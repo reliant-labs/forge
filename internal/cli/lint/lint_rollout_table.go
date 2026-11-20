@@ -29,6 +29,8 @@ package lint
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/linter/testwait"
@@ -293,14 +295,46 @@ func buildRollouts(shipped, fresh []rolloutGroup) map[string]ruleRollout {
 }
 
 // nextPatch is the release after v: v1.9.0 → v1.9.1. A v that is not a
-// vX.Y.Z release yields "", which TestRolloutRowsAreWellFormed refuses.
+// release (parseRelease) yields "", and so does a patch with no successor.
+// TestRolloutRowsAreWellFormed refuses both rows.
 func nextPatch(v string) string {
-	var major, minor, patch int
-	if _, err := fmt.Sscanf(v, "v%d.%d.%d", &major, &minor, &patch); err != nil ||
-		fmt.Sprintf("v%d.%d.%d", major, minor, patch) != v {
+	major, minor, patch, ok := parseRelease(v)
+	if !ok || patch == math.MaxUint32 {
 		return ""
 	}
 	return fmt.Sprintf("v%d.%d.%d", major, minor, patch+1)
+}
+
+// parseRelease reads v as a release, strictly: vMAJOR.MINOR.PATCH, each a
+// decimal with no leading zero that fits 32 bits, and nothing else — no
+// prerelease, no build metadata, no missing part. A rollout row names a
+// release that ships, so anything looser is a typo, not a version.
+func parseRelease(v string) (major, minor, patch uint64, ok bool) {
+	rest, found := strings.CutPrefix(v, "v")
+	if !found {
+		return 0, 0, 0, false
+	}
+	parts := strings.Split(rest, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var nums [3]uint64
+	for i, p := range parts {
+		if p == "" || (len(p) > 1 && p[0] == '0') {
+			return 0, 0, 0, false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return 0, 0, 0, false
+			}
+		}
+		n, err := strconv.ParseUint(p, 10, 32)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		nums[i] = n
+	}
+	return nums[0], nums[1], nums[2], true
 }
 
 // linkedFixtureRows is the newRules row rolloutLinkFixture names, if any.

@@ -127,25 +127,84 @@ func TestLinkedFixtureRows(t *testing.T) {
 // baseline gates strictly later than it was introduced.
 func TestRolloutRowsAreWellFormed(t *testing.T) {
 	for rule, ro := range lintRollouts {
-		if !semver.IsValid(ro.IntroducedIn) {
-			t.Errorf("%s: introduced_in %q is not a vX.Y.Z version", rule, ro.IntroducedIn)
-			continue
-		}
-		afterBaseline := semver.Compare(ro.IntroducedIn, rolloutBaseline) > 0
-		switch {
-		case afterBaseline && ro.GatesFrom == "":
-			t.Errorf("%s: introduced in %s, after the baseline %s, so it must declare gates_from "+
-				"(the release after the one that ships it)", rule, ro.IntroducedIn, rolloutBaseline)
-		case afterBaseline && !semver.IsValid(ro.GatesFrom):
-			t.Errorf("%s: gates_from %q is not a vX.Y.Z version", rule, ro.GatesFrom)
-		case afterBaseline && semver.Compare(ro.GatesFrom, ro.IntroducedIn) <= 0:
-			t.Errorf("%s: gates_from %s must be later than introduced_in %s — a rule warns for at least "+
-				"one release before it gates", rule, ro.GatesFrom, ro.IntroducedIn)
-		case !afterBaseline && ro.GatesFrom != "":
-			t.Errorf("%s: introduced in %s, at or before the baseline %s, so it has gated since it shipped; "+
-				"drop gates_from", rule, ro.IntroducedIn, rolloutBaseline)
+		for _, msg := range rolloutRowProblems(ro) {
+			t.Errorf("%s: %s", rule, msg)
 		}
 	}
+}
+
+// A malformed row is refused rather than given a derived window: the
+// validation TestRolloutRowsAreWellFormed runs over the real table rejects
+// each of these as a newRules row.
+func TestRolloutRowValidationRefusesMalformedRows(t *testing.T) {
+	for _, introduced := range []string{
+		"v1.10.0-rc.1", "v1.10.0+build", "v01.10.0", "v1.010.0", "v1.10.00",
+		"v1.10.4294967296", "v1.10.4294967295", "v1.10", "1.10.0", "v1.10.0.1", "vx.y.z", "", "v1.-1.0", "v1.+1.0",
+	} {
+		rows := buildRollouts(nil, []rolloutGroup{{IntroducedIn: introduced, Rules: []string{"r"}}})
+		if problems := rolloutRowProblems(rows["r"]); len(problems) == 0 {
+			t.Errorf("newRules row introduced_in %q passed validation as %+v", introduced, rows["r"])
+		}
+	}
+	rows := buildRollouts(nil, []rolloutGroup{{IntroducedIn: "v1.10.0", Rules: []string{"r"}}})
+	if problems := rolloutRowProblems(rows["r"]); len(problems) != 0 {
+		t.Errorf("a well-formed newRules row was refused: %v", problems)
+	}
+}
+
+func TestNextPatch(t *testing.T) {
+	for in, want := range map[string]string{
+		"v1.9.0":           "v1.9.1",
+		"v0.0.0":           "v0.0.1",
+		"v1.10.9":          "v1.10.10",
+		"v4294967295.0.0":  "v4294967295.0.1",
+		"v1.2.3-rc.1":      "",
+		"v1.2.3+meta":      "",
+		"v1.2.3-rc.1+meta": "",
+		"v01.2.3":          "",
+		"v1.02.3":          "",
+		"v1.2.03":          "",
+		"v1.2.4294967295":  "", // the patch has no 32-bit successor
+		"v1.2.4294967296":  "", // overflow
+		"v99999999999.0.0": "", // overflow
+		"v1.2":             "",
+		"v1.2.3.4":         "",
+		"1.2.3":            "",
+		"v1.2.x":           "",
+		"v1..3":            "",
+		"v+1.2.3":          "",
+		"garbage":          "",
+		"":                 "",
+	} {
+		if got := nextPatch(in); got != want {
+			t.Errorf("nextPatch(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// rolloutRowProblems is what is wrong with one declared row: a release that
+// is not a strict vX.Y.Z, or a window that disagrees with the baseline.
+func rolloutRowProblems(ro ruleRollout) []string {
+	var out []string
+	if _, _, _, ok := parseRelease(ro.IntroducedIn); !ok {
+		return append(out, fmt.Sprintf("introduced_in %q is not a vMAJOR.MINOR.PATCH release "+
+			"(no prerelease, build metadata or leading zero)", ro.IntroducedIn))
+	}
+	afterBaseline := semver.Compare(ro.IntroducedIn, rolloutBaseline) > 0
+	switch {
+	case afterBaseline && ro.GatesFrom == "":
+		out = append(out, fmt.Sprintf("introduced in %s, after the baseline %s, so it must declare gates_from "+
+			"(the release after the one that ships it)", ro.IntroducedIn, rolloutBaseline))
+	case afterBaseline && !semver.IsValid(ro.GatesFrom):
+		out = append(out, fmt.Sprintf("gates_from %q is not a vX.Y.Z version", ro.GatesFrom))
+	case afterBaseline && semver.Compare(ro.GatesFrom, ro.IntroducedIn) <= 0:
+		out = append(out, fmt.Sprintf("gates_from %s must be later than introduced_in %s — a rule warns for at least "+
+			"one release before it gates", ro.GatesFrom, ro.IntroducedIn))
+	case !afterBaseline && ro.GatesFrom != "":
+		out = append(out, fmt.Sprintf("introduced in %s, at or before the baseline %s, so it has gated since it shipped; "+
+			"drop gates_from", ro.IntroducedIn, rolloutBaseline))
+	}
+	return out
 }
 
 // A row is for a release that shipped (at or before VERSION), for the minor
@@ -794,6 +853,12 @@ func TestGraceIsMachineReadableInJSON(t *testing.T) {
 	grace, _ := m["grace"].(map[string]any)
 	if grace["introduced_in"] != "v1.0.0" || grace["gates_from"] != "v1.0.1" {
 		t.Errorf("grace = %v in %s", grace, raw)
+	}
+	// grace.fix stays in the v1 contract but is always empty, so it is
+	// omitted and the bytes match what a pre-#2410 forge wrote for a rule
+	// with no fix.
+	if _, has := grace["fix"]; has {
+		t.Errorf("grace.fix is deprecated and always empty, so it must be omitted: %s", raw)
 	}
 	if _, leaked := m["rollout"]; leaked {
 		t.Errorf("the internal rollout key leaked into the JSON: %s", raw)

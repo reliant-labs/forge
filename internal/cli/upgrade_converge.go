@@ -255,6 +255,10 @@ type upgradeStartsGating struct {
 	Rule         string `json:"rule"`
 	IntroducedIn string `json:"introduced_in"`
 	GatesFrom    string `json:"gates_from"`
+	// Fix is `starts_gating[].fix` in `forge project upgrade --json`.
+	//
+	// Deprecated: always empty since v1.9.0 (no rule carries a fix hint); kept for the v1 JSON contract.
+	Fix string `json:"fix,omitempty"`
 	// Findings is how many of the rule's findings the lint phase reported
 	// as errors under the new pin; absent when lint did not run.
 	Findings *int `json:"findings,omitempty"`

@@ -135,6 +135,10 @@ type ruleRollout struct {
 type ruleGrace struct {
 	IntroducedIn string `json:"introduced_in"`
 	GatesFrom    string `json:"gates_from"`
+	// Fix is `grace.fix` in `forge lint --json`.
+	//
+	// Deprecated: always empty since v1.9.0 (no rule carries a fix hint); kept for the v1 JSON contract.
+	Fix string `json:"fix,omitempty"`
 	// PreviousPin and GatesAfter are set when the pin is already past
 	// GatesFrom but the project came from a pin older than IntroducedIn:
 	// the rule warns while forge_version is GatesAfter and gates from the

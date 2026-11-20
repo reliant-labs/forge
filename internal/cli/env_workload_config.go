@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -131,6 +132,23 @@ func localWorkloadValues(projectDir, env string, w WorkloadEntity, prov secrets.
 	return hostWorkloadConfig(cfg, w, prov.All(), env), nil
 }
 
+// secretVarNames is the variables of values that w declares from the secret
+// store (and, on host, from a managed secret), sorted.
+func secretVarNames(w WorkloadEntity, values map[string]string) []string {
+	refs := secretRefsForService(&w)
+	refs = append(refs, managedSecretRefsForService(&w)...)
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range refs {
+		if _, ok := values[r.EnvName]; ok && !seen[r.EnvName] {
+			seen[r.EnvName] = true
+			out = append(out, r.EnvName)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // resolvedEnvConfigReport reads the configuration of every selected workload.
 // Under secretsReported a workload whose store lacks declared secrets still
 // reports everything that resolves, and lists the gap in MissingSecrets.
@@ -154,6 +172,7 @@ func resolvedEnvConfigReport(ctx context.Context, projectDir, env string, e *KCL
 					return report, err
 				}
 				row.Env = values
+				row.SecretVars = secretVarNames(w, values)
 				for _, r := range missing {
 					row.MissingSecrets = append(row.MissingSecrets, envConfigMissingSecret{
 						Name: r.EnvName, Secret: r.SecretName, Key: r.Key(),

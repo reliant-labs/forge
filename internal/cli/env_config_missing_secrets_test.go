@@ -120,3 +120,35 @@ func TestEnvExecRefusesMissingSecrets(t *testing.T) {
 		t.Fatalf("the child must not run: stdout %q", out)
 	}
 }
+
+// A readback must not put a secret in a terminal or an agent's transcript
+// (forge report a7cfb588): the table masks a secret-sourced value unless
+// --show-secrets is given, and --json carries it and names it in secret_vars.
+func TestEnvConfigMasksSecretValuesInTheTable(t *testing.T) {
+	testkit.Slow(t, "evaluates a KCL project natively")
+	withMissingSecretFixture(t)
+
+	table, _, err := runEnvConfigSplit(t, "dev")
+	if err != nil {
+		t.Fatalf("table view: %v", err)
+	}
+	if strings.Contains(table, "local-secret") || !strings.Contains(table, "<secret, 12 bytes>") || !strings.Contains(table, "debug") {
+		t.Errorf("the table must mask TOKEN and show LOG_LEVEL:\n%s", table)
+	}
+	shown, _, err := runEnvConfigSplit(t, "dev", "--show-secrets")
+	if err != nil || !strings.Contains(shown, "local-secret") {
+		t.Errorf("--show-secrets must print the value (err %v):\n%s", err, shown)
+	}
+	stdout, _, err := runEnvConfigSplit(t, "dev", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report envConfigReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	api := report.Workloads[0]
+	if api.Env["TOKEN"] != "local-secret" || len(api.SecretVars) != 1 || api.SecretVars[0] != "TOKEN" {
+		t.Errorf("--json must carry the value and name it in secret_vars: env %v, secret_vars %v", api.Env, api.SecretVars)
+	}
+}

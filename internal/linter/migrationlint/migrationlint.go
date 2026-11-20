@@ -318,7 +318,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// emptyTables are the tables this migration created empty and that no
 	// statement since could have written a row to (blocking_index.go): an
 	// index built on one is not a blocking build.
-	emptyTables := map[string]bool{}
+	emptyTables := map[indexRelation]bool{}
 	var findings []Finding
 
 	for _, stmt := range statements {

@@ -19,7 +19,12 @@ func TestBlockingIndexBuild(t *testing.T) {
 		{"unnamed index", "create index on products (name);", 1},
 		{"concurrently", "CREATE INDEX CONCURRENTLY idx_products_name ON products (name);", 0},
 		{"table created in the same file", "CREATE TABLE products (id text PRIMARY KEY, name text);\nCREATE INDEX idx_products_name ON products (name);", 0},
-		{"quoted table created in the same file", "CREATE TABLE public.\"Products\" (id text);\nCREATE INDEX i ON \"Products\" (id);", 0},
+		{"quoted table created in the same file", "CREATE TABLE public.\"Products\" (id text);\nCREATE INDEX i ON public.\"Products\" (id);", 0},
+		{"different schemas do not share an emptiness proof", "CREATE TABLE staging.products (id text);\nCREATE INDEX i ON public.products (id);", 1},
+		{"different qualification does not prove the same relation", "CREATE TABLE staging.products (id text);\nCREATE INDEX i ON products (id);", 1},
+		{"a quoted dot is part of a relation name", "CREATE TABLE \"staging.products\" (id text);\nCREATE INDEX i ON staging.products (id);", 1},
+		{"an ADD COLUMN default can invoke SQL", "CREATE TABLE products (id int);\nALTER TABLE old_products ADD COLUMN copied boolean DEFAULT backfill_products();\nCREATE INDEX i ON products (id);", 1},
+		{"a changed search path invalidates unqualified evidence", "CREATE TABLE products (id int);\nSET search_path TO public;\nCREATE INDEX i ON products (id);", 1},
 		{"another table created in the same file", "CREATE TABLE orders (id text);\nCREATE INDEX i ON products (name);", 1},
 		{"in a comment", "-- CREATE INDEX i ON products (name);\nSELECT 1;", 0},
 		// Emptiness is proved only up to the first statement that could

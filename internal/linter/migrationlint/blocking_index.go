@@ -32,35 +32,46 @@ const RuleBlockingIndexBuild = "blocking-index-build"
 // finding.
 const BlockingIndexBuildRemediation = "build the index with CREATE INDEX CONCURRENTLY, alone in a migration file of its own (`forge db migration new <name>`; postgres refuses CONCURRENTLY inside a transaction block, and a lone statement runs outside one). If the table is empty in every environment, the plain build is fine: `forge db analyze` measures it against a real postgres"
 
+const (
+	indexIdentifierPattern = `(?:"(?:[^"]|"")+"|[a-zA-Z_][\w$]*)`
+	indexRelationPattern   = `(?:` + indexIdentifierPattern + `\s*\.\s*)?` + indexIdentifierPattern
+)
+
 var (
-	createIndexRe = regexp.MustCompile(`(?is)^\s*create\s+(?:unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+)?on\s+(?:only\s+)?((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))`)
+	createIndexRe = regexp.MustCompile(`(?is)^\s*create\s+(?:unique\s+)?index\s+(concurrently\s+)?(?:if\s+not\s+exists\s+)?(?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+)?on\s+(?:only\s+)?(` + indexRelationPattern + `)\s*(?:\(|using\b)`)
 	// The first token after the table name must open a column list. This
 	// excludes PARTITION OF, OF <type> and column-list-free CTAS. The AS
 	// check also excludes CTAS with column names before AS <query>.
-	createTableRe = regexp.MustCompile(`(?is)^\s*create\s+(?:(?:global\s+|local\s+)?(?:temporary|temp|unlogged)\s+)?table\s+((?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*))\s*\(`)
+	createTableRe = regexp.MustCompile(`(?is)^\s*create\s+(?:(?:global\s+|local\s+)?(?:temporary|temp|unlogged)\s+)?table\s+(` + indexRelationPattern + `)\s*\(`)
 	ctasRe        = regexp.MustCompile(`(?is)\bas\s*\(?\s*(?:select|with|values|table|execute)\b`)
-	// ALTER TABLE may attach a populated partition, or make rows visible
-	// under a new name. Only a simple ADD COLUMN preserves the proof.
-	addOneColumnRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:only\s+)?(?:(?:"[^"]+"|[a-zA-Z_][\w$]*)\.)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+add\s+column\b[^,]*$`)
+	// Preserve only a bare nullable column of a known built-in type. A
+	// default, generated expression, constraint, or unknown type is not a
+	// proof: it can execute SQL, even in an otherwise plain ADD COLUMN.
+	addOneColumnRe = regexp.MustCompile(`(?is)^\s*alter\s+table\s+(?:only\s+)?(` + indexRelationPattern + `)\s+add\s+column\s+` + indexIdentifierPattern + `\s+(?:text|smallint|integer|int|bigint|boolean|bool|uuid|bytea)\s*$`)
 )
 
-// relationKey normalises a possibly schema-qualified, possibly quoted
-// relation name for comparison within one file: unquoted identifiers fold
-// to lower case, as postgres folds them, and the schema is dropped (a file
-// that creates public.t and indexes t means one table).
-func relationKey(name string) string {
-	inQuote, dot := false, -1
+// A differently qualified name is not proof of the same relation: without
+// the live search path, t may refer to anything other than public.t.
+// Keep the schema separate from the name so quoted dots do not alias it.
+func relationKey(name string) indexRelation {
+	inQuote := false
 	for i, r := range name {
-		switch {
-		case r == '"':
+		if r == '"' {
 			inQuote = !inQuote
-		case r == '.' && !inQuote:
-			dot = i
+		}
+		if r == '.' && !inQuote {
+			return indexRelation{indexIdentifierKey(name[:i]), indexIdentifierKey(name[i+1:])}
 		}
 	}
-	name = name[dot+1:]
-	if len(name) >= 2 && strings.HasPrefix(name, `"`) && strings.HasSuffix(name, `"`) {
-		return name[1 : len(name)-1]
+	return indexRelation{name: indexIdentifierKey(name)}
+}
+
+type indexRelation struct{ schema, name string }
+
+func indexIdentifierKey(name string) string {
+	name = strings.TrimSpace(name)
+	if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
+		return strings.ReplaceAll(name[1:len(name)-1], `""`, `"`)
 	}
 	return strings.ToLower(name)
 }
@@ -68,10 +79,10 @@ func relationKey(name string) string {
 // createdTable reports the table a statement creates EMPTY: a plain CREATE
 // TABLE. Not CREATE TABLE IF NOT EXISTS (a no-op over a table that may hold
 // rows), and not CREATE TABLE … AS (it creates the table full).
-func createdTable(stmt string) (string, bool) {
+func createdTable(stmt string) (indexRelation, bool) {
 	m := createTableRe.FindStringSubmatch(stmt)
 	if len(m) < 2 || ctasRe.MatchString(stmt) {
-		return "", false
+		return indexRelation{}, false
 	}
 	return relationKey(m[1]), true
 }
@@ -81,7 +92,7 @@ func createdTable(stmt string) (string, bool) {
 // example CREATE EXTENSION runs SQL and ATTACH PARTITION can expose existing
 // rows. An index on a relation not already known empty may evaluate arbitrary
 // index expressions, so it does not preserve proofs for other tables either.
-func preservesEmptyTables(stmt string, emptyTables map[string]bool) bool {
+func preservesEmptyTables(stmt string, emptyTables map[indexRelation]bool) bool {
 	head := strings.TrimSpace(stmt)
 	if end := strings.IndexAny(head, " \t\r\n"); end >= 0 {
 		head = head[:end]
@@ -90,7 +101,8 @@ func preservesEmptyTables(stmt string, emptyTables map[string]bool) bool {
 	case "comment", "grant", "revoke":
 		return true
 	case "alter":
-		return addOneColumnRe.MatchString(stmt)
+		m := addOneColumnRe.FindStringSubmatch(stmt)
+		return len(m) >= 2 && emptyTables[relationKey(m[1])]
 	case "create":
 		m := createIndexRe.FindStringSubmatch(stmt)
 		return len(m) >= 3 && emptyTables[relationKey(m[2])]
@@ -101,7 +113,7 @@ func preservesEmptyTables(stmt string, emptyTables map[string]bool) bool {
 
 // blockingIndexFinding reports a plain CREATE INDEX on a table not in
 // created.
-func blockingIndexFinding(file string, stmt statement, created map[string]bool) (Finding, bool) {
+func blockingIndexFinding(file string, stmt statement, created map[indexRelation]bool) (Finding, bool) {
 	m := createIndexRe.FindStringSubmatch(stmt.Text)
 	if len(m) < 3 || m[1] != "" {
 		return Finding{}, false

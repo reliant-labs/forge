@@ -1,6 +1,7 @@
 package obsdash
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"unicode"
@@ -64,9 +65,10 @@ func AlertTelemetryTargetsOf(targets []telemetry.Target) []AlertTelemetryTarget 
 }
 
 // TelemetryAlertName is the name of the rule a telemetry default raises for
-// service: the service.name in UpperCamelCase ("pg-bouncer" → "PgBouncer"),
-// then suffix. A name an alert may not start with (a digit) is prefixed
-// "Telemetry", so the result is always a valid rule name.
+// service: a readable UpperCamelCase prefix followed by a digest of the
+// original service.name and suffix. The digest keeps punctuation-folding and
+// case-folding from merging distinct services into one alert identity.
+// A leading digit is prefixed with "Telemetry" to keep the name valid.
 func TelemetryAlertName(service, suffix string) string {
 	var b strings.Builder
 	upper := true
@@ -85,7 +87,7 @@ func TelemetryAlertName(service, suffix string) string {
 	if name == "" || unicode.IsDigit(rune(name[0])) {
 		name = "Telemetry" + name
 	}
-	return name + suffix
+	return fmt.Sprintf("%s%x%s", name, sha256.Sum256([]byte(service)), suffix)
 }
 
 // telemetryEnvCond narrows a project-scope target's rows to env, like every

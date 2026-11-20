@@ -21,9 +21,35 @@ func TestTelemetryAlertName(t *testing.T) {
 		"3scale":       "Telemetry3scaleTargetDown",
 		"nats":         "NatsTargetDown",
 	} {
-		if got := TelemetryAlertName(service, "TargetDown"); got != want {
-			t.Errorf("TelemetryAlertName(%q) = %q, want %q", service, got, want)
+		got := TelemetryAlertName(service, "TargetDown")
+		prefix := strings.TrimSuffix(want, "TargetDown")
+		if !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, "TargetDown") || len(got) != len(want)+64 {
+			t.Errorf("TelemetryAlertName(%q) = %q, want %s<sha256>TargetDown", service, got, prefix)
 		}
+	}
+}
+
+func TestTelemetryDefaultsKeepDistinctServiceIdentities(t *testing.T) {
+	in := AlertInput{}
+	for _, service := range []string{"foo.bar", "foo_bar", "foo-bar", "FooBar", "foobar"} {
+		in.TelemetryTargets = append(in.TelemetryTargets, AlertTelemetryTarget{Service: service, Scrapes: true, Checks: true})
+	}
+	rules, _, err := ResolveEnvAlertDefaultsFor(in, "prod", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, rule := range rules {
+		if seen[rule.Alert] {
+			t.Errorf("duplicate generated alert %q", rule.Alert)
+		}
+		seen[rule.Alert] = true
+		if !strings.Contains(rule.Expr, "ServiceName = '"+rule.Labels["service"]+"'") {
+			t.Errorf("alert %s lost its service filter", rule.Alert)
+		}
+	}
+	if len(seen) != 10 {
+		t.Errorf("got %d unique alerts, want two for each service", len(seen))
 	}
 }
 
@@ -35,9 +61,9 @@ func telemetryAlertInput(t *testing.T) AlertInput {
 func TestTelemetryDefaultsAreOneRulePerSystem(t *testing.T) {
 	r := rulesByAlert(t, telemetryAlertInput(t), "prod", nil)
 	for alert, want := range map[string]struct{ id, service string }{
-		"TemporalTargetDown":   {TelemetryTargetDown, "temporal"},
-		"TemporalCheckFailing": {TelemetryCheckFailing, "temporal"},
-		"ClickhouseTargetDown": {TelemetryTargetDown, "clickhouse"},
+		TelemetryAlertName("temporal", "TargetDown"):   {TelemetryTargetDown, "temporal"},
+		TelemetryAlertName("temporal", "CheckFailing"): {TelemetryCheckFailing, "temporal"},
+		TelemetryAlertName("clickhouse", "TargetDown"): {TelemetryTargetDown, "clickhouse"},
 	} {
 		got, ok := r[alert]
 		if !ok {
@@ -54,14 +80,14 @@ func TestTelemetryDefaultsAreOneRulePerSystem(t *testing.T) {
 			t.Errorf("%s does not read its system's service.name:\n%s", alert, got.Expr)
 		}
 	}
-	if _, ok := r["ClickhouseCheckFailing"]; ok {
+	if _, ok := r[TelemetryAlertName("clickhouse", "CheckFailing")]; ok {
 		t.Error("a system with no check got a check alert")
 	}
-	if !strings.Contains(r["TemporalTargetDown"].Expr, "deployment.environment.name'] = 'prod'") {
-		t.Errorf("a project system's rule must read its env:\n%s", r["TemporalTargetDown"].Expr)
+	if !strings.Contains(r[TelemetryAlertName("temporal", "TargetDown")].Expr, "deployment.environment.name'] = 'prod'") {
+		t.Errorf("a project system's rule must read its env:\n%s", r[TelemetryAlertName("temporal", "TargetDown")].Expr)
 	}
-	if strings.Contains(r["ClickhouseTargetDown"].Expr, "deployment.environment.name") {
-		t.Errorf("a platform system's signals carry no env; its rule must not filter on one:\n%s", r["ClickhouseTargetDown"].Expr)
+	if strings.Contains(r[TelemetryAlertName("clickhouse", "TargetDown")].Expr, "deployment.environment.name") {
+		t.Errorf("a platform system's signals carry no env; its rule must not filter on one:\n%s", r[TelemetryAlertName("clickhouse", "TargetDown")].Expr)
 	}
 }
 
@@ -70,12 +96,12 @@ func TestTelemetryDefaultsAreTunedOnceAndOptedOutPerSystem(t *testing.T) {
 		TelemetryTargetDown:   {Enabled: true, For: "15m", Labels: map[string]string{"team": "infra"}, Params: map[string]float64{pWindow: 30}},
 		TelemetryCheckFailing: {Enabled: false},
 	})
-	for _, alert := range []string{"TemporalTargetDown", "ClickhouseTargetDown"} {
+	for _, alert := range []string{TelemetryAlertName("temporal", "TargetDown"), TelemetryAlertName("clickhouse", "TargetDown")} {
 		if got := r[alert]; got.For != "15m" || got.Labels["team"] != "infra" || !strings.Contains(got.Expr, "INTERVAL 30 MINUTE") {
 			t.Errorf("tuning must reach every system's rule: %s %+v", alert, got)
 		}
 	}
-	if _, ok := r["TemporalCheckFailing"]; ok {
+	if _, ok := r[TelemetryAlertName("temporal", "CheckFailing")]; ok {
 		t.Error("a disabled default still raised a rule")
 	}
 
@@ -105,7 +131,7 @@ func TestTelemetryDefaultsReachAProjectWithNoGeneratedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 1 || rules[0].Alert != "ClickhouseTargetDown" {
+	if len(rules) != 1 || rules[0].Alert != TelemetryAlertName("clickhouse", "TargetDown") {
 		t.Errorf("rules = %+v", rules)
 	}
 }
@@ -213,13 +239,13 @@ func TestTelemetryAlertsOnClickHouse(t *testing.T) {
 		}
 		return out
 	}
-	if got := firing("TemporalTargetDown", 1); !slices.Equal(got, []string{"pod-a:9090"}) {
+	if got := firing(TelemetryAlertName("temporal", "TargetDown"), 1); !slices.Equal(got, []string{"pod-a:9090"}) {
 		t.Errorf("TemporalTargetDown fired for %v, want [pod-a:9090]: the newest up of the env's endpoints", got)
 	}
-	if got := firing("ClickhouseTargetDown", 1); !slices.Equal(got, []string{"ch-0:9363"}) {
+	if got := firing(TelemetryAlertName("clickhouse", "TargetDown"), 1); !slices.Equal(got, []string{"ch-0:9363"}) {
 		t.Errorf("ClickhouseTargetDown fired for %v, want [ch-0:9363]: a platform target reads no env", got)
 	}
-	if got := firing("TemporalCheckFailing", 1); !slices.Equal(got, []string{"http://temporal:7243/health", "http://temporal:7244/dead", "temporal:7233"}) {
+	if got := firing(TelemetryAlertName("temporal", "CheckFailing"), 1); !slices.Equal(got, []string{"http://temporal:7243/health", "http://temporal:7244/dead", "temporal:7233"}) {
 		t.Errorf("TemporalCheckFailing fired for %v", got)
 	}
 }

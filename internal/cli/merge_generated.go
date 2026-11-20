@@ -228,6 +228,9 @@ func recertify(merged []byte) []byte {
 // pass it. note, when set, says what the driver decided for the reader of
 // the merge output.
 func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs []byte, markerSize int) (merged []byte, clean bool, note string, err error) {
+	if isAgentsGuideMergePath(relPath) {
+		return mergeAgentsGuide(ctx, relPath, base, ours, theirs, markerSize)
+	}
 	if relPath != "" {
 		if m, ok := checksums.MergeStateFile(relPath, base, ours, theirs); ok {
 			return m, true, "", nil
@@ -990,6 +993,7 @@ var generatedMergePatterns = []string{
 	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
 	"forge_service_catalog.json",
 	".forge/scaffolded/**", ".forge/hashes/**", ".forge/disowned.json",
+	"/AGENTS.md", // project root only; the driver verifies the forge-owned prefix
 }
 
 // writeMergeAttributes writes forge's block into the clone's
@@ -1029,7 +1033,7 @@ func mergeAttributesBlock(prefix string) string {
 			// slash is anchored to the repository root.
 			b.WriteString(p)
 		case strings.Contains(p, "/"):
-			b.WriteString(prefix + p)
+			b.WriteString(prefix + strings.TrimPrefix(p, "/"))
 		default:
 			b.WriteString(prefix + "**/" + p)
 		}

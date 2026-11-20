@@ -266,3 +266,12 @@ func TestHostInfraObserve_EveryInstanceIsNamed(t *testing.T) {
 		}
 	}
 }
+
+// The group's env reaches the supervisor, which logs each instance to
+// .forge/logs/<env>/<name>.log where the local collector tails it.
+func TestSpecOf_CarriesTheGroupEnv(t *testing.T) {
+	got := specOf("e2e", "pg", &HostInfraSpec{Engine: "postgres", Port: 5432})
+	if got.Env != "e2e" || got.Name != "pg" || got.Engine != "postgres" || got.Port != 5432 {
+		t.Errorf("specOf = %+v", got)
+	}
+}

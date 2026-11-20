@@ -30,9 +30,9 @@
 //
 //   - CRUD rpcs. An rpc is CRUD when codegen.CRUDShape claims it (unary,
 //     Create/Get/Update/Delete<E> or List<Es>, no `// forge:custom`) and <E>
-//     is a declared proto message. Their shims share handlers_crud.go by
-//     design, and that file is skipped whole. A CRUD-named rpc marked
-//     `// forge:custom` IS custom, and forge births it in its own rpc file
+//     is a declared message in the service's proto package. Their shims
+//     share handlers_crud.go by design, and that file is skipped whole.
+//     A CRUD-named rpc marked `// forge:custom` IS custom; forge births it in its own rpc file
 //     like any other, so it counts.
 //   - Helpers. A method whose name is no rpc of the service (an unexported
 //     helper, Name, Register) is not an rpc, whatever its receiver.
@@ -82,13 +82,15 @@ func LintOneRPCPerFile(rootDir string) (Result, error) {
 		return Result{}, err
 	}
 
-	// Every declared message, lowercased, is what decides whether a
-	// CRUD-shaped name names an entity (CRUDShape's claim plus the message
-	// half of the verdict; the table half needs the applied schema).
-	messages := map[string]bool{}
+	// A CRUD-shaped name must name a message in the RPC's own proto
+	// package. The table half of the verdict needs the applied schema.
+	messages := map[string]map[string]bool{}
 	for _, s := range scans {
 		for _, m := range s.Messages {
-			messages[strings.ToLower(m.Name)] = true
+			if messages[s.Package] == nil {
+				messages[s.Package] = map[string]bool{}
+			}
+			messages[s.Package][strings.ToLower(m.Name)] = true
 		}
 	}
 
@@ -96,7 +98,7 @@ func LintOneRPCPerFile(rootDir string) (Result, error) {
 	custom := map[string]map[string]bool{}
 	for _, s := range scans {
 		for _, r := range s.RPCs {
-			if r.Service == "" || s.ServiceUnmanaged(r.Service) || isCRUDRPC(r, messages) {
+			if r.Service == "" || s.ServiceUnmanaged(r.Service) || isCRUDRPC(r, messages[s.Package]) {
 				continue
 			}
 			if custom[r.Service] == nil {
@@ -158,12 +160,12 @@ func isCRUDRPC(r codegen.RawProtoRPC, messages map[string]bool) bool {
 	return messages[strings.ToLower(entity)]
 }
 
-// scanProjectProtos raw-scans every .proto under rootDir/proto, one package
-// directory at a time (ScanRawProtoFiles qualifies a scan by one package).
+// scanProjectProtos raw-scans each .proto under rootDir/proto separately so
+// one file's package declaration cannot qualify a different file's RPCs.
 // The vendored forge annotations under proto/forge/ are not the project's.
 func scanProjectProtos(rootDir string) ([]*codegen.RawProtoScan, error) {
 	protoRoot := filepath.Join(rootDir, "proto")
-	byDir := map[string][]string{}
+	var scans []*codegen.RawProtoScan
 	err := filepath.WalkDir(protoRoot, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -176,7 +178,11 @@ func scanProjectProtos(rootDir string) ([]*codegen.RawProtoScan, error) {
 			return nil
 		}
 		if strings.HasSuffix(p, ".proto") {
-			byDir[filepath.Dir(p)] = append(byDir[filepath.Dir(p)], p)
+			s, err := codegen.ScanRawProtoFiles([]string{p})
+			if err != nil {
+				return fmt.Errorf("scan %s: %w", p, err)
+			}
+			scans = append(scans, s)
 		}
 		return nil
 	})
@@ -185,19 +191,6 @@ func scanProjectProtos(rootDir string) ([]*codegen.RawProtoScan, error) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("walk %s: %w", protoRoot, err)
-	}
-	dirs := make([]string, 0, len(byDir))
-	for d := range byDir {
-		dirs = append(dirs, d)
-	}
-	sort.Strings(dirs)
-	scans := make([]*codegen.RawProtoScan, 0, len(dirs))
-	for _, d := range dirs {
-		s, serr := codegen.ScanRawProtoFiles(byDir[d])
-		if serr != nil {
-			return nil, fmt.Errorf("scan %s: %w", d, serr)
-		}
-		scans = append(scans, s)
 	}
 	return scans, nil
 }
@@ -248,7 +241,7 @@ func lintOneRPCPerFileDir(rootDir, dir string, rpcs map[string]bool) ([]Finding,
 		sort.Strings(recvs)
 		for _, recv := range recvs {
 			if ms := byRecv[recv]; len(ms) > 1 {
-				findings = append(findings, oneRPCPerFileFinding(rel, ms))
+				findings = append(findings, oneRPCPerFileFinding(filepath.ToSlash(rel), ms))
 			}
 		}
 	}

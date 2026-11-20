@@ -179,6 +179,44 @@ func TestLintOneRPCPerFile(t *testing.T) {
 	}
 }
 
+func TestLintOneRPCPerFileScopesCRUDToTheProtoPackage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		pkg      string
+		wantLint bool
+	}{
+		{"services.other.v1", true},
+		{"services.orders.v1", false},
+	} {
+		t.Run(tc.pkg, func(t *testing.T) {
+			t.Parallel()
+			root := writeOrderProject(t, map[string]string{"orders.go": rpcMethodSrc("GetOrder") + rpcMethodSrc("ShipOrder")})
+			original := strings.Replace(orderProto, "message Order {\n  string id = 1;\n}\n\n", "", 1)
+			if err := os.WriteFile(filepath.Join(root, "proto/services/orders/v1/orders.proto"), []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Even in the same directory, an unrelated package is not
+			// local. The declaration may also be split across files.
+			dir := filepath.Join(root, "proto/services/orders/v1")
+			types := "syntax = \"proto3\";\npackage " + tc.pkg + ";\nmessage Order { string id = 1; }\n"
+			if err := os.WriteFile(filepath.Join(dir, "types.proto"), []byte(types), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res, err := LintOneRPCPerFile(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantLint {
+				if len(res.Findings) != 1 || !strings.Contains(res.Findings[0].Message, "GetOrder, ShipOrder") {
+					t.Fatalf("want both custom RPCs in the filing warning, got %+v", res.Findings)
+				}
+			} else if len(res.Findings) != 0 {
+				t.Fatalf("GetOrder names a local CRUD message, got %+v", res.Findings)
+			}
+		})
+	}
+}
+
 // A service marked forge:unmanaged owns its handler layout; a project with
 // no handler tree, or no proto, has nothing to lint.
 func TestLintOneRPCPerFile_NothingToJudge(t *testing.T) {

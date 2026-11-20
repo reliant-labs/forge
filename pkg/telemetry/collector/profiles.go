@@ -25,8 +25,8 @@ func (b *builder) profiles(t telemetry.Target) ([]string, error) {
 			key := fmt.Sprintf("%d_%s", i, ty)
 			if b.pods(t) {
 				templates["pprof/"+key] = map[string]any{
-					"rule":   lit(podPortRule(t, p.Port)),
-					"config": pprofConfig(p, ty, "`endpoint`", auth),
+					"rule":   lit(podRule(t)),
+					"config": pprofConfig(p, ty, podEndpoint(p.Port), auth),
 				}
 				continue
 			}

@@ -699,7 +699,7 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 		// telemetryNamed is each per-target rule's name → its service:
 		// TelemetryAlertName folds punctuation, so two accepted services
 		// (foo.bar, foo-bar) can name one rule, which is refused below.
-		telemetryNamed = map[string]string{}
+		telemetryNamed = map[string]telemetryAlertOrigin{}
 	)
 	for _, d := range alertDefs {
 		if !include(d) || !d.applies(in) || (d.needs != nil && !d.needs(in)) {
@@ -728,15 +728,7 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					Labels:      map[string]string{"severity": pr.severity},
 					Annotations: map[string]string{},
 				}
-				for k, v := range d.annotations {
-					r.Annotations[k] = v
-				}
-				if t.For != "" {
-					r.For = t.For
-				}
-				for k, v := range t.Labels {
-					r.Labels[k] = v
-				}
+				applyAlertTuning(&r, d, t)
 				out = append(out, r)
 			}
 			continue
@@ -752,19 +744,11 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					Labels:      map[string]string{"severity": d.Severity, "service": tt.Service},
 					Annotations: map[string]string{},
 				}
-				for k, v := range d.annotations {
-					r.Annotations[k] = v
+				applyAlertTuning(&r, d, t)
+				if other, ok := telemetryNamed[r.Alert]; ok && other.service != tt.Service {
+					return nil, nil, telemetryNameCollision(r.Alert, other.service, tt.Service)
 				}
-				if t.For != "" {
-					r.For = t.For
-				}
-				for k, v := range t.Labels {
-					r.Labels[k] = v
-				}
-				if other, ok := telemetryNamed[r.Alert]; ok && other != tt.Service {
-					return nil, nil, telemetryNameCollision(r.Alert, other, tt.Service)
-				}
-				telemetryNamed[r.Alert] = tt.Service
+				telemetryNamed[r.Alert] = telemetryAlertOrigin{service: tt.Service, defaultID: d.ID}
 				out = append(out, r)
 			}
 			continue
@@ -787,26 +771,43 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 				Labels:      map[string]string{"severity": lv.severity},
 				Annotations: map[string]string{},
 			}
-			for k, v := range d.annotations {
-				r.Annotations[k] = v
-			}
-			if t.For != "" {
-				r.For = t.For
-			}
-			for k, v := range t.Labels {
-				r.Labels[k] = v
-			}
+			applyAlertTuning(&r, d, t)
 			out = append(out, r)
 		}
 	}
-	// A per-target name must not be one another default already raises.
-	for _, r := range out {
-		if svc, ok := telemetryNamed[r.Alert]; ok && r.Labels["service"] != svc {
-			return nil, nil, fmt.Errorf("telemetry system %q raises the default alert %q, which the default %s already names; rename the service, or set default_alerts = False on its forge.Telemetry", svc, r.Alert, r.ID)
-		}
+	if err := validateTelemetryDefaultNames(out, telemetryNamed); err != nil {
+		return nil, nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })
 	return out, skipped, nil
+}
+
+func applyAlertTuning(r *AlertRule, d alertDef, t AlertTuning) {
+	for k, v := range d.annotations {
+		r.Annotations[k] = v
+	}
+	if t.For != "" {
+		r.For = t.For
+	}
+	for k, v := range t.Labels {
+		r.Labels[k] = v
+	}
+}
+
+// Track origin separately from labels, which alert tuning may override.
+type telemetryAlertOrigin struct {
+	service   string
+	defaultID string
+}
+
+// A per-target name must not be one another default already raises.
+func validateTelemetryDefaultNames(rules []AlertRule, named map[string]telemetryAlertOrigin) error {
+	for _, r := range rules {
+		if origin, ok := named[r.Alert]; ok && r.ID != origin.defaultID {
+			return fmt.Errorf("telemetry system %q raises the default alert %q, which the default %s already names; rename the service, or set default_alerts = False on its forge.Telemetry", origin.service, r.Alert, r.ID)
+		}
+	}
+	return nil
 }
 
 // telemetryNameCollision is the error for two declared systems whose

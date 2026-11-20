@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/templates"
 	forgeconfig "github.com/reliant-labs/forge/pkg/config"
 )
@@ -713,6 +714,11 @@ type CmdServerTemplateData struct {
 	// services in front of the bare mux (serverkit.RESTHandler).
 	// Filled by generateCmdServerData from projectAPIRESTEnabled.
 	RESTEnabled bool
+
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // Serves reports whether some config the binary loads declares the serve
@@ -741,29 +747,31 @@ func GenerateCmdServer(messages []ConfigMessage, targetDir string, cs *checksums
 	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: RootConfigFieldNames(messages, targetDir),
 		ConfigInputs: ServeConfigInputs(messages, targetDir),
-	}, targetDir, cs)
+	}, 0, targetDir, cs)
 }
 
 // GenerateCmdServerWithFields renders cmd/server.go using a pre-built
 // config field map (e.g. with migration fields stripped when the
 // migrations feature is disabled).
 func GenerateCmdServerWithFields(configFields map[string]bool, targetDir string, cs *checksums.FileChecksums) error {
-	return GenerateCmdServerForConfigs(configFields, nil, targetDir, cs)
+	return GenerateCmdServerForConfigs(configFields, nil, 0, targetDir, cs)
 }
 
 // GenerateCmdServerForConfigs is GenerateCmdServerWithFields for a binary
 // that binds configs beside its root config: inputs are those configs
-// (ServeConfigInputs), stripped the same way.
-func GenerateCmdServerForConfigs(configFields map[string]bool, inputs []ServeConfigInput, targetDir string, cs *checksums.FileChecksums) error {
+// (ServeConfigInputs), stripped the same way. major is the connect-go major
+// the command tree is born on — `forge generate` passes the major it read
+// once for the run; zero reads targetDir's go.mod.
+func GenerateCmdServerForConfigs(configFields map[string]bool, inputs []ServeConfigInput, major connectmajor.Major, targetDir string, cs *checksums.FileChecksums) error {
 	return generateCmdServerData(CmdServerTemplateData{
 		ConfigFields: configFields,
 		ConfigInputs: inputs,
-	}, targetDir, cs)
+	}, major, targetDir, cs)
 }
 
 // generateCmdServerData is the shared render+write tail of the
 // GenerateCmdServer* variants. Fills Module from go.mod.
-func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *checksums.FileChecksums) error {
+func generateCmdServerData(data CmdServerTemplateData, major connectmajor.Major, targetDir string, cs *checksums.FileChecksums) error {
 	modulePath, err := GetModulePath(targetDir)
 	if err != nil {
 		return fmt.Errorf("read module path: %w", err)
@@ -771,6 +779,10 @@ func generateCmdServerData(data CmdServerTemplateData, targetDir string, cs *che
 	data.Module = modulePath
 	data.RESTEnabled = projectAPIRESTEnabled(targetDir)
 	data.DevSessionCookie = projectMiddlewareDeclares(targetDir, projectDevSessionCookieDecl) && data.ConfigFields["Environment"]
+	// The command tree below is scaffold-once: it is BORN at the major the
+	// project's go.mod selects (the run's major, when a generate passed
+	// one) and is the user's from then on.
+	data.ConnectV2 = GenContext{ProjectDir: targetDir, ConnectMajor: major}.connectV2()
 
 	// The SCAFFOLD-ONCE half of the command tree. Each of these files is
 	// all decisions and no ceremony, so forge writes each exactly once and

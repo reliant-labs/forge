@@ -112,11 +112,13 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
-// rolloutBaseline is the last release before warn-first existed. A rule
-// introduced at or before it has gated since it shipped and declares no
-// GatesFrom; one introduced after it must. It is a fixed point, not a moving
-// "current version": it does not change when a release is cut.
-const rolloutBaseline = "v0.1.46"
+// rolloutBaseline is the last release whose rules gate at any pin. A rule
+// introduced at or before it declares no GatesFrom; one introduced after it
+// must. It was v0.1.46, the last release before warn-first existed; it moved
+// to v1.8.0 when the owner closed every open grace window (2026-11-19). It is
+// a fixed point, not a moving "current version": it does not change when a
+// release is cut.
+const rolloutBaseline = "v1.9.0"
 
 // rolloutGolangciBuildTags is the pseudo-rule key of the golangci-lint
 // build-tag passes (golangci_build_tags.go): the key lint.rules names to
@@ -396,6 +398,17 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 	// Before the move the project came from whatever history says; after
 	// it, from the old pin.
 	oldPrev, oldPrevKnown := previousPin(cfg, oldPin)
+	// After the move lint reads the previous pin the same way: the first
+	// value in forge.yaml's history that grades differently from the new
+	// pin. That is the old pin, unless both grade as one release (two
+	// pseudo-versions leading to v1.7.1), and then it is whatever the old
+	// pin's own previous was. Using the old pin there regardless reported
+	// the same rules as starting to gate on two consecutive bumps, while
+	// lint under the first of them still warned (upgrade-report defect 4).
+	newPrev, newPrevKnown := oldPin, true
+	if oldPin == newPin {
+		newPrev, newPrevKnown = oldPrev, oldPrevKnown
+	}
 	var out []GatingRule
 	for id, ro := range table {
 		if ro.GatesFrom == "" {
@@ -405,7 +418,7 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 			continue
 		}
 		warnedBefore := graceFor(ro, oldPin, oldPrev, oldPrevKnown, from) != nil
-		gatesAfter := graceFor(ro, newPin, oldPin, oldPin != newPin, to) == nil
+		gatesAfter := graceFor(ro, newPin, newPrev, newPrevKnown, to) == nil
 		if warnedBefore && gatesAfter {
 			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix})
 		}
@@ -450,6 +463,25 @@ func withoutRollout(more, base []lintJSONFinding) []lintJSONFinding {
 	return out
 }
 
+// GatesWhen is when a softened finding's rule gates, worded once for every
+// surface that says it — lint's verdict line and `forge project upgrade`'s
+// "Gating soon" — so the two cannot disagree (they did: "gates from v1.8.1"
+// beside "gates from the pin after v1.8.1-0.…"). gatesAfter is set when the
+// pin jumped the rule's window (ruleGrace.GatesAfter): the rule then gates
+// from the pin after that one, whatever its GatesFrom says.
+func GatesWhen(gatesFrom, gatesAfter string) string {
+	if gatesAfter != "" {
+		return "gates from the next forge pin after " + gatesAfter
+	}
+	return "gates from " + gatesFrom
+}
+
+// isRawToolLine reports whether f is a raw sub-tool line — rule "external"
+// with no file — the output under the finding before it, not a finding.
+func isRawToolLine(f lintJSONFinding) bool {
+	return f.Rule == "external" && f.File == ""
+}
+
 // gracedRule is one rule's softened findings in a run, for the verdict line.
 type gracedRule struct {
 	rule string
@@ -467,7 +499,10 @@ func gracedFindings(outcomes []lintStepOutcome) []gracedRule {
 			continue
 		}
 		for _, f := range o.findings {
-			if f.Grace == nil {
+			// A raw sub-tool line (a formatter's diff under the finding it
+			// belongs to) is that finding's output, not a finding: counting
+			// it doubled forge-proto-format (60 for 30 files).
+			if f.Grace == nil || isRawToolLine(f) {
 				continue
 			}
 			key := f.rollout
@@ -476,11 +511,7 @@ func gracedFindings(outcomes []lintStepOutcome) []gracedRule {
 			}
 			g := byRule[key]
 			if g == nil {
-				when := "gates from " + f.Grace.GatesFrom
-				if f.Grace.GatesAfter != "" {
-					when = "gates from the pin after " + f.Grace.GatesAfter
-				}
-				g = &gracedRule{rule: key, gatesFrom: when}
+				g = &gracedRule{rule: key, gatesFrom: GatesWhen(f.Grace.GatesFrom, f.Grace.GatesAfter)}
 				byRule[key] = g
 			}
 			g.n++

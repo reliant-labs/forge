@@ -42,8 +42,7 @@ const ruleUnprovenSignup = "forgeconv-unproven-signup"
 // DEFAULTS auth_self_signup to true (`auth_self_signup: bool = True`, a proto
 // default_value of "true" projected into config_gen.k), which turns the
 // legacy sign-up on in every environment that does not override it, prod
-// included. Its own ID because it was found after ruleUnprovenSignup shipped:
-// it warns for a release before it gates (lint_rollout_table.go).
+// included. It has its own ID so projects can grade the two findings separately.
 const ruleUnprovenSignupDefault = "forgeconv-unproven-signup-default"
 
 var (
@@ -150,11 +149,11 @@ func collectUnprovenSignupJSON(root string) ([]lintJSONFinding, error) {
 		}
 		hint := "deliver mail so sign-up proves the address first: drop `delivery = \"none\"` (platform delivery is the default) " +
 			"or declare `smtp`, and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
-			"(`forge skill load migrations/v1.1.0/identity-v2`)"
+			"(`forge skill load auth/frontend`)"
 		if f.Rule == ruleUnprovenSignupDefault {
 			hint = "default auth_self_signup to false in the config proto (`default_value: \"false\"`, then `forge generate`), " +
 				"and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
-				"(`forge skill load migrations/v1.1.0/identity-v2`)"
+				"(`forge skill load auth/frontend`)"
 		}
 		out = append(out, lintJSONFinding{
 			Rule:     f.Rule,

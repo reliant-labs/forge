@@ -61,16 +61,6 @@ const (
 	// re-verification (an address change) does not grant it again after an
 	// owner revoked it.
 	MetaSignupRoleGranted = "forge.signup_role_granted"
-	// MetaProofLock was the mark of a proof that held an account locked.
-	//
-	// Deprecated: no longer written or read. A key a broker older than
-	// forge#2121's fix left behind is inert; delete it at will.
-	MetaProofLock = "forge.proof_lock"
-	// MetaProofWindowPrefix started the key of a pre-proof cleanup window.
-	//
-	// Deprecated: no longer written or read (there is no pre-proof
-	// cleanup). Keys an older broker left behind are inert.
-	MetaProofWindowPrefix = "forge.proof_window."
 )
 
 // RevokeCredentials removes every credential on an account: the password is

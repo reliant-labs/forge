@@ -234,8 +234,9 @@ func collectIdentityMethodsJSON(root string) ([]lintJSONFinding, error) {
 			Line:     line,
 			Message: "the identity declares " + f.What + " but " + f.Broker + " does not serve it: " + f.Missing +
 				"; the declaration is converged and silently ignored by the sign-in screen",
-			FixHint: "apply the identity-v2 broker edits (`forge skill load migrations/v1.1.0/identity-v2` has them exactly), " +
-				"or drop the declaration",
+			FixHint: "serve it from internal/app/login_broker.go: move the file aside, run `forge generate` to scaffold the current broker " +
+				"(it mounts each declared method through devidp.SignInRoutes in mountSignInMethods), and port your edits onto it " +
+				"(`forge skill load auth/frontend`); or drop the declaration",
 		})
 	}
 	return out, nil

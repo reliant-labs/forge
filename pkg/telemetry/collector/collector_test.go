@@ -96,6 +96,102 @@ func TestGolden(t *testing.T) {
 	}
 }
 
+// Shared log processors must not replace the unconditional identity and counter
+// transforms used by a target's metrics and profiles pipelines.
+func TestTargetTransformsDoNotCollideWithSharedProcessors(t *testing.T) {
+	var targets []telemetry.Target
+	for _, service := range []string{"identity", "logs"} {
+		target := clusterManifests()
+		target.ServiceName = service
+		targets = append(targets, target)
+	}
+	f := mustBuild(t, targets, clusterOptions())
+	if len(f.Processors) != 4 {
+		t.Fatalf("got %d processors, want two target transforms and two shared processors", len(f.Processors))
+	}
+	for _, target := range targets {
+		service := target.ServiceName
+		for _, signal := range []string{"metrics", "profiles"} {
+			pipeline := f.Pipelines[signal+"/telemetry_"+service].(map[string]any)
+			found := false
+			for _, id := range pipeline["processors"].([]any) {
+				name := id.(string)
+				if name == IdentityProcessor || name == LogsProcessor {
+					t.Fatalf("%s pipeline for %s references shared processor %s", signal, service, name)
+				}
+				processor, ok := f.Processors[name]
+				if !ok {
+					continue // Caller-owned pre/post processors.
+				}
+				found = true
+				cfg := processor.(map[string]any)
+				key := "metric_statements"
+				if signal == "profiles" {
+					key = "profile_statements"
+				}
+				groups := cfg[key].([]any)
+				identity := groups[0].(map[string]any)["statements"].([]any)[0]
+				want := fmt.Sprintf(`set(attributes["service.name"], %q)`, service)
+				if identity != want {
+					t.Errorf("%s identity = %v, want %s", signal, identity, want)
+				}
+				if signal == "metrics" && !strings.Contains(fmt.Sprint(groups), "convert_gauge_to_sum") {
+					t.Error("target metrics lost counter conversion")
+				}
+			}
+			if !found {
+				t.Errorf("%s pipeline for %s has no target transform", signal, service)
+			}
+		}
+	}
+	for _, id := range []string{IdentityProcessor, LogsProcessor} {
+		cfg := f.Processors[id].(map[string]any)
+		if _, ok := cfg["log_statements"]; !ok {
+			t.Errorf("shared processor %s lost log processing", id)
+		}
+	}
+}
+
+// A pod scrape never stamps a target label an exporter may also write: the
+// pod's namespace goes under NamespaceLabel, which the target's transform
+// moves to k8s.namespace.name, so an exporter's own `namespace` survives
+// instead of being renamed exported_namespace. An address scrape stamps
+// neither and moves nothing.
+func TestPodScrapeKeepsExportersNamespaceLabel(t *testing.T) {
+	f := mustBuild(t, []telemetry.Target{clusterManifests()}, clusterOptions())
+	job := f.Receivers["prometheus/telemetry_temporal"].(map[string]any)["config"].(map[string]any)["scrape_configs"].([]any)[0].(map[string]any)
+	if job["honor_labels"] != nil {
+		t.Errorf("honor_labels = %v: a scraped pod must not override the target labels", job["honor_labels"])
+	}
+	targets := map[string]string{}
+	for _, r := range job["relabel_configs"].([]any) {
+		r := r.(map[string]any)
+		if l, ok := r["target_label"].(string); ok && l != "__address__" {
+			targets[l] = fmt.Sprint(r["source_labels"])
+		}
+	}
+	if want := map[string]string{"pod": "[__meta_kubernetes_pod_name]", "forge_k8s_namespace": "[__meta_kubernetes_namespace]"}; fmt.Sprint(targets) != fmt.Sprint(want) {
+		t.Errorf("target labels = %v, want %v (never `namespace`, which exporters write)", targets, want)
+	}
+
+	groups := f.Processors["transform/telemetry_target/temporal"].(map[string]any)["metric_statements"].([]any)
+	last := groups[len(groups)-1].(map[string]any)
+	want := []any{
+		`set(resource.attributes["k8s.namespace.name"], datapoint.attributes["forge_k8s_namespace"]) where datapoint.attributes["forge_k8s_namespace"] != nil`,
+		`delete_key(datapoint.attributes, "forge_k8s_namespace")`,
+	}
+	if last["context"] != "datapoint" || fmt.Sprint(last["statements"]) != fmt.Sprint(want) {
+		t.Errorf("last metric group = %v, want the datapoint move %v", last, want)
+	}
+
+	host := mustBuild(t, hostTargets(), hostOptions())
+	for name, p := range host.Processors {
+		if strings.Contains(fmt.Sprint(p), "forge_k8s_namespace") {
+			t.Errorf("host processor %s moves forge_k8s_namespace, which only a pod scrape stamps", name)
+		}
+	}
+}
+
 func TestNetworkPoliciesGolden(t *testing.T) {
 	ref := CollectorRef{Namespace: "forge-observability", PodLabels: map[string]string{"app.kubernetes.io/name": "otel-agent"}}
 	noNS := clusterSecured()
@@ -209,6 +305,12 @@ func TestBuildRefuses(t *testing.T) {
 	noExporters.MetricsExporters = nil
 	bad := clusterManifests()
 	bad.Metrics[0].Allow = "("
+	// An unnamed first scrape's job, and an unnamed first check's receiver,
+	// end in "0": an entry named "0" beside it would share the name.
+	scrapeCollides := clusterAddress()
+	scrapeCollides.Metrics = append(scrapeCollides.Metrics, telemetry.MetricsScrape{Name: "0", Port: 9094, Allow: "x"})
+	checkCollides := clusterAddress()
+	checkCollides.Checks = append(checkCollides.Checks, telemetry.HealthCheck{Name: "0", Kind: "tcp", Port: 9094})
 	cases := []struct {
 		name    string
 		targets []telemetry.Target
@@ -221,6 +323,8 @@ func TestBuildRefuses(t *testing.T) {
 		{"mount root", []telemetry.Target{clusterSecured()}, noMount, "Options.MountRoot"},
 		{"exporters", []telemetry.Target{clusterManifests()}, noExporters, "MetricsExporters"},
 		{"invalid", []telemetry.Target{bad}, clusterOptions(), "not an RE2 expression"},
+		{"scrape named like an index", []telemetry.Target{scrapeCollides}, clusterOptions(), `metrics[1].name: "0" is all digits`},
+		{"check named like an index", []telemetry.Target{checkCollides}, clusterOptions(), `checks[1].name: "0" is all digits`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

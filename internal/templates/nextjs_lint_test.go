@@ -89,7 +89,6 @@ func TestNextJSOtelKeepsEnvReadsInProjectCode(t *testing.T) {
 		// still written out verbatim, until the next major removes them.
 		"process.env.NEXT_PUBLIC_OTEL_ENDPOINT",
 		"process.env.NEXT_PUBLIC_ENVIRONMENT",
-		"process.env.NEXT_PUBLIC_OTEL_REPLAY",
 	} {
 		if !strings.Contains(s, envVar) {
 			t.Errorf("otel_gen.ts no longer reads %s in project code — Next.js can only inline that literal where it is written verbatim, so telemetry would silently no-op; got:\n%s", envVar, s)

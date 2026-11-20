@@ -216,10 +216,19 @@ schema Telemetry:
     logs?: LogParse
     profiles: [PprofScrape] = []
     checks: [HealthCheck] = []
-    # Render a NetworkPolicy that admits ONLY the collector, on ONLY the
-    # declared scrape/pprof/check ports, into the matching pods. Set False
-    # when you own that policy yourself.
-    network_policy: bool = True
+    # Whether forge admits the collector with a NetworkPolicy, on ONLY the
+    # declared scrape/pprof/check ports, into the matching pods. Unset is
+    # "auto". A NetworkPolicy that selects pods no policy selected before
+    # flips them to default-deny for ALL other ingress, which would
+    # black-hole a raw system's real traffic, so auto renders one only where
+    # forge already owns the pods' policy:
+    #   * unset on Workload/HostInfra: the collector's ingress rule joins the
+    #     policy forge already renders for that workload (it exists either way).
+    #   * unset on Manifests/Observability: NO policy. forge cannot know
+    #     whether those pods are already policy-selected, so admission is
+    #     yours; set True to have forge render it.
+    #   * True: render it. False: never.
+    network_policy?: bool
     # The signal-generic system dashboard forge draws for every Telemetry.
     dashboard: SystemDashboard = SystemDashboard {}
     # Your dashboards for this system (forge.dashboards/v1, typed). Each `id`
@@ -621,11 +630,18 @@ declared keys).
 `block_on_overflow: false` and a 2m retry, which is cp's selfmon semantics.
 
 **NetworkPolicy:** `collector.NetworkPolicies(targets, collector)` returns one NetworkPolicy per
-(target, namespace). It selects the target's pods, with ingress from
+(target, namespace) that asks for one. It selects the target's pods, with ingress from
 `{namespaceSelector: collector ns, podSelector: collector pod labels}` on exactly the scrape,
-pprof and check ports. They are rendered as sibling objects of the target's group. A Workload
-gets the rule merged into its own `ingressPolicy` (`workload_render.go:1346-1400`, which already
-names "a cross-namespace scraper" as the unmodelled case).
+pprof and check ports. `Target.NetworkPolicy` is tri-state, because a NetworkPolicy that selects
+pods no policy selected before flips them to default-deny for ALL other ingress:
+
+- unset ("auto") on a Workload or HostInfra: the rule is merged into the workload's own
+  `ingressPolicy` (`workload_render.go:1346-1400`, which already names "a cross-namespace scraper"
+  as the unmodelled case). Safe: that policy exists either way.
+- unset on Manifests or Observability: no policy. forge cannot know whether those pods are
+  already policy-selected, and a new policy would black-hole their real traffic. The project
+  owns admission (`telemetry.Warnings` notes that the collector needs ingress).
+- `True`: rendered, as a sibling object of the target's group. `False`: never.
 
 ### 3.3 Per runtime
 
@@ -886,6 +902,11 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
 - A Telemetry's `service_name` becomes the workload's `OTEL_SERVICE_NAME`, and `scope =
 "platform"` drops the standard `OTEL_RESOURCE_ATTRIBUTES` (no env identity). Both apply only
   when a Telemetry is declared, so an env without one renders byte-identically.
+- `network_policy` is tri-state (`network_policy?: bool`; `Target.NetworkPolicy *bool`), not
+  `bool = True`: unset is "auto" (§3.2, NetworkPolicy), so forge never puts a default-deny policy
+  on raw pods it does not own. `telemetry.Warnings` returns an informational `Problem`
+  (`Warning: true`) for a Manifests or Observability target that pulls with it unset, and
+  `forge env render` prints it on stderr.
 - Validate's hosted rules: every scrape sets `allow`; no `address`, no bearer token, no
   profiles; a numeric port must be one the workload declares. A target on `forge.OnExternal` or
   `forge.BuildOnly` is refused (nothing forge reaches runs it).

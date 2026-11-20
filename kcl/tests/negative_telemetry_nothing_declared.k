@@ -16,7 +16,7 @@ output = forge.render(forge.Bundle {
             service_name = "sys"
             cluster = "k3d-demo"
             selector = {app = "sys"}
-            network_policy = False
+            isolated = True
         }]
     }
 })

@@ -57,6 +57,14 @@ func TestRenderContract_TelemetryDecodesNormalizesAndValidates(t *testing.T) {
 	if cm := by["cert-manager"]; cm.Attachment != telemetry.AttachObservability || cm.Logs.Severity.Mapping["debug"][0] != "3" {
 		t.Errorf("observability target = %+v", cm)
 	}
+	if !ch.AdmitCollector() || tmp.NetworkPolicy != nil || !tmp.AdmitCollector() || by["cert-manager"].AdmitCollector() {
+		t.Errorf("network_policy: clickhouse explicit true, temporal auto (admits), cert-manager auto (does not)")
+	}
+	// The raw target that pulls with network_policy unset gets a note, and
+	// only it.
+	if w := envTelemetryWarnings(e); len(w) != 1 || w[0].ServiceName != "cert-manager" {
+		t.Errorf("warnings = %+v, want one for cert-manager", w)
+	}
 }
 
 // An env that declares no Telemetry decodes to none, from every golden that
@@ -131,5 +139,16 @@ func TestEnvRenderJSONFlag(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "none of the others can be") {
 		t.Fatalf("--json with --list = %v, want them refused together", err)
+	}
+}
+
+func TestCheckEnvTelemetryPrintsNotes(t *testing.T) {
+	e, _ := loadContract(t, "telemetry")
+	var errOut bytes.Buffer
+	if err := checkEnvTelemetry(&errOut, "dev", e); err != nil {
+		t.Fatal(err)
+	}
+	if got := errOut.String(); !strings.Contains(got, "telemetry note: observability (service cert-manager): network_policy") {
+		t.Errorf("notes on stderr = %q", got)
 	}
 }

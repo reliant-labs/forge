@@ -159,10 +159,19 @@ schema Telemetry:
     logs?: LogParse
     profiles: [PprofScrape] = []
     checks: [HealthCheck] = []
-    # Render a NetworkPolicy that admits ONLY the collector, on ONLY the
-    # declared scrape/pprof/check ports, into the matching pods. Set False
-    # when you own that policy yourself.
-    network_policy: bool = True
+    # Whether forge admits the collector with a NetworkPolicy, on ONLY the
+    # declared scrape/pprof/check ports, into the matching pods. Unset is
+    # "auto". A NetworkPolicy that selects pods no policy selected before
+    # flips them to default-deny for ALL other ingress, which would
+    # black-hole a raw system's real traffic, so auto renders one only where
+    # forge already owns the pods' policy:
+    #   * unset on Workload/HostInfra: the collector's ingress rule joins the
+    #     policy forge already renders for that workload (it exists either way).
+    #   * unset on Manifests/Observability: NO policy. forge cannot know
+    #     whether those pods are already policy-selected, so admission is
+    #     yours; set True to have forge render it.
+    #   * True: render it. False: never.
+    network_policy?: bool
     # The signal-generic system dashboard forge draws for every Telemetry.
     dashboard: SystemDashboard = SystemDashboard {}
     # Your alert rules. They join Observability.alerts with labels.service =

@@ -4523,16 +4523,20 @@ benefits:
       screen and Reliant agents use the same permissions and audit trail; apps
       still implement both behaviors.
     why: >-
-      The deterministic evaluation core, exposure events, and product-event
-      tracking are building blocks, not a shipped rollout or experiment
-      service. The proposed first version evaluates a versioned policy locally
-      in the app, without a network call on each request or changes to load
-      balancers.
+      The evaluation SDK ships: a Go store and OpenFeature provider, a browser
+      loader and OpenFeature provider, and assignment events recorded as
+      product events. Declaring changes in the project, platform delivery of
+      each environment's policy, and the Experiments screen are not shipped
+      yet. Evaluation is local in the app, from a versioned policy, without a
+      network call on each request or changes to load balancers.
     evidence:
       - library: pkg/changes
+      - library: pkg/changes/openfeature
       - library: pkg/observe
-      - path: web-runtime/src/track.ts
+      - path: web-runtime/src/changes-store.ts
+      - path: web-runtime/src/changes-provider.ts
       - path: web-runtime/src/exposure.ts
+      - skill: observability/changes
       - skill: observability/product-analytics
 
   - id: builtin-ai-hub

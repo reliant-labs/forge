@@ -90,6 +90,14 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("unit tests do not query a container registry")
 	}
 	buildxAvailable = func(context.Context) bool { return false }
+	// Nor does any release cut install or run syft: the clean-CI answer is
+	// "no SBOM generator", which records each artifact's SBOM as unavailable
+	// and cuts. A test of SBOM generation states the tool and fakes syft
+	// (build_sbom_test.go).
+	sbomTool = func(context.Context) (string, string, error) {
+		return "", "", errors.New("unit tests do not install syft")
+	}
+	sbomCacheDir = func() string { return "" }
 	// Nor does any build ask a registry's token realm about push access: the
 	// clean-CI answer is "not verified", which proceeds. A test of the
 	// preflight states the realm's answer (registry_push_preflight_test.go).

@@ -126,6 +126,9 @@ type buildOptions struct {
 	// pull from. Unlike push, having none is not a failure. Resolved by
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
+	// noSBOM is --no-sbom: cut the release without generating SBOMs
+	// (build_sbom.go). Each artifact records why it has none.
+	noSBOM bool
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
@@ -1872,6 +1875,12 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 // were built and pushed by an earlier step.
 func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (releaseCutOutcome, error) {
 	artifacts := harvestReleaseArtifacts(projectDir, env)
+	// What the build state recorded is what this pipeline built: the SBOM
+	// step reads those images from the docker daemon before the registry.
+	built := make(map[string]bool, len(artifacts))
+	for name := range artifacts {
+		built[name] = true
+	}
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
@@ -1966,6 +1975,13 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// The source history this release adds, while the checkout is at its
 	// commit — see release_commits.go.
 	rel.Commits = captureReleaseCommits(ctx, projectDir, rel, ledger.Releases, os.Stderr)
+	// LAST before the record, after every check that can refuse the cut:
+	// an SBOM costs seconds per artifact, and a refused cut should not pay
+	// for them. Never fails the cut (build_sbom.go).
+	generateReleaseSBOMs(ctx, sbomCut{
+		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
+		Entities: entities, Built: built, NoSBOM: opts.noSBOM,
+	}, rel.Artifacts, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)

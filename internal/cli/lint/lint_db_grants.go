@@ -171,10 +171,14 @@ func readMigrationSources(dir string) (migrationSources, error) {
 }
 
 // locate finds the first line, in a migration that names the table, that
-// declares the column. Best effort: a column added by a statement this does not
-// recognise is located at the table's file with no line.
+// declares the column: a column definition at the start of a line (a CREATE
+// TABLE body, or an ADD COLUMN continuing an ALTER TABLE), or a one-line
+// `ALTER TABLE <table> ADD COLUMN <column> …`. Best effort: a column added by
+// a statement this does not recognise has no location.
 func (ms migrationSources) locate(root, table, column string) (string, int) {
-	colRE := regexp.MustCompile(`(?i)^\s*(?:add\s+column\s+(?:if\s+not\s+exists\s+)?)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`)
+	col := `(?:add\s+column\s+(?:if\s+not\s+exists\s+)?)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`
+	colRE := regexp.MustCompile(`(?i)^\s*` + col +
+		`|\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:"?\w+"?\.)?"?` + regexp.QuoteMeta(table) + `"?\s+add\s+(?:column\s+)?(?:if\s+not\s+exists\s+)?"?` + regexp.QuoteMeta(column) + `"?\s+[A-Za-z]`)
 	tableRE := regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(table) + `\b`)
 	for _, m := range ms {
 		if !tableRE.MatchString(m.text) {

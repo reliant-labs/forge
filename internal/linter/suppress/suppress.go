@@ -165,6 +165,11 @@ type blockRange struct {
 // directive, because the alternative — failing a lint run over the
 // syntax of the thing that turns lint off — is a trap with no upside.
 func ParseFile(content string) *fileDirectives { //nolint:revive // unexported return is deliberate; callers only pass it back to Apply
+	return parseFileIn(content, syntaxAny)
+}
+
+// parseFileIn is ParseFile for a file of a known comment syntax.
+func parseFileIn(content string, syn syntax) *fileDirectives {
 	fd := &fileDirectives{
 		fileScope: map[string]directive{},
 		lineScope: map[int][]directive{},
@@ -175,7 +180,7 @@ func ParseFile(content string) *fileDirectives { //nolint:revive // unexported r
 	lines := strings.Split(content, "\n")
 	for i, raw := range lines {
 		lineNo := i + 1
-		for _, d := range parseLine(raw, lineNo) {
+		for _, d := range parseLineIn(raw, lineNo, syn) {
 			switch d.token {
 			case TokenDisableFile:
 				for _, r := range d.rules {
@@ -229,10 +234,35 @@ func ParseFile(content string) *fileDirectives { //nolint:revive // unexported r
 	return fd
 }
 
-// parseLine returns every directive occurring on one source line. A
-// line may legitimately carry more than one (a trailing //nolint on a
-// line that also opens a block), so this returns a slice.
-func parseLine(raw string, lineNo int) []directive {
+// syntax is the comment syntax of the file a line comes from, when known.
+type syntax int
+
+const (
+	// syntaxAny: unknown, or a language with `//` comments. Every token
+	// counts wherever it appears (see "COMMENT SYNTAX IS NOT PARSED").
+	syntaxAny syntax = iota
+	// syntaxHash: YAML, whose only comment is `#`. golangci's `//nolint:`
+	// is a Go directive and `//` opens no comment here, so a `nolint:`
+	// that no `#` precedes on its line sits in a value — prose such as
+	// the scaffolded .golangci.yml's "add //nolint:forbidigo on this line"
+	// — and declares nothing.
+	syntaxHash
+)
+
+// syntaxOf names the comment syntax of path by its extension.
+func syntaxOf(path string) syntax {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		return syntaxHash
+	}
+	return syntaxAny
+}
+
+// parseLineIn returns every directive occurring on one source line of a
+// file of comment syntax syn. A line may legitimately carry more than one
+// (a trailing //nolint on a line that also opens a block), so this returns
+// a slice.
+func parseLineIn(raw string, lineNo int, syn syntax) []directive {
 	var out []directive
 	// Order matters: the longer tokens are prefixes of the shorter one
 	// (forge:lint-disable-file starts with forge:lint-disable), so the
@@ -240,6 +270,9 @@ func parseLine(raw string, lineNo int) []directive {
 	for _, tok := range []string{TokenDisableFile, TokenDisableNextLine, TokenEnable, TokenDisable, TokenNolint} {
 		idx := strings.Index(raw, tok)
 		if idx < 0 {
+			continue
+		}
+		if tok == TokenNolint && syn == syntaxHash && !strings.Contains(raw[:idx], "#") {
 			continue
 		}
 		rest := raw[idx+len(tok):]
@@ -442,7 +475,12 @@ func matches(rules []string, rule string) bool {
 // linters emit) is matched only by file-scope directives — a
 // line-scoped directive cannot silence something that has no line.
 func Apply(content string, findings []finding.Finding) Result {
-	fd := ParseFile(content)
+	return applyIn(content, syntaxAny, findings)
+}
+
+// applyIn is Apply for a file of a known comment syntax.
+func applyIn(content string, syn syntax, findings []finding.Finding) Result {
+	fd := parseFileIn(content, syn)
 	var res Result
 	for _, f := range findings {
 		d, silenced := fd.covers(f.Rule, f.Line)
@@ -518,7 +556,7 @@ func ApplyFiles(root string, findings []finding.Finding, read func(path string) 
 			res.Kept = append(res.Kept, fs...)
 			continue
 		}
-		one := Apply(string(content), fs)
+		one := applyIn(string(content), syntaxOf(file), fs)
 		res.Kept = append(res.Kept, one.Kept...)
 		res.Suppressed = append(res.Suppressed, one.Suppressed...)
 		res.Violations = append(res.Violations, one.Violations...)

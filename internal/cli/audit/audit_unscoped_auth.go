@@ -497,7 +497,14 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 				Details: details,
 			}
 		}
+		// An acknowledged RPC never resolves the caller: it is declared
+		// global with the marker, and is counted apart so the summary does
+		// not claim it does.
 		summary := fmt.Sprintf("all %d authenticated RPC(s) resolve the caller", authTotal)
+		if len(acknowledged) > 0 {
+			summary = fmt.Sprintf("%d of %d authenticated RPC(s) resolve the caller; the other %d are acknowledged global with `// %s`",
+				scopedTotal, authTotal, len(acknowledged), AuthUnscopedOKDirective)
+		}
 		if authTotal == 0 {
 			summary = "no authenticated RPCs with handlers to inspect (n/a)"
 		}

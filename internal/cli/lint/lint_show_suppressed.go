@@ -156,7 +156,7 @@ func collectSuppressions(root string) ([]declaredSuppression, error) {
 			return nil
 		}
 		rel := relSlash(root, path)
-		for _, d := range suppress.Declarations(content) {
+		for _, d := range suppress.DeclarationsIn(path, content) {
 			out = append(out, declaredSuppression{
 				File: rel, Line: d.Line, Rule: d.Rule, Mechanism: d.Directive, Covers: d.Covers, Reason: d.Reason,
 			})

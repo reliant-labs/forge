@@ -267,6 +267,7 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	}
 	findings = append(findings, lintAdoptionPlacement(files, adopting)...)
 	findings = append(findings, lintCompatDeclarations(contents, adopting, cfg.RequireCompatDeclaration)...)
+	findings = dropCheckProvenSetNotNull(contents, findings)
 	return Result{Findings: findings, Dir: dir, Scanned: files}, nil
 }
 
@@ -370,7 +371,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 						Line:     stmt.Line,
 						Rule:     RuleSetNotNullWithoutBackfill,
 						Severity: severity,
-						Message:  fmt.Sprintf("SET NOT NULL on column %q without an earlier UPDATE backfill in this migration can fail on populated tables", column),
+						Message:  fmt.Sprintf("SET NOT NULL on column %q without an earlier UPDATE backfill in this migration, or a validated CHECK (%s IS NOT NULL) in an earlier one, can fail on populated tables", column, column),
 					})
 				}
 			}
@@ -562,7 +563,7 @@ const UnsafeAddNotNullRemediation = `give the column a constant DEFAULT (ADD COL
 // (and, before UnsafeAddNotNullRemediation existed, for the add rule too). The
 // backfill leads because a SET NOT NULL on an existing column has no DEFAULT
 // shortcut: every existing row needs a value first.
-const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL — and if the previous release inserts rows without this column, SET NOT NULL breaks its inserts, so give the column a constant DEFAULT first or put SET NOT NULL in a later (contract) migration once no running release does; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
+const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL (on a large table, prove it instead with ADD CONSTRAINT <name> CHECK (<column> IS NOT NULL) NOT VALID, VALIDATE CONSTRAINT <name> in a later migration, and SET NOT NULL in a third, which this rule accepts) — and if the previous release inserts rows without this column, SET NOT NULL breaks its inserts, so give the column a constant DEFAULT first or put SET NOT NULL in a later (contract) migration once no running release does; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
 
 // allowUnsafeNotNullPragmaRe matches the in-file opt-out for
 // unsafe-add-not-null-column and set-not-null-without-backfill, in the same

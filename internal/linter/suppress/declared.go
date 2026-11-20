@@ -8,7 +8,7 @@ import (
 // Declared is one rule a directive turns off, as written in a file: a line of
 // the inventory `forge lint --show-suppressed` prints.
 //
-// It is built from the same primitives ParseFile uses (parseLine,
+// It is built from the same primitives ParseFile uses (parseLineIn,
 // nextLineTargets, isDirectiveOnlyLine), so the inventory and the applier
 // cannot disagree about what a directive is or what it covers — the test
 // beside this file applies a finding on every line an entry claims to cover.
@@ -29,6 +29,16 @@ type Declared struct {
 // entry per rule, in source order. TokenEnable only closes a block, so it is
 // not listed itself; it sets the end of the block it closes.
 func Declarations(content string) []Declared {
+	return declarationsIn(content, syntaxAny)
+}
+
+// DeclarationsIn is Declarations for the file at path, read with that file's
+// comment syntax — the one ApplyFiles applies its directives with.
+func DeclarationsIn(path, content string) []Declared {
+	return declarationsIn(content, syntaxOf(path))
+}
+
+func declarationsIn(content string, syn syntax) []Declared {
 	lines := strings.Split(content, "\n")
 	var out []Declared
 	// open maps a rule to the index (in out) of its still-open block. As in
@@ -36,7 +46,7 @@ func Declarations(content string) []Declared {
 	open := map[string]int{}
 	for i, raw := range lines {
 		lineNo := i + 1
-		for _, d := range parseLine(raw, lineNo) {
+		for _, d := range parseLineIn(raw, lineNo, syn) {
 			if d.token == TokenEnable {
 				for _, r := range d.rules {
 					if idx, ok := open[r]; ok {

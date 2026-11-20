@@ -63,6 +63,34 @@ func TestSnapshotCutRequiresCapabilityAndNoLegacyFlattening(t *testing.T) {
 		}
 	}
 }
+
+// The control plane decodes the snapshot document strictly into its pinned
+// forge's Release, so a field that forge predates refuses the whole cut. An
+// SBOM therefore never rides in it: a snapshot release carrying one is
+// refused before any call, and the document sent never names the field.
+func TestSnapshotCutNeverSendsSBOM(t *testing.T) {
+	r := snapshotCatalogRelease(t)
+	r.Artifacts = map[string]release.Artifact{"reliant": {
+		Kind: release.KindOCI, Mode: release.ModeShared,
+		Digests: map[string]string{release.SharedVariant: "sha256:" + strings.Repeat("a", 64)},
+		SBOM:    &release.SBOMRef{Digest: "sha256:" + strings.Repeat("c", 64), Status: release.SBOMStatusOK},
+	}}
+	fake := &snapshotCaller{capable: true}
+	if _, err := (&hostedStore{client: fake}).Cut(context.Background(), r); err == nil || fake.cut != nil {
+		t.Fatalf("a snapshot release carrying an SBOM was sent: err=%v cut=%v", err, fake.cut)
+	}
+
+	r.Artifacts = nil
+	fake = &snapshotCaller{capable: true}
+	if _, err := (&hostedStore{client: fake}).Cut(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := json.Marshal(fake.cut["snapshotRelease"])
+	if strings.Contains(string(doc), "sbom") {
+		t.Fatalf("the snapshot document names sbom: %s", doc)
+	}
+}
+
 func TestSnapshotReleaseRoundTripStrict(t *testing.T) {
 	r := snapshotCatalogRelease(t)
 	raw, _ := json.Marshal(r)

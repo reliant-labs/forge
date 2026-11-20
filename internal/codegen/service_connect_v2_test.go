@@ -258,7 +258,13 @@ func TestServiceArtefactsConnectV2Golden(t *testing.T) {
 		}
 	}
 	if !*updateServiceV2Golden {
-		entries, _ := os.ReadDir(goldenDir)
+		entries, err := os.ReadDir(goldenDir)
+		if err != nil {
+			t.Fatalf("read %s: %v", goldenDir, err)
+		}
+		if len(entries) == 0 {
+			t.Fatalf("%s holds no goldens, so the stale-golden check below asserts nothing", goldenDir)
+		}
 		for _, e := range entries {
 			if _, ok := got[strings.TrimSuffix(e.Name(), ".golden")]; !ok {
 				t.Errorf("stale golden %s: nothing renders it any more", e.Name())

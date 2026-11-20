@@ -142,6 +142,8 @@ func gradableRules() []string {
 		commitpolicy.RuleForgeStateIgnored,
 		// frontend lockfile
 		ruleFrontendLockDrift,
+		// frontend lanes: lint stops installing dependencies (rolled out)
+		ruleFrontendNoInstall,
 		// cross-lane workarounds
 		"workaround-testing-extras", "workaround-cmd-not-in-binaries",
 		// config reach

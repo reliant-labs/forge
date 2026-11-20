@@ -1320,7 +1320,7 @@ _Enforced · Forge, on any infrastructure_
 
 **Works in any repo** (no forge.yaml). **Start:** Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why. **Agent time:** ~10 min.
 
-**Use:** `forge lint`; `--quiet` prints only what failed, `--scope <path>` lints a slice of a shared checkout, `--json` and `--gate-json` are for machines, `--skip-frontends` is a backend-only gate, and `lint.frontend.typecheck` dials the frontend typecheck.
+**Use:** `forge lint`; `--quiet` prints only what failed, `--scope <path>` lints a slice of a shared checkout, `--json` and `--gate-json` are for machines, `--skip-frontends` is a backend-only gate, `--install` installs a frontend's missing dependencies first (lint never installs on its own: a frontend with no `node_modules` is a lane that could not run), and `lint.frontend.typecheck` dials the frontend typecheck.
 
 **Why:** `lint.rules` in `forge.yaml` grades every forge rule `error`, `warn` or `off` identically in every output mode. Never pipe `forge lint` through `head`: the verdict is the last line.
 
@@ -1944,6 +1944,7 @@ _Enforced · Forge, on any infrastructure_
 | `forgeconv-frontend-env-forge-owned`       | A committed dotenv line setting a forge-owned variable (mock API, API URL) drifts from KCL and risks shipping a mock build                                                                                 | `--conventions`     |
 | `forgeconv-frontend-stores-no-server-data` | A Zustand store importing a generated Connect client creates a second source of truth beside React Query                                                                                                   | `--frontend-stores` |
 | `forge-frontend-lock-drift`                | A `package.json` range the lockfile does not record: the state `npm ci` and `pnpm --frozen-lockfile` refuse                                                                                                | bare `forge lint`   |
+| `forge-frontend-no-install`                | A linter that installs dependencies mutates the checkout it judges and hides a pipeline that never prepared its frontends                                                                                  | bare `forge lint`   |
 
 <a id="lint-rules-deploy-secrets"></a>
 

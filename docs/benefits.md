@@ -2113,6 +2113,22 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/cli/ci_vuln_npm.go`](../internal/cli/ci_vuln_npm.go)
 - source [`internal/cli/ci_vuln_exempt.go`](../internal/cli/ci_vuln_exempt.go)
 
+<a id="secret-scan"></a>
+
+### Committed secrets caught
+
+`forge ci secret-scan` runs gitleaks at forge's pin, and the gate (`task ci`, CI's checks job) scans every commit a change adds. Static sites get the gitleaks pre-commit hook API projects carry.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `forge ci secret-scan`, or `task ci`
+
+**Evidence:**
+
+- command `forge ci secret-scan`
+- source [`internal/cigate/plan.go`](../internal/cigate/plan.go)
+- skill `ci/gate` (`forge skill load ci/gate`)
+
 <a id="image-supply-chain"></a>
 
 ### Signed images, SBOM and provenance

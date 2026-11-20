@@ -90,3 +90,10 @@ const GovulncheckVersion = "v1.7.0"
 // GoLicensesVersion is the go-licenses release `forge ci gate` installs when
 // the one on PATH is not it.
 const GoLicensesVersion = "v1.6.0"
+
+// GitleaksVersion is the gitleaks release every secret scan forge sets up
+// runs: the scaffolded pre-commit hook's rev, and the binary `forge ci
+// secret-scan` (the gate's secret-scan row) installs into forge's tools cache
+// when the one on PATH is not it. One constant, so the hook and the gate never
+// disagree about what counts as a secret.
+const GitleaksVersion = "v8.18.4"

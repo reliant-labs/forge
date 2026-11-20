@@ -2666,6 +2666,20 @@ benefits:
       - path: internal/cli/ci_vuln_npm.go
       - path: internal/cli/ci_vuln_exempt.go
 
+  - id: secret-scan
+    category: security
+    title: Committed secrets caught
+    claim: >-
+      `forge ci secret-scan` runs gitleaks at forge's pin, and the gate (`task
+      ci`, CI's checks job) scans every commit a change adds. Static sites get
+      the gitleaks pre-commit hook API projects carry.
+    availability: forge
+    use: "`forge ci secret-scan`, or `task ci`"
+    evidence:
+      - command: ci secret-scan
+      - path: internal/cigate/plan.go
+      - skill: ci/gate
+
   - id: image-supply-chain
     category: security
     title: Signed images, SBOM and provenance

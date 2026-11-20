@@ -23,7 +23,7 @@ A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge en
 
 An app forge does not deploy, any language: `observability/monitoring-only`.
 
-A system forge did not build (a Helm chart, an image-only workload, raw Manifests) gets metrics, logs, traces, profiles, dashboards and alerts from one `forge.Telemetry`, whose vendor facts are yours: `observability/third-party`.
+A system forge did not build (Helm, an image, raw Manifests) declares all it emits in one `forge.Telemetry`: `observability/third-party`.
 
 **To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge skill load observability/destination`.
 

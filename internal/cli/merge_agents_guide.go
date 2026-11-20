@@ -53,9 +53,9 @@ func mergeAgentsGuide(ctx context.Context, relPath string, base, ours, theirs []
 	if !ok {
 		return plain()
 	}
-	guide := o.guide
-	if !bytes.Equal(entry, o.entry) {
-		guide = t.guide
+	guide, ok := guideForMergedCertificate(entry, o.guide, t.guide)
+	if !ok {
+		return plain()
 	}
 
 	var notes []byte
@@ -77,6 +77,22 @@ func mergeAgentsGuide(ctx context.Context, relPath string, base, ours, theirs []
 		note = "kept a certified forge guide; run `forge generate` to refresh it from both sides' inputs (Project Notes merge as text)"
 	}
 	return bytes.Join([][]byte{guide, notes}, nil), clean, note, nil
+}
+
+// Choose only a prefix the resulting entry certifies, regardless of how the
+// ledger represents or combines metadata. A certificate for neither side
+// cannot authorize discarding either side's guide.
+func guideForMergedCertificate(entry []byte, guides ...[]byte) ([]byte, bool) {
+	var proof checksums.ScaffoldEntry
+	if json.Unmarshal(entry, &proof) != nil || proof.Declined != "" || proof.ForgePartHash == "" {
+		return nil, false
+	}
+	for _, guide := range guides {
+		if checksums.Hash(guide) == proof.ForgePartHash {
+			return guide, true
+		}
+	}
+	return nil, false
 }
 
 type agentsGuideSide struct {
@@ -118,8 +134,10 @@ func provedAgentsGuide(ctx context.Context, commit, prefix string, blob []byte) 
 		}
 	}
 	entry, ok := gitFileAt(ctx, commit, prefix+checksums.ScaffoldEntryPath(rel))
-	var proof checksums.ScaffoldEntry
-	if !ok || json.Unmarshal(entry, &proof) != nil || proof.Declined != "" || proof.ForgePartHash != checksums.Hash(guide) {
+	if !ok {
+		return side, false
+	}
+	if _, certified := guideForMergedCertificate(entry, guide); !certified {
 		return side, false
 	}
 	return agentsGuideSide{guide: guide, notes: notes, entry: entry}, true

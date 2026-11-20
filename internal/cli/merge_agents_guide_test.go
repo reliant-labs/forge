@@ -12,6 +12,29 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
+func TestMergeAgentsGuideSelectsCertifiedPrefix(t *testing.T) {
+	ours := []byte("our guide")
+	theirs := []byte("their guide")
+	for _, tc := range []struct {
+		name, entry string
+		want        []byte
+	}{
+		{"merged metadata certifies ours", fmt.Sprintf(`{"birth_hash":"other metadata","forge_part_hash":%q}`, checksums.Hash(ours)), ours},
+		{"certifies theirs", fmt.Sprintf(`{"forge_part_hash":%q}`, checksums.Hash(theirs)), theirs},
+		{"certifies neither", `{"forge_part_hash":"other"}`, nil},
+		{"missing proof", `{}`, nil},
+		{"unreadable proof", `{`, nil},
+		{"declined", fmt.Sprintf(`{"declined":"owned here","forge_part_hash":%q}`, checksums.Hash(ours)), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := guideForMergedCertificate([]byte(tc.entry), ours, theirs)
+			if ok != (tc.want != nil) || string(got) != string(tc.want) {
+				t.Fatalf("guideForMergedCertificate() = (%q, %t), want %q", got, ok, tc.want)
+			}
+		})
+	}
+}
+
 // These exercise the installed driver, including its commit/blob proof, rather
 // than stubbing the evidence which decides whether a guide is safe to merge.
 func TestMergeAgentsGuideRealGit(t *testing.T) {

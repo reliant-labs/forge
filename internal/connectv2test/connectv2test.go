@@ -19,6 +19,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Module is a temp Go module wired to this forge checkout.
@@ -40,7 +43,9 @@ var (
 // (runtime.Caller cannot say — builds here may be -trimpath.)
 func forgeRoot(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command("go", "env", "GOMOD").Output()
+	cmd := exec.Command("go", "env", "GOMOD")
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
 	gomod := strings.TrimSpace(string(out))
 	if err != nil || gomod == "" || gomod == os.DevNull {
 		t.Fatalf("connectv2test: cannot locate the forge module from the test's directory (go env GOMOD: %q, %v)", gomod, err)
@@ -66,6 +71,7 @@ func plugins(t *testing.T) string {
 		} {
 			cmd := exec.Command("go", "build", "-o", filepath.Join(dir, name), pkg)
 			cmd.Dir = root
+			cmd.Env = goexec.Env()
 			if out, err := cmd.CombinedOutput(); err != nil {
 				pluginsErr = "build " + pkg + ": " + err.Error() + "\n" + string(out)
 				return
@@ -190,7 +196,7 @@ func write(t *testing.T, path, content string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := atomicfile.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

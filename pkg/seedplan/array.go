@@ -30,13 +30,16 @@ import (
 // The two shapes read here are the ones a migration writes and
 // pg_get_constraintdef renders: `col <@ ARRAY[…]` (or `<@ '{a,b}'::text[]`),
 // and `cardinality(col)` / `array_length(col, 1)` compared with a constant.
-// Anything else leaves the column to plain synthesis, as before.
+// An unreadable contained-by set must not be mistaken for an open set.
 
 // arrayShape is the declared shape of one array column's value.
 type arrayShape struct {
-	// members is the contained-by set every element must come from, in the
-	// order the CHECK spells it. nil means the elements are open.
+	// members is the intersection of every readable contained-by set; nil
+	// means open unless a contained-by set could not be read.
 	members []string
+	// unknownSet names the first CHECK whose contained-by set could not be
+	// read. Never draw from a partially read intersection.
+	unknownSet string
 	// minLen and maxLen bound the element count; maxLen holds only when
 	// hasMax is set.
 	minLen, maxLen int
@@ -69,6 +72,8 @@ var (
 	// identifier at the end of the text before it, past closing parentheses
 	// and a cast (`(scopes)::text[]`).
 	arrayColumnBeforeRE = regexp.MustCompile(`"?([A-Za-z_][A-Za-z0-9_]*)"?\)*(?:::[a-z][a-z0-9_ ]*(?:\[\])?)?\)*\s*$`)
+	arrayOperandCastRE  = regexp.MustCompile(`(?i)^::\s*(?:[a-z_][a-z0-9_.]*\s+)*[a-z_][a-z0-9_.]*\s*\[\s*\]`)
+	arrayPredicateEndRE = regexp.MustCompile(`(?i)^(?:AND|OR)\b`)
 )
 
 // arrayShapeOf reads the declared shape of an array column from the CHECKs
@@ -94,9 +99,17 @@ func arrayShapeOf(t schemadef.Table, col schemadef.Column) arrayShape {
 			}
 			s.bound(m[2], n)
 		}
-		if members, ok := containedByMembers(ck.Def, col.Name); ok {
-			s.members = intersectMembers(s.members, members)
+		members, complete := containedByMembers(ck.Def, col.Name)
+		if !complete && s.unknownSet == "" {
+			s.unknownSet = ck.Name
+			if s.unknownSet == "" {
+				s.unknownSet = ck.Def
+			}
 		}
+		s.members = intersectMembers(s.members, members)
+	}
+	if s.unknownSet != "" {
+		s.members = nil
 	}
 	return s
 }
@@ -135,9 +148,12 @@ func (s *arrayShape) bound(op string, n int) {
 	}
 }
 
-// intersectMembers returns the members of b that a also holds, in b's order;
-// a nil a is the open set.
+// intersectMembers returns the members of b that a also holds, in b's order.
+// A nil side contributes no contained-by constraint, not an empty set.
 func intersectMembers(a, b []string) []string {
+	if b == nil {
+		return a
+	}
 	if a == nil {
 		return b
 	}
@@ -154,25 +170,35 @@ func intersectMembers(a, b []string) []string {
 	return out
 }
 
-// containedByMembers reads the set a `<column> <@ <array>` comparison in def
-// confines the column to. ok is false when def holds no such comparison on
-// the column, or its array is not a list of constants this reads — a partial
-// set would let synthesis "satisfy" a constraint it never read.
-func containedByMembers(def, column string) ([]string, bool) {
-	for at := 0; ; {
-		idx := strings.Index(def[at:], "<@")
-		if idx < 0 {
-			return nil, false
-		}
-		op := at + idx
-		at = op + 2
-		if m := arrayColumnBeforeRE.FindStringSubmatch(def[:op]); m == nil || m[1] != column {
-			continue
-		}
-		if members, ok := parseArrayOperand(def[at:]); ok {
-			return members, true
+// containedByMembers intersects all `<column> <@ <array>` comparisons in a
+// CHECK, including multiple comparisons within one expression. complete is
+// false for any unreadable right-hand set, not for absence of a comparison.
+func containedByMembers(def, column string) (members []string, complete bool) {
+	for at := 0; at < len(def); {
+		switch {
+		case def[at] == '\'':
+			// Ignore operator-looking bytes inside SQL string literals.
+			_, rest, ok := readQuoted(def[at:])
+			if !ok {
+				return nil, false
+			}
+			at = len(def) - len(rest)
+		case strings.HasPrefix(def[at:], "<@"):
+			op := at
+			at += 2
+			if m := arrayColumnBeforeRE.FindStringSubmatch(def[:op]); m == nil || m[1] != column {
+				continue
+			}
+			set, ok := parseArrayOperand(def[at:])
+			if !ok {
+				return nil, false
+			}
+			members = intersectMembers(members, set)
+		default:
+			at++
 		}
 	}
+	return members, true
 }
 
 // parseArrayOperand reads the constant array at the start of s, behind any
@@ -181,8 +207,8 @@ func containedByMembers(def, column string) ([]string, bool) {
 func parseArrayOperand(s string) ([]string, bool) {
 	s = strings.TrimLeft(s, " \t\n\r(")
 	if strings.HasPrefix(s, "'") {
-		raw, _, ok := readQuoted(s)
-		if !ok {
+		raw, rest, ok := readQuoted(s)
+		if !ok || !isArrayOperandEnd(rest) {
 			return nil, false
 		}
 		return parseArrayText(raw)
@@ -193,9 +219,25 @@ func parseArrayOperand(s string) ([]string, bool) {
 	return parseArrayMembers(s[len("ARRAY["):])
 }
 
+// A parsed literal followed by an operator is only part of the operand,
+// e.g. ARRAY['a'] || another_array. It cannot certify the contained-by set.
+func isArrayOperandEnd(s string) bool {
+	for {
+		s = strings.TrimLeft(s, " \t\n\r)")
+		if m := arrayOperandCastRE.FindString(s); m != "" {
+			s = s[len(m):]
+			continue
+		}
+		return s == "" || arrayPredicateEndRE.MatchString(s)
+	}
+}
+
 // parseArrayMembers reads `member, member, …]`: each member a quoted string
 // or a number (bare or parenthesized), each with an optional cast.
 func parseArrayMembers(s string) ([]string, bool) {
+	if rest, empty := strings.CutPrefix(strings.TrimLeft(s, " \t\n\r"), "]"); empty {
+		return []string{}, isArrayOperandEnd(rest)
+	}
 	var out []string
 	for {
 		s = strings.TrimLeft(s, " \t\n\r")
@@ -236,7 +278,7 @@ func parseArrayMembers(s string) ([]string, bool) {
 		case strings.HasPrefix(s, ","):
 			s = s[1:]
 		case strings.HasPrefix(s, "]"):
-			return out, len(out) > 0
+			return out, isArrayOperandEnd(s[1:])
 		default:
 			return nil, false
 		}
@@ -271,7 +313,10 @@ func parseArrayText(s string) ([]string, bool) {
 		return nil, false
 	}
 	body := strings.TrimSpace(s[1 : len(s)-1])
-	if body == "" || strings.ContainsAny(body, `\{}`) {
+	if body == "" {
+		return []string{}, true
+	}
+	if strings.ContainsAny(body, `\{}`) {
 		return nil, false
 	}
 	var out []string
@@ -295,10 +340,16 @@ func parseArrayText(s string) ([]string, bool) {
 // A column whose CHECK confines its elements to a set draws ONE element from
 // that set per row (more when a cardinality minimum asks): a one-element array
 // satisfies `cardinality(x) > 0` and `x <@ ARRAY[…]` on every row, where two
-// elements would need a set of two. Every other array keeps its two invented
+// elements would need a set of two. Open arrays keep their two invented
 // elements, fitted to any declared count bound.
 func (p *Plan) arrayLiteral(t schemadef.Table, col schemadef.Column, i int) string {
 	shape := arrayShapeOf(t, col)
+	if shape.unknownSet != "" || shape.members != nil && len(shape.members) == 0 {
+		// Never invent members from an unknown or empty intersection.
+		// Validate refuses live plans when that intersection is unprovable
+		// or its cardinality makes an empty array too small.
+		return "'{}'"
+	}
 	var elems []string
 	if len(shape.members) > 0 {
 		salt := p.cfg.EffectiveSalt()
@@ -321,6 +372,33 @@ func (p *Plan) arrayLiteral(t schemadef.Table, col schemadef.Column, i int) stri
 		lit += "::uuid[]"
 	}
 	return lit
+}
+
+// arrayShapeRefusal keeps a live seed from writing an array based on a
+// partial intersection. Omitted columns and excluded rows are not synthesized.
+func (p *Plan) arrayShapeRefusal() error {
+	var problems []string
+	for _, tp := range p.tables {
+		if tp.n == 0 {
+			continue
+		}
+		for _, cp := range tp.cols {
+			if cp.omit || !cp.col.IsArray {
+				continue
+			}
+			shape := arrayShapeOf(tp.table, cp.col)
+			switch {
+			case shape.unknownSet != "":
+				problems = append(problems, fmt.Sprintf("%s.%s: cannot read the contained-by set in CHECK %q", tp.table.Name, cp.col.Name, shape.unknownSet))
+			case shape.members != nil && len(shape.members) == 0 && shape.minLen > 0:
+				problems = append(problems, fmt.Sprintf("%s.%s: contained-by sets have no common element but the CHECK requires a nonempty array", tp.table.Name, cp.col.Name))
+			}
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to seed arrays without a provable value:\n  %s", strings.Join(problems, "\n  "))
 }
 
 // syntheticArrayElement is the element at position pos of an unconstrained

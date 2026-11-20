@@ -77,7 +77,7 @@ func TestArrayShapeOf_ReadsContainedByAndCardinality(t *testing.T) {
 
 // A contained-by array whose members are not all constants is not a set the
 // planner can draw from: reading part of it would "satisfy" a CHECK it never
-// read, so the column keeps plain synthesis.
+// read, so the column is never given members from a partial intersection.
 func TestArrayShapeOf_DeclinesANonConstantSet(t *testing.T) {
 	for _, def := range []string{
 		`CHECK ((tags <@ ARRAY['a'::text, NULL::text]))`,
@@ -89,6 +89,54 @@ func TestArrayShapeOf_DeclinesANonConstantSet(t *testing.T) {
 		if got := arrayShapeOf(tb, tb.Columns[0]); got.members != nil {
 			t.Errorf("%s: members = %q, want none", def, got.members)
 		}
+	}
+}
+
+func TestArrayShapeOfRejectsPartialIntersections(t *testing.T) {
+	check := func(name, body string) schemadef.CheckConstraint {
+		return schemadef.CheckConstraint{Name: name, Columns: []string{"tags"}, Def: body}
+	}
+	for _, tc := range []struct {
+		name   string
+		checks []schemadef.CheckConstraint
+	}{
+		{"across checks", []schemadef.CheckConstraint{
+			check("constant", `CHECK (tags <@ ARRAY['a', 'b'])`),
+			check("unknown", `CHECK (tags <@ ARRAY[lower('B')])`),
+		}},
+		{"in one check", []schemadef.CheckConstraint{
+			check("unknown", `CHECK (tags <@ ARRAY[lower('B')] AND tags <@ ARRAY['a', 'b'])`),
+		}},
+		{"dynamic right side", []schemadef.CheckConstraint{
+			check("unknown", `CHECK (tags <@ ARRAY['a', 'b'] AND tags <@ string_to_array('b,c', ','))`),
+		}},
+		{"literal prefix of an expression", []schemadef.CheckConstraint{
+			check("unknown", `CHECK (tags <@ ARRAY['a', 'b'] AND tags <@ (ARRAY['b'] || string_to_array('c,d', ',')))`),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tb := arrayChecksTable()
+			tb.Columns = []schemadef.Column{tb.Columns[0], arrayCol("tags", "TEXT[]")}
+			tb.Checks = tc.checks
+			shape := arrayShapeOf(tb, tb.Columns[1])
+			if shape.unknownSet != "unknown" || shape.members != nil {
+				t.Fatalf("partial intersection was used: %+v", shape)
+			}
+			p := planFor(t, tb, 3)
+			if err := p.Validate(); err == nil || !strings.Contains(err.Error(), `t.tags: cannot read the contained-by set in CHECK "unknown"`) {
+				t.Fatalf("Validate() = %v; want refusal naming the unreadable CHECK", err)
+			}
+		})
+	}
+}
+
+func TestArrayShapeOfIntersectsEveryConstantSet(t *testing.T) {
+	tb := arrayChecksTable()
+	tb.Columns = []schemadef.Column{tb.Columns[0], arrayCol("tags", "TEXT[]")}
+	tb.Checks = []schemadef.CheckConstraint{{Name: "both", Columns: []string{"tags"}, Def: `CHECK (tags <@ ARRAY['tags <@ literal', 'b'] AND tags <@ ARRAY['c', 'b'])`}}
+	shape := arrayShapeOf(tb, tb.Columns[1])
+	if !reflect.DeepEqual(shape.members, []string{"b"}) || shape.unknownSet != "" {
+		t.Fatalf("all constant sets were not intersected: %+v", shape)
 	}
 }
 

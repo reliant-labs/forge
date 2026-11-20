@@ -27,10 +27,21 @@ func TestParseComposePSSkipsDiagnostics(t *testing.T) {
 	for name, raw := range map[string]string{
 		"ndjson": composeUnsetVarWarning + "\n" + `{"Service":"db","State":"running"}` + "\n",
 		"array":  composeUnsetVarWarning + "\n" + `[{"Service":"db","State":"running"}]` + "\n",
+		"pretty array": composeUnsetVarWarning + "\n[\n" +
+			`  {"Service":"db","State":"running"}` + "\n]\nWARN[0000] warning after output\n",
 	} {
 		got, err := parseComposePS([]byte(raw))
 		if err != nil || len(got) != 1 {
 			t.Errorf("%s: containers = %+v, err = %v; want the one container", name, got, err)
+		}
+	}
+}
+
+func TestParseComposePSRejectsInvalidJSON(t *testing.T) {
+	for _, raw := range []string{`[{"Service":"db"}`, "{\"Service\": \"db\",\n", "unrecognized output\n", "[\nmalformed record\n]\n",
+		`{"level":"warning","msg":"unknown output"}`, `[null]`} {
+		if got, err := parseComposePS([]byte(raw)); err == nil {
+			t.Errorf("parseComposePS(%q) = %+v, want an error", raw, got)
 		}
 	}
 }

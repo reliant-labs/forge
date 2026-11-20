@@ -231,22 +231,34 @@ func parseComposePS(raw []byte) ([]composeContainer, error) {
 	if trimmed == "" {
 		return nil, nil
 	}
-	var out []composeContainer
+	// Stderr is captured together with stdout. Remove recognized Compose
+	// diagnostics, not arbitrary lines: malformed output must remain unknown,
+	// not turn into a claim that a container is absent.
+	var lines []string
 	for _, line := range strings.Split(trimmed, "\n") {
+		if !composePSDiagnostic(strings.TrimSpace(line)) {
+			lines = append(lines, line)
+		}
+	}
+	payload := strings.TrimSpace(strings.Join(lines, "\n"))
+	if payload == "" {
+		return nil, nil
+	}
+	var out []composeContainer
+	if payload[0] == '[' {
+		// The array is a complete JSON document, not one line per record.
+		if err := json.Unmarshal([]byte(payload), &out); err != nil {
+			return nil, err
+		}
+		return validatedComposePS(out)
+	}
+	for _, line := range strings.Split(payload, "\n") {
 		line = strings.TrimSpace(line)
-		// Compose's own diagnostics (an unset ${VAR} warning) arrive on
-		// the captured stderr beside the JSON: neither an object nor an
-		// array, they describe no container (NS FG-17).
-		if line == "" || (line[0] != '{' && line[0] != '[') {
+		if line == "" {
 			continue
 		}
-		if line[0] == '[' {
-			var arr []composeContainer
-			if err := json.Unmarshal([]byte(line), &arr); err != nil {
-				return nil, err
-			}
-			out = append(out, arr...)
-			continue
+		if line[0] != '{' {
+			return nil, fmt.Errorf("expected a JSON array or newline-delimited container objects")
 		}
 		var c composeContainer
 		if err := json.Unmarshal([]byte(line), &c); err != nil {
@@ -254,5 +266,21 @@ func parseComposePS(raw []byte) ([]composeContainer, error) {
 		}
 		out = append(out, c)
 	}
-	return out, nil
+	return validatedComposePS(out)
+}
+
+func validatedComposePS(rows []composeContainer) ([]composeContainer, error) {
+	for _, row := range rows {
+		// A JSON diagnostic object, null array element, or arbitrary JSON
+		// object is not a container observation.
+		if strings.TrimSpace(row.State) == "" {
+			return nil, fmt.Errorf("docker compose ps container record is missing State")
+		}
+	}
+	return rows, nil
+}
+
+func composePSDiagnostic(line string) bool {
+	return (strings.HasPrefix(line, "time=") && strings.Contains(line, " level=") && strings.Contains(line, " msg=")) ||
+		strings.HasPrefix(line, "WARN[") || strings.HasPrefix(line, "WARNING:")
 }

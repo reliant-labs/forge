@@ -20,15 +20,21 @@ func WorkspaceInstallDir(dir, boundary string) string {
 	if err != nil {
 		return dir
 	}
-	rel, err := filepath.Rel(limit, member)
-	if err != nil || !filepath.IsLocal(rel) {
-		return dir
+	// Build the bounded walk once. In particular, a project which is not
+	// an ancestor must not cause a scan (or loop at the filesystem root).
+	var parents []string
+	for p := member; p != limit; {
+		parent := filepath.Dir(p)
+		if parent == p {
+			return dir
+		}
+		parents = append(parents, parent)
+		p = parent
 	}
 
 	// A forge-managed bridge is installed by EnsureTo from the member:
 	// it may first need to create that member's tracked registry lockfile.
-	for p := member; p != limit; {
-		p = filepath.Dir(p)
+	for _, p := range parents {
 		if _, bridge := pnpmBridgeAdopts(p, member); bridge {
 			return dir
 		}
@@ -36,8 +42,7 @@ func WorkspaceInstallDir(dir, boundary string) string {
 	if fileExists(filepath.Join(member, "pnpm-workspace.yaml")) {
 		return dir // this frontend is its own workspace
 	}
-	for p := member; p != limit; {
-		p = filepath.Dir(p)
+	for _, p := range parents {
 		if body, err := os.ReadFile(filepath.Join(p, "pnpm-workspace.yaml")); err == nil {
 			if pnpmWorkspaceAdopts(p, member, body) {
 				return p

@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+func TestWorkspaceInstallDirStopsAtUnrelatedBoundary(t *testing.T) {
+	t.Parallel()
+	common := t.TempDir()
+	member := filepath.Join(common, "other-project", "web")
+	boundary := filepath.Join(common, "this-project")
+	if got := WorkspaceInstallDir(member, boundary); got != member {
+		t.Fatalf("WorkspaceInstallDir = %q, want local %q", got, member)
+	}
+}
+
 func TestWorkspaceInstallDirHonorsBoundariesAndMembership(t *testing.T) {
 	for _, tc := range []struct {
 		name, manifest, content string

@@ -59,7 +59,7 @@ A frontend you keep on Vercel, Netlify or your own host can call a forge API on 
 
    A wildcard origin with credentials is refused at config load, because browsers reject it.
 
-3. **Make the frontend's origin the app origin sign-in trusts.** The sign-in routes refuse a POST from any origin but the API's own and the app's (`devidp.NewCrossOriginProtection`; a same-site sibling is refused like a cross-site one). The app origin is the one in `idp_login_uri`. With managed identity it is derived from the env's hosted frontend or first bound domain, so for a frontend forge does not host, declare the application's URIs literally in `deploy/kcl/identity.k`:
+3. **Make the frontend's origin the app origin sign-in trusts.** The sign-in routes refuse a POST from any origin but the API's own and the app's (`devidp.NewCrossOriginProtection`, proven with the CORS layer in `pkg/devidp/external_frontend_signin_test.go`; a same-site sibling is refused like a cross-site one). The app origin is the one in `idp_login_uri`. With managed identity it is derived from the env's hosted frontend or first bound domain, so for a frontend forge does not host, declare the application's URIs literally in `deploy/kcl/identity.k`:
 
    ```kcl
    applications = [forge.IdentityApplication {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/kcloptions"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -200,14 +201,18 @@ func TestValidateRenderOptionsDegradesPermissively(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte("this is not valid kcl {{{\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateRenderOptions(projectDir, "dev", []string{"anything=1"}); err != nil {
+	got, err := validateRenderOptions(projectDir, "dev", []string{"anything=1"})
+	if err != nil {
 		t.Errorf("validateRenderOptions on an unparseable env = %v, want nil (permissive)", err)
+	}
+	if strings.Join(got, ",") != "anything=1" {
+		t.Errorf("validateRenderOptions on an unparseable env = %q, want the value unchanged", got)
 	}
 }
 
 // No -D means no work: validation must not parse the project at all.
 func TestValidateRenderOptionsNoopWithoutFlags(t *testing.T) {
-	if err := validateRenderOptions("/nonexistent-project", "dev", nil); err != nil {
+	if _, err := validateRenderOptions("/nonexistent-project", "dev", nil); err != nil {
 		t.Errorf("validateRenderOptions with no -D = %v, want nil", err)
 	}
 }
@@ -261,5 +266,104 @@ func TestBuildDoesNotClobberOrchestratorRenderOptions(t *testing.T) {
 	got := activeRenderOptionDArgs()
 	if len(got) != 1 || !strings.Contains(got[0], "desktop_channel") {
 		t.Fatalf("runBuild clobbered the orchestrator's render options: got %v, want the desktop_channel binding", got)
+	}
+}
+
+// A -D value for an option the env declares `type="bool"` must reach KCL in
+// the spelling KCL reads as a bool, or be refused. Every -D value is bound as
+// a KCL string, and option(type="bool") reads only "true"/"True" as True, so
+// `-D debug_image=1` silently built the non-debug image (forge bug 48ab25b9).
+// Options of any other type are relayed exactly as given.
+func TestCheckRenderOptionsNormalizesBoolOptions(t *testing.T) {
+	declared := []kcloptions.Option{
+		{Name: "debug_image", Type: "bool"},
+		{Name: "channel", Type: "str"},
+		{Name: "bare"},
+	}
+	for _, tc := range []struct {
+		value, want string
+	}{
+		{"true", "true"}, {"True", "true"}, {"TRUE", "true"}, {"1", "true"},
+		{"yes", "true"}, {"Yes", "true"}, {" true ", "true"},
+		{"false", "false"}, {"False", "false"}, {"0", "false"}, {"no", "false"},
+	} {
+		got, err := checkRenderOptions("dev", declared, []string{"debug_image=" + tc.value})
+		if err != nil {
+			t.Errorf("debug_image=%q: %v", tc.value, err)
+			continue
+		}
+		if want := "debug_image=" + tc.want; strings.Join(got, ",") != want {
+			t.Errorf("debug_image=%q -> %q, want %q", tc.value, got, want)
+		}
+	}
+
+	for _, bad := range []string{"", "2", "maybe", "on", "t"} {
+		_, err := checkRenderOptions("dev", declared, []string{"debug_image=" + bad})
+		if err == nil {
+			t.Errorf("debug_image=%q: want refused, got nil", bad)
+			continue
+		}
+		for _, frag := range []string{`"debug_image"`, "bool", "true or false", "deploy/kcl/dev/"} {
+			if !strings.Contains(err.Error(), frag) {
+				t.Errorf("debug_image=%q: error %q does not mention %q", bad, err, frag)
+			}
+		}
+	}
+
+	// Non-bool options are untouched, even when the value looks like a bool.
+	in := []string{"channel=1", "bare=YES", "channel2=x"}
+	got, err := checkRenderOptions("dev", declared, in[:2])
+	if err != nil {
+		t.Fatalf("non-bool options: %v", err)
+	}
+	if strings.Join(got, ",") != "channel=1,bare=YES" {
+		t.Errorf("non-bool options = %q, want them relayed unchanged", got)
+	}
+	// The declared-name check still runs first.
+	if _, err := checkRenderOptions("dev", declared, in); err == nil || !strings.Contains(err.Error(), `"channel2"`) {
+		t.Errorf("unknown option: err = %v, want it named", err)
+	}
+}
+
+// The whole -D path on a real env: discovery must report the `type="bool"`
+// declaration, resolveRenderOptions must bind the normalized value, and the
+// render must see True. Renders through renderKCLRaw so a break anywhere in
+// discover → normalize → bind → kcl is caught.
+func TestResolveRenderOptionsBoolReachesKCLAsBool(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	t.Cleanup(func() { setRenderOptions(nil) })
+	t.Setenv("FORGE_KCL_RENDER_FIXTURE", "")
+
+	projectDir := t.TempDir()
+	envDir := filepath.Join(projectDir, "deploy", "kcl", "dev")
+	if err := os.MkdirAll(envDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	main := `_debug = option("debug_image", type="bool", default=False, help="build the debug image")
+out = {debug = _debug}
+`
+	if err := os.WriteFile(filepath.Join(envDir, "main.k"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct{ value, want string }{
+		{"1", `"debug": true`}, {"TRUE", `"debug": true`}, {"no", `"debug": false`},
+	} {
+		dArgs, err := resolveRenderOptions(projectDir, "dev", []string{"debug_image=" + tc.value})
+		if err != nil {
+			t.Fatalf("resolveRenderOptions(debug_image=%s): %v", tc.value, err)
+		}
+		setRenderOptions(dArgs)
+		raw, err := renderKCLRaw(context.Background(), projectDir, "dev")
+		if err != nil {
+			t.Fatalf("renderKCLRaw: %v", err)
+		}
+		if !strings.Contains(string(raw), tc.want) {
+			t.Errorf("-D debug_image=%s rendered %s, want %s", tc.value, raw, tc.want)
+		}
+	}
+
+	if _, err := resolveRenderOptions(projectDir, "dev", []string{"debug_image=maybe"}); err == nil {
+		t.Error("-D debug_image=maybe: want refused, got nil")
 	}
 }

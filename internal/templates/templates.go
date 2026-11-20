@@ -155,6 +155,25 @@ func (c TemplateCategory) Get(name string) ([]byte, error) {
 	return stripBuildIgnore(data), nil
 }
 
+// SourceRoot is where the embedded template tree lives in forge's module
+// source: a SourcePath joined under it names the same file in any forge
+// release's module directory.
+const SourceRoot = "internal/templates"
+
+// SourcePath names the template file Get and Render read for name, as a
+// slash path in the embedded tree (e.g. "project/Taskfile.yml.tmpl").
+func (c TemplateCategory) SourcePath(name string) string {
+	return path.Join(c.basePath, filepath.ToSlash(name))
+}
+
+// Source returns a template file's bytes exactly as this forge embeds them,
+// by its SourcePath — raw, before any //go:build ignore strip or render. It
+// is what `forge project upgrade` compares with the same file in an older
+// forge's module source to learn whether a template changed between them.
+func Source(sourcePath string) ([]byte, error) {
+	return templateFS.ReadFile(sourcePath)
+}
+
 // selfDefaulting is a payload that can fill its own optional fields before
 // rendering. Declared HERE, at the consumer, and deliberately one method wide:
 // Render's whole knowledge of the idea is "ask the payload to complete itself,"
@@ -726,6 +745,13 @@ type FrontendTemplateData struct {
 	// module, or one scaffolded before api-base.ts existed: its own auth
 	// decides who the user is (identifyUser / setTelemetryUser).
 	IdentifySession bool
+	// DevLogFromRuntime selects the Vite dev server's browser-log receiver:
+	// true imports forgeDevLog() from @reliantlabs/forge-web-runtime/vite
+	// (and the scaffold writes no src/lib/devlog-plugin.ts), false wires the
+	// inlined src/lib/devlog-plugin.ts. The generator sets it from the
+	// runtime floor it scaffolds (viteDevLogFromRuntime), so a new project
+	// never imports what the runtime it installs lacks.
+	DevLogFromRuntime bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

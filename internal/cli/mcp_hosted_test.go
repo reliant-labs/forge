@@ -168,7 +168,7 @@ func TestHostedSharedToolSchemasMatchLocal(t *testing.T) {
 		return out
 	}
 	l, h := schemas(local), schemas(hosted)
-	for _, name := range []string{"skill_list", "skill_search", "skill_load", "benefits", "explain_error"} {
+	for _, name := range []string{"skill_list", "skill_search", "skill_load", "benefits", "why", "explain_error"} {
 		if !reflect.DeepEqual(l[name], h[name]) {
 			t.Errorf("%s: hosted input schema %v differs from local %v", name, h[name], l[name])
 		}

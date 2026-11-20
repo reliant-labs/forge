@@ -68,6 +68,11 @@ type UpgradeResult struct {
 	Offered bool
 	// Since is the release whose templates first shipped an Offered file.
 	Since string
+	// Template is the embedded template file this row renders from, as a
+	// templates.SourcePath ("project/Taskfile.yml.tmpl"). The upgrade
+	// report compares it with the same file in the forge the project pinned
+	// to learn whether the template changed across the range.
+	Template string
 }
 
 // ForceSelection names which user-modified files an upgrade run is allowed to
@@ -170,6 +175,10 @@ type managedFile struct {
 	// (it depends on which frontends the project declares), so the entries
 	// are generated per frontend with their render attached.
 	render func() ([]byte, error)
+	// source is the templates.SourcePath render reads, set beside render
+	// (templateName names it otherwise). Empty when no single template
+	// file renders the entry.
+	source string
 	// since is the forge release whose upgrade first ships this file. A
 	// Tier-2 file absent from a project is written only when since is new
 	// across the upgrade's range; an older one is offered instead, because
@@ -1196,7 +1205,23 @@ func UpgradeWith(projectDir string, cfg *config.ProjectConfig, opts UpgradeOptio
 		}
 	}
 
+	source := make(map[string]string, len(files))
+	for _, f := range files {
+		source[f.destPath] = f.templateSource()
+	}
+	for i := range results {
+		results[i].Template = source[results[i].Path]
+	}
 	return results, nil
+}
+
+// templateSource is the embedded template file the entry renders from, or
+// "" when a render func names none.
+func (f managedFile) templateSource() string {
+	if f.render != nil {
+		return f.source
+	}
+	return templates.ProjectTemplates().SourcePath(f.templateName)
 }
 
 // writeManagedFile writes a managed file through the certification

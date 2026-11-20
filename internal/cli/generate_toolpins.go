@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/connectmajor"
@@ -221,23 +222,8 @@ func pinCodegenTools(ctx context.Context, projectDir string, major connectmajor.
 		want := resolveToolVersion(ctx, projectDir, t, "")
 		pathBin, lookErr := exec.LookPath(t.Binary)
 		if want == "latest" {
-			if !isConnectPlugin(t) {
-				continue // module not in the graph: any binary on PATH is fine
-			}
-			// protoc-gen-connect-go is the one tool whose name two
-			// incompatible builds share, so "any binary" is never fine for
-			// it: the other major's emits stubs the project cannot compile.
-			// `go list -m` also fails on a go.mod that merely needs a tidy
-			// ("updates to go.mod needed"), so a v2 project fell through to
-			// the v1 plugin on PATH. Accept a PATH build of the right major
-			// at any version; otherwise pin the version go.mod requires.
-			if lookErr == nil {
-				if _, built := toolBinVersion(ctx, pathBin, t.VersionModule); built {
-					continue
-				}
-			}
-			if want = goModRequireVersion(projectDir, t.VersionModule); want == "" {
-				continue // go.mod does not name it: nothing to pin to
+			if want = unresolvedToolPin(ctx, projectDir, t, pathBin, lookErr == nil); want == "" {
+				continue
 			}
 		}
 		have := "not found on PATH"
@@ -274,6 +260,58 @@ func pinCodegenTools(ctx context.Context, projectDir string, major connectmajor.
 		return nil, err
 	}
 	return res, nil
+}
+
+// unresolvedToolPin is the version to pin t at when the module graph could
+// not name one (resolveToolVersion said "latest"), or "" to run whatever PATH
+// holds.
+//
+// For every tool but protoc-gen-connect-go "" is right: the module is not in
+// the graph, so any build will do. protoc-gen-connect-go is the one tool whose
+// name two incompatible builds share — connect-go v1's and v2's — and each
+// emits stubs only its own runtime compiles against. "Latest" also does not
+// mean "not in the graph" for it: `go list -m` fails on a go.mod that merely
+// needs a tidy ("updates to go.mod needed"), which is what an appended
+// require or replace leaves behind. Running PATH's build then generated v2
+// stubs (Register<Svc>Handler) into a v1 project whose handlers call
+// New<Svc>Handler. So a PATH build counts only when it is of t's major (at
+// any version); otherwise the pin is the version go.mod's own require line
+// names, read from the file rather than the module graph.
+func unresolvedToolPin(ctx context.Context, projectDir string, t protoTool, pathBin string, onPath bool) string {
+	if _, ok := connectmajor.IsRuntimeImport(t.VersionModule); !ok {
+		return "" // module not in the graph: any binary on PATH is fine
+	}
+	if onPath {
+		if _, ofMajor := toolBinVersion(ctx, pathBin, t.VersionModule); ofMajor {
+			return ""
+		}
+	}
+	return goModRequireVersion(projectDir, t.VersionModule)
+}
+
+// goModRequireVersion is the version projectDir's go.mod requires module at
+// (direct or indirect), read from the file itself, or "" when it names none
+// or cannot be read. It answers when `go list -m` cannot: a go.mod that
+// needs a tidy.
+func goModRequireVersion(projectDir, module string) string {
+	path := filepath.Join(projectDir, "go.mod")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	f, err := modfile.ParseLax(path, data, nil)
+	if err != nil {
+		return ""
+	}
+	// Go selects the highest required version, even when an untidy file
+	// repeats the module in separate require directives.
+	var version string
+	for _, r := range f.Require {
+		if r.Mod.Path == module && semver.Compare(r.Mod.Version, version) > 0 {
+			version = r.Mod.Version
+		}
+	}
+	return version
 }
 
 // pinNotice reports which pinned build a codegen tool resolved to. It is
@@ -398,33 +436,4 @@ func withPinnedTools(cmd *exec.Cmd, projectDir string) error {
 		}
 	}
 	return nil
-}
-
-// isConnectPlugin reports whether t is protoc-gen-connect-go, of either
-// major: the tool built from a connect-go runtime module.
-func isConnectPlugin(t protoTool) bool {
-	_, ok := connectmajor.IsRuntimeImport(t.VersionModule)
-	return ok
-}
-
-// goModRequireVersion is the version projectDir's go.mod requires module at,
-// read from the file itself (direct or indirect), or "" when it names none
-// or cannot be read. It answers when `go list -m` cannot — a go.mod that
-// needs a tidy — so the require line is the best statement of the pin.
-func goModRequireVersion(projectDir, module string) string {
-	path := filepath.Join(projectDir, "go.mod")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	f, err := modfile.ParseLax(path, data, nil)
-	if err != nil {
-		return ""
-	}
-	for _, r := range f.Require {
-		if r.Mod.Path == module {
-			return r.Mod.Version
-		}
-	}
-	return ""
 }

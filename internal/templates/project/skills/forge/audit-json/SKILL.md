@@ -103,7 +103,9 @@ Iterate `.categories | keys[]` rather than hard-coding the list.
 | Category | What's in `details` (when relevant) |
 |----------|-------------------------------------|
 | `version` | `pinned_version`, `binary_version`, `ci_pin`, `state_pin`, `intentional`, `hint` (when mismatch) |
-| `shape` | `services[]`, `frontends[]` (each `{name, type}`), `packages[]`, `proto_integrity` (only when proto parsing failed). Workers and operators are owned code with no proto contract — forge does **not** inventory them. |
+| `shape` | `services[]`, `frontends[]` (each `{name, type}`), `packages[]`, `roots[]`, `workloads[]`, `proto_integrity` (only when proto parsing failed). Processes are inventoried whatever code they run: `roots` and `workloads` are always lists (`[]` when none). |
+| `shape.roots[]` | one per `//forge:root` struct in `internal/app`: `name`, `type`, `command[]`, `migrate?` (absent = default), `adopt?`, `short?`, `fields[]`, `root_only[]?` (`{provider, file, line}` — providers marked `//forge:root-only` that name it), `file`, `line`. Unreadable directives add `roots_integrity` and make the category `warn`. |
+| `shape.workloads[]` | one per declared workload, from every env's render: `name`, `kind` (free string), `build` (`go`/`docker`/`shell`/`remote`/`none`), `image?`, `runtimes{}` (env → `host`/`compose`/`cluster`/`hosted`/`build-only`/`external`; `{}` when no env renders it), `file?`/`line?` (its literal). An env that does not render adds `workloads_integrity.errors{env: error}` and makes the category `warn` — never an error. |
 | `shape.services[]` | `name`, `type`, `rpc_count`, `rpcs[]` — each rpc is `{name, streaming?, custom?}`. `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`; `custom: true` marks an rpc declared `// forge:custom` (stubbed, never CRUD-wired, whatever its name). |
 | `features` | `resolved{}` (every feature → bool), `enabled[]`, `disabled[]`. Features are derived from the repo, never configured. Informational — always `ok`. |
 | `ingress` | `gateways`, `http_routes`, `grpc_routes`, `services_without_route`, `findings[]` |
@@ -213,6 +215,10 @@ forge project map --json | jq -r '.. | select(.flags? // [] | index("FORGE_SCAFF
 forge project audit --json | jq '.categories.shape.details |
   {services: (.services | length // 0),
    frontends:(.frontends | length // 0)}'
+
+# Where does each workload run, per env?
+forge project audit --json | jq -r '.categories.shape.details.workloads[]?
+  | "\(.name) (\(.kind), \(.build)): \(.runtimes | to_entries | map("\(.key)=\(.value)") | join(" "))"'
 
 # Which RPCs are streaming, and which are unary?
 forge project audit --json | jq -r '.categories.shape.details.services[]?

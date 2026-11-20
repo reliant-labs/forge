@@ -44,6 +44,31 @@ into files you own and can change.
 
 **Try it in the browser first: [the live demo](https://demo.reliantlabs.io/forge/demo?section=built).**
 
+## Why Forge
+
+Because Forge knows your services, RPCs, schema, environments and releases,
+its tools share one model of the app instead of being glued together:
+
+<!-- reasons:start -->
+
+1. [Forge knows your whole app, so its tools share one model of it](docs/why-forge.md#knows-your-app)
+2. [Every RPC traced, measured and logged with no instrumentation code](docs/why-forge.md#rpc-observability)
+3. [Each release judged by its own telemetry and tied to the errors it causes](docs/why-forge.md#release-health)
+4. [Build once and promote the same bytes from staging to prod](docs/why-forge.md#build-once-promote)
+5. [Database migrations checked against the running release before they ship](docs/why-forge.md#safe-migrations)
+6. [Lint that knows your architecture, not just your syntax](docs/why-forge.md#architecture-lint)
+7. [Secure by default, with auth that fails closed and secrets out of git](docs/why-forge.md#secure-defaults)
+8. [Built for AI agents, with a project that explains itself and gates that check the work](docs/why-forge.md#built-for-agents)
+9. [Tests against a real Postgres that still run in the fast tier](docs/why-forge.md#real-fast-tests)
+10. [Production from the first commit, with the whole stack on your laptop](docs/why-forge.md#prod-from-day-0)
+11. [Adopt it piece by piece in any repo, and keep the tools you already run](docs/why-forge.md#start-anywhere)
+12. [Reliant hosting wires Postgres, secrets, telemetry and domains from your declarations](docs/why-forge.md#hosting-knows-your-app) _(hosted)_
+
+Each reason, how it works and the checked benefits that back it: [docs/why-forge.md](docs/why-forge.md).
+Every benefit: [docs/benefits.md](docs/benefits.md). From a terminal or an agent: `forge why`.
+
+<!-- reasons:end -->
+
 ## See what happened after deployment
 
 Forge deploys and operates your app without requiring Reliant's coding harness.

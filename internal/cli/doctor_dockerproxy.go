@@ -1,4 +1,4 @@
-// Package cli — `forge doctor` Docker daemon HTTP(S)-proxy check.
+// Package cli — `forge project doctor` Docker daemon HTTP(S)-proxy check.
 //
 // When the Docker daemon is configured with an HTTP/HTTPS proxy, ALL
 // container egress — including image pulls and registry TLS handshakes —

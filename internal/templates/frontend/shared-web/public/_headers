@@ -1,7 +1,7 @@
 # Response headers for this site, read by Reliant static hosting at deploy
 # time (Netlify / Cloudflare Pages format; the file itself is never served).
 # It ships in the build, so a promoted release serves the same headers in
-# every env. Reference: `forge skill load deploy/static-site`, "Response
+# every env. Reference: `forge agent skill load deploy/static-site`, "Response
 # headers".
 #
 # Only this site may frame its pages: another origin cannot put a sign-in or

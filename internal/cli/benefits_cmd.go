@@ -66,7 +66,7 @@ benefit.
                                          guardrails, security, ship, host, run, agents)
   forge project benefits --json          for machines (the MCP benefits tool)
 
-Next, 'forge skill load adopt': the survey, the estimate rubric and every entry
+Next, 'forge agent skill load adopt': the survey, the estimate rubric and every entry
 point, for bringing forge into an existing app without a rewrite.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -116,7 +116,7 @@ func buildBenefitsReport(reg *benefits.Registry, forgeProject, all bool, categor
 		}
 		return out
 	}
-	rep := benefitsReport{ForgeProject: forgeProject, Next: cmdutil.Name() + " skill load adopt"}
+	rep := benefitsReport{ForgeProject: forgeProject, Next: cmdutil.Name() + " agent skill load adopt"}
 	everything := inCategory(reg.AppliesTo(true))
 	if forgeProject || all {
 		rep.Benefits = everything
@@ -125,7 +125,7 @@ func buildBenefitsReport(reg *benefits.Registry, forgeProject, all bool, categor
 		rep.More = len(everything) - len(rep.Benefits)
 	}
 	if forgeProject {
-		rep.Next = cmdutil.Name() + " skill load forge"
+		rep.Next = cmdutil.Name() + " agent skill load forge"
 	}
 	if rep.Benefits == nil {
 		rep.Benefits = []benefits.Benefit{}

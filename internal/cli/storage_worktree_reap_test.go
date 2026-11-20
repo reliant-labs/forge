@@ -11,7 +11,7 @@ import (
 )
 
 // TestOnlyAnExplicitStorageGCMayReapWorktrees: worktree and anonymous-volume
-// removal is decided by a person or agent running `forge storage gc --apply`,
+// removal is decided by a person or agent running `forge machine storage gc --apply`,
 // never by a pass that runs on its own. The installed daily job runs the same
 // command, so it is marked --scheduled; `storage daemon` is periodic by
 // definition. (The hourly job and `forge env up`'s background pass run

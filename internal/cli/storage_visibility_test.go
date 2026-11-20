@@ -173,8 +173,8 @@ func TestUpRegistryFailureLineIsActionable(t *testing.T) {
 	for _, want := range []string{
 		"the last cleanup of registry k3d-cp-registry (10h ago) failed: registry k3d-cp-registry also serves k3d-e2e",
 		"This env is unaffected",
-		"`forge storage gc --dry-run`",
-		"`forge storage gc --apply`",
+		"`forge machine storage gc --dry-run`",
+		"`forge machine storage gc --apply`",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)

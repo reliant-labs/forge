@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cloud"
 )
 
-// hostedSecretWriter is the narrow surface `forge secret set/list/unset` use
+// hostedSecretWriter is the narrow surface `forge env secret set/list/unset` use
 // for an env whose secret_provider is forge.HostedSecrets.
 //
 // SEPARATE FROM secrets.Provider ON PURPOSE. A Provider RESOLVES values; the
@@ -25,7 +25,7 @@ import (
 type hostedSecretWriter interface {
 	Set(ctx context.Context, name, value string) (version uint32, err error)
 	// Create is Set with check-and-set 0: it fails when the name already has
-	// a version, which is what `forge secret import` needs so a re-run can
+	// a version, which is what `forge env secret import` needs so a re-run can
 	// never overwrite a value a person has since rotated.
 	Create(ctx context.Context, name, value string) (version uint32, err error)
 	List(ctx context.Context) ([]hostedSecretSummary, error)
@@ -186,7 +186,7 @@ func runHostedSecretUnset(ctx context.Context, envName, key string, entities *KC
 
 // hostedSecretListStore reads a hosted env's names and current versions —
 // value-free by construction (ListSecrets has no value field) — into the
-// same presence facts every provider reports, so `forge secret list --json`
+// same presence facts every provider reports, so `forge env secret list --json`
 // has one shape whatever the provider.
 //
 // An env the control plane has never seen holds no secrets: every declared

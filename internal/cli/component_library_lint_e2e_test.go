@@ -30,7 +30,7 @@ var componentLintWarningAllowlist = map[string]string{}
 // component into a fresh scaffold of each browser frontend kind and runs that
 // scaffold's own eslint config and tsc over them.
 //
-// A component is copied into a project by `forge component install` and is
+// A component is copied into a project by `forge ui component install` and is
 // the project's file from then on, so a lint or type error in it is an error
 // in the project's `npm run lint` / `npm run typecheck` gate on the day it is
 // installed. The static guards in pkg/components (library_lint_gate_test.go)
@@ -97,7 +97,7 @@ func TestE2EComponentLibraryLintsCleanInEveryScaffold(t *testing.T) {
 				t.Fatal("every library component is already in the scaffold — nothing was installed, so nothing was checked")
 			}
 			runCmdTimeout(t, projectDir, 2*time.Minute, forgeBin,
-				append([]string{"component", "install", "--dir", feDir}, names...)...)
+				append([]string{"ui", "component", "install", "--dir", feDir}, names...)...)
 			// What the install wrote: the requested components and the sibling
 			// imports it adds for them.
 			installed := map[string]bool{}
@@ -155,7 +155,7 @@ func TestE2EComponentLibraryLintsCleanInEveryScaffold(t *testing.T) {
 			if len(findings) > 0 {
 				sort.Strings(findings)
 				t.Errorf("library components fail the %s scaffold's own eslint config. "+
-					"`forge component install` copies them into a project, where every one is a "+
+					"`forge ui component install` copies them into a project, where every one is a "+
 					"finding the project did not write. Fix the component; a warning that must "+
 					"stay goes in componentLintWarningAllowlist with its reason:\n  %s",
 					tc.kind, strings.Join(findings, "\n  "))

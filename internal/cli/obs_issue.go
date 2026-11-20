@@ -75,7 +75,7 @@ func issueEventDoc(e obsbackend.IssueEvent) obsIssueEventDoc {
 		Attributes: e.Attributes, SessionID: e.SessionID, URLPath: e.URLPath}
 }
 
-// obsBugReportDoc is one bug report (`forge report-bug`, an agent's
+// obsBugReportDoc is one bug report (`forge agent report-bug`, an agent's
 // report_bug) an issue of a bug-report source groups: its body, which rides
 // on the event as bug_report.* attributes. The issue's title is normalized
 // (<n>, <str>), so the body is the only place the report itself is readable.
@@ -207,7 +207,7 @@ read from this checkout with git. A hosted env also shows who it is assigned to,
 the incident it belongs to (the other issues with the same cause, first seen
 close together: related_count and incident_key), and the newest
 --timeline-limit timeline entries, oldest first. An issue that groups bug
-reports (forge report-bug, an agent's report_bug) shows the body of each report
+reports (forge agent report-bug, an agent's report_bug) shows the body of each report
 its latest event and --events carry: id, severity, title, summary, expected,
 actual and evidence. [env] defaults to dev.
 

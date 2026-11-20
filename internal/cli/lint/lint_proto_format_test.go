@@ -75,7 +75,7 @@ func TestProtoFormatDiffIsGradedWithItsFinding(t *testing.T) {
 func TestProtoFormatFixStaysInsideTheScope(t *testing.T) {
 	testkit.Slow(t, "execs buf")
 	if _, err := exec.LookPath("buf"); err != nil {
-		t.Skip("buf not on PATH — the proto-format lane needs buf (`forge tools install buf`)")
+		t.Skip("buf not on PATH — the proto-format lane needs buf (`forge machine tools install buf`)")
 	}
 	const dirty = "syntax = \"proto3\";\npackage %s.v1;\nmessage   M {string id = 1;}\n"
 	root := t.TempDir()
@@ -143,7 +143,7 @@ func TestProtoFormatFixStaysInsideTheScope(t *testing.T) {
 func TestProtoFormatLane(t *testing.T) {
 	testkit.Slow(t, "execs buf")
 	if _, err := exec.LookPath("buf"); err != nil {
-		t.Skip("buf not on PATH — the proto-format lane needs buf (`forge tools install buf`)")
+		t.Skip("buf not on PATH — the proto-format lane needs buf (`forge machine tools install buf`)")
 	}
 	ctx := context.Background()
 	root := t.TempDir()

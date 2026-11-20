@@ -1,6 +1,6 @@
 package cli
 
-// The control-plane DELIVERY grant: what `forge cluster connect` converges so
+// The control-plane DELIVERY grant: what `forge cloud cluster connect` converges so
 // the control plane can write and renew the Secrets an env DECLARES, and
 // nothing else.
 //

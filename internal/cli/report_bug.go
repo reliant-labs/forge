@@ -17,7 +17,7 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-// `forge report-bug` files a defect in forge itself with the Reliant
+// `forge agent report-bug` files a defect in forge itself with the Reliant
 // engineering team. It is the standalone forge's counterpart of reliant's
 // report_bug agent tool, for a person or an agent in any harness. forge
 // sends nothing unless someone runs it (internal/bugreport,
@@ -53,16 +53,16 @@ forge detected; and a random install id used only for rate limiting. Never
 file contents or environment values. --dry-run prints the exact payload
 without sending it. forge sends nothing unless someone runs this command.
 
-When you are logged in (forge login), the report carries your user id so
+When you are logged in (forge cloud login), the report carries your user id so
 the team can follow up; --anonymous leaves it off.
 
 Exit status is non-zero when the report could not be filed.`,
-		Example: `  forge report-bug --severity high \
+		Example: `  forge agent report-bug --severity high \
     --title "forge generate drops optional fields from list filters" \
     --actual "ListTasksRequest.status is missing from the generated filter" \
     --evidence "forge generate on proto/services/tasks/v1/tasks.proto; forge v0.1.48"
 
-  echo '{"severity":"low","title":"typo in forge lint --help","actual":"\"receive\""}' | forge report-bug --json`,
+  echo '{"severity":"low","title":"typo in forge lint --help","actual":"\"receive\""}' | forge agent report-bug --json`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if fromJSON {
@@ -107,7 +107,7 @@ Exit status is non-zero when the report could not be filed.`,
 	f.StringVar(&r.Evidence, "evidence", "", "how to reproduce it: commands run, their output, file paths")
 	f.BoolVar(&fromJSON, "json", false, "read the report from stdin as a JSON object with the fields severity, title, summary, expected, actual, evidence")
 	f.BoolVar(&dryRun, "dry-run", false, "print exactly what would be sent, and send nothing")
-	f.BoolVar(&anon, "anonymous", false, "do not attach your forge login, even when you are logged in")
+	f.BoolVar(&anon, "anonymous", false, "do not attach your forge cloud login, even when you are logged in")
 	f.StringVarP(&output, "output", "o", "text", "text or json")
 	return cmd
 }
@@ -137,7 +137,7 @@ func printReportResult(w io.Writer, output string, res bugreport.Result) error {
 }
 
 // forgeBugReportFiler targets the reporting endpoint with forge's state
-// directory, presenting the stored forge login for that endpoint unless
+// directory, presenting the stored forge cloud login for that endpoint unless
 // anonymous. A login that does not resolve is simply not presented.
 func forgeBugReportFiler(anonymous bool) *bugreport.Filer {
 	endpoint := bugreport.DefaultEndpoint()

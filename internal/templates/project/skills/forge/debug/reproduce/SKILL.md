@@ -33,11 +33,11 @@ What to log, in order of placement:
 ## Triggering the Bug
 
 - **First confirm the wire.** Before blaming the code, verify the caller can actually reach the target: is the service up, is the kubectl context current (services may live in different clusters), are credentials live? Stale connection state is a top false-cause.
-- **Read the actual runtime logs.** `forge cluster logs --service <name>` tails the pod's logs (kubectl-backed) — read the server's view of the request, don't infer from the client error alone. It tails only the owner cluster; for a peer in another cluster, `kubectl --context <other> -n <ns> logs <pod>`.
+- **Read the actual runtime logs.** `forge dev cluster logs --service <name>` tails the pod's logs (kubectl-backed) — read the server's view of the request, don't infer from the client error alone. It tails only the owner cluster; for a peer in another cluster, `kubectl --context <other> -n <ns> logs <pod>`.
 - **Localize first with `forge project introspect handlers`.** It prints every RPC path the assembled binary serves. If the RPC you're triggering isn't in the list, the fault is a downstream/remote hop — stop digging in this binary.
-- **Hit the endpoint with `forge api curl <service.method>`.** Builds a copy-pasteable Connect request from the shell. It stops at the auth interceptor (no token minting), so add your own credential for an authed call.
+- **Hit the endpoint with `forge dev curl <service.method>`.** Builds a copy-pasteable Connect request from the shell. It stops at the auth interceptor (no token minting), so add your own credential for an authed call.
 - Exercise via Connect client; query DB state before and after the operation.
-- **Put Delve on it** if logging isn't enough: `forge debug start <svc> --run` (its own debug build, with the env's config; `--app-port` when env up holds the port) or `forge debug start --attach <pid> --run` on the running process (without `--run` the target is left halted). `forge debug break <Rpc>`, fire the request in the background, `forge debug continue --timeout 60s`, then `eval`. `forge debug stop` detaches from an attached process (breakpoints removed; it keeps running) and kills only what `start` launched.
+- **Put Delve on it** if logging isn't enough: `forge dev debug start <svc> --run` (its own debug build, with the env's config; `--app-port` when env up holds the port) or `forge dev debug start --attach <pid> --run` on the running process (without `--run` the target is left halted). `forge dev debug break <Rpc>`, fire the request in the background, `forge dev debug continue --timeout 60s`, then `eval`. `forge dev debug stop` detaches from an attached process (breakpoints removed; it keeps running) and kills only what `start` launched.
 
 ## E2E Reproduction
 

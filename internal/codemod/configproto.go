@@ -16,7 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/configproto"
 )
 
-// configproto.go — `forge fix config-proto-package`, the v1.0.0 move of a
+// configproto.go — `forge lint fix config-proto-package`, the v1.0.0 move of a
 // project's config proto off the package every forge project shared.
 //
 // Every project declared `package config.v1` at proto/config/v1, so the

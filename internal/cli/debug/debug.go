@@ -1,4 +1,4 @@
-// Package debug holds the `forge debug` command group — a Delve-backed
+// Package debug holds the `forge dev debug` command group — a Delve-backed
 // interactive debugger driver (start / break / continue / eval / ...).
 //
 // Dir-nested command group (the devspace idiom): the parent newCmd assembles
@@ -47,12 +47,12 @@ breakpoint hit without trapping you. 'stop' kills only what 'start'
 launched: an attached process is detached with its breakpoints removed.
 
 Examples:
-  forge debug start api --run
-  forge debug break CreateTask
-  forge debug break internal/handlers/tasks/rpc_create_task.go:42
-  forge debug continue --timeout 60s
-  forge debug eval "req.Msg.Title"
-  forge debug stop`,
+  forge dev debug start api --run
+  forge dev debug break CreateTask
+  forge dev debug break internal/handlers/tasks/rpc_create_task.go:42
+  forge dev debug continue --timeout 60s
+  forge dev debug eval "req.Msg.Title"
+  forge dev debug stop`,
 	}
 
 	cmd.AddCommand(newStartCmd(f))
@@ -93,7 +93,7 @@ func connectWithSession() (*dbgsvc.DelveDebugger, *dbgsvc.SessionInfo, error) {
 		return nil, nil, fmt.Errorf("loading debug session: %w", err)
 	}
 	if session == nil {
-		return nil, nil, fmt.Errorf("no active debug session (run 'forge debug start' or 'forge debug connect' first)")
+		return nil, nil, fmt.Errorf("no active debug session (run 'forge dev debug start' or 'forge dev debug connect' first)")
 	}
 	d := dbgsvc.NewDelveDebugger()
 	if err := d.Connect(session.Addr); err != nil {

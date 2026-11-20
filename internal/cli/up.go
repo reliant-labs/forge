@@ -14,7 +14,7 @@
 //  6. Wait Ctrl-C → cascade cleanup → exit.
 //
 // Reaching cluster services from the host is the Gateway API ingress
-// path (see `forge cluster urls`); ad-hoc shells against stateful workloads
+// path (see `forge dev cluster urls`); ad-hoc shells against stateful workloads
 // stay available via `kubectl port-forward` directly.
 //
 // Replaces the dev-loop bash script every forge project would otherwise
@@ -139,7 +139,7 @@ Phases:
   4. frontend: start every declared frontend in its path
 
 Reaching cluster services from the host is the Gateway API ingress
-path; run ` + "`forge cluster urls`" + ` to list the routes.
+path; run ` + "`forge dev cluster urls`" + ` to list the routes.
 
 Use --no-build / --no-deploy to skip phases when iterating. Use --target
 <name> to scope the whole run to one service — a CI lane that only wants
@@ -427,7 +427,7 @@ func readRuntimeStatus(ctx context.Context, env string) (runtimeStatusRead, erro
 	headCommit := headCommitTime(projectDir)
 	enrichServing(rows, projectIDForDir(projectDir), env, headCommit)
 
-	// The env-runtime checks that used to live in `forge doctor`. Their
+	// The env-runtime checks that used to live in `forge project doctor`. Their
 	// target is DERIVED from the rows above — one resolver for "what port
 	// does this component serve on", and it is this one. See
 	// env_status_checks.go.
@@ -787,7 +787,7 @@ func preflightHostRunners(e *KCLEntities, targets []string, env string) error {
 	}
 	return cliutil.UserErr("forge env up "+env,
 		"a host workload's runner is not installed:\n"+strings.Join(missing, "\n"), "",
-		fmt.Sprintf("install it, or run the workload without it: `runner = \"go-run\"` in its binder in deploy/kcl/%s/main.k (`forge doctor` lists every tool this project needs)", env))
+		fmt.Sprintf("install it, or run the workload without it: `runner = \"go-run\"` in its binder in deploy/kcl/%s/main.k (`forge project doctor` lists every tool this project needs)", env))
 }
 
 // preflightGoModulesTidy fails fast when a Go module graph the build depends on
@@ -2121,7 +2121,7 @@ type upServicesReport struct {
 	Workloads *doctor.ClusterInventory `json:"workloads,omitempty"`
 	// Checks are the env-runtime health checks (compose infra, app
 	// /healthz, pprof, telemetry backends, Delve) — the set that moved off
-	// `forge doctor` when doctor stopped answering runtime questions.
+	// `forge project doctor` when doctor stopped answering runtime questions.
 	// Additive: a consumer reading only `services` is unaffected. A check
 	// whose status is "unknown" is UNDETERMINED, not a pass.
 	Checks []doctor.CheckResult `json:"checks,omitempty"`
@@ -2293,7 +2293,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	// healthy — every process green, every port bound — and then answers 401
 	// to every authenticated RPC. The banner is the one place someone is
 	// definitely looking at that moment, so the warning belongs here rather
-	// than only in a `forge doctor` run nothing prompts them to make.
+	// than only in a `forge project doctor` run nothing prompts them to make.
 	if w := authParityTrailer(env); w != "" {
 		trailers = append(trailers, w)
 	}
@@ -2310,7 +2310,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 //
 // It reuses doctor's check rather than re-reading the KCL, so there is one
 // definition of "the halves disagree" and the banner cannot drift from what
-// `forge doctor` reports. Warn-only for the same reason doctor warns: a
+// `forge project doctor` reports. Warn-only for the same reason doctor warns: a
 // split-issuer setup is legitimate, and this cannot tell one from a typo.
 func authParityTrailer(env string) string {
 	root, err := os.Getwd()
@@ -2327,7 +2327,7 @@ func authParityTrailerIn(root, env string) string {
 		return ""
 	}
 	return "⚠ Auth: " + res.Message + "\n" +
-		"│   Sign-in will succeed and RPCs will still 401. Details: forge doctor"
+		"│   Sign-in will succeed and RPCs will still 401. Details: forge project doctor"
 }
 
 // renderUpSummary writes the aligned host-service + frontend table + the
@@ -2426,7 +2426,7 @@ func renderUpSummary(w io.Writer, env string, rows []upServiceRow, notReadyLabel
 	renderClusterWorkloads(w, bar, env, cluster)
 	fmt.Fprintf(w, "%s\n", bar)
 	fmt.Fprintf(w, "%s Logs   %s/   — tail -f / grep the per-service *.log here\n", bar, upLogDir(env))
-	fmt.Fprintf(w, "%s Cluster routes:  forge cluster urls\n", bar)
+	fmt.Fprintf(w, "%s Cluster routes:  forge dev cluster urls\n", bar)
 	fmt.Fprintf(w, "%s Live status:     forge env status %s\n", bar, env)
 	for _, t := range trailers {
 		fmt.Fprintf(w, "%s %s\n", bar, t)
@@ -3001,7 +3001,7 @@ func clusterWorkloadError(env string, s *clusterWorkloadSummary) error {
 
 // clusterStatusGlyph is the summary box's mark for the cluster verdict.
 // Pass borrows the box's own "up" dot so the healthy case reads as one
-// table; the abnormal states borrow `forge doctor`'s marks so the same fact
+// table; the abnormal states borrow `forge project doctor`'s marks so the same fact
 // looks the same in both commands. UNDETERMINED gets "?" and never the
 // gray dash — "I could not tell" must not render as "does not apply".
 func clusterStatusGlyph(s doctor.Status) string {

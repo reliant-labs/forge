@@ -1,19 +1,19 @@
 ---
 name: deploy/domains
-description: Serving your own hostname — the `forge domain` commands for hosted sites and ports, why a hosted domain is a control-plane resource rather than spec, `Port.domains` on a cluster you operate, and reading a bound domain's state.
+description: Serving your own hostname — the `forge cloud domain` commands for hosted sites and ports, why a hosted domain is a control-plane resource rather than spec, `Port.domains` on a cluster you operate, and reading a bound domain's state.
 ---
 
 # Custom domains
 
 Every hosted site and exposed hosted port already answers on a hostname the
 platform allocates — you never declare that one. To ALSO serve your own, use
-the `forge domain` commands. **A hosted domain is NOT spec**: a hosted
+the `forge cloud domain` commands. **A hosted domain is NOT spec**: a hosted
 frontend or port that carries `domains` is refused at render.
 
 ```
-forge domain add hounders.club --env prod                # prints the DNS to set
-forge domain bind hounders.club --env prod --target web
-forge domain bind www.hounders.club --env prod --redirect-to hounders.club
+forge cloud domain add hounders.club --env prod                # prints the DNS to set
+forge cloud domain bind hounders.club --env prod --target web
+forge cloud domain bind www.hounders.club --env prod --redirect-to hounders.club
 ```
 
 A `--redirect-to` binding answers every path with a permanent redirect to
@@ -39,7 +39,7 @@ itself, which a spec field would then contradict.
 
 If a domain command is rejected for a missing `domain:read`/`domain:write`
 scope, the credential lacks it: under Reliant, grant it to your Reliant session
-(Settings → Access Tokens, or `reliant auth login`); standalone, run `forge login`.
+(Settings → Access Tokens, or `reliant auth login`); standalone, run `forge cloud login`.
 If a fresh token still lacks it, your role has no grant — an org admin can mint
 a token with `domain:read,domain:write` in the web app (Settings → API tokens,
 https://forge.reliantlabs.io/settings/tokens).
@@ -57,7 +57,7 @@ ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hou
 
 ## Reading a domain's state
 
-`forge env status <env>`, the post-deploy summary and `forge domain show
+`forge env status <env>`, the post-deploy summary and `forge cloud domain show
 <hostname>` print each bound domain's state — `pending_dns` | `verifying` |
 `issuing` | `live` | `failed` | `conflict` — with the DNS record still to
 set and the last error:

@@ -426,5 +426,5 @@ func writeWebRuntime(w io.Writer, spec *WebRuntimeSpec) error {
 		}
 	}
 	return p("\nThe runtime is a PACKAGE: there is nothing to edit and nothing to\n" +
-		"regenerate. `forge skill load frontend-runtime` has the composition rules.\n")
+		"regenerate. `forge agent skill load frontend-runtime` has the composition rules.\n")
 }

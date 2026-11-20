@@ -15,7 +15,7 @@ provides, what it refuses, and the gates (billing, unset secrets):
 **No Reliant account yet?** `forge env deploy <env> --claimable` publishes
 anyway and prints a live URL plus a claim link for your user (see
 `deploy/hosting`, "No account: `--claimable`"). That first deploy needs no
-`forge login`. An unclaimed backend has no outbound internet, and its LLM
+`forge cloud login`. An unclaimed backend has no outbound internet, and its LLM
 gateway credentials may be blank, so do not promise gateway access: degrade the
 feature, or have your user claim the deploy first (`deploy/llm`). Claiming signs
 them in, and everything after it (setting managed secrets, redeploying) runs
@@ -162,7 +162,7 @@ tool.
 - Declare a workload once, in `workloads.k`. An env file that re-states a
   workload's command, ports or build is a second copy that will drift.
 - Never `kubectl apply` a hand render — everything through `forge env deploy`.
-  To read a VALUE KCL declares, `forge kcl eval`; see `deploy/kcl-eval`.
+  To read a VALUE KCL declares, `forge env kcl eval`; see `deploy/kcl-eval`.
 - Deploying another forge project's workloads? Import its `workloads.k`
   (`[forge_projects]` in kcl.mod: at the go.mod pin, or by a git pin for a
   repo that is not a Go dependency) instead of copying it; see

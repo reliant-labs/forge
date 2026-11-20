@@ -43,12 +43,12 @@ type Runner struct {
 	// unbounded.
 	Ctx context.Context
 
-	// Explicit marks the one pass a person or agent invoked: `forge storage
+	// Explicit marks the one pass a person or agent invoked: `forge machine storage
 	// gc` without --scheduled. Only it may remove what no observation can
 	// prove abandoned — worktrees (and then only under the policy's
 	// worktree_reap) and anonymous Docker volumes. Every automatic pass leaves
 	// it false: the background auto-gc, the installed schedule and `forge
-	// storage daemon`. An agent between two commands holds no process in its
+	// machine storage daemon`. An agent between two commands holds no process in its
 	// worktree, and an orphaned volume may be the only copy of a database, so
 	// to a pass nobody invoked either looks exactly like garbage.
 	Explicit bool
@@ -296,7 +296,7 @@ func (r Runner) GC(ctx context.Context, apply bool) error {
 			failures = append(failures, layerErr("registry "+registry.Container, err))
 		}
 	}
-	r.print("named volumes, volumes any container uses, running containers and application data are retained; anonymous volumes are removed only by an explicit `forge storage gc --apply`, worktrees only by one under the worktree_reap policy\n")
+	r.print("named volumes, volumes any container uses, running containers and application data are retained; anonymous volumes are removed only by an explicit `forge machine storage gc --apply`, worktrees only by one under the worktree_reap policy\n")
 	return errors.Join(failures...)
 }
 

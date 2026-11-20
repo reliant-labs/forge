@@ -39,7 +39,7 @@ func TestDoctorSignalHelpMatchesWhatRunFilteredAccepts(t *testing.T) {
 		}
 	}
 	// The moved signals must be pointed AT their new home, not silently
-	// dropped: a user who typed `forge doctor --signal traces` yesterday
+	// dropped: a user who typed `forge project doctor --signal traces` yesterday
 	// needs the help to say where traces went.
 	if !strings.Contains(help, "env status") {
 		t.Errorf("--signal help does not point at `forge env status <env> --signal`, "+
@@ -59,7 +59,7 @@ func TestDoctorRunFilteredRejectsThePhantomSignals(t *testing.T) {
 }
 
 // The env-runtime signals are no longer doctor's. Rejecting them silently
-// (as "unknown signal") would leave a user who typed `forge doctor --signal
+// (as "unknown signal") would leave a user who typed `forge project doctor --signal
 // traces` with nowhere to go, so the error must NAME the new command.
 func TestDoctorRunFilteredRedirectsTheRuntimeSignals(t *testing.T) {
 	d := doctor.New(doctor.Deps{})
@@ -75,7 +75,7 @@ func TestDoctorRunFilteredRedirectsTheRuntimeSignals(t *testing.T) {
 	}
 }
 
-// `forge doctor bogus` used to run every check and exit 0 — the runnable-parent
+// `forge project doctor bogus` used to run every check and exit 0 — the runnable-parent
 // form of the exit-0-on-a-typo wart. Doctor takes no positionals.
 func TestDoctorRejectsStrayPositionals(t *testing.T) {
 	cmd := newDoctorCmd()
@@ -92,7 +92,7 @@ func TestDoctorRejectsStrayPositionals(t *testing.T) {
 
 // THE SPLIT, pinned at the command surface.
 //
-// `forge doctor --env string (default "dev")` was the tell that doctor was
+// `forge project doctor --env string (default "dev")` was the tell that doctor was
 // answering two questions: run it in a project and it silently reported on
 // an environment you never named. Everything doctor now checks spans EVERY
 // declared environment, so there is nothing for --env to scope.
@@ -110,7 +110,7 @@ func TestEnvStatusCarriesTheRuntimeSignals(t *testing.T) {
 	cmd := newEnvStatusCmd()
 	flag := cmd.Flags().Lookup("signal")
 	if flag == nil {
-		t.Fatal("`forge env status` has no --signal flag, but `forge doctor` now redirects to it")
+		t.Fatal("`forge env status` has no --signal flag, but `forge project doctor` now redirects to it")
 	}
 	for _, sig := range []string{"app", "metrics", "traces", "logs", "profiles"} {
 		if !strings.Contains(flag.Usage, sig) {

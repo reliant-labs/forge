@@ -413,7 +413,7 @@ func (r *upgradeRun) skipDetail(name string) string {
 		return detail
 	}
 	for i, n := range left {
-		left[i] = fmt.Sprintf("`%s fix %s`", Name(), n)
+		left[i] = fmt.Sprintf("`%s lint fix %s`", Name(), n)
 	}
 	return detail + "; not run, run each yourself: " + strings.Join(left, ", ")
 }
@@ -444,7 +444,7 @@ func (r *upgradeRun) phaseCodemods() error {
 	if err != nil {
 		return cliutil.WrapUserErr(
 			fmt.Sprintf("forge project upgrade --to %s", r.target), "codemod chain failed", "",
-			"fix the offending file (the error names it), then re-run upgrade; each codemod is also `forge fix <name> --dry-run`", err)
+			"fix the offending file (the error names it), then re-run upgrade; each codemod is also `forge lint fix <name> --dry-run`", err)
 	}
 	var merged CodemodReport
 	for _, cr := range runs {
@@ -489,14 +489,14 @@ func migrationSkillManualPath(version string) string {
 	if _, err := templates.ProjectTemplates().Get(path.Join("skills", "forge", migrationSkillsRoot, version, "SKILL.md")); err != nil {
 		return ""
 	}
-	return fmt.Sprintf("; `%s skill load %s/%s` is the manual path", Name(), migrationSkillsRoot, version)
+	return fmt.Sprintf("; `%s agent skill load %s/%s` is the manual path", Name(), migrationSkillsRoot, version)
 }
 
 func (r *upgradeRun) humanBlocked(cr upgradeCodemodRun) {
 	r.human(upgradeHumanItem{
 		Kind: "codemod-blocked", ID: cr.Name,
-		Message: fmt.Sprintf("forge fix %s wrote nothing: %s", cr.Name, strings.Join(cr.Blocked, "; ")),
-		Fix: fmt.Sprintf("clear each item it lists (`%s fix %s --dry-run`), then re-run `%s project upgrade`", Name(), cr.Name, Name()) +
+		Message: fmt.Sprintf("forge lint fix %s wrote nothing: %s", cr.Name, strings.Join(cr.Blocked, "; ")),
+		Fix: fmt.Sprintf("clear each item it lists (`%s lint fix %s --dry-run`), then re-run `%s project upgrade`", Name(), cr.Name, Name()) +
 			migrationSkillManualPath(cr.Version),
 	})
 }
@@ -581,7 +581,7 @@ func (r *upgradeRun) phasePlaybooks() error {
 			r.human(upgradeHumanItem{
 				Kind: "playbook", ID: row.Meta.ID,
 				Message: fmt.Sprintf("the %s migration playbook still applies: %s", row.Meta.ID, shorten(row.Meta.Description, 160)),
-				Fix: fmt.Sprintf("%s skill load %s, follow the sections whose \"Use when\" matches, then %s project upgrade apply %s",
+				Fix: fmt.Sprintf("%s agent skill load %s, follow the sections whose \"Use when\" matches, then %s project upgrade apply %s",
 					Name(), row.Meta.SkillPath, Name(), row.Meta.ID),
 			})
 		}
@@ -605,8 +605,8 @@ func (r *upgradeRun) runAutomation(meta migrationMeta, step string) error {
 	if c.CleanTree && !r.startedClean && !r.check {
 		r.human(upgradeHumanItem{
 			Kind: "codemod-skipped", ID: name,
-			Message: fmt.Sprintf("forge fix %s replaces files you own and the tree had uncommitted changes, so upgrade left it alone", name),
-			Fix:     fmt.Sprintf("commit the tree, then `%s fix %s` (or re-run `%s project upgrade --allow-dirty`)", Name(), name, Name()),
+			Message: fmt.Sprintf("forge lint fix %s replaces files you own and the tree had uncommitted changes, so upgrade left it alone", name),
+			Fix:     fmt.Sprintf("commit the tree, then `%s lint fix %s` (or re-run `%s project upgrade --allow-dirty`)", Name(), name, Name()),
 		})
 		return nil
 	}

@@ -2,7 +2,7 @@
 # THIS forge. Informational on a pull request, never part of `CI gate`.
 #
 # WHY. forge may break its consumers freely (it is pre-1.0), but the PR that
-# breaks them pays for it: it fixes forge, or ships the `forge fix` codemod.
+# breaks them pays for it: it fixes forge, or ships the `forge lint fix` codemod.
 # Without this check the break surfaces at pin time, on whoever pins next
 # (research/pinning: failure classes F1 and F2). dev-docs/consumer-canary.md
 # is the long form; the logic is internal/consumercanary, run through

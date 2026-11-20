@@ -68,7 +68,7 @@ A consumer URL is fetched shallow (`--depth 1`) into
 `$XDG_CACHE_HOME/forge-consumer-canary` using **your** git credentials.
 control-plane is private: without an ssh key or credential helper that can read
 it, name just reliant: `-consumer reliant=https://github.com/reliant-labs/reliant.git`.
-The run holds one host heavy slot (`forge slot status`), like `forge lint`.
+The run holds one host heavy slot (`forge machine slot status`), like `forge lint`.
 
 ## Fixing a red canary
 
@@ -76,7 +76,7 @@ The output names the consumer, the step and the compiler error. Then either:
 
 - fix forge so the consumer still builds (keep the old name as a thin wrapper,
   change the default instead of the signature), or
-- ship the migration: a `forge fix <name>` codemod and/or a playbook entry,
+- ship the migration: a `forge lint fix <name>` codemod and/or a playbook entry,
   declare the break (`api-break` label / `API-BREAK:` line), and send the
   consumer patch (reliant, then control-plane) that the codemod produces. The
   canary builds consumers at **main**, so it stays red until that consumer

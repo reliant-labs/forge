@@ -80,7 +80,7 @@ func TestRegistryFactsFromConfig_CreateIsNoop(t *testing.T) {
 // TestEnsureDeclaredCluster_ConvergesStorageFacts is the activation claim at
 // the cluster touch point: the contexts the env declares and the registry its
 // config names reach the policy as a side effect of the cluster phase, with no
-// `forge storage register` anywhere.
+// `forge machine storage register` anywhere.
 func TestEnsureDeclaredCluster_ConvergesStorageFacts(t *testing.T) {
 	testkit.Slow(t, "execs git")
 	withReadyNewNodes(t)
@@ -386,7 +386,7 @@ func TestOpportunisticGC_NoticesMissingSchedule(t *testing.T) {
 
 	var out bytes.Buffer
 	maybeOpportunisticGC(t.Context(), &out, upTestEnvRegistries)
-	if !bytes.Contains(out.Bytes(), []byte("forge storage install")) {
+	if !bytes.Contains(out.Bytes(), []byte("forge machine storage install")) {
 		t.Fatalf("no notice naming the install command:\n%s", out.String())
 	}
 
@@ -508,7 +508,7 @@ func TestPinStorageRelease_WaitsForARunningMaintenancePass(t *testing.T) {
 
 // The v1.7.82 control-plane cut: every image built and pushed, then the pin
 // failed with "storage maintenance is already running" because the machine's
-// hourly `forge storage auto-gc` held the lock for longer than the cut's wait.
+// hourly `forge machine storage auto-gc` held the lock for longer than the cut's wait.
 // The pass here never finishes on its own inside the cut's bound, so the cut
 // succeeds only if the waiting cut makes the pass yield at a safe point.
 func TestPinStorageRelease_AutoGCYieldsToAWaitingCut(t *testing.T) {

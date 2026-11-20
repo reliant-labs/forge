@@ -245,13 +245,13 @@ jobs:
           go install "$forge/cmd/forge@${v}"
       # verify-generated REGENERATES the tree and demands a byte-identical
       # result, so it needs every tool that produced the committed output, at
-      # the versions that produced it. `forge tools install` installs the Go
+      # the versions that produced it. `forge machine tools install` installs the Go
       # codegen plugins buf.gen.yaml runs (protoc-gen-go, protoc-gen-connect-go)
       # and the goimports forge formats Go output with, each at the version
       # go.mod resolves. --force: a runner image's own copy of a plugin must not
       # stand in for go.mod's version.
       - name: Install codegen tools
-        run: forge tools install --force
+        run: forge machine tools install --force
       # The gate builds govulncheck and go-licenses at their pins on first use.
       # Cached by version, so a restored entry is only ever a hit or a harmless
       # miss: the gate checks the version of what it finds.

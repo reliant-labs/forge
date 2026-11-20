@@ -31,7 +31,7 @@ package cli
 // (offline_ledger.go). It selects the offline ledger in ledgerFor, which skips
 // this check for that selection alone; no variable or other flag does.
 //
-// IT GOES QUIET BY CONSTRUCTION. Once `forge ledger import` has recorded
+// IT GOES QUIET BY CONSTRUCTION. Once `forge release ledger import` has recorded
 // those promotions, the selected ledger contains them, the comparison finds
 // nothing missing, and the refusal stops — with no flag to remember and no
 // state beyond the ledger itself.
@@ -113,7 +113,7 @@ func checkCheckoutLedgerImported(ctx context.Context, held checkoutLedger, proje
 		return err
 	}
 	return fmt.Errorf("%w: the checkout holds %d promotions (and %d releases) for %s that this ledger has never imported. "+
-		"Run `forge ledger import --from-git` (it reads them at a git rev and records them in %s)",
+		"Run `forge release ledger import --from-git` (it reads them at a git rev and records them in %s)",
 		errLedgerNotImported, missing.Promotions, missing.Releases, env, l.Bindings.Location())
 }
 

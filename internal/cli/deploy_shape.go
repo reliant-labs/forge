@@ -14,7 +14,7 @@ import (
 
 // deployShapeOf is doctor's DeployShaper: it classifies one environment's raw
 // render the way `forge env deploy <env>` does, so `forge ci validate-kcl`
-// and `forge doctor --signal deploy` judge an env by the path that actually
+// and `forge project doctor --signal deploy` judge an env by the path that actually
 // ships it.
 //
 // Nothing here is a second opinion. The destinations are destinationOf's

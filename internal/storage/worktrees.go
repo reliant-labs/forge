@@ -137,7 +137,7 @@ type reapOptions struct {
 // LockReason in reliant's internal/worktreereclaim.
 const reliantLockPrefix = "reliant: worktree "
 
-// Worktrees is the explicit `forge storage worktrees` entry point. It runs the
+// Worktrees is the explicit `forge machine storage worktrees` entry point. It runs the
 // same classifier the GC layer does, over one repository.
 func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Duration, apply bool) error {
 	if idle < minWorktreeIdle {
@@ -148,7 +148,7 @@ func (r Runner) Worktrees(ctx context.Context, repo, base string, idle time.Dura
 }
 
 // worktreeLayer is the GC layer. It removes only in an explicit `forge
-// storage gc --apply` (Runner.Explicit) under a policy that opts in
+// machine storage gc --apply` (Runner.Explicit) under a policy that opts in
 // (worktree_reap); otherwise it previews, whatever apply says.
 func (r Runner) worktreeLayer(apply bool) error {
 	repos := r.worktreeRepos()
@@ -159,16 +159,16 @@ func (r Runner) worktreeLayer(apply bool) error {
 	switch {
 	case !apply || remove:
 	case !r.Policy.WorktreeReap:
-		r.print("worktrees: preview only (set \"worktree_reap\": true in the storage policy, then run `forge storage gc --apply`, to remove)\n")
+		r.print("worktrees: preview only (set \"worktree_reap\": true in the storage policy, then run `forge machine storage gc --apply`, to remove)\n")
 	default:
-		r.print("worktrees: preview only (scheduled and automatic passes never remove worktrees; an explicit `forge storage gc --apply` does)\n")
+		r.print("worktrees: preview only (scheduled and automatic passes never remove worktrees; an explicit `forge machine storage gc --apply` does)\n")
 	}
 	_, err := r.reapWorktrees(r.hostCtx(), reapOptions{repos: repos, idle: minWorktreeIdle, apply: remove})
 	return err
 }
 
 // PrintHeldWorktrees reports the worktrees the reaper will not touch, by
-// reason, for `forge storage status`.
+// reason, for `forge machine storage status`.
 func (r Runner) PrintHeldWorktrees(ctx context.Context) error {
 	repos := r.worktreeRepos()
 	if len(repos) == 0 {

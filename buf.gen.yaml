@@ -13,7 +13,7 @@ version: v2
 # pkg/forgepb, leaving an untracked internal/gen/ after every generate.
 #
 # A `local:` plugin, as in the scaffolded buf.gen.yaml: no BSR access (a
-# remote plugin fails on the BSR's anonymous rate limit), and `forge tools
+# remote plugin fails on the BSR's anonymous rate limit), and `forge machine tools
 # install` puts protoc-gen-go on PATH at the version go.mod pins, which is the
 # version the committed file names in its header.
 #

@@ -12,7 +12,7 @@ Exercises:
     where `forge env up` reconciles the cluster) passes and projects.
   * "local" on a `k3d-`-convention context with NO Bundle.clusters entry
     passes. This is the path the SCAFFOLDED dev env takes: its cluster comes
-    from deploy/k3d.yaml via `forge cluster up`, so it is never a
+    from deploy/k3d.yaml via `forge dev cluster up`, so it is never a
     Bundle.clusters entry, and a check that demanded one would refuse the
     env forge itself scaffolds.
   * "ephemeral" projects, and is a distinct value from "local".

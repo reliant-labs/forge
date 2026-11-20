@@ -60,7 +60,7 @@ type entityMessage struct {
 }
 
 // internalPackage is an internal/<Name>/ package created with
-// `forge package new`, which lands a contract.go — derivation input #3,
+// `forge scaffold package`, which lands a contract.go — derivation input #3,
 // the one that drives mock and middleware generation.
 type internalPackage struct {
 	Name string
@@ -399,7 +399,7 @@ func render(parent string, fx fixture) (*renderResult, error) {
 	}
 
 	for _, pkg := range fx.InternalPackages {
-		if err := forgeIn(root, "package", "new", pkg.Name); err != nil {
+		if err := forgeIn(root, "scaffold", "package", pkg.Name); err != nil {
 			return nil, fmt.Errorf("package new %s: %w", pkg.Name, err)
 		}
 	}

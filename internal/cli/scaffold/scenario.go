@@ -46,7 +46,7 @@ func validateScenarioName(name string) error {
 //
 // Scenarios are typed RPC handler overlays selected via `?scenario=<name>`
 // in the URL. The contract is the generated src/mocks/scenario-types_gen.ts in
-// the target frontend, plus the mock-mode section of `forge skill load
+// the target frontend, plus the mock-mode section of `forge agent skill load
 // frontend`.
 //
 // The command:
@@ -75,7 +75,7 @@ falls through to the base fixture transport.
 The command writes src/mocks/scenarios/<name>.ts and regenerates the
 registry so the new file is picked up automatically. Edit the new file
 to add typed handlers — the contract is src/mocks/scenario-types_gen.ts, and
-` + "`forge skill load frontend`" + ` covers mock mode end to end.
+` + "`forge agent skill load frontend`" + ` covers mock mode end to end.
 
 Examples:
   forge scaffold scenario github-connected
@@ -189,7 +189,7 @@ func runScenario(f *factory.Factory, name, frontend, from, description string) e
 		relPath = outPath
 	}
 	fmt.Printf("✅ Created %s\n", relPath)
-	fmt.Println("   Edit it to add typed handlers. Contract: src/mocks/scenario-types_gen.ts (`forge skill load frontend` for mock mode).")
+	fmt.Println("   Edit it to add typed handlers. Contract: src/mocks/scenario-types_gen.ts (`forge agent skill load frontend` for mock mode).")
 	return nil
 }
 

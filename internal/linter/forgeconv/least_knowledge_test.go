@@ -92,7 +92,7 @@ func TestLeastKnowledge_DesignSeveritiesByDefault(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(fs[0].Remediation, "forge fix narrow-deps internal/handlers/tools") {
+	if !strings.Contains(fs[0].Remediation, "forge lint fix narrow-deps internal/handlers/tools") {
 		t.Errorf("a foreign field's fix is narrow-deps: %s", fs[0].Remediation)
 	}
 }

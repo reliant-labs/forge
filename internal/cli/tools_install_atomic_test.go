@@ -11,7 +11,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// `forge tools install --force` replaces a binary in GOBIN that another
+// `forge machine tools install --force` replaces a binary in GOBIN that another
 // process may be starting at that moment (a parallel generate's buf or
 // protoc-gen-go). A reader must see the old binary or the new one, never a
 // half-written file: `go install` straight into GOBIN rewrote it in place.

@@ -311,7 +311,7 @@ func TestEnsureBootstrapSecrets(t *testing.T) {
 		}
 		t.Cleanup(func() { newGSMAPI = prev })
 		err := ensureBootstrapSecrets(context.Background(), bootstrapEnv(gen, gsm), false, &bytes.Buffer{})
-		if err == nil || !strings.Contains(err.Error(), "forge secret import --to-bootstrap") {
+		if err == nil || !strings.Contains(err.Error(), "forge env secret import --to-bootstrap") {
 			t.Fatalf("got %v", err)
 		}
 	})

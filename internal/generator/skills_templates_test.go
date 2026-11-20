@@ -32,9 +32,9 @@ import (
 //
 //	"forge generate"              -> ["generate"]
 //	"forge db migrate up"         -> ["db", "migrate", "up"]
-//	"forge debug break file:42"   -> ["debug", "break"]
+//	"forge dev debug break file:42"   -> ["debug", "break"]
 //	"forge env up --background"   -> ["env", "up"]
-//	"forge package new <name>"    -> ["package", "new"]
+//	"forge scaffold package <name>"    -> ["package", "new"]
 var forgeCommandRE = regexp.MustCompile(`(?:^|[^\w-])forge[ \t]+([a-z][a-z-]*(?:[ \t]+[a-z][a-z-]*){0,2})`)
 
 // A command reference never spans lines. `import forge` is how every KCL env

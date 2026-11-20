@@ -33,7 +33,7 @@
 # then stores the secret it shows once:
 #   gh secret set FORGE_CONTROL_PLANE_TOKEN
 # (The control plane refuses token minting to a CLI login: `forge cloud token
-# create` under `forge login` exits 9 with reason person_session_required.)
+# create` under `forge cloud login` exits 9 with reason person_session_required.)
 name: Release
 
 on:
@@ -132,7 +132,7 @@ jobs:
         #
         # An env that ALSO pushes to a registry of your own needs that one's
         # credential, and only that one's:
-        #   printf '%s' "$TOKEN" | forge registry login {{.BuildEnv}} \
+        #   printf '%s' "$TOKEN" | forge cloud registry login {{.BuildEnv}} \
         #     --username <user> --password-stdin
         run: forge env build {{.BuildEnv}} --release "$VERSION" --gate-json build.json
       - name: Summary
@@ -203,5 +203,5 @@ jobs:
         run: forge env smoke {{.Env.Name}} --json > smoke.json
       - name: Record the smoke as evidence
         if: always() && steps.deploy.outputs.promotion-id != ''
-        run: forge gate record {{.Env.Name}} --promotion "${{"{{"}} steps.deploy.outputs.promotion-id {{"}}"}}" --from smoke.json
+        run: forge release gate record {{.Env.Name}} --promotion "${{"{{"}} steps.deploy.outputs.promotion-id {{"}}"}}" --from smoke.json
 {{- end}}

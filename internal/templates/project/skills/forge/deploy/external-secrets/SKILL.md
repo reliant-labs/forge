@@ -110,7 +110,7 @@ never wedges a deletion.
 
 | Policy | Refuses |
 |---|---|
-| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: the `system:serviceaccount:forge-system:forge-connect-<cluster>-<env>` ServiceAccount `forge cluster connect` mints. |
+| `eso-writers` | a create, update or delete of an ExternalSecret or SecretStore by anyone but `admission.writers`, `admission.writer_groups` (default `system:masters`), the operator, and the cluster's garbage collector and namespace controller. Name your apply identity: the `system:serviceaccount:forge-system:forge-connect-<cluster>-<env>` ServiceAccount `forge cloud cluster connect` mints. |
 | `eso-store-pin` | any SecretStore except a `vault` provider that dials a server in `admission.servers` with JWT auth on a mount in `jwt_mounts`, with a projected token for `admission.store_service_account` (default `reliant-secrets`, in the store's own namespace) and exactly one audience from `admission.audiences`; or a `gcpsm` provider over Workload Identity for a project in `gcp_projects`. A `webhook` provider is refused: it is an exfiltration channel. |
 | `eso-es-policy` | `dataFrom`; a `ClusterSecretStore` reference; a `creationPolicy` other than Orphan or Merge (including the default, Owner); a `deletionPolicy` other than Retain (Merge only when `spec.data` is empty: a Secret made of templates alone, which ESO would never create under Retain); a `target.name` other than the ExternalSecret's own; a generic target; a per-entry `sourceRef`; a refresh under 5m. |
 
@@ -141,7 +141,7 @@ applied, it checks each cluster that holds one (`internal/cluster/store_prefligh
 | the `ExternalSecret` and `SecretStore` kinds are served, at `external-secrets.io/v1` (skipped when this deploy installs the operator: its CRDs apply first) | declare `external_secrets_operators` and deploy `--target external-secrets` first, or deploy the env that owns the cluster's operator |
 | one owner per cluster: an operator labelled for another env is refused before any write (an unlabelled one, installed by hand, is adopted) | remove this env's entry and let the owner's bundle own the cluster |
 | an in-cluster `forge.OpenBao` finished converging (its newest converge Job succeeded), unless this deploy applies it | deploy it first with `--target <name>`; the command to inspect the Job is in the message |
-| the store holds a value for every name the ExternalSecrets read, less the names `source.generate` mints. Names and versions only, never a value | `forge secret set <NAME>`, `forge secret import`, or declare it under `source.generate` |
+| the store holds a value for every name the ExternalSecrets read, less the names `source.generate` mints. Names and versions only, never a value | `forge env secret set <NAME>`, `forge env secret import`, or declare it under `source.generate` |
 
 A store that cannot be asked (no credential, control plane unreachable) is a
 **warning**, not a block. A `creationPolicy = "Merge"` Secret only updates one

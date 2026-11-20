@@ -1,4 +1,4 @@
-// Package cli — `forge cluster up` ingress install plumbing.
+// Package cli — `forge dev cluster up` ingress install plumbing.
 //
 // forge is OPINIONATED on ONE Gateway API controller everywhere: Envoy
 // Gateway (controllerName gateway.envoyproxy.io/gatewayclass-controller,
@@ -198,7 +198,7 @@ func fetchCachedCRDYAML(ctx context.Context, cacheName, url, label string) (stri
 // kubeContextArgs returns the `--context <kctx>` prefix for a kubectl
 // invocation, or an empty slice when kctx is "". An empty context means
 // "use whatever context the caller pinned via pinKubectlContext" — the
-// dev `forge cluster up` path. The declared-cluster path
+// dev `forge dev cluster up` path. The declared-cluster path
 // (reconcileDeclaredClusters) passes an explicit `k3d-<name>` context so
 // the install targets THAT cluster regardless of the active context.
 func kubeContextArgs(kctx string) []string {

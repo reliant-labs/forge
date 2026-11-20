@@ -324,7 +324,7 @@ func modulePath(dir string) string {
 // A delivered skill is NOT project-generated code: it is a render of the
 // skill catalog embedded in the forge binary, stamped with the rendering
 // forge's version, with no input from the project. It is binary-derived
-// state — `forge skill load` prints the authoritative copy
+// state — `forge agent skill load` prints the authoritative copy
 // straight from the binary — so every forge build would rewrite a committed
 // copy, and whether to track the directory is the project's call (forge's
 // own repo ignores .claude/; a harness: reliant project has none). The

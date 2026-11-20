@@ -195,7 +195,7 @@ func TestTempSweepCandidateSelection(t *testing.T) {
 }
 
 // TestTempSweepDryRunRemovesNothing: the default is a report. A sweep that
-// deleted on a plain `forge storage gc` would be a very expensive surprise.
+// deleted on a plain `forge machine storage gc` would be a very expensive surprise.
 func TestTempSweepDryRunRemovesNothing(t *testing.T) {
 	root := t.TempDir()
 	path := writeTempEntry(t, root, "go-link-dryrun", 48*time.Hour)

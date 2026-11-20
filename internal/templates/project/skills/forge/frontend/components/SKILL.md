@@ -11,7 +11,7 @@ Every frontend ships low-level primitives under `src/components/ui/`. Compose th
 |-----------|-----------|
 | `button` | `primary`/`secondary`/`outline`/`ghost`/`danger`, `xs`–`xl`, `leftIcon`/`rightIcon`, icon-only, `loading`, `href` |
 | `input`, `label`, `form` | Text input, field label, and `Form`/`FormField`/`FormError`/`FormActions`. `<FormField>` mints an id via `useId()`, so child `<Label>`/`<Input>`/`<Select>` auto-bind without `htmlFor`/`id` |
-| `textarea`, `toggle_switch` | On demand: `forge component install textarea toggle_switch`. ToggleSwitch is `role="switch"` with `label` or `ariaLabel`; both auto-bind inside `<FormField>` |
+| `textarea`, `toggle_switch` | On demand: `forge ui component install textarea toggle_switch`. ToggleSwitch is `role="switch"` with `label` or `ariaLabel`; both auto-bind inside `<FormField>` |
 | `card` | Generic surface primitive |
 | `status`, `tag`, `mono` | State (dot + word), kind label, copyable sha |
 | `avatar`, `tabs`, `chip` | Avatar, tab nav (underline/pills/boxed), filter chip. `Tabs`/`FilterBar`: pass `activeTab`/`values` to control them from the URL |

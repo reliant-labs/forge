@@ -86,7 +86,7 @@ func runCheck(t *testing.T, args ...string) (string, error) {
 // Every command the hand-off can take accepts the flag its notice names.
 func TestDelegatedCommandsAcceptTheSkewFlag(t *testing.T) {
 	root := newTestRootCmd(t)
-	for _, args := range [][]string{{"lint"}, {"ci", "gate"}, {"doctor"}, {"generate"}} {
+	for _, args := range [][]string{{"lint"}, {"ci", "gate"}, {"project", "doctor"}, {"generate"}} {
 		cmd, _, err := root.Find(args)
 		if err != nil {
 			t.Fatalf("find %v: %v", args, err)
@@ -139,7 +139,7 @@ func TestDelegation_RenderCommandsAreHandedOver(t *testing.T) {
 	t.Setenv(forgedelegate.MarkerEnv, "")
 	// lint and the gate judge the project with the binary's own analyzers,
 	// step list and forge.yaml schema (pinDelegateJudges).
-	for _, args := range [][]string{{"env", "render", "dev"}, {"env", "shape", "dev"}, {"kcl", "eval", "x.k"}, {"scaffold", "service", "billing"}, {"component", "install", "button"}, {"lint"}, {"ci", "gate", "--list"}} {
+	for _, args := range [][]string{{"env", "render", "dev"}, {"env", "shape", "dev"}, {"env", "kcl", "eval", "x.k"}, {"scaffold", "service", "billing"}, {"ui", "component", "install", "button"}, {"lint"}, {"ci", "gate", "--list"}} {
 		h, _ := armDelegation(t)
 		if _, err := runCheck(t, args...); err != nil {
 			t.Errorf("forge %v: %v", args, err)
@@ -156,7 +156,7 @@ func TestDelegation_RenderCommandsAreHandedOver(t *testing.T) {
 func TestDelegation_ReadsAreHandedOverAndExemptCommandsStayLocal(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
-	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"skill", "list"}, {"env", "down", "dev"}} {
+	for _, args := range [][]string{{"generate", "--dry-run"}, {"generate", "--check"}, {"scaffold", "--dry-run"}, {"env", "list"}, {"project", "audit"}, {"agent", "skill", "list"}, {"env", "down", "dev"}} {
 		h, _ := armDelegation(t)
 		if _, err := runCheck(t, args...); err != nil {
 			t.Errorf("forge %v: %v", args, err)
@@ -165,7 +165,7 @@ func TestDelegation_ReadsAreHandedOverAndExemptCommandsStayLocal(t *testing.T) {
 			t.Errorf("forge %v ran under a forge the project does not pin", args)
 		}
 	}
-	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down", "--all"}, {"project", "upgrade"}, {"report-bug"}, {"slot", "status"}} {
+	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down", "--all"}, {"project", "upgrade"}, {"agent", "report-bug"}, {"machine", "slot", "status"}} {
 		h, installs := armDelegation(t)
 		_, _ = runCheck(t, args...)
 		if h.path != "" || len(*installs) != 0 {
@@ -216,7 +216,7 @@ func TestDelegation_EscapeHatchesAndNoLoop(t *testing.T) {
 func TestDelegation_UnavailablePinFailsAndRunsNothing(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
-	for _, args := range [][]string{{"generate"}, {"skill", "list"}, {"project", "shapes"}} {
+	for _, args := range [][]string{{"generate"}, {"agent", "skill", "list"}, {"project", "shapes"}} {
 		h, _ := armDelegation(t)
 		unobtainablePin(t)
 		_, err := runCheck(t, args...)
@@ -264,13 +264,13 @@ func TestDelegationTargetFor_PrefersLinkedCheckout(t *testing.T) {
 func TestHandOffWanted(t *testing.T) {
 	for rel, want := range map[string]bool{
 		"env render": true, "env shape": true, "env config": true, "env diff": true, "env up": true, "env list": true,
-		"kcl eval": true, "doctor": true, "project frontends": true, "project audit": true, "project shapes": true,
-		"lint": true, "ci gate": true, "ci summarize": true, "generate": true, "skill load": true, "mcp": false,
+		"env kcl eval": true, "project doctor": true, "project frontends": true, "project audit": true, "project shapes": true,
+		"lint": true, "ci gate": true, "ci summarize": true, "generate": true, "agent skill load": true, "agent mcp": false,
 		"a-command-this-forge-lacks": true, "project a-subcommand-this-forge-lacks": true,
 		"": false, "version": false, "help": false, "help generate": false, "completion bash": false, "__complete": false,
 		"env down": true, "env ps": false, "env devstack": false,
-		"project upgrade": false, "project new": false, "report-bug": false,
-		"storage gc": false, "slot run": false,
+		"project upgrade": false, "project new": false, "agent report-bug": false,
+		"machine storage gc": false, "machine slot run": false,
 	} {
 		if got := handOffWanted(rel); got != want {
 			t.Errorf("handOffWanted(%q) = %v, want %v", rel, got, want)
@@ -309,7 +309,7 @@ func TestDelegation_StorageCommandsAreNeverHandedToAPinnedForge(t *testing.T) {
 	h, installs := armDelegation(t)
 
 	root := newTestRootCmd(t)
-	storageCmd, _, err := root.Find([]string{"storage"})
+	storageCmd, _, err := root.Find([]string{"machine", "storage"})
 	if err != nil || storageCmd == nil {
 		t.Fatalf("find storage: %v", err)
 	}
@@ -322,8 +322,8 @@ func TestDelegation_StorageCommandsAreNeverHandedToAPinnedForge(t *testing.T) {
 			walk(sub, p)
 		}
 	}
-	walk(storageCmd, []string{"storage"})
-	for _, want := range []string{"storage gocache", "storage gc", "storage auto-gc"} {
+	walk(storageCmd, []string{"machine", "storage"})
+	for _, want := range []string{"machine storage gocache", "machine storage gc", "machine storage auto-gc"} {
 		found := false
 		for _, p := range paths {
 			found = found || strings.Join(p, " ") == want
@@ -354,8 +354,8 @@ func TestDelegation_StorageCommandsAreNeverHandedToAPinnedForge(t *testing.T) {
 func TestDelegation_StorageIsExcludedEvenWhenListedAsPinGated(t *testing.T) {
 	prev := pinGatedGroups
 	t.Cleanup(func() { pinGatedGroups = prev })
-	pinGatedGroups = map[string][]string{"storage": nil}
-	for _, rel := range []string{"storage", "storage gc", "storage gocache", "storage auto-gc"} {
+	pinGatedGroups = map[string][]string{"machine storage": nil}
+	for _, rel := range []string{"machine storage", "machine storage gc", "machine storage gocache", "machine storage auto-gc"} {
 		if handOffWanted(rel) {
 			t.Errorf("handOffWanted(%q) = true with storage in pinGatedGroups", rel)
 		}

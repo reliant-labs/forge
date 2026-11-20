@@ -49,7 +49,7 @@ type pushPlan struct {
 	// built and tagged locally and nothing leaves the machine.
 	push bool
 	// destinations is one entry per distinct declared repository, sorted, so
-	// the header and `forge registry login` enumerate them deterministically.
+	// the header and `forge cloud registry login` enumerate them deterministically.
 	destinations []imageDestination
 	// env is the environment these images belong to, for the header.
 	env string
@@ -101,7 +101,7 @@ func (p pushPlan) repositoryFor(name string) string {
 // push base, with the platform's layout segment appended to the RESULT.
 //
 // Both halves call it — declaredImageDestinations, so the push plan and
-// `forge registry login` name it, and buildHostedStaticSites, so the push goes
+// `forge cloud registry login` name it, and buildHostedStaticSites, so the push goes
 // there. That is deliberate and it is not a lookup: a bare image needs the
 // base composed on, and recomposing it independently in the build is the
 // "two derivations of one address" defect the release-ref rule exists to
@@ -147,7 +147,7 @@ func repositoryName(repository string) string {
 }
 
 // hosts is the set of distinct registry hosts these destinations name, sorted.
-// What `forge registry login` authenticates against.
+// What `forge cloud registry login` authenticates against.
 func (p pushPlan) hosts() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -281,7 +281,7 @@ func resolveHostedImageBase(base, image string) string {
 
 // declaredImageDestinations is every distinct repository the env's workloads
 // declare for an image forge BUILDS — the single resolution `forge build
-// --push`, `forge registry login`, `forge registry ref` and `forge env up`
+// --push`, `forge cloud registry login`, `forge cloud registry ref` and `forge env up`
 // share.
 //
 // Two filters, each closing a way this could ask for a credential nothing
@@ -289,14 +289,14 @@ func resolveHostedImageBase(base, image string) string {
 //
 //  1. Only a workload forge BUILDS contributes. A third-party image
 //     (`docker.io/library/nats:2.10`) is pulled, never pushed, so including it
-//     would have `forge registry login` demand docker.io credentials. The one
+//     would have `forge cloud registry login` demand docker.io credentials. The one
 //     exception is a third-party image on a HOSTED workload outside the push
 //     base: forge copies it INTO the platform registry at release time, so
 //     its mirror address (never the source) is a destination.
 //  2. Only a workload on a runtime that involves a REGISTRY contributes. A
 //     workload bound OnHost or OnCompose runs from the local filesystem or a
 //     compose file — nothing pulls an image for it, so its declared reference
-//     is not a push destination in that env. This is why `forge registry login
+//     is not a push destination in that env. This is why `forge cloud registry login
 //     dev` on a host-only dev env correctly reports nothing to log in to,
 //     even though those workloads carry perfectly good references for the envs
 //     that DO deploy them.
@@ -424,7 +424,7 @@ func errPushNeedsEnv() error {
 
 // noPushableImagesError is the runbook for an env with nothing to push,
 // shaped by WHY it has nothing. context is the command that needed a
-// destination (`forge env build prod --push`, `forge registry login prod`).
+// destination (`forge env build prod --push`, `forge cloud registry login prod`).
 func noPushableImagesError(context, env string, declared *KCLEntities) error {
 	mainK := fmt.Sprintf("deploy/kcl/%s/main.k", env)
 	workloadsK := "deploy/kcl/workloads.k"

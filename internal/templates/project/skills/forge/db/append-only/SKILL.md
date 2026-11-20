@@ -6,7 +6,7 @@ description: Immutable ledgers — declare append-only tables in migrations so t
 # Append-only tables
 
 Declare table write policy in the migration that owns it, alongside column
-write policies (`forge skill load db/write-policy`).
+write policies (`forge agent skill load db/write-policy`).
 
 One decision lives on the TABLE rather than a column, same `COMMENT ON`
 vocabulary one level up:

@@ -37,7 +37,7 @@
 # THREE JOBS.
 #
 #   prepare   BUILD ONCE, PLAN ONCE. Compiles the e2e test binary, forge, and
-#             the codegen plugins `forge tools install` provides; lists the
+#             the codegen plugins `forge machine tools install` provides; lists the
 #             tests from that binary; plans the shards by recorded duration
 #             (internal/e2eshard); and hands all of it to the shards as one
 #             artifact. Each shard used to compile all of it again: ~100s
@@ -198,7 +198,7 @@ jobs:
           mkdir -p "$dist/bin"
           go test -c -tags e2e -o "$dist/e2e.test" ./internal/cli/
           go build -ldflags "-X github.com/reliant-labs/forge/internal/buildinfo.DevForgeRoot=$PWD" -o "$dist/bin/forge" ./cmd/forge
-          GOBIN="$dist/bin" PATH="$dist/bin:$PATH" "$dist/bin/forge" tools install --force
+          GOBIN="$dist/bin" PATH="$dist/bin:$PATH" "$dist/bin/forge" machine tools install --force
           ls -la "$dist" "$dist/bin"
       - name: List the e2e tests and plan the shards
         id: plan
@@ -382,11 +382,11 @@ jobs:
             | TAG="$K3D_VERSION" bash
           k3d version
 
-      # dlv: TestE2EDebugEnvUpAttachAndStart drives `forge debug` against a
+      # dlv: TestE2EDebugEnvUpAttachAndStart drives `forge dev debug` against a
       # live env. Pinned to the delve module forge itself builds against
       # (go.mod), so the server speaks the API the client mirrors.
       # ubuntu-latest ships kernel.yama.ptrace_scope=1, which lets dlv trace
-      # only its own descendants: `forge debug start --attach` to env up's
+      # only its own descendants: `forge dev debug start --attach` to env up's
       # api (not dlv's child) is refused, and the test failed on every main
       # commit after #1990. 0 is what a developer box that attaches has.
       - name: Install delve

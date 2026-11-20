@@ -94,7 +94,7 @@ func TestClaudeMDImportsAgentsMD(t *testing.T) {
 }
 
 // Pointer files route to the binary and never carry skill content: skills come
-// from `forge skill load`, so a copy on disk would shadow the live catalog.
+// from `forge agent skill load`, so a copy on disk would shadow the live catalog.
 func TestPointerFilesCarryNoSkillBodies(t *testing.T) {
 	skill, err := templates.ProjectTemplates().Get("skills/forge/SKILL.md")
 	if err != nil {

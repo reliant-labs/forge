@@ -10,7 +10,7 @@
 // dogfood — 7 of 9 handler test files (~2,160 LOC) carried it, only 2
 // landed on `tdd.RunRPCCases`. The library is documented in pkg/tdd/doc.go,
 // and the canonical row shape is documented under
-// `forge skill load testing/patterns`.
+// `forge agent skill load testing/patterns`.
 //
 // The lint is advisory (warning, not error) — projects that pre-date the
 // scaffold default may legitimately ship the hand-rolled shape until the

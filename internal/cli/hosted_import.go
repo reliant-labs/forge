@@ -121,7 +121,7 @@ func (li *ledgerImport) AddApply(env, bundleDigest string, outcome *release.Appl
 }
 
 // Empty reports whether the import would write nothing — the answer `forge
-// ledger import` needs before claiming it migrated anything.
+// release ledger import` needs before claiming it migrated anything.
 func (li *ledgerImport) Empty() bool {
 	return len(li.releases)+len(li.environments)+len(li.promotions)+len(li.bundles)+len(li.applies) == 0
 }

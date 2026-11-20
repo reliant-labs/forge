@@ -254,7 +254,7 @@ func TestObjectCollisionIsRegistered(t *testing.T) {
 		}
 	}
 	t.Fatal("Object Collision is not in deployabilityChecks() — it would never run under " +
-		"`forge doctor` or `forge doctor --signal deploy`")
+		"`forge project doctor` or `forge project doctor --signal deploy`")
 }
 
 // stamped splices forge's per-env ownership label into an existing fixture's

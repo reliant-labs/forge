@@ -62,12 +62,12 @@ var fullGCFn = func(ctx context.Context, r storage.Runner, apply bool) error { r
 // runFullGC runs the full pass and, when it applied, records the outcome —
 // success, or which layers failed — beside the policy. That record is the only
 // evidence registry retention is running, so it is written for a failure too:
-// `forge doctor` and `forge env up` read it to say so. A preview changes
+// `forge project doctor` and `forge env up` read it to say so. A preview changes
 // nothing and records nothing. The caller holds the maintenance lock.
 //
-// explicit is true only for a `forge storage gc` a person or agent ran: it is
+// explicit is true only for a `forge machine storage gc` a person or agent ran: it is
 // the one pass that may remove worktrees (under the worktree_reap policy) and
-// anonymous volumes. The installed schedule and `forge storage daemon` pass
+// anonymous volumes. The installed schedule and `forge machine storage daemon` pass
 // false.
 func runFullGC(ctx context.Context, p storage.Policy, path string, out io.Writer, apply, explicit bool) error {
 	r := maintenanceRunner(p, path, out)
@@ -232,7 +232,7 @@ func newStorageCmd() *cobra.Command {
 	return cmdutil.StrictGroup(group)
 }
 
-// newStorageWorktreesCmd is `forge storage worktrees`. It reads no storage
+// newStorageWorktreesCmd is `forge machine storage worktrees`. It reads no storage
 // policy — worktree cleanup is scoped by its own flags — so it is built apart
 // from the policy-loading subcommands above.
 func newStorageWorktreesCmd() *cobra.Command {
@@ -263,7 +263,7 @@ const enforceReserveEnv = "FORGE_STORAGE_ENFORCE_RESERVE"
 // ON A CI RUNNER A SHORTFALL IS A WARNING, NOT A REFUSAL. The reserve exists
 // because a PERSISTENT machine accumulates caches until it fills — the
 // developer Mac that went from 70 GiB free to a failed build. Its remedy,
-// `forge storage gc`, reclaims exactly those caches. An ephemeral runner has
+// `forge machine storage gc`, reclaims exactly those caches. An ephemeral runner has
 // neither: its disk is discarded with the job, and a stock GitHub runner
 // starts with ~14 GiB free — under the 20 GiB default before a single step
 // runs. Refusing there turned every `forge env build` on a stock runner into

@@ -208,7 +208,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		Description: mcpDescSkillList,
 		Annotations: readOnly,
 	}, func(in skillListInput) cmdSpec {
-		args := []string{"skill", "list"}
+		args := []string{"agent", "skill", "list"}
 		if in.Group != "" {
 			args = append(args, in.Group)
 		}
@@ -226,7 +226,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		Description: mcpDescSkillSearch,
 		Annotations: readOnly,
 	}, func(in skillSearchInput) cmdSpec {
-		return cmdSpec{dir: in.Dir, args: []string{"skill", "search", in.Query}}
+		return cmdSpec{dir: in.Dir, args: []string{"agent", "skill", "search", in.Query}}
 	})
 
 	addCmdTool(srv, r, &mcp.Tool{
@@ -234,18 +234,18 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 		Description: mcpDescSkillLoad,
 		Annotations: readOnly,
 	}, func(in skillLoadInput) cmdSpec {
-		return cmdSpec{dir: in.Dir, args: []string{"skill", "load", in.Name}}
+		return cmdSpec{dir: in.Dir, args: []string{"agent", "skill", "load", in.Name}}
 	})
 
 	// report_bug is the one tool that reaches outside the machine: it files
-	// a defect in forge with the Reliant team (`forge report-bug`, which is
+	// a defect in forge with the Reliant team (`forge agent report-bug`, which is
 	// the only way forge ever sends anything).
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "report_bug",
 		Description: reportBugUsage,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: ptr(false), IdempotentHint: true, OpenWorldHint: ptr(true)},
 	}, func(in reportBugInput) cmdSpec {
-		args := []string{"report-bug", "--severity", in.Severity, "--title", in.Title}
+		args := []string{"agent", "report-bug", "--severity", in.Severity, "--title", in.Title}
 		for _, f := range []struct{ flag, value string }{
 			{"--summary", in.Summary}, {"--expected", in.Expected}, {"--actual", in.Actual}, {"--evidence", in.Evidence},
 		} {

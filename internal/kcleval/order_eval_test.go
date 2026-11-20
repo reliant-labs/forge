@@ -1,11 +1,11 @@
 package kcleval_test
 
-// order_eval_test.go pins that `forge kcl eval` keeps KCL's DECLARED key order
+// order_eval_test.go pins that `forge env kcl eval` keeps KCL's DECLARED key order
 // and prints the same bytes `kcl run --format json` does.
 //
 // The defect: Eval decoded the render into a Go map, which has no order, so the
 // JSON came back alphabetised. A consumer comparing committed JSON byte for
-// byte (reliant's release-config drift check) could not use `forge kcl eval`
+// byte (reliant's release-config drift check) could not use `forge env kcl eval`
 // alone and needed a second `kcl run -E forge=<module>` pass.
 
 import (
@@ -144,6 +144,6 @@ func TestEvalJSONMatchesKclRun(t *testing.T) {
 		t.Skipf("kcl run failed (%v); orderGolden pins its output", err)
 	}
 	if got := evalOrder(t, kcleval.FormatJSON); string(got) != string(want) {
-		t.Errorf("forge kcl eval differs from kcl run --format json.\ngot:\n%s\nwant:\n%s", got, want)
+		t.Errorf("forge env kcl eval differs from kcl run --format json.\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }

@@ -282,7 +282,7 @@ func TestSessionOfDerivesTheThreeStates(t *testing.T) {
 }
 
 // TestEnvStatusDocumentRecordsAreAdditive is the compatibility assertion
-// R1/R2 depend on: reliant's daemon parses this document, and `forge gate
+// R1/R2 depend on: reliant's daemon parses this document, and `forge release gate
 // record --from` recognises it by top-level `bound` and `images`. Adding
 // records must not move or rename either.
 func TestEnvStatusDocumentRecordsAreAdditive(t *testing.T) {
@@ -310,7 +310,7 @@ func TestEnvStatusDocumentRecordsAreAdditive(t *testing.T) {
 	// and silently lose the unbound-env-is-SKIPPED distinction.
 	for _, key := range []string{"bound", "images"} {
 		if _, ok := generic[key]; !ok {
-			t.Fatalf("top-level %q is gone: `forge gate record --from` no longer recognises this document", key)
+			t.Fatalf("top-level %q is gone: `forge release gate record --from` no longer recognises this document", key)
 		}
 	}
 	records, ok := generic["records"].(map[string]any)
@@ -329,7 +329,7 @@ func TestEnvStatusDocumentRecordsAreAdditive(t *testing.T) {
 
 // TestReadMachineEnvRecordsReadsWhatTheLedgerHolds is the end-to-end machine
 // path: a promotion, a release with provenance and a session all come back
-// through the SAME reader `forge ledger show` uses — and NO convergence,
+// through the SAME reader `forge release ledger show` uses — and NO convergence,
 // because an env with no control plane has no reconciler.
 func TestReadMachineEnvRecordsReadsWhatTheLedgerHolds(t *testing.T) {
 	testkit.Slow(t, "execs git")

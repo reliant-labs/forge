@@ -56,10 +56,10 @@ to a host process (`forge env status <env> --json` reports each host service's
 `pid` under `runtime.services`):
 
 ```bash
-forge debug start --attach <pid> --run    # the process keeps running
-forge debug break <Rpc>                   # e.g. CreateTask
-forge debug continue --timeout 60s        # after re-sending the request
-forge debug stop                          # detaches; the process keeps running
+forge dev debug start --attach <pid> --run    # the process keeps running
+forge dev debug break <Rpc>                   # e.g. CreateTask
+forge dev debug continue --timeout 60s        # after re-sending the request
+forge dev debug stop                          # detaches; the process keeps running
 ```
 
 Inspect logs, database state, and service health while the failure is reproducible.

@@ -7,7 +7,7 @@ package cli
 // standard OpenTelemetry variables. This verb does the forge side of that in
 // one call:
 //
-//  1. requires sign-in (`forge login`, or a token): there is no anonymous
+//  1. requires sign-in (`forge cloud login`, or a token): there is no anonymous
 //     path for observability;
 //  2. names the project (forge.yaml `name`, --project, the env documents, or
 //     the directory) and declares each env that nothing declares yet in its
@@ -155,7 +155,7 @@ func newObsInitCmd() *cobra.Command {
 		Use:   "init [env…]",
 		Short: "Send an existing app's telemetry to Reliant: register envs, mint ingest tokens, print the OTEL_* variables",
 		Long: `Monitoring for an app forge did not build and does not deploy — any language,
-any CI, any infrastructure. Sign in first (` + "`forge login`" + `); there is no
+any CI, any infrastructure. Sign in first (` + "`forge cloud login`" + `); there is no
 anonymous path.
 
 For each env, init registers it on the control plane (self-managed: the platform
@@ -175,13 +175,13 @@ to skip the question, --no-write to keep the directory untouched and pass
 --project). An env document already there is read, never rewritten; an env
 forge.yaml ` + "`envs:`" + ` declares (the legacy shorthand) stays in forge.yaml.
 
-  forge login
+  forge cloud login
   forge obs init prod staging
   forge obs status prod        # then: forge obs issues prod, forge obs logs prod
   forge obs init prod --json   # the same, as a document
 
 Rotate or revoke a token with ` + "`forge obs tokens`" + `; route alerts with ` + "`forge obs receivers`" + `.
-Language-by-language setup: forge skill load observability (section "Monitoring only, any language").`,
+Language-by-language setup: forge agent skill load observability (section "Monitoring only, any language").`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runObsInit(cmd.Context(), defaultObsInitDeps(cmd), args, o)
 		},
@@ -625,7 +625,7 @@ func writeMonitoringDocument(path, project, env string, m config.MonitoringConfi
 	var b strings.Builder
 	fmt.Fprintf(&b, "# The %s env's declaration, written by `forge obs init`: an env document,\n", env)
 	b.WriteString("# validated against the env schema (`forge project schema env`). It grows with\n")
-	b.WriteString("# the adoption: add `workloads:` to record deploys (forge skill load deploy/record).\n")
+	b.WriteString("# the adoption: add `workloads:` to record deploys (forge agent skill load deploy/record).\n")
 	fmt.Fprintf(&b, "# yaml-language-server: $schema=%s\n", envSchemaID)
 	// Quoted: a project or env named `on`, `2026` or `true` is a valid name
 	// that a plain YAML scalar would turn into a boolean or a number.
@@ -887,7 +887,7 @@ func writeObsInit(d obsInitDeps, doc obsInitDoc, o obsInitOpts, selfHosted strin
 		env := doc.Envs[0].Env
 		fmt.Fprintf(w, "\nnext: forge obs status %s · forge obs issues %s · forge obs receivers create … (alerts to Slack, PagerDuty, a webhook)\n", env, env)
 	}
-	fmt.Fprintln(w, "per language: forge skill load observability (\"Monitoring only, any language\")")
+	fmt.Fprintln(w, "per language: forge agent skill load observability (\"Monitoring only, any language\")")
 	return nil
 }
 
@@ -989,9 +989,9 @@ func ingestTokenErr(err error) error {
 }
 
 // connectObsControlPlane signs in to controlPlane for project: the
-// credential (flag-free: env var, `forge login`, or the host's helper), the
+// credential (flag-free: env var, `forge cloud login`, or the host's helper), the
 // hosted project (created on a person's first use when bind), and the org.
-// No credential is a refusal naming `forge login`: monitoring has no
+// No credential is a refusal naming `forge cloud login`: monitoring has no
 // anonymous path.
 func connectObsControlPlane(ctx context.Context, controlPlane, project, org string, bind bool) (obsSession, error) {
 	ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: controlPlane})
@@ -1005,7 +1005,7 @@ func connectObsControlPlane(ctx context.Context, controlPlane, project, org stri
 	cred, err := cloud.ResolveCredential("", ep)
 	if err != nil {
 		return obsSession{}, obsbackend.Wrong("forge obs needs you signed in to %s (monitoring has no anonymous path): %v", ep.URL, err).
-			With(obsbackend.Cmd("forge", "login", "--endpoint", ep.URL))
+			With(obsbackend.Cmd("forge", "cloud", "login", "--endpoint", ep.URL))
 	}
 	if cred.Kind == "human" && bind && ep.ProjectID == "" {
 		req := map[string]any{"name": project, "create": true}

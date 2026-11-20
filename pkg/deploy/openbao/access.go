@@ -107,7 +107,7 @@ func BuildAccess(s Spec) (AccessDoc, error) {
 		}
 		t := secretaccess.Trust{OIDCDiscoveryURL: c.OIDCDiscoveryURL, BoundIssuer: c.BoundIssuer, PublicKeys: c.PublicKeys}
 		if c.ID != a.SelfCluster && t.OIDCDiscoveryURL == "" && len(t.PublicKeys) == 0 {
-			errs = append(errs, fmt.Errorf("cluster %q is not the cluster OpenBao runs on and declares no oidcDiscoveryURL or publicKeys: its mount could not verify a token. Register its issuer (forge cluster connect), or drop its bindings", c.ID))
+			errs = append(errs, fmt.Errorf("cluster %q is not the cluster OpenBao runs on and declares no oidcDiscoveryURL or publicKeys: its mount could not verify a token. Register its issuer (forge cloud cluster connect), or drop its bindings", c.ID))
 		}
 		req.Clusters = append(req.Clusters, secretaccess.Cluster{ID: c.ID, Audience: c.Audience, Trust: t})
 	}

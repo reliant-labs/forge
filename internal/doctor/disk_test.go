@@ -161,7 +161,7 @@ func TestCheckDisk_StatusRules(t *testing.T) {
 				return
 			}
 			// The contract: a non-PASS line ENDS with the literal command.
-			// `forge doctor` prints only the message without -v, so a
+			// `forge project doctor` prints only the message without -v, so a
 			// diagnosis that does not hand over the next command leaves the
 			// reader exactly where the silent machine left them.
 			if !strings.HasSuffix(res.Message, "run: "+tc.wantFix) {

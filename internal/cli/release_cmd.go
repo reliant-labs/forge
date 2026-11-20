@@ -47,6 +47,17 @@ building or deploying anything.`,
 	cmd.AddCommand(newReleaseWhereCmd())
 	cmd.AddCommand(newReleaseBundleCmd())
 	cmd.AddCommand(newReleaseRecordCmd())
+	// The ledger's readers. Each is also `forge env releases <verb>`, a
+	// documented alias kept for good: one constructor, mounted twice.
+	cmd.AddCommand(newEnvReleasesListCmd(defaultReleasesDeps()))
+	cmd.AddCommand(newEnvReleasesShowCmd(defaultReleasesDeps()))
+	cmd.AddCommand(newEnvReleasesAtCmd(defaultReleasesDeps()))
+	cmd.AddCommand(newEnvReleasesBackfillMigrationsCmd())
+	cmd.AddCommand(newEnvReleasesInterruptedCmd())
+	// The whole-ledger verbs (ledger_cmd.go) and the gate records a
+	// promotion carries (gate_cmd.go).
+	cmd.AddCommand(newLedgerCmd())
+	cmd.AddCommand(newGateCmd())
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -54,7 +65,7 @@ building or deploying anything.`,
 // .forge/env-releases.json into .forge/promotions/<env>.jsonl — one retired
 // in-checkout format into another. Neither is read any more: the ledger is
 // the control plane or the machine store, and the path from a checkout's
-// committed ledger to either one is `forge ledger import --from-git`, which
+// committed ledger to either one is `forge release ledger import --from-git`, which
 // imports history rather than rewriting files in the tree. A conversion
 // command that produced files nothing reads would be worse than its absence.
 

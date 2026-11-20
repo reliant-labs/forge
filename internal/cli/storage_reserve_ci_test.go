@@ -39,7 +39,7 @@ func pinCI(t *testing.T, ci bool) {
 // GiB by the time the suite reaches a build) was refused outright —
 //
 //	host disk /tmp/... has 2.3 GiB free, below the 20 GiB reserve; run
-//	'forge storage status' and 'forge storage gc --apply' before building
+//	'forge machine storage status' and 'forge machine storage gc --apply' before building
 //
 // — although a runner's disk is discarded with the job and the remedy names
 // caches a fresh runner does not have. The reserve exists to stop a
@@ -76,7 +76,7 @@ func TestBuildStorageStillRefusesOffCI(t *testing.T) {
 	if !errors.As(err, &reserve) {
 		t.Fatalf("a developer machine below the reserve was admitted: err=%v", err)
 	}
-	if !strings.Contains(err.Error(), "forge storage gc --apply") {
+	if !strings.Contains(err.Error(), "forge machine storage gc --apply") {
 		t.Errorf("the refusal no longer names the command that unblocks it: %v", err)
 	}
 }

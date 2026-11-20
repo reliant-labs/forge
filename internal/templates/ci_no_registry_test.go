@@ -9,8 +9,8 @@ import (
 // A registry is DECLARED as part of a workload's (or frontend's) `image` in
 // the project's KCL, and nowhere else — an environment does not have one. A
 // scaffolded workflow therefore never names a registry: it logs in with
-// `forge registry login <env>`, builds with `forge env build <env> --push`, and
-// reads the pushed ref back with `forge registry ref <env>` — each of which
+// `forge cloud registry login <env>`, builds with `forge env build <env> --push`, and
+// reads the pushed ref back with `forge cloud registry ref <env>` — each of which
 // reads the images' own references. A registry host in a workflow, a REGISTRY
 // env/var, or a --push carrying a value is a second source of truth that
 // drifts from the one the deploy pulls from.
@@ -55,17 +55,17 @@ func TestScaffoldedWorkflowsNameNoRegistry(t *testing.T) {
 func TestScaffoldedWorkflowsGoThroughForgeForTheRegistry(t *testing.T) {
 	w := renderedWorkflows(t)
 	for _, tc := range []struct{ name, want string }{
-		{"build-images", `forge registry login "$FORGE_ENV" --username`},
+		{"build-images", `forge cloud registry login "$FORGE_ENV" --username`},
 		{"build-images", `forge env build "$FORGE_ENV" --target demo --push --tag "$tag"`},
-		{"build-images", `forge registry ref "$FORGE_ENV" --github-output`},
+		{"build-images", `forge cloud registry ref "$FORGE_ENV" --github-output`},
 		{"build-images", `image-ref: ${{ needs.build-push.outputs.ref }}`},
 		{"build-images", `run: cosign sign --yes "$IMAGE_REF"`},
-		{"deploy", `forge registry login "${{ matrix.env }}" --username`},
+		{"deploy", `forge cloud registry login "${{ matrix.env }}" --username`},
 		{"deploy", `run: forge env build "${{ matrix.env }}" --push` + "\n"},
 		// The hosted job's login carries NO credential: forge resolves the
 		// control-plane one. The env it needs is the control-plane token,
 		// which the job already has for the ledger.
-		{"build-images hosted", `run: forge registry login "staging"` + "\n"},
+		{"build-images hosted", `run: forge cloud registry login "staging"` + "\n"},
 		{"build-images hosted", `FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}`},
 	} {
 		if !strings.Contains(string(w[tc.name]), tc.want) {
@@ -92,7 +92,7 @@ func TestScaffoldedWorkflows_HostedRegistryTakesNoCredential(t *testing.T) {
 			t.Fatalf("%s rendered nothing", name)
 		}
 		for _, line := range strings.Split(body, "\n") {
-			if !strings.Contains(line, "forge registry login") {
+			if !strings.Contains(line, "forge cloud registry login") {
 				continue
 			}
 			// A comment may SHOW the foreign-registry form — release.yml
@@ -118,7 +118,7 @@ func TestScaffoldedWorkflows_HostedBuildHasNoLoginStep(t *testing.T) {
 	for _, name := range []string{"release", "release mixed"} {
 		body := string(renderedWorkflows(t)[name])
 		for _, line := range strings.Split(body, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "run:") && strings.Contains(line, "forge registry login") {
+			if strings.HasPrefix(strings.TrimSpace(line), "run:") && strings.Contains(line, "forge cloud registry login") {
 				t.Errorf("%s has a registry login STEP; `forge env build --release` authenticates its own push "+
 					"(ADR-0003 F3):\n    %s", name, strings.TrimSpace(line))
 			}

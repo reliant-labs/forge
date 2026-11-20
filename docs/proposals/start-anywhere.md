@@ -49,7 +49,7 @@ work that implements them.
 
 1. **Every piece works on its own**, in any repo and any language, with the
    adoption journey above and entry at any step.
-2. **Monitoring is the hook, and it requires sign-in** (`forge login` or a
+2. **Monitoring is the hook, and it requires sign-in** (`forge cloud login` or a
    control-plane token). There is no claimable or anonymous path for
    observability.
 3. **Dashboards live at `https://forge.reliantlabs.io`.** The console routes are
@@ -135,7 +135,7 @@ rather than at the root, which the CLI consolidation keeps to fourteen nouns.
 
 **The skill catalog splits by applicability.** A skill declares `applies: any`
 in its frontmatter when it is useful in a repo with no forge.yaml. In such a
-repo, `forge skill list` (and MCP `skill_list`) shows an "Applies to your repo"
+repo, `forge agent skill list` (and MCP `skill_list`) shows an "Applies to your repo"
 group first. The list is not hard-coded: the frontmatter is the declaration.
 
 **Lint in a non-forge repo skips project-only lanes with a reason.** A bare

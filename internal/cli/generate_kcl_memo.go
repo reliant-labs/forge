@@ -4,7 +4,7 @@ package cli
 // times. The frontend inventory renders every env; so do the CI frontend
 // discovery and the CI hosted-env discovery; the k3d ports fragment renders
 // dev; and the closing loadability check renders every env again. Each is a
-// `forge kcl eval` child, bracketed by two `git status` calls for the purity
+// `forge env kcl eval` child, bracketed by two `git status` calls for the purity
 // guard (kcl_render_purity.go). On a 22-entity project with three envs that
 // was 16 evaluations, a third of the run's wall time; nothing between most of
 // them had changed a byte the evaluation reads.

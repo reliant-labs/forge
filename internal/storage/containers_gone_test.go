@@ -50,7 +50,7 @@ func (d *goneContainerDocker) command(_ context.Context, name string, args ...st
 	return nil, fmt.Errorf("unexpected %s %s", name, joined)
 }
 
-// TestInspectSkipsContainersRemovedMidRun: `forge storage gc --apply` exited 1
+// TestInspectSkipsContainersRemovedMidRun: `forge machine storage gc --apply` exited 1
 // because a container it had listed was gone by the time it inspected it.
 func TestInspectSkipsContainersRemovedMidRun(t *testing.T) {
 	ctx := context.Background()

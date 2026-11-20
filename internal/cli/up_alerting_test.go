@@ -71,7 +71,7 @@ func TestPrepareLocalAlertingRendersWithTheSharedRenderer(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(sec, clickstack.AlertsInAppTokenFile)); len(b) < 32 {
 		t.Fatalf("in-app token = %q", b)
 	}
-	if len(la.Skipped) != 1 || !strings.Contains(la.Skipped[0], "forge secret set --env dev PD_KEY") {
+	if len(la.Skipped) != 1 || !strings.Contains(la.Skipped[0], "forge env secret set --env dev PD_KEY") {
 		t.Fatalf("skipped = %v, want the missing PagerDuty key named with its fix", la.Skipped)
 	}
 

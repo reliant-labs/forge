@@ -84,8 +84,8 @@ func (g *ProjectGenerator) writeProjectConfig() error {
 		"# `features:` block pins one on or off only when the derived default is wrong.\n" +
 		"# Authentication is owned code — internal/app/auth.go's SetupAuth.\n" +
 		"# Add a section (ci, lint, contracts, ...) only to override a default\n" +
-		"# (`forge skill load architecture` documents the schema;\n" +
-		"# `forge skill list` indexes the per-topic skills, e.g. `auth`).\n\n")
+		"# (`forge agent skill load architecture` documents the schema;\n" +
+		"# `forge agent skill list` indexes the per-topic skills, e.g. `auth`).\n\n")
 	data = append(header, data...)
 
 	destPath := filepath.Join(g.Path, "forge.yaml")

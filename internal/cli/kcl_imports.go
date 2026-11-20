@@ -1,6 +1,6 @@
 // File: internal/cli/kcl_imports.go
 //
-// `forge kcl imports` — print where each forge project this project's KCL
+// `forge env kcl imports` — print where each forge project this project's KCL
 // imports ([forge_projects] in deploy/kcl/kcl.mod) resolves to.
 //
 // A render reads an imported project's KCL from wherever go.mod resolves its

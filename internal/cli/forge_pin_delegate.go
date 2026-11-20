@@ -79,13 +79,13 @@ import (
 //   - project upgrade: moves the pin, so it is run by the forge being moved
 //     TO, and must work when the old pin cannot be built.
 //   - project new: the project it writes is not the one around the cwd.
-//   - report-bug: reports a defect in this forge, and must work offline.
+//   - agent report-bug: reports a defect in this forge, and must work offline.
 //   - telemetry: this machine's usage-event choice, the same for every forge.
-//   - storage, slot: bound this machine's caches and heavy slots under THIS
+//   - machine storage, machine slot: bound this machine's caches and heavy slots under THIS
 //     forge's rules. A pinned forge older than the 2h floor and the
 //     live-build lease (#1231, #1243, #1245) would trim the Go build cache
 //     down to now-20m, under running builds.
-//   - mcp: a long-lived server whose every tool call names its own project
+//   - agent mcp: a long-lived server whose every tool call names its own project
 //     (each may pin a different forge), run in-process. Handing the server
 //     to the forge its STARTING directory pins would make every later
 //     request run under that forge, past its own pin check (a delegate does
@@ -104,7 +104,7 @@ import (
 // project, stays here (machineWideFlags).
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
-	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
+	"project upgrade", "project new", "agent report-bug", "telemetry", "machine storage", "machine slot", "agent mcp",
 	"env ps", "env devstack",
 }
 
@@ -144,12 +144,6 @@ var machineWideFlags = map[string]string{
 // forge's root; "" is the root itself). machineWide is whether the run spans
 // every project on the machine (machineWideRun).
 func handOffModeFor(rel string, machineWide bool) handOffMode {
-	if isMovedNounGroup(rel) {
-		// A noun that only holds moved commands (`dev`, `machine`): alone,
-		// it prints its help, and a forge older than the nouns has no such
-		// command to hand it to.
-		return runHere
-	}
 	for _, ex := range handOffExempt {
 		if rel == ex || (ex != "" && strings.HasPrefix(rel, ex+" ")) {
 			return runHere
@@ -712,7 +706,7 @@ func pinnedRunLine(projectRoot, pin string, args []string) string {
 }
 
 // serveRequestsUnderTheirOwnPins prepares a process that serves many
-// commands, each for its own project (forge mcp): no request may replace the
+// commands, each for its own project (forge agent mcp): no request may replace the
 // process with another forge, and none inherits the start-up's verdict — were
 // this process itself a delegate, every request would skip its pin check and
 // run against a project pinned to a different forge. Each request's command

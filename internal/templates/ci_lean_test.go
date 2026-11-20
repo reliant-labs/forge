@@ -176,7 +176,7 @@ func TestCIWorkflows_EachLaneCallsTheTaskLocalCIRuns(t *testing.T) {
 			}
 			// No lane re-spells a check the gate owns.
 			for _, r := range runs {
-				for _, own := range []string{"go test", "go build", "golangci-lint run", "buf lint", "govulncheck", "go-licenses check", "forge ci vuln-scan", "forge ci validate-kcl", "forge ci verify-generated", "forge ci migration-safety", "forge doctor"} {
+				for _, own := range []string{"go test", "go build", "golangci-lint run", "buf lint", "govulncheck", "go-licenses check", "forge ci vuln-scan", "forge ci validate-kcl", "forge ci verify-generated", "forge ci migration-safety", "forge project doctor"} {
 					if strings.Contains(r, own) {
 						t.Errorf("%s: job %q runs %q itself; that check is the gate's (`task ci` runs it too), so CI would drift from the local verdict", name, id, own)
 					}

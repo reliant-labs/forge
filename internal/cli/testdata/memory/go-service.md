@@ -3,7 +3,7 @@
 
 This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands.
 
-This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge skill load <name>` away, named where you need it.
+This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge agent skill load <name>` away, named where you need it.
 
 ## Engineering disposition
 
@@ -14,14 +14,14 @@ This is a long-lived product. For anything hard to change later — architecture
 Skills come from the binary, so they match the forge you run. Load one before guessing. These five show the most, soonest:
 
 ```bash
-forge skill load forge                # start here: what forge already scaffolds, so you never hand-write it
+forge agent skill load forge                # start here: what forge already scaffolds, so you never hand-write it
 forge project shapes --grep <Name>    # where a symbol is in every layer (rpc, table, handler, hook, store), with file:line
 forge env up dev                      # the whole stack locally; every log, browser console included, in .forge/logs/dev/
 forge obs endpoints dev               # p50/p95/p99 and error rate per RPC, with no instrumentation code
 forge obs check <env> --wait --json   # after a deploy: proves the release good, or names what regressed
 ```
 
-`forge skill list` is the catalog. `forge project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `forge project capabilities` lists every verb; `forge project benefits` lists what this project gets without setup. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
+`forge agent skill list` is the catalog. `forge project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `forge project capabilities` lists every verb; `forge project benefits` lists what this project gets without setup. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
 
 ## Critical rules
 
@@ -34,7 +34,7 @@ forge obs check <env> --wait --json   # after a deploy: proves the release good,
    Never pipe `forge lint` through `head`: the verdict is the LAST line. `--quiet` prints only what failed; `--scope <path>` lints your slice of a shared checkout (run it unscoped before merging).
 4. **Iterate on `task test:short -- ./internal/<pkg>/...`** (cached; never add `-count=1` or `-race`, never set a private `GOCACHE`), then `task test` once before you finish; `task ci` is the whole PR gate (`ci`). A test over ~2s calls `testkit.Slow(t, "<why>")` first — gate, don't gut (`testing`). `⏳ waiting for a heavy slot` is a queue, not a hang: never kill the holders (`ci/slots`). A command bounded to minutes (the tests or lint of named packages) may wait in the express lane, ahead of hour-long jobs: `FORGE_SLOT_LANE=express`.
    Anything over ~2 minutes runs in the background (`run_in_background` + `shell_wait`), never detached with `nohup`, `&`, `setsid` or `disown`.
-5. **Debugging: `forge skill load debug` first.** Frontend `console.*` calls and uncaught errors are on disk beside the backend logs: `grep '\[browser:error\]' .forge/logs/dev/*.log`.
+5. **Debugging: `forge agent skill load debug` first.** Frontend `console.*` calls and uncaught errors are on disk beside the backend logs: `grep '\[browser:error\]' .forge/logs/dev/*.log`.
 6. **`auth_required: false` publishes one RPC, never a page.** The pages a signed-out visitor may open are the frontend route guard's `publicExactPaths` (`src/lib/auth/route-guard.tsx`). What a caller may do — access checks, row scoping — is your handler code (`middleware.GetUser`); forge generates none of it (`auth`).
 
 ## Architecture in one screen
@@ -77,13 +77,13 @@ The dashboard's entity tiles, the sidebar nav, the sign-in screen and every gene
 
 ## Shipping
 
-`forge env deploy <env>` ships to Reliant hosting (staging/prod are already bound to it; `deploy`), then `forge obs check <env> --wait --json` proves it. One hosted static site per person is free, counted across environments (each env's site is one); anything beyond it needs billing, and until then `env deploy` exits 7 and prints the billing link: give the user that link, don't retry. Never ask for `forge login` under Reliant. Not signed in at all? `--claimable` deploys with no signup and prints a claim link for the user (`deploy/hosting`).
+`forge env deploy <env>` ships to Reliant hosting (staging/prod are already bound to it; `deploy`), then `forge obs check <env> --wait --json` proves it. One hosted static site per person is free, counted across environments (each env's site is one); anything beyond it needs billing, and until then `env deploy` exits 7 and prints the billing link: give the user that link, don't retry. Never ask for `forge cloud login` under Reliant. Not signed in at all? `--claimable` deploys with no signup and prints a claim link for the user (`deploy/hosting`).
 
 ## When forge itself is wrong — FIX IT
 
 If forge emits something wrong — bad codegen, a lint false positive, a scaffold quirk, a missing capability — fix it in forge when you can; never paper over it or hand-edit generated output, which the next `forge generate` overwrites. forge is semver at major 1: a fix keeps the old flag, field or default working beside the new one, marked deprecated. When you cannot fix it here, report it and carry on:
 
-    forge report-bug --severity high --title "<one line naming the defect>" \
+    forge agent report-bug --severity high --title "<one line naming the defect>" \
       --actual "<the exact error text>" --evidence "<commands, output, file paths>"
 
 Only for defects in forge itself (a command, codegen, lint, skill or doc), not this project's code or tests. Never put credentials or file contents in a report; `--dry-run` shows exactly what would be sent.

@@ -1,6 +1,6 @@
 package cli
 
-// `forge ledger import` against a fixture git repository.
+// `forge release ledger import` against a fixture git repository.
 //
 // The fixture plants the RETIRED in-checkout ledger and COMMITS it, because
 // that is the only state the import reads: a rev, never the working tree.

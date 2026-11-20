@@ -51,17 +51,17 @@ Four rules every run obeys:
    entry per tool version, each published by one rename so a concurrent gate
    never runs a half-written binary. A copy on PATH at another version is not used, and
    neither is a golangci-lint built with a Go older than your `go.mod`. Your
-   PATH and GOBIN are never touched. `forge tools pins [tool]` prints these
+   PATH and GOBIN are never touched. `forge machine tools pins [tool]` prints these
    versions (`--json` for all), so a hand-written workflow reads them from the
    forge it runs.
    buf is the one a project moves itself, in ONE place: a go.mod tool directive
    (`go get -tool github.com/bufbuild/buf/cmd/buf@v1.57.0`). The gate,
-   `forge generate`, `forge tools install buf`, `forge tools pins buf` and the
+   `forge generate`, `forge machine tools install buf`, `forge machine tools pins buf` and the
    scaffolded ci.yml then all run that buf instead of forge's — no Makefile pin,
    no `$BUF` on PATH.
    `forge lint` outside the gate does the same for golangci-lint: with none on
    PATH it builds the pin into the tool cache once, and when it cannot, the
-   golangci-lint lane FAILS naming `forge tools install golangci-lint`. Likewise
+   golangci-lint lane FAILS naming `forge machine tools install golangci-lint`. Likewise
    a missing buf fails the buf lint lane. A gating lane that did not run is
    never a pass.
 4. **The table reaches the job summary.** When `$GITHUB_STEP_SUMMARY` is set the
@@ -120,9 +120,9 @@ each one's time and the gate's wall time. Three things bound the concurrency:
 - **Host slots** — a `heavy` check (whole-module build, test run, lint, render)
   holds one of the machine's heavy slots while it runs (`ci/slots`), so the
   gate never adds more heavy jobs than the host has room for, and the commands
-  it runs (`forge generate`, `task test`'s `forge slot run`) run inside that
+  it runs (`forge generate`, `task test`'s `forge machine slot run`) run inside that
   slot instead of queueing again. Light checks run under `--jobs` (default half
-  the CPUs, 2-8). Do not wrap the gate itself in `forge slot run`.
+  the CPUs, 2-8). Do not wrap the gate itself in `forge machine slot run`.
 - **Longest path first** — slots go to the waiting check with the longest
   chain still to run: its own duration plus the longest chain of checks that
   wait on it, from the durations earlier runs of this repository recorded

@@ -236,7 +236,7 @@ func TestLibrarySearch(t *testing.T) {
 }
 
 // TestLibrarySearchDoesNotShrinkAsTheQueryGetsMorePrecise pins the defect the
-// dogfood run hit: `forge component search "dashboard metric stat tiles"`
+// dogfood run hit: `forge ui component search "dashboard metric stat tiles"`
 // returned 0 results, and DROPPING a word ("tiles") returned metric_card and
 // stat_grid. Under bag-of-words AND, describing your need more precisely
 // empties the library — so the one unit that did search learned the library

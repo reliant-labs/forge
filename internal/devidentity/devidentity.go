@@ -325,7 +325,7 @@ func Spec(in Input) (identity.Spec, []string, error) {
 		}
 		pw, ok := secret(in, u.PasswordSecret)
 		if !ok {
-			warnings = append(warnings, fmt.Sprintf("seed user %q was NOT created: secret %s is not in the env's store: `forge secret set --env <env> %s`", u.Email, u.PasswordSecret, u.PasswordSecret))
+			warnings = append(warnings, fmt.Sprintf("seed user %q was NOT created: secret %s is not in the env's store: `forge env secret set --env <env> %s`", u.Email, u.PasswordSecret, u.PasswordSecret))
 			continue
 		}
 		spec.SeedUsers = append(spec.SeedUsers, identity.SeedUser{Email: u.Email, Password: pw, Roles: u.Roles})
@@ -499,7 +499,7 @@ func socialIDP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
 }
 
 func missingSocialSecret(typ, name string) string {
-	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge secret set --env <env> %s`", typ, name, typ, name)
+	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge env secret set --env <env> %s`", typ, name, typ, name)
 }
 
 func containsMethod(ms []identity.Method, m identity.Method) bool {

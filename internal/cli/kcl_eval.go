@@ -1,6 +1,6 @@
 // File: internal/cli/kcl_eval.go
 //
-// `forge kcl eval <file> [-S <path>]…` — evaluate ONE KCL file of this
+// `forge env kcl eval <file> [-S <path>]…` — evaluate ONE KCL file of this
 // project and print a field out of it.
 //
 // # Why this command exists
@@ -30,7 +30,7 @@
 // those is a forge defect that got worked around instead of reported, and the
 // fix is a forge command, not a better script.
 //
-// # Why `forge kcl eval` and not `forge env render --file`
+// # Why `forge env kcl eval` and not `forge env render --file`
 //
 // Because it is not a render of an environment, and every flag `env render`
 // has says so. That command resolves an image tag from build state, applies
@@ -42,7 +42,7 @@
 // would have to answer what `--cluster` means for a file with no workloads.
 //
 // A `kcl` group also says the true thing about scope: the unit is a KCL file,
-// and the group is where a future `forge kcl fmt` or `forge kcl options`
+// and the group is where a future `forge env kcl fmt` or `forge env kcl options`
 // belongs. `env render` remains the way to evaluate an environment.
 //
 // # Read-only
@@ -82,12 +82,12 @@ subcommands are how anything outside forge reads a value out of project KCL.`,
 	}
 	cmd.AddCommand(newKCLEvalCmd())
 	cmd.AddCommand(newKCLImportsCmd())
-	// Without this, cobra accepts `forge kcl <typo>` and exits 0 — a script
+	// Without this, cobra accepts `forge env kcl <typo>` and exits 0 — a script
 	// whose command name rotted would silently succeed and read an empty value.
 	return cmdutil.StrictGroup(cmd)
 }
 
-// kclEvalFlags is the parsed flag set of `forge kcl eval`. The render-*
+// kclEvalFlags is the parsed flag set of `forge env kcl eval`. The render-*
 // fields are the hidden internal transport an env render's isolated child
 // receives; a user invocation leaves them zero.
 type kclEvalFlags struct {
@@ -185,7 +185,7 @@ Examples:
 //
 // STDOUT CARRIES ONLY THE VALUE. Every diagnostic — the devstack banner, kpm's
 // progress, a declined write — goes to stderr, because the documented use is
-// `V="$(forge kcl eval … --format raw)"` and one stray line of prose there
+// `V="$(forge env kcl eval … --format raw)"` and one stray line of prose there
 // becomes part of V. `env render` learned this the hard way when a `Note:` on
 // stdout became the first YAML document of a stream piped to kubectl.
 func runKCLEval(cmd *cobra.Command, file string, f kclEvalFlags) error {

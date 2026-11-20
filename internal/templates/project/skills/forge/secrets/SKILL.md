@@ -57,7 +57,7 @@ app_config: config_gen.AppConfig = {
 }
 ```
 
-`forge doctor --signal deploy` fails the **Deploy Secrets** check when
+`forge project doctor --signal deploy` fails the **Deploy Secrets** check when
 any credential-shaped env var renders as a literal — that check going
 green is what the annotation is for.
 
@@ -94,12 +94,12 @@ cannot become a side channel for configuration.
 ```bash
 # Store the values (or hand-edit the YAML). --env is REQUIRED — there is no
 # default env and no positional form, so a secret can't land in the wrong one.
-printf '%s' "$STRIPE_KEY" | forge secret set --env dev STRIPE_SECRET_KEY
-forge secret set --env dev JWT_SIGNING_KEY --from-file ./key.pem
+printf '%s' "$STRIPE_KEY" | forge env secret set --env dev STRIPE_SECRET_KEY
+forge env secret set --env dev JWT_SIGNING_KEY --from-file ./key.pem
 
-forge secret unset  --env dev JWT_SIGNING_KEY
-forge secret ensure --env dev   # FileSecrets: create the store + list refs with no value yet
-forge secret list   --env dev   # names + presence, never values — works for EVERY provider
+forge env secret unset  --env dev JWT_SIGNING_KEY
+forge env secret ensure --env dev   # FileSecrets: create the store + list refs with no value yet
+forge env secret list   --env dev   # names + presence, never values — works for EVERY provider
 ```
 
 `set` on a key that already has a value REPLACES it. For a hosted store that
@@ -142,20 +142,20 @@ _bundle = forge.Bundle {
 - `forge.HostedSecrets {}` — `type="hosted"`; values live in the env's
   control plane (the managed secret store). Requires
   `control_plane = forge.ControlPlane {...}` on the same Bundle (load-time
-  check). `forge secret set/list/unset --env <env>` write/list through that
+  check). `forge env secret set/list/unset --env <env>` write/list through that
   control plane (endpoint + credential from `control_plane`, i.e. `--token` /
-  `$FORGE_CONTROL_PLANE_TOKEN` / `forge login` / Reliant's session via
+  `$FORGE_CONTROL_PLANE_TOKEN` / `forge cloud login` / Reliant's session via
   `$FORGE_CREDENTIAL_HELPER`), scoped to the control-plane
   environment addressed by (this project's forge.yaml `name`, the env's NAME).
 
   **That one credential also authenticates the platform CONTAINER REGISTRY**,
   which is why a hosted project has no registry secret to manage. `forge
-  registry login <env>` takes no `--username` and no `--password-*` for our
+  cloud registry login <env>` takes no `--username` and no `--password-*` for our
   host (it refuses them), and `forge env build --push` / `forge env deploy` log
   in on their own before the first push. So the only image-related secret a
   hosted CI job needs is the one it already has. See the `deploy` and `ci`
   skills.
-  Set a hosted workload's secrets with `forge secret set --env <env> <KEY>`
+  Set a hosted workload's secrets with `forge env secret set --env <env> <KEY>`
   before `forge env deploy`: deploys that need an unset one fail until it is
   set (not yet a queued gate). What happens to the values depends on the env's KIND, which forge derives
   from the env's own workloads:
@@ -167,7 +167,7 @@ _bundle = forge.Bundle {
   - **local** — the env declares control_plane but NO hosted tier (host /
     compose / frontend workloads run by `forge env up`). The control plane is
     only its secret store. `forge env up` PULLS the values (signed
-    in to Reliant, or after `forge login` standalone) and injects them — in memory only, never written to disk —
+    in to Reliant, or after `forge cloud login` standalone) and injects them — in memory only, never written to disk —
     into each host service, job, compose/external service and frontend that
     declares them. A failed pull fails `env up` before anything starts.
     `forge env deploy` refuses a local env: there is nothing to publish.
@@ -187,7 +187,7 @@ _bundle = forge.Bundle {
   self-managed env to local (to make its values readable) is never applied.
 - `forge.DotenvSecrets { path = ... }` — **DEPRECATED**. Still resolved
   so existing projects run; `forge lint` fails on the file and
-  `forge secret migrate --env <env>` converts it.
+  `forge env secret migrate --env <env>` converts it.
 
 A dev env on the managed store (the shape a real project uses so dev
 credentials never live in a file on a laptop):
@@ -202,8 +202,8 @@ _bundle = forge.Bundle {
 ```
 
 ```bash
-forge login                                              # once, without Reliant; signed in to Reliant? skip it
-printf '%s' "$KEY" | forge secret set --env dev STRIPE_SECRET_KEY
+forge cloud login                                              # once, without Reliant; signed in to Reliant? skip it
+printf '%s' "$KEY" | forge env secret set --env dev STRIPE_SECRET_KEY
 forge env up dev                                         # pulls, injects in memory, starts
 ```
 
@@ -218,7 +218,7 @@ secret_provider = forge.FileSecrets {
 }
 ```
 
-`forge secret ensure` and `forge env up` write it (0600, key name printed,
+`forge env secret ensure` and `forge env up` write it (0600, key name printed,
 never the value) and never overwrite an existing value. Hosted/external
 providers never generate. The value is durable; rotate by hand with `set`.
 
@@ -270,8 +270,8 @@ _bundle = forge.Bundle {
 - **Same guarantees as a provider Secret.** Applied before the Deployments,
   so the first schedule finds it. Local clusters only (it is plaintext). It
   counts as supply for the deploy preflight's mount check.
-  `forge secret ensure --env <env>` lists a store key with no value, and
-  `forge secret list` attributes it to its Secret.
+  `forge env secret ensure --env <env>` lists a store key with no value, and
+  `forge env secret list` attributes it to its Secret.
 - **Prefer it to a hand-written `kind: Secret`.** A raw Secret manifest with
   literals gets none of the above, and a real credential would have to be
   pasted into git to be expressed at all.
@@ -296,10 +296,10 @@ and injects it differently per runtime:
 
 **Validation:** `forge env up` / `forge env deploy` **fail-fast** if a declared
 `secret_ref` has no value in the store (a file store, or a LOCAL env's pulled
-hosted store), listing every miss with the `forge secret set --env <env>` line
+hosted store), listing every miss with the `forge env secret set --env <env>` line
 that fixes it.
 
-**`forge secret list --env <env>`** answers for every provider: `file` reads
+**`forge env secret list --env <env>`** answers for every provider: `file` reads
 presence from the YAML; `hosted` lists names + current versions; `rendered`
 reports whether each declared Secret key resolves from its source; `external`
 and `none` list the declarations with presence `unknown` (exit 0 — unknown is
@@ -401,8 +401,8 @@ bundle provider is the single-source model now — prefer it.
 
   An optional credential still goes in the workload's `config_secrets`:
   that is what delivers it. Leaving it out to get past the pre-flight means
-  no env ever receives it, even after `forge secret set`. Listed and
-  `optional: true`, turning the feature on in an env is one `forge secret
+  no env ever receives it, even after `forge env secret set`. Listed and
+  `optional: true`, turning the feature on in an env is one `forge env secret
   set --env <env> <KEY>`.
 
   All of this is the DEPLOY pre-flight, over the refs a workload declares
@@ -435,7 +435,7 @@ bundle provider is the single-source model now — prefer it.
 - **Multi-line values round-trip.** A PEM key or JSON blob is written as
   a YAML block scalar; values with colons or leading spaces are quoted.
 - **Undeclared values are inert.** A key no service declares is never
-  injected. `forge secret list --env <env>` reports these — they are usually a
+  injected. `forge env secret list --env <env>` reports these — they are usually a
   typo, or config that belongs in `config.k`.
 - **ExternalSecrets is inert.** It renders nothing and validates
   nothing — it only declares that values live outside forge. It has

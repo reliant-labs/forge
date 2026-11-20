@@ -1,6 +1,6 @@
 ---
 name: migration-v1.0.0-composition-graph
-description: Move a project off the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition onto the composition graph — adopt one root at a time with `//forge:root <name> adopt`, run `forge fix composition-graph`, clear each shape it lists (Infra fields become providers, NewComponents wiring becomes compose.go constructor methods, ServeSpec knobs become reach, with control-plane's as the worked example), then bind deploy workloads to roots.
+description: Move a project off the legacy Infra / OpenInfra / NewComponents / lifecycle.go / ServeSpec composition onto the composition graph — adopt one root at a time with `//forge:root <name> adopt`, run `forge lint fix composition-graph`, clear each shape it lists (Infra fields become providers, NewComponents wiring becomes compose.go constructor methods, ServeSpec knobs become reach, with control-plane's as the worked example), then bind deploy workloads to roots.
 relevance: migration
 ---
 
@@ -12,7 +12,7 @@ Use when `internal/app` declares `type Infra struct` or `func NewComponents`
 ## What changed
 
 A project composes through the composition graph
-(`forge skill load architecture`, "The composition graph"): every part of a
+(`forge agent skill load architecture`, "The composition graph"): every part of a
 process is a component built from its Deps, providers in `providers.go` replace
 the eager `OpenInfra`, `compose.go` holds one constructor method per node, and a
 **root** (`//forge:root <name>`) selects what a process builds — one command per
@@ -68,8 +68,8 @@ graph_compose.go's methods to move into compose.go, which it rewrites.
 Commit first; the codemod replaces files you own.
 
 ```bash
-forge fix composition-graph --dry-run   # what it would do, or what blocks it
-forge fix composition-graph
+forge lint fix composition-graph --dry-run   # what it would do, or what blocks it
+forge lint fix composition-graph
 forge generate && go build ./... && forge lint --graph
 ```
 

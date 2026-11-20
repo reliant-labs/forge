@@ -32,7 +32,7 @@ func TestSkillLoadPrintsRenderSkillContent(t *testing.T) {
 			root := newTestRootCmd(t)
 			root.SetOut(&out)
 			root.SetErr(&out)
-			root.SetArgs([]string{"-C", dir, "skill", "load", arg})
+			root.SetArgs([]string{"-C", dir, "agent", "skill", "load", arg})
 			if err := root.Execute(); err != nil {
 				t.Fatalf("skill load %s: %v\n%s", arg, err, out.String())
 			}

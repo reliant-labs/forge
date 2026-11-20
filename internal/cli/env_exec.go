@@ -67,7 +67,7 @@ arguments are logged by Forge.
 // localWorkloadChildEnv is the environment a local child of workload runs
 // with: base (the inherited environment) with the workload's declared
 // configuration for env layered on top. Shared by env exec and
-// `forge debug start`, so a debugged process sees exactly what env exec's
+// `forge dev debug start`, so a debugged process sees exactly what env exec's
 // child would.
 func localWorkloadChildEnv(ctx context.Context, projectDir, env, workload string, base []string) ([]string, error) {
 	e, err := readEnvConfigEntities(ctx, projectDir, env)

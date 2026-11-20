@@ -42,7 +42,7 @@ type RenderedStoreSecret struct {
 type StoreCluster struct {
 	// Cluster is the kube context.
 	Cluster string
-	// ConnectedCluster is the name `forge cluster connect` registered; empty
+	// ConnectedCluster is the name `forge cloud cluster connect` registered; empty
 	// when no control plane reaches the cluster.
 	ConnectedCluster string
 }

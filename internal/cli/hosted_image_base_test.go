@@ -114,7 +114,7 @@ func TestCheckHostedImagesResolve_NoPushBaseNamesTheFullReferenceRemedy(t *testi
 	// The remedy is to AUTHENTICATE, not to write a full reference or declare an
 	// org: a hosted author's registry is the platform's, and the org is the
 	// credential's.
-	for _, want := range []string{"names no registry host", "could not learn your org", "forge login", `"api"`} {
+	for _, want := range []string{"names no registry host", "could not learn your org", "forge cloud login", `"api"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal is missing %q:\n%v", want, err)
 		}

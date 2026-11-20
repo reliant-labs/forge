@@ -87,7 +87,7 @@ stays real at every tier.
   `forge.ControlPlane` reaches that control plane's ledger unless it exports
   `FORGE_LEDGER=machine` (with a temp `FORGE_LEDGER_HOME`). Setting only
   `FORGE_LEDGER_HOME` does not keep it local. Assert it first:
-  `forge ledger where <env> --json` must report `"backend": "machine"`.
+  `forge release ledger where <env> --json` must report `"backend": "machine"`.
 - **Capture the queries your tests run.** `FORGE_QUERY_CAPTURE_DIR=/tmp/qc
   task test:short` makes every `orm.Client` (and a `dbtrace.NewPgxTracer`
   pgx pool) built while it is set write each distinct statement shape, once
@@ -100,7 +100,7 @@ stays real at every tier.
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`
 
-The canonical entry point for table-driven tests in a forge project is the `github.com/reliant-labs/forge/pkg/tdd` library. Forge's scaffolders (`forge project new`, `forge scaffold service`, `forge package new`, `forge generate`) emit unit / contract test files (plus CRUD integration tests when entities exist) that already import it. Scaffolded per-RPC rows are self-destructing — `WantErr: connect.CodeUnimplemented` fails the moment the handler is implemented, demanding a real assertion in its place; `pkg/tdd` has no permissive any-outcome mode. Treat the helpers below as the default vocabulary for new test files; reach for hand-rolled `for _, tc := range cases` only when the shape doesn't fit.
+The canonical entry point for table-driven tests in a forge project is the `github.com/reliant-labs/forge/pkg/tdd` library. Forge's scaffolders (`forge project new`, `forge scaffold service`, `forge scaffold package`, `forge generate`) emit unit / contract test files (plus CRUD integration tests when entities exist) that already import it. Scaffolded per-RPC rows are self-destructing — `WantErr: connect.CodeUnimplemented` fails the moment the handler is implemented, demanding a real assertion in its place; `pkg/tdd` has no permissive any-outcome mode. Treat the helpers below as the default vocabulary for new test files; reach for hand-rolled `for _, tc := range cases` only when the shape doesn't fit.
 
 | Helper | Use |
 |--------|-----|

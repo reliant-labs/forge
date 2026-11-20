@@ -347,7 +347,7 @@ func TestHostedCLIEndToEnd(t *testing.T) {
 // be set before anything else — the order a managedSecret backend needs, so
 // its pod never starts without the value:
 //
-//	forge secret set hosted GREETING   (ensures the env by name)
+//	forge env secret set hosted GREETING   (ensures the env by name)
 //	forge env build hosted --release v1 --no-build
 //	forge env deploy hosted v1
 //	forge env deploy hosted
@@ -380,7 +380,7 @@ func TestHostedSecretBeforeFirstDeploy(t *testing.T) {
 	_, _ = w.WriteString("hello-from-secret\n")
 	_ = w.Close()
 	os.Stdin = r
-	out, err := runForge(t, "secret", "set", "--env", "hosted", "GREETING")
+	out, err := runForge(t, "env", "secret", "set", "--env", "hosted", "GREETING")
 	os.Stdin = stdin
 	if err != nil {
 		t.Fatalf("secret set before any deploy: %v\n%s", err, out)

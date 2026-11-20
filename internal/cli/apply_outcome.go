@@ -11,7 +11,7 @@ package cli
 // Both ledgers now record the apply's verdict on the promotion it realized:
 //
 //   - a HOSTED ledger as a recorded gate named "apply" (the same post-promote
-//     evidence `forge gate record` writes), so every reader of the control
+//     evidence `forge release gate record` writes), so every reader of the control
 //     plane's ledger sees it, not just this machine;
 //   - a FILE ledger as the machine ledger's apply record (beginApplyRecord),
 //     which already existed and is read here.

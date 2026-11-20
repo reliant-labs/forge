@@ -104,7 +104,7 @@ func TestAutoLogin_NoCredentialFailsBeforeAnythingIsBuilt(t *testing.T) {
 	}
 	// cloud.ResolveCredential's own runbook, surfaced rather than
 	// reworded: it names the three remedies in the order forge tries them.
-	for _, want := range []string{"forge login", "FORGE_CONTROL_PLANE_TOKEN", "--token"} {
+	for _, want := range []string{"forge cloud login", "FORGE_CONTROL_PLANE_TOKEN", "--token"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the failure must name %q as a remedy; got:\n%v", want, err)
 		}
@@ -134,7 +134,7 @@ func TestAutoLogin_LocalRegistryNeverLogsIn(t *testing.T) {
 // TestAutoLogin_ForeignRegistryIsNotOurs: an env whose images all go to the
 // author's own registry resolves no control-plane credential and makes no
 // subprocess call. forge has no credential for that host and must not pretend
-// to — `forge registry login` with the flags, or a plain `docker login`, is
+// to — `forge cloud registry login` with the flags, or a plain `docker login`, is
 // still how it is reached.
 func TestAutoLogin_ForeignRegistryIsNotOurs(t *testing.T) {
 	planProject(t, declaredRegistryFixture)

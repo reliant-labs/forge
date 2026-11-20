@@ -171,7 +171,7 @@ func TestCIWorkflowFileFor_FollowsTheProvider(t *testing.T) {
 
 func TestReliantCIGuidanceNamesTheCheckAndTheSteps(t *testing.T) {
 	g := ReliantCIGuidance(reliantCfg(), "forge", []string{ReliantCIWorkflowPath})
-	for _, want := range []string{"demo/ci", "reliant trigger activate --workflow ci", "ruleset", ".github/workflows/", "forge skill load ci/reliant"} {
+	for _, want := range []string{"demo/ci", "reliant trigger activate --workflow ci", "ruleset", ".github/workflows/", "forge agent skill load ci/reliant"} {
 		if !strings.Contains(g, want) {
 			t.Errorf("guidance lacks %q:\n%s", want, g)
 		}

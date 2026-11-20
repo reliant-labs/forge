@@ -1,4 +1,4 @@
-// Package cli — `forge cluster logs` command.
+// Package cli — `forge dev cluster logs` command.
 //
 // Streams kubectl logs for one or all services in the dev namespace.
 // Replaces a small bash recipe (resolve namespace, look up the right
@@ -33,10 +33,10 @@ dev namespace (the same label forge uses to discover deployments).
 With --service, scopes to one service deployment.
 
 Examples:
-  forge cluster logs                       # tail every forge-managed pod
-  forge cluster logs --service api         # tail one service
-  forge cluster logs --service api --tail 200
-  forge cluster logs --no-follow           # one-shot, no streaming`,
+  forge dev cluster logs                       # tail every forge-managed pod
+  forge dev cluster logs --service api         # tail one service
+  forge dev cluster logs --service api --tail 200
+  forge dev cluster logs --no-follow           # one-shot, no streaming`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevLogs(cmd.Context(), configPath, service, tail, follow)
 		},

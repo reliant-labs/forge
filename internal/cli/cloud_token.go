@@ -13,7 +13,7 @@ package cli
 // credential is refused server-side, and that refusal is surfaced as-is.
 //
 // A CONTROL PLANE MAY REFUSE A CLI LOGIN TOO. Reliant cloud refuses token
-// administration to a `forge login` session (control-plane#2636, reason
+// administration to a `forge cloud login` session (control-plane#2636, reason
 // person_session_required): a token a CLI login minted outlived revoking the
 // login. The CI token is then minted in the web app (Settings → API tokens),
 // and these verbs say so (tokenAdminRefusal) instead of printing a bare
@@ -72,7 +72,7 @@ the control plane refuses a machine credential.
 
 On Reliant cloud, mint the CI token in the web app instead:
 ` + cloud.DefaultConsoleURL + cloud.TokenSettingsPath + ` (Settings → API tokens). It refuses
-token administration to a CLI login (` + "`forge login`" + `), because a token a CLI
+token administration to a CLI login (` + "`forge cloud login`" + `), because a token a CLI
 login minted would outlive revoking the login; these commands then say so and
 exit 9. They still work against a control plane that admits a CLI login:
 
@@ -124,7 +124,7 @@ func (f *cloudTokenFlags) client(ctx context.Context) (cloudCaller, error) {
 // KCL declares uses the control plane it declares, as every hosted verb does.
 // With no --env, or an env that has no deploy/kcl (a repo that only records
 // deploys with `forge release record`), it is Reliant cloud — the default
-// `forge login` signs into, and the one such a repo's records go to. Safe for
+// `forge cloud login` signs into, and the one such a repo's records go to. Safe for
 // the reason login's default is: a token is ORG-scoped, so the env only ever
 // chose WHERE, never what the token may touch.
 func (f *cloudTokenFlags) target(ctx context.Context, projectDir string) (cloud.Endpoint, cloud.Credential, error) {
@@ -383,7 +383,7 @@ func (r *personSessionRefusal) ExitCode() int { return exitNeedsHuman }
 
 func (r *personSessionRefusal) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "the control plane at %s does not let a CLI login (`forge login`) %s access tokens: "+
+	fmt.Fprintf(&b, "the control plane at %s does not let a CLI login (`forge cloud login`) %s access tokens: "+
 		"a token a CLI login minted would outlive revoking the login.\n", r.err.Endpoint, r.action)
 	where := "in the web app's Settings → API tokens"
 	if u := cloud.TokenSettingsURL(r.err.Endpoint); u != "" {
@@ -393,9 +393,9 @@ func (r *personSessionRefusal) Error() string {
 	}
 	fmt.Fprintf(&b, "fix: sign in as a person and %s tokens %s.\n", r.action, where)
 	if r.action == "mint" {
-		fmt.Fprintf(&b, "     Store the secret as your CI's %s; signing in again with `forge login` does not help.", cloud.DefaultTokenEnv)
+		fmt.Fprintf(&b, "     Store the secret as your CI's %s; signing in again with `forge cloud login` does not help.", cloud.DefaultTokenEnv)
 	} else {
-		b.WriteString("     Signing in again with `forge login` does not help.")
+		b.WriteString("     Signing in again with `forge cloud login` does not help.")
 	}
 	if r.err.Message != "" {
 		b.WriteString("\n  server said: " + r.err.Message)

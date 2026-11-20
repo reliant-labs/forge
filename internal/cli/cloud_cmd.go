@@ -63,7 +63,7 @@ func declarationFromEntities(entities *KCLEntities) *cloud.Declaration {
 //
 // Order matters here. The endpoint resolves FIRST so that an env with no
 // declaration gets "this env declares no hosted control plane" rather
-// than "no credential" — the second would send a user to `forge login`
+// than "no credential" — the second would send a user to `forge cloud login`
 // for a problem logging in cannot fix, which is exactly the wrong hint.
 func resolveCloudTarget(ctx context.Context, envName, flagToken string) (cloud.Endpoint, cloud.Credential, error) {
 	decl, err := controlPlaneDeclaration(ctx, envName)
@@ -87,13 +87,13 @@ func resolveCloudTargetFor(envName string, decl *cloud.Declaration, flagToken st
 	return ep, cred, nil
 }
 
-// loginCallbackTimeout bounds how long `forge login` waits for the
+// loginCallbackTimeout bounds how long `forge cloud login` waits for the
 // browser to come back. Long enough for a real SSO round trip including
 // an MFA prompt, short enough that a flow abandoned in a closed tab
 // fails with the --token hint instead of hanging the terminal.
 const loginCallbackTimeout = 5 * time.Minute
 
-// openLoginBrowser launches the browser for `forge login`. A seam so the
+// openLoginBrowser launches the browser for `forge cloud login`. A seam so the
 // command's test drives the real flow against an httptest control plane
 // without opening anything.
 var openLoginBrowser = cloud.OpenBrowser
@@ -135,7 +135,7 @@ var declaredControlPlanes = func(ctx context.Context) (planes []declaredControlP
 		decls = append(decls, envDeclaration{Env: env, Decl: declarationFromEntities(entities)})
 	}
 	// Envs forge.yaml declares for monitoring (env_declaration.go) live on
-	// its monitoring control plane: `forge login` covers them too.
+	// its monitoring control plane: `forge cloud login` covers them too.
 	if cfg, cerr := loadProjectConfigFrom(cfgPath); cerr == nil && cfg.MonitoringOn() && monitoringEndpoint(cfg.Monitoring) == "" {
 		cp := &cloud.Declaration{Endpoint: monitoringControlPlane(cfg.Monitoring)}
 		for _, env := range cfg.Envs {
@@ -183,7 +183,7 @@ func distinctControlPlanes(decls []envDeclaration) []declaredControlPlane {
 	return out
 }
 
-// loginTargets resolves which control planes `forge login` / `forge logout`
+// loginTargets resolves which control planes `forge cloud login` / `forge cloud logout`
 // act on, first match wins:
 //
 //  1. an explicit --endpoint;
@@ -225,7 +225,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 	}
 	if len(skipped) > 0 {
 		return nil, fmt.Errorf("no env that rendered declares a control plane, and %d did not render — one of those may declare a different one\n"+
-			"fix: repair the env's KCL (forge env render <env>), or name the control plane directly: forge login --endpoint https://…",
+			"fix: repair the env's KCL (forge env render <env>), or name the control plane directly: forge cloud login --endpoint https://…",
 			len(skipped))
 	}
 	ep, err := cloud.ResolveEndpoint("", &cloud.Declaration{Endpoint: cloud.DefaultEndpoint})
@@ -237,7 +237,7 @@ func loginTargets(ctx context.Context, endpoint string, errOut io.Writer) ([]dec
 	return []declaredControlPlane{{Endpoint: ep}}, nil
 }
 
-// newLoginCmd is `forge login`: obtain a credential for a hosted control
+// newLoginCmd is `forge cloud login`: obtain a credential for a hosted control
 // plane and store it in the shared credentials file, keyed by endpoint.
 //
 // It STANDS ALONE. A user who wants to deploy to hosted infrastructure
@@ -287,7 +287,7 @@ pipeline has no browser, which is what org tokens are for.
 SIGNED IN TO RELIANT? You do not need this command. ` + "`reliant forge …`" + ` and every
 shell a Reliant agent runs set $` + cloudcred.HelperEnv + `, and forge asks that
 helper for a short-lived token minted from your Reliant session for exactly the
-control plane an env declares. forge login is for standalone forge (no Reliant)
+control plane an env declares. forge cloud login is for standalone forge (no Reliant)
 and for overriding the session with a different identity.
 
 CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
@@ -313,7 +313,7 @@ CREDENTIAL PRECEDENCE, when any forge command talks to the control plane:
 					urls = append(urls, p.Endpoint.URL)
 				}
 				return fmt.Errorf("--token is for one control plane, and this project declares %d: %s\n"+
-					"fix: forge login --endpoint <url> --token <token>", len(planes), strings.Join(urls, ", "))
+					"fix: forge cloud login --endpoint <url> --token <token>", len(planes), strings.Join(urls, ", "))
 			}
 			path, err := cloud.CredentialsPath()
 			if err != nil {
@@ -403,7 +403,7 @@ func loginOne(ctx context.Context, p declaredControlPlane, token string, noVerif
 	return nil
 }
 
-// newLogoutCmd is `forge logout`: drop the stored credential of the control
+// newLogoutCmd is `forge cloud logout`: drop the stored credential of the control
 // plane(s) — the ones this project declares, or one --endpoint — from the
 // shared credentials file. Every other endpoint's entry (including
 // reliant's) is untouched. Human logout revokes the device identity across all
@@ -439,7 +439,7 @@ func newLogoutCmd() *cobra.Command {
 				}
 				if errors.Is(lookupErr, credentials.ErrNotFound) {
 					// An org-bound browser login (a control plane that
-					// predates human identities) is what `forge login`
+					// predates human identities) is what `forge cloud login`
 					// stored, so logout forgets it. A pasted --token or any
 					// other delegated entry is left alone.
 					legacy, err := credentials.Lookup(path, p.Endpoint.URL, cloud.ClientID)
@@ -500,11 +500,18 @@ The endpoint is per-environment and comes from KCL, so which server a
 command hits follows from its env argument — not from any stored
 "current context".
 
-Authenticate with ` + "`forge login`" + `, or set the declared token env var.`,
+Authenticate with ` + "`forge cloud login`" + `, or set the declared token env var.`,
 	}
 	cmd.AddCommand(newCloudStatusCmd())
 	cmd.AddCommand(newCloudTokenCmd())
 	cmd.AddCommand(newCloudIdentityCmd())
+	// The control plane's credential, its registry, its domains, and the
+	// clusters you operate that it deploys to.
+	cmd.AddCommand(newLoginCmd())
+	cmd.AddCommand(newLogoutCmd())
+	cmd.AddCommand(newRegistryCmd())
+	cmd.AddCommand(newDomainCmd())
+	cmd.AddCommand(newCloudClusterCmd())
 	// StrictGroup, not a bare group: cobra's default would accept
 	// `forge cloud <typo>` and exit 0, which for a command that talks to
 	// a remote endpoint reads as "it worked".

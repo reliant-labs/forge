@@ -249,7 +249,7 @@ type KCLEntities struct {
 	// preflight BLOCK on a declared-required-but-absent Secret/key.
 	RequiredSecrets []ExternalSecretEntity `json:"required_secrets,omitempty"`
 	// OpenBao and BootstrapSource are the rendered Bundle.openbao and
-	// Bundle.bootstrap_source: where `forge secret` reaches a self-run store
+	// Bundle.bootstrap_source: where `forge env secret` reaches a self-run store
 	// and where BootstrapSecrets live. Nil when the env declares none.
 	OpenBao         *OpenBaoEntity         `json:"openbao,omitempty"`
 	BootstrapSource *BootstrapSourceEntity `json:"bootstrap_source,omitempty"`
@@ -548,7 +548,7 @@ type GatewayListenerEntity struct {
 // EffectiveHost resolves the hostname a route on this listener is
 // served on: the route's own override wins, then the listener's
 // hostname, then the gateway's default host. Mirrors _route_host in
-// kcl/lib/gateway.k — the two must agree, or `forge cluster urls` prints
+// kcl/lib/gateway.k — the two must agree, or `forge dev cluster urls` prints
 // a URL the cluster does not serve.
 //
 // Returns "" when nothing resolves; callers substitute their own
@@ -566,7 +566,7 @@ func (g *GatewayEntity) EffectiveHost(listener *GatewayListenerEntity, routeHost
 // GatewayTLSEntity is the TLS block on a Gateway. Mode selects the
 // cert origin: "cert_manager" (default — cert-manager Certificate
 // emitted alongside the Gateway, CertIssuer names a ClusterIssuer),
-// "mkcert" (Secret populated host-side by `forge cluster up` via the
+// "mkcert" (Secret populated host-side by `forge dev cluster up` via the
 // mkcert binary; CertIssuer unused), or "gke_certmap" (GCP Certificate
 // Manager map named by Certmap terminates TLS; CertIssuer / SecretName
 // unused — the GKE Gateway controller binds the map via the
@@ -798,7 +798,7 @@ type ControlPlaneSecretEntity struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	// Cluster is the kube context it lands in; ConnectedCluster is the name
-	// `forge cluster connect` registered, the credential it is delivered with.
+	// `forge cloud cluster connect` registered, the credential it is delivered with.
 	Cluster          string `json:"cluster"`
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
 	// Kind says what the control plane mints into it ("telemetry_token",
@@ -1538,7 +1538,7 @@ func (f FrontendEntity) EffectiveEnvVars() []KCLEnvVar {
 //     forge-generated ConfigMap.
 //
 // SecretRef / ConfigMapRef are surfaced (rather than dropped) so the
-// `forge doctor parity` diff can attribute cluster-side projected env
+// `forge project doctor parity` diff can attribute cluster-side projected env
 // vars to their source rather than treating an empty Value as "unset".
 type KCLEnvVar struct {
 	Name         string `json:"name"`
@@ -1875,7 +1875,7 @@ type ClusterTargetEntity struct {
 	Domain    string `json:"domain,omitempty"`
 	Platform  string `json:"platform,omitempty"`
 	// ConnectedCluster is the control-plane cluster this target names, by
-	// the name `forge cluster connect` registered. Empty for a k3d cluster,
+	// the name `forge cloud cluster connect` registered. Empty for a k3d cluster,
 	// which forge applies to directly.
 	ConnectedCluster string `json:"connected_cluster,omitempty"`
 	// ImagePullSecrets are the pull Secrets the target declares. Each cluster

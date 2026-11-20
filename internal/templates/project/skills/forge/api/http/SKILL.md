@@ -1,6 +1,6 @@
 ---
 name: api-http
-description: Hitting Connect RPC handlers with plain HTTP+JSON — URL shape, Content-Type rules, streaming caveats, and the `forge api curl` helper for building copy-pasteable curl invocations.
+description: Hitting Connect RPC handlers with plain HTTP+JSON — URL shape, Content-Type rules, streaming caveats, and the `forge dev curl` helper for building copy-pasteable curl invocations.
 ---
 
 # Plain HTTP + JSON against Connect RPCs
@@ -41,7 +41,7 @@ If you forget `Content-Type` entirely, the server responds with `415 Unsupported
 
 ## Request body shape
 
-ProtoJSON: a JSON object with one key per proto field. Connect accepts both `snake_case` and `camelCase`; forge's proto definitions use `snake_case`, which is what the `forge api curl` skeleton emits.
+ProtoJSON: a JSON object with one key per proto field. Connect accepts both `snake_case` and `camelCase`; forge's proto definitions use `snake_case`, which is what the `forge dev curl` skeleton emits.
 
 ```json
 {
@@ -113,12 +113,12 @@ curl -X POST \
 
 You will see the first response frame plus a connection that stays open until the server closes it.
 
-## The `forge api curl` helper
+## The `forge dev curl` helper
 
-`forge api curl <service.method>` builds a copy-pasteable curl command for you — no remembering the URL shape, no looking up the request message fields:
+`forge dev curl <service.method>` builds a copy-pasteable curl command for you — no remembering the URL shape, no looking up the request message fields:
 
 ```bash
-forge api curl services.users.v1.UserService.GetUser
+forge dev curl services.users.v1.UserService.GetUser
 # →
 # curl -X POST \
 #   -H 'Content-Type: application/json' \
@@ -139,7 +139,7 @@ Flags:
 Short form works when the service name is unique across all proto packages:
 
 ```bash
-forge api curl UserService.GetUser
+forge dev curl UserService.GetUser
 ```
 
 The helper reads `gen/forge_descriptor/` for the proto data — run `forge generate` first if you've just added an RPC.
@@ -150,4 +150,4 @@ The helper reads `gen/forge_descriptor/` for the proto data — run `forge gener
 2. **Wrong Content-Type for streaming** — `application/json` only works for unary RPCs. Streaming returns `415` if you forget `+json`.
 3. **Forgetting the body for empty-input methods** — Connect requires `{}` even for `google.protobuf.Empty`. An empty `-d ''` produces a parse error.
 4. **Confusing the URL with the proto file path** — the URL is built from the `package` directive (`/services.users.v1.UserService/GetUser`), not the file path: the `proto/` root and the file name (`users.proto`) never appear in it.
-5. **Hand-rolling the URL when `forge api curl` exists** — let the helper read the descriptor; it will catch service/method renames at the point of use.
+5. **Hand-rolling the URL when `forge dev curl` exists** — let the helper read the descriptor; it will catch service/method renames at the point of use.

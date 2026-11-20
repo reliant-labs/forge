@@ -15,7 +15,7 @@ For an app forge did **not** build and does **not** deploy: any language, its ow
 ## The steps
 
 ```bash
-forge login                              # a person's sign-in (or RELIANT_TOKEN in CI)
+forge cloud login                              # a person's sign-in (or RELIANT_TOKEN in CI)
 forge obs init prod staging              # registers the envs, mints one ingest token per env, prints the variables
 forge obs status prod                    # after the app has sent anything
 forge obs receivers create oncall --type slack --secret "$SLACK_WEBHOOK_URL"

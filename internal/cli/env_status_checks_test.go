@@ -15,7 +15,7 @@ import (
 // The runtime checks probe the port `forge env status` RESOLVED, not a
 // default.
 //
-// `forge doctor`'s App Health looked up "app:8080" and, in a project serving
+// `forge project doctor`'s App Health looked up "app:8080" and, in a project serving
 // on :3091, rendered a gray dash that was indistinguishable from "not
 // applicable". The fix is not a better default: it is that the check's
 // address comes from the rows the status table was built from — the rendered
@@ -233,7 +233,7 @@ module_path: github.com/example/demo
 		t.Errorf("env = %q, want dev", rep.Env)
 	}
 	if len(rep.Checks) == 0 {
-		t.Error("the JSON envelope carries no runtime checks — they moved here from `forge doctor`")
+		t.Error("the JSON envelope carries no runtime checks — they moved here from `forge project doctor`")
 	}
 	// And no diagnostic text leaked into the document.
 	if strings.Contains(out, "[devstack]") {

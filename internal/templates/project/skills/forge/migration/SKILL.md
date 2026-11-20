@@ -10,7 +10,7 @@ Use this skill when porting an existing Go codebase onto a forge-generated scaff
 ## Pre-flight
 
 1. **No BSR (buf.build) auth required — Go or frontend.** Fresh forge projects scaffold with no `deps:` in `buf.yaml` and `local:` plugins on both halves of codegen:
-   - **Go**: `local: protoc-gen-go` / `local: protoc-gen-connect-go` resolved from `$PATH`. `forge project new` auto-runs `forge tools install` to put them there.
+   - **Go**: `local: protoc-gen-go` / `local: protoc-gen-connect-go` resolved from `$PATH`. `forge project new` auto-runs `forge machine tools install` to put them there.
    - **TypeScript** (frontends): `local: ./frontends/<name>/node_modules/.bin/protoc-gen-es` from `@bufbuild/protoc-gen-es` pinned in the frontend `package.json`. `forge project new` runs `npm install` in each frontend dir before bootstrap codegen.
 
    Opt back into BSR-hosted plugins with `forge project new --buf-plugins=remote` if you prefer no-install (and accept rate limits) on both halves.
@@ -19,10 +19,10 @@ Use this skill when porting an existing Go codebase onto a forge-generated scaff
 4. PATH visibility in your shell does NOT propagate to forge subprocesses unless you `export` it. Add `export PATH=/path/to/go/bin:$PATH` to your shell init or invoke forge with the env inline. `buf generate` is run as a forge subprocess and will silently misbehave if it cannot find tools.
 5. Load relevant skills upfront — they are the most current source of truth on conventions:
    ```bash
-   forge skill load architecture
-   forge skill load services
-   forge skill load auth
-   forge skill load contracts
+   forge agent skill load architecture
+   forge agent skill load services
+   forge agent skill load auth
+   forge agent skill load contracts
    ```
 
 ## Choose the project shape at scaffold time
@@ -199,7 +199,7 @@ Stop and report it, with a reproduction. Do not paper over it, and do not hand-e
 
 - Tell them which forge skills to load before starting (`architecture`, `services`, `contracts`, `migration` plus this skill's children).
 - Tell them which fixes are already in (so they don't relitigate).
-- Be explicit about whether to use `forge package new` or copy source directly.
+- Be explicit about whether to use `forge scaffold package` or copy source directly.
 - Specify env: `export PATH=/path/to/go/bin:$PATH`.
 - Halt-and-report rule on new forge bugs (don't fix forge themselves — bring back to the orchestrator).
 

@@ -19,7 +19,7 @@
 //   - deps-no-downcast: a type assertion turns a field back into a concrete
 //     type, undoing the capability its interface granted.
 //
-// and `forge fix narrow-deps` (Narrow) writes the interface the observed
+// and `forge lint fix narrow-deps` (Narrow) writes the interface the observed
 // calls describe.
 package depsurface
 

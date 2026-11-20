@@ -29,7 +29,7 @@ provisioned out-of-band).
 
 For a Secret ESO syncs from a store (forge.StoreSource), the migration steps are:
 
-  forge secret import      --env prod --from <ns>/<secret> --map key=NAME   # copy in, create-only
+  forge env secret import      --env prod --from <ns>/<secret> --map key=NAME   # copy in, create-only
   forge env secrets verify prod <secret>                                    # live vs the store's copy: match / no-match
   forge env secrets adopt  prod <ns>/<secret>                               # hand the verified Secret to ESO`,
 	}

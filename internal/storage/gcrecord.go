@@ -15,7 +15,7 @@ import (
 
 // Two records beside the policy say what maintenance has actually done.
 //
-//   - last-full-gc.json is written by every APPLIED full pass (`forge storage
+//   - last-full-gc.json is written by every APPLIED full pass (`forge machine storage
 //     gc --apply` and the scheduled job, which runs that command). It records
 //     whether the pass succeeded, and which layers failed. This is the only
 //     evidence that registry retention, the layer that reclaims the most, is
@@ -25,7 +25,7 @@ import (
 //
 // They used to be one stamp, last-gc.json, which the opportunistic pass
 // advanced even when it failed and even though it never runs the registry
-// layer. `forge doctor` then reported "GC scheduled, last ran 2h ago" on a
+// layer. `forge project doctor` then reported "GC scheduled, last ran 2h ago" on a
 // machine where registry retention had never once succeeded.
 
 // GCResult is the outcome of one maintenance pass.
@@ -275,7 +275,7 @@ func LastAutoGC(policyPath string) (GCResult, bool) {
 	return readRecord(AutoGCRecordPath(policyPath))
 }
 
-// GoCacheGCRecordPath is the Go-cache pass's record (`forge storage gocache
+// GoCacheGCRecordPath is the Go-cache pass's record (`forge machine storage gocache
 // --apply`): its outcome and each cache's GoCacheTrim. It is that pass's own
 // record, apart from the opportunistic one, so a scheduler running both on
 // different cadences can rate-limit each by its own last run.

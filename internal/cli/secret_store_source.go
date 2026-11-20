@@ -15,12 +15,12 @@ import (
 	"github.com/reliant-labs/forge/pkg/secretaccess"
 )
 
-// Store sources for `forge secret`.
+// Store sources for `forge env secret`.
 //
 // A forge.ExternalSecret with a forge.StoreSource is a Secret ESO syncs from a
 // secret store: the hosted control plane's (HostedStore), the env's own
 // OpenBao (OpenBaoStore) or Google Secret Manager (GCPSecretManagerStore).
-// `forge secret set|list|import` write and list the STORE side of that, by
+// `forge env secret set|list|import` write and list the STORE side of that, by
 // store name, so the value an operator types is the value ESO later delivers.
 //
 // Three promises hold for every command in this file family and are pinned by
@@ -255,7 +255,7 @@ func toSet(in []string) map[string]bool {
 	return out
 }
 
-// runStoreSourceSet is `forge secret set` for a name a store-backed
+// runStoreSourceSet is `forge env secret set` for a name a store-backed
 // ExternalSecret declares. handled is false when no store declares the name,
 // and the caller carries on with the env's secret_provider.
 func runStoreSourceSet(ctx context.Context, envName, key string, e *KCLEntities, o storeOptions, fromFile string, stdin io.Reader, out io.Writer) (handled bool, err error) {
@@ -276,7 +276,7 @@ func runStoreSourceSet(ctx context.Context, envName, key string, e *KCLEntities,
 	if value == "" {
 		return true, fmt.Errorf(
 			"refusing to write an empty value for %s\n"+
-				"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set --env %s %s",
+				"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge env secret set --env %s %s",
 			key, envName, key)
 	}
 	src, err := openStoreSource(ctx, envName, e, ref, o, true)
@@ -312,7 +312,7 @@ func validStoreName(ref storeRef, name string) error {
 }
 
 // storeSourceListStore is the presence facts of every store the env's
-// ExternalSecrets read from, joined into the one shape `forge secret list`
+// ExternalSecrets read from, joined into the one shape `forge env secret list`
 // reports for every provider.
 func storeSourceListStore(ctx context.Context, envName string, e *KCLEntities) (secretListStore, error) {
 	byStore := map[storeRef][]string{}
@@ -360,7 +360,7 @@ func storeSourceListStore(ctx context.Context, envName string, e *KCLEntities) (
 //
 // The two sets of declarations are different vocabularies (env-var names the
 // provider supplies; store names ESO fetches), so neither is folded into the
-// other's gate: `forge secret ensure` still checks only the provider's.
+// other's gate: `forge env secret ensure` still checks only the provider's.
 func mergeStoreSourceFacts(report secretListReport, e *KCLEntities, st secretListStore) secretListReport {
 	names, attribution := storeSourceDeclarations(e)
 	have := map[string]int{}

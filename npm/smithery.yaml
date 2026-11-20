@@ -1,4 +1,4 @@
-# Smithery listing for `forge mcp` (https://smithery.ai). The listing's text is
+# Smithery listing for `forge agent mcp` (https://smithery.ai). The listing's text is
 # npm/README.md: forge for ANY repo — standalone lint lanes, agent playbooks,
 # runtime libraries, no-account deploys, and the `benefits` tool that says what
 # applies to the repo the agent is in. A local stdio server: Smithery's clients
@@ -13,5 +13,5 @@ startCommand:
     type: object
     properties: {}
   commandFunction: |-
-    () => ({ command: 'npx', args: ['-y', '@reliantlabs/forge', 'mcp'] })
+    () => ({ command: 'npx', args: ['-y', '@reliantlabs/forge', 'agent', 'mcp'] })
   exampleConfig: {}

@@ -1,6 +1,6 @@
 """
 Positive test — `ClusterTarget.connected_cluster` names the cluster that
-`forge cluster connect` registered, so a control-plane-backed env can deploy
+`forge cloud cluster connect` registered, so a control-plane-backed env can deploy
 into a cluster the author operates.
 
 TWO FIELDS FOR THE SAME PHYSICAL CLUSTER, through two different authorities.

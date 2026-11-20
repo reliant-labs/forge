@@ -1,6 +1,6 @@
 package cli
 
-// `forge cluster connect` / `forge cluster disconnect` — registering a
+// `forge cloud cluster connect` / `forge cloud cluster disconnect` — registering a
 // Kubernetes cluster the control plane may deploy INTO, as one env's binding.
 //
 // THE SIBLING COMMANDS IN THIS NAMESPACE ARE LOCAL k3d LIFECYCLE. These two
@@ -20,7 +20,7 @@ package cli
 //
 // forge does not vendor the control plane's protos, so the wire shapes below
 // are the proto3-JSON subset forge reads, declared locally — the same rule the
-// hosted deploy target and `forge domain` follow.
+// hosted deploy target and `forge cloud domain` follow.
 
 import (
 	"context"
@@ -32,6 +32,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -80,12 +81,12 @@ type wireConnectClusterResponse struct {
 const clusterConnectLong = `Register a cluster you operate, by address, and grant ONE env's binding exactly
 what the control plane applies there.
 
-  forge cluster connect prod-us --context gke_acme_us-central1_prod --env prod
-  forge cluster connect prod-us --context ... --env prod --apply-scope namespace:acme-prod,acme-jobs
-  forge cluster connect hub --context ... --env prod --apply-scope cluster
-  forge cluster connect prod-us --context ... --env prod --address https://203.0.113.10:6443 --ca-file ca.pem
-  forge cluster connect prod-us --context ... --env prod --dry-run
-  forge cluster disconnect prod-us --env prod --context ...
+  forge cloud cluster connect prod-us --context gke_acme_us-central1_prod --env prod
+  forge cloud cluster connect prod-us --context ... --env prod --apply-scope namespace:acme-prod,acme-jobs
+  forge cloud cluster connect hub --context ... --env prod --apply-scope cluster
+  forge cloud cluster connect prod-us --context ... --env prod --address https://203.0.113.10:6443 --ca-file ca.pem
+  forge cloud cluster connect prod-us --context ... --env prod --dry-run
+  forge cloud cluster disconnect prod-us --env prod --context ...
 
 HOW IT AUTHENTICATES — one way, on any Kubernetes cluster. Your own kube context
 (--context) bootstraps a dedicated ServiceAccount for this binding and applies
@@ -148,7 +149,7 @@ SECRET DELIVERY — opt-in, off unless named. A Secret the control plane supplie
 and renews (forge.ControlPlaneSecret) needs write access to exactly that
 Secret and no other. Name each one:
 
-  forge cluster connect prod-us --context ... --env prod \
+  forge cloud cluster connect prod-us --context ... --env prod \
     --delivery-secret control-plane-prod/reliant-otel-auth
 
 forge then applies, per namespace, a Role limited by resourceNames to get,
@@ -273,7 +274,7 @@ leaves litter rather than a live credential.
 REFUSED while any live environment targets the cluster — that check is the
 control plane's, and it is why this is not a local delete.
 
-  forge cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
+  forge cloud cluster disconnect prod-us --env prod --context gke_acme_us-central1_prod
 
 --context is optional and names where to clean up. Without it, forge
 deregisters the cluster and prints the commands to delete the grant by hand.`,
@@ -802,11 +803,17 @@ func lookupConnectedCluster(ctx context.Context, c cloudCaller, name string) (st
 	return "", fmt.Errorf("no cluster named %q (this organization has: %s)", name, strings.Join(known, ", "))
 }
 
-// clusterConnectCommands are the commands this file and cluster_list.go add to
-// `forge cluster`. Named so dev.go's newClusterCmd registers them without this
-// file needing to know the parent's shape.
-func clusterConnectCommands() []*cobra.Command {
-	return []*cobra.Command{newClusterConnectCmd(), newClusterDisconnectCmd(), newClusterListCmd(), newClusterShowCmd()}
+// newCloudClusterCmd is `forge cloud cluster`: the commands this file and
+// cluster_list.go define, for a cluster you operate that the control plane
+// deploys to. The opposite direction from `forge dev cluster`: nothing is
+// created, and the cluster outlives the registration.
+func newCloudClusterCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cluster",
+		Short: "Connect a cluster you operate to the control plane, as a deploy target",
+	}
+	cmd.AddCommand(newClusterConnectCmd(), newClusterDisconnectCmd(), newClusterListCmd(), newClusterShowCmd())
+	return cmdutil.StrictGroup(cmd)
 }
 
 // writeIssuerDryRun says what the run would send about the issuer.

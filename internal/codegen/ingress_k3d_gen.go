@@ -3,7 +3,7 @@
 // k3d loadbalancer needs to expose each Gateway listener.
 //
 // The fragment is derived from the dev environment's KCL ingress
-// topology, NOT hand-written. `forge cluster up` merges this
+// topology, NOT hand-written. `forge dev cluster up` merges this
 // fragment into the user-owned deploy/k3d.yaml at create time so
 // k3d's ports block reflects the current gateway listeners. Keeping
 // the merge at cluster-up time (rather than baking ports into

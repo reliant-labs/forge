@@ -189,7 +189,7 @@ func hubUnitsConvergeable(e *KCLEntities, hub []string) error {
 	if bound, _ := declaredBindings(e); len(bound) == 0 {
 		return fmt.Errorf("bundle.hub_converges = [%s] but no cluster is bound to a connected cluster: "+
 			"the hub converges a unit only onto a connected cluster (set connected_cluster on the env's forge.ClusterTarget, "+
-			"or Bundle.connected_clusters), and `forge cluster connect` registers it", strings.Join(hub, ", "))
+			"or Bundle.connected_clusters), and `forge cloud cluster connect` registers it", strings.Join(hub, ", "))
 	}
 	// A HOSTED PART BESIDE A HUB UNIT IS A VALID ENV — placement is per
 	// workload (docs/design/per-workload-placement.md), and the hosted parts

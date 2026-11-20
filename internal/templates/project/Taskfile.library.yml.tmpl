@@ -52,13 +52,13 @@ vars:
   # Declared on the task itself it would silently win over the override.
   GOTESTRACE: '-race'
   # SLOT runs the heavy lanes (`test`, `test:integration`) inside one of this
-  # machine's host-wide heavy slots: `forge slot run` waits while N other heavy
+  # machine's host-wide heavy slots: `forge machine slot run` waits while N other heavy
   # jobs (builds, test lanes, codegen, lints — from any agent, worktree or
   # terminal) are running, because past a handful every one of them slows
   # down. N comes from the machine (min(CPUs/2, memory GiB/8)); set
   # FORGE_HEAVY_SLOTS=<n> to change it or =off to switch it off. Inside a
-  # slot already (a gate check, a parent `forge slot run`) it does not wait.
-  # Empty when forge is absent or predates `forge slot` (the probe fails), so
+  # slot already (a gate check, a parent `forge machine slot run`) it does not wait.
+  # Empty when forge is absent or predates `forge machine slot` (the probe fails), so
   # these tasks still run without it; `task test SLOT=` skips the slot for
   # one run. `--class heavy` is spelled out on purpose: a forge without the
   # verb rejects the flag loudly instead of printing its help and exiting 0
@@ -70,7 +70,7 @@ vars:
   # probe runs on every `task` invocation, so it must cost nothing — never a
   # `go run`.
   SLOT:
-    sh: forge slot status --class heavy >/dev/null 2>&1 && echo 'forge slot run --class heavy --' || true
+    sh: forge machine slot status --class heavy >/dev/null 2>&1 && echo 'forge machine slot run --class heavy --' || true
 
 tasks:
   default:

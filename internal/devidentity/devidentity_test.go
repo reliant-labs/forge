@@ -148,7 +148,7 @@ func TestSpec_SeedUserFailureIsNotFatal(t *testing.T) {
 			t.Errorf("applications = %+v, machine users = %+v: the rest must still converge", spec.Applications, spec.MachineUsers)
 		}
 		if len(warnings) != 1 || !strings.Contains(warnings[0], "dev@acme.test") ||
-			!strings.Contains(warnings[0], "forge secret set --env <env> DEV_PASSWORD") {
+			!strings.Contains(warnings[0], "forge env secret set --env <env> DEV_PASSWORD") {
 			t.Fatalf("warnings = %v, want one naming the seed user and the command that fixes it", warnings)
 		}
 	})

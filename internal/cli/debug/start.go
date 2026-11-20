@@ -19,7 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
-// startOptions are `forge debug start`'s flags.
+// startOptions are `forge dev debug start`'s flags.
 type startOptions struct {
 	attachPID  int
 	port       int
@@ -43,7 +43,7 @@ func newStartCmd(f *factory.Factory) *cobra.Command {
 
 The binary is built with debug flags (-gcflags=all=-N -l) and launched under
 a headless Delve server on 127.0.0.1, halted at its entry point: set
-breakpoints, then 'forge debug continue'. --run lets it run from the start
+breakpoints, then 'forge dev debug continue'. --run lets it run from the start
 instead, so it serves while you set breakpoints against it.
 
 The service gets its environment's configuration the way 'forge env exec'
@@ -63,14 +63,14 @@ the configured one — needed when 'forge env up' already serves that port.
 --attach <pid> attaches to a running process instead, leaving it halted where
 attach found it (--run resumes it at once). forge does not own it: 'stop'
 detaches and leaves it running. To drive a dlv server forge did not
-start — an env's delve runner — use 'forge debug connect <addr>'.
+start — an env's delve runner — use 'forge dev debug connect <addr>'.
 
 Examples:
-  forge debug start api
-  forge debug start api --run --app-port 18080
-  forge debug start --attach 12345 --run
-  forge debug start --port 2345 --env dev api
-  forge debug start ./cmd/server --no-env`,
+  forge dev debug start api
+  forge dev debug start api --run --app-port 18080
+  forge dev debug start --attach 12345 --run
+  forge dev debug start --port 2345 --env dev api
+  forge dev debug start ./cmd/server --no-env`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.envSet = cmd.Flags().Changed("env") || cmd.Flags().Changed("workload")
@@ -138,10 +138,10 @@ func runDebugStartAttach(ctx context.Context, o startOptions) error {
 // thing a silent debugger used to leave them guessing.
 func printRunState(halted bool, where string) {
 	if halted {
-		fmt.Printf("Target is HALTED (%s). Set breakpoints, then 'forge debug continue' to run it.\n", where)
+		fmt.Printf("Target is HALTED (%s). Set breakpoints, then 'forge dev debug continue' to run it.\n", where)
 		return
 	}
-	fmt.Println("Target is RUNNING. Set breakpoints with 'forge debug break', then 'forge debug continue --timeout 60s' waits for the next hit.")
+	fmt.Println("Target is RUNNING. Set breakpoints with 'forge dev debug break', then 'forge dev debug continue --timeout 60s' waits for the next hit.")
 }
 
 func runDebugStartService(ctx context.Context, f *factory.Factory, target string, o startOptions) error {
@@ -211,7 +211,7 @@ func runDebugStartService(ctx context.Context, f *factory.Factory, target string
 
 	fmt.Printf("Building %s with debug flags...\n", buildPath)
 	// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant workspace
-	// image makes it the toolchain default): `forge debug break` hands delve
+	// image makes it the toolchain default): `forge dev debug break` hands delve
 	// an ABSOLUTE file path first, and a trimmed binary records only
 	// module-relative ones.
 	buildCmd := goexec.Graceful(exec.CommandContext(ctx, "go", "build", "-gcflags=all=-N -l", "-trimpath=false", "-o", outputBinary, buildPath))
@@ -375,7 +375,7 @@ func checkAppPortFree(env []string, explicit bool) error {
 		if explicit {
 			return fmt.Errorf("--app-port %s is in use: %w", p, err)
 		}
-		return fmt.Errorf("the service's PORT %s is in use (is 'forge env up' serving it?): pass --app-port <free port>, or attach to the running process with 'forge debug start --attach <pid>'", p)
+		return fmt.Errorf("the service's PORT %s is in use (is 'forge env up' serving it?): pass --app-port <free port>, or attach to the running process with 'forge dev debug start --attach <pid>'", p)
 	}
 	_ = l.Close()
 	return nil
@@ -561,7 +561,7 @@ func mainPackageForService(service, svcPath string) (string, error) {
 			return "./" + filepath.ToSlash(dispatchers[0]), nil
 		}
 		return "", fmt.Errorf(
-			"service %q maps to no single main package; cmd/ holds %d binaries (%s) — pass an explicit path (e.g. forge debug start ./%s)",
+			"service %q maps to no single main package; cmd/ holds %d binaries (%s) — pass an explicit path (e.g. forge dev debug start ./%s)",
 			service, len(mains), strings.Join(mains, ", "), mains[0])
 	}
 

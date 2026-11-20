@@ -20,7 +20,7 @@ import (
 // its Namespace and the base ingress Gateway. `forge env up` read that
 // declaration as "deploys to a cluster": with no `k3d-<project>` context it
 // refused ("declares cluster … but no such kubectl context exists"), and once
-// a user ran `forge cluster up` by hand it refused again trying to push a
+// a user ran `forge dev cluster up` by hand it refused again trying to push a
 // project image no pod would ever pull. The only way through was
 // `--no-deploy`.
 //
@@ -238,11 +238,11 @@ func TestDeclaredContextExistsVerdict_K3dNamesClusterUp(t *testing.T) {
 	if err == nil {
 		t.Fatal("a missing declared context must refuse")
 	}
-	if !strings.Contains(err.Error(), "forge cluster up") {
-		t.Errorf("a missing k3d context must name `forge cluster up`:\n%v", err)
+	if !strings.Contains(err.Error(), "forge dev cluster up") {
+		t.Errorf("a missing k3d context must name `forge dev cluster up`:\n%v", err)
 	}
 	cloud := declaredContextExistsVerdict("prod", "gke_acme_us-central1_prod", nil)
-	if cloud == nil || strings.Contains(cloud.Error(), "forge cluster up") {
-		t.Errorf("a cloud context is not created by forge cluster up:\n%v", cloud)
+	if cloud == nil || strings.Contains(cloud.Error(), "forge dev cluster up") {
+		t.Errorf("a cloud context is not created by forge dev cluster up:\n%v", cloud)
 	}
 }

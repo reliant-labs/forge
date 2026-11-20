@@ -17,7 +17,7 @@ import (
 // a route attaches. `forge env up dev` used to read any of them as "this env
 // deploys to a cluster", so a fresh `forge project new` failed its first
 // `env up` on a missing kubectl context — and, once someone had run
-// `forge cluster up` by hand, on a project image nothing would ever pull.
+// `forge dev cluster up` by hand, on a project image nothing would ever pull.
 // The README's promise ("no cluster") was false on day 0.
 //
 // So the dev loop derives the cluster requirement from DEMAND: the objects

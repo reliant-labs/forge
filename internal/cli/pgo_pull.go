@@ -302,7 +302,7 @@ func (p *pgoPuller) pull(ctx context.Context, b PGOBinary) pgoPullResult {
 	r.Oldest, r.Newest = pgoTime(prof.Oldest), pgoTime(prof.Newest)
 	if len(prof.Edges) == 0 {
 		return skip("no CPU profile edges from %s in env %s over the last %s: profiles arrive every few minutes once a workload runs with an OTLP endpoint, "+
-			"and only from a pkg/observe that records PGO start lines (see `forge skill load observability/profiles`)",
+			"and only from a pkg/observe that records PGO start lines (see `forge agent skill load observability/profiles`)",
 			strings.Join(r.Services, ", "), r.FromEnv, pgoDuration(since))
 	}
 	if r.TotalWeightNS < r.MinWeightNS {
@@ -455,7 +455,7 @@ func pgoLocalError(ctx context.Context, env string, err error) error {
 	switch {
 	case strings.Contains(msg, "profile_pgo_edges") && (strings.Contains(msg, "UNKNOWN_TABLE") || strings.Contains(msg, "doesn't exist") || strings.Contains(msg, "does not exist")):
 		return obsbackend.Undetermined("env %s's local ClickStack has no default.profile_pgo_edges table: this project's profiles schema predates PGO; "+
-			"run `forge project upgrade` (see `forge skill load migrations/v1.8.0/profile-guided-builds`) then `%s`", env, up).With(up)
+			"run `forge project upgrade` (see `forge agent skill load migrations/v1.8.0/profile-guided-builds`) then `%s`", env, up).With(up)
 	}
 	var be *obsbackend.Error
 	if errors.As(err, &be) {

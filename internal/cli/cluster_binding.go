@@ -54,7 +54,7 @@ func resolveClusterBindings(ctx context.Context, c cloudCaller, e *KCLEntities) 
 			sort.Strings(known)
 			return nil, fmt.Errorf("cluster %q targets connected cluster %q, which this organization has not "+
 				"connected (it has: %s)\n"+
-				"fix: forge cluster connect %s --context %s --env <env>",
+				"fix: forge cloud cluster connect %s --context %s --env <env>",
 				b.Cluster, b.ConnectedCluster, strings.Join(known, ", "), b.ConnectedCluster, b.Cluster)
 		}
 		out = append(out, deploytarget.ClusterBinding{Cluster: b.Cluster, ClusterID: id})
@@ -137,7 +137,7 @@ type clusterBinding struct {
 	// Cluster is the rendered cluster / kube-context name — the bundle's own
 	// key (release.BundleClusterPath).
 	Cluster string
-	// ConnectedCluster is the name `forge cluster connect` registered.
+	// ConnectedCluster is the name `forge cloud cluster connect` registered.
 	ConnectedCluster string
 }
 
@@ -219,7 +219,7 @@ func refuseUnboundClusterTargets(envName string, e *KCLEntities) error {
 		"The control plane would record this deploy with nowhere to send it: it holds no address, "+
 		"CA or credential for a cluster it has not been told about.\n"+
 		"fix: register the cluster once, then name it in the target:\n\n"+
-		"    forge cluster connect <name> --context %s --env %s\n\n"+
+		"    forge cloud cluster connect <name> --context %s --env %s\n\n"+
 		"    forge.ClusterTarget {\n        cluster = %q\n        namespace = \"...\"\n        connected_cluster = \"<name>\"\n    }\n\n"+
 		"or, for a cluster only raw groups (Manifests/HelmChart/Generated) reach, once at cluster level:\n\n"+
 		"    connected_clusters = {%q: \"<name>\"}    # on the Bundle\n\n"+
@@ -290,7 +290,7 @@ func refuseUndeliverableControlPlaneSecrets(envName string, e *KCLEntities) erro
 	return fmt.Errorf("env %q declares control-plane secrets (%s) on cluster %s, which names no connected cluster.\n"+
 		"The control plane can only write a Secret into a cluster it holds a credential for, so there is nothing to deliver it with.\n"+
 		"fix: register the cluster once, then name it:\n\n"+
-		"    forge cluster connect <name> --context %s --env %s\n\n"+
+		"    forge cloud cluster connect <name> --context %s --env %s\n\n"+
 		"    connected_clusters = {%q: \"<name>\"}    # on the Bundle, or ClusterTarget.connected_cluster",
 		envName, strings.Join(quoteEach(controlPlaneSecretNames(unbound)), ", "), strings.Join(quoteEach(sorted), ", "),
 		sorted[0], envName, sorted[0])

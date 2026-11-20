@@ -1,6 +1,6 @@
 // forge:deps — consumer-declared interfaces for this package's Deps.
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-// Dependency interfaces; canonical pattern in `forge skill load service-layer`.
+// Dependency interfaces; canonical pattern in `forge agent skill load service-layer`.
 package {{.Name}}
 
 // ─── Dependency interfaces ──────────────────────────────────────────
@@ -22,7 +22,7 @@ package {{.Name}}
 // `forge generate` writes a mock for EVERY interface in this file,
 // alongside the Service mock, into mock_gen.go — the first line above
 // is what tells it to. Never hand-roll a fake for something declared
-// here. `forge fix narrow-deps internal/{{.ImportPath}}` appends the
+// here. `forge lint fix narrow-deps internal/{{.ImportPath}}` appends the
 // interfaces it narrows a wide dep to here too.
 //
 //	// Store is this package's persistence boundary.

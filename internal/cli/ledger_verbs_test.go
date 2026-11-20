@@ -1,6 +1,6 @@
 package cli
 
-// `forge ledger export`, `where` and `show`.
+// `forge release ledger export`, `where` and `show`.
 //
 // The load-bearing test here is the ROUND TRIP: import a git ledger, export
 // it, and compare the result against the files it came from. That is §11.1
@@ -25,7 +25,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// runLedgerVerb drives one `forge ledger <verb>` with the project pinned.
+// runLedgerVerb drives one `forge release ledger <verb>` with the project pinned.
 func runLedgerVerb(t *testing.T, dir string, newCmd func() *cobra.Command, args ...string) (string, error) {
 	t.Helper()
 	if err := cmdutil.SetProjectDir(dir); err != nil {

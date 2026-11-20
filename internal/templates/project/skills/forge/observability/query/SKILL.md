@@ -37,7 +37,7 @@ No deploy to judge, just "something is wrong"? Start with `forge obs status prod
 | Env declares | Backend |
 |---|---|
 | no destination (host processes, the local ClickStack) | **local**: queries the ClickStack `forge env up` started. Down: exit 2 with `forge env up <env>` |
-| hosted workloads, `destination.token_from_control_plane`, or cluster-only workloads with a declared `control_plane` | **cloud**: the env's control plane's ObservabilityService / IssuesService, with your credential (under Reliant, the helper; never `forge login`). A cluster runtime remains self-managed, not hosted |
+| hosted workloads, `destination.token_from_control_plane`, or cluster-only workloads with a declared `control_plane` | **cloud**: the env's control plane's ObservabilityService / IssuesService, with your credential (under Reliant, the helper; never `forge cloud login`). A cluster runtime remains self-managed, not hosted |
 | a third-party destination | exit 2: forge queries only the local ClickStack or the control plane |
 | a local env whose `forge env up` sent telemetry to the hosted store (`dev_telemetry`, recorded in `.forge/obs/backend-<env>.json`) | **cloud**, bound to the record's org, env and instance |
 | observability off | exit 2, naming the KCL to add |

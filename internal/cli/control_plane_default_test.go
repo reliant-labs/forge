@@ -54,7 +54,7 @@ func renderControlPlaneDecl(t *testing.T, main string) *cloud.Declaration {
 
 // TestControlPlaneDefault_KCLMatchesGo pins the one fact forge holds twice:
 // KCL's forge.RELIANT_CLOUD_ENDPOINT (what `forge.ControlPlane {}` renders)
-// and internal/cloud.DefaultEndpoint (what `forge login` uses when nothing is
+// and internal/cloud.DefaultEndpoint (what `forge cloud login` uses when nothing is
 // declared). If they drift, a user who logs in outside a project holds a
 // credential for a server their project's envs never talk to.
 //
@@ -157,7 +157,7 @@ func TestNewEnv_DoesNotCopyTheTemplatesControlPlaneEndpoint(t *testing.T) {
 }
 
 // TestForgeLogin_NothingDeclaredDefaultsToReliantCloud: with no control plane
-// declared, `forge login` logs into Reliant cloud rather than refusing — the
+// declared, `forge cloud login` logs into Reliant cloud rather than refusing — the
 // `go install` user's first command. It says so, and logout forgets the same
 // entry.
 func TestForgeLogin_NothingDeclaredDefaultsToReliantCloud(t *testing.T) {

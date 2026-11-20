@@ -28,7 +28,7 @@
 # Declaring triggers fires nothing. Enable the workflow on this project's
 # machine (Workflows -> Library -> ci -> Enable, or `reliant trigger activate
 # --workflow ci --machine <machine> --param repository=<owner/name>`), then
-# require "demo/ci" in the branch ruleset. `forge skill load ci/reliant` has
+# require "demo/ci" in the branch ruleset. `forge agent skill load ci/reliant` has
 # the steps, forks, and how to add checks of your own.
 name: ci
 title: demo/ci

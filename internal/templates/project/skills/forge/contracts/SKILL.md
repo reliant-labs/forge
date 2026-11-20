@@ -38,11 +38,11 @@ func (s *service) Send(ctx context.Context, to, subject, body string) error { /*
 
 `mock_gen.go` and `middleware_gen.go` are then generated from it exactly as from a hand-written `contract.go`. The derived interface is always named `Service`. Add or remove an exported method and the interface, mock and decorator follow on the next `forge generate`; remove the marker and `contract_gen.go` is removed with it. A package-level `// forge:no-observe` can sit on the marked type's doc, as it can on a `Service` interface doc.
 
-**Dependency interfaces stay hand-declared, consumer-side.** Put them in `deps.go`, whose first line is `// forge:deps — consumer-declared interfaces for this package's Deps.` (the file `forge fix narrow-deps` writes), or in a `contract.go` kept beside the marked type. They are mocked together with `Service` (`MockStore`, …).
+**Dependency interfaces stay hand-declared, consumer-side.** Put them in `deps.go`, whose first line is `// forge:deps — consumer-declared interfaces for this package's Deps.` (the file `forge lint fix narrow-deps` writes), or in a `contract.go` kept beside the marked type. They are mocked together with `Service` (`MockStore`, …).
 
 Refused, by `forge generate` and by `forge lint` (`forgeconv-internal-package-contract-names`): two marked types in one package; a marker on an alias or a generic type; a marked type named `Service`; a package that has both a hand-written `Service` (or a `//forge:contract` / `//forge:service`-marked interface) and a marked type — pick one form per package.
 
-`forge scaffold package <name>` writes this shape: `service.go` with `Deps`, the marked `service` struct and `New`, and no `contract.go`. An existing single-implementation package migrates with `forge fix derive-contract <package-dir>`, which deletes the hand-written `Service`, marks the implementing type and moves leftover dependency interfaces to `deps.go`. It refuses when `Service` has no implementation or several, embeds interfaces, or the implementation exports methods outside `Service`.
+`forge scaffold package <name>` writes this shape: `service.go` with `Deps`, the marked `service` struct and `New`, and no `contract.go`. An existing single-implementation package migrates with `forge lint fix derive-contract <package-dir>`, which deletes the hand-written `Service`, marks the implementing type and moves leftover dependency interfaces to `deps.go`. It refuses when `Service` has no implementation or several, embeds interfaces, or the implementation exports methods outside `Service`.
 
 `//forge:contract` on an **interface** keeps its old meaning: that interface is the package contract under a non-canonical name.
 
@@ -300,19 +300,19 @@ Keep free functions for ergonomics AND expose a `Service` interface whose method
 
 **Decision rule:** pure utility with no I/O / time / randomness / external state → (A). Anything that touches one of those → (B) or (C). Don't apply this rule to your DB layer, HTTP clients, or anything that calls `time.Now()` — those are stateful and need a mock.
 
-## Greenfield: `forge package new`
+## Greenfield: `forge scaffold package`
 
 For new packages in an existing forge project:
 
 ```bash
-forge package new <name>
+forge scaffold package <name>
 ```
 
 Scaffolds `internal/<name>/`:
 - `service.go` with `Deps`, the `//forge:contract`-marked `service` struct and `New`
 - `contract_gen.go` and `mock_gen.go` via `forge generate`
 
-There is no `contract.go`: the `Service` interface is derived from the struct's exported methods. It will refuse if the directory already exists. For ports of existing packages, either move the implementation into the marked struct and let forge derive the interface, or (for a strategy interface, or when you want the surface reviewed first) hand-write `contract.go` extracted from the source's exported surface, run `forge generate`, then copy the implementation behind the interface. An existing hand-written single-implementation `Service` converts with `forge fix derive-contract <package-dir>`. See `migration-cli` and `migration-service` for the porting flow.
+There is no `contract.go`: the `Service` interface is derived from the struct's exported methods. It will refuse if the directory already exists. For ports of existing packages, either move the implementation into the marked struct and let forge derive the interface, or (for a strategy interface, or when you want the surface reviewed first) hand-write `contract.go` extracted from the source's exported surface, run `forge generate`, then copy the implementation behind the interface. An existing hand-written single-implementation `Service` converts with `forge lint fix derive-contract <package-dir>`. See `migration-cli` and `migration-service` for the porting flow.
 
 ## Per-phase lint gate
 

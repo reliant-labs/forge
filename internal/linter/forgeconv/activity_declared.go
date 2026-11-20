@@ -58,7 +58,7 @@ const ruleActivityDeclared = "forgeconv-activity-declared"
 // activityRemediation is the fix every undeclared-mutation finding names.
 const activityRemediation = "declare the event: option (forge.v1.method) = { activity: { verb: \"<verb>\", target: { kind: \"<kind>\", id: \"<field path>\" } } }; " +
 	"or, if it changes nothing worth recording, activity: { none: \"<why>\" }; " +
-	"a read rpc can also be marked `option idempotency_level = NO_SIDE_EFFECTS;` (forge skill load activity)"
+	"a read rpc can also be marked `option idempotency_level = NO_SIDE_EFFECTS;` (forge agent skill load activity)"
 
 // checkActivityDeclared runs the rule over the tree rooted at rootDir (the
 // project's proto/ directory) and returns findings keyed by each file's
@@ -114,7 +114,7 @@ func checkActivityDeclared(rootDir string, protoFiles []string) map[string][]Fin
 			switch {
 			case a.Error != "":
 				// Resolve's error already names the rpc.
-				msg, fix = a.Error, "fix the declaration: every path is a dotted field name in the request (or response.<path>) ending on a scalar or enum (forge skill load activity)"
+				msg, fix = a.Error, "fix the declaration: every path is a dotted field name in the request (or response.<path>) ending on a scalar or enum (forge agent skill load activity)"
 			case a.Mutating && !a.Declared:
 				msg = fmt.Sprintf("rpc %s.%s mutates (its name is not a read verb and it is not NO_SIDE_EFFECTS) but declares no activity event", svc.Name, m.Name)
 				fix = activityRemediation

@@ -83,7 +83,7 @@ Never hand-edit `*-hooks_gen.ts` — overwritten on next `forge generate`. Add c
 ## Step 3 — build the page
 
 `data_table` is in the component library but is NOT one of the components the
-scaffold installs — run `forge component install data_table` first, or reach
+scaffold installs — run `forge ui component install data_table` first, or reach
 for `<Resource>` from `@reliantlabs/forge-web-runtime` (see `frontend-runtime/resource`).
 
 ```tsx

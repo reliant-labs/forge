@@ -14,10 +14,10 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// The exported half of golangci_toolchain.go, for `forge tools install`: it
+// The exported half of golangci_toolchain.go, for `forge machine tools install`: it
 // installs the golangci-lint `forge lint` gates with — forge's pin, built
 // with the toolchain that compiles the project — onto PATH, so a machine set
-// up with `forge tools install` never pays forge lint's one-time build.
+// up with `forge machine tools install` never pays forge lint's one-time build.
 
 // GolangciLintPin is the golangci-lint release forge lints with and installs.
 func GolangciLintPin() string { return templates.GolangciLintVersion }

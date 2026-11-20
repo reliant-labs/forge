@@ -149,11 +149,11 @@ func collectUnprovenSignupJSON(root string) ([]lintJSONFinding, error) {
 		}
 		hint := "deliver mail so sign-up proves the address first: drop `delivery = \"none\"` (platform delivery is the default) " +
 			"or declare `smtp`, and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
-			"(`forge skill load auth/frontend`)"
+			"(`forge agent skill load auth/frontend`)"
 		if f.Rule == ruleUnprovenSignupDefault {
 			hint = "default auth_self_signup to false in the config proto (`default_value: \"false\"`, then `forge generate`), " +
 				"and serve sign-up through the LOGIN_POLICY rather than auth_self_signup " +
-				"(`forge skill load auth/frontend`)"
+				"(`forge agent skill load auth/frontend`)"
 		}
 		out = append(out, lintJSONFinding{
 			Rule:     f.Rule,

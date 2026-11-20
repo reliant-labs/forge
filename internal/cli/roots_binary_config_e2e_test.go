@@ -243,7 +243,7 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 		API    []string `json:"api_env"`
 		Worker []string `json:"worker_env"`
 	}
-	if err := json.Unmarshal([]byte(runCmdStdout(t, projectDir, forgeBin, "kcl", "eval", probePath, "--format", "json")), &envs); err != nil {
+	if err := json.Unmarshal([]byte(runCmdStdout(t, projectDir, forgeBin, "env", "kcl", "eval", probePath, "--format", "json")), &envs); err != nil {
 		t.Fatalf("eval probe: %v", err)
 	}
 	for _, k := range []string{"API_SIGNING_KEY", "API_GREETING", "AUDIT_SINK", "DATABASE_URL"} {
@@ -275,7 +275,7 @@ worker_env = sorted([_k for _k in config_gen.workloadEnvMap(appcfg.rbc_process, 
 	rootsProbe := filepath.Join(projectDir, "deploy", "kcl", "roots_dump.k")
 	writeFileE2E(t, rootsProbe, "import config_gen\n\nroots = config_gen.ROOTS\n")
 	writeFileE2E(t, filepath.Join(projectDir, "pkg", "config", "testdata", "roots.json"),
-		runCmdStdout(t, projectDir, forgeBin, "kcl", "eval", rootsProbe, "-S", "roots", "--format", "json"))
+		runCmdStdout(t, projectDir, forgeBin, "env", "kcl", "eval", rootsProbe, "-S", "roots", "--format", "json"))
 	writeFileE2E(t, filepath.Join(projectDir, "pkg", "config", "roots_e2e_test.go"), rootsValidateTest)
 	runCmd(t, projectDir, "go", "test", "-count=1", "-run", "TestRoots", "./pkg/config/")
 

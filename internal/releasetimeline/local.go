@@ -25,7 +25,7 @@ type LedgerReader interface {
 	Gates(env, promotionID string) ([]release.Gate, error)
 }
 
-// Local reads the machine ledger (the readers `forge ledger show` uses).
+// Local reads the machine ledger (the readers `forge release ledger show` uses).
 type Local struct {
 	Ledger LedgerReader
 }

@@ -13,7 +13,7 @@ import (
 )
 
 // TestRenderRawIsTheBareScalar: raw prints the value's own text with no
-// quoting and no trailing newline, so `$(forge kcl eval … --format raw)`
+// quoting and no trailing newline, so `$(forge env kcl eval … --format raw)`
 // captures exactly the value.
 //
 // The `tr -d "\n'\""` pipelines this replaces delete every newline, quote and

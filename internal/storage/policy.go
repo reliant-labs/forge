@@ -88,7 +88,7 @@ type Policy struct {
 	// WorktreeRebuildable replaces the built-in allowlist of ignored paths a
 	// removable worktree may contain. Nil means the defaults.
 	WorktreeRebuildable []string `json:"worktree_rebuildable,omitempty"`
-	// WorktreeReap lets an explicit `forge storage gc --apply` remove
+	// WorktreeReap lets an explicit `forge machine storage gc --apply` remove
 	// worktrees. Off, the layer only reports. No automatic pass ever removes
 	// one, whatever this says (Runner.Explicit).
 	WorktreeReap bool `json:"worktree_reap,omitempty"`
@@ -108,7 +108,7 @@ type Policy struct {
 
 	// AnonymousVolumeUnused is how long forge must have seen an anonymous
 	// Docker volume referenced by no container, running or stopped, before
-	// an explicit `forge storage gc --apply` may remove it (anonvolumes.go).
+	// an explicit `forge machine storage gc --apply` may remove it (anonvolumes.go).
 	// Minimum 24h; "off" disables the layer. Named volumes are never removed,
 	// whatever this says.
 	AnonymousVolumeUnused string `json:"anonymous_volume_unused"`
@@ -403,7 +403,7 @@ type ReserveError struct {
 }
 
 func (e *ReserveError) Error() string {
-	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge storage status' and 'forge storage gc --apply' before building (persistent volumes are never automatically deleted)", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB)
+	return fmt.Sprintf("host disk %s has %.1f GiB free, below the %d GiB reserve; run 'forge machine storage status' and 'forge machine storage gc --apply' before building (persistent volumes are never automatically deleted)", e.Path, float64(e.Available)/float64(GiB), e.ReserveGiB)
 }
 
 // CheckSpace refuses builds that would start below the physical host reserve.

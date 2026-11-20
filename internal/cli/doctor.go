@@ -12,7 +12,7 @@ import (
 	"github.com/reliant-labs/forge/internal/doctor"
 )
 
-// newDoctorCmd builds `forge doctor` — "is this PROJECT healthy and
+// newDoctorCmd builds `forge project doctor` — "is this PROJECT healthy and
 // well-formed", and nothing else.
 //
 // Doctor used to straddle two questions and take a `--env string (default
@@ -70,10 +70,10 @@ forge-owned, whether its build is stale against HEAD, and whether two
 processes are serving one service.
 
 Examples:
-  forge doctor                  # Check the project
-  forge doctor --json           # Machine-readable output
-  forge doctor --verbose        # Show evidence for passing checks
-  forge doctor --signal deploy  # Deployability gate only (the CI arm)`,
+  forge project doctor                  # Check the project
+  forge project doctor --json           # Machine-readable output
+  forge project doctor --verbose        # Show evidence for passing checks
+  forge project doctor --signal deploy  # Deployability gate only (the CI arm)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDoctor(jsonOutput, verbose, timeout, signal)
 		},

@@ -75,7 +75,7 @@ required_secrets = [forge.ExternalSecret {
 }]
 ```
 
-The deploy preflight then checks it exists in the cluster. For a local k3d env use a `rendered_secrets` entry in that namespace. For the local forwarder the value is the secret-store key: `forge secret set --env dev <key>` (value on stdin); `forge env up` refuses to start without it.
+The deploy preflight then checks it exists in the cluster. For a local k3d env use a `rendered_secrets` entry in that namespace. For the local forwarder the value is the secret-store key: `forge env secret set --env dev <key>` (value on stdin); `forge env up` refuses to start without it.
 
 ## Logs: one path
 
@@ -125,7 +125,7 @@ On a cluster, the node agent does the same for the **destination** with `destina
 ## Recipes
 
 - **Local only (the scaffold default):** `observability = forge.Observability {local_port = _otlp_http_port}`.
-- **Dev machine → your backend:** set `_destination` in `deploy/kcl/dev/main.k`, `forge secret set --env dev OTLP_HEADERS`.
+- **Dev machine → your backend:** set `_destination` in `deploy/kcl/dev/main.k`, `forge env secret set --env dev OTLP_HEADERS`.
 - **Staging/prod cluster → your backend:** declare `destination`, the `required_secrets` entry above, and bind workloads to `OnCluster`.
 - **Hosted:** declare `observability = forge.Observability {destination = ...}` only if you want the contract's protocol/signal switches; the endpoint is the platform's.
 - **Off:** leave `observability` unset.

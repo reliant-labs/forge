@@ -232,7 +232,7 @@ func TestForgeDeployAction_GateRecordsTheDeployDocument(t *testing.T) {
 	t.Parallel()
 	var gate actionStep
 	for _, s := range forgeDeployAllSteps(t) {
-		if strings.Contains(s.Run, "forge gate record") {
+		if strings.Contains(s.Run, "forge release gate record") {
 			gate = s
 		}
 	}

@@ -17,7 +17,7 @@ plane (Reliant cloud). `dev` stays local (`forge.OnHost` + `forge.HostInfra`).
 | `_hosted(_api)` | THE API: the binary's `server` — every service and worker — as one workload |
 | `_hosted(wl.<name>)` | a workload `server` does not run (a job such as `migrate`; one you split out) |
 | `_hosted_frontend(_web_frontend)` | the static export on platform static hosting: the platform owns the bucket, the CDN and the hostname |
-| `secret_provider = forge.HostedSecrets {}` | write-only store: `forge secret set --env <env> <KEY>`; who may use a secret: `forge secret allow` (below) |
+| `secret_provider = forge.HostedSecrets {}` | write-only store: `forge env secret set --env <env> <KEY>`; who may use a secret: `forge env secret allow` (below) |
 
 `_hosted` also:
 
@@ -67,8 +67,8 @@ the pages as `frontend/serving` shows.
 ## Shipping it: `forge env deploy prod`
 
 Signed in to Reliant (`reliant forge …`, or a Reliant agent's shell) there is no
-`forge login`: forge mints a token from your session. Standalone forge uses
-`forge login`; CI sets the env's token variable. Deploy `staging` first, then
+`forge cloud login`: forge mints a token from your session. Standalone forge uses
+`forge cloud login`; CI sets the env's token variable. Deploy `staging` first, then
 promote the same release to `prod`; check with `forge env status <env>`.
 
 To make that order binding, declare it in `deploy/kcl/prod/main.k`:
@@ -119,13 +119,13 @@ the token you deploy with. Fix the failure and deploy again.
 | Scaffold for it | `forge project new <name> --claimable ...` writes a prod that fits: `control_plane = forge.ControlPlane {claimable = True}` (every check then judges it under this plan, and a signed-in deploy is refused until you remove the line) and `_claimable_resources` on its hosted services and jobs |
 | Unavailable: exit 4 `claimable_unavailable` | The platform cannot take it: `disabled by operator`, an `unavailable dependency (<component>)`, `not supported yet` (a cause the platform reserves for a capability it lacks), or `not deployed` (no ClaimableService). Checked before any build; `--json` carries `unavailable_cause` and `unavailable_component`. Not your project: retry later, or deploy to your own account |
 | Never queued | An unclaimed deploy is refused (exit 4), never held for billing; **exit 7 does not occur** |
-| Throttled: exit 4 `claimable_throttled` | Our rate limits or the platform's anonymous sign-up limit. The block prints a scope (`network`, `device`, `platform`), a retry-after and the `forge login` alternative; `--json` carries `retry_after_seconds`, `retry_at`, `throttle_scope`. **forge never retries on its own, and neither should you in a loop**: wait, or `forge login` |
-| Claimed: exit 4 `claimable_claimed` | A human claimed it. Deploy as them: `forge login`, then `forge env deploy <env>` without the flag |
+| Throttled: exit 4 `claimable_throttled` | Our rate limits or the platform's anonymous sign-up limit. The block prints a scope (`network`, `device`, `platform`), a retry-after and the `forge cloud login` alternative; `--json` carries `retry_after_seconds`, `retry_at`, `throttle_scope`. **forge never retries on its own, and neither should you in a loop**: wait, or `forge cloud login` |
+| Claimed: exit 4 `claimable_claimed` | A human claimed it. Deploy as them: `forge cloud login`, then `forge env deploy <env>` without the flag |
 | Redeploys | Re-running reuses this machine's deploy and its claim link and does not extend the expiry |
 
 The anonymous token is stored beside your logins under its own credentials-file
 client id (`forge-cli-claimable/<project>/<env>`), so it can never pass for a
-`forge login` and `forge logout` leaves it alone. It carries only
+`forge cloud login` and `forge cloud logout` leaves it alone. It carries only
 `deploy:read` and `deploy:write`.
 
 ### Gates: what holds a deploy, and how each clears
@@ -147,7 +147,7 @@ older control plane (no holds) still refuses with the billing reason.
 | `ports` (the `expose = True` one is routed) | `operator`, `namespacedRBAC`, `clusterRBAC`, `crds`, ServiceAccount fields: no Kubernetes API on shared nodes |
 | env from a literal, `forge.ManagedSecret`, `forge.DatabaseRef`, `forge.WorkloadURL`; a config-projected `forge.SecretRef` lowers to a ManagedSecret | `sidecars`, `volumes`, `securityContext`, `terminationGracePeriodSeconds`, `podAnnotations`: the platform composes the pod |
 | a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |
-| static frontends on hosted static hosting (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
+| static frontends on hosted static hosting (static export only) | `ports.domains` (use `forge cloud domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
 
 `preStopSeconds` is newer than the other fields: a control plane still on an
 older forge refuses it as an unknown field when you deploy (it decodes the
@@ -209,11 +209,11 @@ list. The list names no destination, path or step: it answers "may this workflow
 use this secret", and what the credential can do is the receiving app's call.
 
 ```bash
-forge secret set    --env staging TRADER_KEY                     # the value, on stdin
-forge secret allow  --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
-forge secret access --env staging [TRADER_KEY] [--json]          # who may use it
-forge secret deny   --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
-forge secret list   --env staging                                # each secret's access beside its version
+forge env secret set    --env staging TRADER_KEY                     # the value, on stdin
+forge env secret allow  --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
+forge env secret access --env staging [TRADER_KEY] [--json]          # who may use it
+forge env secret deny   --env staging --workflow trader-bot --project <reliant project id> TRADER_KEY
+forge env secret list   --env staging                                # each secret's access beside its version
 ```
 
 - `--workflow` is the workflow's name (its `.reliant/workflows/<name>.yaml`);
@@ -236,7 +236,7 @@ with what to fill in shown in a comment:
 ```kcl
 _cluster = forge.ClusterTarget {          # was: _cluster = None
     cluster = "gke_acme_us-central1_prod" # its kubectl context
-    connected_cluster = "acme-prod"       # forge cluster connect acme-prod --context <ctx> --env prod
+    connected_cluster = "acme-prod"       # forge cloud cluster connect acme-prod --context <ctx> --env prod
     namespace = "acme-prod"
     platform = "amd64"
 }
@@ -247,7 +247,7 @@ _workloads = [
 ```
 
 The env still has a control plane, which deploys to the cluster too, so the
-cluster is registered once (`forge cluster connect`) and named in
+cluster is registered once (`forge cloud cluster connect`) and named in
 `connected_cluster`; the render refuses an unconnected one, naming the
 command. An `_on_cluster` workload pulls the image workloads.k declares (push
 it: `forge env build <env> --push`), gets the env's capacity floor, and reads
@@ -299,7 +299,7 @@ env and adds the control plane):
    and a database may not share a name).
 2. In `_hosted`: `image = w.image[w.image.rfind("/") + 1:] if w.image else
    w.image`, and `DATABASE_URL = forge.DatabaseRef {name = _db.name}` in its
-   env (or keep your own Postgres: `forge secret set --env <env> DATABASE_URL`).
+   env (or keep your own Postgres: `forge env secret set --env <env> DATABASE_URL`).
 3. Declare `_api` (above) and bind `_hosted(_api)` in place of every service
    and worker line; rebind the rest (`migrate`, other jobs) `_hosted(wl.<name>)`.
    A frontend `_on_bucket(...)` → hosted (`image = "<name>"`, `runtime =

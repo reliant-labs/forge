@@ -53,7 +53,7 @@ func newCIRunCmd() *cobra.Command {
 passed.
 
 A run is everything one pipeline attempt wrote under its run id: the release it
-cut, the checks it recorded (` + "`forge gate record`" + `), every promotion it made, and
+cut, the checks it recorded (` + "`forge release gate record`" + `), every promotion it made, and
 each promotion's rollout. Nothing is a stored event — the control plane derives
 the stages from the ledger on every read, so polling this is safe.
 

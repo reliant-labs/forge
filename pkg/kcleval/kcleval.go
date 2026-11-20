@@ -13,7 +13,7 @@
 // nothing leading back to the cause. It also needs `kcl` on PATH, which forge
 // itself has not needed since it embedded the runtime.
 //
-// This package calls `forge kcl eval` instead. One consequence is worth being
+// This package calls `forge env kcl eval` instead. One consequence is worth being
 // explicit about: the values come from the forge binary the project is pinned
 // to, which is the same binary `forge env deploy` renders with. A test and a
 // deploy therefore cannot disagree about what the KCL says — the property that
@@ -141,9 +141,9 @@ func MustSelectString(t testing.TB, file, path string) string {
 	return s
 }
 
-// run invokes `forge kcl eval` and returns the JSON on stdout.
+// run invokes `forge env kcl eval` and returns the JSON on stdout.
 //
-// stdout carries only the value — `forge kcl eval` guarantees that and sends
+// stdout carries only the value — `forge env kcl eval` guarantees that and sends
 // every diagnostic to stderr — so the bytes go straight to json.Unmarshal with
 // no preamble-trimming. That is deliberate: the trimming helpers that
 // surrounded direct `kcl` invocations existed because kcl prints a
@@ -193,9 +193,9 @@ func run(ctx context.Context, file string, selectors []string, opts Options) ([]
 			msg = err.Error()
 		}
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("`forge kcl eval %s` timed out after %s: %s", file, timeout, msg)
+			return nil, fmt.Errorf("`forge env kcl eval %s` timed out after %s: %s", file, timeout, msg)
 		}
-		return nil, fmt.Errorf("`forge kcl eval %s`: %s", file, msg)
+		return nil, fmt.Errorf("`forge env kcl eval %s`: %s", file, msg)
 	}
 	return stdout.Bytes(), nil
 }

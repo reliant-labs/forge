@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestSkillListNamesTheEntryPoint pins the pointer `forge skill list` prints
+// TestSkillListNamesTheEntryPoint pins the pointer `forge agent skill list` prints
 // after its table. An alphabetical listing of ninety skills answers "what
 // exists" but not "which one first", and the measured cost of that gap was
 // the largest single time bucket in a dogfood run. The pointer is only
@@ -27,7 +27,7 @@ func TestSkillListNamesTheEntryPoint(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("no shipped skill at %q — `forge skill list` would print no entry pointer, and the corpus would have no front door", entryPointSkillPath)
+		t.Fatalf("no shipped skill at %q — `forge agent skill list` would print no entry pointer, and the corpus would have no front door", entryPointSkillPath)
 	}
 
 	// Default (grouped) view: the entry point is no longer a pointer printed

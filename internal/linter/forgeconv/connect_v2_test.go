@@ -65,7 +65,7 @@ func empty() error {
 // connect-go v2's NewError takes a message string and serializes it
 // verbatim. A fixed message is the hand mapping svcerr replaces; a message
 // built from an error's text is the leak; a `.WithCause(err)` is local
-// only. No v2 finding points at `forge fix connect-errors`, which rewrites
+// only. No v2 finding points at `forge lint fix connect-errors`, which rewrites
 // v1 code only.
 func TestHandlerConnectError_ConnectV2(t *testing.T) {
 	root := writeHandlerFixture(t, map[string]string{"internal/handlers/thing/thing.go": handlerConnectErrorV2Fixture})
@@ -98,7 +98,7 @@ func TestHandlerConnectError_ConnectV2(t *testing.T) {
 		if f.Severity != SeverityWarning {
 			t.Errorf("finding %d severity = %s, want warning", i, f.Severity)
 		}
-		if strings.Contains(f.Remediation, "`forge fix connect-errors` rewrites this site") {
+		if strings.Contains(f.Remediation, "`forge lint fix connect-errors` rewrites this site") {
 			t.Errorf("finding %d promises a codemod that skips v2 code: %s", i, f.Remediation)
 		}
 	}
@@ -125,7 +125,7 @@ func TestHandlerConnectError_ConnectV2AliasAndV1Unchanged(t *testing.T) {
 		t.Errorf("aliased v2 site: %s", got[0].Message)
 	}
 	if got[1].Message != "connect.NewError with a fixed message: the hand-built connect error svcerr replaces" ||
-		!strings.Contains(got[1].Remediation, "`forge fix connect-errors` rewrites this site") {
+		!strings.Contains(got[1].Remediation, "`forge lint fix connect-errors` rewrites this site") {
 		t.Errorf("v1 site changed: %q → %q", got[1].Message, got[1].Remediation)
 	}
 }

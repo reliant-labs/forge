@@ -1,5 +1,5 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
-// Binary contract; canonical pattern in `forge skill load binaries`.
+// Binary contract; canonical pattern in `forge agent skill load binaries`.
 // Package {{.Package}} owns the runtime for the {{.Name}} binary.
 //
 // contract.go declares the public surface — Deps, Service, New —
@@ -79,7 +79,7 @@ type Service interface {
 //
 // The two-result `(Service, error)` shape mirrors the canonical
 // internal-package contract forge enforces (see
-// `forge skill load contracts`). It also satisfies the
+// `forge agent skill load contracts`). It also satisfies the
 // `forgeconv-internal-package-contract-names` lint rule which
 // requires `func New(Deps) (Service, error)` so other packages can
 // instantiate the binary in tests via the same interface.

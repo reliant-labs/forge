@@ -9,7 +9,7 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// TestToolPinsNameForgesGolangciLint: `forge tools pins golangci-lint` is
+// TestToolPinsNameForgesGolangciLint: `forge machine tools pins golangci-lint` is
 // how a CI workflow reads the golangci-lint `forge lint` gates with, so it
 // must be the very constant forge lint builds and installs.
 func TestToolPinsNameForgesGolangciLint(t *testing.T) {

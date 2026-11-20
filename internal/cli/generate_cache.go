@@ -1112,7 +1112,7 @@ var generateCacheEnvIgnored = map[string]bool{
 
 	// Host-slot bookkeeping: which slot a run holds, and where slots
 	// live. FORGE_SLOT_HELD is a fresh token per holder, so keying on it
-	// made every run under a gate (or `forge slot run`) a miss, and every
+	// made every run under a gate (or `forge machine slot run`) a miss, and every
 	// record made there one no later run could match.
 	hostslot.EnvHeld: true,
 	hostslot.EnvDir:  true,

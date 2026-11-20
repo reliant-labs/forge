@@ -713,11 +713,11 @@ answer can't drift from reality:
 | ------------------------------------------------- | ------------------------------------------------------------- |
 | What is running, on what port, and is it healthy? | `forge env status <env>` (`--json`)                           |
 | Where are the logs for this service?              | `forge env status` — a log path per service                   |
-| What are the ingress URLs?                        | `forge cluster urls` (`--json`)                               |
+| What are the ingress URLs?                        | `forge dev cluster urls` (`--json`)                           |
 | What does the schema actually look like?          | `forge db introspect --dsn "$DATABASE_URL"` (`--format json`) |
-| How do I call this RPC?                           | `forge api curl <service.method>`                             |
+| How do I call this RPC?                           | `forge dev curl <service.method>`                             |
 | What is this project, structurally?               | `forge project audit --json`, `map --json`                    |
-| Is the project well-formed?                       | `forge doctor`                                                |
+| Is the project well-formed?                       | `forge project doctor`                                        |
 | What can Forge even do?                           | `forge project capabilities`, `annotations`, `libraries`      |
 
 Two properties make this usable by a model rather than just available to one.
@@ -759,7 +759,7 @@ environments and build-once releases, a dev loop with no database or cluster,
 and hosted static hosting with a CDN (one static site per person is free,
 counted across their orgs; each environment's site counts). Start one with `forge project new <name> --kind
 site`, or adopt an existing Vite or Next.js app in place with `forge project new
---in-place --kind site` (`forge skill load deploy/static-site`). When it grows a
+--in-place --kind site` (`forge agent skill load deploy/static-site`). When it grows a
 waitlist or a checkout, the API is its own forge project beside it.
 
 **Greenfield, or bring your own app.** Forge is best from an empty directory,
@@ -770,6 +770,6 @@ some monitoring as it is, and a Vite or Next.js app is adopted in place. A team
 whose own CI keeps deploying adds one step after its deploy job, `forge release
 record --env prod --version "$TAG"`, and monitoring gets a deploy marker and a
 per-release verdict (`forge obs check`) without forge building or applying
-anything (`forge skill load deploy/record`). Move
-code onto Forge's structure over time as it earns it: `forge skill load
+anything (`forge agent skill load deploy/record`). Move
+code onto Forge's structure over time as it earns it: `forge agent skill load
 migration` is the playbook.

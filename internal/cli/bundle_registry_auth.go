@@ -123,7 +123,7 @@ func bundleRegistryAuthOf(env string, e *KCLEntities) (bundleRegistryAuth, error
 		// An anonymous deploy has no sign-in, token variable or scopes to
 		// check; its credential dies with the claim, takedown or expiry.
 		fix = fmt.Sprintf("this anonymous deploy's credential stops working once it is claimed, taken down or expires — "+
-			"`forge env status %s --claimable` says which. If it was claimed, sign in as the account that claimed it (`forge login`) "+
+			"`forge env status %s --claimable` says which. If it was claimed, sign in as the account that claimed it (`forge cloud login`) "+
 			"and deploy without --claimable", env)
 	}
 	return bundleRegistryAuth{

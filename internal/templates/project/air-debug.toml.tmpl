@@ -8,7 +8,7 @@ tmp_dir = "tmp"
   # building there (a running .exe cannot be replaced), so it builds in place.
   # -trimpath=false beats a -trimpath in GOFLAGS/go env: a debugger sets
   # breakpoints by absolute source path, which a trimmed binary does not record.
-  cmd = "forge storage check ./tmp && CGO_ENABLED=0 go build -gcflags='all=-N -l' -trimpath=false -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
+  cmd = "forge machine storage check ./tmp && CGO_ENABLED=0 go build -gcflags='all=-N -l' -trimpath=false -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
   delay = 1000
   # exclude_dir entries are root-relative: the bare "node_modules" only
   # covers a top-level node_modules. "frontends" excludes the whole
@@ -24,7 +24,7 @@ tmp_dir = "tmp"
   # — the server refuses its own frontend's preflight without it.
   # dlv listens on loopback only (its API runs arbitrary code in the server)
   # and --continue lets the server serve at once instead of sitting halted at
-  # its entry point. Drive it with `forge debug connect 127.0.0.1:2345`.
+  # its entry point. Drive it with `forge dev debug connect 127.0.0.1:2345`.
   entrypoint = ["dlv", "exec", "--headless", "--listen=127.0.0.1:2345", "--api-version=2", "--accept-multiclient", "--continue", "./tmp/{{.Name}}", "--", "server"]
   include_ext = ["go", "yaml"]
   include_file = []
@@ -42,7 +42,7 @@ tmp_dir = "tmp"
 [build.windows]
   # PowerShell, not sh: no `&&`, no `mv`, no inline VAR=val. air >= v1.65.3
   # stops the running .exe before building, so building in place is safe.
-  cmd = 'forge storage check ./tmp; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $env:CGO_ENABLED=0; go build "-gcflags=all=-N -l" -trimpath=false -buildvcs=false -o ./tmp/{{.Name}}.exe ./cmd/{{.Name}}'
+  cmd = 'forge machine storage check ./tmp; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; $env:CGO_ENABLED=0; go build "-gcflags=all=-N -l" -trimpath=false -buildvcs=false -o ./tmp/{{.Name}}.exe ./cmd/{{.Name}}'
   entrypoint = ["dlv", "exec", "--headless", "--listen=127.0.0.1:2345", "--api-version=2", "--accept-multiclient", "--continue", "./tmp/{{.Name}}.exe", "--", "server"]
 
 [color]

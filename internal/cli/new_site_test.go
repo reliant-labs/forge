@@ -286,7 +286,7 @@ func TestGreenfieldSiteInPlaceInAnEmptyDir(t *testing.T) {
 // and every command in them resolves in the command tree.
 func TestSiteNextStepsArePasteable(t *testing.T) {
 	lines := siteNextSteps("landing")
-	want := map[string]bool{"skill load": false, "env up": false, "env deploy": false, "env build": false, "lint": false, "domain add": false}
+	want := map[string]bool{"agent skill load": false, "env up": false, "env deploy": false, "env build": false, "lint": false, "cloud domain add": false}
 	for _, line := range lines {
 		for _, args := range pasteableInvocations(line, Name()) {
 			path := resolvePasteable(t, args)

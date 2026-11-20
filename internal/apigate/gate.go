@@ -14,7 +14,7 @@ import (
 //
 //	label  api-break
 //	marker a line in the PR body (or a commit body) of the form
-//	       API-BREAK: [codemod=<forge fix name>] [playbook=migrations/<vX.Y.Z>]
+//	       API-BREAK: [codemod=<forge lint fix name>] [playbook=migrations/<vX.Y.Z>]
 //
 // A declaration alone never passes: the PR must also SHIP the remedy — a
 // codemod registered in internal/codemod, or a migration playbook under
@@ -38,7 +38,7 @@ const (
 type Remedy struct {
 	// Kind is "codemod" or "playbook" (anything else is rejected by Evaluate).
 	Kind string
-	// Value is the `forge fix` name, or the skill path under skills/forge/.
+	// Value is the `forge lint fix` name, or the skill path under skills/forge/.
 	Value string
 }
 
@@ -121,15 +121,15 @@ func Evaluate(breaks []Break, decl Declaration, changed []string, root string) V
 			"  `// Deprecated: use <new>.`, and leave its removal to a future major, which only the owner cuts.\n"+
 			"  Only the owner accepts a break, with the `%s` label (applied by the owner, or by the\n"+
 			"  Reliant bot on the owner's instruction); it must then still be declared\n"+
-			"  (the `%s` label, or an `%s` line) and ship its remedy: a `forge fix` codemod in %s,\n"+
+			"  (the `%s` label, or an `%s` line) and ship its remedy: a `forge lint fix` codemod in %s,\n"+
 			"  or a migration playbook under %s%s<vX.Y.Z>/. (docs: dev-docs/api-breaks.md)",
 			ApprovedLabel, BreakLabel, markerToken, codemodDir, playbookRoot, playbookGroup)
 	}
 	if !decl.Declared {
 		return fail("a breaking PR pays for it: declare the break and ship its codemod.\n"+
 			"  1. Add the `%s` label to the PR, or put a line in the PR body:\n"+
-			"       %s codemod=<forge fix name>        (or playbook=migrations/<vX.Y.Z>)\n"+
-			"  2. Ship the remedy in this PR: a `forge fix <name>` codemod registered in %s, or a\n"+
+			"       %s codemod=<forge lint fix name>        (or playbook=migrations/<vX.Y.Z>)\n"+
+			"  2. Ship the remedy in this PR: a `forge lint fix <name>` codemod registered in %s, or a\n"+
 			"     migration playbook entry under %s%s<vX.Y.Z>/.\n"+
 			"     (docs: dev-docs/api-breaks.md)", BreakLabel, markerToken, codemodDir, playbookRoot, playbookGroup)
 	}
@@ -137,7 +137,7 @@ func Evaluate(breaks []Break, decl Declaration, changed []string, root string) V
 	if len(decl.Remedies) == 0 {
 		if !shipsCodemod(changed) && !shipsPlaybook(changed) {
 			return fail("the break is declared but this PR ships no codemod and no playbook entry.\n"+
-				"  Add a codemod (a non-test file in %s that registers a `forge fix` name) or a playbook\n"+
+				"  Add a codemod (a non-test file in %s that registers a `forge lint fix` name) or a playbook\n"+
 				"  (a file under %s%s), then name it: %s codemod=<name>", codemodDir, playbookRoot, playbookGroup, markerToken)
 		}
 		return Verdict{OK: true}

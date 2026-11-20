@@ -62,7 +62,7 @@ Unresolvable requirements and local `replace` directives fail; no fallback.
 The checks job installs pinned codegen tools and runs each frontend's `npm ci`
 before verifying generated files. Missing plugins or a pre-dirtied tree must
 fail, not certify skipped output. Installation details and troubleshooting:
-`forge skill load ci/toolchain`.
+`forge agent skill load ci/toolchain`.
 
 ### No workflow names a registry
 
@@ -74,9 +74,9 @@ workflows reach the registries through forge, which derives them from the
 images:
 
 ```bash
-printf '%s' "$TOKEN" | forge registry login <env> --username <user> --password-stdin
+printf '%s' "$TOKEN" | forge cloud registry login <env> --username <user> --password-stdin
 forge env build <env> --push                    # each image → its own declared reference
-forge registry ref <env> --github-output    # ref= image= digest= for later steps
+forge cloud registry ref <env> --github-output    # ref= image= digest= for later steps
 ```
 
 `login` logs in to every distinct host the env's images name, so an env whose
@@ -84,7 +84,7 @@ workloads push to two registries needs no extra step.
 
 `build-images.yml` builds once per commit on main for the first deploy env
 (the one `deploy.yml` auto-deploys), then signs, SBOMs, attests and scans the
-digest-pinned ref `forge registry ref` read back — never a tag and never a
+digest-pinned ref `forge cloud registry ref` read back — never a tag and never a
 YAML literal. The login credential is `GITHUB_TOKEN` (GitHub's container
 registry); for another registry, pipe its credential from a secret (a GAR
 key with `--username _json_key`, an ECR token with `--username AWS`).
@@ -100,8 +100,8 @@ first push. So the scaffolded workflows differ by env, not by project:
 | Workflow | Login step | Credential |
 |---|---|---|
 | `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, hosted build env   | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
+| `build-images.yml`, hosted build env   | none for the build; the trivy job runs `forge cloud registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, cluster build env | `forge cloud registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
 | `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
 
 Two things follow, and both are worth knowing before editing a workflow:
@@ -124,7 +124,7 @@ write access. forge prints a hint saying so. Do not add a `docker login`.
 
 ### Deploys go through forge
 
-`deploy.yml` runs, per env, `forge registry login <env>`, `forge build <env>
+`deploy.yml` runs, per env, `forge cloud registry login <env>`, `forge build <env>
 --push` (each image to the reference its workload declares), then
 `forge env deploy <env> --yes` — never `kcl run | kubectl apply`, which cannot
 resolve `kcl_plugin.forge` and skips the declared-context binding, the
@@ -237,8 +237,8 @@ and each is runnable on its own:
 | Command | What it does |
 |---|---|
 | `forge ci verify-generated` | Runs `forge generate` and asserts nothing changed (`git status --porcelain`, so a newly created file counts) — catches mock/codegen drift where a contract.go grew a parameter but the mock_gen.go wasn't refreshed. Refuses to run when a frontend's protoc-gen-es is missing |
-| `forge ci validate-kcl` | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge doctor --signal deploy`, so CI and the doctor cannot disagree |
-| `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
+| `forge ci validate-kcl` | Renders every environment under `deploy/kcl/<env>/` and asserts the result is APPLYABLE — a `manifests` root exists, every document carries apiVersion + kind, and no other top-level key hides objects no deploy would apply. Shares its implementation with `forge project doctor --signal deploy`, so CI and the doctor cannot disagree |
+| `forge project doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
 | `forge ci vuln-scan --go` | Runs govulncheck against `./...` |
 | `forge ci vuln-scan --npm` | Runs `npm audit` in each frontend |
 | `forge ci migration-safety` | Runs `forge lint --migration-safety` against `db/migrations/` |

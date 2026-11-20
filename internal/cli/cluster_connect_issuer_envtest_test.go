@@ -121,7 +121,7 @@ func getPath(cs *kubernetes.Clientset, path string) ([]byte, error) {
 	return cs.CoreV1().RESTClient().Get().AbsPath(path).DoRaw(context.Background())
 }
 
-// connectToEnvtest runs the real `forge cluster connect --issuer upload`
+// connectToEnvtest runs the real `forge cloud cluster connect --issuer upload`
 // against a real kube-apiserver, as a GKE-named context read through a real kubeconfig.
 func connectToEnvtest(t *testing.T) *envtestCluster {
 	t.Helper()

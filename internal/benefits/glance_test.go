@@ -61,7 +61,7 @@ func TestEmbeddedRegistryHasGlanceAndLimits(t *testing.T) {
 		if lines > 2+maxGlanceFacts+1+3 {
 			t.Errorf("glance %s renders %d lines; keep it short", audience, lines)
 		}
-		if !strings.HasPrefix(out, GlanceHeading) || !strings.Contains(out, "`forge skill load compare`") {
+		if !strings.HasPrefix(out, GlanceHeading) || !strings.Contains(out, "`forge agent skill load compare`") {
 			t.Errorf("glance %s lost its heading or its pointer to the comparison:\n%s", audience, out)
 		}
 	}

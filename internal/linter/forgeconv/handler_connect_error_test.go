@@ -85,7 +85,7 @@ func TestHandlerConnectError_FlagsEveryCallAndNamesItsKind(t *testing.T) {
 			t.Errorf("finding %d severity = %s, want warning (a project flips it to error once migrated)", i, f.Severity)
 		}
 	}
-	if !strings.Contains(got[0].Remediation, "forge fix connect-errors") {
+	if !strings.Contains(got[0].Remediation, "forge lint fix connect-errors") {
 		t.Errorf("a fixed-message finding should point at the codemod: %s", got[0].Remediation)
 	}
 }

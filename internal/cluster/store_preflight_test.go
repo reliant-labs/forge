@@ -127,7 +127,7 @@ func TestCheckStore(t *testing.T) {
 			name:   "the store lacks a name the ExternalSecrets read",
 			probe:  &fakeStoreProbe{crds: servedESO("fx.prod"), present: map[string]map[string]bool{"hosted": {"A": true}}},
 			expect: StoreExpectation{Context: ctxName, Owner: "fx.prod", Reads: oneRead("hosted", "A", "B", "C")},
-			want:   []string{"hosted store holds no value for B, C", "forge secret set", "source.generate"},
+			want:   []string{"hosted store holds no value for B, C", "forge env secret set", "source.generate"},
 		},
 		{
 			name:   "a store that cannot be asked is a warning, not a block",

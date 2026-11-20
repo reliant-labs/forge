@@ -213,7 +213,7 @@ func TestDynamicSegment(t *testing.T) {
 	})
 
 	t.Run("a scaffold-born page names the static-routes fix", func(t *testing.T) {
-		header := "\"use client\";\n\n// yours: scaffolded once, never touched again — forge will not overwrite this file\n// %s page emitted by `forge scaffold page`. See `forge skill load frontend/pages` for canonical patterns.\n"
+		header := "\"use client\";\n\n// yours: scaffolded once, never touched again — forge will not overwrite this file\n// %s page emitted by `forge scaffold page`. See `forge agent skill load frontend/pages` for canonical patterns.\n"
 		body := strings.TrimPrefix(clientDetailPage, "\"use client\";\n")
 		fs := check(t, frontendTree(t, withConfig(map[string]string{
 			"src/app/jobs/[id]/page.tsx":      fmt.Sprintf(header, "Detail") + body,
@@ -248,7 +248,7 @@ func assertScaffoldRemedy(t *testing.T, f finding.Finding, newRoute string) {
 	t.Helper()
 	for _, s := range []string{
 		newRoute,
-		"forge skill load frontend/serving",
+		"forge agent skill load frontend/serving",
 		"rm -rf 'frontends/web/src/app/jobs/[id]' frontends/web/src/app/jobs/page.tsx frontends/web/src/app/jobs/new/page.tsx && forge project rescaffold frontends/web/src/app/jobs/page.tsx frontends/web/src/app/jobs/new/page.tsx",
 		"useEntityIdParam()",
 	} {

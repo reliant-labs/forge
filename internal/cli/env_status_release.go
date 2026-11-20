@@ -61,7 +61,7 @@ const defaultEnvStatusReleaseTimeout = 60 * time.Second
 // the rendering.
 //
 // THE RELEASE FIELDS ARE FLAT, NOT NESTED, and that is load-bearing rather
-// than a style choice: `forge gate record --from` RECOGNISES this document by
+// than a style choice: `forge release gate record --from` RECOGNISES this document by
 // the presence of top-level `bound` and `images` (gate_doc.go's "verify"
 // recipe). Moving them under a `release` key would make every recorded
 // deploy-verification gate fall through to the generic ok/exit_code reading,
@@ -136,7 +136,7 @@ type envStatusDocument struct {
 	// PROVENANCE, the reconciler's CONVERGENCE of it, and the LOCAL SESSIONS running
 	// it (doc §6.3, §7.4). Nested for the same reason Runtime is — a
 	// different question with its own vocabulary — and ADDITIVE: nothing
-	// above it is renamed or repurposed, so `forge gate record --from`
+	// above it is renamed or repurposed, so `forge release gate record --from`
 	// keeps recognising this document by top-level `bound` and `images`,
 	// and reliant's daemon keeps parsing the fields it already reads.
 	//

@@ -360,7 +360,7 @@ func renderEnvForCluster(ctx context.Context, env *Environment) (envRender, *Che
 		// check could not learn what should be running.
 		return envRender{}, &CheckResult{
 			Status:   StatusUnknown,
-			Message:  fmt.Sprintf("could not render env %q, so the workloads it deploys are unknown (see `forge doctor`)", name),
+			Message:  fmt.Sprintf("could not render env %q, so the workloads it deploys are unknown (see `forge project doctor`)", name),
 			Evidence: got.err.Error(),
 		}
 	}

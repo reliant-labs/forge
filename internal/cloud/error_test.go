@@ -238,7 +238,7 @@ func TestCall_AuthFailureStaysActionableAndTyped(t *testing.T) {
 		t.Errorf("Code = %q", cerr.Code)
 	}
 	msg := cerr.Error()
-	for _, want := range []string{"forge login", "ACME_PROD_TOKEN", srv.URL, "/home/u/.forge/login.json", "token expired"} {
+	for _, want := range []string{"forge cloud login", "ACME_PROD_TOKEN", srv.URL, "/home/u/.forge/login.json", "token expired"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("auth error should contain %q; got:\n%s", want, msg)
 		}
@@ -249,7 +249,7 @@ func TestCall_AuthFailureStaysActionableAndTyped(t *testing.T) {
 }
 
 // A 403 that NAMES a missing scope must not send the user round the circle
-// "forge login" -> same token -> same 403. It says the token lacks the scope,
+// "forge cloud login" -> same token -> same 403. It says the token lacks the scope,
 // that login picks it up only if the control plane grants it, and how an
 // admin mints one.
 func TestCall_MissingScopeHintIsNotCircular(t *testing.T) {
@@ -263,7 +263,7 @@ func TestCall_MissingScopeHintIsNotCircular(t *testing.T) {
 	got := err.Error()
 	for _, want := range []string{
 		"lacks the domain:read scope",
-		"re-run `forge login` to pick up the scope",
+		"re-run `forge cloud login` to pick up the scope",
 		"your role has no domain:read grant: ask an org admin",
 		"An admin can mint a token with it in the web app (Settings → API tokens",
 		"export ACME_TOKEN=<token>",
@@ -278,7 +278,7 @@ func TestCall_MissingScopeHintIsNotCircular(t *testing.T) {
 }
 
 // A refusal with reason person_session_required (control-plane#2636: token
-// administration from a CLI login) must not tell the user to `forge login`
+// administration from a CLI login) must not tell the user to `forge cloud login`
 // again — that mints another CLI login and the same refusal. It names the web
 // app, and keeps the code and reason machine-readable.
 func TestCall_PersonSessionRequiredPointsAtTheWebApp(t *testing.T) {
@@ -295,7 +295,7 @@ func TestCall_PersonSessionRequiredPointsAtTheWebApp(t *testing.T) {
 	for _, want := range []string{
 		"needs a person signed in to the Reliant web app, not a CLI login",
 		"sign in to the web app of the control plane at " + srv.URL,
-		"signing in again with `forge login` does not help",
+		"signing in again with `forge cloud login` does not help",
 		"server said: Managing access tokens",
 		"reason: person_session_required",
 	} {
@@ -329,7 +329,7 @@ func TestTokenSettingsURL(t *testing.T) {
 
 func TestCall_PlainRejectionKeepsGenericLoginAdvice(t *testing.T) {
 	srv := connectErrorServer(t, http.StatusUnauthorized, map[string]any{"code": "unauthenticated", "message": "expired"}, "")
-	if got := callAgainst(t, srv).Error(); !strings.Contains(got, "forge login            (human — opens a browser)") {
+	if got := callAgainst(t, srv).Error(); !strings.Contains(got, "forge cloud login            (human — opens a browser)") {
 		t.Errorf("generic advice lost:\n%s", got)
 	}
 }

@@ -259,13 +259,13 @@ func (w *ifaceWriter) declare(f Field) (string, int, error) {
 	w.taken[name] = true
 	embeds, direct := splitRoles(f)
 	fmt.Fprintf(&w.decls, "\n// %s is the part of %s.%s that this package uses through Deps.%s:\n", name, named.Obj().Pkg().Name(), named.Obj().Name(), f.Name)
-	fmt.Fprintf(&w.decls, "// declared here, by its consumer, so the package knows only what it uses\n// (forge fix narrow-deps). Add a method when the package calls one.\n")
+	fmt.Fprintf(&w.decls, "// declared here, by its consumer, so the package knows only what it uses\n// (forge lint fix narrow-deps). Add a method when the package calls one.\n")
 	if len(embeds) > 0 {
 		fmt.Fprintf(&w.decls, "// The embedded interfaces are what the package passes the value on as.\n")
 	}
 	entries := len(embeds) + len(direct)
 	if w.lint.suppressesBloat(entries) {
-		fmt.Fprintf(&w.decls, "//\n//nolint:interfacebloat // forge fix narrow-deps: exactly the %d of %s.%s's %d methods this package calls through Deps.%s, one dependency; shrink it by splitting the package, not the interface.\n",
+		fmt.Fprintf(&w.decls, "//\n//nolint:interfacebloat // forge lint fix narrow-deps: exactly the %d of %s.%s's %d methods this package calls through Deps.%s, one dependency; shrink it by splitting the package, not the interface.\n",
 			entries, named.Obj().Pkg().Name(), named.Obj().Name(), iface.NumMethods(), f.Name)
 	}
 	fmt.Fprintf(&w.decls, "type %s interface {\n", name)

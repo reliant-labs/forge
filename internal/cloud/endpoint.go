@@ -11,7 +11,7 @@ import (
 // It is the Go copy of KCL's forge.RELIANT_CLOUD_ENDPOINT, which is what
 // `forge.ControlPlane {}` resolves to. KCL owns the default for every env; this
 // copy exists for the one command that runs with no env to render — `forge
-// login` outside a project (or in one that declares no control plane).
+// cloud login` outside a project (or in one that declares no control plane).
 // TestControlPlaneDefault_KCLMatchesGo renders the schema and fails if the two
 // drift.
 //

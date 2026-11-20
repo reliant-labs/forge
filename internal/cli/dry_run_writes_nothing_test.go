@@ -27,7 +27,6 @@ func TestDryRunWritesNothing(t *testing.T) {
 	for _, args := range [][]string{
 		{"scaffold", "--dry-run"},
 		{"scaffold", "package", "billing", "--dry-run"},
-		{"package", "new", "billing", "--dry-run"},
 		{"project", "disown", "no-such-file_gen.go", "--reason", "test", "--dry-run"},
 		{"project", "disown", "internal/nothing.go", "--absent", "--reason", "test", "--dry-run"},
 		{"project", "delete", "service", "notes", "--dry-run", "--yes"},

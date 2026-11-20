@@ -6,7 +6,7 @@ import (
 )
 
 // The renders below are the agent-facing digests of the registry: the
-// glance block the entry skills and `forge start app` open with, and the
+// glance block the entry skills and `forge project start app` open with, and the
 // lists the `compare` skill quotes. They are rendered when a skill is loaded
 // (internal/cli expands `<!-- @benefits ... -->` directives), so a skill can
 // never state a benefit the registry does not hold, or keep one it dropped.
@@ -31,7 +31,7 @@ func RenderGlance(r *Registry, audience string) (string, error) {
 		fmt.Fprintf(&b, "- %s: `forge %s`\n", strings.TrimSpace(f.Fact), f.Show)
 	}
 	b.WriteString("\nAll checked against this binary (`forge project benefits --all`). Limits and\n" +
-		"prices beside Vercel, Supabase or Render: `forge skill load compare`.\n")
+		"prices beside Vercel, Supabase or Render: `forge agent skill load compare`.\n")
 	return b.String(), nil
 }
 

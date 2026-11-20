@@ -1,6 +1,6 @@
 package cli
 
-// `forge ledger where <env>` — which backend holds this env's ledger, and
+// `forge release ledger where <env>` — which backend holds this env's ledger, and
 // WHY.
 //
 // The "why" is the point, and it is why this is a command rather than a line
@@ -70,7 +70,7 @@ type ledgerDeclarationDoc struct {
 	TokenEnv string `json:"token_env,omitempty"`
 }
 
-// newLedgerWhereCmd is `forge ledger where <env>`.
+// newLedgerWhereCmd is `forge release ledger where <env>`.
 func newLedgerWhereCmd() *cobra.Command {
 	var asJSON bool
 

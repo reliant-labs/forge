@@ -590,7 +590,7 @@ func TestAnonymousVolumesAreRemovedOnlyByAnExplicitApply(t *testing.T) {
 	if err := r.AnonymousVolumes(context.Background(), true); err != nil || f.ranRemoval(anon) {
 		t.Fatalf("an automatic apply removed a volume (%v)\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "only an explicit `forge storage gc --apply` removes volumes") {
+	if !strings.Contains(out.String(), "only an explicit `forge machine storage gc --apply` removes volumes") {
 		t.Fatalf("the automatic pass must say why it retained the volume:\n%s", out.String())
 	}
 

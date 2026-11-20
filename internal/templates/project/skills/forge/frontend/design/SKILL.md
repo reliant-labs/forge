@@ -54,7 +54,7 @@ component_library(action="search", tag="dashboard")
 component_library(action="get", name="quadrant_chart")
 ```
 
-No `component_library` tool in your environment? The binary carries the same registry: `forge component list`, `forge component search <keyword>`, `forge component install <name>` (categories: `layouts`, `charts`, `diagrams`, `deck`, `ui`).
+No `component_library` tool in your environment? The binary carries the same registry: `forge ui component list`, `forge ui component search <keyword>`, `forge ui component install <name>` (categories: `layouts`, `charts`, `diagrams`, `deck`, `ui`).
 
 Charts and diagrams handle their own coordinate math — pass data, get pixels. If the library has a component that's 80% right, install it and adapt; do not start from a blank file.
 

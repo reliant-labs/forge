@@ -129,12 +129,12 @@ func TestValidate(t *testing.T) {
 
 func TestCommandLine(t *testing.T) {
 	got := CommandLine([]string{
-		"/home/alice/go/bin/forge", "report-bug", "--severity", "high",
+		"/home/alice/go/bin/forge", "agent", "report-bug", "--severity", "high",
 		"--title", "secret stuff", "--evidence=more stuff",
 		"--token", "abc", "--api-key=xyz",
 		"/home/alice/proj", "postgres://u:p@h/db",
 	})
-	want := "forge report-bug --severity high --title … --evidence=… --token [redacted] --api-key=[redacted] ~/proj postgres://[redacted]@h/db"
+	want := "forge agent report-bug --severity high --title … --evidence=… --token [redacted] --api-key=[redacted] ~/proj postgres://[redacted]@h/db"
 	if got != want {
 		t.Errorf("CommandLine =\n  %q\nwant\n  %q", got, want)
 	}
@@ -226,7 +226,7 @@ func TestFileWire(t *testing.T) {
 	defer srv.Close()
 
 	f := &Filer{Endpoint: srv.URL, Token: "tok", State: NewState(t.TempDir())}
-	res, err := f.File(context.Background(), validReport(), Context{ForgeVersion: "v0.1.48", Args: []string{"forge", "report-bug"}})
+	res, err := f.File(context.Background(), validReport(), Context{ForgeVersion: "v0.1.48", Args: []string{"forge", "agent", "report-bug"}})
 	if err != nil {
 		t.Fatalf("File: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestFileWire(t *testing.T) {
 		t.Errorf("report id %q, body reportId %v", res.ReportID, body["reportId"])
 	}
 	client, _ := body["client"].(map[string]any)
-	if body["severity"] != "high" || body["title"] != "forge generate drops a field" || client["forgeVersion"] != "v0.1.48" || client["commandLine"] != "forge report-bug" {
+	if body["severity"] != "high" || body["title"] != "forge generate drops a field" || client["forgeVersion"] != "v0.1.48" || client["commandLine"] != "forge agent report-bug" {
 		t.Errorf("body = %v", body)
 	}
 }

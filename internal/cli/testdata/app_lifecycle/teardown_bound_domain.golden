@@ -6,4 +6,4 @@ This will tear down app "shop" on https://cp.example: every hosted environment i
 --- error
 the control plane refuses to delete an env while a custom domain is bound to it, so nothing was deleted
 fix: unbind each (the domains stay in your organization), then re-run `forge app teardown`:
-    forge domain unbind shop.example --env prod
+    forge cloud domain unbind shop.example --env prod

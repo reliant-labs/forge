@@ -162,8 +162,8 @@ func TestSecretCommands_RequireEnvFlag(t *testing.T) {
 			cmd.SetOut(&out)
 			cmd.SetErr(&out)
 			err := cmd.ExecuteContext(context.Background())
-			if err == nil || !strings.Contains(err.Error(), "--env is required") || !strings.Contains(err.Error(), "fix: forge secret "+args[0]+" --env") {
-				t.Fatalf("forge secret %v without --env: want the --env fix, got %v", args, err)
+			if err == nil || !strings.Contains(err.Error(), "--env is required") || !strings.Contains(err.Error(), "fix: forge env secret "+args[0]+" --env") {
+				t.Fatalf("forge env secret %v without --env: want the --env fix, got %v", args, err)
 			}
 		})
 	}
@@ -174,7 +174,7 @@ func TestSecretCommands_RequireEnvFlag(t *testing.T) {
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)
 		if err := cmd.ExecuteContext(context.Background()); err == nil {
-			t.Fatalf("forge secret %v: a positional env must be refused", args)
+			t.Fatalf("forge env secret %v: a positional env must be refused", args)
 		}
 	}
 }
@@ -360,8 +360,8 @@ func TestResolveCredential_HintIsBareLogin(t *testing.T) {
 	t.Setenv("FORGE_HOME", t.TempDir())
 	t.Setenv("FORGE_CONTROL_PLANE_TOKEN", "")
 	_, err := cloud.ResolveCredential("", cloud.Endpoint{Env: "prod", URL: "https://cp.example.com", TokenEnv: "FORGE_CONTROL_PLANE_TOKEN"})
-	if err == nil || strings.Contains(err.Error(), "forge login prod") || !strings.Contains(err.Error(), "forge login ") {
-		t.Fatalf("the missing-credential hint must be an env-free `forge login`, got %v", err)
+	if err == nil || strings.Contains(err.Error(), "forge cloud login prod") || !strings.Contains(err.Error(), "forge cloud login ") {
+		t.Fatalf("the missing-credential hint must be an env-free `forge cloud login`, got %v", err)
 	}
 }
 
@@ -583,7 +583,7 @@ func TestPullLocalSecrets_FailureNamesLogin(t *testing.T) {
 		pullErr: errors.New("rejected the credential (HTTP 401)"),
 	}
 	_, err := pullLocalSecretsWith(context.Background(), fake, "dev", "", "https://cp")
-	if err == nil || !strings.Contains(err.Error(), "forge login") {
+	if err == nil || !strings.Contains(err.Error(), "forge cloud login") {
 		t.Fatalf("a failed pull must fail loudly with the login fix, got %v", err)
 	}
 }
@@ -597,7 +597,7 @@ func TestUpLocalEnv_PulledSecretsInjectedAndValidated(t *testing.T) {
 
 	// Failure path: the pull fails → env up fails before any provider is built.
 	pullLocalSecretsFor = func(context.Context, string, *KCLEntities) (map[string]string, error) {
-		return nil, errors.New("pull secrets for LOCAL env \"dev\": boom\nfix: `forge login`")
+		return nil, errors.New("pull secrets for LOCAL env \"dev\": boom\nfix: `forge cloud login`")
 	}
 	if err := armLocalSecretsForUp(context.Background(), "dev", e, func(string, ...any) {}); err == nil {
 		t.Fatal("a failed pull must fail env up")
@@ -643,7 +643,7 @@ func TestUpLocalEnv_PulledSecretsInjectedAndValidated(t *testing.T) {
 	// env-named fix.
 	withSecretRef("JWT_SECRET", "s", "JWT_SECRET")(&e.Workloads[0])
 	err = withEnvInSecretFix(secrets.ValidateDeclaredRefs(prov, secretRefsForLaunch(e), secretStoreLabel(e)), "dev")
-	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET") || !strings.Contains(err.Error(), "forge secret set --env dev") {
+	if err == nil || !strings.Contains(err.Error(), "JWT_SECRET") || !strings.Contains(err.Error(), "forge env secret set --env dev") {
 		t.Fatalf("missing pulled secret: %v", err)
 	}
 

@@ -82,7 +82,7 @@ func TestPreflightRegistryPushAccess(t *testing.T) {
 	if !errors.As(err, &coded) || coded.code != exitRefused {
 		t.Fatalf("denied: err = %v, want exit 4", err)
 	}
-	for _, want := range []string{maps, "Nothing was built or pushed", "forge registry login"} {
+	for _, want := range []string{maps, "Nothing was built or pushed", "forge cloud registry login"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal lacks %q:\n%s", want, err)
 		}

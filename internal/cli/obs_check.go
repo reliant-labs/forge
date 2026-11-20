@@ -279,7 +279,7 @@ figures, not_evaluated says so (changed_op: ...) and nothing else changes.
 	f.StringVar(&o.failOn, "fail-on", "", "comma-separated finding codes that fail the release (default: the env's release_health.fail_on): "+strings.Join(release.HealthFindings, ", "))
 	f.StringArrayVar(&o.thresholds, "threshold", nil, "override one threshold for this call, name=value (repeatable)")
 	f.BoolVar(&o.allowInconclusive, "allow-inconclusive", false, "exit 0 on INCONCLUSIVE instead of 2")
-	f.StringVar(&o.gateJSON, "gate-json", "", "also write the verdict to `FILE` as a gate document, for `"+Name()+" gate record --from FILE`")
+	f.StringVar(&o.gateJSON, "gate-json", "", "also write the verdict to `FILE` as a gate document, for `"+Name()+" release gate record --from FILE`")
 	f.BoolVar(&o.explain, "explain", false, "local env only: print the compiled statements instead of running them")
 	cmd.MarkFlagsMutuallyExclusive("release", "promotion")
 	return cmd
@@ -811,7 +811,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	} else if r.Verdict == releasehealth.Inconclusive && releasehealth.InconclusiveCode(r) == releasehealth.ReasonNoRequestTelemetry {
 		// What forge can see of an uninstrumented app: its logs and its
 		// workloads' health.
-		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "workloads", env), obsout.Command("forge", "obs", "logs", env), obsout.Command("forge", "skill", "load", "observability"))
+		doc.Suggested = obsout.Suggest(obsout.Command("forge", "obs", "workloads", env), obsout.Command("forge", "obs", "logs", env), obsout.Command("forge", "agent", "skill", "load", "observability"))
 	} else if r.Verdict == releasehealth.Inconclusive && releasehealth.InconclusiveCode(r) == releasehealth.ReasonWindowNotLive {
 		if cmd := liveWindowCheck(env, r); cmd != "" {
 			doc.Suggested = obsout.Suggest(cmd)
@@ -880,7 +880,7 @@ func checkSuggestions(env string, r releasehealth.Report, base string) []string 
 	return obsout.Suggest(cmds...)
 }
 
-// writeCheckGate writes the gate document `forge gate record --from` reads.
+// writeCheckGate writes the gate document `forge release gate record --from` reads.
 // PASS is passed, FAIL is failed; INCONCLUSIVE, a wait that timed out and a
 // check that could not look are all `error` — the gate vocabulary's "could not
 // reach a verdict", the same distinction as exit 2.

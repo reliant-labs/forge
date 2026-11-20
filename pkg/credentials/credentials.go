@@ -1,6 +1,6 @@
 // Package credentials is the ONE on-disk store of control-plane access tokens,
 // shared by every CLI that talks to a Reliant Labs control plane — `forge
-// login` and `reliant auth login` both write it, and every command of both
+// cloud login` and `reliant auth login` both write it, and every command of both
 // reads it.
 //
 // ── ONE FILE, KEYED BY ENDPOINT, NO "CURRENT" ─────────────────────────

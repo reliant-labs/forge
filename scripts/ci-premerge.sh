@@ -40,7 +40,7 @@
 # row is PASS, N/A or WAIVED.
 #
 # Logs go to $CI_LOG_DIR (default: a fresh temp dir, printed). Run it as one
-# heavy command — `reliant forge slot run -- task ci`, or your harness's heavy
+# heavy command — `reliant forge machine slot run -- task ci`, or your harness's heavy
 # flag — and the forge processes inside reuse that slot (FORGE_SLOT_HELD).
 set -uo pipefail
 
@@ -120,7 +120,7 @@ bin="$scratch/bin"
 forge_tools() {
   mkdir -p "$bin" &&
     go build -o "$bin/forge" ./cmd/forge &&
-    GOBIN="$bin" PATH="$bin:$PATH" "$bin/forge" tools install --force
+    GOBIN="$bin" PATH="$bin:$PATH" "$bin/forge" machine tools install --force
 }
 verify_generated() { PATH="$bin:$PATH" "$bin/forge" ci verify-generated; }
 validate_kcl() {
@@ -155,7 +155,7 @@ golangci() {
   # another release's findings are not the queue's.
   local pin
   pin=$(sed -n 's|^ *golangci-lint) set -- golangci/golangci-lint v\([^ ]*\) .*|\1|p' .github/actions/install-release-tool/action.yml)
-  golangci-lint version | grep -qE "version v?${pin//./\\.} " || skip "golangci-lint on PATH is not ${pin}, the release CI pins: forge tools install golangci-lint"
+  golangci-lint version | grep -qE "version v?${pin//./\\.} " || skip "golangci-lint on PATH is not ${pin}, the release CI pins: forge machine tools install golangci-lint"
   scripts/ci-golangci-changed.sh "$base"
 }
 

@@ -19,7 +19,7 @@ func scaffoldPageRemedy(slugDir, kind string) string {
 	if kind == "edit" {
 		newRoute = "edit"
 	}
-	return fmt.Sprintf("this %s page came from forge's scaffold-once CRUD template, which now scaffolds the static route %s/%s/page.tsx (the id in `?id=`) instead (`forge skill load %s` documents it). "+
+	return fmt.Sprintf("this %s page came from forge's scaffold-once CRUD template, which now scaffolds the static route %s/%s/page.tsx (the id in `?id=`) instead (`forge agent skill load %s` documents it). "+
 		"For pages you never edited: `rm -rf '%s/[id]' %s/page.tsx %s/new/page.tsx && forge project rescaffold %s/page.tsx %s/new/page.tsx`; "+
 		"for edited ones, move them to view/ and edit/, read the id with useEntityIdParam() from src/lib/entity-routes.ts inside a <Suspense> boundary, and build links with entityViewHref/entityEditHref",
 		kind, slugDir, newRoute, staticRoutesSkill, slugDir, slugDir, slugDir, slugDir, slugDir)

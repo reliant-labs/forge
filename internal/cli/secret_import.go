@@ -14,7 +14,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// `forge secret import` copies values that already exist into a store, once.
+// `forge env secret import` copies values that already exist into a store, once.
 //
 // It is step 1 of the per-Secret migration (design §7.1): the platform's
 // Secrets were seeded by a shell script and live only in the cluster, and the
@@ -24,7 +24,7 @@ import (
 //   - CREATE-ONLY. Every write is check-and-set 0 (hosted, OpenBao) or "no
 //     usable version yet" (Secret Manager). A name the store already holds is
 //     reported and left alone, so a re-run can never overwrite a value a
-//     person has since rotated. Rotation is `forge secret set`.
+//     person has since rotated. Rotation is `forge env secret set`.
 //   - IN MEMORY. A value read from the cluster goes straight into the write
 //     and is never printed, logged or put in an error. Values reach the
 //     command from a cluster Secret, stdin or --from-file; none is an
@@ -60,23 +60,23 @@ bytes the cluster holds today before ESO takes the Secret over.
 
 Create-only. A name the store already holds is reported and left untouched, so
 re-running an import is always safe and can never overwrite a value that was
-rotated since. Rotating is 'forge secret set'.
+rotated since. Rotating is 'forge env secret set'.
 
 From a cluster Secret, using your own kube context:
 
-  forge secret import --env prod --from control-plane-prod/control-plane-secrets \
+  forge env secret import --env prod --from control-plane-prod/control-plane-secrets \
       --map github_app_private_key=GITHUB_APP_PRIVATE_KEY
 
 From stdin or a file, one name:
 
-  forge secret import --env prod GITHUB_WEBHOOK_SECRET --from-file ./secret.txt
+  forge env secret import --env prod GITHUB_WEBHOOK_SECRET --from-file ./secret.txt
 
 --to-bootstrap writes a BootstrapSecret's Google Secret Manager container (the
 OpenBao seal key and Postgres password, which cannot live in the store they
 bootstrap). NAME is the container's secret id; --project is the Google project
 that holds it (default: Bundle.bootstrap_source's):
 
-  forge secret import --env prod --to-bootstrap --project acme-prod \
+  forge env secret import --env prod --to-bootstrap --project acme-prod \
       --from control-plane-prod/control-plane-openbao-unseal --map static-key=openbao-unseal-prod
 
 The destination store comes from the ExternalSecret that reads each name

@@ -94,13 +94,13 @@ func TestReasonAndFixOf(t *testing.T) {
 	err := errors.New(strings.Join([]string{
 		"build env prod for deploy: hosted static site web: push failed",
 		"  more detail",
-		"  fix: forge login, then forge env deploy prod",
+		"  fix: forge cloud login, then forge env deploy prod",
 		"",
 	}, "\n"))
 	if got := reasonOf(err); got != "build env prod for deploy: hosted static site web: push failed" {
 		t.Errorf("reasonOf = %q", got)
 	}
-	if got := fixOf(err); got != "forge login, then forge env deploy prod" {
+	if got := fixOf(err); got != "forge cloud login, then forge env deploy prod" {
 		t.Errorf("fixOf = %q", got)
 	}
 	if fixOf(errors.New("no remedy here")) != "" {

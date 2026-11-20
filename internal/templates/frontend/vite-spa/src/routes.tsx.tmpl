@@ -1,7 +1,7 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file
 // TanStack Router, code-based: the route tree lives here, and `forge scaffold page <Entity>`
 // appends entity routes inside the FORGE-ROUTES marker block. Add your own routes above it.
-// Search params: `validateSearch` on the route, read with useSearch. Depth: `forge skill load frontend`.
+// Search params: `validateSearch` on the route, read with useSearch. Depth: `forge agent skill load frontend`.
 
 import {
   createRootRoute,
@@ -58,7 +58,7 @@ import App from "./App";
 // PUBLIC FRONTEND (--auth-mode none): there is no route guard and no sign-in
 // route — every page renders for every visitor. To gate it later, declare
 // users, wrap the shell in the RouteGuard from @/lib/auth/route-guard and add
-// a sign-in route (`forge skill load auth/frontend`).
+// a sign-in route (`forge agent skill load auth/frontend`).
 export const rootRoute = createRootRoute({
   component: function RootShell() {
     return (

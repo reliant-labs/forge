@@ -18,7 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/secrets"
 )
 
-// newSecretCmd is the `forge secret` group: the developer-facing way to
+// newSecretCmd is the `forge env secret` group: the developer-facing way to
 // put values into an env's FileSecrets store.
 //
 // The store is a single gitignored YAML file (env-var name -> value).
@@ -53,12 +53,12 @@ secret_provider is, and set / list / import act on it there:
   forge.GCPSecretManagerStore   Google Secret Manager, with your Application
                                 Default Credentials.
 
-  forge secret allow / deny / access
+  forge env secret allow / deny / access
                         a HOSTED secret's access list: which Reliant workflows
                         may use it ({{ secrets.NAME }} in an http/request
                         header). Hosted envs only.
 
-  forge secret import   copy values that already exist into a store, create-only
+  forge env secret import   copy values that already exist into a store, create-only
                         (the first step of moving a Secret onto ESO)
 
 Verifying and handing a Secret to ESO are 'forge env secrets verify' and
@@ -73,14 +73,14 @@ value lives here and never enters git or KCL render output. A value only
 reaches a service that DECLARES it, so putting something here that no
 service references does nothing — config belongs in deploy/kcl/<env>/config.k.
 
-  forge secret set   --env dev STRIPE_SECRET_KEY   # value on stdin; add, or replace (= rotate)
-  forge secret unset --env dev STRIPE_SECRET_KEY
-  forge secret list  --env dev                     # names + presence, never values
-  forge secret allow --env prod --workflow trader-bot --project <id> TRADER_KEY   # hosted: let a workflow use it
-  forge secret deny  --env prod --workflow trader-bot --project <id> TRADER_KEY
-  forge secret access --env prod [TRADER_KEY]      # hosted: who may use it
-  forge secret ensure --env dev                    # FileSecrets: create the file + report missing
-  forge secret migrate --env dev                   # FileSecrets: convert a legacy .env file`,
+  forge env secret set   --env dev STRIPE_SECRET_KEY   # value on stdin; add, or replace (= rotate)
+  forge env secret unset --env dev STRIPE_SECRET_KEY
+  forge env secret list  --env dev                     # names + presence, never values
+  forge env secret allow --env prod --workflow trader-bot --project <id> TRADER_KEY   # hosted: let a workflow use it
+  forge env secret deny  --env prod --workflow trader-bot --project <id> TRADER_KEY
+  forge env secret access --env prod [TRADER_KEY]      # hosted: who may use it
+  forge env secret ensure --env dev                    # FileSecrets: create the file + report missing
+  forge env secret migrate --env dev                   # FileSecrets: convert a legacy .env file`,
 	}
 	cmd.AddCommand(
 		newSecretSetCmd(),
@@ -111,7 +111,7 @@ func requireSecretEnv(env, usage string) (string, error) {
 	env = strings.TrimSpace(env)
 	if env == "" {
 		return "", fmt.Errorf("--env is required: name the environment whose secret store to use\n"+
-			"fix: forge secret %s\n"+
+			"fix: forge env secret %s\n"+
 			"(there is no default environment, on purpose — a secret aimed at the wrong env is a leaked credential)", usage)
 	}
 	return env, nil
@@ -132,8 +132,8 @@ The VALUE is read from stdin, never from argv — an argv value would land
 in shell history and in the process table. Pipe it, or type it and press
 Ctrl-D:
 
-  printf '%s' "$TOKEN" | forge secret set --env dev STRIPE_SECRET_KEY
-  forge secret set --env dev TLS_KEY --from-file ./key.pem
+  printf '%s' "$TOKEN" | forge env secret set --env dev STRIPE_SECRET_KEY
+  forge env secret set --env dev TLS_KEY --from-file ./key.pem
 
 A trailing newline is trimmed. Multi-line values (a PEM key, a JSON blob)
 round-trip unchanged.`,
@@ -221,7 +221,7 @@ declared secret that has no value yet.
 Secrets the provider declares in FileSecrets.generate (pure random key
 material: an encryption key, a session secret) are minted when absent, never
 overwritten, and reported by name only. Rotating one is a manual
-'forge secret set'. Hosted and external providers never generate.
+'forge env secret set'. Hosted and external providers never generate.
 
 Exits non-zero when a declared secret is missing a value, so it works as a
 setup gate in a task/Makefile before 'forge env up'.`,
@@ -287,7 +287,7 @@ func fileSecretStorePath(envName string, entities *KCLEntities) (string, error) 
 	if sp.Type != "file" {
 		return "", fmt.Errorf(
 			"env %q declares a %q secret_provider, not FileSecrets — this command manages the file store only\n"+
-				"fix: forge secret migrate --env %s   (converts a legacy .env, then switch the KCL to forge.FileSecrets)",
+				"fix: forge env secret migrate --env %s   (converts a legacy .env, then switch the KCL to forge.FileSecrets)",
 			envName, sp.Type, envName)
 	}
 	path := sp.Path
@@ -298,7 +298,7 @@ func fileSecretStorePath(envName string, entities *KCLEntities) (string, error) 
 		if shared := sharedSecretStorePath(projectDir, path); shared != "" {
 			// In a linked worktree, the store that actually holds the
 			// values is usually the primary checkout's. Write THERE by
-			// default, so `forge secret set` in a worktree updates the
+			// default, so `forge env secret set` in a worktree updates the
 			// store every checkout reads instead of creating a local
 			// one-key file that shadows it per key. A worktree that
 			// genuinely wants its own value creates the local file
@@ -399,7 +399,7 @@ func runSecretSetWith(ctx context.Context, envName, key string, store storeOptio
 		if value == "" {
 			return fmt.Errorf(
 				"refusing to write an empty value for %s\n"+
-					"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set --env %s %s",
+					"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge env secret set --env %s %s",
 				key, envName, key)
 		}
 		return runHostedSecretSet(ctx, envName, key, hosted, value, out)
@@ -416,7 +416,7 @@ func runSecretSetWith(ctx context.Context, envName, key string, store storeOptio
 	if value == "" {
 		return fmt.Errorf(
 			"refusing to write an empty value for %s\n"+
-				"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge secret set --env %s %s",
+				"fix: pipe the value in, e.g.  printf '%%s' \"$TOKEN\" | forge env secret set --env %s %s",
 			key, envName, key)
 	}
 
@@ -498,7 +498,7 @@ const (
 	secretPresenceUnknown = "unknown"
 )
 
-// secretListReport is the `forge secret list --json` document.
+// secretListReport is the `forge env secret list --json` document.
 //
 // NO FIELD IN THIS TYPE, OR IN ANY TYPE IT CONTAINS, CAN CARRY A SECRET
 // VALUE. That is a property of the struct definitions, not of the code that
@@ -509,7 +509,7 @@ const (
 // TestSecretListReportHasNoValueCarryingField fails on any new field name
 // that has not been deliberately vetted.
 //
-// The same reasoning is why `forge secret set` reads values from stdin
+// The same reasoning is why `forge env secret set` reads values from stdin
 // rather than argv: a value that never enters a place it can be observed
 // cannot be observed.
 //
@@ -533,12 +533,12 @@ const (
 //	                      "secret_key": "stripe_secret_key"}]}
 //	  ],
 //	  "inert": ["OLD_KEY"],            // store keys nothing declares
-//	  "missing": ["JWT_SECRET"],       // what `forge secret ensure` gates on
+//	  "missing": ["JWT_SECRET"],       // what `forge env secret ensure` gates on
 //	  "missing_count": 1,
 //	  "ok": false                      // true iff verifiable and nothing missing
 //	}
 //
-// `ok` mirrors `forge secret ensure`'s gate, NOT this command's exit code:
+// `ok` mirrors `forge env secret ensure`'s gate, NOT this command's exit code:
 // `secret list` reports rather than gates, so it exits 0 with missing (or
 // unknown) secrets in both modes, for EVERY provider. Exit codes are
 // identical between text and --json.
@@ -783,8 +783,8 @@ type renderedSecretStoreRef struct {
 
 // renderedSecretStoreKeys lists the store keys Bundle.rendered_secrets reads
 // with `from="file"`. They are declarations exactly like a service's
-// secret_ref: `forge secret ensure` must list one with no value, and `forge
-// secret list` must not call its value inert. (A RenderedSecrets PROVIDER's
+// secret_ref: `forge env secret ensure` must list one with no value, and `forge
+// env secret list` must not call its value inert. (A RenderedSecrets PROVIDER's
 // keys are reported by Secret/key instead — see renderedSecretListStore.)
 func renderedSecretStoreKeys(e *KCLEntities) []renderedSecretStoreRef {
 	if e == nil {
@@ -808,7 +808,7 @@ func renderedSecretStoreKeys(e *KCLEntities) []renderedSecretStoreRef {
 
 // managedSecretNamesForService lists the store names a service's
 // `managedSecret` env vars read — the STORE name, not the env var name,
-// because that is the key `forge secret set` writes and the provider resolves.
+// because that is the key `forge env secret set` writes and the provider resolves.
 //
 // They are declarations exactly like a secret_ref, and are collected here
 // rather than through [WorkloadEntity.EnvVars] because they are not
@@ -897,7 +897,7 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 		}
 	}
 	if report.MissingCount > 0 && (report.Provider == "file" || report.Provider == "hosted") {
-		fmt.Fprintf(out, "\nfix: forge secret set --env %s <KEY>\n", envName)
+		fmt.Fprintf(out, "\nfix: forge env secret set --env %s <KEY>\n", envName)
 	}
 	return nil
 }
@@ -940,7 +940,7 @@ func runSecretEnsure(ctx context.Context, envName string, out io.Writer) error {
 	for _, m := range missing {
 		fmt.Fprintf(out, "  %s\n", m)
 	}
-	fmt.Fprintf(out, "\nfix: forge secret set --env %s <KEY>\n", envName)
+	fmt.Fprintf(out, "\nfix: forge env secret set --env %s <KEY>\n", envName)
 	return fmt.Errorf("%d secret(s) missing a value", len(missing))
 }
 
@@ -959,7 +959,7 @@ func generateMissingSecrets(e *KCLEntities, storePath string, present map[string
 		return nil, fmt.Errorf("generate secrets: %w", err)
 	}
 	for _, g := range generated {
-		fmt.Fprintf(out, "generated %s (random key material; stored in %s — rotation is a manual `forge secret set`)\n", g, storePath)
+		fmt.Fprintf(out, "generated %s (random key material; stored in %s — rotation is a manual `forge env secret set`)\n", g, storePath)
 	}
 	return generated, nil
 }
@@ -1062,7 +1062,7 @@ func secretProviderPathForEnv(ctx context.Context, envName string) string {
 // declaredSecretNames is the sorted, de-duplicated set of env-var names
 // every service in the env declares via secret_ref AND must have a value for.
 //
-// OPTIONAL refs are excluded, so `forge secret ensure` agrees with the env-up
+// OPTIONAL refs are excluded, so `forge env secret ensure` agrees with the env-up
 // pre-flight (secrets.ValidateDeclaredRefs). The two are separate code paths
 // over the same entities, and a disagreement is worse than either being wrong
 // alone: `ensure` exists to tell an operator whether `up` will succeed, so an

@@ -41,7 +41,7 @@ func Formats() []string { return []string{string(FormatJSON), string(FormatYAML)
 // per value. FormatRaw prints the scalar's own text and nothing else — no
 // quotes, no trailing newline — so `$(...)` captures exactly the value:
 //
-//	BUILDER_REPO="$(forge kcl eval "${KCL}" -S sbd.builder_repo --format raw)"
+//	BUILDER_REPO="$(forge env kcl eval "${KCL}" -S sbd.builder_repo --format raw)"
 //
 // A number prints as KCL's own text: `-S sbd.disk_size_gb` must produce `200`
 // for a caller passing it to `gcloud --boot-disk-size`, and `200` is what the

@@ -507,7 +507,7 @@ func (p planner) checksLane() []Check {
 			Check{Name: "validate-kcl", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("ci", "validate-kcl")},
 			// Would an SRE let this reach production: probes, resource
 			// requests/limits, credentials from Secrets, bound ServiceAccounts.
-			Check{Name: "deployability", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("doctor", "--signal", "deploy")},
+			Check{Name: "deployability", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("project", "doctor", "--signal", "deploy")},
 		)
 	}
 	return out

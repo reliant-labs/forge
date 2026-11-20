@@ -16,7 +16,7 @@ import (
 // after the first scaffold. The user owns this file going forward.
 //
 // Library reference: github.com/reliant-labs/forge/pkg/tdd
-// Skill: forge skill load contracts
+// Skill: forge agent skill load contracts
 func TestContract(t *testing.T) {
 	t.Parallel()
 

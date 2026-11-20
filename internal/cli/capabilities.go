@@ -54,16 +54,10 @@ type AnalyzerSpec struct {
 }
 
 // CapabilitiesSpec is the whole dump.
-//
-// DeprecatedAliases maps each old spelling of a moved command to its new
-// one (deprecated_aliases.go), so an agent can rewrite a stale spelling
-// mechanically. Both still run; the old ones are hidden from Commands only
-// once they are deprecated in earnest (phase 2).
 type CapabilitiesSpec struct {
-	Commands          []CommandSpec     `json:"commands,omitempty"`
-	Analyzers         []AnalyzerSpec    `json:"analyzers,omitempty"`
-	Markers           []MarkerSpec      `json:"markers,omitempty"`
-	DeprecatedAliases []DeprecatedAlias `json:"deprecated_aliases,omitempty"`
+	Commands  []CommandSpec  `json:"commands,omitempty"`
+	Analyzers []AnalyzerSpec `json:"analyzers,omitempty"`
+	Markers   []MarkerSpec   `json:"markers,omitempty"`
 	// Schemas are the JSON Schemas forge publishes (`forge project schema`).
 	Schemas []SchemaSpec `json:"schemas,omitempty"`
 }
@@ -92,7 +86,7 @@ sibling dumps cover the rest of the vocabulary:
   forge project annotations   the entity-authoring spec (the proto->column
                               mapping, projected buf.validate rules,
                               proto options)
-  forge skill list            the skill catalog; 'forge skill load <name>'
+  forge agent skill list      the skill catalog; 'forge agent skill load <name>'
                               prints the copy THIS binary ships
 
 Examples:
@@ -120,11 +114,10 @@ func runCapabilities(w io.Writer, asJSON bool) error {
 func buildCapabilitiesSpec() CapabilitiesSpec {
 	root := NewRootCmd()
 	return CapabilitiesSpec{
-		Commands:          commandSpecs(root),
-		Analyzers:         analyzerSpecs(root),
-		Markers:           markerSpecs(),
-		DeprecatedAliases: deprecatedAliases(root),
-		Schemas:           schemaSpecs(),
+		Commands:  commandSpecs(root),
+		Analyzers: analyzerSpecs(root),
+		Markers:   markerSpecs(),
+		Schemas:   schemaSpecs(),
 	}
 }
 
@@ -273,5 +266,5 @@ func writeCapabilitiesText(w io.Writer, spec CapabilitiesSpec) error {
 	}
 
 	return p("\nEntity-authoring vocabulary: `forge project annotations`.\n" +
-		"Skills (authoritative, shipped inside this binary): `forge skill list`, `forge skill load <name>`.\n")
+		"Skills (authoritative, shipped inside this binary): `forge agent skill list`, `forge agent skill load <name>`.\n")
 }

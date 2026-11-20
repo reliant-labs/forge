@@ -1,6 +1,6 @@
 ---
 name: graph-checks
-description: What forge lint checks about the composition graph — reach (forge-graph-unreachable, //forge:standby, declaring roots one at a time), root-only nodes (//forge:root-only), audience (//forge:audience), the least-knowledge Deps rules under --conventions and their severities, forge fix narrow-deps, migrating a pre-graph Infra/NewComponents project with forge fix composition-graph, and opt-in construction rollback (ConstructionRollbackTimeout, BuildWithRollback).
+description: What forge lint checks about the composition graph — reach (forge-graph-unreachable, //forge:standby, declaring roots one at a time), root-only nodes (//forge:root-only), audience (//forge:audience), the least-knowledge Deps rules under --conventions and their severities, forge lint fix narrow-deps, migrating a pre-graph Infra/NewComponents project with forge lint fix composition-graph, and opt-in construction rollback (ConstructionRollbackTimeout, BuildWithRollback).
 ---
 
 # Checking the whole graph, and what each node knows
@@ -26,9 +26,9 @@ The graph itself — providers, `compose.go`, roots and commands, each root's co
 
 `--strict` makes every finding but the last an error.
 
-`forge fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go` — the file to use beside a `//forge:contract` type), an interface holding exactly the methods the package uses — those it calls, with each interface it passes the value on as embedded, so every call that hands it on still type-checks — retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
+`forge lint fix narrow-deps internal/handlers/<svc>` fixes the first: it declares, in the package (its `contract.go`, or `deps.go` — the file to use beside a `//forge:contract` type), an interface holding exactly the methods the package uses — those it calls, with each interface it passes the value on as embedded, so every call that hands it on still type-checks — retypes the field, and writes its mock (`mock_gen.go`, kept in step by `forge generate`). `compose.go` needs no change — the value it hands the field still satisfies the narrower interface.
 
-A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v1.0.0/composition-graph` is the rest of the path.
+A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge lint fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v1.0.0/composition-graph` is the rest of the path.
 
 ## Pinning a root's start and stop order
 

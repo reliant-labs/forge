@@ -47,7 +47,7 @@ type secretPrincipal struct {
 }
 
 // secretAccessEntry is one row of a secret's access list, in the shape
-// `forge secret access --json` and `forge secret list --json` emit. Nothing in
+// `forge env secret access --json` and `forge env secret list --json` emit. Nothing in
 // it can carry a secret value.
 type secretAccessEntry struct {
 	SecretName   string `json:"secret_name"`
@@ -114,9 +114,9 @@ func sortAccessEntries(es []secretAccessEntry) {
 // The list belongs to the env's control-plane environment, not to its
 // secret_provider: an env whose deploys read an external store (OpenBao) can
 // still keep workflow secrets on the control plane, and refusing it there
-// left `forge secret allow` unusable for exactly those secrets. ensure follows
+// left `forge env secret allow` unusable for exactly those secrets. ensure follows
 // the hosted rule: allow creates a forge.HostedSecrets env by name so access
-// can be granted before the first deploy, as `forge secret set` can; any
+// can be granted before the first deploy, as `forge env secret set` can; any
 // other env must already exist on the control plane; deny and access are not
 // creators.
 func openHostedSecretAccess(ctx context.Context, envName string, ensure bool) (hostedSecretAccess, cloud.Endpoint, error) {
@@ -155,7 +155,7 @@ func requireAccessProject(project, usage string) (string, error) {
 	if project == "" {
 		return "", fmt.Errorf("--project is required: the Reliant project id that owns the workflow\n"+
 			"fix: find it with `reliant project list` (the ID column; pick the project whose PATH is the checkout holding "+
-			".reliant/workflows/<name>.yaml), then forge secret %s", usage)
+			".reliant/workflows/<name>.yaml), then forge env secret %s", usage)
 	}
 	return project, nil
 }
@@ -164,7 +164,7 @@ func requireAccessWorkflow(workflow, usage string) (string, error) {
 	workflow = strings.TrimSpace(workflow)
 	if workflow == "" {
 		return "", fmt.Errorf("--workflow is required: the name of the workflow to allow (the `name:` in its .reliant/workflows/<name>.yaml)\n"+
-			"fix: forge secret %s", usage)
+			"fix: forge env secret %s", usage)
 	}
 	return workflow, nil
 }
@@ -197,7 +197,7 @@ func runSecretDeny(ctx context.Context, envName, name, workflow, project string,
 	return nil
 }
 
-// secretAccessReport is the `forge secret access --json` document.
+// secretAccessReport is the `forge env secret access --json` document.
 type secretAccessReport struct {
 	Env     string              `json:"env"`
 	Secret  string              `json:"secret,omitempty"`
@@ -233,7 +233,7 @@ func runSecretAccess(ctx context.Context, envName, name string, jsonOut bool, ou
 	fmt.Fprintf(out, "access to %s in hosted env %q%s\n\n", subject, envName, where)
 	if len(report.Entries) == 0 {
 		fmt.Fprintln(out, "no access entries: no workflow may use it")
-		fmt.Fprintf(out, "fix: forge secret allow --env %s --workflow <name> --project <reliant project id> %s\n", envName, orPlaceholder(name))
+		fmt.Fprintf(out, "fix: forge env secret allow --env %s --workflow <name> --project <reliant project id> %s\n", envName, orPlaceholder(name))
 		return nil
 	}
 	writeAccessEntries(out, report.Entries, name == "", "  ")
@@ -280,7 +280,7 @@ The list is the whole policy: it names no destination, path or step.
 Only org owners and admins may edit it, and a protected environment asks for
 step-up; the control plane's refusal is printed as it is sent.
 
-  forge secret allow --env staging --workflow trader-bot --project <id> TRADER_KEY
+  forge env secret allow --env staging --workflow trader-bot --project <id> TRADER_KEY
 
 --project is the Reliant project id that owns the workflow (find it with
 ` + "`reliant project list`" + `). Hosted secrets only: a FileSecrets store has no access
@@ -303,7 +303,7 @@ func newSecretDenyCmd() *cobra.Command {
 		Long: `Remove a workflow from a hosted secret's access list. Its runs lose the
 secret at their next use. Idempotent; the same authorization as 'allow'.
 
-  forge secret deny --env staging --workflow trader-bot --project <id> TRADER_KEY`,
+  forge env secret deny --env staging --workflow trader-bot --project <id> TRADER_KEY`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSecretAccessChange(cmd, "deny", env, workflow, project, args[0], runSecretDeny)
 		},
@@ -346,8 +346,8 @@ func newSecretAccessCmd() *cobra.Command {
 		Long: `Show the access list of one hosted secret, or of every secret in the env
 when NAME is omitted. Metadata only; values are never printed.
 
-  forge secret access --env staging TRADER_KEY
-  forge secret access --env staging --json`,
+  forge env secret access --env staging TRADER_KEY
+  forge env secret access --env staging --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := ""
 			if len(args) == 1 {

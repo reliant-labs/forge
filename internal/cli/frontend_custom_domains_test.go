@@ -9,7 +9,7 @@ import (
 // A hosted frontend publishes NO domains, whatever else it declares.
 //
 // On hosted a custom hostname is an org-scoped control-plane resource bound
-// to one environment (`forge domain add` + `forge domain bind`), so the
+// to one environment (`forge cloud domain add` + `forge cloud domain bind`), so the
 // published StaticSite document must not carry one: a domain in spec is a
 // field the control plane does not read as a binding, which deploys green
 // and never resolves.

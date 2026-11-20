@@ -47,7 +47,7 @@ jobs:
     # that pulls it.
     env:
       FORGE_ENV: staging
-    # The pushed image's digest-pinned ref, from `forge registry ref` — what
+    # The pushed image's digest-pinned ref, from `forge cloud registry ref` — what
     # the build recorded, never a literal here. The digest is IMMUTABLE, the
     # value every later step binds to — never the tag, which is a mutable
     # pointer anyone could re-push.
@@ -99,7 +99,7 @@ jobs:
         # from a repository SECRET.
         env:
           LOGIN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "$FORGE_ENV" --username "${{ github.actor }}" --password-stdin
+        run: printf '%s' "$LOGIN_TOKEN" | forge cloud registry login "$FORGE_ENV" --username "${{ github.actor }}" --password-stdin
 
       - name: Build and push
         # `forge env build <env> --push` pushes to the env's declared registry
@@ -117,7 +117,7 @@ jobs:
       - name: Pushed image ref
         id: ref
         # <registry>/<image>@<digest>, from what the build just recorded.
-        run: forge registry ref "$FORGE_ENV" --github-output
+        run: forge cloud registry ref "$FORGE_ENV" --github-output
 
       # ── Supply chain: SBOM + signing + provenance (M-12) ────────────
       # These steps run AFTER the image is pushed and act on the immutable
@@ -207,7 +207,7 @@ jobs:
         # The scanner pulls the image, so it needs the same read access.
         env:
           LOGIN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$LOGIN_TOKEN" | forge registry login "staging" --username "${{ github.actor }}" --password-stdin
+        run: printf '%s' "$LOGIN_TOKEN" | forge cloud registry login "staging" --username "${{ github.actor }}" --password-stdin
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@v0.35.0

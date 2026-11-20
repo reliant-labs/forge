@@ -91,7 +91,7 @@ pkg/middleware/*_gen.go
 # config fields (DATABASE_URL, …) from it for host runs and for the
 # local-cluster Secret it renders. It must never reach git.
 #
-# Populate it with `forge secret set <env> <KEY>` — never by hand. A value
+# Populate it with `forge env secret set <env> <KEY>` — never by hand. A value
 # only reaches a service that DECLARES it via EnvVar.secret_ref, so a file
 # nothing references is inert; non-secret config belongs in
 # deploy/kcl/<env>/config.k where it stays version-controlled.

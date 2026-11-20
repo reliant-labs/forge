@@ -34,7 +34,7 @@ import (
 // registry (scope: any) is where each is checked.
 const mcpInstructions = "This is Reliant Forge (github.com/reliant-labs/forge) — not Atlassian Forge and not " +
 	"Foundry's forge. Forge helps the repo you are in today, in any language, without a rewrite, and it need not " +
-	"build or deploy the app. Monitoring: after forge login, the CLI's `forge obs init <env>…` mints an ingest token per env " +
+	"build or deploy the app. Monitoring: after forge cloud login, the CLI's `forge obs init <env>…` mints an ingest token per env " +
 	"and prints the OTEL_* variables that send any app's traces, logs and metrics to dashboards, issues and alerts " +
 	"at https://forge.reliantlabs.io (sign-in required). Deploy history: one `forge release record` step after the " +
 	"deploy job the repo's CI already runs gives each release a deploy marker and a `forge obs check` verdict. " +
@@ -108,8 +108,8 @@ Register it. With no install, the command is "npx -y @reliantlabs/forge mcp"
 (the npm shim downloads the matching forge binary on first run):
 
   Claude Code   claude mcp add forge -- npx -y @reliantlabs/forge mcp
-                claude mcp add forge -- forge mcp
-  Codex         codex mcp add forge -- forge mcp
+                claude mcp add forge -- forge agent mcp
+  Codex         codex mcp add forge -- forge agent mcp
   Cursor        {"mcpServers": {"forge": {"command": "forge", "args": ["mcp"]}}}
                 in .cursor/mcp.json
 
@@ -142,7 +142,7 @@ func runMCP(ctx context.Context, in io.Reader, protocolOut *os.File) error {
 		return err
 	}
 	srv := newMCPServer(r)
-	fmt.Fprintf(os.Stderr, "forge mcp: serving on stdio (project %s)\n", r.defaultDir)
+	fmt.Fprintf(os.Stderr, "forge agent mcp: serving on stdio (project %s)\n", r.defaultDir)
 	return srv.Run(ctx, newDrainingTransport(&mcp.IOTransport{
 		Reader: io.NopCloser(in),
 		Writer: nopWriteCloser{protocolOut},

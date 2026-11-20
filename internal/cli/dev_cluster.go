@@ -12,7 +12,7 @@
 //     --servers/--no-lb/--registry-create flags scattered across scripts)
 //   - idempotent up/down semantics (`up` no-ops if the cluster exists,
 //     `down` no-ops if it doesn't)
-//   - kubectl context pinning so `forge cluster reload` can't
+//   - kubectl context pinning so `forge dev cluster reload` can't
 //     accidentally apply to staging or prod
 //   - one-command reload that re-renders KCL + applies + waits for rollout
 //     (the inner loop during local dev)
@@ -73,10 +73,10 @@ Use it whenever the env declares its clusters: a cluster created from the bare
 config file lacks those fields, and the env's own deploy then refuses it.
 
 Examples:
-  forge cluster up
-  forge cluster up --wait
-  forge cluster up --config deploy/k3d.custom.yaml
-  forge cluster up dev-k8s --wait`,
+  forge dev cluster up
+  forge dev cluster up --wait
+  forge dev cluster up --config deploy/k3d.custom.yaml
+  forge dev cluster up dev-k8s --wait`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 1 {
 				if cmd.Flags().Changed("config") {
@@ -170,9 +170,9 @@ docker image (the same code path forge env deploy dev uses, but skips the
 cluster bootstrap).
 
 Examples:
-  forge cluster reload
-  forge cluster reload --image-tag dev-2026-06-01
-  forge cluster reload --dry-run`,
+  forge dev cluster reload
+  forge dev cluster reload --image-tag dev-2026-06-01
+  forge dev cluster reload --dry-run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDevClusterReload(cmd.Context(), configPath, imageTag, namespace, dryRun)
 		},
@@ -353,7 +353,7 @@ var (
 	lookupK3dStateAfterCreateFn  = lookupK3dClusterRuntimeState
 	cleanupK3dCreateToolsFn      = cleanupK3dStartTools
 	mergeK3dKubeconfigFn         = mergeK3dKubeconfig
-	// lookupClusterStateForUpFn is the `forge cluster up` existence probe.
+	// lookupClusterStateForUpFn is the `forge dev cluster up` existence probe.
 	// Seamed like its siblings above so the up path is testable on a host
 	// that happens to have a real cluster of the same name running.
 	lookupClusterStateForUpFn   = lookupK3dClusterRuntimeState
@@ -755,7 +755,7 @@ func currentKubectlContext(ctx context.Context) string {
 	return strings.TrimSpace(string(out))
 }
 
-// resumeExistingDevCluster handles `forge cluster up` against a cluster that
+// resumeExistingDevCluster handles `forge dev cluster up` against a cluster that
 // already exists: start it if stopped, then pin the kubectl context (so the
 // kubectl calls that follow cannot land on a stale one) and optionally wait
 // for nodes to report Ready. Creation is the caller's job.
@@ -781,7 +781,7 @@ func resumeExistingDevCluster(ctx context.Context, clusterName string, state k3d
 }
 
 func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
-	// Deploy-feature gate: `forge cluster up` boots a k3d cluster
+	// Deploy-feature gate: `forge dev cluster up` boots a k3d cluster
 	// whose only purpose is hosting the project's deploy. A library /
 	// CLI project that's opted out of deploy has no reason to spin
 	// one up. Mirrors the deploy gate in runDeploy / runDevClusterReload.
@@ -810,7 +810,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	if store, err := loadProjectStore(); err == nil {
 		ingressOn = store.Features().IngressEnabled()
 	}
-	// `forge cluster up` reads deploy/k3d.yaml directly and has no rendered
+	// `forge dev cluster up` reads deploy/k3d.yaml directly and has no rendered
 	// Cluster entity in hand, so it projects only the ports fragment. A
 	// project that declares CIDRs declares them on a forge.Cluster, which is
 	// the declarative `forge env up` path (cluster_phase.go).
@@ -833,7 +833,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 		// declarative env path already ensures these (cluster_phase.go:
 		// ensureDeclaredCluster), so a project whose deploy/k3d.yaml uses a
 		// standalone registry worked under `forge env up` but not under
-		// `forge cluster up` — the same config, two different outcomes.
+		// `forge dev cluster up` — the same config, two different outcomes.
 		// Read the UN-MERGED user config: the ports merge above rewrites
 		// `ports`, never `registries`.
 		if err := ensureConfigRegistries(ctx, configPath); err != nil {
@@ -872,7 +872,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 	// DECLARED platform dependency — a forge.HelmChart in the env Bundle's
 	// `helm_charts` — rendered + applied by the deploy phase
 	// (`forge env deploy <env> --target=envoy-gateway`, CRD-first) EXACTLY like
-	// the cloud envs. `forge cluster up` only creates the bare k3d cluster
+	// the cloud envs. `forge dev cluster up` only creates the bare k3d cluster
 	// with the host-port mapping the merged k3d config carries; the
 	// controller arrives with the deploy. One declarative model everywhere.
 	//
@@ -894,7 +894,7 @@ func runDevClusterUp(ctx context.Context, configPath string, wait bool) error {
 func runDevClusterDown(ctx context.Context, configPath string) error {
 	// Same gate as runDevClusterUp — tearing down a cluster that
 	// `cluster up` won't create is at worst a no-op, but we keep the
-	// error symmetric so a `forge cluster up && forge cluster
+	// error symmetric so a `forge dev cluster up && forge cluster
 	// down` cycle fails uniformly when deploy is off.
 	if store, err := loadProjectStore(); err == nil && !store.Features().DeployEnabled() {
 		return config.DisabledFeatureError(config.FeatureDeploy)
@@ -920,7 +920,7 @@ func runDevClusterDown(ctx context.Context, configPath string) error {
 	// so --config can never name it, and deleting the owner alone strands it
 	// on a network whose owner is gone. Discover those secondaries from the
 	// live docker labels and delete them FIRST, the same order
-	// `forge cluster down <env>` uses.
+	// `forge dev cluster down <env>` uses.
 	dependents, err := nestedSecondariesOfFn(ctx, clusterName)
 	if err != nil {
 		return fmt.Errorf("find clusters nested on %q's network: %w", clusterName, err)
@@ -1007,11 +1007,11 @@ var (
 	}
 )
 
-// runEnvClustersUp is `forge cluster up <env>`: ensure every cluster the
+// runEnvClustersUp is `forge dev cluster up <env>`: ensure every cluster the
 // env's KCL declares through the SAME reconcile `forge env up` runs, so the
 // declared CIDRs / API port / owner edge are applied at create time.
 //
-// This exists because `forge cluster up --config <file>` cannot express them:
+// This exists because `forge dev cluster up --config <file>` cannot express them:
 // they live on the forge.Cluster, not in the k3d YAML, and k3s fixes CIDRs at
 // create. A cluster created from the bare file therefore comes up on k3s's
 // default blocks, and the env's next `forge env deploy` correctly refuses it on
@@ -1085,7 +1085,7 @@ func envClusterDeleteOrder(clusters []ClusterEntity) []string {
 	return append(secondaries, owners...)
 }
 
-// runEnvClustersDown is `forge cluster down <env>`: delete every k3d
+// runEnvClustersDown is `forge dev cluster down <env>`: delete every k3d
 // cluster the env declares, secondaries first. A cluster declared with `owner`
 // and no config file has no other way to be named through forge.
 func runEnvClustersDown(ctx context.Context, env string) error {
@@ -1098,7 +1098,7 @@ func runEnvClustersDown(ctx context.Context, env string) error {
 	}
 	for _, c := range clusters {
 		if c.Provider != "" && c.Provider != "k3d" {
-			return fmt.Errorf("env %q declares cluster %q with provider=%q; forge cluster down only deletes k3d clusters", env, c.Name, c.Provider)
+			return fmt.Errorf("env %q declares cluster %q with provider=%q; forge dev cluster down only deletes k3d clusters", env, c.Name, c.Provider)
 		}
 	}
 	for _, name := range envClusterDeleteOrder(clusters) {

@@ -56,7 +56,7 @@ project through a symlink. Before writing, it type-checks the rewritten
 package with the contract_gen.go forge would derive, and compares that
 Service with the one it replaces, method by method. The files are written
 as one transaction: if a write fails, every file is restored.`,
-		Example: "  forge fix derive-contract internal/billing --dry-run\n  forge fix derive-contract internal/billing",
+		Example: "  forge lint fix derive-contract internal/billing --dry-run\n  forge lint fix derive-contract internal/billing",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := cmdutil.ProjectRoot()
@@ -66,12 +66,12 @@ as one transaction: if a write fails, every file is restored.`,
 			dir := filepath.ToSlash(filepath.Clean(strings.TrimPrefix(args[0], "./")))
 			scope, err := codemod.ParseScope(root, []string{dir})
 			if err != nil {
-				return cliutil.UserErr("forge fix derive-contract", err.Error(), "",
+				return cliutil.UserErr("forge lint fix derive-contract", err.Error(), "",
 					"name the package directory, relative to the project root, e.g. internal/billing")
 			}
 			if !dryRun && !allowDirty {
 				if dirty := uncommitted(root, scope); dirty != "" {
-					return cliutil.UserErr("forge fix derive-contract",
+					return cliutil.UserErr("forge lint fix derive-contract",
 						dir+" has uncommitted changes:\n"+dirty, "",
 						"commit or stash them first: this rewrites files you own, and `git diff` is how you review it (or pass --allow-dirty)")
 				}
@@ -83,7 +83,7 @@ as one transaction: if a write fails, every file is restored.`,
 				for _, r := range refused.Reasons {
 					fmt.Fprintf(f.Out, "  ✗ %s\n", r)
 				}
-				return cliutil.UserErr("forge fix derive-contract",
+				return cliutil.UserErr("forge lint fix derive-contract",
 					fmt.Sprintf("%d reason(s) the derived contract would not be the Service it replaces", len(refused.Reasons)), "",
 					"clear each item listed above and re-run, or keep the hand-written contract.go (both forms are supported)")
 			}

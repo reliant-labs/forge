@@ -13,15 +13,15 @@ Two places. Forge never writes skill bodies into a project; a leftover `.claude/
 | **Source** | `internal/templates/project/skills/{forge,general}/**/SKILL.md` (this tree) | you, in the forge repo — `//go:embed`ed into the binary |
 | **Project / user skills** | `<project>/.forge/skills/**`, `~/.forge/skills/**` | you. Precedence on a path collision: forge-shipped < project < user-global |
 
-`forge skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. Non-reliant harnesses get a thin pointer (`.claude/skills/forge/SKILL.md`, `.cursor/rules/forge.mdc`, or a line in `AGENTS.md`) that only says to run `forge skill search <query>` / `forge skill load <name>`; it never carries a skill body.
+`forge agent skill load <name>` prints from the binary — that is the authoritative copy, and it carries no banner or preamble. Non-reliant harnesses get a thin pointer (`.claude/skills/forge/SKILL.md`, `.cursor/rules/forge.mdc`, or a line in `AGENTS.md`) that only says to run `forge agent skill search <query>` / `forge agent skill load <name>`; it never carries a skill body.
 
 ## Structure
 
-Skills are organized by **action** — what you're trying to do — not by CLI command. A skill with sub-topics is a directory of directories: `testing/SKILL.md` beside `testing/unit/SKILL.md`, `testing/integration/SKILL.md`, `testing/e2e/SKILL.md`. Run `forge skill list` for the live catalog — do not maintain a copy of it here.
+Skills are organized by **action** — what you're trying to do — not by CLI command. A skill with sub-topics is a directory of directories: `testing/SKILL.md` beside `testing/unit/SKILL.md`, `testing/integration/SKILL.md`, `testing/e2e/SKILL.md`. Run `forge agent skill list` for the live catalog — do not maintain a copy of it here.
 
 ## How skills are used
 
-Run `forge skill list` to see all available skills with descriptions. Run `forge skill load <name>` to print a skill's content to stdout. When an agent hits a task that matches a skill's description, it should load the skill and follow it.
+Run `forge agent skill list` to see all available skills with descriptions. Run `forge agent skill load <name>` to print a skill's content to stdout. When an agent hits a task that matches a skill's description, it should load the skill and follow it.
 
 Skills are **opinionated**. They encode project conventions and the non-obvious gotchas. Don't treat them as optional — the shortcuts around them cause pain.
 
@@ -53,7 +53,7 @@ emit: both       # both audiences (compiler strips @forge-only blocks for genera
 <!-- @forge-only:start -->
 ## Forge-Specific Debug Tools
 
-forge debug start              # attach Delve debugger
+forge dev debug start              # attach Delve debugger
 task test              # run tests with race detector
 <!-- @forge-only:end -->
 ```
@@ -84,6 +84,6 @@ Keep skills short and actionable. `TestShippedSkillsFitDeliveryBudget` enforces 
 
 ## Every claim in a skill is checked
 
-`internal/templates/skills_validation_test.go` fact-checks every shipped SKILL.md against the binary it ships inside: `forge <chain>` references against the real cobra tree, the `--flags` after them against what that command accepts, path references against a real scaffold, `(forge.v1.*)` annotation fields against the compiled descriptors, `forge skill load <path>` targets, `forge/pkg/*` subpackages, audit categories, feature flags, proto packages, and forge.yaml keys. Legitimate exceptions go in `internal/templates/testdata/skills_validation_allowlist.txt` **with a justification** — an unexplained entry fails the test, and so does one whose claim no longer appears in the skill.
+`internal/templates/skills_validation_test.go` fact-checks every shipped SKILL.md against the binary it ships inside: `forge <chain>` references against the real cobra tree, the `--flags` after them against what that command accepts, path references against a real scaffold, `(forge.v1.*)` annotation fields against the compiled descriptors, `forge agent skill load <path>` targets, `forge/pkg/*` subpackages, audit categories, feature flags, proto packages, and forge.yaml keys. Legitimate exceptions go in `internal/templates/testdata/skills_validation_allowlist.txt` **with a justification** — an unexplained entry fails the test, and so does one whose claim no longer appears in the skill.
 
 What the validators cannot see, you have to check yourself: **run the command and read the emitted file.** A claim about what generated code looks like is only as good as the last time someone scaffolded a project and looked.

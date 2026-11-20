@@ -13,7 +13,7 @@ import (
 )
 
 // TestGoSubprocesses_DoNotInheritCallerModMod runs the `go` invocations
-// `forge generate` (and the `forge tools install` its verify-generated CI job
+// `forge generate` (and the `forge machine tools install` its verify-generated CI job
 // runs first) makes against a stand-in toolchain that records the GOFLAGS it
 // was handed.
 //

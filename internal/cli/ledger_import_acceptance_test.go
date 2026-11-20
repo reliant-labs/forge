@@ -1,6 +1,6 @@
 package cli
 
-// §17 step 7, the machine half: `forge ledger import --from-git` against a
+// §17 step 7, the machine half: `forge release ledger import --from-git` against a
 // COPY of control-plane's real ledger.
 //
 // WHY A REAL CHECKOUT AND NOT A FIXTURE. The fixtures beside this file pin

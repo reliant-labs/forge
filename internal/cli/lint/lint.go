@@ -79,7 +79,7 @@ type lintFlags struct {
 	// paths (lint_structured.go).
 	scope []string
 	// gateJSON is a FILE path: write this run's result as a gate document
-	// for `forge gate record` / `forge env deploy --gate`. Not a stdout
+	// for `forge release gate record` / `forge env deploy --gate`. Not a stdout
 	// mode — the human findings and the exit code are unchanged.
 	gateJSON string
 	// showSuppressed prints the inventory of every declared suppression
@@ -389,7 +389,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
-	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
+	cmd.Flags().StringVar(&flags.gateJSON, "gate-json", "", "Also write this run's result to `FILE` as a gate document, for `forge release gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the findings and the exit code are unchanged.")
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The
@@ -1023,7 +1023,7 @@ func (v lintVerdict) render(w io.Writer) error {
 		return cliutil.UserErr("forge lint",
 			"no gating linter ran — this run proved nothing"+v.suffix(),
 			strings.Join(detail, "; "),
-			"install the missing tools ('forge tools install golangci-lint buf') and re-run from the project root")
+			"install the missing tools ('forge machine tools install golangci-lint buf') and re-run from the project root")
 	}
 
 	// Everything the headline must not round up over: lanes that could not
@@ -1169,7 +1169,7 @@ func lintBufBinary(ctx context.Context) (string, bool) {
 
 // bufMissingFix is the command that installs the buf forge pins.
 func bufMissingFix() string {
-	return fmt.Sprintf("run `forge tools install buf` (it installs buf %s), or `go install %s@v%s` with its GOBIN on PATH, then re-run `forge lint`",
+	return fmt.Sprintf("run `forge machine tools install buf` (it installs buf %s), or `go install %s@v%s` with its GOBIN on PATH, then re-run `forge lint`",
 		templates.BufVersion, bufModulePath, templates.BufVersion)
 }
 

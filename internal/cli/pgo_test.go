@@ -291,7 +291,7 @@ func TestPGOPull_NeverTouchesTheFileUnlessWriting(t *testing.T) {
 			f.local.err = errors.New("service \"clickstack\" is not running")
 		}, action: pgoFailed, reason: "local ClickStack is not running — start it with `forge env up prod`", exit: 2, queried: true},
 		{name: "missing local table", setup: func(f *pgoFixture) { f.local.err = missingTable },
-			action: pgoFailed, reason: "run `forge project upgrade` (see `forge skill load migrations/v1.8.0/profile-guided-builds`", exit: 2, queried: true},
+			action: pgoFailed, reason: "run `forge project upgrade` (see `forge agent skill load migrations/v1.8.0/profile-guided-builds`", exit: 2, queried: true},
 		{name: "unimplemented RPC", setup: func(f *pgoFixture) {
 			f.facts["prod"] = pgoFacts("prod", true)
 			f.cp.err = &cloud.Error{HTTPStatus: 404, Code: cloud.CodeUnimplemented}

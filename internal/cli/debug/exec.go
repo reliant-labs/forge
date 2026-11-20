@@ -34,8 +34,8 @@ skipped.
 non-zero and the target keeps running. --no-wait resumes and returns at once.
 
 Examples:
-  forge debug continue --timeout 60s
-  forge debug continue --no-wait`,
+  forge dev debug continue --timeout 60s
+  forge dev debug continue --no-wait`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runContinue(timeout, noWait, jsonOutput)
 		},
@@ -62,7 +62,7 @@ func runContinue(timeout time.Duration, noWait, jsonOutput bool) error {
 		if jsonOutput {
 			_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"running": true})
 		} else {
-			fmt.Println("Target resumed (running). 'forge debug continue --timeout <d>' waits for the next stop.")
+			fmt.Println("Target resumed (running). 'forge dev debug continue --timeout <d>' waits for the next stop.")
 		}
 		return nil
 	}
@@ -83,7 +83,7 @@ func runContinue(timeout time.Duration, noWait, jsonOutput bool) error {
 	state, err := wait(timeout)
 	if errors.Is(err, dbgsvc.ErrStillRunning) {
 		setResumed(session, true)
-		return fmt.Errorf("no stop within %s: the target is still running (the next 'forge debug continue' waits for its next stop)", timeout)
+		return fmt.Errorf("no stop within %s: the target is still running (the next 'forge dev debug continue' waits for its next stop)", timeout)
 	}
 	if err != nil {
 		return fmt.Errorf("continuing: %w", err)

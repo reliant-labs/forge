@@ -91,12 +91,12 @@ jobs:
             exit 1
           fi
 
-      - name: forge tools install
+      - name: forge machine tools install
         run: |
-          if forge tools install; then
-            echo "✅ forge tools install"
+          if forge machine tools install; then
+            echo "✅ forge machine tools install"
           else
-            echo "❌ forge tools install"
+            echo "❌ forge machine tools install"
             exit 1
           fi
 

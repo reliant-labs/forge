@@ -68,7 +68,7 @@ func TestMCPRestartHintNamesRealTools(t *testing.T) {
 	}
 	for _, m := range named {
 		if !have[m[1]] {
-			t.Errorf("hint names tool %q, which forge mcp does not list", m[1])
+			t.Errorf("hint names tool %q, which forge agent mcp does not list", m[1])
 		}
 	}
 }

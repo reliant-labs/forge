@@ -10,7 +10,7 @@ import (
 )
 
 // Forge bug report afa50061: reliant's `task test` runs through `reliant forge
-// slot run`, and every run printed the version-skew warning, because the
+// machine slot run`, and every run printed the version-skew warning, because the
 // embedded forge is rarely the one a project pins. The slot commands are
 // machine-level coordination that every forge shares, so in a project pinned
 // to another forge they run as this one and say nothing about it.
@@ -20,15 +20,13 @@ func TestSlotCommandsRunWithoutTheSkewWarning(t *testing.T) {
 	const warning = "a different forge than the project's"
 
 	// The project really is skewed: a project command warns.
-	if out, err := runCheck(t, "skill", "list"); err != nil || !strings.Contains(out, warning) {
-		t.Fatalf("forge skill list in the skewed project: err %v, want the skew warning, got:\n%s", err, out)
+	if out, err := runCheck(t, "agent", "skill", "list"); err != nil || !strings.Contains(out, warning) {
+		t.Fatalf("forge agent skill list in the skewed project: err %v, want the skew warning, got:\n%s", err, out)
 	}
 
 	for _, args := range [][]string{
-		{"slot", "status"},
-		{"slot", "status", "--json"},
 		{"machine", "slot", "status"},
-		{"slot", "run", "--", "forge-no-such-command-xyz"},
+		{"machine", "slot", "status", "--json"},
 		{"machine", "slot", "run", "--", "forge-no-such-command-xyz"},
 	} {
 		root := newTestRootCmd(t)

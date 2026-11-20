@@ -111,7 +111,7 @@ func TestReadyz_FailsWhenADependencyIsDown(t *testing.T) {
 		t.Errorf("healthz = %d with the database down, want 200 — liveness must not follow readiness", hStatus)
 	}
 	if strings.TrimSpace(hRaw) != "ok" {
-		t.Errorf("healthz body = %q, want \"ok\" (forge doctor asserts this exactly)", strings.TrimSpace(hRaw))
+		t.Errorf("healthz body = %q, want \"ok\" (forge project doctor asserts this exactly)", strings.TrimSpace(hRaw))
 	}
 
 	// Recovery is observed live, not latched.

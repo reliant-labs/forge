@@ -1,6 +1,6 @@
 package cli
 
-// `forge ledger` — the verbs that act on a ledger as a whole, independent of
+// `forge release ledger` — the verbs that act on a ledger as a whole, independent of
 // any one environment.
 //
 // `forge release` is the noun for a release LEDGER's contents (verify a
@@ -37,7 +37,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// newLedgerCmd is `forge ledger`.
+// newLedgerCmd is `forge release ledger`.
 func newLedgerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ledger",
@@ -78,7 +78,7 @@ records the selected ledger has never imported.`,
 // what the repository holds rather than what this checkout happens to be on.
 const defaultImportRev = "origin/main"
 
-// newLedgerImportCmd is `forge ledger import`.
+// newLedgerImportCmd is `forge release ledger import`.
 func newLedgerImportCmd() *cobra.Command {
 	var (
 		fromGit        bool
@@ -492,7 +492,7 @@ func applyLedgerImport(ctx context.Context, out io.Writer, plan ledgerImportPlan
 			fmt.Fprintf(out, "  declined: %s\n", conflict)
 		}
 	}
-	fmt.Fprintf(out, "\nVerify with `%s env status <env>` and `%s ledger export --dir <tmp>`.\n", Name(), Name())
+	fmt.Fprintf(out, "\nVerify with `%s env status <env>` and `%s release ledger export --dir <tmp>`.\n", Name(), Name())
 	return nil
 }
 
@@ -503,7 +503,7 @@ func applyLedgerImport(ctx context.Context, out io.Writer, plan ledgerImportPlan
 // which is the per-record dedupe key the whole import's idempotency rests
 // on, and a method signature makes omitting it impossible.
 func (t *ledgerImportTarget) payload(project string) *ledgerImport {
-	in := newLedgerImport(project, "forge ledger import", false)
+	in := newLedgerImport(project, "forge release ledger import", false)
 	// RELEASES FIRST, and not for tidiness. A promotion names a release,
 	// so a ledger holding the promotion without the release records a
 	// binding pointing at nothing — and an import interrupted between the
@@ -536,7 +536,7 @@ func (t *ledgerImportTarget) envSource(env string) string {
 	if ps := t.Promotions[env]; len(ps) > 0 {
 		return ps[0].From
 	}
-	return "forge ledger import"
+	return "forge release ledger import"
 }
 
 // describeImportCounts renders the per-table counts a backend reports.
@@ -737,7 +737,7 @@ func (s *hostedStore) Import(ctx context.Context, in *ledgerImport) (ledgerImpor
 
 // Compile-time proof that BOTH backends can be imported into. The assertions
 // are what keep a method rename from silently dropping a store out of the
-// capability `forge ledger import` type-asserts for — which would surface as
+// capability `forge release ledger import` type-asserts for — which would surface as
 // "this ledger cannot accept an import" against a control plane that can.
 var (
 	_ ledgerImporter = machineBindingStore{}

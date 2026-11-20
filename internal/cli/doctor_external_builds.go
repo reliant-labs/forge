@@ -1,4 +1,4 @@
-// Package cli — `forge doctor` external-builds checks (Phase 3 of the
+// Package cli — `forge project doctor` external-builds checks (Phase 3 of the
 // build_cmd refactor).
 //
 // For every KCL service whose Service.BuildCmd is non-empty doctor

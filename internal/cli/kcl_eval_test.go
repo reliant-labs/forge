@@ -1,6 +1,6 @@
 package cli
 
-// kcl_eval_test.go covers the CLI surface of `forge kcl eval`: the flags, the
+// kcl_eval_test.go covers the CLI surface of `forge env kcl eval`: the flags, the
 // stdout/stderr split, and the exit behaviour. The evaluation itself is covered
 // in internal/kcleval.
 
@@ -61,7 +61,7 @@ func runEval(t *testing.T, dir string, args ...string) (string, string, error) {
 }
 
 // TestKCLEvalRawIsExactlyTheValue is the contract a shell caller depends on:
-// `V="$(forge kcl eval … --format raw)"` captures the value and nothing else.
+// `V="$(forge env kcl eval … --format raw)"` captures the value and nothing else.
 //
 // STDOUT carrying one stray line of prose is the failure this pins. `env
 // render` shipped that bug — a `Note:` on stdout became the first YAML document

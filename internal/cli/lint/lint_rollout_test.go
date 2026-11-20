@@ -26,7 +26,7 @@ import (
 const rolloutRule = "forge-closed-set"
 
 var testRollouts = map[string]ruleRollout{
-	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"},
+	rolloutRule: {IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge lint fix example"},
 }
 
 // withRollouts makes table the rollout declaration for the rest of the test,
@@ -270,7 +270,7 @@ func TestPinDecidesWhetherARuleStillWarns(t *testing.T) {
 				t.Errorf("grace = %+v, want present=%v", got[0].Grace, tc.wantGrace)
 			}
 			if tc.wantGrace && (got[0].Grace.IntroducedIn != "v1.0.0" || got[0].Grace.GatesFrom != "v1.0.1" ||
-				got[0].Grace.Fix != "forge fix example") {
+				got[0].Grace.Fix != "forge lint fix example") {
 				t.Errorf("grace note = %+v", got[0].Grace)
 			}
 		})
@@ -308,7 +308,7 @@ func TestRulesStartingToGateAcrossAPinBump(t *testing.T) {
 				}
 				return
 			}
-			want := GatingRule{Rule: rolloutRule, IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge fix example"}
+			want := GatingRule{Rule: rolloutRule, IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1", Fix: "forge lint fix example"}
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("got %+v, want [%+v]", got, want)
 			}
@@ -724,7 +724,7 @@ func TestGraceIsMachineReadableInJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	grace, _ := m["grace"].(map[string]any)
-	if grace["introduced_in"] != "v1.0.0" || grace["gates_from"] != "v1.0.1" || grace["fix"] != "forge fix example" {
+	if grace["introduced_in"] != "v1.0.0" || grace["gates_from"] != "v1.0.1" || grace["fix"] != "forge lint fix example" {
 		t.Errorf("grace = %v in %s", grace, raw)
 	}
 	if _, leaked := m["rollout"]; leaked {

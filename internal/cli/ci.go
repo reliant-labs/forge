@@ -216,7 +216,7 @@ func newCIValidateKCLCmd() *cobra.Command {
 			"each workload must pass Workload.Validate(ProfileRestricted), and the set must\n" +
 			"render as the control plane renders it — the same plan `forge env deploy`\n" +
 			"runs, minus the release and the RPCs.\n\n" +
-			"Shares its implementation with `forge doctor --signal deploy`, so CI and\n" +
+			"Shares its implementation with `forge project doctor --signal deploy`, so CI and\n" +
 			"the doctor cannot disagree about whether a project can be deployed.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := requireFeature(config.FeatureCI); err != nil {

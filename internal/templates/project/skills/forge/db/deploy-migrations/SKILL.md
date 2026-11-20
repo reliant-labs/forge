@@ -386,7 +386,7 @@ migration strategy.
 
 ## Verifying
 
-`forge doctor --signal deploy` fails **Deploy Migrations** for any environment
+`forge project doctor --signal deploy` fails **Deploy Migrations** for any environment
 that ships `.sql` migrations with no way to apply them. It accepts a migration
 Job, a migration initContainer, a migrate command, or `AUTO_MIGRATE=true` — it
 asserts a path exists, not which one.

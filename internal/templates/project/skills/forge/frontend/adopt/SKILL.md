@@ -16,7 +16,7 @@ writes only what generated code needs into it:
 |---|---|---|
 | Tier-1 codegen (hooks, mocks, `apiurl_gen.ts`, `otel_gen.ts`, typed config) | yes | yes |
 | owned seams the hooks import (`src/lib/connect.ts` + `api-base.ts`, `src/lib/test-utils.tsx`) | came with the scaffold | scaffolded once if missing; the app's own module is used when present |
-| starter components in `src/components/ui/` | yes | no — `forge component install <name>` |
+| starter components in `src/components/ui/` | yes | no — `forge ui component install <name>` |
 | CRUD pages, nav, dashboard, home page | yes | no, unless `routes` asks for them |
 | `package.json` dependency edits (runtime floor, telemetry SDK) + lockfile refresh | yes | yes |
 

@@ -55,7 +55,7 @@ What it publishes:
 - **`.forge/identity/<name>.json`** (non-secret): issuer, audience, scopes, the signing-key snapshot, client ids, redirect and login URIs.
 - **the env's secret store** (`secrets/dev.yaml`): everything a host process reads, under the env var name the process reads it as: `JWT_ISSUER`, `JWT_AUDIENCE`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`, `IDP_BASE`, `IDP_BROKER_TOKEN`, ... plus `<USER>_MACHINE_KEY` for each declared machine user. The API gets them through `forge.IdentityRef`, which the render fills for you; you copy nothing. The broker token is reused while it is valid and rotated before it expires, never printed.
 
-`forge env up` does not demand those store keys beforehand (they cannot exist before the first converge). A seed user's password is the one thing you supply: `forge secret set --env dev DEV_PASSWORD`, named by the seed user's `password_secret`.
+`forge env up` does not demand those store keys beforehand (they cannot exist before the first converge). A seed user's password is the one thing you supply: `forge env secret set --env dev DEV_PASSWORD`, named by the seed user's `password_secret`.
 
 If the converge fails the stack still starts, without sign-in, and the message names the IdP log.
 
@@ -77,7 +77,7 @@ With mail available, the dev env gets the SAME policies a hosted env gets from t
 - **`owners`** are created, granted `owner_role`, and — while they have no credential — sent ONE invitation, which lands in Mailpit and links to `<frontend>/auth/invite?userID=…&code=…`. Re-sent at most every 7 days, 3 times in all; never revoked when removed. Without mail they are created and granted, and `forge env up` says they cannot be invited.
 - **`signup`, `methods`** converge the IdP's login policy exactly as on hosted (the OTP-email factor magic links redeem included), and the broker reads them from `IDP_LOGIN_POLICY` (the `LOGIN_POLICY` document, `"mail": "dev"`), written to the store like every other identity output.
 - **Passkeys** in dev use relying party `localhost`, whatever `passkey_rp_id` the hosted envs use: a passkey is bound to the host the browser is on.
-- **`social`** providers need a SEPARATE DEV OAuth app at Google/GitHub whose callback is the dev IdP's `http://localhost:<idp port>/idps/callback` (printed by `forge env up`); set its secret with `forge secret set --env dev <client_secret name>`. A provider whose secret is missing is left out with a warning; the other methods still work.
+- **`social`** providers need a SEPARATE DEV OAuth app at Google/GitHub whose callback is the dev IdP's `http://localhost:<idp port>/idps/callback` (printed by `forge env up`); set its secret with `forge env secret set --env dev <client_secret name>`. A provider whose secret is missing is left out with a warning; the other methods still work.
 
 One known difference: dev mail uses Zitadel's own templates, hosted mail the platform relay's. The links and codes are identical.
 
@@ -106,7 +106,7 @@ Pinning a dev port is still available if you want a stable URL — set `port: <n
 
 No IdP, no container, **and no sign-in flow**. Appropriate for `curl`-ing an RPC or a scripted check; not appropriate for anything with a browser. The token carries whatever claims you typed, so it never exercises the claim shape your real issuer produces.
 
-Set `jwt_signing_method: "HS256"` in `deploy/kcl/dev/config.k` and a `jwt_secret` in the env's secret store (`forge secret set --env dev JWT_SECRET`), then sign with the same secret:
+Set `jwt_signing_method: "HS256"` in `deploy/kcl/dev/config.k` and a `jwt_secret` in the env's secret store (`forge env secret set --env dev JWT_SECRET`), then sign with the same secret:
 
 ```go
 // go run ./tmp-token — delete it afterwards; never commit a signer.

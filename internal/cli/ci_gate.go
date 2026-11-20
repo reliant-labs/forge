@@ -59,7 +59,7 @@ func newCIGateCmd() *cobra.Command {
 			"Checks run concurrently. A check waits for the checks it names in `after`; a check that\n" +
 			"rewrites the tree (an extra with `mutates_tree`) runs alone, before the checks that read\n" +
 			"it (verify-generated regenerates a scratch copy, so it is not one); a heavy check holds\n" +
-			"one of the machine's heavy slots (`forge slot status`), and at most --jobs light checks\n" +
+			"one of the machine's heavy slots (`forge machine slot status`), and at most --jobs light checks\n" +
 			"run at once. Each check's output goes to\n" +
 			"tmp/ci/<lane>/<check>.log; the console shows start and finish lines and a failure's tail.\n\n" +
 			"On a committed tree, a check that PASSED on this exact tree before (any worktree of the\n" +
@@ -445,7 +445,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 // gateSlots is how the gate bounds its heavy checks: one host heavy slot each.
 // It returns nil — heavy checks then share the light checks' job cap — when
 // the limit is off, or when the gate itself already runs inside a slot (under
-// `forge slot run`, or as a check of another gate): every slot it asked for
+// `forge machine slot run`, or as a check of another gate): every slot it asked for
 // would be granted at once, so slots could not bound anything.
 func gateSlots(out, stderr io.Writer) cigate.SlotFunc {
 	env := os.Environ()
@@ -459,10 +459,10 @@ func gateSlots(out, stderr io.Writer) cigate.SlotFunc {
 		return nil
 	}
 	if why, inside := hostslot.Inside(hostslot.Heavy, hostslot.Options{Env: env}); inside {
-		fmt.Fprintf(stderr, "⚠️  heavy slots: this gate already runs inside a heavy slot (%s), so its heavy checks cannot queue for their own and share the job cap instead. Run the gate outside `forge slot run`.\n", why)
+		fmt.Fprintf(stderr, "⚠️  heavy slots: this gate already runs inside a heavy slot (%s), so its heavy checks cannot queue for their own and share the job cap instead. Run the gate outside `forge machine slot run`.\n", why)
 		return nil
 	}
-	fmt.Fprintf(out, "heavy slots: %s — `forge slot status` shows who holds them\n", capy)
+	fmt.Fprintf(out, "heavy slots: %s — `forge machine slot status` shows who holds them\n", capy)
 	return func(ctx context.Context) (cigate.HeldSlot, error) {
 		return hostslot.Acquire(ctx, hostslot.Heavy, hostslot.Options{Out: stderr, Label: "forge ci gate", Env: env})
 	}

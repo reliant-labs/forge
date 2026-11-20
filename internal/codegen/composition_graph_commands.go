@@ -350,7 +350,7 @@ func emitRootCommands(projectDir, module string, roots []graphRootView, groups m
 		for i, r := range roots {
 			names[i] = "`" + strings.Join(r.Command, " ") + "`"
 		}
-		fmt.Fprintf(warn, "  ⚠️  %s declares no runRoot, the process policy every root's command runs through, so the commands for this project's roots (%s) are not generated: add `func runRoot(ctx context.Context, deps Deps, root rootSpec) error` to %s (forge skill load architecture — \"Roots and commands\") and register `rootCommands(deps)` in root.go\n",
+		fmt.Fprintf(warn, "  ⚠️  %s declares no runRoot, the process policy every root's command runs through, so the commands for this project's roots (%s) are not generated: add `func runRoot(ctx context.Context, deps Deps, root rootSpec) error` to %s (forge agent skill load architecture — \"Roots and commands\") and register `rootCommands(deps)` in root.go\n",
 			filepath.ToSlash(treeDir), strings.Join(names, ", "), filepath.ToSlash(filepath.Join(treeDir, "serve.go")))
 		return nil
 	}

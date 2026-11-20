@@ -43,11 +43,11 @@ verifying its generated code with an older forge than the one that wrote it.
   needed.
 
 The `checks` job also installs, before `task ci:checks` runs verify-generated, the codegen toolchain at go.mod's
-versions — `forge tools install --force` (protoc-gen-go, protoc-gen-connect-go,
+versions — `forge machine tools install --force` (protoc-gen-go, protoc-gen-connect-go,
 goimports) — and runs `npm ci` in each frontend, because it regenerates the
 tree and demands identical bytes. `npm ci` is what installs
 `@bufbuild/protoc-gen-es`, from the frontend's own devDependencies and
-lockfile: `forge tools install` never runs npm and never writes a
+lockfile: `forge machine tools install` never runs npm and never writes a
 frontend's `package.json` or `package-lock.json` (`--force` reinstalls the
 Go tools only). It fails, naming the edit, when a frontend's buf.gen.yaml
 runs the plugin but its package.json does not declare it. `forge ci

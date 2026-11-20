@@ -69,7 +69,7 @@ Runtimes:
   ```
 
   The two credentials are references, never literals: a `forge.ManagedSecret`
-  (the env's secret store, `forge secret set --env prod UPLOADS_SECRET_ACCESS_KEY`
+  (the env's secret store, `forge env secret set --env prod UPLOADS_SECRET_ACCESS_KEY`
   with the value on stdin; what a hosted workload reads) or a `forge.SecretRef`
   (a Kubernetes Secret on a cluster you operate). GCS: endpoint
   `https://storage.googleapis.com` and an HMAC key of a service account that

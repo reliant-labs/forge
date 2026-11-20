@@ -205,7 +205,7 @@ func adoptSite(in newSiteInput, fe generator.SiteFrontend) error {
 	fmt.Printf("✅ Static site '%s' adopted at %s\n", in.projectName, in.targetPath)
 	fmt.Printf("   frontend %q: the %s app at the root (path \".\", builds into %s/)\n", fe.Name, fe.Type, fe.PublicDir)
 	fmt.Println("   wrote forge.yaml, deploy/kcl/kcl.mod (+ its empty kcl.mod.lock), deploy/kcl/{dev,staging,prod}/main.k — no Go, no server")
-	fmt.Println("   Existing app: session recording remains off. To opt in, initialize browser telemetry and enable _session_replay in each env (forge skill load frontend-runtime/telemetry).")
+	fmt.Println("   Existing app: session recording remains off. To opt in, initialize browser telemetry and enable _session_replay in each env (forge agent skill load frontend-runtime/telemetry).")
 	for _, line := range inPlaceMergeSummary(merged) {
 		fmt.Println(line)
 	}
@@ -323,17 +323,17 @@ func siteNextSteps(cd string) []string {
 		lines = append(lines, "  cd "+cd)
 	}
 	steps := [][2]string{
-		{cli + " skill load deploy/static-site", "the whole flow: envs, releases, hosting, domains"},
+		{cli + " agent skill load deploy/static-site", "the whole flow: envs, releases, hosting, domains"},
 		{cli + " env up dev", "the dev server (browser console mirrored to .forge/logs/dev/)"},
 		{cli + " lint --static-export", "what a static export cannot serve, with file:line"},
 		{cli + " env build prod --release v0.1.0", "build once, push, record the release"},
 		{cli + " env deploy prod v0.1.0", "publish to hosted static hosting (one env's site per person is free)"},
-		{cli + " domain add <host> --env prod", "your own hostname"},
+		{cli + " cloud domain add <host> --env prod", "your own hostname"},
 	}
 	for _, s := range steps {
 		lines = append(lines, "  "+s[0], "      ↳ "+s[1])
 	}
 	return append(lines,
 		"  build-time config (VITE_* / NEXT_PUBLIC_*): `env_vars` on the frontend in each env's main.k",
-		fmt.Sprintf("  the starter page is yours to replace: get a brief, then `%s skill load frontend/design`", cli))
+		fmt.Sprintf("  the starter page is yours to replace: get a brief, then `%s agent skill load frontend/design`", cli))
 }

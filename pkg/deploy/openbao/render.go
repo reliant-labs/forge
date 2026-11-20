@@ -620,7 +620,7 @@ func (s Spec) networkPolicy() *networkingv1.NetworkPolicy {
 	// The converge Jobs, in this namespace.
 	from = append(from, networkingv1.NetworkPolicyPeer{PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{LabelName: s.Name + "-converge"}}})
 	// The writer's tokens are minted for forge-secret-writer; callers reach
-	// the store from wherever `forge secret set` port-forwards, which is a
+	// the store from wherever `forge env secret set` port-forwards, which is a
 	// pod in this namespace's network path, so no peer is added for it.
 	for _, c := range s.Consumers {
 		ns := c.Namespace

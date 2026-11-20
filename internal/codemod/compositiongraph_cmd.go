@@ -19,7 +19,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// compositiongraph_cmd.go — the command-tree half of `forge fix
+// compositiongraph_cmd.go — the command-tree half of `forge lint fix
 // composition-graph`: serve.go, server.go, the retired per-component
 // subcommands, root.go and main.go; then the e2e harness, deploy/kcl and the
 // scan for anything still naming the legacy composition.

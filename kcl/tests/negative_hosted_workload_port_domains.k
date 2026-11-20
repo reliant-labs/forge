@@ -8,15 +8,15 @@ while one workloads.k renders to many, so a domain in the spec would bind to
 every env at once.
 
 So the hosted domain lives in the control plane as its own resource:
-`forge domain add`, then `forge domain bind` to the env you want it on.
+`forge cloud domain add`, then `forge cloud domain bind` to the env you want it on.
 OnCluster keeps `Port.domains` — there you own the ingress and forge's own
 Gateway/HTTPRoute serves the name.
 """
 
 # expect: domains [api.hounders.club]
 # expect: a control-plane resource, not spec
-# expect: forge domain add api.hounders.club
-# expect: forge domain bind
+# expect: forge cloud domain add api.hounders.club
+# expect: forge cloud domain bind
 
 import forge
 import forge.workloads as fw

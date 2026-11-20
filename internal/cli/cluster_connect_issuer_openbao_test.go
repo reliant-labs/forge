@@ -2,7 +2,7 @@
 
 package cli
 
-// P15, the last hop: the key set `forge cluster connect` uploads is enough for
+// P15, the last hop: the key set `forge cloud cluster connect` uploads is enough for
 // a REAL OpenBao to log a pod in. A real kube-apiserver (envtest) signs a
 // projected ServiceAccount token; connect registers the cluster's issuer and
 // keys; the mount is configured exactly as the control plane configures one

@@ -18,7 +18,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
-// connecterrors_run.go — one run of `forge fix connect-errors`: load the
+// connecterrors_run.go — one run of `forge lint fix connect-errors`: load the
 // module, decide each file's rewrites against the reader analysis
 // (connecterrors_readers.go), write what --scope allows, and report with the
 // positions of the files as they end up on disk.
@@ -125,7 +125,7 @@ func runConnectErrors(dir string, opts Options) (Report, error) {
 
 // connectV2Legend says why a connect-go v2 file is left alone, and what to
 // do with it instead.
-const connectV2Legend = "connect-go v2 code is not rewritten: `forge fix connect-errors` proves each rewrite wire-identical for connect-go v1 only. " +
+const connectV2Legend = "connect-go v2 code is not rewritten: `forge lint fix connect-errors` proves each rewrite wire-identical for connect-go v1 only. " +
 	"Edit its connect.NewError / connect.Errorf sites by hand — `forge lint` (forgeconv-handler-connect-error) names each one and its svcerr replacement"
 
 // withConnectV2Files appends the skipped connect-go v2 files to rep's
@@ -383,7 +383,7 @@ func (c *connectErrorsRun) report() Report {
 		for _, bl := range blocks {
 			b.WriteString("\n     - " + c.renderBlock(bl))
 		}
-		b.WriteString("\n   Switch each to svcerr.Code(err) (an errors.As or As-style helper into a *connect.Error to svcerr.Code or the svcerr.Is* predicates), then re-run forge fix connect-errors: it drops the wrappers once none is left.")
+		b.WriteString("\n   Switch each to svcerr.Code(err) (an errors.As or As-style helper into a *connect.Error to svcerr.Code or the svcerr.Is* predicates), then re-run forge lint fix connect-errors: it drops the wrappers once none is left.")
 		rep.Next = append(rep.Next, b.String())
 	}
 	if len(c.outOfScope) > 0 {

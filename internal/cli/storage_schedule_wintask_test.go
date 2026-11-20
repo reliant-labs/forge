@@ -25,7 +25,7 @@ func TestEscapeWindowsArg(t *testing.T) {
 }
 
 func TestWindowsTaskXML(t *testing.T) {
-	data := windowsTaskXML(`C:\Users\a b\forge-storage.exe`, []string{"storage", "gc", "--policy", `C:\p q\"x"`, "--apply"}, time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC))
+	data := windowsTaskXML(`C:\Users\a b\forge-storage.exe`, []string{"machine", "storage", "gc", "--policy", `C:\p q\"x"`, "--apply"}, time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC))
 	var task struct {
 		Start    string `xml:"Triggers>CalendarTrigger>StartBoundary"`
 		Days     string `xml:"Triggers>CalendarTrigger>ScheduleByDay>DaysInterval"`
@@ -44,7 +44,7 @@ func TestWindowsTaskXML(t *testing.T) {
 	if task.Command != `C:\Users\a b\forge-storage.exe` {
 		t.Errorf("command = %q", task.Command)
 	}
-	if want := `storage gc --policy "C:\p q\\\"x\"" --apply`; task.Args != want {
+	if want := `machine storage gc --policy "C:\p q\\\"x\"" --apply`; task.Args != want {
 		t.Errorf("args = %q, want %q", task.Args, want)
 	}
 	if strings.Contains(string(data), "HighestAvailable") {
@@ -61,7 +61,7 @@ func TestEncodeUTF16LEBOM(t *testing.T) {
 }
 
 func TestWindowsHourlyTaskXML(t *testing.T) {
-	data := windowsTaskXMLFor(`C:\f\forge-storage.exe`, []string{"storage", "auto-gc", "--policy", `C:\p`}, time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC), true)
+	data := windowsTaskXMLFor(`C:\f\forge-storage.exe`, []string{"machine", "storage", "auto-gc", "--policy", `C:\p`}, time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC), true)
 	var task struct {
 		Interval string `xml:"Triggers>TimeTrigger>Repetition>Interval"`
 		Limit    string `xml:"Settings>ExecutionTimeLimit"`

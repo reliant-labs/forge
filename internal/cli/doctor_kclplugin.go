@@ -15,7 +15,7 @@ import (
 )
 
 // kclPluginCheckName is a CONTRACT, not a label: reliant's daemon reads
-// `forge doctor --json` and matches this exact name to decide whether a
+// `forge project doctor --json` and matches this exact name to decide whether a
 // machine's forge can render (reliant internal/toolexec/daemonruntime/
 // cmd_forge_capability.go, forgeKCLPluginCheckName). Renaming it silently
 // turns that answer into "undetermined".
@@ -79,7 +79,7 @@ func kclPluginFailureEvidence(err error) string {
 		"cause:    usually KCL's native library could not be extracted or loaded from " + kclLibDir(),
 		"          (antivirus quarantine, a read-only or redirected temp dir, or a bad KCL_LIB_HOME)",
 		"fix:      allow the library through antivirus, or point KCL_LIB_HOME at a writable directory",
-		"          forge may load native code from, then re-run `forge doctor`",
+		"          forge may load native code from, then re-run `forge project doctor`",
 	}, "\n")
 }
 

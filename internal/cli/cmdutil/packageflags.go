@@ -3,7 +3,7 @@ package cmdutil
 import "github.com/spf13/cobra"
 
 // AddPackageScaffoldFlags registers the flags every package-scaffolding verb
-// shares (`forge package new`, `forge scaffold package`, `forge scaffold
+// shares (`forge scaffold package`, `forge scaffold package`, `forge scaffold
 // adapter`), so the three spellings cannot drift apart.
 //
 //   - --base-url opts an adapter into a config block with one base_url leaf,

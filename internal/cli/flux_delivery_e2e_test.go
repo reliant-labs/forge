@@ -96,7 +96,7 @@ func TestE2EFluxDeliverySelfHosted(t *testing.T) {
 	})
 
 	// ── 1. Bootstrap, then deploy ────────────────────────────────────────
-	e.mustForge(e.adminConfig, "cluster", "up", fluxDeliveryE2EEnv, "--wait")
+	e.mustForge(e.adminConfig, "dev", "cluster", "up", fluxDeliveryE2EEnv, "--wait")
 	e.mustForge(e.adminConfig, "env", "deploy", fluxDeliveryE2EEnv, "--target", fluxdelivery.ChartName)
 	out := e.mustForge(e.adminConfig, "env", "deploy", fluxDeliveryE2EEnv, "--yes")
 	first := e.pointerDigest()

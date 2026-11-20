@@ -6,7 +6,7 @@ This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by t
 {{- if .Container}} It is an **adopted app**: a server forge did not write, in any language, built from its own Dockerfile and shipped by forge with environments, build-once releases and Reliant hosting.
 {{- else if .Adopted}} It is an **adopted project**: an existing app, in its own language and layout, that uses only the pieces of forge it opted into.{{end}}
 
-This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `{{.CLI}} skill load <name>` away, named where you need it.
+This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `{{.CLI}} agent skill load <name>` away, named where you need it.
 
 ## Engineering disposition
 
@@ -23,14 +23,14 @@ This is a long-lived product. For anything hard to change later — architecture
 Skills come from the binary, so they match the forge you run. Load one before guessing. These five show the most, soonest:
 
 ```bash
-{{.CLI}} skill load forge                # start here: what forge already scaffolds, so you never hand-write it
+{{.CLI}} agent skill load forge                # start here: what forge already scaffolds, so you never hand-write it
 {{.CLI}} project shapes --grep <Name>    # where a symbol is in every layer (rpc, table, handler, hook, store), with file:line
 {{.CLI}} env up dev                      # the whole stack locally; every log, browser console included, in .forge/logs/dev/
 {{.CLI}} obs endpoints dev               # p50/p95/p99 and error rate per RPC, with no instrumentation code
 {{.CLI}} obs check <env> --wait --json   # after a deploy: proves the release good, or names what regressed
 ```
 
-`{{.CLI}} skill list` is the catalog. `{{.CLI}} project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `{{.CLI}} project capabilities` lists every verb; `{{.CLI}} project benefits` lists what this project gets without setup. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
+`{{.CLI}} agent skill list` is the catalog. `{{.CLI}} project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `{{.CLI}} project capabilities` lists every verb; `{{.CLI}} project benefits` lists what this project gets without setup. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
 
 ## Critical rules
 
@@ -44,7 +44,7 @@ Skills come from the binary, so they match the forge you run. Load one before gu
 {{if $taskGate}}4. **Iterate on `task test:short -- ./internal/<pkg>/...`** (cached; never add `-count=1` or `-race`, never set a private `GOCACHE`), then `task test` once before you finish; `task ci` is the whole PR gate (`ci`). A test over ~2s calls `testkit.Slow(t, "<why>")` first — gate, don't gut (`testing`). `⏳ waiting for a heavy slot` is a queue, not a hang: never kill the holders (`ci/slots`). A command bounded to minutes (the tests or lint of named packages) may wait in the express lane, ahead of hour-long jobs: `FORGE_SLOT_LANE=express`.
 {{- else}}4. **This project has no Taskfile, so there is no `task test` and no `{{.CLI}} test`.** {{template "gate-commands" .}} Iterate on `go test -short ./internal/<pkg>/...` (cached; never add `-count=1` or `-race`). A test over ~2s calls `testkit.Slow(t, "<why>")` first — gate, don't gut (`testing`).{{end}}
    Anything over ~2 minutes runs in the background (`run_in_background` + `shell_wait`), never detached with `nohup`, `&`, `setsid` or `disown`.
-5. **Debugging: `{{.CLI}} skill load debug` first.** Frontend `console.*` calls and uncaught errors are on disk beside the backend logs: `grep '\[browser:error\]' .forge/logs/dev/*.log`.
+5. **Debugging: `{{.CLI}} agent skill load debug` first.** Frontend `console.*` calls and uncaught errors are on disk beside the backend logs: `grep '\[browser:error\]' .forge/logs/dev/*.log`.
 6. **`auth_required: false` publishes one RPC, never a page.** The pages a signed-out visitor may open are the frontend route guard's `publicExactPaths` (`src/lib/auth/route-guard.tsx`). What a caller may do — access checks, row scoping — is your handler code (`middleware.GetUser`); forge generates none of it (`auth`).
 
 ## Architecture in one screen
@@ -96,14 +96,14 @@ The dashboard's entity tiles, the sidebar nav, the sign-in screen and every gene
 
 ## Shipping
 
-`{{.CLI}} env deploy <env>` ships to Reliant hosting (staging/prod are already bound to it; `deploy`), then `{{.CLI}} obs check <env> --wait --json` proves it. One hosted static site per person is free, counted across environments (each env's site is one); anything beyond it needs billing, and until then `env deploy` exits 7 and prints the billing link: give the user that link, don't retry. Never ask for `forge login` under Reliant. Not signed in at all? `--claimable` deploys with no signup and prints a claim link for the user (`deploy/hosting`).
+`{{.CLI}} env deploy <env>` ships to Reliant hosting (staging/prod are already bound to it; `deploy`), then `{{.CLI}} obs check <env> --wait --json` proves it. One hosted static site per person is free, counted across environments (each env's site is one); anything beyond it needs billing, and until then `env deploy` exits 7 and prints the billing link: give the user that link, don't retry. Never ask for `forge cloud login` under Reliant. Not signed in at all? `--claimable` deploys with no signup and prints a claim link for the user (`deploy/hosting`).
 
 {{end -}}
 ## When forge itself is wrong — FIX IT
 
 If forge emits something wrong — bad codegen, a lint false positive, a scaffold quirk, a missing capability — fix it in forge when you can; never paper over it or hand-edit generated output, which the next `{{.CLI}} generate` overwrites. forge is semver at major 1: a fix keeps the old flag, field or default working beside the new one, marked deprecated. When you cannot fix it here, report it and carry on:
 
-    {{.CLI}} report-bug --severity high --title "<one line naming the defect>" \
+    {{.CLI}} agent report-bug --severity high --title "<one line naming the defect>" \
       --actual "<the exact error text>" --evidence "<commands, output, file paths>"
 
 Only for defects in forge itself (a command, codegen, lint, skill or doc), not this project's code or tests. Never put credentials or file contents in a report; `--dry-run` shows exactly what would be sent.
@@ -127,7 +127,7 @@ deploy/kcl/prod/main.k        ← … same
 
 The frontend's `type` (`nextjs` or `vite`) and `public_dir` (where `npm run build` lands: `out/` or `dist/`) are declared in each env's `main.k`. The envs are the declaration: change a binding there, then check it with `{{.CLI}} env render <env>`.
 
-**Start with `{{.CLI}} skill load deploy/static-site`** — the whole flow: envs, the static export, releases, hosting, runtime config, domains. Other skills a site uses: `frontend/design` (designing the page), `deploy/domains` (your own hostname), `deploy/hosting` (what hosted hosting is and costs), `debug`. `{{.CLI}} skill list` is the catalog. Skills come from the binary and are never written to disk.
+**Start with `{{.CLI}} agent skill load deploy/static-site`** — the whole flow: envs, the static export, releases, hosting, runtime config, domains. Other skills a site uses: `frontend/design` (designing the page), `deploy/domains` (your own hostname), `deploy/hosting` (what hosted hosting is and costs), `debug`. `{{.CLI}} agent skill list` is the catalog. Skills come from the binary and are never written to disk.
 
 ## Run it
 
@@ -145,7 +145,7 @@ A site forge started (`{{.CLI}} project new --kind site`) mirrors every `console
 grep '\[browser:error\]' .forge/logs/dev/*.log
 ```
 
-An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` and serves the dev-server receiver; `{{.CLI}} skill load debug` covers both halves.
+An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` and serves the dev-server receiver; `{{.CLI}} agent skill load debug` covers both halves.
 
 ## Build it as a static export
 
@@ -163,9 +163,9 @@ Hosted static hosting serves files: `npm run build` must produce a directory of 
 
 Staging and prod are already bound to Reliant hosted static hosting: the platform owns the bucket, the CDN and a hostname. A hosted deploy ships only a recorded release, never a local build; recovery rolls forward to a new release. Another env is `{{.CLI}} env new preview --from prod`. Your own bucket or Firebase instead: change the frontend's `runtime` in that env's `main.k` (`deploy/static-site`).
 
-**Billing.** One hosted static site per person is free, across every org they own without a plan — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
+**Billing.** One hosted static site per person is free, across every org they own without a plan — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge cloud login` when running under Reliant: you are already signed in.
 
-**Custom domains:** `{{.CLI}} domain add <host> --env prod` (`deploy/domains`).
+**Custom domains:** `{{.CLI}} cloud domain add <host> --env prod` (`deploy/domains`).
 
 ## Config
 
@@ -175,7 +175,7 @@ Staging and prod are already bound to Reliant hosted static hosting: the platfor
 
 ## Design
 
-The starter page is a placeholder that proves the site builds and deploys — not a design, and not something to hand a user. Ready to show means a brief (what the site is for, who it is for, how it should feel — only the user can give you that), real copy, and a layout built for it. Load `frontend/design` first; it asks for the brief and will not invent an aesthetic without one. `{{.CLI}} component search <thing>` searches forge's component library before you hand-write a control.
+The starter page is a placeholder that proves the site builds and deploys — not a design, and not something to hand a user. Ready to show means a brief (what the site is for, who it is for, how it should feel — only the user can give you that), real copy, and a layout built for it. Load `frontend/design` first; it asks for the brief and will not invent an aesthetic without one. `{{.CLI}} ui component search <thing>` searches forge's component library before you hand-write a control.
 
 A PWA is a static site too: forge builds, hosts and ships it like any other. The service worker and web manifest are yours to add — forge scaffolds neither.
 {{- if .Monitoring}}
@@ -216,7 +216,7 @@ An existing app, adopted onto forge as it is. forge is here for the pieces this 
 - **Never move existing code into forge's layout** — `internal/handlers/`, `proto/`, `cmd/`, `db/migrations/` — and never rename, restructure or "forge-ify" it, unless the user asks.
 - forge's Go-service rules — handlers, proto as the API, the generated ORM, `{{.CLI}} generate` — describe projects forge built, not this one. Do not add a {{if not .GoModule}}`go.mod`, a {{end}}`proto/` or a `Taskfile.yml` to "make forge work": it already does.
 - Keep the app's existing deploy YAML, Helm charts, compose files and CI as they are. Translating them into KCL is the user's decision, never a cleanup; forge can deploy hand-written manifests and charts where they stand (`deploy/byo-yaml`).
-- **The next pieces are a menu, not a migration.** `{{.CLI}} skill load adopt` lists what forge can take on next — deploys, environments, releases, secrets, migrations, monitoring — each on its own, in any order, with what it takes. Offer one when it would help; start it only when the user asks.
+- **The next pieces are a menu, not a migration.** `{{.CLI}} agent skill load adopt` lists what forge can take on next — deploys, environments, releases, secrets, migrations, monitoring — each on its own, in any order, with what it takes. Offer one when it would help; start it only when the user asks.
 
 ```
 <the app>, as it was               ← yours, in its own language; forge never rewrites it
@@ -232,9 +232,9 @@ deploy/kcl/<env>/main.k            ← where it runs, one per env: {{if .DeployE
 
 ## Ask forge before guessing
 
-- `{{.CLI}} skill list` is the catalog, `{{.CLI}} skill load <name>` prints one (`adopt` first), and `{{.CLI}} skill search <word>` finds one. Skills come from the binary and are never written to disk.
+- `{{.CLI}} agent skill list` is the catalog, `{{.CLI}} agent skill load <name>` prints one (`adopt` first), and `{{.CLI}} agent skill search <word>` finds one. Skills come from the binary and are never written to disk.
 - `{{.CLI}} project capabilities` lists every verb forge has: check it before concluding forge cannot do something.
-- Debugging: `{{.CLI}} skill load debug` names the evidence forge keeps{{if $deploy}}; every process `{{.CLI}} env up` runs is teed to `.forge/logs/<env>/<name>.log`, so grep there before guessing{{end}}.
+- Debugging: `{{.CLI}} agent skill load debug` names the evidence forge keeps{{if $deploy}}; every process `{{.CLI}} env up` runs is teed to `.forge/logs/<env>/<name>.log`, so grep there before guessing{{end}}.
 {{- if $deploy}}
 
 ## Environments and deploys
@@ -253,7 +253,7 @@ The dev command is the `command` in `deploy/kcl/dev/main.k`: replace it with you
 {{end}}
 A hosted deploy needs billing on the Reliant organization; until it is set up `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry.
 
-- The app reads its config from environment variables. A per-env value is `env` on the app in that env's `main.k`; a credential is `env = {KEY = forge.ManagedSecret {name = "KEY"}}` there, with its value set once by `{{.CLI}} secret set --env <env> KEY` (stdin). forge never sees a secret's value.
+- The app reads its config from environment variables. A per-env value is `env` on the app in that env's `main.k`; a credential is `env = {KEY = forge.ManagedSecret {name = "KEY"}}` there, with its value set once by `{{.CLI}} env secret set --env <env> KEY` (stdin). forge never sees a secret's value.
 - A managed database (if declared) reaches the app as `DATABASE_URL` through `forge.DatabaseRef`.
 - `{{.CLI}} obs logs <env>` and `{{.CLI}} obs workloads <env>` (restarts, crash loops, failed jobs) work for any app. Request rates, error rates and traces exist only if the app exports OpenTelemetry (OTLP to `OTEL_EXPORTER_OTLP_ENDPOINT`, which hosting sets on every workload): until it does, `{{.CLI}} obs check` is INCONCLUSIVE with `reason_code: no_request_telemetry` — not proven good — while restarts, alerts and issues still count. Load `observability/query` for the details.
 {{- else if .DeclaredEnvs}}
@@ -288,7 +288,7 @@ The schema migrations are {{.Tool}}'s (`{{.Evidence}}`){{with .Apply}}, applied 
 
 {{range .Frontends}}- `{{.Name}}`{{with .Type}} ({{.}}){{end}}{{with .Dir}} in `{{.}}`{{end}}
 {{end}}
-They are the app's own code: forge generates nothing into them. Before redesigning one, load `frontend/design` (it asks the user for a brief first); `{{.CLI}} component search <thing>` searches forge's component library before you hand-write a control.
+They are the app's own code: forge generates nothing into them. Before redesigning one, load `frontend/design` (it asks the user for a brief first); `{{.CLI}} ui component search <thing>` searches forge's component library before you hand-write a control.
 {{- end}}
 
 ## Tests and the gate
@@ -316,7 +316,7 @@ A run expected to take more than ~2 minutes goes in the background (`run_in_back
 {{- define "monitoring" -}}
 ## Monitoring
 
-forge monitors this app{{if .DeclaredEnvs}} in {{range $i, $e := .DeclaredEnvs}}{{if $i}}, {{end}}`{{$e}}`{{end}}{{end}}: the app exports OpenTelemetry (traces, logs, metrics) to Reliant with a per-env ingest token, and forge reads it back. It needs a signed-in forge: under Reliant it already is; standalone, `{{.CLI}} login` (or a token in CI). Dashboards: https://forge.reliantlabs.io/forge/p/{{.Name}}/observability.
+forge monitors this app{{if .DeclaredEnvs}} in {{range $i, $e := .DeclaredEnvs}}{{if $i}}, {{end}}`{{$e}}`{{end}}{{end}}: the app exports OpenTelemetry (traces, logs, metrics) to Reliant with a per-env ingest token, and forge reads it back. It needs a signed-in forge: under Reliant it already is; standalone, `{{.CLI}} cloud login` (or a token in CI). Dashboards: https://forge.reliantlabs.io/forge/p/{{.Name}}/observability.
 
 ```bash
 {{.CLI}} obs status <env>          # what is wrong now

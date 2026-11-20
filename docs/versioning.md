@@ -95,7 +95,7 @@ rather than deciding again.
 
 A bridged project compiles generated code against the checkout, so the binary
 must have been built from that same source. `forge generate` and `forge lint`
-print one line, and `forge doctor` reports a `Forge Bridge` warning, whenever
+print one line, and `forge project doctor` reports a `Forge Bridge` warning, whenever
 it cannot show that:
 
 - a binary that records its forge commit (`vcs.revision`, or a version naming

@@ -205,7 +205,7 @@ func openBundleLedger(ctx context.Context, projectDir, env string, kind release.
 	if errors.Is(err, cloud.ErrNoCredential) {
 		// Signed out: one line, not the resolver's fix list (a signed-out
 		// `forge env up` of a local env lands here every run).
-		why = firstLine(why) + " (`" + Name() + " login` to sign in)"
+		why = firstLine(why) + " (`" + Name() + " cloud login` to sign in)"
 	}
 	fmt.Fprintf(in.errWriter(),
 		"[bundle] Warning: env %s's bundle was not written: %s\n"+

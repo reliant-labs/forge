@@ -1,4 +1,4 @@
-// Tests for `forge start` — the router. It is what the paste-able prompt on
+// Tests for `forge project start` — the router. It is what the paste-able prompt on
 // reliantlabs.com sends every agent to first, so three promises are pinned:
 // it stays short (the reader pays for every byte in tokens), every command it
 // prints parses, and every skill it names exists.
@@ -22,7 +22,7 @@ const (
 	startRouterMaxBytes = 4096
 )
 
-// runStartRouter executes bare `forge start` through the real root command
+// runStartRouter executes bare `forge project start` through the real root command
 // tree and returns its stdout, normalized to the standalone `forge` spelling.
 func runStartRouter(t *testing.T) string {
 	t.Helper()
@@ -30,9 +30,9 @@ func runStartRouter(t *testing.T) string {
 	var out bytes.Buffer
 	root.SetOut(&out)
 	root.SetErr(&out)
-	root.SetArgs([]string{"start"})
+	root.SetArgs([]string{"project", "start"})
 	if err := root.Execute(); err != nil {
-		t.Fatalf("forge start: unexpected error: %v\noutput:\n%s", err, out.String())
+		t.Fatalf("forge project start: unexpected error: %v\noutput:\n%s", err, out.String())
 	}
 	return strings.ReplaceAll(out.String(), cmdutil.Name()+" ", "forge ")
 }
@@ -40,12 +40,12 @@ func runStartRouter(t *testing.T) string {
 func TestStartRouterFitsBudget(t *testing.T) {
 	out := runStartRouter(t)
 	lines := strings.Count(out, "\n")
-	t.Logf("`forge start`: %d lines, %d bytes (budget %d lines, %d bytes)", lines, len(out), startRouterMaxLines, startRouterMaxBytes)
+	t.Logf("`forge project start`: %d lines, %d bytes (budget %d lines, %d bytes)", lines, len(out), startRouterMaxLines, startRouterMaxBytes)
 	if lines > startRouterMaxLines {
-		t.Errorf("`forge start` prints %d lines, over the %d-line budget: name a skill instead of inlining it", lines, startRouterMaxLines)
+		t.Errorf("`forge project start` prints %d lines, over the %d-line budget: name a skill instead of inlining it", lines, startRouterMaxLines)
 	}
 	if len(out) > startRouterMaxBytes {
-		t.Errorf("`forge start` prints %d bytes, over the %d-byte budget: name a skill instead of inlining it", len(out), startRouterMaxBytes)
+		t.Errorf("`forge project start` prints %d bytes, over the %d-byte budget: name a skill instead of inlining it", len(out), startRouterMaxBytes)
 	}
 }
 
@@ -56,14 +56,14 @@ func TestStartRouterCarriesBothPaths(t *testing.T) {
 	for _, want := range []string{
 		"forge env deploy prod --claimable",        // existing app: adopt + deploy, no account
 		"forge project new --in-place --kind site", // empty directory: a site
-		"forge start app",                          // empty directory: an app with an API
+		"forge project start app",                  // empty directory: an app with an API
 		"72 hours",                                 // what the agent must tell the user
 		"claim link",                               // ...and hand over
 		"forge env status prod --claimable",        // how to get the link again
-		"forge skill load compare",                 // the honest comparison: limits and prices
+		"forge agent skill load compare",           // the honest comparison: limits and prices
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("`forge start` is missing %q", want)
+			t.Errorf("`forge project start` is missing %q", want)
 		}
 	}
 }
@@ -79,7 +79,7 @@ func TestStartRouterCommandsParse(t *testing.T) {
 	out := runStartRouter(t)
 	matches := startRouterCommand.FindAllStringSubmatch(out, -1)
 	if len(matches) == 0 {
-		t.Fatal("found no `forge ...` commands in `forge start`")
+		t.Fatal("found no `forge ...` commands in `forge project start`")
 	}
 	for _, m := range matches {
 		words := strings.Fields(m[1])

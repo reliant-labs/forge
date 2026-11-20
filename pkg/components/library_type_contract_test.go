@@ -14,7 +14,7 @@ import (
 // `@ts-expect-error` lines are misuses a component's type must reject; a
 // loosened type turns each into an "unused directive" error. Each fixture is
 // compiled against the library components it imports (`./x`) and their own
-// sibling imports, exactly as `forge component install` lays them out.
+// sibling imports, exactly as `forge ui component install` lays them out.
 func TestComponentTypeContracts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("-short: installs typescript and @types/react with npm; runs in the full tier")

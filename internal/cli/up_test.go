@@ -185,7 +185,7 @@ func TestUpLogPath_Sanitises(t *testing.T) {
 // TestUpCmd_NoPortForwardSurface pins the phase-3 ingress refactor:
 // `forge env up` no longer mentions port-forward in any user-facing string
 // (Short / Long / Example / flag help). Reaching cluster services from
-// the host is the Gateway API ingress path now (forge cluster urls); the
+// the host is the Gateway API ingress path now (forge dev cluster urls); the
 // orchestrator must not advertise a port-forward phase that doesn't
 // exist.
 func TestUpCmd_NoPortForwardSurface(t *testing.T) {
@@ -740,7 +740,7 @@ func TestRenderUpSummary(t *testing.T) {
 		"worker", "(no port declared)",
 		".forge/logs/dev/frontend_reliant-web.log",
 		"Logs   .forge/logs/dev/",
-		"forge cluster urls",
+		"forge dev cluster urls",
 		"forge env status dev",
 		"Host services", "Frontends",
 	} {
@@ -1177,7 +1177,7 @@ web_config: frontend_config_gen.WebConfig = {
 		if !strings.Contains(got, "Auth:") {
 			t.Errorf("no warning for a half-wired stack, got %q", got)
 		}
-		if !strings.Contains(got, "forge doctor") {
+		if !strings.Contains(got, "forge project doctor") {
 			t.Errorf("the warning must say where the detail is, got %q", got)
 		}
 	})

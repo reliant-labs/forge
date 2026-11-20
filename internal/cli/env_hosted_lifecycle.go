@@ -2,7 +2,7 @@ package cli
 
 // `forge env stop | start | delete` — the run-state and teardown verbs for a
 // HOSTED environment, i.e. what the Reliant UI's Stop / Start / Delete buttons
-// do, reachable from a terminal with a plain `forge login`.
+// do, reachable from a terminal with a plain `forge cloud login`.
 //
 // THESE ARE NOT `forge env down`. `down` stops host processes forge started on
 // THIS machine and never touches a control plane. stop/start/delete act only
@@ -830,14 +830,14 @@ func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, en
 	case err != nil:
 		fmt.Fprintf(out, "  custom domains: could not be read (%v)\n", err)
 		return fmt.Errorf("could not list the custom domains bound to env %s, so the delete preview is incomplete; nothing was deleted: %w\n"+
-			"fix: re-run once the control plane's domain service answers (`forge domain list` checks it)", envID, err)
+			"fix: re-run once the control plane's domain service answers (`forge cloud domain list` checks it)", envID, err)
 	case len(hosts) == 0:
 		fmt.Fprintln(out, "  custom domains: none bound")
 	default:
 		fmt.Fprintf(out, "  custom domains: %s\n", strings.Join(hosts, ", "))
 		fmt.Fprintln(out, "  note: the control plane refuses to delete an env while a custom domain is bound to it; unbind each first:")
 		for _, h := range hosts {
-			fmt.Fprintf(out, "    forge domain unbind %s --env <env>   (<env>: any env this project declares on this control plane)\n", h)
+			fmt.Fprintf(out, "    forge cloud domain unbind %s --env <env>   (<env>: any env this project declares on this control plane)\n", h)
 		}
 	}
 	return nil

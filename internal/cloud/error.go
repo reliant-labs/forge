@@ -44,7 +44,7 @@ const (
 	// release it accepts and how to upgrade; nothing was executed.
 	ReasonClientUpgradeRequired = "client_upgrade_required"
 	// ReasonPersonSessionRequired: the credential is a valid CLI login
-	// (`forge login`), and this operation needs a person signed in to the
+	// (`forge cloud login`), and this operation needs a person signed in to the
 	// web app — today, managing access tokens and member permissions, since
 	// what a CLI login issued would outlive revoking the login
 	// (control-plane#2636). Signing in again cannot help: it mints another
@@ -269,11 +269,11 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		return out
 	}
 	if out.Reason == ReasonPersonSessionRequired {
-		// The login is valid, so the 403 remedy below (`forge login`) would
+		// The login is valid, so the 403 remedy below (`forge cloud login`) would
 		// send the user round a loop: another login is another CLI login.
 		out.message = fmt.Sprintf(
 			"%s needs a person signed in to the Reliant web app, not a CLI login (HTTP %d%s, %s)\n"+
-				"fix: %s; signing in again with `forge login` does not help%s\n  reason: %s",
+				"fix: %s; signing in again with `forge cloud login` does not help%s\n  reason: %s",
 			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL,
 			webAppFix(c.Endpoint.URL), detailSuffix(detail), out.Reason)
 		return out
@@ -365,7 +365,7 @@ var missingScopeRe = regexp.MustCompile(`\b([a-z]+(?::[a-z]+)*:(?:read|write|man
 // token minted without the scope stays without it — so it says what is
 // actually true about scopes and how to get one.
 //
-// A credential a HELPER minted gets the host's remedy, never `forge login`:
+// A credential a HELPER minted gets the host's remedy, never `forge cloud login`:
 // the user is meant to be signed in once, to the host, and the helper only
 // ever hands out what that session holds. So a missing scope is the session's
 // missing permission, and the fix is wherever that session is managed.
@@ -390,12 +390,12 @@ func authFix(detail, endpoint, tokenEnv string, cred Credential) string {
 	if m := missingScopeRe.FindStringSubmatch(detail); m != nil {
 		return fmt.Sprintf(
 			"The token is valid but lacks the %[1]s scope.\n"+
-				"fix: re-run `forge login` to pick up the scope — a token only carries scopes the control plane granted it at login.\n"+
+				"fix: re-run `forge cloud login` to pick up the scope — a token only carries scopes the control plane granted it at login.\n"+
 				"     If the new token still lacks it, your role has no %[1]s grant: ask an org admin.\n"+
 				"     An admin can mint a token with it in the web app (%[3]s), then export %[2]s=<token>",
 			m[1], tokenEnv, TokenSettingsWhere(endpoint))
 	}
 	return fmt.Sprintf(
-		"fix: forge login            (human — opens a browser)\n"+
+		"fix: forge cloud login            (human — opens a browser)\n"+
 			"     export %s=<token>      (CI — a pipeline has no browser)", tokenEnv)
 }

@@ -12,7 +12,7 @@ import (
 )
 
 // TestWithKubeconfigLock_ConcurrentWritersLoseNothing is the lost update
-// three parallel `forge cluster up`s produced: each writer reads the whole
+// three parallel `forge dev cluster up`s produced: each writer reads the whole
 // kubeconfig, adds its own context and writes the file back, so an unlocked
 // writer that read before another's write erases that context. Under the
 // lock every writer's entry survives.

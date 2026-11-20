@@ -716,7 +716,7 @@ type ShapeControlPlaneSecret struct {
 	// Cluster is the kube context the Secret lands in, the same key the
 	// shape's workloads and objects use.
 	Cluster string `json:"cluster"`
-	// ConnectedCluster is the name `forge cluster connect` registered: the
+	// ConnectedCluster is the name `forge cloud cluster connect` registered: the
 	// credential the control plane delivers with.
 	ConnectedCluster string `json:"connected_cluster"`
 	// Kind says what the control plane mints into it

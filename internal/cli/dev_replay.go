@@ -92,7 +92,7 @@ func printLocalReplayAvailability(e *KCLEntities, facts devTelemetryFacts, mode 
 	}
 	hint := ""
 	if mode.Value != devTelemetryLocal {
-		hint = fmt.Sprintf("; sign in to Reliant (`%s login`) to ship it to your org's hosted store", Name())
+		hint = fmt.Sprintf("; sign in to Reliant (`%s cloud login`) to ship it to your org's hosted store", Name())
 	}
 	fmt.Fprintf(w, "[up]   this env runs no local store (no container, no ClickStack), so nothing is exported or kept%s\n", hint)
 }

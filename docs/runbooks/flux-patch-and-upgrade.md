@@ -6,7 +6,7 @@
 the Flux **minor** (`FLUX_VERSION`, `2.9.x`). With no `distribution.artifact`,
 the operator installs Flux from the manifests embedded in its own image, so the
 Flux **patch** that runs is the newest one the pinned operator embeds. forge
-never installs Flux into a deploy target by itself; see `forge skill load
+never installs Flux into a deploy target by itself; see `forge agent skill load
 deploy/flux`. There is deliberately no version knob: forge replaces the
 controllers' flags wholesale, and they are verified against one minor. So a Flux
 patch is a **forge release** (an operator bump, or a minor bump), and a consumer

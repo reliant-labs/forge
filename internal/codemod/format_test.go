@@ -239,7 +239,7 @@ func TestFormatAfter_UnparseableOutputIsLeftAlone(t *testing.T) {
 }
 
 // register installs the step, so a codemod added tomorrow cannot reach
-// `forge fix` or `forge project upgrade` without it: registry is only appended
+// `forge lint fix` or `forge project upgrade` without it: registry is only appended
 // to there. Proven by registering a codemod whose Run writes unformatted Go and
 // looking the result up the way both entry points do.
 func TestRegisterInstallsTheFormatStep(t *testing.T) {

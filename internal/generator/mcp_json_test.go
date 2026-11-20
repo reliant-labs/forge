@@ -18,8 +18,8 @@ func TestMCPJSONRegistersForgeForClaudeOnly(t *testing.T) {
 		cli     string
 		want    *[2]any // command, args; nil: no forge entry
 	}{
-		{HarnessClaude, "forge", &[2]any{"forge", []any{"mcp"}}},
-		{HarnessClaude, "reliant forge", &[2]any{"reliant", []any{"forge", "mcp"}}},
+		{HarnessClaude, "forge", &[2]any{"forge", []any{"agent", "mcp"}}},
+		{HarnessClaude, "reliant forge", &[2]any{"reliant", []any{"forge", "agent", "mcp"}}},
 		{HarnessReliant, "reliant forge", nil},
 		{HarnessCursor, "forge", nil},
 		{HarnessCodex, "forge", nil},

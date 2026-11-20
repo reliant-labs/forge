@@ -87,7 +87,7 @@ func TestDeniedPushHintForAnAnonymousDeploy(t *testing.T) {
 
 	const site = "registry.example.com/o/p/web/static.v1"
 	hint := deniedPushHint(refusedPush(site), "", site)
-	for _, want := range []string{site, "--claimable", "claimed", "forge report-bug"} {
+	for _, want := range []string{site, "--claimable", "claimed", "forge agent report-bug"} {
 		if !strings.Contains(hint, want) {
 			t.Errorf("anonymous hint missing %q:\n%s", want, hint)
 		}

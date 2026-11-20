@@ -89,8 +89,8 @@ func TestCall_ExpiredTokenTheHelperCannotReplaceSaysSoAndHowToFixIt(t *testing.T
 			t.Errorf("message should contain %q; got:\n%s", want, msg)
 		}
 	}
-	if strings.Contains(msg, "forge login") {
-		t.Errorf("a helper-minted credential is never told to `forge login`:\n%s", msg)
+	if strings.Contains(msg, "forge cloud login") {
+		t.Errorf("a helper-minted credential is never told to `forge cloud login`:\n%s", msg)
 	}
 	if len(srv.calls) != 1 {
 		t.Errorf("the dead token was presented %d times; a same-token refresh must not retry", len(srv.calls))
@@ -108,7 +108,7 @@ func TestCall_ExpiredLoginIsNotRefreshedAndSaysToSignInAgain(t *testing.T) {
 		source CredentialSource
 		want   string
 	}{
-		{"credentials file", SourceLogin, "forge login"},
+		{"credentials file", SourceLogin, "forge cloud login"},
 		{"env", SourceEnv, "ACME_TOKEN"},
 		{"flag", SourceFlag, "ACME_TOKEN"},
 	} {
@@ -170,7 +170,7 @@ func TestCall_UnverifiableCredentialIsNotBlamedOnTheUser(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "retry in a moment") || strings.Contains(msg, "forge login") || strings.Contains(msg, "expired") {
+	if !strings.Contains(msg, "retry in a moment") || strings.Contains(msg, "forge cloud login") || strings.Contains(msg, "expired") {
 		t.Errorf("an outage must say retry and must not blame the credential; got:\n%s", msg)
 	}
 }

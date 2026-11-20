@@ -15,7 +15,7 @@ Use this skill whenever you need to introduce a new network-facing service, inte
 | A background worker                          | `forge scaffold worker <name>`      | Worker with Start/Stop lifecycle |
 | A cron-scheduled worker                      | `forge scaffold worker <name> --kind cron --schedule "..."` | Worker with cron scheduler |
 | A one-shot step that must finish before something else starts | declare a `kind = "job"` workload in `deploy/kcl/workloads.k` and bind it per env (see below) | Ordering primitive — no scaffold needed |
-| An internal Go package with interface contract | `forge package new <name>`   | Package directory with a `//forge:contract`-marked `service` struct (forge derives the `Service` interface and its mock) |
+| An internal Go package with interface contract | `forge scaffold package <name>`   | Package directory with a `//forge:contract`-marked `service` struct (forge derives the `Service` interface and its mock) |
 | A Next.js web frontend                       | `forge scaffold frontend <name>`    | Next.js app wired into the project |
 | A React Native mobile frontend               | `forge scaffold frontend <name> --kind mobile` | Expo app with Connect-web transport |
 
@@ -79,7 +79,7 @@ runtime, and — on the host path — a cycle in the job graph.
 
 Follow this sequence every time you scaffold a new component:
 
-1. **Scaffold** — run the appropriate `forge scaffold` or `forge package new` command.
+1. **Scaffold** — run the appropriate `forge scaffold` or `forge scaffold package` command.
 2. **Define the contract** — edit the `.proto` file (services) or the interface (packages).
 3. **Generate** — run `forge generate` to produce Go code from protos and contracts (handler stubs, mocks, Connect clients).
 4. **Implement** — write the business logic on the `*Service` methods in `internal/handlers/<svc>/` using `s.deps` (a custom RPC is a pb-through method on `*Service`; CRUD delegates via `handlers_crud.go`). For a reusable, transport-free domain layer, scaffold a standalone package (`forge scaffold package <name>`) and call it from the handler.
@@ -119,7 +119,7 @@ each host process gets its own port from `plugin.resolve_port` in
 
 ## Rules
 
-- **Always use `forge scaffold` or `forge package new`** — never copy-paste an existing service or package directory.
+- **Always use `forge scaffold` or `forge scaffold package`** — never copy-paste an existing service or package directory.
 - **One service per proto package** — keep proto definitions focused on a single domain.
 - **Run `forge generate` after any proto or contract change** — generated code must stay in sync.
 - **Service names canonicalize** the same way worker names do: lowercase snake_case (hyphens → underscores, PascalCase boundaries split). `forge scaffold service admin-server` keeps `admin-server` as the `forge.yaml` `name:` display key, but the on-disk leaf, Go package decl, and `forge.yaml` `path:` leaf are all `admin_server` (`internal/handlers/admin_server/`, `package admin_server`, `path: internal/handlers/admin_server`). See the `workers` skill Naming section for the full rule and the migration gotcha; see `architecture` for the cross-ecosystem naming-conventions table.
@@ -151,7 +151,7 @@ The serve path (`cmd/<bin>/cmd/serve.go`) then applies the typed `Mount<Svc>` me
 - **A `// forge:unmanaged` service is not a component.** Its proto declares it but its handlers live outside `internal/handlers/` (in-place adoption — see `migration`), so forge emits no `Mount<Svc>`, compose entry, inventory row or subcommand for it. Mount its handler yourself, onto the same `srv.Mux` with the same handler options, and the generated open-procedure set still covers its public rpcs. `RequireComplete` checks exactly `app.Inventory`, so it neither demands nor blocks on an unmanaged service. Deleting the marker adopts it: the next `forge generate` scaffolds it like a new service.
 - **`serverkit.Run` takes a composed server with typed mounts, not service-name strings.** It runs handlers + workers + operators + lifecycle; *which* of each is decided by what `NewComponents` constructed and the serve path mounted. There is no `args`/`names` variadic, no name-matched wiring.
 - **The interceptor chain and the listener are components.** `serve.go` builds the chain with `serverkit.NewChain(serverkit.ChainDeps{Auth: …})` (every slot defaulted except `Auth`, which is required) and hands it to `serverkit.Server.Chain`; `serverkit.Run` serves one `serverkit.Listener` over it. A process that serves a second kind of caller — daemons, operators — builds a second chain and a second `serverkit.NewListener(ListenerDeps{Config, Chain, Routes})` on its own address, and a listener refuses to start when a mounted service's `(forge.v1.service).audience` differs from its chain's. Depth: `auth` (audiences), `services/shutdown` (running listeners without `Run`).
-- **Shutdown is Run's, and it drains.** Readiness flips, the pre-stop pause runs, then unary requests finish while long-lived streams (SSE, websockets, Connect streams) are ended inside the budget. Mark a plain-HTTP streaming route with `serverkit.LongLived(h)`. Depth: `forge skill load services/shutdown`.
+- **Shutdown is Run's, and it drains.** Readiness flips, the pre-stop pause runs, then unary requests finish while long-lived streams (SSE, websockets, Connect streams) are ended inside the budget. Mark a plain-HTTP streaming route with `serverkit.LongLived(h)`. Depth: `forge agent skill load services/shutdown`.
 
 ## Commands are roots, not one per service
 

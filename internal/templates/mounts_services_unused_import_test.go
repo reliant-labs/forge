@@ -26,7 +26,7 @@ import (
 // own output before the validate build, and goimports silently deletes
 // unused imports. That made the defect invisible on any machine with
 // goimports on PATH and fatal on any machine without it — goimports is not
-// installed by `forge tools install`, and the generate step that shells out
+// installed by `forge machine tools install`, and the generate step that shells out
 // to it only prints "⚠️ goimports not found — skipping import formatting"
 // and continues. The validate build then fails, generate reverts every file
 // it wrote, and `forge project new` leaves a project that does not compile.

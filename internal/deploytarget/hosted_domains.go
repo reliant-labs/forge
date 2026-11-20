@@ -16,8 +16,8 @@ import (
 // the control plane, created once and BOUND to one environment's workload or
 // frontend:
 //
-//	forge domain add hounders.club
-//	forge domain bind hounders.club --env prod --target web
+//	forge cloud domain add hounders.club
+//	forge cloud domain bind hounders.club --env prod --target web
 //
 // Three things make it a resource rather than a field. A name you bring
 // needs an action at YOUR registrar, ownership verification and a
@@ -97,7 +97,7 @@ func checkCustomDomains(envName string, plan []hostedPlanItem) error {
 		"  A hosted hostname needs DNS at your registrar, ownership verification and a certificate. "+
 		"That is asynchronous and human-gated, so it is a control-plane resource bound to ONE environment, "+
 		"not a field this deploy converges.\n"+
-		"  fix: `forge domain add %s`, then `forge domain bind %s --env %s --target %s`, "+
+		"  fix: `forge cloud domain add %s`, then `forge cloud domain bind %s --env %s --target %s`, "+
 		"and remove `domains` from the spec. (forge.OnCluster keeps `Port.domains`: there you own the ingress.)",
 		envName, len(claims), strings.Join(lines, "\n"), first, first, envName, claims[0].Workload)
 }
@@ -198,7 +198,7 @@ const (
 // binary has never heard of, and guessing at it is how a not-yet-serving
 // domain reads as serving.
 //
-// Exported so `forge domain` decodes the state with THIS function rather
+// Exported so `forge cloud domain` decodes the state with THIS function rather
 // than its own copy: the same enum reaches the CLI from two services
 // (DomainService.Domain.state and DeployService's observed domains), and two
 // decoders would eventually disagree about what "live" means.

@@ -60,7 +60,7 @@ func TestDelegation_DirtyPinNeverRunsACachedCleanBuild(t *testing.T) {
 	// The explicit "run THIS forge" still does, and its warning offers no
 	// `go run …@<pin>+dirty`, which would build the clean commit too.
 	t.Setenv(allowVersionSkewEnv, "1")
-	out, err := runCheck(t, "skill", "list")
+	out, err := runCheck(t, "agent", "skill", "list")
 	if err != nil {
 		t.Fatalf("with %s=1: %v", allowVersionSkewEnv, err)
 	}
@@ -94,7 +94,7 @@ func TestResolvePinnedForge_DirtyPinKeyFollowsTheBinary(t *testing.T) {
 		}
 	}
 
-	first, ok, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard)
+	first, ok, err := ResolvePinnedForge(context.Background(), root, "agent skill load", io.Discard)
 	if err != nil || !ok || first.Path != local {
 		t.Fatalf("got %+v, ok %v, err %v; want %s", first, ok, err, local)
 	}
@@ -109,7 +109,7 @@ func TestResolvePinnedForge_DirtyPinKeyFollowsTheBinary(t *testing.T) {
 	if err := os.Chtimes(local, later, later); err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := ResolvePinnedForge(context.Background(), root, "skill load", io.Discard)
+	second, _, err := ResolvePinnedForge(context.Background(), root, "agent skill load", io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

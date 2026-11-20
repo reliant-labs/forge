@@ -19,7 +19,7 @@ import (
 
 // TestStopActionFor pins the safety invariant: only an OWNED session's target
 // may be killed. An attach session (Owned=false) and a nil session MUST
-// detach. This is the regression guard for the field bug where `forge debug
+// detach. This is the regression guard for the field bug where `forge dev debug
 // stop` SIGKILL'd a live admin-server that had been attached via --attach.
 func TestStopActionFor(t *testing.T) {
 	t.Parallel()
@@ -146,7 +146,7 @@ func TestAttachStopLeavesTargetAlive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Attach exactly as `forge debug start --attach` does: the target keeps
+	// Attach exactly as `forge dev debug start --attach` does: the target keeps
 	// running.
 	if err := runDebugStartAttach(ctx, startOptions{attachPID: targetPID, run: true}); err != nil {
 		t.Fatalf("attach: %v", err)

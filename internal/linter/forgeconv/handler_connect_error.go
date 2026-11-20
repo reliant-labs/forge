@@ -22,7 +22,7 @@
 // errors.New("id is required"))`) is not a leak, but it is the same hand
 // mapping svcerr replaces, and it hides the sites that are: a reviewer cannot
 // tell 900 harmless calls from 300 leaking ones by reading them. So the rule
-// flags every call, says which kind each one is, and `forge fix
+// flags every call, says which kind each one is, and `forge lint fix
 // connect-errors` rewrites the harmless kind wire-identically, leaving the
 // worklist this rule exists to surface.
 //
@@ -48,7 +48,7 @@
 //
 // Test files are not linted (a fixture may build a connect error on
 // purpose), nor are generated files (fix the generator). The classification
-// is syntactic: `forge fix connect-errors` type-checks and is authoritative.
+// is syntactic: `forge lint fix connect-errors` type-checks and is authoritative.
 
 package forgeconv
 
@@ -97,7 +97,7 @@ func lintHandlerConnectErrorFile(relPath string, fset *token.FileSet, file *ast.
 		case argFixedMessage:
 			f.Message = "connect.NewError with a fixed message: the hand-built connect error svcerr replaces"
 			f.Remediation = fmt.Sprintf("`return nil, svcerr.%s(\"<message>\")` (NotFound takes the entity: svcerr.NotFound(\"chat\") reads \"chat not found\"; other NotFound prose is svcerr.WithMessage(svcerr.ErrNotFound, \"…\")). "+
-				"`forge fix connect-errors` rewrites this site with the same code and message. See skill: api.", kind)
+				"`forge lint fix connect-errors` rewrites this site with the same code and message. See skill: api.", kind)
 		case argNil:
 			f.Message = "connect.NewError with a nil error: the client reads an empty message"
 			f.Remediation = fmt.Sprintf("return the sentinel `svcerr.Err%s`, or a constructor with the message the caller should read. See skill: api.", kind)
@@ -127,7 +127,7 @@ func connectErrorKind(code ast.Expr, names connectNames) string {
 // args...)`. v2 serializes the message verbatim, and `.WithCause(err)`
 // attaches a cause that never reaches the wire — so the leak is the
 // MESSAGE carrying an error's text (`err.Error()`, a %v of err), not an
-// error argument, which v2 does not take. `forge fix connect-errors`
+// error argument, which v2 does not take. `forge lint fix connect-errors`
 // rewrites connect-go v1 only, so no v2 remediation points at it.
 func lintConnectV2ErrorCall(relPath string, fset *token.FileSet, call *ast.CallExpr, ident, fn string, names connectNames) (Finding, bool) {
 	var shape connectErrorArg
@@ -151,7 +151,7 @@ func lintConnectV2ErrorCall(relPath string, fset *token.FileSet, call *ast.CallE
 	case argFixedMessage:
 		f.Message = callee + " with a fixed message: the hand-built connect error svcerr replaces"
 		f.Remediation = fmt.Sprintf("`return nil, svcerr.%s(\"<message>\")` (NotFound takes the entity: svcerr.NotFound(\"chat\") reads \"chat not found\"; other NotFound prose is svcerr.WithMessage(svcerr.ErrNotFound, \"…\")). "+
-			"A `.WithCause(err)` on it is a local cause only — keep it with svcerr.WithCause. `forge fix connect-errors` rewrites connect-go v1 code only: edit this v2 site by hand. See skill: api.", kind)
+			"A `.WithCause(err)` on it is a local cause only — keep it with svcerr.WithCause. `forge lint fix connect-errors` rewrites connect-go v1 code only: edit this v2 site by hand. See skill: api.", kind)
 	case argNil:
 		f.Message = callee + " with an empty message: the client reads only the code"
 		f.Remediation = fmt.Sprintf("return the sentinel `svcerr.Err%s`, or a constructor with the message the caller should read. See skill: api.", kind)

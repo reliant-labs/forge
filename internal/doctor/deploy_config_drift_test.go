@@ -348,7 +348,7 @@ func TestFrontendCode_ManifestsOnlyRenderIsQuiet(t *testing.T) {
 	}
 }
 
-// The check belongs to the deployability arm — the one `forge doctor
+// The check belongs to the deployability arm — the one `forge project doctor
 // --signal deploy` runs in CI. That is the whole point of the placement:
 // a frontend with no code must be caught on a checkout, before a deploy
 // is attempted.
@@ -359,5 +359,5 @@ func TestFrontendCode_IsInTheDeployabilityArm(t *testing.T) {
 		}
 	}
 	t.Fatal("Frontend Code is not in deployabilityChecks() — it would not run under " +
-		"`forge doctor --signal deploy`, the arm CI calls")
+		"`forge project doctor --signal deploy`, the arm CI calls")
 }

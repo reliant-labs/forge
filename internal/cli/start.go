@@ -1,11 +1,11 @@
-// Package cli — `forge start app`: the greenfield brief, in one call.
-// (`forge start` itself prints the short router in start_router.go.)
+// Package cli — `forge project start app`: the greenfield brief, in one call.
+// (`forge project start` itself prints the short router in start_router.go.)
 //
 // WHY THIS EXISTS. A measured dogfood run spent six documentation calls
-// (`forge --help`, `forge project --help`, `forge skill --help`,
-// `forge skill list`, `forge skill load forge`, `forge project new --help`,
+// (`forge --help`, `forge project --help`, `forge agent skill --help`,
+// `forge agent skill list`, `forge agent skill load forge`, `forge project new --help`,
 // `forge project annotations`,
-// `forge skill load proto`) before authoring its first proto. Every one of
+// `forge agent skill load proto`) before authoring its first proto. Every one of
 // those surfaces is correct and none is hidden; the cost is that reaching
 // the four facts an agent actually needs first — how to lay out the
 // project, how an entity is marked, that custom rpcs are never injected,
@@ -72,9 +72,9 @@ var briefSections = []struct{ skill, heading string }{
 // in the skill: the brief used to print a second, hand-glossed copy of it.
 const briefFlagsSection = "Greenfield, end to end"
 
-// newStartCmd builds `forge start`: the router (start_router.go), which
+// newStartCmd builds `forge project start`: the router (start_router.go), which
 // sends an agent to the one next command for the directory it is in, and
-// `forge start app`, the greenfield brief below.
+// `forge project start app`, the greenfield brief below.
 func newStartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -85,7 +85,7 @@ One table for a directory that already holds an app (a Vite or Next.js static
 app, or anything with a Dockerfile, deploys with no account via
 'forge env deploy prod --claimable') and one for an empty directory (a site
 with 'forge project new --in-place --kind site', an app with an API with
-'forge start app'). Depth is named, never inlined.
+'forge project start app'). Depth is named, never inlined.
 
 This command PRINTS. It creates nothing and changes nothing.`,
 		Args: cobra.NoArgs,
@@ -98,7 +98,7 @@ This command PRINTS. It creates nothing and changes nothing.`,
 	return cmd
 }
 
-// newStartAppCmd builds `forge start app`, the greenfield brief. The brief
+// newStartAppCmd builds `forge project start app`, the greenfield brief. The brief
 // is forge's own vocabulary plus forge's own prose, so it reads no project
 // files and runs anywhere — including in the empty directory it tells you
 // how to fill.
@@ -116,12 +116,12 @@ diamond declaration.
 
 This command PRINTS. It creates nothing and changes nothing.
 
-Depth is named rather than inlined — 'forge skill load <name>' prints the
+Depth is named rather than inlined — 'forge agent skill load <name>' prints the
 copy this binary ships. Three sibling dumps cover the rest of the surface:
 
   forge project capabilities  every verb, analyzer and marker
   forge project annotations   the full entity-authoring spec
-  forge skill list            the skill catalog`,
+  forge agent skill list      the skill catalog`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runStart(cmd.OutOrStdout())
@@ -134,7 +134,7 @@ func runStart(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// Match `forge skill load`: rewrite bare `forge ` command references
+	// Match `forge agent skill load`: rewrite bare `forge ` command references
 	// when this binary is mounted under another name (`reliant forge`),
 	// so every command in the brief is copy-pasteable as printed.
 	_, err = w.Write(rewriteForgeCommands([]byte(brief), cmdutil.Name()))
@@ -158,7 +158,7 @@ func buildStartBrief() (string, error) {
 		body, ok := extractMarkdownSection(doc, s.heading)
 		if !ok {
 			return "", fmt.Errorf(
-				"the %q skill no longer has a %q section, so `forge start app` cannot compose the brief from it "+
+				"the %q skill no longer has a %q section, so `forge project start app` cannot compose the brief from it "+
 					"(fix: restore the heading, or update briefSections in internal/cli/start.go to the new one)",
 				s.skill, s.heading)
 		}
@@ -209,8 +209,8 @@ the no-account plan's limits, creating nothing.
 
 ## Where depth lives
 
-Load only when you reach the topic. ` + "`forge skill load <name>`" + ` prints the copy
-this binary ships, which is authoritative over any copy on disk.
+Load only when you reach the topic. ` + "`forge agent skill load <name>`" + ` prints the copy
+this binary ships, authoritative over any copy on disk.
 
 | Load | When |
 |---|---|
@@ -232,7 +232,7 @@ Three dumps answer "what does forge already do?" without prose:
     forge project annotations    the full entity-authoring spec
     forge project libraries      every forge/pkg package; add a name for its full API
 
-` + "`forge skill list`" + ` is the whole catalog; ` + "`forge skill search <keyword>`" + ` finds one
+` + "`forge agent skill list`" + ` is the whole catalog; ` + "`forge agent skill search <keyword>`" + ` finds one
 by topic.
 
 ## Rules
@@ -293,12 +293,12 @@ func checkBriefFlags(section string) error {
 		if cmd.Flags().Lookup(m[1]) == nil {
 			return fmt.Errorf(
 				"the greenfield skill's flag table names --%s, which `forge project new` does not have, "+
-					"so `forge start app` would advertise a flag that does not parse (fix: the table in "+
+					"so `forge project start app` would advertise a flag that does not parse (fix: the table in "+
 					"skills/forge/greenfield/SKILL.md)", m[1])
 		}
 	}
 	if n == 0 {
-		return fmt.Errorf("the greenfield skill's %q section has no `project new` flag table for `forge start app` to print", briefFlagsSection)
+		return fmt.Errorf("the greenfield skill's %q section has no `project new` flag table for `forge project start app` to print", briefFlagsSection)
 	}
 	return nil
 }

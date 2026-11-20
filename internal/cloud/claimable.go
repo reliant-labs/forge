@@ -46,7 +46,7 @@ const ClaimableClientIDPrefix = "forge-cli-claimable"
 
 // ClaimableClientIDFor is the client id the anonymous token of (project, env)
 // is stored under. It is never equal to ClientID, which is all that makes a
-// stored claimable token unable to stand in for a `forge login`.
+// stored claimable token unable to stand in for a `forge cloud login`.
 func ClaimableClientIDFor(project, env string) string {
 	return ClaimableClientIDPrefix + "/" + project + "/" + env
 }
@@ -234,7 +234,7 @@ const MaxPoWDifficultyBits = 28
 func SolvePoW(ctx context.Context, ch ClaimableChallenge) (string, error) {
 	if ch.DifficultyBits > MaxPoWDifficultyBits {
 		return "", fmt.Errorf("the control plane asked for a %d-bit proof of work; forge solves at most %d bits. "+
-			"Sign up instead: `forge login`", ch.DifficultyBits, MaxPoWDifficultyBits)
+			"Sign up instead: `forge cloud login`", ch.DifficultyBits, MaxPoWDifficultyBits)
 	}
 	workers := runtime.GOMAXPROCS(0)
 	if workers > 8 {

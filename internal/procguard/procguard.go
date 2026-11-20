@@ -3,7 +3,7 @@
 //
 // forge stops processes it started: `forge env down <env>`, `forge env down
 // --all`, the `forge env up` pre-flight that replaces a running stack,
-// host-infra shutdown and `forge debug stop`. Each selects its targets by
+// host-infra shutdown and `forge dev debug stop`. Each selects its targets by
 // forge's ownership markers, and those markers are ENVIRONMENT VARIABLES —
 // inherited by every descendant of a process forge started. A forge-started
 // server that itself runs work (an agent server hosting sessions, a shell, an

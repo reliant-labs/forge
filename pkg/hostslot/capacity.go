@@ -103,7 +103,7 @@ type Capacity struct {
 	// Acquire returns at once and takes nothing.
 	Unlimited bool
 	// Source says where Slots came from, for the waiting line and
-	// `forge slot status`.
+	// `forge machine slot status`.
 	Source  string
 	Machine Machine
 	// Express is how many of the Slots are reserved for the express lane:

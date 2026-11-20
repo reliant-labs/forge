@@ -72,7 +72,7 @@ func evalKCLCommand(ctx context.Context, projectDir, source, env string, options
 	c := rememberedKCLContext(root, env)
 	// Internal re-entry must stay on this binary, not delegate to an older
 	// project pin that cannot understand the render-context flags.
-	args := append(slices.Clone(route[1:]), "-C", root, "kcl", "eval", source, "--allow-version-skew", "--format", format, "--process-rooted")
+	args := append(slices.Clone(route[1:]), "-C", root, "env", "kcl", "eval", source, "--allow-version-skew", "--format", format, "--process-rooted")
 	for _, selector := range selectors {
 		args = append(args, "-S", selector)
 	}

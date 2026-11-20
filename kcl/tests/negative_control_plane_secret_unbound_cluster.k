@@ -8,7 +8,7 @@ delivered, so it is refused at render with the exact fix.
 
 # expect: control_plane_secrets [reliant-otel-auth]
 # expect: names no connected cluster
-# expect: forge cluster connect
+# expect: forge cloud cluster connect
 
 import forge
 import forge.workloads as fw

@@ -15,11 +15,11 @@ workload in deploy/kcl/workloads.k; its Service carries the named `http`
 port the workload declares.
 
 GatewayClass is NOT declared here — it's cluster-scoped and installed
-by `forge cluster up` (in dev) or by the user's cloud Gateway
+by `forge dev cluster up` (in dev) or by the user's cloud Gateway
 controller (in prod). Gateways reference it by `gateway_class_name`.
 
 forge is OPINIONATED on Envoy Gateway: `gateway_class_name` defaults to
-`eg` in EVERY environment, dev included. `forge cluster up` installs
+`eg` in EVERY environment, dev included. `forge dev cluster up` installs
 Envoy Gateway into `envoy-gateway-system`, and the generated
 `deploy/k3d.yaml` starts k3s with `--disable=traefik` — so one
 controller serves the whole promotion path and nothing here needs to

@@ -226,7 +226,7 @@ func SetupAuth(cfg *config.Config) (*auth.Authenticator, error) {
 //
 // Return errors freely: the caller only ever reads "invalid API key", and
 // your error is logged server-side as its cause. The table, issuing keys
-// and revoking them: `forge skill load auth/api-keys`.
+// and revoking them: `forge agent skill load auth/api-keys`.
 func APIKeyValidator(_ *Infra) auth.KeyValidator {
 	return nil
 }

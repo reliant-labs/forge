@@ -237,7 +237,7 @@ render_gateway_lb_ip_proxy = lambda gw: any, namespace: str -> [any] {
 # whole gateway reconcile. One mechanism only: the explicit Certificate.
 #
 # mkcert mode emits no Certificate and no annotation — the Secret is
-# populated host-side by `forge cluster up`.
+# populated host-side by `forge dev cluster up`.
 #
 # gke_certmap mode stamps `networking.gke.io/certmap: <certmap>` on the
 # Gateway: the GKE Gateway controller reads that annotation and binds the
@@ -299,7 +299,7 @@ render_gateway = lambda gw: any, namespace: str -> [any] {
 # named ClusterIssuer, and writes the resulting cert+key into the
 # Secret the Gateway's listener references via tls.certificateRefs.
 #
-# mkcert-mode gateways skip this manifest entirely — `forge cluster
+# mkcert-mode gateways skip this manifest entirely — `forge dev cluster
 # up` populates the Secret host-side via the mkcert binary, so cert-
 # manager doesn't need to know.
 #

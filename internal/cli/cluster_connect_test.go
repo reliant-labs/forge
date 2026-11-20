@@ -287,7 +287,7 @@ func TestRefuseUnboundClusterTargets(t *testing.T) {
 	if err == nil {
 		t.Fatal("a control-plane env targeting an unbound cloud cluster was accepted")
 	}
-	for _, want := range []string{"forge cluster connect", "connected_cluster", `"gke_a_b_prod"`} {
+	for _, want := range []string{"forge cloud cluster connect", "connected_cluster", `"gke_a_b_prod"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal omits %q: %v", want, err)
 		}
@@ -339,7 +339,7 @@ func TestRenderRefusesAnUnboundCloudTarget(t *testing.T) {
 	if err == nil {
 		t.Fatal("the render accepted a control-plane env whose cloud target names no connected cluster")
 	}
-	if !strings.Contains(err.Error(), "forge cluster connect") {
+	if !strings.Contains(err.Error(), "forge cloud cluster connect") {
 		t.Errorf("the refusal does not name the fix: %v", err)
 	}
 }

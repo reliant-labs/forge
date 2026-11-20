@@ -725,7 +725,7 @@ func (r Runner) restoreRegistry(container string, writers ...string) error {
 		return nil
 	}
 	return fmt.Errorf("registry %s is STOPPED and could not be restarted after maintenance: %w; "+
-		"the next `forge storage gc` retries, or run `docker start %s` once no %s-forge-* container is running",
+		"the next `forge machine storage gc` retries, or run `docker start %s` once no %s-forge-* container is running",
 		container, last, container, container)
 }
 

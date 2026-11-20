@@ -1,6 +1,6 @@
 // The credential seam for a platform that must hold its own credential: React Native, which attaches
 // a bearer token (src/lib/connect.ts, setAuthTokenGetter). Browser frontends never use it — they sign
-// in natively with an HttpOnly cookie (native-login.ts). Depth: `forge skill load auth/frontend`.
+// in natively with an HttpOnly cookie (native-login.ts). Depth: `forge agent skill load auth/frontend`.
 
 export interface AuthUser {
   id: string;

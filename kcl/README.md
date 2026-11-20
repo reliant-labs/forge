@@ -250,7 +250,7 @@ The image **registry** is not a render option, and not an env field either: an
 environment does not have a registry. A **workload** does, as part of its
 `image` (`image = "ghcr.io/acme/api"` in `deploy/kcl/workloads.k`). forge
 contributes only the tag and, after a push, the digest, composing them onto the
-reference you wrote. `forge env build <env> --push`, `forge registry login <env>`
+reference you wrote. `forge env build <env> --push`, `forge cloud registry login <env>`
 and `forge env deploy <env>` all follow the images — so two workloads in one env
 can ride two different registries.
 

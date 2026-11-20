@@ -39,7 +39,7 @@ import (
 // (`svcerr.WrapOr(err, svcerr.Internal("push failed"))`), with any text a
 // client should read in the constructor's argument
 // (`svcerr.FailedPrecondition(daemonMsg)`). forgeconv-handler-connect-error
-// lists every connect.NewError in a handler package, and `forge fix
+// lists every connect.NewError in a handler package, and `forge lint fix
 // connect-errors` rewrites the ones with fixed text.
 //
 // Forge's chain builders (observe.Chain, observe.DefaultMiddlewares and

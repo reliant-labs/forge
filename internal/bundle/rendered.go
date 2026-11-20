@@ -5,7 +5,7 @@ package bundle
 //
 // The shape says which objects exist and what they hash to; it deliberately
 // carries no body. A caller deciding what a reconciler's identity must be
-// allowed to apply (`forge cluster connect`) needs the kinds, namespaces and a
+// allowed to apply (`forge cloud cluster connect`) needs the kinds, namespaces and a
 // few spec fields (a CRD's plural, a RoleBinding's roleRef), and it must read
 // them from the SAME stream the bundle is built from, through the same
 // splitter, so the permission it grants and the objects the bundle applies

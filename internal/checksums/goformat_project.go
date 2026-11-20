@@ -16,7 +16,7 @@ import (
 // golangci-lint config.
 //
 // Every forge step that writes Go the author did not type — `forge lint --fix`'s
-// pre-pass, `forge fix narrow-deps`, and every codemod `forge project upgrade`
+// pre-pass, `forge lint fix narrow-deps`, and every codemod `forge project upgrade`
 // runs — has to leave bytes the project's formatter gate accepts, or the
 // formatting findings forge produced itself land in front of a person. They
 // share this one reading of the gate so they cannot disagree about it.
@@ -113,7 +113,7 @@ func ProjectGoFormat(root string) GoFormatStandard {
 }
 
 // RewriteGoFormat is the standard for a file forge has just REWRITTEN (a
-// codemod, `forge fix narrow-deps`): bytes the project's linters accept, so the
+// codemod, `forge lint fix narrow-deps`): bytes the project's linters accept, so the
 // formatting findings forge produced itself never reach a person.
 //
 // It is ProjectGoFormat wherever the project has a golangci-lint config: its

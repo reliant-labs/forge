@@ -21,7 +21,7 @@
 //	GatesFrom     the release it starts to gate in. Empty for a rule that has
 //	              always gated; required for any rule introduced after
 //	              rolloutBaseline.
-//	Fix           the `forge fix <codemod>` that clears it, when one exists.
+//	Fix           the `forge lint fix <codemod>` that clears it, when one exists.
 //
 // The project's pinned forge_version decides. A finding that would fail the
 // gate, from a rule whose GatesFrom is later than the pin, is a WARNING that

@@ -19,9 +19,9 @@ files on a host is the part that is hard to retrofit later:
   plane: the platform owns the bucket, the CDN and the hostname. Every hosted
   site is served through the CDN edge: hashed assets cached at the edge, the
   entry document and `config.js` revalidated on every load, so a deploy is
-  live on the next request. Custom domains are `forge domain`; one bound to a
+  live on the next request. Custom domains are `forge cloud domain`; one bound to a
   site is served through the same CDN once its DNS points at the records
-  `forge domain show` prints, and `forge domain ls` / `forge env status` say
+  `forge cloud domain show` prints, and `forge cloud domain ls` / `forge env status` say
   which path (edge or ingress) each hostname takes.
 - **Config without a rebuild.** A hosted site's `config.js` is written per env
   by the platform, so one bundle serves every env.
@@ -211,7 +211,7 @@ with the command to run instead, and a plain `forge env deploy` (no
 `--claimable`").
 
 Signed in to Reliant means signed in to the control plane: there is no second
-`forge login`. `reliant forge …` and Reliant agents' shells set
+`forge cloud login`. `reliant forge …` and Reliant agents' shells set
 `$FORGE_CREDENTIAL_HELPER`, which mints forge a short-lived token from your
 Reliant session. Your own hostname: load `deploy/domains`.
 
@@ -235,7 +235,7 @@ becomes `"/_api"`, which the platform serves on the site's own hosts
 (`deploy/hosting`): the browser never calls the API's hostname.
 
 Secrets do not belong in a static site: everything in `config.js` is public.
-A value that must stay secret belongs on a service (`forge secret set`).
+A value that must stay secret belongs on a service (`forge env secret set`).
 
 ## Growing a backend
 

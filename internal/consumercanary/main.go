@@ -265,7 +265,7 @@ func report(w io.Writer, rs []Result) error {
 		}
 	}
 	if failed {
-		return errors.New("a consumer does not build against this forge: fix forge, or ship the `forge fix` codemod and declare the break (dev-docs/api-breaks.md)")
+		return errors.New("a consumer does not build against this forge: fix forge, or ship the `forge lint fix` codemod and declare the break (dev-docs/api-breaks.md)")
 	}
 	return nil
 }

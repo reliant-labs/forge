@@ -82,7 +82,7 @@ func TestBrowserLogin_PKCECodeFlow(t *testing.T) {
 		t.Errorf("authorize request: %v", *req)
 	}
 	if req.Get("credential_kind") != "human" {
-		t.Errorf("forge login must ask for a human identity; credential_kind = %q", req.Get("credential_kind"))
+		t.Errorf("forge cloud login must ask for a human identity; credential_kind = %q", req.Get("credential_kind"))
 	}
 	if cred.Kind != KindHuman {
 		t.Errorf("a credential_kind=human reply must be stored as a human identity; kind %q", cred.Kind)

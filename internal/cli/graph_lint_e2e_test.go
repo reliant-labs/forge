@@ -21,7 +21,7 @@ import (
 //  4. a handler taking a 12-method foreign interface and calling one method
 //     is a forgeconv-deps-surface error (§9.2), and --strict on the narrowed
 //     project still passes (the scaffold's root-config Deps only warn);
-//  5. `forge fix narrow-deps` writes the 1-method interface and its mock,
+//  5. `forge lint fix narrow-deps` writes the 1-method interface and its mock,
 //     the project builds, and the rule goes quiet.
 func TestE2EGraphLintAndNarrowDeps(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once

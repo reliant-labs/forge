@@ -86,7 +86,7 @@ func TestClient_Call_AuthFailureIsActionable(t *testing.T) {
 		t.Fatal("expected an error on 401")
 	}
 	msg := err.Error()
-	for _, want := range []string{"forge login", "ACME_PROD_TOKEN", srv.URL, "/home/u/.forge/login.json", "token expired"} {
+	for _, want := range []string{"forge cloud login", "ACME_PROD_TOKEN", srv.URL, "/home/u/.forge/login.json", "token expired"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("auth error should contain %q; got:\n%s", want, msg)
 		}

@@ -7,7 +7,7 @@
 // JSON, and runs the SAME rules (release.Decide, the caller's
 // compare-and-set, release.CheckRecut). A line in one of these files is
 // exactly what the control plane's ImportLedger accepts, which is what makes
-// `forge ledger import --from-file-ledger` a copy rather than a translation.
+// `forge release ledger import --from-file-ledger` a copy rather than a translation.
 // See pkg/release's package doc for the one-model-two-backends doctrine.
 //
 // NOT IN THE CHECKOUT, AND THAT IS THE POINT. The retired backend kept

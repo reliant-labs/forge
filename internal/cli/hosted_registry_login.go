@@ -170,11 +170,11 @@ func autoLoginForPush(ctx context.Context, env string, declared *KCLEntities, pl
 // wrote would carry one — until it expired, in a pipeline nobody remembered
 // had two secrets.
 func errPlatformRegistryTakesNoFlags(env, host, tokenEnv string) error {
-	return cliutil.UserErr("forge registry login "+env,
+	return cliutil.UserErr("forge cloud registry login "+env,
 		fmt.Sprintf("%s is the platform registry for env %q (forge.ControlPlane's registry_host), and it takes your control-plane credential — not a --username and --password", host, env),
 		fmt.Sprintf("deploy/kcl/%s/main.k", env),
-		fmt.Sprintf("drop the flags: forge registry login %s\n"+
-			"  forge resolves the same rlat_ it reaches the control plane with (--token, then $%s, then `forge login`, "+
+		fmt.Sprintf("drop the flags: forge cloud registry login %s\n"+
+			"  forge resolves the same rlat_ it reaches the control plane with (--token, then $%s, then `forge cloud login`, "+
 			"then the credential helper $%s) and presents it to %s on stdin. There is no second credential to mint",
 			env, tokenEnv, cloudcred.HelperEnv, host))
 }
@@ -188,11 +188,11 @@ func errPlatformRegistryTakesNoFlags(env, host, tokenEnv string) error {
 // the author's own message would otherwise be "--username is required" on a
 // command they just ran without it for a different host, in the same env.
 func errForeignRegistryNeedsFlags(env string, hosts []string) error {
-	return cliutil.UserErr("forge registry login "+env,
+	return cliutil.UserErr("forge cloud registry login "+env,
 		fmt.Sprintf("env %q also pushes to %s, which is not the platform registry and has its own credential",
 			env, strings.Join(hosts, ", ")),
 		"deploy/kcl/workloads.k",
 		fmt.Sprintf("pass that registry's credential as well — the platform's half needs nothing:\n"+
-			"  printf '%%s' \"$TOKEN\" | forge registry login %s --username <user> --password-stdin\n"+
+			"  printf '%%s' \"$TOKEN\" | forge cloud registry login %s --username <user> --password-stdin\n"+
 			"  forge logs in to the platform registry from your control-plane credential in the same run", env))
 }

@@ -350,7 +350,7 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 			}
 			// Loopback only: dlv's API runs arbitrary code in the target,
 			// and --listen=:<port> would serve it to the whole network.
-			// `forge debug connect 127.0.0.1:<port>` drives it.
+			// `forge dev debug connect 127.0.0.1:<port>` drives it.
 			argv = []string{"dlv", "exec", "--headless", fmt.Sprintf("--listen=127.0.0.1:%d", port),
 				"--api-version=2", "--accept-multiclient", "--continue", bin}
 			if len(spec.Args) > 0 {

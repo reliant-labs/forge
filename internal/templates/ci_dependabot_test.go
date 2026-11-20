@@ -92,7 +92,7 @@ func TestDependabotTemplateIgnoresVersionStampingGenerators(t *testing.T) {
 		got := ignoredOutright(renderDependabot(t, DependabotData{RunsProtocGenGo: true}), "gomod")
 		if !slices.Contains(got, "google.golang.org/protobuf") {
 			t.Errorf("gomod entry does not ignore google.golang.org/protobuf (ignores %q) — "+
-				"`forge tools install` puts protoc-gen-go at that version on PATH and it stamps every *.pb.go", got)
+				"`forge machine tools install` puts protoc-gen-go at that version on PATH and it stamps every *.pb.go", got)
 		}
 		// forge itself was already ignored; this pins that it stays.
 		if !slices.Contains(got, "github.com/reliant-labs/forge") {

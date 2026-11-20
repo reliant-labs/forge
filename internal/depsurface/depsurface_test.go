@@ -610,7 +610,7 @@ func TestNarrow_WarnsWhenTheNarrowedInterfaceExceedsInterfacebloat(t *testing.T)
 	// directive — directly above it, where golangci-lint reads it — and the
 	// interface is NOT split into embedded roles to dodge the count.
 	deps, _ := os.ReadFile(filepath.Join(dir, res.File))
-	const directive = "//nolint:interfacebloat // forge fix narrow-deps: exactly the 16 of store.Repository's 19 methods this package calls through Deps.Repo, one dependency; shrink it by splitting the package, not the interface.\ntype Repository interface {\n\tM01("
+	const directive = "//nolint:interfacebloat // forge lint fix narrow-deps: exactly the 16 of store.Repository's 19 methods this package calls through Deps.Repo, one dependency; shrink it by splitting the package, not the interface.\ntype Repository interface {\n\tM01("
 	if !strings.Contains(string(deps), directive) {
 		t.Errorf("deps.go lacks the reasoned directive above the unsplit type:\n%s", deps)
 	}

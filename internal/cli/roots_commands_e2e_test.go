@@ -129,7 +129,7 @@ worker_args = _tick.args
 	evalList := func(field string) []string {
 		t.Helper()
 		var out []string
-		if err := json.Unmarshal([]byte(runCmdStdout(t, projectDir, forgeBin, "kcl", "eval", probePath, "-S", field, "--format", "json")), &out); err != nil {
+		if err := json.Unmarshal([]byte(runCmdStdout(t, projectDir, forgeBin, "env", "kcl", "eval", probePath, "-S", field, "--format", "json")), &out); err != nil {
 			t.Fatalf("eval %s: %v", field, err)
 		}
 		return out

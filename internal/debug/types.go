@@ -13,14 +13,14 @@ type SessionInfo struct {
 	TmpDir string `json:"tmp_dir"` // temp build directory for cleanup
 	Docker bool   `json:"docker"`  // true if session is running in a Docker container
 	// Owned reports whether forge launched the target process itself
-	// (`forge debug start <service>` / `--docker`). When false the session
-	// is an ATTACH (`forge debug --attach <pid>`) onto a process forge does
+	// (`forge dev debug start <service>` / `--docker`). When false the session
+	// is an ATTACH (`forge dev debug --attach <pid>`) onto a process forge does
 	// not own: `stop` MUST detach the debugger and leave the target alive.
 	// Killing an attached target is a data-loss-class bug — it terminated a
 	// live platform-api in the field.
 	Owned bool `json:"owned"`
 	// Connected reports that forge did not start this dlv server either
-	// (`forge debug connect <addr>`: an env's delve runner, a dlv someone
+	// (`forge dev debug connect <addr>`: an env's delve runner, a dlv someone
 	// else launched). `stop` then clears its breakpoints, resumes the
 	// target and disconnects — the server and its target keep running.
 	Connected bool `json:"connected,omitempty"`
@@ -30,7 +30,7 @@ type SessionInfo struct {
 	// next `continue` then reports a stop it finds the target in instead
 	// of resuming past it.
 	Resumed bool `json:"resumed,omitempty"`
-	// BreakpointIDs are the breakpoints this session's `forge debug break`
+	// BreakpointIDs are the breakpoints this session's `forge dev debug break`
 	// created. Stopping a connected session clears these and only these: a
 	// dlv server forge did not start may hold another client's breakpoints.
 	BreakpointIDs []int `json:"breakpoint_ids,omitempty"`

@@ -7,7 +7,7 @@ import (
 )
 
 // A scaffolded secrets/<env>.yaml ships every DECLARED slot present and
-// BLANK — that is what `forge secret ensure` writes, and what an untouched
+// BLANK — that is what `forge env secret ensure` writes, and what an untouched
 // project has on disk. So `DATABASE_URL: ""` is the common state, not an
 // unusual one.
 //

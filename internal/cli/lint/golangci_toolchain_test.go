@@ -288,7 +288,7 @@ func TestResolveGolangciLint_MissingAndUnbuildableFails(t *testing.T) {
 		t.Fatalf("no golangci-lint and no build: want a gating error, got %+v", res)
 	}
 	for _, want := range []string{
-		"golangci-lint lane cannot run", "no route to host", "forge tools install",
+		"golangci-lint lane cannot run", "no route to host", "forge machine tools install",
 		"GOTOOLCHAIN=go1.27.0 go install " + golangciModulePath + "@v2.14.0",
 	} {
 		if !strings.Contains(res.err.Error(), want) {
@@ -301,7 +301,7 @@ func TestResolveGolangciLint_MissingAndUnbuildableFails(t *testing.T) {
 	fs, gated, err := collectGraded(t, gate, rc)
 	if err != nil || !gated || len(fs) != 1 || fs[0].Severity != lintSevError {
 		t.Errorf("gate: want one gating error finding, got gated=%v err=%v %+v", gated, err, fs)
-	} else if !strings.Contains(fs[0].Message+fs[0].FixHint, "forge tools install") {
+	} else if !strings.Contains(fs[0].Message+fs[0].FixHint, "forge machine tools install") {
 		t.Errorf("gate: want the fix named, got %+v", fs[0])
 	}
 }

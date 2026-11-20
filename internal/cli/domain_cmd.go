@@ -16,7 +16,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
-// `forge domain` — custom hostnames as control-plane resources.
+// `forge cloud domain` — custom hostnames as control-plane resources.
 //
 // A DOMAIN is org-scoped and has no environment. A BINDING is what makes it
 // serve something: one environment, and one target inside it (or a redirect
@@ -31,7 +31,7 @@ import (
 //
 // WHY EVERY COMMAND TAKES --env WHEN A DOMAIN HAS NO ENVIRONMENT. The env is
 // how forge knows WHICH CONTROL PLANE to talk to: the endpoint comes from
-// that env's `forge.ControlPlane` declaration, exactly as `forge secret` and
+// that env's `forge.ControlPlane` declaration, exactly as `forge env secret` and
 // `forge cloud` resolve theirs. The org is never sent — it is resolved
 // server-side from the token. So `--env` selects the control plane, and for
 // `bind` it additionally selects the environment being bound to.
@@ -64,7 +64,7 @@ type domainWireRecord struct {
 	// ⚠️ THESE MUST BE CARRIED, and forge dropping them is why they are
 	// commented. forge re-encodes the response into this struct, so a
 	// field absent here is a field absent from `--json` too — it does not
-	// pass through. Without them, `forge domain show` on a domain stuck in
+	// pass through. Without them, `forge cloud domain show` on a domain stuck in
 	// pending_dns said only "not verified yet" and the author had to guess
 	// WHICH of their records was wrong, which is the exact question the
 	// per-record checks were added to answer.
@@ -168,14 +168,14 @@ environment. A BINDING points it at one environment and one target inside
 it. Adding a domain tells you the DNS to publish; once it verifies, the
 platform issues its certificate and serves it.
 
-  forge domain add hounders.club --env prod              # claim it, print the DNS
-  forge domain ls --env prod
-  forge domain show hounders.club --env prod
-  forge domain verify hounders.club --env prod           # check DNS now
-  forge domain bind hounders.club --env prod --target web
-  forge domain bind www.hounders.club --env prod --redirect-to hounders.club
-  forge domain unbind hounders.club --env prod
-  forge domain rm hounders.club --env prod
+  forge cloud domain add hounders.club --env prod              # claim it, print the DNS
+  forge cloud domain ls --env prod
+  forge cloud domain show hounders.club --env prod
+  forge cloud domain verify hounders.club --env prod           # check DNS now
+  forge cloud domain bind hounders.club --env prod --target web
+  forge cloud domain bind www.hounders.club --env prod --redirect-to hounders.club
+  forge cloud domain unbind hounders.club --env prod
+  forge cloud domain rm hounders.club --env prod
 
 Domains are NOT declared in KCL. A hostname you bring needs an action at
 your registrar, ownership verification and a certificate — asynchronous and
@@ -188,9 +188,9 @@ environment while an env file renders to many. A hosted spec that carries a
 forge.ControlPlane declaration — a domain itself has no environment. Your
 organization comes from the credential and is never sent, so there is
 nothing to widen. The credential is --token, then the declared env var, then
-the credentials file entry for that endpoint (` + "`forge login`" + `), then the
+the credentials file entry for that endpoint (` + "`forge cloud login`" + `), then the
 credential helper $` + cloudcred.HelperEnv + ` (a host application's session —
-Reliant sets it, so a user signed in to Reliant needs no ` + "`forge login`" + `).`,
+Reliant sets it, so a user signed in to Reliant needs no ` + "`forge cloud login`" + `).`,
 	}
 	cmd.AddCommand(
 		newDomainAddCmd(),
@@ -357,9 +357,9 @@ func runDomainAdd(ctx context.Context, c cloudCaller, hostname string, jsonOutpu
 	d := resp.Domain
 	fmt.Fprintf(out, "Added %s (%s)\n", d.Hostname, deploytarget.DomainStateName(d.State))
 	writeDNSTable(out, d.RequiredRecords)
-	fmt.Fprintf(out, "\nOwnership is checked automatically. To check now:\n  forge domain verify %s --env <env>\n", d.Hostname)
+	fmt.Fprintf(out, "\nOwnership is checked automatically. To check now:\n  forge cloud domain verify %s --env <env>\n", d.Hostname)
 	if d.Binding == nil {
-		fmt.Fprintf(out, "\nIt serves nothing until you bind it:\n  forge domain bind %s --env <env> --target <workload|frontend>\n", d.Hostname)
+		fmt.Fprintf(out, "\nIt serves nothing until you bind it:\n  forge cloud domain bind %s --env <env> --target <workload|frontend>\n", d.Hostname)
 	}
 	return nil
 }
@@ -383,7 +383,7 @@ PATH is where the domain's DNS sends its traffic, as the control plane
 resolves it: edge (the CDN in front of hosted static sites), ingress (the
 regional ingress, no CDN) or elsewhere (not pointed at the platform). A
 static-site domain moves to the edge when you set the records
-` + "`forge domain show`" + ` prints.`,
+` + "`forge cloud domain show`" + ` prints.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := domainClient(cmd.Context(), env, token)
@@ -409,7 +409,7 @@ func runDomainList(ctx context.Context, c cloudCaller, jsonOutput bool, out io.W
 		return writeDomainJSON(out, resp)
 	}
 	if len(resp.Domains) == 0 {
-		fmt.Fprintln(out, "No domains. Add one with `forge domain add <hostname> --env <env>`.")
+		fmt.Fprintln(out, "No domains. Add one with `forge cloud domain add <hostname> --env <env>`.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -518,7 +518,7 @@ self-service escape from a conflict: the org holding it lets go.
 
 To stop serving a domain but KEEP it — and keep its verification, so
 re-binding later costs no DNS work and no new certificate — use
-` + "`forge domain unbind`" + ` instead.`,
+` + "`forge cloud domain unbind`" + ` instead.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := domainClient(cmd.Context(), env, token)
@@ -554,8 +554,8 @@ func newDomainBindCmd() *cobra.Command {
 		Short: "Point a domain at one environment's workload or frontend",
 		Long: `Point a domain at a target in --env, replacing any binding it has.
 
-  forge domain bind hounders.club     --env prod --target web
-  forge domain bind www.hounders.club --env prod --redirect-to hounders.club
+  forge cloud domain bind hounders.club     --env prod --target web
+  forge cloud domain bind www.hounders.club --env prod --redirect-to hounders.club
 
 --target names the WORKLOAD OR FRONTEND as your config names it, not a
 deployment id: a deployment id is re-minted when a workload is replaced,
@@ -581,7 +581,7 @@ complete.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if (target == "") == (redirectTo == "") {
 				return fmt.Errorf("give exactly one of --target or --redirect-to: a domain either proxies to something in %q or redirects elsewhere, never both\n"+
-					"fix: `forge domain bind %s --env %s --target <workload|frontend>`, or `--redirect-to <hostname>`",
+					"fix: `forge cloud domain bind %s --env %s --target <workload|frontend>`, or `--redirect-to <hostname>`",
 					env, args[0], env)
 			}
 			c, err := domainClient(cmd.Context(), env, token)
@@ -679,7 +679,7 @@ func newDomainUnbindCmd() *cobra.Command {
 		Long: `Stop the domain serving, and KEEP the domain.
 
 Its verification survives, so re-binding later costs no DNS work and no new
-certificate. To give the hostname up entirely, use ` + "`forge domain rm`" + `.`,
+certificate. To give the hostname up entirely, use ` + "`forge cloud domain rm`" + `.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := domainClient(cmd.Context(), env, token)

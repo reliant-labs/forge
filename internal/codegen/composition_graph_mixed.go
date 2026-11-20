@@ -4,7 +4,7 @@
 //
 // A project on the legacy Infra / NewComponents composition used to be all or
 // nothing: any `type Infra struct` or `func NewComponents` turned graph mode
-// off for the whole project, and `forge fix composition-graph` converts
+// off for the whole project, and `forge lint fix composition-graph` converts
 // everything at once. The largest projects cannot convert in one step.
 //
 // A root marked `adopt` (`//forge:root public command=public-api adopt`) is
@@ -23,7 +23,7 @@
 //
 // Not yet projected for adopted roots: deploy/kcl's ROOTS and
 // pkg/config/roots_gen.go (a workload keeps the legacy env until the
-// project is in graph mode). The last step is `forge fix composition-graph`.
+// project is in graph mode). The last step is `forge lint fix composition-graph`.
 
 package codegen
 

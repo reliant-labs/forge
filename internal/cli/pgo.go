@@ -44,7 +44,7 @@ build after that is optimized for how the binary really runs. Builds never
 fetch profiles themselves, so they stay reproducible.
 
 Configure it per build in KCL (` + "`pgo = forge.PGO {...}`" + ` on a GoBuild, or
-DockerBuild.pgo keyed by binary); load ` + "`forge skill load observability/profiles`" + `.`,
+DockerBuild.pgo keyed by binary); load ` + "`forge agent skill load observability/profiles`" + `.`,
 	}
 	cmd.AddCommand(newPGOPullCmd(), newPGOStatusCmd())
 	return cmdutil.StrictGroup(cmd)

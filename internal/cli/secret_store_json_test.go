@@ -13,7 +13,7 @@ import (
 
 // canaryValue is written into the fixture store as a real secret value. No
 // assertion in this file may ever relax to "redacted" or "truncated" — the
-// contract `forge secret list` documents is that values are ABSENT.
+// contract `forge env secret list` documents is that values are ABSENT.
 const canaryValue = "SUPERSECRETVALUE-DO-NOT-LEAK"
 
 // writeSecretListFixture stages a KCL render fixture plus a secret store and

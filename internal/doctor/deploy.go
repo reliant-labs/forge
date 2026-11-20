@@ -1367,7 +1367,7 @@ func CheckDeploySecrets(_ context.Context, env *Environment) CheckResult {
 						}
 						fix := "use valueFrom.secretKeyRef"
 						if o.platform {
-							fix = "declare it `managedSecret = \"" + name + "\"` (write-only via `forge secret set --env " +
+							fix = "declare it `managedSecret = \"" + name + "\"` (write-only via `forge env secret set --env " +
 								r.env + "`) or `databaseRef`, never `value`"
 						}
 						leaks = append(leaks, fmt.Sprintf("%s container %q: env %s is a literal value — %s",

@@ -123,7 +123,7 @@ func TestResolveGitPinCommitLock(t *testing.T) {
 		sources := testSources(t, projectDir, &infraFetcher{files: producerFiles("unused", pinA), commit: infraCommit}, nil)
 		_, _, err := resolveGit(t, kclRoot, sources)
 		wantErr(t, err, "pin mismatch", infraRepo+"@v1.4.0", "resolved to commit "+infraCommit,
-			"declares commit fedcba98", "forge kcl imports --refresh", `commit = "`+infraCommit+`"`)
+			"declares commit fedcba98", "forge env kcl imports --refresh", `commit = "`+infraCommit+`"`)
 	})
 	t.Run("a full-sha ref is its own lock", func(t *testing.T) {
 		other := "fedcba9876543210fedcba9876543210fedcba98"
@@ -183,7 +183,7 @@ func TestResolveGitPinFetchFailureNamesThePin(t *testing.T) {
 	sources := testSources(t, projectDir, &infraFetcher{err: errors.New("could not resolve host")}, nil)
 	_, _, err := resolveGit(t, kclRoot, sources)
 	wantErr(t, err, `forge project "infra" pinned to `+infraRepo+"@v9.9.9", "could not resolve host",
-		"forge kcl imports", "source-overrides.yaml", infraRepo+": ../<checkout>")
+		"forge env kcl imports", "source-overrides.yaml", infraRepo+": ../<checkout>")
 }
 
 // The forge-version skew refusal applies to a git pin too, with a remedy that

@@ -13,7 +13,7 @@ import (
 
 // The split, pinned at the check sets.
 //
-// `forge doctor` straddled "is this project well-formed" and "is some
+// `forge project doctor` straddled "is this project well-formed" and "is some
 // environment running". The second half is not answerable without a resolved
 // address, and doctor had none — it guessed :8080. Every runtime check now
 // lives in the set `forge env status <env>` runs, and NONE of them may leak

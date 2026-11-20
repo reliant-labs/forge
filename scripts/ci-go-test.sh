@@ -2,7 +2,7 @@
 # The test process must not inherit a per-invocation host-slot lease token.
 # internal/cli's TestMain clears FORGE_SLOT_HELD already, but Go's test cache
 # records getenv calls against the ORIGINAL parent environment, even after a
-# test unsets a variable. Every `forge slot run` (including a Reliant heavy
+# test unsets a variable. Every `forge machine slot run` (including a Reliant heavy
 # command) supplies a fresh token, so otherwise every gate recompiles nothing
 # but reruns the entire cli suite on an unchanged tree.
 #

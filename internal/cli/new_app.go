@@ -70,7 +70,7 @@ func runNewApp(in newAppInput) error {
 	det, err := detectApp(targetPath, name, in.claimable)
 	if err != nil {
 		return cliutil.WrapUserErr("forge project new --kind app", "could not read the app in "+targetPath, "",
-			"fix what the error names, or write the files by hand from "+Name()+" skill load adopt/deploy", err)
+			"fix what the error names, or write the files by hand from "+Name()+" agent skill load adopt/deploy", err)
 	}
 	var harness generator.Harness
 	if newHarnessExplicit && in.harness != "" {
@@ -177,10 +177,10 @@ func appNextSteps(det *appDetection, written bool) []string {
 	step(cli+" env render staging", "the hosted spec")
 	for _, s := range det.secrets {
 		if det.spec.Claimable {
-			step(cli+" secret set --env staging "+s, "the value on stdin (prod, claimable, takes none until it is claimed)")
+			step(cli+" env secret set --env staging "+s, "the value on stdin (prod, claimable, takes none until it is claimed)")
 			continue
 		}
-		step(cli+" secret set --env staging "+s, "the value on stdin; again with --env prod")
+		step(cli+" env secret set --env staging "+s, "the value on stdin; again with --env prod")
 	}
 	step(cli+" env deploy staging --yes", "build, push, cut a release, roll it out (billing on the org; exit 7 prints the link)")
 	step(cli+" obs check staging --wait --json", "is the release good? INCONCLUSIVE until the app exports traces (adopt Tier 2)")
@@ -189,6 +189,6 @@ func appNextSteps(det *appDetection, written bool) []string {
 	} else {
 		step(cli+" env deploy prod <release>", "the same bytes, promoted by digest")
 	}
-	step(cli+" skill load adopt/deploy", "what each file says, and the next tiers: telemetry, gated promotion, CI")
+	step(cli+" agent skill load adopt/deploy", "what each file says, and the next tiers: telemetry, gated promotion, CI")
 	return lines
 }

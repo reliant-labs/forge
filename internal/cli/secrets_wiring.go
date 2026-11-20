@@ -18,7 +18,7 @@ import (
 // already has (the primary checkout itself, or a non-git directory).
 //
 // This is what makes a `git worktree add`'ed checkout usable without
-// replaying every `forge secret set`: the store is gitignored, so a new
+// replaying every `forge env secret set`: the store is gitignored, so a new
 // worktree materializes none of it, but the values are sitting in the
 // primary checkout. The anchor is git's own `--git-common-dir`, the same
 // authoritative signal the port-block registry uses.
@@ -226,7 +226,7 @@ func withEnvInSecretFix(err error, env string) error {
 //
 // It is the env's ONE secret store. When the env declares FileSecrets —
 // dev's usual shape, with rendered_secrets beside it for plain-manifest
-// consumers — that is the provider's own file, so `forge secret set --env
+// consumers — that is the provider's own file, so `forge env secret set --env
 // dev X` feeds a service's secret_ref and a rendered Secret's key alike.
 // Otherwise it is the conventional secrets/<env>.yaml. Either way it layers
 // over the primary checkout's store in a linked worktree, as the services'
@@ -257,7 +257,7 @@ func renderedSecretsStoreConfig(envName string, entities *KCLEntities) *secrets.
 // workload DECLARES via EnvVar.secret_ref, and DROPS any slot whose value is
 // empty.
 //
-// The empty-slot rule is the important half. `forge secret ensure` scaffolds
+// The empty-slot rule is the important half. `forge env secret ensure` scaffolds
 // the store with every declared slot present and blank, so an untouched
 // project's secrets/<env>.yaml reads `DATABASE_URL: ""`. Injected as-is that
 // is not "no value", it is a REAL env var bound to the empty string — and it
@@ -348,7 +348,7 @@ func scopeManagedSecretsToService(all map[string]string, svc *WorkloadEntity) ma
 
 // managedSecretRefsForService is the pre-flight's view of the workload's
 // managedSecret env vars on a host launch: one ref per store name, which is
-// the key `forge secret set` writes and the provider holds.
+// the key `forge env secret set` writes and the provider holds.
 func managedSecretRefsForService(s *WorkloadEntity) []secrets.SecretRef {
 	var refs []secrets.SecretRef
 	for _, e := range s.Spec.Env {

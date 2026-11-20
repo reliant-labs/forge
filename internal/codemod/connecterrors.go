@@ -18,7 +18,7 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 )
 
-// connecterrors.go — `forge fix connect-errors`: the wire-identical half of
+// connecterrors.go — `forge lint fix connect-errors`: the wire-identical half of
 // moving a project's hand-built Connect errors onto pkg/svcerr.
 //
 // `connect.NewError(code, err)` publishes err.Error() to the caller, and

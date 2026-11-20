@@ -220,7 +220,7 @@ func dockerDesktopBuildx() *realBuildx {
 // localBuilder asked for `buildx inspect --format '{{json .}}'` (no such flag),
 // and pruned the policy's default builder — `default`, a docker-driver builder
 // of a context that is not current on Docker Desktop — from the current
-// context, which buildx refuses. Either failure alone meant `forge storage gc`
+// context, which buildx refuses. Either failure alone meant `forge machine storage gc`
 // never pruned BuildKit on that machine, the layer the absolute 20 GiB budget
 // exists for.
 func TestGCPrunesEveryBuilderAgainstRealBuildx(t *testing.T) {
@@ -251,7 +251,7 @@ func TestGCPrunesEveryBuilderAgainstRealBuildx(t *testing.T) {
 	}
 }
 
-// TestStatusReportsEveryBuilderAgainstRealBuildx: `forge storage status` died
+// TestStatusReportsEveryBuilderAgainstRealBuildx: `forge machine storage status` died
 // at the builder step on a Docker Desktop Mac with buildx's own refusal, so the
 // node GC configuration below it was never reported either.
 func TestStatusReportsEveryBuilderAgainstRealBuildx(t *testing.T) {

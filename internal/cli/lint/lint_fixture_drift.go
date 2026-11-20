@@ -150,7 +150,7 @@ func fixtureDriftFixHint(f fixtureDriftFinding) string {
 		"Lifecycle tests forge scaffolds now carry no literal fixtures: they call New<CreateRequest>(t, db, variant) " +
 		"from the regenerated factories_gen_test.go beside this file, which seeds the parents and fills the request " +
 		"from the current schema on every generate. Replace this seed block and the literal create requests with " +
-		"those calls (see `forge skill load testing`), or edit the statement until postgres accepts it."
+		"those calls (see `forge agent skill load testing`), or edit the statement until postgres accepts it."
 }
 
 // fixtureDriftReport is everything one run found. Unverified is non-empty

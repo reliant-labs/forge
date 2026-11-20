@@ -539,12 +539,12 @@ func TestGateCmd_DeclaresItsFlags(t *testing.T) {
 			found = true
 			for _, f := range flags {
 				if c.Flags().Lookup(f) == nil {
-					t.Errorf("--%s is not declared on `forge gate %s`", f, name)
+					t.Errorf("--%s is not declared on `forge release gate %s`", f, name)
 				}
 			}
 		}
 		if !found {
-			t.Errorf("`forge gate %s` is not declared", name)
+			t.Errorf("`forge release gate %s` is not declared", name)
 		}
 	}
 }

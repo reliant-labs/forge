@@ -88,7 +88,7 @@ const (
 	// (skills/forge/migrations/*). Noise for any project that is already
 	// past (or before) the transition, so DEFAULT listings and the
 	// project-skill regeneration exclude them. They remain loadable by
-	// exact path (`forge skill load migrations/...`) and are surfaced
+	// exact path (`forge agent skill load migrations/...`) and are surfaced
 	// with proper version-range gating by `forge project upgrade list`.
 	SkillRelevanceMigration SkillRelevance = "migration"
 )
@@ -98,7 +98,7 @@ const (
 // teaches forge's own layout, codegen or deploy model. SkillAppliesAny means
 // the skill is worth reading in ANY repo, with no forge.yaml: a playbook
 // (debug, testing tiers), a lint lane that runs standalone, a runtime library,
-// or the adopt path itself. In a directory with no forge.yaml, `forge skill
+// or the adopt path itself. In a directory with no forge.yaml, `forge agent skill
 // list` shows these first ("APPLIES TO YOUR REPO"), so an agent meeting forge
 // in an existing app sees what it can use there before forge's architecture.
 //
@@ -178,15 +178,15 @@ func newSkillListCmd() *cobra.Command {
 The default view is GROUPED and fits on one screen: the start-here skills
 first, then one row per skill group with its sub-skills collapsed into a
 '+N' count. Every collapsed sub-skill is still loadable by its exact path
-('forge skill load db/seeding'). Pass --all for the exhaustive flat table, or a
-group name ('forge skill list observability') for that group's parent and every
+('forge agent skill load db/seeding'). Pass --all for the exhaustive flat table, or a
+group name ('forge agent skill list observability') for that group's parent and every
 sub-skill, each with its full path and description.
 
 In a directory with no forge.yaml (an existing app, any language), the skills
 that declare 'applies: any' come first, as APPLIES TO YOUR REPO: the ones that
 work there as it is, led by 'adopt'.
 
-'forge skill search <keyword>' is usually faster than reading either view —
+'forge agent skill search <keyword>' is usually faster than reading either view —
 it scores paths, descriptions and BODIES, so it finds skills whose title
 never mentions your term.
 
@@ -205,9 +205,9 @@ apply to this project's pinned forge_version.`,
 			}
 			if len(args) == 1 {
 				if skills = skillsInGroup(skills, args[0]); len(skills) == 0 {
-					return cliutil.UserErr(fmt.Sprintf("forge skill list %s", args[0]),
+					return cliutil.UserErr(fmt.Sprintf("forge agent skill list %s", args[0]),
 						fmt.Sprintf("no skill or group named %q", args[0]), "",
-						"run 'forge skill list' to see the groups, or 'forge skill search <keyword>' to find a skill")
+						"run 'forge agent skill list' to see the groups, or 'forge agent skill search <keyword>' to find a skill")
 				}
 				all = true
 			}
@@ -253,7 +253,7 @@ func writeSkillListText(out io.Writer, skills []skillMeta, all, inProject bool) 
 	// choosing from the other ninety. Name it, when it is here.
 	if entryPoint {
 		_, _ = fmt.Fprintf(out,
-			"\nStart with `%s skill load %s` — it names the commands that print forge's whole surface.\n",
+			"\nStart with `%s agent skill load %s` — it names the commands that print forge's whole surface.\n",
 			cmdutil.Name(), entryPointSkillPath)
 	}
 	return nil
@@ -302,10 +302,10 @@ func newSkillLoadCmd() *cobra.Command {
 			root, _ := findProjectRoot()
 			content, err := RenderSkillContentAt(root, name, SkillAudienceAll, Name())
 			if err != nil {
-				return cliutil.UserErr(fmt.Sprintf("forge skill load %s", name),
+				return cliutil.UserErr(fmt.Sprintf("forge agent skill load %s", name),
 					fmt.Sprintf("skill %q not found", name),
 					"",
-					"run 'forge skill list' to see available skills, or 'forge skill search <keyword>' to find one")
+					"run 'forge agent skill list' to see available skills, or 'forge agent skill search <keyword>' to find one")
 			}
 
 			_, err = cmd.OutOrStdout().Write(content)
@@ -314,7 +314,7 @@ func newSkillLoadCmd() *cobra.Command {
 	}
 }
 
-// newSkillSearchCmd implements `forge skill search "<query>"`. The scoring
+// newSkillSearchCmd implements `forge agent skill search "<query>"`. The scoring
 // algorithm is ported verbatim from reliant's skill tool (path/name = 3,
 // description = 1, body = 1, summed across query words).
 func newSkillSearchCmd() *cobra.Command {
@@ -545,7 +545,7 @@ func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 	return insertAfterFrontmatter(body, []byte(advisory)), scope, nil
 }
 
-// RenderSkillContentAt returns a skill exactly as `forge skill load` prints
+// RenderSkillContentAt returns a skill exactly as `forge agent skill load` prints
 // it: resolved with user > project > forge precedence, the version-skew
 // advisory inserted (ResolveSkillContentAt), filtered for audience, and every
 // bare `forge ` command reference rewritten to cliName.

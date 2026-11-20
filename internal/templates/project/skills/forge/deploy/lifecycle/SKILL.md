@@ -7,9 +7,9 @@ description: Stopping, starting and deleting a HOSTED environment from the CLI �
 
 Everything the Reliant UI does to a hosted env is available from the CLI. Signed
 in to Reliant (running `reliant forge …`, or in a Reliant agent's shell) you are
-already authenticated — do NOT run `forge login`; forge asks Reliant's
+already authenticated — do NOT run `forge cloud login`; forge asks Reliant's
 credential helper (`$FORGE_CREDENTIAL_HELPER`) for a short-lived token. Standalone
-forge uses `forge login`; CI sets the env's token variable.
+forge uses `forge cloud login`; CI sets the env's token variable.
 
 ```
 forge env stop prod [--target api] [--wait]    # suspend; never refused
@@ -41,7 +41,7 @@ forge env delete preview [--yes] [--keep-data] # tear the env down, data include
   longer declares.
 - Before confirming, `delete` shows the env's id, project, control plane,
   deployment count and bound custom domains. The control plane refuses to
-  delete an env while a custom domain is bound to it: `forge domain unbind`
+  delete an env while a custom domain is bound to it: `forge cloud domain unbind`
   each first. If the bound domains cannot be read, `delete` stops before
   confirming and deletes nothing.
 - All three refuse an env that is not hosted. `forge env down` only stops local
@@ -90,7 +90,7 @@ forge app delete --status | --cancel     # show it / cancel it until the purge s
   name, release history and release images (not billed) and its custom domains
   (unbound), so `forge env deploy <env> <release>` recreates an env. Each env's
   secrets are not given back to a recreated env: set them again. It deletes
-  nothing while a custom domain is bound to one of the envs (`forge domain
+  nothing while a custom domain is bound to one of the envs (`forge cloud domain
   unbind` it first), when the bound domains cannot be read (the domain service
   failing, or a control plane without one), or while an env this project
   declares also runs parts on a cluster you operate.
@@ -113,7 +113,7 @@ Per-PR and per-branch copies of a template env, which expire:
 
 ## Domains
 
-`forge domain add|ls|show|verify|bind|unbind|rm --env <env>` — see
+`forge cloud domain add|ls|show|verify|bind|unbind|rm --env <env>` — see
 `deploy/domains`.
 
 ## Missing-scope rejections
@@ -121,7 +121,7 @@ Per-PR and per-branch copies of a template env, which expire:
 A 403 naming a scope (e.g. `domain:read`): the credential lacks it. Under
 Reliant, the Reliant session it was minted from lacks it — grant it in Reliant
 (Settings → Access Tokens) or sign in again with `reliant auth login`; standalone,
-re-run `forge login`. If a fresh token still lacks it, your role has no grant —
+re-run `forge cloud login`. If a fresh token still lacks it, your role has no grant —
 ask an org admin, who can mint a token with the scope in the web app (Settings →
 API tokens, https://forge.reliantlabs.io/settings/tokens); export it as the env's
 declared token variable.
@@ -143,7 +143,7 @@ any other scope.
 
 ### A registry-only credential for filing source maps
 
-`sourcemaps:write` files a frontend's source maps (`forge frontend sourcemaps
+`sourcemaps:write` files a frontend's source maps (`forge ui sourcemaps
 push`) and does nothing else. The registry grants it push and pull on
 `<org>/<project>/<frontend>-sourcemaps` repositories only, and the control plane
 refuses it on every RPC. It is a whole credential: a token carrying it carries
@@ -155,14 +155,14 @@ it from the CLI only on a control plane that admits a CLI login for token
 administration (Reliant cloud refuses one: exit 9, `person_session_required`):
 
     forge cloud token create --env prod --name desktop-sourcemaps --scopes sourcemaps:write --expires-in 2160h
-    forge frontend sourcemaps push dist --frontend desktop --build-id "$VERSION" --env <env> --org <org id>
+    forge ui sourcemaps push dist --frontend desktop --build-id "$VERSION" --env <env> --org <org id>
 
 `accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
 list every member (`db/closed-sets`).
 
 ## Where the credential comes from
 
-`--token`, then the env's declared token variable (CI), then what `forge login`
+`--token`, then the env's declared token variable (CI), then what `forge cloud login`
 stored, then the credential helper `$FORGE_CREDENTIAL_HELPER` (Reliant's
 session). `forge cloud status <env>` prints which one a command will use —
 never the token.

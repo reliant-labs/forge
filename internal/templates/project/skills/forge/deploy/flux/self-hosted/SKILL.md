@@ -34,7 +34,7 @@ That installs the pinned Flux Operator and FluxInstance (`forge.flux_chart()`),
 and the env's own **delivery namespace** (`forge-delivery-<project>-<env>`),
 holding the env's delivery ResourceSet (`delivery.<env>`), the copy of the pull
 Secret, and the identities its Flux applies as. Two envs can share a cluster:
-each gets its own namespace. Run `forge cluster up <env>` for a forge-managed
+each gets its own namespace. Run `forge dev cluster up <env>` for a forge-managed
 k3d cluster and it installs the same thing.
 
 ## Shipping a release

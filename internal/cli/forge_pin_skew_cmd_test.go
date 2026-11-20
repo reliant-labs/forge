@@ -78,8 +78,8 @@ func TestForgePinSkew_MutatingCommandsAreRefusedWithRunbook(t *testing.T) {
 		{"scaffold"},
 		{"scaffold", "service", "billing"},
 		{"scaffold", "rpc", "billing", "Refund"},
-		{"package", "new", "ledger"},
-		{"component", "install", "button"},
+		{"scaffold", "package", "ledger"},
+		{"ui", "component", "install", "button"},
 		{"env", "new", "qa"},
 		{"project", "rescaffold"},
 		{"project", "delete", "service", "billing"},
@@ -115,7 +115,7 @@ func TestForgePinSkew_ReadOnlyCommandsAreNotRefused(t *testing.T) {
 		{"project", "delete", "service", "billing", "--dry-run"},
 		{"lint"},
 		{"lint", "--no-fix"},
-		{"skill", "list"},
+		{"agent", "skill", "list"},
 		{"project", "audit"},
 		{"project", "shapes"},
 		{"project", "capabilities"},
@@ -244,7 +244,7 @@ func TestAllowVersionSkewBeforeTheCommandIsRefusedWithTheFix(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"--allow-version-skew", "skill", "load", "migrations/v1.4.0"}, "skill load migrations/v1.4.0 --allow-version-skew"},
+		{[]string{"--allow-version-skew", "agent", "skill", "load", "migrations/v1.4.0"}, "agent skill load migrations/v1.4.0 --allow-version-skew"},
 		{[]string{"-C", "x", "--allow-version-skew=true", "project", "upgrade", "--help"}, "-C x project upgrade --help --allow-version-skew=true"},
 		{[]string{"--allow-version-skew", "ci", "run", "--", "a"}, "ci run --allow-version-skew -- a"},
 	} {
@@ -254,15 +254,15 @@ func TestAllowVersionSkewBeforeTheCommandIsRefusedWithTheFix(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"skill", "load", "x", "--allow-version-skew"},
-		{"skill", "load", "--", "--allow-version-skew"},
-		{"skill", "load", "x"},
+		{"agent", "skill", "load", "x", "--allow-version-skew"},
+		{"agent", "skill", "load", "--", "--allow-version-skew"},
+		{"agent", "skill", "load", "x"},
 	} {
 		if err := skewFlagBeforeCommand(args); err != nil {
 			t.Errorf("skewFlagBeforeCommand(%v) = %v; want nil", args, err)
 		}
 	}
-	if inv := parseInvocation([]string{"skill", "load", "x", "--allow-version-skew"}); inv.rel != "skill load" || !inv.allow {
+	if inv := parseInvocation([]string{"agent", "skill", "load", "x", "--allow-version-skew"}); inv.rel != "agent skill load" || !inv.allow {
 		t.Errorf("the flag after the command: %+v", inv)
 	}
 }

@@ -293,7 +293,7 @@ func TestFileBindingStore_CorruptLineIsAnError(t *testing.T) {
 // rewrote it into .forge/promotions/<env>.jsonl. Both of those locations are
 // now retired: the ledger is the control plane or the machine store, and the
 // path from a committed in-checkout ledger to either one is
-// `forge ledger import --from-git`, which imports history rather than
+// `forge release ledger import --from-git`, which imports history rather than
 // rewriting files in the tree.
 //
 // The safety property those tests protected — a checkout whose committed

@@ -210,7 +210,7 @@ func TestForgeDeployAction_StepsInOrder(t *testing.T) {
 	if doc.Runs.Using != "composite" {
 		t.Fatalf("runs.using = %q", doc.Runs.Using)
 	}
-	order := []string{`forge "${args[@]}" > deploy.json || code=$?`, "forge gate record", "forge ci summarize"}
+	order := []string{`forge "${args[@]}" > deploy.json || code=$?`, "forge release gate record", "forge ci summarize"}
 	idx := 0
 	for _, s := range doc.Runs.Steps {
 		if idx < len(order) && strings.Contains(s.Run, order[idx]) {
@@ -228,7 +228,7 @@ func TestForgeDeployAction_StepsInOrder(t *testing.T) {
 		}
 	}
 	for _, s := range doc.Runs.Steps {
-		if strings.Contains(s.Run, "forge gate record") || strings.Contains(s.Run, "forge ci summarize") {
+		if strings.Contains(s.Run, "forge release gate record") || strings.Contains(s.Run, "forge ci summarize") {
 			if !strings.HasPrefix(s.If, "always()") {
 				t.Errorf("evidence and summary must run always(), got if=%q", s.If)
 			}
@@ -288,7 +288,7 @@ func TestForgeDeployAction_FailedDeployKeepsItsEvidence(t *testing.T) {
 		switch {
 		case s.ID == "deploy":
 			deployRun = s.Run
-		case strings.Contains(s.Run, "forge gate record"):
+		case strings.Contains(s.Run, "forge release gate record"):
 			evidenceRun, evidenceIf = s.Run, s.If
 		}
 	}

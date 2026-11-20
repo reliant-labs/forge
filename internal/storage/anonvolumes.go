@@ -43,9 +43,9 @@ import (
 //     restarts. Every pass that applies records, automatic ones included, so
 //     the clock starts at the first pass after the container went away rather
 //     than at the first explicit one. A preview records nothing.
-//   - EXPLICIT: only `forge storage gc --apply` run by a person or agent
+//   - EXPLICIT: only `forge machine storage gc --apply` run by a person or agent
 //     (Runner.Explicit) removes one. The automatic passes — `forge env up`'s
-//     background pass, the hourly and daily schedule, `forge storage daemon` —
+//     background pass, the hourly and daily schedule, `forge machine storage daemon` —
 //     only observe. An orphaned anonymous volume is exactly where a compose
 //     service with no named volume keeps its data after `docker compose down`:
 //     the postgres image declares VOLUME /var/lib/postgresql/data, so a
@@ -233,7 +233,7 @@ func (r Runner) AnonymousVolumes(ctx context.Context, apply bool) error {
 			if r.Explicit {
 				r.print("remove anonymous volume %s\n", v.describe())
 			} else {
-				r.print("anonymous volume %s: retained, only an explicit `forge storage gc --apply` removes volumes\n", v.describe())
+				r.print("anonymous volume %s: retained, only an explicit `forge machine storage gc --apply` removes volumes\n", v.describe())
 			}
 			continue
 		}
@@ -257,7 +257,7 @@ func (r Runner) AnonymousVolumes(ctx context.Context, apply bool) error {
 	case remove:
 		verdict = fmt.Sprintf("removed %d of %d", removed, len(plan.targets))
 	case !r.Explicit:
-		verdict = fmt.Sprintf("%d eligible, removed only by an explicit `forge storage gc --apply`", len(plan.targets))
+		verdict = fmt.Sprintf("%d eligible, removed only by an explicit `forge machine storage gc --apply`", len(plan.targets))
 	}
 	r.print("anonymous volumes: %s (unused for %s or more); retained %d unused for less, %d named (never removed), %d in use by a container, %d with a non-local driver or driver options\n",
 		verdict, floor, plan.young, plan.named, plan.inUse, plan.special)

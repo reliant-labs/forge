@@ -47,7 +47,7 @@ func CheckDelve(ctx context.Context, env *Environment) CheckResult {
 	if !serviceRunning(psOut, "app-debug") {
 		return CheckResult{
 			Status:   StatusSkip,
-			Message:  "debug profile not active (use 'forge debug start --docker')",
+			Message:  "debug profile not active (use 'forge dev debug start --docker')",
 			Evidence: strings.Join(evidence, "\n"),
 		}
 	}

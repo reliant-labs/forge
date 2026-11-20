@@ -28,7 +28,7 @@ package cli
 // of them; forge also runs forge. A flag would have to be repeated on every
 // invocation, and the one that forgot it would reach the declared control
 // plane — the bug this closes. A variable is set once and inherited by every
-// process the script and forge start.
+// process the script and forge project start.
 //
 // WHY NO URL VALUE. The endpoint is part of the env's DECLARATION
 // (cloud.ResolveEndpoint) and its credential is resolved for that endpoint. A

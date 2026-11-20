@@ -57,7 +57,7 @@ func TestRunEnvDelete_PreviewShowsWhatWillBeDeleted(t *testing.T) {
 	}
 	for _, want := range []string{
 		"id:             env_1", "project:        shop", "control plane:  https://cp.example", "deployments:    2",
-		"custom domains: shop.example, www.shop.example", "forge domain unbind shop.example --env",
+		"custom domains: shop.example, www.shop.example", "forge cloud domain unbind shop.example --env",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("preview missing %q:\n%s", want, out.String())

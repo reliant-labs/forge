@@ -427,7 +427,7 @@ const depsRemediation = "type the field with an interface. Look for an existing 
 	"If the field is `// forge:optional-dep`, assign it CONDITIONALLY (`if x != nil { deps.X = x }`): " +
 	"a nil concrete pointer stored in an interface field is not a nil interface, so an unconditional " +
 	"assignment turns your `if deps.X == nil` guard into a nil-receiver panic. " +
-	"Skill: forge skill load service-layer"
+	"Skill: forge agent skill load service-layer"
 
 // valueStructRemediation leads the fix for a field typed as a struct VALUE.
 //

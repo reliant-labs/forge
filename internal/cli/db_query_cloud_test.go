@@ -362,7 +362,7 @@ func TestDBQueryHostedPolicyRefusalIsNotACredentialProblem(t *testing.T) {
 	}
 	var doc dbQueryDocument
 	_ = json.Unmarshal([]byte(out), &doc)
-	if !strings.Contains(doc.Error, "data_access policy") || strings.Contains(doc.Error, "forge login") || strings.Contains(doc.Error, "rejected the credential") {
+	if !strings.Contains(doc.Error, "data_access policy") || strings.Contains(doc.Error, "forge cloud login") || strings.Contains(doc.Error, "rejected the credential") {
 		t.Errorf("error = %q", doc.Error)
 	}
 }

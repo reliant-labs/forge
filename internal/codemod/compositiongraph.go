@@ -21,7 +21,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
-// compositiongraph.go — `forge fix composition-graph`: move a project off the
+// compositiongraph.go — `forge lint fix composition-graph`: move a project off the
 // legacy composition (the owned Infra / OpenInfra in providers.go, the
 // Components / NewComponents bag in compose.go, lifecycle.go, ServeSpec and
 // the per-service / per-worker / per-operator subcommands) onto the
@@ -177,7 +177,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	if len(p.blocked) > 0 {
 		sort.Strings(p.blocked)
 		rep.Blocked = p.blocked
-		rep.Next = []string{"clear each item above (`forge skill load migrations/v1.0.0/composition-graph` walks through them), then run `forge fix composition-graph` again — nothing was written"}
+		rep.Next = []string{"clear each item above (`forge agent skill load migrations/v1.0.0/composition-graph` walks through them), then run `forge lint fix composition-graph` again — nothing was written"}
 		rep.Verify = nil
 		return rep, nil
 	}
@@ -196,7 +196,7 @@ func runCompositionGraph(dir string, opts Options) (Report, error) {
 	rep.Next = append(rep.Next,
 		"run `forge generate`: it scaffolds providers.go, serve.go (runRoot) and the generated graph (graph_gen.go, routes_gen.go, roots_gen.go), then `go build ./...` and `forge lint --graph`",
 		fmt.Sprintf("review `git diff HEAD -- %s/serve.go`: an edit you made to the old Serve — an interceptor, CORS, edge middleware — now belongs in providers.go (NewUserChain, NewAPIListener) or in runRoot (process policy)", p.tree),
-		"the one root is `server`, the generated default: every service, worker and operator, as `"+p.bin+" server` ran. Split a process by declaring a `//forge:root <name>` struct in internal/app (`forge skill load architecture`, \"Roots and commands\")",
+		"the one root is `server`, the generated default: every service, worker and operator, as `"+p.bin+" server` ran. Split a process by declaring a `//forge:root <name>` struct in internal/app (`forge agent skill load architecture`, \"Roots and commands\")",
 	)
 	if len(p.retired) > 0 {
 		rep.Next = append(rep.Next, fmt.Sprintf("retired subcommands (one root runs them all now): `%s %s`", p.bin, strings.Join(p.retired, "`, `"+p.bin+" ")))
@@ -631,7 +631,7 @@ func (p *cgPlan) readConstructions(f *cgFile, fd *ast.FuncDecl, infraName, compN
 				continue
 			}
 		}
-		p.block(f, st.Pos(), "NewComponents: `%s` is wiring forge did not scaffold — express it as a Deps value in that node's graph constructor method, or a two-phase setter (`forge skill load architecture`)", firstLine(exprString(f, st)))
+		p.block(f, st.Pos(), "NewComponents: `%s` is wiring forge did not scaffold — express it as a Deps value in that node's graph constructor method, or a two-phase setter (`forge agent skill load architecture`)", firstLine(exprString(f, st)))
 	}
 	for local := range pending {
 		p.block(f, fd.Pos(), "NewComponents constructs %s but never stores it on Components", local)
@@ -866,7 +866,7 @@ func cloneExpr(e ast.Expr) ast.Expr {
 const graphComposeHeader = `// forge-scaffold (USER-OWNED, RECONCILED): the composition graph's wiring —
 // one constructor method per node, holding the value expression for every
 // field of that node's Deps. Those expressions are yours. Converted from the
-// legacy NewComponents by ` + "`forge fix composition-graph`" + `; every
+// legacy NewComponents by ` + "`forge lint fix composition-graph`" + `; every
 // ` + "`forge generate`" + ` adds the methods and Deps keys a node lacks, drops a key
 // whose field is gone, and never touches a value.
 `
@@ -1012,7 +1012,7 @@ func (p *cgPlan) checkRunOperators(f *cgFile, fd *ast.FuncDecl) {
 					}
 				}
 			default:
-				p.block(f, kv.Pos(), "RunOperators sets operatorkit.Options.%s, which the graph's controller manager does not take from the project: run the operators under a root of their own with a hand-written manager node (`forge skill load operators`)", key)
+				p.block(f, kv.Pos(), "RunOperators sets operatorkit.Options.%s, which the graph's controller manager does not take from the project: run the operators under a root of their own with a hand-written manager node (`forge agent skill load operators`)", key)
 			}
 		}
 		return false

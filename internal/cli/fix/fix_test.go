@@ -10,7 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 )
 
-// Every release codemod is a `forge fix` subcommand, run over the project
+// Every release codemod is a `forge lint fix` subcommand, run over the project
 // root; --dry-run reports and writes nothing.
 func TestFix_CodemodSubcommand(t *testing.T) {
 	dir := t.TempDir()
@@ -35,7 +35,7 @@ func TestFix_CodemodSubcommand(t *testing.T) {
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
 		if err := cmd.Execute(); err != nil {
-			t.Fatalf("forge fix %s: %v\n%s", strings.Join(args, " "), err, out.String())
+			t.Fatalf("forge lint fix %s: %v\n%s", strings.Join(args, " "), err, out.String())
 		}
 		return out.String()
 	}
@@ -86,7 +86,7 @@ func TestFix_CodemodScope(t *testing.T) {
 	}
 
 	if out, err := run("operatorkit", "--scope", "internal/a"); err != nil {
-		t.Fatalf("forge fix operatorkit --scope: %v\n%s", err, out)
+		t.Fatalf("forge lint fix operatorkit --scope: %v\n%s", err, out)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "internal", "a", "a.go")); !strings.Contains(string(got), "operatorkit.Options") {
 		t.Errorf("internal/a is in scope but was not rewritten:\n%s", got)

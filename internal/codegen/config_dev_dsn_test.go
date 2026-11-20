@@ -56,7 +56,7 @@ func TestDevSecretStoreCarriesNoDSN(t *testing.T) {
 // (below the KCL declaration) and that shadowdb scans for a DSN candidate.
 //
 // The KEY must still be present: the store's job is to list every declared
-// sensitive ref as a labelled slot, so `forge secret ensure dev` and a human
+// sensitive ref as a labelled slot, so `forge env secret ensure dev` and a human
 // reading the file both see what wants a value. It is the VALUE that must be
 // empty.
 func TestEnvDevScaffoldWritesEmptyDBSlot(t *testing.T) {

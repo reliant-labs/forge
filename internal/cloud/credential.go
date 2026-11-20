@@ -5,7 +5,7 @@
 //     environment's KCL (forge.ControlPlane) and lives in git.
 //   - the CREDENTIAL, which is an opaque bearer string that must never
 //     live in git, resolved at call time from a flag, an environment
-//     variable, the shared credentials file `forge login` writes
+//     variable, the shared credentials file `forge cloud login` writes
 //     (forge/pkg/credentials) keyed by THAT endpoint, or a credential helper
 //     the host application names (forge/pkg/cloudcred).
 //
@@ -52,12 +52,12 @@ type CredentialSource string
 // tries them. An explicit flag beats the environment, the environment beats
 // the credentials file on disk, and the file beats a host application's
 // session. That order is what makes a CI run overridable, a human's own
-// `forge login` deliberate, and a signed-in host the ambient default rather
+// `forge cloud login` deliberate, and a signed-in host the ambient default rather
 // than a thing that silently wins.
 const (
 	SourceFlag  CredentialSource = "flag"             // --token
 	SourceEnv   CredentialSource = "env"              // the declared token_env
-	SourceLogin CredentialSource = "credentials file" // written by `forge login`
+	SourceLogin CredentialSource = "credentials file" // written by `forge cloud login`
 	// SourceHelper is a token the credential helper named by
 	// $FORGE_CREDENTIAL_HELPER minted from a host application's session
 	// (pkg/cloudcred). forge does not know which application; Credential.From
@@ -107,7 +107,7 @@ func TokenIdentity(token string) string {
 
 // ErrNoCredential is returned when no credential could be resolved. Use
 // errors.Is to detect it; the message is already actionable (it names the
-// remedy for this machine — `forge login`, or signing in to the host
+// remedy for this machine — `forge cloud login`, or signing in to the host
 // application — and the environment variable), so callers should surface it
 // as-is rather than wrapping it in a generic auth failure.
 var ErrNoCredential = errors.New("no control-plane credential")
@@ -128,7 +128,7 @@ const helperReuseMargin = time.Minute
 //
 //  1. flagToken              — an explicit --token on the command line
 //  2. os.Getenv(ep.TokenEnv) — the env var the environment DECLARED
-//  3. the credentials file   — what `forge login` stored FOR ep.URL
+//  3. the credentials file   — what `forge cloud login` stored FOR ep.URL
 //  4. the credential helper  — $FORGE_CREDENTIAL_HELPER, a host application
 //     that holds the user's session (Reliant sets it), minting a short-lived
 //     token for ep on demand
@@ -140,16 +140,16 @@ const helperReuseMargin = time.Minute
 // because CI is where it is used: a pipeline has no browser and no
 // persistent home directory, so the variable IS its credential, and it
 // must beat any file that happens to exist in a cached runner image. The
-// file comes before the helper because a human who ran `forge login` chose
+// file comes before the helper because a human who ran `forge cloud login` chose
 // that credential for that endpoint deliberately, and a host application
 // signed in as somebody else must not displace it. The helper is last
 // because it is the most ambient of all: it is simply "whoever this machine
 // is signed in to the host as" — the right DEFAULT, and the wrong override.
 //
-// An EXPIRED `forge login` is not a dead end when a helper is configured:
+// An EXPIRED `forge cloud login` is not a dead end when a helper is configured:
 // the user is still signed in to the host, so resolution falls through to it
 // rather than demanding a second login. Without a helper it is reported as
-// expired, because then `forge login` really is the fix.
+// expired, because then `forge cloud login` really is the fix.
 //
 // The file lookup is keyed by the endpoint. A login to staging can never be
 // presented to prod: a prod command finds no entry and says so, instead of
@@ -186,7 +186,7 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 		return Credential{Kind: stored.Kind, Token: stored.Token, Source: SourceLogin, From: path,
 			ExpiresAt: stored.ExpiresAt, Scopes: stored.Scopes}, nil
 	case lookupErr == nil:
-		expiredLogin = fmt.Sprintf("the forge login for %s stored in %s expired at %s",
+		expiredLogin = fmt.Sprintf("the forge cloud login for %s stored in %s expired at %s",
 			ep.URL, path, stored.ExpiresAt.Format(time.RFC3339))
 		if !hasHelper {
 			return Credential{}, fmt.Errorf("%w\n%s\nfix: %s", ErrNoCredential, expiredLogin, loginHint(ep))
@@ -223,7 +223,7 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 
 // helperFailure words a helper that produced no token. A helper's REFUSAL is
 // the host's own advice ("sign in to …") and is shown verbatim: under a host,
-// sending the user to `forge login` would be the wrong fix — they are meant to
+// sending the user to `forge cloud login` would be the wrong fix — they are meant to
 // be signed in once, there. CI's route is named too, because a pipeline that
 // inherited a helper variable still has no browser.
 func helperFailure(ep Endpoint, tokenEnv, expiredLogin string, err error) error {
@@ -366,29 +366,29 @@ func forgetHelperCredential(argv []string, ep Endpoint) {
 
 // CredentialOrder is the resolution order in one line, for help text and
 // errors that explain where a credential comes from.
-const CredentialOrder = "--token, then the env's declared token_env, then what `forge login` stored, " +
+const CredentialOrder = "--token, then the env's declared token_env, then what `forge cloud login` stored, " +
 	"then the credential helper $" + cloudcred.HelperEnv + " (a host application's session — Reliant sets it)"
 
 // SignInHint is the "authenticate and retry" remedy for THIS process. Under a
 // host application that provides a credential helper, the user is meant to be
 // signed in once, to the host — so the remedy is the host's sign-in, not a
-// second login to forge. A standalone forge says `forge login`.
+// second login to forge. A standalone forge says `forge cloud login`.
 func SignInHint() string {
 	if strings.TrimSpace(os.Getenv(cloudcred.HelperEnv)) != "" {
 		return "sign in to the application that provides forge's credentials ($" + cloudcred.HelperEnv + ")"
 	}
-	return "`forge login`"
+	return "`forge cloud login`"
 }
 
-// loginHint is the `forge login` invocation that covers ep. An endpoint an
-// env declared is covered by a bare `forge login`, which logs into every
+// loginHint is the `forge cloud login` invocation that covers ep. An endpoint an
+// env declared is covered by a bare `forge cloud login`, which logs into every
 // control plane the project declares — login never takes an env. Anything
 // else is named with --endpoint.
 func loginHint(ep Endpoint) string {
 	if ep.Env != "" {
-		return "forge login"
+		return "forge cloud login"
 	}
-	return "forge login --endpoint " + ep.URL
+	return "forge cloud login --endpoint " + ep.URL
 }
 
 // CredentialsPath is where the shared credentials file lives, from

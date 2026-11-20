@@ -330,7 +330,7 @@ func TestCIWorkflow_VerifyGeneratedHasItsToolchain(t *testing.T) {
 	order := map[string]int{}
 	for i, s := range job.Steps {
 		switch {
-		case s.Run == "forge tools install --force":
+		case s.Run == "forge machine tools install --force":
 			order["tools"] = i
 		case strings.HasPrefix(s.Uses, "actions/setup-node@"):
 			order["node"] = i

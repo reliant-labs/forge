@@ -2,7 +2,7 @@
 // The browser half of native sign-in: plain POSTs to this app's own API (/auth/login, /register,
 // /session, /logout, …), which runs the whole OIDC flow (internal/app/login_broker.go) and answers
 // with an HttpOnly cookie. No token is readable here, by design: the Identity it returns decides
-// what to SHOW, never what is ALLOWED. Depth: `forge skill load auth/frontend`.
+// what to SHOW, never what is ALLOWED. Depth: `forge agent skill load auth/frontend`.
 {{if .HasTypedConfig}}
 import { apiBase } from "@/lib/api-base";
 import { loadConfig } from "@/lib/config_gen";

@@ -372,7 +372,7 @@ output = forge.render(forge.Bundle {
 		return false
 	}
 	// The remote cluster's mount (jwt-edge) is created when its issuer is
-	// registered (forge cluster connect), not by this render, so the document
+	// registered (forge cloud cluster connect), not by this render, so the document
 	// is checked on the store's own cluster; the edge login only has to pass
 	// the allowlist.
 	mount := jwt["path"].(string)

@@ -111,7 +111,7 @@ func DescribeViolations(role string, violations []Violation) string {
 	return fmt.Sprintf("role %s may only read (SELECT, schema USAGE, CONNECT), but it can also:\n%s\n"+
 		"Take each away in a new migration, and grant %s column SELECTs only. "+
 		"A privilege held through PUBLIC is every role's: revoke it from PUBLIC and grant the roles that need it. "+
-		"See `forge skill load db/dashboards`", role, strings.Join(lines, "\n"), role)
+		"See `forge agent skill load db/dashboards`", role, strings.Join(lines, "\n"), role)
 }
 
 // DashboardPrivilegeViolations lists what role can do besides reading, sorted:

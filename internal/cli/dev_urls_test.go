@@ -254,7 +254,7 @@ func TestRenderIngressURLs_GroupsByGateway(t *testing.T) {
 // default host, which is not the host the cluster serves it on.
 //
 // This mirrors _route_host in kcl/lib/gateway.k. If the two disagree,
-// `forge cluster urls` prints a URL that does not resolve.
+// `forge dev cluster urls` prints a URL that does not resolve.
 func TestBuildIngressURLs_ListenerHostnamePrecedence(t *testing.T) {
 	cases := []struct {
 		name        string

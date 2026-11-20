@@ -7,7 +7,7 @@ package cli
 // owns that, from a literal fixture. It is that the right commands record a
 // declaration, at the right moment, and that the ones which have not rendered
 // the env do NOT: an absent shape leaves the stored one untouched server-side,
-// so a `forge secret set` that sent one would overwrite a build's declaration
+// so a `forge env secret set` that sent one would overwrite a build's declaration
 // with whatever it could infer without rendering.
 
 import (
@@ -533,7 +533,7 @@ func TestBuildDeclarationSurvivesAProjectionFailure(t *testing.T) {
 
 // ─── The ensures that must NOT carry a shape ────────────────────────────────
 
-// TestEnsureWithoutARenderSendsNoShape: `forge secret set`, a promote and
+// TestEnsureWithoutARenderSendsNoShape: `forge env secret set`, a promote and
 // every other ensure that has not rendered the env send no shape at all.
 //
 // This is load-bearing rather than tidy. An absent shape leaves the stored
@@ -569,15 +569,15 @@ func TestHostedSecretSetSendsNoShape(t *testing.T) {
 	}
 	ensures := fake.callsTo("controlplane.v1.DeployService/EnsureEnvironment")
 	if len(ensures) == 0 {
-		t.Fatal("`forge secret set` did not ensure the env, so this test proves nothing")
+		t.Fatal("`forge env secret set` did not ensure the env, so this test proves nothing")
 	}
 	for _, call := range ensures {
 		spec, _ := call.Body["spec"].(map[string]any)
 		if _, present := spec["shape"]; present {
-			t.Errorf("`forge secret set` sent a shape: %v", spec)
+			t.Errorf("`forge env secret set` sent a shape: %v", spec)
 		}
 		if _, present := spec["declaredBy"]; present {
-			t.Errorf("`forge secret set` sent declaredBy: %v", spec)
+			t.Errorf("`forge env secret set` sent declaredBy: %v", spec)
 		}
 	}
 }

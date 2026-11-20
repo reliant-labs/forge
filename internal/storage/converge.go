@@ -30,7 +30,7 @@ type Facts struct {
 	// make deletion unsafe.
 	Contexts []string
 	// Registry is the local registry's CONTAINER name (`k3d-…`), which is
-	// also how `forge storage gc` addresses it.
+	// also how `forge machine storage gc` addresses it.
 	Registry string
 	// Aliases are every host name under which that one registry is pushed to
 	// or pulled from — the containerd mirror keys plus the in-network
@@ -253,7 +253,7 @@ func (r Runner) GoCacheGC(ctx context.Context, apply bool) error {
 // installed schedule — and nothing it can observe tells an abandoned worktree
 // from one an agent is between two commands in: no process holds it open, and
 // its files can sit untouched for a day while the agent reads. Removing one is
-// a decision only an explicit `forge storage gc --apply` may take. Anonymous
+// a decision only an explicit `forge machine storage gc --apply` may take. Anonymous
 // volumes are the same decision about data: this pass records which ones are
 // unused, so their clocks start, and never removes one (anonvolumes.go).
 //

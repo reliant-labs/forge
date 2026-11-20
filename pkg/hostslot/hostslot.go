@@ -49,7 +49,7 @@
 //     naming a slot whose record still carries the same nonce and which is
 //     still locked — a stale or copied token is ignored, not trusted;
 //   - an ANCESTOR process holding a slot of the class with Options.Subtree
-//     set (a wrapper like `forge slot run`, or a scheduler), read from the
+//     set (a wrapper like `forge machine slot run`, or a scheduler), read from the
 //     kernel's parent links. This covers a child whose environment was
 //     scrubbed between the holder and it.
 package hostslot
@@ -370,7 +370,7 @@ func (s *Slot) Env() []string {
 }
 
 // SetLabel replaces the command recorded for this holder, which waiters and
-// `forge slot status` show. A scheduler that takes a slot and only then
+// `forge machine slot status` show. A scheduler that takes a slot and only then
 // decides which job gets it names the job here.
 func (s *Slot) SetLabel(label string) {
 	if s == nil {
@@ -654,7 +654,7 @@ func waitingLine(c Capacity, lane string, holders []Holder, ahead, expressFirst 
 	if expressFirst > 0 {
 		fmt.Fprintf(&b, "; %d express waiter(s) go first", expressFirst)
 	}
-	fmt.Fprintf(&b, ". %d slots = %s, %d reserved for express; set %s to change, `forge slot status` to list.",
+	fmt.Fprintf(&b, ". %d slots = %s, %d reserved for express; set %s to change, `forge machine slot status` to list.",
 		c.Slots, c.Source, c.Express, SlotsEnv(c.Class))
 	if lane != LaneExpress {
 		fmt.Fprintf(&b, " A command bounded to minutes (the tests or lint of named packages) can wait in the express lane: %s=%s.", EnvLane, LaneExpress)

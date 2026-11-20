@@ -174,7 +174,7 @@ func reportMissingSecrets(w io.Writer, env string, report envConfigReport) {
 	for _, m := range missing {
 		fmt.Fprintf(w, "    %-*s   (Secret %s/%s)\n", width, m.Name, m.Secret, m.Key)
 	}
-	fmt.Fprintf(w, "  fix: %s secret set --env %s <KEY>. %s env exec and env up refuse until they are set.\n", Name(), env, Name())
+	fmt.Fprintf(w, "  fix: %s env secret set --env %s <KEY>. %s env exec and env up refuse until they are set.\n", Name(), env, Name())
 }
 
 // collectEnvConfigWorkloads flattens every workload kind into one ordered

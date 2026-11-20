@@ -1,4 +1,4 @@
-// Tests for `forge api curl`. The interesting logic is the pure
+// Tests for `forge dev curl`. The interesting logic is the pure
 // buildCurlCommand function (descriptor + forge.yaml -> curl string),
 // the resolver (target -> service + method), and the JSON-skeleton
 // builder. We test each in isolation table-driven, and run one

@@ -61,7 +61,7 @@ func TestSourcemapPublisherForPicksByObservability(t *testing.T) {
 	}
 }
 
-// `forge frontend sourcemaps push --project` files under THAT project's
+// `forge ui sourcemaps push --project` files under THAT project's
 // registry subtree, which is where the symbolicator looks; without it, under
 // this checkout's own. It once reached only the manifest, so a renderer built
 // in one project for an env of another was filed where nothing looks.
@@ -236,11 +236,11 @@ func TestReleaseImageRepositoryOfSourcemaps(t *testing.T) {
 }
 
 func TestFrontendSourcemapsPushRequiresItsFlags(t *testing.T) {
-	_, err := runForge(t, "frontend", "sourcemaps", "push", "dist")
+	_, err := runForge(t, "ui", "sourcemaps", "push", "dist")
 	if err == nil || !strings.Contains(err.Error(), "required flag") {
 		t.Fatalf("push without flags = %v", err)
 	}
-	if _, err := runForge(t, "frontend", "sourcemaps", "nope"); err == nil {
+	if _, err := runForge(t, "ui", "sourcemaps", "nope"); err == nil {
 		t.Error("an unknown subcommand was accepted")
 	}
 }
@@ -261,7 +261,7 @@ func TestFrontendSourcemapsPushToTheRegistry(t *testing.T) {
 	dist := writeDist(t)
 	before, _ := os.ReadFile(filepath.Join(dist, "assets/app-1.js"))
 
-	out, err := runForge(t, "frontend", "sourcemaps", "push", dist, "--frontend", "desktop", "--build-id", "3f9c0e1a2b4d", "--env", "hosted", "--base-path", "/app")
+	out, err := runForge(t, "ui", "sourcemaps", "push", dist, "--frontend", "desktop", "--build-id", "3f9c0e1a2b4d", "--env", "hosted", "--base-path", "/app")
 	if err != nil {
 		t.Fatalf("push: %v\n%s", err, out)
 	}
@@ -282,7 +282,7 @@ func TestFrontendSourcemapsPushToTheRegistry(t *testing.T) {
 
 	// --project files under that project's subtree, not this checkout's.
 	resetPlatformLogins(t)
-	out, err = runForge(t, "frontend", "sourcemaps", "push", dist, "--frontend", "desktop", "--build-id", "3f9c0e1a2b4d", "--env", "hosted", "--project", "platform")
+	out, err = runForge(t, "ui", "sourcemaps", "push", dist, "--frontend", "desktop", "--build-id", "3f9c0e1a2b4d", "--env", "hosted", "--project", "platform")
 	if err != nil {
 		t.Fatalf("push --project: %v\n%s", err, out)
 	}
@@ -308,7 +308,7 @@ func TestFrontendSourcemapsPushDryRunAndEmpty(t *testing.T) {
 	}
 	t.Cleanup(func() { sourcemapsRegistryPush = prev })
 
-	out, err := runForge(t, "frontend", "sourcemaps", "push", writeDist(t), "--frontend", "desktop", "--build-id", "b1", "--env", "hosted", "--dry-run")
+	out, err := runForge(t, "ui", "sourcemaps", "push", writeDist(t), "--frontend", "desktop", "--build-id", "b1", "--env", "hosted", "--dry-run")
 	if err != nil || !strings.Contains(out, "--dry-run: nothing pushed") {
 		t.Fatalf("dry-run = %v\n%s", err, out)
 	}
@@ -320,7 +320,7 @@ func TestFrontendSourcemapsPushDryRunAndEmpty(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(empty, "index.js"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = runForge(t, "frontend", "sourcemaps", "push", empty, "--frontend", "desktop", "--build-id", "b1", "--env", "hosted")
+	_, err = runForge(t, "ui", "sourcemaps", "push", empty, "--frontend", "desktop", "--build-id", "b1", "--env", "hosted")
 	if err == nil || !strings.Contains(err.Error(), "no source maps found") {
 		t.Fatalf("a dist with no maps = %v", err)
 	}
@@ -329,7 +329,7 @@ func TestFrontendSourcemapsPushDryRunAndEmpty(t *testing.T) {
 		{"--frontend", "Bad_Name", "--build-id", "b1"},
 		{"--frontend", "desktop", "--build-id", "not a tag"},
 	} {
-		full := append([]string{"frontend", "sourcemaps", "push", writeDist(t), "--env", "hosted"}, args...)
+		full := append([]string{"ui", "sourcemaps", "push", writeDist(t), "--env", "hosted"}, args...)
 		if _, err := runForge(t, full...); err == nil {
 			t.Errorf("%v was accepted", args)
 		}

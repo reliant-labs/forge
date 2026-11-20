@@ -187,7 +187,7 @@ func TestRefuseUndeliverableControlPlaneSecrets(t *testing.T) {
 	if err == nil {
 		t.Fatal("a secret on an unconnected cluster was accepted")
 	}
-	for _, want := range []string{"reliant-otel-auth", "gke_p_prod", "forge cluster connect", "connected_clusters"} {
+	for _, want := range []string{"reliant-otel-auth", "gke_p_prod", "forge cloud cluster connect", "connected_clusters"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal omits %q: %v", want, err)
 		}
@@ -221,7 +221,7 @@ func TestRenderRefusesAnUnconnectedControlPlaneSecret(t *testing.T) {
 	}
 	t.Setenv("FORGE_KCL_RENDER_FIXTURE", fixture)
 	_, err := RenderKCL(t.Context(), t.TempDir(), "prod")
-	if err == nil || !strings.Contains(err.Error(), "forge cluster connect") {
+	if err == nil || !strings.Contains(err.Error(), "forge cloud cluster connect") {
 		t.Fatalf("RenderKCL accepted an undeliverable secret: %v", err)
 	}
 }

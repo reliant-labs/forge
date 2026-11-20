@@ -25,7 +25,7 @@ import (
 // one of two places:
 //
 //   - the handler package's own mock_gen.go — a deps.go marked by `forge
-//     fix narrow-deps` mocks its local roles there, and the Deps-discovered
+//     lint fix narrow-deps` mocks its local roles there, and the Deps-discovered
 //     mocks of other packages' interfaces (MockEstimateStore for a
 //     db.EstimateStore field) land there too;
 //   - the mock_gen.go of the package that DECLARES the interface (its

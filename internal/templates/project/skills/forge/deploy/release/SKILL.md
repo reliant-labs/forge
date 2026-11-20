@@ -65,9 +65,9 @@ can read an env with no daemon online.
 An env declaring
 `forge.ControlPlane` records on that control plane; every other env in this
 machine's ledger (`$FORGE_LEDGER_HOME`, default `~/.forge/ledger`).
-`forge ledger where <env>` says which, and why. A hermetic script or test that
+`forge release ledger where <env>` says which, and why. A hermetic script or test that
 renders or imports a real env sets **`FORGE_LEDGER=machine`**: every forge it
-starts stays off the declared control plane, and `forge ledger where <env>
+starts stays off the declared control plane, and `forge release ledger where <env>
 --json` reports `"override": "FORGE_LEDGER=machine"` to assert it.
 `$FORGE_LEDGER_HOME` alone only relocates the machine ledger — a declared env
 still reads and writes its control plane. Control plane down: `deploy/offline-ledger`.

@@ -2,7 +2,7 @@
 // Test utilities. mockTransport(handlers): a Connect Transport keyed on "<Service>/<Method>" (or
 // "<Service>.<Method>"); a handler is {response}, {error} or (input) => response, and an unmatched
 // RPC rejects with Code.Unimplemented. renderWithTransport(ui, {transport}) mounts a fresh
-// QueryClient over that transport. Depth: `forge skill load frontend-testing`.
+// QueryClient over that transport. Depth: `forge agent skill load frontend-testing`.
 
 import { create, type DescMessage } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";

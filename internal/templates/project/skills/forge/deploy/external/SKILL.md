@@ -67,7 +67,7 @@ with an `OnExternal` workload and nothing hosted is **self-managed**, like an
 `forge env deploy` applies them from wherever it runs, through your hooks.
 Two consequences:
 
-- **Its hosted secrets are write-only** (`forge.HostedSecrets`): `forge secret
+- **Its hosted secrets are write-only** (`forge.HostedSecrets`): `forge env secret
   set` writes them, nothing reads them back. Your tooling gets its secrets
   its own way; `pass_env` hands a hook only what this machine's provider
   resolves.

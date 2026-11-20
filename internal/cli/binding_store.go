@@ -185,8 +185,8 @@ type bundleRecorder interface {
 // The READ side survives and is used: a convergence record is an observation
 // the control plane's own observer writes, which forge reads through
 // GetLiveView (hosted_apply.go decodes it). internal/ledgerfile keeps the
-// reader for a machine ledger's existing apply lines, which `forge ledger
-// show` and `forge ledger export` render as history.
+// reader for a machine ledger's existing apply lines, which `forge release ledger
+// show` and `forge release ledger export` render as history.
 
 // sessionReporter records that a local stack is running here.
 //
@@ -344,7 +344,7 @@ func ledgerForRendered(ctx context.Context, projectDir, env string, entities *KC
 }
 
 // selectLedger is the selection alone, without the import check — the seam
-// `forge ledger import` itself needs, because the import must be able to
+// `forge release ledger import` itself needs, because the import must be able to
 // open the very ledger the refusal is about in order to fill it.
 func selectLedger(ctx context.Context, projectDir, env string) (envLedger, error) {
 	return selectLedgerRendered(ctx, projectDir, env, nil)
@@ -732,7 +732,7 @@ func (l machineReleaseLedger) Location() string { return l.store.Dir() }
 // machineRecordStore implements bundleRecorder and sessionReporter against
 // the machine ledger. It writes no apply record, because no caller ever asked
 // it to — see the note on the absent applyRecorder seam above. The underlying
-// ledgerfile.Store still reads existing apply lines for `forge ledger show`.
+// ledgerfile.Store still reads existing apply lines for `forge release ledger show`.
 //
 // A separate type from machineBindingStore rather than more methods on it:
 // the two have disjoint consumers, and a store that is handed to `forge env

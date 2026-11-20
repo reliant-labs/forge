@@ -356,15 +356,15 @@ test(
   },
 );
 
-// `npx -y @reliantlabs/forge mcp` is an MCP stdio server: stdout belongs to
+// `npx -y @reliantlabs/forge agent mcp` is an MCP stdio server: stdout belongs to
 // the protocol, so on the very first run (the download) the shim must write
 // nothing to stdout but the binary's own bytes, and pass stdin through.
 test(
-  "bin/forge.js keeps stdout to the binary's bytes, for `forge mcp` over stdio",
+  "bin/forge.js keeps stdout to the binary's bytes, for `forge agent mcp` over stdio",
   { skip: process.platform === "win32" },
   async () => {
     const { server, base } = await serve(pkg.version, {
-      shScript: '#!/bin/sh\n[ "$1" = mcp ] || exit 9\ncat\n',
+      shScript: '#!/bin/sh\n[ "$1 $2" = "agent mcp" ] || exit 9\ncat\n',
     });
     const cache = fs.mkdtempSync(path.join(os.tmpdir(), "forge-npm-cache-"));
     const request =
@@ -373,7 +373,7 @@ test(
       const res = await new Promise((resolve) => {
         const child = spawn(
           process.execPath,
-          [path.join(__dirname, "..", "bin", "forge.js"), "mcp"],
+          [path.join(__dirname, "..", "bin", "forge.js"), "agent", "mcp"],
           {
             env: {
               ...process.env,

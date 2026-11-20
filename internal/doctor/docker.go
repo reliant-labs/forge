@@ -65,7 +65,7 @@ func hasComposeFile(projectDir string) bool {
 // what `forge env up` launches — is `forge env status <env>`'s own table, which
 // reports holder pid, forge-ownership and build freshness; a compose probe
 // can see none of that, and doctor's old attempt to answer both was how
-// `forge doctor` came to FAIL on a completely healthy host-mode stack.
+// `forge project doctor` came to FAIL on a completely healthy host-mode stack.
 func CheckDocker(ctx context.Context, env *Environment) CheckResult {
 	// A project that declares no compose file has no compose stack by
 	// design (--kind cli, or a host-only dev loop). That is NOT APPLICABLE,

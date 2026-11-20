@@ -239,7 +239,7 @@ func forwarderConfig(o *ObservabilityEntity) (string, error) {
 	// on screen saying why.
 	if o.Destination.TokenSecret != nil {
 		return "", fmt.Errorf("destination %s authenticates with a token the node agent reads from a mounted Secret (token_secret / token_from_control_plane), and the local forwarder has none. "+
-			"Use headers_secret for the host side of this env (forge secret set --env <env> <key>), or declare observability only on the cluster env", o.Destination.Endpoint)
+			"Use headers_secret for the host side of this env (forge env secret set --env <env> <key>), or declare observability only on the cluster env", o.Destination.Endpoint)
 	}
 	spec := deploy.ObservabilityAgentSpec{
 		Endpoint: hostReachableEndpoint(o.Destination.Endpoint),

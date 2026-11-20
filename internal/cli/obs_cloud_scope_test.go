@@ -76,7 +76,7 @@ func TestObsCloudElevatesBeforeTheFirstReadAndIsRefusedNothing(t *testing.T) {
 
 	obsTargetProject(t, srv.URL)
 	withProjectName(t, "obstarget")
-	// A stored `forge login`, not a token handed to forge verbatim: the
+	// A stored `forge cloud login`, not a token handed to forge verbatim: the
 	// credential elevation applies to.
 	t.Setenv(cloud.DefaultTokenEnv, "")
 	t.Setenv("FORGE_HOME", t.TempDir())

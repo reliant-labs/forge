@@ -164,7 +164,7 @@ func RenderMarkdown(r *Registry) []byte {
 	p("**Scope.** \"Works in any repo\" means the benefit needs no forge.yaml:\n" +
 		"it works in an existing app in any language, and the entry says how to\n" +
 		"start and how long an agent takes to first value. Everything else needs a\n" +
-		"forge project; `forge skill load adopt` is how an existing app becomes one.\n\n")
+		"forge project; `forge agent skill load adopt` is how an existing app becomes one.\n\n")
 
 	var cats []Category
 	for _, c := range r.Categories {
@@ -258,7 +258,7 @@ func evidenceLine(e Evidence) string {
 	case KindMarker:
 		return fmt.Sprintf("marker `// %s`", v)
 	case KindSkill:
-		return "skill `" + v + "` (`forge skill load " + v + "`)"
+		return "skill `" + v + "` (`forge agent skill load " + v + "`)"
 	case KindLibrary:
 		return "library [`" + v + "`](../" + v + ")"
 	case KindPath:

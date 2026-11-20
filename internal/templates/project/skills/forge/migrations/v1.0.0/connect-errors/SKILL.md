@@ -1,6 +1,6 @@
 ---
 name: migration-v1.0.0-connect-errors
-description: Move hand-built connect.NewError calls onto pkg/svcerr — run forge fix connect-errors (wire-identical), then convert its worklist by hand with svcerr.WrapOr, and flip forgeconv-handler-connect-error to error.
+description: Move hand-built connect.NewError calls onto pkg/svcerr — run forge lint fix connect-errors (wire-identical), then convert its worklist by hand with svcerr.WrapOr, and flip forgeconv-handler-connect-error to error.
 relevance: migration
 ---
 
@@ -24,7 +24,7 @@ mechanical:
 - `forgeconv-handler-connect-error` — a warning on every `connect.NewError` in a
   handler package, phrased for its shape. `forgeconv-no-handler-error-mapping`
   no longer goes quiet because a file imports svcerr.
-- `forge fix connect-errors` — rewrites the sites where svcerr says exactly
+- `forge lint fix connect-errors` — rewrites the sites where svcerr says exactly
   what the client read before, and lists the rest.
 
 `tdd.AssertConnectError` reads `svcerr.Code` (the code the interceptor sends),
@@ -35,8 +35,8 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
 1. **Run the codemod** on a clean tree, then review `git diff`:
 
    ```bash
-   forge fix connect-errors --dry-run   # every rewrite as file:line: old → new, then the worklist
-   forge fix connect-errors
+   forge lint fix connect-errors --dry-run   # every rewrite as file:line: old → new, then the worklist
+   forge lint fix connect-errors
    ```
 
    Every `file:line` in the report is the file as it is on disk when the run
@@ -47,7 +47,7 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
    `forge lint --scope` does:
 
    ```bash
-   forge fix connect-errors --scope internal/handlers/worktree --scope internal/handlers/project
+   forge lint fix connect-errors --scope internal/handlers/worktree --scope internal/handlers/project
    ```
 
    Only files under the paths are rewritten and reported on; the reader
@@ -126,7 +126,7 @@ and generated proto mocks return `svcerr.Wrap(svcerr.Unimplemented(…))`.
 3. **Switch in-process readers** the report named to `svcerr.Code(err)` (it
    agrees with `connect.CodeOf` for a `*connect.Error` and reads a bare kind;
    an `errors.As` into a `*connect.Error` becomes `svcerr.Code` or an
-   `svcerr.Is*` predicate), then re-run `forge fix connect-errors`: it drops the
+   `svcerr.Is*` predicate), then re-run `forge lint fix connect-errors`: it drops the
    `svcerr.ToConnect(…)` wrappers it left in that package once no reader is
    left — and if one is, the re-run names it.
 

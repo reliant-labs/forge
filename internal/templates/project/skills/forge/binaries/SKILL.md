@@ -136,7 +136,7 @@ string environment = 2 [(forge.v1.config) = {env_var: "RELIANT_ENV", env_var_ali
 
 ### Per-binary config (no project-global AppConfig)
 
-A project can move config OWNERSHIP off a single shared `AppConfig` onto each binary's own message — annotate a config message with `option (forge.v1.binary_config) = {binary: "<cmd/name>"};` (see `forge skill load db` / the config proto's own header for the full mechanics). Doing this for EVERY config message — deleting `AppConfig` entirely — is a legitimate end state, not a half-migration: forge still emits a complete Go/KCL/env surface per binary.
+A project can move config OWNERSHIP off a single shared `AppConfig` onto each binary's own message — annotate a config message with `option (forge.v1.binary_config) = {binary: "<cmd/name>"};` (see `forge agent skill load db` / the config proto's own header for the full mechanics). Doing this for EVERY config message — deleting `AppConfig` entirely — is a legitimate end state, not a half-migration: forge still emits a complete Go/KCL/env surface per binary.
 
 This does not change how a `forge scaffold binary` composition root or a `forge scaffold service`/`worker` Deps struct is written. `config.Config` keeps meaning exactly what it always meant — "this component's config type" — regardless of whether the project has a root `AppConfig` or has moved entirely to per-binary configs:
 
@@ -285,7 +285,7 @@ Run `forge generate` after editing `binaries:` to keep the scaffold and config i
 
 ## See also
 
-- `forge skill load services` — Connect-RPC service shape, `MountX`, when to pick this instead.
-- `forge skill load workers` — in-process workers supervised by serverkit.
-- `forge skill load deploy` — KCL deploy story, including how binaries become Deployments.
-- `forge skill load architecture` — the server's explicit composition (`internal/app/providers.go` `Infra`/`OpenInfra` + `internal/app/compose.go` `NewComponents`), serverkit lifecycle, the interface seam — the wiring the server participates in; a standalone binary owns its own narrow `Deps`/`Service`/`New` analogue.
+- `forge agent skill load services` — Connect-RPC service shape, `MountX`, when to pick this instead.
+- `forge agent skill load workers` — in-process workers supervised by serverkit.
+- `forge agent skill load deploy` — KCL deploy story, including how binaries become Deployments.
+- `forge agent skill load architecture` — the server's explicit composition (`internal/app/providers.go` `Infra`/`OpenInfra` + `internal/app/compose.go` `NewComponents`), serverkit lifecycle, the interface seam — the wiring the server participates in; a standalone binary owns its own narrow `Deps`/`Service`/`New` analogue.

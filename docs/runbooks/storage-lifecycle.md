@@ -1,6 +1,6 @@
 # Local storage lifecycle
 
-`forge storage` bounds rebuildable development state. Persistent volumes and
+`forge machine storage` bounds rebuildable development state. Persistent volumes and
 workspaces have separate lifecycles: registry layers, containerd images, BuildKit
 cache and application data can all live in Docker volumes, so volume age is not
 an indication that a volume is safe to remove. Named volumes are never removed;
@@ -22,10 +22,10 @@ anonymous ones only under the rules in
 | Temp scratch (`$TMPDIR`)                                         | Remove allowlisted toolchain/test scratch, and orphaned Go `t.TempDir()` roots (`Test…<digits>/` holding only `001`, `002`… dirs), idle 24h and open by no process; never anything with git metadata                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Host images tagged for a dead local registry                     | Untag `localhost:<port>`, `registry.localhost:<port>` and `k3d-*:<port>` images when no running registry backs that alias and no container (running or stopped) uses the image                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Shared Go build cache (`go env GOCACHE`) and golangci-lint cache | Remove entries unused for 48h (`go_cache_unused`; the age rule never touches the last 2h). Over its budget — `go_cache_gib` for the build cache, `golangci_cache_gib` (default 4) for the lint cache, each capped at 15% of the volume (`go_cache_volume_percent`) — it also evicts least recently used first down to 80% of the budget. Entries are sized by the blocks they occupy, not their length, never anything used in the last 2h either; a budget the last 2h alone exceeds is reported as `over_budget`, never trimmed into. Executable (`go run`/`go tool`) entries count and are removed whole; top-level files are never touched |
-| Worktrees                                                        | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge storage gc --apply` under `worktree_reap` (see Worktrees)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Worktrees                                                        | Idle ≥ 24h, unlocked, unused, clean, ignored files all rebuildable, HEAD pushed; removed only by an explicit `forge machine storage gc --apply` under `worktree_reap` (see Worktrees)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Every unlink a pass makes                                        | At most 50,000 per pass (`max_deletes_per_pass`), paced to 1,000/s (`delete_rate_per_sec`); the pass backs off at the first EMFILE/ENFILE/ENOTCONN/EIO (see Bounded deletion)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Dangling images (untagged)                                       | Remove an image untagged, used by no container (running or stopped) and built over 1h ago; full and automatic passes; at most 100 Docker removals per pass (`max_docker_removals_per_pass`)                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Anonymous Docker volumes                                         | Remove a labelled, 64-hex-named, plain `local` volume no container uses, seen unused for 14 days (`anonymous_volume_unused`, `off` disables); only by an explicit `forge storage gc --apply`                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Anonymous Docker volumes                                         | Remove a labelled, 64-hex-named, plain `local` volume no container uses, seen unused for 14 days (`anonymous_volume_unused`, `off` disables); only by an explicit `forge machine storage gc --apply`                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Named Docker volumes, database/PVC/workspace volumes             | Never removed by storage GC                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 The cache and log budgets are targets: recent/in-use cache and the diagnostic
@@ -59,19 +59,19 @@ shared cache; a private cache per task is a cold 5-14 GB copy nobody reuses, and
 `go clean -cache` under running builds produces `link: cannot open file
 …/go-build/…-d`. Age-based trim is the safe mechanism: Go bumps an entry's mtime
 on use once it is an hour stale, so an entry older than 2h is not in use by a
-live build. The installed schedule (`forge storage install`) runs the bounded
-non-disruptive pass (`forge storage auto-gc`) HOURLY, because agent load adds
+live build. The installed schedule (`forge machine storage install`) runs the bounded
+non-disruptive pass (`forge machine storage auto-gc`) HOURLY, because agent load adds
 ~40 GB/h of cache entries and a daily trim cannot hold a 60 GiB budget; the
 full pass, with registry downtime, stays daily at 03:30. Both take the
 maintenance lock, so they never overlap. `forge env up` additionally starts
-auto-gc at most once per 24h. `forge storage gc`/`auto-gc` apply it; `forge storage status` reports the shared cache
+auto-gc at most once per 24h. `forge machine storage gc`/`auto-gc` apply it; `forge machine storage status` reports the shared cache
 size. The module cache (`GOMODCACHE`) is Go's: it is shared by every worktree,
 and forge never trims it. The detached auto-gc pass has a 15
 minute budget so a first trim of a very large cache can make progress; a pass
 cut off by the deadline stops cleanly and resumes next time. Dry-run
-(`forge storage gc`) prints each candidate and its bytes.
+(`forge machine storage gc`) prints each candidate and its bytes.
 
-`forge storage gocache --apply` is the Go-cache layer alone, with the whole of
+`forge machine storage gocache --apply` is the Go-cache layer alone, with the whole of
 its budget (`--budget`, default 10m) instead of the slice of a larger pass.
 Schedule it every few minutes on a machine that builds a lot: under agent load
 entries cross the 2h floor at ~25 GiB/h, so between two hourly passes that much
@@ -123,7 +123,7 @@ A cache that still takes in more than its budget inside the floor cannot be
 trimmed to it. The pass then removes everything older, prints
 `WARNING … no trim can reach it` with the size used inside that window and the
 fill rate, and records the cache under `over_budget` in `last-auto-gc.json` /
-`last-full-gc.json` (not a failure). `forge storage status` prints the same
+`last-full-gc.json` (not a failure). `forge machine storage status` prints the same
 split. The remedy there is a larger `go_cache_gib` or a slower fill.
 On 2026-10-21 a 20 GiB budget held a 152 GiB cache filling at ~70 GiB/h: 87% of
 its bytes were compiles keyed on a worktree's absolute path, because the repos
@@ -136,7 +136,7 @@ keeps it that way.
 
 ## Bounded deletion
 
-On 2026-10-09 one `forge storage gc --apply` unlinked 175,324 Go build cache
+On 2026-10-09 one `forge machine storage gc --apply` unlinked 175,324 Go build cache
 entries (53.6 GiB) in about 30 seconds on a kata-containers workspace whose home
 volume is served over virtiofs, while builds were running. The host's virtiofsd
 ran out of file descriptors, the guest saw EMFILE, and the volume was detached
@@ -181,9 +181,9 @@ not connected` backs the pass off like the errno itself, and the builder and
 registry layers do not start.
 
 Direct Go, frontend, shell and Docker build lanes recheck capacity before starting.
-`forge env up` checks before startup and host launches. `forge storage check
+`forge env up` checks before startup and host launches. `forge machine storage check
 [path...]` exposes the same check for custom build/watch commands. New scaffolded
-Air configs prefix every rebuild with `forge storage check ./tmp &&`; add this
+Air configs prefix every rebuild with `forge machine storage check ./tmp &&`; add this
 prefix to existing/custom Air configs to guard their internal rebuild loop.
 These are admission checks, not disk reservations: concurrent builds and one
 large in-progress build can still consume the reserve.
@@ -213,7 +213,7 @@ project contributed, and a registry becomes a cleanup target only once its
 container, aliases, contexts and at least one repository are all known.
 Projects under the system temp directory are never registered.
 
-Each `forge storage gc` starts by pruning entries that no longer exist. A
+Each `forge machine storage gc` starts by pruning entries that no longer exist. A
 project is dropped when its directory is gone. A cluster is dropped only when
 both of these hold: its context is missing from kubeconfig, and docker shows no
 container (running or stopped) labelled with it. A context that exists but is
@@ -227,7 +227,7 @@ not write it.
 At the end of a successful `forge env up`, if the opportunistic pass has not
 been attempted in 24 hours, forge starts the non-disruptive layers in the
 background and returns immediately: rotated logs, the Go caches, builder cache,
-the temp sweep and the source cache. The pass runs as a detached `forge storage
+the temp sweep and the source cache. The pass runs as a detached `forge machine storage
 auto-gc` process. Its log is `logs/auto-gc.log`, next to the policy. The whole
 pass, including each layer's `lsof` snapshot and its walk over entries, is
 bounded at 15 minutes. A layer cut off by that limit removes nothing further,
@@ -237,17 +237,17 @@ failures included, in `last-auto-gc.json` next to the policy. That record is onl
 a rate limit: a machine where the pass cannot succeed is not retried on every
 `up`.
 
-Every applied full pass (`forge storage gc --apply`, and the scheduled job)
+Every applied full pass (`forge machine storage gc --apply`, and the scheduled job)
 records its outcome in `last-full-gc.json`: when it ran, whether it succeeded,
 and which layers failed. Only the full pass runs registry retention, so this
 record is how forge knows whether that retention is working. If registries are
 registered and the last full pass failed, is more than 48 hours old, or never
-completed, `forge doctor` warns. `forge env up` prints one line saying so only
+completed, `forge project doctor` warns. `forge env up` prints one line saying so only
 for the registries its own env's clusters `use`: the record is machine-wide,
 and a project that never touches a registry is not told about it. That line
 quotes the recorded error, says the env is unaffected (retention only reclaims
-old image versions), and names `forge storage gc --dry-run` to re-check and
-`forge storage gc --apply` to retry.
+old image versions), and names `forge machine storage gc --dry-run` to re-check and
+`forge machine storage gc --apply` to retry.
 
 A registry whose protecting cluster is stopped (or was deleted from Docker with
 its kubeconfig context left behind) cannot have its protected set listed, so
@@ -256,17 +256,17 @@ failed: on a laptop a stopped cluster is ordinary. A cluster that is running and
 does not answer is still a failure.
 
 Registry GC, which briefly stops the registry, runs only from the scheduled job
-or an explicit `forge storage gc --apply`. Install the schedule once per machine:
+or an explicit `forge machine storage gc --apply`. Install the schedule once per machine:
 
 ```sh
-forge storage gc --dry-run   # review the plan
-forge storage install        # daily at 03:30
+forge machine storage gc --dry-run   # review the plan
+forge machine storage install        # daily at 03:30
 ```
 
-`forge doctor` says so when registries are registered but no schedule is
+`forge project doctor` says so when registries are registered but no schedule is
 installed, and `forge env up` does when its env uses one of them.
 
-`forge storage register` remains the manual escape hatch: importing an old
+`forge machine storage register` remains the manual escape hatch: importing an old
 project's ledger (`--ledger`), adopting a builder forge never used
 (`--builder relbuild`), or pinning an image (`--pin`, a full reference or a
 canonical digest). Release cuts pin their digests before the ledger entry is
@@ -277,7 +277,7 @@ The default policy is `forge/storage.json` inside the OS user configuration
 directory (`~/Library/Application Support` on macOS, `$XDG_CONFIG_HOME` or
 `~/.config` on Linux). `FORGE_STORAGE_POLICY` overrides it for all build hooks;
 `--policy` overrides a particular storage command. JSON is strict: unknown fields
-are errors. Use `forge storage register --builder relbuild` to adopt another
+are errors. Use `forge machine storage register --builder relbuild` to adopt another
 local builder. An unavailable builder fails its own cleanup; independent healthy
 builders and registries still receive maintenance.
 Remote Docker contexts/builders are refused. Registration pins the Docker context
@@ -303,7 +303,7 @@ explicitly registered repositories are eligible. Stable aliases (`dev`, `e2e`,
 ### Registries created before `--delete-enabled`
 
 A registry created before forge passed `--delete-enabled` to k3d refuses
-manifest DELETE, so retention could never reclaim anything from it. `forge
+manifest DELETE, so retention could never reclaim anything from it. `forge machine
 storage gc` detects this (no `storage.delete.enabled` in its `config.yml`, no
 `REGISTRY_STORAGE_DELETE_ENABLED`) and, inside the maintenance window it
 already takes for offline GC, rewrites `config.yml` in the stopped container
@@ -320,7 +320,7 @@ the next pass retries. The volume, labels and networks are never touched.
 
 Images tagged for a local registry that no longer exists (for example
 `localhost:5061/workspace-base`) are untagged by both the full and the
-non-disruptive passes; `forge storage gc --dry-run` lists them. A `localhost`
+non-disruptive passes; `forge machine storage gc --dry-run` lists them. A `localhost`
 or `registry.localhost` alias is live while a running container publishes that
 host port or a registered running registry owns the alias; a `k3d-<name>` alias
 is live while that container runs. An image any container still uses is kept.
@@ -341,7 +341,7 @@ implementation.
 Every rebuild of a tag leaves the image it replaced behind, untagged, and every
 container removed without `-v` (including `docker compose down`) leaves its
 anonymous volumes behind. On a cloud workspace on 2026-10-09 that was 8.9 GB of
-10.35 GB of images, and 4.2 GB of 4.5 GB in 44 volumes. `forge storage gc`
+10.35 GB of images, and 4.2 GB of 4.5 GB in 44 volumes. `forge machine storage gc`
 prints each target; `--apply` removes them. Removal is never forced, so the
 daemon's own in-use check is the last guard after forge's.
 
@@ -355,9 +355,9 @@ it. An untagged image cannot be selected by name, so nothing but a container or
 a child image can be relying on it, and being wrong costs a rebuild of an image
 whose tag already points at something newer. Oldest go first.
 
-**Anonymous volumes are removed only by an explicit `forge storage gc
+**Anonymous volumes are removed only by an explicit `forge machine storage gc
 --apply`.** The automatic passes — `forge env up`'s background pass, the hourly
-and daily schedule, `forge storage daemon` — only observe. A target must be:
+and daily schedule, `forge machine storage daemon` — only observe. A target must be:
 
 - **Anonymous by both signals:** the `com.docker.volume.anonymous` label the
   daemon sets on every volume it creates without a name (Docker 23+; the
@@ -384,7 +384,7 @@ recoverable only by mounting it by hash. Nothing a pass can observe tells that
 from scratch. A pass nobody invoked does not make decisions about data, which is
 the rule that keeps worktrees out of the automatic passes too. The window is the
 recovery period; the explicit run is the consent. To recover one, list
-candidates with `forge storage gc` and mount the volume by name:
+candidates with `forge machine storage gc` and mount the volume by name:
 `docker run --rm -v <hash>:/data alpine ls /data`.
 
 ## Existing clusters
@@ -393,9 +393,9 @@ New k3d clusters receive a persistent kubelet configuration mount. K3s 1.32+ is
 required for kubelet drop-ins. Existing nodes need a deliberate restart:
 
 ```sh
-forge storage status
-forge storage configure-nodes
-forge storage configure-nodes --apply
+forge machine storage status
+forge machine storage configure-nodes
+forge machine storage configure-nodes --apply
 ```
 
 Nodes restart sequentially and must report the configured age before proceeding.
@@ -475,7 +475,7 @@ HEAD …)`, then goes through a quarantine move: the worktree is `git worktree m
 a `.forge-reclaim-<name>-<ts>` sibling (a path-based writer then gets ENOENT),
 fully re-classified there with a fresh in-use check, and only then removed. If
 anything changed it is moved back and kept. If the move back fails it stays in
-quarantine, is never deleted, and `forge storage status` lists it as
+quarantine, is never deleted, and `forge machine storage status` lists it as
 `quarantined`; move it back with `git worktree move`.
 
 Removal is `git worktree remove` without `--force`; if git refuses the tree is
@@ -484,23 +484,23 @@ kept and reported. Branches are never deleted, and `git worktree prune
 index has been untouched for a day (a worktree on a briefly unmounted volume is
 not pruned while in use).
 
-**Only an explicit `forge storage gc --apply` removes worktrees**, and only when
+**Only an explicit `forge machine storage gc --apply` removes worktrees**, and only when
 the policy sets `"worktree_reap": true`. Every pass nobody invoked — the
 background auto-gc `forge env up` starts, the hourly and daily installed jobs
-(the daily one runs `gc --apply --scheduled`), and `forge storage daemon` —
+(the daily one runs `gc --apply --scheduled`), and `forge machine storage daemon` —
 never removes one: an agent between two commands holds no process in its
 worktree and may not write to it for hours, so to an automatic pass it looks
 exactly like an abandoned one. The auto-gc pass has no worktree layer at all;
 the scheduled full pass previews. Without `lsof` (common in containers) the
-in-use check is unavailable and nothing is removed. `forge storage status`
+in-use check is unavailable and nothing is removed. `forge machine storage status`
 lists held worktrees by reason (locked, recently active, in use, dirty,
 unrecognized ignored data, unpushed, not a linked worktree, managed by
 reliant) so a person can act on what the reaper will not touch. The explicit
 per-repository command runs the same classifier and needs no policy:
 
 ```sh
-forge storage worktrees --repo /path/to/repo            # preview
-forge storage worktrees --repo /path/to/repo --apply
+forge machine storage worktrees --repo /path/to/repo            # preview
+forge machine storage worktrees --repo /path/to/repo --apply
 ```
 
 ## Recovery and rollout
@@ -509,7 +509,7 @@ Before forge stops a registry for GC, it records a marker beside the policy
 (`registry-maintenance/<container>.stopped`). After the pass, forge restarts the
 registry and checks that it is running and answering, retrying for up to two
 minutes. If it still is not serving, the pass fails and names the registry. A
-pass that was killed partway leaves the marker, and the next `forge storage gc`
+pass that was killed partway leaves the marker, and the next `forge machine storage gc`
 (a preview is enough) restarts the registry. A registry that someone stopped by
 hand has no marker, so forge leaves it alone.
 

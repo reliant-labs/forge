@@ -22,7 +22,7 @@ import (
 // into a file nobody could review or reproduce.
 //
 // The replacement is `forge.FileSecrets`: a single gitignored YAML file,
-// populated with `forge secret set`, injected ONLY into the services that
+// populated with `forge env secret set`, injected ONLY into the services that
 // declare each key. This check keeps the old pattern from
 // creeping back — including via a stray file a developer copies from an
 // older project.
@@ -51,7 +51,7 @@ type dotenvFinding struct {
 // explicitly allowed.
 //
 // `.env.example` is NOT allowed either: its whole purpose was to document
-// the keys of a file that should no longer exist, and `forge secret ensure`
+// the keys of a file that should no longer exist, and `forge env secret ensure`
 // now reports exactly which secrets an env needs — from the KCL
 // declarations, so it cannot drift.
 func findDotenvFiles(root string) ([]dotenvFinding, error) {
@@ -204,11 +204,11 @@ func gitIgnoredPaths(root string, paths []string) (map[string]bool, bool) {
 func classifyDotenv(name string) string {
 	switch {
 	case strings.HasSuffix(name, ".example"):
-		return "documents keys that should be declared in KCL; `forge secret ensure --env <env>` lists them from the declarations instead"
+		return "documents keys that should be declared in KCL; `forge env secret ensure --env <env>` lists them from the declarations instead"
 	case strings.Contains(name, "secret"):
-		return "secret values belong in the secret store: `forge secret migrate --env <env>`"
+		return "secret values belong in the secret store: `forge env secret migrate --env <env>`"
 	default:
-		return "config belongs in deploy/kcl/<env>/config.k; secrets in the secret store (`forge secret migrate --env <env>`)"
+		return "config belongs in deploy/kcl/<env>/config.k; secrets in the secret store (`forge env secret migrate --env <env>`)"
 	}
 }
 
@@ -233,7 +233,7 @@ func collectNoDotenvJSON(root string) ([]lintJSONFinding, error) {
 			Message:  fmt.Sprintf(".env files are not used by forge projects: %s", f.Why),
 			FixHint: "a dotenv is injected into every host service wholesale, so its values never have to be " +
 				"declared in KCL — which is how config stops being reproducible. Declare secrets with " +
-				"`EnvVar.secret_ref` and store the values with `forge secret set --env <env> <KEY>`",
+				"`EnvVar.secret_ref` and store the values with `forge env secret set --env <env> <KEY>`",
 		})
 	}
 	return out, nil

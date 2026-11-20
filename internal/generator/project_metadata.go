@@ -29,7 +29,7 @@ import (
 //   - User-owned (written only if absent, never touched if present):
 //     the agent files (see writeAgentSurfaces), .mcp.json, .mcp.json.example.
 //
-// Skills and conventions are served via `forge skill list/load` from embedded
+// Skills and conventions are served via `forge agent skill list/load` from embedded
 // templates — no files are written to disk for them.
 func (g *ProjectGenerator) writeProjectMetadata() error {
 	reliantDir := filepath.Join(g.Path, ".reliant")
@@ -94,7 +94,7 @@ func newMCPJSONData(h Harness, cli string) mcpJSONData {
 		return mcpJSONData{}
 	}
 	cmd, _ := json.Marshal(fields[0])
-	args, _ := json.Marshal(append(fields[1:], "mcp"))
+	args, _ := json.Marshal(append(fields[1:], "agent", "mcp"))
 	return mcpJSONData{ForgeCommandJSON: string(cmd), ForgeArgsJSON: string(args)}
 }
 

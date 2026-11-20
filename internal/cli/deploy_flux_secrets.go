@@ -148,7 +148,7 @@ func refuseUnsyncableHostedSecrets(env string, refs []release.BundleSecretRef) e
 			"  A bundle never carries a Secret, and forge holds no kubectl context for the clusters the control plane's\n"+
 			"  reconciler applies to. Either:\n"+
 			"    - back them with a store: give the forge.ExternalSecret a `source = forge.StoreSource {...}` (the\n"+
-			"      External Secrets Operator delivers it; set the value with `forge secret set`), which rides the\n"+
+			"      External Secrets Operator delivers it; set the value with `forge env secret set`), which rides the\n"+
 			"      bundle as a non-secret object; or\n"+
 			"    - run `forge env secrets sync %s` against each cluster yourself before deploying",
 		env, strings.Join(names, ", "), env)

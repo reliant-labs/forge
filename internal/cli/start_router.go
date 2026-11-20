@@ -1,7 +1,7 @@
-// Package cli — `forge start`: where to start, in about 60 lines.
+// Package cli — `forge project start`: where to start, in about 60 lines.
 //
 // WHY THIS EXISTS. The paste-able prompt on reliantlabs.com tells any coding
-// agent "install forge, run `forge start`, follow it". The agent arrives in
+// agent "install forge, run `forge project start`, follow it". The agent arrives in
 // one of two directories — an app that is already written, or an empty one —
 // and needs exactly one command for each. Loading the entry skill (`forge`,
 // ~12 KB) or `deploy/static-site` (~16 KB) to find that command costs the
@@ -15,7 +15,7 @@
 // names, and holds it to the line and byte budget.
 package cli
 
-// startRouter is what `forge start` prints. Keep it under
+// startRouter is what `forge project start` prints. Keep it under
 // startRouterMaxLines / startRouterMaxBytes (start_router_test.go).
 const startRouter = `# Reliant Forge: start here
 
@@ -30,8 +30,8 @@ it prints. Load a skill only when a row names one.
 | A Vite app or a Next.js static export | ` + "`forge env deploy prod --claimable`" + ` |
 | An app with its own Dockerfile, any language | ` + "`forge env deploy prod --claimable`" + ` |
 | A forge project (forge.yaml) | ` + "`forge env deploy prod --claimable`" + `, or without the flag when signed in |
-| Next.js with server actions, middleware or API routes | ` + "`forge skill load frontend/serving`" + ` |
-| A Go module with no Dockerfile | ` + "`forge skill load migration`" + ` |
+| Next.js with server actions, middleware or API routes | ` + "`forge agent skill load frontend/serving`" + ` |
+| A Go module with no Dockerfile | ` + "`forge agent skill load migration`" + ` |
 
 The first claimable deploy adopts the app where it stands: it adds forge.yaml
 and deploy/kcl/, leaves the app's own files alone, then installs, builds and
@@ -48,7 +48,7 @@ of it first. A deploy takes a few minutes; let it finish. An unclaimed service
 |---|---|
 | A landing page, docs site or SPA (Next.js) | ` + "`forge project new --in-place --kind site`" + ` |
 | The same as a Vite SPA | ` + "`forge project new --in-place --kind site --frontend-kind vite-spa`" + ` |
-| An app with an API (Go services, a database) | ` + "`forge start app`" + ` |
+| An app with an API (Go services, a database) | ` + "`forge project start app`" + ` |
 
 A site starts as a placeholder page: build what the user asked for (load
 ` + "`frontend/design`" + ` first), then ` + "`forge env deploy prod --claimable`" + `. An app
@@ -66,14 +66,14 @@ never post it anywhere public. ` + "`forge env status prod --claimable`" + ` pri
 | It says | Do |
 |---|---|
 | you are signed in (exit 1) | deploy to your organization: drop ` + "`--claimable`" + ` |
-| ` + "`claimable_throttled`" + ` (exit 4) | wait for the printed retry time, or ` + "`forge login`" + `; never retry in a loop |
+| ` + "`claimable_throttled`" + ` (exit 4) | wait for the printed retry time, or ` + "`forge cloud login`" + `; never retry in a loop |
 | anything else (exit 4) | the message names the fix |
 
 ## Depth, by name only
 
-` + "`forge skill load deploy/static-site`" + ` envs, releases, custom domains
-` + "`forge skill load deploy/hosting`" + ` the claimable rules in full
-` + "`forge skill search <topic>`" + ` anything else
+` + "`forge agent skill load deploy/static-site`" + ` envs, releases, custom domains
+` + "`forge agent skill load deploy/hosting`" + ` the claimable rules in full
+` + "`forge agent skill search <topic>`" + ` anything else
 `
 
 // startRouterIncluded is the router's one statement of what forge gives a
@@ -84,5 +84,5 @@ never post it anywhere public. ` + "`forge env status prod --claimable`" + ` pri
 // Facts, not persuasion: the comparison it names states the limits and the
 // prices too.
 const startRouterIncluded = `A forge project gets, with no setup: traces with per-endpoint p50/p95/p99 latency and error rate (` + "`forge obs endpoints`" + `), errors grouped into issues, browser sessions, alerts, a pass/fail verdict on each deploy (` + "`forge obs check`" + `), build-once promotion, and one hosted static site free.
-Where it fits next to Vercel, Supabase or Render, its limits and its prices: ` + "`forge skill load compare`" + `.
+Where it fits next to Vercel, Supabase or Render, its limits and its prices: ` + "`forge agent skill load compare`" + `.
 `

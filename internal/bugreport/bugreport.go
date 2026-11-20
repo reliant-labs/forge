@@ -1,5 +1,5 @@
 // Package bugreport files a defect in forge itself with the Reliant
-// engineering team: `forge report-bug`.
+// engineering team: `forge agent report-bug`.
 //
 // Inside Reliant an agent files with reliant's own report_bug tool, whose
 // record the worker's log pipeline ships to our telemetry. A forge running in
@@ -64,7 +64,7 @@ const (
 // Severities are the accepted severities, most severe first.
 func Severities() []string { return []string{"critical", "high", "medium", "low"} }
 
-// Report is what the reporter writes. Its JSON form is what `forge report-bug
+// Report is what the reporter writes. Its JSON form is what `forge agent report-bug
 // --json` reads.
 type Report struct {
 	// Severity is critical (data loss, or nothing can proceed), high (it
@@ -226,7 +226,7 @@ func baseName(p string) string {
 type Filer struct {
 	// Endpoint is the control plane's base URL.
 	Endpoint string
-	// Token is a forge login to present, "" for none. It only adds the
+	// Token is a forge cloud login to present, "" for none. It only adds the
 	// caller's ids to the record; the ingest ignores one it cannot validate.
 	Token string
 	// State is where the install id and recent reports are kept.

@@ -240,7 +240,7 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 }
 
 // rollupStatus collapses per-category statuses into one overall verdict.
-// "error" beats "warn" beats "ok", same precedence forge doctor uses.
+// "error" beats "warn" beats "ok", same precedence forge project doctor uses.
 func rollupStatus(cats map[string]audittype.Category) audittype.Status {
 	worst := audittype.StatusOK
 	for _, c := range cats {
@@ -1058,7 +1058,7 @@ func auditScaffoldMarkers(projectDir string) audittype.Category {
 //
 // Marker recognized: `// forge:custom-read-shape: <reason>`.
 //
-// Without this audit, the stub is silent: nothing in `forge doctor`
+// Without this audit, the stub is silent: nothing in `forge project doctor`
 // or CI tells the operator that an RPC is shipping as Unimplemented
 // (forge generate prints one warning line per stub at scaffold time).
 // This category surfaces the count + per-method list as a structured

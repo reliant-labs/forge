@@ -2,7 +2,7 @@
 # Smoke test for the Gateway API ingress story. Real k3d + Traefik + curl.
 #
 # Drives a freshly-scaffolded `forge new --kind service` project through
-#   forge cluster up      (Gateway API CRDs + Traefik + GatewayClass)
+#   forge dev cluster up      (Gateway API CRDs + Traefik + GatewayClass)
 #   kubectl apply         (Gateway + HTTPRoute from rendered KCL,
 #                          plus a stand-in traefik/whoami backend instead
 #                          of the forge-built service image)
@@ -35,7 +35,7 @@
 #     published git tag that may not exist during local development.
 #     We rewrite to a `path = ` dep pointing at the repo's kcl/ dir.
 #   - The scaffolded `deploy/k3d.yaml` maps host:18080->container:80
-#     for the bundled Traefik that `forge cluster up` then
+#     for the bundled Traefik that `forge dev cluster up` then
 #     disables; the generated `deploy/k3d-ports.yaml` would append a
 #     conflicting host:18080 mapping. We strip the conflicting entry.
 
@@ -219,7 +219,7 @@ grep -A 6 "HTTP_ROUTES" "${INGRESS_K}" | sed 's/^/    /'
 
 # The scaffolded deploy/k3d.yaml creates a k3d registry on host port
 # 5050. If the user already has a forge project's registry running
-# on 5050 (very common — every previous `forge cluster up` left
+# on 5050 (very common — every previous `forge dev cluster up` left
 # one), `k3d cluster create` will fail with "port already allocated".
 # Pick a fresh port for the smoke test.
 step "Pick a free host port for the smoke-test registry"
@@ -245,7 +245,7 @@ PYEOF
 # ---- 5. fix the k3d.yaml port collision -------------------------------
 
 # The scaffolded deploy/k3d.yaml maps host:18080->container:80 for the
-# bundled Traefik that `forge cluster up` then disables. The
+# bundled Traefik that `forge dev cluster up` then disables. The
 # generated deploy/k3d-ports.yaml fragment will append a second
 # host:18080->container:18080 entry from the Gateway listener — k3d
 # rejects two entries on the same host port.
@@ -324,14 +324,14 @@ fi
 info "k3d-ports.yaml:"
 sed 's/^/    /' "${PROJECT_DIR}/deploy/k3d-ports.yaml"
 
-# ---- 7. forge cluster up ----------------------------------------------
+# ---- 7. forge dev cluster up ----------------------------------------------
 
-step "forge cluster up (5 min timeout)"
+step "forge dev cluster up (5 min timeout)"
 (
     cd "${PROJECT_DIR}"
     # 5-minute timeout — first run pulls images + downloads CRDs.
-    timeout 300 "${FORGE_BIN}" cluster up --wait 2>&1
-) || fail "forge cluster up failed"
+    timeout 300 "${FORGE_BIN}" dev cluster up --wait 2>&1
+) || fail "forge dev cluster up failed"
 
 # Sanity: the cluster is reachable.
 kubectl --context "k3d-${CLUSTER_NAME}" get nodes >/dev/null 2>&1 || \

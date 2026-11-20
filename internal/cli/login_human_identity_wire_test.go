@@ -21,7 +21,7 @@ import (
 
 // identityCP is a control plane on the wire, modelled on control-plane's
 // cliauth (its authorize-request parsing, the token reply) and its hosted-project
-// resolution (hostedProjects.ResolveProject): what `forge login` and the first
+// resolution (hostedProjects.ResolveProject): what `forge cloud login` and the first
 // deploy actually talk to since control-plane #1431.
 type identityCP struct {
 	t   *testing.T
@@ -204,7 +204,7 @@ func humanLoginProject(t *testing.T, name string) string {
 	return root
 }
 
-// loginAgainst runs `forge login`'s browser path (loginOne) against cp.
+// loginAgainst runs `forge cloud login`'s browser path (loginOne) against cp.
 func loginAgainst(t *testing.T, cp *identityCP, path string) (string, error) {
 	t.Helper()
 	withFakeBrowser(t)
@@ -217,7 +217,7 @@ func loginAgainst(t *testing.T, cp *identityCP, path string) (string, error) {
 	return out.String(), err
 }
 
-// The whole human identity path: `forge login` asks for credential_kind=human,
+// The whole human identity path: `forge cloud login` asks for credential_kind=human,
 // stores the rlci_ identity in the human namespace, and a deploy then targets
 // a server-owned project. Every case is a multi-org or first-deploy shape the
 // server resolves differently.

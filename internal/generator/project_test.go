@@ -727,7 +727,7 @@ func TestProjectGeneratorDoesNotWriteSkillsToDisk(t *testing.T) {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	// Skills are served via `forge skill load`, not written to disk.
+	// Skills are served via `forge agent skill load`, not written to disk.
 	skillsDir := filepath.Join(root, ".reliant", "skills")
 	if _, err := os.Stat(skillsDir); err == nil {
 		t.Fatalf("expected .reliant/skills/ to NOT exist (skills now served via CLI), but it does")

@@ -1,4 +1,4 @@
-// Package cli — `forge doctor` host-tool checks.
+// Package cli — `forge project doctor` host-tool checks.
 //
 // Forge shells out to a handful of third-party binaries (kcl, kubectl,
 // docker, go, buf, k3d, git, npm, mkcert, ...). When one of those is
@@ -153,7 +153,7 @@ func requiredForMkcert(cfg *config.ProjectConfig, projectDir string) bool {
 }
 
 // defaultToolChecks is the canonical tool list. Adding a new tool
-// here is the entire change needed to teach `forge doctor` about it.
+// here is the entire change needed to teach `forge project doctor` about it.
 //
 // Why not gate kcl/kubectl on deploy/ingress? kcl is also used by
 // audit + map for any project that has a deploy/ dir, even if
@@ -323,7 +323,7 @@ func allToolChecks() []toolCheck {
 		},
 		{
 			Name:        "k3d",
-			Description: "k3d — local k3s-in-docker dev cluster (forge cluster up)",
+			Description: "k3d — local k3s-in-docker dev cluster (forge dev cluster up)",
 			Required:    requiredWhen(func(f config.FeaturesConfig) bool { return f.DeployEnabled() }),
 			VersionArgs: []string{"version"},
 			InstallHints: map[string]string{

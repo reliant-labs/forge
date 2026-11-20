@@ -10,7 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
-// The grouped default view for `forge skill list`.
+// The grouped default view for `forge agent skill list`.
 //
 // The flat table this replaces printed one row per skill, each carrying its
 // full frontmatter description — 84 lines and several hundred columns wide for
@@ -156,10 +156,10 @@ func writeSkillListFooter(w io.Writer, all, startHere []skillMeta, sections []sk
 		_, _ = fmt.Fprintf(w, " (%d sub-skills collapsed into the +N counts)", collapsed)
 	}
 	_, _ = fmt.Fprintf(w, ".\n")
-	_, _ = fmt.Fprintf(w, "  %s skill load <path>     read one (sub-skills load by full path, e.g. db/seeding)\n", name)
-	_, _ = fmt.Fprintf(w, "  %s skill search <word>   fastest when you know the keyword — matches bodies too\n", name)
-	_, _ = fmt.Fprintf(w, "  %s skill list <group>    one group's sub-skills by full path (e.g. skill list observability)\n", name)
-	_, _ = fmt.Fprintf(w, "  %s skill list --all      the exhaustive table, every sub-skill and full description\n", name)
+	_, _ = fmt.Fprintf(w, "  %s agent skill load <path>     read one (sub-skills load by full path, e.g. db/seeding)\n", name)
+	_, _ = fmt.Fprintf(w, "  %s agent skill search <word>   fastest when you know the keyword — matches bodies too\n", name)
+	_, _ = fmt.Fprintf(w, "  %s agent skill list <group>    one group's sub-skills by full path (e.g. agent skill list observability)\n", name)
+	_, _ = fmt.Fprintf(w, "  %s agent skill list --all      the exhaustive table, every sub-skill and full description\n", name)
 }
 
 // groupSkills splits skills into the start-here head and the labeled catalog

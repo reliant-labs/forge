@@ -90,7 +90,7 @@ func externalCommands(t *testing.T, snippet string) []string {
 	t.Helper()
 	// Task template expressions ({{.CLI_ARGS}}, {{exeExt}}) are resolved by Task
 	// before the shell sees the text; neutralise them for parsing. {{.SLOT}}
-	// is a command PREFIX (`forge slot run --`, or nothing), so the command
+	// is a command PREFIX (`forge machine slot run --`, or nothing), so the command
 	// after it is the one to check: it neutralises to nothing.
 	text := strings.ReplaceAll(snippet, "{{.SLOT}}", "")
 	// {{.FORGE}} is the pinned forge, `go run …/cmd/forge@<pin>`: go is what

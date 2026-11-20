@@ -113,8 +113,8 @@ file and the lines to add.
 |---|---|
 | `deploy/kcl/<env>/main.k` or `deploy/envs/<env>.yaml` declares the env, and it has no workloads or some workload is not external (or it does not render) | none: refused (`record_only_release`), forge deploys that env or nothing shows who does |
 | `deploy/kcl/<env>/main.k` or `deploy/envs/<env>.yaml` binds every workload to the external runtime | the control plane the env declares (`forge.ControlPlane`, a document's `control_plane:`), where it is **self-managed**; Reliant cloud when it declares none. Not signed in, or `FORGE_LEDGER=machine`: this machine, as below |
-| signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
-| `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge ledger import --from-file-ledger` moves it later |
+| signed in (`FORGE_CONTROL_PLANE_TOKEN`, `forge cloud login`, a credential helper; or `--token`) | Reliant cloud. The env is created there as **self-managed** on first use |
+| `FORGE_LEDGER=machine`, or not signed in | this machine's ledger. It works, but monitoring cannot see it; a note says so. `forge release ledger import --from-file-ledger` moves it later |
 
 Monitoring needs sign-in: a record on this machine is history, not a marker.
 

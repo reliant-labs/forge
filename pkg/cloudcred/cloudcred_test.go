@@ -317,7 +317,7 @@ func TestRemoveLegacyHostDeposits(t *testing.T) {
 		}
 	}
 	if _, err := f.Get("https://admin.example.com", "forge-cli"); err != nil {
-		t.Errorf("a human's forge login must survive: %v", err)
+		t.Errorf("a human's forge cloud login must survive: %v", err)
 	}
 	if _, err := f.Get("https://api.example.com", "reliant-cli"); err != nil {
 		t.Errorf("another client's entry must survive: %v", err)

@@ -23,7 +23,7 @@ A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge en
 
 An app forge does not deploy, any language: `observability/monitoring-only`.
 
-**To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge skill load observability/destination`.
+**To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge agent skill load observability/destination`.
 
 ## forge env status — the runtime checks
 
@@ -48,7 +48,7 @@ They read ClickHouse itself (`docker compose exec` into `clickstack`, with its
 own credentials), so a pass means rows are in the store, not that a UI answers.
 With ClickStack off they SKIP and say so.
 
-**Runtime checks use `forge env status`, not `forge doctor`.** Status renders
+**Runtime checks use `forge env status`, not `forge project doctor`.** Status renders
 the environment's KCL and overlays bound ports; doctor checks project structure
 and takes no `--env`. Missing runtime evidence is **UNDETERMINED** (`?`), not
 PASS or SKIP. Run status after `forge env up dev` before investigating.
@@ -174,7 +174,7 @@ The server writes JSON lines to stdout, each with the process `resource` (`obser
 
 ## Continuous profiles
 
-Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. The same CPU profiles drive profile-guided builds: `forge pgo pull --env prod` writes `cmd/<bin>/default.pgo`, which you commit. Depth (defaults, cost, tables, trace links, SQL, PGO): `forge skill load observability/profiles`.
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. The same CPU profiles drive profile-guided builds: `forge pgo pull --env prod` writes `cmd/<bin>/default.pgo`, which you commit. Depth (defaults, cost, tables, trace links, SQL, PGO): `forge agent skill load observability/profiles`.
 
 ## Resource identity
 

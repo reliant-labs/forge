@@ -80,7 +80,7 @@ in ClickHouse; HyperDX cannot draw flamegraphs, so this exports them:
 
 Sample types: cpu (nanoseconds) and inuse_space / inuse_objects (live heap) by
 default; alloc_space / alloc_objects and goroutine only from a workload whose
-profiling block turns them on (see forge skill load observability/profiles).
+profiling block turns them on (see forge agent skill load observability/profiles).
 CPU and the other accumulated types are summed over the range. The live heap
 and the goroutines are gauges: each instance's newest snapshot in the range,
 or, when the range holds none, the newest before it, so a range shorter than

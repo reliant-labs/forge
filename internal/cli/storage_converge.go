@@ -1,8 +1,8 @@
 // Package cli — zero-touch activation of the machine storage policy.
 //
 // The storage machinery under internal/storage was complete and did nothing,
-// because activation was imperative: `forge storage register` and `forge
-// storage install` had to be run by hand, in order, and never were. A
+// because activation was imperative: `forge machine storage register` and `forge
+// machine storage install` had to be run by hand, in order, and never were. A
 // protection that must be switched on is a protection that is off.
 //
 // This file closes that. Every command that creates or uses a local cache
@@ -155,7 +155,7 @@ func upReclaimsStorage(e *KCLEntities, clusterErr error) bool {
 }
 
 // maybeOpportunisticGC is the other half of zero-touch: on a machine where
-// nobody ran `forge storage install`, nothing ever reclaims anything. At the end
+// nobody ran `forge machine storage install`, nothing ever reclaims anything. At the end
 // of a successful `forge env up`, if this pass has not been attempted within
 // opportunisticGCInterval, start the NON-DISRUPTIVE layers — rotated-log
 // expiry, builder-cache prune, temp sweep, source eviction — in the
@@ -172,13 +172,13 @@ func upReclaimsStorage(e *KCLEntities, clusterErr error) bool {
 // layers, so a first run could delete a hundred-odd GB of temp scratch before
 // `up` came back. A goroutine is not the answer either: in its detaching
 // shape `up` exits within milliseconds, killing it mid-prune. So the pass is a
-// separate, detached `forge storage auto-gc` process with its own lock, its
+// separate, detached `forge machine storage auto-gc` process with its own lock, its
 // own bounded context, and its own log.
 //
 // Because it never runs the registry layer, this pass records only its own
 // ATTEMPT (last-auto-gc.json), which is its rate limit. It never writes the
 // full-GC record: an earlier version stamped one shared "last GC" marker here,
-// even on failure, and `forge doctor` read it as "GC scheduled, last ran 2h
+// even on failure, and `forge project doctor` read it as "GC scheduled, last ran 2h
 // ago" on a machine where registry retention had never once run.
 //
 // It also prints at most ONE line about storage health, and only about the
@@ -188,7 +188,7 @@ func upReclaimsStorage(e *KCLEntities, clusterErr error) bool {
 // unscoped line named whatever registry any project on the machine had
 // registered — a brand-new project's first `up` warned that
 // k3d-control-plane-registry, which it never touches, "failed".
-// Machine-wide health is `forge doctor`'s.
+// Machine-wide health is `forge project doctor`'s.
 func maybeOpportunisticGC(_ context.Context, out io.Writer, envRegistries []string) {
 	path, err := storage.DefaultPath()
 	if err != nil {
@@ -207,7 +207,7 @@ func maybeOpportunisticGC(_ context.Context, out io.Writer, envRegistries []stri
 	}
 	logPath, err := startAutoGCFn(path)
 	if err != nil {
-		fmt.Fprintf(out, "[up] storage: could not start background cleanup (%v); `forge storage gc --apply` runs it by hand.\n", err)
+		fmt.Fprintf(out, "[up] storage: could not start background cleanup (%v); `forge machine storage gc --apply` runs it by hand.\n", err)
 		return
 	}
 	fmt.Fprintf(out, "[up] storage: pruning build cache, dangling images, temp scratch and rotated logs in the background (log: %s; %s=0 disables)\n", logPath, storageAutoOptOut)
@@ -229,19 +229,19 @@ func reportEnvRegistryRetention(out io.Writer, path string, policy storage.Polic
 		return
 	}
 	if !storageScheduleInstalledFn() {
-		fmt.Fprintf(out, "[up] storage: this env's registry %s is registered for cleanup but no maintenance schedule is installed, so old image versions are never reclaimed — run `forge storage install` to reclaim them daily.\n", strings.Join(mine, ", "))
+		fmt.Fprintf(out, "[up] storage: this env's registry %s is registered for cleanup but no maintenance schedule is installed, so old image versions are never reclaimed — run `forge machine storage install` to reclaim them daily.\n", strings.Join(mine, ", "))
 		return
 	}
 	last, ok := storage.LastFullGC(path)
 	for _, container := range mine {
 		if problem := storage.RegistryGCProblem(policy, container, last, ok, time.Now()); problem != "" {
-			fmt.Fprintf(out, "[up] storage: %s. This env is unaffected: the registry still serves it, only old image versions are not being reclaimed. `forge storage gc --dry-run` re-checks without deleting anything; `forge storage gc --apply` retries.\n", problem)
+			fmt.Fprintf(out, "[up] storage: %s. This env is unaffected: the registry still serves it, only old image versions are not being reclaimed. `forge machine storage gc --dry-run` re-checks without deleting anything; `forge machine storage gc --apply` retries.\n", problem)
 			return
 		}
 	}
 }
 
-// runAutoGC is the body of `forge storage auto-gc`: one bounded,
+// runAutoGC is the body of `forge machine storage auto-gc`: one bounded,
 // non-disruptive pass under the maintenance lock, recorded as an attempt.
 // A busy lock means another pass is already doing this work, which is not a
 // failure and not an attempt. The pass yields to a waiting writer (a release
@@ -279,7 +279,7 @@ func runAutoGC(ctx context.Context, path string, out io.Writer) error {
 	return err
 }
 
-// newStorageAutoGCCmd is the hidden `forge storage auto-gc`, the process
+// newStorageAutoGCCmd is the hidden `forge machine storage auto-gc`, the process
 // `forge env up` starts in the background. It is a command, not a flag on
 // `gc`, because it is a different pass: non-disruptive layers only, bounded,
 // and recorded as an opportunistic attempt rather than a full GC.
@@ -320,7 +320,7 @@ var goCacheGCFn = func(ctx context.Context, r storage.Runner, apply bool) error 
 	return r.GoCacheGC(ctx, apply)
 }
 
-// runGoCacheGC is the body of `forge storage gocache`: the Go-toolchain caches
+// runGoCacheGC is the body of `forge machine storage gocache`: the Go-toolchain caches
 // alone, under the maintenance lock, recorded in last-gocache-gc.json when it
 // applied. A busy lock means another pass — which trims the Go caches first —
 // is running, and is reported as such by WithLock.
@@ -350,7 +350,7 @@ func runGoCacheGC(ctx context.Context, p storage.Policy, path string, out io.Wri
 	return err
 }
 
-// newStorageGoCacheCmd is `forge storage gocache`: trim the Go-toolchain
+// newStorageGoCacheCmd is `forge machine storage gocache`: trim the Go-toolchain
 // caches now. It is the pass to schedule every few minutes on a machine whose
 // builds outgrow an hourly trim (the Reliant daemon does, on cloud machines).
 func newStorageGoCacheCmd(policyPath *string) *cobra.Command {
@@ -401,7 +401,7 @@ last-gocache-gc.json beside the policy.`,
 var errAutoGCUnderTest = errors.New("refusing to start background storage maintenance under `go test` " +
 	"(os.Executable is the test binary; stub startAutoGCFn)")
 
-// startAutoGC starts `forge storage auto-gc` detached from this process, with
+// startAutoGC starts `forge machine storage auto-gc` detached from this process, with
 // its output in a log beside the policy, and does not wait for it.
 //
 // Under `go test` it refuses. It re-executes os.Executable(), which in a test
@@ -427,7 +427,7 @@ func startAutoGC(policyPath string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = logFile.Close() }()
-	args := append(append([]string{}, tokens[1:]...), "storage", "auto-gc", "--policy", policyPath)
+	args := append(append([]string{}, tokens[1:]...), "machine", "storage", "auto-gc", "--policy", policyPath)
 	cmd := exec.Command(tokens[0], args...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	detachFromParent(cmd)

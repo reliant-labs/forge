@@ -13,7 +13,7 @@ import (
 // materialize a file as a side effect of rendering.
 //
 // WHY NOT KCL's OWN file.write. A render is not only what `forge env up` does.
-// `forge generate`, `forge lint`, `forge ci validate-kcl`, `forge doctor`,
+// `forge generate`, `forge lint`, `forge ci validate-kcl`, `forge project doctor`,
 // `forge env config` and `forge env render` all evaluate the same module to
 // READ something from it, and evaluating a module fires every file.write in
 // it. KCL's runtime has no read-only mode, so forge could only watch those

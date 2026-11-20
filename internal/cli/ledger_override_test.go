@@ -9,7 +9,7 @@ package cli
 // happened to land somewhere local.
 //
 // The regression these pin: control-plane's scripts/test-kata-prepull.sh set
-// FORGE_LEDGER_HOME to a temp dir and ran `forge ledger import --apply`,
+// FORGE_LEDGER_HOME to a temp dir and ran `forge release ledger import --apply`,
 // believing the run private. prod declares forge.ControlPlane, so the import
 // went to the production ledger and was stopped only by a plan conflict.
 //

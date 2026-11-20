@@ -165,7 +165,9 @@ environment.
 
 WHERE THE LEDGER LIVES is declared by the environment, not chosen by a flag:
 an env whose KCL declares forge.ControlPlane records promotions on that control
-plane; every other env records them in .forge/promotions/<env>.jsonl.
+plane; every other env records them in this machine's ledger under
+$FORGE_LEDGER_HOME (default ~/.forge/ledger), shared by every worktree of the
+project. ` + "`forge ledger where <env>`" + ` says which, and why.
 
 EVERY DEPLOY IS A NEW ENTRY, NOT AN EDIT. Re-deploying the release an env
 already runs appends nothing and still applies and waits; a CI retry is safe.
@@ -802,9 +804,20 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 			"cannot be scoped (--target / --frontends-only). Deploy the release whole: forge env deploy %s %s",
 			envName, envName, emptyAs(p.version, "<version>"))
 	}
+	// --from with no version: the source env's release, resolved BEFORE the
+	// bundle step, which records the bundle and computes the §8.6 plan digest
+	// for a named version only. Resolved here and handed to runPromote, so a
+	// converger env's plan carries the digest its --yes / --approve needs
+	// (and a --from the control plane would refuse is refused before the
+	// bundle is recorded). The wire still omits the version: see
+	// promoteSource.VersionFromSource.
+	planVersion, from, err := resolveDeployFrom(ctx, envName, projectDir, p)
+	if err != nil {
+		return err
+	}
 	isSnapshot := false
-	if p.version != "" {
-		r, err := ledger.Releases.Get(ctx, p.version)
+	if planVersion != "" {
+		r, err := ledger.Releases.Get(ctx, planVersion)
 		if err != nil {
 			return err
 		}
@@ -813,10 +826,10 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if isSnapshot && (len(f.targets) > 0 || f.frontendsOnly) {
 		return fmt.Errorf("sealed snapshot is a complete desired decision; --target repair cannot promote it")
 	}
-	if p.version != "" && !isSnapshot {
+	if planVersion != "" && !isSnapshot {
 		// Before the bundle is recorded: a release that cannot run on the
 		// platform's nodes must not cause any registry write, --plan-only included.
-		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger.Releases); err != nil {
+		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, planVersion, ledger.Releases); err != nil {
 			return err
 		}
 	}
@@ -831,14 +844,14 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	// The bundle step, sized to what the scope applies, and the §8.6 plan
 	// computed from the bundle it records.
 	deployPlan, err := releaseBundleAndPlan(ctx, releaseBundleStep{
-		ProjectDir: projectDir, Env: envName, Version: p.version, Targets: f.targets,
+		ProjectDir: projectDir, Env: envName, Version: planVersion, Targets: f.targets,
 		Ledger: ledger, Rerecord: p.rerecordBundle, ErrOut: progressWriter(f.jsonOut),
 	}, scope)
 	if err != nil {
 		return err
 	}
-	if p.liveDiff && p.version != "" && scope.AppliesBundle {
-		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
+	if p.liveDiff && planVersion != "" && scope.AppliesBundle {
+		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, planVersion, ledger)
 	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Targets:               scope.Targets,
@@ -855,6 +868,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		RaiseFloorReason:      p.floorReason,
 		Gates:                 p.gates,
 		From:                  p.fromSource(),
+		resolvedFrom:          from,
 		Run:                   p.run,
 		// The O-13 gate. Always stated by the command, so the verb always
 		// shows the plan and asks before writing a promotion.

@@ -9,12 +9,14 @@ Workers are long-running background processes that don't serve HTTP but particip
 
 ## Naming
 
-Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
+Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the scaffolded `Name()` (the identifier in log lines, and a cron worker's tick-claim key). forge.yaml records no workers: forge discovers each one from `internal/workers/<name>/`.
 
-- `forge scaffold worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`, `path: internal/workers/calibrator_refit` in `forge.yaml`.
-- `forge scaffold worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`, `path: internal/workers/email_sender`.
+- `forge scaffold worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`.
+- `forge scaffold worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`.
 
-**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`. The `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+(A worker scaffolded before this rule returned a kebab-case `Name()`; it is yours, so keep it or change it. For a cron worker, changing it starts a fresh claim history.)
+
+**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`: the directory is what forge discovers the worker by.
 
 ## Adding a Worker
 
@@ -26,9 +28,9 @@ forge scaffold worker <name> --kind cron --schedule "*/5 * * * *"
 This creates:
 - `internal/workers/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
 - `internal/workers/<name>/worker_test.go` — Basic lifecycle test
-- An entry in `forge.yaml` under `services:` with type `worker`
+- Its construction in `internal/app/compose.go` `NewComponents` and its accessor in `internal/app/lifecycle.go` `WorkerList`: forge reconciles both files and adds a newly discovered worker for you. forge.yaml is not touched.
 
-After adding a worker, construct it in the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`) onto its `Components` field — see [Wiring](#wiring) below.
+When you add a field to the worker's `Deps`, forge adds the key to its construction in `compose.go`; you fill the value (off the owned `internal/app/providers.go` `Infra`/`OpenInfra`) — see [Wiring](#wiring) below.
 
 ## Worker Lifecycle
 
@@ -174,7 +176,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ## Wiring
 
-A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in type-topological order, pass it its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. Your `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker — forge appends the accessor for a newly discovered one — and the cmd serve path supervises them, so you don't append to a slice here:
+A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. forge writes the worker's construction there when it first discovers the worker, and adds a key when its `Deps` gains a field; the values are yours. Keep constructions in type-topological order, pass each worker its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. Your `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker — forge appends the accessor for a newly discovered one — and the cmd serve path supervises them, so you don't append to a slice here:
 
 ```go
 type Deps struct {

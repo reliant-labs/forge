@@ -115,6 +115,7 @@ func NewUserInfo(issuer string, endpoint func(ctx context.Context) (string, erro
 // is. It is otelhttp directly and not observe.NewHTTPClient because
 // pkg/observe imports this package.
 func tracedDefaultClient() *http.Client {
+	// forge:lint-disable-next-line forge-tracing-raw-http-client: a copy whose Transport is replaced by otelhttp below, so every call through it is traced
 	c := *http.DefaultClient
 	var base http.RoundTripper = defaultTransport{}
 	if c.Transport != nil {

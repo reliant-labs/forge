@@ -33,6 +33,8 @@
 //	  sessions.jsonl        LocalSession heartbeats are COMPACTED (the only non-append file)
 //	  verifications.jsonl   reserved for source verification (deferred with §9 to #516)
 //	  oci/                  OCI image layout: bundles, content-addressed
+//	  sboms/sha256-<hex>.cdx.json  SBOM bytes a release's artifacts name (sboms.go)
+//	  findings/sha256-<hex>/<db-built-at>_<scanner>@<version>.json  one vulnerability scan per scanner, version and DB build
 //
 // Every worktree of a project on this machine therefore shares one ledger,
 // and "what does prod run" stops depending on which branch is checked out.

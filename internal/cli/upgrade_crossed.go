@@ -338,6 +338,8 @@ func commitTrailers(body string) trailers {
 // forgeHistory answers questions about forge's commit graph offline. nil
 // when no clone of forge is at hand.
 type forgeHistory interface {
+	// Resolve expands a revision to its full local commit ID, or "" if unavailable.
+	Resolve(rev string) string
 	// Has reports whether rev names a commit the clone holds.
 	Has(rev string) bool
 	// IsAncestor reports whether a is an ancestor of (or equal to) b.
@@ -355,6 +357,27 @@ func (g gitHistory) git(args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir", g.dir}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	return cmd.Output()
+}
+
+func (g gitHistory) Resolve(rev string) string {
+	// Resolve the object prefix, not a ref of the same name. Go's cached
+	// clone may contain such refs, and rev-parse <prefix> prefers them.
+	out, err := g.git("rev-parse", "--disambiguate="+rev)
+	if err != nil {
+		return ""
+	}
+	var commit string
+	for _, id := range strings.Fields(string(out)) {
+		kind, err := g.git("cat-file", "-t", id)
+		if err != nil || strings.TrimSpace(string(kind)) != "commit" {
+			continue
+		}
+		if commit != "" {
+			return "" // More than one commit matches: do not guess.
+		}
+		commit = id
+	}
+	return commit
 }
 
 func (g gitHistory) Has(rev string) bool {
@@ -461,7 +484,24 @@ func crossedRange(from, to string, releases []changelogRelease, hist forgeHistor
 		return nil
 	}
 	fromRev, toRev := revOf(from), revOf(to)
-	haveGit := hist != nil && fromRev != "" && toRev != "" && hist.Has(fromRev) && hist.Has(toRev)
+	resolved := true
+	// Pseudo-versions carry abbreviated hashes. Expand them in this clone
+	// before asking about membership, ancestry or commit ranges.
+	if hist != nil && module.IsPseudoVersion(fromKey) {
+		rev := hist.Resolve(fromRev)
+		resolved = rev != ""
+		if rev != "" {
+			fromRev = rev
+		}
+	}
+	if hist != nil && module.IsPseudoVersion(toKey) {
+		rev := hist.Resolve(toRev)
+		resolved = resolved && rev != ""
+		if rev != "" {
+			toRev = rev
+		}
+	}
+	haveGit := hist != nil && resolved && fromRev != "" && toRev != "" && hist.Has(fromRev) && hist.Has(toRev)
 
 	// PRs the old pin already had beyond its base tag: a pseudo-version pin
 	// is a commit some way into the next release.
@@ -530,7 +570,11 @@ func crossedRange(from, to string, releases []changelogRelease, hist forgeHistor
 		after = fromRev // both pins sit after the same tag
 	}
 	tail := newCrossed(canonicalTag(to))
-	tail.Untagged, tail.After, tail.Commit = true, after, shortRev(toRev)
+	displayAfter := after
+	if after == fromRev {
+		displayAfter = revOf(from)
+	}
+	tail.Untagged, tail.After, tail.Commit = true, displayAfter, shortRev(toRev)
 	tail.URL = fmt.Sprintf("%s/compare/%s...%s", forgeRepoURL, shortRev(after), shortRev(toRev))
 	if haveGit && after != "" && hist.Has(after) {
 		cs, err := hist.Log(after, toRev)

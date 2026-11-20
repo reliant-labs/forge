@@ -130,6 +130,12 @@ func (f fakeHistory) idx(rev string) int {
 	}
 	return -1
 }
+func (f fakeHistory) Resolve(rev string) string {
+	if i := f.idx(rev); i >= 0 {
+		return f.revs[i]
+	}
+	return ""
+}
 func (f fakeHistory) Has(rev string) bool         { return f.idx(rev) >= 0 }
 func (f fakeHistory) IsAncestor(a, b string) bool { return f.idx(a) >= 0 && f.idx(a) <= f.idx(b) }
 func (f fakeHistory) Log(from, to string) ([]forgeCommit, error) {
@@ -141,6 +147,47 @@ func (f fakeHistory) Log(from, to string) ([]forgeCommit, error) {
 }
 
 func hexRev(n int) string { return fmt.Sprintf("%012x", 0xaaaa00000000+n) }
+
+// fullRevisionHistory models a cache whose graph queries require full IDs.
+// Resolve alone accepts abbreviated pseudo-version revisions.
+type fullRevisionHistory struct{ fakeHistory }
+
+func (f fullRevisionHistory) Has(rev string) bool {
+	return (strings.HasPrefix(rev, "v") || len(rev) == 40) && f.fakeHistory.Has(rev)
+}
+
+func (f fullRevisionHistory) IsAncestor(a, b string) bool {
+	return f.Has(a) && f.Has(b) && f.fakeHistory.IsAncestor(a, b)
+}
+
+func (f fullRevisionHistory) Log(from, to string) ([]forgeCommit, error) {
+	if !f.Has(from) || !f.Has(to) {
+		return nil, fmt.Errorf("range endpoints must be full commit IDs or tags")
+	}
+	return f.fakeHistory.Log(from, to)
+}
+
+func TestCrossedRangeResolvesPseudoRevisions(t *testing.T) {
+	fromRev := hexRev(1) + strings.Repeat("0", 28)
+	toRev := hexRev(2) + strings.Repeat("0", 28)
+	h := fullRevisionHistory{fakeHistory{
+		revs: []string{fromRev, toRev},
+		msgs: map[string]forgeCommit{toRev: {Subject: "fix: available offline (#42)"}},
+	}}
+	from := "v1.8.1-0.20261119000001-" + hexRev(1)
+	to := "v1.8.1-0.20261119000002-" + hexRev(2)
+	got := crossedRange(from, to, nil, h)
+	if len(got) != 1 || got[0].Source != "git" || got[0].Commits == nil || *got[0].Commits != 1 ||
+		len(got[0].Fixed) != 1 || got[0].Fixed[0].PR != 42 || got[0].After != hexRev(1) {
+		t.Fatalf("resolved range = %+v", got)
+	}
+	// A missing object still produces the explicit offline fallback.
+	h.revs = h.revs[:1]
+	got = crossedRange(from, to, nil, h)
+	if len(got) != 1 || got[0].Source != "unavailable" || got[0].Commit != hexRev(2) {
+		t.Fatalf("unavailable range = %+v", got)
+	}
+}
 
 func TestCrossedRange(t *testing.T) {
 	rels := parseChangelog([]byte(crossedChangelog))

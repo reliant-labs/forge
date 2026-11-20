@@ -1,6 +1,6 @@
 ---
 name: observability/third-party/runtimes
-description: Where a forge.Telemetry declaration is collected, per runtime — forge env up (the local telemetry agent, the .forge/logs/.telemetry includes, the agent log, the upgrade row for older otel-collector.yaml), forge's cluster node agent (no address pulls, mounted Secrets), Reliant hosted (shape-telemetry, the 5000/20 caps, allow required, scope platform refused), and your own collector (Observability.telemetry_collector, forge.telemetry_targets and forge.telemetry_collector with the exact call and what to splice), and the default telemetry of a forge.ManagedDatabase (ManagedDatabase.telemetry, default_telemetry, forge.managed_database_telemetry, forge.cnpg_operator_telemetry).
+description: Where a forge.Telemetry declaration is collected, per runtime — forge env up (the local telemetry agent, the .forge/logs/.telemetry includes, the agent log, the upgrade row for older otel-collector.yaml), forge's cluster node agent (no address pulls, mounted Secrets), Reliant hosted (shape-telemetry + collects-telemetry, the 5000/20 caps, allow required, scope platform refused), and your own collector (Observability.telemetry_collector, forge.telemetry_targets and forge.telemetry_collector with the exact call and what to splice), and the default telemetry of a forge.ManagedDatabase (ManagedDatabase.telemetry, default_telemetry, forge.managed_database_telemetry, forge.cnpg_operator_telemetry).
 ---
 
 # Where a Telemetry is collected
@@ -56,7 +56,7 @@ Without a destination there is no agent, and a cluster Telemetry that nothing co
 
 ## Reliant hosted (`forge.OnHosted`)
 
-The platform collects what a hosted workload declares, **once the control plane advertises `shape-telemetry`**. Until it does, `forge env deploy` warns (`declares telemetry this control plane does not collect yet`) and the declaration is withheld from the shape; nothing breaks. Rules, applied at `forge env render` and `env deploy`:
+The platform collects what a hosted workload declares, **once the control plane advertises both `shape-telemetry` (it decodes the targets) and `collects-telemetry` (it collects them)**; a forge pin bump alone brings only the first. Until it does, `forge env deploy` warns (`declares telemetry this control plane does not collect yet`, naming the missing capability) and the declaration is withheld from the shape; nothing breaks. Rules, applied at `forge env render` and `env deploy`:
 
 | Rule | Why |
 |---|---|

@@ -274,10 +274,13 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 
 // TestANewReaderGetsTheFullDocument: a reader that names every feature, and
 // the nil reader (this forge's own machine ledger), get the document whole.
+// Every feature includes the hand-advertised CapabilityCollectsTelemetry:
+// decoding the hosted telemetry targets alone is not enough to be sent them
+// (TestHostedTelemetryNeedsTheCollectsCapability).
 func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	full := fullBundleDoc()
 	for name, r := range map[string]*BundleReader{
-		"every feature": {Features: BundleDocFeatures()},
+		"every feature": {Features: append(BundleDocFeatures(), CapabilityCollectsTelemetry)},
 		"nil reader":    nil,
 	} {
 		if got := r.Limit(full); !reflect.DeepEqual(got, full) {

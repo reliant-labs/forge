@@ -101,6 +101,22 @@ func findObject(objs []map[string]any, kind, name string) (int, map[string]any) 
 	return -1, nil
 }
 
+// telemetryPolicy finds the standalone telemetry NetworkPolicy of a service
+// by its forge.dev/telemetry-service label: the name carries a digest of the
+// service (collector.NetworkPolicies), so it is not spelled out here.
+func telemetryPolicy(objs []map[string]any, svc string) (int, map[string]any) {
+	for i, o := range objs {
+		if o["kind"] != "NetworkPolicy" {
+			continue
+		}
+		labels, _ := o["metadata"].(map[string]any)["labels"].(map[string]any)
+		if labels["forge.dev/telemetry-service"] == svc {
+			return i, o
+		}
+	}
+	return -1, nil
+}
+
 func admits(rule map[string]any) (ns, pod string) {
 	from := rule["from"].([]any)[0].(map[string]any)
 	ns = from["namespaceSelector"].(map[string]any)["matchLabels"].(map[string]any)["kubernetes.io/metadata.name"].(string)
@@ -131,7 +147,7 @@ func TestExtractManifestsAdmitsTheNodeAgent(t *testing.T) {
 		t.Errorf("admin's policy admits %s/%s, want the agent", ns, pod)
 	}
 
-	at, own := findObject(objs, "NetworkPolicy", "telemetry-temporal")
+	at, own := telemetryPolicy(objs, "temporal")
 	group, _ := findObject(objs, "Deployment", "temporal")
 	if own == nil || at != group+1 {
 		t.Fatalf("telemetry-temporal at %d, want right after its group's Deployment at %d", at, group)
@@ -160,7 +176,7 @@ func TestExtractManifestsAdmitsTheEnvsOwnCollector(t *testing.T) {
 	if ns, pod := admits(rules[len(rules)-1].(map[string]any)); ns != "observability" || pod != "otel" {
 		t.Errorf("admin's policy admits %s/%s, want the env's collector", ns, pod)
 	}
-	_, own := findObject(objs, "NetworkPolicy", "telemetry-temporal")
+	_, own := telemetryPolicy(objs, "temporal")
 	if ns, pod := admits(own["spec"].(map[string]any)["ingress"].([]any)[0].(map[string]any)); ns != "observability" || pod != "otel" {
 		t.Errorf("telemetry-temporal admits %s/%s, want the env's collector", ns, pod)
 	}
@@ -173,7 +189,7 @@ func TestExtractManifestsWithoutTelemetryIsUnchanged(t *testing.T) {
 	delete(out, "telemetry")
 	delete(out["manifests"].([]any)[1].(map[string]any)["spec"].(map[string]any), "telemetry")
 	objs := extractTelemetryDoc(t, doc)
-	if _, np := findObject(objs, "NetworkPolicy", "telemetry-temporal"); np != nil {
+	if _, np := telemetryPolicy(objs, "temporal"); np != nil {
 		t.Error("a telemetry policy rendered with no telemetry declared")
 	}
 	_, np := findObject(objs, "NetworkPolicy", "admin-ingress")
@@ -272,7 +288,7 @@ func TestRenderedTelemetryReachesTheNodeAgent(t *testing.T) {
 	if ns, pod := admits(rules[len(rules)-1].(map[string]any)); ns != "forge-observability" || pod != deploy.ObservabilityAgentName {
 		t.Errorf("zitadel's policy admits %s/%s, want the agent", ns, pod)
 	}
-	at, _ := findObject(objs, "NetworkPolicy", "telemetry-temporal")
+	at, _ := telemetryPolicy(objs, "temporal")
 	svc, _ := findObject(objs, "Service", "temporal")
 	if at != svc+1 {
 		t.Errorf("telemetry-temporal at %d, want right after the group's Service at %d", at, svc)

@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,7 +121,8 @@ func telemetryTargets() []telemetry.Target {
 func telemetryAgentSpec() ObservabilityAgentSpec {
 	s := agentSpec()
 	s.Signals.Profiles = true
-	s.Telemetry = telemetryTargets()
+	targets := telemetryTargets()
+	s.Telemetry = &targets
 	return s
 }
 
@@ -182,11 +184,49 @@ func TestObservabilityAgentWithoutTelemetryIsUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			spec.Telemetry = []telemetry.Target{}
+			spec.Telemetry = &[]telemetry.Target{}
 			if got := agentYAML(t, spec); !bytes.Equal(want, got) {
 				t.Errorf("an empty Telemetry list changed the agent:\n%s", got)
 			}
 		})
+	}
+}
+
+// ObservabilityAgentSpec is part of pkg/deploy's API and stays comparable (a
+// map key needs it): Telemetry is a pointer for that reason. On the wire it
+// is still the KCL record's plain "telemetry" list, both ways.
+var _ = map[ObservabilityAgentSpec]bool{}
+
+func TestObservabilityAgentSpecTelemetryIsAJSONList(t *testing.T) {
+	targets := telemetryTargets()
+	list, err := json.Marshal(targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec ObservabilityAgentSpec
+	if err := json.Unmarshal([]byte(`{"telemetry":`+string(list)+`}`), &spec); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(spec.declaredTelemetry(), targets) {
+		t.Errorf("decoded telemetry = %+v, want %+v", spec.declaredTelemetry(), targets)
+	}
+	out, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]json.RawMessage
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(back["telemetry"], list) {
+		t.Errorf("encoded telemetry = %s, want the list %s", back["telemetry"], list)
+	}
+	none, err := json.Marshal(agentSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(none, []byte(`"telemetry"`)) {
+		t.Errorf("a spec with no telemetry encodes a telemetry key: %s", none)
 	}
 }
 
@@ -331,7 +371,7 @@ func TestAgentRefusesTelemetryItCannotCollect(t *testing.T) {
 	}{
 		"address pull": {func() ObservabilityAgentSpec {
 			s := telemetryAgentSpec()
-			s.Telemetry = []telemetry.Target{address}
+			s.Telemetry = &[]telemetry.Target{address}
 			return s
 		}, "no singleton"},
 		"profiles off": {func() ObservabilityAgentSpec {
@@ -351,7 +391,7 @@ func TestAgentRefusesTelemetryItCannotCollect(t *testing.T) {
 		}, "signals.logs = False"},
 		"optional secret": {func() ObservabilityAgentSpec {
 			s := telemetryAgentSpec()
-			s.Telemetry = []telemetry.Target{optional}
+			s.Telemetry = &[]telemetry.Target{optional}
 			return s
 		}, "Make the reference required"},
 	} {

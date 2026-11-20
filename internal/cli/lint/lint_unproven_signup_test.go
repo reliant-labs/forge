@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/mod/semver"
-
 	"github.com/reliant-labs/forge/internal/codegen"
 )
 
@@ -109,12 +107,8 @@ func TestUnprovenSignup_LegacySelfSignupSpellings(t *testing.T) {
 	}
 }
 
-// The schema-default finding joined the lane after forgeconv-unproven-signup
-// shipped, so it carries its own rollout: a project pinned past the original
-// rule's GatesFrom but before the new rule's sees the newly found default as
-// a warning with the grace note, while a literal true outside development
-// still gates. From the new rule's GatesFrom both gate.
-func TestUnprovenSignup_TheSchemaDefaultWarnsBeforeItGates(t *testing.T) {
+// Both forms gate, even for a project pinned before the rules shipped.
+func TestUnprovenSignup_BothFormsGateAtOlderPins(t *testing.T) {
 	root := t.TempDir()
 	writeOpenSignupFile(t, root, "deploy/kcl/config_gen.k", "schema AppConfig:\n    auth_self_signup: bool = True\n")
 	writeOpenSignupFile(t, root, "deploy/kcl/prod/main.k", `API = forge.Service {env_vars = {"AUTH_SELF_SIGNUP" = "true"}}`+"\n")
@@ -123,15 +117,6 @@ func TestUnprovenSignup_TheSchemaDefaultWarnsBeforeItGates(t *testing.T) {
 		if step.name != unprovenSignupLane {
 			off[step.name] = true
 		}
-	}
-	old, okOld := lintRollouts[ruleUnprovenSignup]
-	ro, okNew := lintRollouts[ruleUnprovenSignupDefault]
-	if !okOld || !okNew {
-		t.Fatalf("rollout rows: %s=%v %s=%v", ruleUnprovenSignup, okOld, ruleUnprovenSignupDefault, okNew)
-	}
-	if semver.Compare(ro.IntroducedIn, old.GatesFrom) < 0 {
-		t.Fatalf("%s is introduced in %s, before %s gates (%s): the grace-period pin below would not be past the old rule's",
-			ruleUnprovenSignupDefault, ro.IntroducedIn, ruleUnprovenSignup, old.GatesFrom)
 	}
 	sweep := func(pin string) (byRule map[string]lintJSONFinding, gated bool) {
 		t.Helper()
@@ -149,28 +134,18 @@ func TestUnprovenSignup_TheSchemaDefaultWarnsBeforeItGates(t *testing.T) {
 		return byRule, gated
 	}
 
-	// In the grace period: past the old rule's GatesFrom, before the new one's.
-	got, gated := sweep(ro.IntroducedIn)
-	if f := got[ruleUnprovenSignup]; f.Severity != lintSevError || f.Grace != nil || f.File != "deploy/kcl/prod/main.k" {
-		t.Errorf("pin %s: the literal true outside dev = %+v, want an ungraced error", ro.IntroducedIn, f)
-	}
-	f := got[ruleUnprovenSignupDefault]
-	if f.Severity == lintSevError || f.Grace == nil || f.File != "deploy/kcl/config_gen.k" {
-		t.Fatalf("pin %s: the schema default = %+v, want a warning carrying the grace note", ro.IntroducedIn, f)
-	}
-	wantNote := "is new in " + ro.IntroducedIn + " and gates from " + ro.GatesFrom
-	if note := f.Grace.note(ruleUnprovenSignupDefault); !strings.Contains(note, wantNote) {
-		t.Errorf("grace note = %q, want it to say %q", note, wantNote)
-	}
+	const pin = "v1.7.0"
+	got, gated := sweep(pin)
 	if !gated {
-		t.Errorf("pin %s: the lane did not gate, but the literal true outside dev is an error", ro.IntroducedIn)
+		t.Errorf("pin %s: unproven sign-up did not gate", pin)
 	}
-
-	// From the new rule's GatesFrom, both gate.
-	got, _ = sweep(ro.GatesFrom)
-	for rule, f := range got {
-		if f.Severity != lintSevError || f.Grace != nil {
-			t.Errorf("pin %s: %s = %+v, want an ungraced error", ro.GatesFrom, rule, f)
+	for rule, wantFile := range map[string]string{
+		ruleUnprovenSignup:        "deploy/kcl/prod/main.k",
+		ruleUnprovenSignupDefault: "deploy/kcl/config_gen.k",
+	} {
+		f := got[rule]
+		if f.Severity != lintSevError || f.Grace != nil || f.File != wantFile {
+			t.Errorf("pin %s: %s = %+v, want an ungraced error in %s", pin, rule, f, wantFile)
 		}
 	}
 }

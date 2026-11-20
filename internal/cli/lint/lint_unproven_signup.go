@@ -42,8 +42,7 @@ const ruleUnprovenSignup = "forgeconv-unproven-signup"
 // DEFAULTS auth_self_signup to true (`auth_self_signup: bool = True`, a proto
 // default_value of "true" projected into config_gen.k), which turns the
 // legacy sign-up on in every environment that does not override it, prod
-// included. Its own ID because it was found after ruleUnprovenSignup shipped:
-// it warns for a release before it gates (lint_rollout_table.go).
+// included. It has its own ID so projects can grade the two findings separately.
 const ruleUnprovenSignupDefault = "forgeconv-unproven-signup-default"
 
 var (

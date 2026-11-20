@@ -154,7 +154,7 @@ func TestFirstComputedReleaseCarryingARuleWarns(t *testing.T) {
 		t.Fatalf("VERSION %q: %v", last, err)
 	}
 	for rule, ro := range lintRollouts {
-		if semver.Compare(ro.IntroducedIn, last) <= 0 {
+		if ro.GatesFrom == "" || semver.Compare(ro.IntroducedIn, last) <= 0 {
 			continue
 		}
 		firstReleases := []string{ro.IntroducedIn}

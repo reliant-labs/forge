@@ -105,7 +105,7 @@ forge cloud login && forge obs init prod staging               # hosted monitori
                                                          #   mints a token per env, prints its OTEL_* variables: endpoint,
                                                          #   headers (the token, shown once), attributes
 # record deploys: mint the CI secret FORGE_CONTROL_PLANE_TOKEN (scope deploy:write) in the web app, Settings → API tokens
-#   (https://forge.reliantlabs.io/settings/tokens; Reliant cloud refuses `forge cloud token create` under `forge login`),
+#   (https://forge.reliantlabs.io/settings/tokens; Reliant cloud refuses `forge cloud token create` under `forge cloud login`),
 #   add the deployed workloads to deploy/envs/prod.yaml (`runtime: {type: external}`), then after the deploy job:
 forge release record --env prod --version "$TAG" --workload api --image "ghcr.io/acme/api@$DIGEST"
 forge obs check prod --release "$TAG" --wait             #   …and its verdict: exit 0 good, 1 regressed, 2 not proven, 8 too early

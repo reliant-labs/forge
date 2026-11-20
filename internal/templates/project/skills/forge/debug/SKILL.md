@@ -19,11 +19,11 @@ Classify the bug before diving in:
 
 ## Parallel Investigation
 
-If your environment supports parallel agents, split the work into three independent tracks:
+If agents can work in parallel, split the investigation:
 
-- **Researcher** — trace code paths, form hypotheses, check git log for recent changes that touch the affected area.
-- **Tester** — write a failing test that isolates the bug. Top-down bisection: start at the outermost reproducing layer (e2e), then narrow to the unit.
-- **Reproducer** — add diagnostic logging, exercise the path in a running system, collect runtime evidence (request IDs, error chains, timing).
+- **Researcher** — trace the code path and check recent commits.
+- **Tester** — start at the outermost failing layer, then narrow to a unit test.
+- **Reproducer** — exercise the running system and capture request IDs, errors, and timing.
 
 Working solo? Run the three passes sequentially: research → reproduce → isolate.
 

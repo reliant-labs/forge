@@ -47,9 +47,8 @@
 //
 //	$FORGE_TOOLS_CACHE (default <UserCacheDir>/forge/tools)/release/
 //	  <name>@<version>-<goos>-<goarch>/
-//	    <name>[.exe]          mode 0555
-//	    toolfetch.json        what was installed, from where, and the sha256
-//	                          of the archive and of the binary
+//	    <name>[.exe]          mode 0555 (0755 on Windows)
+//	    toolfetch.json        bookkeeping: what was installed and from where
 //
 // It is an entry of forge's shared tool cache (internal/toolcache), so it is
 // built in a private staging directory and published by one rename: a
@@ -61,10 +60,19 @@
 // # Who can change the binary (the threat model)
 //
 // Ensure hands back a path, and the caller execs it later, so what matters
-// is who could replace the file in between. The answer is decided by
-// ownership and permissions, and checked on every hit:
+// is who could replace the file in between. Two checks answer it on every
+// hit, each enough on its own against a substituted release binary:
 //
-//   - Another user: excluded. Every directory from the filesystem root down
+//   - The bytes. The cached executable must hash to the sha256 compiled into
+//     forge for that platform's executable (Tool.BinaryChecksums), beside the
+//     archive's. Nothing in the cache vouches for anything: whoever could
+//     write the binary could write the manifest beside it. (A `go install`
+//     build has no compiled-in pin and relies on the second check alone.)
+//   - Who can write the path, decided by ownership and permissions, below.
+//
+// Who can write the path:
+//
+//   - Another user: excluded. On Unix, every directory from the filesystem root down
 //     to the release kind directory must be owned by this user or root and be
 //     writable by nobody else (a sticky directory such as /tmp, and a
 //     group-writable directory of the user's own private group, are the two
@@ -76,12 +84,13 @@
 //     entry refuses it and reinstalls into a fresh staging directory that
 //     replaces it by rename; a violation above it is ErrUntrustedCache. With
 //     no writer but this user able to touch any component, nothing can change
-//     between the check and the exec.
+//     between the check and the exec. On Windows, ACLs instead of mode bits;
+//     see below.
 //   - This user (any process running as the same uid): out of scope. Such a
 //     process can already replace forge itself, edit PATH and shell startup
-//     files, or ptrace forge, so no check inside forge stops it. Hashing the
-//     binary on each hit (against the sha256 recorded when the verified
-//     archive was extracted) catches accidental corruption, not this.
+//     files, or ptrace forge, so no check inside forge stops it. (The hash
+//     check still refuses a binary such a process changed between two calls;
+//     it cannot stop a change between the check and the exec.)
 //   - Root: out of scope, for the same reason.
 //
 // Copying the verified bytes into a per-process private directory and
@@ -91,11 +100,20 @@
 // copies whenever a process dies before its cleanup, and protects only
 // against writers the permission check already excludes.
 //
-// Windows: the cache's protection is its ACL. The default location,
-// %LocalAppData%\forge\tools, inherits the per-user ACL of the profile, which
-// grants no other non-administrator user access; forge does not inspect ACLs,
-// so a FORGE_TOOLS_CACHE elsewhere must carry an equivalent ACL. forge still
-// refuses symlinks and reparse points in the entry, and the hash check runs.
+// Windows: the cache's protection is its ACL, and forge checks it, failing
+// closed. For every component it reads the owner and DACL
+// (GetNamedSecurityInfo) and refuses the cache (ErrUntrustedCache, or a
+// reinstall for a bad entry) unless the owner is this user, SYSTEM,
+// Administrators or TrustedInstaller; the DACL is present and not NULL; and
+// no ACE grants anyone else write, append, delete, delete-child, WRITE_DAC
+// or WRITE_OWNER (generic rights mapped first). Directories above the cache
+// may let others add new children (C:\ lets Authenticated Users create
+// folders), never delete, rename or re-permission one. Deny ACEs are not
+// credited, an ACE type forge cannot read refuses, and a host whose ACLs
+// cannot be read refuses. The default location, %LocalAppData%\forge\tools,
+// passes as it comes: the profile's inherited per-user ACL is private. The
+// rule is evaluateACL, a pure function table-tested on every OS. Symlinks are
+// refused as on Unix.
 //
 // # Where it downloads from
 //
@@ -186,6 +204,12 @@ type Tool struct {
 	// the release's checksums file. A platform whose asset is absent has no
 	// verified binary.
 	Checksums map[string]string
+	// BinaryChecksums maps the same asset names to the sha256 of the
+	// executable inside each archive. Every asset in Checksums must have
+	// one. Every cache hit hashes the cached binary against this compiled-in
+	// value, so nothing written to the cache (the manifest included) can
+	// vouch for a binary.
+	BinaryChecksums map[string]string
 }
 
 // Asset is the release archive name for goos/goarch, in goreleaser's
@@ -204,6 +228,13 @@ func (t Tool) Binary(goos string) string {
 		return t.Name + ".exe"
 	}
 	return t.Name
+}
+
+// binaryChecksum returns the pinned sha256 of the executable in
+// goos/goarch's asset, if any.
+func (t Tool) binaryChecksum(goos, goarch string) (string, bool) {
+	sum, ok := t.BinaryChecksums[t.Asset(goos, goarch)]
+	return sum, ok
 }
 
 // checksum returns the pinned sha256 of goos/goarch's asset, if any.
@@ -251,9 +282,12 @@ type Installed struct {
 	ArchiveSHA256 string `json:"archive_sha256,omitempty"`
 	// GoPackage is the `go install` spec for SourceGoInstall.
 	GoPackage string `json:"go_package,omitempty"`
-	// BinarySHA256 is the executable's sha256 when it was installed: of the
-	// member extracted from the verified archive, or of the go install
-	// build. Every hit rehashes the binary against it.
+	// BinarySHA256 is the executable's sha256 when it was installed. It is
+	// bookkeeping only for a release: the hit check compares the binary to
+	// the compiled-in pin (Tool.BinaryChecksums), never to this. A go
+	// install build has no compiled-in pin, so for it this is all there is,
+	// and it guards against corruption only; the cache's privacy (the
+	// package doc's threat model) is what protects such an entry.
 	BinarySHA256 string `json:"binary_sha256"`
 }
 
@@ -290,6 +324,10 @@ type Fetcher struct {
 	// runtime.GOOS. Distinct from GOOS, the platform a binary is installed
 	// for.
 	hostOS string
+	// acl reads security descriptors when hostOS is Windows: New sets the
+	// platform's reader and the current user's SID. Its zero value refuses
+	// every Windows cache.
+	acl aclSource
 }
 
 // New returns the Fetcher forge uses: forge's shared tool cache, the
@@ -311,6 +349,7 @@ func New() *Fetcher {
 		GOARCH:   runtime.GOARCH,
 		owner:    os.Getuid(),
 		hostOS:   runtime.GOOS,
+		acl:      platformACL(),
 	}
 }
 
@@ -411,8 +450,9 @@ func (f *Fetcher) Find(t Tool) (Installed, bool) {
 // binary must pass checkOwned (this user's, writable by no one else, no
 // symlink); the manifest must name t at its version on this platform, with
 // the pinned archive sha256 for a release; and the binary must be a 0555-style
-// executable (no write bit at all on a Unix host) whose sha256 is the one
-// recorded at install. See the package doc for why that is enough.
+// executable (no write bit at all on a Unix host) whose sha256 is the
+// compiled-in executable pin for a release (the manifest's record only for a
+// go install build). See the package doc for why that is enough.
 func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
 	if !f.ownedEntry(dir, true) {
 		return Installed{}, false
@@ -448,7 +488,17 @@ func (f *Fetcher) ready(t Tool, dir string) (Installed, bool) {
 	if info, err := os.Lstat(bin); err != nil || (f.enforcesModes() && (info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o222 != 0)) {
 		return Installed{}, false
 	}
-	if got, err := hashFile(bin); err != nil || in.BinarySHA256 == "" || got != in.BinarySHA256 {
+	want := in.BinarySHA256
+	if in.Source == SourceRelease {
+		// Never the manifest's word: whoever could write the binary could
+		// write the manifest beside it.
+		pinned, ok := t.binaryChecksum(f.goos(), f.goarch())
+		if !ok {
+			return Installed{}, false
+		}
+		want = pinned
+	}
+	if got, err := hashFile(bin); err != nil || want == "" || got != want {
 		return Installed{}, false
 	}
 	in.Path = bin
@@ -496,6 +546,17 @@ func (f *Fetcher) validate(t Tool) error {
 		decoded, err := hex.DecodeString(checksum)
 		if err != nil || len(decoded) != sha256.Size {
 			return fmt.Errorf("toolfetch: invalid checksum for %q", asset)
+		}
+		// A release with no compiled-in executable pin could only be
+		// vouched for by the cache itself.
+		decoded, err = hex.DecodeString(t.BinaryChecksums[asset])
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("toolfetch: no valid executable checksum for %q", asset)
+		}
+	}
+	for asset := range t.BinaryChecksums {
+		if _, ok := t.Checksums[asset]; !ok {
+			return fmt.Errorf("toolfetch: executable checksum for %q, which has no archive checksum", asset)
 		}
 	}
 	return nil
@@ -570,6 +631,11 @@ func (f *Fetcher) installRelease(ctx context.Context, t Tool, stage string) erro
 	binSum, err := hashFile(bin)
 	if err != nil {
 		return err
+	}
+	if wantBin, _ := t.binaryChecksum(f.goos(), f.goarch()); binSum != wantBin {
+		return fmt.Errorf("%s %s: %w for the %s executable in %s\n  expected %s\n  got      %s\n"+
+			"  the archive matched its pin but its executable did not: forge's two pins disagree",
+			t.Name, t.Version, ErrChecksum, t.Binary(f.goos()), asset, wantBin, binSum)
 	}
 	if err := os.Remove(archive); err != nil {
 		return err

@@ -20,9 +20,9 @@ var ErrUntrustedCache = errors.New("tool cache is writable by another user")
 // modesEnforced reports whether owner and mode bits are the access control
 // on a host running hostOS (Unix), as opposed to ACLs (Windows). On Windows
 // os.Stat reports synthetic 0666/0777 modes and no owner, so the ownership
-// and mode rules would refuse every cache; there forge checks only for links
-// and the binary's hash, and relies on the cache's per-user ACL (the package
-// doc's threat model).
+// and mode rules would refuse every cache; there forge reads each
+// component's owner and DACL instead (acl.go) and refuses the cache unless
+// they prove it private.
 func modesEnforced(hostOS string) bool { return hostOS != "windows" }
 
 // enforcesModes is modesEnforced for the host this Fetcher runs on.
@@ -35,8 +35,11 @@ func (f *Fetcher) checkOwned(path string, info fs.FileInfo) error {
 	if info.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("%s is a symlink", path)
 	}
+	if !f.enforcesModes() {
+		return f.checkACL(path, aclOwned)
+	}
 	uid, _, ok := fileOwner(info)
-	if !ok || !f.enforcesModes() {
+	if !ok {
 		return nil
 	}
 	if int(uid) != f.owner {
@@ -70,8 +73,11 @@ func (f *Fetcher) checkAncestor(path string, info fs.FileInfo) error {
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a directory", path)
 	}
+	if !f.enforcesModes() {
+		return f.checkACL(path, aclAncestor)
+	}
 	uid, gid, ok := fileOwner(info)
-	if !ok || !f.enforcesModes() {
+	if !ok {
 		return nil
 	}
 	if uid != 0 && int(uid) != f.owner {
@@ -122,7 +128,7 @@ func (f *Fetcher) trustedKindDir(dir string) (string, error) {
 
 func untrusted(err error, kindDir string) error {
 	return fmt.Errorf("%w: %v\n  forge will not run a tool from %s: anyone who can write that path can substitute the binary.\n"+
-		"  Fix: `chmod go-w` the directory named above, or set %s to a directory only you can write",
+		"  Fix: remove other users' write access to the path named above (`chmod go-w` on Unix; on Windows `icacls`, keeping only you, SYSTEM and Administrators), or set %s to a directory only you can write",
 		ErrUntrustedCache, err, kindDir, envToolsCache)
 }
 

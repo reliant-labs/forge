@@ -108,12 +108,56 @@ func (r *release) serve(tool Tool, goos, goarch string, body []byte) {
 }
 
 // fakeTool is a Tool whose linux/amd64 and windows/amd64 archives are pinned
-// to the given bodies.
+// to the given bodies, and each archive's executable to the member it holds.
 func fakeTool(linux, windows []byte) Tool {
-	t := Tool{Name: "faketool", Version: "v1.2.3", Repo: "acme/faketool", GoPackage: "example.com/faketool/cmd/faketool", Checksums: map[string]string{}}
-	t.Checksums[t.Asset("linux", "amd64")] = sum(linux)
-	t.Checksums[t.Asset("windows", "amd64")] = sum(windows)
+	t := Tool{Name: "faketool", Version: "v1.2.3", Repo: "acme/faketool", GoPackage: "example.com/faketool/cmd/faketool",
+		Checksums: map[string]string{}, BinaryChecksums: map[string]string{}}
+	for _, p := range []struct {
+		goos string
+		body []byte
+	}{{"linux", linux}, {"windows", windows}} {
+		asset := t.Asset(p.goos, "amd64")
+		t.Checksums[asset] = sum(p.body)
+		t.BinaryChecksums[asset] = sum(memberOf(p.body, p.goos == "windows", t.Binary(p.goos)))
+	}
 	return t
+}
+
+// memberOf is the named member of an in-memory .tar.gz or .zip, or nil.
+func memberOf(archive []byte, isZip bool, name string) []byte {
+	if isZip {
+		zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+		if err != nil {
+			return nil
+		}
+		for _, f := range zr.File {
+			if f.Name == name {
+				rc, err := f.Open()
+				if err != nil {
+					return nil
+				}
+				defer func() { _ = rc.Close() }()
+				b, _ := io.ReadAll(rc)
+				return b
+			}
+		}
+		return nil
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return nil
+	}
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			return nil
+		}
+		if hdr.Name == name {
+			b, _ := io.ReadAll(tr)
+			return b
+		}
+	}
 }
 
 func noGo(string) (string, error) { return "", errors.New("not found") }

@@ -432,7 +432,8 @@ func TestFetchedToolChecks(t *testing.T) {
 	t.Parallel()
 	tool := toolfetch.Tool{
 		Name: "faketool", Version: "v1.2.3", Repo: "acme/faketool", GoPackage: "example.com/faketool",
-		Checksums: map[string]string{"faketool_1.2.3_linux_amd64.tar.gz": strings.Repeat("a", 64)},
+		Checksums:       map[string]string{"faketool_1.2.3_linux_amd64.tar.gz": strings.Repeat("a", 64)},
+		BinaryChecksums: map[string]string{"faketool_1.2.3_linux_amd64.tar.gz": strings.Repeat("b", 64)},
 	}
 	noGo := func(string) (string, error) { return "", errors.New("not found") }
 	hasGo := func(string) (string, error) { return "/usr/bin/go", nil }

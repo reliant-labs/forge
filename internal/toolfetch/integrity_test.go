@@ -81,10 +81,19 @@ func TestCacheRejectsSubstitution(t *testing.T) {
 		}
 		assertRefusedThenReinstalled(t, f, rel, tool, in)
 	})
-	t.Run("manifest without binary hash", func(t *testing.T) {
+	// R3.B1: whoever can write the binary can write the manifest beside it,
+	// so the manifest's own hash of the substitute must vouch for nothing.
+	t.Run("binary and manifest together", func(t *testing.T) {
 		t.Parallel()
 		f, rel, tool, in := installed(t)
-		in.BinarySHA256 = ""
+		evil := []byte("substituted")
+		if err := os.Remove(in.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(in.Path, evil, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		in.BinarySHA256 = sum(evil)
 		if err := writeManifest(filepath.Dir(in.Path), in); err != nil {
 			t.Fatal(err)
 		}
@@ -278,71 +287,177 @@ func TestUnsafeMetadataRejectedBeforeIO(t *testing.T) {
 	}
 }
 
-// On a Windows host the cache's ACL is its protection: os.Stat reports
-// synthetic 0666/0777 modes and no owner, so the mode and ownership rules
-// must not run there, or every Windows cache would be refused. Links are
-// still refused and the binary's hash still checked. Exercised on any host
-// through the Fetcher's hostOS.
-func TestWindowsHostTrustsTheACLNotModeBits(t *testing.T) {
-	t.Parallel()
-	archive := tarGz(t, "faketool", fakeBinary)
-	tool := fakeTool(archive, nil)
-	rel := newRelease(t)
-	rel.serve(tool, "linux", "amd64", archive)
+// The current user's SID in the fake Windows ACLs below.
+const testUserSID = "S-1-5-21-1-2-3-1001"
 
-	// Every directory and file writable by everyone, owned by "someone
-	// else": what Windows' synthetic modes look like to the POSIX rules.
-	parent := t.TempDir()
-	if err := os.Chmod(parent, 0o777); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+// privateSD is what a per-user profile directory carries: owned by the
+// user, full control to the user, SYSTEM and Administrators only.
+func privateSD() winSecurity {
+	return winSecurity{Owner: testUserSID, ACEs: []winACE{
+		{Type: aceTypeAllowed, Mask: fileAllAccess, SID: testUserSID},
+		{Type: aceTypeAllowed, Mask: fileAllAccess, SID: sidSystem},
+		{Type: aceTypeAllowed, Mask: fileAllAccess, SID: sidAdmins},
+	}}
+}
+
+// withGrant is sd plus an allow ACE for sid.
+func withGrant(sd winSecurity, sid string, mask uint32) winSecurity {
+	sd.ACEs = append(append([]winACE(nil), sd.ACEs...), winACE{Type: aceTypeAllowed, Mask: mask, SID: sid})
+	return sd
+}
+
+// windowsHost is a Fetcher acting as a Windows host whose ACL reader
+// returns override(path) when it reports true, else privateSD. The mode
+// bits and owner uid are deliberately hostile (0777, another uid): on
+// Windows they mean nothing and must decide nothing.
+func windowsHost(t *testing.T, rel *release, parent string, override func(path string) (winSecurity, bool)) *Fetcher {
+	t.Helper()
 	f := rel.fetcher(t, "linux")
 	f.hostOS = "windows"
 	f.owner++
 	f.CacheDir = filepath.Join(parent, "release")
-	in, err := f.Ensure(context.Background(), tool)
-	if err != nil {
-		t.Fatalf("a Windows host refused a cache by its mode bits: %v", err)
-	}
-	if info, _ := os.Lstat(in.Path); info.Mode().Perm() != 0o755 {
-		t.Errorf("Windows binary mode %v, want 0755 (0555 would set the read-only attribute)", info.Mode().Perm())
-	}
-	for _, p := range []string{filepath.Dir(in.Path), filepath.Join(filepath.Dir(in.Path), manifestName), in.Path} {
-		if err := os.Chmod(p, 0o777); err != nil {
+	f.acl = aclSource{user: testUserSID, read: func(path string) (winSecurity, error) {
+		if sd, ok := override(path); ok {
+			return sd, nil
+		}
+		return privateSD(), nil
+	}}
+	return f
+}
+
+// R3.B1: on a Windows host the cache is held to its ACLs. Owner and mode
+// bits decide nothing; another principal's write access anywhere refuses
+// the cache; a reader that cannot answer fails closed. Exercised on every OS
+// through the Fetcher's hostOS and ACL seams; the real ACL reader is tested
+// on Windows (acl_windows_test.go).
+func TestWindowsHostHoldsTheCacheToItsACL(t *testing.T) {
+	t.Parallel()
+	archive := tarGz(t, "faketool", fakeBinary)
+	tool := fakeTool(archive, nil)
+	none := func(string) (winSecurity, bool) { return winSecurity{}, false }
+	hostileModes := func(t *testing.T) string {
+		parent := t.TempDir()
+		if err := os.Chmod(parent, 0o777); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if _, ok := f.Find(tool); !ok {
-		t.Fatal("a Windows host refused an entry by its mode bits")
-	}
-	if rel.hits.Load() != 1 {
-		t.Errorf("%d downloads; a mode-bit difference must not reinstall on Windows", rel.hits.Load())
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		return parent
 	}
 
-	// The hash is checked on every host.
-	if err := os.Remove(in.Path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(in.Path, []byte("substituted"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := f.Find(tool); ok {
-		t.Fatal("a Windows host trusted a substituted binary")
+	t.Run("a private ACL is trusted whatever the mode bits", func(t *testing.T) {
+		t.Parallel()
+		rel := newRelease(t)
+		rel.serve(tool, "linux", "amd64", archive)
+		f := windowsHost(t, rel, hostileModes(t), none)
+		in, err := f.Ensure(context.Background(), tool)
+		if err != nil {
+			t.Fatalf("a private Windows cache was refused: %v", err)
+		}
+		if info, _ := os.Lstat(in.Path); info.Mode().Perm() != 0o755 {
+			t.Errorf("Windows binary mode %v, want 0755 (0555 would set the read-only attribute)", info.Mode().Perm())
+		}
+		for _, p := range []string{filepath.Dir(in.Path), filepath.Join(filepath.Dir(in.Path), manifestName), in.Path} {
+			if err := os.Chmod(p, 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, ok := f.Find(tool); !ok || rel.hits.Load() != 1 {
+			t.Fatalf("mode bits decided a Windows hit (found %v, %d downloads)", ok, rel.hits.Load())
+		}
+	})
+
+	t.Run("no ACL reader fails closed", func(t *testing.T) {
+		t.Parallel()
+		rel := newRelease(t)
+		f := windowsHost(t, rel, t.TempDir(), none)
+		f.acl = aclSource{}
+		if _, err := f.Ensure(context.Background(), tool); !errors.Is(err, ErrUntrustedCache) || rel.hits.Load() != 0 {
+			t.Fatalf("err = %v (%d downloads), want ErrUntrustedCache before any download", err, rel.hits.Load())
+		}
+	})
+
+	for _, c := range []struct {
+		name string
+		at   string // "kind" (the cache), or "parent" (an ancestor)
+		sd   winSecurity
+		ok   bool
+	}{
+		{"cache grants Everyone write", "kind", withGrant(privateSD(), "S-1-1-0", fileWriteData), false},
+		{"cache grants Users GENERIC_WRITE", "kind", withGrant(privateSD(), "S-1-5-32-545", genericWrite), false},
+		{"cache owned by another user", "kind", winSecurity{Owner: "S-1-5-21-9-9-9-500", ACEs: privateSD().ACEs}, false},
+		{"cache with a NULL DACL", "kind", winSecurity{Owner: testUserSID, NullDACL: true}, false},
+		{"ancestor grants delete-child", "parent", withGrant(privateSD(), "S-1-5-11", fileDeleteChild), false},
+		{"ancestor grants WRITE_DAC", "parent", withGrant(privateSD(), "S-1-1-0", writeDAC), false},
+		{"ancestor lets users add folders (C:\\ default)", "parent", withGrant(privateSD(), "S-1-5-11", fileAppendData), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			rel := newRelease(t)
+			rel.serve(tool, "linux", "amd64", archive)
+			parent := canonical(t, t.TempDir())
+			target := filepath.Join(parent, "release")
+			if c.at == "parent" {
+				target = parent
+			}
+			f := windowsHost(t, rel, parent, func(p string) (winSecurity, bool) { return c.sd, p == target })
+			_, err := f.Ensure(context.Background(), tool)
+			if c.ok && err != nil {
+				t.Fatalf("refused: %v", err)
+			}
+			if !c.ok && (!errors.Is(err, ErrUntrustedCache) || !strings.Contains(err.Error(), target) || rel.hits.Load() != 0) {
+				t.Fatalf("err = %v (%d downloads), want ErrUntrustedCache naming %s before any download", err, rel.hits.Load(), target)
+			}
+		})
 	}
 
-	// And so is a link.
-	elsewhere := filepath.Join(t.TempDir(), "faketool")
-	if err := os.WriteFile(elsewhere, []byte(fakeBinary), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(in.Path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(elsewhere, in.Path); err != nil {
-		t.Skipf("cannot create a symlink here: %v", err)
-	}
-	if _, ok := f.Find(tool); ok {
-		t.Fatal("a Windows host trusted a symlinked binary")
-	}
+	t.Run("an entry another user could write is refused", func(t *testing.T) {
+		t.Parallel()
+		rel := newRelease(t)
+		rel.serve(tool, "linux", "amd64", archive)
+		var binary string
+		f := windowsHost(t, rel, t.TempDir(), func(p string) (winSecurity, bool) {
+			return withGrant(privateSD(), "S-1-1-0", fileWriteData), binary != "" && p == binary
+		})
+		in, err := f.Ensure(context.Background(), tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binary = in.Path
+		if _, ok := f.Find(tool); ok {
+			t.Fatal("a Windows host trusted a binary Everyone can write")
+		}
+	})
+
+	t.Run("links and substituted bytes are still refused", func(t *testing.T) {
+		t.Parallel()
+		rel := newRelease(t)
+		rel.serve(tool, "linux", "amd64", archive)
+		f := windowsHost(t, rel, t.TempDir(), none)
+		in, err := f.Ensure(context.Background(), tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(in.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(in.Path, []byte("substituted"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := f.Find(tool); ok {
+			t.Fatal("a Windows host trusted a substituted binary")
+		}
+		elsewhere := filepath.Join(t.TempDir(), "faketool")
+		if err := os.WriteFile(elsewhere, []byte(fakeBinary), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(in.Path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, in.Path); err != nil {
+			t.Skipf("cannot create a symlink here: %v", err)
+		}
+		if _, ok := f.Find(tool); ok {
+			t.Fatal("a Windows host trusted a symlinked binary")
+		}
+	})
 }

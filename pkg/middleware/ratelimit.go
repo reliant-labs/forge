@@ -46,7 +46,19 @@ type ClaimsLookup func(ctx context.Context) (*auth.Claims, bool)
 // limiters; idle keys are evicted in LRU order so the interceptor is safe
 // to expose to anonymous traffic. claimsFrom may be nil (all callers are
 // then keyed by peer IP).
+//
+// connect-go v2 projects use [RateLimitInterceptorV2].
 func RateLimitInterceptor(opts RateLimitOptions, claimsFrom ClaimsLookup) connect.Interceptor {
+	rl := newRateLimiter(opts, claimsFrom)
+	if rl == nil {
+		return nil
+	}
+	return rl
+}
+
+// newRateLimiter builds the limiter both connect majors share, or nil when
+// opts disables rate limiting.
+func newRateLimiter(opts RateLimitOptions, claimsFrom ClaimsLookup) *rateLimitInterceptor {
 	if opts.Rps <= 0 {
 		return nil
 	}

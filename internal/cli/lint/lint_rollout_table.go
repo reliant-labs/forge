@@ -232,6 +232,10 @@ var newRules = []rolloutGroup{
 	// or auth_self_signup outside development): its email is a contact
 	// field no proof ever claims (forge#2121).
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Rules: []string{ruleUnprovenSignup}},
+	// The same lane, newly finding a config schema that DEFAULTS
+	// auth_self_signup to true (sign-up on in every env that does not set
+	// it): found after ruleUnprovenSignup shipped, so it warns first.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{ruleUnprovenSignupDefault}},
 	// forge lint --test-waits: a test that waits on the wall clock where it
 	// should wait on an event — the shapes that flake on a loaded machine.
 	{IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Rules: []string{
@@ -248,6 +252,10 @@ var newRules = []rolloutGroup{
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
 	{IntroducedIn: "v1.8.0", GatesFrom: "v1.8.1", Fix: "forge lint --proto-format --fix", Rules: []string{ruleProtoFormat}},
+	// A handler file implementing more than one custom rpc. Advisory: its
+	// findings are warnings at any pin, because where an rpc's code sits
+	// changes no behaviour; the row is what lets lint.rules raise it.
+	{IntroducedIn: "v1.9.0", GatesFrom: "v1.9.1", Rules: []string{"forgeconv-one-rpc-per-file"}},
 	// The frontend lanes stop installing a missing node_modules: until it
 	// gates, lint installs as it did and warns (lint_frontend_deps.go), so a
 	// pipeline that relied on the install — a scaffolded release.yml — is

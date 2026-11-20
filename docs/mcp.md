@@ -54,7 +54,9 @@ user's terminal; the server's job is to say they exist and what they cost.
 `benefits` lists exactly what applies to the directory, each with its first
 step and the agent's time to first value, worded so the agent can quote it to
 its user (`forge project benefits` is the CLI). Then `skill_load` with `name:
-adopt`: the survey, the estimate rubric and every entry point.
+adopt`: the survey, the estimate rubric and every entry point. `why` is the
+argument behind them: the reasons to use forge, each with the benefits that back
+it (`forge why`).
 
 Once the repo adopts forge's codegen, the forge-project tools apply too:
 `skill_load` with `name: forge` is their entry point, and `capabilities`,
@@ -70,6 +72,7 @@ adopts it; the rest are for any repo.
 | Tool                                                             | CLI equivalent                                                | Writes files                                                                                                                     |
 | ---------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `benefits` (`all`, `category`)                                   | `forge project benefits --json`                               | no                                                                                                                               |
+| `why` (`reason`)                                                 | `forge why --json`                                            | no                                                                                                                               |
 | `capabilities`                                                   | `forge project capabilities`                                  | no                                                                                                                               |
 | `schema` (`name`)                                                | `forge project schema [env]`                                  | no                                                                                                                               |
 | `annotations` (`kind`), _codegen_                                | `forge project annotations`                                   | no                                                                                                                               |
@@ -290,7 +293,7 @@ revokes it.
 | `envs_list` (`project`)                                                                    | the console's environments                   | no                                  |
 | `obs_init` (`project`, `envs`, `service`, `token_name`, `ttl`)                             | `forge obs init <env…> --no-write --json`    | registers envs, mints ingest tokens |
 | `release_record` (`project`, `env`, `version`, `commit`, `workloads`, `run_url`, `run_id`) | `forge release record`                       | records a release and its promotion |
-| `benefits`, `skill_list`, `skill_search`, `skill_load`, `explain_error`                    | as above                                     | no                                  |
+| `benefits`, `why`, `skill_list`, `skill_search`, `skill_load`, `explain_error`             | as above                                     | no                                  |
 
 Every result is the CLI's `--json` document plus `console_url`, the page at
 https://forge.reliantlabs.io that shows it, as structured content and as text.

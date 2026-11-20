@@ -534,6 +534,7 @@ func generateSteps() []GenStep {
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
+		{Name: agentsGuideStep, Gate: gateAgentsGuide, GateReason: "no forge.yaml, or harness: none (forge writes no agent file)", Run: stepAgentsGuide, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
 		{Name: "goimports on generated Go", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoimports, Tag: "tools"},
 		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},

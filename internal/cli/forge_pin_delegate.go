@@ -520,7 +520,7 @@ func pinTarget(rel string, allow bool, projectRoot string) (t delegateTarget, ok
 	if !ok {
 		return delegateTarget{}, false, ""
 	}
-	if allow || forgecompat.SkewOverridden() || t.devAgainstTag(rel) {
+	if allow || forgecompat.SkewOverridden() || childOfThisForge() || t.devAgainstTag(rel) {
 		// Run this forge; checkForgePinSkew warns, or refuses.
 		return delegateTarget{}, false, ""
 	}

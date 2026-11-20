@@ -39,6 +39,14 @@
 //     registers cleanup, and is the same shape used by the
 //     bootstrap_testing scaffold.
 //
+// # connect-go v2
+//
+// A v2 handler is "simple" — func(ctx, *Req) (*Resp, error) — so the RPC
+// table helpers have v2 forms: [CaseV2], [RPCCaseV2], [HandlerFuncV2],
+// [TableRPCV2], [RunRPCCasesV2], [AssertConnectErrorV2] and
+// [AssertScaffoldStubV2]. They behave exactly as their v1 twins. The other
+// helpers have no connect type and serve both majors.
+//
 // See pkg/tdd/*_test.go for usage examples; the same patterns appear in
 // the templates under internal/templates/{service,internal-package,test/e2e}.
 package tdd

@@ -51,3 +51,37 @@ func TestIOSignalFor_PgxNamesOnlyItsIO(t *testing.T) {
 		}
 	}
 }
+
+// A Connect client call is outbound I/O in both connect-go majors: v1's
+// generic Client[Req, Res] and v2's single *connect.Client. Neither
+// runtime's pure helpers (a code, an error constructor) are.
+func TestIOSignalFor_ConnectClientBothMajors(t *testing.T) {
+	v1 := types.NewPackage("connectrpc.com/connect", "connect")
+	v2 := types.NewPackage("connectrpc.com/connect/v2", "connect")
+	fn := func(pkg *types.Package, name string) *types.Func {
+		return types.NewFunc(token.NoPos, pkg, name, types.NewSignatureType(nil, nil, nil, nil, nil, false))
+	}
+	method := func(pkg *types.Package, recv, name string) *types.Func {
+		named := types.NewNamed(types.NewTypeName(token.NoPos, pkg, recv, nil), types.NewStruct(nil, nil), nil)
+		r := types.NewVar(token.NoPos, pkg, "c", types.NewPointer(named))
+		return types.NewFunc(token.NoPos, pkg, name, types.NewSignatureType(r, nil, nil, nil, nil, false))
+	}
+	for name, f := range map[string]*types.Func{
+		"(*connect.Client).CallUnary (v1)":        method(v1, "Client", "CallUnary"),
+		"(*connect.Client).CallUnary (v2)":        method(v2, "Client", "CallUnary"),
+		"(*connect.Client).CallServerStream (v2)": method(v2, "Client", "CallServerStream"),
+	} {
+		if label, ok := ioSignalFor(f); !ok || label != "a Connect client call" {
+			t.Errorf("%s: want a Connect client call, got %q, %v", name, label, ok)
+		}
+	}
+	for name, f := range map[string]*types.Func{
+		"connect.NewError (v2)":      fn(v2, "NewError"),
+		"connect.CodeOf (v2)":        fn(v2, "CodeOf"),
+		"(*connect.Error).Code (v2)": method(v2, "Error", "Code"),
+	} {
+		if label, ok := ioSignalFor(f); ok {
+			t.Errorf("%s: a pure connect call was classed as I/O (%q)", name, label)
+		}
+	}
+}

@@ -9,7 +9,11 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
+
 	"github.com/reliant-labs/forge/internal/cigate"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/toolcache"
 	"github.com/reliant-labs/forge/internal/toolpin"
@@ -31,13 +35,19 @@ import (
 // built inside another module's graph; both are honoured. A `=>` replacement
 // line, when present, is not followed: the pinned version is what matters.
 func toolBinVersion(ctx context.Context, binPath, module string) (string, bool) {
-	cmd := exec.CommandContext(ctx, "go", "version", "-m", binPath)
-	cmd.Env = goexec.Env()
-	out, err := cmd.Output()
+	out, err := goVersionM(ctx, binPath)
 	if err != nil {
 		return "", false
 	}
-	return parseBuildInfoVersion(string(out), module)
+	return parseBuildInfoVersion(out, module)
+}
+
+// goVersionM returns `go version -m binPath`. A seam for tests.
+var goVersionM = func(ctx context.Context, binPath string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "version", "-m", binPath)
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 // parseBuildInfoVersion extracts module's version from `go version -m` output.
@@ -65,6 +75,16 @@ func toolMatches(ctx context.Context, binPath string, t protoTool, want string) 
 // toolCacheDir is where a tool pinned at version is installed: its entry in
 // the pinned kind of forge's shared tool cache (internal/toolcache), which
 // FORGE_TOOLS_CACHE relocates with every other tool forge installs.
+//
+// The entry is keyed <binary>@<version>, and that key already separates the
+// two protoc-gen-connect-go builds that share a binary name: Go's semantic
+// import versioning makes a module path ending /vN (N ≥ 2) carry only vN.x.y
+// versions, so connect v1's plugin is always protoc-gen-connect-go@v1.* and
+// v2's (connectrpc.com/connect/v2) protoc-gen-connect-go@v2.*. A v1 project
+// is never handed v2's binary, nor the reverse — and installPinnedTool's
+// ready check verifies the entry's build info names t.VersionModule, so even
+// a hand-planted binary of the other major in an entry is rebuilt, not
+// served. Keying on the version keeps every existing v1 entry valid.
 func toolCacheDir(t protoTool, version string) (string, error) {
 	kind, err := toolcache.KindDir(toolcache.KindPinned)
 	if err != nil {
@@ -148,12 +168,18 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 	if _, err := exec.LookPath("go"); err != nil {
 		return res, nil // cannot resolve versions without the go tool
 	}
-	for _, t := range requiredProtoTools {
+	// The project's own set: protoc-gen-connect-go of the connect-go major
+	// its go.mod selects (internal/connectmajor). toolMatches checks the
+	// binary's build info against that major's module, so a PATH binary of
+	// the other major never satisfies the pin, whatever its version.
+	for _, t := range projectProtoTools(projectDir) {
 		want := resolveToolVersion(ctx, projectDir, t, "")
-		if want == "latest" {
-			continue // module not in the graph: any binary on PATH is fine
-		}
 		pathBin, lookErr := exec.LookPath(t.Binary)
+		if want == "latest" {
+			if want = unresolvedToolPin(ctx, projectDir, t, pathBin, lookErr == nil); want == "" {
+				continue
+			}
+		}
 		have := "not found on PATH"
 		if lookErr == nil {
 			var ok bool
@@ -188,6 +214,58 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 		return nil, err
 	}
 	return res, nil
+}
+
+// unresolvedToolPin is the version to pin t at when the module graph could
+// not name one (resolveToolVersion said "latest"), or "" to run whatever PATH
+// holds.
+//
+// For every tool but protoc-gen-connect-go "" is right: the module is not in
+// the graph, so any build will do. protoc-gen-connect-go is the one tool whose
+// name two incompatible builds share — connect-go v1's and v2's — and each
+// emits stubs only its own runtime compiles against. "Latest" also does not
+// mean "not in the graph" for it: `go list -m` fails on a go.mod that merely
+// needs a tidy ("updates to go.mod needed"), which is what an appended
+// require or replace leaves behind. Running PATH's build then generated v2
+// stubs (Register<Svc>Handler) into a v1 project whose handlers call
+// New<Svc>Handler. So a PATH build counts only when it is of t's major (at
+// any version); otherwise the pin is the version go.mod's own require line
+// names, read from the file rather than the module graph.
+func unresolvedToolPin(ctx context.Context, projectDir string, t protoTool, pathBin string, onPath bool) string {
+	if _, ok := connectmajor.IsRuntimeImport(t.VersionModule); !ok {
+		return "" // module not in the graph: any binary on PATH is fine
+	}
+	if onPath {
+		if _, ofMajor := toolBinVersion(ctx, pathBin, t.VersionModule); ofMajor {
+			return ""
+		}
+	}
+	return goModRequireVersion(projectDir, t.VersionModule)
+}
+
+// goModRequireVersion is the version projectDir's go.mod requires module at
+// (direct or indirect), read from the file itself, or "" when it names none
+// or cannot be read. It answers when `go list -m` cannot: a go.mod that
+// needs a tidy.
+func goModRequireVersion(projectDir, module string) string {
+	path := filepath.Join(projectDir, "go.mod")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	f, err := modfile.ParseLax(path, data, nil)
+	if err != nil {
+		return ""
+	}
+	// Go selects the highest required version, even when an untidy file
+	// repeats the module in separate require directives.
+	var version string
+	for _, r := range f.Require {
+		if r.Mod.Path == module && semver.Compare(r.Mod.Version, version) > 0 {
+			version = r.Mod.Version
+		}
+	}
+	return version
 }
 
 // pinNotice reports which pinned build a codegen tool resolved to. It is
@@ -281,7 +359,7 @@ var goInstallPinned = func(ctx context.Context, spec, gobin string) error {
 func pinError(t protoTool, pinned, have string, cause error) error {
 	return fmt.Errorf("%s does not match the version go.mod pins and could not be fixed automatically: %s, go.mod pins %s %s: %w\n"+
 		"  fix: run `forge tools install --force` (installs %s@%s onto PATH), or put a %s build on PATH",
-		t.Binary, have, t.VersionModule, pinned, cause, t.Binary, pinned, pinned)
+		t.Binary, have, t.VersionModule, pinned, cause, t.Module, pinned, pinned)
 }
 
 func exeSuffix() string {

@@ -90,7 +90,7 @@ func gradableRules() []string {
 		"forgeconv-frontend-env-forge-owned", "forgeconv-frontend-process-env",
 		"forgeconv-handler-connect-error", "forgeconv-handler-file-size",
 		"forgeconv-list-filter-optional", "forgeconv-no-container-deps", "forgeconv-no-getenv",
-		"forgeconv-no-handler-error-mapping", "forgeconv-one-service-per-file",
+		"forgeconv-no-handler-error-mapping", "forgeconv-one-rpc-per-file", "forgeconv-one-service-per-file",
 		"forgeconv-optional-dep-marker-position", "forgeconv-product-event-pii", "forgeconv-service-dir-consistency",
 		"forgeconv-tx-lock-under-serializable", "forgeconv-unwrapped-domain-error",
 		string(contractcheck.RuleInternalPackageContractNames), string(contractcheck.RuleDepsAreInterfaces),
@@ -118,7 +118,7 @@ func gradableRules() []string {
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
 		// auth scaffold
-		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup,
+		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,

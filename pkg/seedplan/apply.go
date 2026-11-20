@@ -218,6 +218,23 @@ var (
 	// member. Anchored on both ends so a conjunction or a function call
 	// around the comparison is not mistaken for a pool.
 	checkEqLiteralRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*"?[A-Za-z_][A-Za-z0-9_]*"?\s*=\s*'((?:[^']|'')*)'(?:::[a-z][a-z0-9_ ]*)?\s*\)+\s*$`)
+	// checkEqBareRE is checkEqLiteralRE for an UNQUOTED literal: a number
+	// or a boolean keyword. It is what a column pinned to one value
+	// normalizes to on a numeric or boolean column —
+	//
+	//	CHECK (id = 1)           → CHECK ((id = 1))
+	//	CHECK (id IN (1))        → CHECK ((id = 1))
+	//	CHECK (rate = 1)         → CHECK ((rate = (1)::numeric))
+	//	CHECK (singleton = true) → CHECK ((singleton = true))
+	//
+	// — the singleton-table idiom (`id int PRIMARY KEY CHECK (id = 1)`),
+	// whose one admitted value is the whole of the table's capacity.
+	checkEqBareRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*"?[A-Za-z_][A-Za-z0-9_]*"?\s*=\s*\(?(-?\d+(?:\.\d+)?|true|false)\)?(?:::[a-z][a-z0-9_ ]*)?\s*\)+\s*$`)
+	// checkBareBoolRE matches a CHECK that is a boolean column by itself, or
+	// its negation: `CHECK (singleton)` / `CHECK (NOT archived)`. A CHECK
+	// expression must be boolean, so a bare column in one IS a boolean
+	// column, pinned to true (or, negated, to false).
+	checkBareBoolRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*(NOT\s+)?"?[A-Za-z_][A-Za-z0-9_]*"?\s*\)+\s*$`)
 	// checkArrayBodyRE isolates the member list of the canonical
 	// `= ANY (ARRAY[...])` form so members are read from the array itself
 	// and never from the rest of the expression.
@@ -249,9 +266,23 @@ var (
 // A numeric member is returned in its DECIMAL spelling; callers render it for
 // the column's own type (poolLiteral emits it bare for a numeric column, so
 // the value reaches SQL as a number rather than a quoted string).
+//
+// A column pinned to ONE value is a one-member vocabulary in any spelling:
+// `col = 'x'`, `col = 1`, `col = true`, and the bare boolean `CHECK (col)`
+// (or `CHECK (NOT col)`). On a sole primary key that pin is the table's whole
+// capacity — see the key cap in finalize.
 func poolFromCheckDef(def string) []string {
 	if m := checkEqLiteralRE.FindStringSubmatch(def); m != nil {
 		return []string{strings.ReplaceAll(m[1], "''", "'")}
+	}
+	if m := checkEqBareRE.FindStringSubmatch(def); m != nil {
+		return []string{m[1]}
+	}
+	if m := checkBareBoolRE.FindStringSubmatch(def); m != nil {
+		if m[1] != "" {
+			return []string{"false"}
+		}
+		return []string{"true"}
 	}
 	if !checkAnyRE.MatchString(def) {
 		return nil

@@ -395,6 +395,59 @@ func probeInt(lit string, used map[string]bool, limit int, b NumBound) (string, 
 	return "", false
 }
 
+// capPinnedKey caps a table whose SOLE primary-key column a CHECK (or a native
+// enum type) restricts to a finite set of values, and deals each row one of
+// them. Such a key admits only as many rows as the set has members — the
+// singleton-table idiom is the one-member case:
+//
+//	CREATE TABLE legacy_credential_copy (id int PRIMARY KEY CHECK (id = 1), …)
+//
+// Planning the configured 20 rows for it writes id = 2 on the second row, and
+// the CHECK aborts the whole (transactional) seed. Capping is the only answer
+// that is true to the schema: the table cannot hold a second row, so the plan
+// says so, seeds the one row with the pinned value, and every child's foreign
+// key resolves to it (a child hash-picks over the parent's capped row count).
+//
+// A composite key member is not capped here: its OTHER members carry the
+// row's distinctness (see keyLiteral). The cap and the per-row values are
+// published exactly as a UNIQUE data column's are — through p.uniques, which
+// keyLiteral reads — so the key the parent inserts and the key a child
+// re-derives through referencedValue are one value.
+func (p *Plan) capPinnedKey(tp *tablePlan, col schemadef.Column) {
+	name := tp.table.Name
+	if len(p.byName[name].PKCols) != 1 {
+		return
+	}
+	pool, ok := p.pools.get(name, col.Name)
+	if !ok {
+		return
+	}
+	lits, _ := p.assignUnique(tp, col, "")
+	if len(lits) < tp.n {
+		p.planWarns = append(p.planWarns, fmt.Sprintf("seed plan: %s capped to %d row(s): its primary key %s admits only %s (a key cannot repeat a value)",
+			name, len(lits), col.Name, describePool(pool)))
+		if tp.n = len(lits); tp.n < 1 {
+			tp.n = 1
+		}
+	}
+	if p.uniques == nil {
+		p.uniques = map[string]map[string][]string{}
+	}
+	if p.uniques[name] == nil {
+		p.uniques[name] = map[string][]string{}
+	}
+	p.uniques[name][col.Name] = lits
+}
+
+// describePool spells a key's admitted values for a warning: the value itself
+// for a pin (`id = 1`), else the count.
+func describePool(pool []string) string {
+	if len(pool) == 1 {
+		return fmt.Sprintf("the single value %s (pinned by a CHECK)", pool[0])
+	}
+	return fmt.Sprintf("%d values", len(pool))
+}
+
 // finalize resolves every row count and UNIQUE-column assignment. It runs at
 // the end of the plan's ONLY three mutators (BuildPlan, SetBounds, ApplyVocab),
 // so every consumer — Apply, Render, Status, the baked entity factories —
@@ -452,8 +505,12 @@ func (p *Plan) finalize() {
 
 		// Distinct assignments for single-column UNIQUE data columns.
 		for _, cp := range tp.cols {
-			if cp.col.IsPK || cp.fk != nil || p.managedRole(name, cp.col) == managedDeletedAt {
+			if cp.fk != nil || p.managedRole(name, cp.col) == managedDeletedAt {
 				continue // referential / managed columns are already unique
+			}
+			if cp.col.IsPK {
+				p.capPinnedKey(tp, cp.col)
+				continue
 			}
 			fold, isUnique := uniqueSingleColumnFold(tp.table, cp.col.Name)
 			if !isUnique {

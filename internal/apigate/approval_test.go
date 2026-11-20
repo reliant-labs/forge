@@ -31,7 +31,7 @@ func (f *fakeGitHub) api(args ...string) ([]byte, error) {
 }
 
 // useFakeGitHub routes ghAPI to f for the test, for repository o/r and the
-// default owner, reliant-01.
+// default owners: reliant-01 and reliant-labs[bot].
 func useFakeGitHub(t *testing.T, f *fakeGitHub) {
 	t.Helper()
 	t.Setenv("GITHUB_REPOSITORY", "o/r")
@@ -53,7 +53,9 @@ func labeled(actor, label string) string {
 func page(events ...string) string { return "[" + strings.Join(events, ",") + "]" }
 
 // The pkg/ API gate's approval attribution: breaking:approved counts only
-// while it is on the PR and the last account to apply it is the owner's.
+// while it is on the PR and the last account to apply it is the owner's, or
+// the Reliant bot's, which labels on the owner's instruction (owner decision,
+// 2026-11-19). No other account's label counts.
 func TestPRDeclarationOwnerApproval(t *testing.T) {
 	other := `{"event":"commented","actor":{"login":"reliant-01"}}`
 	cases := []struct {
@@ -64,8 +66,12 @@ func TestPRDeclarationOwnerApproval(t *testing.T) {
 	}{
 		{"the owner applied the label", prApproved,
 			[]string{page(labeled("reliant-01", ApprovedLabel))}, true},
-		{"a bot applied the label", prApproved,
-			[]string{page(labeled("reliant-labs[bot]", ApprovedLabel))}, false},
+		{"the Reliant bot applied the label", prApproved,
+			[]string{page(labeled("reliant-labs[bot]", ApprovedLabel))}, true},
+		{"another bot applied the label", prApproved,
+			[]string{page(labeled("github-actions[bot]", ApprovedLabel))}, false},
+		{"a non-owner reapplied the Reliant bot's label", prApproved,
+			[]string{page(labeled("reliant-labs[bot]", ApprovedLabel), labeled("someone", ApprovedLabel))}, false},
 		{"the PR author applied the label", prApproved,
 			[]string{page(labeled("someone", ApprovedLabel))}, false},
 		{"the owner applied a different label", prApproved,
@@ -78,7 +84,7 @@ func TestPRDeclarationOwnerApproval(t *testing.T) {
 		{"the owner's label is on a later page", prApproved,
 			[]string{page(other, other, labeled("someone", ApprovedLabel)), page(other, labeled("reliant-01", ApprovedLabel))}, true},
 		{"a non-owner reapplied it on a later page", prApproved,
-			[]string{page(labeled("reliant-01", ApprovedLabel)), page(other), page(labeled("reliant-labs[bot]", ApprovedLabel))}, false},
+			[]string{page(labeled("reliant-01", ApprovedLabel)), page(other), page(labeled("someone", ApprovedLabel))}, false},
 		{"the label carries no labeled event", prApproved, []string{page(other)}, false},
 	}
 	for _, tc := range cases {
@@ -105,6 +111,13 @@ func TestPRDeclarationOwnersOverride(t *testing.T) {
 	t.Setenv("APIGATE_OWNERS", "reliant-01, deputy")
 	if _, _, approved, err := prDeclaration("5"); err != nil || !approved {
 		t.Fatalf("an account named in APIGATE_OWNERS must count: approved=%v err=%v", approved, err)
+	}
+	// An override replaces the default: naming only the owner drops the bot.
+	f = &fakeGitHub{pr: prApproved, events: []string{page(labeled("reliant-labs[bot]", ApprovedLabel))}}
+	useFakeGitHub(t, f)
+	t.Setenv("APIGATE_OWNERS", "reliant-01")
+	if _, _, approved, err := prDeclaration("5"); err != nil || approved {
+		t.Fatalf("APIGATE_OWNERS=reliant-01 must not count the bot's label: approved=%v err=%v", approved, err)
 	}
 }
 
@@ -136,7 +149,8 @@ func TestPRDeclarationAPIErrorsFail(t *testing.T) {
 }
 
 // End to end through -pr: the same declared break that ships its codemod
-// passes when the owner applied breaking:approved, and fails otherwise.
+// passes when the owner (or the Reliant bot) applied breaking:approved, and
+// fails when anyone else did.
 func TestRemovalDeclaredWithCodemodViaPR(t *testing.T) {
 	slow(t)
 	repo := prRepo(t, "removal")
@@ -153,7 +167,12 @@ func TestRemovalDeclaredWithCodemodViaPR(t *testing.T) {
 	}
 
 	useFakeGitHub(t, &fakeGitHub{pr: prApproved, events: []string{page(labeled("reliant-labs[bot]", ApprovedLabel))}})
+	if stdout, stderr, err := gate(t, repo, "-pr", "5"); err != nil || !strings.Contains(stdout, "declared and shipped") {
+		t.Fatalf("the same break with the Reliant bot's label must pass: %v\n%s%s", err, stdout, stderr)
+	}
+
+	useFakeGitHub(t, &fakeGitHub{pr: prApproved, events: []string{page(labeled("someone", ApprovedLabel))}})
 	if _, stderr, err := gate(t, repo, "-pr", "5"); err == nil || !strings.Contains(stderr, "breaking:approved") {
-		t.Fatalf("the same break with a bot-applied label must fail naming breaking:approved: %v\n%s", err, stderr)
+		t.Fatalf("the same break with another account's label must fail naming breaking:approved: %v\n%s", err, stderr)
 	}
 }

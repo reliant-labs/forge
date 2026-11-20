@@ -69,6 +69,8 @@ type plannedBump struct {
 	direct   bool
 	results  []int
 	done     *Bump
+	py       *pyBump // a Python bump's manifest and plan
+	rank     int     // Apply runs a manifest after those of lower rank
 }
 
 // index is every manifest in the tree.
@@ -76,11 +78,13 @@ type index struct {
 	goMods    []*goModule
 	lockfiles []*jsLockfile
 	goWork    bool
+	python    []*pyManifest
+	pyOther   []string // Python lockfiles with no patcher (Pipfile.lock, pdm.lock)
 }
 
 // skipDirs are never searched for manifests: vendored and installed
 // dependencies, fixtures, and tool state.
-var skipDirs = map[string]bool{"node_modules": true, "vendor": true, "testdata": true}
+var skipDirs = map[string]bool{"node_modules": true, "vendor": true, "testdata": true, "site-packages": true, "__pycache__": true}
 
 func scan(dir string) (*index, []string, error) {
 	idx := &index{}
@@ -113,9 +117,14 @@ func scan(dir string) (*index, []string, error) {
 				return nil
 			}
 			idx.lockfiles = append(idx.lockfiles, l)
+		default:
+			if note := idx.addPython(dir, path); note != "" {
+				notes = append(notes, note)
+			}
 		}
 		return nil
 	})
+	idx.rankPython()
 	return idx, notes, err
 }
 
@@ -154,7 +163,7 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 		Installed: f.Package.Version, Status: StatusSkipped,
 	}
 	kind, eco := classify(f.Package)
-	if kind == kindJS && !wantsAnyJS(opts) || kind != kindJS && eco != "" && !opts.wants(eco) {
+	if kind == kindJS && !wantsAnyJS(opts) || kind == kindPython && !wantsAnyPython(opts) || kind != kindJS && eco != "" && !opts.wants(eco) {
 		return
 	}
 	switch kind {
@@ -162,8 +171,6 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 		r.Reason = "the Go standard library: raising the toolchain directive and the builder image has no patcher yet"
 	case kindOS:
 		r.Reason = fmt.Sprintf("an OS package (%s): refreshing the image's base has no patcher yet", f.Package.Type)
-	case kindPython:
-		r.Reason = "a Python package: no patcher yet"
 	case kindOther:
 		r.Reason = fmt.Sprintf("no patcher for %s packages", orUnknown(f.Package.Type))
 	}
@@ -178,7 +185,11 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 		p.Results = append(p.Results, r)
 		return
 	}
-	target, err := ChooseTarget(f.Package.Version, f.FixedIn, opts.AllowMajor)
+	choose := ChooseTarget
+	if kind == kindPython {
+		choose = choosePythonTarget // PEP 440, not semver
+	}
+	target, err := choose(f.Package.Version, f.FixedIn, opts.AllowMajor)
 	if err != nil {
 		r.Reason = err.Error()
 		if opts.Explicit && errors.Is(err, ErrNeedsMajor) {
@@ -195,6 +206,10 @@ func (p *Plan) add(f vulnscan.Finding, idx *index, opts Options) {
 		p.resolveGo(&r, f, idx, at)
 	case kindJS:
 		if !p.resolveJS(&r, f, idx, opts, at) {
+			return
+		}
+	case kindPython:
+		if !p.resolvePython(&r, f, idx, opts, at) {
 			return
 		}
 	}
@@ -385,7 +400,7 @@ var overridePath = map[Ecosystem][]string{
 func (p *Plan) plan(b *plannedBump, result int) {
 	for _, have := range p.bumps {
 		if have.manifest == b.manifest && have.pkg == b.pkg {
-			if compareVersions(b.to, have.to) > 0 {
+			if compareIn(b.eco, b.to, have.to) > 0 {
 				have.to = b.to
 			}
 			have.results = appendInt(have.results, result)

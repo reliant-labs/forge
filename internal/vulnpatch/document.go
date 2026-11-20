@@ -20,7 +20,7 @@ const (
 
 // Ecosystems are the values --ecosystem accepts.
 func Ecosystems() []Ecosystem {
-	return []Ecosystem{EcosystemGo, EcosystemNPM, EcosystemPNPM, EcosystemYarn}
+	return []Ecosystem{EcosystemGo, EcosystemNPM, EcosystemPNPM, EcosystemYarn, EcosystemPip, EcosystemPoetry, EcosystemUV}
 }
 
 // Status is what happened to one finding.
@@ -118,12 +118,15 @@ type Bump struct {
 	To   string `json:"to"`
 	// Direct reports a direct dependency; a transitive npm, pnpm or yarn
 	// one is raised by an override (overrides, pnpm.overrides, resolutions).
+	// A Python one is named by the requirements file, its .in sources or
+	// pyproject.toml.
 	Direct bool `json:"direct"`
 	// Commands are the commands run for its manifest, each as argv (every
 	// bump of one manifest shares them).
 	Commands [][]string `json:"commands"`
 	// Edits are the changes the patcher made to a file itself rather than
-	// through a tool: an override in package.json.
+	// through a tool: an override in package.json, a pin rewritten in a
+	// requirements file or a .in.
 	Edits []string `json:"edits,omitempty"`
 	// Error is the failure, with the tool's output tail; "" on success.
 	Error string `json:"error,omitempty"`
@@ -135,7 +138,7 @@ type VerifyResult struct {
 	// and only the rescan ran.
 	Command string `json:"command"`
 	// Source says where Command came from: flag, forge.yaml, taskfile, go,
-	// npm, pnpm, yarn, or none.
+	// npm, pnpm, yarn, poetry, uv, or none.
 	Source string `json:"source"`
 	// Passed reports that Command exited 0 (true when there is none).
 	Passed bool `json:"passed"`

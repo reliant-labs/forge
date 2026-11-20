@@ -37,7 +37,10 @@ type VulnPatchConfig struct {
 	// tests. Unset, the patcher uses the project's own gate: `task
 	// test:short` when the Taskfile has it, else `go build ./... && go test
 	// -short ./...` for a Go module, else the package manager's `test`
-	// script. `--verify=<cmd>` overrides both.
+	// script, else `uv run pytest -q` / `poetry run pytest -q` for a uv or
+	// poetry project that uses pytest. A project pinned only by
+	// requirements files has no default: set it here. `--verify=<cmd>`
+	// overrides both.
 	//
 	//	vuln:
 	//	  patch:

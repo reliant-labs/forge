@@ -197,13 +197,13 @@ func TestNoPatcherYet(t *testing.T) {
 	root := writeTree(t, map[string]string{"go.mod": goModApp})
 	stdlib := goFinding("GO-2026-9", "stdlib", "go1.22.1", "go1.22.4")
 	osPkg := vulnscan.Finding{ID: "CVE-1", FixState: "fixed", FixedIn: []string{"1.4-r0"}, Package: vulnscan.Package{Name: "zlib", Version: "1.3.2-r1", Type: "apk"}}
-	py := vulnscan.Finding{ID: "CVE-2", FixState: "fixed", FixedIn: []string{"2.0"}, Package: vulnscan.Package{Name: "requests", Version: "1.0", Type: "python"}}
+	py := vulnscan.Finding{ID: "CVE-2", FixState: "fixed", FixedIn: []string{"1.1"}, Package: vulnscan.Package{Name: "requests", Version: "1.0", Type: "python"}}
 	jar := vulnscan.Finding{ID: "CVE-3", FixState: "fixed", FixedIn: []string{"2.0"}, Package: vulnscan.Package{Name: "log4j", Version: "1.0", Type: "java-archive"}}
 	unfixed := goFinding("GO-4", "example.com/lib", "v1.2.0")
 	unfixed.FixState = vulnscan.FixStateNotFixed
 	doc, fr := patch(t, root, []vulnscan.Finding{stdlib, osPkg, py, jar, unfixed}, Options{}, nil, nil)
 	wantCmds(t, fr)
-	for i, want := range []string{"Go standard library", "OS package (apk)", "Python", "java-archive", "no fixed version (fix state: not-fixed)"} {
+	for i, want := range []string{"Go standard library", "OS package (apk)", "in no Python manifest", "java-archive", "no fixed version (fix state: not-fixed)"} {
 		if r := doc.Findings[i]; r.Status != StatusSkipped || !strings.Contains(r.Reason, want) {
 			t.Errorf("finding %d = %s %q, want skipped mentioning %q", i, r.Status, r.Reason, want)
 		}

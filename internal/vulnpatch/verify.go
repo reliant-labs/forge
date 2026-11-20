@@ -26,8 +26,10 @@ const (
 // DefaultVerify is the project's own gate for a patched tree at dir: `task
 // test:short` when its Taskfile has that task; else, for a Go module, `go
 // build ./... && go test -short ./...`; else the package manager's `test`
-// when package.json has a test script. ("", VerifySourceNone) when the tree
-// has none of them; the rescan still runs.
+// when package.json has a test script; else, for a uv or poetry project
+// that uses pytest, `uv run pytest -q` or `poetry run pytest -q`.
+// ("", VerifySourceNone) when the tree has none of them (a project pinned
+// only by requirements files among them); the rescan still runs.
 func DefaultVerify(dir string) (command, source string) {
 	for _, name := range []string{"Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml", "Taskfile.dist.yml", "Taskfile.dist.yaml"} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -59,6 +61,9 @@ func DefaultVerify(dir string) (command, source string) {
 			pm = string(EcosystemYarn)
 		}
 		return pm + " test", pm
+	}
+	if c, src := pythonVerify(dir); c != "" {
+		return c, src
 	}
 	return "", VerifySourceNone
 }
@@ -181,7 +186,7 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 				// fix did not fix it). Any other version is another copy
 				// of the package, which this finding was not about.
 				got := f.Package.Version
-				if sameVersion(got, r.Installed) || atLeast(got, minTo) {
+				if sameVersion(r.Ecosystem, got, r.Installed) || atLeast(r.Ecosystem, got, minTo) {
 					r.Status = StatusStillPresent
 					r.Reason = "the rescan of " + relTo(p.Dir, d) + " still reports it, in " + f.Package.Name + " " + got
 					break scan
@@ -205,7 +210,7 @@ func (p *Plan) resultDirs(i int) (dirs []string, minTo string) {
 				continue
 			}
 			dirs = appendUnique(dirs, b.dir)
-			if minTo == "" || compareVersions(b.to, minTo) < 0 {
+			if minTo == "" || compareIn(b.eco, b.to, minTo) < 0 {
 				minTo = b.to
 			}
 		}
@@ -223,10 +228,21 @@ func samePackage(a, b vulnscan.Package) bool {
 	}
 	ka, ea := classify(a)
 	kb, eb := classify(b)
-	return ka == kb && ea == eb && ka != kindOther && a.Name == b.Name
+	return ka == kb && ea == eb && ka != kindOther && packageName(ka, a.Name) == packageName(kb, b.Name)
 }
 
-// purlBase is a purl's type, namespace and name: pkg:npm/%40s/x@1.0?a=b → pkg:npm/%40s/x.
+// packageName is a package's identity within its kind: a PyPI name as PEP
+// 503 normalizes it ("PyYAML" from an image is "pyyaml" from a requirements
+// file), any other as it is.
+func packageName(k packageKind, name string) string {
+	if k == kindPython {
+		return pyName(name)
+	}
+	return name
+}
+
+// purlBase is a purl's type, namespace and name: pkg:npm/%40s/x@1.0?a=b →
+// pkg:npm/%40s/x; a PyPI name normalized (pkg:pypi/PyYAML@6.0 → pkg:pypi/pyyaml).
 func purlBase(purl string) string {
 	if i := strings.IndexAny(purl, "?#"); i >= 0 {
 		purl = purl[:i]
@@ -236,21 +252,34 @@ func purlBase(purl string) string {
 			purl = purl[:slash+at]
 		}
 	}
-	return strings.ToLower(purl)
+	purl = strings.ToLower(purl)
+	if name, ok := strings.CutPrefix(purl, "pkg:pypi/"); ok {
+		return "pkg:pypi/" + pyName(name) // PEP 503, as the purl spec says
+	}
+	return purl
 }
 
-// sameVersion reports whether a and b are one version, with or without a
-// leading "v".
-func sameVersion(a, b string) bool {
+// sameVersion reports whether a and b are one version of ecosystem e, with
+// or without a leading "v" (PEP 440 equality for Python: "2.31" is
+// "2.31.0").
+func sameVersion(e Ecosystem, a, b string) bool {
+	if pythonEcosystem(e) {
+		return pyEqual(a, b)
+	}
 	if npmVersion(a) == npmVersion(b) {
 		return true
 	}
 	return canonical(a) != "" && canonical(b) != "" && compareVersions(a, b) == 0
 }
 
-// atLeast reports whether v is min or later; false when either is not a
-// version.
-func atLeast(v, min string) bool {
+// atLeast reports whether v is min or later in ecosystem e's order; false
+// when either is not a version.
+func atLeast(e Ecosystem, v, min string) bool {
+	if pythonEcosystem(e) {
+		_, okV := parsePyVersion(v)
+		_, okMin := parsePyVersion(min)
+		return okV && okMin && comparePyVersions(v, min) >= 0
+	}
 	return canonical(v) != "" && canonical(min) != "" && compareVersions(v, min) >= 0
 }
 

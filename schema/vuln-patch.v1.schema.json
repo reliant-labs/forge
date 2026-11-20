@@ -132,7 +132,7 @@
           "type": "string"
         },
         "direct": {
-          "description": "Direct reports a direct dependency; a transitive npm, pnpm or yarn one is raised by an override (overrides, pnpm.overrides, resolutions).",
+          "description": "Direct reports a direct dependency; a transitive npm, pnpm or yarn one is raised by an override (overrides, pnpm.overrides, resolutions). A Python one is named by the requirements file, its .in sources or pyproject.toml.",
           "type": "boolean"
         },
         "commands": {
@@ -146,7 +146,7 @@
           }
         },
         "edits": {
-          "description": "Edits are the changes the patcher made to a file itself rather than through a tool: an override in package.json.",
+          "description": "Edits are the changes the patcher made to a file itself rather than through a tool: an override in package.json, a pin rewritten in a requirements file or a .in.",
           "type": [
             "array",
             "null"
@@ -353,7 +353,7 @@
           "type": "string"
         },
         "source": {
-          "description": "Source says where Command came from: flag, forge.yaml, taskfile, go, npm, pnpm, yarn, or none.",
+          "description": "Source says where Command came from: flag, forge.yaml, taskfile, go, npm, pnpm, yarn, poetry, uv, or none.",
           "type": "string"
         },
         "passed": {

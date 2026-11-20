@@ -94,7 +94,6 @@ import (
 	"errors"
 
 	"connectrpc.com/connect"
-	connectv2 "connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -371,10 +370,7 @@ func wrapped(sentinel error, detail string) error {
 //     *connect.Error) is returned as-is so handlers can construct
 //     specific errors and still funnel them through the same helper.
 //     A *connect.Error behind a [WithCause] cause is NOT one: the outer
-//     error classifies, and the cause stays server-side. A connect-go v2
-//     *connect.Error counts too; it comes back as a v1 error with the same
-//     code, message and details (and stays a wire error when it was a
-//     remote one), carrying the v2 error as its underlying error.
+//     error classifies, and the cause stays server-side.
 //   - A wrapped sentinel from this package maps to the matching
 //     connect.Code; the original error is preserved as the cause so
 //     errors.Is keeps working downstream.
@@ -388,19 +384,12 @@ func wrapped(sentinel error, detail string) error {
 //     SQL, schema names and connection strings. The original is kept as
 //     an unexported cause, reachable server-side via [Cause] and by
 //     errors.Is / errors.As.
-//
-// connect-go v2 projects use [ToConnectV2].
 func ToConnect(err error) *connect.Error {
 	if err == nil {
 		return nil
 	}
-	var ce *connect.Error
-	if found, ok := visibleConnect(err); ok {
-		ce = found.v1
-		if found.v2 != nil {
-			ce = fromV2(found.v2)
-		}
-	} else {
+	ce, ok := visibleAs[*connect.Error](err)
+	if !ok {
 		code := codeFor(err)
 		if faultCode(code) {
 			// The first place svcerr sees a server fault no constructor
@@ -498,8 +487,7 @@ func (e *redactedError) As(target any) bool {
 	if e.cause == nil {
 		return false
 	}
-	switch target.(type) {
-	case **connect.Error, **connectv2.Error:
+	if _, ok := target.(**connect.Error); ok {
 		return false
 	}
 	return errors.As(e.cause, target)
@@ -627,14 +615,13 @@ func clientSafe(err error) error {
 // [Interceptor] runs there, so `return nil, PermissionDenied("admin only")`
 // reaches the test as a bare kind, which connect.CodeOf reads as
 // CodeUnknown; Code reads it as CodePermissionDenied, as the client will be
-// told, and reads a *connect.Error exactly as connect.CodeOf does — of
-// either connect major. connect-go v2 projects use [CodeV2].
+// told, and reads a *connect.Error exactly as connect.CodeOf does.
 func Code(err error) connect.Code {
 	if err == nil {
 		return connect.CodeUnknown
 	}
-	if found, ok := visibleConnect(err); ok {
-		return found.code()
+	if ce, ok := visibleAs[*connect.Error](err); ok {
+		return ce.Code()
 	}
 	return codeFor(err)
 }
@@ -809,7 +796,7 @@ func IsClassified(err error) bool {
 	if err == nil {
 		return false
 	}
-	if _, ok := visibleConnect(err); ok {
+	if _, ok := visibleAs[*connect.Error](err); ok {
 		return true
 	}
 	_, _, recognised := codeForRecognized(err)
@@ -1074,11 +1061,6 @@ func metadataOf(err error) map[string]string {
 	var out map[string]string
 	// walkVisible follows Unwrap only, so a WithCause cause is never reached.
 	walkVisible(err, func(e error) bool {
-		if _, ok := e.(*v2Cause); ok {
-			// A converted v2 error's metadata is complete already; ToConnect
-			// copies it whole (see v2Cause).
-			return true
-		}
 		if m, ok := e.(*metadataError); ok {
 			if out == nil {
 				out = map[string]string{}
@@ -1109,32 +1091,9 @@ func ReasonOf(err error) (string, bool) {
 // any. Additional wrapping (fmt.Errorf("...: %w", err)) around a
 // WithReason error is transparent because the walk follows Unwrap. A reason
 // behind a WithCause cause is not err's reason and is not returned.
-//
-// A connect-go v2 error built by ToConnectV2 carries its verdict's reason
-// in its cause (see v2Cause); the walk reads it there and goes no further.
 func reasonOf(err error) (string, bool) {
-	var (
-		code  string
-		found bool
-	)
-	walkVisible(err, func(e error) bool {
-		switch t := e.(type) {
-		case *reasonError:
-			code, found = t.code, true
-			return true
-		case *v2Cause:
-			code = t.meta.Get(ReasonHeader)
-			found = code != ""
-			return true
-		case *redactedError:
-			return false
-		}
-		var re *reasonError
-		if x, ok := e.(interface{ As(any) bool }); ok && x.As(&re) {
-			code, found = re.code, true
-			return true
-		}
-		return false
-	})
-	return code, found
+	if re, ok := visibleAs[*reasonError](err); ok {
+		return re.code, true
+	}
+	return "", false
 }

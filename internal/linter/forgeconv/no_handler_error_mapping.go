@@ -58,8 +58,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // LintHandlerErrorMapping walks rootDir for Go files under handlers/
@@ -122,13 +120,6 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 
 	sort.Strings(goFiles)
 
-	// A connect-go v2 project's handlers name no connect type in their
-	// signatures; forgeconv-unwrapped-domain-error and
-	// forgeconv-crud-owner-resolver read their v2 shape only when go.mod
-	// selects v2 (internal/connectmajor) or the file imports v2.
-	major := connectmajor.DetectOrDefault(rootDir)
-	projectV2 := major.IsV2()
-
 	var result Result
 	for _, p := range goFiles {
 		rel, relErr := filepath.Rel(rootDir, p)
@@ -151,9 +142,9 @@ func LintHandlerErrorMapping(rootDir string) (Result, error) {
 			continue
 		}
 		result.Findings = append(result.Findings, lintHandlerErrorMappingFile(rel, fset, parsed)...)
-		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed, projectV2)...)
+		result.Findings = append(result.Findings, lintUnwrappedDomainErrorFile(rel, fset, parsed)...)
 		result.Findings = append(result.Findings, lintHandlerConnectErrorFile(rel, fset, parsed)...)
-		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed, major, func() map[string]string {
+		result.Findings = append(result.Findings, lintCRUDOwnerResolverFile(rel, fset, parsed, func() map[string]string {
 			return crudOpKeyColumns(filepath.Join(filepath.Dir(p), "handlers_crud_ops_gen.go"))
 		})...)
 	}
@@ -198,7 +189,6 @@ var suspectMapperNames = map[string]bool{
 // that maps sentinels to connect codes next to svcerr.Wrap is still the
 // switch svcerr replaces.
 func lintHandlerErrorMappingFile(relPath string, fset *token.FileSet, file *ast.File) []Finding {
-	names := fileConnectNames(file)
 	var findings []Finding
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -207,7 +197,7 @@ func lintHandlerErrorMappingFile(relPath string, fset *token.FileSet, file *ast.
 		}
 
 		nameSuspect := suspectMapperNames[fn.Name.Name]
-		bodySuspect, sentinelCount := bodyLooksLikeMapper(fn, names)
+		bodySuspect, sentinelCount := bodyLooksLikeMapper(fn)
 
 		if !nameSuspect && !bodySuspect {
 			continue
@@ -248,19 +238,16 @@ func lintHandlerErrorMappingFile(relPath string, fset *token.FileSet, file *ast.
 // RESPONSE status (PENDING / EXPIRED / DENIED) and returns connect.NewError
 // only for a missing argument and a failed save — that is not a mapper, and
 // svcerr.Wrap could not replace it.
-//
-// Both connect-go majors count (connectNames): v2's mapper returns
-// `connect.NewError(code, msg)` or `connect.Errorf(...)` instead.
-func bodyLooksLikeMapper(fn *ast.FuncDecl, names connectNames) (bool, int) {
+func bodyLooksLikeMapper(fn *ast.FuncDecl) (bool, int) {
 	if fn.Body == nil {
 		return false, 0
 	}
-	buildsError := containsNode(fn.Body, names.isNewError)
+	buildsError := containsNode(fn.Body, isConnectNewError)
 
 	sentinels := 0
 	arm := func(cond ast.Expr, body []ast.Stmt) {
 		n := countSentinelTests(cond)
-		if n > 0 && armMapsToConnect(body, buildsError, names) {
+		if n > 0 && armMapsToConnect(body, buildsError) {
 			sentinels += n
 		}
 	}
@@ -306,7 +293,7 @@ func countSentinelTests(cond ast.Expr) int {
 //
 // A nested function literal is its own scope, not the arm's result, and is
 // not looked into.
-func armMapsToConnect(body []ast.Stmt, fnBuildsError bool, names connectNames) bool {
+func armMapsToConnect(body []ast.Stmt, fnBuildsError bool) bool {
 	found := false
 	for _, stmt := range body {
 		ast.Inspect(stmt, func(n ast.Node) bool {
@@ -320,11 +307,11 @@ func armMapsToConnect(body []ast.Stmt, fnBuildsError bool, names connectNames) b
 				if len(x.Results) == 0 {
 					return true
 				}
-				if containsNode(x.Results[len(x.Results)-1], names.isNewError) {
+				if containsNode(x.Results[len(x.Results)-1], isConnectNewError) {
 					found = true
 				}
 				for _, r := range x.Results {
-					if names.isCode(r) {
+					if isConnectCode(r) {
 						found = true
 					}
 				}
@@ -333,7 +320,7 @@ func armMapsToConnect(body []ast.Stmt, fnBuildsError bool, names connectNames) b
 					return true
 				}
 				for _, r := range x.Rhs {
-					if names.isCode(r) {
+					if isConnectCode(r) {
 						found = true
 					}
 				}
@@ -342,7 +329,7 @@ func armMapsToConnect(body []ast.Stmt, fnBuildsError bool, names connectNames) b
 					return true
 				}
 				for _, v := range x.Values {
-					if names.isCode(v) {
+					if isConnectCode(v) {
 						found = true
 					}
 				}
@@ -354,6 +341,22 @@ func armMapsToConnect(body []ast.Stmt, fnBuildsError bool, names connectNames) b
 		}
 	}
 	return false
+}
+
+// isConnectNewError matches a `connect.NewError(...)` call.
+func isConnectNewError(n ast.Node) bool {
+	call, ok := n.(*ast.CallExpr)
+	return ok && isQualifiedCall(call.Fun, "connect", "NewError")
+}
+
+// isConnectCode matches a `connect.Code<Name>` constant.
+func isConnectCode(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || !strings.HasPrefix(sel.Sel.Name, "Code") || sel.Sel.Name == "Code" {
+		return false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	return ok && id.Name == "connect"
 }
 
 // containsNode reports whether any node under root satisfies match.

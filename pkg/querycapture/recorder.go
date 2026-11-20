@@ -282,9 +282,7 @@ func (r *Recorder) failLocked(err error) {
 // and the wire; the caller is the first frame outside them. A path matches
 // the package itself and every package below it. connect and testing are
 // here because they only ever sit BELOW the code that asked (a handler, a
-// test), and naming them as the caller would say nothing. The connect
-// entry covers connect-go v2 too: its packages sit below the v1 module
-// path (connectrpc.com/connect/v2, .../v2/connecthttp).
+// test), and naming them as the caller would say nothing.
 var databaseStack = []string{
 	"runtime",
 	"database/sql",

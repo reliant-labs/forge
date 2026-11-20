@@ -18,7 +18,6 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/toolpin"
 )
@@ -44,50 +43,26 @@ const frontendTSPluginRange = "^2.5.0"
 //   - scripts/bootstrap.sh (devcontainer bootstrap)
 //   - internal/cli/generate_toolpins.go (generate pins each tool to the
 //     version resolveToolVersion reports, installing into a forge cache)
-//
-// This is the connect-go v1 set, forge's default. A project's own set is
-// projectProtoTools: a connect-go v2 project (internal/connectmajor) builds
-// protoc-gen-connect-go from connect's v2 module instead.
-var requiredProtoTools = requiredProtoToolsFor(connectmajor.V1)
-
-// requiredProtoToolsFor is the codegen tool set for a project on connect-go
-// major m. Only protoc-gen-connect-go differs: both majors ship a binary of
-// that name, from connectrpc.com/connect/cmd/protoc-gen-connect-go (v1) and
-// connectrpc.com/connect/v2/cmd/protoc-gen-connect-go (v2), each installed at
-// the version go.mod resolves for its own runtime module. Each one's
-// generated code imports only its own runtime, so running the other major's
-// binary produces stubs the project cannot compile against.
-func requiredProtoToolsFor(m connectmajor.Major) []protoTool {
-	m = m.OrDefault()
-	return []protoTool{
-		{
-			Binary:        "protoc-gen-go",
-			Module:        "google.golang.org/protobuf/cmd/protoc-gen-go",
-			VersionModule: "google.golang.org/protobuf",
-		},
-		{
-			Binary:        "protoc-gen-connect-go",
-			Module:        m.PluginModule(),
-			VersionModule: m.VersionModule(),
-		},
-		// goimports formats every Go file forge generates. It is not a buf
-		// plugin, but it shapes committed output the same way: `forge generate`
-		// without it skips the pass, so a regenerate on a machine that lacks it
-		// (a CI runner) produces different bytes than one that has it.
-		{
-			Binary:        "goimports",
-			Module:        "golang.org/x/tools/cmd/goimports",
-			VersionModule: "golang.org/x/tools",
-		},
-	}
-}
-
-// projectProtoTools is the codegen tool set of the project rooted at
-// projectDir: requiredProtoToolsFor the connect-go major its go.mod selects.
-// An unreadable go.mod resolves to the v1 default, exactly as it did before
-// v2 existed.
-func projectProtoTools(projectDir string) []protoTool {
-	return requiredProtoToolsFor(connectmajor.DetectOrDefault(projectDir))
+var requiredProtoTools = []protoTool{
+	{
+		Binary:        "protoc-gen-go",
+		Module:        "google.golang.org/protobuf/cmd/protoc-gen-go",
+		VersionModule: "google.golang.org/protobuf",
+	},
+	{
+		Binary:        "protoc-gen-connect-go",
+		Module:        "connectrpc.com/connect/cmd/protoc-gen-connect-go",
+		VersionModule: "connectrpc.com/connect",
+	},
+	// goimports formats every Go file forge generates. It is not a buf
+	// plugin, but it shapes committed output the same way: `forge generate`
+	// without it skips the pass, so a regenerate on a machine that lacks it
+	// (a CI runner) produces different bytes than one that has it.
+	{
+		Binary:        "goimports",
+		Module:        "golang.org/x/tools/cmd/goimports",
+		VersionModule: "golang.org/x/tools",
+	},
 }
 
 type protoTool struct {
@@ -164,10 +139,7 @@ tools 'forge lint' gates with: golangci-lint and buf.
 Each codegen tool is installed at the version this project's go.mod resolves
 for it (google.golang.org/protobuf, connectrpc.com/connect,
 golang.org/x/tools) — the version the committed generated code was produced
-with — falling back to @latest when go.mod does not contain the module. A
-project whose go.mod directly requires connectrpc.com/connect/v2 gets the v2
-protoc-gen-connect-go (connectrpc.com/connect/v2/cmd/protoc-gen-connect-go),
-at the version go.mod resolves for connectrpc.com/connect/v2.
+with — falling back to @latest when go.mod does not contain the module.
 --version overrides that for every codegen tool.
 
 The lint tools install at forge's pins ('forge tools pins'), never at
@@ -325,21 +297,9 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 		"golangci-lint": func() error { return installPinnedGolangciLint(ctx, force) },
 	}
 	var order []string
-	// The project's own set: a connect-go v2 project installs the v2
-	// protoc-gen-connect-go. Outside a project (no forge.yaml above), the
-	// module in the working directory decides, else the v1 default.
-	majorDir := "."
-	if root, err := projectRoot(); err == nil {
-		majorDir = root
-	}
-	for _, t := range projectProtoTools(majorDir) {
+	for _, t := range requiredProtoTools {
 		known[t.Binary] = func() error {
-			reinstall := force
-			if other, ok := otherConnectMajorOnPath(ctx, t); ok && !force {
-				fmt.Printf("🔁 %-26s on PATH is connect-go %s's; this project uses %s — reinstalling\n", t.Binary, other, t.VersionModule)
-				reinstall = true
-			}
-			return goInstallTool(ctx, t.Binary, t.Module+"@"+resolveToolVersion(ctx, ".", t, version), reinstall)
+			return goInstallTool(ctx, t.Binary, t.Module+"@"+resolveToolVersion(ctx, ".", t, version), force)
 		}
 		order = append(order, t.Binary)
 	}
@@ -365,46 +325,6 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 	fmt.Println()
 	fmt.Println("✅ All requested tools installed.")
 	return nil
-}
-
-// otherConnectMajorOnPath reports whether the binary PATH resolves for t is a
-// protoc-gen-connect-go built from the OTHER connect-go major than t's — the
-// one case where "already on PATH" must not mean installed: the binary has
-// the right name and generates stubs the project cannot compile. Any other
-// tool, a binary whose build info cannot be read, or one of the right major
-// reports false, so every other skip behaves as before.
-func otherConnectMajorOnPath(ctx context.Context, t protoTool) (connectmajor.Major, bool) {
-	if t.Binary != "protoc-gen-connect-go" {
-		return 0, false
-	}
-	path, err := exec.LookPath(t.Binary)
-	if err != nil {
-		return 0, false
-	}
-	cmd := exec.CommandContext(ctx, "go", "version", "-m", path)
-	cmd.Env = goexec.Env()
-	out, err := cmd.Output()
-	if err != nil {
-		return 0, false
-	}
-	return otherConnectMajorIn(string(out), t)
-}
-
-// otherConnectMajorIn is otherConnectMajorOnPath's decision over `go version
-// -m` output.
-func otherConnectMajorIn(buildInfo string, t protoTool) (connectmajor.Major, bool) {
-	if _, ok := parseBuildInfoVersion(buildInfo, t.VersionModule); ok {
-		return 0, false
-	}
-	for _, m := range []connectmajor.Major{connectmajor.V1, connectmajor.V2} {
-		if m.VersionModule() == t.VersionModule {
-			continue
-		}
-		if _, ok := parseBuildInfoVersion(buildInfo, m.VersionModule()); ok {
-			return m, true
-		}
-	}
-	return 0, false
 }
 
 // bufModulePath is the package `go install` builds buf from.

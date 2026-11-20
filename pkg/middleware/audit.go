@@ -139,9 +139,6 @@ type AuditSink interface {
 // For compliance-grade durable persistence (so projects can delete a
 // hand-rolled DB-persisting interceptor), use [AuditInterceptorWithSink]
 // to additionally fan each event out to an [AuditSink].
-//
-// connect-go v2 projects use [AuditInterceptorV2] and
-// [AuditInterceptorWithSinkV2].
 func AuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup) connect.Interceptor {
 	return AuditInterceptorWithSink(logger, claimsFrom, nil)
 }
@@ -152,12 +149,6 @@ func AuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup) connect.Inte
 // request path, so the sink never blocks the RPC response. Passing a nil
 // sink yields behavior identical to [AuditInterceptor].
 func AuditInterceptorWithSink(logger *slog.Logger, claimsFrom ClaimsLookup, sink AuditSink) connect.Interceptor {
-	return newAuditInterceptor(logger, claimsFrom, sink)
-}
-
-// newAuditInterceptor builds the audit interceptor both connect majors
-// share; AuditInterceptorWithSinkV2 wraps the same value in a v2 func.
-func newAuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup, sink AuditSink) *auditInterceptor {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -165,7 +156,6 @@ func newAuditInterceptor(logger *slog.Logger, claimsFrom ClaimsLookup, sink Audi
 		logger:     logger.With("log_type", "audit"),
 		claimsFrom: claimsFrom,
 		sink:       sink,
-		now:        time.Now,
 	}
 }
 
@@ -173,18 +163,11 @@ type auditInterceptor struct {
 	logger     *slog.Logger
 	claimsFrom ClaimsLookup
 	sink       AuditSink
-	// v2 marks the interceptor of a connect-go v2 chain: an error's code is
-	// read from a v2 *connect.Error first (see errorCode).
-	v2 bool
-	// now is the clock a call's timestamp and duration are read from:
-	// time.Now, or a test's fake, whose steps make a duration exact on
-	// every OS (Windows' clock can measure a fast call as 0s).
-	now func() time.Time
 }
 
 func (a *auditInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		start := a.now()
+		start := time.Now()
 
 		resp, err := next(ctx, req)
 
@@ -200,7 +183,7 @@ func (a *auditInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 
 func (a *auditInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		start := a.now()
+		start := time.Now()
 
 		err := next(ctx, conn)
 
@@ -211,7 +194,7 @@ func (a *auditInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFun
 }
 
 func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr string, start time.Time, err error) {
-	duration := a.now().Sub(start)
+	duration := time.Since(start)
 
 	event := AuditEvent{
 		Timestamp:   start,
@@ -264,9 +247,9 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 	}
 
 	if err != nil {
-		code := errorCode(err, a.v2)
+		code := connect.CodeOf(err)
 		event.Status = "error"
-		event.ErrorCode = code
+		event.ErrorCode = code.String()
 		// The CLIENT-VISIBLE message, deliberately: an audit stream is
 		// routinely shipped to a SIEM or a compliance store, and svcerr has
 		// already decided what text is safe to hand out. The unredacted
@@ -275,7 +258,7 @@ func (a *auditInterceptor) logAudit(ctx context.Context, procedure, peerAddr str
 		event.ErrorMessage = err.Error()
 		attrs = append(attrs,
 			slog.String("status", "error"),
-			slog.String("code", code),
+			slog.String("code", code.String()),
 			slog.String("error", err.Error()),
 		)
 		// Same severity policy as the operational log — a server fault is

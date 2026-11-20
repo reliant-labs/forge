@@ -23,8 +23,7 @@
 // # What counts as a source
 //
 // The scan is syntactic and reads only RPC handlers — `*Service` methods
-// shaped `(ctx context.Context, req *connect.Request[T])`, or, in connect-go
-// v2 code only, `(ctx context.Context, req *pb.<Method>Request)` — so a helper
+// shaped `(ctx context.Context, req *connect.Request[T])` — so a helper
 // that receives the owner as a parameter is not mistaken for a policy. In
 // each, an owner USE is `orm.WhereEq("<col>", x)` or `e.<Field> = x`, and
 // x is traced back to the statement that bound it:
@@ -51,7 +50,6 @@ import (
 
 	"github.com/jinzhu/inflection"
 
-	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -163,21 +161,16 @@ func (u CRUDOwnerUse) matches(column, field string) bool {
 // handlers, in declaration order. A handler that scopes the same column in
 // more than one place (Fetch and Persist) reports each distinct source
 // once.
-//
-// major is the project's connect-go major (connectmajor.Detect on the
-// project root; the zero value is v1). It decides whether the file's
-// bare-message methods are handlers at all — see handlerShapesOf.
-func ScanCRUDOwnerSources(fset *token.FileSet, file *ast.File, major connectmajor.Major) []CRUDOwnerUse {
+func ScanCRUDOwnerSources(fset *token.FileSet, file *ast.File) []CRUDOwnerUse {
 	imports := fileImportSpecs(file)
-	shapes := handlerShapesOf(file, major)
-	entities := rpcEntities(file, shapes)
+	entities := rpcEntities(file)
 	var uses []CRUDOwnerUse
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
-		ctxName, ok := rpcHandlerCtxParam(fn, shapes)
+		ctxName, ok := rpcHandlerCtxParam(fn)
 		if !ok {
 			continue
 		}
@@ -274,51 +267,10 @@ func ScanCRUDOpKeyColumns(file *ast.File) map[string]string {
 	return out
 }
 
-// handlerShapes says which RPC handler signatures one file's scan reads.
-type handlerShapes struct {
-	// bareMessage admits connect-go v2's handler shape, which takes the
-	// bare request message and names no connect type.
-	bareMessage bool
-}
-
-// handlerShapesOf decides the handler shapes of file in a project on
-// major. connect-go v1's `*connect.Request[T]` is always a handler. The
-// bare-message shape is read only on positive v2 evidence: the file
-// imports connectrpc.com/connect/v2, or the project is on v2 and the file
-// does not import v1's runtime (a v1 file left in a project mid-migration).
-//
-// Without that evidence the shape proves nothing. A v1 project's handler
-// tree can hold an ordinary helper, `func (h *Helper) ListTasks(ctx,
-// *pb.ListTasksRequest) error`, and reading it as a handler would make it
-// owner-policy evidence: a new forgeconv-crud-owner-resolver finding, and
-// a different owner for the next appended wrapper, in a project that
-// changed nothing.
-func handlerShapesOf(file *ast.File, major connectmajor.Major) handlerShapes {
-	var v1, v2 bool
-	for _, imp := range file.Imports {
-		p, err := strconv.Unquote(imp.Path.Value)
-		if err != nil {
-			continue
-		}
-		if m, ok := connectmajor.IsRuntimeImport(p); ok {
-			v1 = v1 || m == connectmajor.V1
-			v2 = v2 || m == connectmajor.V2
-		}
-	}
-	return handlerShapes{bareMessage: v2 || (major.IsV2() && !v1)}
-}
-
 // rpcHandlerCtxParam reports whether fn is a connect RPC handler — a method
-// taking (ctx context.Context, req *connect.Request[T]) under connect-go v1,
-// or, where shapes admits it, (ctx context.Context, req
-// *<pkg>.<Method>Request) under v2, whose handlers take the bare request
-// message — and returns its context parameter's name.
-//
-// The v2 shape is also tied to the method's own name (CreateTask takes
-// *pb.CreateTaskRequest, as protoc-gen-connect-go v2 and buf's standard
-// lint name it), so a v2 helper that receives some other message is not
-// read as a policy.
-func rpcHandlerCtxParam(fn *ast.FuncDecl, shapes handlerShapes) (string, bool) {
+// taking (ctx context.Context, req *connect.Request[T]) — and returns its
+// context parameter's name.
+func rpcHandlerCtxParam(fn *ast.FuncDecl) (string, bool) {
 	if fn.Recv == nil || fn.Type.Params == nil || len(fn.Type.Params.List) != 2 {
 		return "", false
 	}
@@ -330,20 +282,11 @@ func rpcHandlerCtxParam(fn *ast.FuncDecl, shapes handlerShapes) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	switch x := star.X.(type) {
-	case *ast.IndexExpr:
-		if isSelectorExpr(x.X, "connect", "Request") {
-			return ctxField.Names[0].Name, true
-		}
-	case *ast.SelectorExpr:
-		if !shapes.bareMessage {
-			break
-		}
-		if _, isPkg := x.X.(*ast.Ident); isPkg && x.Sel != nil && x.Sel.Name == fn.Name.Name+"Request" {
-			return ctxField.Names[0].Name, true
-		}
+	idx, ok := star.X.(*ast.IndexExpr)
+	if !ok || !isSelectorExpr(idx.X, "connect", "Request") {
+		return "", false
 	}
-	return "", false
+	return ctxField.Names[0].Name, true
 }
 
 // readVerbs and writeVerbs are the RPC verbs whose noun names an entity.
@@ -376,7 +319,7 @@ func splitRPCVerb(name string) (noun string, read, ok bool) {
 // rpcEntities maps each RPC handler in file to its entity. A List's noun is
 // plural; it resolves to the sibling noun that pluralizes to it (the way
 // forge named the List from the entity), else to its singular.
-func rpcEntities(file *ast.File, shapes handlerShapes) map[string]string {
+func rpcEntities(file *ast.File) map[string]string {
 	nouns := map[string]string{}
 	singular := map[string]bool{}
 	for _, decl := range file.Decls {
@@ -384,7 +327,7 @@ func rpcEntities(file *ast.File, shapes handlerShapes) map[string]string {
 		if !ok {
 			continue
 		}
-		if _, ok := rpcHandlerCtxParam(fn, shapes); !ok {
+		if _, ok := rpcHandlerCtxParam(fn); !ok {
 			continue
 		}
 		noun, _, ok := splitRPCVerb(fn.Name.Name)
@@ -576,13 +519,10 @@ func fileImportSpecs(file *ast.File) map[string]string {
 // A file's birth never comes here: it has no siblings, and its scaffolded
 // lifecycle test is written for the placeholder's owner.
 func resolveAppendedOwners(projectDir, shimRel string, existing []byte, missing []CRUDMethodTemplateData) []CRUDMethodTemplateData {
-	// The project's connect-go major decides which handler shapes are
-	// evidence; an unreadable go.mod is v1's, the shapes forge always read.
-	major := connectmajor.DetectOrDefault(projectDir)
 	var fileUses []CRUDOwnerUse
 	fset := token.NewFileSet()
 	if f, err := parser.ParseFile(fset, shimRel, existing, parser.SkipObjectResolution); err == nil {
-		fileUses = ScanCRUDOwnerSources(fset, f, major)
+		fileUses = ScanCRUDOwnerSources(fset, f)
 	}
 	var projectUses []CRUDOwnerUse
 	projectScanned := false
@@ -603,7 +543,7 @@ func resolveAppendedOwners(projectDir, shimRel string, existing []byte, missing 
 		where := "this file's"
 		if !ok {
 			if !projectScanned {
-				projectUses = projectCRUDOwnerUses(projectDir, shimRel, major)
+				projectUses = projectCRUDOwnerUses(projectDir, shimRel)
 				projectScanned = true
 			}
 			d, ok = ownerSourceFor(projectUses, target)
@@ -634,9 +574,8 @@ func resolveAppendedOwners(projectDir, shimRel string, existing []byte, missing 
 }
 
 // projectCRUDOwnerUses scans every handlers_crud.go under the project's
-// internal/handlers except skip (project-relative) for owner uses, reading
-// handler shapes as a project on major has them.
-func projectCRUDOwnerUses(projectDir, skip string, major connectmajor.Major) []CRUDOwnerUse {
+// internal/handlers except skip (project-relative) for owner uses.
+func projectCRUDOwnerUses(projectDir, skip string) []CRUDOwnerUse {
 	var uses []CRUDOwnerUse
 	root := filepath.Join(projectDir, "internal", "handlers")
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -658,7 +597,7 @@ func projectCRUDOwnerUses(projectDir, skip string, major connectmajor.Major) []C
 		if rel, rerr := filepath.Rel(projectDir, dir); rerr == nil {
 			dir = filepath.ToSlash(rel)
 		}
-		for _, u := range ScanCRUDOwnerSources(fset, f, major) {
+		for _, u := range ScanCRUDOwnerSources(fset, f) {
 			u.Dir = dir
 			uses = append(uses, u)
 		}

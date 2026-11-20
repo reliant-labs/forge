@@ -9,8 +9,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // crud_owner_append_test.go pins what a scoped shim APPENDED to an existing
@@ -403,7 +401,7 @@ func (s *Service) scoped(ctx context.Context, tenantID string) orm.QueryOption {
 	if err != nil {
 		t.Fatal(err)
 	}
-	uses := ScanCRUDOwnerSources(fset, f, connectmajor.V1)
+	uses := ScanCRUDOwnerSources(fset, f)
 	if len(uses) != 3 {
 		t.Fatalf("want 3 uses (GetA, CreateA, ListA), got %d: %+v", len(uses), uses)
 	}

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/codegen"
-	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // ownerFile renders a handlers_crud.go whose methods resolve their owner
@@ -55,7 +54,7 @@ func lintOwnerFile(t *testing.T, src string) []Finding {
 	if err != nil {
 		t.Fatalf("parse: %v\n%s", err, src)
 	}
-	return lintCRUDOwnerResolverFile("internal/handlers/channels/handlers_crud.go", fset, f, connectmajor.V1, nil)
+	return lintCRUDOwnerResolverFile("internal/handlers/channels/handlers_crud.go", fset, f, nil)
 }
 
 // TestCRUDOwnerResolver_GrowthAppendedPlaceholders is the incident: two
@@ -235,7 +234,7 @@ func lintOwnerFileWithKeys(t *testing.T, src string, keys func() map[string]stri
 	if err != nil {
 		t.Fatalf("parse: %v\n%s", err, src)
 	}
-	return lintCRUDOwnerResolverFile("internal/handlers/channels/handlers_crud.go", fset, f, connectmajor.V1, keys)
+	return lintCRUDOwnerResolverFile("internal/handlers/channels/handlers_crud.go", fset, f, keys)
 }
 
 // TestCRUDOwnerResolver_NonIDPrimaryKeyOwner: profiles is keyed by

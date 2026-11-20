@@ -65,16 +65,6 @@ func toolMatches(ctx context.Context, binPath string, t protoTool, want string) 
 // toolCacheDir is where a tool pinned at version is installed: its entry in
 // the pinned kind of forge's shared tool cache (internal/toolcache), which
 // FORGE_TOOLS_CACHE relocates with every other tool forge installs.
-//
-// The entry is keyed <binary>@<version>, and that key already separates the
-// two protoc-gen-connect-go builds that share a binary name: Go's semantic
-// import versioning makes a module path ending /vN (N ≥ 2) carry only vN.x.y
-// versions, so connect v1's plugin is always protoc-gen-connect-go@v1.* and
-// v2's (connectrpc.com/connect/v2) protoc-gen-connect-go@v2.*. A v1 project
-// is never handed v2's binary, nor the reverse — and installPinnedTool's
-// ready check verifies the entry's build info names t.VersionModule, so even
-// a hand-planted binary of the other major in an entry is rebuilt, not
-// served. Keying on the version keeps every existing v1 entry valid.
 func toolCacheDir(t protoTool, version string) (string, error) {
 	kind, err := toolcache.KindDir(toolcache.KindPinned)
 	if err != nil {
@@ -158,11 +148,7 @@ func pinCodegenTools(ctx context.Context, projectDir string) (*codegenTools, err
 	if _, err := exec.LookPath("go"); err != nil {
 		return res, nil // cannot resolve versions without the go tool
 	}
-	// The project's own set: protoc-gen-connect-go of the connect-go major
-	// its go.mod selects (internal/connectmajor). toolMatches checks the
-	// binary's build info against that major's module, so a PATH binary of
-	// the other major never satisfies the pin, whatever its version.
-	for _, t := range projectProtoTools(projectDir) {
+	for _, t := range requiredProtoTools {
 		want := resolveToolVersion(ctx, projectDir, t, "")
 		if want == "latest" {
 			continue // module not in the graph: any binary on PATH is fine
@@ -295,7 +281,7 @@ var goInstallPinned = func(ctx context.Context, spec, gobin string) error {
 func pinError(t protoTool, pinned, have string, cause error) error {
 	return fmt.Errorf("%s does not match the version go.mod pins and could not be fixed automatically: %s, go.mod pins %s %s: %w\n"+
 		"  fix: run `forge tools install --force` (installs %s@%s onto PATH), or put a %s build on PATH",
-		t.Binary, have, t.VersionModule, pinned, cause, t.Module, pinned, pinned)
+		t.Binary, have, t.VersionModule, pinned, cause, t.Binary, pinned, pinned)
 }
 
 func exeSuffix() string {

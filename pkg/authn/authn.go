@@ -101,7 +101,6 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	connectv2 "connectrpc.com/connect/v2"
 
 	"github.com/reliant-labs/forge/pkg/auth"
 )
@@ -270,19 +269,7 @@ type Policy struct {
 	// a missing or malformed Authorization header is always the
 	// library's CodeUnauthenticated (those are protocol errors, not
 	// policy decisions).
-	//
-	// connect-go v2 projects set MapErrorV2 instead. Either hook serves
-	// both majors: an interceptor uses the hook of its own major when it is
-	// set and otherwise the other one, its result re-created in its own
-	// major with the same code, message and details.
 	MapError func(err error, fallback *connect.Error) *connect.Error
-
-	// MapErrorV2 is MapError typed on connect-go v2's *connect.Error: it
-	// receives the same raw validation error and the v2 form of the same
-	// fallback (CodeUnauthenticated, message "invalid token: <err>"), and
-	// returning nil keeps that fallback. See MapError for which hook an
-	// interceptor uses when both are set.
-	MapErrorV2 func(err error, fallback *connectv2.Error) *connectv2.Error
 }
 
 // mode is the construction-time resolution of a Policy.
@@ -312,29 +299,10 @@ func (p Policy) resolve() mode {
 // refuses construction when no auth provider is configured and no
 // explicit opt-out was given. Callers must treat the error as fatal and
 // abort startup before binding the listener.
-//
-// connect-go v2 projects use [NewInterceptorV2], which resolves the same
-// Policy the same way.
 func NewInterceptor(p Policy) (connect.Interceptor, error) {
-	ic, err := newInterceptor(p, "authn.NewInterceptor")
-	if err != nil {
-		return nil, err
-	}
-	if ic == nil {
-		// ExternalAuth: another interceptor owns identity, so this one
-		// inspects nothing and attaches no claims.
-		return passthrough{}, nil
-	}
-	return ic, nil
-}
-
-// newInterceptor resolves p for the constructor named ctor: the Validate-mode
-// interceptor, nil for passthrough, or the construction refusal. Both majors'
-// constructors share it, so they resolve a Policy identically.
-func newInterceptor(p Policy, ctor string) (*interceptor, error) {
 	switch p.resolve() {
 	case modeUnconfigured:
-		return nil, errors.New(ctor + ": no auth provider configured — " +
+		return nil, errors.New("authn.NewInterceptor: no auth provider configured — " +
 			"return a validator from app.SetupAuth, or set AuthDeps.ExternalAuth " +
 			"when another interceptor in the chain owns identity; both are edits to " +
 			"your own source, and there is no environment variable that runs this " +
@@ -342,10 +310,10 @@ func newInterceptor(p Policy, ctor string) (*interceptor, error) {
 	case modeValidate:
 		switch {
 		case p.Validate == nil && p.ValidateContext == nil:
-			return nil, errors.New(ctor + ": ValidatorConfigured is true but Policy.Validate is nil " +
+			return nil, errors.New("authn.NewInterceptor: ValidatorConfigured is true but Policy.Validate is nil " +
 				"(and so is Policy.ValidateContext)")
 		case p.Validate != nil && p.ValidateContext != nil:
-			return nil, errors.New(ctor + ": Policy.Validate and Policy.ValidateContext are both set — " +
+			return nil, errors.New("authn.NewInterceptor: Policy.Validate and Policy.ValidateContext are both set — " +
 				"a policy has ONE validator; pass it as ValidateContext, or as Validate when it needs no request context")
 		}
 		ic := &interceptor{policy: p}
@@ -358,7 +326,9 @@ func newInterceptor(p Policy, ctor string) (*interceptor, error) {
 		}
 		return ic, nil
 	default: // modePassthrough
-		return nil, nil
+		// ExternalAuth: another interceptor owns identity, so this one
+		// inspects nothing and attaches no claims.
+		return passthrough{}, nil
 	}
 }
 
@@ -386,9 +356,6 @@ type interceptor struct {
 	// package knows how: ClaimsFromContext for the default stash, nil for a
 	// project's own.
 	claims func(context.Context) (*Claims, bool)
-	// v2 marks the interceptor NewInterceptorV2 built: it prefers
-	// Policy.MapErrorV2 over Policy.MapError.
-	v2 bool
 }
 
 // Claims is how to read the caller this interceptor admitted from a request
@@ -406,7 +373,7 @@ func (a *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		}
 		ctx, err := a.authenticate(ctx, a.policy.authorization(req.Header()))
 		if err != nil {
-			return nil, errorToV1(err)
+			return nil, err
 		}
 		return next(ctx, req)
 	}
@@ -423,7 +390,7 @@ func (a *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 		}
 		ctx, err := a.authenticate(ctx, a.policy.authorization(conn.RequestHeader()))
 		if err != nil {
-			return errorToV1(err)
+			return err
 		}
 		return next(ctx, conn)
 	}
@@ -519,7 +486,12 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 	}
 	if err != nil {
 		fallback := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid token: %w", err))
-		return ctx, a.mapValidationError(err, fallback)
+		if a.policy.MapError != nil {
+			if mapped := a.policy.MapError(err, fallback); mapped != nil {
+				return ctx, mapped
+			}
+		}
+		return ctx, fallback
 	}
 
 	if a.policy.Enrich != nil {
@@ -533,9 +505,6 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 			var ce *connect.Error
 			if errors.As(err, &ce) {
 				return ctx, err
-			}
-			if _, ce2 := outermostConnectError(err); ce2 != nil {
-				return ctx, err // a v2 *connect.Error, passed through as verbatim
 			}
 			return ctx, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("identity enrichment failed: %w", err))
 		}

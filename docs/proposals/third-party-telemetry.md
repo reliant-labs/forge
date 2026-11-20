@@ -1,7 +1,7 @@
 # Proposal: declared telemetry for workloads forge did not build (`forge.Telemetry`)
 
 **Status:** accepted in shape by the owner (2026-11-20): ONE generic primitive, four signals, no
-per-system packs. Being implemented in the phased PRs of §5; F1 (the schema, the render and
+pack per system. Being implemented in the phased PRs of §5; F1 (the schema, the render and
 `pkg/telemetry`) is the first to land. Where an implementation PR diverged from this text, the
 "Implementation notes" section at the end says so.
 **Date:** 2026-11-20
@@ -23,7 +23,7 @@ Owner decision (2026-11-20, binding): ONE generic, configurable forge primitive.
   engines, and anything else on a cluster.
 - It covers all four signals (metrics, logs, traces, profiles), plus dashboards and alerts over
   them.
-- forge ships **no per-system pack, preset or vendor catalog**. Every vendor fact (Temporal
+- forge ships **no pack, preset or vendor catalog per system**. Every vendor fact (Temporal
   metric names, Zitadel env keys, ClickHouse panels) lives in the project's KCL.
 
 The design:
@@ -910,3 +910,36 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
 - Validate's hosted rules: every scrape sets `allow`; no `address`, no bearer token, no
   profiles; a numeric port must be one the workload declares. A target on `forge.OnExternal` or
   `forge.BuildOnly` is refused (nothing forge reaches runs it).
+
+**F4 (forge's cluster node agent):**
+
+- The agent record of a cluster carries that cluster's targets (`ObservabilityAgentSpec.Telemetry`,
+  appended by `_tel_agent_spec` in `kcl/render.k`; absent when there are none, so the record and
+  the agent render byte-identically). `RenderObservabilityAgent` builds them through
+  `collector.Build` (`DiscoverNodePods`, `MountRoot = deploy.TelemetryMountRoot`, env identity
+  from the record's env and part-of) and splices the pieces: `Logs.Preserve` after the
+  `container` operator, `Logs.Processors` and `NodeMetricsProcessors` after k8sattributes, and
+  `K8sAttributesLabels` into its extract. `exporterName()+"_telemetry_isolated"` is the isolated
+  exporter (the destination, with Build's bounded in-memory queue).
+- The identity processor also runs in every pushed (OTLP) pipeline, traces included, because they
+  share k8sattributes and only it deletes the extracted selector labels. `IdentityProcessor` gained
+  `trace_statements` for that.
+- Declaring `Observability.telemetry_collector` moves every target off the agent: it is "the
+  collector that scrapes this env's Telemetry, when it is not forge's agent". The render projects
+  it as `output.telemetry_collector` for the NetworkPolicy rules.
+- No singleton, so the agent REFUSES (render error) a cluster target it would pull at an
+  `address`. It also refuses a target whose signal the env's observability does not ship. With a
+  destination, profiles need `signals.profiles = True`; the agent already sends profiles there,
+  and the feature gate follows that signal. It refuses an `optional` credential too, because the
+  collector reads every credentials file at config load.
+- Every referenced Secret is mounted from the agent's namespace, not optionally. The render refuses
+  one that no `required_secrets`, `rendered_secrets` or `control_plane_secrets` entry supplies
+  there (`_check_agent_telemetry`).
+- The agent's ClusterRole is unchanged: it already lists and watches pods, namespaces and nodes, which is all
+  pod discovery and `k8s_observer` need.
+- NetworkPolicy (`internal/cluster/telemetry.go`): the collector for a cluster is the env's own
+  collector, else the agent (`deploy.AgentCollectorRef`). A Workload target's rule joins its own
+  policy (`deploy.Context.Telemetry`). A Manifests or Observability target with
+  `network_policy = True` gets `collector.NetworkPolicies`, inserted after its Manifests group's
+  last object with the group's owner and delivery unit (an Observability target: at the end of the
+  stream). The agent namespace carries no NetworkPolicy, so its egress to the pulled ports is open.

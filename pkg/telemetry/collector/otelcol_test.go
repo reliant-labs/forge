@@ -13,48 +13,14 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/reliant-labs/forge/internal/otelcoltest"
 	"github.com/reliant-labs/forge/pkg/telemetry"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// contribImage is the collector forge pins (kcl/base.k OTEL_COLLECTOR_IMAGE).
-const contribImage = "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6"
-
-// otelcol runs the pinned collector: otelcol-contrib on PATH (it must be
-// 0.162.0), else the pinned image in docker. Each run
-// gets dir, holding the config, at the same path the config uses.
-type otelcol struct {
-	binary string
-}
-
-func findCollector(t *testing.T) otelcol {
-	t.Helper()
-	bin, lookErr := exec.LookPath("otelcol-contrib")
-	dockerErr := dockerUsable()
-	if lookErr != nil && dockerErr != nil {
-		t.Skipf("no collector to run: put an otelcol-contrib 0.162.0 binary on PATH (%v), or make docker usable (%v)", lookErr, dockerErr)
-	}
-	return otelcol{binary: bin}
-}
-
-// dockerUsable reports why docker cannot run the pinned image, or nil.
-func dockerUsable() error {
-	if out, err := exec.Command("docker", "info").CombinedOutput(); err != nil {
-		return fmt.Errorf("docker info: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// command is the collector invocation with args, mounting dir at its own
-// path under docker.
-func (o otelcol) command(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
-	if o.binary != "" {
-		return exec.CommandContext(ctx, o.binary, args...)
-	}
-	full := append([]string{"run", "--rm", "--name", name, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-v", dir + ":" + dir, contribImage}, args...)
-	return exec.CommandContext(ctx, "docker", full...)
-}
+// findCollector is the pinned collector (internal/otelcoltest), shared with
+// pkg/deploy's node-agent test.
+func findCollector(t *testing.T) otelcoltest.Collector { return otelcoltest.Find(t) }
 
 func writeYAML(t *testing.T, path string, doc any) {
 	t.Helper()
@@ -131,7 +97,7 @@ func TestFragmentsValidateInThePinnedCollector(t *testing.T) {
 			writeYAML(t, path, cfg)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			out, err := col.command(ctx, dir, fmt.Sprintf("forge-telemetry-validate-%d", time.Now().UnixNano()),
+			out, err := otelcoltest.Command(ctx, col, dir, fmt.Sprintf("forge-telemetry-validate-%d", time.Now().UnixNano()), nil,
 				"validate", "--config="+path, "--feature-gates=service.profilesSupport").CombinedOutput()
 			if err != nil {
 				cfgText, _ := os.ReadFile(path)
@@ -445,7 +411,7 @@ func TestClusterIdentityInThePinnedCollector(t *testing.T) {
 // then the processors in order, in the pinned collector, until it has
 // exported want records (or two minutes pass). It returns the records and
 // the collector's output.
-func runLogs(t *testing.T, col otelcol, dir string, ops []any, processors map[string]any, order []string, include string, want int) ([]record, string) {
+func runLogs(t *testing.T, col otelcoltest.Collector, dir string, ops []any, processors map[string]any, order []string, include string, want int) ([]record, string) {
 	t.Helper()
 	out := filepath.Join(dir, "out.json")
 	pipeline := map[string]any{"receivers": strs("filelog"), "exporters": strs("file")}
@@ -466,7 +432,7 @@ func runLogs(t *testing.T, col otelcol, dir string, ops []any, processors map[st
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	name := fmt.Sprintf("forge-telemetry-logs-%d", time.Now().UnixNano())
-	cmd := col.command(ctx, dir, name, "--config="+path)
+	cmd := otelcoltest.Command(ctx, col, dir, name, nil, "--config="+path)
 	var stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stderr, &stderr
 	if err := cmd.Start(); err != nil {
@@ -478,7 +444,7 @@ func runLogs(t *testing.T, col otelcol, dir string, ops []any, processors map[st
 			return
 		}
 		stopped = true
-		if col.binary == "" {
+		if col.Binary == "" {
 			_ = exec.Command("docker", "rm", "-fv", name).Run()
 		} else {
 			_ = cmd.Process.Kill()

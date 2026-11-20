@@ -68,8 +68,12 @@ func (b *builder) logs(targets []telemetry.Target) {
 		identity = append(identity, map[string]any{"context": "resource", "statements": strs(
 			lit(`delete_matching_keys(attributes, ` + ottlString("^"+regexp.QuoteMeta(LabelAttributePrefix)) + `)`))})
 	}
+	// trace_statements too: a caller whose k8sattributes also enriches
+	// pushed traces (forge's node agent) runs this processor there, and
+	// only it deletes the extracted selector labels.
 	b.f.Processors[IdentityProcessor] = map[string]any{
 		"error_mode":         "ignore",
+		"trace_statements":   identity,
 		"log_statements":     identity,
 		"metric_statements":  identity,
 		"profile_statements": identity,

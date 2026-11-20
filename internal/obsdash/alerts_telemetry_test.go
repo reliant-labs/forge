@@ -98,6 +98,35 @@ func TestTelemetryDefaultsAreTunedOnceAndOptedOutPerSystem(t *testing.T) {
 	}
 }
 
+func TestTelemetryServiceLabelTuningDoesNotChangeRuleOwnership(t *testing.T) {
+	in := AlertInput{TelemetryTargets: []AlertTelemetryTarget{
+		{Service: "foo.bar", Scrapes: true, Checks: true},
+		{Service: "foo-baz", Scrapes: true},
+	}}
+	tuning := map[string]AlertTuning{
+		TelemetryTargetDown:   {Enabled: true, Labels: map[string]string{"service": "overridden"}},
+		TelemetryCheckFailing: {Enabled: true, Labels: map[string]string{"service": "overridden"}},
+	}
+	rules, _, err := ResolveEnvAlertDefaultsFor(in, "prod", tuning, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 3 {
+		t.Fatalf("want three distinct rules, got %+v", rules)
+	}
+	for _, r := range rules {
+		if r.Labels["service"] != "overridden" {
+			t.Errorf("%s: service label override lost: %+v", r.Alert, r.Labels)
+		}
+	}
+
+	// Giving colliding systems the same label must not hide a real collision.
+	in.TelemetryTargets[1].Service = "foo-bar"
+	if _, _, err := ResolveEnvAlertDefaultsFor(in, "prod", tuning, nil); err == nil {
+		t.Fatal("service label tuning hid a duplicate alert name")
+	}
+}
+
 func TestTelemetryDefaultsReachAProjectWithNoGeneratedDefaults(t *testing.T) {
 	// A static site generates no alert defaults; a system it declares still
 	// alerts, from the env's render alone.

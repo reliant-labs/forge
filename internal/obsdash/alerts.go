@@ -696,10 +696,11 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 	var (
 		out     []AlertRule
 		skipped []AlertSkip
-		// telemetryNamed is each per-target rule's name → its service:
+		// telemetryNamed records each per-target rule's service and default ID,
+		// independently of its tunable labels:
 		// TelemetryAlertName folds punctuation, so two accepted services
 		// (foo.bar, foo-bar) can name one rule, which is refused below.
-		telemetryNamed = map[string]string{}
+		telemetryNamed = map[string]struct{ service, id string }{}
 	)
 	for _, d := range alertDefs {
 		if !include(d) || !d.applies(in) || (d.needs != nil && !d.needs(in)) {
@@ -745,10 +746,10 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					Annotations: map[string]string{},
 				}
 				applyAlertTuning(&r, d, t)
-				if other, ok := telemetryNamed[r.Alert]; ok && other != tt.Service {
-					return nil, nil, telemetryNameCollision(r.Alert, other, tt.Service)
+				if other, ok := telemetryNamed[r.Alert]; ok && other.service != tt.Service {
+					return nil, nil, telemetryNameCollision(r.Alert, other.service, tt.Service)
 				}
-				telemetryNamed[r.Alert] = tt.Service
+				telemetryNamed[r.Alert] = struct{ service, id string }{tt.Service, d.ID}
 				out = append(out, r)
 			}
 			continue
@@ -777,8 +778,8 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 	}
 	// A per-target name must not be one another default already raises.
 	for _, r := range out {
-		if svc, ok := telemetryNamed[r.Alert]; ok && r.Labels["service"] != svc {
-			return nil, nil, fmt.Errorf("telemetry system %q raises the default alert %q, which the default %s already names; rename the service, or set default_alerts = False on its forge.Telemetry", svc, r.Alert, r.ID)
+		if owner, ok := telemetryNamed[r.Alert]; ok && r.ID != owner.id {
+			return nil, nil, fmt.Errorf("telemetry system %q raises the default alert %q, which the default %s already names; rename the service, or set default_alerts = False on its forge.Telemetry", owner.service, r.Alert, r.ID)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })

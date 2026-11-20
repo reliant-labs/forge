@@ -247,8 +247,19 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 		return MockResult{Skipped: "no RPCs"}, nil
 	}
 
-	// Prepare template data
-	data := prepareServiceData(svc, connectV2For(svc, projectDir))
+	v2 := connectV2For(svc, projectDir)
+	data := prepareServiceData(svc, v2)
+	if v2 && projectDir != "" {
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return MockResult{}, err
+		}
+		mount, err := resolveMountHelper(svc, true, projectDir, res.Dir, cs)
+		if err != nil {
+			return MockResult{}, fmt.Errorf("resolve %s mock mount helper: %w", svc.Name, err)
+		}
+		data["MountMethod"] = mount.name
+	}
 
 	// Parse and execute template
 	tmpl, err := template.New("mock").Parse(mockTemplate)

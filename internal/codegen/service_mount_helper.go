@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -29,60 +30,22 @@ import (
 // reconcileConnectIdentity makes). As RPCs are removed it moves back toward
 // the earliest free candidate.
 //
-// The helper is recognised by its exact shape — a *Service method with one
-// *<pkg>.Server parameter and no results — under any candidate name, so an
-// RPC method is never mistaken for it. It stands down when the resolved name
-// is already declared on *Service anywhere in the package (an RPC
-// implementation, or any other method), when service.go is disowned or
-// missing, and for connect-go v1, whose Register/Mount helper forge has never
-// renamed in an owned file.
+// A disowned helper is never rewritten. Its callers keep its actual name.
+// Connect-go v1's Register/Mount behavior is not reconciled.
 func reconcileMountHelper(svc ServiceDef, root, dir string, cs *checksums.FileChecksums) error {
 	if !connectV2For(svc, root) {
 		return nil
 	}
-	want := mountMethodFor(svc, true)
-	path := filepath.Join(dir, "service.go")
-	if root != "" {
-		if cs == nil {
-			var err error
-			if cs, err = checksums.Load(root); err != nil {
-				return err
-			}
-		}
-		if rel, err := filepath.Rel(root, path); err == nil && cs.IsDisowned(filepath.ToSlash(rel)) {
-			return nil
-		}
-	}
-	src, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
+	mount, err := resolveMountHelper(svc, true, root, dir, cs)
 	if err != nil {
 		return err
 	}
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, src, parser.ParseComments|parser.SkipObjectResolution)
-	if err != nil {
-		return nil // a half-edited service.go is the author's; the build says what is wrong
-	}
-	var helper *ast.FuncDecl
-	for _, decl := range file.Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && isMountMethodCandidateV2(fn.Name.Name) && isV2MountHelper(fn) {
-			helper = fn
-			break
-		}
-	}
-	if helper == nil || helper.Name.Name == want {
+	if mount.helper == nil || mount.helper.Name.Name == mount.name {
 		return nil
 	}
+	helper, src, fset, want := mount.helper, mount.src, mount.fset, mount.name
 	from := helper.Name.Name
-	existing, err := ScanExistingMethods(dir, true)
-	if err != nil {
-		return err
-	}
-	if existing[want] {
-		return nil
-	}
+	path := filepath.Join(dir, "service.go")
 
 	// The helper's name, and the doc comment's leading word when it names
 	// the helper; spans in file order, applied back to front so the earlier
@@ -104,6 +67,106 @@ func reconcileMountHelper(svc ServiceDef, root, dir string, cs *checksums.FileCh
 		return err
 	}
 	return atomicfile.WriteFile(path, out, info.Mode().Perm())
+}
+
+type mountHelperResolution struct {
+	name   string
+	helper *ast.FuncDecl // non-nil only when Forge may rename it
+	src    []byte
+	fset   *token.FileSet
+}
+
+// resolveMountHelper is read by both caller generation and the reconciler.
+// Only the actual registrar on service.go is free to move; every other
+// method (including value receivers and retired RPCs) reserves its name.
+func resolveMountHelper(svc ServiceDef, v2 bool, root, dir string, cs *checksums.FileChecksums) (mountHelperResolution, error) {
+	result := mountHelperResolution{name: mountMethodFor(svc, v2)}
+	if !v2 || dir == "" {
+		return result, nil
+	}
+	path := filepath.Join(dir, "service.go")
+	src, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return result, nil // not scaffolded yet
+	}
+	if err != nil {
+		return result, err
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, src, parser.ParseComments|parser.SkipObjectResolution)
+	if err != nil {
+		return result, nil // leave a half-edited owned file to the compiler
+	}
+	helper := findV2MountHelper(file)
+	if helper == nil {
+		return result, nil
+	}
+	if root != "" {
+		if cs == nil {
+			cs, err = checksums.Load(root)
+			if err != nil {
+				return result, err
+			}
+		}
+		if rel, err := filepath.Rel(root, path); err == nil && cs.IsDisowned(filepath.ToSlash(rel)) {
+			result.name = helper.Name.Name
+			for _, method := range svc.Methods {
+				if method.GoName() == result.name {
+					return result, fmt.Errorf("disowned %s: rename mount helper %s before adding the same-named RPC", path, result.name)
+				}
+			}
+			return result, nil
+		}
+	}
+	occupied, err := occupiedMountMethodNames(dir, file, helper)
+	if err != nil {
+		return result, err
+	}
+	return mountHelperResolution{name: availableMountMethodV2(svc, occupied), helper: helper, src: src, fset: fset}, nil
+}
+
+func findV2MountHelper(file *ast.File) *ast.FuncDecl {
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && isMountMethodCandidateV2(fn.Name.Name) && isV2MountHelper(fn) {
+			return fn
+		}
+	}
+	return nil
+}
+
+func occupiedMountMethodNames(dir string, service *ast.File, helper *ast.FuncDecl) (map[string]bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	occupied := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file := service
+		if name != "service.go" {
+			file, err = parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+			if err != nil || file.Name.Name != service.Name.Name {
+				continue // malformed files fail at build; another package owns its methods
+			}
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn == helper || fn.Recv == nil || len(fn.Recv.List) != 1 {
+				continue
+			}
+			recv := fn.Recv.List[0].Type
+			if star, ok := recv.(*ast.StarExpr); ok {
+				recv = star.X
+			}
+			if id, ok := recv.(*ast.Ident); ok && id.Name == "Service" {
+				occupied[fn.Name.Name] = true
+			}
+		}
+	}
+	return occupied, nil
 }
 
 // isV2MountHelper reports whether fn has the connect-go v2 mount helper's

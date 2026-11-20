@@ -776,6 +776,10 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			connectImport = modulePath + "/gen/services/" + synth + "/v1/" + synth + "v1connect"
 			connectPkg = synth + "v1connect"
 		}
+		mount, err := resolveMountHelper(svc, in.connectV2(), in.ProjectDir, handlerDir, in.Checksums)
+		if err != nil {
+			return fmt.Errorf("resolve %s test mount helper: %w", svc.Name, err)
+		}
 		testSvcs = append(testSvcs, BootstrapTestServiceData{
 			Name:                   pkg,
 			Package:                pkg,
@@ -784,7 +788,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			ConnectServiceGoName:   svc.GoName(),
 			ProtoConnectImportPath: connectImport,
 			ProtoConnectPkg:        connectPkg,
-			MountMethod:            mountMethodFor(svc, in.connectV2()),
+			MountMethod:            mount.name,
 			Fallible:               fallible,
 			Constructor:            DetectConstructorName(handlerDir),
 			HasDB:                  hasDB,
@@ -1987,22 +1991,27 @@ func ComponentTestHelperRelPath(handlerLeaf string) string {
 // Mount2V2, Mount3V2, … (mountMethodCandidateV2) that no RPC of the service
 // uses.
 //
-// It is the one place the name is decided: the service template, the mock,
-// the stub reconciler (reconcileMountHelper), the mounts, the route sets and
-// the test helpers all read it, so they cannot disagree.
+// For an existing v2 handler use resolveMountHelper instead: owned methods
+// that no longer appear in the proto can still occupy a candidate.
 func mountMethodFor(svc ServiceDef, connectV2 bool) string {
+	if !connectV2 {
+		for _, method := range svc.Methods {
+			if method.GoName() == "Register" {
+				return "Mount"
+			}
+		}
+		return "Register"
+	}
+	return availableMountMethodV2(svc, nil)
+}
+
+func availableMountMethodV2(svc ServiceDef, occupied map[string]bool) string {
 	rpcs := make(map[string]bool, len(svc.Methods))
 	for _, m := range svc.Methods {
 		rpcs[m.GoName()] = true
 	}
-	if !connectV2 {
-		if rpcs["Register"] {
-			return "Mount"
-		}
-		return "Register"
-	}
 	for i := 0; ; i++ {
-		if name := mountMethodCandidateV2(i); !rpcs[name] {
+		if name := mountMethodCandidateV2(i); !rpcs[name] && !occupied[name] {
 			return name
 		}
 	}

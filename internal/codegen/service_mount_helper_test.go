@@ -172,9 +172,8 @@ func TestGenerateMissingHandlerStubs_ConnectV2RegisterV2RPCAddedLater(t *testing
 	}
 }
 
-// reconcileMountHelper moves the helper to the resolved name under any
-// candidate name it currently has, and stands down rather than rename onto a
-// name another *Service method already declares.
+// The reconciler and generated callers pick the same first unoccupied name,
+// including methods whose RPC has disappeared from the proto.
 func TestReconcileMountHelper_ConnectV2(t *testing.T) {
 	rpc := func(names ...string) ServiceDef {
 		svc := v2ItemsService()
@@ -212,13 +211,13 @@ func TestReconcileMountHelper_ConnectV2(t *testing.T) {
 			want:  "MountV2",
 		},
 		{
-			name: "target used by another *Service method: stand down",
+			name: "another method reserves a candidate even with a value receiver",
 			svc:  rpc("RegisterV2", "Ping"), helper: "RegisterV2",
-			files: map[string]string{"extra.go": "func (s *Service) MountV2() string { return \"mine\" }\n"},
-			want:  "RegisterV2",
+			files: map[string]string{"extra.go": "func (s Service) MountV2() string { return \"mine\" }\n"},
+			want:  "Mount2V2",
 		},
 		{
-			name: "target still implemented after its rpc left the proto: stand down",
+			name: "a retained implementation reserves the removed RPC's name",
 			svc:  rpc("MountV2", "Ping"), helper: "Mount2V2",
 			files: map[string]string{"rpc_register_v2.go": method("RegisterV2")},
 			want:  "Mount2V2",
@@ -242,8 +241,14 @@ func TestReconcileMountHelper_ConnectV2(t *testing.T) {
 			for name, body := range tc.files {
 				write(name, body)
 			}
-			if err := reconcileMountHelper(tc.svc, project, dir, nil); err != nil {
-				t.Fatalf("reconcileMountHelper: %v", err)
+			for range 2 {
+				rows, _, err := inventoryRows(InventoryGenInput{GenContext: GenContext{ProjectDir: project, ModulePath: v2ItemsModule}, Services: []ServiceDef{tc.svc}})
+				if err != nil || len(rows) != 1 || rows[0].MountMethod != tc.want {
+					t.Fatalf("inventory rows = %v, %v; want mount %s before and after reconciliation", rows, err, tc.want)
+				}
+				if err := reconcileMountHelper(tc.svc, project, dir, nil); err != nil {
+					t.Fatalf("reconcileMountHelper: %v", err)
+				}
 			}
 			got := readFile(t, filepath.Join(dir, "service.go"))
 			if !strings.Contains(got, "// "+tc.want+" registers") || !strings.Contains(got, "func (s *Service) "+tc.want+"(server *connect.Server)") {
@@ -373,6 +378,83 @@ func Mount(m *mountkit.MuxV2, a *items.Service, b *later.Service, c *mocks.Items
 `)
 			mod.Go(t, "build", "./internal/...")
 			mod.Go(t, "vet", "./internal/check")
+		})
+	}
+}
+
+func TestConnectV2GeneratedMountsCompileWithOwnedCollisions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("generates real Connect v2 stubs and compiles the generated callers; runs in task test")
+	}
+	for _, tc := range []struct {
+		name, proto, owned, initial, want string
+		svc                               ServiceDef
+	}{
+		{
+			name: "removed RPC method stays owned", svc: mountV2Service(), initial: "Mount2V2", want: "Mount2V2",
+			proto: strings.Replace(mountV2Proto, "  rpc RegisterV2(RegisterV2Request) returns (RegisterV2Response);\n", "", 1),
+			owned: "func (s *Service) RegisterV2(ctx context.Context, req *pb.RegisterV2Request) (*pb.RegisterV2Response, error) { return nil, nil }",
+		},
+		{
+			name: "non-RPC value method stays owned", svc: registerV2Service(), initial: "RegisterV2", want: "Mount2V2", proto: registerV2Proto,
+			owned: "func (s Service) MountV2() string { return fmt.Sprint(\"owned\") }",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mod := connectv2test.NewModule(t, v2ItemsModule, map[string]string{"services/items/v1/items.proto": tc.proto})
+			svc := tc.svc
+			if tc.initial == "Mount2V2" {
+				svc.Methods = svc.Methods[1:] // only the removed implementation remains on disk
+			}
+			dir := filepath.Join(mod.Dir, "internal", "handlers", "items")
+			if err := GenerateServiceStub(tc.svc, dir); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "service.go")
+			if tc.initial == "RegisterV2" {
+				src := strings.ReplaceAll(readFile(t, path), "MountV2", "RegisterV2")
+				if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(filepath.Join(dir, RPCHandlerFileName("RegisterV2"))); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Remove(filepath.Join(dir, RPCHandlerFileName("RegisterV2"))); err != nil {
+				t.Fatal(err)
+			}
+			mod.Write(t, "internal/handlers/items/owned.go", `package items
+import("context"; "fmt"; pb "example.com/v2app/gen/services/items/v1")
+var _ = context.Background
+var _ = fmt.Sprint
+var _ = (*pb.RegisterV2Request)(nil)
+`+tc.owned+"\n")
+			in := InventoryGenInput{GenContext: GenContext{ProjectDir: mod.Dir, ModulePath: v2ItemsModule}, Services: []ServiceDef{svc}}
+			if err := GenerateInventory(in); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := GenerateMissingHandlerStubs(svc, mod.Dir, dir, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := GenerateMock(svc, mod.Dir, filepath.Join(mod.Dir, "internal", "handlers", "mocks"), nil); err != nil {
+				t.Fatal(err)
+			}
+			mod.Write(t, "internal/app/components.go", `package app
+import "example.com/v2app/internal/handlers/items"
+type Components struct { Items *items.Service }
+`)
+			mod.Write(t, "pkg/config/config.go", "package config\ntype Config struct{}\n")
+			mod.Write(t, "pkg/middleware/middleware.go", `package middleware
+import "github.com/reliant-labs/forge/pkg/authn"
+var ClaimsFromContext = authn.ClaimsFromContext
+`)
+			mod.Write(t, "internal/check/mount.go", `package check
+import (
+    "github.com/reliant-labs/forge/pkg/mountkit"
+    "example.com/v2app/internal/handlers/mocks"
+)
+func MountMock(m *mountkit.MuxV2, c *mocks.ItemsServiceMock) { m.Register(c.`+tc.want+`) }
+`)
+			mod.Go(t, "build", "./internal/...")
 		})
 	}
 }

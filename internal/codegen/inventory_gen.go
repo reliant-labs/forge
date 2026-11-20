@@ -237,12 +237,15 @@ func inventoryRows(in InventoryGenInput) ([]InventoryServiceData, []string, erro
 		// a sign-up endpoint — which collides with the scaffolded mount
 		// helper. The handler renames its helper to Mount in that case, so
 		// this call site has to follow.
-		mountMethod := mountMethodFor(svc, in.connectV2())
+		mount, err := resolveMountHelper(svc, in.connectV2(), in.ProjectDir, res.Dir, in.Checksums)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve %s mount helper: %w", svc.Name, err)
+		}
 
 		rows = append(rows, InventoryServiceData{
 			Name:             runtimeName,
 			FieldName:        fieldName,
-			MountMethod:      mountMethod,
+			MountMethod:      mount.name,
 			Package:          pkg,
 			ConnectPkg:       connectPkg,
 			ProtoServiceName: protoServiceName,

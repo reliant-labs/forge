@@ -2282,6 +2282,71 @@ func TestVersionStamp(t *testing.T) {
 	}
 }
 
+// TestKindStamp: forge.dev/kind is the workload's forge role, on every object
+// the workload renders and on the pod template of its Deployment or CronJob,
+// so a service, a worker and an operator (all Deployments) can be told apart
+// from their pods. Never on a selector, never on a standalone Job's immutable
+// pod template, and never on the env-wide policies, which belong to no workload.
+func TestKindStamp(t *testing.T) {
+	ws := []v1alpha1.Workload{
+		svc("api", httpPort(true)),
+		wl("reconciler", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindWorker}),
+		wl("widgets", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindOperator, CRDs: []string{"Widget"}}),
+		wl("nightly", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindCron, Schedule: "@daily", Args: []string{"x"}}),
+		wl("seed", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindJob, Args: []string{"x"}}),
+	}
+	want := map[string]string{"api": "service", "reconciler": "worker", "widgets": "operator", "nightly": "cron", "seed": "job"}
+	c := ctx
+	c.Network = &EnvNetworkPolicy{EgressPorts: []int32{443}}
+	objs, err := RenderWorkloads(ws, v1alpha1.ProfileFull, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pods := map[string]bool{}
+	for _, o := range objs {
+		k := o.GetKind() + "/" + o.GetName()
+		owner := o.GetLabels()[LabelName]
+		got := o.GetLabels()[LabelKind]
+		if owner == "" {
+			// The env-wide NetworkPolicy bundle: no workload, no kind.
+			if got != "" {
+				t.Errorf("%s: env-wide object stamped with kind %q", k, got)
+			}
+			continue
+		}
+		if got != want[owner] {
+			t.Errorf("%s: %s = %q, want %q", k, LabelKind, got, want[owner])
+		}
+		m := o.Object
+		if get(m, "spec", "selector", "matchLabels", LabelKind) != nil || get(m, "spec", "selector", LabelKind) != nil {
+			t.Errorf("%s: kind label on a selector (immutable)", k)
+		}
+		var pod any
+		switch o.GetKind() {
+		case "Deployment":
+			pod = get(m, "spec", "template", "metadata", "labels", LabelKind)
+		case "CronJob":
+			pod = get(m, "spec", "jobTemplate", "spec", "template", "metadata", "labels", LabelKind)
+		case "Job":
+			if p := get(m, "spec", "template", "metadata", "labels", LabelKind); p != nil {
+				t.Errorf("%s: standalone Job pod template stamped with kind %v (immutable)", k, p)
+			}
+			continue
+		default:
+			continue
+		}
+		if pod != want[owner] {
+			t.Errorf("%s: pod template %s = %v, want %q", k, LabelKind, pod, want[owner])
+		}
+		pods[owner] = true
+	}
+	for _, name := range []string{"api", "reconciler", "widgets", "nightly"} {
+		if !pods[name] {
+			t.Errorf("%s: rendered no pod template to stamp", name)
+		}
+	}
+}
+
 func TestLabelValue(t *testing.T) {
 	for in, want := range map[string]string{
 		"20261025":                        "20261025",

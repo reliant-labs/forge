@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: web
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: web
   namespace: demo-prod
 spec:
@@ -27,6 +28,7 @@ spec:
         app.kubernetes.io/name: web
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: service
     spec:
       automountServiceAccountToken: false
       containers:
@@ -143,6 +145,7 @@ metadata:
     app.kubernetes.io/name: web
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: web
   namespace: demo-prod
 spec:
@@ -162,6 +165,7 @@ metadata:
     app.kubernetes.io/name: web
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: web-pdb
   namespace: demo-prod
 spec:
@@ -179,6 +183,7 @@ metadata:
     app.kubernetes.io/name: web
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: web
   namespace: demo-prod
 ---
@@ -190,6 +195,7 @@ metadata:
     app.kubernetes.io/name: web
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: web-ingress
   namespace: demo-prod
 spec:
@@ -211,6 +217,7 @@ metadata:
     app.kubernetes.io/name: store
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: store
   namespace: demo-prod
 spec:
@@ -228,6 +235,7 @@ spec:
         app.kubernetes.io/name: store
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: service
     spec:
       automountServiceAccountToken: false
       containers:
@@ -324,6 +332,7 @@ metadata:
     app.kubernetes.io/name: store
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: store
   namespace: demo-prod
 spec:
@@ -343,6 +352,7 @@ metadata:
     app.kubernetes.io/name: store
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: store-data
   namespace: demo-prod
 spec:
@@ -361,6 +371,7 @@ metadata:
     app.kubernetes.io/name: store
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: store
   namespace: demo-prod
 ---
@@ -372,6 +383,7 @@ metadata:
     app.kubernetes.io/name: store
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: store-ingress
   namespace: demo-prod
 spec:
@@ -395,6 +407,7 @@ metadata:
     app.kubernetes.io/name: jobs
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: jobs
   namespace: demo-prod
 spec:
@@ -415,6 +428,7 @@ spec:
         app.kubernetes.io/name: jobs
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: worker
     spec:
       automountServiceAccountToken: false
       containers:
@@ -491,6 +505,7 @@ metadata:
     app.kubernetes.io/name: jobs
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: jobs
   namespace: demo-prod
 ---
@@ -502,6 +517,7 @@ metadata:
     app.kubernetes.io/name: jobs
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: jobs-ingress
   namespace: demo-prod
 spec:
@@ -522,6 +538,7 @@ metadata:
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
     forge.dev/job-name: report
+    forge.dev/kind: job
     forge.dev/spec-hash: c04dd9defb
   name: report-c04dd9defb
   namespace: demo-prod
@@ -611,6 +628,7 @@ metadata:
     app.kubernetes.io/name: report
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: job
   name: report
   namespace: demo-prod
 ---
@@ -622,6 +640,7 @@ metadata:
     app.kubernetes.io/name: report
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: job
   name: report-ingress
   namespace: demo-prod
 spec:

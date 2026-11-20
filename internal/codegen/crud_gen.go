@@ -112,6 +112,21 @@ type CRUDMethod struct {
 	Operation string             // "create", "get", "list", "update", "delete"
 }
 
+// ORMQualifier is the identifier the ops file qualifies the ORM package
+// with: DBQual, or db when unset.
+func (d CRUDTemplateData) ORMQualifier() string { return ormQualOrDefault(d.DBQual) }
+
+// ORMQualifier is the identifier this shim qualifies the ORM package
+// with: DBQual, or db when unset (RenderScopedCRUDShim's paste-in snippet).
+func (m CRUDMethodTemplateData) ORMQualifier() string { return ormQualOrDefault(m.DBQual) }
+
+func ormQualOrDefault(q string) string {
+	if q == "" {
+		return "db"
+	}
+	return q
+}
+
 // DBImportLine is DBImport spelled as a line of an import block.
 func (d CRUDTemplateData) DBImportLine() string {
 	if alias, path, ok := strings.Cut(d.DBImport, " "); ok {
@@ -125,12 +140,19 @@ type CRUDTemplateData struct {
 	Package      string // Go package name, e.g. "patients"
 	Module       string // Go module path, e.g. "github.com/demo-project"
 	ProtoPackage string // e.g. "proto/services/patients"
-	// DBImport is the generated ORM package as an import spec: its path, or
-	// "db <path>" when database.orm.package names a package that is not
-	// called db. Every generated CRUD file qualifies the ORM as `db.`, so a
-	// relocated ORM is imported under that name rather than threading a
-	// second qualifier through every template.
-	DBImport      string
+	// DBImport is the generated ORM package as an import spec for the ops
+	// file ("path" or "alias path") and DBQual the identifier that file
+	// qualifies it with (ORMQualifier; empty means db). Both come from
+	// ChooseORMBinding: a default project's internal/db is "path" + db, a
+	// relocated internal/store is "path" + store — never a db alias that
+	// a project's own internal/db package would collide with.
+	DBImport string
+	DBQual   string
+	// orm is the project's ORM placement and pkgDecls the handler
+	// package's top-level names, which a file's ORM qualifier must not
+	// shadow; shimORMBinding re-binds the ORM per shim file from them.
+	orm           config.ORMConfig
+	pkgDecls      map[string]bool
 	HasPagination bool // true if any list method uses pagination
 	HasFilters    bool // true if any list method has filter fields
 	HasOrderBy    bool // true if any list method has order_by
@@ -181,6 +203,11 @@ type CRUDMethodTemplateData struct {
 	InputType  string // "CreatePatientRequest" — pb Go type
 	OutputType string // "CreatePatientResponse" — pb Go type
 	EntityName string // "Patient" — the db.<Entity> struct and db.Create<Entity> funcs
+	// DBQual is the identifier the shim file this method lands in binds
+	// the ORM package to (ORMQualifier; empty means db). Chosen per file:
+	// an appended shim reuses whatever name its file already gives the
+	// ORM import.
+	DBQual string
 	// EntityPbType is the entity's generated pb message type. It equals
 	// EntityName unless the proto name is not already in protoc-gen-go's
 	// casing ("Oauth2token" → pb.Oauth2Token, db.Oauth2token).
@@ -683,7 +710,12 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return CRUDResult{}, err
 	}
 	data.Package = pkg
-	data.DBImport = ORMImportSpec(modulePath, ProjectORMPackage(projectDir))
+	data.orm = ProjectORMPackage(projectDir)
+	data.pkgDecls = handWrittenDecls(targetDir, pkg)
+	opsBinding := ChooseORMBinding(modulePath, data.orm, func(name string) bool {
+		return opsFileImportNames[name] || data.pkgDecls[name]
+	})
+	data.DBImport, data.DBQual = opsBinding.Spec, opsBinding.Qual
 
 	// Tier-1 projection: the per-entity wiring ops + conversion helpers.
 	// Emitted when at least one method passed shape validation OR a wired
@@ -986,6 +1018,16 @@ func crudShimImports(data CRUDTemplateData) []string {
 	return imports
 }
 
+// withDBQual returns methods with each one's ORM qualifier set to qual.
+func withDBQual(methods []CRUDMethodTemplateData, qual string) []CRUDMethodTemplateData {
+	out := make([]CRUDMethodTemplateData, len(methods))
+	for i, m := range methods {
+		m.DBQual = qual
+		out[i] = m
+	}
+	return out
+}
+
 // renderCRUDShimMethods renders the per-RPC shim blocks (delegation or
 // explanatory Unimplemented stub) for the given methods.
 func renderCRUDShimMethods(methods []CRUDMethodTemplateData) (string, error) {
@@ -1028,6 +1070,8 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 			// nothing to scaffold, and an empty shim file helps no one.
 			return nil
 		}
+		binding := shimORMBinding(data, unshimmed, nil)
+		unshimmed = withDBQual(unshimmed, binding.Qual)
 		blocks, err := renderCRUDShimMethods(unshimmed)
 		if err != nil {
 			return err
@@ -1037,6 +1081,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 		// are computed from the methods it will actually contain.
 		scaffolded := data
 		scaffolded.CRUDMethods = unshimmed
+		scaffolded.DBImport = binding.Spec
 		var b strings.Builder
 		b.WriteString(crudShimHeader(scaffolded))
 		b.WriteString("package " + data.Package + "\n\n")
@@ -1075,6 +1120,8 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 		return nil
 	}
 	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing)
+	binding := shimORMBinding(data, missing, existing)
+	missing = withDBQual(missing, binding.Qual)
 	blocks, err := renderCRUDShimMethods(missing)
 	if err != nil {
 		return err
@@ -1084,7 +1131,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 	for _, imp := range crudShimImports(CRUDTemplateData{
 		Module:       data.Module,
 		ProtoPackage: data.ProtoPackage,
-		DBImport:     data.DBImport,
+		DBImport:     binding.Spec,
 		CRUDMethods:  missing,
 	}) {
 		content = ensureImportLine(content, imp)

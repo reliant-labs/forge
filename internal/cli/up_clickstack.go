@@ -203,33 +203,50 @@ func localCollectorService(e *KCLEntities) string {
 //     host processes' logs, and docker creates a missing bind source as ROOT,
 //     after which forge could not write the very logs the collector is there
 //     to read.
+//   - the declared log parsing (forge.Telemetry `logs`) is rendered: for
+//     ClickStack into the include files its collector file loads
+//     (clickstack.TelemetryIncludeDir), for the forwarder into its pipelines.
 //   - for the forwarder, its pipeline file is rendered from the typed
 //     declaration into .forge/observability/forwarder.yaml. The destination's
 //     headers never touch it: the collector reads them from its environment.
-func prepareLocalCollector(projectDir string, e *KCLEntities) error {
+//
+// It reports whether a file a running collector loaded changed (one written
+// for the first time is read when the collector starts), so the caller can
+// make it reload.
+func prepareLocalCollector(projectDir string, e *KCLEntities) (bool, error) {
 	svc := localCollectorService(e)
 	if svc == "" {
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Join(projectDir, ".forge", "logs"), 0o755); err != nil {
-		return err
+		return false, err
+	}
+	logs, err := localTelemetryLogs(e)
+	if err != nil {
+		return false, fmt.Errorf("declared telemetry: %w", err)
 	}
 	if svc != clickstack.ForwarderService {
-		return nil
+		return writeTelemetryIncludes(projectDir, logs)
 	}
-	cfg, err := forwarderConfig(e.Observability)
+	cfg, err := forwarderConfig(e.Observability, logs.forwarderLogs())
 	if err != nil {
-		return err
+		return false, err
 	}
 	dir := filepath.Join(projectDir, clickstack.ForwarderConfigDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return false, err
 	}
-	return atomicfile.WriteFile(filepath.Join(dir, clickstack.ForwarderConfigFile), []byte(cfg), 0o644)
+	p := filepath.Join(dir, clickstack.ForwarderConfigFile)
+	cur, readErr := os.ReadFile(p) // #nosec G304 -- forge's own file
+	if readErr == nil && string(cur) == cfg {
+		return false, nil
+	}
+	return readErr == nil, atomicfile.WriteFile(p, []byte(cfg), 0o644)
 }
 
-// forwarderConfig renders the local forwarder's pipelines for o.
-func forwarderConfig(o *ObservabilityEntity) (string, error) {
+// forwarderConfig renders the local forwarder's pipelines for o, with the
+// declared log parsing spliced into its logs path.
+func forwarderConfig(o *ObservabilityEntity, logs deploy.ForwarderLogs) (string, error) {
 	if o == nil || o.Destination == nil {
 		return "", fmt.Errorf("the local forwarder needs Bundle.observability.destination")
 	}
@@ -249,7 +266,7 @@ func forwarderConfig(o *ObservabilityEntity) (string, error) {
 	if h := o.Destination.HeadersSecret; h != nil {
 		spec.HeadersSecret = &deploy.ObservabilitySecretKey{Name: h.Name, Key: h.Key}
 	}
-	return spec.ForwarderConfig()
+	return spec.ForwarderConfigWith(logs)
 }
 
 // forwarderHostAlias is the name the forwarder container reaches the host by

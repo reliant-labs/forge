@@ -1431,8 +1431,12 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		go session.heartbeatUntil(beatCtx)
 	}
 
-	<-ctx.Done()
-	fmt.Println("\n[up] shutting down...")
+	if awaitHoldEnd(ctx, procs) {
+		fmt.Printf("\n[up] every process this run started has exited (stopped by `forge env down %s`, or on their own; see %s/) — nothing left to supervise, exiting.\n",
+			opts.env, upLogDir(opts.env))
+	} else {
+		fmt.Println("\n[up] shutting down...")
+	}
 	// Stop every heartbeat BEFORE the teardown report — the in-process one
 	// and the keeper, which procs.shutdown stops with the other children —
 	// so a beat in flight cannot land after the stopped row and resurrect
@@ -2648,6 +2652,9 @@ type hostReadyResult struct {
 	port   int
 	state  portReadyState
 	exited string // observed runner exit, not inferred from a missing listener
+	// buildFailed is the compiler output of a hot-reload runner whose build
+	// failed: the runner keeps watching, so it never exits (up_build_failure.go).
+	buildFailed string
 	// holderPID / holderCmd identify the process actually on the port when
 	// state is portReadyForeign. Populated only for that state — for the
 	// others there is either no holder or the holder is our own child.
@@ -2707,7 +2714,7 @@ func evalHostReadiness(e *KCLEntities, projectID, envName string, targets []stri
 func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
 	var out []hostReadyResult
 	for _, r := range rs {
-		if r.state != portReadyOurs || r.exited != "" {
+		if r.state != portReadyOurs || r.exited != "" || r.buildFailed != "" {
 			out = append(out, r)
 		}
 	}
@@ -2727,6 +2734,8 @@ func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) e
 			reason = "held by another process — not the child this run started (stale/foreign holder)"
 		} else if r.exited != "" {
 			reason = "runner exited before readiness (" + r.exited + ")"
+		} else if r.buildFailed != "" {
+			reason = "its build failed (the hot-reload runner keeps watching for a fix):"
 		}
 		if r.port > 0 {
 			fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
@@ -2735,6 +2744,11 @@ func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) e
 				reason = "no live runner observed (portless process)"
 			}
 			fmt.Fprintf(&b, "       %-14s (no port)  %s\n", r.name, reason)
+		}
+		if r.buildFailed != "" {
+			for _, l := range strings.Split(r.buildFailed, "\n") {
+				fmt.Fprintf(&b, "       %-14s   | %s\n", "", l)
+			}
 		}
 		fmt.Fprintf(&b, "       %-14s   log: %s/%s.log\n", "", upLogDir(envName), r.name)
 		if r.holderPID > 0 {
@@ -2844,6 +2858,9 @@ func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envNa
 		}
 		for i := range rs {
 			rs[i].exited = procs.exitReason(rs[i].name)
+			if rs[i].state == portReadyNobody && rs[i].exited == "" {
+				rs[i].buildFailed = buildFailure(envName, rs[i].name)
+			}
 		}
 		ready.observe(rs)
 		return rs

@@ -171,6 +171,14 @@ type RuntimeTarget struct {
 	// an env nobody runs locally. They SKIP, naming why; the cluster check
 	// still runs.
 	RemoteOnly bool
+	// ClusterOnly is true when the env declares no host service and no
+	// compose infra, though a cluster it deploys to may run on this machine
+	// (a local k3d or kind). The host-stack checks (hostStackChecks) probe
+	// what `forge env up` runs outside a cluster, which such an env does
+	// not have, so they SKIP rather than report UNDETERMINED over a stack
+	// that is not there. The local telemetry checks still run: `env up`
+	// may run a ClickStack for a local cluster too.
+	ClusterOnly bool
 }
 
 // AppProbe is a service's declared probe contract (deploy/v1alpha1.Probes):
@@ -189,6 +197,13 @@ type AppProbe struct {
 var machineLocalChecks = map[string]bool{
 	composeCheckName: true, "App Health": true, "pprof": true,
 	"Metrics (ClickStack)": true, "Traces (ClickStack)": true, "Logs (ClickStack)": true, "Delve": true,
+}
+
+// hostStackChecks are the machine-local checks whose subject is the host
+// stack `forge env up` runs outside a cluster: compose infra, a host
+// service's health and pprof, Delve. See RuntimeTarget.ClusterOnly.
+var hostStackChecks = map[string]bool{
+	composeCheckName: true, "App Health": true, "pprof": true, "Delve": true,
 }
 
 // RuntimeInput carries everything RunRuntime needs. Env is reported in
@@ -361,6 +376,10 @@ func (s *svc) RunRuntime(ctx context.Context, in RuntimeInput) (Report, error) {
 			d.register(c.name, skipRemoteOnly(in.Env))
 			continue
 		}
+		if in.Target.ClusterOnly && hostStackChecks[c.name] {
+			d.register(c.name, skipClusterOnly(in.Env))
+			continue
+		}
 		d.register(c.name, c.fn)
 	}
 	return d.run(ctx, []string{composeCheckName}), nil
@@ -373,6 +392,17 @@ func skipRemoteOnly(env string) CheckFunc {
 		return CheckResult{
 			Status:  StatusSkip,
 			Message: fmt.Sprintf("env %q runs nothing on this machine (every workload is on a cluster or hosted) — see Cluster Workloads", env),
+		}
+	}
+}
+
+// skipClusterOnly is the result a machine-local check reports for an env
+// whose every workload is on a cluster, one on this machine included.
+func skipClusterOnly(env string) CheckFunc {
+	return func(context.Context, *Environment) CheckResult {
+		return CheckResult{
+			Status:  StatusSkip,
+			Message: fmt.Sprintf("env %q declares no host service or compose infra (every workload is on a cluster) — see Cluster Workloads", env),
 		}
 	}
 }

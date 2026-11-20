@@ -394,7 +394,9 @@ func FormatUndeclaredSecretMounts(misses []UndeclaredSecretMount) string {
 	}
 	b.WriteString("\nFix one of:\n")
 	b.WriteString("  - declare a forge.KubeconfigSecret to MINT the Secret (cross-cluster kubeconfig), or\n")
-	b.WriteString("  - declare a forge.ExternalSecret to promise it exists out-of-band (then provision it), or\n")
+	b.WriteString("  - promise it exists out-of-band (then provision it): list it in the env's Bundle under\n")
+	fmt.Fprintf(&b, "      required_secrets = [forge.ExternalSecret {name = %q, namespace = \"<ns>\", keys = [\"<key>\"]}]\n", misses[0].Secret)
+	b.WriteString("      with the keys the workload reads, as written (a config secret's are lowercase, e.g. database_url), or\n")
 	b.WriteString("  - render the Secret in the bundle (a secret_provider rendered Secret), or\n")
 	b.WriteString("  - remove the mount/reference if the workload doesn't actually need it.")
 	return b.String()

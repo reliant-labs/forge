@@ -48,7 +48,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -61,14 +60,12 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/internal/kclrender"
-	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -495,7 +492,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return gerr
 	}
 
-	objects, clusters, gerr := attributeWithHosted(ctx, projectDir, manifests, groups, entities, envName, opts)
+	objects, clusters, hostedTotal, gerr := attributeWithHosted(ctx, projectDir, manifests, groups, entities, envName, opts)
 	if gerr != nil {
 		return gerr
 	}
@@ -505,7 +502,10 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		return cerr
 	}
 	objects = append(objects, charts.objects...)
-	totalRendered += charts.total
+	// The hosted tier records are part of the environment too: a hosted-only
+	// env rendered "3 object(s) of 0 rendered" when only the cluster stream
+	// was counted.
+	totalRendered += hostedTotal + charts.total
 	clusters = mergeClusters(clusters, charts.clusters)
 
 	if opts.cluster != "" && !containsString(clusters, opts.cluster) {
@@ -514,7 +514,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	}
 	objects = filterRenderedObjects(objects, opts)
 	if len(objects) == 0 {
-		fmt.Fprintf(errOut, "no objects matched (environment %q rendered %d)\n", envName, totalRendered)
+		reportNoObjects(errOut, envName, totalRendered, entities)
 	}
 
 	if werr := writeRenderedOutput(out, opts, store.Meta().Name, envName, namespace, clusters, objects, entities); werr != nil {
@@ -542,6 +542,17 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		}
 	}
 	return nil
+}
+
+// reportNoObjects says why a render printed nothing. A compose- or host-bound
+// env renders no objects by design: its workloads are started by `forge env
+// up`, not applied, so "rendered 0" would read as a broken env.
+func reportNoObjects(w io.Writer, envName string, total int, entities *KCLEntities) {
+	if total == 0 && entities != nil && (len(entities.WorkloadsOn(RuntimeCompose)) > 0 || len(entities.WorkloadsOn(RuntimeHost)) > 0) {
+		fmt.Fprintf(w, "environment %q renders no cluster or hosted objects: its workloads run under compose or on the host (forge env up)\n", envName)
+		return
+	}
+	fmt.Fprintf(w, "no objects matched (environment %q rendered %d)\n", envName, total)
 }
 
 // writeRenderedOutput prints the render in the form opts asks for: the
@@ -1291,12 +1302,10 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 			for _, it := range items {
 				switch {
 				case it.Workload != nil:
-					doc, _ := json.Marshal(v1alpha1.Workload{
-						TypeMeta:   metav1.TypeMeta{APIVersion: v1alpha1.GroupVersion.String(), Kind: "Workload"},
-						ObjectMeta: metav1.ObjectMeta{Name: it.Name},
-						Spec:       *it.Workload,
-					})
-					fmt.Fprintf(w, "  %s (%s): %s\n", it.Name, it.Workload.EffectiveKind(), doc)
+					// Name and kind only: the stream on stdout already
+					// carries each record in full, and repeating it here as
+					// JSON printed every hosted workload twice.
+					fmt.Fprintf(w, "  %s (%s)\n", it.Name, it.Workload.EffectiveKind())
 				default:
 					fmt.Fprintf(w, "  %s (%s)\n", it.Name, it.Tier)
 				}
@@ -1328,17 +1337,20 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 // the hosted tree. It is the same function the bundle's shape projection
 // calls (hostedBundleObjects), so the render a human reads and the bundle a
 // deploy ships cannot disagree. A --target selection renders no hosted part.
+//
+// hostedTotal is how many hosted records the env declares, whether or not the
+// selection printed them, so the summary's "N of M rendered" counts them.
 func attributeWithHosted(ctx context.Context, projectDir, manifests string, groups []deploytarget.ServiceGroup, entities *KCLEntities,
 	envName string, opts envRenderOptions,
-) ([]renderedObject, []string, error) {
-	objects, clusters := attributeRenderedObjects(manifests, groups, entities)
+) (objects []renderedObject, clusters []string, hostedTotal int, err error) {
+	objects, clusters = attributeRenderedObjects(manifests, groups, entities)
 	hosted, _, err := hostedBundleObjects(ctx, projectDir, envName, entities)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	if len(opts.targets) == 0 && len(hosted) > 0 {
 		objects = append(objects, hosted...)
 		clusters = mergeClusters(clusters, []string{release.BundleHostedCluster})
 	}
-	return objects, clusters, nil
+	return objects, clusters, len(hosted), nil
 }

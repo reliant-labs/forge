@@ -85,7 +85,10 @@ var (
 	previewDeleteHosted = func(ctx context.Context, name string, out io.Writer) error {
 		t, err := resolveLifecycleTarget(ctx, name, "delete", "", "")
 		if errors.Is(err, deploytarget.ErrHostedEnvironmentNotFound) {
-			fmt.Fprintf(out, "[preview] %s was never deployed to its control plane; nothing hosted to delete\n", name)
+			// Not found covers both an instance that never deployed and one
+			// the platform already deleted when it expired, which is the
+			// common case for gc; neither leaves anything hosted.
+			fmt.Fprintf(out, "[preview] %s is not on its control plane (already deleted, as the platform does when a preview expires, or never deployed); nothing hosted to delete\n", name)
 			return nil
 		}
 		if err != nil {

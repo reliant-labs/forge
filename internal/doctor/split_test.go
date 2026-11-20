@@ -210,3 +210,25 @@ func TestRunRuntimeRejectsUnknownSignals(t *testing.T) {
 		t.Error("RunRuntime accepted an unknown signal")
 	}
 }
+
+// TestRunRuntimeSkipsHostStackChecksForAClusterOnlyEnv pins TL-75: an env
+// whose every workload is on a cluster — a local k3d one included — has no
+// host stack, so the host-stack checks skip, naming why, instead of reporting
+// UNDETERMINED; the telemetry checks still run.
+func TestRunRuntimeSkipsHostStackChecksForAClusterOnlyEnv(t *testing.T) {
+	report, err := New(Deps{}).RunRuntime(context.Background(), RuntimeInput{
+		ProjectName: "demo", ProjectDir: t.TempDir(), Env: "k8s",
+		Target: RuntimeTarget{ClusterOnly: true},
+	})
+	if err != nil {
+		t.Fatalf("RunRuntime: %v", err)
+	}
+	for _, c := range report.Checks {
+		if !hostStackChecks[c.Name] {
+			continue
+		}
+		if c.Status != StatusSkip || !strings.Contains(c.Message, `env "k8s" declares no host service or compose infra`) {
+			t.Errorf("%s = %q (%s), want a skip naming the cluster-only env", c.Name, c.Status, c.Message)
+		}
+	}
+}

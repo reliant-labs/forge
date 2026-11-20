@@ -156,14 +156,18 @@ func TestScaffold_OneWorkloadDeclarationRendersOnEveryRuntime(t *testing.T) {
 	}
 	// The env's config.k is what `forge generate` scaffolds next; copy prod's.
 	writeEnv(t, dir, "cloud", string(cloud), filepath.Join(dir, "deploy", "kcl", "prod"))
-	// Rebound to targets the env has not declared: refused, by name — never
-	// an env that renders and deploys nowhere.
-	if err := check("cloud"); err == nil || !strings.Contains(err.Error(), "declares no `_cluster`") {
-		t.Fatalf("--check on a cluster binding with no `_cluster` = %v, want the render refusal naming it", err)
+	// The cluster the API was rebound onto is declared with a placeholder
+	// for each of its facts (TL-74), so --check names what to fill in —
+	// never an env that renders and deploys nowhere.
+	if err := check("cloud"); err == nil || !strings.Contains(err.Error(), "REPLACE_ME_CLUSTER_CONTEXT") || !strings.Contains(err.Error(), "REPLACE_ME_CONNECTED_CLUSTER") {
+		t.Fatalf("--check on a cluster binding with placeholders = %v, want them named", err)
 	}
-	// The author's two edits: declare the cluster and the bucket.
+	// The author's edits: fill the cluster's facts and declare the bucket.
 	filled := strings.NewReplacer(
-		"\n_cluster = None\n", "\n_cluster = forge.ClusterTarget {cluster = \"gke_acme_cloud\", connected_cluster = \"acme-cloud\", namespace = \"acme-cloud\", platform = \"amd64\"}\n",
+		`"REPLACE_ME_CLUSTER_CONTEXT"`, `"gke_acme_cloud"`,
+		`"REPLACE_ME_CONNECTED_CLUSTER"`, `"acme-cloud"`,
+		`"REPLACE_ME_NAMESPACE"`, `"acme-cloud"`,
+		`"REPLACE_ME_PLATFORM"`, `"amd64"`,
 		"\n_bucket = None\n", "\n_bucket = forge.OnBucket {bucket = \"acme-cloud-web\"}\n",
 	).Replace(string(cloud))
 	if err := os.WriteFile(cloudMain, []byte(filled), 0o644); err != nil {

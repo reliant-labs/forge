@@ -190,11 +190,16 @@ func TestEnvDelete_ResolvesByID(t *testing.T) {
 			t.Fatalf("err = %v; want nothing to delete", err)
 		}
 	})
-	t.Run("no control plane to ask", func(t *testing.T) {
+	t.Run("no binding: Reliant cloud is asked", func(t *testing.T) {
+		// TL-51: a delegated credential's deploys record no binding.
+		cloudCP := controlPlaneServer(t, map[string]string{
+			"GetEnvironment": `{"environment":{"id":"env_9","name":"prod-web","project":"shop"}}`,
+		})
+		useUnboundControlPlane(t, cloudCP.URL)
 		undeclaredDeleteProject(t)
-		_, err := resolveLifecycleTargetFromID(t.Context(), "env_9", "", "tok", "")
-		if err == nil || !strings.Contains(err.Error(), "forge env delete --id env_9 --endpoint "+cloud.DefaultEndpoint) {
-			t.Fatalf("err = %v; want an --endpoint fix", err)
+		got, err := resolveLifecycleTargetFromID(t.Context(), "env_9", "", "tok", "")
+		if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != cloudCP.URL {
+			t.Fatalf("target = %+v, %v; want env_9 on Reliant cloud (%s)", got, err, cloudCP.URL)
 		}
 	})
 }
@@ -274,11 +279,17 @@ func TestEnvListOrphaned(t *testing.T) {
 			t.Errorf("out = %s", out.String())
 		}
 	})
-	t.Run("no control plane to ask", func(t *testing.T) {
+	t.Run("no binding: Reliant cloud is asked", func(t *testing.T) {
+		// TL-51: after deploys under a delegated credential only the
+		// binding's lock file exists; the orphans are still listed.
+		useUnboundControlPlane(t, srv.URL)
 		undeclaredDeleteProject(t)
-		err := runEnvListOrphaned(t.Context(), projectDirForKCL(), "tok", "", io.Discard)
-		if err == nil || !strings.Contains(err.Error(), "--endpoint "+cloud.DefaultEndpoint) {
-			t.Fatalf("err = %v; want an --endpoint fix", err)
+		var out bytes.Buffer
+		if err := runEnvListOrphaned(t.Context(), projectDirForKCL(), "tok", "", &out); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "prod-web") {
+			t.Errorf("want prod-web listed from Reliant cloud:\n%s", out.String())
 		}
 	})
 	t.Run("an --endpoint the project never used", func(t *testing.T) {
@@ -288,4 +299,13 @@ func TestEnvListOrphaned(t *testing.T) {
 			t.Fatalf("err = %v; want it refused before the credential is sent", err)
 		}
 	})
+}
+
+// useUnboundControlPlane points the unbound-project fallback (Reliant cloud)
+// at url for one test.
+func useUnboundControlPlane(t *testing.T, url string) {
+	t.Helper()
+	old := unboundControlPlane
+	unboundControlPlane = url
+	t.Cleanup(func() { unboundControlPlane = old })
 }

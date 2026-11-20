@@ -553,6 +553,7 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 	}
 
 	ctx = a.policy.ContextWithClaims(ctx, claims)
+	ctx = withTelemetryUser(ctx, claims)
 	if a.policy.Decorate != nil {
 		// The single post-authentication chokepoint: layer any
 		// project-owned context (dual identity bridge, raw Authorization

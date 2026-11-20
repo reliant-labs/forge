@@ -9,6 +9,8 @@
 //
 // It is slow (buf, plugin builds, a cold `go build`), so every entry point
 // skips under -short; the tests that use it run in `task test`.
+//
+//forge:exclude-contract: test plumbing, no part of the forge binary: one concrete *Module over a temp directory, used only by tests
 package connectv2test
 
 import (
@@ -182,7 +184,7 @@ func run(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOPROXY=off", "GOWORK=off"))
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {

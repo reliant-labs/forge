@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -570,11 +571,48 @@ func RenderSkillContentAt(projectRoot, skillPath string, audience SkillAudience,
 // the command a reader types to invoke forge — so every command printed is
 // copy-pasteable under the mount that served it. "" and "forge" leave the
 // content unchanged.
+//
+// A ```yaml (or ```yml) fence is left as written: it is a file — a CI
+// workflow whose runner installs the standalone forge (`npm i -g
+// @reliantlabs/forge`), a Taskfile, a config value such as `tool: forge` —
+// not a command typed into the shell that loaded the skill, so `reliant
+// forge` there names a binary the runner does not have.
 func rewriteForgeCommands(content []byte, cliName string) []byte {
 	if cliName == "" || cliName == "forge" {
 		return content
 	}
-	return forgeCmdRE.ReplaceAll(content, []byte(cliName+"$1"))
+	lines := bytes.SplitAfter(content, []byte("\n"))
+	fence := "" // the open fence's info string; "" outside a fence
+	inFence := false
+	for i, line := range lines {
+		if info, ok := fenceLine(line); ok {
+			if inFence {
+				inFence, fence = false, ""
+			} else {
+				inFence, fence = true, info
+			}
+			continue
+		}
+		if inFence && (fence == "yaml" || fence == "yml") {
+			continue
+		}
+		lines[i] = forgeCmdRE.ReplaceAll(line, []byte(cliName+"$1"))
+	}
+	return bytes.Join(lines, nil)
+}
+
+// fenceLine reports whether line opens or closes a ``` code fence, and the
+// fence's info string (its language) lowercased.
+func fenceLine(line []byte) (string, bool) {
+	t := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(t, []byte("```")) {
+		return "", false
+	}
+	info := strings.TrimSpace(string(bytes.TrimLeft(t, "`")))
+	if f := strings.Fields(info); len(f) > 0 {
+		info = f[0]
+	}
+	return strings.ToLower(info), true
 }
 
 // forgeModulePath is forge's Go module path, used to discover the forge

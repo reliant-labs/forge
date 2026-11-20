@@ -64,9 +64,16 @@ type lintRunCtx struct {
 	// `forge lint --skip-frontends`, for callers that want a backend-only
 	// gate without paying for the Node toolchain.
 	skipFrontends bool
-	paths         []string
-	cfg           *config.ProjectConfig
-	cwd           string
+	// install is `forge lint --install`: the frontend lanes install missing
+	// dependencies before they run. Off, lint never installs, and a frontend
+	// with no node_modules is a lane that could not run
+	// (lint_frontend_deps.go). installOut receives that install's output;
+	// nil discards it.
+	install    bool
+	installOut io.Writer
+	paths      []string
+	cfg        *config.ProjectConfig
+	cwd        string
 	// scope is `forge lint --scope`; nil is the whole project. Only the
 	// structured drivers (collectLintOutcomes) read it — see
 	// lint_structured.go.

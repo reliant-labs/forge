@@ -26,9 +26,10 @@
 //     baseline. One with enough after but too few before is named in
 //     not_evaluated (baseline.go). The other findings need no baseline.
 //   - Signals (signals.go): a service's requests are its own server spans;
-//     one that sent none in either window is judged on what the hosting
-//     platform's ingress measured for it; a frontend's browser telemetry is
-//     judged beside either (browser_* findings), or alone.
+//     Combine can stand ingress figures in for a service that sent none, but
+//     no caller passes them yet, so a service with no spans is not judged on
+//     its requests; a frontend's browser telemetry is judged beside spans
+//     (browser_* findings), or alone.
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
 //     workload_restarts, browser_errors, browser_failed_requests,
 //     browser_page_load, probe_failed, probe_latency, changed_op_errors,
@@ -1337,8 +1338,8 @@ func InconclusiveWhy(r Report) string {
 // app served plenty.
 func noRequestTelemetryWhy(r Report) string {
 	var b strings.Builder
-	b.WriteString("no request telemetry: no service sent a single server span in either window, no request reached one through the platform's ingress, and no page sent browser telemetry, so error rate and latency could not be judged. ")
-	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces")
+	b.WriteString("no request telemetry: no service sent a single server span in either window and no page sent browser telemetry, so error rate and latency could not be judged. ")
+	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces, and a frontend's from the browser telemetry its pages send")
 	if n := len(r.Uninstrumented); n > 0 {
 		verb := "exports"
 		if n > 1 {
@@ -1346,8 +1347,9 @@ func noRequestTelemetryWhy(r Report) string {
 		}
 		fmt.Fprintf(&b, ", and %s %s none unless it is instrumented: forge did not build it, so it did not instrument it", strings.Join(r.Uninstrumented, ", "), verb)
 	}
-	b.WriteString(". Add an OpenTelemetry SDK that exports traces over OTLP to $OTEL_EXPORTER_OTLP_ENDPOINT (hosting sets it, and OTEL_SERVICE_NAME, on every workload); ")
-	b.WriteString("if the app already does, send it traffic and check again. ")
+	b.WriteString(". For a service, add an OpenTelemetry SDK that exports traces over OTLP to $OTEL_EXPORTER_OTLP_ENDPOINT (hosting sets it, and OTEL_SERVICE_NAME, on every workload); ")
+	b.WriteString("for a static site, load its pages in a real browser (curl and uptime probes send no browser telemetry). ")
+	b.WriteString("If the app already sends telemetry, send it traffic and check again. ")
 	checked := "workload restarts, alerts and issues"
 	if len(r.NotEvaluated) > 0 {
 		checked += " (not evaluated here: " + strings.Join(r.NotEvaluated, ", ") + ")"

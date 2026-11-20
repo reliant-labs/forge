@@ -29,7 +29,10 @@
 // added, never renamed or repurposed.
 package telemetry
 
-import "sort"
+import (
+	"encoding/json"
+	"sort"
+)
 
 // Attachment is where a declaration attaches, which decides what forge infers
 // about its target.
@@ -147,6 +150,12 @@ type Target struct {
 	Checks        []HealthCheck   `json:"checks"`
 	// Dashboard is the signal-generic system dashboard's settings.
 	Dashboard SystemDashboard `json:"dashboard"`
+	// Dashboards are the system's own dashboards, each one forge.dashboards/v1
+	// object exactly as a dashboard file carries it (pkg/dashspec). Validate
+	// runs each through dashspec.ParseDashboard, the validator a release cut
+	// runs; they are kept raw so that validator, with its line and column, is
+	// the one judge of them.
+	Dashboards []json.RawMessage `json:"dashboards"`
 	// DefaultAlerts arms <Service>TargetDown and <Service>CheckFailing.
 	DefaultAlerts bool `json:"default_alerts"`
 }

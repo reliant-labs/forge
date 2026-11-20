@@ -121,6 +121,29 @@ func validateRolloutGroup(g rolloutGroup) error {
 	return nil
 }
 
+// The link-time fixture is one grace row, "<rule>@<introduced_in>@<until>",
+// and anything else is no row at all: a release build (empty) declares
+// nothing, and no test binary links one.
+func TestLinkedFixtureRows(t *testing.T) {
+	got := linkedFixtureRows("forge-column-markers@v1.0.0@v1.0.1")
+	if len(got) != 1 || got[0].IntroducedIn != "v1.0.0" || got[0].Grace == nil || got[0].Grace.Until != "v1.0.1" ||
+		len(got[0].Rules) != 1 || got[0].Rules[0] != "forge-column-markers" {
+		t.Fatalf("got %+v", got)
+	}
+	if ro := buildRollouts(shippedRules, got)["forge-column-markers"]; ro.IntroducedIn != "v1.0.0" || ro.GatesFrom != "v1.0.1" {
+		t.Errorf("the linked row must override the shipped declaration, got %+v", ro)
+	}
+	for _, bad := range []string{"", "forge-column-markers", "forge-column-markers@v1.0.0", "@v1.0.0@v1.0.1",
+		"forge-column-markers@@v1.0.1", "forge-column-markers@v1.0.0@", "a@b@c@d"} {
+		if got := linkedFixtureRows(bad); got != nil {
+			t.Errorf("%q: got %+v, want no row", bad, got)
+		}
+	}
+	if rolloutLinkFixture != "" {
+		t.Errorf("rolloutLinkFixture = %q in a test binary: only the e2e forge build links one", rolloutLinkFixture)
+	}
+}
+
 func TestRolloutGraceRequiresExplicitV19OptIn(t *testing.T) {
 	for _, tc := range []struct {
 		name string

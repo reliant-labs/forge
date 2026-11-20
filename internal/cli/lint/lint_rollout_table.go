@@ -20,6 +20,8 @@
 package lint
 
 import (
+	"strings"
+
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
@@ -262,10 +264,37 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
 		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
 	}},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
+		Fix:          "forge lint --install",
+		Rules:        []string{ruleFrontendNoInstall},
+	},
 }
 
+// rolloutLinkFixture is a grace row linked into a test build of the forge
+// binary, "<rule>@<introduced_in>@<grace_until>", so the warn-first path is
+// proven through the real binary on a rule whose window the test controls
+// (TestE2ENewRuleWarnsUntilPinReachesGatesFrom). Only the linker sets it
+// (-ldflags -X); no flag, env var or file reaches it, and it is empty in
+// every release build.
+var rolloutLinkFixture string
+
 // lintRollouts is the declaration of every rule, by ID.
-var lintRollouts = buildRollouts(shippedRules, newRules)
+var lintRollouts = buildRollouts(shippedRules, newRules, linkedFixtureRows(rolloutLinkFixture))
+
+// linkedFixtureRows is the grace row rolloutLinkFixture names, if any.
+func linkedFixtureRows(fixture string) []rolloutGroup {
+	parts := strings.Split(fixture, "@")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return nil
+	}
+	return []rolloutGroup{{
+		IntroducedIn: parts[1],
+		Grace:        &rolloutGrace{Until: parts[2], Reason: "linked e2e fixture"},
+		Rules:        []string{parts[0]},
+	}}
+}
 
 func buildRollouts(groups ...[]rolloutGroup) map[string]ruleRollout {
 	out := map[string]ruleRollout{}

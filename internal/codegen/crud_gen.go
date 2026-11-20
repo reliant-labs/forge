@@ -1867,6 +1867,22 @@ type CRUDTestTemplateData struct {
 	// bare request messages in, bare responses out, codes read with
 	// svcerr.CodeV2.
 	ConnectV2 bool
+	// HasMigrationsFS mirrors the test harness's own gate for
+	// NewMigratedTestDB (ProjectHasSQLMigrations): when true the lifecycle
+	// test clones the migrated template through it instead of replaying
+	// every migration into a fresh database per test.
+	HasMigrationsFS bool
+	// OmitAssert / OmitDBHelpers leave out package-level helpers another
+	// test file of the package already declares: assertCleanError, and
+	// (rendered only without HasMigrationsFS) findMigrationsDir + crudTestDB.
+	// handlers_crud_test.go declares them all; a per-entity file only the
+	// ones no other file of the external test package does, so the two
+	// compile side by side.
+	OmitAssert    bool
+	OmitDBHelpers bool
+	// PerEntity marks a handlers_crud_<entity>_test.go: the lifecycle test
+	// of one entity the service gained after handlers_crud_test.go was born.
+	PerEntity bool
 }
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
@@ -1998,6 +2014,22 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	lifecycleRel := filepath.Join(relDir, "handlers_crud_test.go")
 	lifecyclePath := filepath.Join(projectDir, lifecycleRel)
 	if !checksums.ScaffoldOnceDecision(projectDir, lifecycleRel) {
+		// handlers_crud_test.go is the user's, and covers the entities the
+		// service had when it was born. An entity the service gained since
+		// gets a lifecycle test of its own, in a file of its own — unless the
+		// user deleted handlers_crud_test.go: that opts the service out of
+		// forge's lifecycle tests, and the entities it covered must not come
+		// back one file at a time.
+		if _, statErr := os.Stat(lifecyclePath); statErr != nil {
+			return CRUDResult{Skipped: "scaffolded once already, then deleted — the service opted out of forge's lifecycle tests", Routine: true}, nil
+		}
+		wrote, err := generateEntityLifecycleTests(svc, filteredMethods, hasCreate, hasGet, modulePath, projectDir, pkg, targetDir, relDir, cs)
+		if err != nil {
+			return CRUDResult{}, err
+		}
+		if wrote {
+			return CRUDResult{Wrote: true}, nil
+		}
 		return CRUDResult{Skipped: "scaffolded once already — the file is yours (or you deleted it)", Routine: true}, nil
 	}
 
@@ -2017,17 +2049,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	fix := buildCRUDTestFixtures(projectDir, nil)
 	defer fix.close()
 
-	// Package + TestHelperName are overridden with the disk-resolved
-	// package clause so the emitted test file always matches the directory
-	// it lands in AND calls the `app.NewTest<X>` factory the bootstrap
-	// testing generator (which uses the same resolver) actually emitted.
-	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir, fix)
-	data.Package = pkg
-	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
-	data.UnfilledDeps = UnfilledDepsFor(targetDir)
-	// relDir is internal/handlers/<leaf>; the import needs the leaf.
-	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
-	data.ConnectV2 = connectV2For(svc, projectDir)
+	data := lifecycleTestData(svc, filteredMethods, modulePath, projectDir, pkg, targetDir, relDir, fix)
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {
@@ -2272,9 +2294,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	// exactly or the generated file has an unused import.
 	needsFieldMask := false
 	for _, e := range entities {
-		if e.HasCreate && e.HasGet && e.PkGoType == "string" &&
-			e.HasUpdate && e.MutableStringField != "" &&
-			e.UpdateMethod.UpdateMaskField != "" {
+		if lifecycleNeedsFieldMask(e) {
 			needsFieldMask = true
 			break
 		}

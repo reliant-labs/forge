@@ -19,10 +19,11 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/sbomoci/ocitest"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// testRegistry reaches a fakeRegistry: no credential, and no retrying
+// testRegistry reaches an ocitest.Registry: no credential, and no retrying
 // transport (a refused request must fail at once, not back off).
 func testRegistry() RegistryOptions {
 	return RegistryOptions{
@@ -89,8 +90,8 @@ func fallbackTag(subject string) string {
 
 func TestAttach_TagFallback(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("acme/web/static.v1", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("acme/web/static.v1", "v1")
 	sbom := sbomDoc("web")
 
 	referrer := mustAttach(t, subject, sbom)
@@ -99,7 +100,7 @@ func TestAttach_TagFallback(t *testing.T) {
 	if !strings.HasPrefix(referrer, repo+"@sha256:") {
 		t.Fatalf("referrer %q is not in the subject's repository %q", referrer, repo)
 	}
-	if tags := f.tagList("acme/web/static.v1"); !contains(tags, fallbackTag(subject)) {
+	if tags := f.Tags("acme/web/static.v1"); !contains(tags, fallbackTag(subject)) {
 		t.Fatalf("no fallback index tag %s; tags %v", fallbackTag(subject), tags)
 	}
 	got := listed(t, subject)
@@ -122,12 +123,12 @@ func TestAttach_TagFallback(t *testing.T) {
 func TestAttach_ReferrersAPI(t *testing.T) {
 	t.Parallel()
 	// GAR: a referrers API that answers `"manifests": null` while empty.
-	f := newFakeRegistry(t, func(f *fakeRegistry) { f.referrersAPI, f.nullManifests = true, true })
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, func(f *ocitest.Registry) { f.ReferrersAPI, f.NullManifests = true, true })
+	subject := f.PutSubject("acme/api", "v1")
 
 	referrer := mustAttach(t, subject, sbomDoc("api"))
 
-	if tags := f.tagList("acme/api"); contains(tags, fallbackTag(subject)) {
+	if tags := f.Tags("acme/api"); contains(tags, fallbackTag(subject)) {
 		t.Errorf("a registry with the referrers API got a fallback tag: %v", tags)
 	}
 	if got := referrerDigests(t, subject); len(got) != 1 || !got[strings.SplitN(referrer, "@", 2)[1]] {
@@ -139,8 +140,8 @@ func TestAttach_ReferrersAPI(t *testing.T) {
 // the second attach to a subject fails after moving the tag.
 func TestAttach_SecondSBOMWhenDeleteRefused(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, func(f *fakeRegistry) { f.refuseDelete = true })
-	subject := f.putSubject("org/proj/api", "v1")
+	f := ocitest.New(t, func(f *ocitest.Registry) { f.RefuseDelete = true })
+	subject := f.PutSubject("org/proj/api", "v1")
 
 	first := mustAttach(t, subject, sbomDoc("first"))
 	second := mustAttach(t, subject, sbomDoc("second"))
@@ -151,7 +152,7 @@ func TestAttach_SecondSBOMWhenDeleteRefused(t *testing.T) {
 			t.Errorf("%s not listed; listed %v", r, got)
 		}
 	}
-	if n := f.deleteCount(); n != 0 {
+	if n := f.DeleteCount(); n != 0 {
 		t.Errorf("attach sent %d DELETE(s); it must never garbage-collect the old index", n)
 	}
 }
@@ -161,12 +162,12 @@ func TestAttach_SameSBOMTwiceIsANoOp(t *testing.T) {
 	for _, api := range []bool{false, true} {
 		t.Run(fmt.Sprintf("referrersAPI=%v", api), func(t *testing.T) {
 			t.Parallel()
-			f := newFakeRegistry(t, func(f *fakeRegistry) { f.referrersAPI = api })
-			subject := f.putSubject("acme/api", "v1")
+			f := ocitest.New(t, func(f *ocitest.Registry) { f.ReferrersAPI = api })
+			subject := f.PutSubject("acme/api", "v1")
 			sbom := sbomDoc("api")
 
 			first := mustAttach(t, subject, sbom)
-			before := f.requestCount()
+			before := len(f.Requests())
 			// Different informational options: still the SBOM already there.
 			again, err := Attach(context.Background(), subject, sbom, AttachOptions{Registry: testRegistry(), Generator: "syft@v9"})
 			if err != nil {
@@ -175,13 +176,11 @@ func TestAttach_SameSBOMTwiceIsANoOp(t *testing.T) {
 			if again != first {
 				t.Errorf("re-attach returned %s, want the existing %s", again, first)
 			}
-			f.mu.Lock()
-			for _, r := range f.requests[before:] {
+			for _, r := range f.Requests()[before:] {
 				if strings.HasPrefix(r, http.MethodPut) || strings.HasPrefix(r, http.MethodPost) {
 					t.Errorf("re-attach wrote to the registry: %s", r)
 				}
 			}
-			f.mu.Unlock()
 			if n := len(listed(t, subject)); n != 1 {
 				t.Errorf("listed %d referrers after a re-attach, want 1", n)
 			}
@@ -193,8 +192,8 @@ func TestAttach_SameSBOMTwiceIsANoOp(t *testing.T) {
 // lost index entries in every phase-0 trial. All must be listed.
 func TestAttach_ConcurrentAttachesAreAllListed(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, func(f *fakeRegistry) { f.refuseDelete = true })
-	subject := f.putSubject("org/proj/api", "v1")
+	f := ocitest.New(t, func(f *ocitest.Registry) { f.RefuseDelete = true })
+	subject := f.PutSubject("org/proj/api", "v1")
 
 	const n = 6
 	refs := make([]string, n)
@@ -226,13 +225,11 @@ func TestAttach_ConcurrentAttachesAreAllListed(t *testing.T) {
 // lost. The attach must notice when it verifies, and re-attach.
 func TestAttach_ReattachesWhenTheIndexWriteIsLost(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("acme/api", "v1")
 	first := mustAttach(t, subject, sbomDoc("first"))
 
-	f.mu.Lock()
-	f.loseIndexWrites = 2
-	f.mu.Unlock()
+	f.LoseIndexWrites(2)
 	second := mustAttach(t, subject, sbomDoc("second"))
 
 	got := referrerDigests(t, subject)
@@ -241,18 +238,15 @@ func TestAttach_ReattachesWhenTheIndexWriteIsLost(t *testing.T) {
 			t.Errorf("%s not listed after verify-and-reattach; listed %v", r, got)
 		}
 	}
-	f.mu.Lock()
-	lost := f.loseIndexWrites
-	f.mu.Unlock()
-	if lost != 0 {
-		t.Fatalf("the fake lost only %d of 2 index writes: the test did not exercise re-attach", 2-lost)
+	if lost := f.IndexWritesToLose(); lost != 0 {
+		t.Fatalf("the fake lost only %d of 2 index writes: the test did not exercise re-attach", 2-f.IndexWritesToLose())
 	}
 }
 
 func TestAttach_SkipsBundleRepositories(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("org/proj/bundle.v1/prod", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("org/proj/bundle.v1/prod", "v1")
 
 	ref, err := Attach(context.Background(), subject, sbomDoc("bundle"), testAttach())
 	if !errors.Is(err, ErrSkipped) {
@@ -262,7 +256,7 @@ func TestAttach_SkipsBundleRepositories(t *testing.T) {
 	if !ok || !strings.Contains(reason, "bundle") || !strings.Contains(reason, "ledger") {
 		t.Errorf("SkipReason = %q, %v", reason, ok)
 	}
-	if n := f.requestCount(); n != 0 {
+	if n := len(f.Requests()); n != 0 {
 		t.Errorf("a skipped attach sent %d request(s)", n)
 	}
 	if _, ok := SkipReason(errors.New("other")); ok {
@@ -279,17 +273,17 @@ func TestBundleSegmentIsTheBundlePackages(t *testing.T) {
 
 func TestAttach_RefusesBadInput(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("acme/api", "v1")
 	for name, tc := range map[string]struct {
 		subject string
 		sbom    []byte
 	}{
-		"tag subject":    {f.host() + "/acme/api:v1", sbomDoc("x")},
-		"bare repo":      {f.host() + "/acme/api", sbomDoc("x")},
+		"tag subject":    {f.Host() + "/acme/api:v1", sbomDoc("x")},
+		"bare repo":      {f.Host() + "/acme/api", sbomDoc("x")},
 		"empty sbom":     {subject, nil},
 		"non-JSON sbom":  {subject, []byte("not json")},
-		"absent subject": {f.host() + "/acme/api@" + digest.FromString("nothing").String(), sbomDoc("x")},
+		"absent subject": {f.Host() + "/acme/api@" + digest.FromString("nothing").String(), sbomDoc("x")},
 	} {
 		if _, err := Attach(context.Background(), tc.subject, tc.sbom, testAttach()); err == nil {
 			t.Errorf("%s: Attach succeeded", name)
@@ -321,28 +315,28 @@ func artifactWith(sbom []byte, referrer string) release.Artifact {
 
 func TestFetch_LedgerFirstWithoutTheNetwork(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("acme/api", "v1")
 	sbom := sbomDoc("api")
 	store, _ := openStore(t)
 	if _, err := store.PutSBOM(sbom); err != nil {
 		t.Fatal(err)
 	}
-	before := f.requestCount()
+	before := len(f.Requests())
 
-	data, source, err := FetchWith(context.Background(), store, artifactWith(sbom, f.host()+"/acme/api@"+digest.FromString("r").String()), subject, testRegistry())
+	data, source, err := FetchWith(context.Background(), store, artifactWith(sbom, f.Host()+"/acme/api@"+digest.FromString("r").String()), subject, testRegistry())
 	if err != nil || source != SourceLedger || !bytes.Equal(data, sbom) {
 		t.Fatalf("Fetch = (%d bytes, %q, %v), want the ledger copy", len(data), source, err)
 	}
-	if n := f.requestCount() - before; n != 0 {
+	if n := len(f.Requests()) - before; n != 0 {
 		t.Errorf("a ledger hit sent %d registry request(s)", n)
 	}
 }
 
 func TestFetch_ReferrerByRecordThenCachedInTheLedger(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("acme/api", "v1")
 	sbom := sbomDoc("api")
 	referrer := mustAttach(t, subject, sbom)
 	store, _ := openStore(t)
@@ -366,8 +360,8 @@ func TestFetch_DiscoversByDigestWhenNoReferrerIsRecorded(t *testing.T) {
 	for _, api := range []bool{false, true} {
 		t.Run(fmt.Sprintf("referrersAPI=%v", api), func(t *testing.T) {
 			t.Parallel()
-			f := newFakeRegistry(t, func(f *fakeRegistry) { f.referrersAPI, f.nullManifests = api, api })
-			subject := f.putSubject("acme/api", "v1")
+			f := ocitest.New(t, func(f *ocitest.Registry) { f.ReferrersAPI, f.NullManifests = api, api })
+			subject := f.PutSubject("acme/api", "v1")
 			sbom := sbomDoc("wanted")
 			mustAttach(t, subject, sbomDoc("other generator's"))
 			mustAttach(t, subject, sbom)
@@ -384,8 +378,8 @@ func TestFetch_DiscoversByDigestWhenNoReferrerIsRecorded(t *testing.T) {
 // matched by reading its layers.
 func TestFetch_DiscoversAReferrerWithoutTheDigestAnnotation(t *testing.T) {
 	t.Parallel()
-	f := newFakeRegistry(t, nil)
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, nil)
+	subject := f.PutSubject("acme/api", "v1")
 	sbom := sbomDoc("from ci")
 
 	ref, d, _ := parseSubject(subject)
@@ -424,8 +418,8 @@ func TestFetch_VerifiesTheDigest(t *testing.T) {
 	t.Parallel()
 	t.Run("referrer holds other bytes", func(t *testing.T) {
 		t.Parallel()
-		f := newFakeRegistry(t, nil)
-		subject := f.putSubject("acme/api", "v1")
+		f := ocitest.New(t, nil)
+		subject := f.PutSubject("acme/api", "v1")
 		referrer := mustAttach(t, subject, sbomDoc("attached"))
 		_, _, err := FetchWith(context.Background(), nil, artifactWith(sbomDoc("recorded"), referrer), subject, testRegistry())
 		if !errors.Is(err, ErrSBOMUnavailable) {
@@ -435,8 +429,8 @@ func TestFetch_VerifiesTheDigest(t *testing.T) {
 	t.Run("registry serves damaged bytes", func(t *testing.T) {
 		t.Parallel()
 		sbom := sbomDoc("api")
-		f := newFakeRegistry(t, func(f *fakeRegistry) { f.corruptBlob = digest.FromBytes(sbom) })
-		subject := f.putSubject("acme/api", "v1")
+		f := ocitest.New(t, func(f *ocitest.Registry) { f.CorruptBlob = digest.FromBytes(sbom) })
+		subject := f.PutSubject("acme/api", "v1")
 		referrer := mustAttach(t, subject, sbom)
 		store, _ := openStore(t)
 		_, _, err := FetchWith(context.Background(), store, artifactWith(sbom, referrer), subject, testRegistry())
@@ -449,8 +443,8 @@ func TestFetch_VerifiesTheDigest(t *testing.T) {
 	})
 	t.Run("damaged ledger copy is passed over and repaired", func(t *testing.T) {
 		t.Parallel()
-		f := newFakeRegistry(t, nil)
-		subject := f.putSubject("acme/api", "v1")
+		f := ocitest.New(t, nil)
+		subject := f.PutSubject("acme/api", "v1")
 		sbom := sbomDoc("api")
 		referrer := mustAttach(t, subject, sbom)
 		store, home := openStore(t)
@@ -485,8 +479,8 @@ func TestFetch_NothingToRead(t *testing.T) {
 		t.Errorf("not in the ledger, no referrer, no subject: %v, want ErrSBOMUnavailable", err)
 	}
 	// GAR's null list: discovery finds nothing, and says so.
-	f := newFakeRegistry(t, func(f *fakeRegistry) { f.referrersAPI, f.nullManifests = true, true })
-	subject := f.putSubject("acme/api", "v1")
+	f := ocitest.New(t, func(f *ocitest.Registry) { f.ReferrersAPI, f.NullManifests = true, true })
+	subject := f.PutSubject("acme/api", "v1")
 	if _, _, err := FetchWith(context.Background(), store, artifactWith(sbomDoc("x"), ""), subject, testRegistry()); !errors.Is(err, ErrSBOMUnavailable) {
 		t.Errorf("subject with no referrers: %v, want ErrSBOMUnavailable", err)
 	}

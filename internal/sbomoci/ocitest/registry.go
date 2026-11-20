@@ -1,4 +1,10 @@
-package sbomoci
+// Package ocitest is an in-process OCI distribution registry for tests of
+// code that pushes and reads OCI artifacts and their referrers with oras-go.
+// It serves only the routes oras-go's remote.Repository uses, over plain
+// HTTP on 127.0.0.1, and needs no network and no container.
+//
+//forge:exclude-contract: a test double: one concrete fake registry, constructed by tests; there is no second implementation to abstract over
+package ocitest
 
 import (
 	"bytes"
@@ -15,30 +21,30 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// fakeRegistry is an in-process OCI distribution registry: just the routes
+// Registry is an in-process OCI distribution registry: just the routes
 // oras-go's remote.Repository uses to push and read manifests, blobs and
 // referrers. It plays both kinds of registry phase 0 found:
 //
-//   - referrersAPI false: distribution v3 / GHCR / Reliant's hosted registry —
+//   - ReferrersAPI false: distribution v3 / GHCR / Reliant's hosted registry —
 //     no /referrers/ route (404), no OCI-Subject header, so the writer keeps
 //     the `sha256-<hex>` fallback index itself;
-//   - referrersAPI true: GAR / zot — the registry indexes `subject` and serves
-//     /referrers/, with nullManifests reproducing GAR's `"manifests": null`.
+//   - ReferrersAPI true: GAR / zot — the registry indexes `subject` and serves
+//     /referrers/, with NullManifests reproducing GAR's `"manifests": null`.
 //
-// refuseDelete is the hosted registry's tenant token (no DELETE).
-// loseIndexWrites makes that many fallback-tag writes vanish — the tag keeps
+// RefuseDelete is the hosted registry's tenant token (no DELETE).
+// LoseIndexWrites makes that many fallback-tag writes vanish — the tag keeps
 // its old index, exactly what a concurrent writer in another process does to
 // the read-modify-write — so verify-and-reattach can be observed.
-type fakeRegistry struct {
-	t   *testing.T
+type Registry struct {
+	t   testing.TB
 	srv *httptest.Server
 
-	referrersAPI    bool
-	nullManifests   bool
-	refuseDelete    bool
+	ReferrersAPI    bool
+	NullManifests   bool
+	RefuseDelete    bool
 	loseIndexWrites int
-	// corruptBlob serves different bytes for this digest.
-	corruptBlob digest.Digest
+	// CorruptBlob serves different bytes for this digest.
+	CorruptBlob digest.Digest
 
 	mu        sync.Mutex
 	manifests map[string]map[digest.Digest]storedManifest // repo → digest → manifest
@@ -54,9 +60,11 @@ type storedManifest struct {
 	body      []byte
 }
 
-func newFakeRegistry(t *testing.T, configure func(*fakeRegistry)) *fakeRegistry {
+// New starts a registry, configured by configure (nil: no referrers API,
+// DELETE allowed), and stops it when the test ends.
+func New(t testing.TB, configure func(*Registry)) *Registry {
 	t.Helper()
-	f := &fakeRegistry{
+	f := &Registry{
 		t:         t,
 		manifests: map[string]map[digest.Digest]storedManifest{},
 		tags:      map[string]map[string]digest.Digest{},
@@ -70,12 +78,12 @@ func newFakeRegistry(t *testing.T, configure func(*fakeRegistry)) *fakeRegistry 
 	return f
 }
 
-// host is the registry's host:port, a 127.0.0.1 address (plain HTTP).
-func (f *fakeRegistry) host() string { return strings.TrimPrefix(f.srv.URL, "http://") }
+// Host is the registry's host:port, a 127.0.0.1 address (plain HTTP).
+func (f *Registry) Host() string { return strings.TrimPrefix(f.srv.URL, "http://") }
 
-// putSubject stores a one-layer artifact manifest under tag in repo and
+// PutSubject stores a one-layer artifact manifest under tag in repo and
 // returns `<host>/<repo>@<digest>`, the subject reference an attach takes.
-func (f *fakeRegistry) putSubject(repo, tag string) string {
+func (f *Registry) PutSubject(repo, tag string) string {
 	f.t.Helper()
 	layer := []byte("layer of " + repo + ":" + tag)
 	m := ocispec.Manifest{
@@ -98,25 +106,25 @@ func (f *fakeRegistry) putSubject(repo, tag string) string {
 	f.blobs[digest.FromBytes(layer)] = layer
 	f.repoManifests(repo)[d] = storedManifest{mediaType: ocispec.MediaTypeImageManifest, body: raw}
 	f.repoTags(repo)[tag] = d
-	return f.host() + "/" + repo + "@" + d.String()
+	return f.Host() + "/" + repo + "@" + d.String()
 }
 
-func (f *fakeRegistry) repoManifests(repo string) map[digest.Digest]storedManifest {
+func (f *Registry) repoManifests(repo string) map[digest.Digest]storedManifest {
 	if f.manifests[repo] == nil {
 		f.manifests[repo] = map[digest.Digest]storedManifest{}
 	}
 	return f.manifests[repo]
 }
 
-func (f *fakeRegistry) repoTags(repo string) map[string]digest.Digest {
+func (f *Registry) repoTags(repo string) map[string]digest.Digest {
 	if f.tags[repo] == nil {
 		f.tags[repo] = map[string]digest.Digest{}
 	}
 	return f.tags[repo]
 }
 
-// tagList is the tags repo holds.
-func (f *fakeRegistry) tagList(repo string) []string {
+// Tags is the tags repo holds.
+func (f *Registry) Tags(repo string) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
@@ -126,16 +134,33 @@ func (f *fakeRegistry) tagList(repo string) []string {
 	return out
 }
 
-func (f *fakeRegistry) requestCount() int {
+// Requests is every request served so far, as "METHOD /path".
+func (f *Registry) Requests() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.requests)
+	return append([]string(nil), f.requests...)
 }
 
-func (f *fakeRegistry) deleteCount() int {
+// DeleteCount is how many DELETEs were asked for, refused or not.
+func (f *Registry) DeleteCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.deletes
+}
+
+// LoseIndexWrites makes the next n writes of an existing `sha256-<hex>`
+// fallback tag vanish: the tag keeps its old index.
+func (f *Registry) LoseIndexWrites(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.loseIndexWrites = n
+}
+
+// IndexWritesToLose is how many lost writes LoseIndexWrites still owes.
+func (f *Registry) IndexWritesToLose() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loseIndexWrites
 }
 
 func writeErr(w http.ResponseWriter, status int, code string) {
@@ -144,7 +169,7 @@ func writeErr(w http.ResponseWriter, status int, code string) {
 	_, _ = fmt.Fprintf(w, `{"errors":[{"code":%q,"message":%q}]}`, code, strings.ToLower(code))
 }
 
-func (f *fakeRegistry) serve(w http.ResponseWriter, r *http.Request) {
+func (f *Registry) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
 	f.mu.Unlock()
@@ -176,7 +201,7 @@ func (f *fakeRegistry) serve(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func (f *fakeRegistry) serveUpload(w http.ResponseWriter, r *http.Request, repo, id string) {
+func (f *Registry) serveUpload(w http.ResponseWriter, r *http.Request, repo, id string) {
 	switch r.Method {
 	case http.MethodPost:
 		f.mu.Lock()
@@ -203,7 +228,7 @@ func (f *fakeRegistry) serveUpload(w http.ResponseWriter, r *http.Request, repo,
 	}
 }
 
-func (f *fakeRegistry) serveBlob(w http.ResponseWriter, r *http.Request, _, ref string) {
+func (f *Registry) serveBlob(w http.ResponseWriter, r *http.Request, _, ref string) {
 	d, err := digest.Parse(ref)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "DIGEST_INVALID")
@@ -211,7 +236,7 @@ func (f *fakeRegistry) serveBlob(w http.ResponseWriter, r *http.Request, _, ref 
 	}
 	f.mu.Lock()
 	data, ok := f.blobs[d]
-	if ok && d == f.corruptBlob {
+	if ok && d == f.CorruptBlob {
 		data = bytes.ToUpper(data)
 	}
 	f.mu.Unlock()
@@ -228,7 +253,7 @@ func (f *fakeRegistry) serveBlob(w http.ResponseWriter, r *http.Request, _, ref 
 	_, _ = w.Write(data)
 }
 
-func (f *fakeRegistry) serveManifest(w http.ResponseWriter, r *http.Request, repo, ref string) {
+func (f *Registry) serveManifest(w http.ResponseWriter, r *http.Request, repo, ref string) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		f.mu.Lock()
@@ -264,7 +289,7 @@ func (f *fakeRegistry) serveManifest(w http.ResponseWriter, r *http.Request, rep
 			}
 		}
 		f.mu.Unlock()
-		if f.referrersAPI && parsed.Subject != nil {
+		if f.ReferrersAPI && parsed.Subject != nil {
 			w.Header().Set("OCI-Subject", parsed.Subject.Digest.String())
 		}
 		w.Header().Set("Docker-Content-Digest", d.String())
@@ -274,7 +299,7 @@ func (f *fakeRegistry) serveManifest(w http.ResponseWriter, r *http.Request, rep
 		f.mu.Lock()
 		f.deletes++
 		f.mu.Unlock()
-		if f.refuseDelete {
+		if f.RefuseDelete {
 			writeErr(w, http.StatusUnauthorized, "UNAUTHORIZED")
 			return
 		}
@@ -300,7 +325,7 @@ func (f *fakeRegistry) serveManifest(w http.ResponseWriter, r *http.Request, rep
 }
 
 // lookup resolves a tag or digest; f.mu must be held.
-func (f *fakeRegistry) lookup(repo, ref string) (digest.Digest, storedManifest, bool) {
+func (f *Registry) lookup(repo, ref string) (digest.Digest, storedManifest, bool) {
 	d, err := digest.Parse(ref)
 	if err != nil {
 		var ok bool
@@ -312,8 +337,8 @@ func (f *fakeRegistry) lookup(repo, ref string) (digest.Digest, storedManifest, 
 	return d, m, ok
 }
 
-func (f *fakeRegistry) serveReferrers(w http.ResponseWriter, r *http.Request, repo, ref string) {
-	if !f.referrersAPI {
+func (f *Registry) serveReferrers(w http.ResponseWriter, r *http.Request, repo, ref string) {
+	if !f.ReferrersAPI {
 		// distribution v3: no such route.
 		http.Error(w, "404 page not found", http.StatusNotFound)
 		return
@@ -345,7 +370,7 @@ func (f *fakeRegistry) serveReferrers(w http.ResponseWriter, r *http.Request, re
 	if filter != "" {
 		w.Header().Set("OCI-Filters-Applied", "artifactType")
 	}
-	if len(list) == 0 && f.nullManifests {
+	if len(list) == 0 && f.NullManifests {
 		_, _ = fmt.Fprintf(w, `{"schemaVersion":2,"mediaType":%q,"manifests":null}`, ocispec.MediaTypeImageIndex)
 		return
 	}

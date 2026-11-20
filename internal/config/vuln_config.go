@@ -1,5 +1,12 @@
 package config
 
+import (
+	"os"
+	"path/filepath"
+
+	"go.yaml.in/yaml/v3"
+)
+
 // VulnConfig is the `vuln:` block: how forge keeps the SBOM it records for
 // each release artifact. Every key is optional, and an absent block is the
 // default — the SBOM goes everywhere it can.
@@ -18,6 +25,24 @@ type VulnConfig struct {
 	//	vuln:
 	//	  attach_sbom: false
 	AttachSBOM *bool `yaml:"attach_sbom,omitempty"`
+}
+
+// ReadVulnConfig reads only the `vuln:` block of the forge.yaml in
+// projectDir, for the release cut, which holds no loaded project. A missing
+// or unreadable file is the zero value (every default on); an invalid one is
+// left to the full loader to report.
+func ReadVulnConfig(projectDir string) VulnConfig {
+	data, err := os.ReadFile(filepath.Join(projectDir, "forge.yaml"))
+	if err != nil {
+		return VulnConfig{}
+	}
+	var doc struct {
+		Vuln VulnConfig `yaml:"vuln"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return VulnConfig{}
+	}
+	return doc.Vuln
 }
 
 // AttachSBOMEnabled reports whether OCI artifacts get their SBOM attached as

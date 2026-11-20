@@ -1980,7 +1980,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// for them. Never fails the cut (build_sbom.go).
 	generateReleaseSBOMs(ctx, sbomCut{
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
-		Entities: entities, Built: built, NoSBOM: opts.noSBOM,
+		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {

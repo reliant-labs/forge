@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,5 +50,19 @@ func TestVuln_RefusesUnknownKeysAndKeepsAnExplicitFalse(t *testing.T) {
 	}
 	if out, _ := yaml.Marshal(cfg); strings.Contains(string(out), "\nvuln:") || strings.Contains(string(out), "attach_sbom") {
 		t.Errorf("an absent vuln block was written back:\n%s", out)
+	}
+}
+
+func TestReadVulnConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if !ReadVulnConfig(dir).AttachSBOMEnabled() {
+		t.Error("no forge.yaml must read as every default on")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: shop\nvuln:\n  attach_sbom: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ReadVulnConfig(dir).AttachSBOMEnabled() {
+		t.Error("attach_sbom: false read as on")
 	}
 }

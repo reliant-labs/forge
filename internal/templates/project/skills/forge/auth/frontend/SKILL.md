@@ -95,7 +95,7 @@ Four reasons, each of which was a real limit of the old design:
 - **No third-party cookies.** The silent-restore iframe a browser flow depends on is already unreliable and is being switched off by browsers. This design has no equivalent to lose.
 - **One origin.** No CORS with the issuer, and no redirect-URI allowlist to keep in step with every deployment.
 
-Staying signed in is likewise a server concern now: the refresh token lives with the broker, so there is no browser-side refresh timer, no single-flight coalescing to get right, and no rotated-token bookkeeping in the bundle.
+Staying signed in is a server concern too. With a database, the session is server-side (`forge/pkg/session`): the cookie holds an opaque id, the broker renews the tokens before they expire, and sign-out deletes the session. The bundle has no refresh timer. Load `auth/sessions` for the details.
 
 ## Config: the issuer values are SERVER-side now
 

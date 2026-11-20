@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/reliant-labs/forge/pkg/apikey"
+	"github.com/reliant-labs/forge/pkg/session"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -29,7 +30,24 @@ var (
 	// ErrBearerTokensDisabled: a non-key credential was presented to an
 	// Authenticator built with no token validator (a key-only service).
 	ErrBearerTokensDisabled = errors.New("bearer tokens are not accepted by this server; present an API key")
+
+	// ErrInvalidSession: a session id was presented and the installed
+	// [SessionResolver] has no live session for it — it never existed,
+	// ended, or was signed out. The caller must sign in again.
+	ErrInvalidSession = errors.New("the session has ended; sign in again")
+
+	// ErrSessionUnavailable: a session id was presented and the session
+	// could not be read (its store or the issuer is unreachable). The
+	// session may be valid; the resolver's own error stays server-side.
+	ErrSessionUnavailable = errors.New("the session could not be checked; try again")
 )
+
+// SessionResolver turns a server-side session id into the access token it
+// stands for. *session.Manager implements it; [Authenticator.UseSessions]
+// installs one.
+type SessionResolver interface {
+	AccessToken(ctx context.Context, id string) (string, error)
+}
 
 // KeyValidatorFunc adapts a function to a [KeyValidator], the way
 // http.HandlerFunc adapts one to an http.Handler — so a validator that
@@ -50,6 +68,10 @@ func (f KeyValidatorFunc) ValidateKey(ctx context.Context, key string) (*Claims,
 //     installed with [Authenticator.UseKeyValidator], with the request's
 //     context, because checking a key is a read of the application's own
 //     store;
+//   - a server-side browser session id ("fs_…", forge/pkg/session), when a
+//     [SessionResolver] is installed with [Authenticator.UseSessions], is
+//     resolved to its session's access token, which then goes to the token
+//     validator below;
 //   - anything else goes to the token validator the Authenticator was
 //     built with — a JWT validator's Validate method.
 //
@@ -96,8 +118,13 @@ func (f KeyValidatorFunc) ValidateKey(ctx context.Context, key string) (*Claims,
 type Authenticator struct {
 	tokens   func(token string) (*Claims, error)
 	keys     atomic.Pointer[keyValidatorSlot]
+	sessions atomic.Pointer[sessionResolverSlot]
 	userInfo atomic.Pointer[UserInfo]
 }
+
+// sessionResolverSlot boxes the installed SessionResolver, as
+// keyValidatorSlot does the key validator.
+type sessionResolverSlot struct{ r SessionResolver }
 
 // keyValidatorSlot boxes the installed KeyValidator: atomic.Pointer needs a
 // concrete type, and a nil *keyValidatorSlot is "no key validator".
@@ -125,6 +152,25 @@ func (a *Authenticator) UseKeyValidator(kv KeyValidator) {
 	a.keys.Store(&keyValidatorSlot{kv: kv})
 }
 
+// UseSessions installs the resolver server-side browser sessions are read
+// through, replacing any installed before; nil uninstalls it. Safe to call
+// concurrently with [Authenticator.Authenticate].
+//
+// With a resolver installed, a credential shaped like a session id
+// ([session.IsID]: "fs_" and 32 random bytes) is resolved to its session's
+// access token, which is then checked by the token validator exactly as a
+// bearer token is; the claims carry [CredentialSession]. A session that has
+// ended fails with [ErrInvalidSession], one that cannot be read with
+// [ErrSessionUnavailable]. Without one, such a credential reaches the token
+// validator unchanged, as it always did.
+func (a *Authenticator) UseSessions(r SessionResolver) {
+	if r == nil {
+		a.sessions.Store(nil)
+		return
+	}
+	a.sessions.Store(&sessionResolverSlot{r: r})
+}
+
 // UseUserInfo installs the [UserInfo] that fills [Claims.Email] for a bearer
 // token that carries no email (a managed identity's access token carries
 // none). nil uninstalls it. API keys are never looked up: a key's claims are
@@ -142,6 +188,17 @@ func (a *Authenticator) Authenticate(ctx context.Context, credential string) (*C
 	if strings.HasPrefix(credential, apikey.KeyPrefix) {
 		return a.authenticateKey(ctx, credential)
 	}
+	cred := TokenCredential()
+	if slot := a.sessions.Load(); slot != nil && session.IsID(credential) {
+		token, err := slot.r.AccessToken(ctx, credential)
+		if errors.Is(err, session.ErrNoSession) {
+			return nil, svcerr.WithCause(ErrInvalidSession, err)
+		}
+		if err != nil {
+			return nil, svcerr.WithCause(ErrSessionUnavailable, err)
+		}
+		credential, cred = token, SessionCredential()
+	}
 	if a.tokens == nil {
 		return nil, ErrBearerTokensDisabled
 	}
@@ -152,7 +209,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, credential string) (*C
 	if claims == nil {
 		return nil, errors.New("token validator returned no claims")
 	}
-	claims = withCredential(claims, TokenCredential())
+	claims = withCredential(claims, cred)
 	if u := a.userInfo.Load(); u != nil {
 		u.fill(ctx, credential, claims)
 	}

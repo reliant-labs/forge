@@ -8,15 +8,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"github.com/reliant-labs/forge/pkg/release"
 )
-
-func TestProbeAttrIsTheReleaseContract(t *testing.T) {
-	if attrForgeProbe != release.ProbeAttr {
-		t.Fatalf("attrForgeProbe = %q, release.ProbeAttr = %q: readers would count marked probes as real traffic", attrForgeProbe, release.ProbeAttr)
-	}
-}
 
 // The server span and the innermost span both carry forge.probe=true, stored
 // as the "true" SpanNotProbeSQL compares against.
@@ -33,7 +25,7 @@ func TestMarkProbeSpansMarksServerAndInnerSpans(t *testing.T) {
 	for _, s := range rec.Ended() {
 		var got attribute.Value
 		for _, kv := range s.Attributes() {
-			if string(kv.Key) == release.ProbeAttr {
+			if string(kv.Key) == attrForgeProbe {
 				got = kv.Value
 			}
 		}

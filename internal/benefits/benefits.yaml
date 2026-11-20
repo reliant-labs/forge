@@ -2145,6 +2145,11 @@ benefits:
         bug_class: >-
           A `//forge:` comment in Go that forge does not read, an unknown name
           or a spelling its parser ignores
+      - id: forge-go-markers-reason-missing
+        lane: --go-markers
+        bug_class: >-
+          A marker whose reason is mandatory (`forge:auth-unscoped-ok`)
+          written with none, which forge ignores; advisory
       - id: forgeconv-open-signup
         lane: ""
         bug_class: >-
@@ -2750,7 +2755,8 @@ benefits:
     claim: >-
       `forge project audit` includes an `unscoped_auth` list of authenticated
       rpcs that never resolve who is calling, with `// forge:auth-unscoped-ok:
-      <reason>` as the only acknowledged exception.
+      <reason>` as the only acknowledged exception; a marker with no reason is
+      listed as malformed, never silently ignored.
     availability: forge
     use: "`forge project audit --json`"
     evidence:
@@ -2777,7 +2783,8 @@ benefits:
     claim: >-
       Claims are enriched by stable subject (never email) before any handler
       runs, and a `forge:owner` column makes forge scaffold the owner-scoping
-      wrapper that lint keeps consistent across siblings.
+      wrapper that lint keeps consistent across siblings, never recommending
+      an email address as the owner.
     availability: forge
     why: >-
       `enrichClaims` runs after validation and before any handler, hydrating by

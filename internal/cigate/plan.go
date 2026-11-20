@@ -59,6 +59,16 @@ var (
 		Module:  "github.com/google/go-licenses",
 		Version: templates.GoLicensesVersion,
 	}
+	// Gitleaks is the secret scanner `forge ci secret-scan` runs. A release
+	// binary on PATH (brew, the GitHub release) records "(devel)" in its
+	// build info, so its version is read from `gitleaks version`.
+	Gitleaks = Tool{
+		Binary:      "gitleaks",
+		Module:      "github.com/zricethezav/gitleaks/v8",
+		Version:     templates.GitleaksVersion,
+		VersionArgs: []string{"version"},
+		VersionRE:   regexp.MustCompile(`v?(\d+\.\d+\.\d+)`),
+	}
 )
 
 // BufTool is the buf the project at root pins (internal/toolpin): its go.mod's
@@ -488,6 +498,7 @@ func (p planner) checksLane() []Check {
 			Argv:     p.forge("ci", "vuln-scan", "--npm"),
 		})
 	}
+	out = append(out, p.secretScan())
 	if ci.LicenseCheck {
 		out = append(out, Check{
 			Name:  "license-check",
@@ -511,6 +522,53 @@ func (p planner) checksLane() []Check {
 		)
 	}
 	return out
+}
+
+// SecretScanCheck is the name of the gate's secret-scan row.
+const SecretScanCheck = "secret-scan"
+
+// secretScan is the gitleaks row: the commits this change adds, scanned for
+// committed credentials with the gitleaks forge pins (`forge ci secret-scan
+// --branch`). It judges only those commits (BranchRange), never the history
+// before them, so pinning the forge that added it cannot fail a gate over a
+// credential committed long ago; a missing gitleaks is SKIPPED like any other
+// pinned tool. A project that wants a different scan takes the row over with
+// a ci.gate.extra_checks entry that `replaces: secret-scan`.
+func (p planner) secretScan() Check {
+	c := Check{
+		Name:  SecretScanCheck,
+		Lane:  LaneChecks,
+		Group: GroupStatic,
+		Tools: []Tool{Gitleaks},
+		Argv:  p.forge("ci", "secret-scan", "--branch"),
+		// Which commits are new depends on the refs, not the tree.
+		NoCache: true,
+	}
+	if !isGitCheckout(p.Root) {
+		c.NotApplicable = "not a git checkout: there are no commits to scan"
+	}
+	return c
+}
+
+// isGitCheckout reports whether root is inside a git work tree: a `.git`
+// directory, or the `.git` file a linked worktree has, at root or above it.
+// Read from the filesystem rather than by running git, so planning stays a
+// pure function of the files.
+func isGitCheckout(root string) bool {
+	dir, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 func (p planner) testLane() []Check {

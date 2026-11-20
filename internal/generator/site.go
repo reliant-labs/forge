@@ -76,6 +76,15 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 		return err
 	}
 
+	// Secret scanning on every commit, the same gitleaks hook (and pin) a
+	// service project's .pre-commit-config.yaml carries. A site has no other
+	// guard: no Go lint, and often no CI. An adopted app that already has a
+	// .pre-commit-config.yaml keeps its own (the in-place merge never
+	// overwrites a file without --force).
+	if err := writeSiteFile(dir, ".pre-commit-config.yaml", []byte(sitePreCommitConfig())); err != nil {
+		return err
+	}
+
 	kclMod, err := templates.DeployTemplates().Render("kcl/kcl.mod.tmpl", struct{ ProjectName string }{projectName})
 	if err != nil {
 		return fmt.Errorf("render kcl.mod template: %w", err)
@@ -110,6 +119,26 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 		}
 	}
 	return nil
+}
+
+// sitePreCommitConfig is a static site's .pre-commit-config.yaml: the
+// gitleaks hook alone. The site's formatter and linter are the app's own
+// (package.json), so forge does not pick them.
+func sitePreCommitConfig() string {
+	return `# See https://pre-commit.com. Run locally with:
+#     pip install pre-commit && pre-commit install
+# gitleaks refuses a commit that adds a secret (an API key, a token, a private
+# key). Everything in a static site is public once deployed, so a secret
+# committed here is a secret published. A false positive: add its fingerprint
+# to .gitleaksignore, or a ` + "`gitleaks:allow`" + ` comment on the line.
+# ` + "`forge ci secret-scan`" + ` runs the same scan, at the same version, over the
+# whole history.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: ` + templates.GitleaksVersion + `
+    hooks:
+      - id: gitleaks
+`
 }
 
 // kclModLockPath is the lock kpm writes beside deploy/kcl/kcl.mod on the first

@@ -4169,7 +4169,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Built-in MCP server
 
-`forge mcp` exposes forge on stdio to any MCP-capable harness, deploys and bug reports included, with no shell scraping.
+`forge mcp` exposes forge on stdio to any MCP-capable harness, deploys, bug reports, guarded database reads and monitoring included, with no shell scraping.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -4180,6 +4180,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge mcp`
 - source [`internal/cli/mcp_tools.go`](../internal/cli/mcp_tools.go)
 - source [`internal/cli/mcp_deploy.go`](../internal/cli/mcp_deploy.go)
+- source [`internal/cli/mcp_obs_local.go`](../internal/cli/mcp_obs_local.go)
 
 <a id="hosted-mcp"></a>
 

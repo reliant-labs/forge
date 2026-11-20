@@ -4783,8 +4783,9 @@ benefits:
     category: agents
     title: Built-in MCP server
     claim: >-
-      `forge mcp` exposes forge on stdio to any MCP-capable harness, deploys and
-      bug reports included, with no shell scraping.
+      `forge mcp` exposes forge on stdio to any MCP-capable harness, deploys,
+      bug reports, guarded database reads and monitoring included, with no
+      shell scraping.
     availability: forge
     headline: true
     scope: any
@@ -4794,6 +4795,7 @@ benefits:
       - command: mcp
       - path: internal/cli/mcp_tools.go
       - path: internal/cli/mcp_deploy.go
+      - path: internal/cli/mcp_obs_local.go
 
   - id: hosted-mcp
     category: agents

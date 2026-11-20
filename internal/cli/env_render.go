@@ -407,7 +407,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// Declared telemetry is checked here, before anything is printed: a
 	// render is what the deploy applies, and a regex the collector cannot
 	// compile or a port nothing listens on fails there, far from its cause.
-	if terr := validateEnvTelemetry(envName, entities); terr != nil {
+	if terr := checkEnvTelemetry(errOut, envName, entities); terr != nil {
 		return terr
 	}
 

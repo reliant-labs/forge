@@ -91,6 +91,8 @@ output = forge.render(forge.Bundle {
         telemetry = [forge.Telemetry {
             selector = {"app" = "clickhouse"}
             isolated = True
+            # The project owns no policy for these pods: forge renders one.
+            network_policy = True
             scope = "platform"
             metrics = [forge.MetricsScrape {
                 port = 9363

@@ -3,7 +3,8 @@ Positive test — what each attachment infers. A HostInfra names its ports
 server/monitor/ui/metrics and projects temporal_metrics_port; a Manifests
 entry takes the group's cluster and namespace (else the primary target's) and
 the group's name; an Observability entry with no cluster is a host address;
-a Telemetry's alerts join the env's rules labelled with its service.
+a Telemetry's alerts join the env's rules labelled with its service; an unset
+network_policy is "auto" and renders no key, an explicit one renders as set.
 """
 
 import forge
@@ -30,8 +31,8 @@ _out = forge.render(forge.Bundle {
     manifests = [
         forge.Manifests {name = "redis", telemetry = [forge.Telemetry {selector = {app = "redis"}, checks = [forge.HealthCheck {port = 6379}]}]}
         forge.Manifests {name = "obs", namespace = "observability", cluster = "k3d-hub", telemetry = [
-            forge.Telemetry {service_name = "ch", selector = {app = "ch"}, metrics = [forge.MetricsScrape {port = 9363, allow = "ClickHouse.*"}]}
-            forge.Telemetry {service_name = "am", namespaces = ["alerting"], selector = {app = "am"}, metrics = [forge.MetricsScrape {port = 9093}]}
+            forge.Telemetry {service_name = "ch", selector = {app = "ch"}, network_policy = True, metrics = [forge.MetricsScrape {port = 9363, allow = "ClickHouse.*"}]}
+            forge.Telemetry {service_name = "am", namespaces = ["alerting"], selector = {app = "am"}, network_policy = False, metrics = [forge.MetricsScrape {port = 9093}]}
         ]}
     ]
 })
@@ -48,3 +49,5 @@ assert_observability_host = _t.devbox.runtime == "host" and _t.devbox.cluster ==
 assert_alerts_joined = [r.alert for r in _out.observability.alerts.rules] == ["Own", "TemporalDown"]
 assert_alert_service_label = _out.observability.alerts.rules[1].labels == {"severity": "warning", "service": "temporal", "team": "core"}
 assert_own_alert_unlabelled = "service" not in _out.observability.alerts.rules[0].labels
+assert_network_policy_auto = all n in ["temporal", "redis", "devbox"] { "network_policy" not in _t[n] }
+assert_network_policy_explicit = _t.ch.network_policy == True and _t.am.network_policy == False

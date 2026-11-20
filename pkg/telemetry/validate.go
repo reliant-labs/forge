@@ -29,10 +29,16 @@ type Problem struct {
 	// "metrics[0].allow".
 	Field   string
 	Message string
+	// Warning marks an informational note (Warnings), never a reason to
+	// refuse the env. Validate reports none.
+	Warning bool
 }
 
 func (p Problem) Error() string {
 	who := p.Source
+	if p.Warning {
+		who = "note: " + who
+	}
 	if p.ServiceName != "" {
 		who += " (service " + p.ServiceName + ")"
 	}
@@ -89,6 +95,26 @@ func Validate(targets []Target, opts Options) error {
 		return nil
 	}
 	return &ValidationError{Env: opts.Env, Problems: v.problems}
+}
+
+// Warnings returns informational notes about targets that are valid but may
+// not collect what they declare. Today there is one: a Manifests or
+// Observability target that pulls (metrics, profiles or checks) with
+// NetworkPolicy unset gets no NetworkPolicy from forge, so the collector
+// reaches its pods only if their existing policies admit it.
+func Warnings(targets []Target) []Problem {
+	var out []Problem
+	for _, t := range targets {
+		if t.NetworkPolicy != nil || !t.Pulled() || (t.Attachment != AttachManifests && t.Attachment != AttachObservability) {
+			continue
+		}
+		out = append(out, Problem{
+			Source: t.Source, ServiceName: t.ServiceName, Field: "network_policy", Warning: true,
+			Message: "unset, so forge renders no NetworkPolicy for these pods (it cannot know whether they are already policy-selected, and a new policy would deny their other ingress): " +
+				"if a policy selects them, admit the collector on the scrape, pprof and check ports yourself, or set network_policy = True",
+		})
+	}
+	return out
 }
 
 type validator struct {

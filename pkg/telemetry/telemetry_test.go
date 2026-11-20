@@ -260,3 +260,61 @@ func TestKCLVocabularyMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestNetworkPolicyIsTriState(t *testing.T) {
+	yes, no := true, false
+	for _, c := range []struct {
+		attach Attachment
+		np     *bool
+		want   bool
+	}{
+		{AttachWorkload, nil, true},       // auto: joins the policy forge already renders
+		{AttachHostInfra, nil, true},      // auto: forge owns it
+		{AttachManifests, nil, false},     // auto: forge cannot know the pods' policies
+		{AttachObservability, nil, false}, // auto: same
+		{AttachManifests, &yes, true},
+		{AttachWorkload, &no, false},
+	} {
+		if got := (Target{Attachment: c.attach, NetworkPolicy: c.np}).AdmitCollector(); got != c.want {
+			t.Errorf("%s with network_policy %v: AdmitCollector = %v, want %v", c.attach, c.np, got, c.want)
+		}
+	}
+	// Unset is absent from the JSON, not false: auto must survive a round trip.
+	b, _ := json.Marshal(Normalize([]Target{{ServiceName: "a"}})[0])
+	if strings.Contains(string(b), "network_policy") {
+		t.Errorf("unset network_policy marshals as %s", b)
+	}
+	got, err := Decode([]byte(`[{"service_name":"a","network_policy":false}]`))
+	if err != nil || got[0].NetworkPolicy == nil || *got[0].NetworkPolicy {
+		t.Errorf("explicit false did not survive decode: %+v, %v", got, err)
+	}
+	in := []Target{{NetworkPolicy: &yes}}
+	out := Normalize(in)
+	*out[0].NetworkPolicy = false
+	if !*in[0].NetworkPolicy {
+		t.Error("Normalize aliases NetworkPolicy with its input")
+	}
+}
+
+func TestWarningsNoteUnadmittedRawTargets(t *testing.T) {
+	yes := true
+	raw := Target{ServiceName: "ch", Source: "manifests:obs", Attachment: AttachManifests, Runtime: RuntimeCluster, Cluster: "c",
+		Selector: map[string]string{"app": "ch"}, Metrics: []MetricsScrape{{Port: 9363}}}
+	explicit := raw
+	explicit.ServiceName, explicit.NetworkPolicy = "ch2", &yes
+	pushOnly := Target{ServiceName: "z", Source: "observability", Attachment: AttachObservability, Runtime: RuntimeCluster, Cluster: "c",
+		Selector: map[string]string{"app": "z"}, Logs: &LogParse{Format: "json"}}
+	ts := Normalize([]Target{workloadTarget(), raw, explicit, pushOnly})
+
+	w := Warnings(ts)
+	if len(w) != 1 || w[0].ServiceName != "ch" || !w[0].Warning || w[0].Field != "network_policy" {
+		t.Fatalf("Warnings = %+v, want one note for the pulled Manifests target with network_policy unset", w)
+	}
+	if !strings.HasPrefix(w[0].Error(), "telemetry note: manifests:obs") {
+		t.Errorf("a note must read as one: %s", w[0].Error())
+	}
+	// A note is never a refusal.
+	if err := Validate(ts, Options{Clusters: []string{"c", "k3d-acme"}}); err != nil {
+		t.Errorf("Validate refused an env whose only finding is a note: %v", err)
+	}
+}

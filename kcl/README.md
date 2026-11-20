@@ -381,6 +381,9 @@ kcl/
   base.k               # -D option accessors, env groups, helpers
   workloads/schema.k   # `forge.workloads` (fw): re-exports for authors
   tiers/tiers_gen.k    # GENERATED from pkg/deploy/v1alpha1 (+ the hosted mask)
+  dashspec/
+    dashspec_gen.k     # GENERATED from pkg/dashspec: forge.dashboards/v1 as closed schemas
+    helpers.k          # rate / quantile / gauge / ratio shorthand over them
   lib/
     capabilities.k     # kind x capability matrix
     images.k           # cluster image reference resolution

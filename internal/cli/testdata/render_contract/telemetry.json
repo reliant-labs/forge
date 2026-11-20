@@ -230,6 +230,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": {
@@ -277,8 +278,8 @@
               "workflowType"
             ],
             "interval": "30s",
-            "label_limit": 30,
-            "label_value_length_limit": 256,
+            "label_limit": 0,
+            "label_value_length_limit": 0,
             "name": "",
             "params": {},
             "path": "/metrics",
@@ -351,6 +352,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": null,
@@ -407,6 +409,28 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [
+          {
+            "id": "clickhouse-parts",
+            "panels": [
+              {
+                "id": "parts",
+                "kind": "line",
+                "series": [
+                  {
+                    "agg": "last",
+                    "field": "ClickHouseMetrics_PartsActive",
+                    "label": "parts",
+                    "metricType": "gauge"
+                  }
+                ],
+                "signal": "metrics",
+                "title": "Active parts"
+              }
+            ],
+            "title": "ClickHouse parts"
+          }
+        ],
         "default_alerts": true,
         "isolated": true,
         "logs": null,
@@ -465,6 +489,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": {

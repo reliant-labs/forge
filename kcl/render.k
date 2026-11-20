@@ -88,6 +88,7 @@ Workload etc. as bare names; `import .schema` would fork type identity.
 import json
 import regex
 import .tiers
+import .dashspec
 import .lib.gateway as gw_lib
 import .lib.jwks as jwks_lib
 import .lib.labels as labels_lib
@@ -1554,9 +1555,23 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # name for ANY tagged image, so the build pushed `<registry>/<name>:<env tag>`
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
+#
+# Except where no image exists to name: a forge.BuildOnly workload whose
+# ShellBuild declares neither `image` nor `output_name` (a desktop bundle, a
+# tree of static files a frontend's `bundle` copies in). The command owns
+# everything it writes and forge composes no image reference into it, so a
+# name derived from the workload would be a placeholder: it was recorded as
+# the workload's image, overwrote the env's deploy-side build state, and was
+# demanded of every release cut. It renders no artifact name instead.
 _artifact = lambda w: any -> str {
-    (img_lib.repository(w.image) if w.image \
-        else (w.build.output_name if w.build.output_name else w.name)) if w.build else ""
+    "" if _shell_builds_no_image(w) else \
+    ((img_lib.repository(w.image) if w.image \
+        else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
+}
+
+_shell_builds_no_image = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
 }
 
 # The build identity: the registry-less artifact plus the tag the workload's
@@ -2521,6 +2536,9 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
         "profiles": [_tel_profiles(p) for p in t.profiles]
         "checks": [_tel_check(c) for c in t.checks]
         "dashboard": {"enabled": t.dashboard.enabled, "title": t.dashboard.title or ""}
+        # forge.dashboards/v1 objects: obsdash runs each through
+        # dashspec.ParseDashboard, the validator a release cut runs.
+        "dashboards": [dashspec.dashboard_json(d) for d in t.dashboards]
         "default_alerts": t.default_alerts
     }
 }

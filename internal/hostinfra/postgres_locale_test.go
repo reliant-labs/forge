@@ -12,7 +12,7 @@ import (
 // `forge env up` with "invalid locale settings". postgresConfig names the
 // locale and encoding itself, the way pgtest does for the test databases.
 func TestPostgresConfig_NamesItsLocaleAndEncoding(t *testing.T) {
-	cfg := reflect.ValueOf(postgresConfig(Spec{Name: "postgres", Port: 5432}, t.TempDir()))
+	cfg := reflect.ValueOf(postgresConfig(Spec{Name: "postgres", Port: 5432}, t.TempDir(), ""))
 	for field, want := range map[string]string{"locale": "C", "encoding": "UTF8"} {
 		f := cfg.FieldByName(field)
 		if !f.IsValid() {

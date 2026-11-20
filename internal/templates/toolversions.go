@@ -90,3 +90,20 @@ const GovulncheckVersion = "v1.7.0"
 // GoLicensesVersion is the go-licenses release `forge ci gate` installs when
 // the one on PATH is not it.
 const GoLicensesVersion = "v1.6.0"
+
+// SyftVersion is the syft release forge generates SBOMs with (CycloneDX
+// JSON, one per release artifact). GrypeVersion is the grype release forge
+// scans those SBOMs with. Both are installed by internal/toolfetch as
+// upstream release binaries, each archive verified against a sha256 compiled
+// into forge (internal/toolfetch/pins.go), never whatever is on PATH: a
+// scanner release changes what it matches, so the verdict of a scan must
+// name the exact scanner that produced it.
+//
+// Bumping one is this constant plus the archive checksums for the new
+// release, copied from its <tool>_<ver>_checksums.txt into pins.go;
+// TestPinnedChecksumsCoverEveryPlatform (internal/toolfetch) fails when a
+// supported platform has no checksum for the version named here.
+const (
+	SyftVersion  = "v1.57.2"
+	GrypeVersion = "v0.122.1"
+)

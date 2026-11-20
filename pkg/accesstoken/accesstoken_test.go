@@ -726,7 +726,8 @@ func TestEnvironmentBinding(t *testing.T) {
 	// to an env would claim a confinement deploy does not enforce.
 	for _, s := range AllScopes {
 		switch s {
-		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead:
+		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead,
+			ScopeChangesWrite, ScopeChangesLaunch:
 			continue
 		}
 		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(s), ActingUserID: "user", Resource: env}

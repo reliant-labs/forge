@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/pkg/telemetry"
@@ -203,19 +204,42 @@ func (r *BundleReader) TelemetryCaps() TelemetryLimits {
 	return r.Telemetry.Resolved()
 }
 
+// CollectsTelemetry reports whether a hosted env's declared telemetry is sent
+// to this reader: it must decode the targets ([BundleFeatureTelemetry]) AND
+// collect them ([CapabilityCollectsTelemetry]). Decoding alone is what every
+// forge pin bump advertises, so it is not proof that anything collects. A nil
+// reader, this forge's own ledger, does both.
+func (r *BundleReader) CollectsTelemetry() bool {
+	return len(r.missingTelemetryCapabilities()) == 0
+}
+
+// missingTelemetryCapabilities is what this reader does not advertise of the
+// two that [BundleReader.CollectsTelemetry] needs, in that order.
+func (r *BundleReader) missingTelemetryCapabilities() []string {
+	var missing []string
+	for _, c := range []string{BundleFeatureTelemetry, CapabilityCollectsTelemetry} {
+		if !r.Supports(c) {
+			missing = append(missing, strconv.Quote(c))
+		}
+	}
+	return missing
+}
+
 // TelemetryWarning is what to tell the person deploying s when this reader
-// does not decode [BundleFeatureTelemetry]: the hosted targets LimitShape
-// leaves out, which the platform will therefore not collect. "" when there is
-// nothing to say. A warning and not a refusal: the env still deploys and its
-// workloads still run, only these signals go uncollected until the control
-// plane is upgraded.
+// does not collect its hosted telemetry ([BundleReader.CollectsTelemetry]):
+// the hosted targets LimitShape leaves out, which the platform will therefore
+// not collect, and the capability the control plane did not advertise. ""
+// when there is nothing to say. A warning and not a refusal: the env still
+// deploys and its workloads still run, only these signals go uncollected
+// until the control plane is upgraded.
 func (r *BundleReader) TelemetryWarning(env string, s Shape) string {
-	if r.Supports(BundleFeatureTelemetry) || len(s.Telemetry) == 0 {
+	missing := r.missingTelemetryCapabilities()
+	if len(missing) == 0 || len(s.Telemetry) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "env %s declares telemetry this control plane does not collect yet (it does not advertise %q), "+
-		"so it is left out of the release, and these targets will NOT be collected:", env, BundleFeatureTelemetry)
+	fmt.Fprintf(&b, "env %s declares telemetry this control plane does not collect yet (it does not advertise %s), "+
+		"so it is left out of the release, and these targets will NOT be collected:", env, strings.Join(missing, " or "))
 	for _, t := range s.Telemetry {
 		fmt.Fprintf(&b, "\n  - %s (%s): %s", t.ServiceName, t.Source, strings.Join(t.Signals(), ", "))
 	}

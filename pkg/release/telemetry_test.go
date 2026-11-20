@@ -148,8 +148,8 @@ func TestShapeTelemetryIsStrippedForOldControlPlanes(t *testing.T) {
 		t.Fatal("LimitShape modified the shape it was given")
 	}
 	for name, r := range map[string]*BundleReader{
-		"names it": {Features: []string{BundleFeatureTelemetry}},
-		"nil":      nil,
+		"decodes and collects": {Features: []string{BundleFeatureTelemetry, CapabilityCollectsTelemetry}},
+		"nil":                  nil,
 	} {
 		if got := r.LimitShape(s); !reflect.DeepEqual(got.Telemetry, s.Telemetry) {
 			t.Errorf("%s: LimitShape changed the targets: %+v", name, got.Telemetry)
@@ -157,6 +157,58 @@ func TestShapeTelemetryIsStrippedForOldControlPlanes(t *testing.T) {
 	}
 	if !slices.Contains(BundleDocFeatures(), BundleFeatureTelemetry) {
 		t.Errorf("BundleDocFeatures does not list %s", BundleFeatureTelemetry)
+	}
+}
+
+// Decoding is not collecting. A control plane advertises BundleDocFeatures
+// verbatim on every forge pin bump, so one that names shape-telemetry but not
+// collects-telemetry (or names collects-telemetry alone, which it cannot
+// decode) is sent no targets and warned about, naming what it lacks. Only a
+// reader that names both, and this forge's own ledger, gets them.
+func TestHostedTelemetryNeedsTheCollectsCapability(t *testing.T) {
+	s := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{hostedTarget("api")})}
+	for name, c := range map[string]struct {
+		r       *BundleReader
+		keep    bool
+		missing string
+	}{
+		"a pin bump: every decode feature": {&BundleReader{Features: BundleDocFeatures()}, false, `"collects-telemetry"`},
+		"shape-telemetry alone":            {&BundleReader{Features: []string{BundleFeatureTelemetry}}, false, `"collects-telemetry"`},
+		"collects-telemetry alone":         {&BundleReader{Features: []string{CapabilityCollectsTelemetry}}, false, `"shape-telemetry"`},
+		"neither":                          {&BundleReader{}, false, `"shape-telemetry" or "collects-telemetry"`},
+		"both":                             {&BundleReader{Features: append(BundleDocFeatures(), CapabilityCollectsTelemetry)}, true, ""},
+		"this forge's ledger":              {nil, true, ""},
+	} {
+		if got := c.r.CollectsTelemetry(); got != c.keep {
+			t.Errorf("%s: CollectsTelemetry = %v, want %v", name, got, c.keep)
+		}
+		if kept := c.r.LimitShape(s).Telemetry != nil; kept != c.keep {
+			t.Errorf("%s: LimitShape kept the targets = %v, want %v", name, kept, c.keep)
+		}
+		if kept := c.r.Limit(BundleDoc{Shape: s}).Shape.Telemetry != nil; kept != c.keep {
+			t.Errorf("%s: Limit kept the targets = %v, want %v", name, kept, c.keep)
+		}
+		msg := c.r.TelemetryWarning("prod", s)
+		if c.keep {
+			if msg != "" {
+				t.Errorf("%s: warned %q", name, msg)
+			}
+			continue
+		}
+		if want := "(it does not advertise " + c.missing + ")"; !strings.Contains(msg, want) {
+			t.Errorf("%s: the warning does not name %s:\n%s", name, want, msg)
+		}
+	}
+}
+
+// collects-telemetry is advertised by hand, never by a pin bump: it is not in
+// the decode list a control plane copies verbatim.
+func TestCollectsTelemetryIsNotADecodeFeature(t *testing.T) {
+	if slices.Contains(BundleDocFeatures(), CapabilityCollectsTelemetry) {
+		t.Errorf("BundleDocFeatures claims %s; a control plane adds collection by hand", CapabilityCollectsTelemetry)
+	}
+	if CapabilityCollectsTelemetry != "collects-telemetry" {
+		t.Errorf("CapabilityCollectsTelemetry = %q; the wire string is frozen", CapabilityCollectsTelemetry)
 	}
 }
 
@@ -169,7 +221,7 @@ func TestTelemetryWarningNamesTheUncollectedTargets(t *testing.T) {
 	s := Shape{Kind: EnvPersistent, Telemetry: ShapeTelemetryOf([]telemetry.Target{hostedTarget("api"), push})}
 
 	got := (&BundleReader{}).TelemetryWarning("prod", s)
-	want := `env prod declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry"), ` +
+	want := `env prod declares telemetry this control plane does not collect yet (it does not advertise "shape-telemetry" or "collects-telemetry"), ` +
 		`so it is left out of the release, and these targets will NOT be collected:
   - api (workload:api): logs, metrics, traces
   - relay (workload:relay): traces
@@ -181,7 +233,7 @@ The deploy continues and the workloads run; their declared telemetry is collecte
 		r *BundleReader
 		s Shape
 	}{
-		"a reader that collects": {&BundleReader{Features: []string{BundleFeatureTelemetry}}, s},
+		"a reader that collects": {&BundleReader{Features: []string{BundleFeatureTelemetry, CapabilityCollectsTelemetry}}, s},
 		"this forge's ledger":    {nil, s},
 		"no hosted target":       {&BundleReader{}, Shape{Kind: EnvPersistent}},
 	} {

@@ -22,15 +22,17 @@ const imageDigest = "sha256:1111111111111111111111111111111111111111111111111111
 type fakeSyft struct {
 	mu    sync.Mutex
 	calls [][]string
+	envs  [][]string
 	// fail maps a source scheme ("docker", "registry", "file") to an error.
 	fail map[string]error
 	// out, when set, replaces the document for every call.
 	out []byte
 }
 
-func (f *fakeSyft) Run(_ context.Context, bin string, args []string) ([]byte, error) {
+func (f *fakeSyft) Run(_ context.Context, bin string, args, env []string) ([]byte, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, append([]string{bin}, args...))
+	f.envs = append(f.envs, env)
 	f.mu.Unlock()
 	src := args[1]
 	scheme := src[:strings.Index(src, ":")]
@@ -239,7 +241,7 @@ func TestCache_DamagedEntryIsAMiss(t *testing.T) {
 func TestGenerate_BoundedConcurrencyKeepsOrder(t *testing.T) {
 	t.Parallel()
 	var running, peak atomic.Int32
-	runner := runnerFunc(func(_ context.Context, _ string, args []string) ([]byte, error) {
+	runner := runnerFunc(func(_ context.Context, _ string, args, _ []string) ([]byte, error) {
 		n := running.Add(1)
 		for {
 			p := peak.Load()
@@ -276,10 +278,10 @@ func TestGeneratorName(t *testing.T) {
 	}
 }
 
-type runnerFunc func(ctx context.Context, bin string, args []string) ([]byte, error)
+type runnerFunc func(ctx context.Context, bin string, args, env []string) ([]byte, error)
 
-func (f runnerFunc) Run(ctx context.Context, bin string, args []string) ([]byte, error) {
-	return f(ctx, bin, args)
+func (f runnerFunc) Run(ctx context.Context, bin string, args, env []string) ([]byte, error) {
+	return f(ctx, bin, args, env)
 }
 
 func contains(xs []string, s string) bool {

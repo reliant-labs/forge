@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"oras.land/oras-go/v2/registry/remote/auth"
+
 	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -24,7 +26,7 @@ type cutSyft struct {
 	fail    map[string]error
 }
 
-func (f *cutSyft) Run(_ context.Context, _ string, args []string) ([]byte, error) {
+func (f *cutSyft) Run(_ context.Context, _ string, args, _ []string) ([]byte, error) {
 	src := args[1]
 	f.mu.Lock()
 	f.sources = append(f.sources, src)
@@ -47,7 +49,10 @@ func useFakeSyft(t *testing.T, fake *cutSyft, cacheDir string) {
 	t.Helper()
 	prevTool, prevRunner, prevCache := sbomTool, sbomRunner, sbomCacheDir
 	sbomTool = func(context.Context) (string, string, error) { return "/fake/syft", "v1.57.2", nil }
-	sbomRunner = fake
+	sbomRunner = nil
+	if fake != nil {
+		sbomRunner = fake
+	}
 	sbomCacheDir = func() string { return cacheDir }
 	t.Cleanup(func() { sbomTool, sbomRunner, sbomCacheDir = prevTool, prevRunner, prevCache })
 }
@@ -344,4 +349,87 @@ func TestCutReleaseFromBuildState_RecordsSBOMs(t *testing.T) {
 	if r := cut2.Release.Artifacts["demo"].SBOM; r == nil || r.Status != release.SBOMStatusUnavailable {
 		t.Errorf("failed SBOM recorded as %+v", r)
 	}
+}
+
+// A hosted image is read with the env's control-plane identity, the one its
+// bundle push presents, so a hosted backend CI pushed (which forge never
+// `docker login`s for) still gets an SBOM. No other registry sees it.
+func TestGenerateReleaseSBOMs_PlatformRegistryReadsUseTheControlPlaneCredential(t *testing.T) {
+	dir := newLedgerTestProject(t, "sbomauth")
+	fake := &envSyft{}
+	useFakeSyft(t, nil, "")
+	sbomRunner = fake
+	e := &KCLEntities{ControlPlane: &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.example", RegistryHost: "registry.example.com"}}
+	// The env's identity as a bundle push memoizes it (bundleRegistryAuthOf
+	// needs a control plane); the real registryCredentialFor decides which
+	// host it is presented to.
+	key := dir + "\x00prod"
+	bundleRegistryAuths.Store(key, bundleRegistryAuth{Host: "registry.example.com", credential: func(context.Context) (string, error) {
+		return "rlat_cut-secret", nil
+	}})
+	t.Cleanup(func() { bundleRegistryAuths.Delete(key) })
+	prev := sbomRegistryCredential
+	t.Cleanup(func() { sbomRegistryCredential = prev })
+	var mu sync.Mutex
+	lookups := map[string]int{}
+	sbomRegistryCredential = func(projectDir, env string, e *KCLEntities, host string) (auth.CredentialFunc, error) {
+		mu.Lock()
+		lookups[host]++
+		mu.Unlock()
+		return registryCredentialFor(projectDir, env, e, host)
+	}
+	artifacts := map[string]release.Artifact{
+		"registry.example.com/org/shop/api": sbomTestImage(sha("a")), // a hosted backend CI pushed
+		"ghcr.io/acme/worker":               sbomTestImage(sha("b")),
+	}
+	var warn bytes.Buffer
+	generateReleaseSBOMs(context.Background(), sbomCut{ProjectDir: dir, Env: "prod", Version: "v1.0.0", Entities: e}, artifacts, &warn)
+
+	for name, art := range artifacts {
+		if !art.SBOM.HasSBOM() {
+			t.Fatalf("%s: %+v (%s)", name, art.SBOM, warn.String())
+		}
+	}
+	platform, other := fake.env("registry:registry.example.com/org/shop/api@"+sha("a")), fake.env("registry:ghcr.io/acme/worker@"+sha("b"))
+	for _, want := range []string{"SYFT_REGISTRY_AUTH_AUTHORITY=registry.example.com", "SYFT_REGISTRY_AUTH_USERNAME=" + platformRegistryUsername, "SYFT_REGISTRY_AUTH_PASSWORD=rlat_cut-secret"} {
+		if !containsString(platform, want) {
+			t.Errorf("platform read env %q lacks %q", platform, want)
+		}
+	}
+	if len(other) != 0 {
+		t.Errorf("the control-plane credential leaked to ghcr.io: %q", other)
+	}
+	if lookups["registry.example.com"] != 1 || lookups["ghcr.io"] != 1 {
+		t.Errorf("credential lookups %v: want one per registry read", lookups)
+	}
+
+	// An env with no control plane has no platform registry: nothing is
+	// resolved and nothing is passed.
+	plain := map[string]release.Artifact{"registry.example.com/org/shop/api": sbomTestImage(sha("c"))}
+	generateReleaseSBOMs(context.Background(), sbomCut{ProjectDir: dir, Env: "dev", Version: "v1.0.1"}, plain, &warn)
+	if got := fake.env("registry:registry.example.com/org/shop/api@" + sha("c")); len(got) != 0 {
+		t.Errorf("no control plane, yet env %q", got)
+	}
+}
+
+// envSyft records the environment each syft source ran with.
+type envSyft struct {
+	mu   sync.Mutex
+	envs map[string][]string
+}
+
+func (f *envSyft) Run(_ context.Context, _ string, args, env []string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.envs == nil {
+		f.envs = map[string][]string{}
+	}
+	f.envs[args[1]] = env
+	return []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6"}`), nil
+}
+
+func (f *envSyft) env(src string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.envs[src]
 }

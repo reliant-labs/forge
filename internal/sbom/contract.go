@@ -18,9 +18,12 @@ type Describer interface {
 	Generate(ctx context.Context, targets []Target) []Result
 }
 
-// Runner runs syft with args and returns what it wrote to stdout.
+// Runner runs syft with args and returns what it wrote to stdout. env is
+// added to syft's own environment (KEY=value; a later key wins over the
+// inherited one) and may carry a registry credential: a Runner never logs it
+// or puts it on a command line.
 type Runner interface {
-	Run(ctx context.Context, bin string, args []string) ([]byte, error)
+	Run(ctx context.Context, bin string, args, env []string) ([]byte, error)
 }
 
 // CacheStore holds generated SBOMs keyed by generator, subject digest and

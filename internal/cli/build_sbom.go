@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"golang.org/x/mod/modfile"
+	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/sbom"
@@ -173,7 +174,7 @@ func recordGeneratedSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 		}
 		return
 	}
-	gen := &sbom.Generator{Tool: sbomTool, Runner: sbomRunner}
+	gen := &sbom.Generator{Tool: sbomTool, Runner: sbomRunner, RegistryAuth: sbomRegistryAuth(in.ProjectDir, in.Env, in.Entities)}
 	if dir := sbomCacheDir(); dir != "" {
 		gen.Cache = &sbom.Cache{Dir: dir}
 	}
@@ -236,6 +237,67 @@ func recordGeneratedSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 		}(in)
 	}
 	wg.Wait()
+}
+
+// sbomRegistryCredential is registryCredentialFor, as a var so a test states
+// the identity without a control plane.
+var sbomRegistryCredential = registryCredentialFor
+
+// registryCredentialFor is the credential forge presents to a registry host
+// for an in-process push or read: nil — the ambient docker credential store,
+// which `docker push` used for the same image — for every host but the env's
+// platform registry, and for that one the env's control-plane identity, the
+// one token the platform registry takes (bundle_registry_auth.go). The docker
+// store holds the platform host only when an image push logged in to it
+// earlier in this process; a site-only or CI-pushed env never did.
+//
+// The identity is memoized with the bundle push's, per (project, env).
+func registryCredentialFor(projectDir, env string, e *KCLEntities, host string) (auth.CredentialFunc, error) {
+	if registryTakesNoCredentials(host) {
+		return nil, nil
+	}
+	platform := platformRegistryHost(e)
+	if platform == "" || !strings.EqualFold(host, platform) {
+		return nil, nil
+	}
+	key := projectDir + "\x00" + env
+	if v, ok := bundleRegistryAuths.Load(key); ok {
+		return v.(bundleRegistryAuth).credentialFunc(), nil
+	}
+	id, err := bundleRegistryAuthOf(env, e)
+	if err != nil {
+		return nil, err
+	}
+	bundleRegistryAuths.Store(key, id)
+	return id.credentialFunc(), nil
+}
+
+// sbomRegistryAuth gives syft forge's own credential for a registry it reads
+// an image from (registryCredentialFor): the env's control-plane identity for
+// its platform registry, so reading a hosted image (a hosted backend CI
+// pushed, a mirrored third-party image, an image carried from an earlier
+// release) does not depend on a `docker login`. Every other registry gets
+// nothing from here: syft reads the ambient docker credential store for it,
+// the same store forge's own pushes to it use (dockercred).
+//
+// Nothing is resolved until syft reads from the platform registry, and the
+// token is asked for per read, as bundle pushes do, so a long cut outlives a
+// short-lived helper token.
+func sbomRegistryAuth(projectDir, env string, e *KCLEntities) sbom.RegistryAuth {
+	return func(ctx context.Context, host string) (sbom.RegistryCredential, bool, error) {
+		credential, err := sbomRegistryCredential(projectDir, env, e, host)
+		if err != nil || credential == nil {
+			return sbom.RegistryCredential{}, false, err
+		}
+		c, err := credential(ctx, host)
+		if err != nil {
+			return sbom.RegistryCredential{}, false, err
+		}
+		if c.Password == "" {
+			return sbom.RegistryCredential{}, false, nil
+		}
+		return sbom.RegistryCredential{Username: c.Username, Password: c.Password}, true, nil
+	}
 }
 
 // runSBOMHooks runs every post-generate hook over one artifact, in order,

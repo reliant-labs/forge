@@ -112,6 +112,10 @@ type Generator struct {
 	Concurrency int
 	// Timeout bounds one target's syft run (≤0: default).
 	Timeout time.Duration
+	// RegistryAuth, when set, supplies forge's own credential for a
+	// registry syft reads an image from (registry_auth.go). nil leaves every
+	// registry read on the ambient docker credential store.
+	RegistryAuth RegistryAuth
 }
 
 const (
@@ -221,28 +225,30 @@ func (g *Generator) one(ctx context.Context, bin, generator string, t Target) Re
 func (g *Generator) scan(ctx context.Context, bin string, t Target) ([]byte, string, error) {
 	switch t.Kind {
 	case KindImage:
-		data, derr := g.run(ctx, bin, t, "docker:"+t.Ref)
+		data, derr := g.run(ctx, bin, t, "docker:"+t.Ref, nil)
 		if derr == nil {
 			return data, release.SBOMSourceImage, nil
 		}
 		if ctx.Err() != nil {
 			return nil, release.SBOMSourceImage, fmt.Errorf("syft on %s: %w", t.Ref, ctx.Err())
 		}
-		data, rerr := g.run(ctx, bin, t, "registry:"+t.Ref)
+		env, note := g.registryEnv(ctx, t.Ref)
+		data, rerr := g.run(ctx, bin, t, "registry:"+t.Ref, env)
 		if rerr != nil {
-			return nil, release.SBOMSourceRegistry, fmt.Errorf("syft could not read %s from the docker daemon (%s) or its registry (%s)",
-				t.Ref, oneLine(derr.Error()), oneLine(rerr.Error()))
+			return nil, release.SBOMSourceRegistry, fmt.Errorf("syft could not read %s from the docker daemon (%s) or its registry (%s)%s",
+				t.Ref, oneLine(derr.Error()), oneLine(rerr.Error()), withNote(note))
 		}
 		return data, release.SBOMSourceRegistry, nil
 	case KindRegistry:
-		data, err := g.run(ctx, bin, t, "registry:"+t.Ref)
+		env, note := g.registryEnv(ctx, t.Ref)
+		data, err := g.run(ctx, bin, t, "registry:"+t.Ref, env)
 		if err != nil {
-			return nil, release.SBOMSourceRegistry, fmt.Errorf("syft could not read %s from its registry: %s", t.Ref, oneLine(err.Error()))
+			return nil, release.SBOMSourceRegistry, fmt.Errorf("syft could not read %s from its registry: %s%s", t.Ref, oneLine(err.Error()), withNote(note))
 		}
 		return data, release.SBOMSourceRegistry, nil
 	default: // binary, lockfile
 		source := sourceFor(t.Kind)
-		data, err := g.run(ctx, bin, t, "file:"+t.Ref)
+		data, err := g.run(ctx, bin, t, "file:"+t.Ref, nil)
 		if err != nil {
 			return nil, source, fmt.Errorf("syft on %s: %s", t.Ref, oneLine(err.Error()))
 		}
@@ -250,12 +256,15 @@ func (g *Generator) scan(ctx context.Context, bin string, t Target) ([]byte, str
 	}
 }
 
-func (g *Generator) run(ctx context.Context, bin string, t Target, src string) ([]byte, error) {
+// run runs syft on src. env is added to syft's environment only; it carries
+// a registry credential and so is never logged, never part of an error, and
+// never on the command line.
+func (g *Generator) run(ctx context.Context, bin string, t Target, src string, env []string) ([]byte, error) {
 	r := g.Runner
 	if r == nil {
 		r = execRunner{}
 	}
-	out, err := r.Run(ctx, bin, syftArgs(t, src))
+	out, err := r.Run(ctx, bin, syftArgs(t, src), env)
 	if err != nil {
 		return nil, err
 	}
@@ -347,6 +356,13 @@ func fileDigest(path string) (string, error) {
 		return "", fmt.Errorf("read %s: %v", path, err)
 	}
 	return Digest(data), nil
+}
+
+func withNote(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "; " + note
 }
 
 // oneLine keeps an error to one line of a reason: syft's stderr can be a

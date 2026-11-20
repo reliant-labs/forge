@@ -40,7 +40,7 @@ func (m *MockDescriber) Generate(ctx context.Context, targets []Target) []Result
 var _ Describer = (*MockDescriber)(nil)
 
 // forge:section MockRunner
-// forge:hash=40634dca8c9c7ee191bc6fb936d0c0565e42b9e1aef089866679c3499da8972b
+// forge:hash=11c604bb6907de7e85c6ab62f57c2d0436a5bffab0817683af867de25a3f18d6
 
 // MockRunner is a test mock for the Runner interface.
 //
@@ -50,14 +50,14 @@ var _ Describer = (*MockDescriber)(nil)
 // "MockRunner.<Method>Func not set" error.
 type MockRunner struct {
 	contractkit.Recorder
-	RunFunc func(context.Context, string, []string) ([]byte, error)
+	RunFunc func(context.Context, string, []string, []string) ([]byte, error)
 }
 
 // Run records the call and delegates to RunFunc when set.
-func (m *MockRunner) Run(ctx context.Context, bin string, args []string) ([]byte, error) {
-	m.Recorder.Record("Run", ctx, bin, args)
+func (m *MockRunner) Run(ctx context.Context, bin string, args []string, env []string) ([]byte, error) {
+	m.Recorder.Record("Run", ctx, bin, args, env)
 	if m.RunFunc != nil {
-		return m.RunFunc(ctx, bin, args)
+		return m.RunFunc(ctx, bin, args, env)
 	}
 	return nil, contractkit.MockNotSet("MockRunner", "Run")
 }

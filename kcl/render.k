@@ -1449,9 +1449,23 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # name for ANY tagged image, so the build pushed `<registry>/<name>:<env tag>`
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
+#
+# Except where no image exists to name: a forge.BuildOnly workload whose
+# ShellBuild declares neither `image` nor `output_name` (a desktop bundle, a
+# tree of static files a frontend's `bundle` copies in). The command owns
+# everything it writes and forge composes no image reference into it, so a
+# name derived from the workload would be a placeholder: it was recorded as
+# the workload's image, overwrote the env's deploy-side build state, and was
+# demanded of every release cut. It renders no artifact name instead.
 _artifact = lambda w: any -> str {
-    (img_lib.repository(w.image) if w.image \
-        else (w.build.output_name if w.build.output_name else w.name)) if w.build else ""
+    "" if _shell_builds_no_image(w) else \
+    ((img_lib.repository(w.image) if w.image \
+        else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
+}
+
+_shell_builds_no_image = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
 }
 
 # The build identity: the registry-less artifact plus the tag the workload's

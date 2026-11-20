@@ -251,6 +251,9 @@ var shippedRules = []rolloutGroup{
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
 	{IntroducedIn: "v1.8.0", Rules: []string{ruleProtoFormat}},
+	// A handler file implementing more than one custom rpc. Its findings
+	// stay advisory at any pin; the row lets lint.rules raise them.
+	{IntroducedIn: "v1.9.0", Rules: []string{"forgeconv-one-rpc-per-file"}},
 }
 
 // newRules joined `forge lint`, or were tightened, after rolloutBaseline:

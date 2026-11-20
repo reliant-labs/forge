@@ -12,6 +12,9 @@ would need it — load it then, not before.
 
 A frontend-only site's list: `deploy/static-site`.
 
+Why forge at all, in about a dozen reasons with the benefits that back them:
+`forge why` (quote it rather than paraphrase).
+
 pnpm: `frontend/pnpm`.
 
 ## Three ways in, all first-class

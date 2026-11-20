@@ -93,8 +93,10 @@ func TestWritePendingMigrationsHuman_EmptyRegistrySaysSo(t *testing.T) {
 	if err := writePendingMigrationsHuman(&buf, nil, 3 /* shipped */); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if !strings.Contains(buf.String(), "up to date") {
-		t.Errorf("expected 'up to date' when migrations exist but none apply, got: %q", buf.String())
+	// Not "up to date": the pin may be behind this forge (upgrade-report
+	// defect 9); what is true is that no playbook applies.
+	if got := buf.String(); !strings.Contains(got, "No migration playbooks pending") || !strings.Contains(got, "ships 3") || strings.Contains(got, "up to date") {
+		t.Errorf("expected 'No migration playbooks pending … ships 3' when migrations exist but none apply, got: %q", got)
 	}
 }
 

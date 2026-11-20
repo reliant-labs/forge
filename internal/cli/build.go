@@ -318,7 +318,7 @@ mirror config inside k3d resolves that reference at pull time).`,
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
 	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires the environment argument.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. Requires the environment argument. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). Requires the environment argument. List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -1347,11 +1347,8 @@ func bindBuildRenderOptions(opts buildOptions) error {
 	if opts.env == "" {
 		return fmt.Errorf("-D requires the environment argument (e.g. `forge build prod -D name=value`): options are declared per-env in deploy/kcl/<env>/")
 	}
-	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	renderDArgs, err := resolveRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions)
 	if err != nil {
-		return err
-	}
-	if err := validateRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions); err != nil {
 		return err
 	}
 	setRenderOptions(renderDArgs)
@@ -1536,8 +1533,12 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// from `frontends` (the input to buildFrontend → `npm run build`)
 	// while keeping their entry in cfg.Frontends so other commands
 	// (forge generate, forge env up's frontend phase) see them unchanged.
+	//
+	// The same filter drops a frontend the env does not declare at all,
+	// unless --target named it: see filterFrontendsForBuild.
 	if entities != nil {
-		frontends = filterFrontendsForBuild(frontends, entities)
+		named := opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != "external"
+		frontends = filterFrontendsForBuild(frontends, entities, opts.env, named)
 	}
 
 	// KCL-driven docker skip: with --env set, no frontend builds an image
@@ -2283,7 +2284,9 @@ func runsUnderDelve(w WorkloadEntity) bool {
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
 // the env's workloads — of every runtime, since a host go-run still needs
 // its module to build. Only a declared GoBuild contributes (docker / shell
-// dispatch elsewhere); a workload with no build is not built by forge. Dedup is by (cmd, outputName) so the shared
+// dispatch elsewhere); a workload with no build is not built by forge, and a
+// build-only workload with build_variants builds only those variants
+// (buildsOnlyVariants). Dedup is by (cmd, outputName) so the shared
 // project binary — which many server/worker/cron services map onto —
 // builds exactly once. The first service to claim a (cmd, output) wins
 // its flags; a divergent second declaration for the same target is a
@@ -2297,7 +2300,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 	var out []goBuildTarget
 	for _, w := range entities.Workloads {
 		g := w.GoBuild()
-		if g == nil {
+		if g == nil || buildsOnlyVariants(w) {
 			continue
 		}
 		outName := g.OutputName
@@ -2326,6 +2329,15 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		})
 	}
 	return out
+}
+
+// buildsOnlyVariants reports whether w is a build-only workload whose binaries
+// are its declared build_variants. Its GoBuild names the package each variant
+// builds (buildKCLBuildOnlyVariants), not a binary of its own: building it as a
+// go target too produced an unrequested host binary bin/<name> with forge's
+// default stamps, which no release records and no runtime launches.
+func buildsOnlyVariants(w WorkloadEntity) bool {
+	return w.OnRuntime(RuntimeBuildOnly) && w.Runtime.BuildOnly != nil && len(w.Runtime.BuildOnly.BuildVariants) > 0
 }
 
 // projectImagePGOOff is the set of go targets the env builds with PGO
@@ -3036,13 +3048,24 @@ func kclFrontendAsBuildTarget(e *KCLEntities, target string) *config.FrontendCon
 //   - forge.OnHosted — built by buildHostedStaticSites, environment-agnostic
 //     and pushed as a release artifact; a plain build here would repeat it.
 //
-// Every other runtime (bucket, firebase, build-only) is kept. A frontend in
-// cfg.Frontends that the env does not declare is kept too: with no runtime
-// to read there is nothing to skip on.
+// Every other runtime (bucket, firebase, build-only) is kept.
 //
-// Prints a one-line note per skipped dev server so users can see at a
-// glance why their build finished early.
-func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities) []config.FrontendConfig {
+// A frontend in the project inventory (cfg.Frontends: every frontends/<name>
+// on disk) that the env does not declare is dropped too, because nothing in
+// the env consumes its `npm run build`: deploy already warns that such a
+// frontend "will NOT be deployed" (warnUndeployedFrontends), and a frontend
+// served from a container builds inside its own Dockerfile. Keeping it ran a
+// full prod build of frontends/web on `forge env build release` for an env
+// that declares no frontend at all (bug 194a8475), so the env had to pass
+// --target to avoid it. The rendered env is the build set, as it already is
+// for every workload.
+//
+// keepUndeclared is set when --target named the frontend: an explicit
+// request builds it whether or not this env declares it, as it always has.
+//
+// Prints a one-line note per skipped frontend so users can see at a glance
+// why their build finished early.
+func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities, env string, keepUndeclared bool) []config.FrontendConfig {
 	if entities == nil {
 		return frontends
 	}
@@ -3050,6 +3073,9 @@ func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEnt
 	for _, fe := range frontends {
 		entity, ok := findFrontendEntity(entities, fe.Name)
 		switch {
+		case !ok && !keepUndeclared:
+			fmt.Printf("[build] skipping prod build for %s (env %q declares no such frontend; --target %s builds it anyway)\n", fe.Name, env, fe.Name)
+			continue
 		case ok && entity.Runtime.Type == FrontendRuntimeHost:
 			fmt.Printf("[build] skipping prod build for %s (forge.OnHost: the dev server)\n", fe.Name)
 			continue

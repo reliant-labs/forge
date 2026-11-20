@@ -169,6 +169,15 @@ type DocumentInput struct {
 	// says: the source of the scans judged them so (a control plane whose
 	// own freshness bound passed, or whose newest scan is STALE).
 	Stale bool
+	// FreshnessFromSource says the source of the scans judges their
+	// freshness itself: a control plane, whose per-artifact scan states and
+	// database freshness bound are the record. The document is then stale
+	// exactly when Stale says so, and ScanIsCurrent is not applied to the
+	// scans' database build times, which neither this machine's clock nor
+	// its StaleAfter govern. An artifact the source has not scanned is
+	// still unscanned (no Latest), so the verdict is determined exactly
+	// when the source's own scan state says it can be.
+	FreshnessFromSource bool
 	// Judged is an authoritative ledger's judgement of the findings
 	// (EvaluateInput.Judged); nil judges them with Gate.
 	Judged map[string]Judgement
@@ -234,12 +243,12 @@ func BuildDocument(in DocumentInput) Document {
 		}
 	}
 	// The document is as fresh as its oldest artifact: when that
-	// artifact's newest scan is not current (ScanIsCurrent), nor is the
-	// verdict.
+	// artifact's newest scan is not current (ScanIsCurrent, or the
+	// source's own judgement under FreshnessFromSource), nor is the verdict.
 	if oldest != nil {
 		doc.DB = DocumentDB{
 			Scanner: oldest.Scanner, Version: oldest.ScannerVersion, Schema: oldest.DBSchema,
-			BuiltAt: oldest.DBBuiltAt, Stale: in.Stale || !ScanIsCurrent(oldest, in.Now),
+			BuiltAt: oldest.DBBuiltAt, Stale: in.Stale || (!in.FreshnessFromSource && !ScanIsCurrent(oldest, in.Now)),
 		}
 	} else {
 		doc.DB = DocumentDB{Scanner: ScannerGrype}
@@ -252,7 +261,11 @@ func BuildDocument(in DocumentInput) Document {
 	ev := Evaluate(EvaluateInput{Gate: in.Gate, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
 	doc.Gate = ev.Gate
 	doc.Gate.JudgedBy = in.JudgedBy
-	if doc.DB.Stale && ev.Gate.Verdict == VerdictStale {
+	switch {
+	case !doc.DB.Stale || ev.Gate.Verdict != VerdictStale:
+	case in.FreshnessFromSource:
+		doc.Notes = append(doc.Notes, "undetermined: the ledger these findings come from judges them stale, and no current scan replaced them")
+	default:
 		doc.Notes = append(doc.Notes, fmt.Sprintf("undetermined: the newest scan of an artifact used a vulnerability database built %s, older than %s, and no current scan replaced it", doc.DB.BuiltAt.Format("2006-01-02"), humanDuration(StaleAfter)))
 	}
 	for i, j := range ev.Findings {

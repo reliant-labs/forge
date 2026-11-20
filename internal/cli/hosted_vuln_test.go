@@ -189,7 +189,9 @@ func hostedSBOMCut(t *testing.T, fake *fakeVulnService, names ...string) (*hoste
 
 func TestHostedCutUploadsEachSBOM(t *testing.T) {
 	t.Parallel()
-	fake := &fakeVulnService{features: []string{hostedVulnFeatureFindings}}
+	// vuln-sbom-upload alone: a control plane that takes SBOMs before it
+	// serves their findings.
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureSBOMUpload}}
 	hs, r, warn := hostedSBOMCut(t, fake, "api", "worker")
 	if _, err := hs.Cut(context.Background(), r); err != nil {
 		t.Fatal(err)
@@ -257,6 +259,8 @@ func TestHostedCutSkipsTheUploadWithoutTheCapability(t *testing.T) {
 	for name, fake := range map[string]*fakeVulnService{
 		"features withheld":     {features: []string{}},
 		"predates capabilities": {noCapabilities: true},
+		// The gate is not an upload: enforcing it names nothing forge sends.
+		"only enforces-vuln-gate": {features: []string{hostedVulnFeatureEnforcesGate}},
 	} {
 		hs, r, warn := hostedSBOMCut(t, fake, "api")
 		if _, err := hs.Cut(context.Background(), r); err != nil {
@@ -309,23 +313,44 @@ func TestSBOMUploadTimeoutScalesWithSize(t *testing.T) {
 	}
 }
 
+// vuln-findings alone (a control plane that named findings before upload had
+// its own feature) still takes the upload: findings are scans of uploads.
+func TestHostedCutUploadsUnderVulnFindingsForCompatibility(t *testing.T) {
+	t.Parallel()
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureFindings}}
+	hs, r, warn := hostedSBOMCut(t, fake, "api")
+	if _, err := hs.Cut(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if n := fake.count(procRecordReleaseSBOM); n != 1 || warn.Len() != 0 {
+		t.Fatalf("%d uploads, output %q; want 1, silently", n, warn)
+	}
+}
+
 func TestHostedVulnPlanLine(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		features []string
-		want     string
+		features         []string
+		upload, findings string
+		uploads, serves  bool
 	}{
-		{nil, "does not keep SBOMs or findings yet"},
-		{[]string{hostedVulnFeatureFindings}, "does not judge vuln_gate at promote yet"},
-		{[]string{hostedVulnFeatureFindings, hostedVulnFeatureEnforcesGate}, "judges vuln_gate at promote"},
+		{nil, "does not take SBOMs yet", "does not serve findings yet", false, false},
+		{[]string{hostedVulnFeatureSBOMUpload}, "keeps and scans this release's SBOMs", "does not serve findings yet", true, false},
+		{[]string{hostedVulnFeatureFindings}, "keeps and scans this release's SBOMs", "does not judge vuln_gate at promote yet", true, true},
+		{[]string{hostedVulnFeatureSBOMUpload, hostedVulnFeatureFindings, hostedVulnFeatureEnforcesGate}, "keeps and scans", "and judges vuln_gate at promote", true, true},
 	} {
 		fake := &fakeVulnService{features: tc.features}
 		hs, _, _ := hostedSBOMCut(t, fake)
 		v := hostedVulnPlan(context.Background(), envLedger{Bindings: hs, Releases: hs})
+		if v.SBOMUpload != tc.uploads || v.Findings != tc.serves {
+			t.Errorf("features %v: sbom_upload %v findings %v, want %v %v", tc.features, v.SBOMUpload, v.Findings, tc.uploads, tc.serves)
+		}
 		var out bytes.Buffer
 		renderPlanVulns(&out, v)
-		if !strings.HasPrefix(out.String(), "  vulns     ") || !strings.Contains(out.String(), tc.want) {
-			t.Errorf("features %v: plan line %q, want %q", tc.features, out.String(), tc.want)
+		lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+		if len(lines) != 2 || !strings.HasPrefix(lines[0], "  sboms     ") || !strings.Contains(lines[0], tc.upload) ||
+			!strings.HasPrefix(lines[1], "  vulns     ") || !strings.Contains(lines[1], tc.findings) {
+			t.Errorf("features %v: plan lines\n%s\nwant sboms %q, vulns %q", tc.features, out.String(), tc.upload, tc.findings)
 		}
 	}
 	if v := hostedVulnPlan(context.Background(), envLedger{Bindings: memBindingStoreForVulnPlan{}}); v != nil {
@@ -482,7 +507,10 @@ func TestVulnOnAControlPlaneThatServesNoFindingsIsUndetermined(t *testing.T) {
 	for name, fake := range map[string]*fakeVulnService{
 		"capability withheld": {features: []string{}},
 		"predates it":         {noCapabilities: true},
-		"rpc unimplemented":   {features: []string{hostedVulnFeatureFindings}, unimplemented: true},
+		// Upload is not reads: a control plane that takes SBOMs but has
+		// not said it serves findings is not read.
+		"upload only":       {features: []string{hostedVulnFeatureSBOMUpload, hostedVulnFeatureEnforcesGate}},
+		"rpc unimplemented": {features: []string{hostedVulnFeatureFindings}, unimplemented: true},
 	} {
 		h := hostedVulnHarness(t, fake)
 		for _, args := range [][]string{{"list", "prod"}, {"show", "prod", "CVE-1"}, {"sbom", "prod"}, {"scan", "--deployed", "prod"}} {
@@ -576,12 +604,81 @@ func TestVulnListJudgesLocallyWhenTheControlPlaneGaveNoVerdict(t *testing.T) {
 	if doc.Gate.JudgedBy != vulnscan.JudgedByLocal || strings.Join(doc.Gate.Blocking, ",") != "CVE-2026-1111" {
 		t.Errorf("gate = %+v, want the local rule's verdict, marked local", doc.Gate)
 	}
-	if !strings.Contains(stderr, "judged locally: the control plane returned no verdict") {
-		t.Errorf("no note says it was judged locally:\n%s", stderr)
+	if !strings.Contains(strings.Join(doc.Notes, "\n"), "judged locally: the control plane returned no verdict") {
+		t.Errorf("no note says it was judged locally: %q", doc.Notes)
 	}
 	text, _, _ := h.exec("list", "prod", "--release", "v1.0.0")
 	if !strings.Contains(text, "judged locally with this checkout's vuln_gate") {
 		t.Errorf("text does not say who judged:\n%s", text)
+	}
+}
+
+// Whether a control-plane read is determined is the control plane's scan
+// state, not this machine's clock: a database the control plane still calls
+// fresh is fresh here at any age, an artifact it calls STALE (or a database
+// it calls stale) makes the verdict "stale", and one it has not finished
+// scanning makes it "unscanned". Both of those exit 2, gate.determined false.
+func TestVulnListIsDeterminedByTheControlPlanesScanState(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name           string
+		edit           func(rv map[string]any)
+		wantVerdict    vulnscan.Verdict
+		wantDetermined bool
+		wantCode       int
+		wantNote       string
+	}{{
+		name: "an old database the control plane calls fresh",
+		edit: func(rv map[string]any) {
+			rv["database"].(map[string]any)["builtAt"] = vulnTestNow.Add(-30 * 24 * time.Hour)
+		},
+		wantVerdict: vulnscan.VerdictPass, wantDetermined: true, wantCode: 0,
+	}, {
+		name:        "no database descriptor at all",
+		edit:        func(rv map[string]any) { delete(rv, "database") },
+		wantVerdict: vulnscan.VerdictPass, wantDetermined: true, wantCode: 0,
+	}, {
+		name: "a STALE artifact",
+		edit: func(rv map[string]any) {
+			rv["artifacts"].([]map[string]any)[0]["scanState"] = "VULNERABILITY_SCAN_STATE_STALE"
+		},
+		wantVerdict: vulnscan.VerdictStale, wantCode: exitUndetermined, wantNote: "judges its newest scan of api stale",
+	}, {
+		name:        "a stale database",
+		edit:        func(rv map[string]any) { rv["database"].(map[string]any)["stale"] = true },
+		wantVerdict: vulnscan.VerdictStale, wantCode: exitUndetermined, wantNote: "past its freshness bound",
+	}, {
+		name: "a scan still pending",
+		edit: func(rv map[string]any) {
+			a := rv["artifacts"].([]map[string]any)[0]
+			a["scanState"] = "VULNERABILITY_SCAN_STATE_PENDING"
+			delete(a, "lastScannedAt")
+		},
+		wantVerdict: vulnscan.VerdictUnscanned, wantCode: exitUndetermined,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+			rv := fake.releaseVulns["v1.0.0"]
+			// Nothing blocks and every artifact has an SBOM, so the scan
+			// state alone decides the verdict.
+			rv["findings"] = []map[string]any{}
+			rv["artifacts"] = rv["artifacts"].([]map[string]any)[:1]
+			tc.edit(rv)
+			h := hostedVulnHarness(t, fake)
+			out, stderr, code := h.exec("list", "prod", "--json")
+			if code != tc.wantCode {
+				t.Fatalf("exit %d, want %d\n%s\n%s", code, tc.wantCode, out, stderr)
+			}
+			doc := decodeVulnDoc(t, out)
+			if doc.Gate.Verdict != tc.wantVerdict || doc.Gate.Determined != tc.wantDetermined {
+				t.Errorf("gate = %+v, want %s determined=%v", doc.Gate, tc.wantVerdict, tc.wantDetermined)
+			}
+			if tc.wantNote != "" && !strings.Contains(strings.Join(doc.Notes, "\n"), tc.wantNote) {
+				t.Errorf("notes %q lack %q", doc.Notes, tc.wantNote)
+			}
+		})
 	}
 }
 

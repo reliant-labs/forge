@@ -114,16 +114,14 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 	}
 	now := deps.now()
 	// The control plane's verdict, when it gave one (f.Judged); env.Gate
-	// then supplies only the mode label and the warn band.
+	// then supplies only the mode label and the warn band. Whether the
+	// verdict is determined is the control plane's scan state too
+	// (FreshnessFromSource; the mapping is hostedArtifactScans').
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, Filter: filter, Now: now, Stale: f.Stale,
-		Judged: f.Judged, JudgedBy: f.JudgedBy,
+		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, Filter: filter, Now: now, Notes: f.Notes,
+		Stale: f.Stale, FreshnessFromSource: true, Judged: f.Judged, JudgedBy: f.JudgedBy,
 	})
-	notes := f.Notes
 	if asJSON {
-		for _, n := range notes {
-			_, _ = fmt.Fprintf(errOut, "note: %s\n", n)
-		}
 		if err := writeVulnJSON(out, doc); err != nil {
 			return err
 		}
@@ -132,7 +130,7 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 	if filter.Match != "" && len(doc.Findings) == 0 {
 		_, _ = fmt.Fprintf(out, "no finding in %s release %s matches %q\n", env.Name, version, filter.Match)
 	}
-	writeVulnDocument(out, doc, now, notes, "")
+	writeVulnDocument(out, doc, now, "")
 	if filter.Match != "" {
 		writeHostedAdvisory(ctx, out, src, filter.Match)
 	}

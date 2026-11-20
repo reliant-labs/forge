@@ -44,6 +44,7 @@ const (
 	sbomEncodingGzip               = "SBOM_ENCODING_GZIP"
 	hostedReleaseVulnPageSize      = 1000
 	hostedReleaseVulnMaxPages      = 200
+	hostedVulnFeatureSBOMUpload    = "vuln-sbom-upload"
 	hostedVulnFeatureFindings      = "vuln-findings"
 	hostedVulnFeatureEnforcesGate  = "enforces-vuln-gate"
 	hostedVulnFindingsNotServedMsg = "this control plane does not serve findings yet"
@@ -52,16 +53,27 @@ const (
 // ─── The capability ──────────────────────────────────────────────────────────
 
 // hostedVulnFeatures is GetDeployCapabilitiesResponse.vulnerability_features.
+// Each feature gates one thing forge does, and nothing else: an upload is not
+// a read, so a control plane can accept SBOMs before it serves findings.
 type hostedVulnFeatures struct {
 	// Features is what the control plane named, verbatim.
 	Features []string
-	// Findings: "vuln-findings". RecordReleaseSBOM stores and scans an
-	// uploaded SBOM, and the reads answer from those scans.
+	// SBOMUpload: "vuln-sbom-upload". RecordReleaseSBOM accepts and scans
+	// an uploaded SBOM. Gates the upload after a cut.
+	SBOMUpload bool
+	// Findings: "vuln-findings". The VulnerabilityService reads answer from
+	// those scans. Gates `forge vuln list|show|sbom` on such an env.
 	Findings bool
 	// EnforcesGate: "enforces-vuln-gate". Promote judges the release's
 	// vuln_gate itself.
 	EnforcesGate bool
 }
+
+// acceptsUploads reports whether RecordReleaseSBOM is live. "vuln-findings"
+// counts too: findings are scans of uploaded SBOMs, so a control plane that
+// serves them takes uploads, whether or not it names the newer feature (one
+// that advertised "vuln-findings" before upload had its own name meant both).
+func (f hostedVulnFeatures) acceptsUploads() bool { return f.SBOMUpload || f.Findings }
 
 // readHostedVulnFeatures asks the control plane which vulnerability features
 // are live. A control plane that does not serve GetCapabilities predates every
@@ -79,6 +91,7 @@ func readHostedVulnFeatures(ctx context.Context, client cloudCaller) (hostedVuln
 	}
 	out := hostedVulnFeatures{Features: caps.Features}
 	for _, f := range caps.Features {
+		out.SBOMUpload = out.SBOMUpload || f == hostedVulnFeatureSBOMUpload
 		out.Findings = out.Findings || f == hostedVulnFeatureFindings
 		out.EnforcesGate = out.EnforcesGate || f == hostedVulnFeatureEnforcesGate
 	}
@@ -112,21 +125,27 @@ func (s *hostedStore) vulnFeatures(ctx context.Context) (hostedVulnFeatures, err
 	return f, nil
 }
 
-// promotePlanVulns is the deploy plan's line about the env's control plane
-// and vulnerabilities: whether it keeps the findings of what this deploy
-// ships, and whether it enforces vuln_gate itself.
+// promotePlanVulns is the deploy plan's lines about the env's control plane
+// and vulnerabilities: whether it takes this release's SBOMs, whether it
+// serves their findings, and whether it enforces vuln_gate itself.
 type promotePlanVulns struct {
 	// Features is GetCapabilities.vulnerability_features, verbatim.
 	Features []string `json:"features"`
-	// Findings: the control plane stores the release's SBOMs and scans them.
+	// SBOMUpload: the control plane accepts and scans the release's SBOMs
+	// (vuln-sbom-upload, or vuln-findings).
+	SBOMUpload bool `json:"sbom_upload"`
+	// Findings: the control plane serves the findings of those scans
+	// (vuln-findings): `forge vuln list` reads them.
 	Findings bool `json:"findings"`
 	// EnforcesGate: the control plane judges vuln_gate at promote.
 	EnforcesGate bool `json:"enforces_gate"`
-	// Note says what the reader should know, in one sentence.
-	Note string `json:"note"`
+	// Upload and Note say what the reader should know about the upload and
+	// about findings and the gate, one sentence each.
+	Upload string `json:"upload"`
+	Note   string `json:"note"`
 }
 
-// hostedVulnPlan is the plan's vulnerability line for an env whose ledger is
+// hostedVulnPlan is the plan's vulnerability lines for an env whose ledger is
 // a control plane; nil for any other. Never an error: a control plane that
 // could not be asked is a note, and the deploy goes on.
 func hostedVulnPlan(ctx context.Context, ledger envLedger) *promotePlanVulns {
@@ -138,30 +157,39 @@ func hostedVulnPlan(ctx context.Context, ledger envLedger) *promotePlanVulns {
 	if err != nil {
 		return &promotePlanVulns{Features: []string{}, Note: fmt.Sprintf("could not ask %s which vulnerability features it serves: %v", hs.endpoint, err)}
 	}
-	v := &promotePlanVulns{Features: f.Features, Findings: f.Findings, EnforcesGate: f.EnforcesGate}
+	v := &promotePlanVulns{Features: f.Features, SBOMUpload: f.acceptsUploads(), Findings: f.Findings, EnforcesGate: f.EnforcesGate}
 	if v.Features == nil {
 		v.Features = []string{}
 	}
+	if v.SBOMUpload {
+		v.Upload = "the control plane keeps and scans this release's SBOMs"
+	} else {
+		v.Upload = "this control plane does not take SBOMs yet: they stay in this machine's ledger"
+	}
 	switch {
 	case f.Findings && f.EnforcesGate:
-		v.Note = "the control plane keeps this release's SBOMs and findings, and judges vuln_gate at promote"
+		v.Note = "it serves their findings (forge vuln list) and judges vuln_gate at promote"
 	case f.Findings:
-		v.Note = "the control plane keeps this release's SBOMs and findings (forge vuln list); it does not judge vuln_gate at promote yet"
+		v.Note = "it serves their findings (forge vuln list); it does not judge vuln_gate at promote yet"
 	default:
-		v.Note = "this control plane does not keep SBOMs or findings yet: they stay in this machine's ledger"
+		v.Note = "it does not serve findings yet (forge vuln list cannot read them from it)"
 	}
 	return v
 }
 
-// renderPlanVulns prints the plan's vulnerability line.
+// renderPlanVulns prints the plan's vulnerability lines: the upload, then
+// findings and the gate.
 func renderPlanVulns(out io.Writer, v *promotePlanVulns) {
 	if v == nil {
 		return
 	}
-	if !v.Findings && cloud.ClaimableActive() {
+	if !v.SBOMUpload && !v.Findings && cloud.ClaimableActive() {
 		// What the control plane does not offer is not something an
 		// anonymous deploy can act on (as the floor line).
 		return
+	}
+	if v.Upload != "" {
+		fmt.Fprintf(out, "  sboms     %s\n", v.Upload)
 	}
 	fmt.Fprintf(out, "  vulns     %s\n", v.Note)
 }
@@ -182,9 +210,10 @@ type sbomBytesReader interface {
 //
 // NEVER FAILS THE CUT. The release is recorded; the SBOMs are evidence about
 // it, and the machine ledger keeps its copy whatever happens here. A control
-// plane that does not advertise "vuln-findings" is skipped silently (it would
-// discard what it was sent); one that advertises it and then answers
-// Unimplemented gets one note; any other failure is a warning per artifact.
+// plane that does not advertise "vuln-sbom-upload" (or "vuln-findings") is
+// skipped silently (it would discard what it was sent); one that advertises
+// it and then answers Unimplemented gets one note; any other failure is a
+// warning per artifact.
 func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release) {
 	var names []string
 	for name, a := range r.Artifacts {
@@ -210,7 +239,7 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		fmt.Fprintf(warn, "[ledger] warning: could not ask %s whether it keeps SBOMs (GetCapabilities): %v; release %s's SBOMs stay in this machine's ledger\n", s.endpoint, err, r.Version)
 		return
 	}
-	if !f.Findings {
+	if !f.acceptsUploads() {
 		return
 	}
 	if s.sboms == nil {
@@ -540,11 +569,30 @@ func (h hostedVulnReader) vulnerability(ctx context.Context, id string) (wireVul
 // them, onto the artifacts BuildDocument merges: the same document, judged by
 // the same rule, whichever ledger the env records in. stale reports that the
 // control plane judged any of it stale; notes say what the document cannot.
+//
+// Whether the verdict is determined (gate.determined) follows the control
+// plane's own scan state, never this machine's clock: the document is built
+// with DocumentInput.FreshnessFromSource, so the database build time is
+// reported but not re-judged against vulnscan.StaleAfter. Per artifact:
+//
+//	SCANNED                        scanned; current unless database.stale
+//	STALE                          scanned, stale: verdict "stale", undetermined
+//	FAILED, an earlier scan        scanned with that scan's findings, and a note
+//	FAILED, never scanned          unscanned
+//	PENDING, NO_SBOM, unknown      unscanned
+//	database.stale                 every scan stale: verdict "stale", undetermined
+//
+// An unscanned artifact makes the verdict "unscanned" (undetermined) unless a
+// finding blocks, which the precedence of vulnscan.Evaluate puts first; a
+// stale one makes it "stale" whatever blocks.
 func hostedArtifactScans(rv wireReleaseVulns) (scans []vulnscan.ArtifactScan, stale bool, notes []string) {
 	db := wireVulnDatabase{Scanner: vulnscan.ScannerGrype}
 	if rv.Database != nil {
 		db = *rv.Database
 		stale = db.Stale
+	}
+	if stale {
+		notes = append(notes, "the control plane's vulnerability database is past its freshness bound, so it judges every scan of this release stale")
 	}
 	byName := map[string]int{}
 	for _, a := range rv.Artifacts {
@@ -561,6 +609,7 @@ func hostedArtifactScans(rv wireReleaseVulns) (scans []vulnscan.ArtifactScan, st
 		case wireScanStale:
 			s.Latest = scanned()
 			stale = true
+			notes = append(notes, fmt.Sprintf("the control plane judges its newest scan of %s stale", a.ArtifactName))
 		case wireScanFailed:
 			if !a.LastScannedAt.IsZero() {
 				s.Latest = scanned()
@@ -711,8 +760,9 @@ func (h hostedVulnSource) releaseFindings(ctx context.Context, version string) (
 
 // releaseScans is releaseFindings in the shape of the promote check's
 // findings seam. fetch is meaningless here (the control plane keeps its own
-// database). The seam carries neither a staleness flag nor the control
-// plane's per-finding verdict, so a caller that judges a gate should use
+// database). The seam carries neither a staleness flag (its notes say when
+// the control plane judged a scan stale) nor the control plane's per-finding
+// verdict, so a caller that judges a gate should use
 // releaseFindings and pass Judged and Stale to vulnscan (DocumentInput /
 // EvaluateInput); this shape re-judges locally, and says so in a note.
 func (h hostedVulnSource) releaseScans(ctx context.Context, rel *release.Release, _ bool) ([]vulnscan.ArtifactScan, []string, error) {
@@ -722,9 +772,6 @@ func (h hostedVulnSource) releaseScans(ctx context.Context, rel *release.Release
 	f, err := h.releaseFindings(ctx, rel.Version)
 	if err != nil {
 		return nil, nil, err
-	}
-	if f.Stale {
-		f.Notes = append(f.Notes, "the control plane judges these findings stale (its vulnerability database is past its freshness bound)")
 	}
 	if f.Judged != nil {
 		f.Notes = append(f.Notes, "the control plane's verdict on each finding is not carried by this seam: re-judged with this checkout's vuln_gate")

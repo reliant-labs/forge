@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,5 +212,32 @@ func TestBuildDocumentTakesFirstSeenAndStaleFromTheSource(t *testing.T) {
 	in.Stale = true
 	if doc := BuildDocument(in); !doc.DB.Stale || doc.Gate.Verdict != VerdictStale {
 		t.Fatalf("source-stale document: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+}
+
+// A source that judges freshness itself is the only judge of it: a database
+// build time older than StaleAfter does not make its scans stale here, and
+// its Stale does.
+func TestBuildDocumentTakesFreshnessFromASourceThatJudgesIt(t *testing.T) {
+	t.Parallel()
+	old := &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-2 * StaleAfter), ScannedAt: testNow}
+	in := DocumentInput{
+		Env: "prod", Release: "v1", Gate: release.DefaultDeliveryPolicy().VulnGate, Now: testNow,
+		Artifacts: []ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:aa", Latest: old}},
+	}
+	if doc := BuildDocument(in); !doc.DB.Stale || doc.Gate.Determined {
+		t.Fatalf("this machine's rule: db %+v gate %+v, want stale", doc.DB, doc.Gate)
+	}
+	in.FreshnessFromSource = true
+	if doc := BuildDocument(in); doc.DB.Stale || doc.Gate.Verdict != VerdictPass || !doc.Gate.Determined || len(doc.Notes) != 0 {
+		t.Fatalf("source-judged fresh: db %+v gate %+v notes %q", doc.DB, doc.Gate, doc.Notes)
+	}
+	in.Stale = true
+	doc := BuildDocument(in)
+	if !doc.DB.Stale || doc.Gate.Verdict != VerdictStale || doc.Gate.Determined {
+		t.Fatalf("source-judged stale: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+	if len(doc.Notes) != 1 || !strings.Contains(doc.Notes[0], "judges them stale") {
+		t.Errorf("notes = %q, want the source's judgement, not a database age", doc.Notes)
 	}
 }

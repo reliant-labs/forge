@@ -370,6 +370,13 @@
         "determined": {
           "description": "Determined is false when the verdict is \"could not determine\" (stale, unscanned): the exit code is 2, and the document's notes say why.",
           "type": "boolean"
+        },
+        "judged_by": {
+          "description": "JudgedBy says whose judgement of each finding the verdict is: \"control-plane\" when the env's control plane judged them (it is authoritative for an env whose ledger it keeps), \"local\" when forge judged them with this checkout's vuln_gate because that control plane returned no verdict. Absent for an env whose ledger is this machine's, which forge judges by definition.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

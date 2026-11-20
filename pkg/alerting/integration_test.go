@@ -28,6 +28,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/reliant-labs/forge/internal/testdocker"
+	"github.com/reliant-labs/forge/internal/testhost"
 	"github.com/reliant-labs/forge/pkg/lease"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 
@@ -144,6 +145,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	// FORGE_TEST_POSTGRES_URL names, or embedded postgres.
 	dsn, dropDB, err := pgtest.NewURL()
 	if err != nil {
+		testhost.SkipIfPostgresDownloadFailed(t, err)
 		t.Fatalf("provision a scratch Postgres database: %v", err)
 	}
 	t.Cleanup(dropDB)
@@ -326,6 +328,7 @@ func TestPerEnvRuleCapEndToEndIsLoud(t *testing.T) {
 	addr := startClickHouse(t)
 	dsn, dropDB, err := pgtest.NewURL()
 	if err != nil {
+		testhost.SkipIfPostgresDownloadFailed(t, err)
 		t.Fatalf("provision a scratch Postgres database: %v", err)
 	}
 	t.Cleanup(dropDB)

@@ -12,6 +12,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/reliant-labs/forge/internal/testhost"
 	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/alerting/pgstore"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -24,6 +25,7 @@ func scratchSchema(t *testing.T) (*sql.DB, string) {
 	}
 	dsn, drop, err := pgtest.NewURL()
 	if err != nil {
+		testhost.SkipIfPostgresDownloadFailed(t, err)
 		t.Fatalf("provision a scratch Postgres database: %v", err)
 	}
 	t.Cleanup(drop)

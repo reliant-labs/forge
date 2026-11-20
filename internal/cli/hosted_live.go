@@ -78,11 +78,20 @@ const (
 // struct serving both would make every Live field look like something the
 // deploy path depends on.
 type wireLiveEnvironment struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Project   string `json:"project,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Project string `json:"project,omitempty"`
+	// Kind is the retired DeployEnvironmentKind (tag 3). A control plane
+	// that predates its removal still sends it, and it is read first when
+	// it is; one that has removed it sends Lifetime, SecretPosture and
+	// HostedSlot instead (tags 25–27, populated by every control plane
+	// since it gained them), which envKindOf derives the kind from.
+	Kind          string `json:"kind,omitempty"`
+	Lifetime      string `json:"lifetime,omitempty"`
+	SecretPosture string `json:"secretPosture,omitempty"`
+	// HostedSlot is false when absent: protojson omits a false bool.
+	HostedSlot bool   `json:"hostedSlot,omitempty"`
+	Namespace  string `json:"namespace,omitempty"`
 	// DeclaredBy and DeclaredAt are set exactly when a declaration exists.
 	DeclaredBy *wireProvenance `json:"declaredBy,omitempty"`
 	// DeclaredAt is the staleness signal: a shape from six weeks ago is
@@ -296,7 +305,7 @@ func liveEnvFromWire(row wireLiveEnvRow, now time.Time) (LiveEnvironment, error)
 		return LiveEnvironment{}, fmt.Errorf("%w: the control plane returned a Live row with no environment", release.ErrInvalid)
 	}
 	we := row.Environment
-	kind, err := envKindFromWire(we.Kind)
+	kind, err := envKindOf(*we)
 	if err != nil {
 		return LiveEnvironment{}, fmt.Errorf("environment %q: %w", we.Name, err)
 	}
@@ -439,6 +448,94 @@ func driftFromWire(w wireDrift) *LiveDrift {
 	}
 	return d
 }
+
+// envKindOf reads an environment's kind off the wire, from whichever
+// vocabulary the control plane speaks.
+//
+// The kind field (tag 3) is read first, so against a control plane that
+// still sends it the answer is exactly what it always was. A control plane
+// that has retired it (tag reserved) sends no kind — absent, or UNSPECIFIED
+// — and the kind is derived from the fields that replaced it, the same way
+// the server derived them from the kind:
+//
+//	secret_posture READABLE                    → local
+//	secret_posture WRITE_ONLY, lifetime PREVIEW → preview
+//	secret_posture WRITE_ONLY, hosted_slot      → persistent
+//	secret_posture WRITE_ONLY, otherwise        → self_managed
+//
+// It stays FAIL-CLOSED. The kind decides whether an env's secrets read back
+// (local is the only readable kind), so the derivation never reads
+// readability from an absence: it needs secret_posture AND lifetime both
+// stated and recognised, and READABLE is local only when nothing else on
+// the row says the env is hosted. An env that states neither a kind nor
+// both replacements — a control plane older than either — is refused, as is
+// any combination no control plane writes.
+//
+// The derivation has one lossy case: a self-managed env with one hosted part
+// holds a hosted slot, so it reads as persistent. That is the placement
+// model's own answer (placement is per workload, and an env with a hosted
+// part is placed), and nothing downstream of the Live view branches on
+// persistent versus self-managed; see EnvRecord.Validate.
+func envKindOf(we wireLiveEnvironment) (release.EnvKind, error) {
+	if we.Kind != "" && we.Kind != deployEnvKindUnspecified {
+		kind, err := envKindFromWire(we.Kind)
+		if err != nil {
+			return "", err
+		}
+		// A kind the server's own posture contradicts is refused rather
+		// than believed: local would make the secrets pullable.
+		if kind == release.EnvLocal && we.SecretPosture != "" && we.SecretPosture != deploySecretPostureReadable {
+			return "", fmt.Errorf("%w: the control plane returned environment kind %q with secret posture %q, which contradict each other", release.ErrInvalid, we.Kind, we.SecretPosture)
+		}
+		return kind, nil
+	}
+	return envKindFromPlacement(we.Lifetime, we.SecretPosture, we.HostedSlot)
+}
+
+// envKindFromPlacement derives the retired kind from lifetime, secret
+// posture and hosted slot. See envKindOf for the table and why each refusal
+// is one.
+func envKindFromPlacement(lifetime, posture string, hostedSlot bool) (release.EnvKind, error) {
+	if posture == "" && lifetime == "" {
+		return "", fmt.Errorf("%w: the control plane returned an environment with no kind, lifetime or secret posture, so this forge cannot tell whether its secrets read back", release.ErrInvalid)
+	}
+	switch lifetime {
+	case deployEnvLifetimePersistent, deployEnvLifetimePreview:
+	default:
+		return "", fmt.Errorf("%w: the control plane returned an environment with no kind and lifetime %q, which this forge does not recognise", release.ErrInvalid, lifetime)
+	}
+	switch posture {
+	case deploySecretPostureReadable:
+		if lifetime != deployEnvLifetimePersistent || hostedSlot {
+			return "", fmt.Errorf("%w: the control plane returned an environment whose secrets read back but which is hosted or a preview (lifetime %q, hosted slot %t)", release.ErrInvalid, lifetime, hostedSlot)
+		}
+		return release.EnvLocal, nil
+	case deploySecretPostureWriteOnly:
+		switch {
+		case lifetime == deployEnvLifetimePreview:
+			return release.EnvPreview, nil
+		case hostedSlot:
+			return release.EnvPersistent, nil
+		default:
+			return release.EnvSelfManaged, nil
+		}
+	default:
+		return "", fmt.Errorf("%w: the control plane returned an environment with no kind and secret posture %q, which this forge does not recognise", release.ErrInvalid, posture)
+	}
+}
+
+// The value names of the enums that replaced DeployEnvironmentKind on a
+// DeployEnvironment, as protojson writes them. UNSPECIFIED is never written
+// (protojson omits a zero enum) and is read as absent.
+const (
+	deployEnvKindUnspecified = "DEPLOY_ENVIRONMENT_KIND_UNSPECIFIED"
+
+	deployEnvLifetimePersistent = "DEPLOY_ENVIRONMENT_LIFETIME_PERSISTENT"
+	deployEnvLifetimePreview    = "DEPLOY_ENVIRONMENT_LIFETIME_PREVIEW"
+
+	deploySecretPostureReadable  = "DEPLOY_SECRET_POSTURE_READABLE"
+	deploySecretPostureWriteOnly = "DEPLOY_SECRET_POSTURE_WRITE_ONLY"
+)
 
 // envKindFromWire reads a DeployEnvironmentKind value name into
 // release.EnvKind. Unknown and unspecified are REFUSED rather than defaulted:

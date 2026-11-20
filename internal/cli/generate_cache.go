@@ -969,6 +969,15 @@ func within(root, p string) bool {
 // that has them: go (tidy, build, packages loads), buf and its Go plugins,
 // goimports, and node for protoc-gen-es. forge itself is fingerprinted
 // separately (it is also buf's protoc-gen-forge plugin).
+//
+// A tool is keyed by NAME here and identified by the CONTENT of the binary
+// PATH resolves (execIdentities), so swapping one protoc-gen-connect-go
+// build for another — connect-go v1's and v2's share the name — changes the
+// key. The build generate actually runs is the go.mod pin
+// (generate_toolpins.go), whose major and version both come from go.mod
+// (internal/connectmajor), and go.mod is a fingerprinted input: moving a
+// project between connect majors is a go.mod edit, so it is never a cache
+// hit.
 var generateCacheBaseTools = []string{
 	"go", "buf", "protoc-gen-go", "protoc-gen-connect-go", "protoc-gen-connect-openapi", "goimports", "node",
 }

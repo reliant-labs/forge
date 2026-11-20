@@ -38,6 +38,22 @@
 #                                            with the command that shows it and the
 #                                            shipped benefit ids it digests (bottom of file)
 #   limits[]      id, title, claim, instead, evidence   what forge does NOT do (bottom of file)
+#   reasons[]     why forge: the argument the benefits back (bottom of file),
+#                 rendered as docs/why-forge.md, the README's reasons block,
+#                 `forge why` and the MCP `why` tool; internal/benefits/reasons.go
+#                 is authoritative
+#                 id                         kebab-case, unique; the why-forge.md anchor
+#                 title                      the outcome, searchable, not clever (<= 100 bytes)
+#                 thesis                     a short paragraph for a skeptical senior
+#                                            engineer (<= 800 bytes); says only what the
+#                                            cited benefits claim
+#                 mechanism                  "Because forge knows X, it can Y" (starts
+#                                            with "Because "; <= 400 bytes)
+#                 availability               forge | hosted | reliant: what it needs to hold
+#                 show                       optional: the command that demonstrates it
+#                 benefits[]                 >= 2 benefit ids, none in-progress; those at or
+#                                            below the reason's availability span >= 2
+#                                            categories; every headline is in some reason
 #
 # internal/cli's TestBenefitsEvidenceExists resolves every evidence item
 # against the binary and this repo; TestEveryGradableRuleIsABenefit holds the
@@ -2158,6 +2174,12 @@ benefits:
           `delivery = "none"`, or `auth_self_signup` outside development): the
           email is a contact field anyone can type, so whatever the app binds to
           it is bound to whoever typed it
+      - id: forgeconv-unproven-signup-default
+        lane: ""
+        bug_class: >-
+          A config schema that defaults `auth_self_signup` to true, which turns
+          the legacy sign-up on in every environment that does not set it, prod
+          included: each such account's email is an address nobody proved
       - id: typed-config-guardrail
         lane: ""
         bug_class: >-
@@ -3532,12 +3554,37 @@ benefits:
     use: '`forge env deploy <env> --release <older> --note "<why>"`'
     why: >-
       There is no rollback command and no down migration, deliberately; the plan
-      and the ledger label an older release `direction BEHIND`. A per-env
-      rollback floor ("never deploy anything older than X") is designed and not
-      shipped; do not cite it until it is.
+      and the ledger label an older release `direction BEHIND`. How far back an
+      env may go is a rollback floor (`rollback-floors`): a deploy below one is
+      refused before anything is built.
     evidence:
       - command: env deploy --note
       - analyzer: --migration-safety
+
+  - id: rollback-floors
+    category: ship
+    title: Rollback floors per environment
+    claim: >-
+      A rollback floor refuses every deploy of a release older than it to one
+      environment before anything is built: set one by hand or with `forge env
+      deploy --floor`, and promoting a release that carries a
+      `forge:breaks-rollback` migration or a `deploy/rollback-floors/<id>.yaml`
+      declaration raises one on its own.
+    availability: forge
+    use: >-
+      `forge env deploy <env> <release> --floor "<why>"`, or `forge env floor
+      set <env> --current --reason "<why>"`
+    why: >-
+      There is no `--force` on deploy: lowering or lifting a floor is its own
+      act, recorded with its reason and principal on the ledger and in the
+      activity stream, and `forge env floor check <env> <release>` asks the
+      same question before a pipeline tags.
+    evidence:
+      - command: env floor
+      - command: env floor check
+      - command: env deploy --floor
+      - skill: deploy/rollback-floor
+      - path: internal/cli/env_floor.go
 
   - id: release-health-gate
     category: ship
@@ -4368,13 +4415,23 @@ benefits:
 
   - id: continuous-profiling
     category: run
-    title: Continuous profiling, no setup
+    title: Continuous CPU and heap profiling
     claim: >-
-      Every process samples a CPU profile every five minutes and a heap snapshot
-      every two hours over OTLP, and `forge obs profile` exports pprof,
-      speedscope or collapsed stacks.
+      With profiling on, every process samples a CPU profile every five minutes
+      and a heap snapshot every two hours over OTLP, and `forge obs profile`
+      exports pprof, speedscope or collapsed stacks; it is on by default with
+      the local ClickStack, and one line turns it on for a hosted or cluster
+      env.
     availability: forge
+    use: >-
+      `observability = forge.Observability { signals =
+      forge.ObservabilitySignals { profiles = True } }` in the env's `main.k`
+    why: >-
+      An unset `signals.profiles` means "on where forge runs the store": on in
+      a dev env with the local ClickStack, off on a destination, a cluster or
+      `forge.OnHosted` until the env says `profiles = True`.
     evidence:
+      - path: kcl/schema.k
       - command: obs profile
       - path: pkg/observe/PROFILES.md
       - library: pkg/profilequery
@@ -4384,7 +4441,7 @@ benefits:
     category: run
     title: Profile-guided builds from production
     claim: >-
-      `forge pgo pull` turns the CPU profiles your env already collects into
+      `forge pgo pull` turns the CPU profiles your env collects into
       each Go binary's `cmd/<bin>/default.pgo`, which you commit; every build
       automatically uses the committed profile, so the compiler optimizes
       (inlining, devirtualization) the call sites production runs hot, and a
@@ -5083,3 +5140,362 @@ limits:
     evidence:
       - command: env deploy --claimable
       - skill: deploy/hosting
+
+# Why forge: the argument the benefits above back. A benefit is one layer's
+# fact; a reason is the cross-layer JOIN a stitched-together stack cannot make,
+# so every reason cites benefits from at least two categories, every headline
+# benefit is cited by some reason, and a reason's thesis may say only what its
+# cited entries claim. Rendered as docs/why-forge.md, the README's "Why Forge"
+# block, `forge why` and the MCP `why` tool. Order is the order of the
+# argument.
+reasons:
+  - id: knows-your-app
+    title: Forge knows your whole app, so its tools share one model of it
+    thesis: >-
+      A stack stitched from separate tools has no shared model of the app: the
+      tracer does not know your RPCs, the deploy tool does not know your
+      migrations, and the linter does not know your wiring, so the glue between
+      them is code you write and keep in step. Forge reads the services, RPCs,
+      tables, components and environments from files in the repo, and its
+      codegen, lint, service catalog and deploys are all derived from that one
+      declaration.
+    mechanism: >-
+      Because forge reads the proto, the applied migrations, the composition
+      graph and the env declarations as its inputs, it can generate the
+      handlers, ORM and hooks, check the wiring as a graph, and print where
+      every symbol lives from the same facts, so none of them can disagree.
+    availability: forge
+    show: project shapes
+    benefits:
+      - proto-to-everything
+      - sql-first-schema
+      - service-catalog
+      - composition-graph-lint
+      - workload-once-bind-per-env
+      - shapes-map
+      - capabilities-introspection
+
+  - id: rpc-observability
+    title: Every RPC traced, measured and logged with no instrumentation code
+    thesis: >-
+      Hand instrumentation is the work that gets skipped, and the RPC that pages
+      you is the one without a span. In a forge project every RPC is already one
+      span, one metric sample and one log record with trace and request ids,
+      every component call and ORM query is a child span, and the same signals
+      run on your laptop and in production. Dashboards are generated from the
+      deployed commands and the composition graph, and forge reports which
+      services actually sent telemetry instead of assuming they did.
+    mechanism: >-
+      Because forge generates the RPC edge and holds a contract for every
+      component, it can wrap each one in telemetry, derive dashboards from the
+      composition graph, and name every place a request's trace is cut.
+    availability: forge
+    show: obs endpoints dev
+    benefits:
+      - edge-telemetry
+      - contract-lint
+      - lint-rules-tracing
+      - generated-dashboards
+      - local-clickstack
+      - obs-cli
+      - telemetry-proven
+      - readable-traces
+      - continuous-profiling
+      - profile-guided-builds
+      - rum-sessions
+
+  - id: release-health
+    title: Each release judged by its own telemetry and tied to the errors it causes
+    thesis: >-
+      Most deploy tools stop at "the pods are healthy"; whether the release made
+      errors or latency worse is a dashboard someone has to remember to open.
+      Forge records every promotion, compares the window after it with the equal
+      window before it, per service, against a policy declared in the env, and
+      ties error issues to the release that introduced them. Every env gets
+      default alerts for error rate, latency, regressed releases and more. On
+      Reliant hosting the control plane judges every promotion on its own, and
+      a declared health gate refuses a prod promote until staging holds a PASS.
+    mechanism: >-
+      Because forge both cuts the release and owns its telemetry, it can mark
+      releases on dashboards, judge each promotion with the env's declared
+      policy, and resolve an issue in the next release so that a later event
+      from an older one counts as a regression.
+    availability: forge
+    show: obs check prod --wait
+    benefits:
+      - obs-check
+      - release-health-policy
+      - release-markers
+      - issues-triage
+      - release-ledger
+      - default-alerts
+      - release-regressed-alert
+      - release-health-gate
+
+  - id: build-once-promote
+    title: Build once and promote the same bytes from staging to prod
+    thesis: >-
+      When each environment rebuilds, staging tested a different artifact than
+      the one prod runs, and per-env config drifts in files nobody diffs. Forge
+      records a release as an immutable set of artifact digests and promotes
+      that record, declares every env as typed KCL over one shared base, and
+      proves parity before its first deploy of an existing app. A deploy is a
+      plan you approve and a compare-and-set against what it read, and it waits
+      for health. Recovery is a new release, and a rollback floor refuses any
+      deploy older than a line you draw.
+    mechanism: >-
+      Because forge builds the release, records it on a ledger and renders
+      every env from the same declaration, it can promote by digest, show how
+      each env would change, refuse a promote that raced a hotfix, and refuse a
+      deploy below an env's rollback floor.
+    availability: forge
+    show: env diff prod
+    benefits:
+      - build-once-promote-by-digest
+      - frontend-runtime-config
+      - envs-in-kcl
+      - shared-env-base
+      - config-check-before-push
+      - env-verify-parity
+      - env-diff
+      - deploy-plan-approval
+      - promote-cas
+      - deploy-waits-for-health
+      - roll-forward
+      - rollback-floors
+
+  - id: safe-migrations
+    title: Database migrations checked against the running release before they ship
+    thesis: >-
+      The migration that takes prod down is rarely wrong SQL; it is a lock
+      queued behind a slow reader, a column the previous release still reads,
+      or a file applied out of order. Every forge migration declares whether the
+      previous release survives it, and lint refuses one that is unsafe or
+      undeclared. Each statement can be measured for locks and rewrites on a
+      disposable copy of a real Postgres, migrations apply under an advisory
+      lock and a lock timeout before any new pod starts, and a release whose
+      migrations the env's schema already passed is refused.
+    mechanism: >-
+      Because the migrations are the schema forge projects its ORM from, and
+      forge cuts the release that carries them, it can lint each one against
+      what a running release survives, apply them before the rollout, and raise
+      a rollback floor when one declares that it breaks rollback.
+    availability: forge
+    show: lint --migration-safety
+    benefits:
+      - sql-first-schema
+      - migration-safety
+      - migration-analysis
+      - never-waiting-migrations
+      - migrations-gate-rollout
+      - migration-release-guard
+      - rollback-floors
+      - managed-postgres-backups
+      - managed-postgres-restore-drill
+
+  - id: architecture-lint
+    title: Lint that knows your architecture, not just your syntax
+    thesis: >-
+      A generic linter cannot tell that a read-only field is never written,
+      that a list filter silently matches everything, that a component is wired
+      but unreachable, or that an authenticated RPC never looks at who is
+      calling. Forge's analyzers know those seams, and each rule names the bug
+      class it prevents. They run beside golangci-lint, buf, eslint and the
+      typecheck with one verdict, a lane that could not run fails instead of
+      passing, and a rule new in a release warns before it gates.
+    mechanism: >-
+      Because forge generated the seams (entities, filters, the composition
+      graph, the auth chain, the static export), it can check how your code
+      uses them, and run the whole CI gate locally with one command.
+    availability: forge
+    show: lint
+    benefits:
+      - one-lint-gate
+      - local-ci-gate
+      - unwritten-fields
+      - list-filter-optional
+      - composition-graph-lint
+      - unscoped-auth-audit
+      - lint-rules-data-integrity
+      - static-export-lint
+      - proto-breaking-gate
+      - generated-drift
+      - lint-skip-is-failure
+      - lint-rollout-grace
+
+  - id: secure-defaults
+    title: Secure by default, with auth that fails closed and secrets out of git
+    thesis: >-
+      Security that must be switched on stays off. Every forge RPC needs a valid
+      credential unless its proto opts out, so a forgotten annotation never
+      publishes an endpoint; errors reach callers classified while the SQL and
+      hosts stay in the server log; secrets are references bound per env, and a
+      `.env` file fails lint. Images are signed with an SBOM, dependencies and
+      images are scanned with expiring exemptions, and production reads go
+      through an audited read-only command. What a caller may do stays your
+      handler's code, and forge lists the RPCs that never ask who is calling.
+    mechanism: >-
+      Because forge owns the interceptor chain, the env render and the build, it
+      can make the safe path the default one and lint for the rest: unscoped
+      RPCs, secret keys nothing produces, and credential-shaped columns the
+      read-only role could see.
+    availability: forge
+    benefits:
+      - auth-fail-closed
+      - svcerr-redaction
+      - secrets-model
+      - no-dotenv
+      - secrets-model-lint
+      - db-grants-lint
+      - unscoped-auth-audit
+      - vuln-scan
+      - image-supply-chain
+      - middleware-hardening
+      - ssrf-guard
+      - guarded-db-query
+
+  - id: built-for-agents
+    title: Built for AI agents, with a project that explains itself and gates that check the work
+    thesis: >-
+      An agent in an unfamiliar repo spends its tokens finding where things are
+      and writing boilerplate, then guesses at conventions nobody wrote down.
+      Forge ships version-matched skills inside the binary, prints its whole
+      surface and the project's map in one call, answers in JSON with shared
+      exit codes and suggested next commands, and generates the code an agent
+      would otherwise type. The lint and test gates then catch what the agent
+      got wrong before a person reviews it.
+    mechanism: >-
+      Because forge knows the layout, its own commands and every symbol's file
+      and line, it can tell an agent where code goes and what to run next, over
+      the CLI or MCP, from the same binary that enforces the rules.
+    availability: forge
+    show: project capabilities
+    benefits:
+      - skills-in-the-binary
+      - mcp-server
+      - hosted-mcp
+      - capabilities-introspection
+      - shapes-map
+      - project-audit
+      - machine-readable-json
+      - exit-code-contract
+      - predictable-layout
+      - entity-from-one-marker
+      - generated-mocks
+      - one-lint-gate
+
+  - id: real-fast-tests
+    title: Tests against a real Postgres that still run in the fast tier
+    thesis: >-
+      Mock-heavy tests pass while production breaks, and tests against real
+      dependencies get so slow that nobody runs them. Forge generates a
+      recording mock for every package contract, runs database tests on a real
+      embedded Postgres with each test on its own copy of a migrated template
+      and no Docker, and writes a lifecycle test for every entity it scaffolds.
+      A slow test must say so, so the fast tier stays fast, and a test whose
+      inputs Go's cache cannot see may not replay a stale pass.
+    mechanism: >-
+      Because forge knows each package's contract and the applied schema, it can
+      generate the mocks and the migrated test database, and lint the tests that
+      would make the fast tier slow or its cache unsound.
+    availability: forge
+    benefits:
+      - generated-mocks
+      - pgtest-real-postgres
+      - test-tiers
+      - entity-lifecycle-tests
+      - flow-tests-seedgraph
+      - tdd-library
+      - slow-test-enforcement
+      - cache-soundness
+      - skipped-pass-detector
+      - lint-rules-tests
+      - fixture-drift-lint
+
+  - id: prod-from-day-0
+    title: Production from the first commit, with the whole stack on your laptop
+    thesis: >-
+      A dev setup that differs from production hides the bugs that matter, and a
+      shared dev database turns parallel work into collisions. `forge env up
+      dev` builds and hot-reloads every service, worker and frontend with
+      Postgres, a real sign-in, the observability stack and mail ready, and the
+      scaffolded dev needs neither Docker nor a cluster. Every checkout gets its
+      own ports and data, so ten agents run ten stacks, and every log, the
+      browser console included, lands in one directory.
+    mechanism: >-
+      Because dev is an environment declared like prod, from the same
+      workloads, forge can run it as host processes with the probes, sign-in and
+      telemetry production gets, configured differently.
+    availability: forge
+    show: env up dev
+    benefits:
+      - prod-from-day-0
+      - env-up-dev
+      - per-worktree-devstacks
+      - browser-logs-on-disk
+      - hot-reload
+      - local-dev-idp
+      - local-clickstack
+      - probes-graceful-shutdown
+      - mock-mode
+
+  - id: start-anywhere
+    title: Adopt it piece by piece in any repo, and keep the tools you already run
+    thesis: >-
+      A framework that demands a rewrite only ever gets adopted on a new
+      project. Forge adopts an existing app in any language without changing its
+      code, and most of it works piece by piece: keep your deploy tool,
+      migration tool, identity provider and telemetry backend, record the
+      deploys your CI already runs, and take any generated file over for good.
+      What forge does not do is written down beside what it does.
+    mechanism: >-
+      Because every part of forge reads a declaration rather than assuming its
+      own stack, each part can be bound to what you already run: a deploy hook,
+      your migration command, an OIDC issuer, any OTLP endpoint, or a cluster
+      you operate.
+    availability: forge
+    show: project benefits
+    benefits:
+      - adopt-existing-project
+      - adopt-frontend
+      - scaffold-exclude
+      - keep-your-migration-tool
+      - external-deploy-tooling
+      - record-deploys
+      - byo-issuer
+      - telemetry-anywhere
+      - owned-seams-disown
+      - overrides-byo-yaml
+      - cluster-connect
+      - monitoring-any-language
+
+  - id: hosting-knows-your-app
+    title: Reliant hosting wires Postgres, secrets, telemetry and domains from your declarations
+    thesis: >-
+      On a stitched stack each hosted piece needs an account, a key and a config
+      file, and none of it knows the app. Reliant hosting reads the declarations
+      forge renders: a declared database becomes a managed Postgres in your own
+      namespace with backups, a bucket gets its credentials and CORS, secrets
+      are write-only per env, telemetry flows with no token to paste, and a
+      hostname gets HTTPS. With the Reliant harness, a paging alert becomes an
+      investigated GitHub issue, every pull request gets code and security
+      review, and agents deploy through the same planned path.
+    mechanism: >-
+      Because the platform reads the same declarations forge renders, it can
+      provision and wire each resource with no keys to copy, and because
+      Reliant's agents use forge's own tools, they act within its plans.
+    availability: hosted
+    show: env status prod
+    benefits:
+      - hosted-by-default
+      - managed-postgres
+      - managed-postgres-backups
+      - managed-buckets
+      - hosted-secrets
+      - hosted-otel-injection
+      - custom-domains-tls
+      - static-hosting-cdn
+      - live-hostname
+      - oncall-agent
+      - ai-pr-security-review
+      - agent-forge-deploy-tool

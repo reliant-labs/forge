@@ -68,6 +68,8 @@ const (
 // The budget is a ceiling. A caller's own deadline (Connect-Timeout-Ms,
 // grpc-timeout) still applies when it is shorter; a longer one does not lift
 // the server's.
+//
+// connect-go v2 projects use Deadline.InterceptorV2 (the slot in ChainV2 is DepsV2.Deadline).
 type Deadline struct {
 	// Unary bounds a unary RPC that Procedures does not name. Zero is
 	// DefaultUnaryDeadline; negative is no server deadline.

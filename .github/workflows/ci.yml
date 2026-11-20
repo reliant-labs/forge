@@ -736,7 +736,11 @@ jobs:
         # laptop: 10.8 GB peak process-tree RSS at -p 4 against 6.9 GB at
         # -p 1, and -p 1 was not slower (132s against 217s). Full mode and
         # -count=1: the guards' whole-repo work skips under -short.
-        run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)
+        run: |
+          packages=$(scripts/ci-test-packages.sh guards)
+          [[ -n "$packages" ]] || { echo '::error::no guard packages to test'; exit 1; }
+          mapfile -t pkgs <<<"$packages"
+          go test -p 1 -count=1 -timeout 30m "${pkgs[@]}"
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
       - name: Save the embedded postgres archives (main only)
@@ -869,7 +873,11 @@ jobs:
         # cache-sound (reliant.md, "Testing tiers"), so a package whose
         # inputs did not change replays its result from the build cache main
         # last saved instead of re-running. -count=1 defeated exactly that.
-        run: go test -short -timeout 30m $(scripts/ci-test-packages.sh unit cli)
+        run: |
+          packages=$(scripts/ci-test-packages.sh unit cli)
+          [[ -n "$packages" ]] || { echo '::error::no Windows packages to test'; exit 1; }
+          mapfile -t pkgs <<<"$packages"
+          go test -short -timeout 30m "${pkgs[@]}"
       - name: Install forge
         env:
           CGO_ENABLED: "0"
@@ -993,7 +1001,12 @@ jobs:
           # As in `windows`: buf is not installed, and this override turns a
           # test's "missing tool" back into a skip under CI=true.
           FORGE_E2E_REQUIRE_TOOLS: "0"
-        run: go test -short -timeout 17m $(cat "${{ steps.pkgs.outputs.list }}")
+          PACKAGE_LIST: ${{ steps.pkgs.outputs.list }}
+        run: |
+          packages=$(cat "$PACKAGE_LIST")
+          [[ -n "$packages" ]] || { echo '::error::no changed Windows packages to test'; exit 1; }
+          mapfile -t pkgs <<<"$packages"
+          go test -short -timeout 17m "${pkgs[@]}"
 
   # PUSH TO MAIN ONLY. On a pull request every package is already compiled
   # by test-short; what this adds is the release flags (-buildvcs), which a

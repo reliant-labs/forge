@@ -3619,8 +3619,11 @@ benefits:
     category: ship
     title: Per-PR preview environments
     claim: >-
-      Every pull request gets its own environment, a copy of a committed
-      template env named for the PR, which deletes itself when it expires.
+      `forge env preview create --pr <n> --ttl <d>` makes a pull request its own
+      environment, a copy of a committed template env named for the PR, which
+      your CI creates, deploys and deletes on close; an expired one is deleted
+      by the control plane when hosted, or by `forge env gc` on a cluster you
+      run.
     availability: forge
     use: >-
       `forge env preview create --pr 123 --ttl 72h`, then `forge env deploy
@@ -3634,7 +3637,9 @@ benefits:
       deletes an expired hosted instance) and stamped on its namespaces, so
       `forge env gc` finds an expired preview on a cluster you operate from the
       cluster alone. `create` refuses an instance that would deploy into the
-      template env's own namespace.
+      template env's own namespace. Forge generates no preview workflow: the
+      `deploy/preview` skill has a GitHub Actions recipe that is yours to
+      commit.
     evidence:
       - command: env preview create
       - command: env gc

@@ -7,7 +7,8 @@
 // exists, declares a hosted identity of its own and is not itself a sharer (a
 // chain) is a fact about two envs, so it is judged here, over every env of the
 // project. The control plane re-checks it at admission, where it also sees the
-// org.
+// org. With several identities in an env (Bundle.identities) it is judged per
+// name: each sharer against the owner's identity of the same name.
 package lint
 
 import (
@@ -25,6 +26,7 @@ import (
 
 // envIdentity is the part of an env's rendered identity this check reads.
 type envIdentity struct {
+	Name      string `json:"name"`
 	Runtime   string `json:"runtime"`
 	ShareWith string `json:"share_with"`
 }
@@ -36,9 +38,13 @@ type identityShareFinding struct {
 	Fix     string
 }
 
-// checkIdentityShares judges every sharer against its owner. identities maps an
-// env to its rendered identity, absent when the env declares none.
-func checkIdentityShares(identities map[string]*envIdentity) []identityShareFinding {
+// checkIdentityShares judges every sharer against its owner. identities maps
+// an env to the identities it renders (`identity`, or several in
+// `identities`), empty when it declares none. share_with is PER NAME: a
+// sharer reuses the owner env's identity of the same name. An env of one
+// identity sharing an owner of one identity is matched whatever the names,
+// as before names mattered.
+func checkIdentityShares(identities map[string][]envIdentity) []identityShareFinding {
 	envs := make([]string, 0, len(identities))
 	for e := range identities {
 		envs = append(envs, e)
@@ -46,25 +52,55 @@ func checkIdentityShares(identities map[string]*envIdentity) []identityShareFind
 	sort.Strings(envs)
 	var out []identityShareFinding
 	for _, env := range envs {
-		id := identities[env]
-		if id == nil || id.ShareWith == "" {
-			continue
+		ids := identities[env]
+		for _, id := range ids {
+			if id.ShareWith == "" {
+				continue
+			}
+			label := "identity"
+			if len(ids) > 1 {
+				label = "identities[" + id.Name + "]"
+			}
+			owners, known := identities[id.ShareWith]
+			owner, found := identityNamed(owners, id.Name)
+			if !found && len(owners) == 1 && len(ids) == 1 {
+				owner, found = owners[0], true
+			}
+			switch {
+			case !known:
+				out = append(out, identityShareFinding{env, fmt.Sprintf("%s.share_with %q names no env of this project (envs: %v)", label, id.ShareWith, envs),
+					"name an env under deploy/kcl/ that declares a hosted identity; sharing another project's users is not supported"})
+			case len(owners) == 0:
+				out = append(out, identityShareFinding{env, fmt.Sprintf("%s.share_with %q: that env declares no identity, so there is no instance to share", label, id.ShareWith),
+					fmt.Sprintf("declare Bundle.identity in env %q, or drop share_with here", id.ShareWith)})
+			case !found:
+				out = append(out, identityShareFinding{env, fmt.Sprintf("%s.share_with %q: that env declares no identity named %q (it declares %v), and share_with reuses the instance of the same name", label, id.ShareWith, id.Name, identityNames(owners)),
+					fmt.Sprintf("declare an identity named %q in env %q, or rename this one to the owner's", id.Name, id.ShareWith)})
+			case owner.ShareWith != "":
+				out = append(out, identityShareFinding{env, fmt.Sprintf("%s.share_with %q: that env itself shares %q's instance, and sharing does not chain", label, id.ShareWith, owner.ShareWith),
+					fmt.Sprintf("share_with %q directly: the env that owns the instance", owner.ShareWith)})
+			case owner.Runtime != "hosted":
+				out = append(out, identityShareFinding{env, fmt.Sprintf("%s.share_with %q: that env's identity runs on the %s, and only a hosted instance can be shared", label, id.ShareWith, owner.Runtime),
+					"share an env whose identity runs on the control plane"})
+			}
 		}
-		owner, known := identities[id.ShareWith]
-		switch {
-		case !known:
-			out = append(out, identityShareFinding{env, fmt.Sprintf("identity.share_with %q names no env of this project (envs: %v)", id.ShareWith, envs),
-				"name an env under deploy/kcl/ that declares a hosted identity; sharing another project's users is not supported"})
-		case owner == nil:
-			out = append(out, identityShareFinding{env, fmt.Sprintf("identity.share_with %q: that env declares no identity, so there is no instance to share", id.ShareWith),
-				fmt.Sprintf("declare Bundle.identity in env %q, or drop share_with here", id.ShareWith)})
-		case owner.ShareWith != "":
-			out = append(out, identityShareFinding{env, fmt.Sprintf("identity.share_with %q: that env itself shares %q's instance, and sharing does not chain", id.ShareWith, owner.ShareWith),
-				fmt.Sprintf("share_with %q directly: the env that owns the instance", owner.ShareWith)})
-		case owner.Runtime != "hosted":
-			out = append(out, identityShareFinding{env, fmt.Sprintf("identity.share_with %q: that env's identity runs on the %s, and only a hosted instance can be shared", id.ShareWith, owner.Runtime),
-				"share an env whose identity runs on the control plane"})
+	}
+	return out
+}
+
+func identityNamed(ids []envIdentity, name string) (envIdentity, bool) {
+	for _, i := range ids {
+		if i.Name == name {
+			return i, true
 		}
+	}
+	return envIdentity{}, false
+}
+
+func identityNames(ids []envIdentity) []string {
+	out := make([]string, 0, len(ids))
+	for _, i := range ids {
+		out = append(out, i.Name)
 	}
 	return out
 }
@@ -75,7 +111,7 @@ func identityShareFindings(projectDir string, cfg *config.ProjectConfig) []ident
 	if err != nil {
 		return nil
 	}
-	identities := map[string]*envIdentity{}
+	identities := map[string][]envIdentity{}
 	for _, e := range entries {
 		envDir := filepath.Join(kclDir, e.Name())
 		if !e.IsDir() {
@@ -92,13 +128,18 @@ func identityShareFindings(projectDir string, cfg *config.ProjectConfig) []ident
 		}
 		var doc struct {
 			Output struct {
-				Identity *envIdentity `json:"identity"`
+				Identity   *envIdentity  `json:"identity"`
+				Identities []envIdentity `json:"identities"`
 			} `json:"output"`
 		}
 		if json.Unmarshal(raw, &doc) != nil {
 			continue
 		}
-		identities[e.Name()] = doc.Output.Identity
+		ids := doc.Output.Identities
+		if doc.Output.Identity != nil {
+			ids = []envIdentity{*doc.Output.Identity}
+		}
+		identities[e.Name()] = ids
 	}
 	return checkIdentityShares(identities)
 }

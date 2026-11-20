@@ -567,3 +567,25 @@ func TestBuildWritesOnlyTheDocumentFeaturesItsReaderDecodes(t *testing.T) {
 		t.Fatalf("a reader of every feature must get the same bundle as the nil reader: %s vs %s", again.Digest, full.Digest)
 	}
 }
+
+// A bundle declaring several identities is refused, before composition, to a
+// recording backend that does not converge them (which would record it and
+// converge none), and built for one that does, or for the machine ledger.
+func TestBuildRefusesSeveralIdentitiesToAReaderThatConvergesOne(t *testing.T) {
+	id := func(name string) release.ShapeIdentity {
+		return release.ShapeIdentity{Name: name, Runtime: release.IdentityRuntimeHosted, Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative}}
+	}
+	in := buildFixture()
+	in.Shape.Identities = []release.ShapeIdentity{id("identity"), id("users")}
+	in.Reader = &release.BundleReader{Features: release.BundleDocFeatures()}
+	if _, err := Build(context.Background(), in); err == nil || !strings.Contains(err.Error(), release.CapabilityConvergesSeveralIdentities) {
+		t.Fatalf("Build for a reader that converges one identity: err = %v", err)
+	}
+	in.Reader = &release.BundleReader{Features: append(release.BundleDocFeatures(), release.CapabilityConvergesSeveralIdentities)}
+	b := mustBuild(t, in)
+	if len(b.Doc.Shape.Identities) != 2 {
+		t.Errorf("the bundle lost its identities: %+v", b.Doc.Shape.Identities)
+	}
+	in.Reader = nil
+	mustBuild(t, in)
+}

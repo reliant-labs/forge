@@ -56,6 +56,16 @@ func TestHostIdentity_OnlyAHostRuntimeIdentity(t *testing.T) {
 	if hostIdentity(nil) != nil || hostIdentity(&KCLEntities{}) != nil {
 		t.Error("no identity means no step")
 	}
+	// Several (Bundle.identities): the one on the host IdP is the dev loop's,
+	// the hosted ones the control plane's.
+	e = identityEntities()
+	host := *e.Identity
+	host.Name = "ops"
+	e.Identity = nil
+	e.Identities = []release.ShapeIdentity{{Name: "users", Runtime: release.IdentityRuntimeHosted}, host}
+	if got := hostIdentity(e); got == nil || got.Name != "ops" {
+		t.Errorf("hostIdentity of several = %+v, want the host-run ops", got)
+	}
 }
 
 // The launch pre-flight demands every declared secret from the store, but the

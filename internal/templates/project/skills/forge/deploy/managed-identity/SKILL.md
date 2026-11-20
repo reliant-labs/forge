@@ -48,6 +48,10 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `social` | `forge.IdentityGoogle` / `forge.IdentityGitHub` with your own OAuth client |
 | `email` | `forge.IdentityEmail {delivery, from_name, from_local, reply_to}`: how the instance's mail is addressed |
 
+## Several identities in one env
+
+`Bundle.identities = [...]`, keyed by `name`: load `deploy/managed-identity/several`.
+
 ## Sign-in: owners, signup, methods, social, mail
 
 ```python

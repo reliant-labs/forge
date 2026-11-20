@@ -40,6 +40,9 @@ func resolveIdentityUser(ctx context.Context, client cloudCaller, base map[strin
 	token := ""
 	for page := 0; page < maxIdentityLookupPages; page++ {
 		req := map[string]any{"orgId": base["orgId"], "environmentId": base["environmentId"], "query": user, "pageSize": 100, "pageToken": token}
+		if name, ok := base["identity"]; ok {
+			req["identity"] = name
+		}
 		var doc identityUsersDocument
 		if err := client.Call(ctx, procIdentityUsers, req, &doc); err != nil {
 			return "", "", fmt.Errorf("look up %s: %w", user, err)

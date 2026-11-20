@@ -137,9 +137,15 @@ schema IdentityRef:
     reads a reserved managed secret, a cluster workload a key of the Secret
     the control plane delivers (`forge-identity-<name>`), a host process the
     env's secret store. The control plane is the only writer of all three.
+
+    `identity` names the `forge.ManagedIdentity` to read from, for an env
+    that declares several (`Bundle.identities`). Empty is accepted only while
+    the env declares exactly one; with several it is ambiguous, and the
+    render says which names to choose from.
     """
     output: str
     application: str = ""
+    identity: str = ""
 
     check:
         output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim", "login_policy"], \

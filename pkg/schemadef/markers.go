@@ -137,9 +137,9 @@ func CommentMarkerProblems(site MarkerSite, column, comment string) []MarkerProb
 var retiredMarkers = map[string]string{
 	"forge:dashboard": "was retired in forge v1.0.14: the dashboard role (forge_dash) reads what your migrations GRANT it, " +
 		"so grant the columns a panel needs (`GRANT SELECT (id, created_at) ON t TO forge_dash;`) and drop the marker. " +
-		"See `forge skill load migrations/v1.0.14`",
+		"See `forge skill load db/dashboards`",
 	"forge:no-dashboard": "was retired in forge v1.0.14: the dashboard role (forge_dash) reads only the columns your migrations GRANT it, " +
-		"so leave this column out of the GRANT and drop the marker. See `forge skill load migrations/v1.0.14`",
+		"so leave this column out of the GRANT and drop the marker. See `forge skill load db/dashboards`",
 }
 
 // RetiredMarker reports whether marker is one forge no longer reads. A

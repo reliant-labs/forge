@@ -452,7 +452,7 @@ benefits:
     evidence:
       - command: scaffold operator
       - library: pkg/controller
-      - library: pkg/appkit
+      - library: pkg/appkit/operatorkit
       - library: pkg/stsresize
       - library: pkg/cmdkit
       - command: scaffold crd
@@ -509,17 +509,6 @@ benefits:
     availability: forge
     evidence:
       - library: pkg/money
-
-  - id: lib-approval
-    category: build
-    title: Human approval queue
-    claim: >-
-      `pkg/approval` holds items an agent proposed until a person approves or
-      rejects them, expires the undecided at their deadline and hands each
-      decided item to the app's follow-up exactly once.
-    availability: forge
-    evidence:
-      - library: pkg/approval
 
   - id: sql-first-schema
     category: data
@@ -846,11 +835,9 @@ benefits:
       READ COMMITTED, never both — and `orm.AfterCommit` holds side effects
       until commit.
     availability: forge
-    use: "forge fix tx-isolation"
     evidence:
       - library: pkg/orm
       - analyzer: --conventions
-      - command: fix tx-isolation
       - skill: service-layer/transactions
 
   - id: never-waiting-migrations
@@ -1002,7 +989,6 @@ benefits:
       - library: pkg/contractkit
       - path: internal/generator/contract
       - skill: contracts
-      - command: fix harness-mocks
 
   - id: test-tiers
     category: test
@@ -1572,15 +1558,12 @@ benefits:
     title: Codemods for convention moves
     claim: >-
       `forge fix` rewrites a project onto a new convention in one command
-      (Connect errors, narrow Deps, transaction isolation, harness mocks, the
-      composition graph, operatorkit, the config proto package), and takes back
-      a rewrite that fails.
+      (Connect errors, narrow Deps, the composition graph, operatorkit, the
+      config proto package), and takes back a rewrite that fails.
     availability: forge
     evidence:
       - command: fix connect-errors
       - command: fix narrow-deps
-      - command: fix tx-isolation
-      - command: fix harness-mocks
       - command: fix composition-graph
       - command: fix operatorkit
       - command: fix config-proto-package
@@ -3763,7 +3746,6 @@ benefits:
       read its would-deny verdicts before turning it on.
     evidence:
       - skill: deploy/delivery-policy
-      - library: pkg/approval
 
   - id: gate-evidence
     category: ship

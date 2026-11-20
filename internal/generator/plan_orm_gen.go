@@ -71,6 +71,15 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	if err := checkORMNameCollisions(dbDir, relDir, entities, outputs); err != nil {
 		return err
 	}
+	// The interfaces over each entity's hand-written <entity>_repo_ext.go
+	// queries, read from those files now (a seam this run scaffolds is born
+	// empty, so it has none). A name the project already declares is not a
+	// refusal here: the ext store joined the projection after projects had
+	// written their own, so it yields, with a note (plan_orm_ext_store_gen.go).
+	extStores, extNotes := renderExtStores(dbDir, relDir, pkgName, entities, outputs)
+	for _, note := range extNotes {
+		fmt.Printf("  ℹ️  %s\n", note)
+	}
 
 	if err := os.MkdirAll(dbDir, 0o755); err != nil {
 		return fmt.Errorf("create db directory: %w", err)
@@ -82,10 +91,12 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	// entity disappearing from the projection doesn't change that.
 	// Removed forge-owned files are pruned from the manifest too.
 	expectedFiles := make(map[string]bool)
-	expectedFiles["types.go"] = true
 	for _, ent := range entities {
 		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm_gen.go"] = true
 		expectedFiles[entityStoreFile(ent)] = true
+	}
+	for _, ext := range extStores {
+		expectedFiles[ext.file] = true
 	}
 	sweepStaleORMFiles(root, relDir, expectedFiles, false, cs)
 	// A project that moved its ORM out of internal/db (database.orm.package)
@@ -95,19 +106,6 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	if relDir != config.DefaultORMPackage {
 		sweepStaleORMFiles(root, config.DefaultORMPackage, nil, true, cs)
 	}
-
-	// internal/db/orm_shared_gen.go is RETIRED. It declared exactly one
-	// symbol, `var ormTracer = otel.Tracer("orm")`, left over from the
-	// pre-generic per-entity ORM that opened its own spans. pkg/crud owns
-	// the tracing now and keeps the same tracer name (crud.repoTracer), so
-	// the generated var has had NO referent since the generic Repo landed:
-	// a rendered project compiles with the file deleted.
-	//
-	// It was also byte-identical in every project ever generated — the
-	// tierguard differential render is what surfaced it — so it was library
-	// code, and dead library code at that, sitting in the user's tree
-	// behind a "do not edit" banner.
-	codegen.RetireGenerated(root, filepath.Join(filepath.FromSlash(relDir), "orm_shared_gen.go"), cs)
 
 	for _, ent := range entities {
 		// The custom-query seam: a scaffold-once, user-owned sibling file
@@ -138,23 +136,16 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	if err := writeStoreInterfaces(root, orm, entities, cs); err != nil {
 		return fmt.Errorf("generate store interfaces: %w", err)
 	}
-
-	// internal/db/types.go was the proto-entity era's alias file; a stale
-	// alias to a deleted pb type would shadow a generated struct. It is
-	// removed only when forge wrote it: `types.go` is the most ordinary
-	// name a hand-written data layer has, and this used to delete one
-	// unconditionally on the first generate that projected an entity.
-	if body, rerr := os.ReadFile(filepath.Join(dbDir, "types.go")); rerr == nil && forgeWroteFile(body) {
-		if err := checksums.RemoveJournaled(filepath.Join(dbDir, "types.go")); err != nil {
-			return fmt.Errorf("retire %s/types.go: %w", relDir, err)
+	for _, ext := range extStores {
+		if err := writeORMFile(root, orm, ext.file, ext.src, cs); err != nil {
+			return fmt.Errorf("generate ext store for entity %s: %w", ext.entity, err)
 		}
 	}
 	return nil
 }
 
 // sweepStaleORMFiles removes forge's ORM output in relDir that this run
-// does not rewrite — an entity whose table is gone, or the pre-rename
-// "_orm.go" spelling — but never a file the user owns (Tier-2 / disowned /
+// does not rewrite — an entity whose table is gone — but never a file the user owns (Tier-2 / disowned /
 // hand-edited): a disowned ORM file is the user's content now, and the
 // entity disappearing from the projection doesn't change that. withStore
 // sweeps store_gen.go too, for a directory the ORM has moved out of.
@@ -162,12 +153,9 @@ func sweepStaleORMFiles(root, relDir string, expected map[string]bool, withStore
 	dir := filepath.Join(root, filepath.FromSlash(relDir))
 	existing, _ := os.ReadDir(dir)
 	for _, e := range existing {
-		// Both spellings are swept: "_orm_gen.go" is the current name and
-		// "_orm.go" the pre-rename one, so an upgrading project's old copies
-		// are reclaimed by the same pass that prunes deleted entities.
 		nm := e.Name()
-		isORM := strings.HasSuffix(nm, "_orm.go") || strings.HasSuffix(nm, "_orm_gen.go") ||
-			strings.HasSuffix(nm, "_store_gen.go") || nm == "orm_shared.go" || (withStore && nm == storeGenFile)
+		isORM := strings.HasSuffix(nm, "_orm_gen.go") || strings.HasSuffix(nm, "_store_gen.go") ||
+			(withStore && nm == storeGenFile)
 		if e.IsDir() || !isORM || expected[nm] {
 			continue
 		}
@@ -267,6 +255,12 @@ func renderRepoExtSeam(pkgName string, ent config.PlanEntity) []byte {
 	b.WriteString("//      called with the ctx that s.deps.DB.RunTx hands its fn, a method\n")
 	b.WriteString("//      here (db.Bun() builders and raw SQL included) joins that\n")
 	b.WriteString("//      transaction; with any other ctx it runs on the pool.\n")
+	b.WriteString("//\n")
+	fmt.Fprintf(&b, "// Each exported func(ctx context.Context, db orm.Context, …) in this file is\n")
+	fmt.Fprintf(&b, "// also a method of %sExtStore (%s_ext_store_gen.go, regenerated\n", msgName, naming.ToSnakeCase(msgName))
+	b.WriteString("// from this file every forge generate), the handle bound: name that in a\n")
+	b.WriteString("// service's Deps — forge wires and mocks it — instead of hand-writing an\n")
+	b.WriteString("// adapter over these functions.\n")
 	b.WriteString("//\n")
 	b.WriteString("// Example (uncomment and adapt):\n")
 	b.WriteString("//\n")

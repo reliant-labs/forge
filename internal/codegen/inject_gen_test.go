@@ -1626,6 +1626,38 @@ func TestGenerateInject_GeneratedStoreSeam(t *testing.T) {
 	assertGofmtFixedPoint(t, filepath.Join(dir, "internal", "app", "compose.go"))
 }
 
+// An entity's ext store — the interface forge writes over its hand-written
+// _repo_ext.go queries, in <entity>_ext_store_gen.go — resolves through the
+// same seam: its file carries the aggregate's accessor in the line shape the
+// seam reads (the ORM generator's test pins that line).
+func TestGenerateInject_GeneratedExtStoreSeam(t *testing.T) {
+	dir := newInjectProject(t)
+	writeStoreGen(t, dir, [2]string{"Plan", "Plans"})
+	ext := "package db\n\nfunc (s Store) PlansExt() PlanExtStore { return planExtStore{db: s.db} }\n"
+	if err := os.WriteFile(filepath.Join(dir, "internal", "db", "plan_ext_store_gen.go"), []byte(ext), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeComponentDeps(t, dir, "internal/handlers", "orders", "orders",
+		"\tPlans db.PlanStore\n\tPlansExt db.PlanExtStore")
+
+	err := GenerateCompose(InjectGenInput{
+		GenContext: GenContext{ProjectDir: dir, ModulePath: "example.com/proj"},
+		Services:   []ServiceDef{{Name: "OrdersService", ModulePath: "example.com/proj"}},
+	})
+	if err != nil {
+		t.Fatalf("a generated ext store must resolve without hand-wiring; got: %v", err)
+	}
+	out := readInject(t, dir)
+	for _, want := range []string{
+		"Plans: db.NewStore(infra.ORM).Plans(),",
+		"PlansExt: db.NewStore(infra.ORM).PlansExt(),",
+	} {
+		if !containsNormalized(out, want) {
+			t.Fatalf("compose.go missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // The accessor set comes from the GENERATED file, so a type that merely looks
 // like a store in a project that has no such entity must NOT pick up a
 // provider — emitting db.NewStore(...).Widgets() there would not compile.

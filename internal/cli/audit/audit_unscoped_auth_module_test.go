@@ -49,16 +49,16 @@ func TestUnscopedAuth_FollowsWrappersInOtherPackagesOfTheModule(t *testing.T) {
 	seamImport := `"example.com/app/pkg/` + seamPkg + `"`
 
 	src := handlerSource([]string{
-		`"example.com/app/internal/authz"`,
+		`"example.com/app/internal/whoami"`,
 		`"example.com/app/internal/lookup"`,
 		seamImport,
-		`extauthz "github.com/other/authz"`,
+		`extwhoami "github.com/other/whoami"`,
 	},
-		handlerCalling("GetOrder", "authz.Caller(ctx)"),           // one hop
-		handlerCalling("GetInvoice", "authz.Deep(ctx)"),           // two hops
+		handlerCalling("GetOrder", "whoami.Caller(ctx)"),          // one hop
+		handlerCalling("GetInvoice", "whoami.Deep(ctx)"),          // two hops
 		handlerCalling("GetSession", seamPkg+".RequireUser(ctx)"), // a wrapper in the seam package
 		handlerCalling("ListOrders", "lookup.Owner(ctx)"),         // reaches store.GetUser, a row fetch
-		handlerCalling("ListInvoices", "extauthz.Caller(ctx)"),    // same name, outside the module
+		handlerCalling("ListInvoices", "extwhoami.Caller(ctx)"),   // same name, outside the module
 		delegationBody("GetCart"),                                 // no getter at all
 	)
 	dir := writeProject(t, "ShopService", map[string]bool{
@@ -66,7 +66,7 @@ func TestUnscopedAuth_FollowsWrappersInOtherPackagesOfTheModule(t *testing.T) {
 		"ListOrders": true, "ListInvoices": true, "GetCart": true,
 	}, src)
 	writeSeamPackage(t, dir)
-	writeFile(t, filepath.Join(dir, "internal", "authz", "authz.go"), goFile("authz",
+	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
 		[]string{seamImport, `"example.com/app/internal/session"`},
 		"func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n\n"+
 			"func Deep(ctx context.Context) any { return session.User(ctx) }\n"))

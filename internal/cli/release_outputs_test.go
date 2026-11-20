@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -74,6 +75,32 @@ func TestHarvestDeclaredOutputs_HashesEveryMatchedFile(t *testing.T) {
 	for name, a := range got {
 		if err := a.Validate(name); err != nil {
 			t.Errorf("artifact %s does not validate: %v", name, err)
+		}
+	}
+}
+
+func TestHarvestDeclaredOutputs_UsesResolvedShellSourceSubdir(t *testing.T) {
+	project, checkout := t.TempDir(), t.TempDir()
+	const output = "dist/tool.tar.gz"
+	workDir := filepath.Join(checkout, "tools")
+	writeArtifactFixture(t, filepath.Join(workDir, output), "built in pinned source")
+	writeArtifactFixture(t, filepath.Join(project, output), "stale local output")
+	const repo = "github.com/acme/tool"
+	writeSourceOverride(t, project, repo, checkout)
+	w := filesOnlyShell("tool", "", BuildOutput{Path: output})
+	w.Build.Shell.Source = &config.GitSource{Repo: repo, Ref: "v1", Subdir: "tools"}
+	entities := &KCLEntities{Workloads: []WorkloadEntity{w}}
+
+	// First resolve for --no-build, then use the same already-resolved path
+	// that a normal build leaves behind.
+	for range 2 {
+		got, missing, err := harvestDeclaredOutputs(context.Background(), project, entities)
+		if err != nil || len(missing) != 0 {
+			t.Fatalf("harvest: %v; missing %v", err, missing)
+		}
+		artifact := got["tool/"+output]
+		if artifact.Integrity != sha256Hex(t, "built in pinned source") || w.Build.Shell.SourceDir != workDir {
+			t.Fatalf("harvest did not use the resolved build directory: %+v, dir %q", artifact, w.Build.Shell.SourceDir)
 		}
 	}
 }

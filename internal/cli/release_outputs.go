@@ -108,8 +108,14 @@ func buildOutputsDir(ctx context.Context, projectDir string, w WorkloadEntity) (
 		if err := resolveShellBuildSource(ctx, projectDir, sh); err != nil {
 			return "", err
 		}
+		// Use the checkout itself; a missing resolution must never fall
+		// back to the project directory and hash a same-named stale file.
+		if sh.SourceDir == "" {
+			return "", fmt.Errorf("ShellBuild.source did not resolve a checkout directory")
+		}
+		return resolveProjectPath(projectDir, sh.SourceDir), nil
 	}
-	return resolveProjectPath(projectDir, w.EffectiveBuildCwd()), nil
+	return resolveProjectPath(projectDir, sh.Cwd), nil
 }
 
 // errMissingDeclaredOutputs is a release's refusal of declared outputs that
@@ -142,11 +148,14 @@ func sha256FileSize(path string) (string, int64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	defer f.Close()
 	h := sha256.New()
 	n, err := io.Copy(h, f)
+	closeErr := f.Close()
 	if err != nil {
 		return "", 0, err
+	}
+	if closeErr != nil {
+		return "", 0, closeErr
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), n, nil
 }

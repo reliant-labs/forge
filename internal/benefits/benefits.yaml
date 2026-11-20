@@ -4541,15 +4541,14 @@ benefits:
       dashboards and the Overview's Traffic and Users sections with no code: visitors, channels,
       sign-ups and their attribution, active and new users, retention, goals and
       funnels.
-    status: in-progress
     availability: hosted
     use: >-
       `forge.Analytics` adds goals, an activation event and channel rules; a
       `<project>-users.json` replaces a dashboard; `dashboards = False` drops
       them.
     why: >-
-      Visitors are counted by the platform's cookieless daily hash at the
-      ingest edge, which ships with the control plane's edge columns and hash.
+      Visitors are counted by the platform's cookieless daily hash, computed at
+      the control plane's ingest edge, so no cookie is set.
     evidence:
       - library: pkg/obsbuiltin
       - path: pkg/obsbuiltin/population_clickhouse_test.go

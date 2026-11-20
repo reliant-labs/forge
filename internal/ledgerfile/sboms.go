@@ -19,8 +19,17 @@ import (
 // each vulnerability scan of them found.
 //
 //	<ledger>/<project-id>/
-//	  sboms/sha256-<hex>.cdx.json                 the SBOM bytes, content-addressed
-//	  findings/sha256-<hex>/<db-built-at>.json    one scan of that SBOM per scanner DB build
+//	  sboms/sha256-<hex>.cdx.json      the SBOM bytes, content-addressed
+//	  findings/sha256-<hex>/<db-built-at>_<scanner>@<scanner-version>.json
+//	                                   one scan of that SBOM per scanner, scanner
+//	                                   version and scanner DB build
+//
+// A findings file is keyed by everything that decides its result: the SBOM,
+// the scanner and its version, and the DB build. Two scanners, or two
+// versions of one, reading the same DB build are two pieces of evidence and
+// get two files. The same scanner, version and DB build re-scanning the same
+// SBOM is a deterministic re-evaluation of one question, and replaces its
+// own file.
 //
 // The SBOM is ALWAYS written here, even when it is also attached to the
 // image as an OCI referrer, so a scan never needs the network for bytes.
@@ -35,10 +44,9 @@ const (
 	sbomsDir    = "sboms"
 	findingsDir = "findings"
 	sbomSuffix  = ".cdx.json"
-	// findingsTimeLayout names a findings file by its scanner DB's build
-	// time: UTC, fixed width, so the lexical order of the names is the
-	// chronological order of the builds, and free of the ':' a file name
-	// cannot carry on every OS.
+	// findingsTimeLayout is the DB-build part of a findings file's name:
+	// UTC, fixed width, and free of the ':' a file name cannot carry on
+	// every OS. Readers order by the records' own times, not by names.
 	findingsTimeLayout = "20060102T150405Z"
 	findingsSuffix     = ".json"
 )
@@ -110,8 +118,8 @@ func (s *Store) GetSBOM(digest string) ([]byte, error) {
 	return data, nil
 }
 
-// FindingsRecord is one vulnerability scan of one SBOM against one build of
-// the scanner's database.
+// FindingsRecord is one vulnerability scan of one SBOM by one scanner version
+// against one build of that scanner's database.
 //
 // It is an ENVELOPE: what the scan found is Body, whose schema belongs to the
 // command that writes and reads it (`forge vuln`), not to this store. The
@@ -120,11 +128,14 @@ func (s *Store) GetSBOM(digest string) ([]byte, error) {
 type FindingsRecord struct {
 	// SBOMDigest is the SBOM that was scanned.
 	SBOMDigest string `json:"sbom_digest"`
-	// Scanner and ScannerVersion name the tool ("grype", "v0.122.1").
+	// Scanner and ScannerVersion name the tool ("grype", "v0.122.1"). Both
+	// are part of the record's key: another scanner, or another version of
+	// this one, is another record.
 	Scanner        string `json:"scanner"`
 	ScannerVersion string `json:"scanner_version,omitempty"`
 	// DBSchema is the scanner database's schema version, and DBBuiltAt
-	// when that database was built. A scan is filed under DBBuiltAt.
+	// when that database was built. DBBuiltAt is part of the record's key
+	// and its primary order (ListFindings).
 	DBSchema  string    `json:"db_schema,omitempty"`
 	DBBuiltAt time.Time `json:"db_built_at"`
 	// ScannedAt is when the scan ran.
@@ -149,22 +160,53 @@ func (r FindingsRecord) validate() error {
 	return nil
 }
 
-func (s *Store) findingsPath(sbomDigest string, dbBuiltAt time.Time) (string, error) {
-	stem, err := sbomFileStem(sbomDigest)
+// findingsFileName is a record's file name inside its SBOM's directory:
+// "<db-built-at>_<scanner>@<scanner-version>.json" ("<db-built-at>_<scanner>.json"
+// when the version is unknown). It is the record's whole key below the SBOM,
+// so two records that differ in scanner, version or DB build never share a
+// file.
+func findingsFileName(r FindingsRecord) string {
+	name := r.DBBuiltAt.UTC().Format(findingsTimeLayout) + "_" + findingsNamePart(r.Scanner)
+	if r.ScannerVersion != "" {
+		name += "@" + findingsNamePart(r.ScannerVersion)
+	}
+	return name + findingsSuffix
+}
+
+// findingsNamePart makes a scanner name or version safe in a file name.
+// Flattening alone could map two values to one name ("a/b" and "a_b"), and
+// that collision would overwrite evidence, so a value the flattening changed
+// also carries a short hash of what it really was. A value already safe —
+// every real one ("grype", "v0.122.1") — is used as it is.
+func findingsNamePart(v string) string {
+	safe := safeSegment(v)
+	if safe == v {
+		return safe
+	}
+	sum := sha256.Sum256([]byte(v))
+	return safe + "-" + hex.EncodeToString(sum[:4])
+}
+
+func (s *Store) findingsPath(r FindingsRecord) (string, error) {
+	stem, err := sbomFileStem(r.SBOMDigest)
 	if err != nil {
 		return "", err
 	}
-	return s.path(findingsDir, stem, dbBuiltAt.UTC().Format(findingsTimeLayout)+findingsSuffix), nil
+	// Joined after Store.path, which would flatten the '@': every part of
+	// the name is already flattened by findingsNamePart.
+	return filepath.Join(s.path(findingsDir, stem), findingsFileName(r)), nil
 }
 
-// PutFindings stores one scan, filed under its SBOM and its DB build. A
-// second scan of the same SBOM against the same DB build replaces the first:
-// it is the newer reading of the same question.
+// PutFindings stores one scan, filed under its SBOM, scanner, scanner version
+// and DB build. A scan by ANOTHER scanner or version never touches this one's
+// file. A second scan by the SAME scanner and version against the same DB
+// build replaces the first: that is a deterministic re-evaluation of the
+// same question, not new evidence.
 func (s *Store) PutFindings(r FindingsRecord) error {
 	if err := r.validate(); err != nil {
 		return err
 	}
-	path, err := s.findingsPath(r.SBOMDigest, r.DBBuiltAt)
+	path, err := s.findingsPath(r)
 	if err != nil {
 		return err
 	}
@@ -175,8 +217,10 @@ func (s *Store) PutFindings(r FindingsRecord) error {
 	return writeFileAtomic(path, append(data, '\n'))
 }
 
-// ListFindings returns every stored scan of an SBOM, OLDEST DB build first.
-// An SBOM never scanned has none, and that is not an error.
+// ListFindings returns every stored scan of an SBOM, ordered by DB build,
+// then by when the scan ran, OLDEST first (and by file name between records
+// equal in both, so the order is deterministic). An SBOM never scanned has
+// none, and that is not an error.
 func (s *Store) ListFindings(sbomDigest string) ([]FindingsRecord, error) {
 	stem, err := sbomFileStem(sbomDigest)
 	if err != nil {
@@ -206,11 +250,20 @@ func (s *Store) ListFindings(sbomDigest string) ([]FindingsRecord, error) {
 		}
 		out = append(out, r)
 	}
+	// Stable over the name order above, which breaks the remaining ties.
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].DBBuiltAt.Equal(out[j].DBBuiltAt) {
+			return out[i].DBBuiltAt.Before(out[j].DBBuiltAt)
+		}
+		return out[i].ScannedAt.Before(out[j].ScannedAt)
+	})
 	return out, nil
 }
 
-// LatestFindings returns the scan of an SBOM against the newest DB build
-// this ledger has scanned it with, or (nil, nil) when it was never scanned.
+// LatestFindings returns the last record in ListFindings' order: the scan
+// against the newest DB build this ledger has scanned the SBOM with, and of
+// several scans of that build (by different scanners or versions) the one
+// that ran last. (nil, nil) when it was never scanned.
 func (s *Store) LatestFindings(sbomDigest string) (*FindingsRecord, error) {
 	all, err := s.ListFindings(sbomDigest)
 	if err != nil || len(all) == 0 {
@@ -220,8 +273,9 @@ func (s *Store) LatestFindings(sbomDigest string) (*FindingsRecord, error) {
 }
 
 // readFindings decodes one findings file and checks it is filed where it
-// says it belongs, so a file copied into the wrong SBOM's directory is an
-// error rather than another SBOM's findings.
+// says it belongs, so a file copied into the wrong SBOM's directory, or
+// under another scanner's or DB build's name, is an error rather than
+// evidence it is not.
 func readFindings(path, sbomDigest string) (FindingsRecord, error) {
 	var r FindingsRecord
 	data, err := os.ReadFile(path) //nolint:gosec // path is built from Store.path and a directory listing of it
@@ -234,9 +288,9 @@ func readFindings(path, sbomDigest string) (FindingsRecord, error) {
 	if err := r.validate(); err != nil {
 		return r, fmt.Errorf("%s: %w", path, err)
 	}
-	want := r.DBBuiltAt.UTC().Format(findingsTimeLayout) + findingsSuffix
-	if r.SBOMDigest != sbomDigest || filepath.Base(path) != want {
-		return r, fmt.Errorf("%w: %s holds findings for %s built %s, not the file's own name", release.ErrInvalid, path, r.SBOMDigest, r.DBBuiltAt.UTC().Format(time.RFC3339))
+	if r.SBOMDigest != sbomDigest || filepath.Base(path) != findingsFileName(r) {
+		return r, fmt.Errorf("%w: %s holds findings for %s by %s@%s against the DB built %s, not the file's own name",
+			release.ErrInvalid, path, r.SBOMDigest, r.Scanner, r.ScannerVersion, r.DBBuiltAt.UTC().Format(time.RFC3339))
 	}
 	return r, nil
 }

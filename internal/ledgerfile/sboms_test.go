@@ -138,10 +138,90 @@ func TestFindingsAreFiledPerDBBuild(t *testing.T) {
 		t.Fatalf("after rescan ListFindings = %+v, %v", all, err)
 	}
 	stem, _ := sbomFileStem(digest)
-	if _, err := os.Stat(filepath.Join(s.Dir(), "findings", stem, "20261120T030000Z.json")); err != nil {
-		t.Fatalf("findings not filed under the DB build: %v", err)
+	if _, err := os.Stat(filepath.Join(s.Dir(), "findings", stem, "20261120T030000Z_grype@v0.122.1.json")); err != nil {
+		t.Fatalf("findings not filed under the DB build and scanner: %v", err)
 	}
 	assertNoTempFiles(t, filepath.Join(s.Dir(), "findings", stem))
+}
+
+// B1 (forge#2480 review): a scan by another scanner, or another version of
+// one, against the same DB build is more evidence, never a replacement.
+func TestFindingsKeepEveryScannerOfOneDBBuild(t *testing.T) {
+	t.Parallel()
+	s := openTest(t)
+	digest, err := s.PutSBOM([]byte(testSBOM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	built := time.Date(2026, 11, 19, 3, 0, 0, 0, time.UTC)
+	grype := findings(digest, built, `{"by":"grype v0.122.1"}`)
+	newerGrype := findings(digest, built, `{"by":"grype v0.123.0"}`)
+	newerGrype.ScannerVersion, newerGrype.ScannedAt = "v0.123.0", built.Add(2*time.Hour)
+	other := findings(digest, built, `{"by":"osv"}`)
+	other.Scanner, other.ScannerVersion, other.ScannedAt = "osv-scanner", "v2.0.0", built.Add(3*time.Hour)
+	// Two scanner names that flatten to the same file-name text.
+	slashed := findings(digest, built, `{"by":"a/b"}`)
+	slashed.Scanner, slashed.ScannerVersion, slashed.ScannedAt = "a/b", "", built.Add(4*time.Hour)
+	underscored := findings(digest, built, `{"by":"a_b"}`)
+	underscored.Scanner, underscored.ScannerVersion, underscored.ScannedAt = "a_b", "", built.Add(5*time.Hour)
+
+	// Written out of scan order: the read order is the records' own.
+	for _, r := range []FindingsRecord{underscored, other, grype, slashed, newerGrype} {
+		if err := s.PutFindings(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := s.ListFindings(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range all {
+		got = append(got, string(r.Body))
+	}
+	want := []string{`{"by":"grype v0.122.1"}`, `{"by":"grype v0.123.0"}`, `{"by":"osv"}`, `{"by":"a/b"}`, `{"by":"a_b"}`}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("ListFindings = %v, want every scanner's record in scan order %v", got, want)
+	}
+	latest, err := s.LatestFindings(digest)
+	if err != nil || latest == nil || string(latest.Body) != `{"by":"a_b"}` {
+		t.Fatalf("LatestFindings = %+v, %v; want the scan that ran last", latest, err)
+	}
+
+	// The same scanner, version and DB build replaces only its own file.
+	again := grype
+	again.Body, again.ScannedAt = json.RawMessage(`{"by":"grype v0.122.1, again"}`), built.Add(6*time.Hour)
+	if err := s.PutFindings(again); err != nil {
+		t.Fatal(err)
+	}
+	all, err = s.ListFindings(digest)
+	if err != nil || len(all) != len(want) {
+		t.Fatalf("after a re-evaluation ListFindings has %d records, %v; want %d", len(all), err, len(want))
+	}
+	if last := all[len(all)-1]; string(last.Body) != `{"by":"grype v0.122.1, again"}` {
+		t.Fatalf("re-evaluation did not replace its own record: last = %s", last.Body)
+	}
+}
+
+// A newer DB build outranks a later scan of an older one.
+func TestFindingsOrderByDBBuildBeforeScanTime(t *testing.T) {
+	t.Parallel()
+	s := openTest(t)
+	digest := "sha256:" + strings.Repeat("e", 64)
+	day1 := time.Date(2026, 11, 19, 3, 0, 0, 0, time.UTC)
+	newDB := findings(digest, day1.Add(24*time.Hour), `{"db":"new"}`)
+	newDB.ScannedAt = day1.Add(25 * time.Hour)
+	lateOldDB := findings(digest, day1, `{"db":"old"}`)
+	lateOldDB.Scanner, lateOldDB.ScannedAt = "osv-scanner", day1.Add(48*time.Hour)
+	for _, r := range []FindingsRecord{newDB, lateOldDB} {
+		if err := s.PutFindings(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest, err := s.LatestFindings(digest)
+	if err != nil || latest == nil || string(latest.Body) != `{"db":"new"}` {
+		t.Fatalf("LatestFindings = %+v, %v; want the newest DB build", latest, err)
+	}
 }
 
 func TestFindingsRefusals(t *testing.T) {
@@ -167,8 +247,8 @@ func TestFindingsRefusals(t *testing.T) {
 	if err := s.PutFindings(findings(other, built, `{}`)); err != nil {
 		t.Fatal(err)
 	}
-	src, _ := s.findingsPath(other, built)
-	dst, _ := s.findingsPath(digest, built)
+	src, _ := s.findingsPath(findings(other, built, `{}`))
+	dst, _ := s.findingsPath(findings(digest, built, `{}`))
 	if err := os.MkdirAll(filepath.Dir(dst), dirMode); err != nil {
 		t.Fatal(err)
 	}

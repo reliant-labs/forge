@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -212,13 +211,16 @@ func (r frameResolver) repoPath(f querycapture.Frame) (string, bool) {
 	var abs string
 	switch {
 	case f.AbsFile != "":
+		if !filepath.IsAbs(f.AbsFile) {
+			return "", false // not an absolute path on this host
+		}
 		abs = f.AbsFile
 	case f.File == "":
 		return "", false
-	case filepath.IsAbs(f.File) || path.IsAbs(f.File):
-		// A slash-rooted File is absolute wherever it was recorded, never
-		// module-relative — Windows' filepath.IsAbs alone wants a volume.
+	case filepath.IsAbs(f.File):
 		abs = f.File
+	case os.IsPathSeparator(f.File[0]) || filepath.VolumeName(f.File) != "":
+		return "", false // never reinterpret a rooted or drive-relative path under the module
 	case f.Module == "" || f.Module == r.module:
 		abs = filepath.Join(r.projectDir, filepath.FromSlash(f.File))
 	default:
@@ -231,21 +233,29 @@ func (r frameResolver) repoPath(f querycapture.Frame) (string, bool) {
 	return filepath.ToSlash(rel), true
 }
 
-// realPath is p made absolute with its symlinks resolved as far as they
-// exist (git reports the repository root resolved; a deleted file still
-// resolves through its directory).
+// realPath resolves the longest existing prefix, including symlinks and
+// Windows short names. A captured file and several of its parent directories
+// may have been deleted after capture.
 func realPath(p string) string {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return p
 	}
-	if r, err := filepath.EvalSymlinks(abs); err == nil {
-		return r
+	var suffix []string
+	for prefix := abs; ; prefix = filepath.Dir(prefix) {
+		resolved, err := filepath.EvalSymlinks(prefix)
+		if err == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved
+		}
+		// Do not walk above an inaccessible or otherwise invalid path.
+		if !os.IsNotExist(err) || filepath.Dir(prefix) == prefix {
+			return abs
+		}
+		suffix = append(suffix, filepath.Base(prefix))
 	}
-	if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
-		return filepath.Join(dir, filepath.Base(abs))
-	}
-	return abs
 }
 
 // queryPassRequested reports whether the document carries a query pass's

@@ -279,6 +279,20 @@ func TestDBAnalyzeQueriesNeedsACapture(t *testing.T) {
 	}
 }
 
+func TestFrameResolverResolvesSymlinksAboveMissingDirectories(t *testing.T) {
+	t.Parallel()
+	repo, alias := t.TempDir(), filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(repo, alias); err != nil {
+		t.Skipf("cannot create symlinks: %v", err)
+	}
+	root := realPath(repo)
+	r := frameResolver{repoRoot: root, projectDir: root}
+	frame := querycapture.Frame{AbsFile: filepath.Join(alias, "missing", "nested", "x.go")}
+	if got, ok := r.repoPath(frame); !ok || got != "missing/nested/x.go" {
+		t.Fatalf("resolve %q under %q: %q, %v", frame.AbsFile, root, got, ok)
+	}
+}
+
 func TestFrameResolverMapsCapturedFramesIntoTheRepository(t *testing.T) {
 	t.Parallel()
 	repo := t.TempDir()
@@ -290,6 +304,8 @@ func TestFrameResolverMapsCapturedFramesIntoTheRepository(t *testing.T) {
 		{querycapture.Frame{File: "internal/db/x.go", Module: "example.com/svc"}, "svc/internal/db/x.go"},
 		{querycapture.Frame{File: "internal/db/x.go"}, "svc/internal/db/x.go"},
 		{querycapture.Frame{File: "internal/db/x.go", AbsFile: filepath.Join(repo, "lib", "y.go"), Module: "example.com/lib"}, "lib/y.go"},
+		{querycapture.Frame{File: filepath.Join(repo, "missing", "nested", "x.go")}, "missing/nested/x.go"},
+		{querycapture.Frame{AbsFile: "module/relative.go"}, ""},
 		{querycapture.Frame{File: "pkg/orm/x.go", Module: "github.com/reliant-labs/forge"}, ""},
 		{querycapture.Frame{File: "/elsewhere/x.go"}, ""},
 	} {

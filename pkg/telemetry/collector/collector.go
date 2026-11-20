@@ -13,10 +13,12 @@
 // What Build returns, per signal:
 //
 //   - metrics: one `prometheus` receiver per target (Kubernetes pod discovery
-//     by namespaces + selector + container port on a cluster, a static address
-//     on a host), the allow/deny/drop_labels relabels and the sample and label
+//     by namespaces + selector on a cluster, scraping each running pod's IP on
+//     the declared port whether or not the pod spec declares it; a static
+//     address on a host), the allow/deny/drop_labels relabels and the sample and label
 //     limits, credentials and CAs read from mounted files; checks are
-//     `tcpcheck`/`httpcheck` receivers (through `receiver_creator` for pods).
+//     `tcpcheck`/`httpcheck` receivers (through `receiver_creator` for pods,
+//     one per pod, on the declared port whether or not the pod spec declares it).
 //     Each target gets its own `metrics/telemetry_<service>` pipeline, whose
 //     `transform/telemetry_<service>` stamps service.name (and the env's
 //     resource attributes when the target's scope is project) and converts the

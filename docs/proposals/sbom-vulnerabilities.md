@@ -953,3 +953,68 @@ day one to every current holder of `deploy:read` (2.4).
 
 The owner's framing: vulnerabilities and SBOMs are a forge feature given by
 default. When forge scaffolds someone's code, they get all of it.
+
+## Phase 0 results and amendments (2026-11-20)
+
+Phase 0 (tasks 0.1 and 0.2) confirmed syft + grype and the referrer with the
+tag fallback. It changes no decision. It fixes the pins and adds five
+amendments, which the tasks in section 6 follow.
+
+**Pins.** syft v1.57.2 and grype v0.122.1, each archive's sha256 checked
+against the upstream `checksums.txt`. grype publishes no windows/arm64 build,
+so that platform falls back to "scanner missing" (not scanned). The grype DB is
+schema v6.1.10, named with its sha256 by
+`https://grype.anchore.io/databases/v6/latest.json`. forge keeps oras-go
+v2.7.0.
+
+**Measurements.** syft takes 1.3 to 4 s on an image or a lockfile, and 13.7 s
+when it pulls a 115 MB image from a registry. A CycloneDX SBOM is 300 KB to
+1 MB. grype scans an SBOM in about 3 s with a warm DB. The DB is a 205 MB
+archive that unpacks to 3.3 GiB. `grype db import` takes about 2 minutes of
+CPU, and a cold first scan about 93 s.
+
+**Amendments:**
+
+1. **Referrer attach (F3b): set `SkipReferrersGC = true`.** On a tag-fallback
+   registry, oras-go v2.7.0 deletes the old referrers index after it moves the
+   `sha256-<hex>` tag. Our hosted registry's tenant tokens cannot delete, so
+   the second attach to a subject reported an error after the tag had already
+   moved. The orphaned index is untagged, and registry GC reclaims it.
+2. **Serialize attaches per subject (F3b).** On tag-fallback registries,
+   concurrent attaches to one digest lost index entries in every trial. The
+   referrer manifests were stored but not listed. forge takes a per-subject
+   lock in the process, lists `Referrers` after each attach, and re-attaches
+   the same manifest if it is missing. That is idempotent. A control-plane
+   signer that writes its own referrer to the same subject (C7) needs the same
+   retry.
+3. **The default verdict counts only findings with a fix (F4, F6).** On a
+   Debian-based Python image, 222 of 246 matches were `wont-fix` or
+   `not-fixed` distro findings. grype's `fix.state` is reliable, so those are
+   reported but never block. This is the schema's existing `fixable_only`
+   default. CPE-based matches cause most false positives and are shown with
+   lower confidence.
+4. **One shared grype DB per machine (F4, C4).** It lives in
+   `~/.forge/cache/vulndb/`, never per project. CI caches it keyed by the DB's
+   build date. The control-plane worker keeps one warm per pod and refreshes it
+   in the background. The DB is never downloaded inside a request path. grype
+   refuses a DB older than 5 days, which matches the `stale` verdict in 1.2.
+5. **Static-site SBOMs come from the lockfile, labelled as such (F3, W1).**
+   syft finds no packages in a built `dist/` and cannot read forge's
+   static-site OCI artifact. The lockfile with dev dependencies excluded is the
+   source (`SBOMRef.Source = lockfile`), and the UI says "from lockfile". It
+   overstates the bundle, because build-time tools listed under `dependencies`
+   are included. That is accepted for phase 1.
+
+**Other findings:**
+
+- The hosted registry's sigguard refuses any manifest with a `subject` on a
+  `bundle.v1/` path from a tenant token. forge does not attach SBOMs there and
+  records the reason. The control plane attaches or stores bundle SBOMs itself
+  (C3, C7).
+- quay supports the referrers API. The earlier research note that said
+  otherwise was wrong. GAR, Docker Hub, quay, ECR public, MCR and zot all
+  answer the API. GHCR and distribution (v2 and v3) need the tag fallback.
+- `oras cp -r` carried the referrer between API and fallback registries in
+  every direction, so mirroring and promotion keep the SBOM.
+- A GAR "delete untagged" cleanup policy may delete referrers, because a
+  referrer is an untagged manifest. This was not tested; F7 documents it.

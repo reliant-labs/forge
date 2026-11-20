@@ -140,17 +140,9 @@ func (v *viteChecker) buildScript() viteScript {
 	raw := v.pkg.Scripts["build"]
 	s := viteScript{present: true}
 	line := v.pkg.lineOf(`"build"\s*:`)
-	var vite []string
-	for _, cmd := range regexp.MustCompile(`&&|\|\||;`).Split(raw, -1) {
-		f := strings.Fields(cmd)
-		for i := 0; i+1 < len(f); i++ {
-			if (f[i] == "vite" || strings.HasSuffix(f[i], "/vite")) && f[i+1] == "build" {
-				vite = f[i+2:]
-			}
-		}
-	}
-	if vite == nil {
-		s.unknown = fmt.Sprintf("package.json's build script (%q) does not run `vite build`", raw)
+	vite, reason := viteBuildArgs(raw)
+	if reason != "" {
+		s.unknown = fmt.Sprintf("package.json's build script (%q) %s", raw, reason)
 		return s
 	}
 	flag := func(name string) (*viteValue, bool) {
@@ -163,7 +155,6 @@ func (v *viteChecker) buildScript() viteScript {
 				val, ok = strings.TrimPrefix(a, "--"+name+"="), true
 			}
 			if ok {
-				val = strings.Trim(val, `"'`)
 				return &viteValue{known: true, value: val, file: "package.json", line: line, where: fmt.Sprintf("--%s in package.json's build script", name)}, true
 			}
 		}
@@ -260,10 +251,6 @@ func (v *viteChecker) checkOutDir(s viteScript) {
 // the URL path — where a relative base breaks deep links.
 var historyRouters = []string{"react-router", "react-router-dom", "@tanstack/react-router", "vue-router", "wouter", "@solidjs/router", "preact-router", "svelte-routing", "@reach/router"}
 
-// hashRoutingRE is a router configured to keep the route in the URL hash,
-// where a relative base is fine.
-var hashRoutingRE = regexp.MustCompile(`\b(createHashRouter|HashRouter|createHashHistory|createWebHashHistory|useHashLocation)\b`)
-
 func (v *viteChecker) checkBase(s viteScript) {
 	var base viteValue
 	switch {
@@ -328,12 +315,8 @@ func (v *viteChecker) checkRelativeBase(base viteValue, groups []bindingGroup) {
 			}
 		}
 	}
-	if router == "" || v.usesHashRouting() {
-		why := "no client-side router is a dependency"
-		if router != "" {
-			why = "its router keeps routes in the URL hash"
-		}
-		v.notes = append(v.notes, fmt.Sprintf("base %q (%s) is relative, which works here: %s", base.value, base.where, why))
+	if router == "" {
+		v.notes = append(v.notes, fmt.Sprintf("base %q (%s) is relative; no known client-side router is a dependency", base.value, base.where))
 		return
 	}
 	want := "/"
@@ -342,35 +325,9 @@ func (v *viteChecker) checkRelativeBase(base viteValue, groups []bindingGroup) {
 	}
 	file, line := v.anchor(base)
 	v.add(RuleViteBase, finding.SeverityWarning, file, line,
-		fmt.Sprintf("frontend %q builds with a relative base (%q, %s) and routes client-side (%s in package.json): a deep link to a nested route such as /a/b is answered with index.html by the host's fallback, and its relative asset URLs then resolve under /a/ — a missing file the host answers with 404, so the page loads blank",
+		fmt.Sprintf("frontend %q builds with a relative base (%q, %s) and declares %s in package.json; its routing mode could not be verified. With path-based routing, a direct visit to /a/b loads index.html but resolves relative asset URLs under /a/, where they can return 404",
 			v.fe.Name, base.value, base.where, router),
-		fmt.Sprintf("set `base: %q` in %s (the mount, with a trailing slash) — a relative base suits only a site with no nested client routes, or a hash router", want, v.configName()))
-}
-
-// usesHashRouting reports whether any source under src/ configures hash
-// routing.
-func (v *viteChecker) usesHashRouting() bool {
-	found := false
-	_ = filepath.WalkDir(filepath.Join(v.fe.Dir, "src"), func(p string, d os.DirEntry, err error) error {
-		if err != nil || found {
-			return nil //nolint:nilerr // best effort: an unreadable tree has no hash router to find
-		}
-		if d.IsDir() {
-			if skippedDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !sourceExts[strings.ToLower(filepath.Ext(p))] {
-			return nil
-		}
-		raw, err := os.ReadFile(p)
-		if err == nil && hashRoutingRE.MatchString(stripComments(string(raw))) {
-			found = true
-		}
-		return nil
-	})
-	return found
+		fmt.Sprintf("set `base: %q` in %s (the mount, with a trailing slash), or verify the app exclusively uses hash routing or no nested client routes", want, v.configName()))
 }
 
 // anchor is where a finding about val points: where it is set, else the

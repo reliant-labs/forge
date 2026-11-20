@@ -1,6 +1,7 @@
 package staticexport
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -275,16 +276,17 @@ func TestCheckVite_Base(t *testing.T) {
 			wantLine: 2,
 		},
 		{
-			name:     "a relative base with a hash router",
+			name:     "a hash router mention does not prove path routing is unused",
 			config:   "export default defineConfig({\n  base: \"./\",\n});\n",
 			pkg:      routerPkg,
-			src:      "import { createHashRouter } from \"react-router-dom\";\nexport const router = createHashRouter([]);\n",
-			wantNote: "keeps routes in the URL hash",
+			src:      "import { createBrowserRouter, createHashRouter } from \"react-router-dom\";\nexport const router = createBrowserRouter([]);\nconst unusedDemo = createHashRouter([]);\n",
+			wantSev:  finding.SeverityWarning,
+			wantLine: 2,
 		},
 		{
 			name:     "a relative base with no router",
 			config:   "export default defineConfig({\n  base: \"\",\n});\n",
-			wantNote: "no client-side router is a dependency",
+			wantNote: "no known client-side router is a dependency",
 		},
 		{
 			name:     "an absolute URL base",
@@ -338,6 +340,48 @@ func TestCheckVite_Base(t *testing.T) {
 			}
 			if got[0].File != "frontends/spa/vite.config.ts" {
 				t.Errorf("file = %s", got[0].File)
+			}
+		})
+	}
+}
+
+func TestCheckVite_WrappedAndAmbiguousBuildScripts(t *testing.T) {
+	for _, tc := range []struct {
+		script    string
+		wantNotes string // when empty, both CLI overrides should cause findings
+	}{
+		{`npx vite build --outDir out --base=/wrong/`, ""},
+		{`npx --yes vite build --outDir 'my out' --base=/wrong/`, ""},
+		{`pnpm exec vite build --outDir out --base=/wrong/`, ""},
+		{`yarn vite build --outDir out --base=/wrong/`, ""},
+		{`npm exec -- vite build --outDir out --base=/wrong/`, ""},
+		{`echo 'vite build --outDir pretend'; npx vite build --outDir out --base=/wrong/`, ""},
+		{`vite build --outDir out --base=/wrong/ && vite build`, "runs multiple `vite build`"},
+		{`vite build --outDir out --base=/wrong/ || pnpm exec vite build`, "runs multiple `vite build`"},
+		{`cd other && vite build`, "cannot be resolved"},
+		{`vite build --outDir "$DIR"`, "cannot be resolved"},
+		{`echo 'vite build --outDir pretend'`, "does not run `vite build`"},
+	} {
+		t.Run(tc.script, func(t *testing.T) {
+			pkg, err := json.Marshal(map[string]any{"scripts": map[string]string{"build": tc.script}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fe := viteFrontend(t, map[string]string{"package.json": string(pkg)})
+			res := checkVite(t, fe)
+			if tc.wantNotes != "" {
+				if len(res.Findings) != 0 || len(res.Notes) != 2 {
+					t.Fatalf("want both checks to explain ambiguity, got %+v", res)
+				}
+				for _, note := range res.Notes {
+					if !strings.Contains(note, "not statically determinable") || !strings.Contains(note, tc.wantNotes) {
+						t.Errorf("note %q does not explain %q", note, tc.wantNotes)
+					}
+				}
+				return
+			}
+			if len(res.Findings) != 2 || res.Findings[0].Rule != RuleViteOutDir || res.Findings[1].Rule != RuleViteBase {
+				t.Fatalf("want both build-script override mismatches, got %+v", res)
 			}
 		})
 	}

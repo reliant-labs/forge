@@ -2299,7 +2299,9 @@ func runsUnderDelve(w WorkloadEntity) bool {
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
 // the env's workloads — of every runtime, since a host go-run still needs
 // its module to build. Only a declared GoBuild contributes (docker / shell
-// dispatch elsewhere); a workload with no build is not built by forge. Dedup is by (cmd, outputName) so the shared
+// dispatch elsewhere); a workload with no build is not built by forge, and a
+// build-only workload with build_variants builds only those variants
+// (buildsOnlyVariants). Dedup is by (cmd, outputName) so the shared
 // project binary — which many server/worker/cron services map onto —
 // builds exactly once. The first service to claim a (cmd, output) wins
 // its flags; a divergent second declaration for the same target is a
@@ -2313,7 +2315,7 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 	var out []goBuildTarget
 	for _, w := range entities.Workloads {
 		g := w.GoBuild()
-		if g == nil {
+		if g == nil || buildsOnlyVariants(w) {
 			continue
 		}
 		outName := g.OutputName
@@ -2342,6 +2344,15 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		})
 	}
 	return out
+}
+
+// buildsOnlyVariants reports whether w is a build-only workload whose binaries
+// are its declared build_variants. Its GoBuild names the package each variant
+// builds (buildKCLBuildOnlyVariants), not a binary of its own: building it as a
+// go target too produced an unrequested host binary bin/<name> with forge's
+// default stamps, which no release records and no runtime launches.
+func buildsOnlyVariants(w WorkloadEntity) bool {
+	return w.OnRuntime(RuntimeBuildOnly) && w.Runtime.BuildOnly != nil && len(w.Runtime.BuildOnly.BuildVariants) > 0
 }
 
 // projectImagePGOOff is the set of go targets the env builds with PGO

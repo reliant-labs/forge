@@ -75,7 +75,7 @@
 //	        ValidateContext:     deps.Validate, // (*auth.Authenticator).Authenticate
 //	        Unauthenticated:     UnauthenticatedProcedures,
 //	        Enrich:              enrichClaims,
-//	        ExtractToken:        credentialFrom, // Bearer, else X-API-Key, else the session cookie
+//	        ExtractCredential:   credentialFrom, // Bearer, else X-API-Key, else the session cookie, with its Channel
 //	    })
 //	}
 //
@@ -261,8 +261,10 @@ type Policy struct {
 	//
 	// The interceptor infers the channel the token came from (see
 	// [AuthMethod]) by finding it in the request: the Authorization header,
-	// the X-API-Key header, a cookie, else [ChannelUnknown]. Set
-	// ExtractCredential instead to name it exactly.
+	// the X-API-Key header, else [ChannelUnknown] — never [ChannelCookie],
+	// which a token-only extractor cannot prove it read, so a browser-session
+	// check fails closed for it. Set ExtractCredential instead to name the
+	// channel, the cookie included.
 	ExtractToken func(header http.Header) string
 
 	// ExtractCredential is ExtractToken that also names the channel the

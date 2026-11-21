@@ -141,7 +141,7 @@ if !m.IsBrowserSession() {          // a server-side session id, in the cookie
 }
 ```
 
-`IsBrowserSession` passes only for a server-side session id (`auth.CredentialSession`, forge/pkg/session) in a cookie: an id the session store resolved, issued to nothing but the browser that signed in. A bearer token in a cookie, an API key or an unknown credential kind never passes, since any client can send a `Cookie` header. Without server-side sessions the guard refuses every caller (fails closed). `m.ViaCookie()` is transport metadata, not proof. Neither a token's contents nor `Enrich` can set the method. It adds nothing against CSRF beyond the cookie's SameSite. Existing projects get the channel with no edit: inferred from where `credentialFrom`'s token sits, and the cookie only when no other header carries it; `authn.Policy.ExtractCredential` names it exactly. Test such a handler with `authn.ContextWithAuthMethod`.
+`IsBrowserSession` passes only for a server-side session id (`auth.CredentialSession`, forge/pkg/session) read from the cookie: never a bearer token in a cookie, an API key or an unknown kind, since any client can send a `Cookie` header. Without server-side sessions it refuses everyone. `m.ViaCookie()` is transport metadata, not proof; neither a token's contents nor `Enrich` can set the method, and it adds nothing against CSRF beyond SameSite. Only `authn.Policy.ExtractCredential` names the cookie channel (the scaffolded `credentialFrom` returns token and channel). An older middleware.go's token-only `ExtractToken` never yields it, so the guard fails closed until its `credentialFrom` returns the channel too. Test with `authn.ContextWithAuthMethod`.
 
 ## Making a principal an application principal: the `Enrich` seam
 

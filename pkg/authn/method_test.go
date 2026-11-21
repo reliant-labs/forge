@@ -2,6 +2,7 @@ package authn
 
 import (
 	"context"
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,10 +13,11 @@ import (
 )
 
 // legacyCredentialFrom is the scaffolded pkg/middleware credentialFrom as
-// existing projects carry it: a token-only Policy.ExtractToken reading, by
-// presence, the Authorization header, then X-API-Key, then the __Host-
-// session cookie. Those projects never edit it, so AuthMethod must work for
-// them through inference alone.
+// projects scaffolded before Policy.ExtractCredential carry it: a token-only
+// Policy.ExtractToken reading, by presence, the Authorization header, then
+// X-API-Key, then the __Host- session cookie. AuthMethod reports its headers
+// by inference and its cookie as ChannelUnknown, so a browser-session check
+// fails closed for it.
 func legacyCredentialFrom(h http.Header) string {
 	if len(h.Values("Authorization")) != 0 {
 		bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer ")
@@ -32,6 +34,22 @@ func legacyCredentialFrom(h http.Header) string {
 		return ""
 	}
 	return cookie.Value
+}
+
+// scaffoldCredentialFrom is the scaffolded credentialFrom of today: the same
+// reads as legacyCredentialFrom, naming the channel it read for
+// Policy.ExtractCredential.
+func scaffoldCredentialFrom(h http.Header) (string, Channel) {
+	if len(h.Values("Authorization")) != 0 {
+		return legacyCredentialFrom(h), ChannelAuthorization
+	}
+	if len(h.Values("X-API-Key")) != 0 {
+		return legacyCredentialFrom(h), ChannelAPIKeyHeader
+	}
+	if v := legacyCredentialFrom(h); v != "" {
+		return v, ChannelCookie
+	}
+	return "", ChannelUnknown
 }
 
 // credentialPolicy is a Validate-mode policy with the library's own claims
@@ -58,6 +76,7 @@ func channelCases() []channelCase {
 	token := Method{Credential: auth.CredentialToken}
 	with := func(ch Channel) Method { m := token; m.Channel = ch; return m }
 	legacy := func(p Policy) Policy { p.ExtractToken = legacyCredentialFrom; return p }
+	scaffold := func(p Policy) Policy { p.ExtractCredential = scaffoldCredentialFrom; return p }
 	explicit := func(ch Channel) func(Policy) Policy {
 		return func(p Policy) Policy {
 			p.ExtractCredential = func(http.Header) (string, Channel) { return "tok", ch }
@@ -68,7 +87,9 @@ func channelCases() []channelCase {
 		{"default reads the Authorization header", nil, map[string]string{"Authorization": "Bearer tok"}, with(ChannelAuthorization)},
 		{"legacy extractor, bearer", legacy, map[string]string{"Authorization": "Bearer tok"}, with(ChannelAuthorization)},
 		{"legacy extractor, api key header", legacy, map[string]string{"X-API-Key": "tok"}, with(ChannelAPIKeyHeader)},
-		{"legacy extractor, session cookie", legacy, map[string]string{"Cookie": "__Host-app_session=tok"}, with(ChannelCookie)},
+		{"legacy extractor, session cookie: never inferred", legacy, map[string]string{"Cookie": "__Host-app_session=tok"}, with(ChannelUnknown)},
+		{"scaffolded extractor, session cookie", scaffold, map[string]string{"Cookie": "__Host-app_session=tok"}, with(ChannelCookie)},
+		{"scaffolded extractor, bearer", scaffold, map[string]string{"Authorization": "Bearer tok", "Cookie": "__Host-app_session=tok"}, with(ChannelAuthorization)},
 		{"legacy extractor, bearer beats an equal cookie", legacy, map[string]string{"Authorization": "Bearer tok", "Cookie": "__Host-app_session=tok"}, with(ChannelAuthorization)},
 		{"extractor names the cookie", explicit(ChannelCookie), nil, with(ChannelCookie)},
 		{"extractor names the api key header", explicit(ChannelAPIKeyHeader), nil, with(ChannelAPIKeyHeader)},
@@ -183,8 +204,8 @@ func TestAuthMethod_V2(t *testing.T) {
 }
 
 // Where a legacy ExtractToken found its token is inferred in
-// credentialFrom's presence order, and an ambiguous token is never
-// reported as the cookie when an earlier channel carries it too.
+// credentialFrom's presence order for the two headers, and never as the
+// cookie: a token-only extractor cannot prove it read one.
 func TestInferChannel(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -197,12 +218,12 @@ func TestInferChannel(t *testing.T) {
 		{"bearer with padding", map[string][]string{"Authorization": {"Bearer  tok "}}, "tok", ChannelAuthorization},
 		{"raw authorization value", map[string][]string{"Authorization": {"tok"}}, "tok", ChannelAuthorization},
 		{"api key header", map[string][]string{"X-API-Key": {" tok "}}, "tok", ChannelAPIKeyHeader},
-		{"one cookie of several", map[string][]string{"Cookie": {"theme=dark; __Host-app_session=tok; lang=en"}}, "tok", ChannelCookie},
-		{"cookie under any name", map[string][]string{"Cookie": {"sid=tok"}}, "tok", ChannelCookie},
+		{"one cookie of several", map[string][]string{"Cookie": {"theme=dark; __Host-app_session=tok; lang=en"}}, "tok", ChannelUnknown},
+		{"cookie under any name", map[string][]string{"Cookie": {"sid=tok"}}, "tok", ChannelUnknown},
 		{"bearer and cookie carry it: the header wins", map[string][]string{"Authorization": {"Bearer tok"}, "Cookie": {"sid=tok"}}, "tok", ChannelAuthorization},
 		{"api key and cookie carry it: the header wins", map[string][]string{"X-API-Key": {"tok"}, "Cookie": {"sid=tok"}}, "tok", ChannelAPIKeyHeader},
 		{"bearer and api key carry it: Authorization wins", map[string][]string{"Authorization": {"Bearer tok"}, "X-API-Key": {"tok"}}, "tok", ChannelAuthorization},
-		{"a different bearer, the cookie carries it", map[string][]string{"Authorization": {"Bearer other"}, "Cookie": {"sid=tok"}}, "tok", ChannelCookie},
+		{"a different bearer, the cookie carries it", map[string][]string{"Authorization": {"Bearer other"}, "Cookie": {"sid=tok"}}, "tok", ChannelUnknown},
 		{"a cookie name is not its value", map[string][]string{"Cookie": {"tok=other"}}, "tok", ChannelUnknown},
 		{"a header inference does not read", map[string][]string{"X-Session": {"tok"}}, "tok", ChannelUnknown},
 		// An extractor reading X-Session accepts the header's token; a copy
@@ -241,7 +262,7 @@ func TestAuthMethod_EnrichCannotChangeIt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			p := credentialPolicy(tc.validated)
-			p.ExtractToken = legacyCredentialFrom
+			p.ExtractCredential = scaffoldCredentialFrom
 			p.Enrich = func(_ context.Context, c *auth.Claims) (*auth.Claims, error) {
 				out := *c
 				out.Credential = tc.forged
@@ -426,24 +447,38 @@ func TestMethod_Predicates(t *testing.T) {
 // IsBrowserSession admits it.
 func TestAuthMethod_BrowserSessionGuard(t *testing.T) {
 	t.Parallel()
-	xSession := func(h http.Header) string { return h.Get("X-Session") }
+	token := func(f func(http.Header) string) func(*Policy) { return func(p *Policy) { p.ExtractToken = f } }
+	scaffold := func(p *Policy) { p.ExtractCredential = scaffoldCredentialFrom }
+	xSession := token(func(h http.Header) string { return h.Get("X-Session") })
+	// A supported custom extractor that decodes its header: the token it
+	// returns is in no header verbatim.
+	xSessionB64 := token(func(h http.Header) string {
+		v, err := base64.StdEncoding.DecodeString(h.Get("X-Session"))
+		if err != nil {
+			return ""
+		}
+		return string(v)
+	})
 	for _, tc := range []struct {
 		name    string
 		cred    auth.Credential
-		extract func(http.Header) string
+		policy  func(*Policy)
 		headers map[string]string
 		admit   bool
 	}{
-		{"a session id in the session cookie", auth.SessionCredential(), legacyCredentialFrom, map[string]string{"Cookie": "__Host-app_session=tok"}, true},
-		{"a bearer JWT replayed as the session cookie", auth.TokenCredential(), legacyCredentialFrom, map[string]string{"Cookie": "__Host-app_session=tok"}, false},
-		{"an unknown credential kind in the cookie", auth.Credential{}, legacyCredentialFrom, map[string]string{"Cookie": "__Host-app_session=tok"}, false},
-		{"a session id as a bearer", auth.SessionCredential(), legacyCredentialFrom, map[string]string{"Authorization": "Bearer tok"}, false},
+		{"a session id in the session cookie", auth.SessionCredential(), scaffold, map[string]string{"Cookie": "__Host-app_session=tok"}, true},
+		{"a bearer JWT replayed as the session cookie", auth.TokenCredential(), scaffold, map[string]string{"Cookie": "__Host-app_session=tok"}, false},
+		{"an unknown credential kind in the cookie", auth.Credential{}, scaffold, map[string]string{"Cookie": "__Host-app_session=tok"}, false},
+		{"a session id as a bearer", auth.SessionCredential(), scaffold, map[string]string{"Authorization": "Bearer tok", "Cookie": "__Host-app_session=tok"}, false},
+		{"a token-only extractor's session cookie: fails closed", auth.SessionCredential(), token(legacyCredentialFrom), map[string]string{"Cookie": "__Host-app_session=tok"}, false},
 		{"a custom header extractor, the token copied into a cookie", auth.SessionCredential(), xSession, map[string]string{"X-Session": "tok", "Cookie": "sid=tok"}, false},
+		{"a decoding header extractor, the decoded id copied into a cookie", auth.SessionCredential(), xSessionB64,
+			map[string]string{"X-Session": base64.StdEncoding.EncodeToString([]byte("tok")), "Cookie": "sid=tok"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			p := credentialPolicy(tc.cred)
-			p.ExtractToken = tc.extract
+			tc.policy(&p)
 			ic, err := NewInterceptor(p)
 			if err != nil {
 				t.Fatal(err)

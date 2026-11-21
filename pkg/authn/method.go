@@ -19,8 +19,9 @@ type Channel uint8
 
 const (
 	// ChannelUnknown: the interceptor could not tell where the credential
-	// came from — a Policy.ExtractToken that read a channel inference does
-	// not recognize, or a Policy.ExtractCredential that said so.
+	// came from — a Policy.ExtractToken whose token is in neither the
+	// Authorization nor the API-key header (a cookie included: see
+	// inferChannel), or a Policy.ExtractCredential that said so.
 	ChannelUnknown Channel = iota
 	// ChannelAuthorization: "Authorization: Bearer <credential>" — another
 	// service, a CLI, a script, a test.
@@ -28,7 +29,8 @@ const (
 	// ChannelAPIKeyHeader: the API-key header ("X-API-Key" by default).
 	ChannelAPIKeyHeader
 	// ChannelCookie: a cookie — in a scaffolded project, the HttpOnly
-	// session cookie native sign-in sets. On its own it is not proof of a
+	// session cookie native sign-in sets. Only a Policy.ExtractCredential
+	// reports it; it is never inferred. On its own it is not proof of a
 	// browser: see [Method.IsBrowserSession].
 	ChannelCookie
 )
@@ -116,25 +118,20 @@ func ContextWithAuthMethod(ctx context.Context, m Method) context.Context {
 }
 
 // inferChannel names the channel a legacy Policy.ExtractToken read token
-// from, by finding token in the request — so a project whose extractor
-// predates Policy.ExtractCredential gets AuthMethod with no edit.
+// from, by finding token in the request, so a project whose extractor
+// predates Policy.ExtractCredential still gets AuthMethod with no edit.
 //
-// The candidates are tried in credentialFrom's presence order: the
-// Authorization header, then the API-key header, then the cookies. When two
-// carry the same value the earlier wins, so a token that is both a bearer
-// and a cookie value is reported as Authorization: a script can always set
-// the header, and when in doubt the answer must not be the cookie. A token
-// found in none of them — an extractor reading a header inference does not
-// know — is ChannelUnknown, which no cookie check passes.
-//
-// Cookie is reported only when the cookie is the ONLY place the token
-// appears. Finding the value in a cookie does not prove the extractor read
-// it there: one reading X-Session would accept the token from that header
-// while a caller copied it into a cookie as well. An ExtractToken sees
-// nothing but the headers, so when no header but Cookie contains the token,
-// the cookie is where the extractor found it; otherwise the answer is
-// Unknown. A project that wants the channel stated rather than inferred
-// sets Policy.ExtractCredential.
+// It reports only the two headers: Authorization (as a bearer or raw), then
+// the API-key header, in credentialFrom's presence order. Anything else is
+// ChannelUnknown — a cookie included, ALWAYS. A token-only extractor cannot
+// say where it read its token, and no search of the request can establish
+// it: one that base64-decodes an X-Session header returns a value no header
+// carries verbatim, so a caller copying the decoded id into a cookie would
+// make the cookie look like its source. Inferring the cookie would let that
+// caller pass [Method.IsBrowserSession]; so the cookie channel is
+// Policy.ExtractCredential's to state, and a legacy extractor fails closed.
+// The headers it does report are transport facts no browser check relies
+// on.
 func inferChannel(header http.Header, token string) Channel {
 	for _, v := range header.Values("Authorization") {
 		v = strings.TrimSpace(v)
@@ -150,31 +147,7 @@ func inferChannel(header http.Header, token string) Channel {
 			return ChannelAPIKeyHeader
 		}
 	}
-	for _, c := range (&http.Request{Header: header}).Cookies() {
-		if c.Value == token {
-			if tokenOutsideCookies(header, token) {
-				return ChannelUnknown
-			}
-			return ChannelCookie
-		}
-	}
 	return ChannelUnknown
-}
-
-// tokenOutsideCookies reports whether any header but Cookie carries token,
-// whole or as part of its value.
-func tokenOutsideCookies(header http.Header, token string) bool {
-	for name, vs := range header {
-		if http.CanonicalHeaderKey(name) == "Cookie" {
-			continue
-		}
-		for _, v := range vs {
-			if strings.Contains(v, token) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // defaultAPIKeyHeader is the API-key header forge scaffolds and

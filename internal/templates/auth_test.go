@@ -420,7 +420,7 @@ func TestMiddlewareTemplate_ReadsOnlyTheHostCookieOutsideDevelopment(t *testing.
 		`const SecureSessionCookieName = "__Host-" + SessionCookieName`,
 		"DevSessionCookie bool",
 		"extract = devCredentialFrom",
-		"ExtractToken:        extract,",
+		"ExtractCredential:   extract,",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("middleware.go lacks %q", want)

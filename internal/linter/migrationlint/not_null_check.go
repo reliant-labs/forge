@@ -132,8 +132,8 @@ func dropCheckProvenSetNotNull(files []compatFile, findings []Finding) []Finding
 
 // harmlessStatement reports whether a statement other than ALTER TABLE
 // certainly removes or replaces no table, column or constraint, so the proofs
-// survive it: plain DML, COMMENT, GRANT/REVOKE, index builds, and SET of
-// anything but the search path (which re-points unqualified names). Anything
+// survive it: plain DML, COMMENT, GRANT/REVOKE, index builds, and SET of a
+// parameter known not to touch name resolution (harmlessSet). Anything
 // else — DROP SCHEMA, CREATE or DROP TABLE, DO, CREATE FUNCTION, CALL, SELECT
 // (which can call a function that runs DDL), unknown DDL — is not.
 func harmlessStatement(text string) bool {
@@ -146,12 +146,43 @@ func harmlessStatement(text string) bool {
 	}
 	first, second := strings.ToLower(w[1]), strings.ToLower(w[2])
 	switch first {
-	case "insert", "update", "delete", "comment", "grant", "revoke", "set":
+	case "insert", "update", "delete", "comment", "grant", "revoke":
 		return true
+	case "set":
+		return harmlessSet(text)
 	case "create":
 		return second == "index" || second == "unique"
 	}
 	return false
+}
+
+// harmlessSetParams are the run-time parameters a migration sets that
+// certainly leave name resolution alone. A SET of any other parameter
+// forgets the proofs: SET SCHEMA 'x' is SET search_path TO x, a quoted
+// "search_path" is search_path, and an unknown one is not known to be safe.
+var harmlessSetParams = map[string]bool{
+	"lock_timeout": true, "statement_timeout": true, "idle_in_transaction_session_timeout": true,
+	"client_min_messages": true, "client_encoding": true, "standard_conforming_strings": true,
+	"check_function_bodies": true, "maintenance_work_mem": true, "work_mem": true,
+	"synchronous_commit": true, "timezone": true, "time zone": true, "application_name": true,
+	"row_security": true, "xmloption": true, "default_tablespace": true,
+	"default_with_oids": true, "constraints": true, "transaction": true,
+}
+
+var setParamRe = regexp.MustCompile(`(?is)^\s*set\s+(?:(?:local|session)\s+)?("(?:[^"]|"")+"|[a-z_][a-z0-9_$.]*(?:\s+zone)?)`)
+
+// harmlessSet reports whether a SET statement names a parameter in
+// harmlessSetParams (unquoted or quoted, any case).
+func harmlessSet(text string) bool {
+	m := setParamRe.FindStringSubmatch(text)
+	if m == nil {
+		return false
+	}
+	name := strings.ToLower(m[1])
+	if strings.HasPrefix(name, `"`) {
+		name = strings.ReplaceAll(strings.Trim(name, `"`), `""`, `"`)
+	}
+	return harmlessSetParams[strings.Join(strings.Fields(name), " ")]
 }
 
 // An unqualified name may resolve to any schema with that table name. Use

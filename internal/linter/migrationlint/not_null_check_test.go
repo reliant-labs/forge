@@ -81,6 +81,20 @@ func TestSetNotNull_ProvenByValidatedCheck(t *testing.T) {
 			{"1.up.sql", `ALTER TABLE users ADD COLUMN note text /* outer ( /* inner */ outer , */, ALTER COLUMN email SET NOT NULL;`}}, 1},
 		{"a search path change invalidates unqualified proofs", []compatFile{add, validate,
 			{"3.up.sql", `SET search_path TO other, public;`}, {"4.up.sql", set.content}}, 1},
+		// Every spelling of a search path change, and any SET not known to be
+		// harmless, forgets the proofs (review B1, round 5).
+		{"SET SCHEMA is a search path change", []compatFile{add, validate,
+			{"3.up.sql", `SET SCHEMA 'other';`}, {"4.up.sql", set.content}}, 1},
+		{"a quoted search_path is the search path", []compatFile{add, validate,
+			{"3.up.sql", `SET "search_path" TO other;`}, {"4.up.sql", set.content}}, 1},
+		{"SET LOCAL of a quoted SEARCH_PATH", []compatFile{add, validate,
+			{"3.up.sql", `SET LOCAL "search_path" = other;`}, {"4.up.sql", set.content}}, 1},
+		{"an unknown parameter is not known to be harmless", []compatFile{add, validate,
+			{"3.up.sql", `SET myext.path = 'x';`}, {"4.up.sql", set.content}}, 1},
+		{"a lock timeout keeps the proof", []compatFile{add, validate,
+			{"3.up.sql", `SET lock_timeout = '5s';`}, {"4.up.sql", set.content}}, 0},
+		{"a quoted harmless parameter keeps the proof", []compatFile{add, validate,
+			{"3.up.sql", `SET "statement_timeout" TO 0;`}, {"4.up.sql", set.content}}, 0},
 
 		// The whole expression must be the proof: another predicate admits
 		// NULLs (review B1 of #2533).

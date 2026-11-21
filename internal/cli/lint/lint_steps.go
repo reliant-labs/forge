@@ -621,6 +621,21 @@ func lintPipeline() []linterStep {
 			collect: collectSecretsJSON,
 		},
 
+		// 13d-ter-quinquies. Telemetry — declared telemetry judged per env
+		// for what it collects (see telemetry.go). Gates on an error (a
+		// dashboard series nothing collects), through the warn-first
+		// rollout; a project that declares no forge.Telemetry is not
+		// rendered and passes.
+		{
+			name:  "telemetry lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
+			},
+			collect: collectTelemetryJSON,
+		},
+
 		// 13d-quater. identity-share-with: a forge.ManagedIdentity share_with
 		// whose owner env is missing, declares no identity, is itself a sharer
 		// or is not hosted. One env's render cannot see another's, so this

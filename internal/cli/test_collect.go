@@ -54,8 +54,8 @@ pod of the last rollout) is kept under stale/<hash>/, labelled "stale build"
 and never merged. Without --run, FORGE_TEST_RUN is the run, else a new one is
 begun; a collect after ` + "`forge test capture --lane e2e`" + ` joins that lane.
 
---reset zeroes the counters instead (each live process is pulled with
-?reset=1 and the result discarded), and leaves out of the next collect every
+--reset zeroes the counters instead (each live process is sent
+POST /debug/coverage with X-Forge-Coverage-Reset: 1, the result discarded), and leaves out of the next collect every
 counter flushed before it: run it before the lane, collect after it.
 
 A workload that is not a forge Go build reports

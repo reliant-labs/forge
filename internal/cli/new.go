@@ -547,6 +547,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		if err := checkInPlaceFrontendCollisions(existingApps, frontendNames); err != nil {
 			return err
 		}
+		// An app at the root itself (a Next.js or Vite app the Go project
+		// is being added around) is reported too: once go.mod exists,
+		// nothing discovers it, and it would otherwise be dropped without a
+		// word (forge bug aee44198).
+		existingApps = append(existingApps, detectRootFrontendApp(targetPath, frontendNames)...)
 	}
 
 	announceNewProject(projectName, targetPath, serviceNames, frontendNames)

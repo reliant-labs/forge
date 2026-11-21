@@ -2,9 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/mail"
+	"net/url"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,6 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Only the public, membership-checked IdentityService belongs here. The
@@ -43,6 +48,13 @@ a flag. The environment must already exist in this project.
 
 --user takes a user id or an exact email address (see 'users').
 
+An environment may declare several identities (KCL Bundle.identities): name
+the one a verb acts on with --identity <name>. It defaults to the env's only
+identity; with several, every verb but 'status' refuses to guess and lists
+them, and 'status' shows each. A control plane that serves one identity per
+environment is never sent a name it would ignore: a verb that needs one is
+refused there, and 'status' shows the one identity it serves and says so.
+
 Inviting creates the account (or grants roles to an existing one) and, for an
 account with no credential yet, issues a one-time password-set code; reset
 issues one for any account. The code is emailed where the instance can send
@@ -54,41 +66,137 @@ a credential. There is no password option, seed account or implicit recipient.
 Roles managed in deploy/kcl/identity.k (members_from = "declared") are
 read-only here.`,
 	}
-	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd(), newCloudIdentityExportCmd())
+	cmd.AddCommand(newCloudIdentityStatusCmd(), newCloudIdentityUsersCmd(), newCloudIdentityInviteCmd(), newCloudIdentityExportCmd(), newCloudIdentityImportCmd())
 	cmd.AddCommand(newCloudIdentityUserVerbs()...)
 	return cmdutil.StrictGroup(cmd)
 }
 
 // Keep KCL rendering outside the HTTP contract tests; production always uses
-// the same per-environment endpoint and credential resolution as the rest of `forge cloud`.
-var resolveIdentityCloudTarget = resolveCloudTarget
+// the same per-environment endpoint and credential resolution as the rest of
+// `forge cloud` (resolveCloudTarget), from ONE render that also names the
+// managed identities the env declares.
+var resolveIdentityCloudTarget = func(ctx context.Context, env, token string) (cloud.Endpoint, cloud.Credential, []string, error) {
+	entities, err := RenderKCL(ctx, projectDirForKCL(), env)
+	if err != nil {
+		return cloud.Endpoint{}, cloud.Credential{}, nil, fmt.Errorf("render KCL for env %q: %w", env, err)
+	}
+	ep, cred, err := resolveCloudTargetFor(env, declarationFromEntities(entities), token)
+	if err != nil {
+		return cloud.Endpoint{}, cloud.Credential{}, nil, err
+	}
+	var names []string
+	for _, id := range entities.AllIdentities() {
+		names = append(names, id.Name)
+	}
+	return ep, cred, names, nil
+}
 
 type cloudIdentityFlags struct {
-	token string
-	json  bool
+	token    string
+	json     bool
+	identity string
 }
 
 func (f *cloudIdentityFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.token, "token", "", "Credential to use, ahead of the env var, stored login and session helper")
 	cmd.Flags().BoolVar(&f.json, "json", false, "Emit machine-readable JSON (never credentials)")
+	cmd.Flags().StringVar(&f.identity, "identity", "", "The managed identity to act on, by ManagedIdentity.name (default: the env's only identity; required when it declares several)")
 }
 
-func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCaller, map[string]any, error) {
-	ep, cred, err := resolveIdentityCloudTarget(ctx, env, f.token)
+// identityBase is what every identity verb resolves before naming an
+// identity: the client, the request it starts from, and the identity names
+// the env declares in KCL.
+func (f *cloudIdentityFlags) identityBase(ctx context.Context, env string) (cloudCaller, map[string]any, []string, error) {
+	ep, cred, declared, err := resolveIdentityCloudTarget(ctx, env, f.token)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	client := cloud.NewClient(ep, cred)
 	declareIdentityScopes(client)
 	org, err := cloud.ResolveOrganization(ctx, client)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	id, err := deploytarget.LookupHostedEnvironment(ctx, client, hostedProjectName(), env)
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	return client, map[string]any{"orgId": org, "environmentId": id}, declared, nil
+}
+
+// target is identityBase with the identity this verb acts on named in the
+// request: --identity, else the env's only one. Several and no --identity is
+// refused, listing them.
+func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCaller, map[string]any, error) {
+	client, req, declared, err := f.identityBase(ctx, env)
+	if err != nil {
 		return nil, nil, err
 	}
-	return client, map[string]any{"orgId": org, "environmentId": id}, nil
+	name, err := pickIdentity(env, f.identity, declared)
+	if err != nil {
+		return nil, nil, err
+	}
+	sel, err := identitySelector(ctx, client, env, name, declared)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sel != "" {
+		req["identity"] = sel
+	}
+	return client, req, nil
+}
+
+// pickIdentity is the identity a verb acts on: flag when given (it must be
+// declared), else the env's only identity ("" when it declares none).
+func pickIdentity(env, flag string, declared []string) (string, error) {
+	if flag != "" {
+		if slices.Contains(declared, flag) {
+			return flag, nil
+		}
+		if len(declared) == 0 {
+			return "", fmt.Errorf("--identity %q: env %q declares no managed identity", flag, env)
+		}
+		return "", fmt.Errorf("--identity %q: env %q declares no identity of that name (declared: %s)", flag, env, strings.Join(declared, ", "))
+	}
+	switch len(declared) {
+	case 0:
+		return "", nil
+	case 1:
+		return declared[0], nil
+	}
+	return "", fmt.Errorf("env %q declares %d managed identities (%s): name one with --identity <name>", env, len(declared), strings.Join(declared, ", "))
+}
+
+// identitySelector is the `identity` a request carries, "" for none. A
+// request names its identity only where that tells the control plane
+// something: the env declares several, or its one identity is not the
+// default name. And only to a control plane that addresses identities by
+// name (release.CapabilityConvergesSeveralIdentities): an older one ignores
+// the field and acts on the env's one identity, so a request whose meaning
+// depends on the name is refused there before anything is written. An env
+// whose one identity has another name is served the old request, which an
+// older control plane answers for that one identity.
+func identitySelector(ctx context.Context, client cloudCaller, env, name string, declared []string) (string, error) {
+	if name == "" || (len(declared) <= 1 && name == release.DefaultIdentityName) {
+		return "", nil
+	}
+	reader, err := deploytarget.HostedBundleReader(ctx, client)
+	if err != nil {
+		return "", fmt.Errorf("identity %q: %w", name, err)
+	}
+	if reader.Supports(release.CapabilityConvergesSeveralIdentities) {
+		return name, nil
+	}
+	if len(declared) <= 1 {
+		return "", nil
+	}
+	return "", errIdentitiesUnaddressable(env, declared)
+}
+
+func errIdentitiesUnaddressable(env string, declared []string) error {
+	return fmt.Errorf("env %q declares managed identities %s, and this control plane addresses one identity per environment "+
+		"(it does not advertise %q): it cannot tell one from another, so nothing was sent. Upgrade the control plane",
+		env, strings.Join(declared, ", "), release.CapabilityConvergesSeveralIdentities)
 }
 
 // declareIdentityScopes tells the client which identity scope each procedure
@@ -96,10 +204,11 @@ func (f *cloudIdentityFlags) target(ctx context.Context, env string) (cloudCalle
 // instead of after a refusal. Neither scope is one a login carries. The
 // control plane's identity.scopeFor maps the read level (GetIdentityStatus,
 // ListUsers) to identity:read and manage, codes and exports (every other
-// procedure here) to identity:manage.
+// procedure here) to identity:manage. The social sign-in check starts intents
+// that are never completed and changes nothing a person sees, so it is read.
 func declareIdentityScopes(c *cloud.Client) {
-	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers)
-	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport,
+	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers, procIdentityCheckSocial)
+	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport, procIdentityImport,
 		procIdentitySetRoles, procIdentityResetPassword, procIdentityLockUser,
 		procIdentityUnlockUser, procIdentityDeleteUser, procIdentityRevokeSessions)
 }
@@ -182,6 +291,13 @@ type identityStatusDocument struct {
 	// OwnersPending are declared owners with no credential yet who were not
 	// invited on the last pass (no mail, or invited recently).
 	OwnersPending []string `json:"ownersPending,omitempty"`
+	// Identity is the ManagedIdentity.name this answer is for, as the
+	// request named it: set by forge (never read from the response), and
+	// only when the request named one.
+	Identity string `json:"identity,omitempty"`
+	// SocialChecks is --check-social's verdict per provider; absent without
+	// the flag.
+	SocialChecks []socialCheck `json:"socialChecks,omitempty"`
 }
 
 // identitySocialStatusWire is controlplane.v1.IdentitySocialStatus.
@@ -250,71 +366,208 @@ func reissueCodeCommand(env, user string) string {
 
 func newCloudIdentityStatusCmd() *cobra.Command {
 	var f cloudIdentityFlags
+	var checkSocialFlag bool
+	var app string
 	cmd := &cobra.Command{
 		Use: "status <env>", Short: "Show managed-identity state, issuer and delivery metadata",
+		Long: `Show the environment's managed-identity state, issuer, applications,
+deliveries and, when it declares social sign-in, the callback to register with
+each provider and each provider's state.
+
+--check-social starts a sign-in with each applied social provider and checks
+the authorize URL the issuer answers with: the provider's own endpoint, a
+client id, scopes, and a redirect_uri EQUAL to the printed callback — the URL
+registered on the provider's OAuth app, which the provider refuses to differ.
+The sign-ins are never completed. They are started by the control plane, or
+with --app <url> by your app's own login broker (POST <url>/auth/social/start,
+the route every sign-in button calls), which also proves the deployed broker
+offers each provider. It exits non-zero when any provider fails or is not
+applied yet.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, req, err := f.target(cmd.Context(), args[0])
+			if app != "" && !checkSocialFlag {
+				return fmt.Errorf("--app goes with --check-social")
+			}
+			if app != "" {
+				if u, err := url.Parse(app); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("--app %q must be an http(s) URL: where your app's login broker answers", app)
+				}
+			}
+			ctx := cmd.Context()
+			client, req, declared, err := f.identityBase(ctx, args[0])
 			if err != nil {
 				return err
 			}
-			var doc identityStatusDocument
-			if err := client.Call(cmd.Context(), procIdentityStatus, req, &doc); err != nil {
-				return fmt.Errorf("identity status: %w", err)
+			names := []string{""}
+			switch {
+			case f.identity != "" || len(declared) <= 1:
+				name, err := pickIdentity(args[0], f.identity, declared)
+				if err != nil {
+					return err
+				}
+				sel, err := identitySelector(ctx, client, args[0], name, declared)
+				if err != nil {
+					return err
+				}
+				names = []string{sel}
+			default:
+				// Several, and none named: every one of them, where the
+				// control plane can tell them apart.
+				reader, err := deploytarget.HostedBundleReader(ctx, client)
+				if err != nil {
+					return fmt.Errorf("identity status: %w", err)
+				}
+				if reader.Supports(release.CapabilityConvergesSeveralIdentities) {
+					names = declared
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Note: env %s declares identities %s, but this control plane serves one identity per environment "+
+						"(it does not advertise %q); showing the one it serves.\n", args[0], strings.Join(declared, ", "), release.CapabilityConvergesSeveralIdentities)
+				}
 			}
-			doc.stamp(nil)
+			docs, checkErrs, err := identityStatuses(ctx, client, req, names, checkSocialFlag, app)
+			if err != nil {
+				return err
+			}
+			checkErr := errors.Join(checkErrs...)
 			if f.json {
-				return writeJSONDocument(cmd.OutOrStdout(), doc)
+				if len(docs) == 1 {
+					if err := writeJSONDocument(cmd.OutOrStdout(), docs[0]); err != nil {
+						return err
+					}
+					return checkErr
+				}
+				all := identityStatusesDocument{Identities: docs}
+				all.stamp(checkErr)
+				if err := writeJSONDocument(cmd.OutOrStdout(), all); err != nil {
+					return err
+				}
+				return checkErr
 			}
 			out := cmd.OutOrStdout()
-			if !doc.HasInstance {
-				fmt.Fprintln(out, "No managed identity instance.")
-				if doc.NotEnabledMessage != "" {
-					fmt.Fprintln(out, doc.NotEnabledMessage)
-				}
-			} else {
-				fmt.Fprintf(out, "State: %s\nIssuer: %s\nMail: %s\n", doc.State, doc.Issuer, mailDeliveryText(doc.MailDelivery))
-				if o := doc.OwnerEnvironment; o != nil && o.ID != fmt.Sprint(req["environmentId"]) {
-					fmt.Fprintf(out, "Owner: %s (this environment shares its identity)\n", o.label())
-				}
-				for _, sh := range doc.SharerEnvironments {
-					fmt.Fprintf(out, "Shared with: %s\n", sh.label())
-				}
-				for _, app := range doc.Apps {
-					fmt.Fprintf(out, "App: %s (client %s)\n", app.Name, app.ClientID)
-				}
-				for _, d := range doc.Deliveries {
-					written := ""
-					if d.LastWrittenAt != "" {
-						written = " written " + d.LastWrittenAt
+			for i, doc := range docs {
+				if len(docs) > 1 {
+					if i > 0 {
+						fmt.Fprintln(out)
 					}
-					fmt.Fprintf(out, "Delivery: %s %s/%s/%s %s%s %s\n", d.Kind, d.Cluster, d.Namespace, d.Name, d.State, written, d.LastError)
+					fmt.Fprintf(out, "Identity: %s\n", doc.Identity)
 				}
-				if doc.SocialCallbackURL != "" {
-					fmt.Fprintf(out, "Social callback: %s (register it as the redirect URI of each OAuth client)\n", doc.SocialCallbackURL)
-				}
-				for _, s := range doc.Social {
-					applied := ""
-					if s.AppliedAt != "" {
-						applied = " applied " + s.AppliedAt
-					}
-					fmt.Fprintf(out, "Social: %s %s%s\n", s.Type, s.State, applied)
-				}
-				if len(doc.OwnersPending) > 0 {
-					fmt.Fprintf(out, "Owners pending: %s (no credential yet and not invited on the last pass)\n", strings.Join(doc.OwnersPending, ", "))
+				writeIdentityStatus(out, doc, fmt.Sprint(req["environmentId"]))
+				if checkSocialFlag && doc.HasInstance && (checkErrs[i] == nil || doc.SocialChecks != nil) {
+					writeSocialChecks(out, socialCallbackFor(doc), doc.SocialChecks)
 				}
 			}
-			if doc.Refused != "" {
-				fmt.Fprintf(out, "Refused: %s\n", doc.Refused)
-			}
-			if doc.LastError != "" {
-				fmt.Fprintf(out, "Last error: %s\n", doc.LastError)
-			}
-			return nil
+			return checkErr
 		},
 	}
 	f.register(cmd)
+	cmd.Flags().BoolVar(&checkSocialFlag, "check-social", false, "Start a sign-in with each social provider and check the authorize URL's redirect_uri equals the printed callback")
+	cmd.Flags().StringVar(&app, "app", "", "With --check-social: start each sign-in through your app's login broker at this URL (POST <url>/auth/social/start) instead of the control plane")
 	return cmd
+}
+
+// identityStatuses reads GetIdentityStatus for each name ("" is the env's one
+// identity), and with checkSocial runs --check-social on each through the
+// same identity-scoped request. checkErrs[i] is docs[i]'s check verdict; err
+// is a status read that failed.
+func identityStatuses(ctx context.Context, client cloudCaller, req map[string]any, names []string, checkSocialFlag bool, app string) (docs []identityStatusDocument, checkErrs []error, err error) {
+	for _, name := range names {
+		r := maps.Clone(req)
+		if name != "" {
+			r["identity"] = name
+		}
+		var doc identityStatusDocument
+		if err := client.Call(ctx, procIdentityStatus, r, &doc); err != nil {
+			if name != "" {
+				return nil, nil, fmt.Errorf("identity status (%s): %w", name, err)
+			}
+			return nil, nil, fmt.Errorf("identity status: %w", err)
+		}
+		doc.Identity = name
+		var checkErr error
+		if checkSocialFlag {
+			checkErr = checkIdentitySocial(ctx, client, r, &doc, app)
+			if checkErr != nil && name != "" {
+				checkErr = fmt.Errorf("identity %s: %w", name, checkErr)
+			}
+		}
+		doc.stamp(checkErr)
+		docs = append(docs, doc)
+		checkErrs = append(checkErrs, checkErr)
+	}
+	return docs, checkErrs, nil
+}
+
+// checkIdentitySocial is --check-social for one identity's status doc: it
+// fills doc.SocialChecks and returns the verdict.
+func checkIdentitySocial(ctx context.Context, client cloudCaller, req map[string]any, doc *identityStatusDocument, app string) error {
+	if !doc.HasInstance {
+		return fmt.Errorf("--check-social: the environment has no managed identity instance")
+	}
+	start := controlPlaneSocialStarter(client, req)
+	if app != "" {
+		start = brokerSocialStarter(socialCheckHTTPClient(), app)
+	}
+	var err error
+	doc.SocialChecks, err = checkSocial(ctx, *doc, start)
+	if err == nil {
+		err = socialCheckErr(doc.SocialChecks)
+	}
+	return err
+}
+
+// identityStatusesDocument is `status --json` for an env with several
+// identities: one GetIdentityStatus answer per identity, each naming it.
+type identityStatusesDocument struct {
+	jsonEnvelope
+	Identities []identityStatusDocument `json:"identities"`
+}
+
+// writeIdentityStatus prints one GetIdentityStatus answer. envID is the env
+// the request named, to tell an owner apart from a sharer.
+func writeIdentityStatus(out io.Writer, doc identityStatusDocument, envID string) {
+	if !doc.HasInstance {
+		fmt.Fprintln(out, "No managed identity instance.")
+		if doc.NotEnabledMessage != "" {
+			fmt.Fprintln(out, doc.NotEnabledMessage)
+		}
+	} else {
+		fmt.Fprintf(out, "State: %s\nIssuer: %s\nMail: %s\n", doc.State, doc.Issuer, mailDeliveryText(doc.MailDelivery))
+		if o := doc.OwnerEnvironment; o != nil && o.ID != envID {
+			fmt.Fprintf(out, "Owner: %s (this environment shares its identity)\n", o.label())
+		}
+		for _, sh := range doc.SharerEnvironments {
+			fmt.Fprintf(out, "Shared with: %s\n", sh.label())
+		}
+		for _, app := range doc.Apps {
+			fmt.Fprintf(out, "App: %s (client %s)\n", app.Name, app.ClientID)
+		}
+		for _, d := range doc.Deliveries {
+			written := ""
+			if d.LastWrittenAt != "" {
+				written = " written " + d.LastWrittenAt
+			}
+			fmt.Fprintf(out, "Delivery: %s %s/%s/%s %s%s %s\n", d.Kind, d.Cluster, d.Namespace, d.Name, d.State, written, d.LastError)
+		}
+		if doc.SocialCallbackURL != "" {
+			fmt.Fprintf(out, "Social callback: %s (register it as the redirect URI of each OAuth client)\n", doc.SocialCallbackURL)
+		}
+		for _, s := range doc.Social {
+			applied := ""
+			if s.AppliedAt != "" {
+				applied = " applied " + s.AppliedAt
+			}
+			fmt.Fprintf(out, "Social: %s %s%s\n", s.Type, s.State, applied)
+		}
+		if len(doc.OwnersPending) > 0 {
+			fmt.Fprintf(out, "Owners pending: %s (no credential yet and not invited on the last pass)\n", strings.Join(doc.OwnersPending, ", "))
+		}
+	}
+	if doc.Refused != "" {
+		fmt.Fprintf(out, "Refused: %s\n", doc.Refused)
+	}
+	if doc.LastError != "" {
+		fmt.Fprintf(out, "Last error: %s\n", doc.LastError)
+	}
 }
 
 // identityExportDocument is RequestIdentityExportResponse. The URL is a

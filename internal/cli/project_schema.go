@@ -160,6 +160,9 @@ func newProjectSchemaCmd() *cobra.Command {
   test-run-result
         forge.test.run-result/v1: what ` + "`forge test run --json`" + ` prints.
 
+  test-collect  forge.test.collect/v1: what ` + "`forge test collect <env> --json`" + `
+        pulled from each workload of an env.
+
   vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
         what was bumped per finding, the verification, and the exit code the
         vuln-patch workflow branches on.

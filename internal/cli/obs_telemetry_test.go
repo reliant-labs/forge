@@ -227,10 +227,12 @@ func TestShapeAlertsCarryTelemetryDefaults(t *testing.T) {
 	for _, a := range alerts {
 		names = append(names, a.Alert)
 	}
-	if !slices.Contains(names, "TemporalTargetDown") || slices.Contains(names, "ClickhouseCheckFailing") {
+	temporalAlert := obsdash.TelemetryAlertName("temporal", "TargetDown")
+	clickhouseAlert := obsdash.TelemetryAlertName("clickhouse", "CheckFailing")
+	if !slices.Contains(names, temporalAlert) || slices.Contains(names, clickhouseAlert) {
 		t.Errorf("alerts = %v: temporal arms its defaults, clickhouse opted out (default_alerts unset)", names)
 	}
-	e.Observability.Alerts = &AlertsEntity{Rules: []AlertRuleEntity{{Alert: "TemporalTargetDown", Expr: "SELECT 1 AS value", Enabled: true}}}
+	e.Observability.Alerts = &AlertsEntity{Rules: []AlertRuleEntity{{Alert: temporalAlert, Expr: "SELECT 1 AS value", Enabled: true}}}
 	if _, _, err := resolveShapeAlerts(context.Background(), io.Discard, dir, "prod", e); err == nil || !strings.Contains(err.Error(), "default_alerts = False") {
 		t.Errorf("a rule that takes a telemetry default's name must be refused: %v", err)
 	}

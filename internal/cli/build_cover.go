@@ -13,6 +13,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -173,8 +174,9 @@ func ResolveCoverBinaries(e *KCLEntities, optIn bool) ([]CoverBinary, error) {
 // applyCover records the resolved coverage on the entities: each GoBuild
 // workload whose binary is instrumented is marked (WorkloadEntity.CoverBuild),
 // which is what the host build and the host launch read. An image whose
-// binary is NOT instrumented here, of a project that opts in (optIn), and
-// that neither the env nor the build turned off, is marked for a cover
+// binary is NOT instrumented here, but WOULD be in a preview of this env
+// (previewCoverBinaries: the same per-binary resolution, so a binary any
+// workload or the env turned off is never one), is marked for a cover
 // VARIANT: a release build of it pushes the cover stage beside the shared
 // image, for a preview of the release to run (buildReleaseCoverVariant).
 func (e *KCLEntities) applyCover(bins []CoverBinary, optIn bool) {
@@ -188,7 +190,7 @@ func (e *KCLEntities) applyCover(bins []CoverBinary, optIn bool) {
 	if e.Tests != nil {
 		pkgs = e.Tests.CoveragePackages
 	}
-	envSaysNo := e.Tests != nil && e.Tests.Coverage != nil && !*e.Tests.Coverage
+	inPreview := previewCoverBinaries(e, optIn)
 	for i := range e.Workloads {
 		w := &e.Workloads[i]
 		if g := w.GoBuild(); g != nil && on[normalizePGOPackage(g.Cmd)] {
@@ -206,25 +208,39 @@ func (e *KCLEntities) applyCover(bins []CoverBinary, optIn bool) {
 			case pkg != "" && on[pkg]:
 				d.cover = &workloadCover{packages: pkgs}
 				w.cover = d.cover
-			case pkg != "" && optIn && !envSaysNo && (!declaresCoverage(d, pkg) || d.Coverage[coverageKey(d, pkg)]):
+			case pkg != "" && inPreview[pkg]:
 				d.coverVariant = &workloadCover{packages: pkgs}
 			}
 		}
 	}
 }
 
-// coverageKey is the key d.Coverage names pkg by ("" when none does).
-func coverageKey(d *DockerBuild, pkg string) string {
-	for k := range d.Coverage {
-		if normalizePGOPackage(k) == pkg {
-			return k
+// previewCoverBinaries is the set of binaries a preview of e instruments:
+// ResolveCoverBinaries over e as a preview (not persistent), so the variant
+// follows exactly the per-binary policy a preview's own build would — the
+// env's declared tests.coverage, else the project's opt-in, and a binary's
+// declared `coverage` on any workload that runs or names it. Binaries whose
+// workloads disagree resolve to none (a preview of e would refuse to render).
+func previewCoverBinaries(e *KCLEntities, optIn bool) map[string]bool {
+	if e == nil {
+		return nil
+	}
+	preview := *e
+	if preview.Preview == nil {
+		preview.Preview = &release.ShapePreview{Of: e.Env}
+	}
+	bins, err := ResolveCoverBinaries(&preview, optIn)
+	if err != nil {
+		return nil
+	}
+	on := map[string]bool{}
+	for _, b := range bins {
+		if b.Enabled {
+			on[b.Package] = true
 		}
 	}
-	return ""
+	return on
 }
-
-// declaresCoverage reports whether d's coverage names pkg at all.
-func declaresCoverage(d *DockerBuild, pkg string) bool { return coverageKey(d, pkg) != "" }
 
 // buildReleaseCoverVariant builds and pushes the cover variant of a release
 // image (applyCover marked it) BESIDE the shared one: the same `docker build`
@@ -235,15 +251,27 @@ func declaresCoverage(d *DockerBuild, pkg string) bool { return coverageKey(d, p
 // A Dockerfile without the cover stage, a build that names its own target, a
 // release that pushes nowhere, or a failed cover build is a line on stdout
 // and no variant, and a preview then runs the shared image.
-func buildReleaseCoverVariant(ctx context.Context, svcName, dockerfile string, d *DockerBuild, dockerArgs, pushTags []string, alreadyCover bool) (string, error) {
+//
+// The stage is looked for in the Dockerfile the build uses (coverDockerfile),
+// a GitSource pin's included.
+func buildReleaseCoverVariant(ctx context.Context, svcName string, d *DockerBuild, dockerArgs, pushTags []string, alreadyCover bool) (string, error) {
 	if alreadyCover || d == nil || d.coverVariant == nil || len(pushTags) == 0 {
+		return "", nil
+	}
+	dockerfile, derr := coverDockerfile(d)
+	if derr != nil {
+		fmt.Printf("[build] %s: no cover variant for this release — %v\n", svcName, derr)
 		return "", nil
 	}
 	if d.Target != "" || !dockerfileHasCoverStage(dockerfile) {
 		fmt.Printf("[build] %s: no cover variant for this release — %s\n", svcName, coverSkipReason(dockerfile, d))
 		return "", nil
 	}
-	args, err := coverVariantArgs(ctx, svcName, dockerfile, d, dockerArgs)
+	args, err := coverVariantArgs(ctx, svcName, d, dockerArgs)
+	if errors.Is(err, errCoverVariantUntagged) {
+		fmt.Printf("[build] %s: no cover variant for this release — %v\n", svcName, err)
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -282,24 +310,45 @@ func coverSkipReason(dockerfile string, d *DockerBuild) string {
 	return fmt.Sprintf("%s has no %#q stage (a new scaffold's Dockerfile does)", dockerfile, coverImageStage)
 }
 
+// errCoverVariantUntagged is coverVariantArgs refusing an argv that tags
+// nothing: the variant would carry the shared image's tags.
+var errCoverVariantUntagged = errors.New("its docker build names no tag to suffix -" + release.CoverVariant + ", so the variant would push over the shared image")
+
 // coverVariantArgs is the shared image's `docker build` argv turned into its
 // cover variant's: `--target cover` and FORGE_COVERPKG (coverImageArgs's
-// rule), and every `-t` tag suffixed -cover (coverTag).
-func coverVariantArgs(ctx context.Context, svcName, dockerfile string, d *DockerBuild, dockerArgs []string) ([]string, error) {
+// rule), and every tag suffixed -cover (coverTag), in each spelling docker
+// accepts: `-t ref`, `--tag ref`, `-t=ref`, `--tag=ref` and `-tref`. An argv
+// that tags nothing is refused: the variant would carry the shared image's
+// tags, and pushing them would overwrite it.
+func coverVariantArgs(ctx context.Context, svcName string, d *DockerBuild, dockerArgs []string) ([]string, error) {
 	variant := *d
 	variant.cover, variant.coverVariant = d.coverVariant, nil
-	extra, err := coverImageArgs(ctx, svcName, dockerfile, &variant)
+	extra, err := coverImageArgs(ctx, svcName, &variant)
 	if err != nil {
 		return nil, err
 	}
 	out := append([]string{dockerArgs[0]}, extra...)
+	tagged := false
 	for i := 1; i < len(dockerArgs); i++ {
 		a := dockerArgs[i]
-		out = append(out, a)
-		if a == "-t" && i+1 < len(dockerArgs) {
+		switch {
+		case (a == "-t" || a == "--tag") && i+1 < len(dockerArgs):
 			i++
-			out = append(out, coverTag(dockerArgs[i]))
+			out = append(out, a, coverTag(dockerArgs[i]))
+			tagged = true
+		case strings.HasPrefix(a, "--tag="), strings.HasPrefix(a, "-t="):
+			flag, ref, _ := strings.Cut(a, "=")
+			out = append(out, flag+"="+coverTag(ref))
+			tagged = true
+		case strings.HasPrefix(a, "-t") && len(a) > 2 && !strings.HasPrefix(a, "--"):
+			out = append(out, "-t"+coverTag(a[2:]))
+			tagged = true
+		default:
+			out = append(out, a)
 		}
+	}
+	if !tagged {
+		return nil, errCoverVariantUntagged
 	}
 	return out, nil
 }
@@ -393,14 +442,46 @@ func dockerfileHasCoverStage(path string) bool {
 	return err == nil && coverStageRE.Match(data)
 }
 
+// coverDockerfile is the Dockerfile d builds with, as a path the stage
+// detection can read: the file a GitSource pin resolved to (DockerfilePath,
+// set by resolveDockerBuildSources) — which under a GitSource context must
+// lie inside that resolved checkout — else the declared path, relative to
+// the project root. It never falls back to a local Dockerfile for a pinned
+// build: reading the deploy repo's own file would answer for the wrong image.
+func coverDockerfile(d *DockerBuild) (string, error) {
+	if d.DockerfilePath != "" {
+		if d.ContextDir != "" && d.DockerfileSource == nil {
+			rel, err := filepath.Rel(d.ContextDir, d.DockerfilePath)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return "", fmt.Errorf("the Dockerfile %s is outside its resolved GitSource context %s", d.DockerfilePath, d.ContextDir)
+			}
+		}
+		return d.DockerfilePath, nil
+	}
+	if d.HasGitSource() {
+		return "", fmt.Errorf("its GitSource Dockerfile was not resolved")
+	}
+	p := serviceDockerfile(d)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(projectDirForKCL(), p)
+	}
+	return p, nil
+}
+
 // coverImageArgs are the extra `docker build` args of a DockerBuild workload
 // the env instruments: `--target cover`, and FORGE_COVERPKG (the packages the
 // stage instruments) when the image builds this project's module. nil, with a
 // line saying why, when the image cannot be a cover build: the Dockerfile has
-// no cover stage, or the build names a target of its own, which wins.
-func coverImageArgs(ctx context.Context, svcName, dockerfile string, d *DockerBuild) ([]string, error) {
+// no cover stage, or the build names a target of its own, which wins. The
+// Dockerfile read is the one the build actually uses (coverDockerfile),
+// including a GitSource pin's.
+func coverImageArgs(ctx context.Context, svcName string, d *DockerBuild) ([]string, error) {
 	if d == nil || d.cover == nil {
 		return nil, nil
+	}
+	dockerfile, err := coverDockerfile(d)
+	if err != nil {
+		return nil, fmt.Errorf("service %q: coverage: %w", svcName, err)
 	}
 	if d.Target != "" {
 		fmt.Printf("[build] %s: not instrumented for coverage — the build names its own target %q (the cover image is the `%s` stage)\n", svcName, d.Target, coverImageStage)

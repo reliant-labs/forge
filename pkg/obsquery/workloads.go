@@ -561,6 +561,58 @@ func (q Workloads) PodRestarts() (Stmt, error) {
 		") GROUP BY env, workload, pod_name, pod_uid, container ORDER BY env, workload, pod_name, container LIMIT " + strconv.Itoa(MaxWorkloadRows)), nil
 }
 
+// MaxPodUsageRows bounds PodUsage: every metric of one container of each of
+// the MaxWorkloadRows pods Pods can list. PodUsage reads one row more, so a
+// result longer than this says the usage was cut.
+const MaxPodUsageRows = MaxWorkloadRows * 10
+
+// PodUsage is Usage per pod rather than over every pod of a container: each
+// pod container's usage, utilization, requests and limits. Columns: env,
+// workload, pod_name, pod_uid, container, metric, latest (the pod's latest
+// sample), p95 (over the pod's samples), img, tag (latest non-empty). Ordered
+// by env, workload, pod_name, container, metric.
+//
+// It covers exactly the pods Pods lists for the same query (the
+// MaxWorkloadRows most recently seen), so a pod Pods returns is never left
+// without usage because other pods' rows used up the cap. At most
+// MaxPodUsageRows rows are the answer; the statement reads one more, so a
+// reader that gets MaxPodUsageRows+1 rows knows the usage was cut and must
+// say so rather than show a listed pod as unreported.
+//
+// A metric the pod's container never reported has no row, so a reader can
+// tell an unreported limit from a zero one. Its rows key a pod the way Pods
+// and PodRestarts do (pod_name, pod_uid), so the three join.
+func (q Workloads) PodUsage() (Stmt, error) {
+	if err := q.validate(); err != nil {
+		return Stmt{}, err
+	}
+	b := newBuilder(q.Scope)
+	conds, err := q.metricConds(b, UsageMetrics)
+	if err != nil {
+		return Stmt{}, err
+	}
+	podConds, err := q.metricConds(b, []string{MetricCPUUsage, MetricMemWorkingSet})
+	if err != nil {
+		return Stmt{}, err
+	}
+	podKey := "(" + wlEnv + ", " + wlWorkload + ", ResourceAttributes['k8s.pod.name'], ResourceAttributes['k8s.pod.uid'])"
+	conds = append(conds, podKey+" IN (\n"+
+		"  SELECT env, workload, pod_name, pod_uid FROM (\n"+
+		"    SELECT "+wlEnv+" AS env, "+wlWorkload+" AS workload,\n"+
+		"           ResourceAttributes['k8s.pod.name'] AS pod_name, ResourceAttributes['k8s.pod.uid'] AS pod_uid, max(TimeUnix) AS last_seen\n"+
+		"    FROM "+b.table(q.Scope, MetricGauge.table())+"\n    "+where(podConds)+"\n"+
+		"    GROUP BY env, workload, pod_name, pod_uid ORDER BY last_seen DESC, env, workload, pod_name LIMIT "+strconv.Itoa(MaxWorkloadRows)+"\n"+
+		"  )\n)")
+	return b.stmt("SELECT " + wlEnv + " AS env, " + wlWorkload + " AS workload,\n" +
+		"       ResourceAttributes['k8s.pod.name'] AS pod_name, ResourceAttributes['k8s.pod.uid'] AS pod_uid,\n" +
+		"       " + wlContainer + " AS container, MetricName AS metric,\n" +
+		"       argMax(Value, TimeUnix) AS latest, quantile(0.95)(Value) AS p95,\n" +
+		"       argMaxIf(ResourceAttributes['container.image.name'], TimeUnix, ResourceAttributes['container.image.name'] != '') AS img,\n" +
+		"       argMaxIf(ResourceAttributes['container.image.tag'], TimeUnix, ResourceAttributes['container.image.tag'] != '') AS tag\n" +
+		"FROM " + b.table(q.Scope, MetricGauge.table()) + "\n" + where(conds) + "\n" +
+		"GROUP BY env, workload, pod_name, pod_uid, container, metric ORDER BY env, workload, pod_name, container, metric LIMIT " + strconv.Itoa(MaxPodUsageRows+1)), nil
+}
+
 // The reasons a Job's own events carry (the Job controller's, upstream
 // kubernetes): one run starts with SuccessfulCreate and ends with Completed or
 // one of the failure reasons.

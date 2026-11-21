@@ -144,10 +144,9 @@ func TestProjectMemoryGolden(t *testing.T) {
 	}
 }
 
-// The Go guide read off a forge Go service's tree is byte-for-byte the guide
-// `forge project new` writes before the tree exists (no derived facts): the
-// facts a forge service has are the ones the guide already assumes.
-func TestGoServiceMemoryEqualsTheScaffoldGuide(t *testing.T) {
+// A new scaffold can describe its defaults. The derived guide keeps the Go
+// architecture, but cannot assume those defaults still match the bindings.
+func TestGoServiceMemoryKeepsTheScaffoldArchitectureNotItsHostingClaim(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	writeTree(t, root, deployEnvs(map[string]string{
@@ -161,8 +160,13 @@ func TestGoServiceMemoryEqualsTheScaffoldGuide(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if derived != string(scaffold) {
-		t.Error("a forge Go service's derived memory differs from the scaffold's guide")
+	const heading = "## Shipping"
+	if strings.SplitN(derived, heading, 2)[0] != strings.SplitN(string(scaffold), heading, 2)[0] {
+		t.Error("a forge Go service's derived memory changed the scaffold architecture")
+	}
+	const claim = "staging/prod are already bound"
+	if strings.Contains(derived, claim) || !strings.Contains(string(scaffold), claim) {
+		t.Error("only the new scaffold guide should describe the default hosted bindings")
 	}
 }
 

@@ -239,8 +239,13 @@ type KCLEntities struct {
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
 	// render emits the shape's own vocabulary, so there is nothing to
-	// translate between the two.
+	// translate between the two. Set when the env declares exactly one
+	// identity; several are Identities, and this is nil. Read both through
+	// AllIdentities.
 	Identity *release.ShapeIdentity `json:"identity,omitempty"`
+	// Identities is Bundle.identities resolved, when the env declares
+	// several (release.Shape.Identities). Nil otherwise.
+	Identities []release.ShapeIdentity `json:"identities,omitempty"`
 	// RenderedSecrets are the Bundle-level forge.RenderedSecret
 	// declarations (Bundle.rendered_secrets): Secrets forge renders and
 	// applies itself, INDEPENDENT of SecretProvider, each at the
@@ -1067,6 +1072,19 @@ type BuildConfigEntity struct {
 	Docker     *DockerBuild // populated when Type=="docker"
 	Shell      *ShellBuild  // populated when Type=="shell"
 	Remote     *RemoteBuild // populated when Type=="remote"
+	// Outputs are the files the build produces that the release ships
+	// (kcl/schema.k Build.outputs), recorded by hash as file artifacts —
+	// see harvestDeclaredOutputs. Empty for a build that declares none.
+	Outputs []BuildOutput
+}
+
+// BuildOutput mirrors the kcl/schema.k BuildOutput: one file, directory or
+// glob a build writes, relative to the build's working directory (a
+// ShellBuild's resolved cwd, else the project root), and the platform it is
+// for ("" when platform-neutral).
+type BuildOutput struct {
+	Path     string `json:"path"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
@@ -1125,15 +1143,15 @@ type DockerBuild struct {
 	// builds, keyed by package path ("./cmd/app"). A binary it does not name
 	// gets the defaults (kcl/schema.k DockerBuild.pgo).
 	PGO map[string]PGOConfig `json:"pgo,omitempty"`
+	// Coverage is the coverage answer of each Go binary the image builds
+	// that it names, keyed by package path; a binary it does not name
+	// follows the env's Tests (kcl/schema.k DockerBuild.coverage).
+	Coverage map[string]bool `json:"coverage,omitempty"`
 	// Inputs are the globs (relative to the project root, or to the resolved
 	// GitSource context) naming the files the image is built from. Declared,
 	// they let a --release build reuse an earlier release's image whose
 	// fingerprint is unchanged — see build_docker_release_reuse.go.
 	Inputs []string `json:"inputs,omitempty"`
-	// Coverage is the coverage answer of each Go binary the image builds
-	// that it names, keyed by package path; a binary it does not name
-	// follows the env's Tests (kcl/schema.k DockerBuild.coverage).
-	Coverage map[string]bool `json:"coverage,omitempty"`
 	// cover is set when the env builds this image instrumented: the binary
 	// its workload runs is a cover build (applyCover). coverVariant is set
 	// when a release build of it also pushes its cover stage beside it, for
@@ -1198,6 +1216,22 @@ type ShellBuild struct {
 	// the command reads. Declared, they let a build whose fingerprint and
 	// pushed image are unchanged be skipped — see build_external_inputs.go.
 	Inputs []string `json:"inputs,omitempty"`
+	// PGO is the profile-guided optimization of each Go binary the command
+	// builds, keyed by package path relative to the cwd ("./cmd/app"). Only
+	// the binaries it names are pulled (kcl/schema.k ShellPGO).
+	PGO map[string]ShellPGOConfig `json:"pgo,omitempty"`
+}
+
+// ShellPGOConfig is a ShellBuild binary's PGO (kcl/schema.k ShellPGO): a PGO
+// plus where `forge pgo pull` writes the profile and whose namespace it reads.
+type ShellPGOConfig struct {
+	PGOConfig
+	// Out is the profile's path relative to the project root; empty is
+	// <cwd>/<package>/default.pgo.
+	Out string `json:"out,omitempty"`
+	// Namespace is the OTEL service.namespace the profiles carry; empty is
+	// the env's project.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears
@@ -1316,11 +1350,24 @@ type BuildVariant struct {
 	// `tags` (kcl/render.k _render_build_variant); this field read
 	// `build_tags`, which no render emits, so a variant's tags were dropped
 	// until the env schema's fixture check caught the mismatch.
-	BuildTags  []string          `json:"tags,omitempty"`
-	GOOS       string            `json:"goos,omitempty"`
-	GOARCH     string            `json:"goarch,omitempty"`
+	BuildTags []string `json:"tags,omitempty"`
+	GOOS      string   `json:"goos,omitempty"`
+	GOARCH    string   `json:"goarch,omitempty"`
+	// EnvAtBuild is the variant's build-time process env (KCL
+	// BuildVariant.env), merged over forge's own so a declared key wins.
 	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
 	OutputName string            `json:"output_name,omitempty"` // default: <service>-<variant>
+}
+
+// variantOutputName is the basename a variant's binary is built to and
+// recorded in the release under: the declared output_name, else
+// <workload>-<variant>. It carries no platform suffix; the file on disk is
+// hostlaunch.ExeName(goos, name), so a windows variant ends in .exe.
+func variantOutputName(workload string, v BuildVariant) string {
+	if v.OutputName != "" {
+		return v.OutputName
+	}
+	return workload + "-" + v.Name
 }
 
 // FrontendEntity is one frontend from rendered KCL: a dev server, or a
@@ -1723,6 +1770,7 @@ type kclRenderRaw struct {
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
+	Identities               []release.ShapeIdentity                   `json:"identities,omitempty"`
 	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -1745,6 +1793,12 @@ type kclRenderRaw struct {
 	RequiredDNS              []DNSRecordEntity                         `json:"required_dns,omitempty"`
 	ControlPlaneSecrets      []ControlPlaneSecretEntity                `json:"control_plane_secrets,omitempty"`
 	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
+	// TelemetryCollector is Observability.telemetry_collector, the env's
+	// own collector, rendered only with telemetry. internal/cluster reads it
+	// (decodeTelemetry) to admit that collector in the targets'
+	// NetworkPolicy rules; it is declared here so the env document schema
+	// carries it.
+	TelemetryCollector *kclTelemetryCollectorRaw `json:"telemetry_collector,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1753,6 +1807,14 @@ type kclRenderRaw struct {
 	// their names are read here, as cluster work (see ClusterWork).
 	BundledCharts []namedRaw `json:"bundled_charts,omitempty"`
 	Generated     []namedRaw `json:"generated,omitempty"`
+}
+
+// kclTelemetryCollectorRaw is output.telemetry_collector: the namespace and
+// pod labels of the collector that scrapes the env's Telemetry when it is
+// not forge's node agent.
+type kclTelemetryCollectorRaw struct {
+	Namespace string            `json:"namespace"`
+	PodLabels map[string]string `json:"pod_labels"`
 }
 
 // namedRaw reads only the name of a render-output entry.
@@ -1955,7 +2017,15 @@ func (t *ClusterTargetEntity) field(name string) string {
 // The override env var FORGE_KCL_RENDER_FIXTURE points at a JSON file
 // whose contents are read in lieu of shelling kcl. Used by unit tests so
 // they can exercise the dispatch logic without a real KCL toolchain.
+//
+// Inside a withDeclarationMemo scope, each env's declaration is evaluated
+// once and shared by every caller in that command (kcl_render_scope.go).
 func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
+	if m := declarationMemoFrom(ctx); m != nil {
+		return m.render(ctx, projectDir, env, func(ctx context.Context) (*KCLEntities, error) {
+			return RenderKCLWith(ctx, projectDir, env, nil)
+		})
+	}
 	return RenderKCLWith(ctx, projectDir, env, nil)
 }
 
@@ -2152,6 +2222,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ReleaseHealth:            raw.ReleaseHealth,
 		UptimeChecks:             raw.UptimeChecks,
 		Identity:                 raw.Identity,
+		Identities:               raw.Identities,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,
 		RequiredSecrets:          raw.RequiredSecrets,
@@ -2328,13 +2399,15 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 // should not silently fall back.
 func dispatchBuild(svcName string, raw json.RawMessage) (result BuildConfigEntity, err error) {
 	var identity struct {
-		Unit       string `json:"unit"`
-		InputsFile string `json:"inputs_file"`
+		Unit       string        `json:"unit"`
+		InputsFile string        `json:"inputs_file"`
+		Outputs    []BuildOutput `json:"outputs"`
 	}
 	defer func() {
 		if err == nil {
 			result.Unit = identity.Unit
 			result.InputsFile = identity.InputsFile
+			result.Outputs = identity.Outputs
 		}
 	}()
 	trimmed := bytes.TrimSpace(raw)

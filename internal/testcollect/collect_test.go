@@ -144,7 +144,11 @@ func (s *coverageServer) start(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		s.queries = append(s.queries, r.URL.RequestURI())
+		q := r.Method + " " + r.URL.RequestURI()
+		if h := r.Header.Get(ResetHeader); h != "" {
+			q += " " + ResetHeader + "=" + h
+		}
+		s.queries = append(s.queries, q)
 		s.mu.Unlock()
 		if r.URL.Path != CoveragePath {
 			http.NotFound(w, r)
@@ -190,7 +194,7 @@ func TestCollectHostPullAndExitFlush(t *testing.T) {
 	if !doc.OK || doc.ExitCode != 0 || doc.Schema != Schema || doc.Collected != 1 || doc.Run != f.run {
 		t.Fatalf("doc head %+v collected=%d run=%q", doc.Head, doc.Collected, doc.Run)
 	}
-	if q := srv.got(); len(q) != 1 || q[0] != CoveragePath {
+	if q := srv.got(); len(q) != 1 || q[0] != "GET "+CoveragePath {
 		t.Errorf("pulled %v, want one GET %s with no reset", q, CoveragePath)
 	}
 	wl := doc.Workloads[0]
@@ -231,6 +235,39 @@ func TestCollectHostPullAndExitFlush(t *testing.T) {
 	}
 }
 
+// A workload name is joined into directories a collect removes and rewrites,
+// so a rendered env naming a workload "../../keep" must not reach outside the
+// run: the workload fails, is never pulled, and nothing outside is touched.
+func TestCollectRefusesAWorkloadNameThatIsNotOnePathElement(t *testing.T) {
+	f := newFixture(t)
+	srv := &coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.300.9000", "LIVE")}
+	addr := srv.start(t)
+	keep := filepath.Join(f.run, "keep") // where e2e/covdata/../../keep lands
+	writeFiles(t, keep, "precious")
+
+	for _, name := range []string{"../../keep", "a/b", `a\b`, "..", ".", ""} {
+		doc := Collect(context.Background(), f.options(Target{
+			Workload: name, Runtime: "host",
+			Host: &HostTarget{PullAddr: addr, CoverDir: filepath.Join(f.root, "cover")},
+		}))
+		if wl := doc.Workloads[0]; wl.State != StateFailed || !strings.Contains(wl.Reason, "single path element") {
+			t.Errorf("workload %q: state %s reason %q, want failed as not a single path element", name, wl.State, wl.Reason)
+		}
+		if doc.Run != "" {
+			t.Errorf("workload %q: recorded run %q", name, doc.Run)
+		}
+	}
+	if q := srv.got(); len(q) != 0 {
+		t.Errorf("pulled %v for workloads with unsafe names", q)
+	}
+	if got := dirNames(t, keep); !slices.Equal(got, []string{"precious"}) {
+		t.Errorf("dir outside the run's coverage now holds %v", got)
+	}
+	if err := validateWorkloadName("api-server_2"); err != nil {
+		t.Errorf("a plain workload name was refused: %v", err)
+	}
+}
+
 // --reset pulls with ?reset=1 and discards what it got, and fences off the
 // counters flushed before it: the next collect leaves them out. No run is
 // created for a reset.
@@ -249,8 +286,8 @@ func TestResetFencesOffEarlierCounters(t *testing.T) {
 	if err != nil || doc.Workloads[0].State != StateReset || doc.Collected != 1 {
 		t.Fatalf("reset: %v %+v", err, doc.Workloads)
 	}
-	if q := srv.got(); len(q) != 1 || q[0] != CoveragePath+"?reset=1" {
-		t.Errorf("reset pulled %v, want one ?reset=1", q)
+	if q := srv.got(); len(q) != 1 || q[0] != "POST "+CoveragePath+" "+ResetHeader+"=1" {
+		t.Errorf("reset sent %v, want one POST with %s: 1 (serverkit refuses any other reset)", q, ResetHeader)
 	}
 	if f.runs != 0 || doc.Run != "" {
 		t.Errorf("a reset asked for a run (%d calls, run %q)", f.runs, doc.Run)
@@ -342,7 +379,10 @@ func TestCollectCluster(t *testing.T) {
 	if wl.State != StateCollected || wl.Build.MetaHash != "bb" || len(wl.Stale) != 1 || wl.Stale[0].MetaHash != "aa" {
 		t.Fatalf("workload %+v, want bb current and aa stale", wl)
 	}
-	want := []string{"k3d-dev/shop-dev/api-old:6060" + CoveragePath, "k3d-dev/shop-dev/api-new:6060" + CoveragePath}
+	want := []string{
+		"GET k3d-dev/shop-dev/api-old:6060 " + CoveragePath + " host=127.0.0.1:6060",
+		"GET k3d-dev/shop-dev/api-new:6060 " + CoveragePath + " host=127.0.0.1:6060",
+	}
 	if !slices.Equal(k.gets, want) {
 		t.Errorf("GETs %v, want %v", k.gets, want)
 	}
@@ -352,8 +392,9 @@ func TestCollectCluster(t *testing.T) {
 	if _, err := collectErr(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
-	if len(k.gets) != 2 || !strings.HasSuffix(k.gets[0], "?reset=1") {
-		t.Errorf("reset GETs %v, want ?reset=1 on each pod", k.gets)
+	resetCall := "POST k3d-dev/shop-dev/api-old:6060 " + CoveragePath + " host=127.0.0.1:6060 " + ResetHeader + "=1"
+	if len(k.gets) != 2 || k.gets[0] != resetCall || !strings.HasPrefix(k.gets[1], "POST ") {
+		t.Errorf("reset requests %v, want POST with %s on each pod (%q)", k.gets, ResetHeader, resetCall)
 	}
 }
 
@@ -366,8 +407,12 @@ type fakeKube struct {
 
 func (k *fakeKube) Pods(context.Context, string, string, string) ([]Pod, error) { return k.pods, k.err }
 
-func (k *fakeKube) Get(_ context.Context, kctx, ns, pod string, port int, pq string) (*http.Response, error) {
-	k.gets = append(k.gets, fmt.Sprintf("%s/%s/%s:%d%s", kctx, ns, pod, port, pq))
+func (k *fakeKube) Do(_ context.Context, kctx, ns, pod string, port int, req *http.Request) (*http.Response, error) {
+	call := fmt.Sprintf("%s %s/%s/%s:%d %s host=%s", req.Method, kctx, ns, pod, port, req.URL.RequestURI(), req.URL.Host)
+	if h := req.Header.Get(ResetHeader); h != "" {
+		call += " " + ResetHeader + "=" + h
+	}
+	k.gets = append(k.gets, call)
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(bytes.NewReader(k.tars[pod]))}, nil
 }
 

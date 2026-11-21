@@ -227,9 +227,9 @@ func TestCloudIdentityUserVerbParsing(t *testing.T) {
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			previous := resolveIdentityCloudTarget
-			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, error) {
+			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, []string, error) {
 				t.Fatal("invalid command reached credential resolution")
-				return cloud.Endpoint{}, cloud.Credential{}, nil
+				return cloud.Endpoint{}, cloud.Credential{}, nil, nil
 			}
 			t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 			if _, err := executeIdentity(args...); err == nil {
@@ -299,9 +299,9 @@ func TestCloudIdentityElevatesSessionCredentialPerVerb(t *testing.T) {
 	defer srv.Close()
 
 	previous := resolveIdentityCloudTarget
-	resolveIdentityCloudTarget = func(_ context.Context, env, _ string) (cloud.Endpoint, cloud.Credential, error) {
+	resolveIdentityCloudTarget = func(_ context.Context, env, _ string) (cloud.Endpoint, cloud.Credential, []string, error) {
 		ep, err := cloud.ResolveEndpoint(env, &cloud.Declaration{Endpoint: srv.URL})
-		return ep, cloud.Credential{Token: "reliant-session", Source: cloud.SourceHelper, From: "Reliant session"}, err
+		return ep, cloud.Credential{Token: "reliant-session", Source: cloud.SourceHelper, From: "Reliant session"}, nil, err
 	}
 	t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 	withProjectName(t, "shop")

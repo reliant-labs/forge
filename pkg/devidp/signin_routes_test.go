@@ -607,6 +607,24 @@ func TestSocial_CallbackRequiresTheStartingBrowser(t *testing.T) {
 	}
 }
 
+// The issuer returns to the success URL with ?id=&token= and to the failure
+// URL with ITS error replacing the URL's, so the failure URL carries a marker
+// the issuer leaves alone (social=failed) for the sign-in page to read.
+func TestSocial_TheIntentReturnsToTheAppsCallbackAndFailurePages(t *testing.T) {
+	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
+	startSocial(t, h.browser())
+	h.z.mu.Lock()
+	urls := h.z.intentURLs
+	h.z.mu.Unlock()
+	if str(urls, "successUrl") != testAppBase+"/auth/social/callback" {
+		t.Errorf("successUrl = %q", str(urls, "successUrl"))
+	}
+	failure, err := url.Parse(str(urls, "failureUrl"))
+	if err != nil || !strings.HasPrefix(failure.String(), testAppBase+"/auth/sign-in?") || failure.Query().Get("social") != "failed" {
+		t.Errorf("failureUrl = %q, want the sign-in page marked social=failed", str(urls, "failureUrl"))
+	}
+}
+
 func TestSocial_UnknownProviderAndUnsafeReturnTo(t *testing.T) {
 	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
 	status, body := h.browser().post("/auth/social/start", map[string]any{"provider": "github"})

@@ -2,6 +2,7 @@ package generator
 
 import (
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -327,5 +328,25 @@ func TestWebRuntimeContentNotices_PnpmLockNamesPnpm(t *testing.T) {
 	n := WebRuntimeContentNotices(project, fe)
 	if len(n) != 1 || !strings.Contains(n[0], "pnpm update "+WebRuntimePackage) {
 		t.Fatalf("want a pnpm update hint, got %q", n)
+	}
+}
+
+func TestFunctionOptionMembers_NewlineSeparatedMembers(t *testing.T) {
+	text := "export interface BrowserTelemetryConfig {\n" +
+		"  endpoint: string\n" +
+		"  readonly level?:\n" +
+		"    | \"debug\"\n" +
+		"    | \"info\"\n" +
+		"  nested: { inner: boolean; other: number }\n" +
+		"  rpcForensics?: boolean\n" +
+		"}\n" +
+		"export declare function initBrowserTelemetry(options: BrowserTelemetryConfig): void;\n"
+	got, ok := functionOptionMembers(text, "initBrowserTelemetry")
+	if !ok {
+		t.Fatal("a newline-separated interface was not judged")
+	}
+	want := map[string]bool{"endpoint": true, "level": true, "nested": true, "rpcForensics": true}
+	if !maps.Equal(got, want) {
+		t.Errorf("members = %v, want %v", got, want)
 	}
 }

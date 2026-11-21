@@ -244,7 +244,7 @@ func objectMembers(text string, declaration bool) (map[string]bool, bool) {
 		if depth == 0 {
 			return set, collect(text[start:i])
 		}
-		if depth == 1 && (text[i] == ',' || (declaration && text[i] == ';')) {
+		if depth == 1 && (text[i] == ',' || (declaration && (text[i] == ';' || newlineEndsMember(text, start, i)))) {
 			if !collect(text[start:i]) {
 				return nil, false
 			}
@@ -252,6 +252,19 @@ func objectMembers(text string, declaration bool) (map[string]bool, bool) {
 		}
 	}
 	return nil, false
+}
+
+// newlineEndsMember reports whether the newline at text[i] separates two
+// interface members: TypeScript lets a member end at a line break with no
+// comma or semicolon. It does only when the line after it starts a member
+// and the text since the last separator holds one, so a type continued on
+// the next line (`a:\n | "x"`) stays a single member.
+func newlineEndsMember(text string, start, i int) bool {
+	if text[i] != '\n' || strings.TrimSpace(text[start:i]) == "" {
+		return false
+	}
+	next := strings.TrimLeft(text[i+1:], " \t\r")
+	return objectMember.MatchString(strings.TrimPrefix(next, "readonly "))
 }
 
 func generatedOptionMembers(text, local string) map[string]bool {

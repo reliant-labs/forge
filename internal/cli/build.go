@@ -2233,6 +2233,13 @@ type goBuildTarget struct {
 	// pgoOff builds with -pgo=off: the env declares the binary's PGO
 	// disabled (kcl/schema.k PGO). A -pgo of the user's own wins.
 	pgoOff bool
+	// cover builds with -cover -covermode=atomic: the env instruments the
+	// binary (kcl/schema.k Tests, WorkloadEntity.CoverBuild). coverPackages
+	// are the env's explicit -coverpkg patterns (empty is "main"), and
+	// coverFlags the resolved flags buildGoTarget fills in before the build.
+	cover         bool
+	coverPackages []string
+	coverFlags    []string
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2284,6 +2291,8 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	if t.pgoOff && !userSetsPGO(t.flags, t.env) {
 		args = append(args, pgoOffFlag)
 	}
+	// A cover build (kcl/schema.k Tests), resolved by buildGoTarget.
+	args = append(args, t.coverFlags...)
 	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
@@ -2328,6 +2337,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		if i, ok := seen[key]; ok {
 			// A binary shared with a delve-run workload is built for it.
 			out[i].debug = out[i].debug || debug
+			// The env refuses workloads that disagree on a binary's
+			// coverage (ResolveCoverBinaries), so either answers for both.
+			out[i].cover = out[i].cover || w.CoverBuild()
 			continue
 		}
 		seen[key] = len(out)
@@ -2342,6 +2354,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			flags:      g.Flags,
 			env:        g.Env,
 			pgoOff:     pgoOff[normalizePGOPackage(g.Cmd)],
+			cover:      w.CoverBuild(),
+			// The env's -coverpkg patterns; empty is "main".
+			coverPackages: w.coverPackages(),
 		})
 	}
 	return out
@@ -2415,6 +2430,17 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
+	// A cover build: -cover -covermode=atomic -coverpkg=<the env's
+	// packages>. -cover in the build's own flags or GOFLAGS is the user's
+	// choice and wins.
+	if t.cover && !userSetsCover(t.flags, t.env) {
+		flags, err := coverBuildFlags(ctx, projectDirForKCL(), t.coverPackages)
+		if err != nil {
+			return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
+		}
+		t.coverFlags = flags
+		fmt.Printf("[build] %s: instrumented for coverage (-cover -covermode=%s)\n", t.outputName, coverMode)
+	}
 	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {

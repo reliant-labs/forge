@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1196,4 +1197,99 @@ func TestFailedResetPublicationLeavesThePreviousRecord(t *testing.T) {
 	if want := map[int]int64{10: 0, 20: 3, 30: 4}; !maps.Equal(counts, want) {
 		t.Fatalf("after the failed reset: %v, want %v (the first reset's record)", counts, want)
 	}
+}
+
+// [B1] An existing reset record that cannot be read is never treated as "no
+// reset": a reset fails and leaves it exactly as it was (its fences and
+// baselines would otherwise be lost), and a collect fails the workload rather
+// than collecting what the record left out or skipping its baselines. Only a
+// record confirmed absent starts empty.
+func TestUnreadableResetRecordIsNeverReplaced(t *testing.T) {
+	unreadable := []struct {
+		name string
+		make func(t *testing.T, path string)
+	}{
+		{"corrupt JSON", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte(`{"schema": "forge.test.collect.reset/v2", "fenced": [`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"another document", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte(`{"schema": "forge.test.collect.reset/v1", "entries": []}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"no read permission", func(t *testing.T, path string) {
+			if runtime.GOOS == "windows" {
+				t.Skip("file modes do not deny the owner a read on Windows")
+			}
+			if os.Geteuid() == 0 {
+				t.Skip("root reads a file whatever its mode")
+			}
+			if err := os.Chmod(path, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+		}},
+	}
+	for _, tc := range unreadable {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			live := &liveServer{}
+			live.set(t, "covmeta.aa", "M", "covcounters.aa.42.100", "10=5 20=3")
+			cover := filepath.Join(f.root, "flushed")
+			writeFile(t, cover, "covmeta.aa", "M")
+			writeFile(t, cover, "covcounters.aa.7.50", "30=1")
+			opts := f.options(Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: live.start(t), CoverDir: cover}})
+			opts.Convert = countingConvert
+			reset := opts
+			reset.Reset = true
+			if doc := Collect(context.Background(), reset); doc.Workloads[0].State != StateReset {
+				t.Fatalf("seeding reset: %+v", doc.Workloads[0])
+			}
+			marker := ResetMarker(f.root, "dev", "api")
+			tc.make(t, marker)
+			info, err := os.Stat(marker)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := readRaw(t, marker)
+
+			doc := Collect(context.Background(), reset)
+			if wl := doc.Workloads[0]; wl.State != StateFailed || !strings.Contains(wl.Reason, "reset record") {
+				t.Fatalf("a reset over an unreadable record: %+v, want failed, naming the record", wl)
+			}
+			after, err := os.Stat(marker)
+			if err != nil || !after.ModTime().Equal(info.ModTime()) || after.Mode() != info.Mode() || !bytes.Equal(readRaw(t, marker), before) {
+				t.Fatalf("the unreadable record was replaced (%v)", err)
+			}
+
+			doc = Collect(context.Background(), opts)
+			if wl := doc.Workloads[0]; wl.State != StateFailed || !strings.Contains(wl.Reason, "reset record") || wl.Build != nil {
+				t.Fatalf("a collect over an unreadable record: %+v, want failed, collecting nothing", wl)
+			}
+			if doc.ExitCode != 2 {
+				t.Errorf("exit %d, want 2: nothing was collected", doc.ExitCode)
+			}
+		})
+	}
+}
+
+// readRaw reads a file's bytes even when its mode denies a read, by lifting
+// the mode for the read and putting it back.
+func readRaw(t *testing.T, path string) []byte {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(path, info.Mode().Perm()) }()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

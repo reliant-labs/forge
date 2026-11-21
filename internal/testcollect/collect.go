@@ -276,10 +276,12 @@ type pending struct {
 // newest first.
 func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) []*build {
 	rec, err := readReset(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
-	fenced := rec.fence()
 	if err != nil {
-		r.Notes = append(r.Notes, "reset fence unreadable, so nothing is left out: "+err.Error())
+		// Without the record, what a reset left out cannot be told apart.
+		r.State, r.Reason = StateFailed, "not collected: "+err.Error()
+		return nil
 	}
+	fenced := rec.fence()
 	var files []covFile
 	live := 0 // live sources attempted (pull, pod, container)
 	add := func(s Source, fs []covFile) {
@@ -673,7 +675,10 @@ func recordRun(ctx context.Context, opts Options, doc *Document, run string, wri
 		input := testreport.LaneCoverageInput{Path: relDir + "/", Format: testreport.CoverageGoCovdata}
 		rec, err := readReset(ResetMarker(opts.ProjectRoot, opts.Env, r.Name))
 		if err != nil {
-			r.Notes = append(r.Notes, "reset record unreadable, so nothing is subtracted: "+err.Error())
+			// The counts since the reset are unknown: record no input
+			// rather than one that counts the time before it.
+			r.State, r.Reason, r.Build, r.Stale = StateFailed, "not collected: "+err.Error(), nil, nil
+			continue
 		}
 		comb, err := combineProcesses(ctx, opts, p.builds[0], rec.baselines())
 		var tally *testreport.Tally

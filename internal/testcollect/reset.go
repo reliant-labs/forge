@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,14 +42,18 @@ type resetRecord struct {
 // writeResetFile publishes a record; a variable so a test can make it fail.
 var writeResetFile = atomicfile.WriteFile
 
-// readReset reads the workload's record: the zero record when no reset ran.
+// readReset reads the workload's record: the zero record when no reset ran,
+// which is only when the file is confirmed absent. Any other failure (I/O,
+// permission, a corrupt or foreign document) is an error: treating it as "no
+// reset" would collect what a reset left out, or lose its fences and
+// baselines on the next write.
 func readReset(path string) (resetRecord, error) {
 	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return resetRecord{}, nil
 	}
 	if err != nil {
-		return resetRecord{}, err
+		return resetRecord{}, fmt.Errorf("reset record %s: %w", path, err)
 	}
 	var r resetRecord
 	if err := json.Unmarshal(b, &r); err != nil || r.Schema != resetSchema {
@@ -76,14 +81,14 @@ func (r resetRecord) baselines() map[processKey]baselineProcess {
 }
 
 // publishReset merges what a reset saw into the workload's record and
-// publishes it with one atomic write. On any failure the record on disk is
-// the one before the reset.
+// publishes it with one atomic write. On any failure, an unreadable previous
+// record included, the record on disk is the one before the reset: an
+// unreadable record is never replaced, since its fences and baselines would
+// be lost. Fix or remove it by hand.
 func publishReset(path string, at time.Time, seen []fenceEntry, taken []baselineProcess) error {
 	prev, err := readReset(path)
 	if err != nil {
-		// Unreadable: replaced by what this reset saw, which includes every
-		// file the old fence held that is still there.
-		prev = resetRecord{}
+		return fmt.Errorf("%w (left as it is; fix or remove it to reset again)", err)
 	}
 	fenced := append(slices.Clone(prev.Fenced), seen...)
 	slices.SortFunc(fenced, fenceEntry.less)

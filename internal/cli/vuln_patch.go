@@ -5,7 +5,7 @@ package cli
 // pull request. The patcher is internal/vulnpatch; this file is the input
 // (an env's findings, or a scan of a directory), flags, output and exit codes.
 //
-//	forge vuln patch <env|dir> [<advisory-id>...] [--ecosystem go|npm|pnpm|yarn]
+//	forge vuln patch <env|dir> [<advisory-id>...] [--ecosystem go|npm|pnpm|yarn|pip|poetry|uv]
 //	                 [--allow-major] [--verify[=<cmd>]] [--pr | --no-pr]
 //	                 [--branch <name>] [--json]
 //
@@ -66,7 +66,8 @@ type vulnPatchDeps struct {
 	// a control plane cannot be read yet; the control-plane read (F8 of the
 	// SBOM design) replaces it there.
 	findingsFor func(ctx context.Context, deps vulnPatchDeps, projectDir string, env vulnEnv) (patchFindings, error)
-	// exec runs go, npm, pnpm, yarn, the verify command, git and gh.
+	// exec runs go, npm, pnpm, yarn, pip-compile, poetry, uv, the verify
+	// command, git and gh.
 	exec vulnscan.Runner
 }
 
@@ -78,7 +79,7 @@ func newVulnPatchCmdWith(deps vulnPatchDeps) *cobra.Command {
 	var opts vulnPatchOptions
 	cmd := &cobra.Command{
 		Use:   "patch <env | dir> [<advisory-id>...]",
-		Short: "Bump vulnerable Go and npm/pnpm/yarn dependencies to their fix, and verify the result",
+		Short: "Bump vulnerable Go, npm/pnpm/yarn and Python dependencies to their fix, and verify the result",
 		Long: `Bump each vulnerable dependency to the lowest version that fixes it, staying in
 its major version, with the ecosystem's own tool so lockfiles stay consistent:
 
@@ -87,6 +88,13 @@ its major version, with the ecosystem's own tool so lockfiles stay consistent:
   npm    npm install <pkg>@<fix> (direct), or an "overrides" entry (transitive)
   pnpm   pnpm update <pkg>@<fix>, or "pnpm.overrides"
   yarn   yarn up <pkg>@<fix> (yarn upgrade on yarn 1), or "resolutions"
+  pip    the <pkg>==<fix> pin rewritten in requirements*.txt; a compiled file
+         (a pip-compile or uv pip compile header, or a sibling .in) is
+         recompiled with --upgrade-package <pkg>==<fix>, its .in pin raised
+         first when it pins <pkg> directly
+  poetry poetry update <pkg> when pyproject.toml's range admits the fix (or
+         <pkg> is transitive), else poetry add <pkg>@^<fix>
+  uv     uv lock --upgrade-package <pkg>==<fix>
 
 <env> patches the findings of the release the env runs, read from this
 machine's ledger (` + "`forge vuln list <env>`" + ` shows them); a directory (".", "./web")
@@ -95,13 +103,17 @@ a fix that no exemption covers is patched; named ids (a CVE finds its GHSA) are
 patched whatever their exemption.
 
 Nothing is guessed. A finding the tree cannot be tied to one manifest, an OS
-package, the Go standard library, a Python package, or a fix only in a new
-major is reported as skipped with the reason: the vuln-patch workflow's agent
-picks those up. --allow-major takes a major bump.
+package, the Go standard library, a range in pyproject.toml or a .in the fix
+lies outside, or a fix only in a new major is reported as skipped with the
+reason: the vuln-patch workflow's agent picks those up. --allow-major takes a
+major bump.
 
 --verify runs the project's gate after the bump (vuln.patch.verify in
 forge.yaml, else ` + "`task test:short`" + ` when the Taskfile has it, else go build and go test
--short, else the package manager's test script; --verify=<cmd> runs <cmd>),
+-short, else the package manager's test script, else uv run or poetry run
+pytest -q for a uv or poetry project that uses pytest; --verify=<cmd> runs
+<cmd>; a project pinned only by requirements files has no default, so name
+its gate in vuln.patch.verify or with --verify=<cmd>),
 then rescans each changed manifest's directory: a finding still reported is
 still_present.
 
@@ -118,7 +130,7 @@ with --pr, or a named advisory whose fix needs --allow-major), nothing changed.`
 			return runVulnPatch(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), deps, args[0], args[1:], opts)
 		},
 	}
-	cmd.Flags().StringSliceVar(&opts.ecosystems, "ecosystem", nil, "patch only these ecosystems: go, npm, pnpm, yarn (repeatable, or comma-separated)")
+	cmd.Flags().StringSliceVar(&opts.ecosystems, "ecosystem", nil, "patch only these ecosystems: go, npm, pnpm, yarn, pip, poetry, uv (repeatable, or comma-separated)")
 	cmd.Flags().BoolVar(&opts.allowMajor, "allow-major", false, "take a fix in a new major version when no fix is in the installed one")
 	cmd.Flags().Var((*optionalString)(&opts.verify), "verify", "after the bump, run the project's gate (or --verify=CMD) and rescan the changed manifests")
 	cmd.Flags().Lookup("verify").NoOptDefVal = verifyGate
@@ -162,7 +174,7 @@ func runVulnPatch(ctx context.Context, out, errOut io.Writer, deps vulnPatchDeps
 			ok = ok || eco == known
 		}
 		if !ok {
-			return fmt.Errorf("--ecosystem %q (expected go, npm, pnpm or yarn)", e)
+			return fmt.Errorf("--ecosystem %q (expected go, npm, pnpm, yarn, pip, poetry or uv)", e)
 		}
 		ecos = append(ecos, eco)
 	}

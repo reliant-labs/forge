@@ -44,6 +44,42 @@ func TestMiddlewareTemplate_EnrichIsAComponentSeam(t *testing.T) {
 	}
 }
 
+// TestMiddlewareTemplate_ReExportsAuthMethod pins middleware.AuthMethod: the
+// handler-facing spelling of authn.AuthMethod, beside GetUser, so a handler
+// that requires a person in the app reads it from the package it already
+// imports. Parsed as Go, so a comment naming it cannot satisfy the test.
+func TestMiddlewareTemplate_ReExportsAuthMethod(t *testing.T) {
+	for _, tmpl := range []string{"middleware.go.tmpl", "middleware_v2.go.tmpl"} {
+		t.Run(tmpl, func(t *testing.T) { checkReExportsAuthMethod(t, tmpl) })
+	}
+}
+
+func checkReExportsAuthMethod(t *testing.T, tmpl string) {
+	t.Helper()
+	content, err := ProjectTemplates().Render(tmpl, struct{ Name string }{Name: "myproject"})
+	if err != nil {
+		t.Fatalf("render %s: %v", tmpl, err)
+	}
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "middleware.go", content, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("rendered middleware.go does not parse: %v", err)
+	}
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "AuthMethod" || fn.Recv != nil {
+			continue
+		}
+		src := string(content[fset.Position(fn.Pos()).Offset:fset.Position(fn.End()).Offset])
+		want := "func AuthMethod(ctx context.Context) (authn.Method, bool) { return authn.AuthMethod(ctx) }"
+		if src != want {
+			t.Fatalf("middleware.AuthMethod is\n%s\nwant\n%s", src, want)
+		}
+		return
+	}
+	t.Fatal("the rendered middleware.go declares no AuthMethod")
+}
+
 // TestRenderAppAuthTemplate verifies the OWNED internal/app/auth.go
 // scaffold (app-auth.go.tmpl): it parses as Go, is owned (no DO-NOT-EDIT
 // banner), exposes SetupAuth with the validator-returning signature the

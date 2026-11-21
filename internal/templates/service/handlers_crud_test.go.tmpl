@@ -1,36 +1,69 @@
-{{- $open := "connect.NewRequest("}}{{$close := ")"}}{{$msg := ".Msg"}}{{if connectV2 .}}{{$open = ""}}{{$close = ""}}{{$msg = ""}}{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+{{- $dbHelpers := and (not .HasMigrationsFS) (not .OmitDBHelpers)}}{{- $dbWrapper := and .HasMigrationsFS (not .PerEntity)}}{{- $ctxHelper := not .PerEntity}}{{- $open := "connect.NewRequest("}}{{$close := ")"}}{{$msg := ".Msg"}}{{if connectV2 .}}{{$open = ""}}{{$close = ""}}{{$msg = ""}}{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
 //
+{{- if .PerEntity}}
+// The CRUD lifecycle test for {{range .Entities}}{{.EntityName}}{{end}}, an entity added after this
+// service's handlers_crud_test.go was scaffolded: each entity forge finds with
+// no TestCRUD_<Entity>_Lifecycle gets one file like this. Delete it and forge
+// does not write it again.
+//
+{{- end}}
 // Drives the real generated stack (handlers → pkg/crud → internal/db →
 // database) against the project's own migrations, asserting real CRUD
 // semantics. Extend it as your entities grow. See the forge `testing` skill.
 package {{.Package}}_test
 
 import (
+{{- if or $dbHelpers $ctxHelper}}
 	"context"
+{{- end}}
+{{- if $dbHelpers}}
 	"os"
 	"path/filepath"
 	"sort"
+{{- end}}
+{{- if or $dbHelpers (not .OmitAssert)}}
 	"strings"
+{{- end}}
 	"testing"
 
 	{{if connectV2 .}}connect "connectrpc.com/connect/v2"{{else}}"connectrpc.com/connect"{{end}}
+{{- if or $dbHelpers $dbWrapper}}
 	"github.com/reliant-labs/forge/pkg/orm"
+{{- end}}
+{{- if not .OmitAssert}}
 	"github.com/reliant-labs/forge/pkg/svcerr"
+{{- end}}
+{{- if $dbHelpers}}
 	"github.com/reliant-labs/forge/pkg/testkit"
+{{- end}}
 {{- if .NeedsFieldMask}}
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 {{- end}}
 
 	pb "{{.Module}}/gen/{{.ProtoPackage}}/v1"
-	{{/* The test factory NewTest<X> is declared in this package's OWN
+	{{/* The test factory NewTest<X> — and NewMigratedTestDB and
+	     AuthedContext beside it — is declared in this package's OWN
 	     helpers_gen_test.go (package {{.Package}}, a _test.go file). Go
 	     compiles a package's in-package _test.go files INTO the package
 	     under test, and this external {{.Package}}_test package imports
 	     that augmented package — so the helper is visible here through an
 	     ordinary import, while never reaching the production binary. */ -}}
 	{{.Package}} "{{.Module}}/internal/handlers/{{.ServiceImportPath}}"
+{{- if $ctxHelper}}
 	"{{.Module}}/pkg/middleware"
+{{- end}}
 )
+{{- if $dbWrapper}}
+
+// crudTestDB returns a fresh database cloned from the template the project's
+// own migrations ({{ .MigrationsDir }}) were applied to once per test binary —
+// the schema the generated CRUD code runs against in production.
+func crudTestDB(t *testing.T) orm.Context {
+	t.Helper()
+	return {{.Package}}.NewMigratedTestDB(t)
+}
+{{- end}}
+{{- if $dbHelpers}}
 
 // findMigrationsDir walks up from the test's working directory (the package
 // dir, at internal/handlers/<svc>/) to the repo root — the nearest ancestor
@@ -86,6 +119,8 @@ func crudTestDB(t *testing.T) orm.Context {
 	}
 	return db
 }
+{{- end}}
+{{- if $ctxHelper}}
 
 // crudTestCtx returns a context with authenticated test claims attached —
 // what the auth middleware would have produced for a real request.
@@ -93,6 +128,8 @@ func crudTestCtx() context.Context {
 	return middleware.ContextWithClaims(context.Background(),
 		&middleware.Claims{UserID: "test-user", Email: "test@example.com"})
 }
+{{- end}}
+{{- if not .OmitAssert}}
 
 // assertCleanError asserts a client-facing error: the expected code, and
 // no leaked SQL/driver internals in the message.
@@ -116,15 +153,29 @@ func assertCleanError(t *testing.T, label string, err error, want connect.Code) 
 		}
 	}
 }
+{{- end}}
 {{range .Entities}}
 {{- if and .HasCreate .HasGet (eq .PkGoType "string")}}
 
 // TestCRUD_{{.EntityName}}_Lifecycle exercises the full executed CRUD
 // path for {{.EntityName}} end to end.
 func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
+{{- if and $.PerEntity $.HasMigrationsFS}}
+	// A fresh database cloned from the template the project's migrations
+	// were applied to once per test binary — the schema the generated CRUD
+	// code runs against in production.
+	db := {{$.Package}}.NewMigratedTestDB(t)
+{{- else}}
 	db := crudTestDB(t)
+{{- end}}
 	svc := {{$.Package}}.NewTest{{$.TestHelperName}}(t, {{$.Package}}.WithDB(db){{if $.UnfilledDeps}}, {{$.Package}}.WithPlaceholderDeps(){{end}})
+{{- if $.PerEntity}}
+	// Authenticated test claims (UserID "test-user") — what the auth
+	// middleware would have produced for a real request.
+	ctx := {{$.Package}}.AuthedContext(t)
+{{- else}}
 	ctx := crudTestCtx()
+{{- end}}
 
 	// Two creates must produce two rows with distinct, non-empty IDs.
 	//
@@ -139,7 +190,7 @@ func TestCRUD_{{.EntityName}}_Lifecycle(t *testing.T) {
 {{- if .CreateMethod.Scoped}}
 	//
 	// {{.CreateMethod.MethodName}} is scoped to {{.CreateMethod.OwnerColumn}} (forge:owner): it stamps the row
-	// with the owner it maps crudTestCtx()'s claims to — "test-user" while
+	// with the owner it maps ctx's claims to — "test-user" while
 	// handlers_crud.go keeps its claims.UserID placeholder. FactoryOwner seeds
 	// the parents under that same owner; change both together.
 {{- end}}

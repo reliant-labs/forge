@@ -64,6 +64,11 @@ func TestClassifyIdentity(t *testing.T) {
 	if r := classifyIdentity(identityIsRefused); !r.terminal {
 		t.Error("a refused declaration is terminal: only a new deploy changes it")
 	}
+	// Refused before any instance existed, with no text: still terminal, so
+	// a deploy's wait ends on it instead of running out its --timeout.
+	if r := classifyIdentity(identityStatusDocument{NotEnabledReason: "IDENTITY_NOT_ENABLED_REASON_REFUSED"}); r == nil || !r.terminal || r.State != identityFailed {
+		t.Errorf("a refusal with no instance = %+v, want a terminal failure", r)
+	}
 }
 
 func identityRollout(identity ...identityStatusDocument) *fakeRolloutService {
@@ -208,6 +213,11 @@ func TestEnvWait_SignedInIdentityRefusalIsStillReported(t *testing.T) {
 	captureStdout(t, func() { report, _ = waitForRollout(context.Background(), "prod", waitOpts(fake)) })
 	if report.Identity == nil || report.Identity.State != identityUnknown {
 		t.Fatalf("a signed-in refusal must be reported, got %+v", report.Identity)
+	}
+	// As one line saying what was not checked, never the credential
+	// error's "re-run forge login" advice under a deploy that worked.
+	if line := report.Identity.line(); !strings.Contains(line, "identity:read") || strings.Contains(line, "login") || strings.Contains(line, "\n") {
+		t.Errorf("identity line = %q", line)
 	}
 }
 

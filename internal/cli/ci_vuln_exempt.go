@@ -33,7 +33,9 @@ import (
 //
 // Both scanners read ONE list, ci.vuln_scan.exemptions, and the ID's own
 // namespace says which scanner an entry belongs to: govulncheck reports
-// GO-YYYY-NNNN, npm audit reports GHSA-xxxx-xxxx-xxxx. See
+// GO-YYYY-NNNN, npm audit reports GHSA-xxxx-xxxx-xxxx, and any other
+// advisory id (a CVE) is the SBOM scan's (`forge ci vuln-sbom`), which
+// matches an entry by a finding's id or any of its aliases. See
 // partitionExemptions.
 //
 // What keeps this from becoming a place to hide problems:
@@ -116,6 +118,12 @@ func (f vulnFinding) label() string {
 const (
 	ecosystemGo  = "go"  // govulncheck: GO-2026-4887
 	ecosystemNPM = "npm" // npm audit:   GHSA-vfj7-8cjw-p6xm
+	// ecosystemOther is every other well-formed advisory id — a CVE, a
+	// distro's own — which only the SBOM scan (`forge ci vuln-sbom`,
+	// grype) reports. Neither govulncheck nor npm audit judges these
+	// entries: to them such an id is a non-match, never stale, never an
+	// error.
+	ecosystemOther = "other"
 )
 
 var (
@@ -154,12 +162,18 @@ func advisoryEcosystem(id string) string {
 // must not read as stale to govulncheck merely because govulncheck never
 // reports GHSA IDs, and the reverse.
 //
-// An entry whose ID neither scanner reports — a blank id, a CVE alias, a
-// typo — can accept nothing anywhere. It is returned in unroutable, as a
-// message, and the caller FAILS the gate on it, for the same reason a
-// malformed entry fails: the file claims an acceptance the gate is not
-// honoring. Reporting it here, once, rather than inside each scanner keeps it
-// from being reported twice, or not at all when only the other scanner runs.
+// An entry with any other well-formed advisory id (a CVE, which grype
+// reports and govulncheck and npm audit do not) goes to ecosystemOther: the
+// SBOM scan reads it, and the two scanners here never see it. Such an entry
+// is still held to the entry contract — a reason and a parseable expiry —
+// since no scanner here would ever report it malformed.
+//
+// An entry that can accept nothing anywhere — a blank id, a string that is
+// not an advisory id, or an "other" entry with no reason or no parseable
+// expiry — is returned in unroutable, as a message, and the caller FAILS the
+// gate on it: the file claims an acceptance no gate is honoring. Reporting it
+// here, once, rather than inside each scanner keeps it from being reported
+// twice, or not at all when only one scanner runs.
 func partitionExemptions(all []config.CIVulnExemption) (byEcosystem map[string][]config.CIVulnExemption, unroutable []string) {
 	byEcosystem = map[string][]config.CIVulnExemption{}
 	for _, ex := range all {
@@ -169,11 +183,17 @@ func partitionExemptions(all []config.CIVulnExemption) (byEcosystem map[string][
 		case id == "":
 			unroutable = append(unroutable,
 				"an exemption entry has no `id` — it cannot accept anything, so it is ignored")
-		case eco == "":
+		case eco == "" && !vulnExemptIDRE.MatchString(id):
 			unroutable = append(unroutable, fmt.Sprintf(
-				"%s is not an ID either scanner reports, so it can accept nothing — govulncheck findings "+
-					"are accepted by their GO-YYYY-NNNN id and npm audit findings by their GHSA-xxxx-xxxx-xxxx "+
-					"id; use the id the scan printed", id))
+				"%s is not an advisory ID, so it can accept nothing — govulncheck findings are accepted by "+
+					"their GO-YYYY-NNNN id, npm audit findings by their GHSA-xxxx-xxxx-xxxx id, and the SBOM "+
+					"scan's by the id or any alias it printed (CVE-2026-0001); use the id the scan printed", id))
+		case eco == "":
+			if _, msg := checkExemptionEntry(ex); msg != "" {
+				unroutable = append(unroutable, msg)
+				continue
+			}
+			byEcosystem[ecosystemOther] = append(byEcosystem[ecosystemOther], ex)
 		default:
 			byEcosystem[eco] = append(byEcosystem[eco], ex)
 		}
@@ -249,6 +269,30 @@ type vulnGateResult struct {
 	Malformed []string
 }
 
+// checkExemptionEntry holds one ci.vuln_scan.exemptions entry to the entry
+// contract every scanner shares — an id, a reason, a YYYY-MM-DD expiry — and
+// returns its expiry, or why it cannot be honored as written. Whether it has
+// expired is each scanner's to judge.
+func checkExemptionEntry(ex config.CIVulnExemption) (time.Time, string) {
+	id := canonicalAdvisoryID(ex.ID)
+	switch {
+	case id == "":
+		return time.Time{}, "an exemption entry has no `id` — it cannot accept anything, so it is ignored"
+	case strings.TrimSpace(ex.Reason) == "":
+		return time.Time{}, fmt.Sprintf(
+			"%s has no `reason` — an unexplained exemption cannot be reviewed, so it is not honored", id)
+	case strings.TrimSpace(ex.Expires) == "":
+		return time.Time{}, fmt.Sprintf(
+			"%s has no `expires` — an exemption without a review date never gets re-examined, so it is not honored", id)
+	}
+	expiry, err := time.Parse("2006-01-02", strings.TrimSpace(ex.Expires))
+	if err != nil {
+		return time.Time{}, fmt.Sprintf(
+			"%s has an unparseable `expires: %s` — want YYYY-MM-DD, so it is not honored", id, ex.Expires)
+	}
+	return expiry, ""
+}
+
 // evaluateVulnFindings applies the project's exemptions to a scan.
 //
 // now is injected so the expiry rule is testable without waiting for a
@@ -264,25 +308,9 @@ func evaluateVulnFindings(findings []vulnFinding, exemptions []config.CIVulnExem
 
 	for _, ex := range exemptions {
 		id := canonicalAdvisoryID(ex.ID)
-		switch {
-		case id == "":
-			res.Malformed = append(res.Malformed,
-				"an exemption entry has no `id` — it cannot accept anything, so it is ignored")
-			continue
-		case strings.TrimSpace(ex.Reason) == "":
-			res.Malformed = append(res.Malformed, fmt.Sprintf(
-				"%s has no `reason` — an unexplained exemption cannot be reviewed, so it is not honored", id))
-			continue
-		case strings.TrimSpace(ex.Expires) == "":
-			res.Malformed = append(res.Malformed, fmt.Sprintf(
-				"%s has no `expires` — an exemption without a review date never gets re-examined, so it is not honored", id))
-			continue
-		}
-
-		expiry, err := time.Parse("2006-01-02", strings.TrimSpace(ex.Expires))
-		if err != nil {
-			res.Malformed = append(res.Malformed, fmt.Sprintf(
-				"%s has an unparseable `expires: %s` — want YYYY-MM-DD, so it is not honored", id, ex.Expires))
+		expiry, msg := checkExemptionEntry(ex)
+		if msg != "" {
+			res.Malformed = append(res.Malformed, msg)
 			continue
 		}
 		// Expiry is end-of-day: an exemption dated today is still live

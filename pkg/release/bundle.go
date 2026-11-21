@@ -573,6 +573,15 @@ type Shape struct {
 	// shape, so it is a bundle-document feature
 	// ([BundleFeatureExternalDatabases]).
 	ExternalDatabases []ShapeExternalDatabase `json:"external_databases,omitempty"`
+	// Telemetry is the env's declared telemetry targets (forge.Telemetry)
+	// that run on Reliant hosting, normalized: what the platform collects,
+	// since forge runs no collector there. Sorted by service name. Omitted
+	// when the env declares no hosted target, so every shape recorded before
+	// the field encodes and hashes exactly as it did. A control plane that
+	// predates it refuses the whole shape, so it is a bundle-document feature
+	// ([BundleFeatureTelemetry]), and it is sent only to one that also
+	// collects it ([CapabilityCollectsTelemetry]). See telemetry.go.
+	Telemetry []ShapeTelemetry `json:"telemetry,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet (a
 	// transitional state, see [ApplierForge]), or "flux" for one an in-cluster
@@ -611,6 +620,16 @@ type Shape struct {
 	// recorded before the field encodes and hashes exactly as it did; a
 	// bundle-document feature ([BundleFeaturePreview]).
 	Preview *ShapePreview `json:"preview,omitempty"`
+	// Changes are the Forge Changes the release can serve, keyed by change
+	// key (changes.yaml at the project root, the same in every env): each
+	// one's value type, variants and default. The control plane refuses to
+	// deliver a variant the env's release does not declare. Who gets which
+	// variant is NOT here: that is live delivery state the control plane
+	// owns. Omitted when the project declares none, so every shape recorded
+	// before the field encodes and hashes exactly as it did; a control plane
+	// that predates it refuses the whole shape, so it is a bundle-document
+	// feature ([BundleFeatureChanges]).
+	Changes map[string]ShapeChange `json:"changes,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -1213,6 +1232,9 @@ func (s Shape) Validate() error {
 	if err := validateShapeBuckets(s.Buckets); err != nil {
 		return err
 	}
+	if err := validateShapeChanges(s.Changes); err != nil {
+		return err
+	}
 	if s.ReleaseHealth != nil {
 		if err := s.ReleaseHealth.canonical().validate(); err != nil {
 			return err
@@ -1228,6 +1250,9 @@ func (s Shape) Validate() error {
 		return err
 	}
 	if err := s.validateExternalDatabases(); err != nil {
+		return err
+	}
+	if err := validateShapeTelemetry(s.Telemetry); err != nil {
 		return err
 	}
 	delivered := map[string]bool{}
@@ -1405,6 +1430,7 @@ func (s Shape) Canonical() Shape {
 		out.DataAccess = nil
 	}
 	out.Buckets = canonicalShapeBuckets(s.Buckets)
+	out.Changes = canonicalShapeChanges(s.Changes)
 	if s.ReleaseHealth != nil {
 		if h := s.ReleaseHealth.canonical(); !s.ReleaseHealth.IsDefault() {
 			out.ReleaseHealth = &h
@@ -1416,6 +1442,7 @@ func (s Shape) Canonical() Shape {
 	out.ReleaseProbes = canonicalReleaseProbes(s.ReleaseProbes)
 	out.Databases = canonicalShapeDatabases(s.Databases)
 	out.ExternalDatabases = canonicalExternalDatabases(s.ExternalDatabases)
+	out.Telemetry = canonicalShapeTelemetry(s.Telemetry)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id

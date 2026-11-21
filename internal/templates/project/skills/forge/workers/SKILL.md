@@ -9,12 +9,14 @@ Workers are long-running background processes that don't serve HTTP but particip
 
 ## Naming
 
-Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the `forge.yaml` `path:` field. The display name in `forge.yaml` `name:` keeps its original spelling.
+Worker names canonicalize to lowercase **snake_case**: hyphens become underscores and PascalCase/camelCase boundaries split (`email-sender` → `email_sender`, `EmailSender` → `email_sender`, `calibrator_refit` stays `calibrator_refit`). The canonical form is what appears on disk, in the Go package decl, and in the scaffolded `Name()` (the identifier in log lines, and a cron worker's tick-claim key). forge.yaml records no workers: forge discovers each one from `internal/workers/<name>/`.
 
-- `forge scaffold worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`, `path: internal/workers/calibrator_refit` in `forge.yaml`.
-- `forge scaffold worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`, `path: internal/workers/email_sender`.
+- `forge scaffold worker calibrator_refit` → directory `internal/workers/calibrator_refit/`, `package calibrator_refit`.
+- `forge scaffold worker email-sender` → directory `internal/workers/email_sender/`, `package email_sender`.
 
-**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`. The `forge.yaml` `services[].path:` is the source of truth — match the directory to it, not the other way around.
+(A worker scaffolded before this rule returned a kebab-case `Name()`; it is yours, so keep it or change it. For a cron worker, changing it starts a fresh claim history.)
+
+**Migrating from a non-forge codebase:** rename existing worker directories to the canonical snake_case leaf under `internal/workers/` *before* running `forge generate`: the directory is what forge discovers the worker by.
 
 ## Adding a Worker
 
@@ -26,9 +28,11 @@ forge scaffold worker <name> --kind cron --schedule "*/5 * * * *"
 This creates:
 - `internal/workers/<name>/worker.go` — Worker implementation with `Start(ctx)` / `Stop(ctx)`
 - `internal/workers/<name>/worker_test.go` — Basic lifecycle test
-- An entry in `forge.yaml` under `services:` with type `worker`
+- Its constructor method in `internal/app/compose.go`, `func (g *Graph) new<Name>() (*<name>.Worker, error)`: the next `forge generate` adds it when it discovers the worker. The default `server` root supervises every worker nothing else depends on, so there is nothing to append and nothing to register. forge.yaml is not touched.
 
-After adding a worker, construct it in the explicit composition (`internal/app/compose.go` `NewComponents`, off the owned `internal/app/providers.go` `Infra`/`OpenInfra`) onto its `Components` field — see [Wiring](#wiring) below.
+When you add a field to the worker's `Deps`, forge adds the key to its constructor method; a field another node produces is resolved by type, and the values stay yours — see [Wiring](#wiring) below.
+
+A pre-graph project (an owned `Infra` + `NewComponents` composition) gets the worker's construction in `NewComponents` and its accessor in `internal/app/lifecycle.go` `WorkerList` instead, reconciled the same way, until `forge fix composition-graph` moves it to the graph.
 
 ## Worker Lifecycle
 
@@ -174,7 +178,7 @@ func (w *Worker) Start(ctx context.Context) error {
 
 ## Wiring
 
-A worker's `Deps` are interface-typed fields filled **by type in `internal/app/compose.go` `NewComponents`**, not by string-matched field names and not by a generated `wire_gen.go`. You construct the worker in type-topological order, pass it its collaborators' interfaces (read off the owned `infra.<Field>`), and assign it onto its `Components` field. Your `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker — forge appends the accessor for a newly discovered one — and the cmd serve path supervises them, so you don't append to a slice here:
+A worker's `Deps` are interface-typed fields filled **by type** in the composition graph (`internal/app/compose.go`), not by string-matched field names and not by a generated `wire_gen.go`. forge writes the worker's constructor method when it first discovers the worker, and adds a key when its `Deps` gains a field; the value expressions are yours. Each value is another node's memoized accessor (`g.QueueClient()`, a component or a provider func's value from the owned `internal/app/providers.go`) or a graph input (`g.Cfg`, `g.Log`):
 
 ```go
 type Deps struct {
@@ -183,7 +187,32 @@ type Deps struct {
     Queue  queue.Client         // an interface — the default fill is the real in-process impl
 }
 
-// in internal/app/compose.go
+// in internal/app/compose.go (yours; generate adds missing methods and Deps keys, never touches a value)
+func (g *Graph) newCleanup() (*cleanup.Worker, error) {
+    return cleanup.New(cleanup.Deps{
+        Logger: g.Log,             // a graph input
+        Cfg:    g.Cfg.Cleanup,
+        Queue:  g.QueueClient(),   // another node's accessor, resolved BY TYPE
+    }), nil
+}
+```
+
+A root selects what a process builds and supervises. With no `//forge:root` declared, the generated `Server` root runs every runnable node nothing depends on (the API listener, every worker, every operator), which is what `<bin> server` runs. To run a worker as a process of its own, declare a root that names it and deploy that root (load `architecture`, "Roots and commands"):
+
+```go
+// internal/app, conventionally roots.go — yours
+//forge:root worker
+type Worker struct {
+    Cleanup *cleanup.Worker // `<bin> worker` builds the cleanup worker's closure alone
+}
+```
+
+Because `Queue` is an interface, swapping a mock (in a test) or a Connect client (when the producer moves to its own binary) is a one-line change of the value expression, with the worker untouched. There is no name-matched `*App` field, no typed-zero-with-TODO fallback, and no `wire_gen.go`: a collaborator that doesn't satisfy the interface fails to compile rather than being silently dropped, and a required field nothing produces, or two nodes could fill, fails `forge generate` with the node, field and type.
+
+**Pre-graph projects.** A project that still composes with an owned `Infra` + `NewComponents` constructs each worker there instead, in type-topological order, off `infra.<Field>`, and assigns it onto its `Components` field; `internal/app/lifecycle.go` `WorkerList(c)` adapts every constructed worker (forge appends the accessor for a newly discovered one) and the cmd serve path supervises them:
+
+```go
+// in internal/app/compose.go, pre-graph
 func NewComponents(infra *Infra) (*Components, error) {
     c := &Components{}
     q := queue.New(infra.QueueConn)          // construct collaborators once, off infra
@@ -195,8 +224,6 @@ func NewComponents(infra *Infra) (*Components, error) {
     return c, nil
 }
 ```
-
-Because `Queue` is an interface, swapping a mock (in a test) or a Connect client (when the producer moves to its own binary) is a one-line change in `NewComponents` with the worker untouched. There is no name-matched `*App` field, no typed-zero-with-TODO fallback, and no `wire_gen.go` — a collaborator that doesn't satisfy the interface fails to compile rather than being silently dropped.
 
 ## Running on more than one replica
 
@@ -232,7 +259,7 @@ Rules the primitive cannot enforce for you:
 
 ## Late-bound dependencies between workers
 
-When worker A produces a value worker B needs (snapshot saver, registry, event sink), you can't pass it through B's constructor — both workers are constructed in the same pass, so a constructor-only graph would deadlock. **Two-phase wiring is the answer, and it's just plain Go:** construct both ends and inject with a setter, by hand inside `NewComponents`. No disown needed — `compose.go` is yours, and reconciliation only adds missing components and Deps keys; it never rewrites what you wrote.
+When worker A produces a value worker B needs (snapshot saver, registry, event sink) and B also feeds A, the two constructors form a cycle. In the composition graph, break it with a lazy edge: give one side a `func() T` Deps field, and forge wires the other node's accessor method value, which is called only after both exist (`architecture`, "Shape errors fail generate"). In a pre-graph project, **two-phase wiring is the answer, and it's just plain Go:** construct both ends and inject with a setter, by hand inside `NewComponents`. No disown needed — `compose.go` is yours, and reconciliation only adds missing components and Deps keys; it never rewrites what you wrote.
 
 ```go
 func NewComponents(infra *Infra) (*Components, error) {

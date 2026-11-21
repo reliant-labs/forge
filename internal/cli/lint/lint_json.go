@@ -445,6 +445,8 @@ func collectSingleLinterJSON(
 		// `forge lint --proto-format --fix` writes buf's output (--json
 		// refuses --fix, so it stays detect-only).
 		return report(collectProtoFormatJSON(ctx, cwd, formatKeep(scope, paths), flags.autoFix()))
+	case flags.telemetry:
+		return report(collectTelemetryJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	}
 
 	return nil, false, nil

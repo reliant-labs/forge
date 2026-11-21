@@ -91,6 +91,12 @@ default is the directory the server was started in, or -C):
               skill_search   find a skill by keyword
               skill_load     print one skill
               deploy_status  the claimable deploy of an env: URL, claim link, state
+              db_query       one read-only SQL statement against an env's app
+                             database (forge db query --json, same policy, audit
+                             and read-only role)
+              obs_status, obs_issues, obs_issue, obs_logs, obs_check
+                             an env's telemetry and release verdict (forge obs
+                             … --json); the hosted connector's tools, by name
               explain_error  a forge failure's meaning and the exact next command
   mutating    lint           forge lint --quiet [--scope PATH...]
               generate       forge generate [--dry-run | --check]

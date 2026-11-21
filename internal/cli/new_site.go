@@ -209,7 +209,7 @@ func adoptSite(in newSiteInput, fe generator.SiteFrontend) error {
 	for _, line := range inPlaceMergeSummary(merged) {
 		fmt.Println(line)
 	}
-	printSiteNextSteps("")
+	printSiteNextSteps("", fe.Type)
 	return nil
 }
 
@@ -293,7 +293,7 @@ func greenfieldSite(ctx context.Context, in newSiteInput) error {
 	if !in.inPlace {
 		cd = filepath.Base(in.targetPath)
 	}
-	printSiteNextSteps(cd)
+	printSiteNextSteps(cd, fe.Type)
 	return nil
 }
 
@@ -305,27 +305,33 @@ func siteStarterLabel(kind string) string {
 }
 
 // printSiteNextSteps prints siteNextSteps.
-func printSiteNextSteps(cd string) {
+func printSiteNextSteps(cd, feType string) {
 	fmt.Println()
-	for _, line := range siteNextSteps(cd) {
+	for _, line := range siteNextSteps(cd, feType) {
 		fmt.Println(line)
 	}
 }
 
 // siteNextSteps is what to do with a site `project new` just made or
 // adopted: the skill that covers the whole flow, run it, ship it. cd, when
-// set, is the directory to change into first. Every command in it resolves
-// in the command tree (TestSiteNextStepsArePasteable).
-func siteNextSteps(cd string) []string {
+// set, is the directory to change into first. feType is the frontend's KCL
+// type: `lint --static-export` checks only a Next.js export, so a Vite site's
+// export check is its own `npm run build`. Every command in it resolves in the
+// command tree (TestSiteNextStepsArePasteable).
+func siteNextSteps(cd, feType string) []string {
 	cli := Name()
 	lines := []string{"Next steps:"}
 	if cd != "" {
 		lines = append(lines, "  cd "+cd)
 	}
+	exportCheck := [2]string{cli + " lint --static-export", "what a static export cannot serve, with file:line"}
+	if feType == "vite" {
+		exportCheck = [2]string{"npm run build", "the export's only check: a Vite build is already static (lint --static-export checks Next.js)"}
+	}
 	steps := [][2]string{
 		{cli + " skill load deploy/static-site", "the whole flow: envs, releases, hosting, domains"},
 		{cli + " env up dev", "the dev server (browser console mirrored to .forge/logs/dev/)"},
-		{cli + " lint --static-export", "what a static export cannot serve, with file:line"},
+		exportCheck,
 		{cli + " env build prod --release v0.1.0", "build once, push, record the release"},
 		{cli + " env deploy prod v0.1.0", "publish to hosted static hosting (one env's site per person is free)"},
 		{cli + " domain add <host> --env prod", "your own hostname"},

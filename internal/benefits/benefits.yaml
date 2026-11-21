@@ -204,7 +204,7 @@ benefits:
 
   - id: owned-seams-disown
     category: build
-    title: Every generated file has an exit
+    title: Disown any generated file
     claim: >-
       Generated code sits beside owned seams you edit freely, and `forge project
       disown` permanently hands any generated file to you.
@@ -216,7 +216,7 @@ benefits:
 
   - id: scaffold-exclude
     category: build
-    title: Areas forge never writes
+    title: Exclude paths from codegen
     claim: >-
       `scaffold.exclude` in forge.yaml names the parts of an existing repo forge
       must never write, and every generate, scaffold, upgrade and rescaffold
@@ -236,7 +236,7 @@ benefits:
 
   - id: prune-orphans
     category: build
-    title: Clean up after a feature
+    title: Prune orphaned generated files
     claim: >-
       When a feature is pinned off, `forge generate` lists the files it left
       behind and `forge project prune --orphans` deletes the ones still exactly
@@ -398,7 +398,7 @@ benefits:
 
   - id: frontend-runtime-config
     category: build
-    title: One bundle, every env
+    title: Runtime frontend config per env
     claim: >-
       Frontend config is a typed `config_gen.ts` read at runtime from a per-env
       `config.js`, so one bundle promotes unchanged, a key not in the schema
@@ -577,6 +577,7 @@ benefits:
       - path: internal/linter/migrationlint/compat_declaration.go
       - path: internal/linter/migrationlint/add_column.go
       - path: internal/linter/migrationlint/transaction_block.go
+      - path: internal/linter/migrationlint/blocking_index.go
       - path: internal/cli/lint/lint_rules.go
     rules:
       - id: no-down-migration
@@ -623,6 +624,12 @@ benefits:
         bug_class: >-
           `CREATE INDEX CONCURRENTLY` and kin cannot run in a transaction block;
           the statement must be alone in its file
+      - id: blocking-index-build
+        lane: --migration-safety
+        bug_class: >-
+          A plain `CREATE INDEX` on a table that may hold rows blocks every
+          write to it for the whole build (a warning: lint cannot see the
+          table's size; `forge db analyze` measures it)
       - id: enum-value-used-before-commit
         lane: --migration-safety
         bug_class: >-
@@ -703,6 +710,44 @@ benefits:
         bug_class: >-
           A statement that does not finish within statement_timeout on
           production-shaped data
+
+  - id: query-index-analysis
+    category: data
+    title: Index check of tested queries
+    claim: >-
+      `forge db analyze queries` plans every query shape a test run recorded
+      on a disposable database at the head schema, with sequential scans
+      disabled, and reports each
+      filter, join and ORDER BY … LIMIT no index serves, with the caller's
+      file and line.
+    availability: forge
+    headline: false
+    use: >-
+      Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then
+      `forge db analyze queries --capture /tmp/qc` (the shapes whose callers
+      changed since the merge-base; `--all` for every one), or add
+      `--capture` to `forge db analyze` to run it after the migrations.
+    why: >-
+      A new filter or join without an index passes every test on a small
+      table and becomes a full scan in production; whether an index can serve
+      it depends on the schema at head, which only the planner knows.
+    evidence:
+      - command: db analyze queries
+      - path: pkg/dbanalyze/queries.go
+      - path: pkg/querycapture
+      - path: internal/cli/db_analyze_queries.go
+      - skill: db/analyze
+    rules:
+      - id: db-analyze-query-no-usable-index
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A filter, join or ORDER BY … LIMIT that no index can serve, which
+          reads every row of the table once it holds production data
+      - id: db-analyze-query-large-seqscan
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A query whose plan on an anonymized production snapshot
+          sequentially scans a large table
 
   - id: keep-your-migration-tool
     category: data
@@ -842,7 +887,7 @@ benefits:
 
   - id: never-waiting-migrations
     category: data
-    title: Migrations that never wedge prod
+    title: Migration lock and statement timeouts
     claim: >-
       A migration never waits for a lock without a limit (`lock_timeout` 5s,
       five attempts with backoff, `statement_timeout` 30m, overridable per
@@ -893,7 +938,7 @@ benefits:
 
   - id: dev-db-recovery
     category: data
-    title: Wedged dev DB recovers
+    title: Dev database reset and repair
     claim: >-
       `forge db migrate force` repairs and clears dirty migration state, and
       `forge db reset` drops, recreates, migrates and seeds a dev database (dev
@@ -992,7 +1037,7 @@ benefits:
 
   - id: test-tiers
     category: test
-    title: Three tiers, real subject
+    title: Unit, integration and e2e tiers
     claim: >-
       Unit tests use the real subject plus generated mocks, integration tests a
       real migrated Postgres and end-to-end tests a running dev stack, so the
@@ -1006,7 +1051,7 @@ benefits:
 
   - id: slow-test-enforcement
     category: test
-    title: Fast test tier stays fast
+    title: Slow-test gating for the fast tier
     claim: >-
       A test that execs a tool, drives a container or dials the network calls
       `testkit.Slow` and skips under `-short`, and `forge lint --slow-tests`
@@ -1030,7 +1075,7 @@ benefits:
 
   - id: cache-soundness
     category: test
-    title: No stale cached passes
+    title: Go test cache soundness checks
     claim: >-
       A test whose child process reads repo files must skip under `-short` or
       open those inputs itself, so Go's test cache cannot replay a PASS after
@@ -1061,7 +1106,7 @@ benefits:
 
   - id: skipped-pass-detector
     category: test
-    title: A skipped suite isn't green
+    title: Skipped-test detection in CI
     claim: >-
       `forge ci verify-test-run` reports packages that skipped so much that
       their pass proves nothing.
@@ -1127,7 +1172,7 @@ benefits:
 
   - id: kcl-eval-tests
     category: test
-    title: Test what you declared
+    title: Test assertions on KCL declarations
     claim: >-
       `forge/pkg/kcleval` lets a Go test assert against the project's KCL
       declarations instead of restating them.
@@ -1242,7 +1287,7 @@ benefits:
 
   - id: env-down-self-safe
     category: dev
-    title: Stopping never kills yourself
+    title: Safe env shutdown for agents
     claim: >-
       `forge env down` walks its own parent chain first, so it can't end the
       agent or shell that started it.
@@ -1302,7 +1347,7 @@ benefits:
 
   - id: storage-gc
     category: dev
-    title: Disk kept in check
+    title: Disk space reserve and cleanup
     claim: >-
       `forge storage` reports host capacity, refuses a build below the
       free-space reserve, trims Go build caches and removes idle, clean, pushed
@@ -1518,7 +1563,7 @@ benefits:
 
   - id: lint-skip-is-failure
     category: guardrails
-    title: A skipped lane never passes
+    title: Skipped lint lanes fail the gate
     claim: >-
       A gating lint lane that could not run fails the build unless you accept
       the skip by name with a reason, and `--strict` escalates advisory findings
@@ -1572,7 +1617,7 @@ benefits:
 
   - id: version-skew-guard
     category: guardrails
-    title: Pinned forge, no skew
+    title: Pinned forge version enforcement
     claim: >-
       Forge refuses to lint or generate with a binary other than the one
       `forge.yaml` pins, so every machine and CI produce the same output.
@@ -1583,7 +1628,7 @@ benefits:
 
   - id: unwritten-fields
     category: guardrails
-    title: Catches fields nothing writes
+    title: Unwritten read-only field detection
     claim: >-
       A read-only or computed field that no code populates fails lint, instead
       of every row shipping a silent zero.
@@ -1596,7 +1641,7 @@ benefits:
 
   - id: guarded-field-bypass
     category: guardrails
-    title: Guarded fields stay guarded
+    title: Guarded-column write detection
     claim: >-
       Lint flags an edit page or handler that writes a `forge:guards` column
       directly, bypassing the rpc that owns its state transitions.
@@ -1607,7 +1652,7 @@ benefits:
 
   - id: create-nullability
     category: guardrails
-    title: Create requests keep presence
+    title: Optional-field presence checks
     claim: >-
       Lint fails when a field's optional label differs between an entity and its
       Create request, which would silently drop "unset" vs "zero".
@@ -1698,7 +1743,7 @@ benefits:
 
   - id: deps-boundary-lints
     category: guardrails
-    title: Dependency injection stays honest
+    title: Dependency injection lint
     claim: >-
       Lint keeps Deps interface-typed and narrow, forbids downcasts and
       container-style deps, and pushes scalars into typed config, so every
@@ -1714,7 +1759,7 @@ benefits:
 
   - id: optional-deps-guard
     category: guardrails
-    title: No nil-dep panics
+    title: Optional dependency nil checks
     claim: >-
       Lint flags an unguarded dereference of a Deps field marked
       `forge:optional-dep`, a nil-pointer panic no construction-time check can
@@ -1750,7 +1795,7 @@ benefits:
 
   - id: marker-typo-lints
     category: guardrails
-    title: Misspelled markers are caught
+    title: Unknown marker detection
     claim: >-
       A misspelled `forge:` marker in Go, proto or a SQL comment, or a
       `(forge.v1.*)` option this binary does not define, fails lint instead of
@@ -1824,7 +1869,9 @@ benefits:
     claim: >-
       For a statically hosted Next.js app, `forge lint --static-export` names
       each route, server action, `cookies()` call or `next/image` use the export
-      would refuse, with file and line.
+      would refuse, with file and line. For a Vite app it checks that the build
+      lands in the directory the deploy publishes and its asset URLs match the
+      mount.
     availability: forge
     evidence:
       - command: lint --static-export
@@ -1960,7 +2007,7 @@ benefits:
 
   - id: lint-rules-composition-deps
     category: guardrails
-    title: Architecture stays testable
+    title: Architecture and wiring rules
     claim: >-
       Lint keeps Deps interface-typed and narrow, every component reachable and
       audience-correct, so services stay mockable and wired.
@@ -2145,6 +2192,11 @@ benefits:
         bug_class: >-
           A `//forge:` comment in Go that forge does not read, an unknown name
           or a spelling its parser ignores
+      - id: forge-go-markers-reason-missing
+        lane: --go-markers
+        bug_class: >-
+          A marker whose reason is mandatory (`forge:auth-unscoped-ok`)
+          written with none, which forge ignores; advisory
       - id: forgeconv-open-signup
         lane: ""
         bug_class: >-
@@ -2178,7 +2230,7 @@ benefits:
 
   - id: lint-rules-tracing
     category: guardrails
-    title: Traces that never break
+    title: Broken-trace detection and fixes
     claim: >-
       `forge lint --tracing` names every place a request's trace is cut (a log
       call without its context, a hand-built HTTP client, an untraced database
@@ -2340,6 +2392,25 @@ benefits:
           A frontend on a bucket with `trailingSlash` off: the export writes
           `<route>.html` and a bucket serves objects by exact name, so every
           route but `/` 404s
+      - id: static-export-partial-prerender
+        lane: --static-export
+        bug_class: >-
+          `cacheComponents: true` (create-next-app's Next.js 16 default) or
+          `experimental.ppr` in `next.config`, which turns on partial
+          prerendering and makes `next build` refuse the export
+      - id: static-export-vite-out-dir
+        lane: --static-export
+        bug_class: >-
+          A Vite frontend on a static runtime whose `build.outDir` is not the
+          env's `public_dir`, so the deploy publishes a directory the build
+          never wrote: missing, or stale from an older build
+      - id: static-export-vite-base
+        lane: --static-export
+        bug_class: >-
+          A Vite `base` that misses where the env mounts the frontend
+          (`base_path`, or the site root), so every script and stylesheet 404s
+          and the page loads blank; or a relative base with a path-based client
+          router, which breaks deep links to nested routes
       - id: forgeconv-frontend-process-env
         lane: --conventions
         bug_class: >-
@@ -2469,9 +2540,44 @@ benefits:
           An env whose render fails, so its secrets could not be judged (a
           warning; `forge env render` reports the render error itself)
 
+  - id: lint-rules-telemetry
+    category: guardrails
+    title: Declared telemetry rules
+    claim: >-
+      A dashboard panel over a series no scrape keeps, an unbounded scrape and
+      a rate over a gauge are caught from each env's real render.
+    availability: forge
+    evidence:
+      - path: internal/cli/lint/telemetry_rules.go
+      - command: lint --telemetry
+    rules:
+      - id: telemetry-dashboard-metric-uncollected
+        lane: --telemetry
+        bug_class: >-
+          A declared dashboard series whose metric no scrape of its system
+          keeps (allow minus deny), so the panel is empty in every env it ships
+          to with no other symptom
+      - id: telemetry-scrape-unbounded
+        lane: --telemetry
+        bug_class: >-
+          A metrics scrape with no `allow`, which stores every series the
+          endpoint exposes until it passes `sample_limit` and fails whole
+      - id: telemetry-rate-on-gauge
+        lane: --telemetry
+        bug_class: >-
+          A rate or increase over a metric nothing marks as a counter (no
+          `counters` match, no `_total`/`_count`/`_sum`), which reads nothing
+          when the metric is a gauge (a warning)
+      - id: telemetry-high-cardinality-risk
+        lane: --telemetry
+        bug_class: >-
+          A scrape that raises `sample_limit` or keeps every name while
+          dropping no labels, so a per-user or per-id label explodes its
+          series (a warning)
+
   - id: lint-rules-scaffold-ownership
     category: guardrails
-    title: Generated code stays honest
+    title: Generated-code tampering checks
     claim: >-
       Hand-edited generated files, ignored generated code and committed
       machine-local state fail lint.
@@ -2538,7 +2644,7 @@ benefits:
 
   - id: lint-rules-forge-internal
     category: guardrails
-    title: Forge's own template checks
+    title: Template lint for forge itself
     claim: >-
       Forge lints its own templates for the ownership banner each tier must
       carry and for symbols a regenerated template no longer defines, so a forge
@@ -2646,11 +2752,16 @@ benefits:
     category: security
     title: Dependency and image scanning
     claim: >-
-      `forge ci vuln-scan` runs govulncheck, npm audit and image scans per
-      `forge.yaml`, refuses a pass it did not verify, and takes reviewed,
+      `forge ci vuln-scan` runs govulncheck over every Go module and npm audit
+      over every frontend, refuses a pass it did not verify, and takes reviewed,
       expiring exemptions instead of silent ignores.
     availability: forge
     headline: true
+    why: >-
+      Container images are scanned by Trivy steps in the generated GitHub
+      workflows (`ci.yml`'s docker build and `build-images.yml`), not by `forge
+      ci vuln-scan`, so they run in CI only and `ci.vuln_scan.exemptions` does
+      not cover them.
     evidence:
       - command: ci vuln-scan
       - path: internal/cli/ci_vuln_npm.go
@@ -2660,13 +2771,16 @@ benefits:
     category: security
     title: Signed images, SBOM and provenance
     claim: >-
-      The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign
-      signature and a build-provenance attestation to every image, bound to its
-      digest.
+      The generated `build-images.yml` signs every image it pushes with a keyless
+      cosign signature bound to its digest, generates an SPDX SBOM for it, and
+      attests its build provenance.
     availability: forge
     headline: true
     why: >-
-      This is the generated GitHub workflow only; `forge env build` itself does
+      The SBOM is uploaded as a workflow run artifact, not attached to the image
+      in the registry, and the provenance attestation is skipped for private
+      repositories outside GitHub Enterprise Cloud (GitHub's attestation store
+      refuses them). This is the generated GitHub workflow only; `forge env build` itself does
       not sign, and the DeliveryPolicy
       `provenance_sbom`/`trusted_builder`/`admission_verify` controls are
       recorded, not enforced.
@@ -2750,7 +2864,8 @@ benefits:
     claim: >-
       `forge project audit` includes an `unscoped_auth` list of authenticated
       rpcs that never resolve who is calling, with `// forge:auth-unscoped-ok:
-      <reason>` as the only acknowledged exception.
+      <reason>` as the only acknowledged exception; a marker with no reason is
+      listed as malformed, never silently ignored.
     availability: forge
     use: "`forge project audit --json`"
     evidence:
@@ -2777,7 +2892,8 @@ benefits:
     claim: >-
       Claims are enriched by stable subject (never email) before any handler
       runs, and a `forge:owner` column makes forge scaffold the owner-scoping
-      wrapper that lint keeps consistent across siblings.
+      wrapper that lint keeps consistent across siblings, never recommending
+      an email address as the owner.
     availability: forge
     why: >-
       `enrichClaims` runs after validation and before any handler, hydrating by
@@ -2828,7 +2944,7 @@ benefits:
 
   - id: jwks-outage-survival
     category: security
-    title: Restarts survive an IdP outage
+    title: Cached JWKS for IdP outages
     claim: >-
       A JWKS snapshot lets a service restart and keep validating tokens while
       its issuer is down.
@@ -3203,7 +3319,7 @@ benefits:
 
   - id: env-verify-parity
     category: ship
-    title: Prove parity before deploying
+    title: Pre-deploy parity verification
     claim: >-
       `forge env verify <env>` compares, per workload, the digest the env's
       promotion pins against the digest running and runs your tool's own dry
@@ -3276,7 +3392,7 @@ benefits:
 
   - id: declared-env-catalog
     category: ship
-    title: Every env in the release
+    title: Release lists every declared env
     claim: >-
       A released bundle carries one `declared_envs` entry per
       `deploy/kcl/<env>/main.k`, so the console lists environments that never
@@ -3413,7 +3529,7 @@ benefits:
 
   - id: promote-cas
     category: ship
-    title: No stale deploy overwrites a hotfix
+    title: Compare-and-set promotions
     claim: >-
       Every promote is a compare-and-set against the promotion the plan read, so
       a CI job that waited on approval cannot overwrite a hotfix that landed
@@ -3431,7 +3547,7 @@ benefits:
 
   - id: rollout-not-trampled
     category: ship
-    title: In-flight rollouts aren't trampled
+    title: Concurrent rollout protection
     claim: >-
       Promoting while the current promotion is still rolling out is refused
       (exit 4) unless `--supersede` is given, and the override is recorded on
@@ -3496,7 +3612,7 @@ benefits:
 
   - id: interrupted-cut-resume
     category: ship
-    title: A half-pushed release resumes
+    title: Resumable release builds
     claim: >-
       A cut that died after pushing images is resumed from its journal by
       re-running the same build, rebuilding nothing.
@@ -3539,7 +3655,7 @@ benefits:
 
   - id: roll-forward
     category: ship
-    title: Roll forward, deliberately
+    title: Roll-forward recovery
     claim: >-
       A failed deploy leaves the previous ReplicaSet serving and a bad migration
       is stopped before any workload changes, so recovery is a new release, and
@@ -3715,9 +3831,46 @@ benefits:
       - path: pkg/releasehealth/releasehealth.go
       - command: obs check
 
+  - id: vuln-gate-self-hosted
+    category: ship
+    title: Vulnerability gate, warn first
+    claim: >-
+      Every release cut prints what its SBOMs are known to be vulnerable to
+      and what each env's `vuln_gate` would do, and an env with no control
+      plane has `vuln_gate = enforce` and `provenance_sbom` judged before
+      forge writes its promotion, warning for one release before it refuses.
+    availability: forge
+    use: >-
+      `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy {
+      mode = "enforce" } }`; accept one advisory with `forge vuln exempt
+      <env> <id> --reason "..." --expires YYYY-MM-DD`
+    why: >-
+      Graded through the lint rollout rows `vuln-gate` and `sbom-required`:
+      below their `gates_from` release an enforce is judged as audit and says
+      "would block". From it, a self-hosted promotion is refused
+      `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale
+      database: could not determine is never a pass) or `sbom_missing`, each
+      exit 4; `--override-vuln-gate "<why>"` records who overrode it, why,
+      and which findings. `lint.rules: {vuln-gate: error}` gates now.
+    evidence:
+      - command: vuln exempt
+      - command: ci vuln-sbom
+      - path: internal/cli/vuln_gate.go
+    rules:
+      - id: vuln-gate
+        lane: forge env deploy
+        bug_class: >-
+          An env that declares `vuln_gate = enforce` promoting a release with
+          a fixable critical or KEV-listed advisory, or one nobody scanned
+      - id: sbom-required
+        lane: forge env deploy
+        bug_class: >-
+          A release promoted with no SBOM for an artifact it ships, so nothing
+          can say what it contains or what it is vulnerable to
+
   - id: delivery-policy-recorded
     category: ship
-    title: Delivery policy, stated honestly
+    title: Per-env delivery policy controls
     claim: >-
       `forge.DeliveryPolicy` declares per env what a release must prove, each
       control `off`, `audit` or `enforce`: `health_gate`, `signing` and
@@ -3779,7 +3932,7 @@ benefits:
 
   - id: flux-safe
     category: ship
-    title: Reconciler-safe manifests
+    title: GitOps-safe manifests
     claim: >-
       Forge refuses a Job that a GitOps reconciler would re-run or wedge (a TTL,
       an unhashed name) and a force-recreate on a kind that holds data at bundle
@@ -4074,7 +4227,7 @@ benefits:
 
   - id: billing-queued-exit7
     category: host
-    title: Billing never fails silently
+    title: Deploys queued on billing holds
     claim: >-
       A deploy that needs billing is recorded and queued (exit 7) with the link
       to fix it, and proceeds on its own when the hold clears.
@@ -4319,7 +4472,7 @@ benefits:
 
   - id: obs-status-changes
     category: run
-    title: What's wrong, what changed
+    title: Env status and change log
     claim: >-
       `forge obs status` summarizes services, open issues, firing alerts and the
       release in force; `forge obs changes` lists promotions, rollbacks, failed
@@ -4331,7 +4484,7 @@ benefits:
 
   - id: readable-traces
     category: run
-    title: Traces that show missing spans
+    title: Trace trees with uninstrumented time
     claim: >-
       `forge obs trace` prints a capped tree with errors and the critical path
       expanded, linked logs, and how much time went to uninstrumented code.
@@ -4364,8 +4517,9 @@ benefits:
     title: Error issues tied to releases
     claim: >-
       Errors group into issues with culprit, frames, trace, events per version
-      and suspect commits, and `resolve --in next` ties a fix to a release so a
-      later event from an older one is a regression.
+      and suspect commits, and `resolve --in next` ties a fix to the next
+      release: events from what is live stay quiet, and an event from a release
+      promoted after the resolve reopens the issue as a regression.
     availability: forge
     use: >-
       `forge obs issue <id>`; `forge obs issues --since-release|--since-deploy`
@@ -4541,18 +4695,55 @@ benefits:
       dashboards and the Overview's Traffic and Users sections with no code: visitors, channels,
       sign-ups and their attribution, active and new users, retention, goals and
       funnels.
-    status: in-progress
     availability: hosted
     use: >-
       `forge.Analytics` adds goals, an activation event and channel rules; a
       `<project>-users.json` replaces a dashboard; `dashboards = False` drops
       them.
     why: >-
-      Visitors are counted by the platform's cookieless daily hash at the
-      ingest edge, which ships with the control plane's edge columns and hash.
+      Visitors are counted by the platform's cookieless daily hash, computed at
+      the control plane's ingest edge, so no cookie is set.
     evidence:
       - library: pkg/obsbuiltin
       - path: pkg/obsbuiltin/population_clickhouse_test.go
+      - skill: observability/product-analytics
+
+  - id: controlled-rollouts-and-experiments
+    category: run
+    title: Controlled rollouts and A/B tests
+    claim: >-
+      Planned: one change ships new app behavior to everyone, as a gradual
+      rollout, or as a comparison of versions, with stable cohorts by user,
+      account, or visitor.
+    status: in-progress
+    availability: hosted
+    use: >-
+      Create a change with its default and new behavior, then choose who gets
+      it: everyone (remote config), a gradual rollout to a stable percentage,
+      or compare versions (an A/B test measured against your own product
+      events). The same user, account, or visitor keeps the same outcome, and
+      ramping up only adds people. The planned project-level Experiments
+      screen and Reliant agents use the same permissions and audit trail; apps
+      still implement both behaviors.
+    why: >-
+      The evaluation SDK ships: a Go store and OpenFeature provider, a browser
+      loader and OpenFeature provider, and assignment events recorded as
+      product events, and changes are declared in the project (changes.yaml)
+      and shipped in the release. Platform delivery of each environment's
+      policy and the Experiments screen are not shipped yet. Evaluation is
+      local in the app, from a versioned policy, without a
+      network call on each request or changes to load balancers.
+    evidence:
+      - library: pkg/changes
+      - library: pkg/changes/openfeature
+      - library: pkg/observe
+      - path: web-runtime/src/track.ts
+      - path: web-runtime/src/changes-store.ts
+      - path: web-runtime/src/changes-provider.ts
+      - path: web-runtime/src/exposure.ts
+      - path: internal/changesdecl/changesdecl.go
+      - path: docs/changes.md
+      - skill: observability/changes
       - skill: observability/product-analytics
 
   - id: builtin-ai-hub
@@ -4640,7 +4831,7 @@ benefits:
 
   - id: real-opt-out
     category: run
-    title: Opt-out enforced at the source
+    title: Telemetry opt-out at the source
     claim: >-
       Turning telemetry off for an env, or for one category (traces, metrics,
       logs, profiles, metadata, browser), means it is never collected or stored,
@@ -4783,8 +4974,9 @@ benefits:
     category: agents
     title: Built-in MCP server
     claim: >-
-      `forge mcp` exposes forge on stdio to any MCP-capable harness, deploys and
-      bug reports included, with no shell scraping.
+      `forge mcp` exposes forge on stdio to any MCP-capable harness, deploys,
+      bug reports, guarded database reads and monitoring included, with no
+      shell scraping.
     availability: forge
     headline: true
     scope: any
@@ -4794,6 +4986,7 @@ benefits:
       - command: mcp
       - path: internal/cli/mcp_tools.go
       - path: internal/cli/mcp_deploy.go
+      - path: internal/cli/mcp_obs_local.go
 
   - id: hosted-mcp
     category: agents
@@ -4815,7 +5008,7 @@ benefits:
 
   - id: capabilities-introspection
     category: agents
-    title: Whole surface in one call
+    title: Capabilities introspection
     claim: >-
       `forge project capabilities --json` enumerates every command, lint
       analyzer and marker from the binary itself, and `forge project
@@ -4881,7 +5074,7 @@ benefits:
 
   - id: report-bug
     category: agents
-    title: Agents report framework bugs
+    title: Bug reports from agents
     claim: >-
       `forge report-bug` sends a redacted defect report with evidence,
       deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly
@@ -4942,7 +5135,7 @@ benefits:
 
   - id: predictable-layout
     category: agents
-    title: Layout agents can predict
+    title: Predictable project layout
     claim: >-
       Every project shares one enforced layout (one service per proto file, a
       service's files in one directory, contracts beside their packages), so an
@@ -4965,7 +5158,7 @@ benefits:
 
   - id: llm-placement-guidance
     category: agents
-    title: The LLM proposes, code decides
+    title: LLM features as workflows
     claim: >-
       The `llm` skill puts agentic or judgement work in a Reliant workflow that
       calls the app's API, keeps money, limits and approvals as rules in the
@@ -5131,6 +5324,45 @@ limits:
     evidence:
       - external: control-plane:deploy/kcl/lib/hub_pool.k
       - skill: deploy
+  - id: no-hosted-autoscaling
+    title: Hosted backends do not autoscale
+    claim: >-
+      A hosted service or worker runs the replica count its env declares; it
+      does not scale with traffic between a min and a max, and a managed
+      database's storage and compute do not grow on their own.
+    instead: >-
+      raise the replica count or the shape in the env's `main.k` and deploy, or
+      bind the workload to a cluster you run and give it your own
+      HorizontalPodAutoscaler.
+    evidence:
+      - skill: deploy/hosting
+      - command: env shape
+  - id: hosted-profiling-opt-in
+    title: Hosted profiling is opt-in
+    claim: >-
+      Continuous CPU and heap profiling is on by default only against the local
+      ClickStack; a hosted env collects profiles only once its `main.k` sets
+      `signals.profiles = True`.
+    instead: >-
+      set `observability = forge.Observability { signals =
+      forge.ObservabilitySignals { profiles = True } }` in the env's `main.k`.
+    evidence:
+      - skill: observability/profiles
+      - path: pkg/observe/PROFILES.md
+  - id: no-deployment-protection
+    title: No sign-in gate on deployments
+    claim: >-
+      Hosted URLs, previews included, are public; there is no team sign-in or
+      password in front of a whole deployment. Managed identity signs in your
+      app's own users, and each RPC requires a signed-in caller unless its
+      proto opts out, but a static site or page is served to anyone.
+    instead: >-
+      put the pages behind your app's own sign-in (the frontend route guard and
+      `auth_required`), or keep a private preview on a cluster you run behind
+      your own access proxy.
+    evidence:
+      - skill: auth
+      - skill: deploy/preview
   - id: unclaimed-deploys-expire
     title: Unclaimed deploys are temporary
     claim: >-

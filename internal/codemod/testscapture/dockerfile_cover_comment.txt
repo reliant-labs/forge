@@ -1,0 +1,6 @@
+# ── Cover stage (use with: docker build --target cover) ──
+# The production image with instrumented binaries. Go writes a binary's
+# coverage counters to GOCOVERDIR when it exits; /tmp is the emptyDir forge
+# mounts in every pod it renders (the root filesystem is read-only), so the
+# counters outlive a container restart. serverkit's /debug/coverage serves
+# them live on the debug listener.

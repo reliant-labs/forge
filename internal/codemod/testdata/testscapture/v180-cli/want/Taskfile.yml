@@ -1,0 +1,318 @@
+version: '3'
+
+# Task wrappers for the democli CLI. Kept intentionally minimal — only
+# the verbs that have an obvious meaning for a single-binary tool (build,
+# test, lint, fmt). Add more as the project grows.
+
+env:
+  # GOFLAGS gets -trimpath, merged into whatever GOFLAGS you already use (from
+  # the environment, `go env -w` or the toolchain's go.env). Without it Go
+  # hashes each package's ABSOLUTE directory into its build-cache key, so every
+  # worktree and scratch copy of this module (forge ci verify-generated
+  # regenerates in a fresh one every run) compiles the whole module again and
+  # re-runs every test instead of reusing what a sibling already built.
+  # Measured: a second worktree of one commit compiled 267 packages and cached
+  # 0 of 73 test packages without it; 0 and 58 with it. A GOFLAGS already in
+  # your environment wins over this block (Task never overrides one), and
+  # -trimpath=false in it, or in `go env -w GOFLAGS`, opts out.
+  GOFLAGS:
+    sh: 'f="$(go env GOFLAGS 2>/dev/null)"; case " $f " in *" -trimpath"*|*" --trimpath"*) echo "$f" ;; *) echo "${f:+$f }-trimpath" ;; esac'
+
+vars:
+  # FORGE runs the forge THIS PROJECT pins: forge.yaml's forge_version. It
+  # is never whatever `forge` is first on PATH — that is routinely another
+  # version (a bundled forge, a months-old `go install`), and an older forge
+  # rejects a newer forge.yaml ("unknown key") or lints, gates and generates
+  # with templates the project did not pin. `go run module@version` builds
+  # the pinned forge once and then reuses the cached executable.
+  #
+  # Overrides, for forge developers and pins no proxy serves:
+  #   FORGE_BIN=/path/to/forge task ci     (environment), or
+  #   task ci FORGE=forge                  (command line).
+  # A bridged project (go.work, below) runs the bridged checkout instead.
+  # A pin that names no published forge (a +dirty build, `dev`) falls back to
+  # the forge on PATH, which then hands the command to the pin when it can.
+  FORGE_YAML:
+    sh: cat forge.yaml
+  # A project bridged to a local forge checkout (a gitignored go.work `use`,
+  # written by `forge project new --link-forge`) compiles against that
+  # checkout, and so do its templates: this very file can call a verb newer
+  # than the release forge_version names (that is the floor a build from a
+  # checkout may pin, not the forge that wrote this project). Run the forge the
+  # workspace resolves instead: `go list -m -json` says `"Main": true` for a
+  # module that is a workspace's main module and omits the key for a version it
+  # downloaded. The test is Task's own `contains`, not grep: this file runs on
+  # Windows too.
+  FORGE_BRIDGED:
+    sh: 'go list -m -json github.com/reliant-labs/forge 2>/dev/null || true'
+  FORGE: '{{$pin := index (fromYaml .FORGE_YAML) "forge_version" | default "" | toString}}{{if .FORGE_BIN}}{{.FORGE_BIN}}{{else if contains "Main\": true" .FORGE_BRIDGED}}go run github.com/reliant-labs/forge/cmd/forge{{else if or (eq $pin "") (eq $pin "dev") (contains "+" $pin)}}forge{{else}}go run github.com/reliant-labs/forge/cmd/forge@{{$pin}}{{end}}'
+  # GOTESTRACE is a TOP-LEVEL var on purpose: only global vars can be
+  # overridden from the command line (`task test GOTESTRACE=`), which is how
+  # the generated CI workflow passes through forge.yaml's `ci.test.race`.
+  # Declared on the task itself it would silently win over the override.
+  GOTESTRACE: '-race'
+  # SLOT runs the heavy lanes (`test`, `test:integration`) inside one of this
+  # machine's host-wide heavy slots: `forge slot run` waits while N other heavy
+  # jobs (builds, test lanes, codegen, lints — from any agent, worktree or
+  # terminal) are running, because past a handful every one of them slows
+  # down. N comes from the machine (min(CPUs/2, memory GiB/8)); set
+  # FORGE_HEAVY_SLOTS=<n> to change it or =off to switch it off. Inside a
+  # slot already (a gate check, a parent `forge slot run`) it does not wait.
+  # Empty when forge is absent or predates `forge slot` (the probe fails), so
+  # these tasks still run without it; `task test SLOT=` skips the slot for
+  # one run. `--class heavy` is spelled out on purpose: a forge without the
+  # verb rejects the flag loudly instead of printing its help and exiting 0
+  # without running the tests. `test:short` takes no slot: the scoped inner
+  # loop is not heavy and must not queue.
+  #
+  # The one deliberate use of the forge on PATH rather than FORGE: slots are
+  # machine-wide (every project and forge version shares one queue), and this
+  # probe runs on every `task` invocation, so it must cost nothing — never a
+  # `go run`.
+  SLOT:
+    sh: forge slot status --class heavy >/dev/null 2>&1 && echo 'forge slot run --class heavy --' || true
+  # ── Test records ──────────────────────────────────────────────────────────
+  # `task test` and `test:integration` record
+  # what they ran into .forge/tests/runs/<id>/: `forge test begin` allocates
+  # the run (or joins $FORGE_TEST_RUN, which `forge test run` sets so several
+  # lanes form one run), and `forge test capture` runs the lane's command
+  # UNCHANGED, stores its results and coverage, prints ordinary `go test`
+  # output and exits with the command's own status. `forge test report`
+  # (`task test:report`) summarises the record. `test:short` records nothing.
+  #
+  # Recording never decides a verdict, and never breaks a lane: with
+  # FORGE_TESTS=off, or a forge that cannot begin a run (one that predates
+  # `forge test`, an offline `go run`), RUN is empty and every lane runs
+  # exactly the command it would without recording — no capture, no -json,
+  # no coverage flags.
+  #
+  # TEST_BEGIN prints the run directory, or nothing. Each lane evaluates it
+  # in its own vars, so a `task` that runs no test lane never pays for it.
+  TEST_BEGIN: '[ "$FORGE_TESTS" = off ] || { d="$({{.FORGE}} test begin)" && [ -d "$d" ] && echo "$d"; } || true'
+  # TEST_SKIP is the `go test -skip` pattern of the quarantined tests
+  # (ci/quarantine/go/, written by `forge test quarantine add`), or nothing.
+  # forge is asked only when something is quarantined.
+  TEST_SKIP: '{ [ ! -d ci/quarantine/go ] && [ -z "$CI_QUARANTINE_EXTRA" ]; } || {{.FORGE}} test quarantine skip-regex go || true'
+  # COVERAGE is forge.yaml's `tests.coverage`: `true`/`false`, or a map whose
+  # `enabled` defaults to true (the legacy `ci.test.coverage` when the tests
+  # block does not say), always rendered as exactly "true" or "false". "false"
+  # keeps the coverage flags out of every lane, which then record results only.
+  # COVERPKG is ` -coverpkg=./...` under `tests.coverage.packages: module`:
+  # each test binary then counts the whole module, not just its own package.
+  COVERAGE: >-
+    {{- $cfg := fromYaml .FORGE_YAML -}}
+    {{- $tests := index $cfg "tests" -}}
+    {{- $cov := "" -}}
+    {{- if kindIs "map" $tests}}{{$cov = index $tests "coverage"}}{{end -}}
+    {{- if kindIs "bool" $cov}}{{if $cov}}true{{else}}false{{end}}
+    {{- else if kindIs "map" $cov}}{{if hasKey $cov "enabled"}}{{eq (toString (index $cov "enabled")) "true"}}{{else}}true{{end}}
+    {{- else}}{{$ci := index $cfg "ci"}}{{$t := ""}}{{if kindIs "map" $ci}}{{$t = index $ci "test"}}{{end}}{{if kindIs "map" $t}}{{eq (toString (index $t "coverage")) "true"}}{{else}}false{{end}}
+    {{- end -}}
+  COVERPKG: >-
+    {{- $tests := index (fromYaml .FORGE_YAML) "tests" -}}
+    {{- $cov := "" -}}
+    {{- if kindIs "map" $tests}}{{$cov = index $tests "coverage"}}{{end -}}
+    {{- if and (kindIs "map" $cov) (eq (toString (index $cov "packages")) "module")}} -coverpkg=./...{{end -}}
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  deps:
+    desc: Install Go dependencies
+    cmds:
+      - go mod download
+
+  build:
+    desc: Build the CLI binary into ./bin/democli
+    cmds:
+      # -trimpath strips local filesystem paths so builds are reproducible
+      # across machines; -buildvcs=true embeds the commit/dirty flag for
+      # runtime correlation.
+      - go build -trimpath -buildvcs=true -o bin/democli{{exeExt}} ./cmd/democli
+
+  install:
+    desc: Install the CLI binary to $GOBIN (or $GOPATH/bin)
+    cmds:
+      - go install -trimpath -buildvcs=true ./cmd/democli
+
+  test:
+    # Scoping: `task test -- ./internal/lifecycle/...` runs ONLY those Go
+    # packages; with no `--` args it is the whole module. An unmatched pattern
+    # fails in `go test` itself, so a scoped run can never quietly widen into
+    # a whole-module run that reports success.
+    desc: Run Go unit tests (excludes `//go:build integration` files)
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+      SKIP: { sh: "{{.TEST_SKIP}}" }
+    cmds:
+      # `-timeout 120s` matches the global per-package timeout convention so a
+      # hung test fails the suite quickly rather than wedging CI. Integration
+      # tests use the `integration` build tag and ship their own task below.
+      #
+      # Recorded as lane `unit` (see TEST_BEGIN): -json is the stream capture
+      # stores and renders back as plain `go test` output, and
+      # -covermode=atomic -coverprofile writes the lane's coverage beside it.
+      - >-
+        {{.SLOT}} {{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane unit -- {{end}}go test {{.GOTESTRACE}} -count=1
+        {{- if .RUN}} -json{{if eq .COVERAGE "true"}} -covermode=atomic '-coverprofile={{.RUN}}/unit/cover.out'{{.COVERPKG}}{{end}}{{end}}
+        {{- if .SKIP}} -skip '{{.SKIP}}'{{end}} -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+
+  test:short:
+    # The inner loop: run this after each edit, scoped to the packages you
+    # touched, and `task test` once before you finish. It drops -count=1 on
+    # purpose — Go's test cache keys on the test binary, its flags, and the
+    # files and env vars the test reads, so a cached pass is a real pass for
+    # any test that builds its own state, and re-running unchanged packages is
+    # most of what an edit loop spends. It drops -race because the race
+    # detector rebuilds every package under its own cache key and slows tests
+    # 2-10x; `task test` and CI keep both. A test that needs more than 60s
+    # under -short wants an `if testing.Short() { t.Skip() }` gate. The cache
+    # sees only what the test process itself reads: a test that execs a child
+    # process which reads repo files must read those inputs itself or skip
+    # under -short, or this tier can report a stale pass.
+    desc: "Inner-loop Go tests: -short, cached, no race. Scope it: task test:short -- ./internal/foo/..."
+    cmds:
+      - go test -short -timeout 60s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+
+  test:integration:
+    desc: Run integration tests (build tag `integration`, real dependencies expected)
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+      SKIP: { sh: "{{.TEST_SKIP}}" }
+    cmds:
+      # Integration tests rely on out-of-process state (postgres, sqlite tmp
+      # dir, etc.) so they're gated behind the `integration` build tag and
+      # excluded from `task test`. Run this in an environment that satisfies
+      # the per-test setup contract; see the testing-integration skill.
+      # Recorded as lane `integration`, the same way `task test` records `unit`.
+      - >-
+        {{.SLOT}} {{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane integration -- {{end}}go test {{.GOTESTRACE}} -count=1
+        {{- if .RUN}} -json{{if eq .COVERAGE "true"}} -covermode=atomic '-coverprofile={{.RUN}}/integration/cover.out'{{.COVERPKG}}{{end}}{{end}}
+        {{- if .SKIP}} -skip '{{.SKIP}}'{{end}} -timeout 600s -tags=integration {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+
+  test:all:
+    # The pre-merge sweep. `task test` stays the lane the CI test job runs
+    # (the edit loop runs `task test:short`); this adds the tagged lane.
+    #
+    # The two lanes are separate `go test` invocations ON PURPOSE. Build tags
+    # ADD files rather than filter them, so `-tags=integration` already
+    # recompiles and reruns every untagged test — a single combined pass plus
+    # a plain pass would run the whole unit suite twice for no extra signal.
+    desc: Run the unit and integration suites in order
+    cmds:
+      - task: test
+      - task: test:integration
+
+  ci:
+    # The whole PR gate, locally: ci:checks, then test, then test:integration,
+    # in ONE summary table. The scaffolded .github/workflows/ci.yml is a thin
+    # wrapper around the same three lanes (`task ci:checks`, `task test`,
+    # `task test:integration`), so this is the verdict CI would give, on your
+    # machine, before you push. It runs everything: change detection (skipping
+    # jobs a docs-only change cannot affect) is a CI cost optimization and lives
+    # in the workflow; locally you scope by running one lane.
+    #
+    # The gate lives in forge (`forge ci gate`), not in a script copied here, so
+    # it improves with forge and carries the same tool pins as CI. Rules, all
+    # enforced by it:
+    #   - every check runs even if an earlier one failed, then one table;
+    #   - exit non-zero if anything failed;
+    #   - a check that could not run (missing tool, dirty tree) is SKIPPED, not
+    #     PASS, and fails the gate unless named: CI_SKIP=vuln-go task ci
+    #   - tools run at the versions CI pins, from forge's tool cache.
+    # Add your own checks under `ci.gate.extra_checks` in forge.yaml.
+    #
+    # Not run under SLOT: the gate schedules host slots itself, one per
+    # heavy check, so one slot around the whole run would let every check
+    # inside it skip the queue (they would all be "inside a slot").
+    desc: "The whole PR gate locally (what CI runs): ci:checks + test + test:integration, one summary"
+    cmds:
+      - '{{.FORGE}} ci gate all'
+
+  ci:checks:
+    # The static and build lane — what the `checks` CI job runs after its one
+    # shared setup: verify-generated, lint, build, vulnerability and license
+    # scans, KCL validation and deployability, plus your ci.gate.extra_checks.
+    # See `task ci` for the semantics; `forge ci gate --list` names every check.
+    desc: "Static + build lane of the CI gate: verify-generated, lint, build, vuln-scan, KCL (what the CI `checks` job runs)"
+    cmds:
+      - '{{.FORGE}} ci gate checks'
+
+  test:report:
+    # What the lanes recorded: results, coverage merged across lanes, diff
+    # coverage against the base, failures. `forge test report` runs no test;
+    # it reads .forge/tests/runs/. Arguments after `--` go to it:
+    #
+    #   task test:report                       the newest run
+    #   task test:report -- --json             forge.test.report/v1
+    #   task test:report -- --format lcov      for an editor or another tool
+    #   task test:report -- --upload           send it to the control plane
+    #
+    # Exits 0 when every recorded test passed, 1 when one failed, 2 when the
+    # record proves nothing (no runs, every test skipped). Coverage never
+    # decides it.
+    desc: Summarise the recorded test runs (results, coverage, diff coverage); runs no test
+    cmds:
+      - "{{.FORGE}} test report {{.CLI_ARGS}}"
+
+  coverage:
+    # HTML coverage report at coverage.html, from what the lanes RECORDED:
+    # the newest run's coverage, merged across every lane it holds (unit and
+    # integration). It runs no test, so run the lanes first: `task test
+    # coverage`, or `forge test run` for unit and integration in one run.
+    # Other formats: `task test:report -- --format lcov` (or cobertura, json).
+    desc: Write coverage.html from the recorded test runs (run `task test` first)
+    cmds:
+      - "{{.FORGE}} test report --format html > coverage.html"
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true
+
+  generate:
+    # CLI/library kinds rarely have proto codegen, but contract-driven
+    # mock generation (`forge generate` emits mock_gen.go for any
+    # package with a contract.go) is universal. This task keeps the
+    # verb consistent across kinds so verify-generate has something
+    # canonical to call.
+    desc: Run forge generate (contract mocks, etc.)
+    cmds:
+      - '{{.FORGE}} generate'
+
+  verify-generate:
+    # CI gate: regenerate everything, then assert nothing changed.
+    # Catches the silent codegen-mock drift class of failure where a
+    # contract gains a parameter and the mock_gen.go is not refreshed
+    # — a recurring pain point when working on contract-pack-style
+    # codegen packages. Mirrors the service-kind Taskfile's verbatim.
+    desc: Verify generated code is committed up to date (forge ci verify-generated)
+    cmds:
+      - '{{.FORGE}} ci verify-generated'
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go source
+    cmds:
+      - cmd: |
+          if ! command -v goimports >/dev/null 2>&1; then
+            echo "goimports not installed — run: go install golang.org/x/tools/cmd/goimports@latest" >&2
+            exit 1
+          fi
+          goimports -w .
+      - go mod tidy
+
+  vet:
+    desc: Run go vet across the module
+    cmds:
+      - go vet ./...
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf bin
+      - rm -f coverage.out coverage.html

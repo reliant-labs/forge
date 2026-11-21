@@ -65,6 +65,9 @@ func TestV190Migration_Detection(t *testing.T) {
 		"analytics: full":    {[]file{{"src/lib/monitoring.ts", "initBrowserTelemetry({ analytics: \"full\" });\n"}}, false},
 		// Section 9: ledger formats.
 		"a .forge/scaffolded.json ledger": {[]file{{".forge/scaffolded.json", "{}\n"}}, true},
+		// Section 10: test lanes that record nothing (forge-detect tests-capture).
+		"an unrecorded test lane": {[]file{{"Taskfile.yml", "tasks:\n  test:\n    cmds:\n      - \"{{.SLOT}} go test -count=1 ./...\"\n"}}, true},
+		"a recorded test lane":    {[]file{{"Taskfile.yml", "tasks:\n  test:\n    cmds:\n      - >-\n        {{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane unit -- {{end}}go test ./...\n  test:short:\n    cmds:\n      - go test -short ./...\n"}}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

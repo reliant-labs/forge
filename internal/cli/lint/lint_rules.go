@@ -56,6 +56,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/slowtest"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
+	"github.com/reliant-labs/forge/internal/linter/testscapture"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/internal/linter/tracinglint"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
@@ -156,6 +157,8 @@ func gradableRules() []string {
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
 		// the flake gate (`forge ci gate`'s flake-check step)
 		RuleFlakeCheck,
+		// a Taskfile test lane that records nothing (advisory; lint.rules raises it)
+		testscapture.Rule,
 		// golangci-lint's build-tag passes (rolled out as one unit)
 		rolloutGolangciBuildTags,
 	}

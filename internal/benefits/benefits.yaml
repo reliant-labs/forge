@@ -2321,6 +2321,14 @@ benefits:
           dependence, leaked state, a timing assumption) merges and surfaces
           weeks later in someone else's change (`forge test flakes gate`;
           advisory until `lint.rules: {flake-check: error}`)
+      - id: tests-capture
+        lane: --tests
+        bug_class: >-
+          A Taskfile test lane that runs `go test` without `forge test
+          capture` records nothing: no results for `forge test report`, no
+          coverage, no flake history, and an empty record behind the release's
+          tests gate (`forge fix tests-capture`; advisory until
+          `lint.rules: {tests-capture: error}`)
       - id: forgeconv-handler-tests-use-tdd
         lane: --tests
         bug_class: >-

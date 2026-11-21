@@ -1,0 +1,3 @@
+// The record directory of the `forge test capture` lane running Vitest, if
+// one is (see the `test` block below).
+const testLaneDir = process.env.FORGE_TEST_LANE_DIR;

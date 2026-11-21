@@ -50,6 +50,11 @@ type Report struct {
 	// Verify are the commands that prove the result. Empty means the
 	// default: go build, forge generate, forge lint.
 	Verify []string
+	// Diff is the unified diff of what the run rewrote (or, dry run, would
+	// rewrite), for a codemod whose edits a one-line summary cannot show:
+	// one that rewrites YAML, Dockerfiles and config rather than Go symbols.
+	// `forge fix <name> --dry-run` prints it. Empty for the rest.
+	Diff string
 }
 
 // Changed reports whether the run rewrote (or would rewrite) anything.

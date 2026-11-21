@@ -233,6 +233,7 @@ forge fix derive-contract	cmd	allow-dirty:bool allow-version-skew:bool dry-run:b
 forge fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge fix tests-capture	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge frontend	group	allow-version-skew:bool project-dir/C:string
@@ -258,6 +259,7 @@ forge lint fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-r
 forge lint fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge lint fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge lint fix tests-capture	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge lint fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge login	cmd	allow-version-skew:bool endpoint:string no-verify:bool project-dir/C:string token:string

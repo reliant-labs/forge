@@ -1,0 +1,3 @@
+Taskfile.yml ../../../../templates/testdata/golden/Taskfile.yml.golden
+.github/workflows/ci.yml ../../../../templates/testdata/golden/ci_full.yml.golden
+.github/workflows/e2e.yml ../../../../templates/testdata/golden/e2e.yml.golden

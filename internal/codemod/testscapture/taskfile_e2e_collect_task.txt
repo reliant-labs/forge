@@ -1,0 +1,9 @@
+  test:e2e:collect:
+    # Pulls the servers' counters into the e2e lane (converted with
+    # `go tool covdata textfmt`). Deferred by test:e2e, so it runs whatever
+    # the suite's verdict; its own failure never changes that verdict.
+    internal: true
+    cmds:
+      - cmd: "{{.FORGE}} test collect {{.ENV}} --run '{{.RUN}}' --lane e2e"
+        if: '[ -n "{{.RUN}}" ]'
+        ignore_error: true

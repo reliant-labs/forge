@@ -1,0 +1,55 @@
+# Forge project manifest — see https://github.com/reliant-labs/forge.
+# This file is minimal on purpose. Features, the database, the frontends and
+# the project kind are derived from what exists in the repo (db/migrations,
+# frontends/, deploy/kcl, internal/operators, ...), not configured here; a
+# `features:` block pins one on or off only when the derived default is wrong.
+# Authentication is owned code — internal/app/auth.go's SetupAuth.
+# Add a section (ci, lint, contracts, ...) only to override a default
+# (`forge skill load architecture` documents the schema;
+# `forge skill list` indexes the per-topic skills, e.g. `auth`).
+
+name: demo
+module_path: example.com/demo
+forge_version: v1.9.0
+harness: reliant
+config:
+    enforce_typed_access: error
+
+# Written when the frontend was scaffolded. The vuln-npm gate (`forge ci vuln-scan`,
+# a row of `task ci`) fails on high and critical npm advisories. The ones below are
+# carried by the scaffolded frontend's own dependencies and have NO fixed release, so
+# there is nothing to upgrade to. Each is accepted by id only — a new advisory in the
+# same package still fails — with the reason it cannot reach this app, until
+# `expires`. On that date the gate fails again: re-review, then extend the date or
+# delete the entry. Delete it sooner when the gate reports it as matching nothing.
+ci:
+  vuln_scan:
+    exemptions:
+      - id: GHSA-vfj7-8cjw-p6xm
+        reason: >-
+          braces has no fixed release (every version through 3.0.3 is affected).
+          It reaches this project only through the Next.js frontend's dev lint
+          toolchain (stylelint and eslint-config-next, via fast-glob/micromatch),
+          which expands glob patterns from the project's own config files, never
+          from untrusted input, and is not in the production bundle (npm audit
+          --omit=dev does not report it). Remove this entry if braces ever enters
+          a production dependency, and once a fixed braces release makes forge ci
+          vuln-scan report it as matching nothing.
+        expires: "2027-02-19"
+
+# Test runs: every `task test*` lane records its results and coverage under
+# .forge/tests/ (`forge test report` reads them; `forge skill load testing`).
+# Recording never decides a verdict; FORGE_TESTS=off turns it off for one run.
+tests:
+    # upload: ci                           # ci (default) | always | never
+    # flakes:
+    #     quarantine: suggest              # suggest (default) | pr: open the quarantine PR
+    #     issues: false                    # file flake:suspected / flake:removed issues
+    #
+    # coverage false: the lanes record results only, and no env builds
+    # instrumented (-cover) binaries. Or a mapping:
+    #   coverage:
+    #       packages: package              # package (default) | module: -coverpkg=./...
+    #       exclude: ["internal/legacy/**"]  # left out of every percentage
+    #       include_generated: false       # count gen/, *_gen.go, *.pb.go in them
+    coverage: true

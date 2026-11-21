@@ -1,0 +1,1 @@
+forge.yaml sets ci.test.coverage: true, which the lanes and the cover builds read while tests.coverage is unset, so no tests: block was added. To move to the new key, replace it with `tests: {coverage: true}` (forge skill load migrations/v1.9.0/tests)

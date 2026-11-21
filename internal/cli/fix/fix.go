@@ -151,6 +151,9 @@ func printCodemodReport(out io.Writer, c codemod.Codemod, rep codemod.Report, dr
 			fmt.Fprintf(out, "  %d. %s\n", i+1, n)
 		}
 	}
+	if dryRun && rep.Diff != "" {
+		fmt.Fprintf(out, "\n%s", rep.Diff)
+	}
 	if !dryRun && len(rep.Verify) > 0 {
 		fmt.Fprintf(out, "\n  Verify: %s\n", strings.Join(rep.Verify, " && "))
 	}

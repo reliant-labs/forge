@@ -1,0 +1,22 @@
+    ...(laneDir
+      ? {
+          // Naming reporters replaces Vitest's defaults, so the GitHub
+          // Actions annotations it adds by itself are named here too.
+          reporters: process.env.GITHUB_ACTIONS
+            ? ["default", "json", "github-actions"]
+            : ["default", "json"],
+          outputFile: { json: join(laneDir, "vitest.json") },
+          coverage: {
+            enabled: process.env.FORGE_TEST_COVERAGE !== "off",
+            provider: "v8" as const,
+            // Istanbul JSON (coverage-final.json): statement blocks, the
+            // granularity the Go lanes record. An lcov.info beside it would be
+            // a second, line-granular copy of the same files, which
+            // `forge test report` refuses to merge with it.
+            reporter: ["json"],
+            reportsDirectory: laneDir,
+            // The lane directory is capture's; Vitest must not empty it.
+            clean: false,
+          },
+        }
+      : {}),

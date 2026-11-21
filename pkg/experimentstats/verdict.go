@@ -331,10 +331,15 @@ func compare(c, t Arm, alpha, z float64, minSample int64) Comparison {
 	}
 	out.Verdict = VerdictInconclusive
 	switch {
-	case min(c.Assigned, t.Assigned) < minSample:
-		out.Reason = ReasonBelowMinSample
 	case min(c.Units, t.Units) < minSample:
+		// The decision is gated on window-complete units, the ones the
+		// estimate is computed from, and on nothing else. Assigned only
+		// says why it is not yet: an arm short of assigned units needs
+		// more traffic; one with enough needs its windows to complete.
 		out.Reason = ReasonWindowNotComplete
+		if min(c.Assigned, t.Assigned) < minSample {
+			out.Reason = ReasonBelowMinSample
+		}
 	case out.PValue < alpha && out.DiffCI.Low > 0:
 		out.Verdict = VerdictTreatmentBetter
 	case out.PValue < alpha && out.DiffCI.High < 0:

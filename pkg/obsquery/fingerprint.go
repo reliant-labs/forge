@@ -154,6 +154,13 @@ const (
 	// failures (ServerFailureFilterSQL), and server records of any level that
 	// carry a source. The control plane's ingest view filters on it.
 	IssueRecordFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR ` + sqlWarnServerFailure + ` OR LogAttributes['issue.source'] != '')`
+	// IssueEventFilterSQL is the issue filter before WARN server failures
+	// joined it: server errors and sourced records only. Its value is frozen
+	// because a Go constant's value is part of the v1 API.
+	//
+	// Deprecated: use IssueRecordFilterSQL, which also selects WARN server
+	// failures (retryable codes, a server deadline logged at WARN).
+	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR LogAttributes['issue.source'] != '')`
 	// IssueSourceSQL is a record's issue source, "" for an error.
 	IssueSourceSQL = `LogAttributes['issue.source']`
 )
@@ -353,7 +360,7 @@ func (r ServerErrorRecord) LoggedByForge() bool {
 	return strings.HasPrefix(r.function(), ForgeLibraryFunctionPrefix) && r.Attributes[LogKeyProcedure] != ""
 }
 
-// ForgeLibraryCulprit reports whether culprit, as ServerCulpritSQL spelled it
+// ForgeLibraryCulprit reports whether culprit, as ServerCulprit spelled it
 // before forge#2235, names a function in forge's own libraries: an issue
 // stored then still shows forge's interceptor.
 func ForgeLibraryCulprit(culprit string) bool {
@@ -369,11 +376,13 @@ func ServerIssueCulprit(r ServerErrorRecord) string {
 	if r.LoggedByForge() {
 		return r.Attributes[LogKeyProcedure]
 	}
-	return serverCulprit(r)
+	return ServerCulprit(r)
 }
 
-// serverCulprit is the Go reference for ServerCulpritSQL.
-func serverCulprit(r ServerErrorRecord) string {
+// ServerCulprit is the Go reference for ServerCulpritSQL.
+//
+// Deprecated: use ServerIssueCulprit.
+func ServerCulprit(r ServerErrorRecord) string {
 	if file := r.Attributes[LogKeyCodeFile]; file != "" {
 		return file + " in " + r.function()
 	}

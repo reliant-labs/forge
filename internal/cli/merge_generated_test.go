@@ -235,7 +235,7 @@ func TestEnsureGeneratedMergeDriver_WiresAnyForgeClone(t *testing.T) {
 	prev := mergeDriverExecutable
 	mergeDriverExecutable = func() (string, error) { return "/opt/forge bin/forge", nil }
 	t.Cleanup(func() { mergeDriverExecutable = prev })
-	for _, env := range []string{"FORGE_NO_GIT_HOOKS", "FORGE_NO_MERGE_DRIVER"} {
+	for _, env := range []string{"FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS", "FORGE_NO_MERGE_DRIVER"} {
 		t.Setenv(env, "")
 	}
 
@@ -304,7 +304,7 @@ func TestEnsureGeneratedMergeDriver_DefaultWritesNoGitConfig(t *testing.T) {
 	notices := t.TempDir()
 	mergeDriverNoticeDir = func() (string, error) { return notices, nil }
 	mergeDriverIdentity = func() string { return "pin-a" }
-	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS"} {
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 		t.Setenv(e, "")
 	}
 
@@ -394,9 +394,9 @@ func TestEnsureGeneratedMergeDriver_DefaultWritesNoGitConfig(t *testing.T) {
 	}
 }
 
-// FORGE_NO_MERGE_DRIVER skips the driver. FORGE_NO_GIT_HOOKS is about hooks
-// and does not: reliant's pin script sets it, and with it skipping the
-// driver the clone kept the
+// FORGE_NO_MERGE_DRIVER skips the driver. FORGE_NO_GIT_HOOKS (and its old
+// spelling FORGE_NO_HOOKS) is about hooks and does not: reliant's pin script
+// sets FORGE_NO_HOOKS, and with it skipping the driver the clone kept the
 // previous pin's driver. An ephemeral binary is never written, because it is
 // gone by the next merge.
 func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
@@ -424,9 +424,9 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 	}
 
 	mergeDriverExecutable = func() (string, error) { return "/opt/forge/bin/forge", nil }
-	for env, wantDriver := range map[string]bool{"FORGE_NO_MERGE_DRIVER": false, "FORGE_NO_GIT_HOOKS": true} {
+	for env, wantDriver := range map[string]bool{"FORGE_NO_MERGE_DRIVER": false, "FORGE_NO_GIT_HOOKS": true, "FORGE_NO_HOOKS": true} {
 		t.Run(env, func(t *testing.T) {
-			for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS"} {
+			for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 				t.Setenv(e, "")
 			}
 			t.Setenv(env, "1")
@@ -438,7 +438,7 @@ func TestEnsureGeneratedMergeDriver_OptOutsAndEphemeralBinaries(t *testing.T) {
 		})
 	}
 
-	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS"} {
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 		t.Setenv(e, "")
 	}
 	for _, exe := range []string{filepath.Join(os.TempDir(), "go-build123", "exe", "forge"), "/work/cli.test"} {
@@ -506,7 +506,7 @@ func TestEnsureGeneratedMergeDriver_NoticeNamesWhatChangedAndWhoSharesIt(t *test
 	prevCheck := mergeDriverPinCheck
 	t.Cleanup(func() { mergeDriverPinCheck = prevCheck })
 	mergeDriverPinCheck = func(string) (string, string, bool) { return "", "", false }
-	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS"} {
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 		t.Setenv(e, "")
 	}
 
@@ -595,7 +595,7 @@ func TestEnsureGeneratedMergeDriver_OneCommandServesEveryWorktree(t *testing.T) 
 	prevExe, prevCheck, prevID := mergeDriverExecutable, mergeDriverPinCheck, mergeDriverIdentity
 	t.Cleanup(func() { mergeDriverExecutable, mergeDriverPinCheck, mergeDriverIdentity = prevExe, prevCheck, prevID })
 	mergeDriverPinCheck = func(string) (string, string, bool) { return "", "", false }
-	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS"} {
+	for _, e := range []string{"FORGE_NO_MERGE_DRIVER", "FORGE_NO_GIT_HOOKS", "FORGE_NO_HOOKS"} {
 		t.Setenv(e, "")
 	}
 

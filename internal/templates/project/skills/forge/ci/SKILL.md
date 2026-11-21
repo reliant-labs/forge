@@ -172,7 +172,7 @@ same verdict locally:
 | Command | What it runs | CI job |
 |---|---|---|
 | `task ci` | `ci:checks`, then `test`, then `test:integration`, one summary table | none: run this instead of CI |
-| `task ci:checks` | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
+| `task ci:checks` | verify-generated, lint, build, vuln-scan, secret-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
 | `task test` | unit tests + every frontend's | `test` |
 | `task test:integration` | the `integration`-tagged suite | `integration-test` |
 
@@ -243,6 +243,7 @@ and each is runnable on its own:
 | `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
 | `forge ci vuln-scan --go` | Runs govulncheck against `./...` |
 | `forge ci vuln-scan --npm` | Runs `npm audit` in each frontend |
+| `forge ci secret-scan` | Runs gitleaks at forge's pin over every commit; `--branch` (the gate's `secret-scan` row) scans only the commits the change adds, `--since <rev>` the commits after a revision, `--staged` a commit being made |
 | `forge ci migration-safety` | Runs `forge lint --migration-safety` against `db/migrations/` |
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.

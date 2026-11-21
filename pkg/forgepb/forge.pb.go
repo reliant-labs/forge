@@ -89,6 +89,71 @@ func (ListFilterOp) EnumDescriptor() ([]byte, []int) {
 	return file_forge_v1_forge_proto_rawDescGZIP(), []int{0}
 }
 
+// StoreAs controls how complex or non-scalar protobuf types are persisted
+// in the database.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Column storage types live in migration SQL.
+type StoreAs int32
+
+const (
+	// Inferred from the protobuf type (default behavior).
+	StoreAs_STORE_AS_UNSPECIFIED StoreAs = 0
+	// Store as a JSONB column.
+	StoreAs_STORE_AS_JSONB StoreAs = 1
+	// Store as a TEXT column.
+	StoreAs_STORE_AS_TEXT StoreAs = 2
+	// Store as a BLOB / BYTEA column.
+	StoreAs_STORE_AS_BLOB StoreAs = 3
+	// Store in a separate table with a foreign key relationship.
+	StoreAs_STORE_AS_TABLE StoreAs = 4
+)
+
+// Enum value maps for StoreAs.
+var (
+	StoreAs_name = map[int32]string{
+		0: "STORE_AS_UNSPECIFIED",
+		1: "STORE_AS_JSONB",
+		2: "STORE_AS_TEXT",
+		3: "STORE_AS_BLOB",
+		4: "STORE_AS_TABLE",
+	}
+	StoreAs_value = map[string]int32{
+		"STORE_AS_UNSPECIFIED": 0,
+		"STORE_AS_JSONB":       1,
+		"STORE_AS_TEXT":        2,
+		"STORE_AS_BLOB":        3,
+		"STORE_AS_TABLE":       4,
+	}
+)
+
+func (x StoreAs) Enum() *StoreAs {
+	p := new(StoreAs)
+	*p = x
+	return p
+}
+
+func (x StoreAs) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StoreAs) Descriptor() protoreflect.EnumDescriptor {
+	return file_forge_v1_forge_proto_enumTypes[1].Descriptor()
+}
+
+func (StoreAs) Type() protoreflect.EnumType {
+	return &file_forge_v1_forge_proto_enumTypes[1]
+}
+
+func (x StoreAs) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StoreAs.Descriptor instead.
+func (StoreAs) EnumDescriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{1}
+}
+
 // ServiceVisibility determines how a service is exposed.
 type ServiceVisibility int32
 
@@ -126,11 +191,11 @@ func (x ServiceVisibility) String() string {
 }
 
 func (ServiceVisibility) Descriptor() protoreflect.EnumDescriptor {
-	return file_forge_v1_forge_proto_enumTypes[1].Descriptor()
+	return file_forge_v1_forge_proto_enumTypes[2].Descriptor()
 }
 
 func (ServiceVisibility) Type() protoreflect.EnumType {
-	return &file_forge_v1_forge_proto_enumTypes[1]
+	return &file_forge_v1_forge_proto_enumTypes[2]
 }
 
 func (x ServiceVisibility) Number() protoreflect.EnumNumber {
@@ -139,7 +204,7 @@ func (x ServiceVisibility) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ServiceVisibility.Descriptor instead.
 func (ServiceVisibility) EnumDescriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{1}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{2}
 }
 
 // ActivityWriter selects who writes a declared activity event.
@@ -183,11 +248,11 @@ func (x ActivityWriter) String() string {
 }
 
 func (ActivityWriter) Descriptor() protoreflect.EnumDescriptor {
-	return file_forge_v1_forge_proto_enumTypes[2].Descriptor()
+	return file_forge_v1_forge_proto_enumTypes[3].Descriptor()
 }
 
 func (ActivityWriter) Type() protoreflect.EnumType {
-	return &file_forge_v1_forge_proto_enumTypes[2]
+	return &file_forge_v1_forge_proto_enumTypes[3]
 }
 
 func (x ActivityWriter) Number() protoreflect.EnumNumber {
@@ -196,7 +261,7 @@ func (x ActivityWriter) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ActivityWriter.Descriptor instead.
 func (ActivityWriter) EnumDescriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{2}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{3}
 }
 
 // ConfigFieldRole enumerates the semantic roles a config field can carry.
@@ -261,11 +326,11 @@ func (x ConfigFieldRole) String() string {
 }
 
 func (ConfigFieldRole) Descriptor() protoreflect.EnumDescriptor {
-	return file_forge_v1_forge_proto_enumTypes[3].Descriptor()
+	return file_forge_v1_forge_proto_enumTypes[4].Descriptor()
 }
 
 func (ConfigFieldRole) Type() protoreflect.EnumType {
-	return &file_forge_v1_forge_proto_enumTypes[3]
+	return &file_forge_v1_forge_proto_enumTypes[4]
 }
 
 func (x ConfigFieldRole) Number() protoreflect.EnumNumber {
@@ -274,7 +339,7 @@ func (x ConfigFieldRole) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ConfigFieldRole.Descriptor instead.
 func (ConfigFieldRole) EnumDescriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{3}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{4}
 }
 
 // ListFilterOptions declares how a generated List op applies one request
@@ -351,6 +416,402 @@ func (x *ListFilterOptions) GetOp() ListFilterOp {
 	return ListFilterOp_LIST_FILTER_OP_UNSPECIFIED
 }
 
+// EntityOptions defines how a protobuf message maps to a database table.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Kept for one release so legacy projects' protos
+// keep compiling; remove the annotations from your protos.
+type EntityOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Database table name. Inferred from the message name (snake_case, pluralized)
+	// when left empty.
+	Table string `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
+	// Enable soft-delete semantics (adds a deleted_at column).
+	SoftDelete bool `protobuf:"varint,2,opt,name=soft_delete,json=softDelete,proto3" json:"soft_delete,omitempty"`
+	// Automatically manage created_at and updated_at timestamp columns.
+	Timestamps bool `protobuf:"varint,3,opt,name=timestamps,proto3" json:"timestamps,omitempty"`
+	// Composite or single-column indexes to create on this table.
+	Indexes []*IndexDef `protobuf:"bytes,4,rep,name=indexes,proto3" json:"indexes,omitempty"`
+	// Contract middleware to wire around generated repository methods.
+	// Supported values: "tracing", "metrics", "logging".
+	Middleware    []string `protobuf:"bytes,5,rep,name=middleware,proto3" json:"middleware,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EntityOptions) Reset() {
+	*x = EntityOptions{}
+	mi := &file_forge_v1_forge_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EntityOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EntityOptions) ProtoMessage() {}
+
+func (x *EntityOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EntityOptions.ProtoReflect.Descriptor instead.
+func (*EntityOptions) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *EntityOptions) GetTable() string {
+	if x != nil {
+		return x.Table
+	}
+	return ""
+}
+
+func (x *EntityOptions) GetSoftDelete() bool {
+	if x != nil {
+		return x.SoftDelete
+	}
+	return false
+}
+
+func (x *EntityOptions) GetTimestamps() bool {
+	if x != nil {
+		return x.Timestamps
+	}
+	return false
+}
+
+func (x *EntityOptions) GetIndexes() []*IndexDef {
+	if x != nil {
+		return x.Indexes
+	}
+	return nil
+}
+
+func (x *EntityOptions) GetMiddleware() []string {
+	if x != nil {
+		return x.Middleware
+	}
+	return nil
+}
+
+// IndexDef defines a database index on one or more columns.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Declare indexes in migration SQL instead.
+type IndexDef struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Index name. Auto-generated from field names when left empty.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Column names included in this index, in order.
+	Fields []string `protobuf:"bytes,2,rep,name=fields,proto3" json:"fields,omitempty"`
+	// Whether this index enforces a uniqueness constraint.
+	Unique        bool `protobuf:"varint,3,opt,name=unique,proto3" json:"unique,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *IndexDef) Reset() {
+	*x = IndexDef{}
+	mi := &file_forge_v1_forge_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *IndexDef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IndexDef) ProtoMessage() {}
+
+func (x *IndexDef) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IndexDef.ProtoReflect.Descriptor instead.
+func (*IndexDef) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *IndexDef) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *IndexDef) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+func (x *IndexDef) GetUnique() bool {
+	if x != nil {
+		return x.Unique
+	}
+	return false
+}
+
+// FieldOptions defines how a protobuf field maps to a database column.
+//
+// DEPRECATED — Retired: ignored by forge. SQL is the schema — db/migrations
+// drive entity projections. Kept for one release so legacy projects' protos
+// keep compiling; remove the annotations from your protos.
+type FieldOptions struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Mark this field as the primary key.
+	Pk bool `protobuf:"varint,1,opt,name=pk,proto3" json:"pk,omitempty"`
+	// How to store complex or non-scalar types in the database.
+	Store StoreAs `protobuf:"varint,3,opt,name=store,proto3,enum=forge.v1.StoreAs" json:"store,omitempty"`
+	// Foreign key reference in "table.column" format (e.g., "users.id").
+	Ref string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Column has a UNIQUE constraint.
+	Unique bool `protobuf:"varint,5,opt,name=unique,proto3" json:"unique,omitempty"`
+	// Create a single-column index on this field.
+	Index bool `protobuf:"varint,6,opt,name=index,proto3" json:"index,omitempty"`
+	// SQL default expression (e.g., "0", "'active'", "NOW()").
+	DefaultValue string `protobuf:"bytes,7,opt,name=default_value,json=defaultValue,proto3" json:"default_value,omitempty"`
+	// Skip this field in code generation entirely.
+	Skip bool `protobuf:"varint,8,opt,name=skip,proto3" json:"skip,omitempty"`
+	// Application-layer validation rules for this field.
+	Validate *ValidationRules `protobuf:"bytes,9,opt,name=validate,proto3" json:"validate,omitempty"`
+	// Field cannot be updated after initial creation.
+	Immutable     bool `protobuf:"varint,10,opt,name=immutable,proto3" json:"immutable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FieldOptions) Reset() {
+	*x = FieldOptions{}
+	mi := &file_forge_v1_forge_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FieldOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FieldOptions) ProtoMessage() {}
+
+func (x *FieldOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FieldOptions.ProtoReflect.Descriptor instead.
+func (*FieldOptions) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *FieldOptions) GetPk() bool {
+	if x != nil {
+		return x.Pk
+	}
+	return false
+}
+
+func (x *FieldOptions) GetStore() StoreAs {
+	if x != nil {
+		return x.Store
+	}
+	return StoreAs_STORE_AS_UNSPECIFIED
+}
+
+func (x *FieldOptions) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *FieldOptions) GetUnique() bool {
+	if x != nil {
+		return x.Unique
+	}
+	return false
+}
+
+func (x *FieldOptions) GetIndex() bool {
+	if x != nil {
+		return x.Index
+	}
+	return false
+}
+
+func (x *FieldOptions) GetDefaultValue() string {
+	if x != nil {
+		return x.DefaultValue
+	}
+	return ""
+}
+
+func (x *FieldOptions) GetSkip() bool {
+	if x != nil {
+		return x.Skip
+	}
+	return false
+}
+
+func (x *FieldOptions) GetValidate() *ValidationRules {
+	if x != nil {
+		return x.Validate
+	}
+	return nil
+}
+
+func (x *FieldOptions) GetImmutable() bool {
+	if x != nil {
+		return x.Immutable
+	}
+	return false
+}
+
+// ValidationRules defines application-layer constraints enforced during
+// code generation. These do not affect the database schema directly.
+type ValidationRules struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Field value is required (must be non-zero-value).
+	Required bool `protobuf:"varint,1,opt,name=required,proto3" json:"required,omitempty"`
+	// Minimum length for string fields.
+	MinLength int32 `protobuf:"varint,2,opt,name=min_length,json=minLength,proto3" json:"min_length,omitempty"`
+	// Maximum length for string fields.
+	MaxLength int32 `protobuf:"varint,3,opt,name=max_length,json=maxLength,proto3" json:"max_length,omitempty"`
+	// Regex pattern the value must match.
+	Pattern string `protobuf:"bytes,4,opt,name=pattern,proto3" json:"pattern,omitempty"`
+	// Semantic format constraint (e.g., "email", "url", "uuid", "ip").
+	Format string `protobuf:"bytes,5,opt,name=format,proto3" json:"format,omitempty"`
+	// Minimum value for numeric fields.
+	Min float64 `protobuf:"fixed64,6,opt,name=min,proto3" json:"min,omitempty"`
+	// Maximum value for numeric fields.
+	Max float64 `protobuf:"fixed64,7,opt,name=max,proto3" json:"max,omitempty"`
+	// Allowed values (for enum-like string fields).
+	AllowedValues []string `protobuf:"bytes,8,rep,name=allowed_values,json=allowedValues,proto3" json:"allowed_values,omitempty"`
+	// Custom validation function name to call during validation.
+	Custom        string `protobuf:"bytes,9,opt,name=custom,proto3" json:"custom,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ValidationRules) Reset() {
+	*x = ValidationRules{}
+	mi := &file_forge_v1_forge_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ValidationRules) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ValidationRules) ProtoMessage() {}
+
+func (x *ValidationRules) ProtoReflect() protoreflect.Message {
+	mi := &file_forge_v1_forge_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ValidationRules.ProtoReflect.Descriptor instead.
+func (*ValidationRules) Descriptor() ([]byte, []int) {
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ValidationRules) GetRequired() bool {
+	if x != nil {
+		return x.Required
+	}
+	return false
+}
+
+func (x *ValidationRules) GetMinLength() int32 {
+	if x != nil {
+		return x.MinLength
+	}
+	return 0
+}
+
+func (x *ValidationRules) GetMaxLength() int32 {
+	if x != nil {
+		return x.MaxLength
+	}
+	return 0
+}
+
+func (x *ValidationRules) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *ValidationRules) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
+func (x *ValidationRules) GetMin() float64 {
+	if x != nil {
+		return x.Min
+	}
+	return 0
+}
+
+func (x *ValidationRules) GetMax() float64 {
+	if x != nil {
+		return x.Max
+	}
+	return 0
+}
+
+func (x *ValidationRules) GetAllowedValues() []string {
+	if x != nil {
+		return x.AllowedValues
+	}
+	return nil
+}
+
+func (x *ValidationRules) GetCustom() string {
+	if x != nil {
+		return x.Custom
+	}
+	return ""
+}
+
 // ServiceOptions defines metadata and behavior for a Connect RPC service.
 // Apply via [(forge.v1.service) = { ... }] on any service definition.
 type ServiceOptions struct {
@@ -381,7 +842,7 @@ type ServiceOptions struct {
 
 func (x *ServiceOptions) Reset() {
 	*x = ServiceOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[1]
+	mi := &file_forge_v1_forge_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -393,7 +854,7 @@ func (x *ServiceOptions) String() string {
 func (*ServiceOptions) ProtoMessage() {}
 
 func (x *ServiceOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[1]
+	mi := &file_forge_v1_forge_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -406,7 +867,7 @@ func (x *ServiceOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceOptions.ProtoReflect.Descriptor instead.
 func (*ServiceOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{1}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ServiceOptions) GetName() string {
@@ -472,7 +933,7 @@ type AuthConfig struct {
 
 func (x *AuthConfig) Reset() {
 	*x = AuthConfig{}
-	mi := &file_forge_v1_forge_proto_msgTypes[2]
+	mi := &file_forge_v1_forge_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -484,7 +945,7 @@ func (x *AuthConfig) String() string {
 func (*AuthConfig) ProtoMessage() {}
 
 func (x *AuthConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[2]
+	mi := &file_forge_v1_forge_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -497,7 +958,7 @@ func (x *AuthConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthConfig.ProtoReflect.Descriptor instead.
 func (*AuthConfig) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{2}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AuthConfig) GetAuthRequired() bool {
@@ -561,7 +1022,7 @@ type MethodOptions struct {
 
 func (x *MethodOptions) Reset() {
 	*x = MethodOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[3]
+	mi := &file_forge_v1_forge_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -573,7 +1034,7 @@ func (x *MethodOptions) String() string {
 func (*MethodOptions) ProtoMessage() {}
 
 func (x *MethodOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[3]
+	mi := &file_forge_v1_forge_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -586,7 +1047,7 @@ func (x *MethodOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MethodOptions.ProtoReflect.Descriptor instead.
 func (*MethodOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{3}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *MethodOptions) GetAuthRequired() bool {
@@ -685,7 +1146,7 @@ type ActivityOptions struct {
 
 func (x *ActivityOptions) Reset() {
 	*x = ActivityOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[4]
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -697,7 +1158,7 @@ func (x *ActivityOptions) String() string {
 func (*ActivityOptions) ProtoMessage() {}
 
 func (x *ActivityOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[4]
+	mi := &file_forge_v1_forge_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -710,7 +1171,7 @@ func (x *ActivityOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityOptions.ProtoReflect.Descriptor instead.
 func (*ActivityOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{4}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ActivityOptions) GetVerb() string {
@@ -778,7 +1239,7 @@ type ActivityTarget struct {
 
 func (x *ActivityTarget) Reset() {
 	*x = ActivityTarget{}
-	mi := &file_forge_v1_forge_proto_msgTypes[5]
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -790,7 +1251,7 @@ func (x *ActivityTarget) String() string {
 func (*ActivityTarget) ProtoMessage() {}
 
 func (x *ActivityTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[5]
+	mi := &file_forge_v1_forge_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,7 +1264,7 @@ func (x *ActivityTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActivityTarget.ProtoReflect.Descriptor instead.
 func (*ActivityTarget) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{5}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ActivityTarget) GetKind() string {
@@ -1045,7 +1506,7 @@ type ConfigFieldOptions struct {
 
 func (x *ConfigFieldOptions) Reset() {
 	*x = ConfigFieldOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[6]
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1057,7 +1518,7 @@ func (x *ConfigFieldOptions) String() string {
 func (*ConfigFieldOptions) ProtoMessage() {}
 
 func (x *ConfigFieldOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[6]
+	mi := &file_forge_v1_forge_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1070,7 +1531,7 @@ func (x *ConfigFieldOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigFieldOptions.ProtoReflect.Descriptor instead.
 func (*ConfigFieldOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{6}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ConfigFieldOptions) GetEnvVar() string {
@@ -1188,7 +1649,7 @@ type ConfigCondition struct {
 
 func (x *ConfigCondition) Reset() {
 	*x = ConfigCondition{}
-	mi := &file_forge_v1_forge_proto_msgTypes[7]
+	mi := &file_forge_v1_forge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1200,7 +1661,7 @@ func (x *ConfigCondition) String() string {
 func (*ConfigCondition) ProtoMessage() {}
 
 func (x *ConfigCondition) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[7]
+	mi := &file_forge_v1_forge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1213,7 +1674,7 @@ func (x *ConfigCondition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigCondition.ProtoReflect.Descriptor instead.
 func (*ConfigCondition) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{7}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ConfigCondition) GetField() string {
@@ -1270,7 +1731,7 @@ type EnvVarAlias struct {
 
 func (x *EnvVarAlias) Reset() {
 	*x = EnvVarAlias{}
-	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1282,7 +1743,7 @@ func (x *EnvVarAlias) String() string {
 func (*EnvVarAlias) ProtoMessage() {}
 
 func (x *EnvVarAlias) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[8]
+	mi := &file_forge_v1_forge_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1295,7 +1756,7 @@ func (x *EnvVarAlias) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnvVarAlias.ProtoReflect.Descriptor instead.
 func (*EnvVarAlias) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{8}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *EnvVarAlias) GetName() string {
@@ -1421,7 +1882,7 @@ type BinaryConfigOptions struct {
 
 func (x *BinaryConfigOptions) Reset() {
 	*x = BinaryConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	mi := &file_forge_v1_forge_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1433,7 +1894,7 @@ func (x *BinaryConfigOptions) String() string {
 func (*BinaryConfigOptions) ProtoMessage() {}
 
 func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[9]
+	mi := &file_forge_v1_forge_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1446,7 +1907,7 @@ func (x *BinaryConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BinaryConfigOptions.ProtoReflect.Descriptor instead.
 func (*BinaryConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{9}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *BinaryConfigOptions) GetBinary() string {
@@ -1481,7 +1942,7 @@ type CommandPath struct {
 
 func (x *CommandPath) Reset() {
 	*x = CommandPath{}
-	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	mi := &file_forge_v1_forge_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1493,7 +1954,7 @@ func (x *CommandPath) String() string {
 func (*CommandPath) ProtoMessage() {}
 
 func (x *CommandPath) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[10]
+	mi := &file_forge_v1_forge_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1506,7 +1967,7 @@ func (x *CommandPath) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandPath.ProtoReflect.Descriptor instead.
 func (*CommandPath) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{10}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CommandPath) GetPath() []string {
@@ -1563,7 +2024,7 @@ type FrontendConfigOptions struct {
 
 func (x *FrontendConfigOptions) Reset() {
 	*x = FrontendConfigOptions{}
-	mi := &file_forge_v1_forge_proto_msgTypes[11]
+	mi := &file_forge_v1_forge_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1575,7 +2036,7 @@ func (x *FrontendConfigOptions) String() string {
 func (*FrontendConfigOptions) ProtoMessage() {}
 
 func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_forge_v1_forge_proto_msgTypes[11]
+	mi := &file_forge_v1_forge_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1588,7 +2049,7 @@ func (x *FrontendConfigOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FrontendConfigOptions.ProtoReflect.Descriptor instead.
 func (*FrontendConfigOptions) Descriptor() ([]byte, []int) {
-	return file_forge_v1_forge_proto_rawDescGZIP(), []int{11}
+	return file_forge_v1_forge_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *FrontendConfigOptions) GetFrontend() string {
@@ -1599,6 +2060,14 @@ func (x *FrontendConfigOptions) GetFrontend() string {
 }
 
 var file_forge_v1_forge_proto_extTypes = []protoimpl.ExtensionInfo{
+	{
+		ExtendedType:  (*descriptorpb.MessageOptions)(nil),
+		ExtensionType: (*EntityOptions)(nil),
+		Field:         50200,
+		Name:          "forge.v1.entity",
+		Tag:           "bytes,50200,opt,name=entity",
+		Filename:      "forge/v1/forge.proto",
+	},
 	{
 		ExtendedType:  (*descriptorpb.MessageOptions)(nil),
 		ExtensionType: (*BinaryConfigOptions)(nil),
@@ -1613,6 +2082,14 @@ var file_forge_v1_forge_proto_extTypes = []protoimpl.ExtensionInfo{
 		Field:         50202,
 		Name:          "forge.v1.frontend_config",
 		Tag:           "bytes,50202,opt,name=frontend_config",
+		Filename:      "forge/v1/forge.proto",
+	},
+	{
+		ExtendedType:  (*descriptorpb.FieldOptions)(nil),
+		ExtensionType: (*FieldOptions)(nil),
+		Field:         50300,
+		Name:          "forge.v1.field",
+		Tag:           "bytes,50300,opt,name=field",
 		Filename:      "forge/v1/forge.proto",
 	},
 	{
@@ -1651,40 +2128,49 @@ var file_forge_v1_forge_proto_extTypes = []protoimpl.ExtensionInfo{
 
 // Extension fields to descriptorpb.MessageOptions.
 var (
+	// optional forge.v1.EntityOptions entity = 50200;
+	E_Entity = &file_forge_v1_forge_proto_extTypes[0]
 	// Binds a config message to the binary that loads it. See BinaryConfigOptions.
 	//
 	// optional forge.v1.BinaryConfigOptions binary_config = 50201;
-	E_BinaryConfig = &file_forge_v1_forge_proto_extTypes[0]
+	E_BinaryConfig = &file_forge_v1_forge_proto_extTypes[1]
 	// Binds a config message to the frontend that loads it. See
 	// FrontendConfigOptions.
 	//
 	// optional forge.v1.FrontendConfigOptions frontend_config = 50202;
-	E_FrontendConfig = &file_forge_v1_forge_proto_extTypes[1]
+	E_FrontendConfig = &file_forge_v1_forge_proto_extTypes[2]
 )
 
 // Extension fields to descriptorpb.FieldOptions.
 var (
+	// Database column mapping and constraints.
+	//
+	// Retired: ignored by forge. SQL is the schema — db/migrations drive entity
+	// projections. Kept only so legacy protos keep compiling.
+	//
+	// optional forge.v1.FieldOptions field = 50300;
+	E_Field = &file_forge_v1_forge_proto_extTypes[3]
 	// Configuration binding to environment variables and CLI flags.
 	//
 	// optional forge.v1.ConfigFieldOptions config = 50400;
-	E_Config = &file_forge_v1_forge_proto_extTypes[2]
+	E_Config = &file_forge_v1_forge_proto_extTypes[4]
 	// A List request field's filter facet: the column it compares and how.
 	// See ListFilterOptions.
 	//
 	// optional forge.v1.ListFilterOptions filter = 50500;
-	E_Filter = &file_forge_v1_forge_proto_extTypes[3]
+	E_Filter = &file_forge_v1_forge_proto_extTypes[5]
 )
 
 // Extension fields to descriptorpb.ServiceOptions.
 var (
 	// optional forge.v1.ServiceOptions service = 50000;
-	E_Service = &file_forge_v1_forge_proto_extTypes[4]
+	E_Service = &file_forge_v1_forge_proto_extTypes[6]
 )
 
 // Extension fields to descriptorpb.MethodOptions.
 var (
 	// optional forge.v1.MethodOptions method = 50100;
-	E_Method = &file_forge_v1_forge_proto_extTypes[5]
+	E_Method = &file_forge_v1_forge_proto_extTypes[7]
 )
 
 var File_forge_v1_forge_proto protoreflect.FileDescriptor
@@ -1694,7 +2180,45 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x14forge/v1/forge.proto\x12\bforge.v1\x1a google/protobuf/descriptor.proto\x1a\x1egoogle/protobuf/duration.proto\"S\n" +
 	"\x11ListFilterOptions\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12&\n" +
-	"\x02op\x18\x02 \x01(\x0e2\x16.forge.v1.ListFilterOpR\x02op\"\x87\x02\n" +
+	"\x02op\x18\x02 \x01(\x0e2\x16.forge.v1.ListFilterOpR\x02op\"\xb4\x01\n" +
+	"\rEntityOptions\x12\x14\n" +
+	"\x05table\x18\x01 \x01(\tR\x05table\x12\x1f\n" +
+	"\vsoft_delete\x18\x02 \x01(\bR\n" +
+	"softDelete\x12\x1e\n" +
+	"\n" +
+	"timestamps\x18\x03 \x01(\bR\n" +
+	"timestamps\x12,\n" +
+	"\aindexes\x18\x04 \x03(\v2\x12.forge.v1.IndexDefR\aindexes\x12\x1e\n" +
+	"\n" +
+	"middleware\x18\x05 \x03(\tR\n" +
+	"middleware\"N\n" +
+	"\bIndexDef\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
+	"\x06fields\x18\x02 \x03(\tR\x06fields\x12\x16\n" +
+	"\x06unique\x18\x03 \x01(\bR\x06unique\"\x95\x02\n" +
+	"\fFieldOptions\x12\x0e\n" +
+	"\x02pk\x18\x01 \x01(\bR\x02pk\x12'\n" +
+	"\x05store\x18\x03 \x01(\x0e2\x11.forge.v1.StoreAsR\x05store\x12\x10\n" +
+	"\x03ref\x18\x04 \x01(\tR\x03ref\x12\x16\n" +
+	"\x06unique\x18\x05 \x01(\bR\x06unique\x12\x14\n" +
+	"\x05index\x18\x06 \x01(\bR\x05index\x12#\n" +
+	"\rdefault_value\x18\a \x01(\tR\fdefaultValue\x12\x12\n" +
+	"\x04skip\x18\b \x01(\bR\x04skip\x125\n" +
+	"\bvalidate\x18\t \x01(\v2\x19.forge.v1.ValidationRulesR\bvalidate\x12\x1c\n" +
+	"\timmutable\x18\n" +
+	" \x01(\bR\timmutable\"\x80\x02\n" +
+	"\x0fValidationRules\x12\x1a\n" +
+	"\brequired\x18\x01 \x01(\bR\brequired\x12\x1d\n" +
+	"\n" +
+	"min_length\x18\x02 \x01(\x05R\tminLength\x12\x1d\n" +
+	"\n" +
+	"max_length\x18\x03 \x01(\x05R\tmaxLength\x12\x18\n" +
+	"\apattern\x18\x04 \x01(\tR\apattern\x12\x16\n" +
+	"\x06format\x18\x05 \x01(\tR\x06format\x12\x10\n" +
+	"\x03min\x18\x06 \x01(\x01R\x03min\x12\x10\n" +
+	"\x03max\x18\a \x01(\x01R\x03max\x12%\n" +
+	"\x0eallowed_values\x18\b \x03(\tR\rallowedValues\x12\x16\n" +
+	"\x06custom\x18\t \x01(\tR\x06custom\"\x87\x02\n" +
 	"\x0eServiceOptions\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -1775,7 +2299,13 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x12LIST_FILTER_OP_GTE\x10\x02\x12\x15\n" +
 	"\x11LIST_FILTER_OP_LT\x10\x03\x12\x16\n" +
 	"\x12LIST_FILTER_OP_LTE\x10\x04\x12\x19\n" +
-	"\x15LIST_FILTER_OP_PREFIX\x10\x05*t\n" +
+	"\x15LIST_FILTER_OP_PREFIX\x10\x05*q\n" +
+	"\aStoreAs\x12\x18\n" +
+	"\x14STORE_AS_UNSPECIFIED\x10\x00\x12\x12\n" +
+	"\x0eSTORE_AS_JSONB\x10\x01\x12\x11\n" +
+	"\rSTORE_AS_TEXT\x10\x02\x12\x11\n" +
+	"\rSTORE_AS_BLOB\x10\x03\x12\x12\n" +
+	"\x0eSTORE_AS_TABLE\x10\x04*t\n" +
 	"\x11ServiceVisibility\x12\"\n" +
 	"\x1eSERVICE_VISIBILITY_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SERVICE_VISIBILITY_API\x10\x01\x12\x1f\n" +
@@ -1790,9 +2320,11 @@ const file_forge_v1_forge_proto_rawDesc = "" +
 	"\x1aCONFIG_FIELD_ROLE_TLS_CERT\x10\x02\x12\x1d\n" +
 	"\x19CONFIG_FIELD_ROLE_TLS_KEY\x10\x03\x12\"\n" +
 	"\x1eCONFIG_FIELD_ROLE_CORS_ORIGINS\x10\x04\x12,\n" +
-	"(CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS\x10\x05:e\n" +
+	"(CONFIG_FIELD_ROLE_CORS_ALLOW_CREDENTIALS\x10\x05:R\n" +
+	"\x06entity\x12\x1f.google.protobuf.MessageOptions\x18\x98\x88\x03 \x01(\v2\x17.forge.v1.EntityOptionsR\x06entity:e\n" +
 	"\rbinary_config\x12\x1f.google.protobuf.MessageOptions\x18\x99\x88\x03 \x01(\v2\x1d.forge.v1.BinaryConfigOptionsR\fbinaryConfig:k\n" +
-	"\x0ffrontend_config\x12\x1f.google.protobuf.MessageOptions\x18\x9a\x88\x03 \x01(\v2\x1f.forge.v1.FrontendConfigOptionsR\x0efrontendConfig:U\n" +
+	"\x0ffrontend_config\x12\x1f.google.protobuf.MessageOptions\x18\x9a\x88\x03 \x01(\v2\x1f.forge.v1.FrontendConfigOptionsR\x0efrontendConfig:M\n" +
+	"\x05field\x12\x1d.google.protobuf.FieldOptions\x18\xfc\x88\x03 \x01(\v2\x16.forge.v1.FieldOptionsR\x05field:U\n" +
 	"\x06config\x12\x1d.google.protobuf.FieldOptions\x18\xe0\x89\x03 \x01(\v2\x1c.forge.v1.ConfigFieldOptionsR\x06config:T\n" +
 	"\x06filter\x12\x1d.google.protobuf.FieldOptions\x18Ċ\x03 \x01(\v2\x1b.forge.v1.ListFilterOptionsR\x06filter:U\n" +
 	"\aservice\x12\x1f.google.protobuf.ServiceOptions\x18І\x03 \x01(\v2\x18.forge.v1.ServiceOptionsR\aservice:Q\n" +
@@ -1810,62 +2342,74 @@ func file_forge_v1_forge_proto_rawDescGZIP() []byte {
 	return file_forge_v1_forge_proto_rawDescData
 }
 
-var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_forge_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_forge_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_forge_v1_forge_proto_goTypes = []any{
 	(ListFilterOp)(0),                   // 0: forge.v1.ListFilterOp
-	(ServiceVisibility)(0),              // 1: forge.v1.ServiceVisibility
-	(ActivityWriter)(0),                 // 2: forge.v1.ActivityWriter
-	(ConfigFieldRole)(0),                // 3: forge.v1.ConfigFieldRole
-	(*ListFilterOptions)(nil),           // 4: forge.v1.ListFilterOptions
-	(*ServiceOptions)(nil),              // 5: forge.v1.ServiceOptions
-	(*AuthConfig)(nil),                  // 6: forge.v1.AuthConfig
-	(*MethodOptions)(nil),               // 7: forge.v1.MethodOptions
-	(*ActivityOptions)(nil),             // 8: forge.v1.ActivityOptions
-	(*ActivityTarget)(nil),              // 9: forge.v1.ActivityTarget
-	(*ConfigFieldOptions)(nil),          // 10: forge.v1.ConfigFieldOptions
-	(*ConfigCondition)(nil),             // 11: forge.v1.ConfigCondition
-	(*EnvVarAlias)(nil),                 // 12: forge.v1.EnvVarAlias
-	(*BinaryConfigOptions)(nil),         // 13: forge.v1.BinaryConfigOptions
-	(*CommandPath)(nil),                 // 14: forge.v1.CommandPath
-	(*FrontendConfigOptions)(nil),       // 15: forge.v1.FrontendConfigOptions
-	nil,                                 // 16: forge.v1.EnvVarAlias.ValuesEntry
-	(*durationpb.Duration)(nil),         // 17: google.protobuf.Duration
-	(*descriptorpb.MessageOptions)(nil), // 18: google.protobuf.MessageOptions
-	(*descriptorpb.FieldOptions)(nil),   // 19: google.protobuf.FieldOptions
-	(*descriptorpb.ServiceOptions)(nil), // 20: google.protobuf.ServiceOptions
-	(*descriptorpb.MethodOptions)(nil),  // 21: google.protobuf.MethodOptions
+	(StoreAs)(0),                        // 1: forge.v1.StoreAs
+	(ServiceVisibility)(0),              // 2: forge.v1.ServiceVisibility
+	(ActivityWriter)(0),                 // 3: forge.v1.ActivityWriter
+	(ConfigFieldRole)(0),                // 4: forge.v1.ConfigFieldRole
+	(*ListFilterOptions)(nil),           // 5: forge.v1.ListFilterOptions
+	(*EntityOptions)(nil),               // 6: forge.v1.EntityOptions
+	(*IndexDef)(nil),                    // 7: forge.v1.IndexDef
+	(*FieldOptions)(nil),                // 8: forge.v1.FieldOptions
+	(*ValidationRules)(nil),             // 9: forge.v1.ValidationRules
+	(*ServiceOptions)(nil),              // 10: forge.v1.ServiceOptions
+	(*AuthConfig)(nil),                  // 11: forge.v1.AuthConfig
+	(*MethodOptions)(nil),               // 12: forge.v1.MethodOptions
+	(*ActivityOptions)(nil),             // 13: forge.v1.ActivityOptions
+	(*ActivityTarget)(nil),              // 14: forge.v1.ActivityTarget
+	(*ConfigFieldOptions)(nil),          // 15: forge.v1.ConfigFieldOptions
+	(*ConfigCondition)(nil),             // 16: forge.v1.ConfigCondition
+	(*EnvVarAlias)(nil),                 // 17: forge.v1.EnvVarAlias
+	(*BinaryConfigOptions)(nil),         // 18: forge.v1.BinaryConfigOptions
+	(*CommandPath)(nil),                 // 19: forge.v1.CommandPath
+	(*FrontendConfigOptions)(nil),       // 20: forge.v1.FrontendConfigOptions
+	nil,                                 // 21: forge.v1.EnvVarAlias.ValuesEntry
+	(*durationpb.Duration)(nil),         // 22: google.protobuf.Duration
+	(*descriptorpb.MessageOptions)(nil), // 23: google.protobuf.MessageOptions
+	(*descriptorpb.FieldOptions)(nil),   // 24: google.protobuf.FieldOptions
+	(*descriptorpb.ServiceOptions)(nil), // 25: google.protobuf.ServiceOptions
+	(*descriptorpb.MethodOptions)(nil),  // 26: google.protobuf.MethodOptions
 }
 var file_forge_v1_forge_proto_depIdxs = []int32{
 	0,  // 0: forge.v1.ListFilterOptions.op:type_name -> forge.v1.ListFilterOp
-	1,  // 1: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
-	6,  // 2: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
-	17, // 3: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
-	8,  // 4: forge.v1.MethodOptions.activity:type_name -> forge.v1.ActivityOptions
-	9,  // 5: forge.v1.ActivityOptions.target:type_name -> forge.v1.ActivityTarget
-	2,  // 6: forge.v1.ActivityOptions.writer:type_name -> forge.v1.ActivityWriter
-	3,  // 7: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
-	12, // 8: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
-	11, // 9: forge.v1.ConfigFieldOptions.required_when:type_name -> forge.v1.ConfigCondition
-	16, // 10: forge.v1.EnvVarAlias.values:type_name -> forge.v1.EnvVarAlias.ValuesEntry
-	14, // 11: forge.v1.BinaryConfigOptions.subtrees:type_name -> forge.v1.CommandPath
-	18, // 12: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
-	18, // 13: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
-	19, // 14: forge.v1.config:extendee -> google.protobuf.FieldOptions
-	19, // 15: forge.v1.filter:extendee -> google.protobuf.FieldOptions
-	20, // 16: forge.v1.service:extendee -> google.protobuf.ServiceOptions
-	21, // 17: forge.v1.method:extendee -> google.protobuf.MethodOptions
-	13, // 18: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
-	15, // 19: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
-	10, // 20: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
-	4,  // 21: forge.v1.filter:type_name -> forge.v1.ListFilterOptions
-	5,  // 22: forge.v1.service:type_name -> forge.v1.ServiceOptions
-	7,  // 23: forge.v1.method:type_name -> forge.v1.MethodOptions
-	24, // [24:24] is the sub-list for method output_type
-	24, // [24:24] is the sub-list for method input_type
-	18, // [18:24] is the sub-list for extension type_name
-	12, // [12:18] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	7,  // 1: forge.v1.EntityOptions.indexes:type_name -> forge.v1.IndexDef
+	1,  // 2: forge.v1.FieldOptions.store:type_name -> forge.v1.StoreAs
+	9,  // 3: forge.v1.FieldOptions.validate:type_name -> forge.v1.ValidationRules
+	2,  // 4: forge.v1.ServiceOptions.visibility:type_name -> forge.v1.ServiceVisibility
+	11, // 5: forge.v1.ServiceOptions.auth:type_name -> forge.v1.AuthConfig
+	22, // 6: forge.v1.MethodOptions.timeout:type_name -> google.protobuf.Duration
+	13, // 7: forge.v1.MethodOptions.activity:type_name -> forge.v1.ActivityOptions
+	14, // 8: forge.v1.ActivityOptions.target:type_name -> forge.v1.ActivityTarget
+	3,  // 9: forge.v1.ActivityOptions.writer:type_name -> forge.v1.ActivityWriter
+	4,  // 10: forge.v1.ConfigFieldOptions.role:type_name -> forge.v1.ConfigFieldRole
+	17, // 11: forge.v1.ConfigFieldOptions.env_var_aliases:type_name -> forge.v1.EnvVarAlias
+	16, // 12: forge.v1.ConfigFieldOptions.required_when:type_name -> forge.v1.ConfigCondition
+	21, // 13: forge.v1.EnvVarAlias.values:type_name -> forge.v1.EnvVarAlias.ValuesEntry
+	19, // 14: forge.v1.BinaryConfigOptions.subtrees:type_name -> forge.v1.CommandPath
+	23, // 15: forge.v1.entity:extendee -> google.protobuf.MessageOptions
+	23, // 16: forge.v1.binary_config:extendee -> google.protobuf.MessageOptions
+	23, // 17: forge.v1.frontend_config:extendee -> google.protobuf.MessageOptions
+	24, // 18: forge.v1.field:extendee -> google.protobuf.FieldOptions
+	24, // 19: forge.v1.config:extendee -> google.protobuf.FieldOptions
+	24, // 20: forge.v1.filter:extendee -> google.protobuf.FieldOptions
+	25, // 21: forge.v1.service:extendee -> google.protobuf.ServiceOptions
+	26, // 22: forge.v1.method:extendee -> google.protobuf.MethodOptions
+	6,  // 23: forge.v1.entity:type_name -> forge.v1.EntityOptions
+	18, // 24: forge.v1.binary_config:type_name -> forge.v1.BinaryConfigOptions
+	20, // 25: forge.v1.frontend_config:type_name -> forge.v1.FrontendConfigOptions
+	8,  // 26: forge.v1.field:type_name -> forge.v1.FieldOptions
+	15, // 27: forge.v1.config:type_name -> forge.v1.ConfigFieldOptions
+	5,  // 28: forge.v1.filter:type_name -> forge.v1.ListFilterOptions
+	10, // 29: forge.v1.service:type_name -> forge.v1.ServiceOptions
+	12, // 30: forge.v1.method:type_name -> forge.v1.MethodOptions
+	31, // [31:31] is the sub-list for method output_type
+	31, // [31:31] is the sub-list for method input_type
+	23, // [23:31] is the sub-list for extension type_name
+	15, // [15:23] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_forge_v1_forge_proto_init() }
@@ -1873,15 +2417,15 @@ func file_forge_v1_forge_proto_init() {
 	if File_forge_v1_forge_proto != nil {
 		return
 	}
-	file_forge_v1_forge_proto_msgTypes[3].OneofWrappers = []any{}
+	file_forge_v1_forge_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_forge_v1_forge_proto_rawDesc), len(file_forge_v1_forge_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   13,
-			NumExtensions: 6,
+			NumEnums:      5,
+			NumMessages:   17,
+			NumExtensions: 8,
 			NumServices:   0,
 		},
 		GoTypes:           file_forge_v1_forge_proto_goTypes,

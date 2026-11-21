@@ -545,6 +545,11 @@ func (r *upgradeRun) phaseCodemods() error {
 		fmt.Fprintln(r.out, "📝 UPGRADE_NOTES.md written at the project root.")
 		fmt.Fprintln(r.out, "    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
 	}
+	if !r.check {
+		if err := migrateLegacyChecksums(r.projectDir); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

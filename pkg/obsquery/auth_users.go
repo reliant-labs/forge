@@ -76,6 +76,15 @@ const EventAuthAccounts = "auth_accounts"
 const UserActivityEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')" +
 	" AND Props['" + observe.PropKind + "'] != '" + observe.KindState + "'"
 
+// ActiveEvidence is the predicate UserActivityEvidence was before
+// observe.TrackState: any user-attributed event except a sign-out and the
+// platform's account snapshot. Its value is frozen (forge is semver at major
+// 1, and a caller may compare or embed it); it still counts a TrackState fact
+// as activity.
+//
+// Deprecated: use UserActivityEvidence, which leaves TrackState facts out.
+const ActiveEvidence = "UserId != '' AND EventName NOT IN ('" + string(observe.AuthSignedOut) + "', '" + EventAuthAccounts + "')"
+
 // NewUsersSource is a subquery over table with one row per new user of the
 // window that ends at to (a DateTime64(9) SQL expression):
 //

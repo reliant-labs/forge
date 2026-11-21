@@ -70,7 +70,7 @@ func TestPlan_OrderAndLanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(names(all), " ")
-	want := "deps-web verify-generated golangci-lint buf-lint migration-safety lint-web typecheck-web css-health-web go-build build-web vuln-go vuln-npm vuln-sbom license-check validate-kcl deployability deps-web unit-tests flake-check integration-tests"
+	want := "deps-web verify-generated golangci-lint buf-lint migration-safety lint-web typecheck-web css-health-web go-build build-web vuln-go vuln-npm vuln-sbom secret-scan license-check validate-kcl deployability deps-web unit-tests flake-check integration-tests"
 	if got != want {
 		t.Errorf("plan order:\n got %s\nwant %s", got, want)
 	}
@@ -132,6 +132,33 @@ func TestPlan_NotApplicableRows(t *testing.T) {
 	}
 	if c := find(t, all, "integration-tests"); c.NotApplicable == "" {
 		t.Error("integration-tests without //go:build integration files should be N/A")
+	}
+}
+
+// The secret-scan row (FG-06) runs `forge ci secret-scan --branch` with
+// gitleaks at the version the scaffolded pre-commit hook pins, in every
+// project with git history, and is N/A where there is none.
+func TestPlan_SecretScanRow(t *testing.T) {
+	root := t.TempDir()
+	all, err := Plan(PlanInput{Root: root, Forge: []string{"forge"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := find(t, all, SecretScanCheck); !strings.Contains(c.NotApplicable, "not a git checkout") {
+		t.Errorf("no git history must be N/A, got %q", c.NotApplicable)
+	}
+
+	write(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+	all, err = Plan(PlanInput{Root: root, Forge: []string{"forge"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := find(t, all, SecretScanCheck)
+	if c.NotApplicable != "" || strings.Join(c.Argv, " ") != "forge ci secret-scan --branch" || c.Lane != LaneChecks {
+		t.Fatalf("secret-scan row = %+v", c)
+	}
+	if len(c.Tools) != 1 || c.Tools[0].Binary != "gitleaks" || c.Tools[0].Version != templates.GitleaksVersion {
+		t.Errorf("secret-scan must pin gitleaks %s, got %+v", templates.GitleaksVersion, c.Tools)
 	}
 }
 

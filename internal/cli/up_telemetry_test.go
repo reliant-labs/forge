@@ -269,7 +269,19 @@ func TestWriteAgentSecrets(t *testing.T) {
 		{Secret: "worker-pprof", Key: "token", StoreKey: "WORKER_PPROF_TOKEN", Path: "worker-pprof/token"},
 		{Secret: "ca", Key: "ca.crt", StoreKey: "ABSENT_CA", Optional: true, Path: "ca/ca.crt"},
 	}
-	if err := writeAgentSecrets(dir, mounts, map[string]string{"WORKER_PPROF_TOKEN": "s3cret"}, "dev"); err != nil {
+	write := func(mounts []telemetry.SecretMount, store map[string]string) (string, error) {
+		s, err := stageAgentSecrets(dir, mounts, store, "dev")
+		if err != nil {
+			return "", err
+		}
+		if err := s.swap(); err != nil {
+			return "", err
+		}
+		s.commit()
+		return s.revision, nil
+	}
+	rev, err := write(mounts, map[string]string{"WORKER_PPROF_TOKEN": "s3cret"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(dir, "worker-pprof", "token")
@@ -283,9 +295,54 @@ func TestWriteAgentSecrets(t *testing.T) {
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Error("a credential an earlier run wrote was left behind")
 	}
-	err = writeAgentSecrets(dir, mounts[:1], map[string]string{}, "dev")
+	_, err = write(mounts[:1], map[string]string{})
 	if err == nil || !strings.Contains(err.Error(), "secret set --env dev WORKER_PPROF_TOKEN") {
 		t.Errorf("a missing store key = %v, want an error naming the fix", err)
+	}
+	// A failed resolve touches nothing: the running agent keeps its token.
+	if b, _ := os.ReadFile(p); string(b) != "s3cret" {
+		t.Errorf("a missing store key changed the live token to %q", b)
+	}
+
+	// A rotated value is another revision (the agent restarts on it); the
+	// same value is the same one.
+	same, err := write(mounts, map[string]string{"WORKER_PPROF_TOKEN": "s3cret"})
+	if err != nil || same != rev || rev == "" {
+		t.Errorf("the same credentials = revision %q (err %v), want %q", same, err, rev)
+	}
+	rotated, err := write(mounts, map[string]string{"WORKER_PPROF_TOKEN": "rotated"})
+	if err != nil || rotated == rev {
+		t.Errorf("a rotated token kept revision %q (err %v)", rotated, err)
+	}
+}
+
+// An agent that does not start on the new credentials gets the old ones
+// back, so the one still running reads what it was started with.
+func TestAgentSecretsRollBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "secrets")
+	mounts := []telemetry.SecretMount{{Secret: "w", Key: "token", StoreKey: "TOKEN", Path: "w/token"}}
+	first, err := stageAgentSecrets(dir, mounts, map[string]string{"TOKEN": "old"}, "dev")
+	if err != nil || first.swap() != nil {
+		t.Fatalf("stage the first set: %v", err)
+	}
+	first.commit()
+	next, err := stageAgentSecrets(dir, mounts, map[string]string{"TOKEN": "new"}, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(dir, "w", "token")
+	if b, _ := os.ReadFile(p); string(b) != "old" {
+		t.Fatalf("staging changed the live token to %q", b)
+	}
+	if err := next.swap(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "new" {
+		t.Fatalf("after swap the token is %q, want new", b)
+	}
+	next.rollback()
+	if b, _ := os.ReadFile(p); string(b) != "old" {
+		t.Errorf("after rollback the token is %q, want old", b)
 	}
 }
 

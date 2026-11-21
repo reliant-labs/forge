@@ -132,9 +132,9 @@ func readTar(r io.Reader, top string) ([]covFile, error) {
 	return out, nil
 }
 
-// readDir returns the coverage files directly in dir, less the counter files
-// a reset fenced off (fence.go). A missing dir has none.
-func readDir(dir string, excluded map[string]bool) ([]covFile, error) {
+// readDir returns the coverage files directly in dir. A missing dir has
+// none.
+func readDir(dir string) ([]covFile, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -148,7 +148,7 @@ func readDir(dir string, excluded map[string]bool) ([]covFile, error) {
 			continue
 		}
 		f, ok := parseCovName(e.Name())
-		if !ok || (!f.meta && excluded[f.name]) {
+		if !ok {
 			continue
 		}
 		if f.data, err = os.ReadFile(filepath.Join(dir, e.Name())); err != nil {

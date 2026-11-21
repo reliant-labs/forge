@@ -276,7 +276,7 @@ type pending struct {
 // gatherTarget reads every source of t, fills r and returns its builds,
 // newest first.
 func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) []*build {
-	excluded, err := readFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
+	fenced, _, err := readFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
 	if err != nil {
 		r.Notes = append(r.Notes, "reset fence unreadable, so nothing is left out: "+err.Error())
 	}
@@ -296,7 +296,8 @@ func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult
 		} else if h.Withheld != "" {
 			r.Notes = append(r.Notes, "no live pull: "+h.Withheld)
 		}
-		fs, err := readDir(h.CoverDir, excluded)
+		fs, err := readDir(h.CoverDir)
+		fs = fenceOut(fs, fenced, dirSource(opts.ProjectRoot, h.CoverDir))
 		s := Source{Kind: SourceExitFlush, From: rel(opts.ProjectRoot, h.CoverDir), Status: SourceOK, Files: len(fs)}
 		switch {
 		case err != nil:
@@ -307,7 +308,7 @@ func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult
 		add(s, fs)
 	case t.Compose != nil:
 		live++
-		gatherCompose(ctx, opts, t.Compose, excluded, add)
+		gatherCompose(ctx, opts, t.Compose, fenced, add)
 	case t.Cluster != nil:
 		c := t.Cluster
 		if c.Withheld != "" {
@@ -359,7 +360,7 @@ func settleEmpty(sources []Source, live int) (state, reason string) {
 	return StateUnreachable, strings.Join(unreachable, "; ")
 }
 
-func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, excluded map[string]bool, add func(Source, []covFile)) {
+func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, fenced fenceSet, add func(Source, []covFile)) {
 	from := "service " + c.Service
 	if opts.Docker == nil {
 		add(Source{Kind: SourceContainer, From: from, Status: SourceUnreachable, Error: "docker is not available"}, nil)
@@ -393,7 +394,7 @@ func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, excluded
 			add(s, nil)
 			continue
 		}
-		fs = fenceOut(fs, excluded)
+		fs = fenceOut(fs, fenced, containerSource(id))
 		s.Files = len(fs)
 		if len(fs) == 0 {
 			s.Status = SourceEmpty
@@ -507,14 +508,14 @@ func describeDialErr(err error) string {
 	return err.Error()
 }
 
-// resetTarget zeroes t's counters and fences off, by name, the counter files
-// flushed before it (fence.go has the rule).
+// resetTarget zeroes t's counters and fences off the counter files flushed
+// before it, by source, name and content (fence.go has the rule).
 func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) {
 	at := opts.Now()
-	// fenced records the names; it is called only once the reset has
+	// fenced records the files; it is called only once the reset has
 	// happened, so a reset that failed leaves the previous fence.
-	fenced := func(names []string) bool {
-		if err := writeFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload), at, names); err != nil {
+	fenced := func(seen []fenceEntry) bool {
+		if err := writeFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload), at, seen); err != nil {
 			r.State, r.Reason = StateFailed, "reset fence not recorded, so the counters flushed before the reset would be collected: "+err.Error()
 			return false
 		}
@@ -540,21 +541,21 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 				return
 			}
 		}
-		names, err := dirCounterNames(t.Host.CoverDir)
+		fs, err := readDir(t.Host.CoverDir)
 		if err != nil {
 			r.State, r.Reason = StateFailed, "list the counters flushed before the reset: "+err.Error()
 			return
 		}
-		if !fenced(names) {
+		if !fenced(fenceEntries(dirSource(opts.ProjectRoot, t.Host.CoverDir), fs)) {
 			return
 		}
 	case t.Compose != nil:
-		names, err := composeCounterNames(ctx, opts, t.Compose)
+		seen, err := composeFenceEntries(ctx, opts, t.Compose)
 		if err != nil {
 			r.State, r.Reason = StateFailed, "list the counters flushed before the reset: "+err.Error()
 			return
 		}
-		if !fenced(names) {
+		if !fenced(seen) {
 			return
 		}
 		r.Notes = append(r.Notes, "a container's live counters cannot be zeroed (compose withholds "+CoveragePath+"); the counter files flushed before now are left out of every later collect")
@@ -578,11 +579,11 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 	r.State = StateReset
 }
 
-// composeCounterNames lists the counter files in every container of the
-// service: what a reset fences off. A container with no GOCOVERDIR yet has
-// none; one that cannot be read fails the reset, since its files would
-// otherwise be collected.
-func composeCounterNames(ctx context.Context, opts Options, c *ComposeTarget) ([]string, error) {
+// composeFenceEntries lists the counter files in every container of the
+// service, each by its container: what a reset fences off. A container with
+// no GOCOVERDIR yet has none; one that cannot be read fails the reset, since
+// its files would otherwise be collected.
+func composeFenceEntries(ctx context.Context, opts Options, c *ComposeTarget) ([]fenceEntry, error) {
 	if opts.Docker == nil {
 		return nil, errors.New("docker is not available")
 	}
@@ -590,7 +591,7 @@ func composeCounterNames(ctx context.Context, opts Options, c *ComposeTarget) ([
 	if err != nil {
 		return nil, err
 	}
-	var names []string
+	var seen []fenceEntry
 	for _, id := range ids {
 		data, err := opts.Docker.CopyOut(ctx, id, c.CoverDir)
 		if errors.Is(err, ErrNoSuchPath) {
@@ -603,9 +604,9 @@ func composeCounterNames(ctx context.Context, opts Options, c *ComposeTarget) ([
 		if err != nil {
 			return nil, fmt.Errorf("container %s: %w", short(id), err)
 		}
-		names = append(names, counterNames(fs)...)
+		seen = append(seen, fenceEntries(containerSource(id), fs)...)
 	}
-	return names, nil
+	return seen, nil
 }
 
 // recordRun writes each collected workload's builds into the run, converts

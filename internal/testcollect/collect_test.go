@@ -378,19 +378,131 @@ func TestResetFencesOffEarlierCounters(t *testing.T) {
 	}
 }
 
-// fenceNames reads a workload's reset fence.
+// fenceNames reads the counter-file names a workload's reset fence holds.
 func fenceNames(t *testing.T, root, workload string) []string {
 	t.Helper()
-	ex, err := readFence(ResetMarker(root, "dev", workload))
+	_, f, err := readFence(ResetMarker(root, "dev", workload))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
-	for n := range ex {
-		out = append(out, n)
+	out := slices.Clone(f.Excluded)
+	for _, e := range f.Entries {
+		out = append(out, e.Name)
 	}
 	slices.Sort(out)
 	return out
+}
+
+// writeFile writes one file with the given bytes.
+func writeFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// [B1] Go names a counter file covcounters.<build>.<pid>.<nanos>, so a file
+// flushed after a reset can share a fenced file's name. The fence keys on
+// (source, name, content): a same-named file with other bytes, in the same
+// GOCOVERDIR, is a different file and is collected.
+func TestResetFenceKeepsASameNamedFileWithOtherBytes(t *testing.T) {
+	f := newFixture(t)
+	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
+	writeFile(t, cover, "covmeta.aa", "M")
+	writeFile(t, cover, "covcounters.aa.1.100", "PRE-RESET")
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{Withheld: "PPROF_ADDR binds 0.0.0.0:6060", CoverDir: cover}}
+	opts := f.options(target)
+	opts.Reset = true
+	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateReset {
+		t.Fatalf("reset: %+v", doc.Workloads[0])
+	}
+	if _, err := collectErr(context.Background(), f.options(target)); err == nil {
+		t.Fatal("the fenced file was collected")
+	}
+
+	writeFile(t, cover, "covcounters.aa.1.100", "POST-RESET") // same pid and nanos, new bytes
+	doc, err := collectErr(context.Background(), f.options(target))
+	if err != nil {
+		t.Fatalf("the post-reset file was dropped: %v", err)
+	}
+	b := doc.Workloads[0].Build
+	if b == nil || b.CounterFiles != 1 {
+		t.Fatalf("build %+v, want the post-reset file", b)
+	}
+	got, err := os.ReadFile(filepath.Join(f.run, filepath.FromSlash(b.Dir), "covcounters.aa.1.100"))
+	if err != nil || string(got) != "POST-RESET" {
+		t.Fatalf("collected %q (%v), want the post-reset bytes", got, err)
+	}
+}
+
+// [B1] Across sources: a container started after the reset writes a file of
+// the same name, and even the same bytes, as a fenced container's file. The
+// fence names the container it saw, so the new one is collected; the fenced
+// container's file stays out until its bytes change.
+func TestResetFenceIsPerSource(t *testing.T) {
+	f := newFixture(t)
+	d := &fakeDocker{
+		ids:  map[string][]string{"api": {"c1"}},
+		tars: map[string][]byte{"c1": tarOf(t, "./covmeta.aa", "M", "./covcounters.aa.1.100", "SAME")},
+	}
+	target := Target{Workload: "api", Runtime: "compose", Compose: &ComposeTarget{Service: "api", CoverDir: "/tmp"}}
+	opts := f.options(target)
+	opts.Docker, opts.Reset = d, true
+	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateReset {
+		t.Fatalf("reset: %+v", doc.Workloads[0])
+	}
+	opts.Reset = false
+
+	d.ids["api"] = []string{"c1", "c2"}
+	d.tars["c2"] = tarOf(t, "./covmeta.aa", "M", "./covcounters.aa.1.100", "SAME")
+	doc, err := collectErr(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 1 {
+		t.Fatalf("build %+v, want c2's file only: c1's is fenced, c2 is another source", b)
+	}
+
+	// c1 flushes again under the same name, with new counts: both are kept,
+	// the name collision resolved as build.write resolves any.
+	d.tars["c1"] = tarOf(t, "./covmeta.aa", "M", "./covcounters.aa.1.100", "NEW")
+	if doc, err = collectErr(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 2 {
+		t.Fatalf("build %+v, want c1's new file and c2's", b)
+	}
+}
+
+// A fence written by the first version (bare names) is still read: a name it
+// lists is left out from any source, with any bytes, and a later reset keeps
+// it while adding entries of the current form.
+func TestLegacyNameOnlyFenceStillFences(t *testing.T) {
+	f := newFixture(t)
+	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
+	writeFile(t, cover, "covmeta.aa", "M")
+	writeFile(t, cover, "covcounters.aa.1.100", "ANY")
+	writeFile(t, cover, "covcounters.aa.2.200", "KEPT")
+	marker := ResetMarker(f.root, "dev", "api")
+	writeFile(t, filepath.Dir(marker), filepath.Base(marker), `{"schema":"forge.test.collect.reset/v1","reset_at":"2026-11-21T00:00:00Z","excluded":["covcounters.aa.1.100"]}`)
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{Withheld: "PPROF_ADDR binds 0.0.0.0:6060", CoverDir: cover}}
+	doc, err := collectErr(context.Background(), f.options(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 1 {
+		t.Fatalf("build %+v, want only the file the legacy fence does not name", b)
+	}
+	opts := f.options(target)
+	opts.Reset = true
+	Collect(context.Background(), opts)
+	_, fe, err := readFence(marker)
+	if err != nil || !slices.Equal(fe.Excluded, []string{"covcounters.aa.1.100"}) || len(fe.Entries) != 2 {
+		t.Fatalf("rewritten fence %+v (%v), want the legacy name kept and both files entered", fe, err)
+	}
 }
 
 // [B1] A reset after an instrumented process has already exited. Its

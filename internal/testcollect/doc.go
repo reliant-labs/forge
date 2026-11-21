@@ -40,9 +40,10 @@
 // listed nowhere, so no reader merges them.
 //
 // `--reset` zeroes what a run must not count: it sends each live process the
-// reset POST and discards the tar, and records the NAMES of the counter files
-// flushed before it in .forge/tests/covdata/<env>/.reset/<workload>, which
-// every later collect leaves out (fence.go has the whole rule).
+// reset POST and discards the tar, and records the counter files flushed
+// before it, by source, name and content digest, in
+// .forge/tests/covdata/<env>/.reset/<workload>; every later collect leaves
+// out exactly those files (fence.go has the whole rule).
 //
 // Collection is best effort per workload: one that cannot be reached is
 // reported, never fatal to the others.

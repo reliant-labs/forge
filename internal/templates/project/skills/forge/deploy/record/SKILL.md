@@ -286,6 +286,56 @@ Run the two commands after the deploy. Pass `--commit` and `--url` when the CI
 is not one of the three above; the `--url` then also identifies the run, so a
 retry of the same run records once.
 
+## Record test results and coverage too
+
+The same CI step can record what your tests did: results, coverage and flaky
+tests, per commit. The record is local first (`.forge/tests/runs/`), and
+uploading it is one more command after your own test steps. Reading it back
+and what coverage means: `testing/coverage`; flaky tests: `testing/flakes`.
+
+```bash
+# your own test steps, then:
+forge test ingest --lane pytest --format junit report.xml
+forge test ingest --lane pytest --format cobertura coverage.xml
+forge test report --upload
+```
+
+- **`forge test ingest`** copies reports a runner wrote on its own into a lane
+  of a run, in any language. Results: `junit`, `go-json`, `vitest`. Coverage:
+  `lcov`, `cobertura`, `istanbul`. A lane takes one results file (several
+  `go-json` streams are joined) and any number of coverage files, so ingest
+  results and coverage into one lane with two calls. Results are scrubbed of
+  secret shapes. The run is `--run`, else `$FORGE_TEST_RUN`, else a new one of
+  the checkout. No forge.yaml is needed. Lcov and Cobertura carry lines only, so
+  their coverage reports `granularity: line`.
+- **`forge test report --upload`** sends the report to the control plane.
+  `--upload=required` exits 4 when it cannot upload; the plain flag warns and
+  keeps the report's own exit code. A Go project that uses forge's lanes needs no ingest: `forge test
+  capture` already recorded them.
+- **The token.** `FORGE_CONTROL_PLANE_TOKEN` is the same variable `forge release
+  record` reads. For Tests it needs **`tests:write`**, the narrow upload scope
+  (it implies nothing and reads nothing back), or `deploy:write`, which also
+  uploads. Mint it as above, in the web app. **Reading the record needs
+  `tests:read`** (everyone with `deploy:read` is granted it). A machine token
+  minted before the release that ships Tests is not rewritten: **re-mint it to
+  read Tests**.
+- **Hosted upload needs a control plane that advertises the Tests features.**
+  Until the control plane you talk to does, `--upload` prints a note and the
+  local record stays; with `--upload=required` it exits 4. `.forge/tests/` is
+  never lost to a failed upload, and a recording failure never changes your
+  job's verdict.
+- **GitHub Actions:** `FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}`
+  in the step's `env`, then `forge test report --upload` with
+  `continue-on-error: true` and `if: ${{ !cancelled() }}`, so a fork's pull
+  request (no secrets) warns instead of failing. The other CIs set the same
+  variable as a masked secret.
+
+**Vitest coverage: the `json` (istanbul) reporter only.** Configure `coverage:
+{ provider: "v8", reporter: ["json"] }` and ingest `coverage/coverage-final.json`
+with `--format istanbul`. Do not also write `lcov`: it is line-granular, and
+`forge test report` refuses to merge one file at statement and line granularity
+(exit 2). A forge-scaffolded frontend is already set up this way.
+
 ## Reading `obs check` in CI
 
 Branch on its exit code, never on its text: **0** done; **1** the release

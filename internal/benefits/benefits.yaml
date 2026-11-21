@@ -1170,6 +1170,100 @@ benefits:
       - analyzer: --tests
       - analyzer: --conventions
 
+  - id: test-record-coverage
+    category: test
+    title: Results and coverage recorded per lane
+    claim: >-
+      Each scaffolded test lane records its results and its statement coverage
+      under `.forge/tests/runs/` through `forge test capture`, which passes the
+      command's own exit code through, and `forge test report` merges the lanes
+      into one report with diff coverage against the base and generated code
+      left out of the percentages.
+    status: recorded
+    availability: forge
+    use: >-
+      `task test`, then `task test:report`; `forge test coverage --diff
+      origin/main` lists the changed lines no test reached, and `--format
+      lcov|cobertura|html` hands the figures to other tools.
+    why: >-
+      forge never decides how the tests run: the flags live in your Taskfile and
+      forge records what they produced. Runs from different trees, or from two
+      builds of one package, are refused rather than averaged, and coverage
+      never decides an exit code.
+    evidence:
+      - command: test capture
+      - command: test report
+      - command: test coverage
+      - library: pkg/testreport
+      - skill: testing/coverage
+
+  - id: test-record-any-ci
+    category: test
+    title: Record any CI's test reports
+    claim: >-
+      `forge test ingest` copies a JUnit, Vitest, LCOV, Cobertura or istanbul
+      report from any language's runner into a recorded run, and `forge test
+      report` summarises it, with no forge.yaml.
+    availability: forge
+    use: >-
+      `forge test ingest --lane pytest --format junit report.xml`, then `forge
+      test report`; `--upload` sends it to a control plane that records Tests.
+    scope: any
+    adopt: "After your tests, run `forge test ingest --lane <name> --format junit <report.xml>` and then `forge test report` (add `--format cobertura <coverage.xml>` for coverage)."
+    estimate: "~10 min"
+    evidence:
+      - command: test ingest
+      - command: test report
+      - skill: deploy/record
+
+  - id: e2e-cover-builds
+    category: test
+    title: End-to-end coverage from cover builds
+    claim: >-
+      Go servers in local, ephemeral and preview envs are built with `-cover`,
+      and `forge test collect` pulls what an e2e run reached into the same
+      report as the unit lanes; a persistent env refuses a cover build unless
+      it says why, so prod runs the digest staging ran.
+    availability: forge
+    use: >-
+      `task test:e2e ENV=<env>` baselines the counters, runs the suite and
+      collects what it reached since; `forge.Tests` in `deploy/kcl/<env>/main.k` overrides the
+      default.
+    why: >-
+      The coverage endpoint is read-only and served on the debug listener's
+      loopback address only, and counters from two builds of one package are never merged.
+    evidence:
+      - command: test collect
+      - path: pkg/serverkit/coverage.go
+      - path: internal/cli/build_cover.go
+      - skill: testing/coverage
+
+  - id: flake-states-quarantine
+    category: test
+    title: Flaky tests found, ranked, quarantined
+    claim: >-
+      `forge test flakes` derives each test's state (suspected, flaky,
+      quarantined, fixed, removed) from the recorded runs, leaves host and
+      correlated-infrastructure failures out of the scores, ranks by flake rate
+      with its n, and writes the quarantine as one file per test.
+    status: recorded
+    availability: forge
+    use: >-
+      `forge test flakes`, `forge test quarantine add <test-id>`; `forge test
+      flakes gate` runs the tests a change adds or edits three times, and
+      blocks only when `lint.rules: {flake-check: error}`.
+    why: >-
+      Flaky means confirmed events on two or more distinct commits, so a burst
+      of re-runs on one commit counts once. Flake issues and quarantine pull
+      requests are opt-in (`tests.flakes.issues`, `quarantine: pr`).
+    evidence:
+      - command: test flakes
+      - command: test flakes gate
+      - command: test flakes confirm
+      - command: test quarantine add
+      - library: pkg/testreport
+      - skill: testing/flakes
+
   - id: kcl-eval-tests
     category: test
     title: Test assertions on KCL declarations

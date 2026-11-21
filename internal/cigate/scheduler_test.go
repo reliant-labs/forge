@@ -314,6 +314,81 @@ func TestHeavyQueue_EarliestPositionFirst(t *testing.T) {
 	}
 }
 
+// A free slot is not handed to the only check that has asked while an earlier
+// check that may start has yet to ask: it waits for that one, however late its
+// goroutine runs. (A loaded Windows runner once gave the slot to a short check
+// because the mid-length one asked after a fixed settle window.) The test is
+// driven by the queue's held hook, never by the clock.
+func TestHeavyQueue_WaitsForEarlierReadyCheck(t *testing.T) {
+	slots := &fakeSlots{sem: make(chan struct{}, 1)} // one slot on the host
+	q := newHeavyQueue(context.Background(), slots.take)
+	q.ready = func() []int { return []int{1, 3} }
+	held := make(chan []int, 16)
+	q.held = func(waiting []int) {
+		select {
+		case held <- waiting:
+		default: // a re-evaluation the test does not need
+		}
+	}
+	defer q.close()
+
+	type grant struct {
+		pos  int
+		slot HeldSlot
+	}
+	got := make(chan grant, 2)
+	take := func(pos int) {
+		s, err := q.take(pos, fmt.Sprint(pos))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		got <- grant{pos, s}
+	}
+	// failAfter bounds a wait that should end at once; it proves nothing
+	// about order.
+	failAfter := time.NewTimer(10 * time.Second)
+	defer failAfter.Stop()
+
+	// 1. The later check asks while the earlier ready one has not.
+	go take(3)
+	// 2. The queue holds a slot and evaluates position 3 alone.
+	select {
+	case waiting := <-held:
+		if fmt.Sprint(waiting) != "[3]" {
+			t.Fatalf("held with %v waiting, want [3]", waiting)
+		}
+	case g := <-got:
+		t.Fatalf("position %d was granted while the earlier ready position 1 had not asked", g.pos)
+	case <-failAfter.C:
+		t.Fatal("the queue never evaluated position 3")
+	}
+	// 3. At that point position 3 has no slot.
+	select {
+	case g := <-got:
+		t.Fatalf("position %d was granted after the queue held the slot back", g.pos)
+	default:
+	}
+	// 4. The earlier check asks: it gets the slot; once it releases it,
+	// position 3 gets it.
+	go take(1)
+	var order []int
+	for len(order) < 2 {
+		select {
+		case g := <-got:
+			order = append(order, g.pos)
+			if err := g.slot.Release(); err != nil {
+				t.Fatal(err)
+			}
+		case <-failAfter.C:
+			t.Fatalf("grants so far %v: the queue stopped granting", order)
+		}
+	}
+	if fmt.Sprint(order) != "[1 3]" {
+		t.Fatalf("grant order %v, want [1 3]", order)
+	}
+}
+
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

@@ -136,5 +136,10 @@ service:
   pipelines:
     logs/forge:
       receivers: [filelog/forge]
-      processors: [memory_limiter, transform, transform/telemetry_identity, transform/telemetry_logs, batch]
+      processors:
+        - memory_limiter
+        - transform
+        - transform/telemetry_identity
+        - transform/telemetry_logs
+        - batch
       exporters: [clickhouse]

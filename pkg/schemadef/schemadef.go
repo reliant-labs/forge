@@ -315,7 +315,7 @@ const TableMarkerEntityName = "forge:entity-name"
 // COMMENT ON TABLE may carry — the table-level twin of
 // KnownColumnMarkers, and registered for the same reason: a vocabulary
 // nothing enumerates is a vocabulary a typo silently leaves inert.
-var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity}
+var KnownTableMarkers = []string{TableMarkerAppendOnly, TableMarkerNoEntity, TableMarkerEntityName, ViewMarkerEntity, TableMarkerOwner, TableMarkerPublic, TableMarkerUnscoped}
 
 // DeclaredEntityName returns the name a TableMarkerEntityName declaration
 // gives the table's entity, "" when it declares none.

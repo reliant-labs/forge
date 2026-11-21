@@ -50,7 +50,7 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 {{- end}}
 
-	rows, err := {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+	rows, err := {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 	if err != nil {
 		return nil, svcerr.Wrap(err)
 	}
@@ -78,7 +78,9 @@ func (s *Service) {{.MethodName}}(
   that predates this wording.
 */}}
 // {{.MethodName}} delegates CRUD {{.Operation}} to pkg/crud.
-{{- if and .Scoped .OwnerResolver}}
+{{- if .Owned}}
+// Auth: SCOPED by the table's forge:owner= declaration — the generated op resolves the caller with s.deps.Owners and scopes every read and write.
+{{- else if and .Scoped .OwnerResolver}}
 // Auth: SCOPED to {{.OwnerColumn}} (forge:owner) via {{.OwnerResolver}}(ctx), the resolver this file's other {{.OwnerColumn}} wrappers call.
 {{- else if and .Scoped .OwnerClaimsField}}
 // Auth: SCOPED to {{.OwnerColumn}} (forge:owner) via {{.AuthSeam}}(ctx).{{.OwnerClaimsField}}, the mapping this file's other {{.OwnerColumn}} wrappers use.

@@ -29,7 +29,9 @@ import (
 // Scenario (mirrors TestE2EPbThroughCrudPlusCustomRpc): a fresh project
 // with a dashboard frontend and, in one service, BOTH a `// forge:entity`
 // CRUD entity (with an enum field and an optional field) AND a genuine
-// custom RPC. new → author proto → `forge scaffold` → build green →
+// custom RPC. new → author proto → `forge scaffold` → build green → the
+// author declares whose rows the born table holds (the one decision the
+// scaffold asks for rather than makes; see the crud-ownership lane) →
 // `forge lint --no-fix` and asserts:
 //
 //   - exit 0 with ZERO error findings (no "❌" anywhere) — covering the
@@ -122,6 +124,21 @@ message CreateApiKeyResponse {}
 	runCmd(t, projectDir, forgeBin, "scaffold")
 	runCmd(t, projectDir, "go", "build", "./...")
 
+	// The one question the scaffold leaves to its author: whose rows the
+	// born orders table holds. Forge declares no owner and no exemption for
+	// them, so the crud-ownership lane names the table (a warning or an
+	// error by the pin's rollout; either way the decision is asked, not
+	// made). The author then answers in a new migration, which is the
+	// fresh project every later assertion judges.
+	ownOut, _ := runCmdAllowFail(t, projectDir, forgeBin, "lint", "--crud-ownership", "--no-fix")
+	if !strings.Contains(ownOut, "[crud-table-unowned]") || !strings.Contains(ownOut, "table orders") {
+		t.Errorf("an ownerless born table must be asked whose rows it holds, not exempted for its author:\n%s", ownOut)
+	}
+	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "declare_orders_scope"),
+		"-- forge:backward-compatible — a table comment only; no schema change\n"+
+			"COMMENT ON TABLE orders IS 'forge:unscoped: fixture; every caller of the catalog service is an operator';\n")
+	runCmd(t, projectDir, forgeBin, "generate")
+
 	// THE INVARIANT: `forge lint` exits 0 on the fresh scaffold. PATH is
 	// prepended with the tree-built contractlint so the contract lane runs
 	// against THIS tree's analyzers.
@@ -156,7 +173,7 @@ message CreateApiKeyResponse {}
 	// routes, next/image is unoptimized, and the dev log route is POST-only
 	// and dev-guarded. A scaffold this lane flagged would be one whose
 	// staging/prod `npm run build` fails, or whose hosted site lacks pages.
-	if !strings.Contains(out, "static-export clean — 1 static frontend(s)") {
+	if !strings.Contains(out, "static-export clean — 1 Next.js frontend(s)") {
 		t.Errorf("static-export lane did not judge the scaffolded frontend clean:\n%s", out)
 	}
 

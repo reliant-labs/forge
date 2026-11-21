@@ -75,6 +75,13 @@ func registryPushProbeTargets(entities *KCLEntities, opts buildOptions) (string,
 	if host == "" {
 		return "", nil
 	}
+	// A local registry takes no credentials (registryTakesNoCredentials):
+	// autoLoginForPush logs nothing in to it and the in-process pushes
+	// present none, so docker holding no credential for it is the expected
+	// state, not a refusal to probe for.
+	if registryTakesNoCredentials(host) {
+		return "", nil
+	}
 	sites := hostedStaticSites(entities, opts)
 	mapsHosted := sourcemapsHosted(entities) && opts.pushPlan.pushBase != ""
 	var repositories []string

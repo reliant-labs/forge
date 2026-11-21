@@ -56,17 +56,55 @@ type Options struct {
 	// Interval is how old a sample may be before Latest takes a new one;
 	// zero means DefaultInterval, and it is at least MinInterval.
 	Interval time.Duration
+	// Volumes are the filesystems the host group reports, in order, at most
+	// four, one per device and one per role. Nil means DefaultVolumes; an
+	// empty, non-nil slice reports none. Start rejects a role other than
+	// VolumeCwd, VolumeTmp and VolumeData, since the role is the metric
+	// attribute and its value set is closed.
+	Volumes []Volume
 
 	// procRoot and cgroupRoot replace the platform's /proc and cgroup2 mount
 	// in tests; empty is the platform default (none outside linux).
 	procRoot, cgroupRoot string
-	// volumes replaces the default filesystems (cwd and tmp) in tests.
-	volumes []volume
 	// now replaces time.Now in tests.
 	now func() time.Time
 }
 
-type volume struct{ role, path string }
+// The roles a Volume may have: the values of the forge.filesystem.role
+// attribute on the system.filesystem.* metrics.
+const (
+	// VolumeCwd is the working directory's filesystem.
+	VolumeCwd = "cwd"
+	// VolumeTmp is the temporary directory's (os.TempDir).
+	VolumeTmp = "tmp"
+	// VolumeData is an app's own data: a cache, a database, a workspace.
+	VolumeData = "data"
+)
+
+// volumeRoles is every role a Volume may have.
+var volumeRoles = []string{VolumeCwd, VolumeTmp, VolumeData}
+
+// Volume is a filesystem the host group reports, named in the metrics by its
+// Role and never by its path.
+type Volume struct {
+	// Role is VolumeCwd, VolumeTmp or VolumeData.
+	Role string
+	// Path is any path on the filesystem. It is statted, never reported.
+	Path string
+}
+
+// DefaultVolumes is what a Sampler reports when Options.Volumes is nil: the
+// working directory's filesystem (when it can be read) and the temporary
+// directory's. An app that writes elsewhere appends its own:
+//
+//	opts.Volumes = append(resmetrics.DefaultVolumes(), resmetrics.Volume{Role: resmetrics.VolumeData, Path: cacheDir})
+func DefaultVolumes() []Volume {
+	vols := []Volume{{Role: VolumeTmp, Path: os.TempDir()}}
+	if wd, err := os.Getwd(); err == nil {
+		vols = append([]Volume{{Role: VolumeCwd, Path: wd}}, vols...)
+	}
+	return vols
+}
 
 // Sampler reads the process and its host on demand and caches the result. It
 // runs no goroutine of its own: a sample is taken when Latest finds the cached
@@ -108,6 +146,11 @@ func Start(ctx context.Context, opts Options) (*Sampler, error) {
 	case ScopeHost, ScopeCgroup:
 	default:
 		return nil, fmt.Errorf("resmetrics: unknown scope %q (want %q or %q)", opts.Scope, ScopeHost, ScopeCgroup)
+	}
+	for _, v := range opts.Volumes {
+		if !slices.Contains(volumeRoles, v.Role) {
+			return nil, fmt.Errorf("resmetrics: unknown volume role %q (want one of %v)", v.Role, volumeRoles)
+		}
 	}
 	if opts.Interval == 0 {
 		opts.Interval = DefaultInterval
@@ -233,6 +276,15 @@ func (s *Sampler) sample(now time.Time) Snapshot {
 func (s *Sampler) sampleProcess(now time.Time, linux bool, st procStat, stOK bool, next *counters, fail func(string, error)) *ProcessStats {
 	p := &ProcessStats{StartTime: processStart, Goroutines: runtime.NumGoroutine(), GoMappedBytes: goMappedBytes()}
 	if !linux {
+		if nativeReaders {
+			readProcess(p, fail)
+			if p.CPU != nil {
+				s.processRate(now, p.CPU, next)
+			}
+			if p.Memory != nil {
+				p.Memory.GoGap = int64(p.Memory.RSS) - int64(p.GoMappedBytes) //nolint:gosec // memory sizes fit in int64
+			}
+		}
 		return p
 	}
 	if self, err := s.proc.selfStat(); err != nil {
@@ -242,12 +294,7 @@ func (s *Sampler) sampleProcess(now time.Time, linux bool, st procStat, stOK boo
 			p.StartTime = st.bootTime.Add(time.Duration(self.startTicks) * time.Second / userHZ)
 		}
 		p.CPU = &ProcessCPU{UserSeconds: self.userSeconds, SystemSeconds: self.systemSeconds}
-		total := self.userSeconds + self.systemSeconds
-		if dt := now.Sub(s.prev.procAt).Seconds(); s.prev.haveProc && dt > 0 {
-			u := max(total-s.prev.procCPU, 0) / dt
-			p.CPU.Utilization = &u
-		}
-		next.procAt, next.procCPU, next.haveProc = now, total, true
+		s.processRate(now, p.CPU, next)
 		p.Faults = &PageFaults{Minor: self.minorFaults, Major: self.majorFaults}
 	}
 	if rss, virt, err := s.proc.selfStatm(); err != nil {
@@ -365,23 +412,16 @@ func (s *Sampler) sampleHost(linux, nodeWide bool, st procStat, stOK bool, cg *C
 			}
 		}
 	}
+	if !linux && nativeReaders {
+		readHost(h, nodeWide, fail)
+		if h.CPU != nil {
+			s.hostRate(h.CPU, next)
+		}
+	}
 	if linux && nodeWide {
 		if stOK {
 			h.CPU = &HostCPU{Seconds: st.cpu}
-			if prev := s.prev; prev.haveH {
-				d := CPUModes{
-					User: st.cpu.User - prev.hostCPU.User, System: st.cpu.System - prev.hostCPU.System,
-					Idle: st.cpu.Idle - prev.hostCPU.Idle, IOWait: st.cpu.IOWait - prev.hostCPU.IOWait,
-					Steal: st.cpu.Steal - prev.hostCPU.Steal,
-				}
-				if total := d.User + d.System + d.Idle + d.IOWait + d.Steal; total > 0 {
-					h.CPU.Utilization = &CPUModes{
-						User: max(d.User, 0) / total, System: max(d.System, 0) / total, Idle: max(d.Idle, 0) / total,
-						IOWait: max(d.IOWait, 0) / total, Steal: max(d.Steal, 0) / total,
-					}
-				}
-			}
-			next.hostCPU, next.haveH = st.cpu, true
+			s.hostRate(h.CPU, next)
 		}
 		if l, err := s.proc.loadavg(); err != nil {
 			fail("/proc/loadavg", err)
@@ -403,37 +443,76 @@ func (s *Sampler) sampleHost(linux, nodeWide bool, st procStat, stOK bool, cg *C
 	return h
 }
 
-// filesystems stats the volumes the process writes to, one per device, at most
-// maxVolumes, in the order given (cwd first).
+// processRate sets c's utilization from the CPU time of the previous sample
+// that read it, and records this one for the next.
+func (s *Sampler) processRate(now time.Time, c *ProcessCPU, next *counters) {
+	total := c.UserSeconds + c.SystemSeconds
+	if dt := now.Sub(s.prev.procAt).Seconds(); s.prev.haveProc && dt > 0 {
+		u := max(total-s.prev.procCPU, 0) / dt
+		c.Utilization = &u
+	}
+	next.procAt, next.procCPU, next.haveProc = now, total, true
+}
+
+// hostRate sets c's per-mode utilization from the CPU times of the previous
+// sample that read them, and records these for the next. Unavailable modes
+// contribute neither a delta nor time to the utilization denominator.
+func (s *Sampler) hostRate(c *HostCPU, next *counters) {
+	cur := c.Seconds
+	if prev := s.prev; prev.haveH {
+		d := CPUModes{
+			User: cur.User - prev.hostCPU.User, System: cur.System - prev.hostCPU.System,
+			Idle: cur.Idle - prev.hostCPU.Idle,
+		}
+		if !c.NoIOWaitSteal {
+			d.IOWait = cur.IOWait - prev.hostCPU.IOWait
+			d.Steal = cur.Steal - prev.hostCPU.Steal
+		}
+		if total := d.User + d.System + d.Idle + d.IOWait + d.Steal; total > 0 {
+			c.Utilization = &CPUModes{
+				User: max(d.User, 0) / total, System: max(d.System, 0) / total, Idle: max(d.Idle, 0) / total,
+				IOWait: max(d.IOWait, 0) / total, Steal: max(d.Steal, 0) / total,
+			}
+		}
+	}
+	next.hostCPU, next.haveH = cur, true
+}
+
+// filesystems stats the volumes the process writes to, one per device and
+// one per role, at most maxVolumes, in the order given (cwd first by default).
 func (s *Sampler) filesystems(fail func(string, error)) []Filesystem {
 	if !volumesSupported {
 		return nil
 	}
-	vols := s.opts.volumes
+	vols := s.opts.Volumes
 	if vols == nil {
-		vols = []volume{{role: "tmp", path: os.TempDir()}}
+		vols = []Volume{{Role: VolumeTmp, Path: os.TempDir()}}
 		if wd, err := os.Getwd(); err != nil {
 			fail("filesystem/cwd", err)
 		} else {
-			vols = append([]volume{{role: "cwd", path: wd}}, vols...)
+			vols = append([]Volume{{Role: VolumeCwd, Path: wd}}, vols...)
 		}
 	}
 	var out []Filesystem
-	seen := map[uint64]bool{}
+	seenDev := map[uint64]bool{}
+	seenRole := map[string]bool{}
 	for _, v := range vols {
 		if len(out) == maxVolumes {
 			break
 		}
-		dev, used, free, err := statVolume(v.path)
+		if seenRole[v.Role] {
+			continue
+		}
+		dev, used, free, err := statVolume(v.Path)
 		if err != nil {
-			fail("filesystem/"+v.role, err)
+			fail("filesystem/"+v.Role, err)
 			continue
 		}
-		if seen[dev] {
+		if seenDev[dev] {
 			continue
 		}
-		seen[dev] = true
-		out = append(out, Filesystem{Role: v.role, UsedBytes: used, FreeBytes: free})
+		seenDev[dev], seenRole[v.Role] = true, true
+		out = append(out, Filesystem{Role: v.Role, UsedBytes: used, FreeBytes: free})
 	}
 	return out
 }

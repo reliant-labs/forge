@@ -1079,6 +1079,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// resolveEphemeralHostPorts.
 	apiBaseURL := resolveEphemeralHostPorts(entities)
 	resolveEphemeralFrontendPorts(cfg, entities)
+	// Named same-origin APIs (Frontend.apis) are proxied by each dev server
+	// to the ports just settled, so dev URLs equal hosted ones.
+	resolveDevAPIUpstreams(entities)
 
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
@@ -3739,6 +3742,16 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 			envFileMap = map[string]string{}
 		}
 		envFileMap[frontendAPIURLEnvVar(fe.Type)] = apiBaseURL
+	}
+	// The named same-origin APIs' upstreams (resolveDevAPIUpstreams), which
+	// the scaffolded dev server proxies at /_api/@<name>. Lowest layer too:
+	// the frontend's KCL env_vars outrank it, and so does the shell with
+	// FORGE_ENV_OVERRIDE=FORGE_DEV_APIS.
+	if v := devAPIsEnvValue(fe.DevAPIUpstreams); v != "" {
+		if envFileMap == nil {
+			envFileMap = map[string]string{}
+		}
+		envFileMap[devAPIsEnvVar] = v
 	}
 	// EffectiveEnvVars folds the typed `config` block (mock/api_url/otel/
 	// environment) into the KCL env stream, explicit env_vars winning on a

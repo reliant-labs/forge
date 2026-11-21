@@ -1,7 +1,8 @@
 # Smithery listing for `forge mcp` (https://smithery.ai). The listing's text is
-# npm/README.md: forge for ANY repo — standalone lint lanes, agent playbooks,
-# runtime libraries, no-account deploys, and the `benefits` tool that says what
-# applies to the repo the agent is in. A local stdio server: Smithery's clients
+# npm/README.md, which opens with the one definition every listing shares (npm
+# description, npm/server.json, gemini-extension.json; held equal by
+# TestListingsShareOneDefinition): "Guardrails for apps in any agent harness.
+# Deploy with no account: a live URL plus a claim link." A local stdio server: Smithery's clients
 # start it with npx, which downloads the forge binary that matches the package
 # version on first run. Nothing to configure: every tool takes an optional
 # `dir`, works with or without a forge.yaml, and deploy_claimable needs no

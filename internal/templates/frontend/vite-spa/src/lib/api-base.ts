@@ -49,3 +49,50 @@ export function apiBase(configured: string): string {
     configured,
   });
 }
+
+// ── Named APIs ──────────────────────────────────────────────────────────
+//
+// A frontend that calls more than one backend names the others in KCL
+// (`Frontend.apis = {billing = "billing-api"}`), and each is served on this
+// page's own origin too, at `/_api/@<name>`, so the session cookie stays
+// first-party for every one of them. Dev server: proxied like `/_api`. A
+// build: config.js's `apis.<name>` (`/_api/@<name>` on Reliant hosting, the
+// workload's own URL where nothing serves the route). Depth: `frontend/serving`.
+//
+//     createConnectTransport({ baseUrl: apiBaseFor("billing"), credentials: "include" })
+
+/** chooseApiBaseFor is chooseApiBase for the named API `name`. */
+export function chooseApiBaseFor(name: string, inputs: ApiBaseInputs): string {
+  if (inputs.devProxyPath) {
+    return `${inputs.origin}${inputs.basePath}${inputs.devProxyPath}/@${name}`;
+  }
+  return inputs.configured.replace(/\/+$/, "");
+}
+
+/** The named APIs this environment's config.js publishes: name -> base URL. */
+function configuredApis(): Record<string, unknown> {
+  if (typeof window === "undefined") return {};
+  const apis = (window as { __FORGE_CONFIG__?: { apis?: unknown } }).__FORGE_CONFIG__?.apis;
+  return apis !== null && typeof apis === "object" ? (apis as Record<string, unknown>) : {};
+}
+
+/**
+ * apiBaseFor returns the base URL for requests to the named API `name`. It
+ * throws when neither the dev server nor config.js knows the name — a typo,
+ * or an environment that does not declare it in Frontend.apis — rather than
+ * sending the request to the default API.
+ */
+export function apiBaseFor(name: string): string {
+  const configured = configuredApis()[name];
+  if (!DEV_API_PROXY && typeof configured !== "string") {
+    throw new Error(
+      `[forge] no API named "${name}" in this environment: declare it in the frontend's Frontend.apis`,
+    );
+  }
+  return chooseApiBaseFor(name, {
+    devProxyPath: DEV_API_PROXY,
+    origin: typeof window === "undefined" ? "" : window.location.origin,
+    basePath: "",
+    configured: typeof configured === "string" ? configured : "",
+  });
+}

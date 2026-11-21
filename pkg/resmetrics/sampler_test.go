@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func TestSnapshotReadsEveryFixtureFile(t *testing.T) {
 	if h.Processes == nil || *h.Processes != (CountLimit{Count: 2, Limit: 32768}) {
 		t.Errorf("Processes = %+v, want 2 numeric /proc entries against pid_max", h.Processes)
 	}
-	if runtime.GOOS == "linux" {
+	if volumesSupported {
 		if len(h.Filesystems) != 1 || h.Filesystems[0].Role != "cwd" {
 			t.Errorf("Filesystems = %+v, want one (cwd): both fixture volumes are on one device", h.Filesystems)
 		}
@@ -125,6 +126,35 @@ func TestSnapshotReadsEveryFixtureFile(t *testing.T) {
 	}
 	if c.PidsCurrent == nil || *c.PidsCurrent != 12 || c.PidsMax != nil {
 		t.Errorf("pids = %v / %v, want 12 and no limit (max)", c.PidsCurrent, c.PidsMax)
+	}
+}
+
+func TestHostRateUsesOnlyMeasuredModes(t *testing.T) {
+	for _, noIOWaitSteal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "linux", true: "native"}[noIOWaitSteal], func(t *testing.T) {
+			s := &Sampler{prev: counters{
+				haveH:   true,
+				hostCPU: CPUModes{User: 10, System: 20, Idle: 30, IOWait: 40, Steal: 50},
+			}}
+			c := &HostCPU{
+				Seconds:       CPUModes{User: 12, System: 23, Idle: 35, IOWait: 44, Steal: 56},
+				NoIOWaitSteal: noIOWaitSteal,
+			}
+			want := CPUModes{User: 0.1, System: 0.15, Idle: 0.25, IOWait: 0.2, Steal: 0.3}
+			if noIOWaitSteal {
+				// A previous source populated modes the native reader cannot measure.
+				c.Seconds.IOWait, c.Seconds.Steal = 0, 0
+				want = CPUModes{User: 0.2, System: 0.3, Idle: 0.5}
+			}
+			var next counters
+			s.hostRate(c, &next)
+			if c.Utilization == nil || !modesNear(*c.Utilization, want) {
+				t.Fatalf("utilization = %+v, want %+v", c.Utilization, want)
+			}
+			if !next.haveH || next.hostCPU != c.Seconds {
+				t.Fatalf("next counters = %+v, want current CPU times", next)
+			}
+		})
 	}
 }
 
@@ -164,7 +194,7 @@ func TestAFailedReaderDropsOnlyItsOwnFields(t *testing.T) {
 // With no /proc at all (a sandbox, or the readers pointed nowhere), Start
 // still succeeds and the runtime-derived fields are still reported.
 func TestNoProcStillSamples(t *testing.T) {
-	s, err := Start(context.Background(), Options{procRoot: t.TempDir() + "/missing", cgroupRoot: t.TempDir(), volumes: []volume{}})
+	s, err := Start(context.Background(), Options{procRoot: t.TempDir() + "/missing", cgroupRoot: t.TempDir(), Volumes: []Volume{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +254,7 @@ func TestCgroupScopeLeavesOutTheNode(t *testing.T) {
 	if snap.Cgroup == nil || h.MemoryLimit == nil || *h.MemoryLimit != 2097152 {
 		t.Error("cgroup scope lost the container's own numbers")
 	}
-	if runtime.GOOS == "linux" && len(h.Filesystems) == 0 {
+	if volumesSupported && len(h.Filesystems) == 0 {
 		t.Error("cgroup scope dropped the process's own volumes")
 	}
 }
@@ -305,5 +335,43 @@ func TestRealProcSelf(t *testing.T) {
 	}
 	if up := p.Uptime(time.Now()); up < 0 || up > 24*time.Hour {
 		t.Errorf("uptime %v: the start time is wrong", up)
+	}
+}
+
+// Options.Volumes names the filesystems by a closed set of roles: an unknown
+// role is refused, a volume that cannot be read is an error that does not use
+// up its role, and nil means DefaultVolumes.
+func TestVolumes(t *testing.T) {
+	if _, err := Start(context.Background(), Options{Volumes: []Volume{{Role: "/home/me", Path: t.TempDir()}}}); err == nil {
+		t.Error("a role outside the closed set was accepted")
+	}
+
+	f := newFixture(t)
+	o := f.options(Options{})
+	o.Volumes = []Volume{{Role: VolumeData, Path: filepath.Join(t.TempDir(), "missing")}, {Role: VolumeData, Path: t.TempDir()}}
+	s, err := Start(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Latest()
+	if !volumesSupported {
+		if snap.Host.Filesystems != nil {
+			t.Errorf("Filesystems = %+v on a platform without statfs", snap.Host.Filesystems)
+		}
+		return
+	}
+	if fs := snap.Host.Filesystems; len(fs) != 1 || fs[0].Role != VolumeData || fs[0].UsedBytes+fs[0].FreeBytes == 0 {
+		t.Errorf("Filesystems = %+v, want the readable data volume", fs)
+	}
+	if snap.Errors["filesystem/data"] == nil {
+		t.Errorf("the unreadable volume was not reported: %v", snap.Err())
+	}
+
+	roles := map[string]bool{}
+	for _, v := range DefaultVolumes() {
+		roles[v.Role] = true
+	}
+	if !roles[VolumeTmp] || !roles[VolumeCwd] || len(roles) != 2 {
+		t.Errorf("DefaultVolumes = %+v, want cwd and tmp", DefaultVolumes())
 	}
 }

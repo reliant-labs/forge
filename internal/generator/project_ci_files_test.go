@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -70,6 +71,44 @@ func TestCIFiles_CLIGetsNoImageOrDeployWorkflow(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, ".github", "workflows", absent)); !os.IsNotExist(err) {
 			t.Errorf("%s was written for a CLI project (err=%v)", absent, err)
 		}
+	}
+}
+
+// TestCIFiles_ScaffoldPinsItsOwnForgeAndGetsTheForgeScan: `forge project new`
+// pins the forge that ran it, and build-images.yml runs `forge vuln scan` for
+// that pin when it has it. So a scaffold by v1.10.0 — or by any later build,
+// a development build after the v1.10.0 tag included — gets the forge scan
+// and no anchore/Trivy steps, and one by an older forge keeps them.
+func TestCIFiles_ScaffoldPinsItsOwnForgeAndGetsTheForgeScan(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	for _, tc := range []struct {
+		binary    string
+		forgeScan bool
+	}{
+		{"v1.10.0", true},
+		{"v1.10.1-0.20261122000000-0123456789ab", true}, // a checkout build after the tag
+		{"v1.11.0", true},
+		{"v1.9.0", false},
+		{"v1.9.1-0.20261121000000-0123456789ab", false}, // a checkout build before it
+	} {
+		t.Run(tc.binary, func(t *testing.T) {
+			restoreBuildinfo(t)
+			buildinfo.Set(tc.binary, "", "")
+			g, dir := ciGenerator(t, config.FeaturesConfig{})
+			writeEnvMain(t, dir, "staging", "prod")
+			if err := g.generateCIFiles(); err != nil {
+				t.Fatalf("generateCIFiles: %v", err)
+			}
+			if got := readCIFile(t, filepath.Join(dir, "forge.yaml")); !strings.Contains(got, "forge_version: "+tc.binary) {
+				t.Fatalf("forge.yaml does not pin the scaffolding forge %s:\n%s", tc.binary, got)
+			}
+			b := readCIFile(t, filepath.Join(dir, ".github", "workflows", "build-images.yml"))
+			scan := strings.Contains(b, "forge vuln scan --image")
+			old := strings.Contains(b, "aquasecurity/trivy-action") || strings.Contains(b, "anchore/sbom-action")
+			if scan != tc.forgeScan || old == tc.forgeScan {
+				t.Errorf("forge %s: forge vuln scan=%v, anchore/Trivy=%v; want forge scan=%v:\n%s", tc.binary, scan, old, tc.forgeScan, b)
+			}
+		})
 	}
 }
 

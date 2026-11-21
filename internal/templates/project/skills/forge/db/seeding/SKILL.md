@@ -104,7 +104,7 @@ COMMENT ON CONSTRAINT orders_patient_id_fkey ON orders IS
 | declaration | meaning |
 | --- | --- |
 | `forge:ref derived-from=<column>` | the route leaving by `<column>` decides; this column is seeded from it |
-| `forge:ref authoritative` | this column is the truth; the other edge is narrowed to agree with it |
+| `forge:ref authoritative` | this column is the truth; every other route to the parent is narrowed to agree with it |
 | `forge:ref independent` | genuinely unrelated facts (an order shipped to someone else's address) |
 
 **`authoritative` is usually the right answer.** The record states its own

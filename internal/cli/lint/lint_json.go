@@ -402,6 +402,8 @@ func collectSingleLinterJSON(
 		return reportBySeverity(collectClosedSetsJSON(cwd, cfg))
 	case flags.dbGrants:
 		return reportBySeverity(collectDBGrantsJSON(cwd, cfg))
+	case flags.crudOwnership:
+		return reportBySeverity(collectCRUDOwnershipJSON(cwd, cfg))
 	case flags.fixtureDrift || flags.crudFixtures:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.timeBucketing:

@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -281,6 +284,61 @@ func resolveEphemeralHostPorts(e *KCLEntities) string {
 		}
 	}
 	return backendURL
+}
+
+// devAPIsEnvVar is the variable `forge env up` hands a web frontend's dev
+// server its named same-origin APIs in (Frontend.apis): a JSON object, name ->
+// the upstream base URL `/_api/@<name>/*` is proxied to. The scaffolded
+// vite.config.ts and next.config.ts read it.
+const devAPIsEnvVar = "FORGE_DEV_APIS"
+
+// resolveDevAPIUpstreams fills each frontend's DevAPIUpstreams from its named
+// APIs, AFTER resolveEphemeralHostPorts: a host workload's upstream is the
+// port it binds in this run (declared or just assigned), which render could
+// not know for an undeclared one; anything else keeps the URL render
+// resolved. A name with neither is left out and reported, so the dev server
+// answers it 404 rather than proxying somewhere stale.
+func resolveDevAPIUpstreams(e *KCLEntities) {
+	if e == nil {
+		return
+	}
+	byName := make(map[string]*WorkloadEntity, len(e.Workloads))
+	for i := range e.Workloads {
+		byName[e.Workloads[i].Name] = &e.Workloads[i]
+	}
+	for i := range e.Frontends {
+		fe := &e.Frontends[i]
+		if len(fe.APIs) == 0 {
+			continue
+		}
+		fe.DevAPIUpstreams = make(map[string]string, len(fe.APIs))
+		for _, name := range slices.Sorted(maps.Keys(fe.APIs)) {
+			target := fe.APIs[name]
+			upstream := fe.APIURLs[name]
+			if w := byName[target]; w != nil && w.OnRuntime(RuntimeHost) {
+				if p := w.HostPort(); p > 0 {
+					upstream = fmt.Sprintf("http://localhost:%d", p)
+				}
+			}
+			if upstream == "" {
+				fmt.Printf("[up] frontend %s: api %q (workload %s) has no URL in this env; /_api/@%s will answer 404\n", fe.Name, name, target, name)
+				continue
+			}
+			fe.DevAPIUpstreams[name] = upstream
+		}
+	}
+}
+
+// devAPIsEnvValue encodes upstreams as FORGE_DEV_APIS; "" for none.
+func devAPIsEnvValue(upstreams map[string]string) string {
+	if len(upstreams) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(upstreams)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // frontendEnvPrefix returns the public-env-var prefix a frontend of the

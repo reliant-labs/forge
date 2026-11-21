@@ -295,6 +295,23 @@ const CapabilityServesDashboardFilterParams = "serves-dashboard-filter-params"
 // deploying ([BundleReader.TelemetryWarning]).
 const CapabilityCollectsTelemetry = "collects-telemetry"
 
+// CapabilityServesNamedSiteAPIs is advertised beside the bundle features by
+// a control plane that SERVES a hosted static site's named same-origin APIs
+// (StaticSiteSpec.APIs): its operator records each name's host in the site's
+// serving document and writes `apis` into config.js, and its origin routes
+// <any host of the site>/_api/@<name>/* to that host, prefix stripped, with
+// the client's X-Forwarded-* replaced by its own.
+//
+// Decoding the field is a matter of the forge a control plane pins, which it
+// would gain on any pin bump; serving it is not. So, like
+// [CapabilityEnforcesPromotionChecks], it is deliberately not in
+// [BundleDocFeatures]: a control plane adds it by hand, in the change that
+// serves the routes. Until it does, forge refuses to record a site that
+// declares named APIs there ([BundleReader.CheckNamedSiteAPIs]), so a deploy
+// fails with the capability named instead of shipping a site whose
+// /_api/@<name> calls 404.
+const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
@@ -556,6 +573,22 @@ func (r *BundleReader) CheckIdentities(s Shape) error {
 	return fmt.Errorf("this env declares %d managed identities (%s), and this control plane converges only one per env "+
 		"(it does not advertise %q). Upgrade the control plane, or declare one identity in this env until it is",
 		len(names), strings.Join(names, ", "), CapabilityConvergesSeveralIdentities)
+}
+
+// CheckNamedSiteAPIs refuses static sites that declare named same-origin
+// APIs (sites names them) to a reader that does not serve them: one that
+// does not advertise [CapabilityServesNamedSiteAPIs] would publish the site
+// and answer every /_api/@<name> call with a 404. No such site, and the nil
+// reader (this forge's own machine ledger), always pass. Callers run it
+// before anything is written.
+func (r *BundleReader) CheckNamedSiteAPIs(sites []string) error {
+	if len(sites) == 0 || r.Supports(CapabilityServesNamedSiteAPIs) {
+		return nil
+	}
+	return fmt.Errorf("static site %s declares named same-origin APIs (Frontend.apis, served at /_api/@<name>), and this control plane "+
+		"does not serve them (it does not advertise %q), so every call to one would 404. Upgrade the control plane, or call those "+
+		"backends by URL (a literal in runtime_config) until it is",
+		strings.Join(sites, ", "), CapabilityServesNamedSiteAPIs)
 }
 
 // identityOutputLoginPolicy is the identity output the sign-in feature added.

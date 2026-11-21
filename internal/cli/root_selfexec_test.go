@@ -15,8 +15,16 @@ import (
 // observes only its own execution. The route is package state recorded
 // by the root PersistentPreRun; these tests must not run in parallel
 // with each other.
+//
+// The t.Setenv enforces that: testing panics when a test (or an ancestor)
+// that calls it is parallel, so a t.Parallel() caller fails on its first run
+// instead of racing the route under -race only when the scheduler lines two
+// of them up (main went red that way: TestTestRunHelpSaysItNeverRunsGoTest
+// and TestTestGroupSaysItRunsNoSuiteOfItsOwn, both parallel, both building
+// the root).
 func resetCmdRoute(t *testing.T) {
 	t.Helper()
+	t.Setenv("FORGE_TEST_CMD_ROUTE_SERIAL", "1")
 	cmdutil.ResetCmdRoute()
 	t.Cleanup(cmdutil.ResetCmdRoute)
 }

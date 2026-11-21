@@ -192,3 +192,17 @@ func TestOutputKeys_DeliverTheLoginPolicyDocument(t *testing.T) {
 		t.Error("no document: no key (the broker keeps its legacy policy)")
 	}
 }
+
+func TestSpec_SocialPassTokensReachesTheIdP(t *testing.T) {
+	in := v2Input()
+	in.Identity.Social[1].PassTokens = true
+	spec, _, err := Spec(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range spec.IdPs {
+		if p.PassTokens != (p.Type == identity.IdPGitHub) {
+			t.Errorf("idp %s pass_tokens = %v", p.Type, p.PassTokens)
+		}
+	}
+}

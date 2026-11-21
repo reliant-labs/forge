@@ -55,6 +55,17 @@ func TestRegistryPushProbeTargets(t *testing.T) {
 	if _, got := registryPushProbeTargets(e, noPush); len(got) != 0 {
 		t.Errorf("a build that pushes nothing probes %v", got)
 	}
+	// A local registry takes no credentials and is logged in to by nothing,
+	// so there is no credential to ask its realm about.
+	for _, local := range []string{"localhost:5051", "127.0.0.1:44513"} {
+		le := probeEntities(hostedFE("web", "web", ""))
+		le.ControlPlane.RegistryHost = local
+		lo := probeOpts()
+		lo.pushPlan.pushBase = local + "/org/proj"
+		if _, got := registryPushProbeTargets(le, lo); len(got) != 0 {
+			t.Errorf("a build pushing to the local registry %s probes %v", local, got)
+		}
+	}
 }
 
 func stubPushProbe(t *testing.T, res deploytarget.PushAccess) *[]string {

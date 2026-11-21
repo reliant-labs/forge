@@ -161,6 +161,45 @@ func ValidateRuntimeConfig(rc map[string]RuntimeConfigValue) error {
 	return errors.Join(errs...)
 }
 
+// siteAPINameRE is SiteAPINamePattern, compiled.
+var siteAPINameRE = regexp.MustCompile(SiteAPINamePattern)
+
+// MaxSiteAPIs bounds StaticSiteSpec.APIs.
+const MaxSiteAPIs = 16
+
+// ValidateSiteAPIName checks one named API's name.
+func ValidateSiteAPIName(name string) error {
+	if !siteAPINameRE.MatchString(name) {
+		return fmt.Errorf("api name %q must match %s: it is the path segment after /_api/@", name, SiteAPINamePattern)
+	}
+	return nil
+}
+
+// ValidateSiteAPIs checks a StaticSite's named APIs: legal names, a
+// workload reference each, the bound, and no runtime config key that would
+// collide with the published `apis` object.
+func ValidateSiteAPIs(apis map[string]WorkloadURLRef, rc map[string]RuntimeConfigValue) error {
+	if len(apis) == 0 {
+		return nil
+	}
+	var errs []error
+	if len(apis) > MaxSiteAPIs {
+		errs = append(errs, fmt.Errorf("apis has %d entries; at most %d are allowed", len(apis), MaxSiteAPIs))
+	}
+	for _, name := range sortedKeys(apis) {
+		if err := ValidateSiteAPIName(name); err != nil {
+			errs = append(errs, fmt.Errorf("apis: %w", err))
+		}
+		if err := apis[name].Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("apis.%s: %w", name, err))
+		}
+	}
+	if _, ok := rc[RuntimeConfigAPIsKey]; ok {
+		errs = append(errs, fmt.Errorf("runtimeConfig.%s collides with the named APIs, which config.js publishes under that key: rename the entry", RuntimeConfigAPIsKey))
+	}
+	return errors.Join(errs...)
+}
+
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -324,6 +363,9 @@ func (s StaticSiteSpec) Validate() error {
 		errs = append(errs, err)
 	}
 	if err := ValidateRuntimeConfig(s.RuntimeConfig); err != nil {
+		errs = append(errs, err)
+	}
+	if err := ValidateSiteAPIs(s.APIs, s.RuntimeConfig); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

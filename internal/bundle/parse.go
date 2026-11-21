@@ -20,6 +20,7 @@ package bundle
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -311,4 +312,20 @@ func SecretDocuments(stream string) ([]SecretDocument, error) {
 		out = append(out, SecretDocument{Clusters: doc.clusters, Namespace: meta.namespace, Name: meta.name, Body: body})
 	}
 	return out, nil
+}
+
+// staticSitesWithNamedAPIs names every forge StaticSite in docs whose spec
+// declares named same-origin APIs (spec.apis), in stream order.
+func staticSitesWithNamedAPIs(docs []parsedDoc) []string {
+	var out []string
+	for _, d := range docs {
+		if d.meta.kind != "StaticSite" || !strings.HasPrefix(d.meta.apiVersion, "forge.dev/") {
+			continue
+		}
+		body, _ := d.body.(map[string]any)
+		if len(mapAt(mapAt(body, "spec"), "apis")) > 0 {
+			out = append(out, d.meta.name)
+		}
+	}
+	return out
 }

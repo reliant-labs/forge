@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/schemagen"
+	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
@@ -48,6 +49,14 @@ func publishedSchemas() map[string]struct {
 				Describes: "one env's declaration: what deploy/kcl/<env>/main.k renders to, or a hand-written env document (deploy/envs/<env>.yaml)",
 			},
 			body: envSchemaJSON,
+		},
+		"vuln-list": {
+			spec: SchemaSpec{
+				Name: "vuln-list", APIVersion: vulnscan.DocumentSchema, ID: vulnListSchemaID,
+				Command:   "forge project schema vuln-list",
+				Describes: "`forge vuln list|show|scan --json`: a release's vulnerability findings and the env's vuln_gate verdict",
+			},
+			body: vulnListSchemaJSON,
 		},
 		"test-results":  testDocumentSchema("test-results", testreport.SchemaResults, reflect.TypeOf(testreport.Results{}), "one lane run's test cases, normalised from go test -json, JUnit or Vitest JSON (.forge/tests/runs/<id>/<lane>/)"),
 		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
@@ -122,6 +131,10 @@ func newProjectSchemaCmd() *cobra.Command {
         env document (deploy/envs/<env>.yaml or .json), which declares an env
         without KCL. Generated from the Go types forge decodes it with.
 
+  vuln-list  forge.dev/vuln-list/v1: the document ` + "`forge vuln list|show|scan --json`" + `
+        prints — a release's vulnerability findings and the env's vuln_gate
+        verdict. Generated from the Go type forge encodes it with.
+
   test-results, test-coverage, test-report, test-flakes
         forge.test.results/v1, forge.test.coverage/v1, forge.test.report/v1,
         forge.test.flakes/v1: the test record's documents, generated from the
@@ -133,7 +146,9 @@ editor at it with "$schema" (JSON) or a yaml-language-server comment (YAML).
 
 Examples:
   forge project schema
-  forge project schema env > env.v1.schema.json`,
+  forge project schema env > env.v1.schema.json
+  forge project schema vuln-list
+  forge project schema test-report`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -161,9 +176,16 @@ func runProjectSchema(w io.Writer, name string) error {
 	return err
 }
 
+// writeSchemaList prints one entry per schema, its name padded to the longest
+// name so a new registration needs no change here.
 func writeSchemaList(w io.Writer) error {
-	for _, s := range schemaSpecs() {
-		if _, err := fmt.Fprintf(w, "%-13s %s  %s\n              %s\n", s.Name, s.APIVersion, s.Command, s.Describes); err != nil {
+	specs := schemaSpecs()
+	width := 0
+	for _, s := range specs {
+		width = max(width, len(s.Name))
+	}
+	for _, s := range specs {
+		if _, err := fmt.Fprintf(w, "%-*s %s  %s\n%*s%s\n", width, s.Name, s.APIVersion, s.Command, width+1, "", s.Describes); err != nil {
 			return err
 		}
 	}

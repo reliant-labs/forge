@@ -8,8 +8,9 @@
 //
 //   - live, in the process. serverkit serves it at /debug/coverage on the
 //     loopback debug listener (pkg/serverkit/coverage.go): a tar of the
-//     covmeta and covcounters files Go would write, `?reset=1` zeroing the
-//     counters after the tar is built.
+//     covmeta and covcounters files Go would write; a POST carrying
+//     X-Forge-Coverage-Reset: 1 zeroes the counters after the tar is built
+//     (serverkit refuses a reset in any form a web page could send).
 //   - flushed, in GOCOVERDIR. Go writes the counters there when main returns
 //     and on os.Exit, so every process that exited cleanly left a file.
 //
@@ -38,8 +39,8 @@
 // go-covdata input, and the stale ones in <run>/<lane>/covdata/<workload>/stale/<hash>/,
 // listed nowhere, so no reader merges them.
 //
-// `--reset` zeroes what a run must not count: it pulls each live process with
-// `?reset=1` and discards the tar, and records the time in
+// `--reset` zeroes what a run must not count: it sends each live process the
+// reset POST and discards the tar, and records the time in
 // .forge/tests/covdata/<env>/.reset/<workload>, so counter files flushed before
 // it (their names carry the time they were written) are left out of the next
 // collect.

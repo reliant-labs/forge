@@ -98,8 +98,8 @@ func runningPods(items []corev1.Pod) []testcollect.Pod {
 	return out
 }
 
-// Get sends one GET to port inside the pod, over its own tunnel.
-func (k *collectKube) Get(ctx context.Context, kubeContext, namespace, pod string, port int, pathAndQuery string) (*http.Response, error) {
+// Do sends req to port inside the pod, over its own tunnel.
+func (k *collectKube) Do(ctx context.Context, kubeContext, namespace, pod string, port int, req *http.Request) (*http.Response, error) {
 	c, err := k.client(kubeContext)
 	if err != nil {
 		return nil, err
@@ -113,9 +113,5 @@ func (k *collectKube) Get(ctx context.Context, kubeContext, namespace, pod strin
 			},
 		},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", pod, port, pathAndQuery), nil)
-	if err != nil {
-		return nil, err
-	}
-	return hc.Do(req)
+	return hc.Do(req.WithContext(ctx))
 }

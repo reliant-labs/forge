@@ -1741,6 +1741,9 @@ var removals = []removal{
 					"web-runtime/src/replay-recorder.test.ts",
 					"web-runtime/scripts/browser-telemetry-smoke.mjs",
 					"pkg/deploy/observability_line_resource_test.go",
+					// The telemetry translator's collector tests decode the
+					// file exporter's OTLP/JSON the same way.
+					"pkg/telemetry/collector/otelcol_test.go",
 					// forge's own CLI events (pkg/observe/cliev) post the same OTLP/JSON.
 					"pkg/observe/cliev/otlp.go",
 					// The telemetry translator's tests read the pinned collector's

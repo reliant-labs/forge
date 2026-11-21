@@ -39,11 +39,10 @@ func Users(in Input) dashspec.Dashboard {
 		Description: "Who uses the product: accounts, active users (any signed-in product event), new users (sign-ups, or the users first seen " +
 			"when the environment reports no sign-ups) and returning users, engagement, weekly retention and how people sign up and sign in. " +
 			"A user is counted once per environment. Hosted environments only: a local forge env up has no product_events table.",
-		Group:          dashspec.GroupProduct,
-		Filters:        envFilter(),
-		Sections:       usersSections,
-		DefaultRange:   "30d",
-		DefaultCompare: dashspec.ComparePeriod,
+		Group:        dashspec.GroupProduct,
+		Filters:      envFilter(),
+		Sections:     usersSections,
+		DefaultRange: "30d",
 	}
 	newRule := fmt.Sprintf("Users whose first auth_signed_up is in the range; where no sign-up was reported in the %d days before its end, "+
 		"the users first seen in the range, except those within %d days of the earliest event retained (they count as returning). "+

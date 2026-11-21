@@ -235,6 +235,23 @@ export {
 } from "./exposure.js";
 
 /**
+ * Forge Changes evaluated in the browser: remote config, gradual rollouts and
+ * A/B tests as one model, decided locally from a versioned snapshot with
+ * sticky, hash-based cohorts. The twin of forge/pkg/changes (same results,
+ * one shared set of golden vectors); renamed here because the barrel is flat
+ * (`evaluateChange` is changes.ts's `evaluate`). Imports nothing.
+ */
+export {
+  evaluate as evaluateChange,
+  parseSnapshot as parseChangesSnapshot,
+  previewHash as changePreviewHash,
+  type EvalContext as ChangeEvalContext,
+  type Reason as ChangeReason,
+  type Result as ChangeResult,
+  type Snapshot as ChangesSnapshot,
+} from "./changes.js";
+
+/**
  * The standard auth events (`auth_signed_up`, `auth_signed_in`,
  * `auth_signed_out`) the console counts users from. `identifyUser(id)` is what
  * an app calls wherever it learns who is signed in: it attaches the id to

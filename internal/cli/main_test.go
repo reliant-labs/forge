@@ -89,6 +89,10 @@ func TestMain(m *testing.M) {
 	// registry, no buildx. A test that needs a different answer sets one,
 	// and hermetic_host_test.go fails the suite if any of these binaries
 	// is reached again.
+	// Nor does a host launch write a `forge` shim for the test binary into
+	// the developer's tool cache (up_forge_shim.go); up_forge_shim_test.go
+	// exercises the real one against a temporary cache.
+	forgeShimDir = func() (string, error) { return "", errors.New("unit tests write no forge shim") }
 	listK3dClustersFn = func(context.Context) ([]k3dClusterListEntry, error) { return nil, nil }
 	pinKubectlContextFn = func(context.Context, string) error { return nil }
 	imagetoolsInspect = func(context.Context, string, string) ([]byte, error) {

@@ -68,6 +68,14 @@ type ProjectMemoryData struct {
 	Gate MemoryGate
 }
 
+// ScaffoldEnvs reports whether the caller is rendering the scaffold guide,
+// before reading an existing project. A derived guide can name environments
+// from the tree, but names (including staging and prod) do not establish a
+// binding. Rendering the environment, not reading session memory, resolves it.
+func (d ProjectMemoryData) ScaffoldEnvs() bool {
+	return !d.Derived
+}
+
 // MemoryDatabase is the project's migration tool, as the memory names it.
 type MemoryDatabase struct {
 	// Tool names the migration tool: forge, goose, prisma, alembic, ...

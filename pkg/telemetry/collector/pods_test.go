@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/otelcoltest"
 	"github.com/reliant-labs/forge/pkg/telemetry"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -85,7 +86,7 @@ func mustAtoi(t *testing.T, s string) int {
 func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 	testkit.Slow(t, "runs the pinned otelcol-contrib against a local metrics server (docker or a local binary)")
 	col := findCollector(t)
-	col.hostNetwork = true
+	col.HostNetwork = true
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
@@ -156,7 +157,7 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	name := fmt.Sprintf("forge-telemetry-pods-%d", time.Now().UnixNano())
-	cmd := col.command(ctx, dir, name, "--config="+path)
+	cmd := otelcoltest.Command(ctx, col, dir, name, nil, "--config="+path)
 	var stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stderr, &stderr
 	if err := cmd.Start(); err != nil {
@@ -168,7 +169,7 @@ func TestPodScrapeIgnoresDeclaredPortsInThePinnedCollector(t *testing.T) {
 			return
 		}
 		stopped = true
-		if col.binary == "" {
+		if col.Binary == "" {
 			_ = exec.Command("docker", "rm", "-fv", name).Run()
 		} else {
 			_ = cmd.Process.Kill()

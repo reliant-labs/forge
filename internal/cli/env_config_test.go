@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -346,5 +348,30 @@ func TestEnvConfigJSONStdoutIsTheDocumentAlone(t *testing.T) {
 	}
 	if !strings.Contains(string(diag), "overriding the typed config value") {
 		t.Errorf("the shadowing warning should be on stderr; stderr:\n%s", diag)
+	}
+}
+
+func TestEnvConfigTableMasksOnlySecretVars(t *testing.T) {
+	report := envConfigReport{Env: "dev", Workloads: []envConfigWorkload{{
+		Name: "api", Kind: "service",
+		Env:        map[string]string{"LOG_LEVEL": "debug", "TOKEN": "0123456789abcdef"},
+		SecretVars: []string{"TOKEN"},
+	}}}
+	for _, tc := range []struct {
+		show       bool
+		want, deny string
+	}{
+		{false, "<secret, 16 bytes>", "0123456789abcdef"},
+		{true, "0123456789abcdef", "<secret,"},
+	} {
+		cmd := &cobra.Command{}
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		if err := renderEnvConfigTable(cmd, report, tc.show); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), tc.want) || strings.Contains(out.String(), tc.deny) || !strings.Contains(out.String(), "debug") {
+			t.Errorf("show=%v:\n%s", tc.show, out.String())
+		}
 	}
 }

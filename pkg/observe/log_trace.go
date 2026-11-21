@@ -67,7 +67,30 @@ func NewLogHandler(next slog.Handler, cfg Config) slog.Handler {
 	if !exportEnabled(signalLogs, cfg) {
 		return errorInputsHandler{next: h}
 	}
-	return errorInputsHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}
+	// The user is added above the split, so the OTLP bridge's record names
+	// them too, not only the stdout line traceHandler writes.
+	return errorInputsHandler{next: userHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}}
+}
+
+// userHandler adds the authenticated user (authn.UserIDFromContext) to a
+// record that names none, before the record reaches next.
+type userHandler struct{ next slog.Handler }
+
+func (h userHandler) Enabled(ctx context.Context, l slog.Level) bool { return h.next.Enabled(ctx, l) }
+
+func (h userHandler) Handle(ctx context.Context, r slog.Record) error {
+	if id := authn.UserIDFromContext(ctx); id != "" && !hasAttr(r, authn.AttrUserID) {
+		r.AddAttrs(slog.String(authn.AttrUserID, id))
+	}
+	return h.next.Handle(ctx, r)
+}
+
+func (h userHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	return userHandler{next: h.next.WithAttrs(as)}
+}
+
+func (h userHandler) WithGroup(name string) slog.Handler {
+	return userHandler{next: h.next.WithGroup(name)}
 }
 
 func logScopeName(cfg Config) string {

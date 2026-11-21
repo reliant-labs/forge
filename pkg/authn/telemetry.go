@@ -2,6 +2,9 @@ package authn
 
 import (
 	"context"
+	"net"
+	"regexp"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -35,9 +38,11 @@ func withTelemetryUser(ctx context.Context, claims *Claims) context.Context {
 // it (pkg/observe's log handler reads UserIDFromContext). The auth
 // interceptor calls it for every authenticated request; a worker or job
 // acting on one user's behalf calls it to say whom its errors reached. An
-// empty id returns ctx unchanged.
+// empty id, or one that is not opaque (OpaqueUserID), returns ctx
+// unchanged: the id lands on every record and span, so personal data or a
+// credential must never ride in on it.
 func ContextWithUserID(ctx context.Context, id string) context.Context {
-	if id == "" {
+	if id == "" || !OpaqueUserID(id) {
 		return ctx
 	}
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String(AttrUserID, id))
@@ -49,4 +54,21 @@ func ContextWithUserID(ctx context.Context, id string) context.Context {
 func UserIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(telemetryUserKey{}).(string)
 	return id
+}
+
+// MaxUserIDLen is the longest user id recorded on telemetry.
+const MaxUserIDLen = 128
+
+var jwtLikeRE = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.`)
+
+// OpaqueUserID reports whether id is fit to name a user on telemetry: at
+// most MaxUserIDLen characters, no '@' (an email is never an id), and not an
+// IP address or a JWT. The empty id is opaque (no user). pkg/observe's
+// product-event actor check is this same rule.
+func OpaqueUserID(id string) bool {
+	if id == "" {
+		return true
+	}
+	return len(id) <= MaxUserIDLen && !strings.Contains(id, "@") &&
+		net.ParseIP(strings.Trim(id, "[]")) == nil && !jwtLikeRE.MatchString(id)
 }

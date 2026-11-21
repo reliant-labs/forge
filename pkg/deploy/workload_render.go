@@ -85,20 +85,25 @@ func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([
 	if err != nil {
 		return nil, err
 	}
-	var objs []runtime.Object
+	var out []*unstructured.Unstructured
 	for _, w := range set.list {
 		o, err := set.render(w, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("workload %s: %w", w.name, err)
 		}
-		objs = append(objs, o...)
+		u, err := toUnstructured(o)
+		if err != nil {
+			return nil, err
+		}
+		stampKind(u, w.kind)
+		out = append(out, u...)
 	}
 	if ctx.Network != nil {
-		objs = append(objs, envNetworkPolicies(ctx.Namespace, *ctx.Network)...)
-	}
-	out, err := toUnstructured(objs)
-	if err != nil {
-		return nil, err
+		u, err := toUnstructured(envNetworkPolicies(ctx.Namespace, *ctx.Network))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u...)
 	}
 	stampEnv(out, ctx.Env)
 	stampVersion(out, ctx.Version)

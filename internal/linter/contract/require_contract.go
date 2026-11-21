@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"strings"
 
@@ -156,6 +157,7 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 	// with exported methods in a _test.go file is not a surface anything
 	// that imports the package can call.
 	hasExportedMethods := false
+	private := privateReceiverTypes(pass)
 	for _, file := range pass.Files {
 		if hasExportedMethods {
 			break
@@ -173,6 +175,9 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 				continue
 			}
 			if isStdlibConventionMethod(funcDecl) {
+				continue
+			}
+			if private[receiverTypeName(funcDecl)][funcDecl.Name.Name] {
 				continue
 			}
 			if funcDecl.Name.IsExported() {
@@ -260,6 +265,221 @@ var stdlibConventionMethods = map[string]bool{
 // convention methods rather than exempting the package.
 func isStdlibConventionMethod(decl *ast.FuncDecl) bool {
 	return stdlibConventionMethods[decl.Name.Name]
+}
+
+// receiverTypeName is the name of a method's receiver base type: T for
+// `func (T) M()`, `func (*T) M()` and `func (t *T[K]) M()`.
+func receiverTypeName(decl *ast.FuncDecl) string {
+	expr := decl.Recv.List[0].Type
+	for {
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			expr = e.X
+		case *ast.IndexExpr:
+			expr = e.X
+		case *ast.IndexListExpr:
+			expr = e.X
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.Ident:
+			return e.Name
+		default:
+			return ""
+		}
+	}
+}
+
+// privateReceiverTypes maps each of the package's unexported types whose
+// methods no caller outside the package can reach as package API to the
+// exported methods it has only to satisfy another package's interface.
+//
+// A type qualifies when it never appears in an exported signature, var,
+// struct field or method result (directly or through a type that does), and
+// implements none of the package's own exported interfaces. Of its exported
+// methods, the ones exempted are those an interface declared by an imported
+// package requires, which the type implements: `Quantize` on an unexported
+// palette handed to gif.Options satisfies image/draw.Quantizer, so it cannot
+// be unexported and is no surface a contract.go would describe.
+//
+// Still reported: a helper-only exported method on an unexported type (the
+// rule's "unexport it" repair applies), an unexported implementation of an
+// exported interface the package declares (`func New() Service` returning
+// `*service` — that interface belongs in contract.go), and a type that
+// escapes through the exported API (`func New() *impl`).
+func privateReceiverTypes(pass *analysis.Pass) map[string]map[string]bool {
+	pkg := pass.Pkg
+	if pkg == nil {
+		return nil
+	}
+	scope := pkg.Scope()
+	reachable := apiReachableTypes(pkg)
+
+	var localIfaces []*types.Interface
+	for _, name := range scope.Names() {
+		if tn, ok := scope.Lookup(name).(*types.TypeName); ok && tn.Exported() {
+			if iface := methodInterface(tn); iface != nil {
+				localIfaces = append(localIfaces, iface)
+			}
+		}
+	}
+
+	var imported []*types.Interface // computed on first need
+	private := map[string]map[string]bool{}
+	for _, name := range scope.Names() {
+		tn, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok || tn.Exported() || tn.IsAlias() || reachable[tn] {
+			continue
+		}
+		named, ok := tn.Type().(*types.Named)
+		if !ok || named.TypeParams().Len() > 0 || len(implemented(named, localIfaces)) > 0 {
+			continue
+		}
+		if imported == nil {
+			imported = importedInterfaces(pkg)
+		}
+		var exempt map[string]bool
+		for _, iface := range implemented(named, imported) {
+			for i := 0; i < iface.NumMethods(); i++ {
+				if exempt == nil {
+					exempt = map[string]bool{}
+				}
+				exempt[iface.Method(i).Name()] = true
+			}
+		}
+		if exempt != nil {
+			private[name] = exempt
+		}
+	}
+	return private
+}
+
+// methodInterface returns tn's underlying interface when it declares at least
+// one method, else nil.
+func methodInterface(tn *types.TypeName) *types.Interface {
+	if iface, ok := tn.Type().Underlying().(*types.Interface); ok && iface.NumMethods() > 0 {
+		return iface
+	}
+	return nil
+}
+
+// implemented returns the interfaces of ifaces that named or *named implements.
+func implemented(named *types.Named, ifaces []*types.Interface) []*types.Interface {
+	var out []*types.Interface
+	ptr := types.NewPointer(named)
+	for _, iface := range ifaces {
+		if types.Implements(named, iface) || types.Implements(ptr, iface) {
+			out = append(out, iface)
+		}
+	}
+	return out
+}
+
+// importedInterfaces lists every exported interface with methods declared by
+// a package pkg imports, transitively.
+func importedInterfaces(pkg *types.Package) []*types.Interface {
+	out := []*types.Interface{}
+	visited := map[*types.Package]bool{pkg: true}
+	pkgs := append([]*types.Package(nil), pkg.Imports()...)
+	for len(pkgs) > 0 {
+		p := pkgs[0]
+		pkgs = pkgs[1:]
+		if visited[p] {
+			continue
+		}
+		visited[p] = true
+		pkgs = append(pkgs, p.Imports()...)
+		for _, name := range p.Scope().Names() {
+			if tn, ok := p.Scope().Lookup(name).(*types.TypeName); ok && tn.Exported() {
+				if iface := methodInterface(tn); iface != nil {
+					out = append(out, iface)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// apiReachableTypes returns pkg's named types a caller outside pkg can reach
+// through its exported API: every type named by an exported object's type,
+// and, transitively, by a reachable type's exported fields and methods.
+func apiReachableTypes(pkg *types.Package) map[*types.TypeName]bool {
+	r := &typeReach{pkg: pkg, reachable: map[*types.TypeName]bool{}, seen: map[types.Type]bool{}}
+	scope := pkg.Scope()
+	for _, name := range scope.Names() {
+		if obj := scope.Lookup(name); obj.Exported() {
+			r.walk(obj.Type())
+		}
+	}
+	for len(r.queue) > 0 {
+		n := r.queue[0]
+		r.queue = r.queue[1:]
+		r.walk(n.Underlying())
+		for i := 0; i < n.NumMethods(); i++ {
+			if m := n.Method(i); m.Exported() {
+				r.walk(m.Type())
+			}
+		}
+	}
+	return r.reachable
+}
+
+type typeReach struct {
+	pkg       *types.Package
+	reachable map[*types.TypeName]bool
+	seen      map[types.Type]bool
+	queue     []*types.Named
+}
+
+func (r *typeReach) walk(t types.Type) {
+	if t == nil || r.seen[t] {
+		return
+	}
+	r.seen[t] = true
+	switch tt := t.(type) {
+	case *types.Named:
+		if obj := tt.Obj(); obj.Pkg() == r.pkg && !r.reachable[obj] {
+			r.reachable[obj] = true
+			r.queue = append(r.queue, tt)
+		}
+		for i := 0; i < tt.TypeArgs().Len(); i++ {
+			r.walk(tt.TypeArgs().At(i))
+		}
+	case *types.Alias:
+		r.walk(types.Unalias(tt))
+	case *types.Pointer:
+		r.walk(tt.Elem())
+	case *types.Slice:
+		r.walk(tt.Elem())
+	case *types.Array:
+		r.walk(tt.Elem())
+	case *types.Map:
+		r.walk(tt.Key())
+		r.walk(tt.Elem())
+	case *types.Chan:
+		r.walk(tt.Elem())
+	case *types.Signature:
+		r.walkTuple(tt.Params())
+		r.walkTuple(tt.Results())
+	case *types.Struct:
+		for i := 0; i < tt.NumFields(); i++ {
+			if f := tt.Field(i); f.Exported() || f.Embedded() {
+				r.walk(f.Type())
+			}
+		}
+	case *types.Interface:
+		for i := 0; i < tt.NumMethods(); i++ {
+			r.walk(tt.Method(i).Type())
+		}
+		for i := 0; i < tt.NumEmbeddeds(); i++ {
+			r.walk(tt.EmbeddedType(i))
+		}
+	}
+}
+
+func (r *typeReach) walkTuple(t *types.Tuple) {
+	for i := 0; i < t.Len(); i++ {
+		r.walk(t.At(i).Type())
+	}
 }
 
 // isMainPackage reports whether the package under analysis is a command

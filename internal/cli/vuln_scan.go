@@ -44,6 +44,8 @@ KEV and fixable critical, warn high); --deployed by the env's own.
 
 --deployed reads the release the env's ledger records as deployed, not the
 digests running in its cluster; a drift between the two is ` + "`forge env status`" + `'s.
+For an env whose ledger is a control plane, --deployed reads the control
+plane's findings (it rescans what is deployed daily) and scans nothing here.
 
 Exit codes: 0 nothing blocking; 1 a blocking finding; 2 could not determine
 (no SBOM, scanner missing, database stale).`,
@@ -88,7 +90,10 @@ func runVulnScan(ctx context.Context, out, errOut io.Writer, deps vulnDeps, dir 
 			return undeterminedf("env %q: %v", opts.deployed, err)
 		}
 		if env.hosted() {
-			return hostedVulnError(env)
+			// The control plane's findings are the record for such an
+			// env, and it rescans what is deployed itself (decision #4):
+			// --deployed reads them rather than scanning here.
+			return runVulnListHosted(ctx, out, errOut, deps, env, "", vulnscan.Filter{}, opts.asJSON)
 		}
 	}
 

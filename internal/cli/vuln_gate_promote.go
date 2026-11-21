@@ -9,14 +9,17 @@ package cli
 // promotion's transaction (C6), against its own findings for the release's
 // SBOM digests (owner decision 4); forge judges nothing for it here.
 //
-// THE ONE ROW LEFT OPEN (§1.5): an env with a control plane whose apply forge
+// THE LEDGER-ONLY ROW (§1.5): an env with a control plane whose apply forge
 // does and the control plane converges nothing (envLedger.ledgerOnly). Its
-// findings are the control plane's, which forge cannot read until task F8
-// gives it a VulnerabilityService client. judgeVulnGates takes its findings
-// through vulnFindingsSource for exactly that reason: such an env gets a
-// source that reads the control plane's findings, and the judgement below is
-// unchanged. Until then nothing judges that row, which is the state every
-// env was in before this change.
+// findings are the control plane's, and so is the verdict on each finding:
+// checkPromotionVulnGates reads them through hostedVulnSource.releaseFindings
+// and judges them with the control plane's per-finding judgement (Judged),
+// its freshness (Stale, FreshnessFromSource) and its release-level findings,
+// exactly as `forge vuln list` reads them. A control plane that enforces
+// vuln_gate itself (enforces-vuln-gate) judges the promotion in its own
+// transaction, so forge judges nothing for it here; one that serves no
+// findings leaves every artifact unscanned (audit notes it, enforce refuses:
+// could not determine is never a pass).
 //
 // WHAT IS RECORDED. Each check that ran leaves a gate on the promotion, under
 // the names it judges (vulnGateGateName, sbomGateName), the way required_gates
@@ -26,6 +29,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -55,11 +59,30 @@ const (
 	reasonSBOMMissing = release.RefusalSBOMMissing
 )
 
-// vulnFindingsSource returns the latest scan of every shipping artifact of a
-// release. fetch allows it to refresh (or download) the vulnerability
-// database first; without it, it scans only with what this machine has.
+// vulnGateFindings is what a findings source hands the gate: the latest scan
+// of every shipping artifact, and, from a ledger that judges its own findings
+// (a control plane), its verdict on each, its freshness and the findings it
+// holds at release scope. They go into vulnscan.DocumentInput as they are.
+type vulnGateFindings struct {
+	Scans []vulnscan.ArtifactScan
+	// Release are findings attributed to the release and to no artifact
+	// (DocumentInput.ReleaseFindings).
+	Release []vulnscan.ReleaseFinding
+	Notes   []string
+	// Stale and FreshnessFromSource: the source judged the findings'
+	// freshness itself (DocumentInput).
+	Stale, FreshnessFromSource bool
+	// Judged is the source's verdict on each finding, nil when it gave
+	// none; JudgedBy says whose verdict the gate is (GateResult.JudgedBy).
+	Judged   map[string]vulnscan.Judgement
+	JudgedBy string
+}
+
+// vulnFindingsSource returns a release's findings for the gate. fetch allows
+// it to refresh (or download) the vulnerability database first; without it,
+// it scans only with what this machine has.
 type vulnFindingsSource interface {
-	releaseScans(ctx context.Context, rel *release.Release, fetch bool) ([]vulnscan.ArtifactScan, []string, error)
+	gateFindings(ctx context.Context, rel *release.Release, fetch bool) (vulnGateFindings, error)
 }
 
 // machineVulnSource is the machine ledger's findings: the SBOMs the cut
@@ -71,7 +94,7 @@ type machineVulnSource struct {
 	log   io.Writer
 }
 
-func (m machineVulnSource) releaseScans(ctx context.Context, rel *release.Release, fetch bool) ([]vulnscan.ArtifactScan, []string, error) {
+func (m machineVulnSource) gateFindings(ctx context.Context, rel *release.Release, fetch bool) (vulnGateFindings, error) {
 	var notes []string
 	var scanner *vulnscan.Scanner
 	var local vulnscan.Status
@@ -93,9 +116,29 @@ func (m machineVulnSource) releaseScans(ctx context.Context, rel *release.Releas
 	}
 	rs, err := vulnscan.ScanRelease(ctx, m.store, scanner, local, rel, vulnscan.RescanIfNewer)
 	if err != nil {
-		return nil, notes, err
+		return vulnGateFindings{Notes: notes}, err
 	}
-	return rs.Artifacts, append(notes, rs.Notes...), nil
+	return vulnGateFindings{Scans: rs.Artifacts, Notes: append(notes, rs.Notes...)}, nil
+}
+
+// readVulnFindings is findings already read: the control plane's, read once
+// for both checks (hostedPromoteVulnSource).
+type readVulnFindings vulnGateFindings
+
+func (r readVulnFindings) gateFindings(context.Context, *release.Release, bool) (vulnGateFindings, error) {
+	return vulnGateFindings(r), nil
+}
+
+// unreadVulnFindings is a ledger whose findings could not be read: every
+// shipping artifact unscanned, for the reason given.
+type unreadVulnFindings struct{ reason string }
+
+func (u unreadVulnFindings) gateFindings(_ context.Context, rel *release.Release, _ bool) (vulnGateFindings, error) {
+	var out vulnGateFindings
+	for _, name := range shippingArtifacts(rel) {
+		out.Scans = append(out.Scans, vulnscan.ArtifactScan{Artifact: name, Reason: u.reason})
+	}
+	return out, nil
 }
 
 // vulnPromoteInput is the promotion the two checks judge.
@@ -235,19 +278,19 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 		return nil, nil
 	}
 
-	var scans []vulnscan.ArtifactScan
-	var notes []string
+	var found vulnGateFindings
 	if src != nil {
 		var err error
-		scans, notes, err = src.releaseScans(ctx, rel, in.Ask && graded == release.DeliveryEnforce)
+		found, err = src.gateFindings(ctx, rel, in.Ask && graded == release.DeliveryEnforce)
 		if err != nil {
 			return nil, undeterminedf("vuln_gate: read the findings of %s: %v", in.Version, err)
 		}
 	} else {
 		for _, name := range shippingArtifacts(rel) {
-			scans = append(scans, vulnscan.ArtifactScan{Artifact: name, Reason: "no findings to read for this env's ledger"})
+			found.Scans = append(found.Scans, vulnscan.ArtifactScan{Artifact: name, Reason: "no findings to read for this env's ledger"})
 		}
 	}
+	scans, notes := found.Scans, found.Notes
 	if len(shippingArtifacts(rel)) == 0 {
 		// A release with no artifact an SBOM describes (a version-only
 		// record) has nothing scanned, which is "0 of 0 scanned" to the
@@ -262,6 +305,8 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 	}
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
 		Env: in.Env, Release: in.Version, Gate: in.Policy.VulnGate, GradedAs: graded, Artifacts: scans, Now: now,
+		ReleaseFindings: found.Release, Stale: found.Stale, FreshnessFromSource: found.FreshnessFromSource,
+		Judged: found.Judged, JudgedBy: found.JudgedBy,
 	})
 	for _, n := range notes {
 		fmt.Fprintf(out, "[deploy] vuln_gate: %s\n", n)
@@ -281,6 +326,9 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 		gate.Details["db_built_at"] = doc.DB.BuiltAt.Format("2006-01-02T15:04:05Z")
 	}
 	gate.Details["determined"] = doc.Gate.Determined
+	if doc.Gate.JudgedBy != "" {
+		gate.Details["judged_by"] = doc.Gate.JudgedBy
+	}
 	if doc.Gate.Determined && verdict != vulnscan.VerdictBlock {
 		return &gate, nil
 	}
@@ -365,8 +413,9 @@ func vulnRefusalDetail(in vulnPromoteInput, doc vulnscan.Document, what string, 
 var promoteVulnDeps = defaultVulnDeps
 
 // checkPromotionVulnGates is the promote path's entry: the env's resolved
-// policy, the release from the env's ledger, and the machine ledger's
-// findings.
+// policy, the release from the env's ledger, and that ledger's findings —
+// this machine's, or, for a ledger-only env, its control plane's
+// (hostedPromoteVulnSource).
 func checkPromotionVulnGates(ctx context.Context, out io.Writer, projectDir string, ledger envLedger, pol *release.ShapeDeliveryPolicy, in promotionCheckInput) ([]release.Gate, error) {
 	resolved := pol.Resolved()
 	if resolved.ProvenanceSBOM.Mode == release.DeliveryOff && resolved.VulnGate.Mode == release.DeliveryOff {
@@ -385,8 +434,70 @@ func checkPromotionVulnGates(ctx context.Context, out io.Writer, projectDir stri
 	if m, ok := ledger.Releases.(machineReleaseLedger); ok {
 		src = machineVulnSource{deps: promoteVulnDeps(), store: m.store, log: out}
 	}
+	if hs, ok := ledger.Bindings.(*hostedStore); ok {
+		var judgedThere bool
+		if rel, src, judgedThere = hostedPromoteVulnSource(ctx, hs, in.Env, rel); judgedThere {
+			return nil, nil
+		}
+	}
 	return judgeVulnGates(ctx, out, vulnPromoteInput{
 		Env: in.Env, Version: in.Version, Promoter: in.Promoter, Policy: resolved, Release: rel,
 		Grades: gradeVulnRules(projectDir), Override: in.OverrideVulnGate, Gates: in.Gates, Ask: in.Ask,
 	}, src)
+}
+
+// hostedPromoteVulnSource is the findings source of a ledger-only env (§1.5):
+// the control plane's findings of rel in env, read once through
+// hostedVulnSource.releaseFindings, with its verdict on each finding (Judged)
+// and its freshness, exactly as `forge vuln list` reads them. It returns rel
+// with each artifact's SBOM as the control plane records it (a control
+// plane's release carries no SBOM refs: they travel by RecordReleaseSBOM),
+// so provenance_sbom judges what the control plane holds.
+//
+// judgedThere reports a control plane that enforces vuln_gate itself: it
+// judges the promotion in its own transaction, and forge judges nothing. A
+// control plane that serves no findings, or whose findings could not be read,
+// leaves every shipping artifact unscanned, with the reason.
+func hostedPromoteVulnSource(ctx context.Context, hs *hostedStore, env string, rel *release.Release) (_ *release.Release, _ vulnFindingsSource, judgedThere bool) {
+	f, err := hs.vulnFeatures(ctx)
+	switch {
+	case err != nil:
+		return rel, unreadVulnFindings{reason: fmt.Sprintf("could not ask %s which vulnerability features it serves: %v", hs.endpoint, err)}, false
+	case f.EnforcesGate:
+		return rel, nil, true
+	case !f.Findings:
+		return rel, unreadVulnFindings{reason: "the control plane at " + hs.endpoint + " does not serve findings yet"}, false
+	}
+	src := hostedVulnSource{reader: hostedVulnReader{client: hs.client, project: hs.project}, env: env}
+	read, err := src.releaseFindings(ctx, rel.Version)
+	if errors.Is(err, errHostedVulnEnvNotFound) {
+		return rel, unreadVulnFindings{reason: fmt.Sprintf("env %q is not on the control plane at %s, so it has no scope or vuln_gate to read findings under", env, hs.endpoint)}, false
+	}
+	if err != nil {
+		return rel, unreadVulnFindings{reason: fmt.Sprintf("the control plane's findings could not be read: %v", err)}, false
+	}
+	found := vulnGateFindings{
+		Scans: read.Scans, Release: read.Release, Notes: read.Notes,
+		Stale: read.Stale, FreshnessFromSource: true, Judged: read.Judged, JudgedBy: read.JudgedBy,
+	}
+	return hostedReleaseWithSBOMs(rel, read.Artifacts), readVulnFindings(found), false
+}
+
+// hostedReleaseWithSBOMs is rel with each artifact that has no SBOM ref given
+// the one the control plane records for it. rel itself is not changed.
+func hostedReleaseWithSBOMs(rel *release.Release, sboms []wireReleaseArtifactSBOM) *release.Release {
+	out := *rel
+	out.Artifacts = make(map[string]release.Artifact, len(rel.Artifacts))
+	for name, a := range rel.Artifacts {
+		out.Artifacts[name] = a
+	}
+	for _, w := range sboms {
+		a, ok := out.Artifacts[w.ArtifactName]
+		if !ok || a.SBOM != nil || w.SBOMDigest == "" {
+			continue
+		}
+		a.SBOM = &release.SBOMRef{Digest: w.SBOMDigest, Format: w.Format, Referrer: w.Referrer, Status: release.SBOMStatusOK}
+		out.Artifacts[w.ArtifactName] = a
+	}
+	return &out
 }

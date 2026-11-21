@@ -199,15 +199,41 @@ schema RuntimeClass:
 
 schema BuildVariant:
     """One Go build variant. Used by Service.deploy = BuildOnly for
-    multi-variant builds (e.g. `dev`, `prod` ldflag matrix)."""
+    multi-variant builds (e.g. `dev`, `prod` ldflag matrix, or one binary
+    per goos/goarch).
+
+    Each variant is its own `go build` of the workload's GoBuild `cmd`, into
+    `<output dir>/<output_name>`:
+
+        runtime = forge.BuildOnly {build_variants = [
+            forge.BuildVariant {name = "linux-amd64", goos = "linux", goarch = "amd64"}
+            forge.BuildVariant {
+                name = "darwin-arm64", goos = "darwin", goarch = "arm64"
+                output_name = "acme-darwin-arm64"
+                env = {"CGO_ENABLED" = "1"}
+            }
+        ]}
+    """
     name: str
     ldflags: [str] = []
     tags: [str] = []
     goos: str = ""
     goarch: str = ""
+    # Build-time process env for this variant's `go build`, merged over
+    # forge's own (declared keys win). Variants build with CGO_ENABLED=0
+    # unless this sets it, e.g. {"CGO_ENABLED" = "1"} for a binary that
+    # links C.
+    env: {str: str} = {}
+    # The binary's basename. "" is `<workload>-<variant name>`. On a
+    # windows variant `.exe` is appended. It is also the binary's key in the
+    # release ledger, so two variants of one env must not share it.
+    output_name: str = ""
 
     check:
         name, "BuildVariant.name is required"
+        all k in env {k}, "BuildVariant.env must not contain an empty name (variant '${name}')"
+        "/" not in output_name and "\\" not in output_name, \
+            "BuildVariant.output_name '${output_name}' must be a file name, not a path (variant '${name}')"
 
 schema ConfigMap:
     """A Kubernetes ConfigMap — non-sensitive key/value pairs.
@@ -3254,6 +3280,9 @@ schema PGO:
 
         build = forge.DockerBuild {pgo = {"./cmd/proxy" = forge.PGO {enabled = False}}}
 
+    A ShellBuild's command is opaque to forge, so it pulls a profile only for
+    the binaries the build's `pgo` names, each a ShellPGO (see ShellPGO).
+
     One binary has one profile. A modular-monolith binary that runs as the
     server, a worker and a cron gets ONE profile merging every workload that
     runs it, weighted by CPU — which is what the compiler should optimize.
@@ -3288,6 +3317,44 @@ schema PGO:
         regex.match(min_weight, _DURATION_RE), \
             "PGO.min_weight '${min_weight}' is not a duration — it needs a unit, e.g. '10s' or '500ms'"
         all s in services {s}, "PGO.services must not contain an empty name"
+
+schema ShellPGO(PGO):
+    """Profile-guided optimization for one Go binary a ShellBuild's command
+    builds (ShellBuild.pgo, keyed by the binary's package path relative to
+    the build's cwd). Every PGO field means what it does on a GoBuild, and two
+    more say what forge cannot see inside a shell command:
+
+        build = forge.ShellBuild {
+            cwd = "../reliant"
+            cmd = "./scripts/build-image.sh"
+            pgo = {"./cmd/reliant" = forge.ShellPGO {from_env = "prod"}}
+        }
+
+    `forge pgo pull --env prod` then writes ../reliant/cmd/reliant/default.pgo
+    from the CPU profiles of every workload this build serves, and a command
+    that runs `go build ./cmd/reliant` from cwd reads it (Go's default
+    `-pgo=auto`). The profile is also part of the build's `inputs`
+    fingerprint, so committing a refreshed one rebuilds the image.
+
+    forge does not edit the command, so `enabled = False` only makes
+    `forge pgo pull` skip the binary: whether the build uses a profile is the
+    command's own `-pgo`.
+    """
+    # Where `forge pgo pull` writes the profile, relative to the project root
+    # (a leading `../` reaches a sibling checkout, as `cwd` does). "" is
+    # `<cwd>/<binary>/default.pgo`, the file `go build <binary>` run from cwd
+    # reads. Required when the build has a `source`: forge resolves that
+    # checkout per invocation, so there is nowhere lasting to write by default.
+    out: str = ""
+    # The OTEL service.namespace whose profiles are merged. "" is this
+    # project's (Bundle.project), which every workload it renders reports.
+    namespace: str = ""
+
+    check:
+        not out.startswith("/"), \
+            "ShellPGO.out '${out}' is relative to the project root (use ../ for a sibling checkout), never absolute"
+        not out.endswith("/"), \
+            "ShellPGO.out '${out}' names the profile FILE (e.g. '../reliant/cmd/reliant/default.pgo'), not a directory"
 
 schema Tests:
     """How this env's Go binaries are built for test coverage: whether forge
@@ -3607,7 +3674,8 @@ schema ShellBuild(Build):
         nothing outside is read or keyed on.
       * fingerprint — sha256 over everything that identifies the build's
         artifact (the command, the resolved cwd, the declared `source`,
-        `inputs_file` and its content, `unit`, `output_name`), `env`
+        `inputs_file` and its content, `unit`, `output_name`, and the
+        content of each profile `pgo` names — see ShellPGO), `env`
         (with every built_images value, so a rebuilt parent rebuilds its
         children), the platform, the pushed image and tag, the patterns,
         and every selected file's path, size, executable bit and CONTENT.
@@ -3691,9 +3759,19 @@ schema ShellBuild(Build):
     # same inputs (minus the release tag the KCL composed in) are unchanged.
     # Empty: the command runs on every build. See the docstring.
     inputs: [str] = []
+    # Profile-guided optimization per Go binary the command builds, keyed by
+    # the binary's package path relative to cwd ("./cmd/app"): where
+    # `forge pgo pull` writes its default.pgo, and whose profiles. A binary
+    # not named is not pulled (forge cannot see what the command builds).
+    # See ShellPGO.
+    pgo: {str: ShellPGO} = {}
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
+        all k in pgo {_pgo_binary_key(k)}, \
+            "ShellBuild.pgo is keyed by a binary's package path relative to cwd, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
+        not source or all k in pgo {pgo[k].out}, \
+            "ShellBuild.pgo needs `out` on every binary when the build has a `source`: forge resolves that checkout per invocation, so the profile has no lasting default path — got ${[k for k in pgo if not pgo[k].out]}"
         all p in inputs { p.strip() != "" and p.strip() != "!" }, \
             "ShellBuild.inputs entries are globs relative to the build's cwd; an empty entry selects nothing"
         all p in inputs { not p.lstrip("!").startswith("/") }, \

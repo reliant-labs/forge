@@ -310,7 +310,15 @@ func TestGoldenSnapshots(t *testing.T) {
 		{
 			name: "build-images.yml",
 			render: func(t *testing.T) []byte {
-				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true})
+				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, ForgeVersion: "v1.10.0"})
+			},
+		},
+		{
+			// A project pinned to a forge before `forge vuln` (v1.10.0)
+			// keeps the SBOM action and the Trivy scan its forge can run.
+			name: "build-images_pre_vuln.yml",
+			render: func(t *testing.T) []byte {
+				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, ForgeVersion: "v1.9.0"})
 			},
 		},
 		{
@@ -321,7 +329,7 @@ func TestGoldenSnapshots(t *testing.T) {
 			// token. One golden could only show one of them.
 			name: "build-images_hosted.yml",
 			render: func(t *testing.T) []byte {
-				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, Hosted: true})
+				return renderCI(t, "github", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, Hosted: true, ForgeVersion: "v1.10.0"})
 			},
 		},
 		{

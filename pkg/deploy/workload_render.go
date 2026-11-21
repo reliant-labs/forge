@@ -121,6 +121,13 @@ func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([
 	return out, nil
 }
 
+// UnenforceableSourceCIDRsError is the refusal for a port that declares
+// allowedSourceCIDRs on a runtime that cannot enforce them. The workload's
+// name is added by the caller.
+func UnenforceableSourceCIDRsError(p v1alpha1.Port) error {
+	return fmt.Errorf("port %s: allowedSourceCIDRs %v cannot be enforced on a cluster you operate, and forge will not drop it silently (the port would serve every client): only forge.OnHosted enforces a per-port source allowlist; bind the workload to forge.OnHosted, or remove allowedSourceCIDRs and restrict access where you own the ingress", p.Name, p.AllowedSourceCIDRs)
+}
+
 // RestrictedKinds is every object kind RenderWorkloads may emit under
 // ProfileRestricted: the objects that reach only the hosted user's own pods. No
 // RBAC kind is in it, ever. A gating job is an initContainer inside a
@@ -234,6 +241,19 @@ func prepareSet(ws []v1alpha1.Workload, p v1alpha1.Profile) (*workloadSet, error
 		}
 		w := &workload{name: name, spec: spec.WithDefaults()}
 		w.kind = w.spec.EffectiveKind()
+		// Fail closed. This renderer emits a Service and a NetworkPolicy,
+		// neither of which can turn a client away by its source address
+		// (the policy sees the gateway pod, not the client), so a port that
+		// declares an allowlist would silently serve everyone. Only the
+		// hosted platform enforces it, at its proxy, under the Restricted
+		// profile.
+		if p == v1alpha1.ProfileFull {
+			for _, port := range w.spec.Ports {
+				if len(port.AllowedSourceCIDRs) > 0 {
+					fail(UnenforceableSourceCIDRsError(port))
+				}
+			}
+		}
 		// A service that declares no ports serves the standard mux on
 		// `http` :8080 (expand.k:502). NOT exposed: expand.k's default
 		// carried expose=True, but expose now asks for a PUBLIC hostname

@@ -109,10 +109,29 @@ jobs:
         # <registry>/<image>@<digest>, from what the build just recorded.
         run: forge registry ref "$FORGE_ENV" --github-output
 
-      # ── Supply chain: SBOM + signing + provenance (M-12) ────────────
+      # ── Supply chain: signing + provenance (M-12) ───────────────────
       # These steps run AFTER the image is pushed and act on the immutable
       # digest forge recorded. Using the digest (not a mutable tag) binds the
-      # SBOM/signature/attestation to the exact bytes pushed.
+      # signature/attestation to the exact bytes pushed.
+{{- /*
+  WHAT THE PINNED FORGE HAS. A project's CI runs the forge its forge.yaml
+  pins, so a step that runs a newer forge command renders only for a pin that
+  has it (BuildImagesWorkflowData.ForgeAtLeast, naming the first release with
+  the command). The vuln verbs and the SBOM at the cut ship in v1.10.0
+  (v1.9.0 was tagged before them): a project pinned to v1.10.0 or later gets the
+  forge scan and no SBOM action; an older pin keeps the anchore SBOM action
+  and the Trivy scan its forge cannot replace. Moving forge_version past
+  v1.10.0 and regenerating switches it over.
+*/}}
+{{- if .ForgeAtLeast "v1.10.0"}}
+      #
+      # No SBOM step lives here: this workflow pushes an image and cuts no
+      # release. forge writes an SBOM per artifact at every release cut
+      # (`forge env build <env> --release`, or the cut inside `forge env
+      # deploy`), records its digest in the release, and attaches it beside
+      # the image as an OCI referrer. The scan job below judges the pushed
+      # image itself with `forge vuln scan`.
+{{- end}}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -124,6 +143,7 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
           IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
         run: cosign sign --yes "$IMAGE_REF"
+{{- if not (.ForgeAtLeast "v1.10.0")}}
 
       - name: Generate SBOM (SPDX JSON)
         uses: anchore/sbom-action@v0
@@ -149,14 +169,16 @@ jobs:
         env:
           IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
         run: cosign attest --yes --type spdxjson --predicate sbom-{{.ProjectName}}.spdx.json "$IMAGE_REF"
+{{- end}}
 
       - name: Attest build provenance
         # GitHub's attestation store only accepts public repositories (or
         # private ones on GitHub Enterprise Cloud). Elsewhere the step fails
         # with "Feature not available for user-owned private repositories"
         # AFTER the image is pushed, turning every push to main red. The image
-        # is still cosign-signed and ships an SBOM above; this condition only
-        # skips the SLSA provenance upload. On Enterprise Cloud, drop it.
+        # is still cosign-signed above, and the next step gives a private
+        # repository's image the same provenance as a cosign attestation. On
+        # Enterprise Cloud, drop this condition (and the next step).
         if: ${{"{{"}} !github.event.repository.private {{"}}"}}
         uses: actions/attest-build-provenance@v1
         with:
@@ -219,7 +241,7 @@ jobs:
           cosign attest --yes --type slsaprovenance1 --predicate provenance.json "$IMAGE_REF"
 {{- if .VulnDocker}}
 
-  trivy-scan:
+  vuln-scan:
     name: Vulnerability Scan
     needs: build-push
     runs-on: ubuntu-latest
@@ -239,13 +261,14 @@ jobs:
 {{installForgeRun 8}}
 
       - name: Log in to the declared registry
-        # The scanner pulls the image, so it needs the same read access.
+        # The scanner reads the image from its registry with the docker
+        # credential this step writes.
 {{- if .Hosted}}
         # The platform registry takes the control-plane credential, so this
         # passes no --username and no password: forge resolves the same rlat_
         # it reaches the control plane with. Unlike the build job, the login
-        # IS a step here — nothing in this job pushes, and trivy pulls on its
-        # own rather than through forge.
+        # IS a step here — nothing in this job pushes, and the scan reads the
+        # image on its own rather than through forge's push.
         env:
           FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
         run: forge registry login "{{.BuildEnv}}"
@@ -255,7 +278,67 @@ jobs:
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "{{.BuildEnv}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 {{- end}}
 
+{{- if .ForgeAtLeast "v1.10.0"}}
+
+      # The grype vulnerability database is 205 MB to download and 3.3 GiB
+      # unpacked. It is cached per UTC day: the primary key is today's date,
+      # the fallback the newest earlier day. The database's own key
+      # (`forge vuln db status --json`'s cache_key, its build date) cannot be
+      # the restore key: it is only known once the database is on disk. So:
+      #   - a later run today hits today's key exactly: no download, no save;
+      #   - the first run of a day restores the newest earlier cache, `forge
+      #     vuln db pull` downloads only when the listing names a newer build,
+      #     and the result is saved under today's key;
+      #   - a cold cache downloads once.
+      # Drop the cache steps to download on every run instead.
+      - name: Name today's vulnerability database cache
+        id: vulndb-key
+        # FORGE_VULN_DB_DIR is where forge keeps the database; set here so it
+        # is the directory the cache steps restore and save.
+        run: |
+          echo "FORGE_VULN_DB_DIR=$HOME/.cache/forge/vulndb" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the vulnerability database
+        id: vulndb
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
+          key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
+          restore-keys: forge-vulndb-v6-
+
+      - name: Refresh the vulnerability database
+        id: vulndb-pull
+        # Skipped on an exact hit: today's cache was saved after a pull.
+        # Otherwise it downloads only when the listing has a newer build than
+        # the one restored (or none was).
+        if: steps.vulndb.outputs.cache-hit != 'true'
+        run: forge vuln db pull
+
+      - name: Scan the pushed image
+        # The digest-pinned ref the build pushed — the exact bytes scanned.
+        # forge's pinned grype, judged by the default vuln_gate: a KEV-listed
+        # advisory, or a critical that has a fix, fails the job (exit 1). A
+        # scan that could not run, or a database older than 5 days, fails it
+        # too (exit 2): an unscanned image is never a pass. This judges by
+        # the default rule and applies no exemptions; the env's own vuln_gate
+        # (and its `forge vuln exempt`) judges the release at its promotion.
+        env:
+          IMAGE_REF: ${{"{{"}} needs.build-push.outputs.ref {{"}}"}}
+        run: forge vuln scan --image "$IMAGE_REF"
+
+      - name: Save the vulnerability database
+        # Under today's key, whatever the scan found, once the refresh left a
+        # current database in place; never after an exact hit.
+        if: always() && steps.vulndb-pull.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
+          key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
+{{- else}}
+
       - name: Run Trivy vulnerability scanner
+        # This project's forge predates `forge vuln` (v1.10.0).
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           # The digest-pinned ref the build pushed — the exact bytes scanned.
@@ -263,6 +346,7 @@ jobs:
           format: table
           exit-code: "1"
           severity: CRITICAL,HIGH
+{{- end}}
 {{- end}}
 {{- /*
   No frontend job here. A frontend image is ENVIRONMENT-SPECIFIC — each env
@@ -279,7 +363,7 @@ jobs:
     needs:
       - build-push
       {{- if .VulnDocker}}
-      - trivy-scan
+      - vuln-scan
       {{- end}}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -294,7 +378,7 @@ jobs:
             echo "|-------|--------|"
             echo "| {{.ProjectName}} | ${{"{{"}} needs.build-push.result {{"}}"}} |"
             {{- if .VulnDocker}}
-            echo "| trivy scan | ${{"{{"}} needs.trivy-scan.result {{"}}"}} |"
+            echo "| vulnerability scan | ${{"{{"}} needs.vuln-scan.result {{"}}"}} |"
             {{- end}}
             echo ""
             echo "**Commit:** \`$GITHUB_SHA\`"

@@ -83,6 +83,11 @@ type fixture struct {
 	// Entities maps a service name to the entity messages declared in
 	// its proto. Each becomes a migration + table + CRUD quintet.
 	Entities map[string][]entityMessage
+	// NoMigrations deletes every migration `project new` wrote (the
+	// auth_sessions table of server-side sign-in sessions), so the
+	// fixture renders the "no migrations yet" branch of the files that
+	// project db/migrations/.
+	NoMigrations bool
 	// Frontends are `--frontend` names (forge.yaml shape + features).
 	Frontends []string
 	// MakeTestGate replaces the scaffolded Taskfile with a project-owned
@@ -285,7 +290,10 @@ func projectD() fixture {
 		// subcommand and records the collision in the anchor.
 		Services: []string{"alpha", "version"},
 		// No Entities: nothing is marked `// forge:entity`, so `forge
-		// scaffold` births no table and db/migrations/ stays empty.
+		// scaffold` births no table. `project new` still writes the
+		// auth_sessions migration server-side sign-in sessions read, so D
+		// deletes it (NoMigrations) to keep db/migrations/ empty.
+		NoMigrations: true,
 		// The database keeps no default telemetry, so its dashboards and
 		// spec part are not emitted (presence-derived).
 		DatabaseTelemetryOff: true,
@@ -416,6 +424,18 @@ func render(parent string, fx fixture) (*renderResult, error) {
 	if len(fx.Entities) > 0 {
 		if err := forgeIn(root, "scaffold"); err != nil {
 			return nil, fmt.Errorf("scaffold entities: %w", err)
+		}
+	}
+
+	if fx.NoMigrations {
+		migs, err := filepath.Glob(filepath.Join(root, "db", "migrations", "*.sql"))
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range migs {
+			if err := os.Remove(m); err != nil {
+				return nil, fmt.Errorf("remove %s: %w", m, err)
+			}
 		}
 	}
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/devidp"
 	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/session"
 
 	"{{.Module}}/pkg/config"
 {{- if .MiddlewareDeclaresSessionCookie}}
@@ -61,11 +62,13 @@ const (
 	VerifyResendPath          = devidp.VerifyResendPath
 )
 
-// SessionCookieName holds the access token.
+// SessionCookieName holds the session: an opaque server-side session id
+// (forge/pkg/session) when the broker is mounted WithSessions, else the
+// access token itself.
 //
 // A COOKIE, not a JSON field, and that is the load-bearing decision: it is
-// HttpOnly, so no script can read it, which is what keeps the token out of
-// reach of an XSS. Returning it in a response body would hand it straight
+// HttpOnly, so no script can read it, which is what keeps the credential out
+// of reach of an XSS. Returning it in a response body would hand it straight
 // back to JavaScript and forfeit the main reason this flow exists.
 //
 {{- if .MiddlewareDeclaresSessionCookie}}
@@ -112,8 +115,25 @@ func (b *loginBroker) sessionCookie() string {
 	return SessionCookieName
 }
 
+// BrokerOption configures RegisterLoginBroker.
+type BrokerOption func(*loginBroker)
+
+// WithSessions keeps sessions SERVER-SIDE in m: the cookie holds an opaque
+// session id, the access and refresh tokens stay on the server, the access
+// token is renewed before it expires (so nobody is signed out mid-task), and
+// sign-out deletes the session and revokes its refresh token at the issuer.
+// providers.go's NewSessions builds m over the app's database; the
+// interceptor resolves the same ids (Authenticator.UseSessions).
+//
+// Without it (nil m included) the cookie holds the access token itself and
+// the session ends when that token expires: the refresh token is discarded,
+// because there is nowhere safe to keep it.
+func WithSessions(m *session.Manager) BrokerOption {
+	return func(b *loginBroker) { b.sessions = m }
+}
+
 // RegisterLoginBroker mounts the native sign-in API.
-func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger) {
+func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger, opts ...BrokerOption) {
 	// ── Every route below refuses a cross-site request ───────────────────
 	//
 	// A page on another site can POST to these routes from the victim's
@@ -151,19 +171,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 {{- end}}
 
 	broker := &loginBroker{
-		client: &devidp.Client{
-			Base: cfg.IdpBase,
-			Host: cfg.IdpHost,
-			// The file wins while it yields a token, and is re-read on use,
-			// so a control plane can rotate the credential without a
-			// restart; idp_broker_token is the fallback.
-			Token:     cfg.IdpBrokerToken,
-			TokenFile: cfg.IdpBrokerTokenFile,
-			// No call this broker makes may add a credential to an account
-			// whose address is unverified (forge#2121): a sign-up proves the
-			// address before anything is set on it.
-			ProvenCredentialsOnly: true,
-		},
+		client: brokerClient(cfg),
 		flow: devidp.FlowConfig{
 			ClientID:    cfg.OidcClientId,
 			RedirectURI: cfg.OidcRedirectUri,
@@ -202,6 +210,14 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 		forgotByAddress: newAttemptLimiter(3, time.Hour),
 		forgotByIP:      newAttemptLimiter(10, time.Hour),
 		resetByUser:     newAttemptLimiter(5, time.Hour),
+	}
+	for _, opt := range opts {
+		opt(broker)
+	}
+	if broker.sessions != nil {
+		// A session can outlive its access token only with a refresh
+		// token, which the issuer grants for offline_access.
+		broker.flow.Scopes = sessionScopes({{if .ScopesField}}cfg.OidcScopes{{else}}""{{end}})
 	}
 	// With a policy, it alone decides sign-up (open or domain, and only
 	// where the form can end in a session). An unusable one allows none.
@@ -292,6 +308,9 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 type loginBroker struct {
 	client       *devidp.Client
 	flow         devidp.FlowConfig
+	// sessions keeps sessions server-side (WithSessions); nil keeps the
+	// access token in the cookie.
+	sessions     *session.Manager
 	logger       *slog.Logger
 	devMode      bool
 	secureCookie bool
@@ -381,15 +400,16 @@ func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{o
 		SecureCookie:     b.secureCookie,
 		Logger:           b.logger,
 		TrustedProxyHops: b.proxyHops,
-		SignedIn: func(w http.ResponseWriter, tokens devidp.Tokens) any {
-			b.setSession(w, tokens)
-			return identityFrom(tokens.IDToken)
-		},
-		SessionToken: func(r *http.Request) string {
-			if c, err := r.Cookie(b.sessionCookie()); err == nil {
-				return c.Value
+		SignedInRequest: func(w http.ResponseWriter, r *http.Request, tokens devidp.Tokens) (any, error) {
+			if err := b.setSession(w, r, tokens); err != nil {
+				return nil, err
 			}
-			return ""
+			return identityFrom(tokens.IDToken), nil
+		},
+		// The access token the session cookie stands for, "" when none.
+		SessionToken: func(r *http.Request) string {
+			token, _ := b.accessToken(r)
+			return token
 		},
 		PasswordPolicy: b.passwordPolicy,
 		RejectPassword: b.writePasswordRejection,
@@ -481,7 +501,10 @@ func (b *loginBroker) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b.setSession(w, tokens)
+	if err := b.setSession(w, r, tokens); err != nil {
+		b.sessionUnavailable(w, r, err)
+		return
+	}
 	writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
 }
 
@@ -575,7 +598,10 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	b.logger.InfoContext(r.Context(), "account created", "email", req.Email)
 
-	b.setSession(w, tokens)
+	if err := b.setSession(w, r, tokens); err != nil {
+		b.sessionUnavailable(w, r, err)
+		return
+	}
 	writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
 }
 
@@ -584,12 +610,40 @@ func (b *loginBroker) handleRegister(w http.ResponseWriter, r *http.Request) {
 // It exists so the app can decide what to show without reading a cookie it
 // deliberately cannot read. The answer is an identity, never a token.
 func (b *loginBroker) handleSession(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(b.sessionCookie())
-	if err != nil || cookie.Value == "" {
+	token, err := b.accessToken(r)
+	if errors.Is(err, session.ErrNoSession) {
+		// The session ended (expired, revoked, signed out elsewhere): drop
+		// the cookie that names it.
+		b.clearSessionCookie(w)
+	}
+	if err != nil && !errors.Is(err, session.ErrNoSession) {
+		// The store or the issuer is unreachable. The session may be fine,
+		// so it is not cleared; the screen renders signed out until it is
+		// reachable again.
+		b.logger.ErrorContext(r.Context(), "the session could not be read", "error", err)
+		writeAuthError(w, http.StatusServiceUnavailable, "Sign-in is unavailable right now. Please try again.")
+		return
+	}
+	if token == "" {
 		writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
 		return
 	}
-	writeAuthJSON(w, http.StatusOK, b.sessionIdentity(r.Context(), cookie.Value))
+	writeAuthJSON(w, http.StatusOK, b.sessionIdentity(r.Context(), token))
+}
+
+// accessToken is the access token the request's session cookie stands for:
+// the cookie's own value, or — when it holds a server-side session id — the
+// token that session holds, renewed first if it is about to expire. "" with
+// no error is no cookie; session.ErrNoSession is a session that has ended.
+func (b *loginBroker) accessToken(r *http.Request) (string, error) {
+	cookie, err := r.Cookie(b.sessionCookie())
+	if err != nil || cookie.Value == "" {
+		return "", nil
+	}
+	if b.sessions == nil || !session.IsID(cookie.Value) {
+		return cookie.Value, nil
+	}
+	return b.sessions.AccessToken(r.Context(), cookie.Value)
 }
 
 // sessionIdentity is who the session's access token belongs to, with the
@@ -714,15 +768,56 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (b *loginBroker) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// auth_signed_out, the one auth event devidp cannot see: read whom the
-	// cookie was for before clearing it (presentation-only decode, as
-	// identityFrom). No count depends on it; product_events = False in the
-	// env switches it off with forge's other automatic events.
-	if c, err := r.Cookie(b.sessionCookie()); err == nil && observe.AutoProductEvents() {
-		if claims, ok := presentationClaimsFrom(c.Value); ok && claims.Sub != "" {
-			observe.TrackAuth(r.Context(), observe.AuthSignedOut, claims.Sub, observe.WithProvider(observe.AuthProviderForge))
+	ctx := r.Context()
+	subject := ""
+	if c, err := r.Cookie(b.sessionCookie()); err == nil {
+		if b.sessions != nil && session.IsID(c.Value) {
+			// Sign-out is a DELETE: the session stops working on the next
+			// request (on another replica, within its cache TTL), and the
+			// refresh token it held is revoked at the issuer, so no copy
+			// of it can mint access tokens either.
+			tokens, info, err := b.sessions.Revoke(ctx, c.Value)
+			switch {
+			case err == nil:
+				subject = info.Subject
+				b.revokeAtIssuer(ctx, tokens)
+			case !errors.Is(err, session.ErrNoSession):
+				// The browser still forgets the cookie below; the stored
+				// session ends at its idle or absolute expiry.
+				b.logger.ErrorContext(ctx, "sign-out could not delete the session", "error", err)
+			}
+		} else if claims, ok := presentationClaimsFrom(c.Value); ok {
+			// An access-token cookie: whom it was for, presentation-only
+			// (as identityFrom).
+			subject = claims.Sub
 		}
 	}
+	// auth_signed_out, the one auth event devidp cannot see. No count
+	// depends on it; product_events = False in the env switches it off with
+	// forge's other automatic events.
+	if subject != "" && observe.AutoProductEvents() {
+		observe.TrackAuth(ctx, observe.AuthSignedOut, subject, observe.WithProvider(observe.AuthProviderForge))
+	}
+	b.clearSessionCookie(w)
+	writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
+}
+
+// revokeAtIssuer revokes a signed-out session's refresh token (RFC 7009).
+// Best effort, bounded, and detached from the request: the session is already
+// gone, and the browser's sign-out must not wait on, or fail with, the issuer.
+func (b *loginBroker) revokeAtIssuer(ctx context.Context, tokens session.Tokens) {
+	if tokens.RefreshToken == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if err := b.client.RevokeToken(ctx, b.flow, tokens.RefreshToken, "refresh_token"); err != nil {
+		b.logger.DebugContext(ctx, "sign-out: the issuer did not revoke the refresh token", "error", err)
+	}
+}
+
+// clearSessionCookie tells the browser to forget the session cookie.
+func (b *loginBroker) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     b.sessionCookie(),
 		Value:    "",
@@ -732,30 +827,47 @@ func (b *loginBroker) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Secure:   b.secureCookie,
 		SameSite: http.SameSiteLaxMode,
 	})
-	writeAuthJSON(w, http.StatusOK, identity{Authenticated: false})
 }
 
-// setSession stores the access token in an HttpOnly cookie.
+// setSession signs the browser in with tokens: an HttpOnly cookie holding
+// a server-side session id (WithSessions), or the access token itself.
 //
-// SCAFFOLD-GRADE ON PURPOSE, and worth understanding before shipping: the
-// access token IS the cookie here, which keeps this file short and
-// stateless. It means the cookie expires exactly when the token does, and
-// that the refresh token is discarded rather than used.
+// WITH SESSIONS the tokens stay on the server (forge/pkg/session): the store
+// holds them sealed under a key derived from the id, renews the access token
+// before it expires, and ends the session after Lifetime, or IdleTimeout
+// unused (see NewSessions in providers.go). The cookie lives as long as the
+// session may. A session the request already carried is ended first, so a
+// sign-in never leaves the previous one behind.
 //
-// For a longer-lived product, keep a server-side session store keyed by an
-// opaque id, put the ID in this cookie, and hold both tokens there — then
-// a refresh renews the session without the user noticing, and revoking a
-// session is a delete rather than a wait.
-func (b *loginBroker) setSession(w http.ResponseWriter, tokens devidp.Tokens) {
-	maxAge := tokens.ExpiresIn
+// WITHOUT, the cookie expires exactly when the access token does and the
+// refresh token is discarded: the person signs in again every token lifetime.
+func (b *loginBroker) setSession(w http.ResponseWriter, r *http.Request, tokens devidp.Tokens) error {
+	value, maxAge := tokens.AccessToken, tokens.ExpiresIn
 	if maxAge <= 0 {
 		maxAge = int(time.Hour.Seconds())
+	}
+	if b.sessions != nil {
+		subject := identityFrom(tokens.IDToken).Subject
+		if subject == "" {
+			subject = identityFrom(tokens.AccessToken).Subject
+		}
+		issued, err := b.sessions.Create(r.Context(), devidp.SessionTokens(tokens, time.Now()),
+			session.Meta{Subject: subject, UserAgent: r.UserAgent()})
+		if err != nil {
+			return err
+		}
+		if old, err := r.Cookie(b.sessionCookie()); err == nil && session.IsID(old.Value) {
+			if prev, _, err := b.sessions.Revoke(r.Context(), old.Value); err == nil {
+				b.revokeAtIssuer(r.Context(), prev)
+			}
+		}
+		value, maxAge = issued.ID, int(time.Until(issued.ExpiresAt).Seconds())
 	}
 	http.SetCookie(w, &http.Cookie{
 		// Host-only: no Domain, ever, so the cookie goes to this host
 		// alone; __Host- prefixed when Secure (sessionCookie).
 		Name:  b.sessionCookie(),
-		Value: tokens.AccessToken,
+		Value: value,
 		Path:  "/",
 		// HttpOnly is the whole point — see SessionCookieName.
 		HttpOnly: true,
@@ -766,6 +878,35 @@ func (b *loginBroker) setSession(w http.ResponseWriter, tokens devidp.Tokens) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   maxAge,
 	})
+	return nil
+}
+
+// sessionUnavailable answers a sign-in whose credentials were right but whose
+// session could not be stored: no cookie, and a sentence the screen shows.
+func (b *loginBroker) sessionUnavailable(w http.ResponseWriter, r *http.Request, err error) {
+	b.logger.ErrorContext(r.Context(), "the session could not be stored", "error", err)
+	writeAuthError(w, http.StatusBadGateway, "Sign-in is unavailable right now. Please try again.")
+}
+
+// sessionScopes is what a sign-in asks for when its session is kept
+// server-side: oidc_scopes (comma-separated) with offline_access added,
+// since a refresh token is what lets the session outlive its access token.
+func sessionScopes(configured string) []string {
+	scopes := []string{}
+	for _, s := range strings.Split(configured, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			scopes = append(scopes, s)
+		}
+	}
+	if len(scopes) == 0 {
+		scopes = []string{"openid", "profile", "email"}
+	}
+	for _, s := range scopes {
+		if s == "offline_access" {
+			return scopes
+		}
+	}
+	return append(scopes, "offline_access")
 }
 
 // identityFrom decodes the claims a UI needs from a JWT.
@@ -1189,9 +1330,10 @@ func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
 		tokens, err = b.client.SignIn(devidp.WithAuthMethod(ctx, observe.AuthMethodReset), b.flow,
 			devidp.Credentials{LoginName: user.LoginName, Password: req.Password})
 		if err == nil {
-			b.setSession(w, tokens)
-			writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
-			return
+			if err = b.setSession(w, r, tokens); err == nil {
+				writeAuthJSON(w, http.StatusOK, identityFrom(tokens.IDToken))
+				return
+			}
 		}
 	}
 	b.logger.WarnContext(ctx, "password reset: password set, but the follow-up sign-in failed", "user_id", userID, "error", err)
@@ -1298,6 +1440,30 @@ func (l *attemptLimiter) forget(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.entries, key)
+}
+
+// brokerClient is the broker's client for the issuer.
+func brokerClient(cfg *config.{{or .ConfigType "Config"}}) *devidp.Client {
+	return &devidp.Client{
+		Base: cfg.IdpBase,
+		Host: cfg.IdpHost,
+		// The file wins while it yields a token, and is re-read on use,
+		// so a control plane can rotate the credential without a
+		// restart; idp_broker_token is the fallback.
+		Token:     cfg.IdpBrokerToken,
+		TokenFile: cfg.IdpBrokerTokenFile,
+		// No call this broker makes may add a credential to an account
+		// whose address is unverified (forge#2121): a sign-up proves the
+		// address before anything is set on it.
+		ProvenCredentialsOnly: true,
+	}
+}
+
+// SessionRefresher renews the access tokens of the sessions this broker
+// creates, at the same issuer and as the same OAuth client. providers.go's
+// NewSessions hands it to the session Manager.
+func SessionRefresher(cfg *config.{{or .ConfigType "Config"}}) session.Refresher {
+	return brokerClient(cfg).SessionRefresher(devidp.FlowConfig{ClientID: cfg.OidcClientId, RedirectURI: cfg.OidcRedirectUri})
 }
 
 // errLoginNotConfigured names what is missing, and how to get it.

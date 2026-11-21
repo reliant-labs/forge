@@ -507,6 +507,24 @@ type Port struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=8
 	Domains []string `json:"domains,omitempty"`
+
+	// AllowedSourceCIDRs restricts which client network addresses may reach
+	// this port. Each entry is an IPv4 or IPv6 CIDR, or a bare address (a
+	// /32 or /128); forge stores the canonical masked form ("10.0.0.5/24"
+	// becomes "10.0.0.0/24"). Empty or absent means no restriction.
+	//
+	// The check is on the client's network address as the platform ingress
+	// sees it, not on a header the client sent. A request from any other
+	// address is answered 403 before it reaches the workload.
+	//
+	// Only the exposed port may set it: nothing else is reachable from
+	// outside. It fails closed per runtime. The hosted platform enforces it;
+	// every other runtime refuses a workload that sets it, at render and at
+	// deploy, because a runtime that cannot enforce an allowlist must not
+	// silently serve everyone. At most MaxSourceCIDRs entries.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	AllowedSourceCIDRs []string `json:"allowedSourceCIDRs,omitempty"`
 }
 
 // Probes are a workload's readiness and liveness probes, declared ONCE.
@@ -861,6 +879,7 @@ func defaultPorts(in []Port) []Port {
 		if p.Protocol == "" {
 			p.Protocol = DefaultPortProtocol
 		}
+		p.AllowedSourceCIDRs = NormalizeSourceCIDRs(p.AllowedSourceCIDRs)
 		out[i] = p
 	}
 	return out

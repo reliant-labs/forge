@@ -12,6 +12,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/alerting/pgstore"
 	"github.com/reliant-labs/forge/pkg/audit"
 	"github.com/reliant-labs/forge/pkg/schemadef"
+	"github.com/reliant-labs/forge/pkg/session"
 )
 
 // Forge bug 22dc63db: control-plane turned the ORM on and generate failed on
@@ -164,6 +165,9 @@ func TestLibraryTables_MatchTheLibrariesSchemas(t *testing.T) {
 	want["audit_log"] = auditCols
 
 	for table, cols := range ddlColumns(t, activity.SchemaSQL) {
+		want[table] = cols
+	}
+	for table, cols := range ddlColumns(t, session.SchemaSQL) {
 		want[table] = cols
 	}
 	alerting, err := pgstore.SchemaSQL("")

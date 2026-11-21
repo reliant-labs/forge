@@ -2065,6 +2065,22 @@ _hosted_domain_violations = lambda w: any -> [str] {
     ["domains ${_d}: a hosted custom hostname is a control-plane resource, not spec — it needs DNS at your registrar, ownership verification and a certificate, and it binds to ONE environment while this file renders to many. Create it once and bind it: `forge domain add ${_d[0]}`, then `forge domain bind ${_d[0]} --env <env> --target ${w.name}`. (forge.OnCluster keeps `Port.domains`: there you own the ingress.)"] if _d else []
 }
 
+# A port's `allowedSourceCIDRs` is a promise that other clients are turned
+# away, so a runtime that cannot keep it must refuse it: serving everyone while
+# the declaration reads "restricted" is the failure this prevents. Only hosted
+# enforces it (the platform proxy checks the client address and answers 403).
+# A host process or a compose service has no ingress forge controls. On a
+# cluster you operate, forge renders the Gateway and HTTPRoute but sets no
+# client-address detection (ClientTrafficPolicy), so what Envoy sees behind
+# your load balancer is not something forge can vouch for. A compose or
+# build-only workload already refuses `ports` whole.
+_source_cidr_violations = lambda w: any, rt: any -> [str] {
+    [
+        "port ${p.name}: allowedSourceCIDRs ${p.allowedSourceCIDRs} cannot be enforced on the ${rt.type} runtime, and forge will not drop it silently (the port would serve every client). Only forge.OnHosted enforces a per-port source allowlist; bind this workload to forge.OnHosted, or remove allowedSourceCIDRs and restrict access where you own the ingress."
+        for p in (w.ports or []) if p.allowedSourceCIDRs
+    ] if rt.type in ["host", "cluster", "external"] else []
+}
+
 _mask_violations = lambda w: any, rt: any -> [str] {
     _hosted = ["${f}: ${tiers.RESTRICTED_FIELD_REASONS[f]}" for f in tiers.RESTRICTED_FIELD_REASONS if f in w and _set(w, f)] \
         + ["env ${k} (${_channel(v)}): ${tiers.RESTRICTED_FIELD_REASONS['env.' + _channel(v)]}" for k, v in w.env if "env." + _channel(v) in tiers.RESTRICTED_FIELD_REASONS and not (_channel(v) == "secretRef" and v.store_key)] \
@@ -2083,7 +2099,7 @@ _mask_violations = lambda w: any, rt: any -> [str] {
     _build_only = ["${f}: ${_BUILD_ONLY_REFUSED[f]}" for f in _BUILD_ONLY_REFUSED if _set(w, f)] \
         + (["build: a build-only workload with no build has nothing to produce"] if not w.build else []) \
         if rt.type == "build-only" else []
-    _hosted + _host + _compose + _build_only
+    _hosted + _host + _compose + _build_only + _source_cidr_violations(w, rt)
 }
 
 # ---------------------------------------------------------------------------

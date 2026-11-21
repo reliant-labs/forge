@@ -60,11 +60,13 @@ func publishedSchemas() map[string]struct {
 			},
 			body: vulnListSchemaJSON,
 		},
-		"test-results":  testDocumentSchema("test-results", testreport.SchemaResults, reflect.TypeOf(testreport.Results{}), "one lane run's test cases, normalised from go test -json, JUnit or Vitest JSON (.forge/tests/runs/<id>/<lane>/)"),
-		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
-		"test-report":   testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
-		"test-flakes":   testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
-		"test-collect":  testDocumentSchema("test-collect", testcollect.Schema, reflect.TypeOf(testcollect.Document{}), "the coverage `forge test collect <env> --json` pulled from each workload of an env: where from, its build, the stale builds kept apart"),
+		"test-results":       testDocumentSchema("test-results", testreport.SchemaResults, reflect.TypeOf(testreport.Results{}), "one lane run's test cases, normalised from go test -json, JUnit or Vitest JSON (.forge/tests/runs/<id>/<lane>/)"),
+		"test-coverage":      testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
+		"test-report":        testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
+		"test-flakes":        testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
+		"test-coverage-view": testDocumentSchema("test-coverage-view", schemaTestCoverageView, reflect.TypeOf(testCoverageDoc{}), "recorded coverage as `forge test coverage --json` shows it: a path or lane filter, the per-package or per-file rollup, diff coverage, and the forge.test.coverage/v1 document they come from"),
+		"test-runs":          testDocumentSchema("test-runs", schemaTestRuns, reflect.TypeOf(testRunsDoc{}), "the local test runs, newest first, with each lane's exit code; `forge test runs --json`"),
+		"test-collect":       testDocumentSchema("test-collect", testcollect.Schema, reflect.TypeOf(testcollect.Document{}), "the coverage `forge test collect <env> --json` pulled from each workload of an env: where from, its build, the stale builds kept apart"),
 		"vuln-patch": {
 			spec: SchemaSpec{
 				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
@@ -151,6 +153,8 @@ func newProjectSchemaCmd() *cobra.Command {
         forge.test.flakes/v1: the test record's documents, generated from the
         pkg/testreport types forge and the control plane write them with.
 
+  test-coverage-view, test-runs
+        forge.test.coverage-view/v1, forge.test.runs/v1: what ` + "`forge test\n        coverage --json`" + ` and ` + "`forge test runs --json`" + ` print.
   test-collect  forge.test.collect/v1: what ` + "`forge test collect <env> --json`" + `
         pulled from each workload of an env.
 

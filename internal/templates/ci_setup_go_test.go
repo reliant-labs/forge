@@ -11,7 +11,7 @@ import (
 // A scaffolded job that runs the `go` command must set up Go FIRST, from
 // go.mod, with actions/setup-go's go-version-file.
 //
-// THE BUG THIS CATCHES: build-images.yml's trivy-scan job ran the forge
+// THE BUG THIS CATCHES: build-images.yml's scan job (then `trivy-scan`) ran the forge
 // install script — whose last line is `go install …` — with no setup-go step
 // before it, so it used whatever Go the runner happened to preinstall. On
 // houndersclub that was older than go.mod's `go 1.27.0`, and the step died
@@ -20,7 +20,7 @@ import (
 // missing copy survived review: the job LOOKS like the others.
 //
 // The rule is per-JOB because a GitHub job is a fresh runner — a setup-go in
-// `lint` does nothing for `trivy-scan` — and it is ORDER-sensitive because a
+// `lint` does nothing for `vuln-scan` — and it is ORDER-sensitive because a
 // setup-go after the `go` call configures a toolchain the call already failed
 // without.
 //

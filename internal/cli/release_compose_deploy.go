@@ -204,7 +204,8 @@ func executeSnapshotPromotion(ctx context.Context, r release.Release, ledger env
 			return nil
 		}
 	}
-	guard := appendGuard{ExpectedCurrentID: expected, SupersedeInFlight: opts.Supersede, RaiseFloorReason: opts.RaiseFloorReason}
+	guard := appendGuard{ExpectedCurrentID: expected, SupersedeInFlight: opts.Supersede, RaiseFloorReason: opts.RaiseFloorReason,
+		VulnGateOverrideReason: strings.TrimSpace(opts.OverrideVulnGate)}
 	if expected == expectUnboundLiteral {
 		guard.ExpectedCurrentID = ""
 		guard.ExpectUnbound = true

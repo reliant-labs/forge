@@ -1,6 +1,6 @@
 ---
 name: deploy/domains
-description: Serving your own hostname — the `forge domain` commands for hosted sites and ports, why a hosted domain is a control-plane resource rather than spec, `Port.domains` on a cluster you operate, and reading a bound domain's state.
+description: Serving your own hostname — the `forge domain` commands for hosted sites and ports, why a hosted domain is a control-plane resource rather than spec, `Port.domains` on a cluster you operate, reading a bound domain's state, and restricting a port to source addresses with `allowedSourceCIDRs`.
 ---
 
 # Custom domains
@@ -54,6 +54,28 @@ lowercase DNS names, no wildcards, no duplicates.
 # OnCluster only — on OnHosted this is a render error.
 ports = [fw.Port {name = "http", port = 8080, expose = True, domains = ["api.hounders.club"]}]
 ```
+
+## Restricting who can reach a port: `allowedSourceCIDRs`
+
+An exposed port can declare the client addresses allowed to reach it. The check
+is on the client's network address as the platform ingress sees it, and any
+other address gets a 403 before the request reaches the workload. Empty or
+absent means no restriction. Entries are IPv4/IPv6 CIDRs or bare addresses (a
+bare address becomes a /32 or /128), at most 64, no duplicates, and only on the
+`expose = True` port.
+
+```kcl
+ports = [fw.Port {
+    name = "http", port = 8080, expose = True
+    allowedSourceCIDRs = ["188.34.190.188/32", "65.108.48.77/32", "37.24.226.100/32", "89.246.73.244/32", "85.115.25.67/32"]
+}]
+```
+
+It fails closed: only `forge.OnHosted` enforces it. `forge env render` and
+`forge env deploy` refuse it on any other runtime (naming the workload, port and
+runtime) rather than serve every client under a declaration that reads
+"restricted". On `forge.OnCluster`, forge renders the Gateway but sets no
+client-address detection, so it cannot vouch for what the gateway sees.
 
 ## Reading a domain's state
 

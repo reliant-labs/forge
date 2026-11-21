@@ -21,8 +21,10 @@ func TestPGORefresh_RunsWeeklyAndByHand(t *testing.T) {
 	}
 }
 
-// It pulls the env it was rendered for, holds only an obs:read credential (in
-// the one variable forge reads), and never a deploy token.
+// It pulls the env it was rendered for, holds only its read credential (in
+// the one variable forge reads), never the deploy token, and documents the
+// scopes that credential needs (internal/cli TestPGORefreshTokenScopesCoverPGOPull
+// proves them against the calls the pull makes).
 func TestPGORefresh_PullsTheEnvWithAnObsToken(t *testing.T) {
 	out := renderCIText(t, "pgo-refresh.yml.tmpl", PGORefreshWorkflowData{ProjectName: "demo", Env: "prod"})
 	if !strings.Contains(out, "forge pgo pull --env prod --json") {
@@ -33,6 +35,9 @@ func TestPGORefresh_PullsTheEnvWithAnObsToken(t *testing.T) {
 	}
 	if strings.Contains(out, "secrets.FORGE_CONTROL_PLANE_TOKEN") {
 		t.Error("pgo-refresh.yml reads profiles; it must not hold the deploy token")
+	}
+	if !strings.Contains(out, "FORGE_OBS_TOKEN, a token with "+PGORefreshTokenScopes) {
+		t.Errorf("pgo-refresh.yml must document the token's scopes, %s", PGORefreshTokenScopes)
 	}
 }
 

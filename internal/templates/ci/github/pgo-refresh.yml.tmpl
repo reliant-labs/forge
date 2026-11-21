@@ -16,13 +16,14 @@
 # project's runs end green with nothing to commit until the env has served real
 # traffic. Without the secret below the job only says so and ends green.
 #
-# Needs one repository secret: FORGE_OBS_TOKEN, a token with obs:read. A person
-# signed in to the web app mints it under Settings → API tokens (Reliant cloud:
-# https://forge.reliantlabs.io/settings/tokens), then stores the secret it shows
-# once:
+# Needs one repository secret: FORGE_OBS_TOKEN, a token with {{.TokenScopes}}:
+# the pull looks the env up (deploy:read) before it reads its profiles
+# (obs:read). A person signed in to the web app mints it under Settings → API
+# tokens (Reliant cloud: https://forge.reliantlabs.io/settings/tokens), then
+# stores the secret it shows once:
 #   gh secret set FORGE_OBS_TOKEN
-# It is not FORGE_CONTROL_PLANE_TOKEN on purpose: reading profiles needs no
-# deploy rights, so this job holds none.
+# It is not FORGE_CONTROL_PLANE_TOKEN on purpose: that one can deploy
+# (deploy:write) and cannot read profiles; this one can read and never deploy.
 #
 # A pull request opened with the workflow's GITHUB_TOKEN starts no other
 # workflow (GitHub's rule), so its checks run when someone pushes to it or
@@ -55,7 +56,7 @@ jobs:
     steps:
       - name: No FORGE_OBS_TOKEN, nothing to pull
         if: env.FORGE_CONTROL_PLANE_TOKEN == ''
-        run: echo "::notice::FORGE_OBS_TOKEN is not set, so there are no {{.Env}} profiles to pull. Mint an obs:read token and run gh secret set FORGE_OBS_TOKEN to turn this on."
+        run: echo "::notice::FORGE_OBS_TOKEN is not set, so there are no {{.Env}} profiles to pull. Mint a token with {{.TokenScopes}} and run gh secret set FORGE_OBS_TOKEN to turn this on."
       - uses: actions/checkout@v4
         if: env.FORGE_CONTROL_PLANE_TOKEN != ''
       - uses: actions/setup-go@v5

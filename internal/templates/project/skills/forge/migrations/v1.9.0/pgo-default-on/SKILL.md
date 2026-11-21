@@ -1,74 +1,66 @@
 ---
 name: migrations/v1.9.0/pgo-default-on
-description: Profile-guided builds on by default (forge v1.9.0). A project scaffolded since v1.9.0 keeps continuous CPU profiles ON in its hosted envs (`signals = forge.ObservabilitySignals {profiles = True}` on the hosted bundle's observability, which `forge.Observability {}` left off) and gets `.github/workflows/pgo-refresh.yml`, a weekly `forge pgo pull --env prod` that opens a pull request with each Go binary's refreshed cmd/<bin>/default.pgo. An existing project opts in: set profiles = True in each hosted env's main.k, let `forge generate` add the workflow, store an obs:read token as FORGE_OBS_TOKEN, then commit the first pull. Use when a deploy/kcl/<env>/main.k binds forge.OnHosted and declares `observability = forge.Observability {}`, or a hosted project has no pgo-refresh.yml.
+description: Profile-guided builds turn on by themselves wherever an env has CPU profiles (forge v1.9.0). A hosted project gets `.github/workflows/pgo-refresh.yml` on its next `forge generate` (new projects at `forge project new`): every Monday it runs `forge pgo pull --env <prod>` and opens a pull request with each Go binary's cmd/<bin>/default.pgo when the env's profiles changed it, and does nothing where there are none. It needs a FORGE_OBS_TOKEN secret with deploy:read,obs:read. Profile collection is not changed for an existing project; new scaffolds keep it on in hosted envs. Use when a deploy/kcl/<env>/main.k binds forge.OnHosted and no cmd/<bin>/default.pgo is committed yet.
 version: v1.9.0
-detection: grep -lqs 'forge.OnHosted' deploy/kcl/*/main.k && { grep -qsE 'observability = forge\.Observability \{\}' deploy/kcl/*/main.k || test ! -f .github/workflows/pgo-refresh.yml; }
+detection: grep -lqs 'forge.OnHosted' deploy/kcl/*/main.k && ! grep -qs 'pgo-refresh: false' forge.yaml && ! ls cmd/*/default.pgo >/dev/null 2>&1
 ---
 
-# Profile-guided builds on by default (v1.9.0)
+# Profile-guided builds turn on where profiles exist (v1.9.0)
 
 forge has built every Go binary with its committed `cmd/<bin>/default.pgo`
 since v1.8.0 (Go's default `-pgo=auto`), and `forge pgo pull --env prod`
-writes that file from production's CPU profiles. Two things kept a new hosted
-project from ever getting one, and v1.9.0 scaffolds both on:
+writes that file from the env's CPU profiles. What was missing was anything
+that ran the pull. v1.9.0 adds it, and it applies itself.
 
-1. **Profiles were off in hosted envs that declare an observability block.**
-   `signals.profiles` unset means "on where forge runs the store", which is
-   the local ClickStack only, so a hosted env with
-   `observability = forge.Observability {}` (every scaffolded project with a
-   frontend) rendered `OTEL_PROFILES_EXPORTER=none` and prod had no CPU
-   profiles to pull. A hosted env with no observability block already
-   profiles.
-2. **Nothing refreshed the file.** A one-off `forge pgo pull` goes stale as
-   the code moves.
+## What changes by itself
 
-Each section is independent. None changes a build until you commit a
-`default.pgo`, and a missing profile never fails one.
+**`.github/workflows/pgo-refresh.yml` appears on your next `forge generate`**
+when the project has a hosted env (`ci.provider: github`). It is a
+scaffold-once file like `release.yml`: yours after it is written, never
+rewritten, and a deleted one stays deleted. Every Monday it pulls the last
+hosted env in promotion order and:
 
-## 1. Keep profiles on in hosted envs
+- the env has profiles, and a binary's profile changed: it opens (or updates)
+  one pull request with the new `default.pgo`. Merging it is what turns PGO on
+  for that binary; every build after it uses the profile;
+- the env has no profiles, or too little CPU in the week (`pgo.min_weight`):
+  it commits nothing and ends green.
 
-**Use when** a `deploy/kcl/<env>/main.k` binds `forge.OnHosted` and its bundle
-declares `observability = forge.Observability {}` (or a block with no
-`signals.profiles`).
+A build never fetches a profile: it reads the committed file, so it stays
+reproducible from the commit alone, and a missing profile never fails one.
 
-Set it explicitly:
+**Profile collection is not changed.** An existing project keeps whatever its
+envs declare (`signals.profiles`; a hosted env with
+`observability = forge.Observability {}` does not collect them, one with no
+observability block does). A project scaffolded since v1.9.0 sets
+`profiles = True` in its hosted envs. Profiles count toward the env's
+telemetry allowance like logs and traces.
 
-```kcl
-observability = forge.Observability {signals = forge.ObservabilitySignals {profiles = True}}
-```
+## What to do
 
-Keep any other field the block already sets. `forge env render <env>` should
-no longer show `OTEL_PROFILES_EXPORTER=none` on the hosted workloads; the next
-`forge env deploy <env>` starts sending a 5s CPU profile every 5 minutes per
-process (about 0.15% of a core) and a live-heap snapshot every two hours.
-Profiles count toward the env's telemetry usage. To stay off, write
-`profiles = False` instead: that says so on purpose.
+1. Store the token the workflow reads, with exactly these scopes:
+   `deploy:read,obs:read` (the pull looks the env up, then reads its
+   profiles; it never deploys). Mint it under Settings → API tokens in the
+   web app, then:
 
-## 2. The weekly refresh workflow
+   ```bash
+   gh secret set FORGE_OBS_TOKEN
+   ```
 
-**Use when** the project has a hosted env and no
-`.github/workflows/pgo-refresh.yml`.
+   Until it is set the job prints a notice and ends green.
+2. To have profiles to pull from an env that does not collect them, set
+   `signals = forge.ObservabilitySignals {profiles = True}` on that env's
+   `forge.Observability` and redeploy. That is your call: it adds a 5s CPU
+   profile every 5 minutes per process and a live-heap snapshot every two
+   hours to the env's telemetry.
+3. Optional, to start now instead of on Monday:
 
-`forge generate` (or `forge project upgrade`) offers the file: it is
-scaffold-once and yours after that, and `ci.workflows: {pgo-refresh: false}`
-in forge.yaml declines it. It needs one repository secret, a token with
-`obs:read` (Settings → API tokens in the web app):
+   ```bash
+   forge pgo pull --env prod   # writes cmd/<bin>/default.pgo per Go binary with data
+   forge pgo status            # provenance, age and config per binary
+   git add cmd/*/default.pgo && git commit -m "chore(pgo): first default.pgo from prod"
+   ```
 
-```bash
-gh secret set FORGE_OBS_TOKEN
-```
-
-Without it the job prints a notice and ends green.
-
-## 3. The first profile
-
-Once the env has served about a day of real traffic:
-
-```bash
-forge pgo pull --env prod        # writes cmd/<bin>/default.pgo per Go binary
-forge pgo status                 # provenance, age and config per binary
-git add cmd/*/default.pgo && git commit -m "chore(pgo): first default.pgo from prod"
-```
-
-A binary with too little CPU in the window is skipped with a note; pull again
-later. Depth: `forge skill load observability/profiles`.
+To decline the workflow: `ci.workflows: {pgo-refresh: false}` in forge.yaml
+(before `forge generate`), or delete the file after. Depth:
+`forge skill load observability/profiles`.

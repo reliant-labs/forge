@@ -616,6 +616,17 @@ type PGORefreshWorkflowData struct {
 	Env string
 }
 
+// PGORefreshTokenScopes are the scopes pgo-refresh.yml's FORGE_OBS_TOKEN
+// needs: `forge pgo pull` resolves the organization and looks the hosted env
+// up (deploy:read) before it exports profiles (obs:read). An explicit token
+// is never elevated, so it must carry both; it needs no deploy:write.
+// internal/cli TestPGORefreshTokenScopesCoverPGOPull holds this to the calls
+// the pull really makes.
+const PGORefreshTokenScopes = "deploy:read,obs:read"
+
+// TokenScopes is PGORefreshTokenScopes, for the template.
+func (PGORefreshWorkflowData) TokenScopes() string { return PGORefreshTokenScopes }
+
 // E2EWorkflowData holds data for the standalone E2E test workflow template.
 type E2EWorkflowData struct {
 	ProjectName  string

@@ -35,6 +35,8 @@ func noCompiledGoFixture(t *testing.T) string {
 		// Another module's source is not this module's package.
 		"tools/nested/go.mod": "module example.com/nested\n\ngo 1.22\n",
 		"tools/nested/n.go":   "package nested\n",
+		// A package deeper inside it: gen/services/x/v1 under gen/go.mod.
+		"tools/nested/sub/v1/s.go": "package v1\n",
 		// Excluded on this host, by file name and by constraint.
 		"foreign/x_plan9.go":    "package foreign\n",
 		"foreign2/y.go":         "//go:build plan9\n\npackage foreign2\n",
@@ -56,6 +58,16 @@ func TestLintScopePackagesCountOnlyCompiledGo(t *testing.T) {
 		{name: "the ignore-tagged file named directly", scope: []string{"scripts/gen.go"}},
 		{name: "a nested module", scope: []string{"tools"}},
 		{name: "a nested module's file", scope: []string{"tools/nested/n.go"}},
+		// The pre-push hook's case: a changed generated file in gen/services/…
+		// where gen/ has its own go.mod.
+		{name: "a package deep inside a nested module", scope: []string{"tools/nested/sub/v1"}},
+		{name: "a file deep inside a nested module", scope: []string{"tools/nested/sub/v1/s.go"}},
+		{
+			name:        "this module's package beside a nested module's",
+			scope:       []string{"internal/foo", "tools/nested/sub/v1/s.go"},
+			wantAny:     []string{"./internal/foo/..."},
+			wantDefault: []string{"./internal/foo/..."},
+		},
 		{name: "foreign GOOS by file name and by constraint", scope: []string{"foreign", "foreign2"}},
 		{name: "docs only", scope: []string{"docs"}},
 		{
@@ -169,6 +181,39 @@ func TestTargetedPackageLanesSkipScopeWithNoCompiledGo(t *testing.T) {
 			if o.ran || o.skipMsg != "no Go package under --scope — skipping "+lane {
 				t.Errorf("%s --scope %v: ran=%v skipMsg=%q; want skipped", lane, scopePaths, o.ran, o.skipMsg)
 			}
+		}
+	}
+}
+
+// A scope reaching only a nested module's source skips each package lane with
+// a note naming that module, so it never reads as a typo or a silent green.
+func TestScopeInsideNestedModuleSkipsNamingTheModule(t *testing.T) {
+	root := noCompiledGoFixture(t)
+	scope, err := parseLintScope(root, []string{"tools/nested/sub/v1/s.go", "tools/nested/n.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "no Go package of this module under --scope (tools/nested is its own Go module, which forge lint lints only when run inside it) — skipping "
+	for lane := range targetedPackageLanes {
+		o, err := collectLaneOutcome(context.Background(), lintFlags{}, lane, []string{"./..."}, root, nil, nil, scope)
+		if err != nil {
+			t.Fatalf("%s: %v", lane, err)
+		}
+		if o.ran || o.skipMsg != want+lane {
+			t.Errorf("%s: ran=%v skipMsg=%q; want %q", lane, o.ran, o.skipMsg, want+lane)
+		}
+	}
+	steps := []linterStep{{
+		name: "golangci-lint", gates: true, scope: scopeByPackages,
+		shouldRun: func(*lintRunCtx) (bool, string) { return true, "" },
+		collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+			t.Errorf("golangci-lint ran on %v", rc.paths)
+			return nil, false, nil
+		},
+	}}
+	for _, o := range collectLintOutcomesFrom(&lintRunCtx{cwd: root, paths: []string{"./..."}, scope: scope}, steps) {
+		if o.skipMsg != want+o.name {
+			t.Errorf("%s: skipMsg = %q, want %q", o.name, o.skipMsg, want+o.name)
 		}
 	}
 }

@@ -341,7 +341,7 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 			case scopeByPackages:
 				pkgs := rc.scope.goPackages()
 				if len(pkgs) == 0 {
-					o.skipMsg = "no Go package under --scope — skipping " + step.name
+					o.skipMsg = rc.scope.scopeSkipMsg(step.name)
 					outcomes = append(outcomes, o)
 					continue
 				}
@@ -493,7 +493,7 @@ func collectLaneOutcome(
 				paths, run = defaultPassPackages(cwd, pkgs, nil)
 			}
 			if !run {
-				o.skipMsg = "no Go package under --scope — skipping " + lane
+				o.skipMsg = scope.scopeSkipMsg(lane)
 				return o, nil
 			}
 		}

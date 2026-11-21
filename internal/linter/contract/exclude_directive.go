@@ -117,6 +117,11 @@ const (
 	// RuleExcludeMultiImpl refuses the marker on a package owning a
 	// multi-implementation interface.
 	RuleExcludeMultiImpl = "forge-exclude-contract-multi-impl"
+	// RuleExcludeSearchIncomplete is the non-gating note that the
+	// multi-implementation search could not type-check every package of the
+	// module (one outside a --scope does not compile), so the marker was
+	// judged without a full search.
+	RuleExcludeSearchIncomplete = "forge-exclude-contract-search-incomplete"
 )
 
 // outboundIOSignal is one family of outbound-I/O entry points. A call whose

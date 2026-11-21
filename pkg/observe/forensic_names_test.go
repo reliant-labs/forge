@@ -103,30 +103,6 @@ func TestForensicNamesSharedTable(t *testing.T) {
 	}
 }
 
-// TestDeprecatedForensicIDPredicatesKeepTheirMeaning pins the exported
-// predicates forensics no longer records by to what they always answered:
-// pkg/ is semver at major 1, so ForensicIDValueName carries the new rule
-// and these keep the old one.
-func TestDeprecatedForensicIDPredicatesKeepTheirMeaning(t *testing.T) {
-	for name, want := range map[string]bool{
-		"ORDERID": true, "VOID": true, "orderID": true, "order_id": true, "id": true,
-		"pin_id": true, "cvvID": true, "session_id": false, "otp_counter_id": false,
-		"uuid": false, "order_uuid": false, "paid": false,
-	} {
-		if got := ForensicIDName(name); got != want {
-			t.Errorf("ForensicIDName(%q) = %v, want %v", name, got, want)
-		}
-	}
-	for name, want := range map[string]bool{
-		"session_id": true, "sessionID": true, "max_session_id": true, "SESSIONID": true,
-		"pin_id": false, "session_uuid": false, "orderID": false, "session": false,
-	} {
-		if got := ForensicSecretIDName(name); got != want {
-			t.Errorf("ForensicSecretIDName(%q) = %v, want %v", name, got, want)
-		}
-	}
-}
-
 func TestForensicNameWords(t *testing.T) {
 	for name, want := range map[string]string{
 		"userPIN":       "user pin",
@@ -274,7 +250,7 @@ func TestForensicsNeverRecordsSecretNamedPlainNumbers(t *testing.T) {
 		// An ID-shaped secret name is never a quantity, whatever leads it.
 		"forensics.arg.req.max_session_id": "[len=8]",
 		"forensics.arg.req.num_otp_id":     "[len=8]",
-		// So is one ID-shaped only as ForensicIDName always matched.
+		// So is one ID-shaped only in the broader legacy shape.
 		"forensics.arg.req.max_SESSIONID": "[len=8]",
 		"forensics.arg.req.maxTOKENId":    "[len=7]",
 	} {

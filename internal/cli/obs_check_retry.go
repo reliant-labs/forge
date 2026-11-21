@@ -44,6 +44,10 @@ import (
 const (
 	checkReasonQuotaExhausted = "quota_exhausted"
 	checkReasonRateLimited    = "rate_limited"
+	// A read the credential is not allowed to make, or a credential the
+	// control plane did not accept: exit 2, and these say which.
+	checkReasonPermissionDenied = "permission_denied"
+	checkReasonUnauthenticated  = "unauthenticated"
 )
 
 const (
@@ -177,6 +181,16 @@ func (p checkPoll) read(ctx context.Context, req obsbackend.HealthRequest, doc o
 	d, o, deadline := p.d, p.o, p.deadline
 	bad := func(err error) (obsbackend.HealthResult, obsCheckDoc, error) {
 		doc.Suggested = obsbackend.SuggestedOf(err)
+		// A credential that may not read release health judged nothing, and
+		// no later read changes that: say so as data, so a pipeline can tell
+		// "this token lacks obs:read" from "the release was not proven good"
+		// without parsing the message. The exit stays 2 (could not look).
+		switch obsbackend.FailureOf(err).Code {
+		case cloud.CodePermissionDenied:
+			doc.ReasonCode, doc.Reason = checkReasonPermissionDenied, "this credential may not read release health (it needs the obs:read scope); nothing was judged"
+		case cloud.CodeUnauthenticated:
+			doc.ReasonCode, doc.Reason = checkReasonUnauthenticated, "the control plane did not accept this credential; nothing was judged"
+		}
 		return obsbackend.HealthResult{}, doc, err
 	}
 	faults := 0 // transient faults in a row, for the backoff

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
 // bundleFeatureKeys is the document key paths each optional feature adds.
@@ -41,6 +43,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeaturePromotionChecks:      {"shape.delivery_policy.required_gates", "shape.delivery_policy.approval_hook"},
 	BundleFeaturePreview:              {"shape.preview"},
 	BundleFeatureChanges:              {"shape.changes"},
+	BundleFeatureTelemetry:            {"shape.telemetry"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
 	// layer and no document key.
 	BundleFeatureServiceCatalog: {},
@@ -168,6 +171,7 @@ func fullBundleDoc() BundleDoc {
 			Buckets:                  []ShapeBucket{{Name: "uploads", RuntimeKind: BucketRuntimeHosted}},
 			Preview:                  &ShapePreview{Of: "preview", ExpiresAt: "2026-12-01T00:00:00Z", Source: "pr-12"},
 			Changes:                  map[string]ShapeChange{"new-checkout": checkoutChange()},
+			Telemetry:                ShapeTelemetryOf([]telemetry.Target{hostedTarget("api")}),
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
 		DeclaredEnvs: []DeclaredEnv{
@@ -199,7 +203,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	for _, p := range strays {
 		strayRoots[p] = true
 	}
-	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.release_probes", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email"} {
+	for _, want := range []string{"objects", "provenance.commit_author", "provenance.commit_subject", "shape.frontend_telemetry", "shape.observability_policy.retention", "shape.store_secrets", "shape.generated_secrets", "shape.openbao", "shape.external_secrets_operators", "shape.control_plane_secrets[].delivery", "shape.release_health", "shape.uptime_checks", "shape.release_probes", "shape.databases", "shape.external_databases", "shape.delivery_policy.health_gate", "declared_envs", "shape.workloads[].unit", "shape.host_infra", "shape.identity.owners", "shape.identity.owner_role", "shape.identity.signup", "shape.identity.methods", "shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.telemetry"} {
 		if !strayRoots[want] {
 			t.Fatalf("the full document does not stray at %q (strays %v): the fixture or the doc helper no longer exercises it", want, strays)
 		}
@@ -252,6 +256,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Buckets = nil
 	wantShape.Preview = nil
 	wantShape.Changes = nil
+	wantShape.Telemetry = nil
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate, gateless.RequiredGates, gateless.ApprovalHook = nil, nil, nil
 	wantShape.DeliveryPolicy = &gateless
@@ -275,10 +280,13 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 
 // TestANewReaderGetsTheFullDocument: a reader that names every feature, and
 // the nil reader (this forge's own machine ledger), get the document whole.
+// Every feature includes the hand-advertised CapabilityCollectsTelemetry:
+// decoding the hosted telemetry targets alone is not enough to be sent them
+// (TestHostedTelemetryNeedsTheCollectsCapability).
 func TestANewReaderGetsTheFullDocument(t *testing.T) {
 	full := fullBundleDoc()
 	for name, r := range map[string]*BundleReader{
-		"every feature": {Features: BundleDocFeatures()},
+		"every feature": {Features: append(BundleDocFeatures(), CapabilityCollectsTelemetry)},
 		"nil reader":    nil,
 	} {
 		if got := r.Limit(full); !reflect.DeepEqual(got, full) {

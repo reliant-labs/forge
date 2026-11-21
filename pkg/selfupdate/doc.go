@@ -31,6 +31,17 @@
 // the boot-loop guard) goes through the same rename. [Boot] and
 // [Pending.Confirm] remove the images set aside once no process runs them.
 //
+// The window that remains: the instant between the two renames (each
+// written through to disk), when the install path is missing. Windows has
+// no call that closes it: ReplaceFile performs the same two renames, reports
+// the same half-done state (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) and does not
+// support write-through. So the move is first recorded in StateDir/move.json,
+// and a process killed inside the window leaves that journal behind. The
+// binary itself cannot start from a missing path; the next [Boot] that does
+// run with the same state directory (another binary sharing it, or the image
+// set aside, <name>.old-<ns>.exe, started by hand) renames the image back.
+// Renaming that file back by hand does the same.
+//
 // # Confirm and revert
 //
 // [Boot] runs first in main. After a swap it starts a watchdog: the app calls

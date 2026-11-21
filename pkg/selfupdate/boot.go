@@ -86,22 +86,33 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 		p.dir = dir
 	}
 	if _, err := os.Stat(statePath(p.dir)); err != nil {
-		return p // never swapped here
+		if _, jerr := os.Stat(journalPath(p.dir)); jerr != nil {
+			return p // never swapped here
+		}
 	}
 	exe, err := filepath.EvalSymlinks(env.exe)
 	if err != nil {
 		p.log.Warn("selfupdate: boot: resolve the running binary", "err", err)
 		return p
 	}
-	// Windows: the images earlier swaps renamed aside, now that the
-	// processes that ran them have exited.
-	sweepAside(env.fs, exe)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var revertNow string
 	var watch time.Duration
 	err = withLock(ctx, p.dir, func() error {
+		// Windows: a process that died between renaming its install aside
+		// and moving the new binary in left the install path missing. This
+		// start runs some other binary (one sharing the state directory, or
+		// the image set aside, started by hand): put the install back.
+		if restored, err := recoverMove(env.fs, p.dir); err != nil {
+			p.log.Error("selfupdate: boot: recover an interrupted swap", "err", err)
+		} else if restored != "" {
+			p.log.Warn("selfupdate: boot: restored an install an interrupted swap left missing", "path", restored)
+		}
+		// Windows: the images earlier swaps renamed aside, now that the
+		// processes that ran them have exited.
+		sweepAside(env.fs, exe)
 		st, err := loadState(p.dir)
 		if err != nil {
 			return err
@@ -282,7 +293,7 @@ func (p *Pending) revert(reason string) {
 		st.markFailed(rec.ToVersion, reason, now)
 		// On Windows rec.Path is this process's running image: it is moved
 		// aside, as at the swap.
-		if err := p.env.fs.replaceWithCopy(rec.Previous, rec.Path, now); err != nil {
+		if err := p.env.fs.replaceWithCopy(rec.Previous, rec.Path, now, journalPath(p.dir)); err != nil {
 			rec.Phase, rec.Reason, rec.UpdatedAt = "revert_failed", reason+"; revert failed: "+err.Error(), now
 			return errors.Join(err, saveState(p.dir, st))
 		}

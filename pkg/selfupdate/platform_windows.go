@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 // swapSupported: a running .exe cannot be replaced, but it can be renamed,
@@ -18,6 +20,25 @@ func swapSupported() bool { return true }
 // so neither a rename over it nor a remove of it succeeds while it runs. It
 // may still be renamed, which is what the swap does.
 const runningImageLocked = true
+
+// hostRename is os.Rename (MoveFileEx, replacing an existing target) with
+// MOVEFILE_WRITE_THROUGH: it returns once the rename is on disk, so the move
+// journal written before it, and each rename of a swap, reach the disk in
+// order.
+func hostRename(oldpath, newpath string) error {
+	from, err := windows.UTF16PtrFromString(oldpath)
+	if err != nil {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+	}
+	to, err := windows.UTF16PtrFromString(newpath)
+	if err != nil {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+	}
+	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH); err != nil {
+		return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: err}
+	}
+	return nil
+}
 
 // execBinary starts the binary at path as a new process with the same argv,
 // environment, working directory and stdio, then exits this one: Windows has

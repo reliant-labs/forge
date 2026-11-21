@@ -629,7 +629,26 @@ PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
   asks `OpenProcess`/`GetExitCodeProcess` whether a recorded pid still runs
   (access denied counts as alive). `Boot` and `Confirm` remove the images set
   aside once nothing runs them: the new process's `Boot` can race the old
-  process's exit, and a later start or the confirmation retries. The file
+  process's exit, and a later start or the confirmation retries.
+- **The window between the two renames.** Renaming the running image aside and
+  renaming the new binary into place are two operations, and the install path
+  is missing between them. Windows has no single call that closes this:
+  `ReplaceFileW` performs the same two renames internally, documents the same
+  half-done state (`ERROR_UNABLE_TO_MOVE_REPLACEMENT_2`: the replaced file
+  renamed away, the replacement not moved in) and does not support
+  `REPLACEFILE_WRITE_THROUGH`. It also merges the replaced file's ACLs and
+  streams into the replacement. So each move-aside first writes
+  `StateDir/move.json` (install path, aside name, staged copy; fsynced), and
+  every rename goes through `MoveFileEx(MOVEFILE_REPLACE_EXISTING |
+  MOVEFILE_WRITE_THROUGH)`, so the journal and the renames reach the disk in
+  order. The journal is removed once the install path holds a binary again. A
+  process killed inside the window leaves it behind. The binary cannot start
+  from a missing path, so recovery runs at the next `Boot` of any process that
+  can start with the same state directory (another binary sharing it, or the
+  aside image started by hand): under the state lock, it renames the aside
+  image back. `state.json` is written only after a move completes, so it still
+  describes the restored binary. Renaming the `.old-<ns>.exe` back by hand
+  does the same. The file
   operations are a seam (`swapFS`), so the Windows path is unit-tested on every
   platform against a fake that refuses to replace or remove a locked running
   image, and `TestReexecEndToEndWindows` does a real swap, confirm and

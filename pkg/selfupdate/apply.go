@@ -99,7 +99,7 @@ func (u *Updater) ExecPending() error {
 	defer cancel()
 
 	backups := filepath.Join(u.cfg.StateDir, "previous")
-	fsys := u.fs.orHost()
+	fsys, journal := u.fs.orHost(), journalPath(u.cfg.StateDir)
 	var prev string
 	err = withLock(ctx, u.cfg.StateDir, func() error {
 		if err := checkStaged(*s); err != nil {
@@ -116,7 +116,7 @@ func (u *Updater) ExecPending() error {
 		if err != nil {
 			return fmt.Errorf("selfupdate: save the running binary: %w", err)
 		}
-		if err := fsys.replaceWithCopy(s.Path, in.Path, now); err != nil {
+		if err := fsys.replaceWithCopy(s.Path, in.Path, now, journal); err != nil {
 			return fmt.Errorf("selfupdate: swap: %w", err)
 		}
 		// An earlier swap that was never confirmed still needs its rollback
@@ -139,11 +139,11 @@ func (u *Updater) ExecPending() error {
 		}
 		if got, err := sha256File(in.Path); err != nil || got != s.SHA256 {
 			err = errors.Join(err, fmt.Errorf("selfupdate: %s does not hold the staged binary after the swap", in.Path))
-			return errors.Join(err, fsys.replaceWithCopy(prev, in.Path, now))
+			return errors.Join(err, fsys.replaceWithCopy(prev, in.Path, now, journal))
 		}
 		if err := saveState(u.cfg.StateDir, st); err != nil {
 			// Without the record no Boot could revert it: put the old one back.
-			return errors.Join(err, fsys.replaceWithCopy(prev, in.Path, now))
+			return errors.Join(err, fsys.replaceWithCopy(prev, in.Path, now, journal))
 		}
 		// Committed: only now may backups nothing refers to go.
 		keep := map[string]bool{prev: true}
@@ -174,7 +174,7 @@ func (u *Updater) ExecPending() error {
 			return err
 		}
 		now := u.now().UTC()
-		if err := fsys.replaceWithCopy(prev, in.Path, now); err != nil {
+		if err := fsys.replaceWithCopy(prev, in.Path, now, journal); err != nil {
 			return err
 		}
 		reason := "exec failed: " + execErr.Error()

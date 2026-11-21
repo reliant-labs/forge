@@ -108,6 +108,9 @@ func TestReexecEndToEndWindows(t *testing.T) {
 		if st.Swap.Phase != phaseConfirmed {
 			t.Fatalf("phase = %s", st.Swap.Phase)
 		}
+		if _, err := os.Stat(journalPath(filepath.Join(filepath.Dir(filepath.Dir(exe)), "state"))); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("a completed swap left its move journal: %v", err)
+		}
 		// v2 is current: nothing to do, and this start sweeps the v1 image
 		// set aside, whose process has exited.
 		if out, code := run(); code != 0 || !strings.Contains(out, "skip:") {

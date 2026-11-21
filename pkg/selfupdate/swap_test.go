@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -170,6 +171,9 @@ func TestWindowsSwapMovesTheRunningImageAside(t *testing.T) {
 	st := readJSONState(t, u.cfg.StateDir)
 	if st.Swap == nil || st.Swap.Phase != phaseSwapped || st.Swap.Path != exe {
 		t.Fatalf("swap = %+v", st.Swap)
+	}
+	if _, err := os.Stat(journalPath(u.cfg.StateDir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a completed move left its journal: %v", err)
 	}
 
 	// The old process exited; the new one starts, sweeps the image set aside
@@ -340,7 +344,7 @@ func TestSetAsideNeverReplacesAnEarlierImage(t *testing.T) {
 	if err := os.WriteFile(earlier, []byte("still running"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := newLockingFS().fs().setAside(exe, fixedSwapTime)
+	got, err := newLockingFS().fs().setAside(exe, fixedSwapTime, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +354,7 @@ func TestSetAsideNeverReplacesAnEarlierImage(t *testing.T) {
 	if !bytes.Equal(readFile(t, earlier), []byte("still running")) || !bytes.Equal(readFile(t, got), []byte("current")) {
 		t.Fatal("an earlier image was overwritten")
 	}
-	if got, err := newLockingFS().fs().setAside(exe, fixedSwapTime); err != nil || got != "" {
+	if got, err := newLockingFS().fs().setAside(exe, fixedSwapTime, nil); err != nil || got != "" {
 		t.Fatalf("a missing file: %q %v, want nothing set aside", got, err)
 	}
 }
@@ -438,4 +442,215 @@ func TestRespawnStartsTheSameCommandThenExits(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "file not found") || exited != -1 {
 		t.Fatalf("a failed start: err=%v exit=%d, want the error and no exit", err, exited)
 	}
+}
+
+// errKilled stands in for the process dying mid-move: the fake rename panics
+// with it, so nothing after the rename (the in-process restore included)
+// runs, exactly as when the process is killed.
+var errKilled = errors.New("killed")
+
+// killBeforeInstall makes lfs "kill the process" when the staged copy is
+// about to be renamed onto exe, after exe was renamed aside.
+func killBeforeInstall(lfs *lockingFS, exe string) {
+	lfs.mu.Lock()
+	defer lfs.mu.Unlock()
+	lfs.failRename = func(oldpath, newpath string) error {
+		if newpath == exe && strings.Contains(filepath.Base(oldpath), ".new-") {
+			panic(errKilled)
+		}
+		return nil
+	}
+}
+
+func (l *lockingFS) revive() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.failRename = nil
+	clear(l.locked)
+}
+
+// dies runs fn, which must be killed by errKilled.
+func dies(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != errKilled {
+			t.Fatalf("want the process killed mid-move, got %v", r)
+		}
+	}()
+	fn()
+}
+
+// leftovers lists the staged copies left beside exe.
+func leftovers(t *testing.T, exe string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(exe))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".new-") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+func TestWindowsSwapKilledBetweenTheRenamesIsRecoveredAtTheNextBoot(t *testing.T) {
+	t.Parallel()
+	lfs := newLockingFS()
+	u, exe, oldBin, _ := windowsSwap(t, lfs, time.Hour)
+	u.execFn = func(string, []string, []string) error { t.Error("a killed swap must not start anything"); return nil }
+	killBeforeInstall(lfs, exe)
+	dies(t, func() { _ = u.ExecPending() })
+
+	// The window: the install path is gone, and only the journal says where
+	// its binary went.
+	if _, err := os.Lstat(exe); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the fault was not injected between the renames: %v", err)
+	}
+	aside := asides(t, exe)
+	if len(aside) != 1 {
+		t.Fatalf("asides = %v", aside)
+	}
+	var j moveJournal
+	if err := json.Unmarshal(readFile(t, journalPath(u.cfg.StateDir)), &j); err != nil || j.Path != exe || j.Aside != aside[0] {
+		t.Fatalf("journal = %+v (%v), want %s set aside as %s", j, err, exe, aside[0])
+	}
+
+	// The process died, so its locks are gone. The image set aside, started
+	// by hand, is the binary that can still run: its Boot puts the install
+	// back.
+	lfs.revive()
+	lfs.run(aside[0])
+	p := boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()},
+		bootEnv{exe: aside[0], pid: 3, exec: newExecRecorder().exec, alive: allAlive, fs: lfs.fs()})
+	if p.Swapped || p.Reverted != "" {
+		t.Fatalf("p = %+v: an interrupted swap is neither pending nor reverted", p)
+	}
+	if !bytes.Equal(readFile(t, exe), oldBin) {
+		t.Fatal("the install was not restored")
+	}
+	if _, err := os.Stat(journalPath(u.cfg.StateDir)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the journal outlived the recovery: %v", err)
+	}
+	if left := leftovers(t, exe); len(left) != 0 {
+		t.Fatalf("staged copies left beside the install: %v", left)
+	}
+	// state.json is written only after a move completes, so it never
+	// recorded this swap: the restored binary boots as if none happened.
+	if st := readJSONState(t, u.cfg.StateDir); st.Swap != nil {
+		t.Fatalf("swap = %+v, want none recorded", st.Swap)
+	}
+	if p := boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()},
+		bootEnv{exe: exe, pid: 4, exec: newExecRecorder().exec, alive: allAlive, fs: lfs.fs()}); p.Swapped || p.Reverted != "" {
+		t.Fatalf("the restored install booted as %+v", p)
+	}
+}
+
+func TestWindowsRevertKilledBetweenTheRenamesIsRecoveredByAnotherBinary(t *testing.T) {
+	t.Parallel()
+	lfs := newLockingFS()
+	u, exe, _, newBin := windowsSwap(t, lfs, time.Hour)
+	rec := newExecRecorder()
+	u.execFn = rec.exec
+	if err := u.ExecPending(); err != nil {
+		t.Fatal(err)
+	}
+	lfs.exitAll()
+	lfs.run(exe)
+	p := boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()},
+		bootEnv{exe: exe, pid: 2, exec: rec.exec, alive: allAlive, fs: lfs.fs()})
+	p.timer.Stop()
+	killBeforeInstall(lfs, exe)
+	dies(t, func() { p.revert("test: reverting") })
+	if _, err := os.Lstat(exe); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("the fault was not injected between the renames: %v", err)
+	}
+
+	// Another binary sharing the state directory starts and restores the
+	// install to what it held before the interrupted revert.
+	lfs.revive()
+	other := installed(t, []byte("another binary"))
+	boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()},
+		bootEnv{exe: other, pid: 5, exec: rec.exec, alive: allAlive, fs: lfs.fs()})
+	if !bytes.Equal(readFile(t, exe), newBin) {
+		t.Fatal("the install was not restored to the binary the revert was replacing")
+	}
+	// The revert was never recorded, so the swap is still pending and the
+	// restored binary's next start re-arms its watchdog.
+	if st := readJSONState(t, u.cfg.StateDir); st.Swap.Phase != phaseSwapped {
+		t.Fatalf("phase = %s, want swapped", st.Swap.Phase)
+	}
+	if p := boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()},
+		bootEnv{exe: exe, pid: 6, exec: rec.exec, alive: allAlive, fs: lfs.fs()}); !p.Swapped {
+		t.Fatalf("p = %+v, want the swap still pending", p)
+	} else {
+		p.timer.Stop()
+	}
+}
+
+func TestRecoverMove(t *testing.T) {
+	t.Parallel()
+	t.Run("nothing to recover", func(t *testing.T) {
+		t.Parallel()
+		if got, err := recoverMove(newLockingFS().fs(), t.TempDir()); err != nil || got != "" {
+			t.Fatalf("%q %v", got, err)
+		}
+	})
+	t.Run("the move completed before the journal was removed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		exe := installed(t, []byte("new"))
+		staged := filepath.Join(filepath.Dir(exe), ".app.new-1")
+		aside := asideName(exe, 1)
+		for p, b := range map[string]string{staged: "copy", aside: "old"} {
+			if err := os.WriteFile(p, []byte(b), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data, _ := json.Marshal(moveJournal{Path: exe, Aside: aside, Staged: staged})
+		if err := os.WriteFile(journalPath(dir), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := recoverMove(newLockingFS().fs(), dir); err != nil || got != "" {
+			t.Fatalf("%q %v, want nothing restored", got, err)
+		}
+		if !bytes.Equal(readFile(t, exe), []byte("new")) {
+			t.Fatal("a completed move was undone")
+		}
+		for _, p := range []string{journalPath(dir), staged} {
+			if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("%s survived: %v", p, err)
+			}
+		}
+	})
+	t.Run("a torn journal", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := os.WriteFile(journalPath(dir), []byte("{\"pa"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := recoverMove(newLockingFS().fs(), dir); err != nil || got != "" {
+			t.Fatalf("%q %v", got, err)
+		}
+		if _, err := os.Stat(journalPath(dir)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatal("a torn journal must be dropped")
+		}
+	})
+	t.Run("the image set aside is gone too", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		exe := filepath.Join(t.TempDir(), "app.exe")
+		data, _ := json.Marshal(moveJournal{Path: exe, Aside: asideName(exe, 1)})
+		if err := os.WriteFile(journalPath(dir), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := recoverMove(newLockingFS().fs(), dir); err == nil {
+			t.Fatal("want an error naming what could not be restored")
+		}
+		if _, err := os.Stat(journalPath(dir)); err != nil {
+			t.Fatal("an unrecovered journal must stay for a later start")
+		}
+	})
 }

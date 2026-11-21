@@ -223,7 +223,7 @@ func TestBootIgnoresAnotherBinaryAndNoticesAReplacement(t *testing.T) {
 	}
 
 	// Someone reinstalled the binary by hand after the swap.
-	if err := hostFS.replaceWithCopy(other, exe, time.Now()); err != nil {
+	if err := hostFS.replaceWithCopy(other, exe, fixedNow, journalPath(u.cfg.StateDir)); err != nil {
 		t.Fatal(err)
 	}
 	if p := bootAs(u, exe, 1, rec, allAlive); p.Swapped || rec.count() != 0 {

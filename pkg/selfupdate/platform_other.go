@@ -2,6 +2,8 @@
 
 package selfupdate
 
+import "os"
+
 // Every target that is neither unix nor windows can stage a release but not
 // swap it.
 
@@ -9,6 +11,8 @@ func swapSupported() bool { return false }
 
 // runningImageLocked: nothing is ever swapped here.
 const runningImageLocked = false
+
+func hostRename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
 
 func execBinary(string, []string, []string) error { return ErrUnsupported }
 

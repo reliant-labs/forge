@@ -61,6 +61,18 @@ processors:
       context: resource
       statements:
       - set(attributes["service.name"], "billing-worker")
+    trace_statements:
+    - conditions:
+      - attributes["service.name"] == "nats"
+      context: resource
+      statements:
+      - set(attributes["service.name"], "nats")
+      - set(attributes["deployment.environment.name"], "dev")
+    - conditions:
+      - attributes["service.name"] == "worker"
+      context: resource
+      statements:
+      - set(attributes["service.name"], "billing-worker")
   transform/telemetry_logs:
     error_mode: silent
     log_statements:

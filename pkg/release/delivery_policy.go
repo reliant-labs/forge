@@ -202,7 +202,7 @@ func DefaultDeliveryPolicy() ShapeDeliveryPolicy {
 	return ShapeDeliveryPolicy{
 		TrustedBuilder:   ShapeTrustedBuilder{Mode: DeliveryAudit, Builders: []string{}},
 		Signing:          ShapeSigning{Mode: DeliveryAudit, Key: SigningKeyOrgKMS},
-		ProvenanceSBOM:   ShapeControl{Mode: DeliveryEnforce},
+		ProvenanceSBOM:   ShapeControl{Mode: DeliveryAudit},
 		FluxVerify:       ShapeControl{Mode: DeliveryAudit},
 		AdmissionVerify:  ShapeControl{Mode: DeliveryAudit},
 		SignedPromotions: ShapeControl{Mode: DeliveryAudit},

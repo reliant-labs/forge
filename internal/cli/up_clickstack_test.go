@@ -253,13 +253,13 @@ func TestFrontendDevCmdCarriesTelemetryEnv(t *testing.T) {
 // unable to write the logs the collector tails.
 func TestPrepareLocalCollectorOnlyWhenACollectorRuns(t *testing.T) {
 	dir := t.TempDir()
-	if err := prepareLocalCollector(dir, &KCLEntities{}); err != nil {
+	if _, err := prepareLocalCollector(dir, &KCLEntities{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".forge", "logs")); err == nil {
 		t.Fatal("created .forge/logs although no local collector is declared")
 	}
-	if err := prepareLocalCollector(dir, clickstackEntities(nil)); err != nil {
+	if _, err := prepareLocalCollector(dir, clickstackEntities(nil)); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(filepath.Join(dir, ".forge", "logs")); err != nil || !fi.IsDir() {
@@ -281,7 +281,7 @@ func TestForwarderIsRenderedFromTheDeclaration(t *testing.T) {
 	e := &KCLEntities{Observability: o, Workloads: []WorkloadEntity{
 		{Name: "otel-forwarder", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "otel-forwarder"}}},
 	}}
-	if err := prepareLocalCollector(dir, e); err != nil {
+	if _, err := prepareLocalCollector(dir, e); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, ".forge", "observability", "forwarder.yaml"))

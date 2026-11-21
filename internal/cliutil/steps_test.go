@@ -162,6 +162,41 @@ func TestStepRunnerRepeatsWarnings(t *testing.T) {
 	}
 }
 
+// A warning's detail — the lines under it, indented deeper — is repeated with
+// it: the observability step's warning names each env that did not render and
+// KCL's reason there, and `forge project new` showed only the headline
+// (forge bug report aef6d25f). A line at the warning's own indent is not its
+// detail.
+func TestStepRunnerRepeatsAWarningsDetail(t *testing.T) {
+	r := NewStepRunner("forge project new", false)
+	t.Cleanup(func() { _ = r.Close(); _ = os.Remove(r.path) })
+	term := terminalOutput(t, func() {
+		_ = r.Run(Step{Title: "generate code", Run: func() error {
+			fmt.Fprintln(os.Stderr, "⚠️  observability dashboards: kept the 0 existing file(s), because 1 environment(s) did not render:")
+			fmt.Fprintln(os.Stderr, "    deploy/kcl/dev: Cannot add member 'x' to schema 'AppConfig' (at /p/deploy/kcl/dev/config.k:12:5)")
+			fmt.Fprintln(os.Stderr, "  Make it render, and the next `forge generate` regenerates them.")
+			fmt.Println("✓ CI workflows")
+			fmt.Println("  ⚠️  frontend: skipped")
+			fmt.Println("  ✓ routine indented line")
+			return nil
+		}})
+	})
+	for _, want := range []string{
+		"deploy/kcl/dev: Cannot add member 'x' to schema 'AppConfig' (at /p/deploy/kcl/dev/config.k:12:5)",
+		"Make it render",
+		"⚠️  frontend: skipped",
+	} {
+		if !strings.Contains(term, want) {
+			t.Errorf("terminal lacks %q:\n%s", want, term)
+		}
+	}
+	for _, not := range []string{"CI workflows", "routine indented line"} {
+		if strings.Contains(term, not) {
+			t.Errorf("a line that is no warning's detail reached the terminal (%q):\n%s", not, term)
+		}
+	}
+}
+
 // Verbose streams the step's output as it always did, with the header, and
 // captures nothing.
 func TestStepRunnerVerboseStreams(t *testing.T) {

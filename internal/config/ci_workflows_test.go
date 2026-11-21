@@ -17,6 +17,19 @@ func TestCIWorkflows_LoadAndDefault(t *testing.T) {
 	}
 }
 
+// The v1.10.0 pgo-default-on playbook and pgo-refresh.yml's own header name
+// this opt-out; it was a load error ("no workflow named pgo-refresh").
+func TestCIWorkflows_PGORefreshCanBeDeclined(t *testing.T) {
+	in := "name: demo\nmodule_path: github.com/example/demo\nci:\n  workflows:\n    pgo-refresh: false\n"
+	cfg, err := LoadProject([]byte(in), "forge.yaml")
+	if err != nil {
+		t.Fatalf("expected clean load, got: %v", err)
+	}
+	if cfg.CI.WorkflowEnabled("pgo-refresh") {
+		t.Error("pgo-refresh: false must switch pgo-refresh.yml off")
+	}
+}
+
 func TestCIWorkflows_UnknownNameIsALoadError(t *testing.T) {
 	in := "name: demo\nmodule_path: github.com/example/demo\nci:\n  workflows:\n    deploys: false\n"
 	_, err := LoadProject([]byte(in), "forge.yaml")

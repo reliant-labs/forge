@@ -1,3 +1,6 @@
+// Package testreport is forge's test record vocabulary. This file is the run
+// directory's layout: the manifests `forge test begin` and `forge test capture`
+// write.
 package testreport
 
 import (

@@ -163,7 +163,7 @@ func TestBuildWriteKeepsCollidingCounterFiles(t *testing.T) {
 	}
 }
 
-func TestReadDirSince(t *testing.T) {
+func TestReadDirLeavesOutFencedNames(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
 		"covmeta.aa":           "M",
@@ -175,14 +175,20 @@ func TestReadDirSince(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	fs, err := readDir(dir, time.Unix(0, 200))
+	// Fenced by name: the newer-stamped file is left out and the older one
+	// kept, because a name's timestamp decides nothing.
+	fs, err := readDir(dir, map[string]bool{"covcounters.aa.2.300": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fs) != 2 {
-		t.Fatalf("read %d files, want the meta and the counters after since", len(fs))
+	var names []string
+	for _, f := range fs {
+		names = append(names, f.name)
 	}
-	if fs, err := readDir(filepath.Join(dir, "missing"), time.Time{}); err != nil || fs != nil {
+	if want := []string{"covcounters.aa.1.100", "covmeta.aa"}; !slices.Equal(names, want) {
+		t.Fatalf("read %v, want %v", names, want)
+	}
+	if fs, err := readDir(filepath.Join(dir, "missing"), nil); err != nil || fs != nil {
 		t.Errorf("a missing dir: %v %v, want nothing and no error", fs, err)
 	}
 }

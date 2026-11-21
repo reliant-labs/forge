@@ -54,9 +54,12 @@ pod of the last rollout) is kept under stale/<hash>/, labelled "stale build"
 and never merged. Without --run, FORGE_TEST_RUN is the run, else a new one is
 begun; a collect after ` + "`forge test capture --lane e2e`" + ` joins that lane.
 
---reset zeroes the counters instead (each live process is sent
-POST /debug/coverage with X-Forge-Coverage-Reset: 1, the result discarded), and leaves out of the next collect every
-counter flushed before it: run it before the lane, collect after it.
+--reset zeroes the counters instead: each live process is sent
+POST /debug/coverage with X-Forge-Coverage-Reset: 1 (the result discarded),
+and the counter files already flushed (by any process, including one that
+exited before the reset) are recorded by name and left out of every later
+collect. A file flushed after the reset is always collected. Run it before
+the lane, collect after it.
 
 A workload that is not a forge Go build reports
 "coverage: unavailable (not a forge Go build)"; one the env does not
@@ -98,7 +101,7 @@ when an instrumented workload could not be reached and nothing was collected;
 		},
 	}
 	cmd.Flags().StringArrayVar(&workloads, "workload", nil, "Collect only this workload (repeatable; default: every workload of the env)")
-	cmd.Flags().BoolVar(&reset, "reset", false, "Zero the counters instead of collecting them, and leave out of the next collect what was flushed before")
+	cmd.Flags().BoolVar(&reset, "reset", false, "Zero the counters instead of collecting them, and leave the counter files flushed before it out of every later collect")
 	cmd.Flags().StringVar(&run, "run", "", "Run directory to record into (default: $FORGE_TEST_RUN, else a new run)")
 	cmd.Flags().StringVar(&lane, "lane", testcollect.DefaultLane, "Lane to record the coverage under")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print forge.test.collect/v1")

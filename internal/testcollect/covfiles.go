@@ -132,9 +132,9 @@ func readTar(r io.Reader, top string) ([]covFile, error) {
 	return out, nil
 }
 
-// readDir returns the coverage files directly in dir whose counters were
-// written at or after since (zero: all of them). A missing dir has none.
-func readDir(dir string, since time.Time) ([]covFile, error) {
+// readDir returns the coverage files directly in dir, less the counter files
+// a reset fenced off (fence.go). A missing dir has none.
+func readDir(dir string, excluded map[string]bool) ([]covFile, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -148,7 +148,7 @@ func readDir(dir string, since time.Time) ([]covFile, error) {
 			continue
 		}
 		f, ok := parseCovName(e.Name())
-		if !ok || (!f.meta && !since.IsZero() && f.nanos < since.UnixNano()) {
+		if !ok || (!f.meta && excluded[f.name]) {
 			continue
 		}
 		if f.data, err = os.ReadFile(filepath.Join(dir, e.Name())); err != nil {
@@ -157,20 +157,6 @@ func readDir(dir string, since time.Time) ([]covFile, error) {
 		out = append(out, f)
 	}
 	return out, nil
-}
-
-// sinceFilter drops the counter files written before since.
-func sinceFilter(files []covFile, since time.Time) []covFile {
-	if since.IsZero() {
-		return files
-	}
-	out := files[:0:0]
-	for _, f := range files {
-		if f.meta || f.nanos >= since.UnixNano() {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 // build is one binary build's files: its meta and every counter file of it.

@@ -374,7 +374,137 @@ func TestResetFencesOffEarlierCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 1 {
-		t.Fatalf("after reset: build %+v, want only the live counters (the flushed 5000 predates the reset at 6000)", b)
+		t.Fatalf("after reset: build %+v, want only the live counters (the flushed file was there at the reset)", b)
+	}
+}
+
+// fenceNames reads a workload's reset fence.
+func fenceNames(t *testing.T, root, workload string) []string {
+	t.Helper()
+	ex, err := readFence(ResetMarker(root, "dev", workload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for n := range ex {
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// [B1] A reset after an instrumented process has already exited. Its
+// counters are collectable until the reset, and the reset (which starts the
+// run from zero) then fences off that file by name, and only that file:
+// anything flushed after the reset is collected whatever time its name
+// encodes, and a second reset keeps the first one's exclusions.
+func TestResetAfterAProcessExited(t *testing.T) {
+	f := newFixture(t)
+	addr := (&coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.300.9000", "LIVE")}).start(t)
+	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
+	writeFiles(t, cover, "covmeta.aa", "covcounters.aa.100.5000") // a process that exited
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: addr, CoverDir: cover}}
+	collect := func(want int, why string) {
+		t.Helper()
+		doc, err := collectErr(context.Background(), f.options(target))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != want {
+			t.Fatalf("%s: build %+v, want %d counter file(s)", why, b, want)
+		}
+	}
+	reset := func(at int64) {
+		t.Helper()
+		opts := f.options(target)
+		opts.Reset = true
+		opts.Now = func() time.Time { return time.Unix(0, at) }
+		if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateReset {
+			t.Fatalf("reset: %+v", doc.Workloads[0])
+		}
+	}
+
+	collect(2, "before any reset, the exited process's counters are collected")
+	reset(6000)
+	if got := fenceNames(t, f.root, "api"); !slices.Equal(got, []string{"covcounters.aa.100.5000"}) {
+		t.Fatalf("fence %v, want exactly the file flushed before the reset", got)
+	}
+	collect(1, "after the reset, the exited process's file is left out")
+
+	// Flushed after the reset by a process whose name encodes an earlier time
+	// (a timestamp comparison would drop it), and by one stamped later.
+	writeFiles(t, cover, "covcounters.aa.200.1000", "covcounters.aa.400.7000")
+	collect(3, "files flushed after the reset are collected, whatever their timestamps")
+
+	reset(8000)
+	want := []string{"covcounters.aa.100.5000", "covcounters.aa.200.1000", "covcounters.aa.400.7000"}
+	if got := fenceNames(t, f.root, "api"); !slices.Equal(got, want) {
+		t.Fatalf("fence after a second reset %v, want %v: it only grows", got, want)
+	}
+	collect(1, "a second reset excludes what it saw, and keeps the first one's exclusion")
+}
+
+// The inverse: a reset with nothing flushed fences nothing, and every file
+// that appears afterwards is collected.
+func TestFileFlushedAfterResetIsCollected(t *testing.T) {
+	f := newFixture(t)
+	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{Withheld: "PPROF_ADDR binds 0.0.0.0:6060", CoverDir: cover}}
+	opts := f.options(target)
+	opts.Reset = true
+	opts.Now = func() time.Time { return time.Unix(0, 1<<62) } // far later than any name below
+	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateReset {
+		t.Fatalf("reset: %+v", doc.Workloads[0])
+	}
+	if got := fenceNames(t, f.root, "api"); len(got) != 0 {
+		t.Fatalf("fence %v, want empty: nothing was flushed", got)
+	}
+	writeFiles(t, cover, "covmeta.aa", "covcounters.aa.1.10", "covcounters.aa.2.20")
+	doc, err := collectErr(context.Background(), f.options(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 2 {
+		t.Fatalf("build %+v, want both files flushed after the reset", b)
+	}
+}
+
+// Compose: the reset fences the names in every container; a container that
+// cannot be read fails the reset rather than fencing too little.
+func TestResetComposeFencesContainerFiles(t *testing.T) {
+	f := newFixture(t)
+	d := &fakeDocker{
+		ids:  map[string][]string{"api": {"c1", "c2"}},
+		tars: map[string][]byte{"c1": tarOf(t, "./covmeta.aa", "M", "./covcounters.aa.1.100", "OLD"), "c2": tarOf(t, "./tmpfile", "x")},
+	}
+	target := Target{Workload: "api", Runtime: "compose", Compose: &ComposeTarget{Service: "api", CoverDir: "/tmp"}}
+	opts := f.options(target)
+	opts.Docker, opts.Reset = d, true
+	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateReset {
+		t.Fatalf("reset: %+v", doc.Workloads[0])
+	}
+	if got := fenceNames(t, f.root, "api"); !slices.Equal(got, []string{"covcounters.aa.1.100"}) {
+		t.Fatalf("fence %v", got)
+	}
+	d.tars["c2"] = tarOf(t, "./covmeta.aa", "M", "./covcounters.aa.1.50", "NEW") // c2's process exits after the reset
+	opts.Reset = false
+	doc, err := collectErr(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 1 {
+		t.Fatalf("build %+v, want only c2's file flushed after the reset", b)
+	}
+
+	g := newFixture(t)
+	opts = g.options(target)
+	opts.Reset = true
+	opts.Docker = &fakeDocker{ids: map[string][]string{"api": {"c1"}}, copyErr: map[string]error{"c1": errors.New("daemon gone")}}
+	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateFailed {
+		t.Fatalf("an unreadable container: %+v, want failed", doc.Workloads[0])
+	}
+	if _, err := os.Stat(ResetMarker(g.root, "dev", "api")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a failed reset wrote a fence: %v", err)
 	}
 }
 
@@ -413,10 +543,11 @@ func TestCollectCompose(t *testing.T) {
 }
 
 type fakeDocker struct {
-	ids    map[string][]string
-	tars   map[string][]byte
-	copied []string
-	err    error
+	ids     map[string][]string
+	tars    map[string][]byte
+	copyErr map[string]error
+	copied  []string
+	err     error
 }
 
 func (d *fakeDocker) Containers(_ context.Context, c ComposeTarget) ([]string, error) {
@@ -425,6 +556,9 @@ func (d *fakeDocker) Containers(_ context.Context, c ComposeTarget) ([]string, e
 
 func (d *fakeDocker) CopyOut(_ context.Context, id, dir string) ([]byte, error) {
 	d.copied = append(d.copied, id+":"+dir)
+	if err := d.copyErr[id]; err != nil {
+		return nil, err
+	}
 	return d.tars[id], nil
 }
 

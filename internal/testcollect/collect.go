@@ -17,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/testcapture"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -167,24 +166,11 @@ func stamp(doc *Document, code int, msg string) *Document {
 	return doc
 }
 
-// ResetMarker is the file --reset records its time in for one workload:
+// ResetMarker is the reset fence of one workload (fence.go):
 // .forge/tests/covdata/<env>/.reset/<workload>. A workload name never starts
 // with '.', so it cannot collide with a workload's GOCOVERDIR beside it.
 func ResetMarker(projectRoot, env, workload string) string {
 	return filepath.Join(projectRoot, ".forge", "tests", "covdata", env, ".reset", workload)
-}
-
-// readMarker is the time --reset last ran for the workload; zero when never.
-func readMarker(path string) time.Time {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return time.Time{}
-	}
-	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b)))
-	if err != nil {
-		return time.Time{}
-	}
-	return t
 }
 
 // Collect collects (or with Reset, zeroes) the coverage of every target. It
@@ -290,7 +276,10 @@ type pending struct {
 // gatherTarget reads every source of t, fills r and returns its builds,
 // newest first.
 func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) []*build {
-	since := readMarker(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
+	excluded, err := readFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
+	if err != nil {
+		r.Notes = append(r.Notes, "reset fence unreadable, so nothing is left out: "+err.Error())
+	}
 	var files []covFile
 	live := 0 // live sources attempted (pull, pod, container)
 	add := func(s Source, fs []covFile) {
@@ -307,7 +296,7 @@ func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult
 		} else if h.Withheld != "" {
 			r.Notes = append(r.Notes, "no live pull: "+h.Withheld)
 		}
-		fs, err := readDir(h.CoverDir, since)
+		fs, err := readDir(h.CoverDir, excluded)
 		s := Source{Kind: SourceExitFlush, From: rel(opts.ProjectRoot, h.CoverDir), Status: SourceOK, Files: len(fs)}
 		switch {
 		case err != nil:
@@ -318,7 +307,7 @@ func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult
 		add(s, fs)
 	case t.Compose != nil:
 		live++
-		gatherCompose(ctx, opts, t.Compose, since, add)
+		gatherCompose(ctx, opts, t.Compose, excluded, add)
 	case t.Cluster != nil:
 		c := t.Cluster
 		if c.Withheld != "" {
@@ -370,7 +359,7 @@ func settleEmpty(sources []Source, live int) (state, reason string) {
 	return StateUnreachable, strings.Join(unreachable, "; ")
 }
 
-func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, since time.Time, add func(Source, []covFile)) {
+func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, excluded map[string]bool, add func(Source, []covFile)) {
 	from := "service " + c.Service
 	if opts.Docker == nil {
 		add(Source{Kind: SourceContainer, From: from, Status: SourceUnreachable, Error: "docker is not available"}, nil)
@@ -404,7 +393,7 @@ func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, since ti
 			add(s, nil)
 			continue
 		}
-		fs = sinceFilter(fs, since)
+		fs = fenceOut(fs, excluded)
 		s.Files = len(fs)
 		if len(fs) == 0 {
 			s.Status = SourceEmpty
@@ -518,69 +507,105 @@ func describeDialErr(err error) string {
 	return err.Error()
 }
 
-// resetTarget zeroes t's counters and fences off what was flushed before.
+// resetTarget zeroes t's counters and fences off, by name, the counter files
+// flushed before it (fence.go has the rule).
 func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) {
-	marked := false
-	// at is when the reset began: counters flushed before it are fenced off.
-	// The fence is written only once the reset has happened, so a reset that
-	// failed leaves the previous fence, and the next collect keeps every
-	// counter it would have kept before.
 	at := opts.Now()
-	mark := func() {
-		p := ResetMarker(opts.ProjectRoot, opts.Env, t.Workload)
-		err := os.MkdirAll(filepath.Dir(p), 0o755)
-		if err == nil {
-			err = atomicfile.WriteFile(p, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+	// fenced records the names; it is called only once the reset has
+	// happened, so a reset that failed leaves the previous fence.
+	fenced := func(names []string) bool {
+		if err := writeFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload), at, names); err != nil {
+			r.State, r.Reason = StateFailed, "reset fence not recorded, so the counters flushed before the reset would be collected: "+err.Error()
+			return false
 		}
-		if err != nil {
-			r.Notes = append(r.Notes, "reset time not recorded: "+err.Error())
-			return
-		}
-		marked = true
+		return true
 	}
 	switch {
 	case t.Host != nil:
 		if t.Host.PullAddr == "" {
-			mark()
 			r.Notes = append(r.Notes, "live counters not zeroed: "+t.Host.Withheld)
-			break
+		} else {
+			_, s := pullHTTP(ctx, opts.HTTP, t.Host.PullAddr, true)
+			r.Sources = append(r.Sources, s)
+			// Only an answer the process gave proves the counters were
+			// zeroed: a refusal, or no answer at all (down, timed out),
+			// zeroed nothing, so the fence stays where it was.
+			switch s.Status {
+			case SourceOK, SourceEmpty:
+			case SourceUnreachable:
+				r.State, r.Reason = StateUnreachable, s.Error+" (not reset: the earlier counters are kept)"
+				return
+			default:
+				r.State, r.Reason = StateFailed, s.Error+" (not reset: the earlier counters are kept)"
+				return
+			}
 		}
-		_, s := pullHTTP(ctx, opts.HTTP, t.Host.PullAddr, true)
-		r.Sources = append(r.Sources, s)
-		// Only an answer the process gave proves the counters were zeroed:
-		// a refusal, or no answer at all (down, timed out), zeroed nothing,
-		// so the fence stays where it was.
-		switch s.Status {
-		case SourceOK, SourceEmpty:
-		case SourceUnreachable:
-			r.State, r.Reason = StateUnreachable, s.Error+" (not reset: the earlier counters are kept)"
-			return
-		default:
-			r.State, r.Reason = StateFailed, s.Error+" (not reset: the earlier counters are kept)"
+		names, err := dirCounterNames(t.Host.CoverDir)
+		if err != nil {
+			r.State, r.Reason = StateFailed, "list the counters flushed before the reset: "+err.Error()
 			return
 		}
-		mark()
+		if !fenced(names) {
+			return
+		}
 	case t.Compose != nil:
-		mark()
-		r.Notes = append(r.Notes, "a container's live counters cannot be zeroed (compose withholds "+CoveragePath+"); counters flushed before now are left out of the next collect")
+		names, err := composeCounterNames(ctx, opts, t.Compose)
+		if err != nil {
+			r.State, r.Reason = StateFailed, "list the counters flushed before the reset: "+err.Error()
+			return
+		}
+		if !fenced(names) {
+			return
+		}
+		r.Notes = append(r.Notes, "a container's live counters cannot be zeroed (compose withholds "+CoveragePath+"); the counter files flushed before now are left out of every later collect")
 	case t.Cluster != nil:
 		if t.Cluster.Withheld != "" {
 			r.State, r.Reason = StateUnreachable, "no live pull: "+t.Cluster.Withheld
 			return
 		}
+		// A pod's GOCOVERDIR is never read, so there is nothing flushed to
+		// fence: zeroing the live counters is the whole reset.
 		gatherPods(ctx, opts, t.Cluster, true, func(s Source, _ []covFile) { r.Sources = append(r.Sources, s) })
 		ok := slices.ContainsFunc(r.Sources, func(s Source) bool { return s.Status == SourceOK || s.Status == SourceEmpty })
 		if !ok {
 			r.State, r.Reason = settleEmpty(r.Sources, 1)
 			return
 		}
-		marked = true
-	}
-	if marked {
-		r.State = StateReset
+	default:
+		r.State, r.Reason = StateFailed, "nothing could be reset"
 		return
 	}
-	r.State, r.Reason = StateFailed, "nothing could be reset"
+	r.State = StateReset
+}
+
+// composeCounterNames lists the counter files in every container of the
+// service: what a reset fences off. A container with no GOCOVERDIR yet has
+// none; one that cannot be read fails the reset, since its files would
+// otherwise be collected.
+func composeCounterNames(ctx context.Context, opts Options, c *ComposeTarget) ([]string, error) {
+	if opts.Docker == nil {
+		return nil, errors.New("docker is not available")
+	}
+	ids, err := opts.Docker.Containers(ctx, *c)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, id := range ids {
+		data, err := opts.Docker.CopyOut(ctx, id, c.CoverDir)
+		if errors.Is(err, ErrNoSuchPath) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("container %s: %w", short(id), err)
+		}
+		fs, err := readTar(bytes.NewReader(data), path.Base(c.CoverDir))
+		if err != nil {
+			return nil, fmt.Errorf("container %s: %w", short(id), err)
+		}
+		names = append(names, counterNames(fs)...)
+	}
+	return names, nil
 }
 
 // recordRun writes each collected workload's builds into the run, converts

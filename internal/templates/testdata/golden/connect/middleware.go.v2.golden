@@ -48,6 +48,13 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 // access-control rules — forge generates no access control.
 func GetUser(ctx context.Context) (*Claims, error) { return authn.GetUser(ctx) }
 
+// AuthMethod reports how the request's caller authenticated: the channel the
+// credential arrived in (the session cookie, the Authorization header, the
+// APIKeyHeader) and its kind. A sensitive action that needs a person in the
+// app, not a program holding their token, checks m.IsBrowserSession(): a
+// server-side session id in the cookie, never a bearer token in one.
+func AuthMethod(ctx context.Context) (authn.Method, bool) { return authn.AuthMethod(ctx) }
+
 // ─── The unauthenticated allow-list is DECLARED IN THE PROTO ─────────
 //
 // Which RPCs a caller may reach with no credentials is

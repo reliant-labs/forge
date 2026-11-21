@@ -205,6 +205,10 @@ func TestInferChannel(t *testing.T) {
 		{"a different bearer, the cookie carries it", map[string][]string{"Authorization": {"Bearer other"}, "Cookie": {"sid=tok"}}, "tok", ChannelCookie},
 		{"a cookie name is not its value", map[string][]string{"Cookie": {"tok=other"}}, "tok", ChannelUnknown},
 		{"a header inference does not read", map[string][]string{"X-Session": {"tok"}}, "tok", ChannelUnknown},
+		// An extractor reading X-Session accepts the header's token; a copy
+		// in a cookie does not make it the cookie channel.
+		{"a header inference does not read, copied into a cookie", map[string][]string{"X-Session": {"tok"}, "Cookie": {"sid=tok"}}, "tok", ChannelUnknown},
+		{"any other header carrying it, even inside a value", map[string][]string{"X-Forwarded-Auth": {"scheme tok"}, "Cookie": {"sid=tok"}}, "tok", ChannelUnknown},
 		{"a substring is not a match", map[string][]string{"Authorization": {"Bearer tok2"}, "Cookie": {"sid=xtok"}}, "tok", ChannelUnknown},
 	}
 	for _, tc := range cases {
@@ -383,9 +387,14 @@ func TestMethod_Predicates(t *testing.T) {
 		viaCookie, browser bool
 	}{
 		{Method{}, false, false},
-		{Method{Channel: ChannelCookie, Credential: auth.CredentialToken}, true, true},
-		{Method{Channel: ChannelCookie, Credential: auth.CredentialUnknown}, true, true},
+		// Only a server-side session id in a cookie is a browser session: a
+		// bearer token replayed as a cookie, an unknown kind and an API key
+		// are not.
+		{Method{Channel: ChannelCookie, Credential: auth.CredentialSession}, true, true},
+		{Method{Channel: ChannelCookie, Credential: auth.CredentialToken}, true, false},
+		{Method{Channel: ChannelCookie, Credential: auth.CredentialUnknown}, true, false},
 		{Method{Channel: ChannelCookie, Credential: auth.CredentialAPIKey}, true, false},
+		{Method{Channel: ChannelAuthorization, Credential: auth.CredentialSession}, false, false},
 		{Method{Channel: ChannelAuthorization, Credential: auth.CredentialToken}, false, false},
 		{Method{Channel: ChannelAPIKeyHeader, Credential: auth.CredentialAPIKey}, false, false},
 		{Method{Channel: ChannelUnknown, Credential: auth.CredentialToken}, false, false},
@@ -409,5 +418,49 @@ func TestMethod_Predicates(t *testing.T) {
 	ctx := ContextWithAuthMethod(context.Background(), Method{Channel: ChannelCookie})
 	if m, ok := AuthMethod(ctx); !ok || !m.ViaCookie() {
 		t.Fatalf("ContextWithAuthMethod round trip: %+v, %v", m, ok)
+	}
+}
+
+// The browser-session guard end to end: a policy whose validator proves the
+// credential as ok, the request's headers, and whether a handler gating on
+// IsBrowserSession admits it.
+func TestAuthMethod_BrowserSessionGuard(t *testing.T) {
+	t.Parallel()
+	xSession := func(h http.Header) string { return h.Get("X-Session") }
+	for _, tc := range []struct {
+		name    string
+		cred    auth.Credential
+		extract func(http.Header) string
+		headers map[string]string
+		admit   bool
+	}{
+		{"a session id in the session cookie", auth.SessionCredential(), legacyCredentialFrom, map[string]string{"Cookie": "__Host-app_session=tok"}, true},
+		{"a bearer JWT replayed as the session cookie", auth.TokenCredential(), legacyCredentialFrom, map[string]string{"Cookie": "__Host-app_session=tok"}, false},
+		{"an unknown credential kind in the cookie", auth.Credential{}, legacyCredentialFrom, map[string]string{"Cookie": "__Host-app_session=tok"}, false},
+		{"a session id as a bearer", auth.SessionCredential(), legacyCredentialFrom, map[string]string{"Authorization": "Bearer tok"}, false},
+		{"a custom header extractor, the token copied into a cookie", auth.SessionCredential(), xSession, map[string]string{"X-Session": "tok", "Cookie": "sid=tok"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := credentialPolicy(tc.cred)
+			p.ExtractToken = tc.extract
+			ic, err := NewInterceptor(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := callV1(t, func(ctx context.Context) (string, error) {
+				m, _ := AuthMethod(ctx)
+				if m.IsBrowserSession() {
+					return "admitted", nil
+				}
+				return "refused", nil
+			}, ic, tc.headers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := map[bool]string{true: "admitted", false: "refused"}[tc.admit]; got != want {
+				t.Fatalf("browser-session guard = %s, want %s", got, want)
+			}
+		})
 	}
 }

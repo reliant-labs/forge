@@ -49,9 +49,16 @@ func TestMiddlewareTemplate_EnrichIsAComponentSeam(t *testing.T) {
 // that requires a person in the app reads it from the package it already
 // imports. Parsed as Go, so a comment naming it cannot satisfy the test.
 func TestMiddlewareTemplate_ReExportsAuthMethod(t *testing.T) {
-	content, err := ProjectTemplates().Render("middleware.go.tmpl", struct{ Name string }{Name: "myproject"})
+	for _, tmpl := range []string{"middleware.go.tmpl", "middleware_v2.go.tmpl"} {
+		t.Run(tmpl, func(t *testing.T) { checkReExportsAuthMethod(t, tmpl) })
+	}
+}
+
+func checkReExportsAuthMethod(t *testing.T, tmpl string) {
+	t.Helper()
+	content, err := ProjectTemplates().Render(tmpl, struct{ Name string }{Name: "myproject"})
 	if err != nil {
-		t.Fatalf("render middleware.go.tmpl: %v", err)
+		t.Fatalf("render %s: %v", tmpl, err)
 	}
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "middleware.go", content, parser.SkipObjectResolution)

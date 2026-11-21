@@ -131,17 +131,17 @@ Two forge-specific facts worth knowing before you write it:
 
 ## Requiring a person in the browser
 
-The same user can call you from the app (the HttpOnly session cookie) and from software holding their token (`Authorization: Bearer`, a CLI, an agent). For a sensitive action — approving something, managing keys — require the cookie:
+The same user can call you from the app (the HttpOnly session cookie) and from software holding their token (`Authorization: Bearer`, a CLI, an agent). For a sensitive action — approving something, managing keys — require a browser session:
 
 ```go
 m, _ := middleware.AuthMethod(ctx) // forge/pkg/authn: Channel + Credential kind
-if !m.IsBrowserSession() {          // cookie channel, and not an API key
+if !m.IsBrowserSession() {          // a server-side session id, in the cookie
     return nil, connect.NewError(connect.CodePermissionDenied,
         errors.New("approve this in the app, signed in"))
 }
 ```
 
-The interceptor records the method beside the claims, from the request and the validator's credential kind, so no token's contents and no `Enrich` can set it. A page's scripts cannot read an HttpOnly cookie or turn it into a header, which is why the cookie is the person signal; a non-browser client can still send a `Cookie` header, so a cookie holding a server-side session id proves more than one holding the bearer token itself. It adds nothing against CSRF beyond the cookie's SameSite (see `credentialFrom`'s comment in `pkg/middleware/middleware.go`). Existing projects get it with no edit: the channel is inferred from where `credentialFrom`'s token sits in the request; `authn.Policy.ExtractCredential` names it exactly. Test such a handler with `authn.ContextWithAuthMethod`.
+`IsBrowserSession` passes only for a server-side session id (`auth.CredentialSession`, forge/pkg/session) that arrived in a cookie: an id the session store resolved, which is issued to nothing but the browser that signed in. A bearer token in a cookie, an API key and an unknown credential kind never pass it — a non-browser client can send any `Cookie` header, so the cookie channel alone proves nothing. A project without server-side sessions has no browser session to prove, and the guard refuses every caller: turn sessions on (`deploy/managed-identity`) before you rely on it. `m.ViaCookie()` is the transport alone, metadata rather than proof. The interceptor records the method beside the claims, from the request and the authenticator's credential kind, so no token's contents and no `Enrich` can set it. It adds nothing against CSRF beyond the cookie's SameSite (see `credentialFrom`'s comment in `pkg/middleware/middleware.go`). Existing projects get the channel with no edit: it is inferred from where `credentialFrom`'s token sits, and reported as the cookie only when no other header carries it; `authn.Policy.ExtractCredential` names it exactly. Test such a handler with `authn.ContextWithAuthMethod`.
 
 ## Making a principal an application principal: the `Enrich` seam
 

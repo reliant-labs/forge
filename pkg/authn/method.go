@@ -11,10 +11,10 @@ import (
 // Channel names the part of the request a credential arrived in.
 //
 // [auth.Claims.Credential] says WHAT proved the caller — a token, an API
-// key. Channel says WHERE the caller put it, which is a different fact: the
-// same token authenticates identically whether it rode an Authorization
-// header or a session cookie, but only a browser page sends a cookie it
-// cannot read. See [Method.ViaCookie].
+// key, a server-side session id. Channel says WHERE the caller put it, which
+// is a different fact, and transport metadata only: any client can send any
+// header, cookies included. [Method.IsBrowserSession] combines the two into
+// the one check a sensitive action needs.
 type Channel uint8
 
 const (
@@ -28,7 +28,8 @@ const (
 	// ChannelAPIKeyHeader: the API-key header ("X-API-Key" by default).
 	ChannelAPIKeyHeader
 	// ChannelCookie: a cookie — in a scaffolded project, the HttpOnly
-	// session cookie native sign-in sets.
+	// session cookie native sign-in sets. On its own it is not proof of a
+	// browser: see [Method.IsBrowserSession].
 	ChannelCookie
 )
 
@@ -61,40 +62,32 @@ type Method struct {
 	Credential auth.CredentialKind
 }
 
-// ViaCookie reports whether the credential arrived in a cookie.
-//
-// That is the "a person is using the app" signal. A browser page's ONLY
-// channel is the session cookie: it is HttpOnly, so the page's scripts can
-// neither read it nor copy it into a header, and the browser attaches it
-// only to requests from the app itself. Software holding a bearer token —
-// a CLI, an integration, an agent with a token — presents it in the
-// Authorization header instead, so requiring ViaCookie on a sensitive
-// action (approving something, managing credentials) refuses that same
-// user's token held by a program.
-//
-// What it does not say:
-//
-//   - It is not a CSRF defence. It inherits whatever the cookie's
-//     SameSite attribute gives and nothing more; the scaffolded
-//     pkg/middleware/middleware.go (credentialFrom's comment) explains why
-//     a Connect call with a SameSite=Lax session cookie is not a CSRF
-//     opening, and the login broker's origin check covers same-site
-//     siblings.
-//   - A client outside a browser can set any Cookie header it likes, so a
-//     cookie whose value is the same token the caller could hold as a
-//     bearer proves less than one whose value is an opaque server-side
-//     session id. Check Credential too when the project issues one.
-//   - An API key presented in a cookie is still a key: see
-//     [Method.IsBrowserSession].
+// ViaCookie reports whether the credential arrived in a cookie. It is
+// transport metadata, not proof of a person: a client outside a browser can
+// set any Cookie header, so a program holding a user's bearer token can put
+// it in a cookie. Gate a sensitive action on [Method.IsBrowserSession].
 func (m Method) ViaCookie() bool { return m.Channel == ChannelCookie }
 
 // IsBrowserSession reports whether the caller is a person's browser
-// session: the credential arrived in a cookie ([Method.ViaCookie]) and was
-// not an API key. It is false for the zero Method, so a request with no
-// recorded method — an allow-listed procedure, an anonymous caller, a
-// passthrough interceptor — never passes it.
+// session: the credential arrived in a cookie AND was a server-side session
+// id ([auth.CredentialSession]) that forge's authenticator resolved against
+// the session store (forge/pkg/session). No other credential passes it — not
+// a bearer token replayed in a cookie, not an API key, not an unknown kind —
+// because only a session id is never issued to anything but the browser
+// that signed in, so a program holding the same user's token cannot
+// impersonate it. A project that does not keep server-side sessions has no
+// browser session to prove, and IsBrowserSession is false for every caller:
+// it fails closed.
+//
+// It is false for the zero Method, so a request with no recorded method —
+// an allow-listed procedure, an anonymous caller, a passthrough interceptor
+// — never passes it.
+//
+// It is not a CSRF defence: it inherits whatever the cookie's SameSite
+// attribute gives and nothing more (credentialFrom's comment in the
+// scaffolded pkg/middleware/middleware.go).
 func (m Method) IsBrowserSession() bool {
-	return m.ViaCookie() && m.Credential != auth.CredentialAPIKey
+	return m.ViaCookie() && m.Credential == auth.CredentialSession
 }
 
 // methodContextKey is the private context key the method stash uses, so the
@@ -133,6 +126,15 @@ func ContextWithAuthMethod(ctx context.Context, m Method) context.Context {
 // the header, and when in doubt the answer must not be the cookie. A token
 // found in none of them — an extractor reading a header inference does not
 // know — is ChannelUnknown, which no cookie check passes.
+//
+// Cookie is reported only when the cookie is the ONLY place the token
+// appears. Finding the value in a cookie does not prove the extractor read
+// it there: one reading X-Session would accept the token from that header
+// while a caller copied it into a cookie as well. An ExtractToken sees
+// nothing but the headers, so when no header but Cookie contains the token,
+// the cookie is where the extractor found it; otherwise the answer is
+// Unknown. A project that wants the channel stated rather than inferred
+// sets Policy.ExtractCredential.
 func inferChannel(header http.Header, token string) Channel {
 	for _, v := range header.Values("Authorization") {
 		v = strings.TrimSpace(v)
@@ -150,10 +152,29 @@ func inferChannel(header http.Header, token string) Channel {
 	}
 	for _, c := range (&http.Request{Header: header}).Cookies() {
 		if c.Value == token {
+			if tokenOutsideCookies(header, token) {
+				return ChannelUnknown
+			}
 			return ChannelCookie
 		}
 	}
 	return ChannelUnknown
+}
+
+// tokenOutsideCookies reports whether any header but Cookie carries token,
+// whole or as part of its value.
+func tokenOutsideCookies(header http.Header, token string) bool {
+	for name, vs := range header {
+		if http.CanonicalHeaderKey(name) == "Cookie" {
+			continue
+		}
+		for _, v := range vs {
+			if strings.Contains(v, token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // defaultAPIKeyHeader is the API-key header forge scaffolds and

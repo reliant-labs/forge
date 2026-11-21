@@ -314,6 +314,40 @@ func TestHeavyQueue_EarliestPositionFirst(t *testing.T) {
 	}
 }
 
+// A free slot is not handed to the only check that has asked while an earlier
+// check that may start has yet to ask: it waits for that one, however late its
+// goroutine runs. (A loaded Windows runner once gave the slot to a short check
+// because the mid-length one asked after a fixed settle window.)
+func TestHeavyQueue_WaitsForEarlierReadyCheck(t *testing.T) {
+	slots := &fakeSlots{sem: make(chan struct{}, 8)}
+	q := newHeavyQueue(context.Background(), slots.take)
+	q.ready = func() []int { return []int{1, 3} }
+	defer q.close()
+	got := make(chan int, 2)
+	take := func(pos int) {
+		if _, err := q.take(pos, fmt.Sprint(pos)); err != nil {
+			t.Error(err)
+			return
+		}
+		got <- pos
+	}
+	go take(3)
+	select {
+	case pos := <-got:
+		t.Fatalf("position %d was granted while the earlier ready position 1 had not asked", pos)
+	case <-time.After(200 * time.Millisecond):
+	}
+	go take(1)
+	<-got
+	<-got
+	// serve labels each slot as it grants it, so the labels are grant order.
+	slots.mu.Lock()
+	defer slots.mu.Unlock()
+	if fmt.Sprint(slots.labels) != "[1 3]" {
+		t.Fatalf("grant order %v, want [1 3]", slots.labels)
+	}
+}
+
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

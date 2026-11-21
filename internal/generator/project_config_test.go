@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -381,5 +382,23 @@ func TestWriteProjectConfig_PersistsDisabledFeaturesAsPins(t *testing.T) {
 	}
 	if strings.Contains(string(data), "codegen") || strings.Contains(string(data), "hot_reload") {
 		t.Errorf("the CLI kind's derived defaults must not be written as pins:\n%s", data)
+	}
+}
+
+// TestWriteSiteScaffold_SecretScanning (FG-06): a static site gets the
+// gitleaks pre-commit hook a service project carries, at the pin `forge ci
+// secret-scan` runs. Before, a site had no secret scanning at all.
+func TestWriteSiteScaffold_SecretScanning(t *testing.T) {
+	dir := t.TempDir()
+	fe := SiteFrontend{Name: "web", Type: "vite", PublicDir: "dist"}
+	if err := WriteSiteScaffold(dir, "site", HarnessReliant, fe); err != nil {
+		t.Fatalf("WriteSiteScaffold: %v", err)
+	}
+	hook, err := os.ReadFile(filepath.Join(dir, ".pre-commit-config.yaml"))
+	if err != nil {
+		t.Fatalf("a site must get a .pre-commit-config.yaml: %v", err)
+	}
+	if !strings.Contains(string(hook), "id: gitleaks") || !strings.Contains(string(hook), "rev: "+templates.GitleaksVersion) {
+		t.Errorf("site pre-commit config must run gitleaks %s:\n%s", templates.GitleaksVersion, hook)
 	}
 }

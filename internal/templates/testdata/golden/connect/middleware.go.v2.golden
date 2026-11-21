@@ -48,6 +48,13 @@ func ContextWithClaims(ctx context.Context, claims *Claims) context.Context {
 // access-control rules — forge generates no access control.
 func GetUser(ctx context.Context) (*Claims, error) { return authn.GetUser(ctx) }
 
+// AuthMethod reports how the request's caller authenticated: the channel the
+// credential arrived in (the session cookie, the Authorization header, the
+// APIKeyHeader) and its kind. A sensitive action that needs a person in the
+// app, not a program holding their token, checks m.IsBrowserSession(): a
+// server-side session id in the cookie, never a bearer token in one.
+func AuthMethod(ctx context.Context) (authn.Method, bool) { return authn.AuthMethod(ctx) }
+
 // ─── The unauthenticated allow-list is DECLARED IN THE PROTO ─────────
 //
 // Which RPCs a caller may reach with no credentials is
@@ -205,42 +212,48 @@ const APIKeyHeader = "X-API-Key"
 // outside development can only have been planted by a sibling site (cookie
 // tossing) to sign the browser in as someone else, so it is ignored.
 //
+// It also returns the channel it read, which AuthMethod reports to handlers:
+// only this function can say the credential came from the session cookie
+// (forge never infers that), and that is what lets m.IsBrowserSession()
+// admit a person in the app. Keep the channel truthful if you change where
+// the credential is read.
+//
 // Return "" for "no credential presented"; it is treated exactly like a
 // missing Authorization header. This changes only WHERE the credential is
 // read — it still goes through the same validator, so a channel cannot
 // weaken authentication. Point it somewhere else if your session lives
 // elsewhere.
-func credentialFrom(h http.Header) string {
+func credentialFrom(h http.Header) (string, authn.Channel) {
 	// Select by presence, not validity: even an empty or malformed higher
 	// priority header must not fall through to another principal.
 	if len(h.Values("Authorization")) != 0 {
 		bearer, ok := strings.CutPrefix(h.Get("Authorization"), "Bearer ")
 		if !ok {
-			return ""
+			return "", authn.ChannelAuthorization
 		}
-		return strings.TrimSpace(bearer)
+		return strings.TrimSpace(bearer), authn.ChannelAuthorization
 	}
 	if len(h.Values(APIKeyHeader)) != 0 {
-		return strings.TrimSpace(h.Get(APIKeyHeader))
+		return strings.TrimSpace(h.Get(APIKeyHeader)), authn.ChannelAPIKeyHeader
 	}
 	cookie, err := (&http.Request{Header: h}).Cookie(SecureSessionCookieName)
 	if err != nil {
-		return ""
+		return "", authn.ChannelUnknown
 	}
-	return cookie.Value
+	return cookie.Value, authn.ChannelCookie
 }
 
 // devCredentialFrom is credentialFrom for local development, where the
 // session cookie is plain-named (AuthDeps.DevSessionCookie).
-func devCredentialFrom(h http.Header) string {
-	if v := credentialFrom(h); v != "" || len(h.Values("Authorization")) != 0 || len(h.Values(APIKeyHeader)) != 0 {
-		return v
+func devCredentialFrom(h http.Header) (string, authn.Channel) {
+	if v, ch := credentialFrom(h); v != "" || len(h.Values("Authorization")) != 0 || len(h.Values(APIKeyHeader)) != 0 {
+		return v, ch
 	}
 	cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName)
 	if err != nil {
-		return ""
+		return "", authn.ChannelUnknown
 	}
-	return cookie.Value
+	return cookie.Value, authn.ChannelCookie
 }
 
 // ─── Interceptor construction ────────────────────────────────────────
@@ -280,6 +293,6 @@ func NewAuthInterceptorV2(deps AuthDeps) (connect.ServerInterceptor, error) {
 		ValidateContext:     deps.Validate,
 		Unauthenticated:     UnauthenticatedProcedures,
 		Enrich:              enrich,
-		ExtractToken:        extract,
+		ExtractCredential:   extract,
 	})
 }

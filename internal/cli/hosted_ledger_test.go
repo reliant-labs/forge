@@ -70,6 +70,10 @@ type fakeDeployService struct {
 	// set, rollout_in_flight unless the request supersedes.
 	pinned        bool
 	inFlightPhase string
+	// vulnGateBlocks refuses every promote vuln_gate_blocked unless it
+	// carries a vulnGateOverrideReason, as a control plane whose env's
+	// vuln_gate blocks the release does (control-plane C6).
+	vulnGateBlocks bool
 	// refusalWithoutDetail sends a refusal as the reason header alone, the
 	// way a control plane without the detail descriptor would.
 	refusalWithoutDetail bool
@@ -419,6 +423,10 @@ func (f *fakeDeployService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		list := f.promotions[envID]
 		if f.pinned {
 			f.refusePromote(w, reasonEnvironmentPinned, "the environment is pinned", body, list, "")
+			return
+		}
+		if f.vulnGateBlocks && strings.TrimSpace(str("vulnGateOverrideReason")) == "" {
+			f.refusePromote(w, reasonVulnGateBlocked, "prod's delivery_policy.vuln_gate is enforce, and release "+version+" has a finding it blocks: CVE-2026-1111", body, list, "")
 			return
 		}
 		var scope struct {

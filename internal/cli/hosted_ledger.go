@@ -1085,6 +1085,17 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	if guard.RaiseFloorReason != "" {
 		req["raiseFloorReason"] = guard.RaiseFloorReason
 	}
+	// `deploy --override-vuln-gate` (PromoteReleaseRequest tag 18): the
+	// control plane judges vuln_gate and provenance_sbom in the promotion's
+	// transaction, and relaxes their refusals for this one promotion only
+	// when it is given a reason, which it records. Sent only when set; a
+	// control plane that predates the gate discards it as an unknown field
+	// and has nothing to relax. Its refusal (vuln_gate_blocked,
+	// vuln_gate_unscanned, sbom_missing) comes back through
+	// refusalFromWire as exitRefused.
+	if guard.VulnGateOverrideReason != "" {
+		req["vulnGateOverrideReason"] = guard.VulnGateOverrideReason
+	}
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
 		// Holds is non-empty when the control plane ACCEPTED and RECORDED

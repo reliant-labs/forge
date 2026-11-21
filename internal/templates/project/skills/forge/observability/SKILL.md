@@ -23,6 +23,8 @@ A value you set yourself (shell, `config.k`, a workload's `env`) wins: `forge en
 
 An app forge does not deploy, any language: `observability/monitoring-only`.
 
+A system forge did not build (Helm, an image, raw Manifests) declares all it emits in one `forge.Telemetry`: `observability/third-party`.
+
 **To send it somewhere else**, declare a destination: local ClickStack is just the default one. A `forge.Observability` on the Bundle names an OTLP endpoint, a headers *secret reference*, which signals, and sampling; forge renders the collector for the runtime (a compose forwarder locally, a node-agent DaemonSet on a cluster) and apps are unchanged. Depth: `forge skill load observability/destination`.
 
 ## forge env status — the runtime checks
@@ -127,11 +129,10 @@ claiming to be an incident. Its volume stays countable: the RPC error counter
 (and `<pkg>.errors` on the component chain) carries `error_class` and `code`.
 
 A failed call's server span follows the class too (OK for `user` and
-`canceled`, Error for `server`): `observability/error-levels`.
-
-Where the policy applies (the RPC edge, the component chain, every
-hand-written `logger.Error`), wrapping a log forwarder, and marking an error
-`svcerr.WithClass` or `observe.WithErrorClassifier`: `observability/error-levels`.
+`canceled`, Error for `server`). Where the policy applies (the RPC edge, the
+component chain, every hand-written `logger.Error`), wrapping a log forwarder,
+and marking an error `svcerr.WithClass` or `observe.WithErrorClassifier`:
+`observability/error-levels`.
 
 Server faults carry a bounded stack: `observability/error-stacks`.
 

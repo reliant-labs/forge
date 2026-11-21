@@ -193,6 +193,36 @@ func TestLegacyRel(t *testing.T) {
 	}
 }
 
+func TestLegacyArgs(t *testing.T) {
+	for _, tc := range []struct {
+		in, want  string
+		rewritten bool
+	}{
+		{"cloud registry login --json", "registry login --json", true},
+		// A command's own flag value is not a path word, wherever it sits.
+		{"cloud registry login --username alice", "registry login --username alice", true},
+		{"cloud registry login --username cloud", "registry login --username cloud", true},
+		{"release list --env prod", "env releases list --env prod", true},
+		{"dev cluster up --name dev", "cluster up --name dev", true},
+		// A group's own persistent flag, between path words.
+		{"machine storage --policy machine gc", "storage --policy machine gc", true},
+		{"-C cloud cloud login", "-C cloud login", true},
+		{"--project-dir=x machine slot status", "--project-dir=x slot status", true},
+		{"cloud -C x registry ref web", "registry -C x ref web", true},
+		{"dev cluster up dev", "cluster up dev", true},
+		{"release list prod --json", "env releases list prod --json", true},
+		{"registry login", "registry login", false},
+		{"cloud status", "cloud status", false},
+		{"generate -- cloud login", "generate -- cloud login", false},
+		{"", "", false},
+	} {
+		got, rewritten := legacyArgs(strings.Fields(tc.in))
+		if strings.Join(got, " ") != tc.want || rewritten != tc.rewritten {
+			t.Errorf("legacyArgs(%q) = %q (rewritten %v), want %q (%v)", tc.in, strings.Join(got, " "), rewritten, tc.want, tc.rewritten)
+		}
+	}
+}
+
 // A moved command meets the project's pinned forge exactly as its old
 // spelling does: the same hand-off mode, the same pin gate. The nouns that
 // only hold moved commands run here: an older forge has no such command.
@@ -233,24 +263,31 @@ func TestMovedCommandsAreGatedAndHandedOffAsTheirOldSpelling(t *testing.T) {
 	}
 }
 
-// A moved command is handed to the pinned forge as typed (every forge a
-// project can pin has both spellings), and a noun alone stays here.
-func TestHandOffGivesThePinnedForgeTheSpellingTyped(t *testing.T) {
+// The incident this guards against: a project pinned to a forge older than
+// the nouns, and an agent typing the new spelling. The pinned forge is given
+// the old spelling, told not to warn about it, and a noun alone stays here.
+func TestHandOffGivesThePinnedForgeTheOldSpelling(t *testing.T) {
 	skewedProject(t)
 	t.Setenv(forgedelegate.MarkerEnv, "")
 
-	for _, args := range [][]string{{"release", "ledger", "show", "--json"}, {"ledger", "show"}} {
-		h, _ := armDelegation(t)
-		handed, _, err := handOffForTest(t, args...)
-		if err != nil || !handed {
-			t.Fatalf("%v: handed %v, err %v", args, handed, err)
-		}
-		if got, want := strings.Join(h.args, " "), strings.Join(args, " "); got != want {
-			t.Errorf("handed over as %q, want %q as typed", got, want)
-		}
-		if slices.Contains(h.env, noDeprecationWarningsEnv+"=1") {
-			t.Errorf("%v: a hand-off must reach the pinned forge as is, warnings and all; env %v", args, h.env)
-		}
+	h, _ := armDelegation(t)
+	handed, _, err := handOffForTest(t, "release", "ledger", "show", "--json")
+	if err != nil || !handed {
+		t.Fatalf("handed %v, err %v", handed, err)
+	}
+	if got := strings.Join(h.args, " "); got != "ledger show --json" {
+		t.Errorf("handed over as %q, want the old spelling", got)
+	}
+	if !slices.Contains(h.env, noDeprecationWarningsEnv+"=1") {
+		t.Errorf("a respelled hand-off must silence the pinned forge's deprecation line; env %v", h.env)
+	}
+
+	h, _ = armDelegation(t)
+	if handed, _, err := handOffForTest(t, "ledger", "show"); err != nil || !handed {
+		t.Fatalf("handed %v, err %v", handed, err)
+	}
+	if slices.Contains(h.env, noDeprecationWarningsEnv+"=1") {
+		t.Errorf("an old spelling typed as is must reach the pinned forge as is, warnings and all; env %v", h.env)
 	}
 
 	for _, args := range [][]string{{"dev"}, {"machine", "slot", "status"}, {"agent", "mcp"}} {

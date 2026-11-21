@@ -165,7 +165,7 @@ func TestNewInterceptor_DefaultStashIsReadableByGetUser(t *testing.T) {
 	if !ok {
 		t.Fatalf("Validate mode must build the validating interceptor, got %T", ic)
 	}
-	ctx, err := a.authenticate(context.Background(), "Bearer tok")
+	ctx, err := a.authenticate(context.Background(), "Bearer tok", ChannelAuthorization)
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestAuthenticate(t *testing.T) {
 			}
 			a := &interceptor{policy: validatePolicy(validate)}
 
-			ctx, err := a.authenticate(context.Background(), tc.authorization)
+			ctx, err := a.authenticate(context.Background(), tc.authorization, ChannelAuthorization)
 
 			if tc.wantErrCode != 0 {
 				if err == nil {
@@ -280,7 +280,7 @@ func TestAuthenticate_AnonymousOK(t *testing.T) {
 	t.Run("missing token proceeds claim-less", func(t *testing.T) {
 		t.Parallel()
 		a := &interceptor{policy: anonPolicy(func(string) (*auth.Claims, error) { return nil, nil })}
-		ctx, err := a.authenticate(context.Background(), "")
+		ctx, err := a.authenticate(context.Background(), "", ChannelAuthorization)
 		if err != nil {
 			t.Fatalf("AnonymousOK: missing token must not error, got %v", err)
 		}
@@ -292,7 +292,7 @@ func TestAuthenticate_AnonymousOK(t *testing.T) {
 	t.Run("present-but-invalid token is still rejected", func(t *testing.T) {
 		t.Parallel()
 		a := &interceptor{policy: anonPolicy(func(string) (*auth.Claims, error) { return nil, errors.New("bad sig") })}
-		_, err := a.authenticate(context.Background(), "Bearer bad")
+		_, err := a.authenticate(context.Background(), "Bearer bad", ChannelAuthorization)
 		var cerr *connect.Error
 		if !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
 			t.Fatalf("AnonymousOK: an invalid credential is a real error; want Unauthenticated, got %v", err)
@@ -302,7 +302,7 @@ func TestAuthenticate_AnonymousOK(t *testing.T) {
 	t.Run("valid token still attaches claims", func(t *testing.T) {
 		t.Parallel()
 		a := &interceptor{policy: anonPolicy(func(string) (*auth.Claims, error) { return validClaims, nil })}
-		ctx, err := a.authenticate(context.Background(), "Bearer good")
+		ctx, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization)
 		if err != nil {
 			t.Fatalf("AnonymousOK: valid token must not error, got %v", err)
 		}
@@ -351,7 +351,7 @@ func TestAuthenticate_EnricherHook(t *testing.T) {
 	}
 	a := &interceptor{policy: p}
 
-	ctx, err := a.authenticate(context.Background(), "Bearer good")
+	ctx, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestAuthenticate_EnricherHook(t *testing.T) {
 		return nil, errors.New("user row missing")
 	}
 	a = &interceptor{policy: p}
-	if _, err := a.authenticate(context.Background(), "Bearer good"); err == nil {
+	if _, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization); err == nil {
 		t.Fatal("enricher failure must reject the request")
 	} else {
 		var cerr *connect.Error
@@ -379,7 +379,7 @@ func TestAuthenticate_EnricherHook(t *testing.T) {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("suspended"))
 	}
 	a = &interceptor{policy: p}
-	if _, err := a.authenticate(context.Background(), "Bearer good"); err == nil {
+	if _, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization); err == nil {
 		t.Fatal("enricher connect.Error must reject the request")
 	} else {
 		var cerr *connect.Error
@@ -426,7 +426,7 @@ func TestAuthenticate_DecorateHook(t *testing.T) {
 	}
 	a := &interceptor{policy: p}
 
-	ctx, err := a.authenticate(context.Background(), "Bearer good")
+	ctx, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestAuthenticate_NilDecorateUnchanged(t *testing.T) {
 	validClaims := &auth.Claims{UserID: "user-1"}
 	a := &interceptor{policy: validatePolicy(func(string) (*auth.Claims, error) { return validClaims, nil })}
 
-	ctx, err := a.authenticate(context.Background(), "Bearer good")
+	ctx, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestAuthenticate_MapErrorHook(t *testing.T) {
 	}
 	a := &interceptor{policy: p}
 
-	_, err := a.authenticate(context.Background(), "Bearer good")
+	_, err := a.authenticate(context.Background(), "Bearer good", ChannelAuthorization)
 	if err == nil {
 		t.Fatal("validator failure must reject the request")
 	}
@@ -508,7 +508,7 @@ func TestAuthenticate_MapErrorHook(t *testing.T) {
 	// Returning nil falls back to the library default (CodeUnauthenticated).
 	p.MapError = func(error, *connect.Error) *connect.Error { return nil }
 	a = &interceptor{policy: p}
-	_, err = a.authenticate(context.Background(), "Bearer good")
+	_, err = a.authenticate(context.Background(), "Bearer good", ChannelAuthorization)
 	if cerr := new(connect.Error); !errors.As(err, &cerr) || cerr.Code() != connect.CodeUnauthenticated {
 		t.Fatalf("nil MapError must fall back to CodeUnauthenticated, got %v", err)
 	}
@@ -518,7 +518,7 @@ func TestAuthenticate_MapErrorHook(t *testing.T) {
 	mapErrCalled := false
 	p.MapError = func(error, *connect.Error) *connect.Error { mapErrCalled = true; return nil }
 	a = &interceptor{policy: p}
-	if _, err := a.authenticate(context.Background(), ""); err == nil {
+	if _, err := a.authenticate(context.Background(), "", ChannelAuthorization); err == nil {
 		t.Fatal("missing header must be rejected")
 	}
 	if mapErrCalled {

@@ -35,16 +35,11 @@ type Options struct {
 	NoDiff bool
 	// Lane, when set, keeps only that lane's results and coverage.
 	Lane string
-	// IncludeGenerated counts generated files; Include and Exclude are
-	// MergeOptions' globs.
-	IncludeGenerated bool
-	Include, Exclude []string
 	// Git runs git; nil is [ExecGit].
 	Git Git
-	// Covdata converts a GOCOVERDIR; nil is [testreport.ConvertCovdata]
-	// with GoBin.
+	// Covdata converts a GOCOVERDIR; nil is [testreport.ConvertCovdata],
+	// which runs the go on PATH (goBin is always "").
 	Covdata func(ctx context.Context, goBin, dir string) ([]testreport.CovdataBuild, error)
-	GoBin   string
 }
 
 // Assembly is what a set of runs adds up to: the inputs of a
@@ -159,15 +154,12 @@ func Assemble(ctx context.Context, opts Options) (*Assembly, error) {
 	if len(docs) > 0 {
 		cov, err := testreport.Merge(docs, testreport.MergeOptions{
 			ModulePath: repo.modulePath, ModuleDir: repo.moduleDir,
-			IncludeGenerated: opts.IncludeGenerated, Include: opts.Include, Exclude: opts.Exclude,
 		})
 		if err != nil {
 			return nil, err
 		}
 		repo.fillBlobs(cov)
-		if !opts.IncludeGenerated {
-			repo.markGenerated(cov)
-		}
+		repo.markGenerated(cov)
 		a.Coverage = cov
 	}
 
@@ -276,7 +268,7 @@ func readCoverage(ctx context.Context, opts Options, l *Lane, sourceKey string, 
 	for _, in := range l.CoverageInputs() {
 		p := filepath.Join(l.Dir, filepath.FromSlash(strings.TrimSuffix(in.Path, "/")))
 		if in.Format == testreport.CoverageGoCovdata {
-			builds, err := opts.Covdata(ctx, opts.GoBin, p)
+			builds, err := opts.Covdata(ctx, "", p)
 			if err != nil {
 				notes = append(notes, fmt.Sprintf("lane %s: covdata in %s not converted: %v", l.Lane, in.Path, err))
 				continue

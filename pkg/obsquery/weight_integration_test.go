@@ -24,6 +24,9 @@ func TestSpanThresholdFastPathMatchesTheRegex(t *testing.T) {
 		"", "ot=th:0", "ot=th:e6666666666666", "ot=th:", "ot=th:E6", "ot=th:e6z", "ot=th:-1",
 		"ot=rv:abc;th:8", "foo=bar,ot=th:8", "ot=th:8,foo=1", "ot=th:8;rv:1", "xot=th:8", " ot=th:8",
 		"ot=th:8 ", "ot=th:th:8", "ot=th:0000000000000000000000", "ot=th:8,ot=th:9", "ot=rv:1;th:2;th:3",
+		// Quotes and backslashes: the literal escaping below must carry
+		// them through unchanged.
+		"ot=th:8'", `ot=th:\8`, `ot=th:8\`, `foo='\',ot=th:8`,
 	}
 	r := rand.New(rand.NewSource(1))
 	const alphabet = "ot=h:0e6fzE,; "
@@ -39,7 +42,7 @@ func TestSpanThresholdFastPathMatchesTheRegex(t *testing.T) {
 	}
 	quoted := make([]string, len(states))
 	for i, s := range states {
-		quoted[i] = "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+		quoted[i] = clickHouseString(s)
 	}
 	q := "SELECT TraceState, " + obsquery.SpanThresholdSQL + " AS fast, " + obsquery.SpanThresholdRegexSQL + " AS regex " +
 		"FROM (SELECT arrayJoin([" + strings.Join(quoted, ", ") + "]) AS TraceState) WHERE fast != regex"
@@ -58,4 +61,10 @@ func TestSpanThresholdFastPathMatchesTheRegex(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// clickHouseString is s as a ClickHouse string literal: a backslash escapes
+// in one, so it is doubled before each quote is escaped.
+func clickHouseString(s string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, "'", `\'`).Replace(s) + "'"
 }

@@ -129,6 +129,23 @@ func TestPrivateApplyMovesToEmbeddedWhenItsServerGoesAway(t *testing.T) {
 	}
 }
 
+// A failed private apply can return no shadow. Tables must pass through
+// the error, including its own cleanup after the failed attempt.
+func TestTablesReturnsPrivateApplyErrorWithoutShadow(t *testing.T) {
+	t.Setenv(pgtest.EnvBaseURL, deadServer)
+	dir, migDir := fallbackProject(t)
+	servers := stubApplyShadow(t)
+
+	tables, err := Tables(dir, migDir)
+	var pgErr *pgconn.PgError
+	if tables != nil || !errors.As(err, &pgErr) || pgErr.Code != "57P01" {
+		t.Fatalf("Tables = %v, %v; want only the override's own failure", tables, err)
+	}
+	if want := []string{deadServer}; !reflect.DeepEqual(*servers, want) {
+		t.Fatalf("applied on %q, want %q", *servers, want)
+	}
+}
+
 // The FORGE_TEST_POSTGRES_URL override fails loudly; it is never swapped for
 // embedded postgres behind the caller's back.
 func TestOverrideServerIsNeverReplaced(t *testing.T) {

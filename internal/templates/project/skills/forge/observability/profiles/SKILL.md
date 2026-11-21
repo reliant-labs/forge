@@ -113,6 +113,8 @@ build = forge.DockerBuild {pgo = {"./cmd/proxy" = forge.PGO {enabled = False}}}
 
 Two declarations for one binary in one env that disagree are a render error. A `-pgo=` in `GoBuild.flags` always wins over forge's.
 
+**A ShellBuild's binaries.** forge cannot see what a shell command builds, so `pull` reads only the binaries `ShellBuild.pgo` names, keyed by package path relative to the build's `cwd`, each a `forge.ShellPGO`: the fields above plus `out` (where the profile goes, relative to the project root; default `<cwd>/<binary>/default.pgo`, which may be a sibling checkout's) and `namespace` (the `service.namespace` to read; default this project's). A deploy repo whose `cwd = "../reliant"` build runs three workloads gets one `../reliant/cmd/reliant/default.pgo` merging all three; commit it in that checkout. `enabled = False` only skips the binary, since forge does not edit the command. Load `deploy/build`.
+
 **Opting out.** `enabled = False` turns PGO off for that binary. It also renders `FORGE_PROFILES_PGO=off` for its workloads, so `pkg/observe` stops attaching the PGO attributes to CPU samples (about +24% gzipped OTLP on a CPU profile, ~2% of stored row bytes; `pkg/observe/PROFILES.md`, "PGO start lines"). Deleting `default.pgo` alone does not stop the collection.
 
 **Failing gracefully.** `pull` never breaks a build and never damages a file: no data yet, below `min_weight`, a ClickStack that is not running, not signed in, or a control plane older than the RPC each give a per-binary note naming the reason and the fix, and the existing `default.pgo` is left untouched. It exits 2 only when a requested source could not be read at all.

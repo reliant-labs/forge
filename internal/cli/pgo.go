@@ -43,8 +43,10 @@ Dockerfile build, host builds and air all use it with no flag changes.
 build after that is optimized for how the binary really runs. Builds never
 fetch profiles themselves, so they stay reproducible.
 
-Configure it per build in KCL (` + "`pgo = forge.PGO {...}`" + ` on a GoBuild, or
-DockerBuild.pgo keyed by binary); load ` + "`forge skill load observability/profiles`" + `.`,
+Configure it per build in KCL (` + "`pgo = forge.PGO {...}`" + ` on a GoBuild,
+DockerBuild.pgo keyed by binary, or ShellBuild.pgo keyed by binary relative to its
+cwd, whose ` + "`forge.ShellPGO {out = ...}`" + ` may name a sibling checkout's profile);
+load ` + "`forge skill load observability/profiles`" + `.`,
 	}
 	cmd.AddCommand(newPGOPullCmd(), newPGOStatusCmd())
 	return cmdutil.StrictGroup(cmd)

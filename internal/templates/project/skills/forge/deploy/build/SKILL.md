@@ -37,6 +37,18 @@ what the pod runs, the same subcommand the host runtime runs.
 
 A Go binary with a committed `cmd/<bin>/default.pgo` is built with it (Go's default `-pgo=auto`), on every runtime. `forge pgo pull --env prod` writes the file from production's CPU profiles and `forge env build` prints a `pgo:` line per binary; `pgo = forge.PGO {...}` on a `GoBuild` (or `DockerBuild.pgo`, keyed by binary) sets the source env and window, and `enabled = False` passes `-pgo=off`. Load `observability/profiles`.
 
+A `ShellBuild` is opaque to forge, so it pulls a profile only for the binaries the build's `pgo` names, each a `forge.ShellPGO` keyed by its package path relative to `cwd`. That is how a deploy repo refreshes the profile of a binary it builds from a sibling checkout:
+
+```
+build = forge.ShellBuild {
+    cwd = "../reliant"
+    cmd = "./scripts/build-reliant-image.sh"
+    pgo = {"./cmd/reliant" = forge.ShellPGO {from_env = "prod"}}
+}
+```
+
+`forge pgo pull --env prod` then merges the CPU profiles of every workload this build serves into `../reliant/cmd/reliant/default.pgo`, which a command running `go build ./cmd/reliant` from `cwd` reads; commit it in that checkout. `out` names another path (relative to the project root, never past the directory holding it; required when the build has a `source`), and `namespace` reads profiles another `service.namespace` reported (default: this project's). forge never edits the command, so `enabled = False` only makes `pull` skip the binary. The named profiles are part of the build's `inputs` fingerprint, so a refreshed one rebuilds the image even when the globs (`**/*.go`) do not select it.
+
 ## Skip an unchanged ShellBuild with `inputs`
 
 A `forge.ShellBuild` runs its `cmd` on every build, because forge cannot see

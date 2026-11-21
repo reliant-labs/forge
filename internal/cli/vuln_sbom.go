@@ -34,8 +34,9 @@ func newVulnSBOMCmd(deps vulnDeps) *cobra.Command {
 the release an env runs, or of --release. The bytes come from this machine's
 ledger, verified against the digest the release records. For an env whose
 ledger is a control plane, the control plane names the SBOM's digest and the
-bytes are this machine's copy (the cut keeps one); an SBOM cut on another
-machine is not fetched from its OCI referrer by this forge.
+bytes are this machine's copy (the cut keeps one), or, for a release cut on
+another machine, the OCI referrer beside the image, verified against that
+digest and kept in this machine's ledger for the next read.
 
 --artifact names the artifact; it may be left out when only one artifact has an
 SBOM. --format spdx converts to SPDX JSON with syft (installed on first use).`,

@@ -2398,3 +2398,30 @@ func TestCronJobHistoryRenders(t *testing.T) {
 		}
 	}
 }
+
+// A runtime that renders forge's own Kubernetes objects under ProfileFull has
+// no way to turn a client away by source address, so a port that declares
+// allowedSourceCIDRs must be refused, never rendered without it.
+func TestFullProfileRefusesAllowedSourceCIDRs(t *testing.T) {
+	port := v1alpha1.Port{Name: "http", Port: 8080, Expose: true, AllowedSourceCIDRs: []string{"188.34.190.188/32"}}
+	_, err := RenderWorkloads([]v1alpha1.Workload{svc("feeds", port)}, v1alpha1.ProfileFull, ctx)
+	if err == nil {
+		t.Fatal("RenderWorkloads rendered a port with allowedSourceCIDRs under the full profile")
+	}
+	for _, want := range []string{"workload feeds", "port http", "188.34.190.188/32", "cannot be enforced", "forge.OnHosted"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal lacks %q: %v", want, err)
+		}
+	}
+}
+
+// The hosted platform enforces the field itself, at its proxy, so the
+// restricted render accepts it and the Kubernetes objects are unchanged.
+func TestRestrictedProfileAcceptsAllowedSourceCIDRs(t *testing.T) {
+	plain := render(t, v1alpha1.ProfileRestricted, svc("feeds", httpPort(true)))
+	port := v1alpha1.Port{Name: "http", Port: 8080, Expose: true, AllowedSourceCIDRs: []string{"188.34.190.188/32"}}
+	got := render(t, v1alpha1.ProfileRestricted, svc("feeds", port))
+	if len(got) != len(plain) {
+		t.Fatalf("rendered %d objects, want the same %d as without the field", len(got), len(plain))
+	}
+}

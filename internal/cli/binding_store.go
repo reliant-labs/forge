@@ -491,8 +491,20 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 // control plane (hosted_vuln.go). Opened on first use: a ledger that cuts
 // nothing never opens it.
 func attachSBOMSource(l envLedger, projectDir string) envLedger {
-	if hs, ok := l.Bindings.(*hostedStore); ok && hs.sboms == nil && projectDir != "" {
-		hs.sboms = func() (sbomBytesReader, error) { return openMachineLedger(projectDir) }
+	if projectDir == "" {
+		return l
+	}
+	return attachSBOMStore(l, func() (sbomBytesReader, error) { return openMachineLedger(projectDir) })
+}
+
+// attachSBOMStore is attachSBOMSource with the store named: a ledger whose
+// cuts store their SBOM bytes somewhere other than the checkout's machine
+// ledger (`forge release record`, which files them under the record's
+// project, openRecordSBOMStore) reads them from there. A ledger that already
+// has a source keeps it.
+func attachSBOMStore(l envLedger, open func() (sbomBytesReader, error)) envLedger {
+	if hs, ok := l.Bindings.(*hostedStore); ok && hs.sboms == nil && open != nil {
+		hs.sboms = open
 	}
 	return l
 }

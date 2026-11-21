@@ -214,6 +214,11 @@ type sbomBytesReader interface {
 // skipped silently (it would discard what it was sent); one that advertises
 // it and then answers Unimplemented gets one note; any other failure is a
 // warning per artifact.
+//
+// A version-only record's source SBOM (Release.SourceSBOM) describes no
+// artifact, and RecordReleaseSBOM files every SBOM under one: it stays in
+// this machine's ledger, and the cut says so when the control plane would
+// otherwise have taken it.
 func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release) {
 	var names []string
 	for name, a := range r.Artifacts {
@@ -221,7 +226,8 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 			names = append(names, name)
 		}
 	}
-	if len(names) == 0 {
+	source := r.SourceSBOM.HasSBOM()
+	if len(names) == 0 && !source {
 		return
 	}
 	sort.Strings(names)
@@ -240,6 +246,12 @@ func (s *hostedStore) recordReleaseSBOMs(ctx context.Context, r release.Release)
 		return
 	}
 	if !f.acceptsUploads() {
+		return
+	}
+	if source {
+		fmt.Fprintf(warn, "[ledger] note: release %s's source SBOM (%s) stays in this machine's ledger: %s keeps SBOMs per artifact, and it describes none\n", r.Version, r.SourceSBOM.Digest, s.endpoint)
+	}
+	if len(names) == 0 {
 		return
 	}
 	if s.sboms == nil {
@@ -765,10 +777,10 @@ type hostedReleaseFindings struct {
 
 // hostedVulnSource is the control plane's findings of the releases of ONE env:
 // "findings for release X in env Y", with Y's exemptions and first-seen times
-// applied by the control plane. It is what `forge vuln list|show` read for
-// such an env, and it satisfies the promote check's findings seam
-// (releaseScans), for an env whose apply forge does but whose ledger is a
-// control plane (design §1.5).
+// applied by the control plane. It is what `forge vuln list|show|patch` read
+// for such an env, and what the promote check reads (hostedPromoteVulnSource)
+// for an env whose apply forge does but whose ledger is a control plane
+// (design §1.5).
 type hostedVulnSource struct {
 	reader hostedVulnReader
 	env    string
@@ -812,28 +824,4 @@ func (h hostedVulnSource) releaseFindings(ctx context.Context, version string) (
 		out.Judged[hostedFinding(w).Key()] = j
 	}
 	return out, nil
-}
-
-// releaseScans is releaseFindings in the shape of the promote check's
-// findings seam. fetch is meaningless here (the control plane keeps its own
-// database). The seam carries neither a staleness flag (its notes say when
-// the control plane judged a scan stale) nor the control plane's per-finding
-// verdict, so a caller that judges a gate should use
-// releaseFindings and pass Judged and Stale to vulnscan (DocumentInput /
-// EvaluateInput); this shape re-judges locally, and says so in a note.
-func (h hostedVulnSource) releaseScans(ctx context.Context, rel *release.Release, _ bool) ([]vulnscan.ArtifactScan, []string, error) {
-	if rel == nil {
-		return nil, nil, nil
-	}
-	f, err := h.releaseFindings(ctx, rel.Version)
-	if err != nil {
-		return nil, nil, err
-	}
-	if f.Judged != nil {
-		f.Notes = append(f.Notes, "the control plane's verdict on each finding is not carried by this seam: re-judged with this checkout's vuln_gate")
-	}
-	if n := len(f.Release); n > 0 {
-		f.Notes = append(f.Notes, fmt.Sprintf("%d finding(s) the control plane attributes to the release and to no artifact are not carried by this seam; read releaseFindings for them", n))
-	}
-	return f.Scans, f.Notes, nil
 }

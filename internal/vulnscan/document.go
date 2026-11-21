@@ -173,7 +173,10 @@ type DocumentInput struct {
 	Env     string
 	Release string
 	// Gate is the env's vuln_gate, resolved.
-	Gate      release.ShapeVulnGate
+	Gate release.ShapeVulnGate
+	// GradedAs is the mode the rollout grades Gate.Mode as; "" is the
+	// declared mode (EvaluateInput.GradedAs).
+	GradedAs  release.DeliveryMode
 	Artifacts []ArtifactScan
 	Filter    Filter
 	Now       time.Time
@@ -289,7 +292,7 @@ func BuildDocument(in DocumentInput) Document {
 	for _, k := range order {
 		all = append(all, byKey[k].Finding)
 	}
-	ev := Evaluate(EvaluateInput{Gate: in.Gate, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
+	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
 	doc.Gate = ev.Gate
 	doc.Gate.JudgedBy = in.JudgedBy
 	switch {

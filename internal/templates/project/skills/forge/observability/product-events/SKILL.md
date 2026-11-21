@@ -195,7 +195,9 @@ OpenFeature.addHooks(forgeExposureHook);
 ```
 
 A failed evaluation is no exposure; an object-valued flag with no variant name
-is recorded as `object`, never its contents.
+is recorded as `object`, never its contents. Forge Changes records the same
+event with `run`, `unit`, `reason` and `revision` (the hook skips its
+provider): `observability/changes`.
 
 ### Reserved event names
 

@@ -906,31 +906,97 @@ func TestHostedEnumMappings(t *testing.T) {
 	}
 }
 
-// The findings seam the promote check reads (design §1.5): one env's findings
-// of one release, as the document's artifacts.
-func TestHostedVulnSourceReleaseScans(t *testing.T) {
-	t.Parallel()
-	fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+// oneRelease is a release ledger holding rel.
+type oneRelease struct {
+	emptyReleases
+	rel *release.Release
+}
+
+func (o oneRelease) Get(_ context.Context, v string) (*release.Release, error) {
+	if o.rel != nil && o.rel.Version == v {
+		return o.rel, nil
+	}
+	return nil, nil
+}
+
+// ledgerOnlyVulnGates judges v1.0.0's promotion to a ledger-only prod (forge
+// applies, the control plane converges nothing) under the default policy, with
+// fake as the control plane. The release, as a control plane returns it,
+// carries no SBOM refs.
+func ledgerOnlyVulnGates(t *testing.T, fake *fakeVulnService) ([]release.Gate, string) {
+	t.Helper()
 	srv := httptest.NewServer(fake)
 	t.Cleanup(srv.Close)
-	src := hostedVulnSource{env: "prod", reader: hostedVulnReader{
-		client:  cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL}, cloud.Credential{Token: "rlat_test"}),
-		project: "acme",
-	}}
-	scans, _, err := src.releaseScans(context.Background(), &release.Release{Version: "v1.0.0"}, false)
+	l := hostedLedger(cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL}, cloud.Credential{Token: "rlat_test"}), srv.URL, "acme", deploytarget.HostedEnvSelfManaged)
+	oci := func(d string) release.Artifact {
+		return release.Artifact{Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha(d)}}
+	}
+	// Cut by a forge that records SBOMs: the absence of one is judged.
+	rel := &release.Release{Version: "v1.0.0", Artifacts: map[string]release.Artifact{"api": oci("1"), "web": oci("2")},
+		Provenance: &release.Provenance{ForgeVersion: gatingPin}}
+	ledger := envLedger{Bindings: l.Bindings, Releases: oneRelease{rel: rel}, Hosted: true, Mixed: true}
+	if !ledger.ledgerOnly() {
+		t.Fatal("the fixture is not a ledger-only env")
+	}
+	pol := release.DefaultDeliveryPolicy()
+	var out bytes.Buffer
+	gates, err := checkPromotionVulnGates(context.Background(), &out, t.TempDir(), ledger, &pol, promotionCheckInput{Env: "prod", Version: "v1.0.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(scans) != 2 || scans[0].Latest == nil || len(scans[0].Latest.Findings) != 2 || scans[1].Latest != nil {
-		t.Fatalf("scans = %+v", scans)
+	if rel.Artifacts["api"].SBOM != nil {
+		t.Error("the ledger's release was changed in place")
+	}
+	return gates, out.String()
+}
+
+// The promote check of a ledger-only env (design §1.5) judges the control
+// plane's findings with the control plane's verdict on each (Judged), not
+// this checkout's rule, and judges provenance_sbom against the SBOMs the
+// control plane records.
+func TestLedgerOnlyPromoteJudgesTheControlPlanesFindings(t *testing.T) {
+	t.Parallel()
+	fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+	findings := fake.releaseVulns["v1.0.0"]["findings"].([]map[string]any)
+	// The control plane's verdict differs from the local rule both ways:
+	// the fixable critical is exempt there, and the low blocks.
+	findings[0]["blocking"] = false
+	findings[0]["exemption"] = map[string]any{"environmentId": "env-prod", "advisoryId": "CVE-2026-1111", "reason": "accepted on prod", "expiresAt": "2027-01-01T00:00:00Z"}
+	findings[1]["blocking"] = true
+	gates, out := ledgerOnlyVulnGates(t, fake)
+
+	vg := gateNamed(gates, vulnGateGateName)
+	if vg == nil {
+		t.Fatalf("no vuln_gate gate recorded: %+v\n%s", gates, out)
+	}
+	if b := vg.Details["blocking"].([]string); strings.Join(b, ",") != "CVE-2026-2222" || vg.Details["judged_by"] != vulnscan.JudgedByControlPlane || vg.Details["outcome"] != "audit" {
+		t.Errorf("vuln_gate = %+v, want the control plane's blocking CVE-2026-2222, judged there, audited", vg.Details)
+	}
+	sg := gateNamed(gates, sbomGateName)
+	if sg == nil || strings.Join(sg.Details["missing"].([]string), ",") != "web (no SBOM)" {
+		t.Errorf("provenance_sbom = %+v, want only web missing (api's SBOM is the control plane's)", sg)
+	}
+
+	// A control plane that enforces vuln_gate itself judges in its own
+	// transaction: forge records nothing and reads no findings.
+	fake = hostedFindings("sha256:" + strings.Repeat("a", 64))
+	fake.features = append(fake.features, hostedVulnFeatureEnforcesGate)
+	if gates, _ := ledgerOnlyVulnGates(t, fake); len(gates) != 0 {
+		t.Errorf("an enforcing control plane: forge recorded %+v", gates)
 	}
 	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	var envApplied bool
 	for _, c := range fake.calls {
-		envApplied = envApplied || c == "controlplane.v1.VulnerabilityService/GetVulnerabilitySummary"
+		if strings.Contains(c, "GetReleaseVulnerabilities") {
+			t.Errorf("an enforcing control plane's findings were read: %v", fake.calls)
+		}
 	}
-	if !envApplied {
-		t.Errorf("the env's id was never resolved, so its exemptions and first-seen times were not applied")
+	fake.mu.Unlock()
+
+	// One that serves no findings leaves every artifact unscanned.
+	fake = hostedFindings("sha256:" + strings.Repeat("a", 64))
+	fake.features = nil
+	gates, _ = ledgerOnlyVulnGates(t, fake)
+	if vg := gateNamed(gates, vulnGateGateName); vg == nil || vg.Details["verdict"] != string(vulnscan.VerdictUnscanned) || !strings.Contains(vg.Summary, "does not serve findings") {
+		t.Errorf("no findings served: %+v", vg)
 	}
 }

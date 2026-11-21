@@ -990,7 +990,7 @@ func (r *SignInRoutes) HandleSocialStart(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	authURL, intentID, err := r.cfg.Client.StartIDPIntent(ctx, social.IdPID,
-		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+"/auth/sign-in?error=social")
+		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+SocialFailurePath)
 	if err != nil {
 		r.unavailable(ctx, w, "social sign-in could not start", err)
 		return
@@ -1001,6 +1001,18 @@ func (r *SignInRoutes) HandleSocialStart(w http.ResponseWriter, req *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": authURL})
 }
+
+// SocialFailurePath is where the issuer sends the browser when a social
+// sign-in fails at the provider (the person cancelled, the provider refused
+// the client): the sign-in page, marked social=failed so it can say the sign-in
+// did not complete.
+//
+// The issuer SETS error, error_description and id on this URL, replacing any
+// it carried (Zitadel v4.20.5, proven by the social sign-in e2e: a provider's
+// access_denied arrives as error=access_denied), so error=social never reaches
+// the page that way. It stays for sign-in pages scaffolded before social=failed
+// existed, which test only error=social; social=failed is what survives.
+const SocialFailurePath = "/auth/sign-in?error=social&social=failed"
 
 // SafeReturnTo keeps a same-origin path and turns anything else into "/".
 //

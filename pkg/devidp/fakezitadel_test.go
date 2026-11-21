@@ -28,9 +28,11 @@ type fakeZitadel struct {
 	users    map[string]*fakeUser
 	sessions map[string]*fakeSession
 	intents  map[string]*fakeIntent
-	mails    []fakeMail // what the issuer "sent"
-	calls    []string   // "METHOD /path", every call
-	grants   []string   // "userID:role"
+	// intentURLs is the urls object of the last intent started.
+	intentURLs map[string]any
+	mails      []fakeMail // what the issuer "sent"
+	calls      []string   // "METHOD /path", every call
+	grants     []string   // "userID:role"
 
 	// refusedPassword is a password the issuer's policy refuses although it
 	// meets every rule the broker can see (DOMAIN-ZDLwA, "no symbol").
@@ -936,6 +938,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		b := readBody(r)
 		f.mu.Lock()
 		id := f.id("intent")
+		f.intentURLs = sub(b, "urls")
 		f.mu.Unlock()
 		ok(w, map[string]any{"authUrl": "https://accounts.example/authorize?client_id=x&state=" + id + "&idp=" + str(b, "idpId")})
 	})

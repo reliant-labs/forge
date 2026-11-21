@@ -386,6 +386,16 @@ func FailureOf(err error) Failure {
 		return f
 	}
 	f.Message = err.Error()
+	var pu *cloud.ProjectUnavailableError
+	if errors.As(err, &pu) {
+		// Whichever answer the control plane gave, the project is not there
+		// for this caller.
+		f.Class, f.Code, f.Reason = ClassNotFound, cloud.CodeNotFound, cloud.ReasonHostedProjectNotFound
+		if pu.Wire != nil {
+			f.HTTPStatus = pu.Wire.HTTPStatus
+		}
+		return f
+	}
 	var ce *cloud.Error
 	if !errors.As(err, &ce) {
 		switch {

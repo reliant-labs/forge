@@ -82,6 +82,11 @@ func errorFactsOf(err error) jsonErrorFacts {
 		}
 		return facts
 	}
+	if errors.Is(err, cloud.ErrHostedProjectUnavailable) {
+		// One answer, whichever the control plane gave (an older one said
+		// permission_denied): the project is not there for this caller.
+		return jsonErrorFacts{ErrorCode: cloud.CodeNotFound, ErrorReason: cloud.ReasonHostedProjectNotFound}
+	}
 	var ce *cloud.Error
 	if errors.As(err, &ce) && (ce.Code != "" || ce.Reason != "") {
 		return jsonErrorFacts{ErrorCode: ce.Code, ErrorReason: ce.Reason, ErrorScopes: ce.Scopes}

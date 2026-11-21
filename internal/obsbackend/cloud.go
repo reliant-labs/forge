@@ -155,6 +155,11 @@ func MapCloudError(err error) error {
 	if errors.As(err, &be) {
 		return err
 	}
+	if errors.Is(err, cloud.ErrHostedProjectUnavailable) {
+		// The request named a project the caller cannot see: the request's
+		// fault, as a NotFound is.
+		return (&Error{Code: ExitWrong}).Cause(err)
+	}
 	var ce *cloud.Error
 	if !errors.As(err, &ce) {
 		return Undetermined("the control plane could not be reached").Cause(err)

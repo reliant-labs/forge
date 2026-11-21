@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,6 +34,12 @@ type identityCP struct {
 	// "<org>/<name>" to a hosted project id.
 	orgs     []string
 	projects map[string]string
+	// notFound makes a project id the person cannot see answer the way
+	// control-plane answers it since it stopped revealing other tenants'
+	// projects: NotFound with ReasonHostedProjectNotFound, the same as an id
+	// that never existed. Unset, it answers as before: PermissionDenied
+	// "project not available to this caller" for another org's project.
+	notFound bool
 
 	mu         sync.Mutex
 	authorizes []url.Values
@@ -109,6 +116,9 @@ func (cp *identityCP) serve(w http.ResponseWriter, r *http.Request) {
 			cp.connectErr(w, 401, "unauthenticated", "missing Authorization header")
 			return
 		}
+		if id := r.Header.Get("Forge-Project-ID"); id != "" && !cp.visible(w, id) {
+			return
+		}
 		cp.effects = append(cp.effects, r.Header.Get("Forge-Project-ID"))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
@@ -132,19 +142,16 @@ func (cp *identityCP) resolve(w http.ResponseWriter, id, name, org string, creat
 		return false
 	}
 	if id != "" {
+		if !cp.visible(w, id) {
+			return
+		}
 		for key, pid := range cp.projects {
 			if pid == id {
 				o, n, _ := strings.Cut(key, "/")
-				if !member(o) {
-					cp.connectErr(w, 403, "permission_denied", "project not available to this caller")
-					return
-				}
 				reply(o, n, pid)
 				return
 			}
 		}
-		cp.connectErr(w, 404, "not_found", "project not found")
-		return
 	}
 	if org == "" {
 		var matches []string
@@ -184,6 +191,39 @@ func (cp *identityCP) resolve(w http.ResponseWriter, id, name, org string, creat
 	pid := "project-" + org + "-" + name
 	cp.projects[org+"/"+name] = pid
 	reply(org, name, pid)
+}
+
+// visible reports whether the hosted project id is one of the person's orgs',
+// and otherwise answers for it as this control plane's generation does.
+func (cp *identityCP) visible(w http.ResponseWriter, id string) bool {
+	for key, pid := range cp.projects {
+		if pid != id {
+			continue
+		}
+		o, _, _ := strings.Cut(key, "/")
+		for _, m := range cp.orgs {
+			if m == o {
+				return true
+			}
+		}
+		if cp.notFound {
+			cp.projectNotFound(w)
+		} else {
+			cp.connectErr(w, 403, "permission_denied", "project not available to this caller")
+		}
+		return false
+	}
+	cp.projectNotFound(w)
+	return false
+}
+
+func (cp *identityCP) projectNotFound(w http.ResponseWriter) {
+	if cp.notFound {
+		w.Header().Set(cloud.ReasonHeader, cloud.ReasonHostedProjectNotFound)
+		cp.connectErr(w, 404, "not_found", "hosted project not found")
+		return
+	}
+	cp.connectErr(w, 404, "not_found", "project not found not found")
 }
 
 func (cp *identityCP) connectErr(w http.ResponseWriter, status int, code, msg string) {
@@ -257,61 +297,136 @@ func TestHumanLogin_WireIdentityPath(t *testing.T) {
 			wantErr: "not available",
 		},
 	} {
+		for _, notFound := range []bool{false, true} {
+			t.Run(tc.name+map[bool]string{false: " (legacy answers)", true: " (not_found answers)"}[notFound], func(t *testing.T) {
+				path := isolatedCredentials(t)
+				t.Setenv("FORGE_CREDENTIAL_HELPER", "")
+				root := humanLoginProject(t, "shop")
+				cp := newIdentityCP(t, tc.orgs, tc.projects)
+				cp.notFound = notFound
+
+				out, err := loginAgainst(t, cp, path)
+				if err != nil {
+					t.Fatalf("login: %v\n%s", err, out)
+				}
+				if len(cp.authorizes) != 1 || cp.authorizes[0].Get("credential_kind") != "human" || cp.authorizes[0].Get("client_id") != cloud.ClientID {
+					t.Fatalf("authorize requests: %v", cp.authorizes)
+				}
+				stored, err := credentials.Lookup(path, cp.srv.URL, cloud.HumanClientID)
+				if err != nil || stored.Kind != cloud.KindHuman || stored.Token != identityToken {
+					t.Fatalf("human identity not stored in the human namespace: %+v %v", stored, err)
+				}
+				if _, err := credentials.Lookup(path, cp.srv.URL, cloud.ClientID); err == nil {
+					t.Fatal("a human login also wrote a delegated forge-cli entry")
+				}
+
+				decl := &cloud.Declaration{Endpoint: cp.srv.URL}
+				ep, err := bindHostedProject(context.Background(), "prod", decl, tc.org)
+				if tc.wantErr != "" {
+					if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+						t.Fatalf("bind: err = %v, want %q", err, tc.wantErr)
+					}
+					if _, statErr := os.Stat(filepath.Join(root, hostedProjectBindingFile)); !os.IsNotExist(statErr) {
+						t.Fatalf("a refused first deploy wrote a binding: %v", statErr)
+					}
+					return
+				}
+				if err != nil || ep.ProjectID != tc.wantBound {
+					t.Fatalf("bind = %+v, %v; want project %s", ep, err, tc.wantBound)
+				}
+				// The binding persists; the next command resolves it from disk.
+				ep, err = projectEndpoint("prod", decl)
+				if err != nil || ep.ProjectID != tc.wantBound {
+					t.Fatalf("binding not persisted: %+v %v", ep, err)
+				}
+				// An effect carries the server project identity with the same
+				// org-less identity, and asks the server, not a local org, whose
+				// project it is.
+				cred, err := cloud.ResolveCredential("", ep)
+				if err != nil || cred.Kind != cloud.KindHuman {
+					t.Fatalf("resolve credential: %+v %v", cred, err)
+				}
+				if err := cloud.NewClient(ep, cred).Call(context.Background(), "controlplane.v1.DeployService/EnsureEnvironment", map[string]any{}, nil); err != nil {
+					t.Fatalf("effect: %v", err)
+				}
+				if org, err := cloud.ResolveOrganization(context.Background(), cloud.NewClient(ep, cred)); err != nil || !strings.HasPrefix(tc.wantBound, "project-"+org+"-") {
+					t.Fatalf("organization from the project target = %q, %v", org, err)
+				}
+				if len(cp.effects) != 1 || cp.effects[0] != tc.wantBound {
+					t.Fatalf("effects carried Forge-Project-ID %v, want [%s]", cp.effects, tc.wantBound)
+				}
+			})
+		}
+	}
+}
+
+// A checkout bound to a hosted project the person can no longer see — its
+// org removed them, or it never existed on this control plane — is one
+// refusal whichever answer the control plane gives (NotFound today,
+// PermissionDenied "project not available to this caller" before): no effect
+// runs, the error names the project and the binding, and no remedy sends the
+// person to `forge login`, which cannot help.
+func TestHumanLogin_BoundProjectTheCallerCannotSee(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		notFound bool
+		bound    string
+	}{
+		{"another org's project, legacy permission_denied", false, "project-B-shop"},
+		{"another org's project, not_found", true, "project-B-shop"},
+		{"a project that never existed, not_found", true, "project-never-minted"},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := isolatedCredentials(t)
 			t.Setenv("FORGE_CREDENTIAL_HELPER", "")
 			root := humanLoginProject(t, "shop")
-			cp := newIdentityCP(t, tc.orgs, tc.projects)
-
-			out, err := loginAgainst(t, cp, path)
-			if err != nil {
+			// The person is in A only; the checkout was bound to B's shop.
+			cp := newIdentityCP(t, []string{"A"}, map[string]string{"B/shop": "project-B-shop"})
+			cp.notFound = tc.notFound
+			if out, err := loginAgainst(t, cp, path); err != nil {
 				t.Fatalf("login: %v\n%s", err, out)
 			}
-			if len(cp.authorizes) != 1 || cp.authorizes[0].Get("credential_kind") != "human" || cp.authorizes[0].Get("client_id") != cloud.ClientID {
-				t.Fatalf("authorize requests: %v", cp.authorizes)
+			key, err := credentials.Normalize(cp.srv.URL)
+			if err != nil {
+				t.Fatal(err)
 			}
-			stored, err := credentials.Lookup(path, cp.srv.URL, cloud.HumanClientID)
-			if err != nil || stored.Kind != cloud.KindHuman || stored.Token != identityToken {
-				t.Fatalf("human identity not stored in the human namespace: %+v %v", stored, err)
+			raw, _ := json.Marshal(map[string]string{key: tc.bound})
+			if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o700); err != nil {
+				t.Fatal(err)
 			}
-			if _, err := credentials.Lookup(path, cp.srv.URL, cloud.ClientID); err == nil {
-				t.Fatal("a human login also wrote a delegated forge-cli entry")
+			if err := os.WriteFile(filepath.Join(root, hostedProjectBindingFile), raw, 0o600); err != nil {
+				t.Fatal(err)
 			}
 
 			decl := &cloud.Declaration{Endpoint: cp.srv.URL}
-			ep, err := bindHostedProject(context.Background(), "prod", decl, tc.org)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("bind: err = %v, want %q", err, tc.wantErr)
-				}
-				if _, statErr := os.Stat(filepath.Join(root, hostedProjectBindingFile)); !os.IsNotExist(statErr) {
-					t.Fatalf("a refused first deploy wrote a binding: %v", statErr)
-				}
-				return
+			ep, err := bindHostedProject(context.Background(), "prod", decl, "")
+			if err != nil || ep.ProjectID != tc.bound {
+				t.Fatalf("bind = %+v, %v; want the existing binding %s", ep, err, tc.bound)
 			}
-			if err != nil || ep.ProjectID != tc.wantBound {
-				t.Fatalf("bind = %+v, %v; want project %s", ep, err, tc.wantBound)
-			}
-			// The binding persists; the next command resolves it from disk.
-			ep, err = projectEndpoint("prod", decl)
-			if err != nil || ep.ProjectID != tc.wantBound {
-				t.Fatalf("binding not persisted: %+v %v", ep, err)
-			}
-			// An effect carries the server project identity with the same
-			// org-less identity, and asks the server, not a local org, whose
-			// project it is.
 			cred, err := cloud.ResolveCredential("", ep)
-			if err != nil || cred.Kind != cloud.KindHuman {
-				t.Fatalf("resolve credential: %+v %v", cred, err)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if err := cloud.NewClient(ep, cred).Call(context.Background(), "controlplane.v1.DeployService/EnsureEnvironment", map[string]any{}, nil); err != nil {
-				t.Fatalf("effect: %v", err)
+			effect := cloud.NewClient(ep, cred).Call(context.Background(), "controlplane.v1.DeployService/EnsureEnvironment", map[string]any{}, nil)
+			_, org := cloud.ResolveOrganization(context.Background(), cloud.NewClient(ep, cred))
+			for what, err := range map[string]error{"an effect": effect, "resolving its org": org} {
+				if !errors.Is(err, cloud.ErrHostedProjectUnavailable) {
+					t.Fatalf("%s: err = %v, want ErrHostedProjectUnavailable", what, err)
+				}
+				for _, want := range []string{"hosted project " + tc.bound + " is not available", hostedProjectBindingFile} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("%s: message lacks %q:\n%s", what, want, err)
+					}
+				}
+				if strings.Contains(err.Error(), "forge login") {
+					t.Errorf("%s: message names `forge login`, which cannot help:\n%s", what, err)
+				}
+				if facts := errorFactsOf(err); facts.ErrorCode != cloud.CodeNotFound || facts.ErrorReason != cloud.ReasonHostedProjectNotFound {
+					t.Errorf("%s: --json facts = %+v, want not_found / %s for both answers", what, facts, cloud.ReasonHostedProjectNotFound)
+				}
 			}
-			if org, err := cloud.ResolveOrganization(context.Background(), cloud.NewClient(ep, cred)); err != nil || !strings.HasPrefix(tc.wantBound, "project-"+org+"-") {
-				t.Fatalf("organization from the project target = %q, %v", org, err)
-			}
-			if len(cp.effects) != 1 || cp.effects[0] != tc.wantBound {
-				t.Fatalf("effects carried Forge-Project-ID %v, want [%s]", cp.effects, tc.wantBound)
+			if len(cp.effects) != 0 {
+				t.Fatalf("an effect ran against a project the person cannot see: %v", cp.effects)
 			}
 		})
 	}

@@ -239,8 +239,13 @@ type KCLEntities struct {
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
 	// render emits the shape's own vocabulary, so there is nothing to
-	// translate between the two.
+	// translate between the two. Set when the env declares exactly one
+	// identity; several are Identities, and this is nil. Read both through
+	// AllIdentities.
 	Identity *release.ShapeIdentity `json:"identity,omitempty"`
+	// Identities is Bundle.identities resolved, when the env declares
+	// several (release.Shape.Identities). Nil otherwise.
+	Identities []release.ShapeIdentity `json:"identities,omitempty"`
 	// RenderedSecrets are the Bundle-level forge.RenderedSecret
 	// declarations (Bundle.rendered_secrets): Secrets forge renders and
 	// applies itself, INDEPENDENT of SecretProvider, each at the
@@ -1730,6 +1735,7 @@ type kclRenderRaw struct {
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
+	Identities               []release.ShapeIdentity                   `json:"identities,omitempty"`
 	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -2172,6 +2178,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ReleaseHealth:            raw.ReleaseHealth,
 		UptimeChecks:             raw.UptimeChecks,
 		Identity:                 raw.Identity,
+		Identities:               raw.Identities,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,
 		RequiredSecrets:          raw.RequiredSecrets,

@@ -507,7 +507,7 @@ read, which is the existing rule.
 | Where                                          | What runs                                                                                                                                       | Upload                                                                                                                                                             |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Locally** (`task test`, `forge test run`)    | capture into `.forge/tests/runs/`                                                                                                               | Off for a dirty tree. On a clean tree, only with `tests.upload: always` or `forge test report --upload`. A local clean run counts toward its commit like any other |
-| **Scaffolded CI** (`ci.yml`)                   | the lanes through capture, then `forge test report --upload`                                                                                    | On, with a `tests:write` token (`FORGE_TOKEN`). Upload failure is a warning                                                                                        |
+| **Scaffolded CI** (`ci.yml`)                   | the lanes through capture, then `forge test report --upload`                                                                                    | On, with a `tests:write` token in `FORGE_CONTROL_PLANE_TOKEN`, the variable forge reads everywhere else. Upload failure is a warning                               |
 | **External CI**                                | `forge test report --upload` after the project's own steps, or `forge test ingest` for runners forge does not wrap (pytest JUnit, jest LCOV, …) | On with a token, like `forge release record`                                                                                                                       |
 | **Preview envs** (scaffolded preview workflow) | deploy the `cover` variant, `task test:e2e ENV=<preview>`, then upload                                                                          | On                                                                                                                                                                 |
 | **Dev**                                        | the dev stack runs `cover` builds, and `task test:e2e` collects from it                                                                         | Dirty-tree rules apply                                                                                                                                             |
@@ -637,12 +637,23 @@ project schema <name>`:
 }
 ```
 
-`forge.test.coverage/v1` is the per-file document (blocks and hits per lane,
-plus the changed line ranges). `forge.test.flakes/v1` is `{tests: [{id, state,
-score, n, events: [{kind, commit, run, at}], quarantine, issue}], host:
-[{signature, events, runs}]}`, where `score` with `n` is the flake rate
-(a ranking) and `host` is host health.
-`forge.test.run/v1` is the `run.json` manifest.
+The other documents:
+
+- `forge.test.coverage/v1` is the stored per-file document (blocks and hits
+  per lane, plus the changed line ranges).
+- `forge.test.coverage-view/v1` is what `forge test coverage --json` prints:
+  `summary`, `rollup` (by package or file), `diff` and `suggested`, with the
+  stored `forge.test.coverage/v1` document embedded as `coverage`.
+- `forge.test.flakes/v1` is `{tests: [{id, state, score, n, events: [{kind,
+commit, run, at}], quarantine, issue}], host: [{signature, events, runs}]}`,
+  where `score` with `n` is the flake rate (a ranking) and `host` is host
+  health.
+- `forge.test.runs/v1` is `forge test runs --json`.
+- `forge.test.run-result/v1` is `forge test run --json`: the lanes it ran and
+  each one's exit code.
+- `forge.test.collect/v1` is `forge test collect --json`.
+- `forge.test.confirm/v1` is `forge test flakes confirm --json`.
+- `forge.test.run/v1` is the `run.json` manifest.
 
 ### 1.8 forge.yaml
 
@@ -794,7 +805,8 @@ test_infra_events(id, org_id, project, kind host|infra, infra_group, test_key_id
 The new service lives in package `controlplane.v1`, at
 `proto/services/tests/v1/tests.proto`. It is named `TestsService`, not
 `TestService`, because forge requires a service's name to match its proto
-directory (`tests/`). The web reaches every `controlplane.v1.*` service
+directory (`tests/`); the owner settled the name on 2026-11-21
+([Decisions](#decision-2026-11-21-service-names)). The web reaches every `controlplane.v1.*` service
 directly on platform-api, so it needs no proxy:
 
 ```proto
@@ -864,6 +876,12 @@ yet") and keeps the local record.
     and log lines, so it is not readable by every token that can record a
     deploy. It is env-bindable like `vuln:read`: a token bound to an env reads
     only the runs recorded against that env.
+  - **The grant goes to roles and presets, not to existing tokens.** Machine
+    tokens that already hold `deploy:read` are not rewritten to add
+    `tests:read`. A token minted before the release that ships Tests must be
+    re-minted to read Tests. This fails closed: an old token reads nothing it
+    could not read before. It is also reversible, because removing the scope
+    from a role or preset rewrites no stored token either.
 - An operation with no scope mapping is refused for machine principals, and
   grants are re-read on every request. These are the existing rules.
 - Quarantine and issue settings are never written through the API. They are
@@ -1202,16 +1220,16 @@ covered, and move into F5 and F1.
 
 ### Phase 2: control-plane store, merge, flakes
 
-| #   | Task                                                                                                                                                                                                              | Repo                      | Size | Depends on                 | Parallel group |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---- | -------------------------- | -------------- |
-| C1  | Proto: `TestsService`, `TestsAdminService`, `test_features`; `tests:read` and `tests:write` in forge `pkg/accesstoken` (a small forge PR merged first, then pinned)                                               | control-plane (+ forge S) | S    | —                          | A (with F1/F2) |
-| C2  | Migrations and `teststore`; `testbucket` adapter with vulnstore's copy-state machine; scope CHECK widened, `tests:read` granted to `deploy:read` holders; project identity on first upload                        | control-plane             | M    | C1                         | B              |
-| C3  | `RecordTestRun` (digests re-derived, caps, `tests:write`/`deploy:write`, org-scoped) plus `test_ingest` (sandboxed parse via forge's `pkg/testreport`, commit merge, flake events)                                | control-plane             | M    | C2, F1 released and pinned | C              |
-| C4  | Read API: summary, runs, run, coverage, file coverage, release tests, flaky tests, test; `tests:read`, env-bound tokens, NotFound across orgs                                                                     | control-plane             | M    | C2                         | C (with C3)    |
-| C5  | `test_flake_sweep` (states, opt-in issues and quarantine PRs through the GitHub connection), `test_retention` (the rules in Amendment 1, part B) and the `test_storage_gib` shadow meter, admin RPCs              | control-plane             | M    | C3                         | D              |
-| C6  | Releases: bind commit reports at `CutRelease` and on later ingest (`deploy_release_tests`); `Promote` refuses a `cover` digest on a persistent env; advertise `release-test-evidence` and `refuses-cover-variant` | control-plane             | S    | C3, F5                     | D              |
-| F10 | forge hosted: `report --upload`, `collect` uploads, reads (`coverage`, `runs`, `flakes`) from the control plane, `Release.Tests` from the server, `Unimplemented` handled                                         | forge                     | S    | C1, F3, F6                 | C              |
-| P1  | Pin bumps: reliant to the forge with F1–F10, then control-plane in lockstep                                                                                                                                       | reliant, control-plane    | S    | F1–F10 released            | E              |
+| #   | Task                                                                                                                                                                                                                                  | Repo                      | Size | Depends on                 | Parallel group |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---- | -------------------------- | -------------- |
+| C1  | Proto: `TestsService`, `TestsAdminService`, `test_features`; `tests:read` and `tests:write` in forge `pkg/accesstoken` (a small forge PR merged first, then pinned)                                                                   | control-plane (+ forge S) | S    | —                          | A (with F1/F2) |
+| C2  | Migrations and `teststore`; `testbucket` adapter with vulnstore's copy-state machine; scope CHECK widened, `tests:read` granted to roles and presets with `deploy:read` (existing tokens untouched); project identity on first upload | control-plane             | M    | C1                         | B              |
+| C3  | `RecordTestRun` (digests re-derived, caps, `tests:write`/`deploy:write`, org-scoped) plus `test_ingest` (sandboxed parse via forge's `pkg/testreport`, commit merge, flake events)                                                    | control-plane             | M    | C2, F1 released and pinned | C              |
+| C4  | Read API: summary, runs, run, coverage, file coverage, release tests, flaky tests, test; `tests:read`, env-bound tokens, NotFound across orgs                                                                                         | control-plane             | M    | C2                         | C (with C3)    |
+| C5  | `test_flake_sweep` (states, opt-in issues and quarantine PRs through the GitHub connection), `test_retention` (the rules in Amendment 1, part B) and the `test_storage_gib` shadow meter, admin RPCs                                  | control-plane             | M    | C3                         | D              |
+| C6  | Releases: bind commit reports at `CutRelease` and on later ingest (`deploy_release_tests`); `Promote` refuses a `cover` digest on a persistent env; advertise `release-test-evidence` and `refuses-cover-variant`                     | control-plane             | S    | C3, F5                     | D              |
+| F10 | forge hosted: `report --upload`, `collect` uploads, reads (`coverage`, `runs`, `flakes`) from the control plane, `Release.Tests` from the server, `Unimplemented` handled                                                             | forge                     | S    | C1, F3, F6                 | C              |
+| P1  | Pin bumps: reliant to the forge with F1–F10, then control-plane in lockstep                                                                                                                                                           | reliant, control-plane    | S    | F1–F10 released            | E              |
 
 ### Phase 3: web
 
@@ -1254,6 +1272,13 @@ covered, and move into F5 and F1.
 | X4  | Instrumented servers in other languages for adopted apps (coverage.py, `c8` for Node) through `forge test collect` hooks | forge                   | M    |
 | X5  | `source: tests` trigger for opt-in agent automation                                                                      | control-plane + reliant | S    |
 | X6  | Org-wide Tests rollup; per-test analytics in the org's ClickHouse                                                        | reliant + control-plane | M    |
+
+**Merge order for F7.** The scaffold runs forge commands in a project's
+Taskfile and CI, and `TestScaffoldTemplatesRunOnlyReleasedForgeCommands`
+fails a template that runs a command no released forge has. So F7 merges only
+after a forge release that contains F2–F6 and F5b (`forge test collect`,
+split out of F5), followed by a refresh of
+`internal/cli/testdata/released_commands.txt`.
 
 **Critical path to "a hosted project shows real coverage and flakes":** F1 →
 F2 → F3 → F10 → P1, with C1 → C2 → C3 → C4 running alongside, then W0 → W1.
@@ -1373,6 +1398,14 @@ The two smaller calls are settled too:
 - **Quarantine PRs and flake issues are opt-in for customers**
   (`tests.flakes`) and on for forge, control-plane and reliant
   ([1.5](#15-results-and-flaky-tests), [section 6](#6-dogfood-forge-control-plane-reliant)).
+
+### Decision (2026-11-21): service names
+
+The owner settled the control-plane service names: **`TestsService`** in
+`proto/services/tests/v1/` and **`TestsAdminService`** in
+`proto/services/tests_admin/v1/`. forge requires a service's name to match
+its proto directory, so the name follows from the directory and is not
+reopened ([2.3](#23-api)).
 
 ## Amendment 1: coverage source and retention (2026-11-20)
 

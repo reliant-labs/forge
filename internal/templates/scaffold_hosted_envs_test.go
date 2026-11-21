@@ -173,6 +173,12 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 					if img, _ := wm["image"].(string); img != "shop" {
 						t.Errorf("%s: workload %v image = %q, want the bare project image", env, wm["name"], img)
 					}
+					// Continuous profiles stay on in a hosted env, with or
+					// without a frontend: they are what `forge pgo pull`
+					// builds each binary's default.pgo from.
+					if b, _ := json.Marshal(wm); strings.Contains(string(b), `"name":"OTEL_PROFILES_EXPORTER","value":"none"`) {
+						t.Errorf("%s: workload %v turns continuous profiles off; a new hosted project keeps them on", env, wm["name"])
+					}
 				}
 
 				frontends, _ := out["frontends"].([]any)

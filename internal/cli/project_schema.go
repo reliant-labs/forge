@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/reliant-labs/forge/internal/vulnscan"
 )
 
 // SchemaSpec names one schema forge publishes, for `forge project
@@ -44,6 +46,14 @@ func publishedSchemas() map[string]struct {
 			},
 			body: envSchemaJSON,
 		},
+		"vuln-list": {
+			spec: SchemaSpec{
+				Name: "vuln-list", APIVersion: vulnscan.DocumentSchema, ID: vulnListSchemaID,
+				Command:   "forge project schema vuln-list",
+				Describes: "`forge vuln list|show|scan --json`: a release's vulnerability findings and the env's vuln_gate verdict",
+			},
+			body: vulnListSchemaJSON,
+		},
 	}
 }
 
@@ -69,13 +79,18 @@ func newProjectSchemaCmd() *cobra.Command {
         env document (deploy/envs/<env>.yaml or .json), which declares an env
         without KCL. Generated from the Go types forge decodes it with.
 
+  vuln-list  forge.dev/vuln-list/v1: the document ` + "`forge vuln list|show|scan --json`" + `
+        prints — a release's vulnerability findings and the env's vuln_gate
+        verdict. Generated from the Go type forge encodes it with.
+
 With no name, lists the schemas. The schema printed is the one embedded in
 this binary, so it is exactly what this forge validates against. Point an
 editor at it with "$schema" (JSON) or a yaml-language-server comment (YAML).
 
 Examples:
   forge project schema
-  forge project schema env > env.v1.schema.json`,
+  forge project schema env > env.v1.schema.json
+  forge project schema vuln-list`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -105,7 +120,7 @@ func runProjectSchema(w io.Writer, name string) error {
 
 func writeSchemaList(w io.Writer) error {
 	for _, s := range schemaSpecs() {
-		if _, err := fmt.Fprintf(w, "%-6s %s  %s\n       %s\n", s.Name, s.APIVersion, s.Command, s.Describes); err != nil {
+		if _, err := fmt.Fprintf(w, "%-9s %s  %s\n          %s\n", s.Name, s.APIVersion, s.Command, s.Describes); err != nil {
 			return err
 		}
 	}

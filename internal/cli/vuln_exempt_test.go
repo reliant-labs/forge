@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -229,5 +230,207 @@ delivery_policy:
 	}
 	if _, _, err := exemptInEnvDocYAML([]byte("apiVersion: forge.dev/env/v1\n"), "CVE-2026-1234", "x", "2026-12-31"); err == nil {
 		t.Error("a document with no vuln_gate was edited")
+	}
+}
+
+// The review's cases (forge#2490): every one refuses, writes nothing, and
+// prints the lines to add by hand. The AST, not the text, decides.
+func TestExemptInKCLFailsClosed(t *testing.T) {
+	const id = "CVE-2026-1234"
+	cases := map[string]struct{ src, why string }{
+		// An `id = "…"` inside another exemption's string, quotes escaped:
+		// a regex over the text took it for a declaration.
+		"id inside an escaped string": {`import forge
+
+bundle = forge.Bundle {
+    delivery_policy = forge.DeliveryPolicy {
+        vuln_gate = forge.VulnPolicy {
+            exemptions = [
+                forge.VulnExemption {id = "CVE-2026-9999", reason = "unlike id = \"CVE-2026-1234\", unreachable", expires = "2026-12-31"}
+            ]
+        }
+    }
+}
+`, "appears in a string"},
+		"computed id": {`import forge
+
+_id = "CVE-2026-1234"
+bundle = forge.Bundle {
+    delivery_policy = forge.DeliveryPolicy {
+        vuln_gate = forge.VulnPolicy {exemptions = [forge.VulnExemption {id = _id, reason = "x", expires = "2026-12-31"}]}
+    }
+}
+`, "computed id"},
+		"computed field of the same exemption": {`import forge
+
+_why = "unreachable"
+bundle = forge.Bundle {
+    delivery_policy = forge.DeliveryPolicy {
+        vuln_gate = forge.VulnPolicy {exemptions = [forge.VulnExemption {id = "CVE-2026-1234", reason = "${_why}", expires = "2026-12-31"}]}
+    }
+}
+`, "not a plain literal"},
+		"computed exemptions list": {`import forge
+
+_ex = [forge.VulnExemption {id = "GO-2026-0001", reason = "x", expires = "2026-12-31"}]
+bundle = forge.Bundle {
+    delivery_policy = forge.DeliveryPolicy {
+        vuln_gate = forge.VulnPolicy {exemptions = _ex + []}
+    }
+}
+`, "exemptions at line"},
+		"a Bundle and an independent DeliveryPolicy": {`import forge
+
+_policy = forge.DeliveryPolicy {approvals = forge.Approvals {mode = "enforce"}}
+bundle = forge.Bundle {
+    project = "demo"
+}
+`, "not its delivery_policy field"},
+		"a Bundle with a computed delivery_policy": {`import forge
+import ..base.env as envbase
+
+bundle = forge.Bundle {
+    project = "demo"
+    delivery_policy = envbase.policy
+}
+`, "delivery_policy at line 6 is computed"},
+		"a Bundle unpacking a dict": {`import forge
+
+_extra = {project = "demo"}
+bundle = forge.Bundle {
+    **_extra
+    env = "prod"
+}
+`, "unpacks a value"},
+		"named only in a comment": {`import forge
+
+# CVE-2026-1234 is accepted in lib/policy.k
+bundle = forge.Bundle {
+    project = "demo"
+}
+`, "only in a comment"},
+		"two delivery_policy fields": {`import forge
+
+bundle = forge.Bundle {
+    delivery_policy = forge.DeliveryPolicy {}
+}
+other = {delivery_policy = forge.DeliveryPolicy {}}
+`, "set 2 times"},
+		"a syntax error": {"import forge\n\nbundle = forge.Bundle {\n    project = \n", "cannot parse"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, changed, err := exemptInKCL(tc.src, id, "why", "2026-12-31")
+			var anchor *errVulnExemptNoAnchor
+			if !errors.As(err, &anchor) || changed || got != "" {
+				t.Fatalf("want a refusal, got changed=%v err=%v\n%s", changed, err, got)
+			}
+			if !strings.Contains(err.Error(), tc.why) || !strings.Contains(err.Error(), "Nothing was written") ||
+				!strings.Contains(err.Error(), `VulnExemption {id = "CVE-2026-1234", reason = "why", expires = "2026-12-31"}`) {
+				t.Errorf("the refusal must say why (%q) and give the lines to add:\n%s", tc.why, err)
+			}
+		})
+	}
+}
+
+// An id written with an escape is the same id: the literal is replaced
+// whole, and nothing outside it moves.
+func TestExemptInKCLEscapedIDIsReplacedInPlace(t *testing.T) {
+	src := `import forge
+
+bundle = forge.Bundle {
+    delivery_policy = forge.DeliveryPolicy {
+        vuln_gate = forge.VulnPolicy {
+            exemptions = [
+                forge.VulnExemption {id = "CVE\x2d2026-1234", reason = "old", expires = "2026-11-30"} # renewed below
+            ]
+        }
+    }
+}
+`
+	got, changed, err := exemptInKCL(src, "CVE-2026-1234", "new reason", "2027-03-31")
+	if err != nil || !changed {
+		t.Fatalf("%v %v", changed, err)
+	}
+	want := strings.Replace(src, `forge.VulnExemption {id = "CVE\x2d2026-1234", reason = "old", expires = "2026-11-30"}`,
+		`forge.VulnExemption {id = "CVE-2026-1234", reason = "new reason", expires = "2027-03-31"}`, 1)
+	if got != want {
+		t.Errorf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Nothing else changed: each golden edit differs from its input in one
+// window, which removes nothing but (at most) the one exemption literal it
+// replaced, and adds nothing but the new literal and the fields that hold it.
+func TestExemptInKCLChangesOnlyTheLiteral(t *testing.T) {
+	const id, reason, expires = "CVE-2026-1234", `unreachable: we never call the "parser"`, "2026-12-31"
+	ins, _ := filepath.Glob(filepath.Join("testdata", "vuln_exempt", "*.k"))
+	if len(ins) == 0 {
+		t.Fatal("no golden inputs")
+	}
+	wrapper := regexp.MustCompile(`\b(exemptions|vuln_gate|delivery_policy)\b|\b[A-Za-z_][A-Za-z0-9_]*\.(VulnPolicy|DeliveryPolicy)\b|[\s,=\[\]{}]`)
+	for _, in := range ins {
+		orig, err := os.ReadFile(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, changed, err := exemptInKCL(string(orig), id, reason, expires)
+		if err != nil || !changed {
+			t.Fatalf("%s: %v %v", in, changed, err)
+		}
+		// The new literal and the one it replaced (same id) become one
+		// placeholder; what is left may differ only by the fields that hold
+		// the literal.
+		newLit := regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\.VulnExemption \{id = "CVE-2026-1234", reason = "unreachable: we never call the \\"parser\\"", expires = "2026-12-31"\}`)
+		oldLit := regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*\.VulnExemption \{id = "CVE-2026-1234"[^}]*\}`)
+		if n := len(newLit.FindAllStringIndex(next, -1)); n != 1 {
+			t.Fatalf("%s: %d new literals", in, n)
+		}
+		a, b := newLit.ReplaceAllString(next, "\x00"), oldLit.ReplaceAllString(string(orig), "\x00")
+		lo, hiB, hiA := kclChangedWindow(b, a)
+		removed, added := b[lo:hiB], a[lo:hiA]
+		if strings.Trim(wrapper.ReplaceAllString(removed, ""), "\x00") != "" {
+			t.Errorf("%s: the edit removed more than the replaced literal: %q", in, removed)
+		}
+		if strings.Trim(wrapper.ReplaceAllString(added, ""), "\x00") != "" {
+			t.Errorf("%s: the edit added more than the literal and the fields that hold it: %q", in, added)
+		}
+	}
+}
+
+// The post-edit check bites: a result that changed a byte outside the
+// literal, or another exemption, is refused.
+func TestVerifyKCLExemptEditRefusesCollateralChanges(t *testing.T) {
+	orig := `import forge
+
+bundle = forge.Bundle {
+    project = "demo"
+    delivery_policy = forge.DeliveryPolicy {
+        vuln_gate = forge.VulnPolicy {exemptions = [forge.VulnExemption {id = "GO-2026-0001", reason = "x", expires = "2026-12-31"}]}
+    }
+}
+`
+	a, err := parseKCLForEdit(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := collectKCLFacts(a)
+	lit := `forge.VulnExemption {id = "CVE-2026-1234", reason = "r", expires = "2026-12-31"}`
+	at := strings.Index(orig, "]}")
+	good := orig[:at] + ", " + lit + orig[at:]
+	e := &kclExemptEdit{id: "CVE-2026-1234", reason: "r", expires: "2026-12-31", alias: "forge"}
+	splice := func(next string) kclSplice {
+		return kclSplice{next: next, lo: at, hi: at, adds: map[string]int{"VulnExemption": 1}}
+	}
+	if err := verifyKCLExemptEdit(e, orig, splice(good), before); err != nil {
+		t.Fatalf("a clean insertion was refused: %v", err)
+	}
+	for name, bad := range map[string]string{
+		"a byte outside the literal": strings.Replace(good, `project = "demo"`, `project = "other"`, 1),
+		"another exemption changed":  strings.Replace(good, `reason = "x"`, `reason = "y"`, 1),
+	} {
+		if err := verifyKCLExemptEdit(e, orig, splice(bad), before); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

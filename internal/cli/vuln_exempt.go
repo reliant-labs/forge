@@ -151,6 +151,13 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 	if err := atomicfile.WriteFile(path, []byte(next), info.Mode().Perm()); err != nil {
 		return err
 	}
+	// Nothing else changed: what is on disk is the verified edit, byte for
+	// byte (exemptInKCL proved it differs from the original only inside the
+	// inserted or updated literal).
+	if back, err := os.ReadFile(path); err != nil || string(back) != next {
+		_ = atomicfile.WriteFile(path, orig, info.Mode().Perm())
+		return fmt.Errorf("forge vuln exempt: %s did not read back as written; restored it", relOrAbs(projectDir, path))
+	}
 	gate, rerr := vulnExemptRender(ctx, projectDir, env)
 	if rerr == nil && !gateExempts(gate, id, reason, opts.expires) {
 		rerr = fmt.Errorf("the edit to %s does not reach env %s's rendered vuln_gate (its policy may be built in another file)", rel, env)

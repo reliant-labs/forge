@@ -42,6 +42,19 @@ type wireHealthIssue struct {
 	RegressedAt  time.Time `json:"regressedAt"`
 }
 
+// wireAlertRef is ReleaseAlertRef.
+type wireAlertRef struct {
+	Rule            string            `json:"rule"`
+	Fingerprint     string            `json:"fingerprint"`
+	FiringAt        time.Time         `json:"firingAt"`
+	Labels          map[string]string `json:"labels"`
+	BaselineFirings int               `json:"baselineFirings"`
+}
+
+func (a wireAlertRef) alert() releasehealth.Alert {
+	return releasehealth.Alert{Rule: a.Rule, Fingerprint: a.Fingerprint, FiringAt: a.FiringAt.UTC(), Labels: a.Labels, BaselineFirings: a.BaselineFirings}
+}
+
 type wireReleaseHealth struct {
 	Promotion struct {
 		ID                     string    `json:"id"`
@@ -72,12 +85,11 @@ type wireReleaseHealth struct {
 	} `json:"services"`
 	NewIssues       []wireHealthIssue `json:"newIssues"`
 	RegressedIssues []wireHealthIssue `json:"regressedIssues"`
-	FiringAlerts    []struct {
-		Rule        string            `json:"rule"`
-		Fingerprint string            `json:"fingerprint"`
-		FiringAt    time.Time         `json:"firingAt"`
-		Labels      map[string]string `json:"labels"`
-	} `json:"firingAlerts"`
+	FiringAlerts    []wireAlertRef    `json:"firingAlerts"`
+	// BaselineAlerts: alerts that were flapping before the promotion, so
+	// their alert_firing findings are warn and say why in unattributed.
+	// Empty from an older control plane, which counted every alert.
+	BaselineAlerts   []wireAlertRef `json:"baselineAlerts"`
 	WorkloadFindings []struct {
 		Workload             string  `json:"workload"`
 		Restarts             jsonInt `json:"restarts"`
@@ -91,6 +103,9 @@ type wireReleaseHealth struct {
 		Threshold float64 `json:"threshold"`
 		Policy    string  `json:"policy"`
 		Message   string  `json:"message"`
+		// Unattributed says why the finding is not the release's (an
+		// alert already flapping before it): Rejudge never fails on one.
+		Unattributed string `json:"unattributed"`
 	} `json:"findings"`
 	Thresholds []struct {
 		Name   string `json:"name"`
@@ -202,7 +217,10 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		r.RegressedIssues = append(r.RegressedIssues, issue(i))
 	}
 	for _, a := range w.FiringAlerts {
-		r.FiringAlerts = append(r.FiringAlerts, releasehealth.Alert{Rule: a.Rule, Fingerprint: a.Fingerprint, FiringAt: a.FiringAt.UTC(), Labels: a.Labels})
+		r.FiringAlerts = append(r.FiringAlerts, a.alert())
+	}
+	for _, a := range w.BaselineAlerts {
+		r.BaselineAlerts = append(r.BaselineAlerts, a.alert())
 	}
 	for _, f := range w.WorkloadFindings {
 		r.Workloads = append(r.Workloads, releasehealth.Workload{Workload: f.Workload, Restarts: int64(f.Restarts), LastTerminatedReason: f.LastTerminatedReason})
@@ -212,7 +230,7 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		if code == "" || code == "unspecified" {
 			continue
 		}
-		r.Findings = append(r.Findings, releasehealth.Finding{Code: code, Service: f.Service, Value: f.Value, Threshold: f.Threshold, Policy: f.Policy, Message: f.Message})
+		r.Findings = append(r.Findings, releasehealth.Finding{Code: code, Service: f.Service, Value: f.Value, Threshold: f.Threshold, Policy: f.Policy, Message: f.Message, Unattributed: f.Unattributed})
 	}
 	for _, t := range w.Thresholds {
 		r.Thresholds = append(r.Thresholds, releasehealth.Threshold{Name: t.Name, Value: t.Value, Source: t.Source})

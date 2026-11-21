@@ -49,11 +49,12 @@ type ProjectUnavailableError struct {
 	Wire *Error
 }
 
+// Error is the same sentence whichever answer the control plane gave: the
+// server's own text is deliberately left out (it is in Wire, for structured
+// diagnostics), because an older control plane's PermissionDenied wording
+// would make the two answers read differently, and the message would then
+// tell a person something the new answer never does.
 func (e *ProjectUnavailableError) Error() string {
-	detail := ""
-	if e.Wire != nil {
-		detail = detailSuffix(e.Wire.Message)
-	}
 	endpoint := ""
 	if e.Wire != nil && e.Wire.Endpoint != "" {
 		endpoint = " at " + e.Wire.Endpoint
@@ -64,8 +65,8 @@ func (e *ProjectUnavailableError) Error() string {
 			"  the id is this checkout's binding to the control plane (.forge/hosted-projects.json)\n"+
 			"fix: if you were removed from the project's organization, ask one of its owners to add you back;\n"+
 			"     if the project was deleted, or the binding came from another checkout, remove its entry from\n"+
-			"     .forge/hosted-projects.json and deploy again to bind this checkout afresh%s",
-		e.ProjectID, endpoint, detail)
+			"     .forge/hosted-projects.json and deploy again to bind this checkout afresh",
+		e.ProjectID, endpoint)
 }
 
 // Is makes errors.Is(err, ErrHostedProjectUnavailable) true.

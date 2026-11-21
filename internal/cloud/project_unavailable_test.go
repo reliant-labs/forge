@@ -38,6 +38,8 @@ func answer(w http.ResponseWriter, status int, reason, body string) {
 // unwrap to *Error, so "an older control plane without GetCapabilities" and
 // "no such environment" branches never fire on it).
 func TestAProjectTheCallerCannotSeeIsOneErrorWhicheverAnswer(t *testing.T) {
+	// The one message every answer must produce, endpoint aside.
+	messages := map[string]string{}
 	for name, a := range projectAnswers {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -66,8 +68,25 @@ func TestAProjectTheCallerCannotSeeIsOneErrorWhicheverAnswer(t *testing.T) {
 				if strings.Contains(err.Error(), "forge login") {
 					t.Errorf("%s: message sends the person to `forge login`, which cannot help:\n%s", kind, err)
 				}
+				if strings.Contains(err.Error(), pu.Wire.Message) {
+					t.Errorf("%s: message carries the server's own text %q, so the answers read differently:\n%s", kind, pu.Wire.Message, err)
+				}
+				messages[name+"/"+kind] = strings.ReplaceAll(err.Error(), srv.URL, "<endpoint>")
 			}
 		})
+	}
+	var first string
+	for key, msg := range messages {
+		if first == "" {
+			first = msg
+			continue
+		}
+		if msg != first {
+			t.Errorf("%s reads differently from the other answers:\n%s\nvs\n%s", key, msg, first)
+		}
+	}
+	if len(messages) != 2*len(projectAnswers) {
+		t.Fatalf("compared %d messages, want %d", len(messages), 2*len(projectAnswers))
 	}
 }
 

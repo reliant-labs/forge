@@ -450,6 +450,11 @@ func (u *Updater) attempt(ctx context.Context) (applied, stop bool) {
 func (u *Updater) confirmWhenReady(ctx context.Context, ready func(context.Context) error) {
 	for {
 		if ready == nil || ready(ctx) == nil {
+			// A readiness check may ignore cancellation and return success late.
+			// Leave the swap unconfirmed so the watchdog can still revert it.
+			if ctx.Err() != nil {
+				return
+			}
 			err := u.confirm()
 			if err == nil {
 				u.confirmed.Store(true)

@@ -290,6 +290,33 @@ func TestServeConfirmsASwapOnlyOnceReady(t *testing.T) {
 	waitDone(t, done)
 }
 
+func TestConfirmWhenReadyDoesNotConfirmAfterDeadline(t *testing.T) {
+	t.Parallel()
+	for name, withReady := range map[string]bool{"nil ready": false, "late ready": true} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+			defer cancel()
+			confirmed := false
+			u := &Updater{confirm: func() error { confirmed = true; return nil }, after: newFakeClock().After}
+			var ready func(context.Context) error
+			if withReady {
+				ready = func(ctx context.Context) error {
+					// Simulate a check that ignores its deadline and reports success late.
+					<-ctx.Done()
+					return nil
+				}
+			} else {
+				<-ctx.Done()
+			}
+			u.confirmWhenReady(ctx, ready)
+			if confirmed || u.confirmed.Load() {
+				t.Fatal("confirmed a swap after the readiness deadline")
+			}
+		})
+	}
+}
+
 func TestServeConfirmsEvenWhenDisabled(t *testing.T) {
 	t.Parallel()
 	confirmed := make(chan struct{})

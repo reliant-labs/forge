@@ -382,6 +382,18 @@ func LoadClaimable(ep Endpoint, project, env string, now time.Time) (credentials
 	return c, nil
 }
 
+// StoredClaimableCredential is the anonymous deploy token this machine holds
+// for (project, env) at ep, as a Credential the client can present: what
+// LoadClaimable reads, unexpired. ok is false when there is none.
+func StoredClaimableCredential(ep Endpoint, project, env string, now time.Time) (Credential, bool) {
+	c, err := LoadClaimable(ep, project, env, now)
+	if err != nil || c.Token == "" {
+		return Credential{}, false
+	}
+	return Credential{Token: c.Token, Source: SourceClaimable,
+		From: "this machine's claimable deploy of " + env, ExpiresAt: c.ExpiresAt, Scopes: c.Scopes}, true
+}
+
 // StoreClaimable records the anonymous deploy of (project, env) at ep.
 func StoreClaimable(ep Endpoint, project, env string, d ClaimableDeploy, now time.Time) (credentials.Credential, error) {
 	path, err := CredentialsPath()

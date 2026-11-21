@@ -41,7 +41,7 @@ For a standalone frontend, its own `pnpm-workspace.yaml` is its settings root
 (it does **not** opt the project into the shared API/hooks layout). Example:
 
 ```yaml
-# Forge installs explicitly before dev/build/lint. Scripts must not reinstall
+# Forge installs explicitly before dev/build (and `forge lint --install`). Scripts must not reinstall
 # a standalone registry lock over an active dev bridge's linked runtime.
 verifyDepsBeforeRun: false
 

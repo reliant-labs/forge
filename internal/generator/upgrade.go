@@ -458,6 +458,15 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// expected to edit (add a log pipeline, tune the collector), not a
 		// function of anything they declare. Gated on service-kind AND
 		// observability being enabled.
+		//
+		// otel-collector.yaml is also how an existing project gets the
+		// include that loads declared log parsing (forge.Telemetry `logs`,
+		// written by `forge env up` under .forge/logs/.telemetry/): a pristine
+		// copy is updated here, an edited one is reported with the include
+		// among its missing lines, and `forge env up` names the lines to add
+		// when a declared parse finds the include absent. Its include rides
+		// on the .forge/logs mount the file already needs, so a project whose
+		// docker-compose.yml is edited (not upgraded) loads it unchanged.
 		{templateName: "otel-collector.yaml.tmpl", destPath: "deploy/observability/otel-collector.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.44"},
 		{templateName: "dashboards-README.md.tmpl", destPath: "deploy/observability/dashboards/README.md", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.44"},
 		{templateName: "otel-profiles.yaml.tmpl", destPath: "deploy/observability/otel-profiles.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.45"},

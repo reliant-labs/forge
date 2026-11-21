@@ -37,14 +37,31 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// envs / monitoring: read by the env-declaration seam
 			// (internal/cli/env_declaration.go) every `forge obs` verb
 			// resolves through, and by `forge obs init`.
+			// tests: coverage read by the env render (ReadTestsCoverage →
+			// resolveCoverBinaries); the rest by the `forge test` verbs.
 			// scaffold: read by checksums.ExcludeGlobs at every write
 			// chokepoint (scaffold.exclude).
+			// vuln: read where the release cut attaches an OCI artifact's
+			// SBOM as a referrer (VulnConfig.AttachSBOMEnabled).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
 				"forge_version", "generate", "git", "harness", "k8s",
-				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
+				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "tests", "upgrade",
+				"vuln",
 			},
+		},
+		{
+			// vuln.attach_sbom: read by the release cut (internal/sbomoci);
+			// vuln.patch.verify: read by `forge vuln patch`.
+			name: "VulnConfig",
+			typ:  reflect.TypeFor[VulnConfig](),
+			want: []string{"attach_sbom", "patch"},
+		},
+		{
+			name: "VulnPatchConfig",
+			typ:  reflect.TypeFor[VulnPatchConfig](),
+			want: []string{"verify"},
 		},
 		{
 			// Every feature; orm also has //forge:no-orm.

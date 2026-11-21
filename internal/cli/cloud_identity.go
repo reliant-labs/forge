@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/mail"
+	"net/url"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -202,9 +204,10 @@ func errIdentitiesUnaddressable(env string, declared []string) error {
 // instead of after a refusal. Neither scope is one a login carries. The
 // control plane's identity.scopeFor maps the read level (GetIdentityStatus,
 // ListUsers) to identity:read and manage, codes and exports (every other
-// procedure here) to identity:manage.
+// procedure here) to identity:manage. The social sign-in check starts intents
+// that are never completed and changes nothing a person sees, so it is read.
 func declareIdentityScopes(c *cloud.Client) {
-	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers)
+	c.DeclareScope("identity:read", procIdentityStatus, procIdentityUsers, procIdentityCheckSocial)
 	c.DeclareScope("identity:manage", procIdentityInvite, procIdentityExport,
 		procIdentitySetRoles, procIdentityResetPassword, procIdentityLockUser,
 		procIdentityUnlockUser, procIdentityDeleteUser, procIdentityRevokeSessions)
@@ -292,6 +295,9 @@ type identityStatusDocument struct {
 	// request named it: set by forge (never read from the response), and
 	// only when the request named one.
 	Identity string `json:"identity,omitempty"`
+	// SocialChecks is --check-social's verdict per provider; absent without
+	// the flag.
+	SocialChecks []socialCheck `json:"socialChecks,omitempty"`
 }
 
 // identitySocialStatusWire is controlplane.v1.IdentitySocialStatus.
@@ -360,10 +366,33 @@ func reissueCodeCommand(env, user string) string {
 
 func newCloudIdentityStatusCmd() *cobra.Command {
 	var f cloudIdentityFlags
+	var checkSocialFlag bool
+	var app string
 	cmd := &cobra.Command{
 		Use: "status <env>", Short: "Show managed-identity state, issuer and delivery metadata",
+		Long: `Show the environment's managed-identity state, issuer, applications,
+deliveries and, when it declares social sign-in, the callback to register with
+each provider and each provider's state.
+
+--check-social starts a sign-in with each applied social provider and checks
+the authorize URL the issuer answers with: the provider's own endpoint, a
+client id, scopes, and a redirect_uri EQUAL to the printed callback — the URL
+registered on the provider's OAuth app, which the provider refuses to differ.
+The sign-ins are never completed. They are started by the control plane, or
+with --app <url> by your app's own login broker (POST <url>/auth/social/start,
+the route every sign-in button calls), which also proves the deployed broker
+offers each provider. It exits non-zero when any provider fails or is not
+applied yet.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if app != "" && !checkSocialFlag {
+				return fmt.Errorf("--app goes with --check-social")
+			}
+			if app != "" {
+				if u, err := url.Parse(app); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+					return fmt.Errorf("--app %q must be an http(s) URL: where your app's login broker answers", app)
+				}
+			}
 			ctx := cmd.Context()
 			client, req, declared, err := f.identityBase(ctx, args[0])
 			if err != nil {
@@ -396,6 +425,7 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 				}
 			}
 			docs := make([]identityStatusDocument, 0, len(names))
+			checkErrs := make([]error, 0, len(names))
 			for _, name := range names {
 				r := maps.Clone(req)
 				if name != "" {
@@ -408,17 +438,45 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 					}
 					return fmt.Errorf("identity status: %w", err)
 				}
-				doc.stamp(nil)
 				doc.Identity = name
+				// --check-social checks each identity's own providers,
+				// through the same identity-scoped request.
+				var checkErr error
+				if checkSocialFlag {
+					if !doc.HasInstance {
+						checkErr = fmt.Errorf("--check-social: the environment has no managed identity instance")
+					} else {
+						start := controlPlaneSocialStarter(client, r)
+						if app != "" {
+							start = brokerSocialStarter(socialCheckHTTPClient(), app)
+						}
+						doc.SocialChecks, checkErr = checkSocial(ctx, doc, start)
+						if checkErr == nil {
+							checkErr = socialCheckErr(doc.SocialChecks)
+						}
+					}
+					if checkErr != nil && name != "" {
+						checkErr = fmt.Errorf("identity %s: %w", name, checkErr)
+					}
+				}
+				doc.stamp(checkErr)
 				docs = append(docs, doc)
+				checkErrs = append(checkErrs, checkErr)
 			}
+			checkErr := errors.Join(checkErrs...)
 			if f.json {
 				if len(docs) == 1 {
-					return writeJSONDocument(cmd.OutOrStdout(), docs[0])
+					if err := writeJSONDocument(cmd.OutOrStdout(), docs[0]); err != nil {
+						return err
+					}
+					return checkErr
 				}
 				all := identityStatusesDocument{Identities: docs}
-				all.stamp(nil)
-				return writeJSONDocument(cmd.OutOrStdout(), all)
+				all.stamp(checkErr)
+				if err := writeJSONDocument(cmd.OutOrStdout(), all); err != nil {
+					return err
+				}
+				return checkErr
 			}
 			out := cmd.OutOrStdout()
 			for i, doc := range docs {
@@ -429,11 +487,16 @@ func newCloudIdentityStatusCmd() *cobra.Command {
 					fmt.Fprintf(out, "Identity: %s\n", doc.Identity)
 				}
 				writeIdentityStatus(out, doc, fmt.Sprint(req["environmentId"]))
+				if checkSocialFlag && doc.HasInstance && (checkErrs[i] == nil || doc.SocialChecks != nil) {
+					writeSocialChecks(out, socialCallbackFor(doc), doc.SocialChecks)
+				}
 			}
-			return nil
+			return checkErr
 		},
 	}
 	f.register(cmd)
+	cmd.Flags().BoolVar(&checkSocialFlag, "check-social", false, "Start a sign-in with each social provider and check the authorize URL's redirect_uri equals the printed callback")
+	cmd.Flags().StringVar(&app, "app", "", "With --check-social: start each sign-in through your app's login broker at this URL (POST <url>/auth/social/start) instead of the control plane")
 	return cmd
 }
 

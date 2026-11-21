@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,6 +59,13 @@ type AlertInput struct {
 	// env. The uptime defaults apply only to an env that has checks, and read
 	// only those checks' series, so a check an env opts out of cannot alert.
 	UptimeChecks []string `json:"-"`
+	// TelemetryTargets are the declared telemetry systems (forge.Telemetry)
+	// that arm the default alerts. Like UptimeChecks they are an env's: the
+	// resolver sets them from the env's render (AlertTelemetryTargetsOf), and
+	// the generated file never records them. AlertInputOf sets them from
+	// every env's, so the catalog lists the telemetry defaults exactly when
+	// some env declares a system.
+	TelemetryTargets []AlertTelemetryTarget `json:"-"`
 }
 
 // AlertInputOf derives the defaults' input from the same Input the dashboards
@@ -72,6 +80,12 @@ func AlertInputOf(in Input) AlertInput {
 	}
 	sort.Slice(out.Services, func(i, j int) bool { return out.Services[i].Name < out.Services[j].Name })
 	out.FrontendServices = in.frontendServiceNames()
+	for _, sys := range in.Telemetry {
+		if sys.DefaultAlerts {
+			out.TelemetryTargets = append(out.TelemetryTargets, AlertTelemetryTarget{Service: sys.Service, Platform: sys.Platform,
+				Scrapes: len(sys.Scrapes) > 0, Checks: sys.TCPChecks || sys.HTTPChecks})
+		}
+	}
 	return out
 }
 
@@ -151,6 +165,14 @@ type alertDef struct {
 	// metadata. ResolveEnvAlertDefaultsFor resolves these alone, for a
 	// project forge generate writes no alert defaults for (a static site).
 	envScoped bool
+	// perTarget, when set, makes the default one rule per declared telemetry
+	// target it holds for (AlertInput.TelemetryTargets), named for the
+	// target's service (TelemetryAlertName: Alert is "<Service><suffix>"),
+	// labelled service = its service.name, and compiled by targetSQL instead
+	// of sql. The default is tuned once for every target; a target opts out
+	// with Telemetry.default_alerts = False.
+	perTarget func(AlertTelemetryTarget) bool
+	targetSQL func(env string, t AlertTelemetryTarget, p map[string]float64) string
 }
 
 // alertLevel is one severity of a default with levels.
@@ -260,7 +282,8 @@ var alertDefs = []alertDef{
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
 			ID: "service-silent", Alert: "ServiceSilent", Title: "A service with steady traffic went quiet",
-			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "metrics",
+			// This warning scans a day of traffic and already requires ten minutes of silence.
+			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "metrics",
 			Params: []AlertParam{
 				{"silent_minutes", 10, "minutes without a request before it fires"},
 				{"min_active_hours", 18, "of the previous 24h, the hours the service must have served requests in to count as steady (a quiet staging service never pages)"},
@@ -387,6 +410,36 @@ var alertDefs = []alertDef{
 		levels:      []alertLevel{{"CertificateExpiring", SeverityWarning, false}, {"CertificateExpiringSoon", SeverityCritical, true}},
 		envScoped:   true,
 		sql:         certificateExpiringSQL,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: TelemetryTargetDown, Alert: telemetryAlertPlaceholder + "TargetDown",
+			Title:    "A declared telemetry target's scrape keeps failing (up = 0)",
+			Severity: SeverityWarning, For: "5m", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pWindow, 10, "minutes back the newest scrape result of each endpoint is looked for; keep it above the scrape interval"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }}: scraping {{ $labels.instance }} has failed for 5 minutes (up = 0: the target is down, the scrape times out, or it returns more samples than its sample_limit)"},
+		applies:     func(in AlertInput) bool { return slices.ContainsFunc(in.TelemetryTargets, scrapedTarget) },
+		perTarget:   scrapedTarget,
+		targetSQL:   telemetryTargetDownSQL,
+		envScoped:   true,
+	},
+	{
+		AlertDefaultInfo: AlertDefaultInfo{
+			ID: TelemetryCheckFailing, Alert: telemetryAlertPlaceholder + "CheckFailing",
+			Title:    "A declared telemetry check has not succeeded for 5 minutes",
+			Severity: SeverityWarning, For: "5m", Interval: "1m", Signal: "metrics", Requires: "metrics",
+			Params: []AlertParam{
+				{pWindow, 5, "minutes of probes considered: the check fires when none of them succeeded"},
+			},
+		},
+		annotations: map[string]string{"summary": "{{ $labels.service }}: the check of {{ $labels.check }} has not succeeded once in the window ({{ $value }} failed probes)"},
+		applies:     func(in AlertInput) bool { return slices.ContainsFunc(in.TelemetryTargets, checkedTarget) },
+		perTarget:   checkedTarget,
+		targetSQL:   telemetryCheckFailingSQL,
+		envScoped:   true,
 	},
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
@@ -644,6 +697,10 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 	var (
 		out     []AlertRule
 		skipped []AlertSkip
+		// telemetryNamed is each per-target rule's name → its service:
+		// TelemetryAlertName folds punctuation, so two accepted services
+		// (foo.bar, foo-bar) can name one rule, which is refused below.
+		telemetryNamed = map[string]telemetryAlertOrigin{}
 	)
 	for _, d := range alertDefs {
 		if !include(d) || !d.applies(in) || (d.needs != nil && !d.needs(in)) {
@@ -672,15 +729,27 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 					Labels:      map[string]string{"severity": pr.severity},
 					Annotations: map[string]string{},
 				}
-				for k, v := range d.annotations {
-					r.Annotations[k] = v
+				applyAlertTuning(&r, d, t)
+				out = append(out, r)
+			}
+			continue
+		}
+		if d.perTarget != nil {
+			for _, tt := range in.TelemetryTargets {
+				if !d.perTarget(tt) {
+					continue
 				}
-				if t.For != "" {
-					r.For = t.For
+				r := AlertRule{
+					ID: d.ID, Alert: TelemetryAlertName(tt.Service, strings.TrimPrefix(d.Alert, telemetryAlertPlaceholder)),
+					Expr: d.targetSQL(env, tt, params), For: d.For, Interval: d.Interval,
+					Labels:      map[string]string{"severity": d.Severity, "service": tt.Service},
+					Annotations: map[string]string{},
 				}
-				for k, v := range t.Labels {
-					r.Labels[k] = v
+				applyAlertTuning(&r, d, t)
+				if other, ok := telemetryNamed[r.Alert]; ok && other.service != tt.Service {
+					return nil, nil, telemetryNameCollision(r.Alert, other.service, tt.Service)
 				}
+				telemetryNamed[r.Alert] = telemetryAlertOrigin{service: tt.Service, defaultID: d.ID}
 				out = append(out, r)
 			}
 			continue
@@ -703,20 +772,49 @@ func resolveAlertDefaults(in AlertInput, env string, tuning map[string]AlertTuni
 				Labels:      map[string]string{"severity": lv.severity},
 				Annotations: map[string]string{},
 			}
-			for k, v := range d.annotations {
-				r.Annotations[k] = v
-			}
-			if t.For != "" {
-				r.For = t.For
-			}
-			for k, v := range t.Labels {
-				r.Labels[k] = v
-			}
+			applyAlertTuning(&r, d, t)
 			out = append(out, r)
 		}
 	}
+	if err := validateTelemetryDefaultNames(out, telemetryNamed); err != nil {
+		return nil, nil, err
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Alert < out[j].Alert })
 	return out, skipped, nil
+}
+
+func applyAlertTuning(r *AlertRule, d alertDef, t AlertTuning) {
+	for k, v := range d.annotations {
+		r.Annotations[k] = v
+	}
+	if t.For != "" {
+		r.For = t.For
+	}
+	for k, v := range t.Labels {
+		r.Labels[k] = v
+	}
+}
+
+// Track origin separately from labels, which alert tuning may override.
+type telemetryAlertOrigin struct {
+	service   string
+	defaultID string
+}
+
+// A per-target name must not be one another default already raises.
+func validateTelemetryDefaultNames(rules []AlertRule, named map[string]telemetryAlertOrigin) error {
+	for _, r := range rules {
+		if origin, ok := named[r.Alert]; ok && r.ID != origin.defaultID {
+			return fmt.Errorf("telemetry system %q raises the default alert %q, which the default %s already names; rename the service, or set default_alerts = False on its forge.Telemetry", origin.service, r.Alert, r.ID)
+		}
+	}
+	return nil
+}
+
+// telemetryNameCollision is the error for two declared systems whose
+// service names TelemetryAlertName folds into one rule name.
+func telemetryNameCollision(alert, a, b string) error {
+	return fmt.Errorf("telemetry systems %q and %q both raise the default alert %q (its name keeps only the letters and digits of service.name); rename one service, or set default_alerts = False on one of their forge.Telemetry", a, b, alert)
 }
 
 // EnvIDPlaceholder stands for the env's id in a rule whose data is stamped with

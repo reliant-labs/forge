@@ -61,6 +61,16 @@ var (
 	}
 )
 
+// VulnSBOMCheck is the gate row of `forge ci vuln-sbom`, and its two "could
+// not run" exit statuses: VulnSBOMSkipExit fails the gate (the vuln-gate rule
+// gates this project, and an unscanned tree is never a pass);
+// VulnSBOMAllowedSkipExit does not (the rule does not gate it yet).
+const (
+	VulnSBOMCheck           = "vuln-sbom"
+	VulnSBOMSkipExit        = 77
+	VulnSBOMAllowedSkipExit = 78
+)
+
 // BufTool is the buf the project at root pins (internal/toolpin): its go.mod's
 // github.com/bufbuild/buf when it declares one, forge's pin otherwise. The
 // gate holds PATH to it for verify-generated and buf-lint, so the gate, `forge
@@ -488,6 +498,7 @@ func (p planner) checksLane() []Check {
 			Argv:     p.forge("ci", "vuln-scan", "--npm"),
 		})
 	}
+	out = append(out, p.vulnSBOM()...)
 	if ci.LicenseCheck {
 		out = append(out, Check{
 			Name:  "license-check",
@@ -511,6 +522,31 @@ func (p planner) checksLane() []Check {
 		)
 	}
 	return out
+}
+
+// vulnSBOM is the vuln-sbom row.
+func (p planner) vulnSBOM() []Check {
+	// The SBOM scan of the source tree's lockfiles (`forge ci vuln-sbom`:
+	// syft, then grype), graded through the vuln-gate rollout row: while
+	// the project's forge pin is below its GatesFrom release, a blocking
+	// finding is reported and fails nothing, and a machine with no scanner
+	// or vulnerability database SKIPs the row, allowed. A project that
+	// turned vulnerability scanning off (ci.vuln_scan: no go, no npm) does
+	// not get it.
+	if !p.CI.VulnGo && !p.CI.VulnNPM {
+		return nil
+	}
+	return []Check{{
+		Name:  VulnSBOMCheck,
+		Lane:  LaneChecks,
+		Group: GroupStatic,
+		Heavy: true,
+		// The advisory database changes daily.
+		NoCache:             true,
+		Argv:                p.forge("ci", "vuln-sbom"),
+		SkipExitCode:        VulnSBOMSkipExit,
+		AllowedSkipExitCode: VulnSBOMAllowedSkipExit,
+	}}
 }
 
 func (p planner) testLane() []Check {
@@ -823,3 +859,7 @@ func (t *treeSnapshot) wasClean() bool {
 	})
 	return t.clean
 }
+
+// GovulncheckTool is the govulncheck the gate pins, for a command that runs
+// it outside the gate (`forge ci vuln-scan` with none on PATH).
+func GovulncheckTool() Tool { return govulncheck }

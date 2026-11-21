@@ -78,8 +78,9 @@ import (
 //
 //	forge:ref derived-from=<column>   the route leaving by <column> is
 //	                                  authoritative; seed THIS column from it
-//	forge:ref authoritative           this column is the truth; the other edge
-//	                                  is constrained to agree with it
+//	forge:ref authoritative           this column is the truth; every other
+//	                                  route to the same parent is constrained
+//	                                  to agree with it
 //	forge:ref independent             the two are unrelated facts; seed each
 //	                                  on its own and say nothing further
 //
@@ -92,10 +93,12 @@ import (
 // rather than honoured into a failed transaction.
 //
 // `authoritative` also narrows the authoritative column itself, to parents
-// that HAVE a partner on the other edge: a parent with none cannot satisfy the
-// declaration on any row. That narrowing is real (the column ends up ranging
-// over "patients who have a prescription") and is stated here rather than
-// discovered in the data.
+// that HAVE a partner on every other route: a parent missing from one cannot
+// satisfy the declaration on any row. That narrowing is real (the column ends
+// up ranging over "patients who have a prescription") and is stated here
+// rather than discovered in the data. Routes that share no parent at all, and
+// a column two declarations would each narrow, cannot be honoured, and are
+// refused rather than left to disagree.
 //
 // # Why the derivation cannot loop
 //
@@ -164,26 +167,51 @@ func (d diamond) constraint() string {
 }
 
 // authPair is the resolved form of a `forge:ref authoritative` declaration:
-// the direct column is the truth, so the OTHER edge of the diamond is narrowed
-// to rows that agree with it.
+// the direct column is the truth, so EVERY other route from the child to the
+// same parent is narrowed to rows that agree with it. A column can reach its
+// parent by several routes — a message through the thread that sent it and the
+// one that received it, a job through its chat and its worktree — and the
+// declaration is a statement about all of them, not about whichever one the
+// detector happened to find first.
 type authPair struct {
 	// directCol is the authoritative column on the child table. Its value set
-	// is narrowed to parents that some via row actually reaches, because a
-	// parent with no partner cannot satisfy the declaration on any row.
+	// is narrowed to parents that EVERY route reaches through some row,
+	// because a parent missing from one route cannot satisfy the declaration
+	// on any row.
 	directCol string
+	// routes are the edges that must agree, in detection order.
+	routes []authRoute
+}
+
+// authRoute is one edge an authoritative column constrains.
+type authRoute struct {
 	// viaCol is the child column that must agree; viaTable is what it
 	// references and tail is the route from THERE to the shared parent (the
 	// full route minus its first hop, which is viaCol itself).
 	viaCol   string
 	viaTable string
 	tail     []fkHop
+	// d is the diamond this route came from, kept so a route forge cannot
+	// satisfy is reported with the same runbook as an undeclared one.
+	d diamond
+}
+
+func newAuthRoute(d diamond) authRoute {
+	return authRoute{viaCol: d.viaCol(), viaTable: d.route[0].refTable, tail: d.route[1:], d: d}
 }
 
 // resolveDiamonds finds every diamond, applies the declarations found on the
 // foreign-key constraints, and returns the derivations, the authoritative
-// pairs, and the undeclared leftovers. Called at the END of finalize: the walk
-// uses real parent assignments, and those hash-pick against the row counts
-// finalize settles.
+// pairs, and the leftovers forge must refuse on. Called at the END of
+// finalize: the walk uses real parent assignments, and those hash-pick
+// against the row counts finalize settles.
+//
+// A direct column reachable by several routes yields one diamond per route,
+// and every one of them is answered: an `authoritative` column narrows each
+// route, and a route a declaration does not cover is reported rather than
+// dropped. Skipping the second route of a column the first one had settled
+// is how an authoritative project_id came to be seeded beside chat ids of
+// another project while Validate passed.
 func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth map[string][]authPair, undeclared []diamond) {
 	found := p.findDiamonds()
 	if len(found) == 0 {
@@ -191,17 +219,23 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 	}
 
 	derived = map[string]map[string][]fkHop{}
-	auth = map[string][]authPair{}
-	claimed := map[string]bool{}
+	// pairs collects every authoritative route by its direct column, in
+	// detection order, before assignConflicts decides which can be honoured.
+	type pairKey struct{ table, col string }
+	var order []pairKey
+	pairs := map[pairKey]*authPair{}
+	addAuth := func(d diamond) {
+		k := pairKey{d.child, d.direct.col.Name}
+		ap, ok := pairs[k]
+		if !ok {
+			ap = &authPair{directCol: d.direct.col.Name}
+			pairs[k] = ap
+			order = append(order, k)
+		}
+		ap.routes = append(ap.routes, newAuthRoute(d))
+	}
 
 	for _, d := range found {
-		key := d.child + "." + d.direct.col.Name
-		if claimed[key] {
-			// A column reachable by two different routes: the first
-			// declaration settles it, and a second one cannot be honoured
-			// simultaneously.
-			continue
-		}
 		switch {
 		case !d.declared() && p.directEdgeSettlesIt(d):
 			// Structurally not a decision — see directEdgeSettlesIt. Resolve
@@ -218,19 +252,12 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 				undeclared = append(undeclared, d)
 				continue
 			}
-			claimed[key] = true
-			auth[d.child] = append(auth[d.child], authPair{
-				directCol: d.direct.col.Name,
-				viaCol:    d.viaCol(),
-				viaTable:  d.route[0].refTable,
-				tail:      d.route[1:],
-			})
+			addAuth(d)
 		case !d.declared():
 			undeclared = append(undeclared, d)
 		case d.verdict == refIndependent:
 			// The author said the two are unrelated facts. Seed each on its
 			// own and never mention it again.
-			claimed[key] = true
 		case d.verdict == refDerivedFrom+d.viaCol():
 			// A UNIQUE column is a 1-1 relationship: the seeder gives it a
 			// distinct parent per row on purpose, and a derived value would
@@ -242,11 +269,17 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 				undeclared = append(undeclared, d)
 				continue
 			}
-			claimed[key] = true
 			if derived[d.child] == nil {
 				derived[d.child] = map[string][]fkHop{}
 			}
 			derived[d.child][d.direct.col.Name] = d.route
+		case strings.HasPrefix(d.verdict, refDerivedFrom):
+			// Derived from ANOTHER route. The declaration settles the column,
+			// but says nothing to reconcile this route with it, so the two
+			// are left to disagree — which is the refusal, not a pass.
+			d.issue = fmt.Sprintf("%s.%s is declared %s, which does not reconcile the route through %s with it",
+				d.child, d.direct.col.Name, d.verdict, d.viaCol())
+			undeclared = append(undeclared, d)
 		case d.verdict == refAuthoritative:
 			// Same constraint, other column. `authoritative` re-picks BOTH
 			// ends — the via edge is narrowed into a bucket, and the
@@ -261,15 +294,51 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 				undeclared = append(undeclared, d)
 				continue
 			}
-			claimed[key] = true
-			auth[d.child] = append(auth[d.child], authPair{
-				directCol: d.direct.col.Name,
-				viaCol:    d.viaCol(),
-				viaTable:  d.route[0].refTable,
-				tail:      d.route[1:],
-			})
+			addAuth(d)
 		}
 	}
+
+	auth = map[string][]authPair{}
+	// role records what each child column already is in an honoured pair.
+	// A column is narrowed by at most one rule: it can be one pair's truth or
+	// one route's agreeing edge, never both and never two of either — two
+	// narrowings computed independently need not meet, and the one picked
+	// second would silently lose.
+	role := map[pairKey]string{}
+	for table, cols := range derived {
+		for col, route := range cols {
+			role[pairKey{table, col}] = "derived from its route through " + route[0].column
+		}
+	}
+	for _, k := range order {
+		ap := pairs[k]
+		if r, taken := role[k]; taken {
+			for _, rt := range ap.routes {
+				rt.d.issue = fmt.Sprintf("%s.%s is already %s, so it cannot also be the authoritative side of this reference",
+					k.table, k.col, r)
+				undeclared = append(undeclared, rt.d)
+			}
+			continue
+		}
+		kept := authPair{directCol: ap.directCol}
+		for _, rt := range ap.routes {
+			vk := pairKey{k.table, rt.viaCol}
+			if r, taken := role[vk]; taken {
+				rt.d.issue = fmt.Sprintf("%s.%s is already %s, so it cannot also be narrowed to agree with %s.%s",
+					k.table, rt.viaCol, r, k.table, k.col)
+				undeclared = append(undeclared, rt.d)
+				continue
+			}
+			role[vk] = fmt.Sprintf("narrowed to agree with %s.%s", k.table, k.col)
+			kept.routes = append(kept.routes, rt)
+		}
+		if len(kept.routes) == 0 {
+			continue
+		}
+		role[k] = "authoritative for its own reference"
+		auth[k.table] = append(auth[k.table], kept)
+	}
+
 	if len(derived) == 0 {
 		derived = nil
 	}
@@ -493,48 +562,76 @@ func (p *Plan) walkRoute(table string, route []fkHop, i, depth int) (int, bool) 
 }
 
 // authPairFor returns the `forge:ref authoritative` pair this column takes
-// part in, and which side of it the column is on.
-func (p *Plan) authPairFor(table, column string) (pair authPair, isDirect, ok bool) {
+// part in, and which side of it the column is on: route is -1 for the
+// authoritative column itself, else the index of the route it is the edge of.
+func (p *Plan) authPairFor(table, column string) (pair authPair, route int, ok bool) {
 	for _, ap := range p.authRefs[table] {
-		switch column {
-		case ap.directCol:
-			return ap, true, true
-		case ap.viaCol:
-			return ap, false, true
+		if column == ap.directCol {
+			return ap, -1, true
+		}
+		for k, rt := range ap.routes {
+			if column == rt.viaCol {
+				return ap, k, true
+			}
 		}
 	}
-	return authPair{}, false, false
+	return authPair{}, 0, false
 }
 
 // authoritativeRow answers a `forge:ref authoritative` declaration.
 //
-// Both columns are pinned off ONE grouping: every row of the via table,
-// bucketed by the parent its tail route reaches. The authoritative column
-// draws from the buckets' KEYS — narrowing it to parents some via row can
-// actually partner with, because a parent with no partner cannot satisfy the
-// declaration on any row — and the via column then draws from that bucket.
-// Both draws are the same deterministic hash-pick every other column uses.
+// Every column of the pair is pinned off the same groupings: each route's via
+// table, bucketed by the parent its tail reaches. The authoritative column
+// draws from the parents EVERY route reaches — narrowing it to parents each
+// via edge can actually partner with, because a parent missing from one route
+// cannot satisfy the declaration on any row — and each via column then draws
+// from its own route's bucket for that parent. All draws are the same
+// deterministic hash-pick every other column uses.
 //
 // The narrowing is real and is stated in the declaration's own documentation:
 // the authoritative column ends up ranging over "patients who have a
 // prescription" rather than all patients.
-func (p *Plan) authoritativeRow(tp tablePlan, cp columnPlan, ap authPair, isDirect bool, i, depth int) (int, bool) {
-	buckets, targets := p.routeBuckets(ap.viaTable, ap.tail, depth)
+func (p *Plan) authoritativeRow(tp tablePlan, cp columnPlan, ap authPair, route, i, depth int) (int, bool) {
+	targets := p.authTargets(ap, depth)
 	if len(targets) == 0 {
 		return 0, false
 	}
 	salt := p.cfg.EffectiveSalt()
-	// The authoritative column's own draw — computed identically on both
-	// branches so the two columns agree without either reading the other.
+	// The authoritative column's own draw — computed identically on every
+	// branch so the columns agree without any of them reading another.
 	want := targets[pick(salt, tp.table.Name, ap.directCol, i, len(targets))]
-	if isDirect {
+	if route < 0 {
 		return want, true
 	}
+	rt := ap.routes[route]
+	buckets, _ := p.routeBuckets(rt.viaTable, rt.tail, depth)
 	partners := buckets[want]
 	if len(partners) == 0 {
 		return 0, false
 	}
 	return partners[pick(salt, tp.table.Name, cp.col.Name, i, len(partners))], true
+}
+
+// authTargets is the set of parents an authoritative column may draw from:
+// those every one of its routes reaches through some row, sorted. With one
+// route it is that route's reachable parents, unchanged.
+func (p *Plan) authTargets(ap authPair, depth int) []int {
+	var out []int
+	for k, rt := range ap.routes {
+		buckets, targets := p.routeBuckets(rt.viaTable, rt.tail, depth)
+		if k == 0 {
+			out = targets
+			continue
+		}
+		var kept []int
+		for _, t := range out {
+			if len(buckets[t]) > 0 {
+				kept = append(kept, t)
+			}
+		}
+		out = kept
+	}
+	return out
 }
 
 // routeBuckets groups a table's rows by the parent row their route reaches:
@@ -633,7 +730,8 @@ func (e *UndeclaredDiamondError) Error() string {
 // parent, a 1-1 UNIQUE key that forces the identity mapping — are left out:
 // there is no decision for the author to make and demanding one is nagging.
 func (p *Plan) diamondRefusal() error {
-	if len(p.undeclared) == 0 {
+	unsatisfied := p.unsatisfiedAuthRoutes()
+	if len(p.undeclared) == 0 && len(unsatisfied) == 0 {
 		return nil
 	}
 	var stanzas []string
@@ -650,12 +748,50 @@ func (p *Plan) diamondRefusal() error {
 		quiet = append(quiet, fmt.Sprintf("%s.%s -> %s.%s (also reachable as: %s)",
 			d.child, d.direct.col.Name, d.parent(), d.refCol(), renderRoute(d.route)))
 	}
+	// A route forge accepted is still checked against the rows it produced:
+	// where its narrowing found nothing to draw from, the cells fell back to
+	// the independent pick, and that refuses like an undeclared reference
+	// rather than passing as declared.
+	for _, d := range unsatisfied {
+		if s := p.diamondStanza(d); s != "" {
+			stanzas = append(stanzas, s)
+		}
+	}
 	if len(stanzas) == 0 {
 		// Nothing disagrees anywhere: seeding these rows is safe, and
 		// demanding a decision nobody's data needs is nagging.
 		return nil
 	}
 	return &UndeclaredDiamondError{Stanzas: stanzas, Quiet: quiet}
+}
+
+// unsatisfiedAuthRoutes returns every route of an honoured `authoritative`
+// pair, each carrying the reason it would disagree, for diamondRefusal to
+// check against the planned rows. A route whose rows all agree renders no
+// stanza, so the list is cheap to over-include.
+func (p *Plan) unsatisfiedAuthRoutes() []diamond {
+	var out []diamond
+	for _, tp := range p.tables {
+		for _, ap := range p.authRefs[tp.table.Name] {
+			noCommon := len(ap.routes) > 1 && len(p.authTargets(ap, 0)) == 0
+			for _, rt := range ap.routes {
+				d := rt.d
+				if noCommon {
+					vias := make([]string, len(ap.routes))
+					for k, r := range ap.routes {
+						vias[k] = r.viaCol
+					}
+					d.issue = fmt.Sprintf("no row of %s is reachable through every route from %s.%s (%s), so the routes cannot all agree with it",
+						d.parent(), d.child, ap.directCol, strings.Join(vias, ", "))
+				} else {
+					d.issue = fmt.Sprintf("forge could not narrow %s.%s to agree with %s.%s on every row",
+						d.child, rt.viaCol, d.child, ap.directCol)
+				}
+				out = append(out, d)
+			}
+		}
+	}
+	return out
 }
 
 // diamondStanza renders one undeclared reference: the two paths, the rows that
@@ -699,8 +835,12 @@ func (p *Plan) diamondStanza(d diamond) string {
 	if d.issue != "" {
 		fmt.Fprintf(&b, "    the declaration on %s cannot be honoured: %s\n", d.constraint(), d.issue)
 	}
-	fmt.Fprintf(&b, "    seeded independently, the two disagree in %d of %d row(s): %s\n",
-		disagreed, tp.n, strings.Join(examples, "; "))
+	how := "seeded independently"
+	if d.issue != "" {
+		how = "as seeded"
+	}
+	fmt.Fprintf(&b, "    %s, the two disagree in %d of %d row(s): %s\n",
+		how, disagreed, tp.n, strings.Join(examples, "; "))
 	b.WriteString("    Declare which is authoritative (pick ONE):\n")
 	fmt.Fprintf(&b, "      COMMENT ON CONSTRAINT %s ON %s IS 'forge:ref derived-from=%s';\n",
 		d.constraint(), d.child, d.viaCol())

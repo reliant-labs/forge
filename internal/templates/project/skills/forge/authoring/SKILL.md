@@ -99,7 +99,7 @@ COMMENT ON CONSTRAINT estimates_customer_id_fkey ON estimates IS
 | declaration | meaning |
 |---|---|
 | `forge:ref derived-from=<column>` | the route leaving by `<column>` decides; this column is seeded from it |
-| `forge:ref authoritative` | this column is the truth; the other edge is narrowed to agree |
+| `forge:ref authoritative` | this column is the truth; every other route to the parent is narrowed to agree |
 | `forge:ref independent` | genuinely unrelated facts |
 
 `authoritative` is usually right: the record states its own subject and the

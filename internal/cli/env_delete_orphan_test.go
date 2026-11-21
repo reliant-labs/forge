@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -308,4 +310,53 @@ func useUnboundControlPlane(t *testing.T, url string) {
 	old := unboundControlPlane
 	unboundControlPlane = url
 	t.Cleanup(func() { unboundControlPlane = old })
+}
+
+// Two env documents for one env (prod-web.yaml and prod-web.json) are an
+// ambiguous declaration, never an undeclared env: delete by name refuses it
+// before asking any control plane, and delete --id refuses an env this
+// project still declares, however ambiguously.
+func TestEnvDelete_AmbiguousEnvDocumentsCountAsDeclared(t *testing.T) {
+	twoDocs := func(t *testing.T) {
+		t.Helper()
+		dir := filepath.Join(".", "deploy", "envs")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"prod-web.yaml", "prod-web.json"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("by name", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		undeclaredDeleteProject(t, srv.URL)
+		twoDocs(t)
+		if !envDeclared(".", "prod-web") {
+			t.Fatal("two env documents read as undeclared")
+		}
+		if _, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", ""); err == nil {
+			t.Fatal("an ambiguously declared env resolved for delete")
+		}
+		if called {
+			t.Fatal("the control plane was asked to resolve an env this project still declares")
+		}
+	})
+	t.Run("by id", func(t *testing.T) {
+		srv := controlPlaneServer(t, map[string]string{
+			"GetEnvironment": `{"environment":{"id":"env_9","name":"prod-web","project":"shop"}}`,
+		})
+		undeclaredDeleteProject(t, srv.URL)
+		twoDocs(t)
+		_, err := resolveLifecycleTargetFromID(t.Context(), "env_9", "", "tok", "")
+		if err == nil || !strings.Contains(err.Error(), "still declares") {
+			t.Fatalf("err = %v; want an env this project still declares refused", err)
+		}
+	})
 }

@@ -194,14 +194,17 @@ func checkLifecycleEnvName(env string) error {
 
 // envDeclared reports whether projectDir declares env: deploy/kcl/<env>/, or
 // an env document (deploy/envs/<env>.yaml) — what `forge obs init` writes for
-// a monitoring-only env, which renders through the same seam.
+// a monitoring-only env, which renders through the same seam. Two env
+// documents for one env (prod.yaml and prod.json) count as declared: the
+// declared path renders it, and the render refuses the ambiguity before
+// anything is resolved by name or deleted.
 func envDeclared(projectDir, env string) bool {
 	st, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env))
 	if err == nil && st.IsDir() {
 		return true
 	}
-	p, _ := envdoc.Path(projectDir, env)
-	return p != ""
+	p, err := envdoc.Path(projectDir, env)
+	return p != "" || err != nil
 }
 
 // resolveUndeclaredLifecycleTarget finds env by name on a control plane when

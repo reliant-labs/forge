@@ -216,6 +216,20 @@ func parkInReceive(claim bool) func(context.Context, *connect.BidiStream[wrapper
 // Cancelling its context alone left both pinning the shutdown to the end of
 // the budget. Either way the client is told by the drain contract — OK,
 // marked drained — not by the abort's read error.
+//
+// DrainHTTP returns when http.Server.Shutdown sees the ended stream's
+// connection idle, and Shutdown polls for that on a backoff that grows to
+// 500ms (±10%): ticks fall about 1.0s, 1.5s, 2.0s into the drain. The old
+// 1.2s budget with a 400ms reserve ended the claimed stream at 800ms and
+// left exactly one tick (~1.0s) before the budget ran out, so the connection
+// had ~200ms to close; a loaded runner missed it (forge#2647). Ending it at
+// 1.2s of a 2.4s budget leaves two ticks (~1.5s, ~2.0s). The reserve can be
+// at most half the budget (Streams.arm).
+const (
+	parkedDrainBudget  = 2400 * time.Millisecond
+	parkedDrainReserve = 1200 * time.Millisecond
+)
+
 func TestDrain_EndsAStreamParkedInReceive(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -228,7 +242,7 @@ func TestDrain_EndsAStreamParkedInReceive(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			streams := &serverkit.Streams{DrainReserve: 400 * time.Millisecond}
+			streams := &serverkit.Streams{DrainReserve: parkedDrainReserve}
 			mux := http.NewServeMux()
 			mux.Handle(tc.procedure, connect.NewBidiStreamHandler(tc.procedure, parkInReceive(tc.claim),
 				connect.WithInterceptors(serverkit.StreamDrainInterceptor())))
@@ -244,10 +258,12 @@ func TestDrain_EndsAStreamParkedInReceive(t *testing.T) {
 				t.Fatalf("first message = %v, %v", msg, err)
 			}
 
-			// The budget's hard deadline is 1.2s - 400ms = 800ms in: a
-			// claimed stream is ended there, an unclaimed one at once.
-			ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+			// The hard deadline is budget - reserve = 1.2s in: a claimed
+			// stream is ended there, an unclaimed one at once.
+			ctx, cancel := context.WithTimeout(context.Background(), parkedDrainBudget)
 			defer cancel()
+			deadline, _ := ctx.Deadline()
+			hard := deadline.Add(-parkedDrainReserve)
 			drained := make(chan error, 1)
 			go func() { drained <- serverkit.DrainHTTP(ctx, httpSrv, streams) }()
 
@@ -262,6 +278,11 @@ func TestDrain_EndsAStreamParkedInReceive(t *testing.T) {
 			}()
 			select {
 			case err := <-ended:
+				// One-sided, so a slow runner cannot fail it: the drain ends
+				// a claimed stream at the hard deadline, never before.
+				if tc.claim && time.Now().Before(hard) {
+					t.Errorf("claimed stream ended before the hard deadline")
+				}
 				if !errors.Is(err, io.EOF) {
 					t.Errorf("drained stream ended with %v (code %s), want OK", err, connect.CodeOf(err))
 				}
@@ -271,11 +292,7 @@ func TestDrain_EndsAStreamParkedInReceive(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("the drain never ended the stream")
 			}
-			// The claimed case ends the stream at the hard deadline, 400ms
-			// before the budget expires; on a loaded runner DrainHTTP
-			// intermittently reported the budget exceeded, so only the
-			// unclaimed case asserts it (flake policy, forge#2647).
-			if err := <-drained; err != nil && !tc.claim {
+			if err := <-drained; err != nil {
 				t.Fatalf("DrainHTTP = %v: the parked stream outlived the budget", err)
 			}
 			if r := streams.Report(); r.StillRunning != 0 {

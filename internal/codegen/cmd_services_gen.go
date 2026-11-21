@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 )
@@ -74,6 +75,11 @@ type CmdGroupItem struct {
 	// method to add, instead of a method expression that breaks the build (and
 	// with it every `forge generate` and `forge scaffold service`).
 	MountMissing bool
+
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // CmdServicesTemplateData feeds cmd-svc-register.go.tmpl (the services group
@@ -197,6 +203,9 @@ type CmdServiceGroupInput struct {
 	// package, and the mount this group calls has to be that one.
 	Workers   []BootstrapWorkerData
 	Operators []BootstrapOperatorData
+	// ConnectMajor is the connect-go major the mount references target
+	// (internal/connectmajor); zero reads it from the project's go.mod.
+	ConnectMajor connectmajor.Major
 }
 
 // GenerateCmdGroups renders the dir-nested command groups under
@@ -270,7 +279,9 @@ func GenerateCmdGroups(in CmdServiceGroupInput, targetDir string, cs *checksums.
 	// the day the service was born.
 	svcItems, skipped := cmdServiceItemsFromNames(modulePath, in.Bin, in.Services, mountOverride)
 	markMissingMounts(targetDir, svcItems)
+	v2 := GenContext{ProjectDir: targetDir, ConnectMajor: in.ConnectMajor}.connectV2()
 	for _, item := range svcItems {
+		item.ConnectV2 = v2
 		mountContent, rerr := templates.ProjectTemplates().Render("cmd-svc-mount-gen.go.tmpl", item)
 		if rerr != nil {
 			return fmt.Errorf("render cmd-svc-mount-gen.go.tmpl (%s): %w", item.Name, rerr)

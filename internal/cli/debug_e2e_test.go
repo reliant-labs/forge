@@ -35,12 +35,12 @@ message EchoResponse {
   string text = 1;
 }`
 
+// echoHandler is the connect-go v2 handler shape (the project is created
+// with --connect v2): the request and response are the wire messages.
 const echoHandler = `package tasks
 
 import (
 	"context"
-
-	"connectrpc.com/connect"
 
 	pb "example.com/dbgdemo/gen/services/tasks/v1"
 )
@@ -48,10 +48,10 @@ import (
 // Echo implements the Echo RPC.
 func (s *Service) Echo(
 	ctx context.Context,
-	req *connect.Request[pb.EchoRequest],
-) (*connect.Response[pb.EchoResponse], error) {
-	reply := "echo: " + req.Msg.GetText()
-	return connect.NewResponse(&pb.EchoResponse{Text: reply}), nil
+	req *pb.EchoRequest,
+) (*pb.EchoResponse, error) {
+	reply := "echo: " + req.GetText()
+	return &pb.EchoResponse{Text: reply}, nil
 }
 `
 
@@ -109,7 +109,9 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 		}
 	}
 
-	must(root, "project", "new", "dbgdemo", "--mod", "example.com/dbgdemo", "--service", "tasks", "--skip-tools")
+	// --connect v2 explicitly: echoHandler is written in v2's handler shape,
+	// so the project's major must not follow a changing default.
+	must(root, "project", "new", "dbgdemo", "--mod", "example.com/dbgdemo", "--service", "tasks", "--skip-tools", "--connect", "v2")
 	project := filepath.Join(root, "dbgdemo")
 	protoPath := filepath.Join(project, "proto", "services", "tasks", "v1", "tasks.proto")
 	proto := readFileE2E(t, protoPath)
@@ -122,7 +124,7 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 	writeFileE2E(t, handlerPath, echoHandler)
 	returnLine := 0
 	for i, line := range strings.Split(echoHandler, "\n") {
-		if strings.Contains(line, "return connect.NewResponse") {
+		if strings.Contains(line, "return &pb.EchoResponse") {
 			returnLine = i + 1
 		}
 	}
@@ -217,7 +219,7 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 	out = must(project, "debug", "continue", "--timeout", "90s")
 	mustContain(out, "Reason: breakpoint", "continue to the rpc entry")
 	mustContain(out, "Echo", "continue to the rpc entry")
-	mustContain(must(project, "debug", "eval", "req.Msg.Text"), "dbg", "eval request field")
+	mustContain(must(project, "debug", "eval", "req.Text"), "dbg", "eval request field")
 	out = must(project, "debug", "continue", "--timeout", "90s")
 	mustContain(out, fmt.Sprintf("rpc_echo.go:%d", returnLine), "continue to the line breakpoint")
 	mustContain(must(project, "debug", "eval", "reply"), "echo: dbg", "eval local")
@@ -251,7 +253,7 @@ func TestE2EDebugEnvUpAttachAndStart(t *testing.T) {
 	must(project, "debug", "break", "Echo")
 	pending = echoAsync(appPort, "own")
 	mustContain(must(project, "debug", "continue", "--timeout", "90s"), "Reason: breakpoint", "continue on the started service")
-	mustContain(must(project, "debug", "eval", "req.Msg.Text"), "own", "eval on the started service")
+	mustContain(must(project, "debug", "eval", "req.Text"), "own", "eval on the started service")
 	mustContain(must(project, "debug", "stop"), "killed", "stop a started session")
 	select {
 	case <-pending:

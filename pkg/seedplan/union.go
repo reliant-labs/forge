@@ -63,8 +63,13 @@ import (
 //	         | <col> IS NULL
 //	         | <col> IS NOT NULL
 //	         | <col> {> >= < <=} <numeric literal>
+//	         | length(<col>) > 0     (and char_length, TRIM(BOTH FROM <col>), >= 1)
 //
-// Anything else — a nested OR inside a group, NOT, a function call, a
+// A biconditional, `(P) = (Q)`, and its xor `(P) <> (Q)`, are unions too —
+// `(P AND Q) OR (NOT P AND NOT Q)` — and biconditional.go expands them into
+// this same flat shape before anything here sees them.
+//
+// Anything else — a nested OR inside a group, NOT, any other function call, a
 // subquery, a column-to-column comparison, arithmetic, IN, <>, a bare boolean
 // column — fails to parse and the constraint keeps the existing "forge cannot
 // place its values" warning. A general solver is the rabbit hole; a narrow
@@ -98,6 +103,13 @@ const (
 	termIsNull                      // col IS NULL
 	termNotNull
 	termCmp // col {> >= < <=} <numeric literal>
+	// termNonBlank is `length(col) > 0` and its spellings — char_length,
+	// a TRIM(BOTH FROM col) or btrim(col) argument, `>= 1`. It asks for a
+	// non-blank string and places no value: every string forge synthesizes
+	// is non-blank, so like IS NOT NULL it only has to be PRESENT (and a
+	// minimal plan, which would otherwise leave a `DEFAULT ''` in place,
+	// must write it).
+	termNonBlank
 )
 
 // unionTerm is one parsed atom of an AND-group. It is pure syntax: whether
@@ -131,6 +143,16 @@ type unionCell struct {
 	// — it only forbids that path from declining the edge on this table.
 	// See columnPlan.requireEdge.
 	requireEdge bool
+	// nonBlank marks a string column the branch requires to be non-blank
+	// (termNonBlank). It is always set together with present: a full plan
+	// already writes a non-blank value, and a minimal plan must write one
+	// even over a DEFAULT, because the usual DEFAULT for such a column is ''.
+	nonBlank bool
+	// null on a FOREIGN KEY (only a nullable, single-column one is ever
+	// eligible) means the branch forbids the edge: the reference path
+	// writes NULL on every row that takes this branch. See
+	// Plan.unionForbidsEdge.
+	//
 	// lit is how an INSERT spells the pin; raw is the same value undecorated,
 	// which is what a consumer that is not writing SQL — the generated CRUD
 	// fixtures, see UnionPlacement — needs.
@@ -154,6 +176,13 @@ var (
 	unionNullRE = regexp.MustCompile(`^"?([a-z_][a-z0-9_]*)"?\s+IS\s+(NOT\s+)?NULL$`)
 	unionEqRE   = regexp.MustCompile(`^"?([a-z_][a-z0-9_]*)"?\s*=\s*(.+)$`)
 	unionCmpRE  = regexp.MustCompile(`^"?([a-z_][a-z0-9_]*)"?\s*(>=|>|<=|<)\s*(.+)$`)
+	// unionNonBlankRE matches a non-blank requirement: length(col) > 0 or
+	// >= 1, through char_length / character_length too, with the argument
+	// optionally trimmed — `length(TRIM(BOTH FROM col))` is how postgres
+	// renders `length(trim(col))`.
+	unionNonBlankRE = regexp.MustCompile(`^(?:length|char_length|character_length)\(\s*` +
+		`(?:TRIM\(\s*BOTH\s+FROM\s+"?([a-z_][a-z0-9_]*)"?\s*\)|btrim\(\s*"?([a-z_][a-z0-9_]*)"?\s*\)|"?([a-z_][a-z0-9_]*)"?)` +
+		`\s*\)\s*(?:>\s*\(?0\)?|>=\s*\(?1\)?)$`)
 	// The literal forms pg_get_constraintdef renders: a quoted string with an
 	// optional cast, and a number that may be parenthesized and cast.
 	unionStrLitRE = regexp.MustCompile(`^'((?:[^']|'')*)'(?:::[a-z_ "]+)?$`)
@@ -208,6 +237,10 @@ func parseUnionGroup(expr string) ([]unionTerm, bool) {
 // arithmetic operand or a column-to-column comparison matches nothing here and
 // takes the whole constraint out of scope.
 func parseUnionTerm(s string) (unionTerm, bool) {
+	if m := unionNonBlankRE.FindStringSubmatch(s); m != nil {
+		col := m[1] + m[2] + m[3] // exactly one alternative captured
+		return unionTerm{column: col, kind: termNonBlank}, true
+	}
 	if m := unionNullRE.FindStringSubmatch(s); m != nil {
 		kind := termIsNull
 		if m[2] != "" {
@@ -305,6 +338,12 @@ func unionClaimedChecks(t schemadef.Table) map[string]bool {
 		// noise and wrong: the constraint IS placed.
 		if _, ok := parseStatusGuard(body); ok {
 			out[ck.Name] = true
+			continue
+		}
+		// So is a biconditional (biconditional.go): placed as guards over
+		// its discriminator, or as a union of its two truth values.
+		if _, ok := parseBiconditional(body); ok {
+			out[ck.Name] = true
 		}
 	}
 	return out
@@ -321,6 +360,14 @@ func unionPlacesColumn(t schemadef.Table, col string) bool {
 		}
 		body, ok := checkBody(ck.Def)
 		if !ok {
+			continue
+		}
+		// A biconditional writes NULL into its presence column on the
+		// rows where that side is false, so it places the column too.
+		if bc, ok := parseBiconditional(body); ok {
+			if bc.left.column == col || bc.right.column == col {
+				return true
+			}
 			continue
 		}
 		groups, ok := parseUnionBranches(body)
@@ -388,7 +435,30 @@ func tableUnionSpecs(t schemadef.Table, pools EnumPools, ordered map[string]orde
 		}
 		groups, ok := parseUnionBranches(body)
 		if !ok {
-			continue // not this shape — the ordering pass reports it
+			// A biconditional the guard pass did not take (its
+			// discriminator has no vocabulary, or neither side is a
+			// discriminator) is placed as the union of its two truth
+			// values — whichever of them can be written.
+			bc, isBiconditional := parseBiconditional(body)
+			if !isBiconditional {
+				continue // not this shape — the ordering pass reports it
+			}
+			var note string
+			groups, note = bc.groups(t, pools)
+			if len(groups) == 0 {
+				refuse(ck.Name, note)
+				continue
+			}
+			spec, why := buildUnionSpec(t, conv, pools, ordered, ck, groups, nil)
+			if why != "" {
+				refuse(ck.Name, why)
+				continue
+			}
+			if note != "" {
+				warns = append(warns, fmt.Sprintf("seed plan: %s constraint %q %s", t.Name, ck.Name, note))
+			}
+			specs = append(specs, spec)
+			continue
 		}
 		spec, why := buildUnionSpec(t, conv, pools, ordered, ck, groups, nil)
 		if why != "" {
@@ -506,6 +576,7 @@ func unionBranchCells(
 	type agg struct {
 		col             schemadef.Column
 		isNull, notNull bool
+		nonBlank        bool
 		eq              *unionTerm
 		bound           NumBound
 		hasBound        bool
@@ -523,7 +594,20 @@ func unionBranchCells(
 			// that it pick one. Without this an ordinary lifecycle guard
 			// (`… OR crew_id IS NOT NULL`) is refused for naming a foreign
 			// key, which is most of them.
-			if reason != "" && term.kind == termNotNull && notNullOnlyFor(terms, term.column) {
+			//
+			// A non-blank requirement is the same statement for a string
+			// column: every value forge writes into one, keys and
+			// references included, is non-blank.
+			if reason != "" && (term.kind == termNotNull || term.kind == termNonBlank) && notNullOnlyFor(terms, term.column) {
+				reason = ""
+			}
+			// The mirror for a NULLABLE single-column foreign key: a branch
+			// that only asserts it IS NULL places no value either — it asks
+			// the reference path to decline the edge on that row, which it
+			// already does on its own for variety (Plan.unionForbidsEdge).
+			// That is what lets `(kind = 'workspace') = (daemon_id IS NOT
+			// NULL)` hold on the rows that are not workspace grants.
+			if reason != "" && term.kind == termIsNull && isNullOnlyFor(terms, term.column) && nullableSoleFK(t, col) {
 				reason = ""
 			}
 			if reason != "" {
@@ -538,6 +622,9 @@ func unionBranchCells(
 			a.isNull = true
 		case termNotNull:
 			a.notNull = true
+		case termNonBlank:
+			a.notNull = true
+			a.nonBlank = true
 		case termEq:
 			if a.eq != nil && a.eq.lit != term.lit {
 				return nil, false, "" // two different pins on one column: never true
@@ -559,6 +646,20 @@ func unionBranchCells(
 			}
 			cells[name] = unionCell{null: true}
 			continue
+		}
+		if a.nonBlank {
+			if a.col.Type != schemadef.TypeString {
+				return nil, false, fmt.Sprintf("it requires a non-blank %s, which is %s", name, a.col.Type)
+			}
+			if a.eq != nil && strings.TrimSpace(a.eq.raw) == "" {
+				return nil, false, "" // pinned blank and required non-blank: never true
+			}
+			// A non-blank equality pin is validated against the pool below
+			// and then written directly. A presence-only cell has no pin:
+			// it draws from the usable subset of the pool in presentLiteral.
+			if pool, ok := pools.get(t.Name, name); ok && a.eq == nil && len(nonBlankValues(pool)) == 0 {
+				return nil, false, fmt.Sprintf("it requires a non-blank %s, whose declared values are all blank", name)
+			}
 		}
 		declared := declaredBound(t, name)
 		switch {
@@ -594,9 +695,9 @@ func unionBranchCells(
 			// full plan already guarantees and a minimal plan (which leaves
 			// nullable columns NULL) must act on.
 			if !a.col.NotNull && isForeignKey(t, name) {
-				cells[name] = unionCell{requireEdge: true}
+				cells[name] = unionCell{requireEdge: true, nonBlank: a.nonBlank}
 			} else {
-				cells[name] = unionCell{present: true}
+				cells[name] = unionCell{present: true, nonBlank: a.nonBlank}
 			}
 		}
 	}
@@ -747,9 +848,87 @@ func (p *Plan) unionLiteral(table string, col schemadef.Column, i int) (string, 
 			return cell.lit, true
 		case cell.hasBound:
 			return unionBounded(p.valueLiteral(table, col, i), col, cell.bound), true
+		case cell.present:
+			if lit, ok := p.presentLiteral(table, col, i, cell.nonBlank); ok {
+				return lit, true
+			}
 		}
 	}
 	return "", false
+}
+
+// presentLiteral keeps a cell the branch requires PRESENT (and, for nonBlank,
+// non-blank) from taking a natural value that is not. Synthesis never yields
+// NULL, but the vocabulary overlay may: a project that pinned
+// `daemon_id: [null]` to dodge a biconditional forge could not place gets a
+// NULL on exactly the rows the placed biconditional now requires a daemon.
+// ok is false when the natural value already satisfies the cell, so the
+// caller's usual dispatch (ordering, the plain draw) carries on unchanged.
+// Otherwise the overlay's usable values are drawn from, and failing those the
+// schema's own value.
+func (p *Plan) presentLiteral(table string, col schemadef.Column, i int, nonBlank bool) (string, bool) {
+	usable := func(lit string) bool {
+		return lit != "NULL" && (!nonBlank || isNonBlankLiteral(lit))
+	}
+	if usable(p.valueLiteral(table, col, i)) {
+		return "", false
+	}
+	var vals []string
+	for _, v := range p.vocab[table][col.Name] {
+		if usable(poolLiteral(col, v)) {
+			vals = append(vals, v)
+		}
+	}
+	salt := p.cfg.EffectiveSalt()
+	if len(vals) > 0 {
+		return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))]), true
+	}
+	lit := p.schemaValueLiteral(table, col, i)
+	if usable(lit) {
+		return lit, true
+	}
+	if pool, ok := p.pools.get(table, col.Name); ok && nonBlank {
+		// The branch planner rejects an all-blank pool for a presence
+		// placement. Recheck here rather than returning a schema draw
+		// that does not satisfy the branch.
+		vals := SeedEnumChoices(nonBlankValues(pool))
+		if len(vals) > 0 {
+			return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))]), true
+		}
+	}
+	return "", false
+}
+
+func isNonBlankLiteral(lit string) bool {
+	v, ok := decodeScalarLiteral(lit)
+	return ok && strings.TrimSpace(v) != ""
+}
+
+func nonBlankValues(pool []string) []string {
+	var values []string
+	for _, v := range pool {
+		if strings.TrimSpace(v) != "" {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
+// unionForbidsEdge reports whether the union branch row i of table takes
+// requires the foreign key col to be NULL — the `daemon_id IS NULL` side of
+// `(kind = 'workspace') = (daemon_id IS NOT NULL)`. The reference path asks
+// before it picks a parent, since a union never reaches an FK cell through
+// unionLiteral.
+func (p *Plan) unionForbidsEdge(table, col string, i int) bool {
+	for s, spec := range p.unions[table] {
+		if len(spec.branches) == 0 {
+			continue
+		}
+		if cell, ok := p.unionBranch(table, s, spec, i)[col]; ok && cell.null {
+			return true
+		}
+	}
+	return false
 }
 
 // unionVocabWarnings names every overlay entry a union placement OVERRIDES.

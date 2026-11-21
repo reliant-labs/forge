@@ -81,8 +81,9 @@ into every environment it is promoted to.
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
 frontend's KCL `config` block. Every web frontend's `config.js` names its
 environment, so `ENVIRONMENT` needs no declaration. A literal
-`{NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT` / `ENVIRONMENT` / `OTEL_REPLAY` in the
-frontend's `env_vars` is carried into the runtime config as well, so older
+`{NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT` / `ENVIRONMENT` in the frontend's
+`env_vars` is carried into the runtime config as well (`OTEL_REPLAY` is not:
+use `telemetry.replay`), so older
 declarations keep working (on `forge.OnHosted`, only the ingest path: the
 control plane writes that document's `ENVIRONMENT`). A build variable only exported in the shell at
 `npm run build` is a **deprecated** fallback: used when `config.js` lacks the
@@ -128,9 +129,8 @@ erases what `full` stored and keeps the running session in memory;
 `optOutOfAnalytics()` is the person's objection to analytics at all. A start
 in a mode that can never reach `full` erases ids an earlier page load stored.
 Under GPC / DNT the browser's events carry **no user id** (not even from
-`setTelemetryUser`), and no auth event is sent. `attribution` /
-`enableAttribution()` are deprecated spellings of mode `full` + consent and
-keep working. The contract, and what each tier sends:
+`setTelemetryUser`), and no auth event is sent. `enableAttribution()` is a
+deprecated spelling of mode `full` + consent. The contract, and what each tier sends:
 `observability/product-events`.
 
 **Where a visit came from.** In `full`, the stored attribution keeps

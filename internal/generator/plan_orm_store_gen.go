@@ -50,11 +50,11 @@ package generator
 // These interfaces cover the generated CRUD surface ONLY. Anything the
 // builder cannot express — joins, aggregates, CTEs, raw SQL — belongs in
 // the per-entity <entity>_repo_ext.go seam forge already scaffolds
-// (scaffold-once, user-owned, never regenerated). A hand-written query
-// there is reached by declaring it on your own interface in the consuming
-// package: the generated store deliberately does NOT try to enumerate
-// user queries, because it is regenerated and would either clobber them or
-// go stale against them.
+// (scaffold-once, user-owned, never regenerated). <Entity>Store does not
+// enumerate those queries: it is regenerated from the schema and would go
+// stale against user code, and widening it would break every hand fake of
+// it. The queries get an interface of their own instead, <Entity>ExtStore,
+// regenerated from the ext file itself (plan_orm_ext_store_gen.go).
 
 import (
 	"fmt"
@@ -124,9 +124,10 @@ func renderStoreAggregate(pkgName string) []byte {
 	b.WriteString("// Deps field forge resolves by type, and forge generates its mock.\n")
 	b.WriteString("//\n")
 	b.WriteString("// These cover the GENERATED CRUD surface only. A hand-written or raw-SQL\n")
-	b.WriteString("// query belongs in the entity's <entity>_repo_ext.go seam; declare it on\n")
-	b.WriteString("// your own interface in the consuming package, because these files are\n")
-	b.WriteString("// regenerated and would go stale against it.\n\n")
+	b.WriteString("// query belongs in the entity's <entity>_repo_ext.go seam: each exported\n")
+	b.WriteString("// func(ctx context.Context, db orm.Context, …) there is a method of the\n")
+	b.WriteString("// <Entity>ExtStore in <entity>_ext_store_gen.go, which follows that file\n")
+	b.WriteString("// on every generate (accessor: <Entities>Ext()).\n\n")
 	b.WriteString("// Store is every entity's store behind one handle, for code that genuinely\n")
 	b.WriteString("// spans several tables against a real database (a reporting job, a\n")
 	b.WriteString("// migration of data). Each entity's accessor (<Entities>()) is declared in\n")

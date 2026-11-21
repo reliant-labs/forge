@@ -119,9 +119,26 @@ yourself writing that method, stop and use the generated store.
 
 **A query the generated CRUD cannot express** — a join, an aggregate, a CTE,
 raw SQL — goes in that entity's `internal/db/<entity>_repo_ext.go` seam, which
-is scaffolded once and never regenerated. Declare a narrow consumer-side
-interface for it (the rule above applies again here) rather than expecting it on
-the generated store, which is regenerated and would go stale against it.
+is scaffolded once and never regenerated. Write it as the seam shows,
+`func F(ctx context.Context, db orm.Context, …)`, and `forge generate` binds it
+too: every such exported function of that file becomes a method of
+`db.<Entity>ExtStore` (`<entity>_ext_store_gen.go`, regenerated from the ext file
+each run, so it never goes stale). Name it in Deps like the CRUD store — forge
+wires it (`db.NewStore(infra.ORM).<Entities>Ext()`) and mocks it — instead of
+hand-writing an interface plus a passthrough adapter over your own queries:
+
+```go
+type Deps struct {
+    Plans    db.PlanStore      // generated CRUD
+    PlansExt db.PlanExtStore   // your plan_repo_ext.go queries, handle bound
+}
+```
+
+`<Entity>Store` itself is never widened (your fakes of it keep compiling). A
+function of another shape — generic, naming an unexported type, not taking
+`(ctx, orm.Context)` first — stays a package function, and `forge generate`
+names it in an ℹ️ line. A consumer that needs only one or two queries may still
+declare its own narrower interface; the ext store satisfies it.
 
 ## The implementation
 

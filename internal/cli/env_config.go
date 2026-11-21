@@ -49,6 +49,10 @@ type envConfigWorkload struct {
 	// secret store cannot supply. Their variables are absent from Env. Only
 	// local (OnHost/OnCompose) workloads are resolved, so only they report.
 	MissingSecrets []envConfigMissingSecret `json:"missing_secrets,omitempty"`
+	// SecretVars names the variables in Env whose value comes from the env's
+	// secret store, sorted. The table masks them unless --show-secrets is
+	// given; --json carries their values, as scripts read them from it.
+	SecretVars []string `json:"secret_vars,omitempty"`
 }
 
 // envConfigMissingSecret is one declared secret the store lacks: the
@@ -84,7 +88,7 @@ func (r envConfigReport) missingSecrets() []envConfigMissingSecret {
 }
 
 func newEnvConfigCmd() *cobra.Command {
-	var jsonOut, strict bool
+	var jsonOut, strict, showSecrets bool
 	var nameFilter string
 
 	cmd := &cobra.Command{
@@ -113,7 +117,12 @@ A declared secret the env's secret store cannot supply is reported, not
 fatal: its variable is left out, it is listed on stderr (and under
 "missing_secrets" in --json), and the command still exits 0. Running a process
 without it is the error, so ` + Name() + ` env exec and env up refuse. Pass --strict to
-fail here too.`,
+fail here too.
+
+A value that comes from the env's secret store is masked in the table, as
+<secret, N bytes>, so reading the configuration back does not put a secret in
+a terminal, a log or an agent's transcript. --show-secrets prints it. --json
+carries every value, and lists the secret-sourced variables in "secret_vars".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			envName := args[0]
 			projectDir := projectDirForKCL()
@@ -145,12 +154,13 @@ fail here too.`,
 				enc.SetIndent("", "  ")
 				return enc.Encode(report)
 			}
-			return renderEnvConfigTable(cmd, report)
+			return renderEnvConfigTable(cmd, report, showSecrets)
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit machine-readable JSON")
 	cmd.Flags().StringVar(&nameFilter, "workload", "", "Only this workload (service, job, frontend, operator or cronjob)")
+	cmd.Flags().BoolVar(&showSecrets, "show-secrets", false, "Print the values that come from the secret store in the table, instead of masking them (--json always carries them)")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Fail (exit 1) when a declared secret is missing from the secret store, as env exec does, instead of reporting it")
 	return cmd
 }
@@ -246,8 +256,10 @@ func filterEnvConfigWorkloads(in []envConfigWorkload, name string) []envConfigWo
 }
 
 // renderEnvConfigTable writes the human view: one block per workload, its
-// variables sorted by name.
-func renderEnvConfigTable(cmd *cobra.Command, report envConfigReport) error {
+// variables sorted by name. A secret-sourced value is masked unless
+// showSecrets is set (forge report a7cfb588: a readback put a 64-hex secret
+// in an agent's transcript).
+func renderEnvConfigTable(cmd *cobra.Command, report envConfigReport, showSecrets bool) error {
 	out := cmd.OutOrStdout()
 	if len(report.Workloads) == 0 {
 		fmt.Fprintf(out, "deploy/kcl/%s/ declares no workloads.\n", report.Env)
@@ -268,13 +280,28 @@ func renderEnvConfigTable(cmd *cobra.Command, report envConfigReport) error {
 		}
 		sort.Strings(names)
 
+		secret := make(map[string]bool, len(w.SecretVars))
+		for _, n := range w.SecretVars {
+			secret[n] = true
+		}
 		tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 		for _, n := range names {
-			fmt.Fprintf(tw, "  %s\t%s\n", n, w.Env[n])
+			v := w.Env[n]
+			if secret[n] && !showSecrets {
+				v = maskedSecret(v)
+			}
+			fmt.Fprintf(tw, "  %s\t%s\n", n, v)
 		}
 		if err := tw.Flush(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// maskedSecret is how the table shows a secret-sourced value: that it is
+// set, and its length, which is what a readback needs to tell a set secret
+// from an empty or truncated one.
+func maskedSecret(v string) string {
+	return fmt.Sprintf("<secret, %d bytes>", len(v))
 }

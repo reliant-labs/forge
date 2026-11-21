@@ -1129,7 +1129,8 @@ func elemType(sliceType string) string {
 // struct. Request fields are matched to columns by name; unmatched
 // fields are dropped with a comment so the generated code says why.
 // Columns the request does NOT carry — `// forge:read-only` fields, and
-// anything in the table the wire message never had — are left unset, and
+// anything in the table the wire message never had — are left unset (a
+// read-only field the request DOES carry is skipped too), and
 // a NOT NULL column's DEFAULT then applies: the entity field of one whose
 // DEFAULT is not its Go zero is nil (or the json/array zero) until set,
 // and the INSERT omits it (ColumnInsertDefault).
@@ -1139,6 +1140,19 @@ func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, [
 	for _, c := range entity.Columns {
 		colByName[c.Name] = c
 	}
+	// A column whose ENTITY field is `forge:read-only` / `forge:computed` is
+	// server-owned on every write path, Create included. The born Create
+	// request omits such a field, but one marked after birth can still be on
+	// the request, and copying it let a client set the column at Create
+	// (forge report 443bd9d8) while Update refused it. FindUnsatisfiableColumns
+	// already judges these columns as unassigned at Create; this makes the
+	// generated code agree with it.
+	serverOwned := make(map[string]bool, len(entity.Fields))
+	for _, f := range entity.Fields {
+		if f.ReadOnly {
+			serverOwned[f.Name] = true
+		}
+	}
 	var out []string
 	var unmapped []UnmappedField
 	assigned := make(map[string]bool, len(wireFields))
@@ -1146,6 +1160,10 @@ func buildCreateAssigns(svc ServiceDef, m Method, entity EntityDef) ([]string, [
 		col, ok := colByName[wf.Name]
 		if !ok {
 			out = append(out, fmt.Sprintf("// %s: request-only field (no %q column in the applied schema)", wf.GoName, wf.Name))
+			continue
+		}
+		if serverOwned[wf.Name] && !col.IsPK && col.Name != entity.PkField {
+			out = append(out, fmt.Sprintf("// %s: server-owned (forge:read-only / forge:computed on the entity field); the request's value is not stored. Remove it from the request, or set the column in the handler.", wf.GoName))
 			continue
 		}
 		a, why := assignToDB("e", "req", wf, col)

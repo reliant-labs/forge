@@ -20,9 +20,8 @@ import (
 // itself handed it.
 //
 // `forge test` is the case that motivated this. It was removed so a second
-// spelling of the test suite could not disagree with the Taskfile, the CLI
-// grew a good failure message (see test_removed_test.go) — and the memory
-// file kept telling agents to use it anyway.
+// spelling of the test suite could not disagree with the Taskfile — and the
+// memory file kept telling agents to use it anyway.
 func TestMemoryTemplateNamesNoRemovedCommands(t *testing.T) {
 	t.Parallel()
 

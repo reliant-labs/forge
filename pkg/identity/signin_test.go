@@ -560,7 +560,7 @@ func TestLoginPolicyDocCarriesPassTokensOnlyWhereDeclared(t *testing.T) {
 		t.Fatalf("doc = %+v", doc)
 	}
 	g, gh := doc.Social[0], doc.Social[1]
-	if g.PassTokens || g.Scopes != nil || !gh.PassTokens || strings.Join(gh.Scopes, " ") != "read:user user:email" {
+	if g.PassTokens || g.Scopes != "" || !gh.PassTokens || gh.Scopes != "read:user user:email" {
 		t.Errorf("social = %+v", doc.Social)
 	}
 	raw, _ := json.Marshal(doc)

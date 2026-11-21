@@ -93,9 +93,10 @@ type LoginPolicySocial struct {
 	// SignInRoutesConfig.UpstreamTokens (KCL `pass_tokens`). Never in
 	// /auth/options.
 	PassTokens bool `json:"pass_tokens,omitempty"`
-	// Scopes are the provider's declared scopes, carried only with
-	// PassTokens (UpstreamTokens.Scopes).
-	Scopes []string `json:"scopes,omitempty"`
+	// Scopes are the provider's declared scopes, space-separated as OAuth
+	// writes them, carried only with PassTokens (UpstreamTokens.Scopes). A
+	// string, not a slice, so LoginPolicySocial stays comparable.
+	Scopes string `json:"scopes,omitempty"`
 }
 
 // LoginPolicyPassword is the password complexity a sign-up form checks.

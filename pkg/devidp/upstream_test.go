@@ -23,7 +23,7 @@ const (
 )
 
 var googlePass = LoginPolicySocial{Type: "google", IdPID: "idp-google", Label: "Google", PassTokens: true,
-	Scopes: []string{"read:user", "repo"}}
+	Scopes: "read:user repo"}
 
 // withTokens adds Zitadel v2's idpInformation.oauth to an intent result.
 func withTokens(res map[string]any) map[string]any {

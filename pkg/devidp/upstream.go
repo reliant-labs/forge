@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -116,7 +117,7 @@ func (r *SignInRoutes) handUpstreamTokens(ctx context.Context, social LoginPolic
 		return !strict
 	}
 	tokens := *res.Upstream
-	tokens.Scopes = append([]string(nil), social.Scopes...)
+	tokens.Scopes = strings.Fields(social.Scopes)
 	err := r.cfg.UpstreamTokens(ctx, UpstreamGrant{
 		Subject: subject, Provider: social.Type, IdPID: res.Link.IdPID,
 		ProviderUserID: res.Link.UserID, ProviderUserName: res.Link.UserName,

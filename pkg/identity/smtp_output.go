@@ -418,7 +418,7 @@ func (p *run) loginPolicyDoc(ctx context.Context, si SignIn) (*LoginPolicyDoc, e
 	for _, i := range p.spec.IdPs {
 		s := LoginPolicySocial{Type: string(i.Type), IdPID: p.idpIDs[i.Name], Label: socialLabels[i.Type]}
 		if i.PassTokens {
-			s.PassTokens, s.Scopes = true, append([]string{}, i.Scopes...)
+			s.PassTokens, s.Scopes = true, strings.Join(i.Scopes, " ")
 		}
 		doc.Social = append(doc.Social, s)
 	}

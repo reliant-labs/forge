@@ -698,10 +698,9 @@ test_run_packages(run_id, org_id, package, test_set_digest, attempts_per_test,
 test_sets(org_id, digest, test_key_ids bigint[], PRIMARY KEY (org_id, digest))
 
 -- Row condition: a test has rows iff at least one of its attempts in the run
--- did not pass; it then has one row for EVERY attempt, passing ones included
--- (a retry pass keeps its pass). A test whose attempts all passed has none.
--- Monthly partitions. The 200k cap is the upload's (below): it counts every
--- attempt of every case, so a run can never store more rows than it.
+-- did not pass (fail or skip); it then has one row for EVERY attempt, from 1,
+-- passing ones included, so a retry pass is stored as fail, pass. A test whose
+-- attempts all passed has none. At most 200k rows per run (below).
 test_case_results(run_id, org_id, test_key_id, attempt, status pass|fail|skip,
           duration_ms, failure_sig_hash, verdict NULL,
           PRIMARY KEY (run_id, test_key_id, attempt))
@@ -751,20 +750,41 @@ test_infra_events(id, org_id, project, kind host|infra, infra_group, test_key_id
   - `test_runs` gives the lane and the commit.
   - `test_run_packages` names each package the run ran, the set of tests it
     ran there, and how many attempts each got (`-count`).
-  - `test_case_results` holds a row per attempt, with its status, for every
-    test that had a fail or skip attempt (so a retry pass keeps its passing
-    attempt too).
-  - A test in the run's test set with no row passed every attempt.
+  - `test_case_results` stores every attempt, pass included, of each test
+    that had **any** non-pass attempt in the run. So a retry pass is stored
+    as `fail, pass`, which is what retry-pass classification reads.
+  - A test whose attempts all passed has no row. It is in the run's test set,
+    and its pass is implied by it.
 
   The test set is exact where a package list is not: a lane run with `-run`
   (the flake gate), a build-tagged test, or a test added or deleted on that
   commit. For our repos this removes about 99% of the rows.
 
-- **Sizes.** An upload is capped at 32 MiB compressed (`gzip` required above 1
-  MiB) and 200k cases, matching `RecordReleaseSBOM`. A case is one attempt of
-  one test: a lane run with `-count=3` over 70k tests is 210k cases and is
-  refused, so the cap bounds `test_case_results` rows per run as well. A larger
-  upload is refused with a reason, never truncated. Phase 0 measured the three repos: a full
+  | A test's attempts in one run                | `test_case_results` rows     | Read back as            |
+  | ------------------------------------------- | ---------------------------- | ----------------------- |
+  | passed (`-count=1`, or 3/3 with `-count=3`) | none                         | pass, from the test set |
+  | failed                                      | `1 fail`                     | fail                    |
+  | failed, then passed on retry                | `1 fail`, `2 pass`           | pass, retry pass        |
+  | failed twice, then passed (`-count=3`)      | `1 fail`, `2 fail`, `3 pass` | pass, retry pass        |
+  | passed, then failed (`-count=2`)            | `1 pass`, `2 fail`           | fail (the last attempt) |
+  | skipped (`t.Skip`)                          | `1 skip`                     | skip                    |
+
+  The last attempt is the test's outcome in the run. A pass after a fail is
+  a retry pass.
+
+- **Caps, never truncation.**
+
+  - `RecordTestRun` refuses an upload over 32 MiB across its parts as sent
+    (`gzip` required for a part above 1 MiB), or over 256 MiB inflated across
+    its parts, with `InvalidArgument` and the reason. It parses nothing, so
+    it cannot count cases.
+  - **The case cap is 200k stored attempt rows per run, counted at ingest.**
+    It counts `test_case_results` rows, not every attempt a run made: a lane
+    of 70k tests run `-count=3` that all pass stores no rows. Ingest refuses
+    a run over the cap: the run is settled failed with the reason, and none
+    of its results are written. It is never truncated.
+
+- **Sizes.** Phase 0 measured the three repos: a full
   unit lane's per-package profile is about 9, 13.5 and 17 MB as text and 0.9,
   1.2 and 1.5 MB gzipped (forge, control-plane, reliant), and one server's
   covdata is a 1.15 MB gzipped meta file plus 5 to 18 KB of counters per
@@ -799,8 +819,9 @@ test_infra_events(id, org_id, project, kind host|infra, infra_group, test_key_id
   `flaky → fixed`). It reconciles `quarantined` against what the default branch
   reports, and on opt-in projects it files and closes issues and opens
   quarantine PRs through the GitHub connection (once per test and transition).
-- **`test_retention`**, daily, collects blobs and case partitions past the
-  retention rules ([Amendment 1, part B](#b-retention)), keeping anything a retained release references
+- **`test_retention`**, daily, collects blobs and runs past the retention
+  rules (a run's test-set references and case rows go with it, by cascade;
+  the case table is not partitioned) ([Amendment 1, part B](#b-retention)), keeping anything a retained release references
   (`deploystore.RetainedReleaseIDs`, the vulnstore rule).
 - **Fairness.** Per-org concurrency caps and bounded batches, as in
   `vuln_rescan`.
@@ -824,11 +845,13 @@ service TestsService {
   // Reads (tests:read). Every filter is optional; lists are paged.
   rpc GetTestSummary(GetTestSummaryRequest) returns (GetTestSummaryResponse);
   //   per branch (default branch by default): coverage trend points (commit, at, combined, by_lane),
-  //   pass rate over the last N runs, flaky / quarantined counts, last run, release markers
+  //   pass rate over the last N runs, flaky / quarantined counts, last run, release markers,
+  //   host health: one row per host signature {signature, events, runs, tests}
   rpc ListTestRuns(ListTestRunsRequest) returns (ListTestRunsResponse);
   //   filters: branch, commit, release, environment, lane, source, status
   rpc GetTestRun(GetTestRunRequest) returns (GetTestRunResponse);
-  //   totals, failures with output, retry passes, slowest tests, zero-evidence packages
+  //   totals, failures with output (each TestFailure carries its verdict and infra_group),
+  //   retry passes, slowest tests, zero-evidence packages
   rpc GetCoverage(GetCoverageRequest) returns (GetCoverageResponse);
   //   project + one of commit | release | environment; lane?; path prefix; base?
   //   → the children of that path (package or file) with statements, combined and per-lane %, diff %
@@ -849,6 +872,17 @@ A flake event's verdict is the `TestFlakeVerdict` enum, the proto twin of
 carries `infra_group`, the id of the correlated-failure group it belongs to,
 which is the `infra_group` of its `test_infra_events` row
 ([2.1](#21-store)).
+
+Two read shapes follow from that, and cp#3286's proto does not have them yet,
+so a later proto change adds both:
+
+- **`TestFailure` carries `infra_group`** in `GetTestRun`, beside its
+  verdict, so a run page can group its correlated failures into one infra
+  event instead of listing them as separate failures.
+- **`GetTestSummary` returns host-health rows**, one per host signature:
+  `{signature, events, runs, tests}`, the shape of `pkg/testreport`'s
+  `HostHealth`. That replaces a bare count (`host_failures_30d`) as what the
+  Flaky tests page's Host health list reads.
 
 `TestsAdminService` (`proto/services/tests_admin/v1/`) gets
 `RecomputeCommit`, `RecomputeFlakes`, `PurgeNow` and `GetIngestBacklog` for

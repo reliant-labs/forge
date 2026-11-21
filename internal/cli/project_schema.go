@@ -153,6 +153,7 @@ func newProjectSchemaCmd() *cobra.Command {
 
   test-coverage-view, test-runs
         forge.test.coverage-view/v1, forge.test.runs/v1: what ` + "`forge test\n        coverage --json`" + ` and ` + "`forge test runs --json`" + ` print.
+
   vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
         what was bumped per finding, the verification, and the exit code the
         vuln-patch workflow branches on.

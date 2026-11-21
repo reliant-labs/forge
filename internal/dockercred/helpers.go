@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 )
@@ -91,8 +92,10 @@ func HelperBesideTool(helper string, lookPath func(string) (string, error)) stri
 		return ""
 	}
 	dir := filepath.Dir(real)
-	st, err := os.Stat(filepath.Join(dir, "docker-credential-"+helper))
-	if err != nil || st.IsDir() || st.Mode()&0o111 == 0 {
+	// exec.LookPath on a path judges it the way the OS runs it: the execute
+	// bit on Unix, a PATHEXT extension (docker-credential-gcloud.cmd) on
+	// Windows, where a mode bit means nothing.
+	if _, err := exec.LookPath(filepath.Join(dir, "docker-credential-"+helper)); err != nil {
 		return ""
 	}
 	return dir

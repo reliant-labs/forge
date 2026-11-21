@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -54,7 +55,13 @@ func TestHelperBesideTool(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, f := range []string{"gcloud", "docker-credential-gcloud"} {
+	// The Cloud SDK ships the helper as docker-credential-gcloud.cmd on
+	// Windows, where only a PATHEXT extension makes a file executable.
+	helperFile := "docker-credential-gcloud"
+	if runtime.GOOS == "windows" {
+		helperFile += ".cmd"
+	}
+	for _, f := range []string{"gcloud", helperFile} {
 		if err := os.WriteFile(filepath.Join(sdk, f), []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -63,9 +70,15 @@ func TestHelperBesideTool(t *testing.T) {
 	if err := os.Symlink(filepath.Join(sdk, "gcloud"), link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
+	// The directory as EvalSymlinks names it: on Windows that expands an
+	// 8.3 short name (RUNNER~1) in t.TempDir() to the long one.
+	want, err := filepath.EvalSymlinks(sdk)
+	if err != nil {
+		t.Fatal(err)
+	}
 	look := lookPathIn(map[string]string{"gcloud": link})
-	if got := HelperBesideTool("gcloud", look); got != sdk {
-		t.Fatalf("HelperBesideTool = %q, want %q", got, sdk)
+	if got := HelperBesideTool("gcloud", look); got != want {
+		t.Fatalf("HelperBesideTool = %q, want %q", got, want)
 	}
 	if got := HelperBesideTool("desktop", look); got != "" {
 		t.Fatalf("only a known tool's helper is located, got %q", got)

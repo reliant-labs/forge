@@ -484,7 +484,28 @@ func (p planner) checksLane() []Check {
 		}
 	}
 
-	// 5. Vulnerabilities and licenses.
+	// 5. Vulnerabilities, committed secrets and licenses.
+	out = append(out, p.scanChecks()...)
+
+	// 6. Deployability, last: it is the one that renders every env's KCL.
+	if ci.HasKCL {
+		out = append(out,
+			// Asserts the render is something `kubectl apply` accepts, not
+			// merely that the KCL evaluates.
+			Check{Name: "validate-kcl", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("ci", "validate-kcl")},
+			// Would an SRE let this reach production: probes, resource
+			// requests/limits, credentials from Secrets, bound ServiceAccounts.
+			Check{Name: "deployability", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("doctor", "--signal", "deploy")},
+		)
+	}
+	return out
+}
+
+// scanChecks are the checks lane's scanners: known vulnerabilities (Go,
+// npm, the lockfiles' SBOM), committed secrets and dependency licenses.
+func (p planner) scanChecks() []Check {
+	ci := p.CI
+	var out []Check
 	if ci.VulnGo {
 		out = append(out, Check{
 			Name:  "vuln-go",
@@ -519,18 +540,6 @@ func (p planner) checksLane() []Check {
 			Tools: []Tool{goLicenses},
 			Argv:  licenseCheckArgv(p.Root),
 		})
-	}
-
-	// 6. Deployability, last: it is the one that renders every env's KCL.
-	if ci.HasKCL {
-		out = append(out,
-			// Asserts the render is something `kubectl apply` accepts, not
-			// merely that the KCL evaluates.
-			Check{Name: "validate-kcl", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("ci", "validate-kcl")},
-			// Would an SRE let this reach production: probes, resource
-			// requests/limits, credentials from Secrets, bound ServiceAccounts.
-			Check{Name: "deployability", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("doctor", "--signal", "deploy")},
-		)
 	}
 	return out
 }

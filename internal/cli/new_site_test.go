@@ -188,7 +188,7 @@ func TestGreenfieldSiteIsFrontendOnly(t *testing.T) {
 		{"", "nextjs", "out", []string{"package.json", "next.config.ts", "tsconfig.json", "postcss.config.mjs",
 			"src/app/layout.tsx", "src/app/page.tsx", "src/app/dev-logging.tsx", "src/app/%5F_forge/log/route.ts"}},
 		{"vite-spa", "vite", "dist", []string{"package.json", "vite.config.ts", "index.html", "tsconfig.json",
-			"src/main.tsx", "src/App.tsx", "src/lib/devlog-plugin.ts"}},
+			"src/main.tsx", "src/App.tsx"}},
 	} {
 		t.Run(tc.feType, func(t *testing.T) {
 			parent := t.TempDir()

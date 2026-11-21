@@ -1326,11 +1326,24 @@ type BuildVariant struct {
 	// `tags` (kcl/render.k _render_build_variant); this field read
 	// `build_tags`, which no render emits, so a variant's tags were dropped
 	// until the env schema's fixture check caught the mismatch.
-	BuildTags  []string          `json:"tags,omitempty"`
-	GOOS       string            `json:"goos,omitempty"`
-	GOARCH     string            `json:"goarch,omitempty"`
+	BuildTags []string `json:"tags,omitempty"`
+	GOOS      string   `json:"goos,omitempty"`
+	GOARCH    string   `json:"goarch,omitempty"`
+	// EnvAtBuild is the variant's build-time process env (KCL
+	// BuildVariant.env), merged over forge's own so a declared key wins.
 	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
 	OutputName string            `json:"output_name,omitempty"` // default: <service>-<variant>
+}
+
+// variantOutputName is the basename a variant's binary is built to and
+// recorded in the release under: the declared output_name, else
+// <workload>-<variant>. It carries no platform suffix; the file on disk is
+// hostlaunch.ExeName(goos, name), so a windows variant ends in .exe.
+func variantOutputName(workload string, v BuildVariant) string {
+	if v.OutputName != "" {
+		return v.OutputName
+	}
+	return workload + "-" + v.Name
 }
 
 // FrontendEntity is one frontend from rendered KCL: a dev server, or a

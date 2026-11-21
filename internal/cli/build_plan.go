@@ -342,7 +342,7 @@ func planBuildOnlyVariants(ctx context.Context, in planInputs) []buildPlanStep {
 		}
 		buildCmd := g.Cmd
 		for _, v := range svc.Runtime.BuildOnly.BuildVariants {
-			t := goBuildTarget{cmd: buildCmd, outputName: svc.Name + "-" + v.Name, goos: v.GOOS, goarch: v.GOARCH, tags: v.BuildTags, env: v.EnvAtBuild}
+			t := goBuildTarget{cmd: buildCmd, outputName: variantOutputName(svc.Name, v), goos: v.GOOS, goarch: v.GOARCH, tags: v.BuildTags, env: v.EnvAtBuild}
 			out = append(out, buildPlanStep{
 				kind: "variant", name: svc.Name + ":" + v.Name, what: "go build " + buildCmd,
 				problem: planGoTarget(ctx, t, in.goPackageName),

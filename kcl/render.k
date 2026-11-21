@@ -3526,6 +3526,8 @@ _render_build_variant = lambda bv: BuildVariant -> any {
         "tags": bv.tags
         "goos": bv.goos if bv.goos else None
         "goarch": bv.goarch if bv.goarch else None
+        "env_at_build": bv.env if bv.env else None
+        "output_name": bv.output_name if bv.output_name else None
     }
 }
 

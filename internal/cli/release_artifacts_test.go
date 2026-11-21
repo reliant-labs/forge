@@ -271,6 +271,28 @@ func TestHarvestFileArtifacts_HashesDeclaredBinaries(t *testing.T) {
 	}
 }
 
+// TestHarvestFileArtifacts_WindowsVariantFindsExe pins that a windows
+// variant is hashed from the .exe the build wrote (hostlaunch.ExeName), while
+// the ledger keys it by its declared name.
+func TestHarvestFileArtifacts_WindowsVariantFindsExe(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFixture(t, filepath.Join(dir, "bin", "cli-windows.exe"), "exe-bytes")
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "cli", Kind: "tool",
+		Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{
+			{Name: "windows", GOOS: "windows", GOARCH: "amd64"},
+		}}},
+	}}}
+
+	art, ok := harvestFileArtifacts(dir, "bin", entities)["cli-windows"]
+	if !ok {
+		t.Fatalf("windows variant not harvested from cli-windows.exe")
+	}
+	if want := sha256Hex(t, "exe-bytes"); art.Integrity != want {
+		t.Errorf("integrity = %q, want %q", art.Integrity, want)
+	}
+}
+
 // sha256Hex returns the canonical "sha256:<hex>" digest of a string, computed
 // independently of the production helper so the assertion is a real check
 // rather than a restatement of the implementation.

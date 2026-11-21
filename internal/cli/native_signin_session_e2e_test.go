@@ -3,6 +3,8 @@
 package cli
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
+	"github.com/reliant-labs/forge/pkg/session"
 )
 
 // TestE2ENativeSignInSessionAuthenticatesRPCs is the gate for the half of
@@ -32,6 +35,14 @@ import (
 // auth-gated RPC three ways: with the session cookie (must pass), with
 // nothing (must 401 — the cookie channel must not open the door), and with
 // another app's cookie (must 401).
+//
+// A fresh project with a database keeps sessions SERVER-SIDE: the cookie
+// holds an opaque session id, the tokens live in auth_sessions (a migration
+// the scaffold wrote), and the interceptor resolves the id to its token. So it
+// also stores a session in the project's own database, as the broker does at
+// sign-in, and calls the RPC with its id (must pass), then signs it out and
+// calls again (must 401) — proof the scaffold wires one Manager into both the
+// broker and the authenticator, over a table its own migration created.
 func TestE2ENativeSignInSessionAuthenticatesRPCs(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -75,6 +86,13 @@ message Widget {
 		"DATABASE_URL="+dsn,
 		"ENVIRONMENT=development",
 		"JWT_SECRET="+pubPEM,
+		// Enough broker configuration for native sign-in to mount (and so
+		// its sessions to exist); no issuer is ever called.
+		"IDP_BASE=http://127.0.0.1:1",
+		"IDP_BROKER_TOKEN=e2e-broker-token",
+		"OIDC_CLIENT_ID=e2e-client",
+		"OIDC_REDIRECT_URI=http://localhost/cb",
+		"IDP_LOGIN_URI=http://localhost/auth/sign-in",
 	)
 	var serverOut strings.Builder
 	cmd.Stdout = &serverOut
@@ -126,5 +144,42 @@ message Widget {
 	}
 	if code, body := list("otherapp_session=" + token); code != http.StatusUnauthorized {
 		t.Errorf("another app's session cookie authenticated this API (HTTP %d, want 401):\n%s", code, body)
+	}
+
+	// A server-side session, stored the way the broker stores one at sign-in.
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sessions, err := session.NewManager(session.Config{Store: session.NewPostgresStore(db)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	issued, err := sessions.Create(ctx, session.Tokens{AccessToken: token, Expiry: time.Now().Add(time.Hour)}, session.Meta{Subject: "e2e-user"})
+	if err != nil {
+		t.Fatalf("store a session in the scaffolded auth_sessions table: %v", err)
+	}
+	if code, body := list("cookieapp_session=" + issued.ID); code != http.StatusOK {
+		t.Errorf("an RPC carrying a server-side session id = HTTP %d, want 200 — the authenticator does not resolve sessions:\n%s\nserver output:\n%s",
+			code, body, serverOut.String())
+	}
+	if _, _, err := sessions.Revoke(ctx, issued.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Revoked in the shared table: the server's cache holds it at most
+	// session.DefaultCacheTTL.
+	deadline := time.Now().Add(session.DefaultCacheTTL + 10*time.Second)
+	for {
+		code, body := list("cookieapp_session=" + issued.ID)
+		if code == http.StatusUnauthorized {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("a signed-out session still authenticates (HTTP %d):\n%s", code, body)
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }

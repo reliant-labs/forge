@@ -11,15 +11,23 @@ const (
 	CredentialToken
 	// CredentialAPIKey: an API key the installed [KeyValidator] checked.
 	CredentialAPIKey
+	// CredentialSession: a server-side browser session id (forge/pkg/session)
+	// the installed [SessionResolver] resolved to an access token, which the
+	// token validator then checked. Only a browser holding the session
+	// cookie presents one: no script can read the cookie, and the id is not
+	// a token any other client is ever issued.
+	CredentialSession
 )
 
-// String returns "unknown", "token" or "api_key".
+// String returns "unknown", "token", "api_key" or "session".
 func (k CredentialKind) String() string {
 	switch k {
 	case CredentialToken:
 		return "token"
 	case CredentialAPIKey:
 		return "api_key"
+	case CredentialSession:
+		return "session"
 	}
 	return "unknown"
 }
@@ -62,11 +70,19 @@ func APIKeyCredential(keyPrefix string) Credential {
 	return Credential{kind: CredentialAPIKey, keyPrefix: keyPrefix}
 }
 
+// SessionCredential is the credential [Authenticator] stamps on a request
+// whose credential was a server-side session id. It is exported for tests that
+// build a session caller's claims by hand.
+func SessionCredential() Credential { return Credential{kind: CredentialSession} }
+
 // Kind returns the kind of credential.
 func (c Credential) Kind() CredentialKind { return c.kind }
 
 // IsAPIKey reports whether an API key proved the claims.
 func (c Credential) IsAPIKey() bool { return c.kind == CredentialAPIKey }
+
+// IsSession reports whether a server-side browser session proved the claims.
+func (c Credential) IsSession() bool { return c.kind == CredentialSession }
 
 // KeyPrefix is the API key's lookup prefix, or "" for any other kind.
 func (c Credential) KeyPrefix() string { return c.keyPrefix }
@@ -74,6 +90,10 @@ func (c Credential) KeyPrefix() string { return c.keyPrefix }
 // IsAPIKey reports whether an API key, not a person's token, proved c. It
 // is false for nil claims.
 func (c *Claims) IsAPIKey() bool { return c != nil && c.Credential.IsAPIKey() }
+
+// IsSession reports whether a server-side browser session, not a bearer
+// token or an API key, proved c. It is false for nil claims.
+func (c *Claims) IsSession() bool { return c != nil && c.Credential.IsSession() }
 
 // withCredential returns a copy of c carrying cred, so stamping never writes
 // to claims a validator may hold on to (a cache, a test fixture).

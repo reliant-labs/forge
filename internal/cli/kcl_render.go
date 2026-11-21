@@ -1995,7 +1995,15 @@ func (t *ClusterTargetEntity) field(name string) string {
 // The override env var FORGE_KCL_RENDER_FIXTURE points at a JSON file
 // whose contents are read in lieu of shelling kcl. Used by unit tests so
 // they can exercise the dispatch logic without a real KCL toolchain.
+//
+// Inside a withDeclarationMemo scope, each env's declaration is evaluated
+// once and shared by every caller in that command (kcl_render_scope.go).
 func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
+	if m := declarationMemoFrom(ctx); m != nil {
+		return m.render(ctx, projectDir, env, func(ctx context.Context) (*KCLEntities, error) {
+			return RenderKCLWith(ctx, projectDir, env, nil)
+		})
+	}
 	return RenderKCLWith(ctx, projectDir, env, nil)
 }
 

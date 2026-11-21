@@ -42,6 +42,7 @@ func newCICmd() *cobra.Command {
 	cmd.AddCommand(newCIVerifyTestRetryCmd())
 	cmd.AddCommand(newCIValidateKCLCmd())
 	cmd.AddCommand(newCIVulnScanCmd())
+	cmd.AddCommand(newCIVulnSBOMCmd())
 	cmd.AddCommand(newCIMigrationSafetyCmd())
 	cmd.AddCommand(newCIRunCmd())
 	cmd.AddCommand(newCISummarizeCmd())
@@ -370,7 +371,8 @@ func newCIVulnScanCmd() *cobra.Command {
 			"high or critical (lower ones are printed, not failed). An advisory with no fixed\n" +
 			"version that cannot reach your code can be accepted under ci.vuln_scan.exemptions\n" +
 			"in forge.yaml — by its GO-… id (govulncheck) or GHSA-… id (npm audit), with a\n" +
-			"reason and an expiry date. Each entry accepts that one advisory and nothing else; an\n" +
+			"reason and an expiry date. Any other advisory id (a CVE) belongs to the SBOM scan,\n" +
+			"`forge ci vuln-sbom`; this command never judges it. Each entry accepts that one advisory and nothing else; an\n" +
 			"expired or incomplete entry fails the gate, and one that matches nothing is reported\n" +
 			"so it can be removed.\n\n" +
 			"The Go scan covers EVERY Go module of the project, not only the one at its root:\n" +
@@ -416,10 +418,11 @@ func newCIVulnScanCmd() *cobra.Command {
 			// not run contributes an error, never a silent absence.
 			var ran, failed []string
 
-			// One exemption list serves both scanners; each entry's ID
-			// says which one it belongs to. An entry neither scanner
-			// reports can accept nothing, and fails the gate the way a
-			// malformed entry does.
+			// One exemption list serves both scanners (and the SBOM
+			// scan); each entry's ID says which one it belongs to. An
+			// entry no scanner could honor fails the gate the way a
+			// malformed entry does; a well-formed CVE entry is the SBOM
+			// scan's, and neither scanner here judges it.
 			exemptions, unroutable := partitionExemptions(ci.VulnScan.Exemptions)
 			for _, m := range unroutable {
 				fmt.Fprintf(os.Stderr, "❌ exemption not honored: %s\n", m)

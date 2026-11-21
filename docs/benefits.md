@@ -3139,6 +3139,29 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/releasehealth/releasehealth.go`](../pkg/releasehealth/releasehealth.go)
 - command `forge obs check`
 
+<a id="vuln-gate-self-hosted"></a>
+
+### Vulnerability gate, warn first
+
+Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate = enforce` and `provenance_sbom` judged before forge writes its promotion, warning for one release before it refuses.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "enforce" } }`; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`
+
+**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required`: below their `gates_from` release an enforce is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now.
+
+**Evidence:**
+
+- command `forge vuln exempt`
+- command `forge ci vuln-sbom`
+- source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
+
+| Rule            | Bug class it prevents                                                                                                                | Lane               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `vuln-gate`     | An env that declares `vuln_gate = enforce` promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
+| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to            | `forge env deploy` |
+
 <a id="delivery-policy-recorded"></a>
 
 ### Per-env delivery policy controls
@@ -3973,14 +3996,18 @@ _In progress · Reliant hosting_
 
 **Use:** Create a change with its default and new behavior, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The planned project-level Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
 
-**Why:** The deterministic evaluation core, exposure events, and product-event tracking are building blocks, not a shipped rollout or experiment service. The proposed first version evaluates a versioned policy locally in the app, without a network call on each request or changes to load balancers.
+**Why:** The evaluation SDK ships: a Go store and OpenFeature provider, a browser loader and OpenFeature provider, and assignment events recorded as product events. Declaring changes in the project, platform delivery of each environment's policy, and the Experiments screen are not shipped yet. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
 
 **Evidence:**
 
 - library [`pkg/changes`](../pkg/changes)
+- library [`pkg/changes/openfeature`](../pkg/changes/openfeature)
 - library [`pkg/observe`](../pkg/observe)
 - source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
+- source [`web-runtime/src/changes-store.ts`](../web-runtime/src/changes-store.ts)
+- source [`web-runtime/src/changes-provider.ts`](../web-runtime/src/changes-provider.ts)
 - source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
+- skill `observability/changes` (`forge skill load observability/changes`)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>

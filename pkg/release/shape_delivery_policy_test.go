@@ -39,13 +39,13 @@ func TestDefaultDeliveryPolicyIsValidAndIsItsOwnDefault(t *testing.T) {
 // The hybrid rule, pinned: what cannot block a deploy enforces, what can audits.
 // Signing and flux_verify audit: enforcing them refuses a rollback to a
 // release signed before them, so an env opts in once its history is signed.
+// provenance_sbom audits (owner, 2026-11-20): enforced, it refuses a promotion
+// whose artifacts have no SBOM (the sbom-required rule), so it can block one.
 func TestDefaultDeliveryPolicyFollowsTheHybridRule(t *testing.T) {
 	d := DefaultDeliveryPolicy()
-	if d.ProvenanceSBOM.Mode != DeliveryEnforce {
-		t.Errorf("provenance_sbom defaults to %s, want enforce: it cannot block a deploy", d.ProvenanceSBOM.Mode)
-	}
 	for name, got := range map[string]DeliveryMode{
-		"signing": d.Signing.Mode, "flux_verify": d.FluxVerify.Mode,
+		"provenance_sbom": d.ProvenanceSBOM.Mode,
+		"signing":         d.Signing.Mode, "flux_verify": d.FluxVerify.Mode,
 		"trusted_builder": d.TrustedBuilder.Mode, "admission_verify": d.AdmissionVerify.Mode,
 		"signed_promotions": d.SignedPromotions.Mode, "vuln_gate": d.VulnGate.Mode,
 		"bundle_kinds": d.BundleKinds.Mode, "approvals": d.Approvals.Mode,
@@ -173,6 +173,9 @@ func TestShape_DeliveryPolicyIsCanonicalAcrossListOrder(t *testing.T) {
 // The wire form is a contract with the control plane: pin it.
 func TestShape_DeliveryPolicyGolden(t *testing.T) {
 	p := DefaultDeliveryPolicy()
+	// Stated, not defaulted: the golden pins the encoding, and a default
+	// that moves (provenance_sbom's, 2026-11-20) must not move it.
+	p.ProvenanceSBOM.Mode = DeliveryEnforce
 	p.VulnGate.Mode = DeliveryEnforce
 	p.Approvals = ShapeApprovals{Mode: DeliveryEnforce, Required: 1}
 	b, err := Shape{Kind: EnvSelfManaged, DeliveryPolicy: &p}.Encode()
@@ -394,5 +397,43 @@ func TestShape_DeliveryPolicyPromotionChecksCanonical(t *testing.T) {
 	}
 	if err := (Shape{Kind: EnvLocal, DeliveryPolicy: &p}.Canonical().Validate()); err != nil {
 		t.Fatalf("valid checks refused: %v", err)
+	}
+}
+
+// provenance_sbom's default is audit (owner, 2026-11-20). An env that leaves
+// it unset records no delivery_policy, as before; one that writes
+// provenance_sbom = enforce — which the old default could not tell from
+// silence — now records the policy, so whoever enforces it can see it.
+func TestExplicitProvenanceSBOMEnforceIsRecorded(t *testing.T) {
+	d := DefaultDeliveryPolicy()
+	if d.ProvenanceSBOM.Mode != DeliveryAudit {
+		t.Fatalf("provenance_sbom defaults to %s, want audit", d.ProvenanceSBOM.Mode)
+	}
+	if !(&d).IsDefault() {
+		t.Fatal("the default policy is not IsDefault")
+	}
+	enc := func(p *ShapeDeliveryPolicy) string {
+		b, err := Shape{Kind: EnvSelfManaged, DeliveryPolicy: p}.Encode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if got := enc(&d); strings.Contains(got, "delivery_policy") {
+		t.Errorf("a default policy was recorded: %s", got)
+	}
+	explicit := DefaultDeliveryPolicy()
+	explicit.ProvenanceSBOM.Mode = DeliveryEnforce
+	if (&explicit).IsDefault() {
+		t.Fatal("provenance_sbom = enforce reads as the default")
+	}
+	if got := enc(&explicit); !strings.Contains(got, `"provenance_sbom":{"mode":"enforce"}`) {
+		t.Errorf("an explicit provenance_sbom = enforce was not recorded: %s", got)
+	}
+	// A shape recorded before the change, with no delivery_policy, reads as
+	// the new default: audit, which refuses nothing — as no forge ever did.
+	var none *ShapeDeliveryPolicy
+	if none.Resolved().ProvenanceSBOM.Mode != DeliveryAudit {
+		t.Error("a shape without delivery_policy does not resolve to audit")
 	}
 }

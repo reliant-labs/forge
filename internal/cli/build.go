@@ -1861,6 +1861,10 @@ type releaseCutOutcome struct {
 	Ledger string
 	// Images, Packages and Files count the artifacts by kind.
 	Images, Packages, Files int
+	// Vulns is the advisory scan of the cut's SBOMs (vuln_gate.go); nil
+	// when nothing was judged (no SBOMs by policy, vuln_gate off, a
+	// claimable deploy).
+	Vulns *cutVulnVerdict
 }
 
 // printReleaseCut is the text rendering of a cut.
@@ -1875,6 +1879,7 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
 		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
 	}
+	printCutVulnVerdict(out, cut.Vulns)
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
@@ -1992,13 +1997,18 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
 		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// The advisory verdict on those SBOMs, printed under the release line.
+	// Never fails the cut (vuln_gate.go).
+	vulns := scanReleaseAtCut(ctx, cutVulnInput{
+		ProjectDir: projectDir, Env: env, Entities: entities, Release: &rel, Hosted: ledger.Hosted, Log: os.Stderr,
+	})
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
 	}
 	return releaseCutOutcome{
 		Release: rel, Created: created, Ledger: ledger.Releases.Location(),
-		Images: images, Packages: packages, Files: files,
+		Images: images, Packages: packages, Files: files, Vulns: vulns,
 	}, nil
 }
 
@@ -2243,6 +2253,13 @@ type goBuildTarget struct {
 	// pgoOff builds with -pgo=off: the env declares the binary's PGO
 	// disabled (kcl/schema.k PGO). A -pgo of the user's own wins.
 	pgoOff bool
+	// cover builds with -cover -covermode=atomic: the env instruments the
+	// binary (kcl/schema.k Tests, WorkloadEntity.CoverBuild). coverPackages
+	// are the env's explicit -coverpkg patterns (empty is "main"), and
+	// coverFlags the resolved flags buildGoTarget fills in before the build.
+	cover         bool
+	coverPackages []string
+	coverFlags    []string
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2294,6 +2311,8 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	if t.pgoOff && !userSetsPGO(t.flags, t.env) {
 		args = append(args, pgoOffFlag)
 	}
+	// A cover build (kcl/schema.k Tests), resolved by buildGoTarget.
+	args = append(args, t.coverFlags...)
 	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
@@ -2338,6 +2357,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		if i, ok := seen[key]; ok {
 			// A binary shared with a delve-run workload is built for it.
 			out[i].debug = out[i].debug || debug
+			// The env refuses workloads that disagree on a binary's
+			// coverage (ResolveCoverBinaries), so either answers for both.
+			out[i].cover = out[i].cover || w.CoverBuild()
 			continue
 		}
 		seen[key] = len(out)
@@ -2352,6 +2374,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			flags:      g.Flags,
 			env:        g.Env,
 			pgoOff:     pgoOff[normalizePGOPackage(g.Cmd)],
+			cover:      w.CoverBuild(),
+			// The env's -coverpkg patterns; empty is "main".
+			coverPackages: w.coverPackages(),
 		})
 	}
 	return out
@@ -2425,6 +2450,18 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
+	// A cover build: -cover -covermode=atomic -coverpkg=<the env's
+	// packages>. An explicit -cover in the build's own flags or GOFLAGS is
+	// the user's choice and wins; a -covermode or -coverpkg of theirs is
+	// kept in place of forge's (mergeCoverFlags).
+	if owns, _, _ := userCoverFlags(t.flags, t.env); t.cover && !owns {
+		flags, err := coverBuildFlags(ctx, projectDirForKCL(), t.coverPackages)
+		if err != nil {
+			return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
+		}
+		t.coverFlags = mergeCoverFlags(flags, t.flags, t.env)
+		fmt.Printf("[build] %s: instrumented for coverage (-cover -covermode=%s)\n", t.outputName, coverMode)
+	}
 	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {

@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -68,8 +69,14 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 	if ctx.Cfg == nil {
 		return nil
 	}
+	// Kept for rederiveFrontendInventory: an env that fails here may render
+	// later in the run, once the modules it imports are regenerated.
+	ctx.diskFrontends = slices.Clone(ctx.Cfg.Frontends)
+	rendered := ctx.renderedEnvs()
+	ctx.inventoryMissedEnvs = failedEnvNames(rendered.failed)
+	ctx.inventoryFrontends = rendered.frontends
 
-	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.renderedFrontends()))
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.inventoryFrontends))
 	if len(fromKCL) == 0 {
 		return frontendCodegenProblems(ctx.Cfg.Frontends)
 	}
@@ -96,6 +103,62 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 			len(names), names)
 	}
 	return nil
+}
+
+// rederiveFrontendInventory derives the inventory again when an environment
+// that failed to render for stepDeriveFrontendInventory renders now.
+//
+// The inventory is derived early in the run, before per-env deploy config
+// regenerates config_gen.k. An env main.k (or config.k) that sets a config
+// field added to the proto in the same edit cannot evaluate until then, so
+// the frontends it declares were missing from the inventory, and the steps
+// that run after the regeneration — the frontend typed config, the
+// observability dashboards — refused or shrank for a frontend that, by then,
+// was declared by an env that renders. The refusal named no cause, because
+// the failure that dropped the frontend had been forgotten with its stale
+// cache, and the generate rolled back, so re-running it failed the same way
+// (forge bug report 3d0d0a20).
+func (ctx *pipelineContext) rederiveFrontendInventory() {
+	if ctx.Cfg == nil || len(ctx.inventoryMissedEnvs) == 0 {
+		return
+	}
+	rendered := ctx.renderedEnvs()
+	stillFailed := failedEnvNames(rendered.failed)
+	recovered := false
+	for _, env := range ctx.inventoryMissedEnvs {
+		if !slices.Contains(stillFailed, env) {
+			recovered = true
+			break
+		}
+	}
+	ctx.inventoryMissedEnvs = stillFailed
+	if !recovered {
+		return
+	}
+	// Keep the last usable declarations only for environments that failed
+	// this pass. A successful render replaces its older declarations, even
+	// when it now declares no frontends. Preserve environment ordering so
+	// DeriveFrontendsFromKCL resolves duplicate names the same way as before.
+	frontends := slices.Clone(rendered.frontends)
+	for _, old := range ctx.inventoryFrontends {
+		if slices.Contains(stillFailed, old.Env) {
+			frontends = append(frontends, old)
+		}
+	}
+	slices.SortStableFunc(frontends, func(a, b renderedEnvFrontend) int { return strings.Compare(a.Env, b.Env) })
+	ctx.inventoryFrontends = frontends
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(frontends))
+	ctx.Cfg.Frontends = config.MergeFrontendInventory(ctx.diskFrontends, fromKCL)
+	config.ApplyDerivedDefaults(ctx.Cfg)
+}
+
+// failedEnvNames is the environment of each failure, in order.
+func failedEnvNames(failed []envRenderFailure) []string {
+	names := make([]string, 0, len(failed))
+	for _, f := range failed {
+		names = append(names, f.Env)
+	}
+	return names
 }
 
 // renderedFrontends reads the frontends every renderable environment

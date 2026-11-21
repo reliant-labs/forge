@@ -150,7 +150,16 @@ func pinnedMerge(ctx context.Context, stderr io.Writer, args []string, relPath s
 	if os.Getenv(delegatedDriverEnv) == "" {
 		if command, ok := pinnedDriverCommand(root, pin); ok {
 			fmt.Fprintf(stderr, "forge merge-generated %s: this driver is forge %s; merging with the pinned forge %s\n", relPath, binary, pin)
-			return true, runDelegatedDriver(ctx, command, args) == nil, nil
+			err := runDelegatedDriver(ctx, command, args)
+			if !driverLaunchFailed(err) {
+				return true, err == nil, nil
+			}
+			// The registered forge vanished between the check above and
+			// the run (a concurrent prune), and the command, in a shape
+			// from before the guard, has no fallback of its own: the
+			// shell never started forge, so %A is untouched. Install the
+			// pin below instead (forge reports 3371cb20, 3a924320).
+			fmt.Fprintf(stderr, "forge merge-generated %s: the pinned forge %s registered in this clone could not be started (%v)\n", relPath, pin, err)
 		}
 		// No pinned forge has run in this clone (a fresh worktree, or a
 		// checkout whose scripts opt out of the driver wiring): install the
@@ -194,6 +203,18 @@ func runDelegatedDriver(ctx context.Context, command string, args []string) erro
 	cmd.Env = append(os.Environ(), delegatedDriverEnv+"=1")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// driverLaunchFailed reports whether err is the shell's own failure to start
+// a delegated driver's program: 127, not found, or 126, not executable.
+// Forge's merge exits 0 or 1, so either code means it never ran.
+func driverLaunchFailed(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	code := exitErr.ExitCode()
+	return code == 126 || code == 127
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

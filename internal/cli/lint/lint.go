@@ -65,6 +65,7 @@ type lintFlags struct {
 	slowTests         bool
 	testWaits         bool
 	protoFormat       bool
+	telemetry         bool
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
@@ -198,6 +199,10 @@ Examples:
                                  # unwired rpc stubs
   forge lint --secrets           # FAIL on a platform-secrets defect, with
                                  # file:line and its escape
+  forge lint --telemetry         # FAIL on a declared dashboard series whose
+                                 # metric no scrape of its system keeps;
+                                 # WARN on an unbounded or high-cardinality
+                                 # scrape and a rate over a likely gauge
   forge lint --guarded-fields    # Flag a scaffolded edit page whose
                                  # update_mask still writes a column a
                                  # custom rpc guards (forge:guards) — the
@@ -388,6 +393,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.testWaits, "test-waits", false, "Fail on a Go test that waits on the wall clock where it should wait on an event — a time.Sleep before the test goes on, an event wait that fails the test after a deadline under 5s (select on time.After, testify Eventually, a poll bounded by time.Now().Add), or an upper bound asserted on real elapsed time — the shapes that flake on a loaded machine. Runs in every forge lint; the fix is testkit.Eventually / testkit.Receive")
 	cmd.Flags().BoolVar(&flags.protoFormat, "proto-format", false, "Fail on a .proto that buf format would rewrite — the scaffolded pre-commit buf-format hook's own check (buf format -d over the buf workspace), so lint and the commit hook cannot disagree. Runs in every forge lint; with --fix, writes buf's output")
+	cmd.Flags().BoolVar(&flags.telemetry, "telemetry", false, "Judge declared telemetry (forge.Telemetry) per env, with the KCL file:line: FAILS on a declared dashboard series whose metric no scrape of its system keeps (allow minus deny; a histogram x counts as x_bucket/_sum/_count); WARNS on a metrics scrape with no allow, a rate/increase over a name no counters or _total/_count/_sum marks as a counter, and a scrape that raises sample_limit or keeps every name without drop_labels. Runs in every forge lint")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, contract refusals in a tree with no forge.yaml, and an advisory lane's own could-not-run report (the typed-config guardrail when golangci-lint never reported). Not needed for a gating lane that could NOT run: that always fails, unless --allow-skip accepts it")
 	// No backticks (see --optional-deps-guard): cobra would take the quoted
 	// span as the argument placeholder.

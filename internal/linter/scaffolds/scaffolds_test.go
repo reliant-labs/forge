@@ -1,6 +1,7 @@
 package scaffolds
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -119,4 +120,46 @@ func findingMatches(findings []Finding, rule string) bool {
 		}
 	}
 	return false
+}
+
+// Regression (obs ab047a0f): control-plane's gate stages tool installs under
+// `.tools/tmp/install.*/`, a checkout of another repository whose Go files
+// carry that repository's scaffold markers and which the installer deletes
+// while lint may be walking it. A directory the go tool ignores (leading "."
+// or "_") is never project source, so LintRoot neither reports it nor fails
+// when it vanishes.
+func TestLintRoot_SkipsDirectoriesTheGoToolIgnores(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	marked := "package x\n\n// FORGE_SCAFFOLD: fill me in\nfunc F() {}\n"
+	for _, dir := range []string{".tools/tmp/install.abc/reliant-src/internal/videojobs", "_scratch/x"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, "x.go"), []byte(marked), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := LintRoot(root)
+	if err != nil {
+		t.Fatalf("LintRoot returned error: %v", err)
+	}
+	if len(res.Findings) != 0 {
+		t.Fatalf("expected no findings from go-ignored directories, got %+v", res.Findings)
+	}
+
+	// The same file in project source is still reported.
+	if err := os.MkdirAll(filepath.Join(root, "internal", "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "x", "x.go"), []byte(marked), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err = LintRoot(root)
+	if err != nil {
+		t.Fatalf("LintRoot returned error: %v", err)
+	}
+	if !findingMatches(res.Findings, "scaffold-not-customized") {
+		t.Fatalf("expected the project-source marker to be reported, got %+v", res.Findings)
+	}
 }

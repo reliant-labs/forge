@@ -170,7 +170,7 @@ func TestTelemetryIncludes(t *testing.T) {
 		all.WriteString("=== " + name + "\n")
 		all.Write(files[name])
 	}
-	goldenFile(t, "includes_dev.golden.yaml", all.Bytes())
+	goldenFile(t, "includes_dev.golden.txt", all.Bytes()) // .txt: a stream of "=== <file>" sections, not YAML (pre-commit check-yaml)
 
 	empty, err := localTelemetryLogs(telemetryEntities())
 	if err != nil {

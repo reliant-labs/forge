@@ -193,7 +193,13 @@ _{{.FrontendIdent}}_frontend = forge.Frontend {
 
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"
-{{if .HasFrontend}}    observability = forge.Observability {}
+{{if and .HasFrontend .Claimable}}    observability = forge.Observability {}
+{{else if not .Claimable}}    # Continuous profiles ON: the platform stores them, and `forge pgo pull
+    # --env {{.EnvName}}` turns their CPU into each Go binary's committed
+    # cmd/<bin>/default.pgo, which every build then uses. They count toward
+    # the env's telemetry allowance like logs and traces; `profiles = False`
+    # opts out (forge skill load observability/profiles).
+    observability = forge.Observability {signals = forge.ObservabilitySignals {profiles = True}}
 {{end}}    # Where hosted workloads, the database{{if .HasFrontend}} and the site{{end}} are published:
     # Reliant cloud (set `endpoint` for another control plane).
 {{- if .Claimable}}

@@ -156,6 +156,7 @@ tool.
 | "never deploy older than X"; a `below_rollback_floor` refusal; declaring an API/feature/data change that cannot be rolled back past | `deploy/rollback-floor` |
 | a cut that died mid-push; control plane unreachable; the k3d registry mirror | `deploy/interrupted-cut`, `deploy/offline-ledger`, `deploy/k3d-registry` |
 | your own CI deploys; forge only records each deploy (`forge release record`) for monitoring | `deploy/record` |
+| what a release is known to be vulnerable to: its SBOMs, `forge vuln list`, the `vuln_gate` | `vuln` |
 
 ## Rules
 

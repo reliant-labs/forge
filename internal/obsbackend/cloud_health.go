@@ -31,6 +31,22 @@ type wireHealthStats struct {
 	P99Ms     float64 `json:"p99Ms"`
 }
 
+// wireBrowserStats is control-plane's BrowserWindowStats: one frontend's
+// browser figures over one window.
+type wireBrowserStats struct {
+	PageViews      jsonInt `json:"pageViews"`
+	PageLoads      jsonInt `json:"pageLoads"`
+	JSErrors       jsonInt `json:"jsErrors"`
+	Requests       jsonInt `json:"requests"`
+	FailedRequests jsonInt `json:"failedRequests"`
+	PageLoadP95Ms  float64 `json:"pageLoadP95Ms"`
+}
+
+func (s wireBrowserStats) stats() releasehealth.BrowserStats {
+	return releasehealth.BrowserStats{PageViews: int64(s.PageViews), PageLoads: int64(s.PageLoads), JSErrors: int64(s.JSErrors),
+		Requests: int64(s.Requests), FailedRequests: int64(s.FailedRequests), PageLoadP95Ms: s.PageLoadP95Ms}
+}
+
 type wireHealthIssue struct {
 	ID           string    `json:"id"`
 	Service      string    `json:"service"`
@@ -82,6 +98,22 @@ type wireReleaseHealth struct {
 		Before       wireHealthStats `json:"before"`
 		After        wireHealthStats `json:"after"`
 		VersionShare *float64        `json:"versionShare"`
+		// Signal and Browser: a control plane that reads browser telemetry
+		// (control-plane#2752, shipped by control-plane#2955 at 08eb56fa:
+		// ServiceHealthDelta.signal = 5 and .browser = 6, a
+		// BrowserHealthDelta of two BrowserWindowStats, in
+		// proto/services/observability/v1/observability.proto, filled by
+		// rpc_get_release_health.go from this module's releasehealth, so
+		// the Signal values are releasehealth's own) says what each service
+		// was judged on and sends a frontend's browser figures, so the folds
+		// below (the baseline rule, --fail-on) see a frontend-only env's
+		// page views rather than a service that sent nothing. An older one
+		// sends neither, and decodes as before: spans, no browser figures.
+		Signal  string `json:"signal"`
+		Browser *struct {
+			Before wireBrowserStats `json:"before"`
+			After  wireBrowserStats `json:"after"`
+		} `json:"browser"`
 	} `json:"services"`
 	NewIssues       []wireHealthIssue `json:"newIssues"`
 	RegressedIssues []wireHealthIssue `json:"regressedIssues"`
@@ -204,7 +236,11 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		return releasehealth.WindowStats{Requests: int64(s.Requests), ErrorRate: s.ErrorRate, P50Ms: s.P50Ms, P95Ms: s.P95Ms, P99Ms: s.P99Ms}
 	}
 	for _, s := range w.Services {
-		r.Services = append(r.Services, releasehealth.ServiceHealth{Service: s.Service, Before: stats(s.Before), After: stats(s.After), VersionShare: s.VersionShare})
+		h := releasehealth.ServiceHealth{Service: s.Service, Before: stats(s.Before), After: stats(s.After), VersionShare: s.VersionShare, Signal: s.Signal}
+		if s.Browser != nil {
+			h.Browser = &releasehealth.BrowserHealth{Before: s.Browser.Before.stats(), After: s.Browser.After.stats()}
+		}
+		r.Services = append(r.Services, h)
 	}
 	issue := func(i wireHealthIssue) releasehealth.Issue {
 		return releasehealth.Issue{ID: i.ID, Service: i.Service, Title: i.Title, Culprit: i.Culprit, Events: int64(i.Events),

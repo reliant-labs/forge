@@ -16,7 +16,7 @@ without forge ever touching your additions.
 
 - `.github/workflows/ci.yml` (yours (scaffold-once)): A thin wrapper around the local gate: jobs `changes`, `checks` (`task ci:checks`), `test`, `integration-test`, plus `docker-build` / `e2e` where the project has them; `timeout-minutes` on every job. See `ci/gate`
 - `.github/workflows/proto-breaking.yml` (Tier-1): `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow.
-- `.github/workflows/build-images.yml` (Tier-1): The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml`
+- `.github/workflows/build-images.yml` (Tier-1): The project image: build + push, cosign signature and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud), then a `vuln-scan` job over the pushed digest. With `forge_version` at v1.10.0 or later it runs `forge vuln scan --image` with the grype database cached per UTC day, and writes no SBOM (forge records one at every release cut, `vuln`); with an older pin, whose forge has neither, it keeps the anchore SPDX SBOM action and a Trivy scan, and regenerating after the pin passes v1.10.0 switches it. Frontend images are per-env and built by `deploy.yml`
 - `.github/workflows/deploy.yml` (Tier-1): Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded)
 - `.github/workflows/e2e.yml` (Tier-1): E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime
 - `.github/workflows/pre-commit.yml` (Tier-2): Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after)
@@ -85,7 +85,7 @@ forge registry ref <env> --github-output    # ref= image= digest= for later step
 workloads push to two registries needs no extra step.
 
 `build-images.yml` builds once per commit on main for the first deploy env
-(the one `deploy.yml` auto-deploys), then signs, SBOMs, attests and scans the
+(the one `deploy.yml` auto-deploys), then signs, attests and scans (`forge vuln scan` from forge v1.10.0, Trivy before; `vuln`) the
 digest-pinned ref `forge registry ref` read back — never a tag and never a
 YAML literal. The login credential is `GITHUB_TOKEN` (GitHub's container
 registry); for another registry, pipe its credential from a secret (a GAR
@@ -102,7 +102,7 @@ first push. So the scaffolded workflows differ by env, not by project:
 | Workflow | Login step | Credential |
 |---|---|---|
 | `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, hosted build env   | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, hosted build env   | none for the build; the `vuln-scan` job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
 | `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
 | `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
 
@@ -172,7 +172,7 @@ same verdict locally:
 | Command | What it runs | CI job |
 |---|---|---|
 | `task ci` | `ci:checks`, then `test`, then `test:integration`, one summary table | none: run this instead of CI |
-| `task ci:checks` | verify-generated, lint, build, vuln-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
+| `task ci:checks` | verify-generated, lint, build, vuln-scan, secret-scan, license, KCL, deployability, plus your `ci.gate.extra_checks` | `checks` |
 | `task test` | unit tests + every frontend's | `test` |
 | `task test:integration` | the `integration`-tagged suite | `integration-test` |
 
@@ -243,6 +243,7 @@ and each is runnable on its own:
 | `forge doctor --signal deploy` | Deployability gate: probes, resource requests/limits, credentials sourced from Secrets rather than literal env values, ServiceAccounts bound to pods, and a way to apply pending SQL migrations. Reads the rendered manifests, so it needs no cluster and no image |
 | `forge ci vuln-scan --go` | Runs govulncheck against `./...` |
 | `forge ci vuln-scan --npm` | Runs `npm audit` in each frontend |
+| `forge ci secret-scan` | Runs gitleaks at forge's pin over every commit; `--branch` (the gate's `secret-scan` row) scans only the commits the change adds, `--since <rev>` the commits after a revision, `--staged` a commit being made |
 | `forge ci migration-safety` | Runs `forge lint --migration-safety` against `db/migrations/` |
 
 Run `task ci` locally before pushing to reproduce the whole CI gate.

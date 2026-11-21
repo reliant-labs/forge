@@ -51,6 +51,20 @@ func TestCheckDisownedFiles(t *testing.T) {
 			wantInMsg:  "2 disowned generated file(s)",
 			wantInEvid: []string{"pkg/app/bootstrap.go", "pkg/app/wire_gen.go"},
 		},
+		{
+			// Legacy `forked: true` manifest entries are converted to
+			// disowned.json records by the legacy-manifest migration on
+			// the next `forge generate` — doctor reads the one converted
+			// source of truth (the pre-migration manifest is invisible
+			// here by design; the migration is automatic and loud).
+			name: "migrated legacy fork shows as disowned",
+			files: map[string]map[string]any{
+				"pkg/app/wire_gen.go": {"reason": "migrated from legacy .forge/checksums.json (legacy fork-era entry; the fork state was removed)", "disowned_at": "2026-06-01T00:00:00Z"},
+			},
+			wantStatus: StatusPass,
+			wantInMsg:  "1 disowned generated file(s)",
+			wantInEvid: []string{"pkg/app/wire_gen.go"},
+		},
 	}
 
 	for _, tt := range tests {

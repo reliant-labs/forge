@@ -47,6 +47,7 @@ type lintFlags struct {
 	columnMarkers     bool
 	closedSets        bool
 	dbGrants          bool
+	crudFixtures      bool
 	fixtureDrift      bool
 	timeBucketing     bool
 	protoMarkers      bool
@@ -377,6 +378,12 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.closedSets, "closed-sets", false, "Fail when a CHECK declared forge:closed-set <set> does not list exactly that Go set, and print the migration that fixes it")
 	cmd.Flags().BoolVar(&flags.dbGrants, "db-grants", false, "Fail on a credential-shaped column (token, password, key, ciphertext, hash…) that carries neither forge:secret nor forge:readable <reason>: the read-only forge_ro role is refused it until someone decides")
 	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Execute every literal fixture statement in a scaffolded handlers_crud_test.go against the current schema — migrations applied to a shadow postgres, each statement run in a rolled-back transaction — and report postgres's own error for each one it rejects: a GENERATED column, a UNIQUE collision, a dangling foreign key, a CHECK a later migration added (warnings only)")
+	// --crud-fixtures checked one failure class (a dangling foreign key) by
+	// reading migration text; --fixture-drift now executes the statements, so
+	// postgres reports that class along with every other. Kept as a hidden
+	// alias so an existing script keeps running the check it asked for.
+	cmd.Flags().BoolVar(&flags.crudFixtures, "crud-fixtures", false, "Alias of --fixture-drift")
+	_ = cmd.Flags().MarkDeprecated("crud-fixtures", "use --fixture-drift, which now executes each fixture statement against the shadow schema and reports foreign-key violations along with every other rejection")
 	cmd.Flags().BoolVar(&flags.timeBucketing, "time-bucketing", false, "Flag a two-argument date_trunc over a TIMESTAMPTZ column — postgres truncates it in the SESSION timezone, which the driver sets from the client host, so every bucketed total is attributed to the wrong day by an amount that changes with the deploy host. Pin the zone: date_trunc('day', col, 'UTC') (warnings only)")
 	cmd.Flags().BoolVar(&flags.goMarkers, "go-markers", false, "Flag //forge: comments in .go files that forge does not read — an unknown marker name, or a known marker in a spelling its parser ignores (“//forge:exclude-contract — why” instead of “: why”); each is an error naming file:line and the expected form")
 	cmd.Flags().BoolVar(&flags.protoMarkers, "proto-markers", false, "Flag .proto comments containing forge: that match no known proto marker — a misspelled marker is inert and warns nowhere (warnings only)")

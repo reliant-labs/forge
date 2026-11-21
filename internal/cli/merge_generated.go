@@ -64,7 +64,7 @@ package cli
 //     which never got forge's .gitattributes, gets the same routes in the
 //     clone's info/attributes (shared by its worktrees, and reported).
 //     FORGE_NO_MERGE_DRIVER=1 opts out of the driver; FORGE_NO_GIT_HOOKS=1
-//     is about hooks only and leaves the driver alone.
+//     (or FORGE_NO_HOOKS) is about hooks only and leaves the driver alone.
 //   - `forge merge-driver install` wires a checkout on purpose, even under
 //     FORGE_NO_MERGE_DRIVER (a merge queue's pool), and `forge merge-driver
 //     check` fails a checkout whose driver cannot run (merge_driver_install.go).
@@ -82,6 +82,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -270,7 +271,8 @@ func mergeGeneratedPath(ctx context.Context, relPath string, base, ours, theirs 
 
 // unstampableRenderOfOurs reports whether ours is forge's render of a
 // comment-incapable output: its body hash is the one THIS side's
-// certificate (.forge/hashes/<path>.sha256) records for it. The project root is the nearest directory above relPath
+// certificate (.forge/hashes/<path>.sha256, or a legacy .forge/hashes.json)
+// records for it. The project root is the nearest directory above relPath
 // holding forge.yaml (the driver runs at the top of the work tree, and
 // relPath is relative to it); this side's certificate comes from HEAD, which
 // is this side in a merge, a rebase and a cherry-pick alike.
@@ -280,11 +282,21 @@ func unstampableRenderOfOurs(relPath string, ours []byte) bool {
 		return false
 	}
 	prefix := strings.TrimSuffix(filepath.ToSlash(relPath), rel)
-	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashCertPath(rel)).Output()
+	if data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.HashCertPath(rel)).Output(); err == nil {
+		recorded, ok := checksums.ParseHashCert(data)
+		return ok && recorded == checksums.BodyHash(ours)
+	}
+	data, err := exec.CommandContext(context.Background(), "git", "cat-file", "blob", "HEAD:"+prefix+checksums.LegacyHashesFile).Output()
 	if err != nil {
 		return false
 	}
-	recorded, ok := checksums.ParseHashCert(data)
+	var h struct {
+		Files map[string]string `json:"files"`
+	}
+	if json.Unmarshal(data, &h) != nil {
+		return false
+	}
+	recorded, ok := h.Files[rel]
 	return ok && recorded == checksums.BodyHash(ours)
 }
 
@@ -427,11 +439,11 @@ func newMergeGeneratedCmd() *cobra.Command {
 // checkout and forge version, says when the clone's driver is missing or
 // unusable (noticeUnwiredMergeDriver; forge#2232).
 //
-// FORGE_NO_MERGE_DRIVER=1 silences both. The git-hooks opt-out
-// (FORGE_NO_GIT_HOOKS) used to skip the driver as well, and that is how
-// reliant's pin script — which sets it to leave core.hooksPath alone — left
-// the driver naming the previous pin's forge: the driver is local git config,
-// not a hook, and the hooks opt-out no longer touches it.
+// FORGE_NO_MERGE_DRIVER=1 silences both. FORGE_NO_GIT_HOOKS (and
+// FORGE_NO_HOOKS) used to skip the driver as well, and that is how
+// reliant's pin script — which sets FORGE_NO_HOOKS to leave core.hooksPath
+// alone — left the driver naming the previous pin's forge: the driver is
+// local git config, not a hook, and the hooks opt-out no longer touches it.
 func ensureGeneratedMergeDriver(root string) {
 	ensureGeneratedMergeDriverTo(os.Stderr, root)
 }

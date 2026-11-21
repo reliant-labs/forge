@@ -305,11 +305,14 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 			}
 			dockerfile := serviceDockerfile(b.Docker)
 			imageName, imageTag := serviceDockerImage(svc, in.resolvedTag, in.opts)
-			_, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
+			args, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
+			// The command the build will run, as the build prints it. The
+			// SOURCE_DATE_EPOCH build arg is the one argument missing: it
+			// comes from git history, which a plan does not read.
 			step := buildPlanStep{
 				kind:   "docker",
 				name:   svc.Name,
-				what:   "docker build -f " + dockerfile + " " + serviceDockerContext(b.Docker),
+				what:   dockerCommandLine(appendSourceDateEpoch(args, "")),
 				pushes: pushes,
 			}
 			if err := checkServiceDockerContext(in.projectDir, svc.Name, b.Docker); err != nil {
@@ -339,7 +342,7 @@ func planBuildOnlyVariants(ctx context.Context, in planInputs) []buildPlanStep {
 		}
 		buildCmd := g.Cmd
 		for _, v := range svc.Runtime.BuildOnly.BuildVariants {
-			t := goBuildTarget{cmd: buildCmd, outputName: svc.Name + "-" + v.Name, goos: v.GOOS, goarch: v.GOARCH, tags: v.BuildTags, env: v.EnvAtBuild}
+			t := goBuildTarget{cmd: buildCmd, outputName: variantOutputName(svc.Name, v), goos: v.GOOS, goarch: v.GOARCH, tags: v.BuildTags, env: v.EnvAtBuild}
 			out = append(out, buildPlanStep{
 				kind: "variant", name: svc.Name + ":" + v.Name, what: "go build " + buildCmd,
 				problem: planGoTarget(ctx, t, in.goPackageName),

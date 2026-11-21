@@ -175,6 +175,9 @@ func (v *validator) target() {
 			break
 		}
 	}
+	if t.Attachment == AttachWorkload && t.Runtime == RuntimeCluster && len(t.Namespaces) == 0 {
+		v.add("namespaces", "a workload target on a cluster needs its namespace: without one its selector matches same-named pods in every namespace, and their signals would be stamped as this service")
+	}
 	if t.Pulled() && t.Runtime != RuntimeHosted && len(t.Selector) == 0 && t.Address == "" {
 		v.add("selector", "a scrape, pull or check needs pods (a selector) or an address to reach")
 	}

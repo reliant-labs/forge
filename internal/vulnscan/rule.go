@@ -153,9 +153,11 @@ func (c Coverage) Complete() bool { return len(c.Unscanned) == 0 && c.Scanned ==
 type GateResult struct {
 	// Mode is the env's vuln_gate mode: off, audit or enforce.
 	Mode string `json:"mode"`
-	// GradedAs is the mode the gate is judged at. It is the declared mode
-	// today; the warn-first rollout (an enforce graded as audit until the
-	// rule's GatesFrom release) is the promotion gate's to apply.
+	// GradedAs is the mode the gate is judged at: the declared mode, except
+	// that the warn-first rollout grades an enforce as audit until the
+	// project's forge pin reaches the vuln-gate rule's GatesFrom release
+	// (internal/cli/lint/rollout_grade.go). The caller grades; Evaluate
+	// records what it was told (EvaluateInput.GradedAs).
 	GradedAs string `json:"graded_as"`
 	// Verdict is the gate's answer.
 	Verdict Verdict `json:"verdict"`
@@ -164,6 +166,27 @@ type GateResult struct {
 	// Determined is false when the verdict is "could not determine" (stale,
 	// unscanned): the exit code is 2, and the document's notes say why.
 	Determined bool `json:"determined"`
+	// JudgedBy says whose judgement of each finding the verdict is:
+	// "control-plane" when the env's control plane judged them (it is
+	// authoritative for an env whose ledger it keeps). Absent for an env
+	// whose ledger is this machine's, which forge judges by definition.
+	// "local" is reserved for a verdict forge gave in a control plane's
+	// stead; this forge never gives one (a control plane that cannot judge
+	// the env is "could not determine").
+	JudgedBy string `json:"judged_by,omitempty"`
+}
+
+// The JudgedBy values.
+const (
+	JudgedByControlPlane = "control-plane"
+	JudgedByLocal        = "local"
+)
+
+// Judgement is an authoritative ledger's answer for one finding: whether the
+// env's vuln_gate blocks it, and the exemption that takes it out of the gate.
+type Judgement struct {
+	Blocking  bool
+	Exemption *Exemption
 }
 
 // Evaluation is the rule applied to a release's findings.
@@ -178,6 +201,9 @@ type EvaluateInput struct {
 	// Gate is the env's vuln_gate, resolved (release.ShapeDeliveryPolicy's
 	// Resolved().VulnGate: the defaults when the env declares none).
 	Gate release.ShapeVulnGate
+	// GradedAs is the mode the rollout grades Gate.Mode as; "" is the
+	// declared mode.
+	GradedAs release.DeliveryMode
 	// Findings are every finding of the release, across its artifacts.
 	Findings []Finding
 	// Coverage says what was scanned.
@@ -187,6 +213,28 @@ type EvaluateInput struct {
 	Stale bool
 	// Now dates exemptions.
 	Now time.Time
+	// Judged, when non-nil, is an authoritative ledger's judgement of every
+	// finding, by Finding.Key() (a control plane's per-finding blocking and
+	// exemption): it decides which findings block and which are exempt, and
+	// this rule is not consulted for either. A finding it does not name
+	// neither blocks nor is exempt. The warn band, which gates nothing and
+	// which such a ledger does not report, is still this rule's.
+	Judged map[string]Judgement
+}
+
+// judgeAuthoritative is a finding's action under in.Judged.
+func judgeAuthoritative(in EvaluateInput, f Finding) (Action, *Exemption) {
+	a := in.Judged[f.Key()]
+	switch {
+	case a.Exemption != nil:
+		return ActionNone, a.Exemption
+	case a.Blocking:
+		return ActionBlock, nil
+	}
+	if local, _ := Judge(in.Gate, f, in.Now); local == ActionWarn {
+		return ActionWarn, nil
+	}
+	return ActionNone, nil
 }
 
 // Evaluate applies the rule to a release. Precedence: off, then stale, then
@@ -208,15 +256,23 @@ func Evaluate(in EvaluateInput) Evaluation {
 	if ev.Gate.Mode == "" {
 		ev.Gate.Mode, ev.Gate.GradedAs = string(release.DeliveryAudit), string(release.DeliveryAudit)
 	}
+	if in.GradedAs != "" && in.Gate.Mode != release.DeliveryOff {
+		ev.Gate.GradedAs = string(in.GradedAs)
+	}
 	off := in.Gate.Mode == release.DeliveryOff
 	warned := false
 	seen := map[string]bool{}
 	for _, f := range in.Findings {
 		j := Judged{Finding: f, Action: ActionNone}
-		if !off {
+		switch {
+		case !off && in.Judged != nil:
+			j.Action, j.Exemption = judgeAuthoritative(in, f)
+		case !off:
 			j.Action, j.Exemption = Judge(in.Gate, f, in.Now)
-		} else if e := exemptionFor(in.Gate, f, in.Now); e != nil {
-			j.Exemption = e
+		case in.Judged != nil:
+			j.Exemption = in.Judged[f.Key()].Exemption
+		default:
+			j.Exemption = exemptionFor(in.Gate, f, in.Now)
 		}
 		switch j.Action {
 		case ActionBlock:

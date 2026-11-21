@@ -279,7 +279,7 @@
           ]
         },
         "artifacts": {
-          "description": "Artifacts are the release artifacts the package is in.",
+          "description": "Artifacts are the release artifacts the package is in. Empty (never absent) for a finding its source attributes to the release as a whole and to no artifact; text output says \"release\" for it. Such a finding is judged, counted and listed like any other.",
           "type": "array",
           "items": {
             "type": "string"
@@ -353,7 +353,7 @@
           "type": "string"
         },
         "graded_as": {
-          "description": "GradedAs is the mode the gate is judged at. It is the declared mode today; the warn-first rollout (an enforce graded as audit until the rule's GatesFrom release) is the promotion gate's to apply.",
+          "description": "GradedAs is the mode the gate is judged at: the declared mode, except that the warn-first rollout grades an enforce as audit until the project's forge pin reaches the vuln-gate rule's GatesFrom release (internal/cli/lint/rollout_grade.go). The caller grades; Evaluate records what it was told (EvaluateInput.GradedAs).",
           "type": "string"
         },
         "verdict": {
@@ -370,6 +370,13 @@
         "determined": {
           "description": "Determined is false when the verdict is \"could not determine\" (stale, unscanned): the exit code is 2, and the document's notes say why.",
           "type": "boolean"
+        },
+        "judged_by": {
+          "description": "JudgedBy says whose judgement of each finding the verdict is: \"control-plane\" when the env's control plane judged them (it is authoritative for an env whose ledger it keeps). Absent for an env whose ledger is this machine's, which forge judges by definition. \"local\" is reserved for a verdict forge gave in a control plane's stead; this forge never gives one (a control plane that cannot judge the env is \"could not determine\").",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

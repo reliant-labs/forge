@@ -17,22 +17,8 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-func newUpgradeCmd() *cobra.Command {
-	var (
-		check      bool
-		force      bool
-		toVersion  string
-		dryRun     bool
-		all        bool
-		jsonOut    bool
-		allowDirty bool
-		skip       []string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "upgrade [--force <path>...]",
-		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
-		Long: `Take the project from the forge it pins to a newer one, and do every mechanical
+// upgradeCmdLong is the help text of `forge project upgrade`.
+const upgradeCmdLong = `Take the project from the forge it pins to a newer one, and do every mechanical
 step on the way, so the gate is green without hand edits. In order:
 
   modules             go get / go mod tidy the forge requirement of each module
@@ -150,8 +136,25 @@ Examples:
   forge project upgrade --check --all          # Every reported file (still no inline diffs)
   forge project upgrade --force                # Apply all updates, even for user-modified files
   forge project upgrade --force buf.yaml       # Overwrite ONLY buf.yaml; leave other edits alone
-  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`,
-		Args: cobra.ArbitraryArgs,
+  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`
+
+func newUpgradeCmd() *cobra.Command {
+	var (
+		check      bool
+		force      bool
+		toVersion  string
+		dryRun     bool
+		all        bool
+		jsonOut    bool
+		allowDirty bool
+		skip       []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "upgrade [--force <path>...]",
+		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
+		Long:  upgradeCmdLong,
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --dry-run is an alias for --check; either toggles dry-run.
 			return runUpgradeCommand(cmd, upgradeOptions{

@@ -40,7 +40,8 @@ func newCISecretScanCmd() *cobra.Command {
 			"With no flag every commit is scanned. --branch scans the commits this checkout adds\n" +
 			"over the branch it merges into (since the merge-base with origin/<default branch>,\n" +
 			"or CI_BASE; on the default branch, the last commit) — what `forge ci gate` runs, so a\n" +
-			"gate judges the change and never a credential committed long before it. --since <rev>\n" +
+			"gate judges the change and never a credential committed long before it. A base with no\n" +
+			"merge-base with HEAD (a shallow clone) is an error, never a narrower scan. --since <rev>\n" +
 			"scans the commits after <rev> (`<rev>..HEAD`). --staged scans what `git commit` is\n" +
 			"about to record, for a pre-commit hook.\n\n" +
 			"Findings are printed redacted. A finding that is not a secret (a test fixture, a\n" +
@@ -64,7 +65,11 @@ func newCISecretScanCmd() *cobra.Command {
 				if !isGitWorkTree(root) {
 					return notAGitCheckout(root)
 				}
-				rangeSpec, why := cigate.BranchRange(cmd.Context(), root, os.Getenv(cigate.BaseEnv))
+				rangeSpec, why, err := cigate.BranchRange(cmd.Context(), root, os.Getenv(cigate.BaseEnv))
+				if err != nil {
+					return cliutil.UserErr("forge ci secret-scan --branch", err.Error(), root,
+						"fetch the full history and the base branch, set "+cigate.BaseEnv+" to the ref this change merges into, or scan every commit with `forge ci secret-scan`")
+				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "secret-scan: scanning %s\n", why)
 				return runSecretScan(cmd, root, rangeSpec, false)
 			}

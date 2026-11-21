@@ -31,7 +31,9 @@ same thing in both.
 `secret-scan` runs `forge ci secret-scan --branch`: gitleaks, at the version
 forge pins (the scaffolded pre-commit hook's), over the commits the change adds —
 since the merge-base with `origin/<default branch>` (or `CI_BASE`), the last
-commit on the default branch. It judges the change, never the history before
+commit on the default branch. A base it finds no merge-base with (a shallow
+clone: check out with `fetch-depth: 0`) fails the row rather than scanning
+less. It judges the change, never the history before
 it, so pinning the forge that added the row cannot fail a gate over a
 credential committed long ago. A false positive is silenced the gitleaks way:
 its fingerprint in `.gitleaksignore`, or a `gitleaks:allow` comment on the

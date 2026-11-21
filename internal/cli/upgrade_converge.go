@@ -605,7 +605,14 @@ func (r *upgradeRun) phaseTemplates() error {
 	printUserModifiedRemedies(counts, r.opts.showAll)
 	r.rep.TemplateDrift = append(r.rep.TemplateDrift, counts.userModifiedPaths...)
 	r.rep.Offers = append(r.rep.Offers, counts.offers...)
-	adv, err := runAdvisoryPassView(r.projectDir, r.cfg, selection, r.check, view)
+	// The scaffold-once rows render as the project will be pinned once this
+	// run is done. The pin phase moves forge_version after this one, and a
+	// template gated on the pin (build-images.yml runs `forge vuln scan` from
+	// v1.10.0) would otherwise be compared to, and `--force` would adopt, the
+	// form the OLD pin gets.
+	atTarget := *r.cfg
+	atTarget.ForgeVersion = r.target
+	adv, err := runAdvisoryPassView(r.projectDir, &atTarget, selection, r.check, view)
 	if err != nil {
 		return err
 	}

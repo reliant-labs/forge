@@ -19,8 +19,10 @@ func TestWriteSiteStarter(t *testing.T) {
 	}{
 		{"nextjs", []string{"package.json", "next.config.ts", "tsconfig.json", "postcss.config.mjs", ".gitignore",
 			"src/app/layout.tsx", "src/app/page.tsx", "src/app/globals.css", "src/app/dev-logging.tsx", "src/app/%5F_forge/log/route.ts"}},
+		// The Vite dev-log receiver comes from the runtime at the current floor;
+		// TestViteSiteStarterFollowsTheRuntimeFloor checks both receiver paths.
 		{"vite-spa", []string{"package.json", "vite.config.ts", "index.html", "tsconfig.json", ".gitignore",
-			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts", "src/lib/devlog-plugin.ts"}},
+			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts"}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			fe, ok := SiteStarterFrontend(tc.kind, "web")

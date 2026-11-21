@@ -21,7 +21,9 @@ func TestPlanKCLDockerRemote_ShowsTheWholeDockerCommand(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte("FROM scratch\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	const token = "ghp_0123456789abcdefABCDEF0123456789abcd"
+	// A token-shaped value, assembled here so no credential-shaped literal
+	// sits in the source (it was never a real token).
+	token := "ghp_" + strings.Repeat("x0", 18)
 	steps := planKCLDockerRemote(planInputs{
 		cfg:        &config.ProjectConfig{Name: "p"},
 		projectDir: root,

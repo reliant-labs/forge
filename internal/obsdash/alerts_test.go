@@ -108,7 +108,12 @@ func TestSilentDefaultNeedsSteadyTraffic(t *testing.T) {
 		if r.For != "0s" {
 			t.Errorf("service-silent for = %q: the silence window is in the SQL, so the hold time is 0s", r.For)
 		}
+		if r.Interval != "5m" {
+			t.Errorf("service-silent interval = %q, want 5m", r.Interval)
+		}
+		return
 	}
+	t.Fatal("no service-silent default")
 }
 
 // TestSilentDefaultCountsEveryCallAServiceServes pins forge#1727: the project's

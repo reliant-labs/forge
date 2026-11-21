@@ -178,6 +178,10 @@ type Artifact struct {
 	// URI locates the artifact when name+version does not (a download URL,
 	// a non-default registry, or the registry an image was pushed to).
 	URI string `json:"uri,omitempty"`
+	// Size is a file artifact's length in bytes, beside its Integrity.
+	// Informational, and NOT part of the identity (the hash names the
+	// bytes); 0 when not recorded.
+	Size int64 `json:"size,omitempty"`
 	// BuiltFrom is the git checkout the artifact's build command ran in, when
 	// that is a checkout forge can name — a ShellBuild's cwd. Informational
 	// provenance like Platforms, and NOT part of the identity: the digest
@@ -304,6 +308,9 @@ func (a Artifact) Validate(name string) error {
 	if a.InputsDigest != "" && !ValidDigest(a.InputsDigest) {
 		return bad("inputs_digest %q is not a canonical sha256 digest", a.InputsDigest)
 	}
+	if a.Size < 0 {
+		return bad("size %d is negative", a.Size)
+	}
 	if err := a.SBOM.validate(); err != nil {
 		return bad("%v", err)
 	}
@@ -321,11 +328,12 @@ func (a Artifact) SharedDigest() (string, bool) {
 	return d, ok && d != ""
 }
 
-// sameIdentity compares the fields that name the bytes. Platforms, BuiltFrom,
-// InputsDigest, CarriedFrom and SBOM are informational and deliberately
-// excluded: re-stating a release with a different platform list, the same
-// digests built in another checkout or carried from an earlier release, or an
-// SBOM a newer generator wrote, has not claimed different bytes.
+// sameIdentity compares the fields that name the bytes. Platforms, Size,
+// BuiltFrom, InputsDigest, CarriedFrom and SBOM are informational and
+// deliberately excluded: re-stating a release with a different platform list,
+// a file whose size a ledger did not keep, the same digests built in another
+// checkout or carried from an earlier release, or an SBOM a newer generator
+// wrote, has not claimed different bytes.
 func (a Artifact) sameIdentity(b Artifact) bool {
 	if a.Kind != b.Kind || a.Mode != b.Mode || a.Version != b.Version ||
 		a.Integrity != b.Integrity || a.URI != b.URI {
@@ -411,6 +419,14 @@ type Release struct {
 	// part of its identity; see [Release.SameContent] for what identifies a
 	// version-only release.
 	RecordOnly bool `json:"record_only,omitempty"`
+	// SourceSBOM is the SBOM of the source tree the release was recorded
+	// from, for a release whose artifacts carry none of their own: a
+	// version-only record's lockfiles (`forge release record
+	// --sbom-source`). Evidence like each Artifact.SBOM, NOT identity:
+	// [Release.SameContent] ignores it, and [BackfillSBOMs] fills it but
+	// never replaces it. A snapshot release refuses it, as it refuses
+	// artifact SBOMs.
+	SourceSBOM *SBOMRef `json:"source_sbom,omitempty"`
 }
 
 // VersionOnly reports whether the release names no artifacts at all: a
@@ -486,6 +502,9 @@ func (r Release) Validate() error {
 	// older decoder predates refuses the whole document there. SBOMs ride
 	// beside that document, never in it.
 	if len(r.Catalog) > 0 || len(r.SnapshotIntents) > 0 {
+		if r.SourceSBOM != nil {
+			return fmt.Errorf("%w: release %q is a snapshot release and cannot carry a source SBOM: a snapshot release's SBOMs are recorded beside its document", ErrInvalid, r.Version)
+		}
 		for _, name := range r.ArtifactNames() {
 			if r.Artifacts[name].SBOM != nil {
 				return fmt.Errorf("%w: release %q is a snapshot release and cannot carry an SBOM on artifact %q: a snapshot release's SBOMs are recorded beside its document", ErrInvalid, r.Version, name)
@@ -498,11 +517,17 @@ func (r Release) Validate() error {
 	// A FORGE-BUILT release that names nothing is a build that lost its
 	// outputs, and stays refused. Only a release explicitly recorded from an
 	// outside pipeline may be version-only.
+	if err := r.SourceSBOM.validate(); err != nil {
+		return fmt.Errorf("%w: release %q: source %v", ErrInvalid, r.Version, err)
+	}
 	if r.VersionOnly() && !r.RecordOnly {
 		return fmt.Errorf("%w: release %q names no artifacts — a release that names nothing cannot be promoted", ErrInvalid, r.Version)
 	}
 	for _, name := range r.ArtifactNames() {
 		if err := r.Artifacts[name].Validate(name); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
+		if err := validateVariantArtifact(name, r.Artifacts[name]); err != nil {
 			return fmt.Errorf("release %q: %w", r.Version, err)
 		}
 	}

@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -38,6 +42,10 @@ type fakeRecordCP struct {
 	envs       map[string]map[string]any
 	promotions []map[string]any
 	promoteErr error
+	// vulnFeatures is GetCapabilities.vulnerabilityFeatures; nil answers
+	// GetCapabilities Unimplemented (a control plane predating it), so the
+	// cut uploads no SBOM.
+	vulnFeatures []string
 }
 
 type fakeRecordCall struct {
@@ -75,6 +83,12 @@ func (f *fakeRecordCP) Call(_ context.Context, proc string, req, out any) error 
 		}
 		f.releases[version] = body
 		reply = map[string]any{"created": true}
+	case "GetRelease":
+		cut, ok := f.releases[body["version"].(string)]
+		if !ok {
+			return &cloud.Error{Code: cloud.CodeNotFound, Message: "release not found"}
+		}
+		reply = map[string]any{"release": cut}
 	case "ListEnvironments":
 		var list []any
 		if e, ok := f.envs[body["search"].(string)]; ok {
@@ -110,7 +124,9 @@ func (f *fakeRecordCP) Call(_ context.Context, proc string, req, out any) error 
 		if arts, ok := cut["artifacts"].([]any); ok {
 			for _, a := range arts {
 				am := a.(map[string]any)
-				resolved[am["name"].(string)] = am["digest"]
+				if d, ok := am["digest"].(string); ok && d != "" { // shared digests only, as release.NewPromotion
+					resolved[am["name"].(string)] = d
+				}
 			}
 		}
 		p := map[string]any{
@@ -121,6 +137,21 @@ func (f *fakeRecordCP) Call(_ context.Context, proc string, req, out any) error 
 		}
 		f.promotions = append(f.promotions, p)
 		reply = map[string]any{"promotion": p}
+	case "GetCapabilities":
+		if f.vulnFeatures == nil {
+			return &cloud.Error{Code: "unimplemented", Message: proc}
+		}
+		reply = map[string]any{"vulnerabilityFeatures": f.vulnFeatures}
+	case "RecordReleaseSBOM":
+		// The digest of the bytes uploaded, as the real control plane
+		// answers it.
+		gz, _ := base64.StdEncoding.DecodeString(body["sbom"].(string))
+		zr, err := gzip.NewReader(bytes.NewReader(gz))
+		if err != nil {
+			return &cloud.Error{Code: cloud.CodeInvalidArgument, Message: "sbom is not gzip"}
+		}
+		doc, _ := io.ReadAll(zr)
+		reply = map[string]any{"digest": sbom.Digest(doc), "created": true, "scanState": "VULNERABILITY_SCAN_STATE_PENDING"}
 	default:
 		return &cloud.Error{Code: "unimplemented", Message: proc}
 	}
@@ -148,10 +179,12 @@ func useRecordLedger(t *testing.T, open recordLedgerOpener) {
 	t.Cleanup(func() { openRecordLedger = prev })
 }
 
+// hostedRecordTarget opens cp as the record's ledger the way
+// defaultRecordLedger opens a real control plane (recordHostedLedger).
 func hostedRecordTarget(cp *fakeRecordCP) recordLedgerOpener {
-	return func(_ context.Context, _, project, _, _ string, _ *KCLEntities) (recordLedger, error) {
+	return func(_ context.Context, projectDir, project, _, _ string, _ *KCLEntities) (recordLedger, error) {
 		return recordLedger{
-			ledger:   hostedLedger(cp, cloud.DefaultEndpoint, project, deploytarget.HostedEnvSelfManaged),
+			ledger:   recordHostedLedger(cp, cloud.DefaultEndpoint, projectDir, project, deploytarget.HostedEnvSelfManaged),
 			endpoint: cloud.DefaultEndpoint,
 		}, nil
 	}

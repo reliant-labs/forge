@@ -13,7 +13,7 @@ import (
 // orm.ReadCommitted). Each level carries the attempt budget it needs —
 // Serializable and RepeatableRead are retried on 40001 / 40P01 up to
 // DefaultTxMaxAttempts, ReadCommitted runs once — and WithMaxAttempts /
-// WithReadOnly refine it into a TxOptions.
+// WithReadOnly / WithRetryOn refine it into a TxOptions.
 //
 // It has no default. The zero value is UNSET, and every opener rejects it:
 // SERIALIZABLE and READ COMMITTED make opposite correctness arguments (the
@@ -86,6 +86,12 @@ func (i Isolation) WithMaxAttempts(n int) TxOptions { return i.txOptions().WithM
 // SERIALIZABLE; see TxOptions.ReadOnly).
 func (i Isolation) WithReadOnly() TxOptions { return i.txOptions().WithReadOnly() }
 
+// WithRetryOn returns the level also retrying the errors fn reports true for,
+// ORed with 40001 / 40P01; see TxOptions.WithRetryOn.
+func (i Isolation) WithRetryOn(fn func(error) bool) TxOptions {
+	return i.txOptions().WithRetryOn(fn)
+}
+
 // sqlLevel maps an Isolation onto database/sql's constants. Only a validated
 // level reaches it.
 func (i Isolation) sqlLevel() sql.IsolationLevel {
@@ -122,6 +128,7 @@ func (i Isolation) String() string {
 //	db.RunTx(ctx, orm.Serializable, fn)                     // retried up to DefaultTxMaxAttempts
 //	db.RunTx(ctx, orm.ReadCommitted, fn)                    // one attempt
 //	db.RunTx(ctx, orm.ReadCommitted.WithMaxAttempts(3), fn) // retried on deadlock (40P01)
+//	db.RunTx(ctx, orm.Serializable.WithRetryOn(orm.RetryOnCommitRollback), fn) // … and on a COMMIT that rolled back
 //	tx, err := db.BeginDetached(ctx, orm.Serializable.WithReadOnly().WithMaxAttempts(1))
 //
 // Every field that decides behaviour must be set: the zero value is rejected.
@@ -150,10 +157,24 @@ type TxOptions struct {
 	ReadOnly bool
 
 	// MaxAttempts bounds how many times fn runs: 1 is no retry, N re-runs fn
-	// from the top on 40001 / 40P01 until N attempts have failed. Required
-	// (at least 1). BeginDetached hands the transaction to the caller, so it
-	// cannot retry and requires exactly 1.
+	// from the top on 40001 / 40P01 (and on whatever WithRetryOn adds) until
+	// N attempts have failed. Required (at least 1). BeginDetached hands the
+	// transaction to the caller, so it cannot retry and requires exactly 1.
 	MaxAttempts int
+
+	// retryOn holds the classifiers WithRetryOn added, ORed with the default
+	// 40001 / 40P01 classification. It is a pointer to an immutable value,
+	// not a func or slice field, so TxOptions stays comparable: == compiles
+	// and never panics, and two options carrying classifiers are equal only
+	// when they carry the same WithRetryOn result.
+	retryOn *retryClassifiers
+}
+
+// retryClassifiers is the immutable list behind TxOptions.retryOn.
+// WithRetryOn copies it, so options derived from a shared base never see
+// each other's classifiers.
+type retryClassifiers struct {
+	fns []func(error) bool
 }
 
 func (o TxOptions) txOptions() TxOptions { return o }
@@ -162,6 +183,69 @@ func (o TxOptions) txOptions() TxOptions { return o }
 func (o TxOptions) WithMaxAttempts(n int) TxOptions {
 	o.MaxAttempts = n
 	return o
+}
+
+// WithRetryOn returns o retrying, besides 40001 / 40P01, every failed attempt
+// whose error fn reports true for. It widens the classification and never
+// narrows it: fn is ORed with the default and with every classifier an
+// earlier WithRetryOn added, so
+//
+//	orm.Serializable.
+//	    WithRetryOn(orm.RetryOnSQLState("40002", "25P02")).
+//	    WithRetryOn(orm.RetryOnCommitRollback)
+//
+// retries on all four codes and on a COMMIT that rolled back. A nil fn adds
+// nothing.
+//
+// With more than one attempt, a classified error is treated as a 40001:
+// an error still classified after the last attempt returns svcerr.Aborted
+// with the error as its cause. At one attempt (orm.ReadCommitted by default,
+// or WithMaxAttempts(1)), the runner does not consult the custom classifier;
+// an ordinary error is returned unchanged and native conflicts still return
+// svcerr.Aborted. Every opener accepts a classifier, so a project's opener
+// can add its own to whatever policy its caller named; BeginDetached never
+// retries and never consults it, and a
+// joined RunTx ignores it with the rest of its options. A classifier is a
+// property of the body: say
+// it where the body can produce the error, and keep it narrow — a retried
+// error that is really an answer (23505 in most code) costs MaxAttempts
+// rollbacks and backoff sleeps, then surfaces as svcerr.Aborted instead of
+// the answer.
+//
+// fn has retry.Policy.Retryable's signature, so one classifier serves both.
+func (o TxOptions) WithRetryOn(fn func(error) bool) TxOptions {
+	if fn == nil {
+		return o
+	}
+	var fns []func(error) bool
+	if o.retryOn != nil {
+		fns = append(fns, o.retryOn.fns...)
+	}
+	o.retryOn = &retryClassifiers{fns: append(fns, fn)}
+	return o
+}
+
+// Retryable reports whether a transaction run with o re-runs an attempt that
+// failed with err, attempt budget permitting: a 40001 / 40P01 anywhere in
+// err's chain, or an error a WithRetryOn classifier reports true for. RunTx
+// and RunTransaction consult it between attempts; a project's own opener
+// with a retry loop of its own (see ResolveTxPolicy) calls it to honour the
+// same policy. It reports false for a nil err.
+func (o TxOptions) Retryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRetryableTxError(err) {
+		return true
+	}
+	if o.retryOn != nil {
+		for _, fn := range o.retryOn.fns {
+			if fn(err) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // WithReadOnly returns o as a READ ONLY transaction (DEFERRABLE under
@@ -186,6 +270,13 @@ func (o TxOptions) String() string {
 	} else {
 		fmt.Fprintf(&b, ", %d attempts", o.MaxAttempts)
 	}
+	if o.retryOn != nil {
+		if n := len(o.retryOn.fns); n == 1 {
+			b.WriteString(", +1 retry classifier")
+		} else {
+			fmt.Fprintf(&b, ", +%d retry classifiers", n)
+		}
+	}
 	return b.String()
 }
 
@@ -208,7 +299,9 @@ func resolveTxPolicy(p TxPolicy, op string, detached bool) (TxOptions, error) {
 // such as a repository wrapper with a retry ladder of its own — and returns
 // it as full options: level, access mode and attempt budget. It refuses what
 // RunTx refuses (no policy, an unset or unknown level, no attempt budget), so
-// the wrapper's callers name a level exactly as RunTx's do.
+// the wrapper's callers name a level exactly as RunTx's do. The wrapper's
+// retry loop asks the returned options' Retryable whether to re-run an
+// attempt, so a WithRetryOn its caller added is honoured there too.
 //
 // op names the opener for the error ("Repo.RunTx"), and the error names the
 // line that called the opener — one frame above the caller of

@@ -157,8 +157,8 @@ const (
 
 // The weighted request and error counts, as release health counts them.
 var (
-	weightedRequests = "sum(" + obsquery.SpanWeightSQL + ")"
-	weightedErrors   = "sumIf(" + obsquery.SpanWeightSQL + ", " + obsquery.SpanErrorSQL + ")"
+	weightedRequests = "sum(" + obsquery.SpanSampleWeightSQL + ")"
+	weightedErrors   = "sumIf(" + obsquery.SpanSampleWeightSQL + ", " + obsquery.SpanErrorSQL + ")"
 )
 
 // backendVersionShareSQL is each bucket's server requests split by version, as
@@ -220,9 +220,9 @@ var versionComparisonSQL = `SELECT ` + releasesVersion + ` AS "Version",
        formatDateTime(max(Timestamp), '%Y-%m-%d %H:%i') AS "Last seen (UTC)",
        toUInt64(round(` + weightedRequests + `)) AS "Requests",
        round(100 * ` + weightedErrors + ` / nullIf(` + weightedRequests + `, 0), 2) AS "Error rate (%)",
-       round(quantileExactWeightedIf(0.5)(Duration / 1000000, ` + obsquery.SpanWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p50 (ms)",
-       round(quantileExactWeightedIf(0.95)(Duration / 1000000, ` + obsquery.SpanWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p95 (ms)",
-       round(quantileExactWeightedIf(0.99)(Duration / 1000000, ` + obsquery.SpanWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p99 (ms)"
+       round(quantileExactWeightedIf(0.5)(Duration / 1000000, ` + obsquery.SpanSampleWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p50 (ms)",
+       round(quantileExactWeightedIf(0.95)(Duration / 1000000, ` + obsquery.SpanSampleWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p95 (ms)",
+       round(quantileExactWeightedIf(0.99)(Duration / 1000000, ` + obsquery.SpanSampleWeightIntSQL + `, NOT ` + obsquery.SpanStreamSQL + `), 1) AS "p99 (ms)"
 FROM otel_traces
 WHERE ` + obsquery.SpanServerSQL + ` AND ` + obsquery.SpanNotProbeSQL + ` AND ` + releasesTraceScope + `
 GROUP BY ` + releasesVersion + `

@@ -80,7 +80,15 @@ func TestSnapshotCutNeverSendsSBOM(t *testing.T) {
 		t.Fatalf("a snapshot release carrying an SBOM was sent: err=%v cut=%v", err, fake.cut)
 	}
 
+	// The release's own source SBOM is refused the same way.
 	r.Artifacts = nil
+	r.SourceSBOM = &release.SBOMRef{Digest: "sha256:" + strings.Repeat("c", 64), Status: release.SBOMStatusOK, Source: release.SBOMSourceLockfile}
+	fake = &snapshotCaller{capable: true}
+	if _, err := (&hostedStore{client: fake}).Cut(context.Background(), r); err == nil || fake.cut != nil {
+		t.Fatalf("a snapshot release carrying a source SBOM was sent: err=%v cut=%v", err, fake.cut)
+	}
+
+	r.SourceSBOM = nil
 	fake = &snapshotCaller{capable: true}
 	if _, err := (&hostedStore{client: fake}).Cut(context.Background(), r); err != nil {
 		t.Fatal(err)

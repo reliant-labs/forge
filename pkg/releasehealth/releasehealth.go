@@ -26,9 +26,10 @@
 //     baseline. One with enough after but too few before is named in
 //     not_evaluated (baseline.go). The other findings need no baseline.
 //   - Signals (signals.go): a service's requests are its own server spans;
-//     one that sent none in either window is judged on what the hosting
-//     platform's ingress measured for it; a frontend's browser telemetry is
-//     judged beside either (browser_* findings), or alone.
+//     Combine can stand ingress figures in for a service that sent none, but
+//     no caller passes them yet, so a service with no spans is not judged on
+//     its requests; a frontend's browser telemetry is judged beside spans
+//     (browser_* findings), or alone.
 //   - Findings: error_rate, latency, new_issue, regressed_issue, alert_firing,
 //     workload_restarts, browser_errors, browser_failed_requests,
 //     browser_page_load, probe_failed, probe_latency, changed_op_errors,
@@ -597,6 +598,10 @@ type Alert struct {
 	// baseline window before the promotion, set on an alert of
 	// [Report.BaselineAlerts] (alert_baseline.go); 0 elsewhere.
 	BaselineFirings int `json:"baseline_firings,omitempty"`
+	// Issue is set on an alert of [Report.PreExistingAlerts]: the issue it
+	// fired for, which predates the release (pre_existing_alerts.go); nil
+	// elsewhere.
+	Issue *PreExistingIssue `json:"issue,omitempty"`
 }
 
 // Critical reports whether the alert is labelled severity=critical.
@@ -677,7 +682,12 @@ type Input struct {
 	// an alert that was already flapping from one the release opened
 	// (alert_baseline.go). Nil when not read, which counts every alert.
 	AlertHistory []AlertEvent
-	Workloads    []Workload
+	// AlertIssues are the issues the firing alerts name (label issue_id),
+	// read by the caller: what tells an alert on an issue that predates the
+	// release from one the release caused (pre_existing_alerts.go). Nil when
+	// not read, which counts every alert.
+	AlertIssues []AlertIssue
+	Workloads   []Workload
 	// Ops are the figures of the ops the release's commit range changed,
 	// selected by the caller (changed_ops.go); nil judges no op.
 	Ops        []OpHealth
@@ -707,6 +717,17 @@ type Finding struct {
 	// Unattributed says why the finding is not the judged release's doing
 	// ([Attribute]); such a finding is a warn whatever fail_on says.
 	Unattributed string `json:"unattributed,omitempty"`
+	// PreExisting is set on an alert_firing finding whose alert's condition
+	// predates the release: the same alert fired in the baseline window
+	// (alert_baseline.go), or its issue was first seen before the promotion
+	// and fires no faster under it (pre_existing_alerts.go). Such a finding
+	// is a warn, with the reason in Unattributed.
+	PreExisting bool `json:"pre_existing,omitempty"`
+	// Alert names the alert behind an alert_firing finding: its fingerprint,
+	// or its rule and labels when it has none. It is what matches the finding
+	// to its own alert (pre_existing_alerts.go); "" on a finding judged
+	// before the field existed, and on every other code.
+	Alert string `json:"alert,omitempty"`
 	// Op, Commit and PR are set on a changed-op finding (changed_ops.go):
 	// the op (its span name, also the Ref), the newest commit of the
 	// release's range that changed it, and that commit's pull request when
@@ -746,6 +767,12 @@ type Report struct {
 	// alert_firing finding saying so, never a failing one
 	// (alert_baseline.go). A critical one is never here.
 	BaselineAlerts []Alert `json:"baseline_alerts,omitempty"`
+	// PreExistingAlerts opened after the promotion and still fire, but each
+	// names an issue first seen before the promotion that fires no faster
+	// under the release (pre_existing_alerts.go): the issue's old condition,
+	// not the release's. Each is a warn alert_firing finding saying so, with
+	// the issue on the alert. A critical one is never here.
+	PreExistingAlerts []Alert `json:"pre_existing_alerts,omitempty"`
 	// AlertStateUnread says why a caller that applies the critical-alert rule
 	// itself could not read the alert state (WithAlertStateUnread): a PASS
 	// that could not look at it is not proven good.
@@ -877,7 +904,7 @@ func Evaluate(in Input) Report {
 			continue
 		}
 		r.FiringAlerts = append(r.FiringAlerts, a)
-		add(Finding{Code: release.HealthAlertFiring, Ref: a.Rule, Value: 1, Threshold: 1,
+		add(Finding{Code: release.HealthAlertFiring, Ref: a.Rule, Alert: alertKey(a), Value: 1, Threshold: 1,
 			Message: fmt.Sprintf("alert %s opened after the promotion and is still firing", a.Rule)})
 	}
 	for _, w := range in.Workloads {
@@ -896,6 +923,9 @@ func Evaluate(in Input) Report {
 	// An alert that was already flapping before the promotion is the env's,
 	// not the release's (alert_baseline.go).
 	r = discountBaselineAlerts(r, in.AlertHistory, nil, t.AlertBaselineMinFirings, t.BaselineWindow)
+	// So is an alert on an issue that predates the release and fires no
+	// faster under it (pre_existing_alerts.go).
+	r = discountPreExistingAlerts(r, in.AlertIssues, nil, t.NewIssueMinEvents)
 
 	sortFindings(r.Findings)
 	r.Verdict = verdictOf(r.Findings, r.AfterComplete, r.Services, t.gauge(), r.unproven())
@@ -1308,8 +1338,8 @@ func InconclusiveWhy(r Report) string {
 // app served plenty.
 func noRequestTelemetryWhy(r Report) string {
 	var b strings.Builder
-	b.WriteString("no request telemetry: no service sent a single server span in either window, no request reached one through the platform's ingress, and no page sent browser telemetry, so error rate and latency could not be judged. ")
-	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces")
+	b.WriteString("no request telemetry: no service sent a single server span in either window and no page sent browser telemetry, so error rate and latency could not be judged. ")
+	b.WriteString("Release health measures requests from each service's own OpenTelemetry traces, and a frontend's from the browser telemetry its pages send")
 	if n := len(r.Uninstrumented); n > 0 {
 		verb := "exports"
 		if n > 1 {
@@ -1317,8 +1347,9 @@ func noRequestTelemetryWhy(r Report) string {
 		}
 		fmt.Fprintf(&b, ", and %s %s none unless it is instrumented: forge did not build it, so it did not instrument it", strings.Join(r.Uninstrumented, ", "), verb)
 	}
-	b.WriteString(". Add an OpenTelemetry SDK that exports traces over OTLP to $OTEL_EXPORTER_OTLP_ENDPOINT (hosting sets it, and OTEL_SERVICE_NAME, on every workload); ")
-	b.WriteString("if the app already does, send it traffic and check again. ")
+	b.WriteString(". For a service, add an OpenTelemetry SDK that exports traces over OTLP to $OTEL_EXPORTER_OTLP_ENDPOINT (hosting sets it, and OTEL_SERVICE_NAME, on every workload); ")
+	b.WriteString("for a static site, load its pages in a real browser (curl and uptime probes send no browser telemetry). ")
+	b.WriteString("If the app already sends telemetry, send it traffic and check again. ")
 	checked := "workload restarts, alerts and issues"
 	if len(r.NotEvaluated) > 0 {
 		checked += " (not evaluated here: " + strings.Join(r.NotEvaluated, ", ") + ")"

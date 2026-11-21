@@ -24,8 +24,9 @@ import (
 //	FORGE_ALERT_CLICKHOUSE=ch task test -- ./pkg/obsbuiltin/...
 
 // tenantTables creates db's product_events (with the v28 edge columns and
-// v29's OrgId), error_events, and otel_traces (the OTel exporter's schema the
-// tenant uses, which the AI hub reads).
+// v29's OrgId), error_events, otel_traces (the OTel exporter's schema the
+// tenant uses, which the AI hub reads) and otel_metrics_gauge (the uptime
+// prober's gauges).
 func tenantTables(db string) string {
 	return `
 DROP DATABASE IF EXISTS ` + db + `;
@@ -51,6 +52,10 @@ CREATE TABLE ` + db + `.otel_traces (
     Events Nested (Timestamp DateTime64(9), Name LowCardinality(String), Attributes Map(LowCardinality(String), String)),
     Links Nested (TraceId String, SpanId String, TraceState String, Attributes Map(LowCardinality(String), String))
 ) ENGINE = MergeTree PARTITION BY toDate(Timestamp) ORDER BY (ServiceName, SpanName, toDateTime(Timestamp));
+CREATE TABLE ` + db + `.otel_metrics_gauge (
+    ResourceAttributes Map(LowCardinality(String), String), ServiceName LowCardinality(String), MetricName LowCardinality(String),
+    Attributes Map(LowCardinality(String), String), TimeUnix DateTime64(9), Value Float64
+) ENGINE = MergeTree ORDER BY (MetricName, TimeUnix);
 `
 }
 
@@ -102,11 +107,28 @@ func (c *clickhouse) run(sql string, start, end time.Time, envs ...string) strin
 // try is run, returning the failure instead of failing the test.
 func (c *clickhouse) try(sql string, start, end time.Time, envs ...string) (string, error) {
 	c.t.Helper()
-	sc := obsquery.Scope{Database: "t_org_a", Start: start, End: end, EnvRestricted: true, EnvIDs: envs}
+	return c.tryScoped(sql, obsquery.Scope{Start: start, End: end}, 86400, envs...)
+}
+
+// filtered is run with the filter params set (obsquery.Scope.FilterParams)
+// and a bucket of step seconds.
+func (c *clickhouse) filtered(sql string, start, end time.Time, filters map[string]string, step int64, envs ...string) string {
+	c.t.Helper()
+	out, err := c.tryScoped(sql, obsquery.Scope{Start: start, End: end, FilterParams: filters}, step, envs...)
+	if err != nil {
+		c.t.Fatalf("%v\n--- sql ---\n%s", err, sql)
+	}
+	return out
+}
+
+// tryScoped binds sql to sc (its range and filter params) over envs.
+func (c *clickhouse) tryScoped(sql string, sc obsquery.Scope, step int64, envs ...string) (string, error) {
+	c.t.Helper()
+	sc.Database, sc.EnvRestricted, sc.EnvIDs = "t_org_a", true, envs
 	for _, e := range envs {
 		sc.Envs = append(sc.Envs, obsquery.Env{ID: e, Name: e})
 	}
-	st, err := obsquery.SQLPanel{Scope: sc, SQL: sql, StepSeconds: 86400}.Compile()
+	st, err := obsquery.SQLPanel{Scope: sc, SQL: sql, StepSeconds: step}.Compile()
 	if err != nil {
 		c.t.Fatalf("compile: %v\n%s", err, sql)
 	}

@@ -197,6 +197,10 @@ type Artifact struct {
 	// its declared inputs were unchanged (see InputsDigest); empty when this
 	// release's build produced the image. Informational, NOT identity.
 	CarriedFrom string `json:"carried_from,omitempty"`
+	// SBOM is evidence about the artifact, not part of its identity: a re-cut of
+	// the same digests with a newer syft is the same release, never a conflict.
+	// Nil on a release cut before forge recorded SBOMs, or with SBOMs off.
+	SBOM *SBOMRef `json:"sbom,omitempty"`
 }
 
 // BuildSource is the checkout an artifact was built in: its repository, HEAD
@@ -300,6 +304,9 @@ func (a Artifact) Validate(name string) error {
 	if a.InputsDigest != "" && !ValidDigest(a.InputsDigest) {
 		return bad("inputs_digest %q is not a canonical sha256 digest", a.InputsDigest)
 	}
+	if err := a.SBOM.validate(); err != nil {
+		return bad("%v", err)
+	}
 	return nil
 }
 
@@ -315,10 +322,10 @@ func (a Artifact) SharedDigest() (string, bool) {
 }
 
 // sameIdentity compares the fields that name the bytes. Platforms, BuiltFrom,
-// InputsDigest and CarriedFrom are informational and deliberately excluded:
-// re-stating a release with a different platform list, or the same digests
-// built in another checkout or carried from an earlier release, has not
-// claimed different bytes.
+// InputsDigest, CarriedFrom and SBOM are informational and deliberately
+// excluded: re-stating a release with a different platform list, the same
+// digests built in another checkout or carried from an earlier release, or an
+// SBOM a newer generator wrote, has not claimed different bytes.
 func (a Artifact) sameIdentity(b Artifact) bool {
 	if a.Kind != b.Kind || a.Mode != b.Mode || a.Version != b.Version ||
 		a.Integrity != b.Integrity || a.URI != b.URI {
@@ -459,6 +466,18 @@ func (r Release) Validate() error {
 			}
 			if actual != id {
 				return fmt.Errorf("%w: catalog identity mismatch", ErrInvalid)
+			}
+		}
+	}
+	// A snapshot release travels to the control plane as a document the
+	// server decodes STRICTLY into its pinned forge's Release, and forge
+	// reads it back the same way (snapshotReleaseFromJSON), so a field an
+	// older decoder predates refuses the whole document there. SBOMs ride
+	// beside that document, never in it.
+	if len(r.Catalog) > 0 || len(r.SnapshotIntents) > 0 {
+		for _, name := range r.ArtifactNames() {
+			if r.Artifacts[name].SBOM != nil {
+				return fmt.Errorf("%w: release %q is a snapshot release and cannot carry an SBOM on artifact %q: a snapshot release's SBOMs are recorded beside its document", ErrInvalid, r.Version, name)
 			}
 		}
 	}

@@ -52,6 +52,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -133,7 +134,20 @@ type Result struct {
 	Path string
 	// Source says where it came from, for the one-line notice.
 	Source string
+	// Kind says where it came from, for a program: KindTools, KindCache or
+	// KindBuilt.
+	Kind string
 }
+
+// The Kinds of Result.
+const (
+	// KindTools is the project's own .tools/bin/forge.
+	KindTools = "tools"
+	// KindCache is a build this resolver made earlier and kept.
+	KindCache = "cache"
+	// KindBuilt is a build this call made.
+	KindBuilt = "built"
+)
 
 // CacheDirEnv relocates the builds the resolver keeps (default
 // <user cache dir>/forge/pinned), for read-only home directories and test
@@ -149,6 +163,10 @@ type Resolver struct {
 
 	// Version runs a forge binary and returns the version it reports.
 	Version func(ctx context.Context, path string) (string, error)
+	// CommandVersion is Version for a forge reached through args before
+	// forge's own (`reliant forge`): it runs `path args... version`.
+	// VersionOf uses it when set, else Version for a bare path.
+	CommandVersion func(ctx context.Context, path string, args []string) (string, error)
 	// Same reports whether version got is the forge want names.
 	Same func(want, got string) bool
 	// Install runs `go install pkg` with GOBIN=gobin.
@@ -158,6 +176,19 @@ type Resolver struct {
 	// Slot takes one of the machine's heavy slots for a build (label names
 	// it to waiters) and returns its release. Nil is hostslot's heavy class.
 	Slot func(ctx context.Context, label string) (release func(), err error)
+}
+
+// VersionOf runs the forge that `path args...` names and returns the version
+// it reports, through CommandVersion, else Version when args is empty. It
+// errors when the resolver has no probe for the command.
+func (r *Resolver) VersionOf(ctx context.Context, path string, args []string) (string, error) {
+	switch {
+	case r.CommandVersion != nil:
+		return r.CommandVersion(ctx, path, args)
+	case len(args) == 0 && r.Version != nil:
+		return r.Version(ctx, path)
+	}
+	return "", fmt.Errorf("no version probe for %s", strings.Join(append([]string{path}, args...), " "))
 }
 
 func (r *Resolver) logw() io.Writer {
@@ -216,7 +247,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 		return Result{}, errors.New("forge.yaml pins no forge_version")
 	}
 	if local, ok := r.LocalPinned(ctx, projectRoot, pin); ok {
-		return Result{Path: local, Source: "the project's .tools/bin/forge"}, nil
+		return Result{Path: local, Source: "the project's .tools/bin/forge", Kind: KindTools}, nil
 	}
 
 	dir, err := r.cacheDir()
@@ -232,7 +263,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	}
 	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
 		touch(entry)
-		return Result{Path: bin, Source: "the cached build of " + pin}, nil
+		return Result{Path: bin, Source: "the cached build of " + pin, Kind: KindCache}, nil
 	}
 
 	if err := os.MkdirAll(entry, 0o755); err != nil {
@@ -245,7 +276,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	defer done()
 	if tmp == "" {
 		touch(entry)
-		return Result{Path: bin, Source: "the cached build of " + pin}, nil
+		return Result{Path: bin, Source: "the cached build of " + pin, Kind: KindCache}, nil
 	}
 
 	fmt.Fprintf(r.logw(), "forge: building forge %s (one time; cached in %s)\n", pin, dir)
@@ -264,7 +295,7 @@ func (r *Resolver) Pinned(ctx context.Context, projectRoot, pin string) (Result,
 	}
 	touch(entry)
 	r.prune(dir, safeName(pin))
-	return Result{Path: bin, Source: "forge " + pin + " (just built)"}, nil
+	return Result{Path: bin, Source: "forge " + pin + " (just built)", Kind: KindBuilt}, nil
 }
 
 // dirtyPinError says why the +dirty pin cannot be obtained, naming the clean
@@ -307,7 +338,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	bin := filepath.Join(entry, exeName())
 	if st, err := os.Stat(bin); err == nil && !st.IsDir() {
 		touch(entry)
-		return Result{Path: bin, Source: "the build of checkout " + dir}, nil
+		return Result{Path: bin, Source: "the build of checkout " + dir, Kind: KindCache}, nil
 	}
 	if err := os.MkdirAll(entry, 0o755); err != nil {
 		return Result{}, err
@@ -319,7 +350,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	defer done()
 	if tmp == "" {
 		touch(entry)
-		return Result{Path: bin, Source: "the build of checkout " + dir}, nil
+		return Result{Path: bin, Source: "the build of checkout " + dir, Kind: KindCache}, nil
 	}
 
 	fmt.Fprintf(r.logw(), "forge: building forge from the checkout %s (cached until it changes)\n", dir)
@@ -339,7 +370,7 @@ func (r *Resolver) Bridge(ctx context.Context, dir, stamp string) (Result, error
 	}
 	touch(entry)
 	r.prune(cache, filepath.Base(filepath.Dir(entry)))
-	return Result{Path: bin, Source: "forge built from checkout " + dir}, nil
+	return Result{Path: bin, Source: "forge built from checkout " + dir, Kind: KindBuilt}, nil
 }
 
 // buildSettings are the environment variables that change the bytes `go
@@ -615,6 +646,13 @@ func tail(s string, n int) string {
 // RunVersion is Resolver.Version's default: `<path> version`, first line,
 // the token after "version".
 func RunVersion(ctx context.Context, path string) (string, error) {
+	return RunCommandVersion(ctx, path, nil)
+}
+
+// RunCommandVersion is RunVersion for a forge reached through arguments
+// before forge's own: `<path> <args...> version`. A host that embeds forge is
+// probed as `reliant forge version`, since `reliant version` is the host's.
+func RunCommandVersion(ctx context.Context, path string, args []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	// A path (not a bare name looked up on PATH) is made absolute first: the
@@ -626,7 +664,7 @@ func RunVersion(ctx context.Context, path string) (string, error) {
 	}
 	// No marker: `version` runs as the forge it is in every forge that has
 	// the hand-off, and a marker is good only for a process exec'd in place.
-	cmd := exec.CommandContext(ctx, path, "version")
+	cmd := exec.CommandContext(ctx, path, append(slices.Clone(args), "version")...)
 	// Probed from OUTSIDE every project. A forge run inside a project whose
 	// pin it does not match checks that skew even for `version`, and its
 	// warning's remedy probes the project's .tools/bin/forge — this very

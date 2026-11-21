@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Managed identity: the part of an env's declaration (forge.ManagedIdentity)
@@ -205,6 +206,32 @@ type ShapeIdentity struct {
 	// DevMail is the mailpit HostInfra a host-run instance's mail goes to.
 	// Host runtime only.
 	DevMail string `json:"dev_mail,omitempty"`
+
+	// CodeLifetime is how long a password-set code stays redeemable (a reset
+	// link's, and the one invite/reset --return-code hands back), as a Go
+	// duration ("24h0m0s"). Empty is the provider's default,
+	// [DefaultIdentityCodeLifetime]. Read it through
+	// [ShapeIdentity.PasswordCodeLifetime].
+	CodeLifetime string `json:"code_lifetime,omitempty"`
+}
+
+const (
+	// DefaultIdentityCodeLifetime is the lifetime of a password-set code on
+	// an instance that declares none: Zitadel's default.
+	DefaultIdentityCodeLifetime = time.Hour
+	// MinIdentityCodeLifetime and MaxIdentityCodeLifetime bound a declared
+	// one: the code works like a password.
+	MinIdentityCodeLifetime = 5 * time.Minute
+	MaxIdentityCodeLifetime = 7 * 24 * time.Hour
+)
+
+// PasswordCodeLifetime is the declared password-set code lifetime, else
+// [DefaultIdentityCodeLifetime].
+func (i ShapeIdentity) PasswordCodeLifetime() time.Duration {
+	if d, err := time.ParseDuration(i.CodeLifetime); err == nil && d > 0 {
+		return d
+	}
+	return DefaultIdentityCodeLifetime
 }
 
 // ShapeIdentitySignup is who may create an account from the sign-in screen.
@@ -856,6 +883,19 @@ func (i ShapeIdentity) validateSignIn(roles map[string]ShapeIdentityRole, bad fu
 			return bad("email reply_to %q is not an email address", e.ReplyTo)
 		case i.SMTP != nil && e.FromLocal != "":
 			return bad("email from_local is set with smtp, whose sender is the From")
+		}
+	}
+
+	// The password-set code lifetime.
+	if i.CodeLifetime != "" {
+		d, err := time.ParseDuration(i.CodeLifetime)
+		switch {
+		case err != nil:
+			return bad("code_lifetime %q is not a duration", i.CodeLifetime)
+		case d < MinIdentityCodeLifetime || d > MaxIdentityCodeLifetime:
+			return bad("code_lifetime %s is outside %s..%s", d, MinIdentityCodeLifetime, MaxIdentityCodeLifetime)
+		case i.ShareWith != "":
+			return bad("share_with reuses %q's instance, so code_lifetime belongs to the owner", i.ShareWith)
 		}
 	}
 

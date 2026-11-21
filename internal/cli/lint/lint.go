@@ -47,7 +47,6 @@ type lintFlags struct {
 	columnMarkers     bool
 	closedSets        bool
 	dbGrants          bool
-	crudFixtures      bool
 	fixtureDrift      bool
 	timeBucketing     bool
 	protoMarkers      bool
@@ -69,6 +68,9 @@ type lintFlags struct {
 	generatedDrift    bool
 	strict            bool
 	skipFrontends     bool
+	// install is --install: the frontend lanes install missing
+	// dependencies first. Off, lint never installs (lint_frontend_deps.go).
+	install bool
 	// allowSkip is --allow-skip: `<lane>[,<lane>…]=<reason>` values
 	// accepting that a gating lane may not run (lint_skip.go).
 	allowSkip []string
@@ -99,6 +101,11 @@ This command will:
   typecheck runs the project's own "typecheck" npm script when it has one,
   and otherwise runs the frontend's TypeScript compiler with --noEmit.
   Severity is lint.frontend.typecheck (error | warn | off) in forge.yaml.
+  Both read the installed node_modules and never install: a frontend with
+  none is a lane that could NOT run, named with its install command, unless
+  --install asks lint to install it first. (Warn-first: below the
+  forge-frontend-no-install rule's gates-from release, lint still installs
+  and warns that it will stop.)
 - Optionally run targeted rule sets (--contract, --db, --migration-safety,
   --conventions, --tests). Name several to run them all under one verdict:
   forge lint --conventions --contract
@@ -145,6 +152,8 @@ Examples:
   forge lint --fix               # Apply the mechanical fixes, then gate
   forge lint --fix ./internal/x/...  # ...only in the packages you are working on
   forge lint --skip-frontends    # Backend-only gate; no Node toolchain needed
+  forge lint --install           # Install missing frontend dependencies first
+                                 # (lint never installs on its own)
   forge lint --contract          # Run contract interface enforcement linter
   forge lint --db                # Run DB entity lint rules
   forge lint --migration-safety  # Run SQL migration safety checks
@@ -204,6 +213,10 @@ Examples:
                                  # rewrites, POST handlers, no trailingSlash
                                  # on a bucket). CI's next build is the
                                  # authority; this says it first, file:line
+                                 # A Vite frontend on a static runtime: FAIL
+                                 # when build.outDir is not the public_dir or
+                                 # base misses the base_path. Any other
+                                 # frontend: a "not applicable" line
   forge lint --tracing           # Report where a request's trace is cut (a
                                  # log call that drops the ctx in scope, a
                                  # raw *http.Client or sql.Open, a contract
@@ -359,12 +372,6 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.closedSets, "closed-sets", false, "Fail when a CHECK declared forge:closed-set <set> does not list exactly that Go set, and print the migration that fixes it")
 	cmd.Flags().BoolVar(&flags.dbGrants, "db-grants", false, "Fail on a credential-shaped column (token, password, key, ciphertext, hash…) that carries neither forge:secret nor forge:readable <reason>: the read-only forge_ro role is refused it until someone decides")
 	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Execute every literal fixture statement in a scaffolded handlers_crud_test.go against the current schema — migrations applied to a shadow postgres, each statement run in a rolled-back transaction — and report postgres's own error for each one it rejects: a GENERATED column, a UNIQUE collision, a dangling foreign key, a CHECK a later migration added (warnings only)")
-	// --crud-fixtures checked one failure class (a dangling foreign key) by
-	// reading migration text; --fixture-drift now executes the statements, so
-	// postgres reports that class along with every other. Kept as a hidden
-	// alias so an existing script keeps running the check it asked for.
-	cmd.Flags().BoolVar(&flags.crudFixtures, "crud-fixtures", false, "Alias of --fixture-drift")
-	_ = cmd.Flags().MarkDeprecated("crud-fixtures", "use --fixture-drift, which now executes each fixture statement against the shadow schema and reports foreign-key violations along with every other rejection")
 	cmd.Flags().BoolVar(&flags.timeBucketing, "time-bucketing", false, "Flag a two-argument date_trunc over a TIMESTAMPTZ column — postgres truncates it in the SESSION timezone, which the driver sets from the client host, so every bucketed total is attributed to the wrong day by an amount that changes with the deploy host. Pin the zone: date_trunc('day', col, 'UTC') (warnings only)")
 	cmd.Flags().BoolVar(&flags.goMarkers, "go-markers", false, "Flag //forge: comments in .go files that forge does not read — an unknown marker name, or a known marker in a spelling its parser ignores (“//forge:exclude-contract — why” instead of “: why”); each is an error naming file:line and the expected form")
 	cmd.Flags().BoolVar(&flags.protoMarkers, "proto-markers", false, "Flag .proto comments containing forge: that match no known proto marker — a misspelled marker is inert and warns nowhere (warnings only)")
@@ -373,7 +380,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.readOnlyFields, "read-only-fields", false, "Flag a forge:read-only field whose column nothing populates — no non-generated Go file assigns it, no meaningful DEFAULT, not GENERATED — so every row ships as the type's zero with no error anywhere. FAILS the build, except while the service still holds forge-scaffolded unwired rpc stubs (then a warning naming them)")
 	cmd.Flags().BoolVar(&flags.secrets, "secrets", false, "Judge the platform secrets model per env, with file:line: no ClusterSecretStore/ClusterExternalSecret/PushSecret, ExternalSecret policy (Orphan or Merge, Retain, namespaced store, explicit keys), every Secret a workload reads is produced by exactly one declaration that lists the key, an immutable store name is pinned at 1, an out_of_band_reason that explains, no reasonless OpenBao wildcard read, and (warning) an OpenBao escrowed inside its own cluster. FAILS the build on an error; every message names its escape")
 	cmd.Flags().BoolVar(&flags.guardedFields, "guarded-fields", false, "Flag a scaffolded edit page whose update_mask still names a column declared 'forge:guards' — saving the form writes it raw and bypasses the rpc that owns it, and pages are scaffold-once so 'forge generate' cannot repair them (warnings only)")
-	cmd.Flags().BoolVar(&flags.staticExport, "static-export", false, "For each Next.js frontend that must build to a static export (forge.yaml output: static, or bound to forge.OnHosted / OnBucket / OnFirebase in any env), report with file:line what the export cannot serve. FAILS on what next build refuses (a dynamic route without generateStaticParams, server actions, next/headers, next/image without images.unoptimized, a build that is not an export); WARNS on what it silently drops (middleware, non-GET route handlers, ungated rewrites/redirects/headers, a bucket-bound export without trailingSlash)")
+	cmd.Flags().BoolVar(&flags.staticExport, "static-export", false, "For each Next.js frontend that must build to a static export (forge.yaml output: static, or bound to forge.OnHosted / OnBucket / OnFirebase in any env), report with file:line what the export cannot serve. FAILS on what next build refuses (a dynamic route without generateStaticParams, server actions, next/headers, next/image without images.unoptimized, a build that is not an export); WARNS on what it silently drops (middleware, non-GET route handlers, ungated rewrites/redirects/headers, a bucket-bound export without trailingSlash). For each Vite frontend bound to a static runtime, FAILS when vite build's outDir is not the env's public_dir or base does not match its base_path, and WARNS on a relative base with a path-based client router. Every other frontend gets an explicit \"not applicable\" line")
 	cmd.Flags().BoolVar(&flags.protoOptions, "proto-options", false, "Flag (forge.v1.*) annotation fields this forge binary's descriptors do not define — a retired or misspelled option field compiles under buf and is read by nothing (warnings only)")
 	cmd.Flags().BoolVar(&flags.vendoredProtos, "vendored-protos", false, "Fail when a vendored proto (proto/forge/v1/forge.proto) differs from the copy embedded in this forge binary — forge's upgrade path does not track these copies, so drift is otherwise invisible")
 	cmd.Flags().BoolVar(&flags.graph, "graph", false, "Check the composition graph (internal/app) as a whole: every component and provider is reached by some root, and every listener serves only services of its chain's audience. FAILS the build on an error (graph mode only)")
@@ -387,6 +394,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().StringArrayVar(&flags.allowSkip, "allow-skip", nil, "Accept that a gating lane may NOT run here, by name and with a reason: LANE[,LANE...]=REASON (repeatable), e.g. --allow-skip 'frontend-typecheck=frontends typecheck in the web job'. A gating lane that could not run (a tool missing, a frontend with no node_modules) fails forge lint otherwise; an accepted one is listed as SKIPPED (allowed) in the verdict. forge.yaml lint.allow_skip is the project-level form. Accepts only could-not-run: a lane that ran and found problems still fails")
 	cmd.Flags().BoolVar(&flags.tracing, "tracing", false, "Report where a request's trace is cut: a log call made with a context in scope but not passed it (no trace_id), an *http.Client or database pool opened without forge's traced constructors, a contract package constructed without its generated decorator. With --fix, rewrites every log call to its ...Context form and every undecorated contract construction to NewInstrumented; forge.yaml lint.tracing.log_wrappers adds the project's own logging helpers")
 	cmd.Flags().BoolVar(&flags.skipFrontends, "skip-frontends", false, "Skip the whole frontend lane (eslint/stylelint + TypeScript typecheck + static-export) for a backend-only gate that needs no Node toolchain")
+	cmd.Flags().BoolVar(&flags.install, "install", false, "Install a frontend's missing dependencies (and refresh a node_modules older than its lockfile) with its own package manager, frozen to the lockfile, before the frontend lanes run. Off by default: lint never mutates the checkout, and a frontend with no node_modules is a lane that could NOT run, named in the verdict with its install command. The install's output goes to stderr, and nowhere under --quiet unless it fails")
 	cmd.Flags().BoolVar(&flags.fix, "fix", false, "Apply the mechanical fixes in place (Go formatting, the tracing log rewrite, frontend prettier, eslint --fix), each Go rewrite type-checked and taken back if it breaks its package. Never golangci-lint fixes. Off by default: lint is a gate and reports")
 	cmd.Flags().BoolVar(&flags.check, "check", false, "Report only: write nothing, print the diff each fix would apply, and exit non-zero if any is pending. The default; beats --fix (also spelled --no-fix)")
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
@@ -429,6 +437,10 @@ type lintRunOptions struct {
 	reportFormat  bool
 	strict        bool
 	skipFrontends bool
+	// install is --install (lint_frontend_deps.go); installOut receives its
+	// output.
+	install    bool
+	installOut io.Writer
 	// formatSkipFrontends keeps the format lane off the frontends without
 	// dropping their typecheck: a frontend whose lint lane is off
 	// (frontendSkips).
@@ -690,7 +702,16 @@ func collectHandlerTreeFindings() ([]forgeconv.Finding, bool, error) {
 	if err != nil {
 		return nil, true, fmt.Errorf("forge convention lint (handler file size) failed: %w", err)
 	}
-	return append(findings, sizeRes.Findings...), true, nil
+	findings = append(findings, sizeRes.Findings...)
+
+	// One custom rpc per file — warns on a handler file implementing two or
+	// more of its service's custom rpcs (CRUD shims and helpers excluded).
+	// Advisory at every pin; lint.rules can raise it.
+	rpcRes, err := forgeconv.LintOneRPCPerFile(".")
+	if err != nil {
+		return nil, true, fmt.Errorf("forge convention lint (one rpc per file) failed: %w", err)
+	}
+	return append(findings, rpcRes.Findings...), true, nil
 }
 
 // collectGoCodeConventionFindings runs the rules that read Go code

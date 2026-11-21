@@ -1,6 +1,8 @@
 // Package obsbuiltin builds forge's built-in product analytics dashboards:
 // the Traffic and Users sections of a project's Overview, and the Product
-// analytics hub's Overview, Users, Product and Acquisition dashboards. Every
+// analytics hub's Overview, Users, Product and Acquisition dashboards, and the
+// cards of the console's Overview page (Cards: Traffic, and Uptime over the
+// uptime prober's gauges). Every
 // panel is a sql panel over the hosted per-org product_events table (and, for one figure, error_events), in
 // the pkg/dashspec vocabulary, so the Reliant console draws them with no
 // chart code of its own.
@@ -81,6 +83,11 @@ type Input struct {
 	// .exclude_user_ids): every user count reads obsquery.ActiveEvidenceFor
 	// them. Zero: the convention alone.
 	Activity obsquery.Activity
+	// Uptime says the project has outside-in uptime checks: a public
+	// frontend or HTTP route (each gets a default check on a hosted
+	// environment), or a declared forge.UptimeCheck. Cards draws the Uptime
+	// dashboard only for one.
+	Uptime bool
 }
 
 // Dashboards are the built-in product dashboards for in, in the hub's tab
@@ -94,6 +101,35 @@ func Dashboards(in Input) []dashspec.Dashboard {
 	out := []dashspec.Dashboard{ProductOverview(in), Users(in), Product(in)}
 	if in.Web {
 		out = append(out, Acquisition(in))
+	}
+	return out
+}
+
+// IsCardDashboard reports whether id is one of the card dashboards (Cards).
+// They read hosted tables only (product_events, the uptime prober's gauges).
+func IsCardDashboard(id string) bool {
+	return id == TrafficID || id == UptimeID
+}
+
+// Cards are the dashboards that hold the cards of a project's Overview page
+// by stable panel id: Traffic for a project with a browser frontend, and
+// Uptime for one with uptime checks (Input.Uptime). They are not among
+// Dashboards, the product analytics hub's tabs; the Reliant console reads
+// their panels into the Overview's sections and lists them as dashboards of
+// their own. Empty when the project opted out (Analytics.DashboardsEnabled)
+// of the analytics, except Uptime, which is not analytics.
+//
+// They are servable only by a control plane whose obsquery binds filter
+// params, so forge generate writes none of them, and a release bundle carries
+// them only to a control plane that advertises
+// release.CapabilityServesDashboardFilterParams.
+func Cards(in Input) []dashspec.Dashboard {
+	var out []dashspec.Dashboard
+	if in.Web && in.Analytics.DashboardsEnabled() {
+		out = append(out, Traffic(in))
+	}
+	if in.Uptime {
+		out = append(out, Uptime(in))
 	}
 	return out
 }

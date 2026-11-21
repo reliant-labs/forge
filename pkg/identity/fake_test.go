@@ -65,7 +65,7 @@ type fakeZitadel struct {
 	log      []string
 	hosts    map[string]bool
 	flaky    map[string]int // path substring -> remaining 503s
-	failPath map[string]int // path substring -> HTTP status to return always
+	failPath map[string]int // "METHOD /path" substring -> HTTP status to return always
 	smallPg  bool
 	// projectionLag makes the v2 user reads of a human created through the
 	// fake answer 404 "User could not be found", as real Zitadel does while
@@ -293,7 +293,8 @@ func (f *fakeZitadel) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for sub, status := range f.failPath {
-		if strings.Contains(r.URL.Path, sub) {
+		// Matched against "METHOD /path", so a key can name one method.
+		if strings.Contains(r.Method+" "+r.URL.Path, sub) {
 			zerr(w, status, 13, "SVC-2", "forced failure")
 			return
 		}

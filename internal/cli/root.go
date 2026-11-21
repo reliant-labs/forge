@@ -238,8 +238,9 @@ path from an empty directory to authored protos, in one call.`,
 			}
 
 			// Is this the forge the project pins? Warned for every
-			// project command; refused for the ones that build, release
-			// or deploy. See forge_pin_skew.go.
+			// project command but the pin-independent ones (slot);
+			// refused for the ones that build, release or deploy. See
+			// forge_pin_skew.go.
 			allow, _ := cmd.Flags().GetBool(allowVersionSkewFlag)
 			if err := checkForgePinSkew(cmd, rootCmd, cmd.ErrOrStderr(), allow); err != nil {
 				return err
@@ -278,6 +279,11 @@ path from an empty directory to authored protos, in one call.`,
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
+	// `forge why` prints the reasons to use forge with the benefits that
+	// back them (why_cmd.go). Top level for the same reason as `start`: it
+	// answers the question a newcomer asks before any noun means anything
+	// (owner, 2026-11-20). `forge project benefits --why` is the same list.
+	rootCmd.AddCommand(newWhyCmd())
 	// The git merge driver forge configures for its generated files
 	// (merge_generated.go). Hidden: git runs it, people do not.
 	rootCmd.AddCommand(newMergeGeneratedCmd())
@@ -309,9 +315,6 @@ path from an empty directory to authored protos, in one call.`,
 	// ran the whole Go suite twice — untagged, then under -tags=integration,
 	// which ADDS files rather than filtering them). Contrast `forge lint`, which
 	// stays because it orchestrates analyzers that exist only inside forge.
-	//
-	// newTestRemovedCmd below is a signpost, not a command: it only errors.
-	rootCmd.AddCommand(newTestRemovedCmd())
 	// `lint` migrated to the internal/cli/lint group (factory registry).
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).
@@ -363,6 +366,8 @@ path from an empty directory to authored protos, in one call.`,
 	// `forge release verify` proves every artifact the ledger names really
 	// exists in its public registry and matches the recorded bytes.
 	rootCmd.AddCommand(newReleaseCmd())
+	// `vuln` scans release SBOMs and judges them by the env's vuln_gate (vuln.go).
+	rootCmd.AddCommand(newVulnCmd())
 	// `ledger` is the whole-ledger noun: the verbs that move or inspect a
 	// ledger rather than one env's binding. `ledger import` is the only
 	// way forward from the retired in-checkout ledger, and the only thing
@@ -421,15 +426,47 @@ func addGlobalFlags(fs *pflag.FlagSet, projectDir *string) {
 // newVersionCmd creates the version subcommand so both `forge version` and
 // `forge --version` work. Cobra's built-in --version flag handles the latter;
 // this covers users who type the subcommand form.
+//
+// `forge version --pinned` answers for the project's pin instead
+// (forge_pinned.go). It is a flag of `version`, not a verb of its own,
+// because it is the same question — which forge, and where — asked of the
+// project rather than of this binary, and because `version` already runs as
+// this forge in every project (handOffExempt): the one place a tool can ask
+// any forge, however old or skewed, without being handed somewhere else.
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var pinned, asJSON bool
+	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "Print the forge version and build identity",
-		Run: func(cmd *cobra.Command, args []string) {
+		Short: "Print the forge version and build identity (--pinned: the project's pinned forge)",
+		Long: `Print this forge's version and build identity.
+
+--pinned prints the forge the project pins instead — the project found from
+the working directory or -C — fetching or building it the way a command
+handed to it would, but printing it instead of running it:
+
+  path     the executable (this forge's own when it already is the pin)
+  version  the version it reports
+  source   self | tools (the project's .tools/bin/forge) | cache | built
+
+--json prints it as one forge.version.pinned/v1 document, whose "command"
+is the exec-ready prefix ([path], or [path, "forge"] for an embedded forge).
+It fails when there is no project, no forge_version, or the pinned forge
+cannot be had.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if pinned {
+				return runVersionPinned(cmd, asJSON)
+			}
+			if asJSON {
+				return fmt.Errorf("--json goes with --pinned: %s version --pinned --json", Name())
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", Name(), versionLine())
 			fmt.Fprint(cmd.OutOrStdout(), buildinfo.Describe())
+			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&pinned, pinnedFlag, false, "Print the forge the project pins (path, version, source), fetching or building it")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "With --pinned: print one forge.version.pinned/v1 document")
+	return cmd
 }
 
 // versionLine renders this binary's forge identity. It reads from

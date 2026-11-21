@@ -283,6 +283,13 @@ func (p *Plan) assignOneTuple(tp *tablePlan, ix schemadef.Index) (tupleAssign, s
 
 	// Widest supply advances fastest, so the fewest columns have to move.
 	sort.Slice(members, func(a, b int) bool {
+		// A data member that alone covers the row target goes first: it
+		// makes the tuple distinct by itself and leaves every foreign-key
+		// member to the referential machinery (and to forge:ref).
+		ca, cb := !members[a].fk && members[a].card >= tp.n, !members[b].fk && members[b].card >= tp.n
+		if ca != cb {
+			return ca
+		}
 		if members[a].card != members[b].card {
 			return members[a].card > members[b].card
 		}

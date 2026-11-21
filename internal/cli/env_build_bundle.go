@@ -295,6 +295,16 @@ func writeEnvBundle(ctx context.Context, projectDir, env string, in bundleBuildI
 	if withheld {
 		noteServiceCatalogWithheld(in.errWriter(), env)
 	}
+	// So are the dashboards only a control plane that binds filter params
+	// serves (the Overview page's cards): withheld unless this one says so.
+	observability, _ = withholdUnservedDashboards(observability, reader)
+	// A hosted env's declared telemetry is collected by the platform, so it
+	// rides only to a control plane that collects it (LimitShape drops it
+	// otherwise): say which targets go uncollected rather than drop them
+	// silently. One that does collect holds them to the caps it advertises.
+	if err := checkBundleTelemetry(in.errWriter(), env, doc.Shape, reader); err != nil {
+		return bundleWriteOutcome{}, err
+	}
 
 	placements, err := bundlePlacementDeclarations(doc.entities)
 	if err != nil {
@@ -531,6 +541,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		Identity:            doc.Shape.Identity,
 		Databases:           doc.Shape.Databases,
 		ExternalDatabases:   doc.Shape.ExternalDatabases,
+		Telemetry:           doc.Shape.Telemetry,
 		Applier:             doc.Shape.Applier,
 		Units:               doc.Shape.Units,
 		HostInfra:           doc.Shape.HostInfra,

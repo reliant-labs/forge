@@ -49,13 +49,13 @@ var obsCheckSchema = obsout.Schema{
 		"subject", "subject.promotion_id", "subject.release", "subject.git_commit", "subject.promoted_at", "subject.previous_release", "subject.live_at",
 		"windows", "windows.before", "windows.before.from", "windows.before.to", "windows.after", "windows.after.from", "windows.after.to", "windows.after_complete",
 		"services", "services.service", "services.before", "services.after", "services.version_share",
-		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed", "findings.op", "findings.commit", "findings.pr",
+		"findings", "findings.code", "findings.service", "findings.ref", "findings.value", "findings.threshold", "findings.policy", "findings.message", "findings.unattributed", "findings.pre_existing", "findings.alert", "findings.op", "findings.commit", "findings.pr",
 		"changed_ops", "changed_ops.op", "changed_ops.service", "changed_ops.kind",
 		"changed_ops.before", "changed_ops.before.requests", "changed_ops.before.error_rate", "changed_ops.before.p50_ms", "changed_ops.before.p95_ms", "changed_ops.before.p99_ms",
 		"changed_ops.after", "changed_ops.after.requests", "changed_ops.after.error_rate", "changed_ops.after.p50_ms", "changed_ops.after.p95_ms", "changed_ops.after.p99_ms", "changed_ops.after_version", "changed_ops.before_version",
 		"changed_ops.commits", "changed_ops.commits.sha", "changed_ops.commits.subject", "changed_ops.commits.pr",
 		"version_share", "window_not_live", "rollout_incomplete",
-		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "baseline_alerts", "workload_findings",
+		"new_issues", "regressed_issues", "firing_alerts", "standing_critical_alerts", "issue_alerts", "baseline_alerts", "pre_existing_alerts", "workload_findings",
 		"thresholds", "thresholds.name", "thresholds.value", "thresholds.source",
 		"not_evaluated", "waited", "early_pass", "statements", "statements.purpose", "statements.sql", "statements.params.*",
 		"suggested",
@@ -110,10 +110,14 @@ type obsCheckDoc struct {
 	// BaselineAlerts opened after the promotion, but the same alert also
 	// fired in the baseline window before it: flapping before the release,
 	// so each is a warn finding, not a failing one.
-	BaselineAlerts   []releasehealth.Alert     `json:"baseline_alerts,omitempty"`
-	WorkloadFindings []releasehealth.Workload  `json:"workload_findings,omitempty"`
-	Thresholds       []releasehealth.Threshold `json:"thresholds,omitempty"`
-	NotEvaluated     []string                  `json:"not_evaluated,omitempty"`
+	BaselineAlerts []releasehealth.Alert `json:"baseline_alerts,omitempty"`
+	// PreExistingAlerts opened after the promotion, but each names an issue
+	// first seen before it that fires no faster under the release: the
+	// issue's old condition, so each is a warn finding, not a failing one.
+	PreExistingAlerts []releasehealth.Alert     `json:"pre_existing_alerts,omitempty"`
+	WorkloadFindings  []releasehealth.Workload  `json:"workload_findings,omitempty"`
+	Thresholds        []releasehealth.Threshold `json:"thresholds,omitempty"`
+	NotEvaluated      []string                  `json:"not_evaluated,omitempty"`
 	// Waited is how long --wait polled, when it did.
 	Waited string `json:"waited,omitempty"`
 	// EarlyPass says why --early-pass ended the wait before the after window
@@ -220,6 +224,9 @@ Exit status:
      current control plane starts the after window when the release went
      live (subject.live_at), so a retried promotion is judged on what it
      served; only an older one, which anchors it at promoted_at, gets here.
+     permission_denied / unauthenticated: the credential may not read
+     release health (a CI token needs obs:read) — nothing was judged, and
+     no retry changes that.
   8  check again later; nothing final was learned. Either --wait ran out
      (--timeout) before the after window finished, or the control plane
      refused the read because the org's query quota is spent
@@ -491,6 +498,7 @@ func judgeCheckAlerts(ctx context.Context, d obsDeps, b obsbackend.Backend, r re
 	}
 	r = releasehealth.WithoutExcludedAlerts(r, live)
 	r = withAlertBaseline(ctx, d, b, r, live, overrides)
+	r = withPreExistingAlerts(ctx, d, b, r, live, overrides)
 	r = releasehealth.WithStandingAlerts(r, nil)
 	if readable && r.Verdict != releasehealth.Fail {
 		readLive()
@@ -569,6 +577,65 @@ func withAlertBaseline(ctx context.Context, d obsDeps, b obsbackend.Backend, r r
 		history = append(history, releasehealth.AlertEvent{Rule: e.Rule, Fingerprint: e.Fingerprint, Labels: e.Labels, Transition: e.Transition, At: e.At})
 	}
 	return releasehealth.WithAlertBaseline(r, history, live, overrides)
+}
+
+// withPreExistingAlerts applies the pre-existing-alert rule (pkg/releasehealth
+// pre_existing_alerts.go): it reads the issue each counted alert_firing alert
+// names twice, its events by version in the baseline window before the
+// promotion and in the after window from it, so neither side counts the
+// other's events. An issue that cannot be read leaves its alert counted:
+// nothing proves the condition is old.
+//
+// The baseline is read over whole hours inside [P - baseline_window, P): the
+// control plane counts an issue's events by the hour, so a range that cuts
+// an hour answers for all of it, and an hour holding the promotion would
+// count the release's rollout as the baseline. The after window is read as
+// it is, [P, its end); an hour it cuts shows as events outside it, and the
+// rule then counts the alert (releasehealth.IssueWindow).
+func withPreExistingAlerts(ctx context.Context, d obsDeps, b obsbackend.Backend, r releasehealth.Report, live []releasehealth.Alert, overrides map[string]string) releasehealth.Report {
+	ir, ok := b.(issueVersionReader)
+	ids := releasehealth.AlertIssueIDs(r, live)
+	p := r.Subject.PromotedAt
+	if !ok || len(ids) == 0 || p.IsZero() || r.Subject.Release == "" {
+		return r
+	}
+	beforeFrom := p.Add(-checkBaselineWindow(r.Thresholds))
+	if t := beforeFrom.Truncate(time.Hour); t.Before(beforeFrom) {
+		beforeFrom = t.Add(time.Hour)
+	}
+	beforeTo := p.Truncate(time.Hour)
+	afterTo := r.After.To
+	if now := d.Now(); afterTo.IsZero() || afterTo.After(now) {
+		afterTo = now
+	}
+	read := func(id string, from, to time.Time) (obsbackend.GetIssueResult, releasehealth.IssueWindow, error) {
+		w := releasehealth.IssueWindow{From: from, To: to}
+		if !from.Before(to) {
+			return obsbackend.GetIssueResult{}, w, nil // an empty window: no evidence
+		}
+		res, err := ir.GetIssue(ctx, obsbackend.GetIssueRequest{Narrow: obsbackend.Narrow{Range: obsbackend.Range{From: from, To: to}}, ID: id})
+		for _, v := range res.ByVersion {
+			w.Versions = append(w.Versions, releasehealth.IssueVersionEvents{Version: v.Version, Events: v.Events, FirstSeenAt: v.FirstSeen, LastSeenAt: v.LastSeen})
+		}
+		return res, w, err
+	}
+	var issues []releasehealth.AlertIssue
+	for _, id := range ids[:min(len(ids), maxAttributedIssues)] {
+		res, after, err := read(id, p, afterTo)
+		if err == nil && res.Issue.ID == "" {
+			err = fmt.Errorf("no issue %s in the after window", id)
+		}
+		var before releasehealth.IssueWindow
+		if err == nil {
+			_, before, err = read(id, beforeFrom, beforeTo)
+		}
+		if err != nil {
+			fmt.Fprintf(d.Stderr, "could not read issue %s, so the alert that names it counts as the release's: %v\n", id, err)
+			continue
+		}
+		issues = append(issues, releasehealth.AlertIssue{ID: id, FirstSeenAt: res.Issue.FirstSeen, FirstVersion: res.Issue.FirstVersion, Before: before, After: after})
+	}
+	return releasehealth.WithPreExistingAlerts(r, issues, live, overrides)
 }
 
 // checkBaselineWindow is the baseline window a report was judged with.
@@ -733,6 +800,7 @@ func fillCheckDoc(doc *obsCheckDoc, info obsbackend.Info, env string, res obsbac
 	doc.NewIssues, doc.RegressedIssues = checkIssues(r.NewIssues, r.IssueWindowVersions), checkIssues(r.RegressedIssues, r.IssueWindowVersions)
 	doc.FiringAlerts, doc.WorkloadFindings = r.FiringAlerts, r.Workloads
 	doc.StandingCritical, doc.ExcludedAlerts, doc.IssueAlerts, doc.BaselineAlerts = r.StandingCritical, r.ExcludedAlerts, r.IssueAlerts, r.BaselineAlerts
+	doc.PreExistingAlerts = r.PreExistingAlerts
 	doc.Thresholds, doc.NotEvaluated = r.Thresholds, r.NotEvaluated
 	doc.Statements = res.Statements
 	if !o.explain {
@@ -955,6 +1023,13 @@ func writeCheckText(w io.Writer, doc obsCheckDoc) {
 		for _, a := range doc.BaselineAlerts {
 			fmt.Fprintf(w, "alert %s firing%s: not counted (it also fired %d time(s) in the baseline window before the promotion: flapping before this release)\n",
 				a.Rule, alertSubject(a.Labels), a.BaselineFirings)
+		}
+	}
+	if len(doc.PreExistingAlerts) > 0 {
+		fmt.Fprintln(w)
+		for _, a := range doc.PreExistingAlerts {
+			fmt.Fprintf(w, "alert %s firing%s: not counted (its issue %s was first seen %s, before the promotion, and fires no faster under this release)\n",
+				a.Rule, alertSubject(a.Labels), a.Issue.ID, firstNonEmptyStr(a.Issue.FirstVersion, a.Issue.FirstSeenAt.UTC().Format(time.RFC3339)))
 		}
 	}
 	if len(doc.NotEvaluated) > 0 {

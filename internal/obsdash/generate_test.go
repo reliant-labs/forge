@@ -10,56 +10,13 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 )
 
-func TestOwnedOverviewMigratesEditsWithoutDroppingIndependentOverride(t *testing.T) {
-	for _, bothEdited := range []bool{false, true} {
-		t.Run(map[bool]string{false: "migrate", true: "preserve-both"}[bothEdited], func(t *testing.T) {
-			dir := t.TempDir()
-			legacy := DashboardsDir + "/shop-overview_gen.json"
-			owned := OverridePath("shop", Dashboard{ID: "overview"})
-			if err := os.MkdirAll(filepath.Join(dir, DashboardsDir), 0755); err != nil {
-				t.Fatal(err)
-			}
-			old := []byte(`{"name":"edited legacy","tiles":[]}`)
-			if err := os.WriteFile(filepath.Join(dir, legacy), old, 0644); err != nil {
-				t.Fatal(err)
-			}
-			if bothEdited {
-				if err := os.WriteFile(filepath.Join(dir, owned), []byte(`{"name":"independent override"}`), 0644); err != nil {
-					t.Fatal(err)
-				}
-			}
-			cs := &checksums.FileChecksums{}
-			if _, err := Write(dir, fixture(), cs); err != nil {
-				t.Fatal(err)
-			}
-			got, err := os.ReadFile(filepath.Join(dir, owned))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bothEdited && string(got) != string(old) {
-				t.Fatalf("legacy edit lost: %s", got)
-			}
-			_, err = os.Stat(filepath.Join(dir, legacy))
-			if bothEdited && err != nil {
-				t.Fatal("independent legacy edit was removed")
-			}
-			if !bothEdited && !os.IsNotExist(err) {
-				t.Fatal("migrated legacy twin remains")
-			}
-			if _, generated := cs.Unstampable[owned]; generated {
-				t.Fatal("owned output retained generated ownership")
-			}
-		})
-	}
-}
-
 // TestOwnedOverviewDoesNotFreezeTheNoDeployedSentinel pins the fix for the
 // overview a fresh `forge project new` shipped: its first generate ran before
 // any environment's workloads rendered, scaffolded the owned overview with
 // every panel on the no-deployed-process sentinel, and no later generate
 // refreshed it, so the local overview drew nothing forever. An untouched
-// scaffold (and a pristine legacy render) takes the current render; a file the
-// user edited is still never touched.
+// scaffold takes the current render; a file the user edited is still never
+// touched.
 func TestOwnedOverviewDoesNotFreezeTheNoDeployedSentinel(t *testing.T) {
 	const sentinel = "__forge_no_deployed_process__"
 	undeployed := fixture()
@@ -110,28 +67,6 @@ func TestOwnedOverviewDoesNotFreezeTheNoDeployedSentinel(t *testing.T) {
 		}
 		if got := read(t, dir, owned); got != edited {
 			t.Fatal("an edited owned overview was rewritten")
-		}
-	})
-
-	t.Run("pristine legacy render is not migrated verbatim", func(t *testing.T) {
-		dir := t.TempDir()
-		legacy := DashboardsDir + "/shop-overview_gen.json"
-		if err := os.MkdirAll(filepath.Join(dir, DashboardsDir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		old := []byte(`{"name":"shop: overview","tiles":[{"config":{"where":"ServiceName = '` + sentinel + `'"}}]}`)
-		if err := os.WriteFile(filepath.Join(dir, legacy), old, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		cs := &checksums.FileChecksums{Unstampable: map[string]string{legacy: checksums.BodyHash(old)}}
-		if _, err := Write(dir, deployed, cs); err != nil {
-			t.Fatal(err)
-		}
-		if got := read(t, dir, owned); contains(got, sentinel) {
-			t.Fatalf("the pristine legacy overview was migrated with its sentinel:\n%s", got)
-		}
-		if _, err := os.Stat(filepath.Join(dir, legacy)); !os.IsNotExist(err) {
-			t.Fatal("the pristine legacy overview remains")
 		}
 	})
 }
@@ -214,43 +149,6 @@ func TestWriteIsIdempotentHonoursOverridesAndRetiresStaleFiles(t *testing.T) {
 		t.Error("custom.json was removed")
 	}
 	_ = first
-}
-
-// TestWriteRetiresTheWholeProjectAggregates: the spec and saved searches
-// used to be one file each for every service. Write now writes them per
-// service, and removes the old aggregates forge wrote — a pristine one only;
-// one the user edited stays.
-func TestWriteRetiresTheWholeProjectAggregates(t *testing.T) {
-	dir := t.TempDir()
-	cs := &checksums.FileChecksums{}
-	legacySearches := DashboardsDir + "/saved-searches_gen.ndjson"
-	for _, rel := range []string{LegacySpecFile, legacySearches} {
-		if _, err := checksums.WriteGeneratedFile(dir, rel, []byte("{}\n"), cs, true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := Write(dir, fixture(), cs); err != nil {
-		t.Fatal(err)
-	}
-	for _, rel := range []string{LegacySpecFile, legacySearches} {
-		if _, err := os.Stat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
-			t.Errorf("%s survived Write: %v", rel, err)
-		}
-	}
-
-	// A hand-edited aggregate is the user's.
-	if _, err := checksums.WriteGeneratedFile(dir, LegacySpecFile, []byte("{}\n"), cs, true); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, LegacySpecFile), []byte(`{"mine":true}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Write(dir, fixture(), cs); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, LegacySpecFile)); err != nil {
-		t.Errorf("a hand-edited %s was removed: %v", LegacySpecFile, err)
-	}
 }
 
 // TestReadSpecIsBuild: the parts Write puts on disk assemble into exactly

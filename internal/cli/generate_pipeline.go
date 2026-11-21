@@ -45,6 +45,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/kclmigrate"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -128,6 +129,18 @@ type pipelineContext struct {
 	graphRoots    []codegen.GraphRoot
 	graphRootsSet bool
 
+	// connectMajorV is the connect-go major the project's go.mod selects
+	// (internal/connectmajor), read ONCE per generate — eagerly in
+	// newPipelineContextWithFlags, lazily (connectMajor) for a synthetic
+	// context — and threaded into every major-sensitive part of the run:
+	// project wiring (GenContext.ConnectMajor), the per-service emitters
+	// (stamped on ctx.Services, codegen.WithConnectMajor), the command tree
+	// (generateConfigLoader) and the codegen tool pins
+	// (bindCodegenToolsMajor). So one run cannot render half its files —
+	// or run a plugin — for one major and half for the other, even when a
+	// tidy or a user hook rewrites go.mod mid-run.
+	connectMajorV connectmajor.Major
+
 	// Inputs (set in newPipelineContextWithFlags).
 	ProjectDir string
 	AbsPath    string
@@ -181,6 +194,18 @@ type pipelineContext struct {
 	// Strict promotes "Warning: ... failed" sites into hard errors via
 	// the warnOrFail helper. See pipelineFlags.Strict for the rationale.
 	Strict bool
+
+	// KeepOnBuildFailure turns a failed compile check (the validate step),
+	// and a post generate hook that failed, into a failed step the run goes
+	// on past, keeping its writes. See
+	// pipelineFlags.KeepOnBuildFailure.
+	KeepOnBuildFailure bool
+	// keptBuildFailure is the compile check's error when KeepOnBuildFailure
+	// kept the run's writes despite it, for the report the run ends with.
+	keptBuildFailure error
+	// keptHookFailures are the post generate hooks that failed while
+	// KeepOnBuildFailure kept the run going, in the order they ran.
+	keptHookFailures []error
 
 	// Verbose toggles per-step skip messages. See pipelineFlags.Verbose
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.
@@ -322,19 +347,36 @@ func newPipelineContextWithFlags(projectDir string, flags pipelineFlags) (*pipel
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve project dir: %w", err)
 	}
+	major := connectmajor.DetectOrDefault(projectDir)
+	// Codegen tool pinning (protoc-gen-connect-go's major) follows the
+	// same once-read answer as every emitter.
+	bindCodegenToolsMajor(projectDir, major)
 	return &pipelineContext{
-		ProjectDir:      projectDir,
-		AbsPath:         abs,
-		Force:           flags.Force,
-		ExplainDrift:    flags.ExplainDrift,
-		SkipValidate:    flags.SkipValidate,
-		SkipPreChecks:   flags.SkipPreChecks,
-		SkipConfigCheck: flags.SkipConfigCheck,
-		ForceCleanup:    flags.ForceCleanup,
-		TemplatesOnly:   flags.TemplatesOnly,
-		Strict:          flags.Strict,
-		Verbose:         flags.Verbose,
+		ProjectDir:         projectDir,
+		AbsPath:            abs,
+		Force:              flags.Force,
+		ExplainDrift:       flags.ExplainDrift,
+		SkipValidate:       flags.SkipValidate,
+		SkipPreChecks:      flags.SkipPreChecks,
+		SkipConfigCheck:    flags.SkipConfigCheck,
+		ForceCleanup:       flags.ForceCleanup,
+		TemplatesOnly:      flags.TemplatesOnly,
+		Strict:             flags.Strict,
+		KeepOnBuildFailure: flags.KeepOnBuildFailure,
+		Verbose:            flags.Verbose,
+		connectMajorV:      major,
 	}, nil
+}
+
+// connectMajor is the connect-go major this run generates for: the one read
+// when the context was built, else (a synthetic context) the go.mod's now,
+// remembered for the rest of the run.
+func (ctx *pipelineContext) connectMajor() connectmajor.Major {
+	if ctx.connectMajorV == 0 {
+		ctx.connectMajorV = connectmajor.DetectOrDefault(ctx.ProjectDir)
+		bindCodegenToolsMajor(ctx.ProjectDir, ctx.connectMajorV)
+	}
+	return ctx.connectMajorV
 }
 
 // generateSteps returns the ordered step plan. The slice is the
@@ -534,6 +576,7 @@ func generateSteps() []GenStep {
 		{Name: "frontend mocks + transport", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendMocks, Tag: "frontend"},
 		{Name: "repoint renamed *_gen frontend imports", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendRenamedImports, Tag: "frontend"},
 		{Name: "retire delivered agent skills", Gate: always, Run: stepRetireAgentSkills, Tag: "tools"},
+		{Name: agentsGuideStep, Gate: gateAgentsGuide, GateReason: "no forge.yaml, or harness: none (forge writes no agent file)", Run: stepAgentsGuide, Tag: "tools"},
 		{Name: "go mod tidy (root)", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoModTidyRoot, Tag: "tools", Writes: writesRootTidy},
 		{Name: "goimports on generated Go", Gate: hasGoModule, GateReason: noGoModuleReason, Run: stepGoimports, Tag: "tools"},
 		{Name: "cleanup stale codegen", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCleanupStale, Tag: "codegen"},
@@ -578,7 +621,7 @@ func generateSteps() []GenStep {
 		// pb reference there would otherwise surface only at the user's
 		// next `go test`. See generate_stale_scaffold.go.
 		{Name: "check stale scaffold tests", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepCheckStaleScaffoldTests, Tag: "validate"},
-		{Name: "go build (validate generated code)", Gate: and(gateValidateNotSkipped, hasGoModule), GateReason: "--skip-validate was passed, or " + noGoModuleReason, Run: stepGoBuildValidate, Tag: "validate"},
+		{Name: goBuildValidateStep, Gate: and(gateValidateNotSkipped, hasGoModule), GateReason: "--skip-validate was passed, or " + noGoModuleReason, Run: stepGoBuildValidate, Tag: "validate"},
 		// The deploy tree must COMPILE, and a tree that does not is a hard
 		// failure rather than a warning. See generate_kcl_loadable.go: a
 		// generate that exits 0 on an unrenderable tree defers the discovery
@@ -854,6 +897,26 @@ var templatesOnlyStepAllow = map[string]bool{
 	"per-env deploy config":                           true,
 	"frontend mocks + transport":                      true,
 }
+
+// stepPresetValue is generate's --steps flag: a step preset name, checked
+// when the flag is parsed. The check used to wait for the pipeline, so
+// `generate --steps <typo>` first ran the root's clone setup — which can
+// rewrite the merge driver in the git config every worktree of the clone
+// shares — and only then failed. Parsing precedes every PersistentPreRun.
+type stepPresetValue string
+
+func (v *stepPresetValue) Set(s string) error {
+	if _, ok := stepPresetAllowlist[s]; s != "" && !ok {
+		return fmt.Errorf("unknown pipeline step preset %q (valid: %s)", s, knownStepPresetNames())
+	}
+	*v = stepPresetValue(s)
+	return nil
+}
+
+func (v *stepPresetValue) String() string { return string(*v) }
+
+// Type is "string", as the StringVar it replaced, so --help reads the same.
+func (v *stepPresetValue) Type() string { return "string" }
 
 // knownStepPresetNames returns a comma-joined string of every
 // registered step preset for error messages. Kept as a helper so the
@@ -1597,7 +1660,7 @@ func stepDetectProtoDirs(ctx *pipelineContext) error {
 // concern. Best-effort: see ensureGenGoMod for the no-op fallthrough
 // conditions.
 func stepEnsureGenModule(ctx *pipelineContext) error {
-	if err := ensureGenGoMod(ctx.ProjectDir); err != nil {
+	if err := ensureGenGoModFor(ctx.ProjectDir, ctx.connectMajor()); err != nil {
 		return err
 	}
 	changed, err := ensureGenForgeRequire(ctx.ProjectDir)
@@ -1650,11 +1713,9 @@ func stepDescriptorGenerate(ctx *pipelineContext) error {
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs
 // protoc-gen-connect-openapi over each proto/services/<svc>/ to emit
-// `openapi/<service>.yaml`. Best-effort: a missing plugin or a single
-// failing service surfaces as a warning so the rest of the pipeline
-// still completes. The hard "plugin not on PATH" case bubbles up as an
-// error because that's an actionable misconfiguration (the user opted
-// in via forge.yaml but didn't install the binary).
+// `openapi/<service>.yaml`. The project opted in via forge.yaml, so a
+// plugin forge cannot provision, or a service whose spec is not written,
+// fails the step rather than warning past it.
 func stepOpenAPIGenerate(ctx *pipelineContext) error {
 	if err := runOpenAPIGenerate(ctx.ProjectDir, ctx.Cfg); err != nil {
 		return fmt.Errorf("openapi generation: %w", err)
@@ -1753,7 +1814,7 @@ func stepConfigLoader(ctx *pipelineContext) error {
 	if ctx.Cfg != nil {
 		features = ctx.Cfg.Features
 	}
-	configFields, cfgErr := generateConfigLoader(ctx.ProjectDir, features, ctx.Checksums)
+	configFields, cfgErr := generateConfigLoader(ctx.ProjectDir, features, ctx.connectMajor(), ctx.Checksums)
 	if cfgErr != nil {
 		return fmt.Errorf("config loader generation failed: %w", cfgErr)
 	}
@@ -1812,8 +1873,10 @@ func stepParseServicesAndModule(ctx *pipelineContext) error {
 		}
 	}
 
-	ctx.Services = services
-	ctx.DeclaredServices = declared
+	// Every per-service emitter renders the major this run read once, not
+	// whatever go.mod says by the time it runs (codegen.WithConnectMajor).
+	ctx.Services = codegen.WithConnectMajor(services, ctx.connectMajor())
+	ctx.DeclaredServices = codegen.WithConnectMajor(declared, ctx.connectMajor())
 	ctx.ModulePath = modulePath
 	return nil
 }
@@ -2336,7 +2399,14 @@ func stepInternalAppComposition(ctx *pipelineContext) error {
 		return err
 	}
 
-	roots, err := generateHybridComposition(rows, packages, modulePath, dbDriver, ormEnabled, ctx.ProjectDir, webhookServices, ctx.Checksums)
+	roots, err := generateHybridComposition(hybridCompositionInput{
+		GenContext:      codegen.GenContext{ProjectDir: ctx.ProjectDir, ModulePath: modulePath, Checksums: ctx.Checksums, ConnectMajor: ctx.connectMajor()},
+		Services:        rows,
+		Packages:        packages,
+		DatabaseDriver:  dbDriver,
+		ORMEnabled:      ormEnabled,
+		WebhookServices: webhookServices,
+	})
 	if err != nil {
 		return fmt.Errorf("internal/app composition generation failed: %w", err)
 	}
@@ -2412,7 +2482,7 @@ func stepCmdGroups(ctx *pipelineContext) error {
 	// files are scaffold-once OWNED code written by `forge scaffold worker/operator`,
 	// and main.go is scaffold-once. Generate learns nothing about the
 	// worker/operator set.
-	return generateCmdGroups(rows, ctx.ProjectDir, ctx.Checksums)
+	return generateCmdGroupsFor(rows, ctx.ProjectDir, ctx.connectMajor(), ctx.Checksums)
 }
 
 // stepCmdCommands ensures the user-owned cmd/<bin>/cmd/commands.go extension
@@ -2445,7 +2515,7 @@ func stepBootstrapTesting(ctx *pipelineContext) error {
 	if err != nil {
 		return err
 	}
-	err = generateBootstrapTesting(rows, ctx.ModulePath, ctx.ProjectDir, ctx.Checksums)
+	err = generateBootstrapTesting(rows, ctx.ModulePath, ctx.ProjectDir, ctx.connectMajor(), ctx.Checksums)
 	// The entity test factories could not read the applied schema, so they
 	// wrote nothing. That is a FAILED step, never a warning: the stale-file
 	// sweep deletes what no emitter wrote this run, and a run that let it
@@ -2699,6 +2769,9 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		in.Deployed, err = deployedIdentities(ctx, ctx.renderedEnvs().workloads)
 		if err != nil {
 			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
+		}
+		if in.Telemetry, err = obsdash.TelemetrySystemsOf(ctx.renderedEnvs().telemetry); err != nil {
+			return fmt.Errorf("deriving the declared telemetry dashboards from deploy/kcl: %w", err)
 		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {
@@ -2985,8 +3058,29 @@ func stepPostGenValidate(ctx *pipelineContext) error {
 // non-compiling Go. Includes the pre-refactor heuristic hints
 // (forge/pkg pin skew / pkg/config) on failure to nudge the user
 // toward the most likely fix.
+//
+// With --keep-on-build-failure a failed compile is a failed step the run
+// goes on past (warnOrFail), not one that rolls the tree back: the run keeps
+// every file it wrote, still runs the steps after this one, exits non-zero,
+// and is never recorded as a verified fixed point. That is the shape of a
+// migration whose hand-written code is ported AFTER generating — connect-go
+// v2 is the case that asked for it — where the default rollback would undo
+// the very output the next step needs to read.
 func stepGoBuildValidate(ctx *pipelineContext) error {
-	// Skipped when the tree's build inputs are ones it already passed on
-	// (generate_go_memo.go).
-	return memoizedGoValidate(ctx.ProjectDir, func() error { return runGoBuildValidate(ctx.ProjectDir) })
+	err := goBuildValidate(ctx.ProjectDir)
+	if err == nil || !ctx.KeepOnBuildFailure {
+		return err
+	}
+	ctx.keptBuildFailure = err
+	return ctx.warnOrFail(goBuildValidateStep, err)
+}
+
+// goBuildValidateStep names the validate step's compile check.
+const goBuildValidateStep = "go build (validate generated code)"
+
+// goBuildValidate is the validate step's compile check, skipped when the
+// tree's build inputs are ones it already passed on (generate_go_memo.go). A
+// variable so a test can fail the step without a toolchain.
+var goBuildValidate = func(projectDir string) error {
+	return memoizedGoValidate(projectDir, func() error { return runGoBuildValidate(projectDir) })
 }

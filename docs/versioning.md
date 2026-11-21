@@ -1,7 +1,7 @@
 # forge versioning: what a project pins, and what a dev build does instead
 
 forge is **one Go module**, `github.com/reliant-labs/forge`. Generated projects
-import `github.com/reliant-labs/forge/pkg/*` (serverkit, appkit, orm, observe,
+import `github.com/reliant-labs/forge/pkg/*` (serverkit, lifecyclekit, orm, observe,
 testkit, ...) — those are packages inside that module, not a separate one.
 
 This document is the canonical description of how that dependency is versioned.
@@ -177,6 +177,32 @@ or a host whose go.mod requires forge at a pseudo-version — is exactly the
 commit it names, and is handed over like any other. (Forge report 86c6fd64: `reliant
 forge generate` in a project pinned to v1.0.4 ran reliant's embedded
 v0.1.47-0.… forge under that tolerance and rewrote hundreds of generated lines.)
+
+**Finding the pinned forge from outside the project.** The hand-off needs a
+project around the command, so a tool that runs forge from elsewhere — a test
+that execs forge from a temp directory, a script in another repo — asks for the
+pinned forge's executable instead of digging through the build cache:
+
+```bash
+forge version --pinned -C path/to/project          # path, version, source
+forge version --pinned --json -C path/to/project   # one forge.version.pinned/v1 document
+```
+
+It fetches or builds the pin exactly as the hand-off would (the linked
+checkout, `.tools/bin/forge`, the cache, a build), checks that it reports the
+pinned version, and prints it instead of running it. This forge's own
+executable is checked too: it is run, not vouched for, and when it reports
+another version (a host replaced on disk since it started) it is not the
+pin, which is then fetched or built like any other. `source` is `self` (this
+forge already is the pin; `path` is its own executable), `tools`, `cache` or
+`built`; the document's `command` is the exec-ready prefix, `[path]`, or
+`[path, "forge"]` when the forge is embedded (`reliant forge`). No project, no
+`forge_version`, or a pin that cannot be had is an error. It is part of
+`version`, so it is never handed off, and `FORGE_ALLOW_VERSION_SKEW` does not
+change the answer. A host that embeds forge gets the same answer from
+`cli.ResolvePinnedForgePath`. The cache layout (`FORGE_PINNED_CACHE`, else
+`<user cache dir>/forge/pinned/…`) is forge's private business, not an
+interface.
 
 **No pin.** Outside a project, or in one whose forge.yaml pins no
 `forge_version`, the forge you ran runs. An embedded forge says which on stderr

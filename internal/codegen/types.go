@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -17,6 +18,17 @@ type ServiceDef struct {
 	ProtoFile  string
 	ModulePath string                       // e.g., "github.com/demo-project"
 	Messages   map[string][]MessageFieldDef // message name → fields (e.g., "ListPatientsRequest" → [...])
+
+	// ConnectMajor is the connect-go major the project's Go code targets,
+	// a project fact carried beside ModulePath for the per-service emitters
+	// (handler stubs, service.go, mocks, CRUD shims and tests). `forge
+	// generate` stamps the major it read ONCE for the run
+	// (WithConnectMajor), so every service file follows the same answer as
+	// the project wiring. The zero value — a ServiceDef from the parser, a
+	// scaffold command, a test — means "read it from the project's
+	// go.mod" (connectV2For). Never serialized: the descriptor describes
+	// protos, not the module that compiles them.
+	ConnectMajor connectmajor.Major `json:"-"`
 
 	// Audience is the trust domain the service serves, from
 	// `option (forge.v1.service) = {audience: "..."}`: "user" when the

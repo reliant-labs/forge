@@ -89,6 +89,13 @@ Read one with ` + "`" + Name() + ` obs session <id>` + "`" + `: a text timeline 
 Sessions are derived by the control plane from the browser's telemetry: a local
 ClickStack has no session tables, so a local env answers "could not look".
 
+Only sessions with a recorded replay are listed: the control plane counts a
+session once a full replay snapshot arrived, which also hides background-only
+fragments (a hidden tab, a rotated session id). So --user, --path and
+--has-error narrow that list, and a user whose sessions recorded no replay
+shows none. Their spans stay readable in traces, and
+` + "`" + Name() + ` obs session <id>` + "`" + ` still reads any session by id.
+
 ` + obsSessionsSchema.Help(),
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {

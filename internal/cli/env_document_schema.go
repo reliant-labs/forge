@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/schemagen"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 	forgeschema "github.com/reliant-labs/forge/schema"
 )
 
@@ -146,6 +147,11 @@ func envSchemaOptions(describe func(reflect.Type, string) string) schemagen.Opti
 			},
 			{Type: tWorkload, Name: "spec"}: func(g *schemagen.Generator) (*schemagen.Schema, error) {
 				return g.Ref(reflect.TypeOf(deployv1alpha1.WorkloadSpec{}))
+			},
+			// output.telemetry is decoded strictly by pkg/telemetry.Decode
+			// from a json.RawMessage, into []telemetry.Target.
+			{Type: reflect.TypeOf(kclRenderRaw{}), Name: "telemetry"}: func(g *schemagen.Generator) (*schemagen.Schema, error) {
+				return g.Ref(reflect.TypeOf([]telemetry.Target{}))
 			},
 		},
 		Describe: describe,

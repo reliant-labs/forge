@@ -125,6 +125,8 @@ func gradableRules() []string {
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,
 		secrets.RuleSingleOwner, ruleSecretsNotRendered,
+		// declared telemetry
+		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
 		// schema markers
 		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
 		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, ruleGoMarkersReasonMissing, "forge-vendored-proto-drift",

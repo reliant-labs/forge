@@ -5,12 +5,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/internal/clickstack"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/telemetry"
@@ -99,6 +101,9 @@ func goldenFile(t *testing.T, name string, got []byte) {
 // exported to the local collector and the profiles collector, with the
 // supervisor's health extension and the self-telemetry listener off.
 func TestTelemetryAgentConfigGolden(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the golden pins POSIX paths (/project/...); Windows renders them with backslashes")
+	}
 	e := telemetryEntities(hostEngineTarget(), hostWorkloadTarget(), clusterTarget())
 	plan, err := planTelemetryAgent("/project", "dev", e)
 	if err != nil {
@@ -170,7 +175,7 @@ func TestTelemetryIncludes(t *testing.T) {
 		all.WriteString("=== " + name + "\n")
 		all.Write(files[name])
 	}
-	goldenFile(t, "includes_dev.golden.yaml", all.Bytes())
+	goldenFile(t, "includes_dev.golden.txt", all.Bytes()) // .txt: a stream of "=== <file>" sections, not YAML (pre-commit check-yaml)
 
 	empty, err := localTelemetryLogs(telemetryEntities())
 	if err != nil {
@@ -289,7 +294,7 @@ func TestWriteAgentSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != "s3cret" || info.Mode().Perm() != 0o600 {
+	if b, _ := os.ReadFile(p); string(b) != "s3cret" || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Errorf("token file = %q mode %v, want the store's value at 0600", b, info.Mode().Perm())
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -420,5 +425,44 @@ func TestScaffoldedCollectorIncludesTelemetry(t *testing.T) {
 	upLocalTelemetry(context.Background(), &out, dir, "dev", telemetryEntities(logsOnly), nil)
 	if !strings.Contains(out.String(), "log lines parsed as declared for billing-worker") || strings.Contains(out.String(), "not applied") {
 		t.Errorf("output:\n%s", out.String())
+	}
+}
+
+// A compose workload's declared ports are container ports: env up collects
+// each on the port compose publishes it on, and drops (with a warning) one
+// the service does not publish.
+func TestComposeTelemetryUsesPublishedPorts(t *testing.T) {
+	orig := composePublishersFn
+	t.Cleanup(func() { composePublishersFn = orig })
+	composePublishersFn = func(_ context.Context, _ string, _ *deploytarget.ComposeSpec, service string) ([]composePublisher, error) {
+		if service != "prom-svc" {
+			t.Errorf("asked docker about service %q, want the workload's compose service", service)
+		}
+		return []composePublisher{
+			{URL: "0.0.0.0", TargetPort: 9090, PublishedPort: 19090, Protocol: "tcp"},
+			{URL: "::", TargetPort: 9090, PublishedPort: 19090, Protocol: "tcp"},
+		}, nil
+	}
+	target := telemetry.Target{
+		ServiceName: "prom", Source: "workload:prom", Attachment: telemetry.AttachWorkload,
+		Runtime: telemetry.RuntimeCompose, Address: "127.0.0.1",
+		Metrics: []telemetry.MetricsScrape{{Port: 9090, Path: "/metrics"}},
+		Checks:  []telemetry.HealthCheck{{Kind: "tcp", Port: 9091}},
+	}
+	e := &KCLEntities{
+		Telemetry: []telemetry.Target{target},
+		Workloads: []WorkloadEntity{{Name: "prom", Runtime: RuntimeEntity{Type: RuntimeCompose, Compose: &ComposeRuntime{Service: "prom-svc"}}}},
+	}
+	var out bytes.Buffer
+	got := withPublishedComposePorts(context.Background(), &out, t.TempDir(), "dev", e)
+	tt := got.Telemetry[0]
+	if len(tt.Metrics) != 1 || tt.Metrics[0].Port != 19090 {
+		t.Errorf("metrics = %+v, want the scrape on published port 19090", tt.Metrics)
+	}
+	if len(tt.Checks) != 0 || !strings.Contains(out.String(), "not collecting prom tcp check :9091") {
+		t.Errorf("checks = %+v, output %q: want the unpublished port dropped with a warning", tt.Checks, out.String())
+	}
+	if e.Telemetry[0].Metrics[0].Port != 9090 || len(e.Telemetry[0].Checks) != 1 {
+		t.Errorf("the caller's entities were written: %+v", e.Telemetry[0])
 	}
 }

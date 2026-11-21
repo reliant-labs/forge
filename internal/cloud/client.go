@@ -172,7 +172,14 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 		return fmt.Errorf("read %s response: %w", procedure, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return c.connectError(procedure, resp, raw)
+		err := c.connectError(procedure, resp, raw)
+		if sendsProjectID(procedure, projectID, token) {
+			// The request named its hosted project by id: an answer that
+			// the project is not the caller's is about that, not about
+			// whatever the procedure addressed.
+			return asProjectUnavailable(err, projectID, false)
+		}
+		return err
 	}
 	if out == nil {
 		return nil
@@ -224,7 +231,7 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 		return nil, fmt.Errorf("build %s request: %w", procedure, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if token != "" && projectID != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject") {
+	if sendsProjectID(procedure, projectID, token) {
 		httpReq.Header.Set("Forge-Project-ID", projectID)
 	}
 	// The credential is an OPAQUE bearer string. forge does not inspect
@@ -256,6 +263,13 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 		return nil, fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
 	}
 	return resp, nil
+}
+
+// sendsProjectID reports whether a request names its hosted project in the
+// Forge-Project-ID header. ResolveHostedProject never does: it names the
+// project in its body, as what it resolves.
+func sendsProjectID(procedure, projectID, token string) bool {
+	return token != "" && projectID != "" && !strings.HasSuffix(procedure, "/ResolveHostedProject")
 }
 
 func (c *Client) httpClient() *http.Client {

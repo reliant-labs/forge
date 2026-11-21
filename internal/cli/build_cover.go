@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -180,8 +181,21 @@ func (e *KCLEntities) applyCover(bins []CoverBinary) {
 		pkgs = e.Tests.CoveragePackages
 	}
 	for i := range e.Workloads {
-		if g := e.Workloads[i].GoBuild(); g != nil && on[normalizePGOPackage(g.Cmd)] {
-			e.Workloads[i].cover = &workloadCover{packages: pkgs}
+		w := &e.Workloads[i]
+		if g := w.GoBuild(); g != nil && on[normalizePGOPackage(g.Cmd)] {
+			w.cover = &workloadCover{packages: pkgs}
+		}
+		// An image is built instrumented when the binary its workload runs
+		// is: the same binary ResolveCoverBinaries resolved for it.
+		if d := w.Build.Docker; w.Build.Type == "docker" && d != nil {
+			named := map[string]bool{}
+			for k := range d.Coverage {
+				named[normalizePGOPackage(k)] = true
+			}
+			if pkg := dockerWorkloadBinary(*w, d, e.Project, named); pkg != "" && on[pkg] {
+				d.cover = &workloadCover{packages: pkgs}
+				w.cover = d.cover
+			}
 		}
 	}
 }
@@ -211,22 +225,109 @@ func coverDir(projectDir, env, workload string) string {
 	return filepath.Join(projectDir, ".forge", "tests", "covdata", env, workload)
 }
 
+// coverImageStage is the Dockerfile stage a cover image is built from: the
+// scaffolded Dockerfile's `cover` stage (Dockerfile.tmpl), the production
+// image with every binary built -cover -covermode=atomic.
+const coverImageStage = "cover"
+
+// coverStageRE finds a `FROM <base> AS cover` line (Dockerfile keywords are
+// case-insensitive).
+var coverStageRE = regexp.MustCompile(`(?im)^\s*FROM\s+\S+(\s+--\S+)*\s+AS\s+` + coverImageStage + `\s*$`)
+
+// dockerfileHasCoverStage reports whether the Dockerfile at path declares the
+// cover stage. A Dockerfile scaffolded before it existed does not, and its
+// image is built as before.
+func dockerfileHasCoverStage(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && coverStageRE.Match(data)
+}
+
+// coverDockerfile is the Dockerfile d builds with, as a path the stage
+// detection can read: the file a GitSource pin resolved to (DockerfilePath,
+// set by resolveDockerBuildSources) — which under a GitSource context must
+// lie inside that resolved checkout — else the declared path, relative to
+// the project root. It never falls back to a local Dockerfile for a pinned
+// build: reading the deploy repo's own file would answer for the wrong image.
+func coverDockerfile(d *DockerBuild) (string, error) {
+	if d.DockerfilePath != "" {
+		if d.ContextDir != "" && d.DockerfileSource == nil {
+			rel, err := filepath.Rel(d.ContextDir, d.DockerfilePath)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return "", fmt.Errorf("the Dockerfile %s is outside its resolved GitSource context %s", d.DockerfilePath, d.ContextDir)
+			}
+		}
+		return d.DockerfilePath, nil
+	}
+	if d.HasGitSource() {
+		return "", fmt.Errorf("its GitSource Dockerfile was not resolved")
+	}
+	p := serviceDockerfile(d)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(projectDirForKCL(), p)
+	}
+	return p, nil
+}
+
+// coverImageArgs are the extra `docker build` args of a DockerBuild workload
+// the env instruments: `--target cover`, and FORGE_COVERPKG (the packages the
+// stage instruments) when the image builds this project's module. nil, with a
+// line saying why, when the image cannot be a cover build: the Dockerfile has
+// no cover stage, or the build names a target of its own, which wins. The
+// Dockerfile read is the one the build actually uses (coverDockerfile),
+// including a GitSource pin's.
+func coverImageArgs(ctx context.Context, svcName string, d *DockerBuild) ([]string, error) {
+	if d == nil || d.cover == nil {
+		return nil, nil
+	}
+	dockerfile, err := coverDockerfile(d)
+	if err != nil {
+		return nil, fmt.Errorf("service %q: coverage: %w", svcName, err)
+	}
+	if d.Target != "" {
+		fmt.Printf("[build] %s: not instrumented for coverage — the build names its own target %q (the cover image is the `%s` stage)\n", svcName, d.Target, coverImageStage)
+		return nil, nil
+	}
+	if !dockerfileHasCoverStage(dockerfile) {
+		fmt.Printf("[build] %s: not instrumented for coverage — %s has no `%s` stage (a new scaffold's Dockerfile does)\n", svcName, dockerfile, coverImageStage)
+		return nil, nil
+	}
+	args := []string{"--target", coverImageStage}
+	// FORGE_COVERPKG names this project's packages, so it is passed only when
+	// the image builds this project from its root; another context builds
+	// another module, and Go's default (its main module) is the right one.
+	if _, own := d.BuildArgs["FORGE_COVERPKG"]; !own && !d.HasGitSource() && serviceDockerContext(d) == "." {
+		pkgs, err := coverPackages(ctx, projectDirForKCL(), d.cover.packages)
+		if err != nil {
+			return nil, fmt.Errorf("service %q: %w", svcName, err)
+		}
+		args = append(args, "--build-arg", "FORGE_COVERPKG="+strings.Join(pkgs, ","))
+	}
+	fmt.Printf("[build] %s: instrumented for coverage (docker build --target %s)\n", svcName, coverImageStage)
+	return args, nil
+}
+
 // coverBuildFlags are the `go build` (and `go run`) flags of a cover build:
 // -cover -covermode=atomic -coverpkg=<patterns>. Empty patterns are "main":
 // the project's module minus its gen/ tree (mainModuleCoverPatterns).
 func coverBuildFlags(ctx context.Context, projectDir string, patterns []string) ([]string, error) {
-	pkgs := patterns
-	if len(pkgs) == 0 {
-		var err error
-		if pkgs, err = mainModuleCoverPatterns(ctx, projectDir); err != nil {
-			return nil, err
-		}
+	pkgs, err := coverPackages(ctx, projectDir, patterns)
+	if err != nil {
+		return nil, err
 	}
 	flags := []string{"-cover", "-covermode=" + coverMode}
 	if len(pkgs) > 0 {
 		flags = append(flags, "-coverpkg="+strings.Join(pkgs, ","))
 	}
 	return flags, nil
+}
+
+// coverPackages are the -coverpkg patterns: patterns as declared, or "main"
+// (mainModuleCoverPatterns) when there are none.
+func coverPackages(ctx context.Context, projectDir string, patterns []string) ([]string, error) {
+	if len(patterns) > 0 {
+		return patterns, nil
+	}
+	return mainModuleCoverPatterns(ctx, projectDir)
 }
 
 var mainCoverPatterns sync.Map // projectDir → []string

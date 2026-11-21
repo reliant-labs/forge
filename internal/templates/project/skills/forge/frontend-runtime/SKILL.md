@@ -16,6 +16,19 @@ The runtime is a **package**, not project code: there is nothing to edit and
 nothing to regenerate. Fixes to it (e.g. tracing behavior) arrive with a
 version bump.
 
+`forge generate` raises the declared range to the floor its generated code
+needs, but the floor is a version, and the lockfile can still install an
+older runtime than the generated code was written against. So after it settles
+each frontend, generate checks named imports in its generated TypeScript
+against the INSTALLED runtime's public entry points. It also checks option
+keys it can trace to the telemetry and mock transport API declarations. If
+an import or option is missing, generate prints a
+`⚠️ frontend <name>: the installed @reliantlabs/forge-web-runtime X does not
+ship …` line that names each feature and the file using it. Fix it with
+`npm update @reliantlabs/forge-web-runtime` (or `pnpm update`, `yarn up`). If
+that changes nothing, your forge is ahead of the last runtime release (a pin of
+an untagged forge commit), and the next release publishes the feature.
+
 You compose it from **your** owned files:
 
 - `src/lib/connect.ts` — builds the transport interceptors from the runtime.

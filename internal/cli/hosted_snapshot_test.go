@@ -91,6 +91,24 @@ func TestSnapshotCutNeverSendsSBOM(t *testing.T) {
 	}
 }
 
+// Nor does a release's test evidence: the control plane binds the commit
+// report itself, and the document it decodes strictly never names the field.
+func TestSnapshotCutNeverSendsTests(t *testing.T) {
+	r := snapshotCatalogRelease(t)
+	r.Tests = &release.TestsRef{ReportDigest: "sha256:" + strings.Repeat("c", 64), Status: release.TestsStatusOK}
+	fake := &snapshotCaller{capable: true}
+	if _, err := (&hostedStore{client: fake}).Cut(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := json.Marshal(fake.cut["snapshotRelease"])
+	if strings.Contains(string(doc), `"tests"`) || fake.cut["tests"] != nil {
+		t.Fatalf("the cut sends test evidence: %s / %v", doc, fake.cut)
+	}
+	if r.Tests == nil {
+		t.Fatal("Cut modified its release")
+	}
+}
+
 func TestSnapshotReleaseRoundTripStrict(t *testing.T) {
 	r := snapshotCatalogRelease(t)
 	raw, _ := json.Marshal(r)

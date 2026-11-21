@@ -1992,6 +1992,10 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
 		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// The commit's test report, on a ledger forge fills it on (the machine
+	// ledger; a control plane binds its own). Never fails the cut
+	// (release_tests_evidence.go).
+	rel.Tests = captureReleaseTests(ctx, projectDir, rel, ledger.Releases, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)

@@ -1176,6 +1176,10 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		// recorded through their own RPC, never inside this document.
 		doc := r.WithoutSBOMs()
 		doc.Migrations = nil
+		// Test evidence too: the control plane binds a release's commit
+		// report itself, and an older one's strict decoder predates the
+		// field (release.TestOlderDecoderIgnoresTests).
+		doc.Tests = nil
 		req = map[string]any{"version": r.Version, "project": r.Project, "snapshotRelease": doc}
 	}
 	if r.Migrations != nil {

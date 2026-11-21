@@ -439,6 +439,7 @@ forge test capture	cmd	format:string lane:string project-dir/C:string render:str
 forge test coverage	cmd	allow-version-skew:bool by:string commit:string diff:string json:bool lane:string project-dir/C:string run:string
 forge test ingest	cmd	allow-version-skew:bool format:string lane:string project-dir/C:string run:string
 forge test report	cmd	allow-version-skew:bool base:string commit:string format:string gate-json:string json:bool project-dir/C:string upload:bool
+forge test run	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge test runs	cmd	allow-version-skew:bool branch:string commit:string json:bool limit:int project-dir/C:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string

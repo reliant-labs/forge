@@ -261,7 +261,7 @@ tasks:
     # in: a task's own vars would win over the caller's). Each frontend is
     # its own lane, `frontend-<dir>`. capture exports FORGE_TEST_LANE_DIR,
     # and the scaffolded Vitest config writes its results (vitest.json) and
-    # its v8 coverage (coverage-final.json, lcov.info) there only when that
+    # its v8 coverage (coverage-final.json) there only when that
     # is set, so a bare `npm test` is unchanged. FORGE_TEST_COVERAGE=off is
     # how `tests.coverage: false` reaches it. A frontend with no Vite or
     # Vitest config (an Expo app's jest) records its output unparsed.

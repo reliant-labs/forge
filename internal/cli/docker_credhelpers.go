@@ -23,8 +23,8 @@ var dockerCredHelpersOnce sync.Once
 // obs 51b41070).
 //
 // When the Cloud SDK's helper sits beside the gcloud on PATH (reached through
-// a symlink, so its directory is not on PATH), that directory is added to this
-// process's PATH, which the docker children inherit, and a note says so.
+// a symlink, so its directory is not on PATH), that directory is appended to this
+// process's PATH (after every directory already on it), which the docker children inherit, and a note says so.
 // Otherwise a warning names the helper, its hosts and the fix; the build still
 // runs, because one that never touches those hosts does not need the helper.
 func checkDockerCredHelpers(w io.Writer) {
@@ -40,7 +40,9 @@ func reportDockerCredHelpers(w io.Writer, configPath string, lookPath func(strin
 	for _, m := range dockercred.MissingHelpers(configPath, lookPath) {
 		bin := "docker-credential-" + m.Helper
 		if dir := dockercred.HelperBesideTool(m.Helper, lookPath); dir != "" {
-			_ = os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			// Appended, never prepended: the directory holds the SDK's other
+			// tools too, and the ones already on PATH must keep winning.
+			_ = os.Setenv("PATH", os.Getenv("PATH")+string(os.PathListSeparator)+dir)
 			_, _ = fmt.Fprintf(w, "[build] %s names %s, which is not on PATH; using the one beside gcloud in %s\n", configPath, bin, dir)
 			continue
 		}

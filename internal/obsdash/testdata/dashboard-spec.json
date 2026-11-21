@@ -652,6 +652,10 @@
           "title": "Runtime"
         },
         {
+          "id": "resources",
+          "title": "Process resources"
+        },
+        {
           "id": "workload",
           "title": "Workload saturation"
         },
@@ -666,7 +670,7 @@
       ],
       "id": "process-shop-api",
       "title": "shop: shop-api",
-      "description": "The service shop-api. Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares; runtime and logs always.",
+      "description": "The service shop-api. Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares, the host it runs on when no node agent reports it; runtime, its resource use and logs always.",
       "group": "services",
       "tags": [
         "service"
@@ -1170,6 +1174,141 @@
           "height": 7
         },
         {
+          "section": "resources",
+          "id": "process-cpu",
+          "title": "Process CPU",
+          "description": "CPU cores the process used (process.cpu.utilization); above 1 when more than one core is busy.",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "cores",
+              "agg": "avg",
+              "field": "process.cpu.utilization",
+              "metricType": "gauge"
+            },
+            {
+              "label": "busiest instance",
+              "agg": "max",
+              "field": "process.cpu.utilization",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-api"
+              ]
+            }
+          ],
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-memory",
+          "title": "Resident memory",
+          "description": "Resident set size (process.memory.usage), and the share of it outside the Go runtime's mapped memory: cgo, mmap and fragmentation (forge.process.memory.go_gap).",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "rss",
+              "agg": "avg",
+              "field": "process.memory.usage",
+              "metricType": "sum"
+            },
+            {
+              "label": "largest instance",
+              "agg": "max",
+              "field": "process.memory.usage",
+              "metricType": "sum"
+            },
+            {
+              "label": "outside the Go runtime",
+              "agg": "avg",
+              "field": "forge.process.memory.go_gap",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-api"
+              ]
+            }
+          ],
+          "unit": "bytes",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-fds",
+          "title": "Open files against the limit",
+          "description": "Open file descriptors over the soft RLIMIT_NOFILE, for the fullest instance (unix; at 100% accept and open fail with EMFILE).",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "of limit",
+              "agg": "max",
+              "field": "forge.process.file_descriptor.utilization",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-api"
+              ]
+            }
+          ],
+          "unit": "percent",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-threads",
+          "title": "OS threads and handles",
+          "description": "OS threads of the process (process.thread.count), and on windows its open kernel handles (forge.process.handle.count).",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "threads",
+              "agg": "max",
+              "field": "process.thread.count",
+              "metricType": "sum"
+            },
+            {
+              "label": "handles",
+              "agg": "max",
+              "field": "forge.process.handle.count",
+              "metricType": "sum"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-api"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 12,
+          "height": 7
+        },
+        {
           "section": "logs",
           "id": "error-logs",
           "title": "Error logs",
@@ -1328,6 +1467,10 @@
           "title": "Runtime"
         },
         {
+          "id": "resources",
+          "title": "Process resources"
+        },
+        {
           "id": "workload",
           "title": "Workload saturation"
         },
@@ -1338,7 +1481,7 @@
       ],
       "id": "process-shop-worker",
       "title": "shop: shop-worker",
-      "description": "The worker shop-worker. Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares; runtime and logs always.",
+      "description": "The worker shop-worker. Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares, the host it runs on when no node agent reports it; runtime, its resource use and logs always.",
       "group": "services",
       "tags": [
         "worker"
@@ -1583,6 +1726,141 @@
           ],
           "unit": "bytes",
           "width": 24,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-cpu",
+          "title": "Process CPU",
+          "description": "CPU cores the process used (process.cpu.utilization); above 1 when more than one core is busy.",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "cores",
+              "agg": "avg",
+              "field": "process.cpu.utilization",
+              "metricType": "gauge"
+            },
+            {
+              "label": "busiest instance",
+              "agg": "max",
+              "field": "process.cpu.utilization",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            }
+          ],
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-memory",
+          "title": "Resident memory",
+          "description": "Resident set size (process.memory.usage), and the share of it outside the Go runtime's mapped memory: cgo, mmap and fragmentation (forge.process.memory.go_gap).",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "rss",
+              "agg": "avg",
+              "field": "process.memory.usage",
+              "metricType": "sum"
+            },
+            {
+              "label": "largest instance",
+              "agg": "max",
+              "field": "process.memory.usage",
+              "metricType": "sum"
+            },
+            {
+              "label": "outside the Go runtime",
+              "agg": "avg",
+              "field": "forge.process.memory.go_gap",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            }
+          ],
+          "unit": "bytes",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-fds",
+          "title": "Open files against the limit",
+          "description": "Open file descriptors over the soft RLIMIT_NOFILE, for the fullest instance (unix; at 100% accept and open fail with EMFILE).",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "of limit",
+              "agg": "max",
+              "field": "forge.process.file_descriptor.utilization",
+              "metricType": "gauge"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            }
+          ],
+          "unit": "percent",
+          "width": 12,
+          "height": 7
+        },
+        {
+          "section": "resources",
+          "id": "process-threads",
+          "title": "OS threads and handles",
+          "description": "OS threads of the process (process.thread.count), and on windows its open kernel handles (forge.process.handle.count).",
+          "kind": "line",
+          "signal": "metrics",
+          "series": [
+            {
+              "label": "threads",
+              "agg": "max",
+              "field": "process.thread.count",
+              "metricType": "sum"
+            },
+            {
+              "label": "handles",
+              "agg": "max",
+              "field": "forge.process.handle.count",
+              "metricType": "sum"
+            }
+          ],
+          "where": [
+            {
+              "field": "service.name",
+              "op": "in",
+              "values": [
+                "shop-worker"
+              ]
+            }
+          ],
+          "unit": "count",
+          "width": 12,
           "height": 7
         },
         {

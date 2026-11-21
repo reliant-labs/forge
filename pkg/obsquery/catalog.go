@@ -72,12 +72,17 @@ func (k CatalogKind) hasTemporality() bool {
 // 30-day scan finds no new names and costs 30 times as much.
 const CatalogWindow = 24 * time.Hour
 
-// builtinMetricPrefixes mark forge's and the Go runtime's own metrics.
-var builtinMetricPrefixes = []string{"rpc.", "go.", "forge."}
+// builtinMetricPrefixes mark forge's and the Go runtime's own metrics: the
+// Connect interceptor's (rpc.), the Go runtime's (go.), forge's (forge.), and
+// the process and host resource metrics every forge binary reports through
+// pkg/resmetrics under the OpenTelemetry semantic-convention names (process.,
+// system.).
+var builtinMetricPrefixes = []string{"rpc.", "go.", "forge.", "process.", "system."}
 
 // IsBuiltinMetric reports whether name is a runtime or forge built-in metric
-// (the rpc., go. and forge. prefixes) as opposed to an application's own. The
-// console mirrors this rule in TypeScript; this is the one Go source to copy.
+// (the rpc., go., forge., process. and system. prefixes) as opposed to an
+// application's own. The console mirrors this rule in TypeScript; this is the
+// one Go source to copy.
 func IsBuiltinMetric(name string) bool {
 	for _, p := range builtinMetricPrefixes {
 		if strings.HasPrefix(name, p) && len(name) > len(p) {

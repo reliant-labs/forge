@@ -9,14 +9,17 @@ import (
 
 // TestForgeMetricPanelsReadDeclaredMetrics pins the generated dashboards to
 // the metrics forge's runtime declares (metrics.builtinSpecs, which the
-// Connect interceptor and the Go runtime instrumentation emit under). Every
-// metrics series over a forge-owned name (rpc.server.*, go.*) must name a
+// Connect interceptor, the Go runtime instrumentation and pkg/resmetrics emit
+// under). Every metrics series over a forge-owned name (forgeOwned) must name a
 // declared built-in, with a metricType its declared instrument is stored as.
 // A dashboard that queries a name nothing emits draws "no data" forever, and
 // pkg/observe's TestChainCountsRPCsOnTheGlobalMeterProvider pins the other
 // half: that a server's chain really emits these names.
 func TestForgeMetricPanelsReadDeclaredMetrics(t *testing.T) {
-	sp := Build(fixture())
+	in := fixture()
+	// A host process (no node agent) draws the host resource panels too.
+	in.Processes = append(in.Processes, Process{Name: "shop-local", Binary: "shop", Args: []string{"local"}, ServiceNames: []string{"shop-local"}, Workloads: []string{"shop-local"}, Kind: "worker"})
+	sp := Build(in)
 	stored := map[metrics.Type][]string{
 		metrics.Counter:       {"sum"},
 		metrics.UpDownCounter: {"sum"},
@@ -30,7 +33,7 @@ func TestForgeMetricPanelsReadDeclaredMetrics(t *testing.T) {
 				continue
 			}
 			for _, s := range p.Series {
-				if !strings.HasPrefix(s.Field, "rpc.server.") && !strings.HasPrefix(s.Field, "go.") {
+				if !forgeOwned(s.Field) {
 					continue
 				}
 				seen[s.Field] = true
@@ -49,9 +52,21 @@ func TestForgeMetricPanelsReadDeclaredMetrics(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"rpc.server.calls", "rpc.server.errors", "rpc.server.duration"} {
+	for _, name := range []string{"rpc.server.calls", "rpc.server.errors", "rpc.server.duration", "process.cpu.utilization", "system.cpu.utilization"} {
 		if !seen[name] {
 			t.Errorf("no generated dashboard reads %s; this test would pass vacuously", name)
 		}
 	}
+}
+
+// forgeOwned reports whether a metric name is in a namespace forge's runtime
+// emits under: the Connect interceptor's, the Go runtime's, and the process
+// and host resource metrics of pkg/resmetrics.
+func forgeOwned(name string) bool {
+	for _, p := range []string{"rpc.server.", "go.", "process.", "system.", "forge.process.", "forge.system.", "forge.cgroup.", "forge.resource."} {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }

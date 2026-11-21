@@ -7351,6 +7351,16 @@ schema ObservabilitySignals:
     # `False` renders FORGE_PRODUCT_EVENTS=off on every workload. Events the
     # app emits itself (observe.Track) are not affected.
     product_events: bool = True
+    # The env's default for which process and host resource metrics every Go
+    # workload reports (forge/pkg/observe, FORGE_OBSERVE_RESOURCE_METRICS):
+    # "auto", "all", "process", "host" or "off" (Workload.resource_metrics
+    # says what each means). Unset renders nothing, so the runtime's "auto"
+    # applies. A workload's own `resource_metrics`, then its `env`, win.
+    resource_metrics?: str
+
+    check:
+        not resource_metrics or resource_metrics in RESOURCE_METRICS_MODES, \
+            "ObservabilitySignals.resource_metrics must be one of ${RESOURCE_METRICS_MODES} — got '${resource_metrics}'"
 
 schema ObservabilitySampling:
     """Trace sampling. The ratio is HEAD sampling in the SDK: every workload

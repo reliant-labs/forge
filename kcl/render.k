@@ -988,6 +988,15 @@ _profiling_env = lambda w: any, env: {str:} -> {str:str} {
         | ({FORGE_PROFILES_HEAP_INTERVAL = _p.heap_interval} if _p and not _env_set(env, "FORGE_PROFILES_HEAP_INTERVAL") else {})
 }
 
+# FORGE_OBSERVE_RESOURCE_METRICS for w: its own `resource_metrics`, else the
+# env's ObservabilitySignals.resource_metrics, else nothing (the runtime's
+# "auto"). Never over the workload's own env.
+_resource_metrics_env = lambda w: any, b: Bundle, env: {str:} -> {str:str} {
+    _env_mode = b.observability.signals.resource_metrics if b.observability and b.observability.signals else ""
+    _mode = w.resource_metrics if w.resource_metrics else _env_mode
+    {FORGE_OBSERVE_RESOURCE_METRICS = _mode} if _mode and not _env_set(env, "FORGE_OBSERVE_RESOURCE_METRICS") else {}
+}
+
 # A project-relative path the one way the PGO rules compare it: surrounding
 # space trimmed, empty and `.` segments dropped ("./", "." and "" are the
 # root; "./Dockerfile" is "Dockerfile"); an absolute path as it is.
@@ -1055,6 +1064,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
         | (_obs_env(rt, bundle, _set) if _runs else {}) \
         | _tel \
         | (_profiling_env(w, _env) if _runs else {}) \
+        | (_resource_metrics_env(w, bundle, _env) if _runs else {}) \
         | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})

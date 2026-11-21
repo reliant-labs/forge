@@ -517,6 +517,11 @@ schema FlowCheck:
     check:
         path.startswith("/"), "FlowCheck.path must start with '/' (e.g. '/flow-health') — got '${path}'"
 
+# The values of FORGE_OBSERVE_RESOURCE_METRICS (forge/pkg/observe): which of
+# the process and host resource metrics a Go workload reports. Workload's and
+# ObservabilitySignals' `resource_metrics`.
+RESOURCE_METRICS_MODES = ["auto", "all", "process", "host", "off"]
+
 # Minutes in a Profiling.heap_interval ("15m", "2h"); 0 when malformed.
 _profiling_minutes = lambda d: str -> int {
     (int(d[:-1]) * (60 if d.endswith("h") else 1)) if regex.match(d, r"^[0-9]+[mh]$") else 0
@@ -665,6 +670,21 @@ schema Workload:
     # live heap every two hours. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
     # every runtime that runs a process; the workload's own `env` wins.
     profiling?: Profiling
+    # Which process and host resource metrics this workload reports (CPU, RSS,
+    # fds, threads; the machine's CPU, load, memory and volumes, or in a pod
+    # its cgroup), overriding the env's ObservabilitySignals.resource_metrics:
+    #
+    #   "auto":    the runtime's default: both, and inside a Kubernetes pod the
+    #              container's cgroup instead of the node
+    #   "all":     both, with the whole machine even inside a pod
+    #   "process": the process only
+    #   "host":    the machine (or cgroup) only
+    #   "off":     neither; the sampler does not start
+    #
+    # Unset: the env's setting, else the runtime's "auto". Rendered as
+    # FORGE_OBSERVE_RESOURCE_METRICS on every runtime that runs a process; the
+    # workload's own `env` wins.
+    resource_metrics?: str
     # How what this workload runs is observed when forge did not build it (a
     # third-party image): scrapes, log parsing, OTLP env remaps, profiles,
     # checks and alerts (see forge.Telemetry). The target IS this workload:
@@ -766,6 +786,8 @@ schema Workload:
             "Workload '${name}': telemetry is not supported for kind='tool' — a tool is never scheduled, so there is nothing to observe"
         go_memory_limit_percent == Undefined or go_memory_limit_percent == None or (go_memory_limit_percent >= 0 and go_memory_limit_percent <= 95), \
             "Workload '${name}': go_memory_limit_percent must be 0 (off) or 1..95 — got ${go_memory_limit_percent}. GOMEMLIMIT is a fraction of the container limit, and the limit also has to hold memory the Go runtime does not count."
+        not resource_metrics or resource_metrics in RESOURCE_METRICS_MODES, \
+            "Workload '${name}': resource_metrics must be one of ${RESOURCE_METRICS_MODES} — got '${resource_metrics}'"
 
         # --- cron ---
         not schedule or kind == "cron", \

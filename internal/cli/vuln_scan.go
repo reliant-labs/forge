@@ -123,7 +123,7 @@ func runVulnScan(ctx context.Context, out, errOut io.Writer, deps vulnDeps, dir 
 			return undeterminedf("%v", err)
 		}
 		notes = rs.Notes
-		in = vulnscan.DocumentInput{Env: opts.deployed, Release: rel.Version, Gate: env.Gate, Artifacts: rs.Artifacts, Now: now}
+		in = vulnscan.DocumentInput{Env: opts.deployed, Release: rel.Version, Gate: env.Gate, Artifacts: rs.Artifacts, Now: now, Notes: notes}
 	default:
 		source, name := "", ""
 		if opts.image != "" {
@@ -164,7 +164,7 @@ func runVulnScan(ctx context.Context, out, errOut io.Writer, deps vulnDeps, dir 
 		if len(in.Artifacts) == 1 && in.Release == "" {
 			label = in.Artifacts[0].Artifact
 		}
-		writeVulnDocument(out, doc, now, notes, label)
+		writeVulnDocument(out, doc, now, label)
 	}
 	return vulnExit(doc)
 }

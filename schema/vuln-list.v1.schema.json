@@ -39,6 +39,16 @@
       "items": {
         "$ref": "#/$defs/DocumentFinding"
       }
+    },
+    "notes": {
+      "description": "Notes say what the reader should know about the data: why nothing could be rescanned (no scanner, no database, a stale database), and why the verdict is undetermined.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [
@@ -161,7 +171,7 @@
           "format": "date-time"
         },
         "stale": {
-          "description": "Stale reports that BuiltAt is older than five days.",
+          "description": "Stale reports that BuiltAt is older than five days (StaleAfter): the verdict is then \"stale\", exit 2, whatever the findings say.",
           "type": [
             "boolean",
             "null"
@@ -356,13 +366,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "determined": {
+          "description": "Determined is false when the verdict is \"could not determine\" (stale, unscanned): the exit code is 2, and the document's notes say why.",
+          "type": "boolean"
         }
       },
       "required": [
         "mode",
         "graded_as",
         "verdict",
-        "blocking"
+        "blocking",
+        "determined"
       ],
       "additionalProperties": false
     },

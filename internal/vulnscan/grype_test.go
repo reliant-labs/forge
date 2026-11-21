@@ -107,13 +107,13 @@ func TestParseGrypeKEVMergeAndUnknownSeverity(t *testing.T) {
 
 func TestParseGrypeRefusesAnUndatedDatabase(t *testing.T) {
 	t.Parallel()
-	if _, err := ParseGrype([]byte(`{"descriptor":{"db":{"status":{}}},"matches":[]}`), time.Now()); err == nil {
+	if _, err := ParseGrype([]byte(`{"descriptor":{"db":{"status":{}}},"matches":[]}`), testNow); err == nil {
 		t.Fatal("a scan with no database build time was accepted")
 	}
-	if _, err := ParseGrype([]byte(`not json`), time.Now()); err == nil {
+	if _, err := ParseGrype([]byte(`not json`), testNow); err == nil {
 		t.Fatal("garbage accepted")
 	}
-	scan, err := ParseGrype([]byte(`{"descriptor":{"db":{"status":{"built":"2026-11-20T06:21:00Z"}}},"matches":null}`), time.Now())
+	scan, err := ParseGrype([]byte(`{"descriptor":{"db":{"status":{"built":"2026-11-20T06:21:00Z"}}},"matches":null}`), testNow)
 	if err != nil || scan.Findings == nil || len(scan.Findings) != 0 {
 		t.Fatalf("clean scan = %+v, %v (findings must be an empty list, not null)", scan, err)
 	}

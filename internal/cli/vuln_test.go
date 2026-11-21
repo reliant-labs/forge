@@ -501,3 +501,103 @@ func TestVulnListSchemaValidatesTheGoldenDocument(t *testing.T) {
 		t.Fatalf("forge project schema vuln-list: %v", err)
 	}
 }
+
+// storeScan files a stored scan of digest against a database built at
+// built: clean (no findings) or the sample's findings (one blocks).
+func (h *vulnHarness) storeScan(digest string, built time.Time, clean bool) {
+	h.t.Helper()
+	s := &vulnscan.Scan{Schema: vulnscan.ScanSchema, Scanner: "grype", ScannerVersion: "v0.122.1", DBSchema: "v6.1.10", DBBuiltAt: built, ScannedAt: built.Add(time.Minute), Findings: []vulnscan.Finding{}}
+	if !clean {
+		parsed, err := vulnscan.ParseGrype(h.sample, built)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		s.Findings = parsed.Findings
+	}
+	rec, err := vulnscan.Record(digest, s)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := h.store.PutFindings(rec); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// TestVulnListWithoutACurrentScanIsUndetermined is B1: when nothing can be
+// rescanned (no grype, no database, a stale database), the stored scans
+// stand in, and the verdict is determined only if each artifact's newest
+// stored scan used a database built within five days. Otherwise exit 2,
+// whatever the stored findings say; they are still listed.
+func TestVulnListWithoutACurrentScanIsUndetermined(t *testing.T) {
+	t.Parallel()
+	staleBuild := vulnTestNow.Add(-6 * 24 * time.Hour)
+	freshBuild := vulnTestNow.Add(-2 * 24 * time.Hour)
+	cases := []struct {
+		name      string
+		local     string // "no-grype", "no-db", "stale-db"
+		stored    time.Time
+		clean     bool
+		want      int
+		verdict   vulnscan.Verdict
+		wantNote  string
+		blockedBy string
+	}{
+		{"absent scanner, stored clean scan with a stale db", "no-grype", staleBuild, true, exitUndetermined, vulnscan.VerdictStale, "grype is not installed", ""},
+		{"absent db, stored clean scan with a stale db", "no-db", staleBuild, true, exitUndetermined, vulnscan.VerdictStale, "no vulnerability database", ""},
+		{"stale local db, stored clean scan with it", "stale-db", staleBuild, true, exitUndetermined, vulnscan.VerdictStale, "older than 5 days, so nothing was rescanned", ""},
+		{"stale local db, stored blocking scan: still undetermined, blocker listed", "stale-db", staleBuild, false, exitUndetermined, vulnscan.VerdictStale, "undetermined:", "CVE-2026-4738"},
+		{"absent scanner, stored clean scan with a fresh db: determined", "no-grype", freshBuild, true, exitOK, vulnscan.VerdictPass, "grype is not installed", ""},
+		{"absent db, stored clean scan with a fresh db: determined", "no-db", freshBuild, true, exitOK, vulnscan.VerdictPass, "no vulnerability database", ""},
+		{"absent scanner, stored fresh blocking scan: blocks", "no-grype", freshBuild, false, exitWrong, vulnscan.VerdictBlock, "grype is not installed", "CVE-2026-4738"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newVulnHarness(t)
+			digest := h.cut("v1.0.0", false)
+			h.storeScan(digest, tc.stored, tc.clean)
+			switch tc.local {
+			case "no-grype":
+				h.noGrype = true
+			case "no-db":
+				h.built = time.Time{}
+			case "stale-db":
+				h.built = staleBuild
+			}
+			out, _, code := h.exec("list", "prod", "--json")
+			if code != tc.want {
+				t.Fatalf("exit %d, want %d\n%s", code, tc.want, out)
+			}
+			doc := decodeVulnDoc(t, out)
+			if doc.Gate.Verdict != tc.verdict || doc.Gate.Determined != tc.verdict.Determined() || doc.DB.Stale != (tc.verdict == vulnscan.VerdictStale) {
+				t.Errorf("gate %+v db %+v", doc.Gate, doc.DB)
+			}
+			if !strings.Contains(strings.Join(doc.Notes, "\n"), tc.wantNote) {
+				t.Errorf("notes %q lack %q", doc.Notes, tc.wantNote)
+			}
+			if tc.blockedBy != "" && (strings.Join(doc.Gate.Blocking, ",") != tc.blockedBy || len(doc.Findings) == 0) {
+				t.Errorf("stored findings not kept for display: blocking %v, %d findings", doc.Gate.Blocking, len(doc.Findings))
+			}
+			if h.scans != 0 {
+				t.Errorf("rescanned %d times with no usable scanner or database", h.scans)
+			}
+			// show reads the same path and exits the same way.
+			if _, _, code := h.exec("show", "prod", "zlib"); code != tc.want {
+				t.Errorf("show: exit %d, want %d", code, tc.want)
+			}
+		})
+	}
+}
+
+// scan --deployed needs a current scan: a stale database it cannot refresh
+// is exit 2 even when a fresh-looking clean scan is stored.
+func TestVulnScanDeployedWithAStaleDatabaseIsUndetermined(t *testing.T) {
+	t.Parallel()
+	h := newVulnHarness(t)
+	digest := h.cut("v1.0.0", false)
+	h.storeScan(digest, vulnTestNow.Add(-time.Hour), true)
+	h.built = vulnTestNow.Add(-6 * 24 * time.Hour)
+	if _, stderr, code := h.exec("scan", "--deployed", "prod"); code != exitUndetermined || !strings.Contains(stderr, "stale") {
+		t.Fatalf("exit %d\n%s", code, stderr)
+	}
+}

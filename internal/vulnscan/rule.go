@@ -104,8 +104,10 @@ const (
 	// the verdict says what was found, the mode decides whether a promotion
 	// is refused.
 	VerdictBlock Verdict = "block"
-	// VerdictStale means nothing blocks, but a scan ran against a database older
-	// than StaleAfter. Not a pass: the data cannot vouch for the release.
+	// VerdictStale means a scan the verdict needs ran against a database
+	// older than StaleAfter, and no current scan could replace it. Not a
+	// pass, and not a block: the data cannot vouch for the release either
+	// way (its blocking ids are still listed).
 	VerdictStale Verdict = "stale"
 	// VerdictUnscanned means nothing blocks, but an artifact has no SBOM or no
 	// scan. Not a pass: "not scanned" is never clean.
@@ -159,6 +161,9 @@ type GateResult struct {
 	Verdict Verdict `json:"verdict"`
 	// Blocking are the ids of the advisories that block, sorted, each once.
 	Blocking []string `json:"blocking"`
+	// Determined is false when the verdict is "could not determine" (stale,
+	// unscanned): the exit code is 2, and the document's notes say why.
+	Determined bool `json:"determined"`
 }
 
 // Evaluation is the rule applied to a release's findings.
@@ -184,9 +189,16 @@ type EvaluateInput struct {
 	Now time.Time
 }
 
-// Evaluate applies the rule to a release. Precedence: off, then block (a
-// blocking finding is reported even from stale or partial data — it was
-// found), then stale, then unscanned, then warn, then pass.
+// Evaluate applies the rule to a release. Precedence: off, then stale, then
+// block, then unscanned, then warn, then pass.
+//
+// Stale outranks block on purpose. Findings from a database older than
+// StaleAfter cannot establish the release's status either way, so the
+// verdict is "could not determine" whatever they say. The blocking ids are
+// still listed in Gate.Blocking, and every finding keeps its action, so a
+// reader sees what the old data found. A blocking finding from a current
+// scan outranks an unscanned artifact: that one was found with current
+// data, and the missing scan could only add to it.
 func Evaluate(in EvaluateInput) Evaluation {
 	ev := Evaluation{Gate: GateResult{
 		Mode:     string(in.Gate.Mode),
@@ -221,10 +233,10 @@ func Evaluate(in EvaluateInput) Evaluation {
 	switch {
 	case off:
 		ev.Gate.Verdict = VerdictOff
-	case len(ev.Gate.Blocking) > 0:
-		ev.Gate.Verdict = VerdictBlock
 	case in.Stale:
 		ev.Gate.Verdict = VerdictStale
+	case len(ev.Gate.Blocking) > 0:
+		ev.Gate.Verdict = VerdictBlock
 	case !in.Coverage.Complete():
 		ev.Gate.Verdict = VerdictUnscanned
 	case warned:
@@ -232,5 +244,6 @@ func Evaluate(in EvaluateInput) Evaluation {
 	default:
 		ev.Gate.Verdict = VerdictPass
 	}
+	ev.Gate.Determined = ev.Gate.Verdict.Determined()
 	return ev
 }

@@ -32,7 +32,7 @@ func generateVulnListSchema(describe func(reflect.Type, string) string) ([]byte,
 		Required: map[reflect.Type][]string{
 			reflect.TypeOf(vulnscan.Document{}):        {"schema", "env", "release", "coverage", "db", "gate", "counts", "findings"},
 			reflect.TypeOf(vulnscan.DocumentFinding{}): {"id", "severity", "kev", "package", "artifacts", "action"},
-			reflect.TypeOf(vulnscan.GateResult{}):      {"mode", "graded_as", "verdict", "blocking"},
+			reflect.TypeOf(vulnscan.GateResult{}):      {"mode", "graded_as", "verdict", "blocking", "determined"},
 		},
 		Describe: describe,
 	})

@@ -111,7 +111,12 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 	now := deps.now()
 
 	// The database and scanner as they are: list installs and downloads
-	// nothing. Without them it reads what is stored.
+	// nothing. Without them, or with a stale database, nothing is rescanned
+	// and the stored scans stand in, under vulnscan.ScanIsCurrent's rule:
+	// the verdict is determined only if each artifact's newest stored scan
+	// used a database built within five days (it is a scan with a fresh
+	// database, even if grype is absent now). Otherwise it is "stale",
+	// exit 2, whatever the stored findings say, and they are still listed.
 	var notes []string
 	var scanner *vulnscan.Scanner
 	var local vulnscan.Status
@@ -128,7 +133,9 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		notes = append(notes, "no vulnerability database on this machine, so nothing was rescanned (`forge vuln db pull`)")
 	default:
 		scanner = &vulnscan.Scanner{DB: db}
-		if !local.Fresh(now) {
+		if local.Stale(now) {
+			notes = append(notes, fmt.Sprintf("the vulnerability database on this machine was built %s, older than 5 days, so nothing was rescanned (`forge vuln db pull`)", local.BuiltAt.Format("2006-01-02")))
+		} else if !local.Fresh(now) {
 			notes = append(notes, fmt.Sprintf("the vulnerability database was built %s ago; `forge vuln db pull` refreshes it", roundAge(local.Age(now))))
 		}
 	}
@@ -138,12 +145,9 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 	}
 	notes = append(notes, rs.Notes...)
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: envName, Release: rel.Version, Gate: env.Gate, Artifacts: rs.Artifacts, Filter: filter, Now: now,
+		Env: envName, Release: rel.Version, Gate: env.Gate, Artifacts: rs.Artifacts, Filter: filter, Now: now, Notes: notes,
 	})
 	if asJSON {
-		for _, n := range notes {
-			_, _ = fmt.Fprintf(errOut, "note: %s\n", n)
-		}
 		if err := writeVulnJSON(out, doc); err != nil {
 			return err
 		}
@@ -151,7 +155,7 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		if filter.Match != "" && len(doc.Findings) == 0 {
 			_, _ = fmt.Fprintf(out, "no finding in %s release %s matches %q\n", envName, rel.Version, filter.Match)
 		}
-		writeVulnDocument(out, doc, now, notes, "")
+		writeVulnDocument(out, doc, now, "")
 	}
 	return vulnExit(doc)
 }

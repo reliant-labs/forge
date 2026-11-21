@@ -36,6 +36,8 @@ func TestRealGrype(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The wall clock on purpose: the real database's age is measured
+	// against now, and Ensure has just made it current.
 	if !st.Present || st.Schema == "" || st.Stale(time.Now()) {
 		t.Fatalf("status after Ensure = %+v", st)
 	}

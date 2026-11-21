@@ -26,7 +26,8 @@
     "verdict": "block",
     "blocking": [
       "CVE-2026-4738"
-    ]
+    ],
+    "determined": true
   },
   "counts": {
     "critical": 1,

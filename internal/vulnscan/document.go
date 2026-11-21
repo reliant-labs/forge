@@ -1,6 +1,7 @@
 package vulnscan
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,10 @@ type Document struct {
 	Counts Counts `json:"counts"`
 	// Findings are the listed findings, strongest first.
 	Findings []DocumentFinding `json:"findings"`
+	// Notes say what the reader should know about the data: why nothing
+	// could be rescanned (no scanner, no database, a stale database), and
+	// why the verdict is undetermined.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // DocumentDB is the freshness of a document's findings.
@@ -47,7 +52,8 @@ type DocumentDB struct {
 	// BuiltAt is the build of the OLDEST database any listed artifact was
 	// scanned with: the document is only as fresh as that.
 	BuiltAt time.Time `json:"built_at,omitzero"`
-	// Stale reports that BuiltAt is older than five days.
+	// Stale reports that BuiltAt is older than five days (StaleAfter): the
+	// verdict is then "stale", exit 2, whatever the findings say.
 	Stale bool `json:"stale"`
 }
 
@@ -152,13 +158,26 @@ type DocumentInput struct {
 	Artifacts []ArtifactScan
 	Filter    Filter
 	Now       time.Time
+	// Notes are carried into the document (Document.Notes).
+	Notes []string
+}
+
+// ScanIsCurrent reports whether s can vouch for an artifact at now: its
+// database was built within StaleAfter. This is the freshness rule: a
+// verdict is determined only if every scanned artifact's NEWEST stored scan
+// is current by its own db_built_at. A stored scan that is current counts
+// even when no scanner or database is on this machine now: it IS a scan with
+// a fresh database. One that is not current makes the verdict "stale" (exit
+// 2) unless a rescan replaced it, whatever it found.
+func ScanIsCurrent(s *Scan, now time.Time) bool {
+	return s != nil && now.Sub(s.DBBuiltAt) <= StaleAfter
 }
 
 // BuildDocument merges a release's per-artifact scans into one document:
 // each advisory-on-package once, with every artifact it is in; the gate's
 // verdict over all of them; then the filter.
 func BuildDocument(in DocumentInput) Document {
-	doc := Document{Schema: DocumentSchema, Env: in.Env, Release: in.Release, Findings: []DocumentFinding{}}
+	doc := Document{Schema: DocumentSchema, Env: in.Env, Release: in.Release, Findings: []DocumentFinding{}, Notes: append([]string(nil), in.Notes...)}
 	doc.Coverage.Artifacts = len(in.Artifacts)
 	byKey := map[string]*DocumentFinding{}
 	var order []string
@@ -197,10 +216,13 @@ func BuildDocument(in DocumentInput) Document {
 			order = append(order, k)
 		}
 	}
+	// The document is as fresh as its oldest artifact: when that
+	// artifact's newest scan is not current (ScanIsCurrent), nor is the
+	// verdict.
 	if oldest != nil {
 		doc.DB = DocumentDB{
 			Scanner: oldest.Scanner, Version: oldest.ScannerVersion, Schema: oldest.DBSchema,
-			BuiltAt: oldest.DBBuiltAt, Stale: in.Now.Sub(oldest.DBBuiltAt) > StaleAfter,
+			BuiltAt: oldest.DBBuiltAt, Stale: !ScanIsCurrent(oldest, in.Now),
 		}
 	} else {
 		doc.DB = DocumentDB{Scanner: ScannerGrype}
@@ -212,6 +234,9 @@ func BuildDocument(in DocumentInput) Document {
 	}
 	ev := Evaluate(EvaluateInput{Gate: in.Gate, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now})
 	doc.Gate = ev.Gate
+	if doc.DB.Stale && ev.Gate.Verdict == VerdictStale {
+		doc.Notes = append(doc.Notes, fmt.Sprintf("undetermined: the newest scan of an artifact used a vulnerability database built %s, older than %s, and no current scan replaced it", doc.DB.BuiltAt.Format("2006-01-02"), humanDuration(StaleAfter)))
+	}
 	for i, j := range ev.Findings {
 		d := byKey[order[i]]
 		d.Action, d.Exemption = j.Action, j.Exemption

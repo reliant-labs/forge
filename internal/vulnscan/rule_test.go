@@ -91,7 +91,8 @@ func TestEvaluateVerdicts(t *testing.T) {
 		{"clean", defaultGate(), nil, full, false, VerdictPass, 0},
 		{"warn only", defaultGate(), []Finding{warn}, full, false, VerdictWarn, 0},
 		{"block, one id listed once", enforce, []Finding{block, block2, warn}, full, false, VerdictBlock, 1},
-		{"block beats stale and partial", defaultGate(), []Finding{block}, partial, true, VerdictBlock, 1},
+		{"stale beats block: old data cannot establish the status, its blockers still listed", defaultGate(), []Finding{block}, full, true, VerdictStale, 1},
+		{"a current block beats an unscanned artifact", defaultGate(), []Finding{block}, partial, false, VerdictBlock, 1},
 		{"stale is never a pass", defaultGate(), nil, full, true, VerdictStale, 0},
 		{"stale beats warn", defaultGate(), []Finding{warn}, full, true, VerdictStale, 0},
 		{"unscanned artifact is never a pass", defaultGate(), []Finding{warn}, partial, false, VerdictUnscanned, 0},
@@ -109,6 +110,9 @@ func TestEvaluateVerdicts(t *testing.T) {
 			}
 			if ev.Gate.Blocking == nil {
 				t.Errorf("blocking must encode as [], never null")
+			}
+			if ev.Gate.Determined != tc.want.Determined() {
+				t.Errorf("determined = %v for verdict %s", ev.Gate.Determined, tc.want)
 			}
 		})
 	}

@@ -216,7 +216,11 @@ func vulnExit(doc vulnscan.Document) error {
 	case vulnscan.VerdictBlock:
 		return &exitCodeError{code: exitWrong, verdict: true, msg: fmt.Sprintf("vuln_gate (%s) would block: %s", g.Mode, strings.Join(g.Blocking, ", "))}
 	case vulnscan.VerdictStale:
-		return &exitCodeError{code: exitUndetermined, verdict: true, msg: fmt.Sprintf("could not determine: the findings come from a vulnerability database built %s, older than 5 days (forge vuln db pull)", doc.DB.BuiltAt.Format("2006-01-02"))}
+		msg := fmt.Sprintf("could not determine: the findings come from a vulnerability database built %s, older than 5 days, and no current scan replaced them (forge vuln db pull, then forge vuln scan --release %s)", doc.DB.BuiltAt.Format("2006-01-02"), doc.Release)
+		if len(g.Blocking) > 0 {
+			msg += "; the old data would block: " + strings.Join(g.Blocking, ", ")
+		}
+		return &exitCodeError{code: exitUndetermined, verdict: true, msg: msg}
 	case vulnscan.VerdictUnscanned:
 		var names []string
 		for _, u := range doc.Coverage.Unscanned {
@@ -248,7 +252,7 @@ func dbExit(err error) error {
 
 // writeVulnDocument prints a document as text. label names what was scanned
 // when the document names no env or release (a directory, an image, a file).
-func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, notes []string, label string) {
+func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, label string) {
 	subject := "release " + doc.Release
 	switch {
 	case doc.Env != "" && doc.Release != "":
@@ -293,7 +297,7 @@ func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, notes 
 	for _, u := range doc.Coverage.Unscanned {
 		_, _ = fmt.Fprintf(w, "not scanned: %s (%s)\n", u.Artifact, u.Reason)
 	}
-	for _, n := range notes {
+	for _, n := range doc.Notes {
 		_, _ = fmt.Fprintf(w, "note: %s\n", n)
 	}
 	if doc.Env != "" && len(doc.Gate.Blocking) > 0 {

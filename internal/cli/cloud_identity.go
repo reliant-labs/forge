@@ -424,44 +424,9 @@ applied yet.`,
 						"(it does not advertise %q); showing the one it serves.\n", args[0], strings.Join(declared, ", "), release.CapabilityConvergesSeveralIdentities)
 				}
 			}
-			docs := make([]identityStatusDocument, 0, len(names))
-			checkErrs := make([]error, 0, len(names))
-			for _, name := range names {
-				r := maps.Clone(req)
-				if name != "" {
-					r["identity"] = name
-				}
-				var doc identityStatusDocument
-				if err := client.Call(ctx, procIdentityStatus, r, &doc); err != nil {
-					if name != "" {
-						return fmt.Errorf("identity status (%s): %w", name, err)
-					}
-					return fmt.Errorf("identity status: %w", err)
-				}
-				doc.Identity = name
-				// --check-social checks each identity's own providers,
-				// through the same identity-scoped request.
-				var checkErr error
-				if checkSocialFlag {
-					if !doc.HasInstance {
-						checkErr = fmt.Errorf("--check-social: the environment has no managed identity instance")
-					} else {
-						start := controlPlaneSocialStarter(client, r)
-						if app != "" {
-							start = brokerSocialStarter(socialCheckHTTPClient(), app)
-						}
-						doc.SocialChecks, checkErr = checkSocial(ctx, doc, start)
-						if checkErr == nil {
-							checkErr = socialCheckErr(doc.SocialChecks)
-						}
-					}
-					if checkErr != nil && name != "" {
-						checkErr = fmt.Errorf("identity %s: %w", name, checkErr)
-					}
-				}
-				doc.stamp(checkErr)
-				docs = append(docs, doc)
-				checkErrs = append(checkErrs, checkErr)
+			docs, checkErrs, err := identityStatuses(ctx, client, req, names, checkSocialFlag, app)
+			if err != nil {
+				return err
 			}
 			checkErr := errors.Join(checkErrs...)
 			if f.json {
@@ -498,6 +463,56 @@ applied yet.`,
 	cmd.Flags().BoolVar(&checkSocialFlag, "check-social", false, "Start a sign-in with each social provider and check the authorize URL's redirect_uri equals the printed callback")
 	cmd.Flags().StringVar(&app, "app", "", "With --check-social: start each sign-in through your app's login broker at this URL (POST <url>/auth/social/start) instead of the control plane")
 	return cmd
+}
+
+// identityStatuses reads GetIdentityStatus for each name ("" is the env's one
+// identity), and with checkSocial runs --check-social on each through the
+// same identity-scoped request. checkErrs[i] is docs[i]'s check verdict; err
+// is a status read that failed.
+func identityStatuses(ctx context.Context, client cloudCaller, req map[string]any, names []string, checkSocialFlag bool, app string) (docs []identityStatusDocument, checkErrs []error, err error) {
+	for _, name := range names {
+		r := maps.Clone(req)
+		if name != "" {
+			r["identity"] = name
+		}
+		var doc identityStatusDocument
+		if err := client.Call(ctx, procIdentityStatus, r, &doc); err != nil {
+			if name != "" {
+				return nil, nil, fmt.Errorf("identity status (%s): %w", name, err)
+			}
+			return nil, nil, fmt.Errorf("identity status: %w", err)
+		}
+		doc.Identity = name
+		var checkErr error
+		if checkSocialFlag {
+			checkErr = checkIdentitySocial(ctx, client, r, &doc, app)
+			if checkErr != nil && name != "" {
+				checkErr = fmt.Errorf("identity %s: %w", name, checkErr)
+			}
+		}
+		doc.stamp(checkErr)
+		docs = append(docs, doc)
+		checkErrs = append(checkErrs, checkErr)
+	}
+	return docs, checkErrs, nil
+}
+
+// checkIdentitySocial is --check-social for one identity's status doc: it
+// fills doc.SocialChecks and returns the verdict.
+func checkIdentitySocial(ctx context.Context, client cloudCaller, req map[string]any, doc *identityStatusDocument, app string) error {
+	if !doc.HasInstance {
+		return fmt.Errorf("--check-social: the environment has no managed identity instance")
+	}
+	start := controlPlaneSocialStarter(client, req)
+	if app != "" {
+		start = brokerSocialStarter(socialCheckHTTPClient(), app)
+	}
+	var err error
+	doc.SocialChecks, err = checkSocial(ctx, *doc, start)
+	if err == nil {
+		err = socialCheckErr(doc.SocialChecks)
+	}
+	return err
 }
 
 // identityStatusesDocument is `status --json` for an env with several

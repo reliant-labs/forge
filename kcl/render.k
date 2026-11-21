@@ -2300,7 +2300,7 @@ _tel_agent_secret_refs = lambda b: Bundle -> [any] {
 _check_agent_telemetry = lambda b: Bundle -> bool {
     _refs = _tel_agent_secret_refs(b)
     _ns = b.observability.agent.namespace if _refs else ""
-    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, b.identity, b.env, b.project, b.control_plane_secrets)) if _refs else []
+    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, _idns(b), b.env, b.project, b.control_plane_secrets)) if _refs else []
     _missing = [d for d in _refs if not (any s in b.required_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in b.rendered_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in _delivered { s.name == d.ref.secret and _cps_ns(s) == _ns and d.ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] })]

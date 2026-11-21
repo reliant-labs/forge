@@ -139,6 +139,10 @@ Exit 7 is a person's turn, not a failure: relay the link to the user, do not
 retry in a loop. A newer deploy to the same env supersedes a queued one. An
 older control plane (no holds) still refuses with the billing reason.
 
+A hosted deploy at a terminal (not CI or `--json`) prints the launcher's
+`FORGE_HOST_CONNECT_HINT` (how to connect this machine for agents) before
+`RESULT`. forge only prints it.
+
 ### What hosting provides and refuses
 
 | Provides | Refuses (bind to a cluster you operate) |

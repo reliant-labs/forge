@@ -202,7 +202,10 @@ func TestExpHistogramAgainstClickHouse(t *testing.T) {
 			insertExp(t, c, "restart", "map()", restart, base.Add(time.Duration(i)*time.Minute), 2, newExpPoint(3, 0, take(50+100*(i-4))))
 		}
 		res := eval(t, c, scope(base.Add(2*time.Minute), base.Add(9*time.Minute)), panel("line", obsquery.PanelSeries{Label: "c", Field: "restart", Agg: "rate", MetricType: "exp_histogram"}), obsquery.EvalOptions{StepSeconds: 60})
-		if len(res.Series[0].Points) != 7 {
+		// A sample covers the minute BEFORE it, so the samples at 3:00..8:00
+		// fill the buckets 2:00..7:00; nothing covers 8:00-9:00 (the last
+		// sample is at 8:00), which is no point rather than a guess.
+		if len(res.Series[0].Points) != 6 {
 			t.Fatalf("points = %v", pointValues(res.Series[0]))
 		}
 		for _, p := range res.Series[0].Points {
@@ -211,8 +214,12 @@ func TestExpHistogramAgainstClickHouse(t *testing.T) {
 			}
 		}
 		count := eval(t, c, scope(base.Add(2*time.Minute), base.Add(9*time.Minute)), panel("number", obsquery.PanelSeries{Label: "n", Field: "restart", Agg: "count", MetricType: "exp_histogram"}), obsquery.EvalOptions{StepSeconds: 60})
-		if r := count.Series[0].Reduced; r == nil || math.Abs(*r-700) > 0.5 {
-			t.Errorf("count across the restart = %v, want 700", r)
+		// The observations the exports carry, not the rate times the range
+		// (700): 100 for 2:00-3:00, the 50 since the restart at 3:30 (the 50
+		// of 3:00-3:30 died with the old process, unexported), and 400 for
+		// 4:00-8:00. Nothing after 8:00 is exported yet.
+		if r := count.Series[0].Reduced; r == nil || math.Abs(*r-550) > 0.5 {
+			t.Errorf("count across the restart = %v, want 550", reducedOf(count.Series[0]))
 		}
 	})
 

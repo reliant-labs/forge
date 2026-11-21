@@ -24,6 +24,11 @@
 // tiers"), so a reload may record the same exposure again; the dashboards
 // count distinct persons, so it counts once.
 //
+// A provider that knows more says so in the options: the measured `run` (part
+// of the dedupe key, since a new run is a new assignment), the `unit` that
+// stays together, the `reason` and the config `revision`. Forge Changes
+// (changes-store.ts) passes all four.
+//
 // An evaluation that failed (an OpenFeature `errorCode`) is no exposure. A
 // variant is a name: an object-valued flag with no variant name is recorded
 // as `object`, never its contents.
@@ -35,13 +40,30 @@ import { recordProductEvent, stampedTelemetryUser } from "./track.js";
 /** The product event an exposure is recorded as. */
 export const FLAG_EVALUATED_EVENT = "flag_evaluated";
 
+/**
+ * The provider name Forge Changes records under and its OpenFeature provider
+ * reports; forgeExposureHook leaves that provider's evaluations alone.
+ */
+export const FORGE_CHANGES_PROVIDER = "forge";
+
 /** Longest flag key, variant or provider name recorded. */
 export const MAX_FLAG_VALUE_CHARS = 128;
 
-/** trackExposure's options. */
+/** trackExposure's options. Each one set becomes a property of the event. */
 export interface ExposureOptions {
   /** The flag provider ("launchdarkly", "flagd", "statsig", your own). */
   provider?: string;
+  /**
+   * The measured run (experiment or rollout) the variant was assigned in.
+   * Part of the dedupe key: a new run of a flag is a new assignment.
+   */
+  run?: string;
+  /** What stays together: "user", "account" or "visitor". */
+  unit?: string;
+  /** Why the provider chose the variant ("experiment", "preview", …). */
+  reason?: string;
+  /** The revision of the flag configuration that decided it. */
+  revision?: number;
 }
 
 let seen = new Set<string>();
@@ -52,6 +74,11 @@ function clean(value: string): string {
     .replace(/[\u0000-\u001f\u007f]/g, "")
     .trim()
     .slice(0, MAX_FLAG_VALUE_CHARS);
+}
+
+/** An optional string option, cleaned; "" when unset or not a string. */
+function optional(value: unknown): string {
+  return typeof value === "string" ? clean(value) : "";
 }
 
 function variantName(variant: unknown): string {
@@ -66,7 +93,7 @@ function variantName(variant: unknown): string {
 
 /**
  * Record that this person was shown `variant` of `flag`. Once per (person,
- * flag, variant) per UTC day per page load; never throws; inherits track()'s
+ * flag, variant, run) per UTC day per page load; never throws; inherits track()'s
  * gates (nothing in the `off` tier, before init is held, after
  * disableTelemetry() dropped).
  *
@@ -86,19 +113,36 @@ export function trackExposure(
     if (key === "" || name === "") {
       return;
     }
+    const run = optional(options?.run);
     const day = new Date().toISOString().slice(0, 10);
-    const mark = `${stampedTelemetryUser()}\u0000${key}\u0000${name}\u0000${day}`;
+    const mark = `${stampedTelemetryUser()}\u0000${key}\u0000${name}\u0000${run}\u0000${day}`;
     if (seen.has(mark)) {
       return;
     }
     seen.add(mark);
     const props: Record<string, string> = { flag: key, variant: name };
-    const provider =
-      typeof options?.provider === "string"
-        ? clean(options.provider).toLowerCase()
-        : "";
+    const provider = optional(options?.provider).toLowerCase();
     if (provider !== "") {
       props.provider = provider;
+    }
+    if (run !== "") {
+      props.run = run;
+    }
+    const unit = optional(options?.unit);
+    if (unit !== "") {
+      props.unit = unit;
+    }
+    const reason = optional(options?.reason);
+    if (reason !== "") {
+      props.reason = reason;
+    }
+    const revision = options?.revision;
+    if (
+      typeof revision === "number" &&
+      Number.isSafeInteger(revision) &&
+      revision >= 0
+    ) {
+      props.revision = String(revision);
     }
     recordProductEvent(FLAG_EVALUATED_EVENT, props);
   } catch {
@@ -132,7 +176,13 @@ export const forgeExposureHook = {
     details: ExposureEvaluationDetails,
   ): void {
     try {
-      if (details?.errorCode) {
+      // Forge Changes' own provider records its evaluations, with the run
+      // and reason this hook cannot see: counting them here too would
+      // record each one twice.
+      if (
+        details?.errorCode ||
+        hookContext?.providerMetadata?.name === FORGE_CHANGES_PROVIDER
+      ) {
         return;
       }
       const flag = details?.flagKey ?? hookContext?.flagKey;

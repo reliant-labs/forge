@@ -37,6 +37,8 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// envs / monitoring: read by the env-declaration seam
 			// (internal/cli/env_declaration.go) every `forge obs` verb
 			// resolves through, and by `forge obs init`.
+			// tests: coverage read by the env render (ReadTestsCoverage →
+			// resolveCoverBinaries); the rest by the `forge test` verbs.
 			// scaffold: read by checksums.ExcludeGlobs at every write
 			// chokepoint (scaffold.exclude).
 			// vuln: read where the release cut attaches an OCI artifact's
@@ -45,14 +47,21 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
 				"forge_version", "generate", "git", "harness", "k8s",
-				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
+				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "tests", "upgrade",
 				"vuln",
 			},
 		},
 		{
+			// vuln.attach_sbom: read by the release cut (internal/sbomoci);
+			// vuln.patch.verify: read by `forge vuln patch`.
 			name: "VulnConfig",
 			typ:  reflect.TypeFor[VulnConfig](),
-			want: []string{"attach_sbom"},
+			want: []string{"attach_sbom", "patch"},
+		},
+		{
+			name: "VulnPatchConfig",
+			typ:  reflect.TypeFor[VulnPatchConfig](),
+			want: []string{"verify"},
 		},
 		{
 			// Every feature; orm also has //forge:no-orm.
@@ -163,7 +172,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[LintConfig](),
 			// allow_skip: read by the lint command (internal/cli/lint/lint_skip.go).
 			// lanes: read by the lint command (internal/cli/lint/lint_lanes.go).
-			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
+			// auth: read by the unscoped_auth audit (internal/cli/audit/audit_unscoped_auth_module.go).
+			want: []string{"allow_skip", "auth", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
+		},
+		{
+			name: "AuthLintConfig",
+			typ:  reflect.TypeFor[AuthLintConfig](),
+			want: []string{"caller_resolvers"},
+		},
+		{
+			name: "CallerResolverConfig",
+			typ:  reflect.TypeFor[CallerResolverConfig](),
+			want: []string{"call"},
 		},
 		{
 			name: "LintSkipAllowance",

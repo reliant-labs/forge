@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/vulnpatch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 )
 
@@ -54,6 +55,14 @@ func publishedSchemas() map[string]struct {
 			},
 			body: vulnListSchemaJSON,
 		},
+		"vuln-patch": {
+			spec: SchemaSpec{
+				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
+				Command:   "forge project schema vuln-patch",
+				Describes: "`forge vuln patch --json`: what the patcher bumped per finding, the verification, and the exit code",
+			},
+			body: vulnPatchSchemaJSON,
+		},
 	}
 }
 
@@ -82,6 +91,10 @@ func newProjectSchemaCmd() *cobra.Command {
   vuln-list  forge.dev/vuln-list/v1: the document ` + "`forge vuln list|show|scan --json`" + `
         prints — a release's vulnerability findings and the env's vuln_gate
         verdict. Generated from the Go type forge encodes it with.
+
+  vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
+        what was bumped per finding, the verification, and the exit code the
+        vuln-patch workflow branches on.
 
 With no name, lists the schemas. The schema printed is the one embedded in
 this binary, so it is exactly what this forge validates against. Point an

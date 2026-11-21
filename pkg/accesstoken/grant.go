@@ -29,8 +29,9 @@ const (
 	// query its database (db:query), read its object storage
 	// (storage:read), read its rendered config values
 	// (deploy:config:read), run its changes (changes:write,
-	// changes:launch) or read its vulnerability findings (vuln:read), and no
-	// other env of the org.
+	// changes:launch), read its vulnerability findings (vuln:read) or read
+	// the test runs recorded against it (tests:read), and no other env of
+	// the org.
 	ResourceEnvironment ResourceKind = "environment"
 )
 
@@ -91,6 +92,11 @@ var scopeResourceRules = map[Scope]struct {
 	// vuln:read reads one env's findings when bound: what is exploitable in
 	// prod, for a token that must not see staging's.
 	ScopeVulnRead: {kind: ResourceEnvironment, required: false},
+	// tests:read reads one env's runs when bound (a preview's e2e, say),
+	// the vuln:read rule. tests:write has no entry: an upload names its
+	// environment in the request, and a binding would claim a confinement
+	// the upload path does not enforce.
+	ScopeTestsRead: {kind: ResourceEnvironment, required: false},
 }
 
 // admitsOnDaemon reports whether scope may ride a token bound to a DAEMON:

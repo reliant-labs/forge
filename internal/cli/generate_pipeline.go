@@ -305,6 +305,12 @@ type pipelineContext struct {
 	rendered     renderedEnvironments
 	renderedRead bool
 
+	// The disk inventory and last usable declarations used to derive frontend
+	// codegen. A failed re-render cannot erase an env's known declarations.
+	diskFrontends       []config.FrontendConfig
+	inventoryFrontends  []renderedEnvFrontend
+	inventoryMissedEnvs []string
+
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
 	// see generate_serve.go). Lazily populated via
@@ -559,6 +565,13 @@ func generateSteps() []GenStep {
 		// project had nothing to read and silently fell back to proto
 		// defaults, which is the bug this ordering fixes.
 		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
+		// Typed accessors for changes.yaml (Go and every web frontend). Not
+		// gated on frontends or services: a Go-only project and a static site
+		// both declare changes. A project without changes.yaml writes nothing
+		// here, and the step retires what an earlier declaration wrote. Before
+		// "cleanup stale codegen", which deletes the certified files this run
+		// did not write.
+		{Name: "changes accessors (changes.yaml)", Gate: always, Run: stepChangesAccessors, Tag: "codegen"},
 		// AFTER the env config modules, deliberately. Which workflows exist
 		// is read off a RENDER of every env (generate_ci_hosted.go: a hosted
 		// env gets release.yml, not deploy.yml), and an env cannot render
@@ -2036,6 +2049,7 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
+	ctx.rederiveFrontendInventory()
 	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums, func() []envRenderFailure { return ctx.renderedEnvs().failed })
 }
 
@@ -2737,6 +2751,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		}
 		in.Services = append(in.Services, svc)
 	}
+	ctx.rederiveFrontendInventory()
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	// An env that did not render would drop its frontends and processes from

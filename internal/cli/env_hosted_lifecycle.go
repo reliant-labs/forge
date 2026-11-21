@@ -491,7 +491,15 @@ func boundHostedEndpoints(projectDir string) ([]string, error) {
 func lifecycleTargetAt(ctx context.Context, env string, ep cloud.Endpoint, flagToken string) (lifecycleTarget, error) {
 	cred, err := cloud.ResolveCredential(flagToken, ep)
 	if err != nil {
-		return lifecycleTarget{}, err
+		// Not signed in: an env this machine deployed with --claimable is
+		// still this machine's to stop, start or delete, with the anonymous
+		// token it stored beside the claim link (obs 81e743cf). A login, when
+		// there is one, always wins: it is resolved first.
+		stored, ok := cloud.StoredClaimableCredential(ep, hostedProjectName(), env, claimableNow())
+		if !ok {
+			return lifecycleTarget{}, err
+		}
+		cred = stored
 	}
 	client := cloud.NewClient(ep, cred)
 	he, err := deploytarget.FindHostedEnvironment(ctx, client, hostedProjectName(), env)

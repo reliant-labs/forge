@@ -1,0 +1,9 @@
+      # `task coverage` (not a second hand-rolled `go test -coverprofile`):
+      # same reason as above, and it keeps the profile flags in one place.
+      - name: Go test coverage
+        run: task coverage
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out

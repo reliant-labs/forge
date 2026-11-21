@@ -1,0 +1,9 @@
+  coverage:
+    # HTML coverage report at coverage.html. Race testing happens in
+    # `task test`; this task is purely for measuring exercised code.
+    desc: Run unit tests with coverage and emit coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out -timeout 60s ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true

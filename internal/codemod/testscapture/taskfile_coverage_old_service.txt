@@ -1,0 +1,13 @@
+  coverage:
+    # HTML coverage report at coverage.html. We deliberately omit -race
+    # here (race + coverage requires -covermode=atomic, which in turn
+    # needs the `covdata` tool — not always present in auto-installed
+    # toolchains). Race testing happens in `task test`; this task is for
+    # measuring exercised code. Skips integration / e2e (those have their
+    # own tasks) so coverage reflects unit tests.
+    desc: Run unit tests with coverage and emit coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out -timeout 60s ./...
+      - go tool cover -html=coverage.out -o coverage.html
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true

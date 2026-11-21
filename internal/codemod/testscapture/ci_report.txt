@@ -1,0 +1,12 @@
+      # Every lane above recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This summarises that record and sends it
+      # to the control plane, authenticated by FORGE_CONTROL_PLANE_TOKEN (a
+      # token with tests:write or deploy:write). It never decides the job: the
+      # lane's own step carries the verdict, and an upload that cannot happen
+      # (no token, as on a fork's pull request) is a warning.
+      - name: Report tests
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: task test:report -- --upload

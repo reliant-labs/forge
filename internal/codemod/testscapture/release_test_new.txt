@@ -1,0 +1,12 @@
+        # second spelling of `go test` that could drift from it. Its lanes
+        # record what they ran under .forge/tests/ (`forge test capture`), and
+        # `forge test report` turns that record into the deploy's `tests` gate:
+        # the same document `forge ci verify-test-run --gate-json` writes,
+        # zero-evidence and mass-skip checks included. It re-runs nothing. A
+        # run with recording off (FORGE_TESTS=off) leaves nothing to report,
+        # and the gate is then undetermined, never a pass.
+        run: |
+          status=0
+          task test || status=$?
+          forge test report --gate-json gates/test.json
+          exit "$status"

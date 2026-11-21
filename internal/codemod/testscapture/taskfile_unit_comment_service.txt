@@ -1,0 +1,5 @@
+      #
+      # Recorded as lane `unit` (see TEST_BEGIN): -json is the stream capture
+      # stores and renders back as plain `go test` output, and
+      # -covermode=atomic -coverprofile writes the lane's coverage beside it.
+      # atomic, not the default `set`, so hit counts add up across lanes.

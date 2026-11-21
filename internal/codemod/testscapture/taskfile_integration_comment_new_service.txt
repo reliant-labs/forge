@@ -1,0 +1,2 @@
+      # heavy DB-backed scenarios room while still surfacing hangs. Recorded
+      # as lane `integration`, the same way `task test` records `unit`.

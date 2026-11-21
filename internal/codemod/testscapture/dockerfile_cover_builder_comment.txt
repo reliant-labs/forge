@@ -1,0 +1,7 @@
+# ── Cover builder (only used by the `cover` stage) ──
+# Every binary again, instrumented for test coverage (-cover
+# -covermode=atomic). `forge build` builds the `cover` stage for an env that
+# runs coverage-instrumented builds (local, ephemeral and preview envs of a
+# project that opts in: kcl/schema.k Tests) and passes FORGE_COVERPKG, the
+# packages to instrument; empty instruments Go's default, the main module.
+# The production stage never depends on it, so its image is unchanged.

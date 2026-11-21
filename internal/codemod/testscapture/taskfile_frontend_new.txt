@@ -1,0 +1,36 @@
+  test:frontend:
+    desc: Run every frontend's tests
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+    cmds:
+      - task: test:frontend:lanes
+        vars: { RUN: "{{.RUN}}" }
+
+  test:frontend:lanes:
+    # The frontend lanes of a run RUN (`test` and `test:frontend` pass theirs
+    # in: a task's own vars would win over the caller's). Each frontend is
+    # its own lane, `frontend-<dir>`. capture exports FORGE_TEST_LANE_DIR,
+    # and the scaffolded Vitest config writes its results (vitest.json) and
+    # its v8 coverage (coverage-final.json) there only when that
+    # is set, so a bare `npm test` is unchanged. FORGE_TEST_COVERAGE=off is
+    # how `tests.coverage: false` reaches it. A frontend with no Vite or
+    # Vitest config (an Expo app's jest) records its output unparsed.
+    internal: true
+    cmds:
+      # A scoped run (`task test -- ./some/pkg/...`) selected Go packages,
+      # which says nothing about any frontend — running the JS suites anyway
+      # is how a "just this package" run ends up executing tests in a
+      # frontend someone else is editing, and reporting on them.
+      - cmd: echo "Go package patterns given — skipping the frontend lane."
+        silent: true
+        if: '[ -n "{{.CLI_ARGS}}" ]'
+      - task: frontends
+        if: '[ -z "{{.CLI_ARGS}}" ]'
+        vars:
+          LABEL: "$PM test"
+          SCRIPT: >-
+            {{if .RUN}}lane="frontend-${dir##*/}"; set --;
+            if [ -f vitest.config.ts ] || [ -f vite.config.ts ]; then set -- --results "{{.RUN}}/$lane/vitest.json"; fi;
+            {{if ne .COVERAGE "true"}}FORGE_TEST_COVERAGE=off {{end}}{{end}}{{.SLOT}}
+            {{- if .RUN}} {{.FORGE}} test capture --run '{{.RUN}}' --lane "$lane" "$@" --{{end}}
+            $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests

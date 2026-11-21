@@ -1,0 +1,4 @@
+        # above. Without it forge exits 5, plan_unconfirmed. ENV=e2e: the
+        # lane zeroes and collects the e2e env's server coverage (an env
+        # whose Go workloads run cover builds; it warns and moves on when
+        # they do not).

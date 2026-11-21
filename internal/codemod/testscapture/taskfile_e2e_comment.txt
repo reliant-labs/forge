@@ -1,0 +1,9 @@
+    #
+    # The coverage that matters here is the SERVERS': an env whose Go
+    # workloads run instrumented (`cover`) builds — dev and every preview by
+    # default — counts what the suite reached. The lane zeroes their
+    # counters first and collects them afterwards, failed run or not, into
+    # lane `e2e` of the run (`forge test collect`). ENV names the env the
+    # suite runs against: `task test:e2e ENV=preview-pr-12`; default dev.
+    # Collecting is best effort: an env that is not up, or runs no cover
+    # build, warns and the lane's verdict is the suite's alone.

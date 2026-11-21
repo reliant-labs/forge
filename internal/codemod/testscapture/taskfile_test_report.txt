@@ -1,0 +1,16 @@
+  test:report:
+    # What the lanes recorded: results, coverage merged across lanes, diff
+    # coverage against the base, failures. `forge test report` runs no test;
+    # it reads .forge/tests/runs/. Arguments after `--` go to it:
+    #
+    #   task test:report                       the newest run
+    #   task test:report -- --json             forge.test.report/v1
+    #   task test:report -- --format lcov      for an editor or another tool
+    #   task test:report -- --upload           send it to the control plane
+    #
+    # Exits 0 when every recorded test passed, 1 when one failed, 2 when the
+    # record proves nothing (no runs, every test skipped). Coverage never
+    # decides it.
+    desc: Summarise the recorded test runs (results, coverage, diff coverage); runs no test
+    cmds:
+      - "{{.FORGE}} test report {{.CLI_ARGS}}"

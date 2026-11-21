@@ -1,0 +1,14 @@
+  test:frontend:
+    desc: Run every frontend's tests
+    cmds:
+      # A scoped run (`task test -- ./some/pkg/...`) selected Go packages,
+      # which says nothing about any frontend — running the JS suites anyway
+      # is how a "just this package" run ends up executing tests in a
+      # frontend someone else is editing, and reporting on them.
+      - cmd: echo "Go package patterns given — skipping the frontend lane."
+        silent: true
+        if: '[ -n "{{.CLI_ARGS}}" ]'
+      - task: frontends
+        if: '[ -z "{{.CLI_ARGS}}" ]'
+        vars:
+          SCRIPT: '{{.SLOT}} $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests'

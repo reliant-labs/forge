@@ -1,0 +1,5 @@
+name: demo
+module_path: example.com/demo
+forge_version: v1.9.0
+tests:
+    coverage: false

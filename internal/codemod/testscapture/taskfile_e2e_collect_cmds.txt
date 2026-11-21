@@ -1,0 +1,4 @@
+      - cmd: "{{.FORGE}} test collect {{.ENV}} --reset --run '{{.RUN}}'"
+        if: '[ -n "{{.RUN}}" ]'
+        ignore_error: true
+      - defer: { task: test:e2e:collect, vars: { RUN: "{{.RUN}}", ENV: "{{.ENV}}" } }

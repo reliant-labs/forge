@@ -1,0 +1,16 @@
+# Forge project manifest — see https://github.com/reliant-labs/forge.
+# This file is minimal on purpose. Features, the database, the frontends and
+# the project kind are derived from what exists in the repo (db/migrations,
+# frontends/, deploy/kcl, internal/operators, ...), not configured here; a
+# `features:` block pins one on or off only when the derived default is wrong.
+# Authentication is owned code — internal/app/auth.go's SetupAuth.
+# Add a section (ci, lint, contracts, ...) only to override a default
+# (`forge skill load architecture` documents the schema;
+# `forge skill list` indexes the per-topic skills, e.g. `auth`).
+
+name: democli
+module_path: example.com/democli
+forge_version: v1.9.0
+harness: reliant
+config:
+    enforce_typed_access: error

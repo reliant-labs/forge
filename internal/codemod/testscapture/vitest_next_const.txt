@@ -1,0 +1,8 @@
+// A `forge test capture` lane (the Taskfile's test lanes) sets
+// FORGE_TEST_LANE_DIR to the lane's record directory, .forge/tests/runs/<id>/
+// <lane>/. Then, and only then, Vitest writes its results there as JSON
+// (vitest.json) and measures v8 coverage into the same directory
+// (coverage-final.json), which `forge test report` merges with the
+// Go lanes. A bare `npm test` is unchanged. FORGE_TEST_COVERAGE=off is
+// forge.yaml's `tests.coverage: false`: results only.
+const laneDir = process.env.FORGE_TEST_LANE_DIR;

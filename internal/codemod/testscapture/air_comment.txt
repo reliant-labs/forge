@@ -1,0 +1,5 @@
+  #
+  # $FORGE_GO_BUILD_FLAGS is how `forge env up` builds the server for test
+  # coverage (-cover -covermode=atomic -coverpkg=…) in a local or preview env
+  # (kcl/schema.k Tests): unset, it expands to nothing, so bare `air` builds
+  # as before.

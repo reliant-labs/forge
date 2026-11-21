@@ -1,0 +1,6 @@
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+      SKIP: { sh: "{{.TEST_SKIP}}" }
+      # An env name, or dev. Not any $ENV the shell happens to carry (some
+      # images set ENV=/etc/profile for sh's startup file).
+      ENV: '{{if and .ENV (regexMatch "^[a-z][a-z0-9-]*$" (toString .ENV))}}{{.ENV}}{{else}}dev{{end}}'

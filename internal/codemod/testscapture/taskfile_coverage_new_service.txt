@@ -1,0 +1,12 @@
+  coverage:
+    # HTML coverage report at coverage.html, from what the lanes RECORDED:
+    # the newest run's coverage, merged across every lane it holds (unit,
+    # integration, e2e, the frontends). It runs no test, so run the lanes
+    # first: `task test coverage`, or `forge test run` for unit and
+    # integration in one run. Other formats: `task test:report -- --format
+    # lcov` (or cobertura, json).
+    desc: Write coverage.html from the recorded test runs (run `task test` first)
+    cmds:
+      - "{{.FORGE}} test report --format html > coverage.html"
+      - cmd: echo "Coverage report written to coverage.html"
+        silent: true

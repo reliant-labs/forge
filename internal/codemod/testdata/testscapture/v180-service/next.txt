@@ -1,0 +1,2 @@
+install frontends/admin's new devDependency: `pnpm install` in frontends/admin (forge project upgrade's locks phase does it), and commit the lockfile
+install frontends/web's new devDependency: `pnpm install` in frontends/web (forge project upgrade's locks phase does it), and commit the lockfile

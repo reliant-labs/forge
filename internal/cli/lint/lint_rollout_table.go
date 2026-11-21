@@ -246,7 +246,7 @@ var shippedRules = []rolloutGroup{
 	// forge db analyze: what a migration measurably does on a real
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
-	{IntroducedIn: "v1.7.0", Rules: dbanalyze.RuleIDs()},
+	{IntroducedIn: "v1.7.0", Rules: dbanalyze.MigrationRuleIDs()},
 	// forge lint --proto-format: a .proto `buf format` would rewrite — the
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
@@ -293,6 +293,11 @@ var newRules = []rolloutGroup{
 		IntroducedIn: "v1.9.0",
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
 		Rules:        []string{staticexport.RulePartialPrerender},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
+		Rules:        dbanalyze.QueryRuleIDs(),
 	},
 }
 

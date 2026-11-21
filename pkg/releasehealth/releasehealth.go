@@ -57,7 +57,8 @@
 //     Being the release's own calls, they are attributed whatever their
 //     service's version share. They never prove a release good: a PASS
 //     still rests on the services.
-//   - Issues count with enough after-window events: new_issue_min_events for
+//   - Issues count when they were first seen (new) or regressed in the after
+//     window [P, after.To), with enough after-window events: new_issue_min_events for
 //     a new issue, regressed_issue_min_events (unset: the same) for a
 //     regressed one. The platform's NewIssue and IssueRegressed alerts are
 //     judged as their issue, not as alert_firing findings, unless critical
@@ -864,6 +865,9 @@ func Evaluate(in Input) Report {
 		if !is.FirstSeenAt.IsZero() && is.FirstSeenAt.Before(p) {
 			continue
 		}
+		if afterWindowEnd(is.FirstSeenAt, in.Windows.After.To) {
+			continue // first seen after the window: not this release's
+		}
 		if is.Events < int64(t.NewIssueMinEvents) {
 			continue
 		}
@@ -873,6 +877,12 @@ func Evaluate(in Input) Report {
 	}
 	for _, is := range in.RegressedIssues {
 		if !is.RegressedAt.IsZero() && is.RegressedAt.Before(p) {
+			continue
+		}
+		// Regressed after the window closed: a later incident's (a database
+		// restart hours on), which must not rewrite a closed promotion's
+		// verdict.
+		if afterWindowEnd(is.RegressedAt, in.Windows.After.To) {
 			continue
 		}
 		// One stray event of an old, transient signature is not a release
@@ -1113,7 +1123,13 @@ func alertKey(a Alert) string {
 // afterWindow reports whether a opened at or after end, the after window's
 // end: [P, end) is what a release answers for. A zero end bounds nothing.
 func afterWindow(a Alert, end time.Time) bool {
-	return !end.IsZero() && !a.FiringAt.IsZero() && !a.FiringAt.Before(end)
+	return afterWindowEnd(a.FiringAt, end)
+}
+
+// afterWindowEnd reports whether at is at or after end, the after window's
+// end. A zero end, or a zero at (unknown), bounds nothing.
+func afterWindowEnd(at, end time.Time) bool {
+	return !end.IsZero() && !at.IsZero() && !at.Before(end)
 }
 
 // criticalRules are the rules with a critical alert opened in [p, end).

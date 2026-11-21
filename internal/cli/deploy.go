@@ -398,6 +398,7 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
 	flags.BoolVar(&f.explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
 	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
+	flags.BoolVar(&f.noSBOM, "no-sbom", false, "When this deploy cuts a release (no version named): cut it without generating an SBOM for each artifact. Warns, and each artifact records why it has none. No effect when the deploy promotes an existing release")
 	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Deploy every backend workload but skip the static frontend build+ship (hosted static hosting, a bucket or Firebase). The backend-only path without enumerating every --target.")
@@ -452,6 +453,10 @@ type promoteCmdFlags struct {
 	// healthGateAckCode with the reason as the note; see
 	// withHealthGateOverride.
 	overrideHealthGate string
+	// overrideVulnGate is the recorded reason to promote past the env's
+	// vuln_gate and provenance_sbom refusals, for an env forge judges
+	// (vuln_gate_promote.go).
+	overrideVulnGate string
 	// rerecordBundle replaces a release's bundle of record when this
 	// checkout renders different objects than the one recorded (see
 	// release_bundle_of_record.go). Off, such a render is refused.
@@ -518,6 +523,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.overrideHealthGate, "override-health-gate", "",
 		"Promote even though the env's health gate (delivery_policy.health_gate) refuses: an env it follows has not proved this release good. Give the reason; it is recorded on the promotion with who overrode it. For incidents — the gate's refusal says what is missing")
+	flags.StringVar(&f.overrideVulnGate, "override-vuln-gate", "",
+		"Promote even though the env's vuln_gate (a blocking advisory, or an artifact nobody scanned) or provenance_sbom (an artifact with no SBOM) refuses. Give the reason; it is recorded on the promotion with who overrode it and which findings. For one promotion: the durable answer is an exemption (forge vuln exempt)")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 	flags.BoolVar(&f.skipHubCheck, "skip-hub-check", false,
 		"Record a hub-converged env's promotion even when its control plane's hub reports the reconciler failing. Without it, such a deploy is refused before anything is recorded")
@@ -610,6 +617,9 @@ type deployCmdFlags struct {
 	rolloutOrder    []string
 
 	promote promoteCmdFlags
+	// noSBOM is --no-sbom: the release this deploy cuts gets no SBOMs
+	// (build_sbom.go).
+	noSBOM bool
 }
 
 // dispatchDeployCmd validates the flag combination and routes to the release
@@ -866,6 +876,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
 		RaiseFloorReason:      p.floorReason,
+		OverrideVulnGate:      p.overrideVulnGate,
 		Gates:                 p.gates,
 		From:                  p.fromSource(),
 		resolvedFrom:          from,
@@ -948,6 +959,9 @@ func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
 	}
 	if f.overrideHealthGate != "" {
 		set = append(set, "--override-health-gate")
+	}
+	if f.overrideVulnGate != "" {
+		set = append(set, "--override-vuln-gate")
 	}
 	if len(set) == 0 {
 		return nil
@@ -1359,9 +1373,9 @@ func resolveEnvMainK(store *projectstore.Store, envName string) (string, error) 
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDirForKCL(), kclDir, envName)
 	if !envHasDeclaration(projectDirForKCL(), envName, mainK) {
-		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists\nAvailable environments can be found under %s/ and deploy/envs/", envName, mainK, envName, kclDir)
+		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists\nAvailable environments can be found under %s/ and deploy/envs/", envName, shown, envName, kclDir)
 	}
 	return mainK, nil
 }

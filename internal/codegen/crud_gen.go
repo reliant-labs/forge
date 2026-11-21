@@ -3,6 +3,9 @@ package codegen
 import (
 	"bytes"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -112,6 +115,21 @@ type CRUDMethod struct {
 	Operation string             // "create", "get", "list", "update", "delete"
 }
 
+// ORMQualifier is the identifier the ops file qualifies the ORM package
+// with: DBQual, or db when unset.
+func (d CRUDTemplateData) ORMQualifier() string { return ormQualOrDefault(d.DBQual) }
+
+// ORMQualifier is the identifier this shim qualifies the ORM package
+// with: DBQual, or db when unset (RenderScopedCRUDShim's paste-in snippet).
+func (m CRUDMethodTemplateData) ORMQualifier() string { return ormQualOrDefault(m.DBQual) }
+
+func ormQualOrDefault(q string) string {
+	if q == "" {
+		return "db"
+	}
+	return q
+}
+
 // DBImportLine is DBImport spelled as a line of an import block.
 func (d CRUDTemplateData) DBImportLine() string {
 	if alias, path, ok := strings.Cut(d.DBImport, " "); ok {
@@ -128,12 +146,17 @@ type CRUDTemplateData struct {
 	// ConnectV2 is whether the project builds against connect-go v2; it is
 	// copied onto every CRUDMethods entry, which the shim template renders.
 	ConnectV2 bool
-	// DBImport is the generated ORM package as an import spec: its path, or
-	// "db <path>" when database.orm.package names a package that is not
-	// called db. Every generated CRUD file qualifies the ORM as `db.`, so a
-	// relocated ORM is imported under that name rather than threading a
-	// second qualifier through every template.
-	DBImport      string
+	// DBImport is the generated ORM package as an import spec for the ops
+	// file ("path" or "alias path") and DBQual the identifier that file
+	// qualifies it with (ORMQualifier; empty means db). Both come from
+	// ChooseORMBinding: the default internal/db uses db, while a relocated
+	// internal/store can use store without colliding with the project's db.
+	DBImport string
+	DBQual   string
+	// orm is the project's ORM placement and pkgDecls the handler package's
+	// top-level names. shimORMBinding uses them when appending shims.
+	orm           config.ORMConfig
+	pkgDecls      map[string]bool
 	HasPagination bool // true if any list method uses pagination
 	HasFilters    bool // true if any list method has filter fields
 	HasOrderBy    bool // true if any list method has order_by
@@ -148,6 +171,10 @@ type CRUDTemplateData struct {
 	// only TODO stubs, the template skips those imports to keep the
 	// file compiling.
 	NeedsCRUDLib bool
+	// NeedsStrconv gates the strconv import: set when a real get, list,
+	// update or delete op carries an integer primary key across pkg/crud's
+	// text-keyed seam (crud_pk_key.go).
+	NeedsStrconv bool
 	// NeedsOpsFile is true when the Tier-1 ops file must be written:
 	// either NeedsCRUDLib (a real op constructor) OR there is at least
 	// one entity conversion pair a wired custom-read-shape body depends
@@ -184,6 +211,11 @@ type CRUDMethodTemplateData struct {
 	InputType  string // "CreatePatientRequest" — pb Go type
 	OutputType string // "CreatePatientResponse" — pb Go type
 	EntityName string // "Patient" — the db.<Entity> struct and db.Create<Entity> funcs
+	// DBQual is the identifier the shim file this method lands in binds
+	// the ORM package to (ORMQualifier; empty means db). Chosen per file:
+	// an appended shim reuses whatever name its file already gives the
+	// ORM import.
+	DBQual string
 	// EntityPbType is the entity's generated pb message type. It equals
 	// EntityName unless the proto name is not already in protoc-gen-go's
 	// casing ("Oauth2token" → pb.Oauth2Token, db.Oauth2token).
@@ -207,7 +239,18 @@ type CRUDMethodTemplateData struct {
 	PkDBField    string // "Id" — the PK's field on the db.<Entity> struct (naming.ColumnGoName)
 	PkColumnName string // "id" (raw DB column name)
 	PkGoType     string // "int64"
-	HasPkInInput bool   // true if the request message likely has an ID field
+	// PkRequestKey and PkEntityKey are the Go expressions that render the
+	// key of `req` (get/delete) and of `entity` (update/list) as the text
+	// pkg/crud carries: the field itself for a string key, a strconv call
+	// for an integer one. PkParseBits is the bit size the ops parse that
+	// text back at before calling the ORM delegate (0: a string key, no
+	// parse), and PkKeyArg the argument they then pass it ("id", "key",
+	// "int32(key)"). See crud_pk_key.go.
+	PkRequestKey string
+	PkEntityKey  string
+	PkParseBits  int
+	PkKeyArg     string
+	HasPkInInput bool // true if the request message likely has an ID field
 	// ResponseField is the pb Go field of the response that carries the
 	// entity — the single entity for create/get/update ("Patient"), the
 	// repeated one for list ("Patients"). Read off the response message's
@@ -740,7 +783,12 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		return CRUDResult{}, err
 	}
 	data.Package = pkg
-	data.DBImport = ORMImportSpec(modulePath, ProjectORMPackage(projectDir))
+	data.orm = ProjectORMPackage(projectDir)
+	data.pkgDecls = handWrittenDecls(targetDir, pkg)
+	opsBinding := ChooseORMBinding(modulePath, data.orm, func(name string) bool {
+		return opsFileImportNames[name] || data.pkgDecls[name]
+	})
+	data.DBImport, data.DBQual = opsBinding.Spec, opsBinding.Qual
 	data.ConnectV2 = connectV2For(svc, projectDir)
 	for i := range data.CRUDMethods {
 		data.CRUDMethods[i].ConnectV2 = data.ConnectV2
@@ -1052,6 +1100,16 @@ func crudShimImports(data CRUDTemplateData) []string {
 	return imports
 }
 
+// withDBQual returns methods with each one's ORM qualifier set to qual.
+func withDBQual(methods []CRUDMethodTemplateData, qual string) []CRUDMethodTemplateData {
+	out := make([]CRUDMethodTemplateData, len(methods))
+	for i, m := range methods {
+		m.DBQual = qual
+		out[i] = m
+	}
+	return out
+}
+
 // renderCRUDShimMethods renders the per-RPC shim blocks (delegation or
 // explanatory Unimplemented stub) for the given methods.
 func renderCRUDShimMethods(methods []CRUDMethodTemplateData) (string, error) {
@@ -1094,6 +1152,11 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 			// nothing to scaffold, and an empty shim file helps no one.
 			return nil
 		}
+		binding, err := shimORMBinding(projectDir, data, unshimmed, nil)
+		if err != nil {
+			return fmt.Errorf("%s: %w", shimRel, err)
+		}
+		unshimmed = withDBQual(unshimmed, binding.Qual)
 		blocks, err := renderCRUDShimMethods(unshimmed)
 		if err != nil {
 			return err
@@ -1103,6 +1166,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 		// are computed from the methods it will actually contain.
 		scaffolded := data
 		scaffolded.CRUDMethods = unshimmed
+		scaffolded.DBImport = binding.Spec
 		var b strings.Builder
 		b.WriteString(crudShimHeader(scaffolded))
 		b.WriteString("package " + data.Package + "\n\n")
@@ -1141,6 +1205,11 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 		return nil
 	}
 	missing = resolveAppendedOwners(projectDir, shimRel, existing, missing, majorOf(data.ConnectV2))
+	binding, err := shimORMBinding(projectDir, data, missing, existing)
+	if err != nil {
+		return fmt.Errorf("%s: %w", shimRel, err)
+	}
+	missing = withDBQual(missing, binding.Qual)
 	blocks, err := renderCRUDShimMethods(missing)
 	if err != nil {
 		return err
@@ -1150,7 +1219,7 @@ func ensureCRUDShimFile(projectDir, relDir string, data CRUDTemplateData, unshim
 	for _, imp := range crudShimImports(CRUDTemplateData{
 		Module:       data.Module,
 		ProtoPackage: data.ProtoPackage,
-		DBImport:     data.DBImport,
+		DBImport:     binding.Spec,
 		ConnectV2:    data.ConnectV2,
 		CRUDMethods:  missing,
 	}) {
@@ -1241,33 +1310,52 @@ func recordTier2(cs *checksums.FileChecksums, relPath string, content []byte) {
 	checksums.MarkWrittenThisRun(relPath)
 }
 
-// ensureImportLine inserts an import (optionally "alias path") into the
-// file's first import block when no line for that path exists yet. Same
-// minimal-mutation approach as ensureDepsDBField: the file is user-owned,
-// so we touch only what the appended code needs to compile.
+// ensureImportLine inserts a missing import (optionally "alias path").
+// Parse import specs instead of searching text: a comment or a raw-string
+// import must not be confused for a second copy of the path. Only the
+// missing declaration is spliced into the owned source.
 func ensureImportLine(content, imp string) string {
-	alias, path, hasAlias := strings.Cut(imp, " ")
-	if !hasAlias {
-		path = imp
-		alias = ""
-	}
-	if strings.Contains(content, "\""+path+"\"") {
+	importPath := importSpecPath(imp)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", content, parser.ImportsOnly)
+	if err != nil {
 		return content
 	}
-	idx := strings.Index(content, "import (")
-	if idx < 0 {
-		return content
+	for _, spec := range file.Imports {
+		if p, err := strconv.Unquote(spec.Path.Value); err == nil && p == importPath {
+			return content
+		}
 	}
-	closing := strings.Index(content[idx:], ")")
-	if closing < 0 {
-		return content
+	line := strconv.Quote(importPath)
+	if alias, _, ok := strings.Cut(imp, " "); ok {
+		line = alias + " " + line
 	}
-	line := "\t\"" + path + "\"\n"
-	if alias != "" {
-		line = "\t" + alias + " \"" + path + "\"\n"
+	for _, decl := range file.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.IMPORT && gd.Rparen.IsValid() {
+			// A cgo block must remain next to its own preamble.
+			if len(gd.Specs) == 1 && gd.Specs[0].(*ast.ImportSpec).Path.Value == `"C"` {
+				continue
+			}
+			pos := fset.Position(gd.Rparen).Offset
+			prefix := ""
+			if pos > 0 && content[pos-1] != '\n' {
+				prefix = "\n"
+			}
+			return content[:pos] + prefix + "\t" + line + "\n" + content[pos:]
+		}
 	}
-	insertPos := idx + closing
-	return content[:insertPos] + line + content[insertPos:]
+	// No suitable grouped import. The end of the package clause is always
+	// before any import docs (including cgo preambles). Keep a conventional
+	// package-line comment there, too.
+	pos := fset.Position(file.Name.End()).Offset
+	end := strings.IndexByte(content[pos:], '\n')
+	if end >= 0 {
+		rest := strings.TrimSpace(content[pos : pos+end])
+		if rest == "" || strings.HasPrefix(rest, "//") {
+			pos += end + 1
+		}
+	}
+	return content[:pos] + "\nimport (\n\t" + line + "\n)\n" + content[pos:]
 }
 
 // validateCRUDShape decides whether the request/response messages observed
@@ -1296,6 +1384,11 @@ func ensureImportLine(content, imp string) string {
 // is treated as ok so existing projects whose protos do match AIP-158
 // keep generating the same code they did before this check landed.
 func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
+	// The key comes first: an op over a key type pkg/crud cannot carry
+	// would not compile whatever the messages look like.
+	if reason := crudPkKeyMismatch(svc, cm); reason != "" {
+		return false, reason
+	}
 	if len(svc.Messages) == 0 {
 		return true, ""
 	}
@@ -1625,6 +1718,16 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		}
 	}
 
+	// The key's text form at the pkg/crud seam (crud_pk_key.go). A shape
+	// validateCRUDShape refused gets no op, so its key needs no rendering.
+	var pkRequestKey, pkEntityKey string
+	var pkParseBits int
+	if shapeOK {
+		pkRequestKey, _ = pkKeyText("req."+naming.GoCamelCase(cm.Entity.PkField), requestPkGoType(svc, cm))
+		pkEntityKey, _ = pkKeyText("entity."+naming.ColumnGoName(cm.Entity.PkField), cm.Entity.PkGoType)
+		pkParseBits, _ = pkKeyParseBits(cm.Entity.PkGoType)
+	}
+
 	return CRUDMethodTemplateData{
 		MethodName:         cm.Method.GoName(),
 		InputType:          cm.Method.InputGoName(),
@@ -1640,6 +1743,10 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		PkDBField:          naming.ColumnGoName(cm.Entity.PkField),
 		PkColumnName:       cm.Entity.PkField,
 		PkGoType:           cm.Entity.PkGoType,
+		PkRequestKey:       pkRequestKey,
+		PkEntityKey:        pkEntityKey,
+		PkParseBits:        pkParseBits,
+		PkKeyArg:           pkKeyArg(cm.Entity.PkGoType),
 		HasPkInInput:       cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
 		ResponseField:      responseEntityGoField(svc, cm.Method.OutputType, cm.Entity.Name, cm.Operation == "list"),
 		HasPagination:      hasPagination,
@@ -1736,6 +1843,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 	hasFilters := false
 	hasOrderBy := false
 	needsCRUDLib := false
+	needsStrconv := false
 	for _, m := range methods {
 		if m.HasPagination {
 			hasPagination = true
@@ -1748,6 +1856,9 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		}
 		if !m.ShapeMismatch {
 			needsCRUDLib = true
+			if m.Operation != "create" && (m.PkParseBits > 0 || usesStrconv(m.PkRequestKey, m.PkEntityKey)) {
+				needsStrconv = true
+			}
 		}
 	}
 	// Any real op names orm.QueryOption now: the get/update/delete shims
@@ -1822,6 +1933,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		HasOrderBy:       hasOrderBy,
 		NeedsORM:         needsORM || ConvNeedsORM(convs),
 		NeedsCRUDLib:     needsCRUDLib,
+		NeedsStrconv:     needsStrconv,
 		NeedsOpsFile:     needsOpsFile,
 		CRUDMethods:      methods,
 		Entities:         convs,

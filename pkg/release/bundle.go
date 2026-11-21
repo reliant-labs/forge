@@ -620,6 +620,16 @@ type Shape struct {
 	// recorded before the field encodes and hashes exactly as it did; a
 	// bundle-document feature ([BundleFeaturePreview]).
 	Preview *ShapePreview `json:"preview,omitempty"`
+	// Changes are the Forge Changes the release can serve, keyed by change
+	// key (changes.yaml at the project root, the same in every env): each
+	// one's value type, variants and default. The control plane refuses to
+	// deliver a variant the env's release does not declare. Who gets which
+	// variant is NOT here: that is live delivery state the control plane
+	// owns. Omitted when the project declares none, so every shape recorded
+	// before the field encodes and hashes exactly as it did; a control plane
+	// that predates it refuses the whole shape, so it is a bundle-document
+	// feature ([BundleFeatureChanges]).
+	Changes map[string]ShapeChange `json:"changes,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -1222,6 +1232,9 @@ func (s Shape) Validate() error {
 	if err := validateShapeBuckets(s.Buckets); err != nil {
 		return err
 	}
+	if err := validateShapeChanges(s.Changes); err != nil {
+		return err
+	}
 	if s.ReleaseHealth != nil {
 		if err := s.ReleaseHealth.canonical().validate(); err != nil {
 			return err
@@ -1417,6 +1430,7 @@ func (s Shape) Canonical() Shape {
 		out.DataAccess = nil
 	}
 	out.Buckets = canonicalShapeBuckets(s.Buckets)
+	out.Changes = canonicalShapeChanges(s.Changes)
 	if s.ReleaseHealth != nil {
 		if h := s.ReleaseHealth.canonical(); !s.ReleaseHealth.IsDefault() {
 			out.ReleaseHealth = &h

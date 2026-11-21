@@ -25,6 +25,9 @@ is the project's own.
 
 import regex
 import .dashspec
+# Called only from telemetry_collector below, so the module still evaluates
+# under a plugin-less runtime: a plugin import is resolved at the call.
+import kcl_plugin.forge as forge_plugin
 
 _TEL_NAME_RE: str = r"^[a-z0-9]([-a-z0-9_.]*[a-z0-9])?$"
 # Collector durations: what Go's time.ParseDuration reads, restricted to ms/s/m/h.
@@ -115,7 +118,10 @@ schema Telemetry:
         HostInfra's ports are named `server` (port), `monitor`
         (nats_monitor_port), `ui` (temporal_ui_port) and `metrics`
         (temporal_metrics_port). `selector`, `namespaces`, `cluster` and
-        `address` are refused.
+        `address` are refused. On forge.OnCompose a port is the CONTAINER
+        port: `forge env up` collects it on the loopback port the compose file
+        publishes it on (`19090:9090` is scraped at 127.0.0.1:19090), and one
+        the file does not publish is not collected, with a warning.
       * `Manifests.telemetry`: forge cannot see into raw objects, so
         `selector` (or `address`) is required and ports are numbers.
         `namespaces` defaults to [Manifests.namespace], and the cluster is
@@ -498,3 +504,190 @@ schema TelemetryCollector:
         pod_labels and all k, v in pod_labels { k and v }, "TelemetryCollector.pod_labels must name at least one non-empty label"
         not otlp_http_endpoint or regex.match(otlp_http_endpoint, r"^https?://"), "TelemetryCollector.otlp_http_endpoint must be a URL with a scheme"
         not otlp_grpc_address or not regex.match(otlp_grpc_address, r"^[a-z]+://"), "TelemetryCollector.otlp_grpc_address is host:port, with no scheme"
+
+# ---------------------------------------------------------------------------
+# A project's own collector (docs/proposals/third-party-telemetry.md, "Own
+# collector"). A project that runs its own OpenTelemetry Collector in KCL
+# (declared as Observability.telemetry_collector) renders the SAME collector
+# configuration forge's agents render, from the same declarations, through the
+# one translator (pkg/telemetry/collector.Build, reached through
+# kcl_plugin.forge.telemetry_collector):
+#
+#     import forge
+#
+#     _targets = forge.telemetry_targets(_bundle)
+#     _tel = forge.telemetry_collector(_targets, forge.TelemetryCollectorOptions {
+#         runtime = "cluster"
+#         cluster = "prod-hub"
+#         discovery = "node-pods"
+#         mount_root = "/etc/telemetry/secrets"
+#         processors = ["memory_limiter"]
+#         post_processors = ["batch"]
+#         metrics_exporters = ["otlp_http/platform"]
+#         collector = _bundle.observability.telemetry_collector
+#     })
+#     # Merge _tel.receivers / processors / exporters / pipelines /
+#     # extensions into the agent's config, list _tel.service_extensions in
+#     # service.extensions, splice _tel.logs.preserve into the filelog
+#     # operators and _tel.logs.processors into the logs pipeline after
+#     # k8sattributes, append _tel.k8sattributes_labels to k8sattributes'
+#     # extract.labels, and add _tel.network_policies to Bundle.manifests.
+#
+# The collector must mount every Secret a target's bearer_token or tls.ca
+# names, NOT optional, at <mount_root>/<secret>: the prometheus receiver fails
+# its config load on a missing credentials file.
+# ---------------------------------------------------------------------------
+
+telemetry_targets = lambda b: Bundle -> [any] {
+    """The env's telemetry targets, normalized as the render's
+    `output.telemetry` is (one entry per forge.Telemetry, resolved against
+    where it attaches): the list forge.telemetry_collector takes. Pass the
+    bundle the env renders, minus the collector's own objects (those consume
+    this list)."""
+    _render_telemetry(b)
+}
+
+schema TelemetryIsolatedExporter:
+    """The exporter Telemetry.isolated targets' metrics go to: your exporter's
+    config, to which forge adds a bounded in-memory sending_queue that drops
+    on overflow and a bounded retry, so monitoring the telemetry pipeline
+    never wedges on it."""
+    # The exporter's component ID, e.g. "otlp_http/selfmon".
+    name: str
+    # The exporter's config, minus sending_queue and retry_on_failure.
+    config: {str:any} = {}
+    # The queue's size in requests (forge's default: 200).
+    queue_size?: int
+    # How long a batch is retried before it is dropped (forge's default: 2m).
+    retry_max_elapsed?: str
+
+    check:
+        name, "TelemetryIsolatedExporter.name is the exporter's component ID"
+        not queue_size or queue_size > 0, "TelemetryIsolatedExporter.queue_size must be positive"
+        not retry_max_elapsed or regex.match(retry_max_elapsed, _TEL_DURATION_RE), "TelemetryIsolatedExporter.retry_max_elapsed must be a duration like 2m"
+
+schema TelemetryCollectorOptions:
+    """What forge.telemetry_collector needs to know about the collector it
+    renders for (pkg/telemetry/collector.Options)."""
+    # Where the collector runs. It collects only the targets it reaches: on
+    # "host", host and compose targets; on "cluster", that cluster's.
+    runtime: "cluster" | "host"
+    # The kubectl context of the targets to keep, on "cluster". Unset keeps
+    # every cluster target.
+    cluster?: str
+    # What the collector pulls from, on "cluster". "all": every pod and
+    # address (one collector per cluster). "node-pods": only this node's pods
+    # (a DaemonSet; address targets are left to an "addresses" collector).
+    # "addresses": only address targets (the singleton beside a DaemonSet).
+    discovery: "all" | "node-pods" | "addresses" = "all"
+    # The env var holding the node's name, for "node-pods" (default
+    # K8S_NODE_NAME, from the downward API's spec.nodeName).
+    node_name_env?: str
+    # Where the collector mounts each referenced Secret, as
+    # <mount_root>/<secret>. Required when a target declares a bearer_token
+    # or a tls.ca.
+    mount_root?: str
+    # The env's identity (e.g. deployment.environment.name), stamped on every
+    # signal of a scope "project" target, never on a "platform" one.
+    resource_attrs: {str:str} = {}
+    # Render the pprof pulls. They are alpha in the pinned collector, which
+    # then needs --feature-gates=service.profilesSupport.
+    enable_profiles: bool = False
+    # Processors run first in every pipeline rendered (e.g. memory_limiter).
+    # Defined by you.
+    processors: [str] = []
+    # Processors run last in every metrics pipeline (e.g. batch). Defined by
+    # you.
+    post_processors: [str] = []
+    # The exporters every non-isolated target's metrics and checks go to.
+    # Defined by you.
+    metrics_exporters: [str] = []
+    # The exporters every target's profiles go to. Defined by you.
+    profiles_exporters: [str] = []
+    # Where isolated targets' metrics go. Required when a target is isolated.
+    isolated?: TelemetryIsolatedExporter
+    # The collector the NetworkPolicies admit, normally the env's
+    # Observability.telemetry_collector. Set, the fragment carries the
+    # standalone NetworkPolicy of every target that asks for one
+    # (network_policy = True); unset, it carries none. Set it on ONE of a
+    # pair of collectors that split discovery.
+    collector?: TelemetryCollector
+
+schema TelemetryCollectorLogs:
+    """What to splice into your collector's logs pipeline."""
+    # One stanza operator for your filelog receiver, keeping a line's raw
+    # text for the parse: after the `container` operator on a cluster, after
+    # the file-name-to-service.name move on a host. None when no target
+    # parses logs.
+    preserve?: {str:any}
+    # The processors to run in your logs pipeline after k8sattributes, in
+    # order (defined in TelemetryCollectorFragment.processors).
+    processors: [str] = []
+
+schema TelemetryCollectorFragment:
+    """The collector configuration forge.telemetry_collector rendered.
+    extensions, receivers, processors, exporters and pipelines are whole
+    components and pipelines, merged into your config as they are; the rest
+    are pieces you splice into what you already own."""
+    extensions: {str:any} = {}
+    receivers: {str:any} = {}
+    processors: {str:any} = {}
+    exporters: {str:any} = {}
+    pipelines: {str:any} = {}
+    # The extensions to list in service.extensions.
+    service_extensions: [str] = []
+    logs: TelemetryCollectorLogs = TelemetryCollectorLogs {}
+    # Processors for your node-metrics (kubeletstats) pipeline, after
+    # k8sattributes.
+    node_metrics_processors: [str] = []
+    # Entries to append to k8sattributes' extract.labels.
+    k8sattributes_labels: [any] = []
+    # NetworkPolicy objects, for Bundle.manifests (see
+    # TelemetryCollectorOptions.collector).
+    network_policies: [any] = []
+    # What was skipped, and why.
+    warnings: [str] = []
+
+telemetry_collector = lambda targets: [any], opts: TelemetryCollectorOptions -> TelemetryCollectorFragment {
+    """The collector configuration for targets (forge.telemetry_targets),
+    rendered by pkg/telemetry/collector.Build: the same translation forge's
+    own agents use. A target Build refuses fails the render, naming it."""
+    _iso = opts.isolated
+    _c = opts.collector
+    _r = forge_plugin.telemetry_collector(targets, {
+        "runtime": opts.runtime
+        "cluster": opts.cluster or ""
+        "discovery": opts.discovery
+        "node_name_env": opts.node_name_env or ""
+        "mount_root": opts.mount_root or ""
+        "resource_attrs": opts.resource_attrs
+        "enable_profiles": opts.enable_profiles
+        "processors": opts.processors
+        "post_processors": opts.post_processors
+        "metrics_exporters": opts.metrics_exporters
+        "profiles_exporters": opts.profiles_exporters
+        "isolated": {
+            "name": _iso.name
+            "config": _iso.config
+            "queue_size": _iso.queue_size or 0
+            "retry_max_elapsed": _iso.retry_max_elapsed or ""
+        } if _iso else None
+        "collector": {"namespace": _c.namespace, "pod_labels": _c.pod_labels} if _c else None
+    })
+    TelemetryCollectorFragment {
+        extensions = _r.extensions
+        receivers = _r.receivers
+        processors = _r.processors
+        exporters = _r.exporters
+        pipelines = _r.pipelines
+        service_extensions = _r.service_extensions
+        logs = TelemetryCollectorLogs {
+            preserve = _r.logs.preserve
+            processors = _r.logs.processors
+        }
+        node_metrics_processors = _r.node_metrics_processors
+        k8sattributes_labels = _r.k8sattributes_labels
+        network_policies = _r.network_policies
+        warnings = _r.warnings
+    }
+}

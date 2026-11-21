@@ -67,11 +67,10 @@ func ProductOverview(in Input) dashspec.Dashboard {
 		Description: "The product on one screen: visitors, sign-ups and active users against the previous period, each week's new and returning users, " +
 			"the figures that moved, the visit → sign-up → activation funnel, where visitors come from, whether sign-ups come back, and what people use. " +
 			"Each block links to the tab with its detail, and counts what that tab counts. Hosted environments only: a local forge env up has no product_events table.",
-		Group:          dashspec.GroupProduct,
-		Filters:        envFilter(),
-		Sections:       productOverviewSections,
-		DefaultRange:   "30d",
-		DefaultCompare: dashspec.ComparePeriod,
+		Group:        dashspec.GroupProduct,
+		Filters:      envFilter(),
+		Sections:     productOverviewSections,
+		DefaultRange: "30d",
 	}
 
 	signups := kpi("signups", "Sign-ups", "Users whose first auth_signed_up is in the range. The trend is each UTC day's.",

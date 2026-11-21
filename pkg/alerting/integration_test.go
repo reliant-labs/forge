@@ -14,7 +14,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,6 +28,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/reliant-labs/forge/internal/testdocker"
+	"github.com/reliant-labs/forge/internal/testhost"
 	"github.com/reliant-labs/forge/pkg/lease"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 
@@ -47,11 +47,8 @@ const chImage = "clickhouse/clickhouse-server:26.8.24-alpine@sha256:b200d774984e
 func scratchPostgresURL(t *testing.T) (dsn string, drop func()) {
 	t.Helper()
 	dsn, drop, err := pgtest.NewURL()
-	var fetchErr *pgtest.FetchError
-	if errors.As(err, &fetchErr) && fetchErr.Status != http.StatusNotFound {
-		t.Skipf("the embedded postgres binary registry is unreachable: %v", err)
-	}
 	if err != nil {
+		testhost.SkipIfPostgresDownloadFailed(t, err)
 		t.Fatalf("provision a scratch Postgres database: %v", err)
 	}
 	return dsn, drop

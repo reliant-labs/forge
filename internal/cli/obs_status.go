@@ -48,7 +48,7 @@ var obsStatusSchema = obsout.Schema{
 		"alerts.active_at", "alerts.firing_at", "alerts.value",
 		"workloads", "workloads.workload", "workloads.namespace", "workloads.kind", "workloads.health", "workloads.cause",
 		"workloads.reason", "workloads.detail", "workloads.since", "workloads.ready", "workloads.desired", "workloads.restarts",
-		"workloads.last_exit_reason", "workloads.last_exit_at", "workloads.release", "workloads_total",
+		"workloads.last_exit_reason", "workloads.last_exit_at", "workloads.release", "workloads_total", "workloads_truncated",
 		"telemetry", "telemetry.last_log_at", "telemetry.last_span_at", "telemetry.lookback",
 		"telemetry.deliveries_enabled", "telemetry.deliveries", "telemetry.deliveries.cluster", "telemetry.deliveries.namespace",
 		"telemetry.deliveries.name", "telemetry.deliveries.state", "telemetry.deliveries.expires_at",
@@ -130,18 +130,19 @@ type obsStatusDoc struct {
 	IssuesTruncated bool                         `json:"issues_truncated,omitempty"`
 	Alerts          []obsbackend.Alert           `json:"alerts,omitzero"`
 	// Workloads are the env's workloads that are suspended or need a look
-	// (obsbackend.Workload.Unhealthy), worst first; WorkloadsTotal is how
-	// many the read found. A suspended env serves nothing and emits no
-	// telemetry, so without this section it reads as a quiet, healthy one.
-	Workloads      []obsbackend.Workload `json:"workloads,omitzero"`
-	WorkloadsTotal int                   `json:"workloads_total,omitempty"`
-	Telemetry      *obsStatusTelemetry   `json:"telemetry,omitempty"`
-	CurrentRelease *obsStatusRelease     `json:"current_release,omitempty"`
-	Changes        []obsbackend.Change   `json:"changes,omitzero"`
-	Unread         []string              `json:"unread,omitempty"`
-	NotEvaluated   []string              `json:"not_evaluated,omitempty"`
-	Warnings       []string              `json:"warnings,omitempty"`
-	Suggested      []string              `json:"suggested,omitempty"`
+	// (obsbackend.Workload.Unhealthy), worst first. WorkloadsTotal counts
+	// returned rows before filtering; it is not an environment total if
+	// WorkloadsTruncated is true.
+	Workloads          []obsbackend.Workload `json:"workloads,omitzero"`
+	WorkloadsTotal     int                   `json:"workloads_total,omitempty"`
+	WorkloadsTruncated bool                  `json:"workloads_truncated,omitempty"`
+	Telemetry          *obsStatusTelemetry   `json:"telemetry,omitempty"`
+	CurrentRelease     *obsStatusRelease     `json:"current_release,omitempty"`
+	Changes            []obsbackend.Change   `json:"changes,omitzero"`
+	Unread             []string              `json:"unread,omitempty"`
+	NotEvaluated       []string              `json:"not_evaluated,omitempty"`
+	Warnings           []string              `json:"warnings,omitempty"`
+	Suggested          []string              `json:"suggested,omitempty"`
 }
 
 type obsStatusOpts struct {
@@ -342,6 +343,7 @@ func statusSections(b obsbackend.Backend, env, project string, n obsbackend.Narr
 				return err
 			}
 			doc.Workloads, doc.WorkloadsTotal = []obsbackend.Workload{}, len(res.Workloads)
+			doc.WorkloadsTruncated = res.Truncated
 			for _, w := range res.Workloads {
 				if w.Unhealthy() || w.Health == obsbackend.WorkloadSuspended {
 					doc.Workloads = append(doc.Workloads, w)
@@ -464,7 +466,7 @@ func mergeStatusPart(doc *obsStatusDoc, p obsStatusDoc) {
 		doc.Alerts = p.Alerts
 	}
 	if p.Workloads != nil {
-		doc.Workloads, doc.WorkloadsTotal = p.Workloads, p.WorkloadsTotal
+		doc.Workloads, doc.WorkloadsTotal, doc.WorkloadsTruncated = p.Workloads, p.WorkloadsTotal, p.WorkloadsTruncated
 	}
 	if t := p.Telemetry; t != nil {
 		if doc.Telemetry == nil {
@@ -495,7 +497,7 @@ func statusSuggestions(env string, doc obsStatusDoc) []string {
 	if suspended > 0 {
 		cmds = append(cmds, obsout.Command("forge", "env", "start", env))
 	}
-	if unhealthy > 0 {
+	if unhealthy > 0 || doc.WorkloadsTruncated {
 		cmds = append(cmds, obsout.Command("forge", "obs", "workloads", env))
 	}
 	if len(doc.Issues) > 0 {
@@ -633,6 +635,9 @@ func writeStatusText(w io.Writer, now time.Time, doc obsStatusDoc) {
 func writeStatusWorkloads(w io.Writer, now time.Time, doc obsStatusDoc) {
 	suspended, _ := statusWorkloadCounts(doc.Workloads)
 	switch {
+	case suspended > 0 && doc.WorkloadsTruncated:
+		fmt.Fprintf(w, "SUSPENDED: %d of %d returned workloads of %s are suspended; `%s env start %s` resumes them\n",
+			suspended, doc.WorkloadsTotal, doc.Scope.Env, Name(), doc.Scope.Env)
 	case doc.WorkloadsTotal > 0 && suspended == doc.WorkloadsTotal:
 		fmt.Fprintf(w, "SUSPENDED: every workload of %s (%d) is suspended and serves no traffic; `%s env start %s` resumes it\n",
 			doc.Scope.Env, suspended, Name(), doc.Scope.Env)
@@ -640,8 +645,13 @@ func writeStatusWorkloads(w io.Writer, now time.Time, doc obsStatusDoc) {
 		fmt.Fprintf(w, "SUSPENDED: %d of %d workloads of %s are suspended and serve no traffic; `%s env start %s` resumes them\n",
 			suspended, doc.WorkloadsTotal, doc.Scope.Env, Name(), doc.Scope.Env)
 	}
+	if doc.WorkloadsTruncated {
+		fmt.Fprintf(w, "workloads: %d read; result truncated (narrow with --service to inspect others)\n", doc.WorkloadsTotal)
+	}
 	if len(doc.Workloads) == 0 {
-		fmt.Fprintf(w, "workloads: %d, every one healthy with no restarts in the range\n", doc.WorkloadsTotal)
+		if !doc.WorkloadsTruncated {
+			fmt.Fprintf(w, "workloads: %d, every one healthy with no restarts in the range\n", doc.WorkloadsTotal)
+		}
 		return
 	}
 	rows := make([][]string, len(doc.Workloads))

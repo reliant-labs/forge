@@ -402,6 +402,47 @@ func TestObsStatusNamesASuspendedEnv(t *testing.T) {
 	}
 }
 
+// The hosted backend may cap the returned workload rows. An observed
+// subset cannot prove that the whole environment is suspended or healthy.
+func TestObsStatusMarksTruncatedWorkloads(t *testing.T) {
+	for _, tc := range []struct {
+		name, rows string
+		count      int
+	}{
+		{"suspended", `[{"workload":"api","health":"WORKLOAD_HEALTH_SUSPENDED"}]`, 1},
+		{"healthy", `[{"workload":"api","health":"WORKLOAD_HEALTH_HEALTHY"}]`, 1},
+		{"empty", `[]`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := statusCaller()
+			caller.replies[procWorkloads] = []string{fmt.Sprintf(`{"truncated":true,"workloads":%s}`, tc.rows)}
+			out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := decode(t, out)
+			if doc["workloads_truncated"] != true || (tc.count > 0 && doc["workloads_total"] != float64(tc.count)) {
+				t.Errorf("truncation or returned row count missing: %s", out)
+			}
+			text, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, falseClaim := range []string{"every workload of prod", "every one healthy", "1 of 1 workloads of prod are suspended"} {
+				if strings.Contains(text, falseClaim) {
+					t.Errorf("partial output claimed %q:\n%s", falseClaim, text)
+				}
+			}
+			if !strings.Contains(text, fmt.Sprintf("workloads: %d read; result truncated", tc.count)) {
+				t.Errorf("text did not disclose truncation:\n%s", text)
+			}
+			if tc.name == "suspended" && !strings.Contains(text, "1 of 1 returned workloads") {
+				t.Errorf("text did not preserve bounded suspension evidence:\n%s", text)
+			}
+		})
+	}
+}
+
 // A workload needing a look is listed with the workloads view to open; a
 // read longer than ListWorkloads takes asks for its last 7 days.
 func TestObsStatusListsUnhealthyWorkloads(t *testing.T) {

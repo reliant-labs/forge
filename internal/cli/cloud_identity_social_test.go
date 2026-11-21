@@ -20,7 +20,7 @@ func authorizeURL(endpoint, clientID, scope, redirect string) string {
 	return endpoint + "?" + q.Encode()
 }
 
-func TestVerifySocialAuthorizeURL(t *testing.T) {
+func TestVerifySocialAuthURL(t *testing.T) {
 	const gh, google = "https://github.com/login/oauth/authorize", "https://accounts.google.com/o/oauth2/v2/auth"
 	for _, tc := range []struct {
 		name, typ, url string
@@ -40,7 +40,7 @@ func TestVerifySocialAuthorizeURL(t *testing.T) {
 		{"garbage", "github", "::", false, "no usable authorize URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := verifySocialAuthorizeURL(tc.typ, tc.url, testSocialCallback)
+			c := verifySocialAuthURL(tc.typ, tc.url, testSocialCallback)
 			if c.OK != tc.wantOK {
 				t.Fatalf("OK = %v, want %v (problems %v)", c.OK, tc.wantOK, c.Problems)
 			}
@@ -49,7 +49,7 @@ func TestVerifySocialAuthorizeURL(t *testing.T) {
 			}
 		})
 	}
-	if c := verifySocialAuthorizeURL("github", authorizeURL(gh, "x", "read:user", testSocialCallback), ""); c.OK {
+	if c := verifySocialAuthURL("github", authorizeURL(gh, "x", "read:user", testSocialCallback), ""); c.OK {
 		t.Error("a check with no callback to compare with passed")
 	}
 }

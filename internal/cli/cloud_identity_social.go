@@ -38,11 +38,11 @@ import (
 // intents are never completed; they expire on the issuer.
 const procIdentityCheckSocial = "controlplane.v1.IdentityService/CheckSocialSignIn"
 
-// socialAuthorizeEndpoint is where each provider's authorize URL must point:
+// socialAuthEndpoint is where each provider's authorize URL must point:
 // Zitadel's GitHub provider uses github.com's fixed endpoint, and its Google
 // provider the authorization_endpoint of accounts.google.com's discovery
 // document.
-var socialAuthorizeEndpoint = map[string]struct{ host, path string }{
+var socialAuthEndpoint = map[string]struct{ host, path string }{
 	"github": {"github.com", "/login/oauth/authorize"},
 	"google": {"accounts.google.com", "/o/oauth2/v2/auth"},
 }
@@ -63,18 +63,18 @@ type socialCheck struct {
 	// A skipped provider is not OK.
 	Skipped string `json:"skipped,omitempty"`
 	// What the authorize URL carried.
-	AuthorizeEndpoint string   `json:"authorizeEndpoint,omitempty"`
-	ClientID          string   `json:"clientId,omitempty"`
-	Scopes            []string `json:"scopes,omitempty"`
-	RedirectURI       string   `json:"redirectUri,omitempty"`
+	AuthEndpoint string   `json:"authorizeEndpoint,omitempty"`
+	ClientID     string   `json:"clientId,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+	RedirectURI  string   `json:"redirectUri,omitempty"`
 	// Problems are each thing wrong, as a sentence that says what to do.
 	Problems []string `json:"problems,omitempty"`
 }
 
-// verifySocialAuthorizeURL checks the authorize URL the issuer answered for a
+// verifySocialAuthURL checks the authorize URL the issuer answered for a
 // provider of type typ against callback, the redirect URI registered at the
 // provider (status's socialCallbackUrl).
-func verifySocialAuthorizeURL(typ, authURL, callback string) socialCheck {
+func verifySocialAuthURL(typ, authURL, callback string) socialCheck {
 	c := socialCheck{Type: typ}
 	bad := func(format string, args ...any) { c.Problems = append(c.Problems, fmt.Sprintf(format, args...)) }
 	u, err := url.Parse(authURL)
@@ -82,14 +82,14 @@ func verifySocialAuthorizeURL(typ, authURL, callback string) socialCheck {
 		bad("the issuer answered no usable authorize URL (%q)", authURL)
 		return c
 	}
-	c.AuthorizeEndpoint = u.Scheme + "://" + u.Host + u.Path
+	c.AuthEndpoint = u.Scheme + "://" + u.Host + u.Path
 	q := u.Query()
 	c.ClientID, c.RedirectURI = q.Get("client_id"), q.Get("redirect_uri")
 	c.Scopes = strings.Fields(q.Get("scope"))
-	if want, ok := socialAuthorizeEndpoint[typ]; !ok {
+	if want, ok := socialAuthEndpoint[typ]; !ok {
 		bad("unknown provider type %q", typ)
 	} else if u.Scheme != "https" || u.Host != want.host || u.Path != want.path {
-		bad("the authorize endpoint is %s, want https://%s%s", c.AuthorizeEndpoint, want.host, want.path)
+		bad("the authorize endpoint is %s, want https://%s%s", c.AuthEndpoint, want.host, want.path)
 	}
 	if c.ClientID == "" {
 		bad("the authorize URL carries no client_id: the provider's client id did not reach the issuer")
@@ -232,7 +232,7 @@ func checkSocial(ctx context.Context, doc identityStatusDocument, start socialSt
 		case s.Error != "":
 			checks = append(checks, socialCheck{Type: typ, Problems: []string{s.Error}})
 		default:
-			checks = append(checks, verifySocialAuthorizeURL(typ, s.AuthURL, callback))
+			checks = append(checks, verifySocialAuthURL(typ, s.AuthURL, callback))
 		}
 	}
 	return checks, nil
@@ -268,8 +268,8 @@ func writeSocialChecks(w io.Writer, callback string, checks []socialCheck) {
 		default:
 			fmt.Fprintf(w, "Social check: %s FAILED\n", c.Type)
 		}
-		if c.AuthorizeEndpoint != "" {
-			fmt.Fprintf(w, "  authorize: %s (client_id %s, scope %s)\n", c.AuthorizeEndpoint, c.ClientID, strings.Join(c.Scopes, " "))
+		if c.AuthEndpoint != "" {
+			fmt.Fprintf(w, "  authorize: %s (client_id %s, scope %s)\n", c.AuthEndpoint, c.ClientID, strings.Join(c.Scopes, " "))
 		}
 		for _, p := range c.Problems {
 			fmt.Fprintf(w, "  - %s\n", p)

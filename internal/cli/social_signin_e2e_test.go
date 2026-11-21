@@ -437,11 +437,11 @@ message Widget {
 			fail("%s authorize URL: response_type=%q state=%q", want.provider, q.Get("response_type"), s.intentID)
 		}
 		// `forge cloud identity status --check-social` accepts exactly this,
-		if c := verifySocialAuthorizeURL(want.provider, s.authURL, callbackURL); !c.OK {
+		if c := verifySocialAuthURL(want.provider, s.authURL, callbackURL); !c.OK {
 			fail("--check-social refuses the real %s authorize URL: %v", want.provider, c.Problems)
 		}
 		// and refuses it against a callback registered for another issuer.
-		if c := verifySocialAuthorizeURL(want.provider, s.authURL, "https://other.example/idps/callback"); c.OK {
+		if c := verifySocialAuthURL(want.provider, s.authURL, "https://other.example/idps/callback"); c.OK {
 			fail("--check-social accepts %s against a callback the issuer does not send", want.provider)
 		}
 	}

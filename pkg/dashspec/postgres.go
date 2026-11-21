@@ -21,6 +21,8 @@ type PostgresQuery struct {
 	// Draw is how the result is drawn: PostgresDrawAuto (or empty), line,
 	// number, table or bar. Auto draws a line when Time names a column, a
 	// number for one row and one value, a table otherwise.
+	//
+	//dashspec:enum PostgresDraw
 	Draw string `json:"draw,omitempty"`
 	// Time names the result column holding each row's timestamp. A line
 	// requires it.

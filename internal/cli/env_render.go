@@ -129,6 +129,7 @@ func newEnvRenderCmd() *cobra.Command {
 		targets      []string
 		list         bool
 		count        bool
+		asJSON       bool
 		noDigest     bool
 		failOnWrite  bool
 		noWriteCheck bool
@@ -185,6 +186,7 @@ Examples:
   ` + Name() + ` env render dev                              # every object, cluster-annotated
   ` + Name() + ` env render dev --list                       # one line per object (kind/name/cluster)
   ` + Name() + ` env render prod --count                     # objects per cluster, and per kind on each
+  ` + Name() + ` env render dev --json | jq .telemetry         # the env's declared telemetry, normalized
   ` + Name() + ` env render dev --cluster k3d-cp-daemon      # only what that cluster receives
   ` + Name() + ` env render prod --kind Deployment,Job       # only those kinds
   ` + Name() + ` env render prod --target workspace-proxy    # only that app's objects
@@ -202,6 +204,7 @@ Examples:
 				targets:      targets,
 				list:         list,
 				count:        count,
+				json:         asJSON,
 				noDigest:     noDigest,
 				failOnWrite:  failOnWrite,
 				noWriteCheck: noWriteCheck,
@@ -217,12 +220,14 @@ Examples:
 	cmd.Flags().StringVar(&nameFilter, "name", "", "Print only objects with this metadata.name")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Print only the named application's objects (the app.kubernetes.io/name group forge env deploy --target selects; repeatable)")
 	cmd.Flags().BoolVar(&list, "list", false, "Print one line per object (cluster, kind, namespace, name) instead of the YAML stream")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print one JSON document ("+envRenderJSONSchema+") instead of the YAML stream: the objects --list shows, and the env's declared telemetry (forge.Telemetry), normalized")
 	cmd.Flags().BoolVar(&count, "count", false, "Print how many objects land on each cluster (and per kind on each), instead of the YAML stream")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Render image references as the mutable :tag even when a build state captured an immutable digest (matches forge env deploy --no-digest)")
 	cmd.Flags().BoolVar(&failOnWrite, "fail-on-write", false, "Exit non-zero if any file in the project changed while rendering (the render is not guaranteed side-effect-free — see the command description)")
 	cmd.Flags().BoolVar(&noWriteCheck, "no-write-check", false, "Skip the before/after scan that detects files the render wrote")
 	cmd.Flags().BoolVar(&noCharts, "no-charts", false, "Skip templating declared forge.HelmChart platform deps (no helm, no network); the summary names what was left out")
-	cmd.Flags().StringArrayVarP(&options, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.MarkFlagsMutuallyExclusive("json", "list", "count")
+	cmd.Flags().StringArrayVarP(&options, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 
 	return cmd
 }
@@ -238,6 +243,7 @@ type envRenderOptions struct {
 	targets      []string
 	list         bool
 	count        bool
+	json         bool
 	noDigest     bool
 	failOnWrite  bool
 	noWriteCheck bool
@@ -306,11 +312,11 @@ func envRenderMainK(kclDir, projectDir, envName string) (string, error) {
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDir, kclDir, envName)
 	if !envHasDeclaration(projectDir, envName, mainK) {
 		envs, _ := ListEnvs(projectDir)
 		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists (declared environments: %s)",
-			envName, mainK, envName, strings.Join(envs, ", "))
+			envName, shown, envName, strings.Join(envs, ", "))
 	}
 	return mainK, nil
 }
@@ -322,11 +328,8 @@ func envRenderMainK(kclDir, projectDir, envName string) (string, error) {
 // restore puts back the options that were active before; it is a no-op when
 // no -D was given.
 func bindEnvRenderOptions(projectDir, envName string, values []string) (dArgs []string, restore func(), err error) {
-	dArgs, err = parseRenderOptions(values)
+	dArgs, err = resolveRenderOptions(projectDir, envName, values)
 	if err != nil {
-		return nil, nil, err
-	}
-	if err := validateRenderOptions(projectDir, envName, values); err != nil {
 		return nil, nil, err
 	}
 	if dArgs == nil {
@@ -398,6 +401,12 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	// On stderr with the render's other notes: the manifest stream is the
 	// only thing out carries.
 	writeFluxDeliverySigningNotice(errOut, envName, entities.FluxDelivery)
+	// Declared telemetry is checked here, before anything is printed: a
+	// render is what the deploy applies, and a regex the collector cannot
+	// compile or a port nothing listens on fails there, far from its cause.
+	if terr := checkEnvTelemetry(errOut, envName, entities); terr != nil {
+		return terr
+	}
 
 	namespace := renderEnvNamespace(opts.namespace, entities, store.Meta().Name, envName)
 
@@ -508,15 +517,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		fmt.Fprintf(errOut, "no objects matched (environment %q rendered %d)\n", envName, totalRendered)
 	}
 
-	if opts.count {
-		if werr := writeRenderedCounts(out, clusters, objects); werr != nil {
-			return werr
-		}
-	} else if opts.list {
-		if werr := writeRenderedTable(out, objects); werr != nil {
-			return werr
-		}
-	} else if werr := writeRenderedStream(out, objects); werr != nil {
+	if werr := writeRenderedOutput(out, opts, store.Meta().Name, envName, namespace, clusters, objects, entities); werr != nil {
 		return werr
 	}
 	writeRenderSummary(errOut, renderProvenance{
@@ -541,6 +542,21 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 		}
 	}
 	return nil
+}
+
+// writeRenderedOutput prints the render in the form opts asks for: the
+// --json document, --count, the --list table, or (by default) the YAML stream.
+func writeRenderedOutput(out io.Writer, opts envRenderOptions, project, envName, namespace string, clusters []string, objects []renderedObject, entities *KCLEntities) error {
+	switch {
+	case opts.json:
+		return writeRenderedJSON(out, project, envName, namespace, clusters, objects, entities)
+	case opts.count:
+		return writeRenderedCounts(out, clusters, objects)
+	case opts.list:
+		return writeRenderedTable(out, objects)
+	default:
+		return writeRenderedStream(out, objects)
+	}
 }
 
 // renderEnvNamespace honors the flag, then the declaration, then the project default.

@@ -3,8 +3,6 @@ package codegen
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -148,8 +146,8 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 // default; see ormEntitiesForTables.
 //
 // ormDir is the ORM package's directory relative to projectDir
-// (config.ORMPackage's PackageDir, "internal/db" by default): the stores it
-// already holds decide which library tables keep theirs, deprecated.
+// (config.ORMPackage's PackageDir, "internal/db" by default). The projection
+// no longer reads it; it stays in the signature for the callers that pass it.
 func BuildORMEntities(projectDir, ormDir string, services []ServiceDef) ([]EntityDef, error) {
 	return BuildORMEntitiesFrom(projectDir, config.MigrationsPathIn(projectDir), ormDir, services)
 }
@@ -157,7 +155,7 @@ func BuildORMEntities(projectDir, ormDir string, services []ServiceDef) ([]Entit
 // BuildORMEntitiesFrom is BuildORMEntities over the migrations in migDir (an
 // absolute directory) rather than the primary database's: the projection of
 // one of several declared databases (config.ProjectDatabases).
-func BuildORMEntitiesFrom(projectDir, migDir, ormDir string, services []ServiceDef) ([]EntityDef, error) {
+func BuildORMEntitiesFrom(projectDir, migDir, _ string, services []ServiceDef) ([]EntityDef, error) {
 	tables, err := shadowdb.Tables(projectDir, migDir)
 	if err != nil {
 		return nil, err
@@ -172,13 +170,9 @@ func BuildORMEntitiesFrom(projectDir, migDir, ormDir string, services []ServiceD
 	if err := schemadef.CheckMarkers(append(tables, views...)); err != nil {
 		return nil, err
 	}
-	projected := existingORMProjection(filepath.Join(projectDir, filepath.FromSlash(ormDir)), ormDir)
-	entities, notes, deprecations, err := ormEntitiesForTables(append(tables, views...), services, projected)
+	entities, notes, err := ormEntitiesForTables(append(tables, views...), services)
 	for _, n := range notes {
 		fmt.Println("ℹ️  " + n)
-	}
-	for _, d := range deprecations {
-		fmt.Fprintln(os.Stderr, "⚠️  "+d)
 	}
 	return entities, err
 }
@@ -198,12 +192,8 @@ func BuildORMEntitiesFrom(projectDir, migDir, ormDir string, services []ServiceD
 // generated one is how its entity name came to collide with the app's
 // audit_logs. It is projected when something declares it should be: a CRUD
 // rpc names it (the CRUD wiring compiles against its store), or its comment
-// says `forge:entity`. It is also kept, with a deprecation in deprecations,
-// when projected reports the project already generates its store: generated
-// code is public within major 1, so that store goes only in the next major.
-// The kept store never wins a collision: a projection that collides with
-// another table's could not have compiled, so the library table yields.
-func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, projected ormProjected) (entities []EntityDef, notes, deprecations []string, err error) {
+// says `forge:entity`.
+func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef) (entities []EntityDef, notes []string, err error) {
 	var baseTables []schemadef.Table
 	for _, t := range tables {
 		if !t.IsView { // a view is never a CRUD entity
@@ -213,29 +203,6 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 	byTable := map[string]EntityDef{}
 	for _, e := range entitiesForTables(baseTables, services) {
 		byTable[e.TableName] = e
-	}
-
-	// An existing library-table store is kept only if no other relation
-	// projects to its name; those names are known before the loop.
-	other := map[string]bool{}
-	for _, t := range tables {
-		if t.NoEntity() {
-			continue
-		}
-		if _, lib := libraryOwning(t); lib {
-			continue
-		}
-		if t.IsView {
-			if e, ok := viewEntityDef(t); ok {
-				other[strings.ToLower(e.Name)] = true
-			}
-			continue
-		}
-		name := TableEntityName(t)
-		if e, joined := byTable[t.Name]; joined {
-			name = e.Name
-		}
-		other[strings.ToLower(name)] = true
 	}
 
 	owner := map[string]schemadef.Table{} // entity name (lowercased) → table
@@ -249,8 +216,7 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 		return nil
 	}
 	// skipLibraryTable reports whether a forge library's table that no entity
-	// declares is left off the ORM (noting why). One a previous generate
-	// projected keeps its store, deprecated, until the next major.
+	// declares is left off the ORM (noting why).
 	skipLibraryTable := func(t schemadef.Table) bool {
 		lib, ok := libraryOwning(t)
 		if !ok {
@@ -259,17 +225,8 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 		if declared, _ := t.DeclaresEntity(); declared {
 			return false
 		}
-		name := TableEntityName(t)
-		file, had := "", false
-		if projected != nil && !other[strings.ToLower(name)] {
-			file, had = projected(t, name)
-		}
-		if !had {
-			notes = append(notes, libraryTableNote(t, lib))
-			return true
-		}
-		deprecations = append(deprecations, libraryTableDeprecation(t, lib, file))
-		return false
+		notes = append(notes, libraryTableNote(t, lib))
+		return true
 	}
 	sorted := append([]schemadef.Table(nil), tables...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
@@ -283,7 +240,7 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 				continue
 			}
 			if err := add(t, e); err != nil {
-				return nil, notes, deprecations, err
+				return nil, notes, err
 			}
 			continue
 		}
@@ -302,11 +259,11 @@ func ormEntitiesForTables(tables []schemadef.Table, services []ServiceDef, proje
 			e = buildEntityDef(TableEntityName(t), t, ServiceDef{})
 		}
 		if err := add(t, e); err != nil {
-			return nil, notes, deprecations, err
+			return nil, notes, err
 		}
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })
-	return entities, notes, deprecations, nil
+	return entities, notes, nil
 }
 
 // EntityCollisionError is two relations of the applied schema that project

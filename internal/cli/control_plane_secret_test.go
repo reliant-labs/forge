@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/cluster"
+	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -249,7 +250,7 @@ func TestForwarderConfigRefusesATokenDestination(t *testing.T) {
 			}{Name: "forge-otlp-token", Key: "token"},
 		},
 	}
-	_, err := forwarderConfig(o)
+	_, err := forwarderConfig(o, deploy.ForwarderLogs{})
 	if err == nil || !strings.Contains(err.Error(), "headers_secret") {
 		t.Fatalf("the forwarder accepted a token destination it cannot authenticate: %v", err)
 	}

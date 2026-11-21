@@ -25,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/schemagen"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 	forgeschema "github.com/reliant-labs/forge/schema"
 )
 
@@ -96,6 +97,7 @@ func envSchemaOptions(describe func(reflect.Type, string) string) schemagen.Opti
 		Required: map[reflect.Type][]string{
 			reflect.TypeOf(envDocumentWire{}): {"project", "env"},
 			tWorkload:                         {"name", "runtime"},
+			reflect.TypeOf(BuildOutput{}):     {"path"},
 		},
 		Types: map[reflect.Type]func(*schemagen.Generator) (*schemagen.Schema, error){
 			// The frontend runtime union (FrontendRuntime.UnmarshalJSON): a
@@ -140,12 +142,24 @@ func envSchemaOptions(describe func(reflect.Type, string) string) schemagen.Opti
 			},
 			{Type: tWorkload, Name: "build"}: func(g *schemagen.Generator) (*schemagen.Schema, error) {
 				str := &schemagen.Schema{Types: []string{"string", "null"}}
+				// Build.outputs (kcl/schema.k BuildOutput), decoded beside
+				// unit and inputs_file for every build type.
+				output, err := g.Ref(reflect.TypeOf(BuildOutput{}))
+				if err != nil {
+					return nil, err
+				}
 				return schemagen.TaggedUnion(g, "type", envBuildVariants,
 					schemagen.Property{Name: "unit", Schema: str},
-					schemagen.Property{Name: "inputs_file", Schema: str})
+					schemagen.Property{Name: "inputs_file", Schema: str},
+					schemagen.Property{Name: "outputs", Schema: &schemagen.Schema{Types: []string{"array"}, Items: output}})
 			},
 			{Type: tWorkload, Name: "spec"}: func(g *schemagen.Generator) (*schemagen.Schema, error) {
 				return g.Ref(reflect.TypeOf(deployv1alpha1.WorkloadSpec{}))
+			},
+			// output.telemetry is decoded strictly by pkg/telemetry.Decode
+			// from a json.RawMessage, into []telemetry.Target.
+			{Type: reflect.TypeOf(kclRenderRaw{}), Name: "telemetry"}: func(g *schemagen.Generator) (*schemagen.Schema, error) {
+				return g.Ref(reflect.TypeOf([]telemetry.Target{}))
 			},
 		},
 		Describe: describe,

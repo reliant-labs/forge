@@ -22,6 +22,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/internal/templates"
 	"github.com/reliant-labs/forge/pkg/session"
@@ -168,6 +169,10 @@ type routesGenView struct {
 	Imports        []graphImport
 	Services       []routesServiceView
 	Audiences      []routesAudienceView
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // GenerateGraph emits the composition graph for a project in graph mode
@@ -646,7 +651,7 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 	if err != nil {
 		return routesGenView{}, err
 	}
-	routesView := routesGenView{Module: in.ModulePath, ConnectImports: connectImports}
+	routesView := routesGenView{Module: in.ModulePath, ConnectImports: connectImports, ConnectV2: in.connectV2()}
 	routesImports := map[string]string{}
 	byAudience := map[string][]routesServiceView{"user": nil}
 	for _, row := range rows {
@@ -675,7 +680,7 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 			return routesGenView{}, err
 		}
 	}
-	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect",
+	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect", "connectrpc.com/connect/v2",
 		"github.com/reliant-labs/forge/pkg/middleware", "github.com/reliant-labs/forge/pkg/mountkit",
 		"github.com/reliant-labs/forge/pkg/mountkit/inventory", "github.com/reliant-labs/forge/pkg/authn")
 	return routesView, nil
@@ -1023,6 +1028,10 @@ type providersGraphData struct {
 	// sign-in keeps its sessions server-side (the Sessions provider,
 	// forge/pkg/session) in the auth_sessions table.
 	Sessions bool
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // configTypeDeclares reports whether the config typeName — "" is the root
@@ -1052,8 +1061,12 @@ func configTypeDeclares(messages []ConfigMessage, typeName string, rootFields ma
 var projectDevSessionCookieDecl = regexp.MustCompile(`(?m)^\s*DevSessionCookie\s+bool\b`)
 
 // projectAuthInterceptorDecl matches the auth interceptor the scaffolded
-// pkg/middleware/middleware.go declares.
-var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthInterceptor\(`)
+// pkg/middleware/middleware.go declares; projectAuthInterceptorV2Decl its
+// connect-go v2 form.
+var (
+	projectAuthInterceptorDecl   = regexp.MustCompile(`(?m)^func NewAuthInterceptor\(`)
+	projectAuthInterceptorV2Decl = regexp.MustCompile(`(?m)^func NewAuthInterceptorV2\(`)
+)
 
 // projectDeclaresAuthInterceptor reports whether the project's pkg/middleware
 // declares NewAuthInterceptor — forge's scaffold does, a project with a
@@ -1062,6 +1075,17 @@ var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthIntercepto
 // there. A project with no pkg/middleware yet is about to get forge's.
 func projectDeclaresAuthInterceptor(projectDir string) bool {
 	return projectMiddlewareDeclares(projectDir, projectAuthInterceptorDecl)
+}
+
+// projectDeclaresAuthInterceptorFor is projectDeclaresAuthInterceptor for the
+// connect-go major the providers target: a v2 project's UserAuth calls
+// NewAuthInterceptorV2, which only a middleware.go born on v2 (or ported to
+// it) declares.
+func projectDeclaresAuthInterceptorFor(projectDir string, v2 bool) bool {
+	if v2 {
+		return projectMiddlewareDeclares(projectDir, projectAuthInterceptorV2Decl)
+	}
+	return projectDeclaresAuthInterceptor(projectDir)
 }
 
 // projectClaimsEnricherDecl matches the enricher seam the scaffolded
@@ -1102,8 +1126,10 @@ func projectMiddlewareDeclares(projectDir string, decl *regexp.Regexp) bool {
 // GenerateGraphProviders scaffolds a graph-mode project's owned
 // internal/app/providers.go (the default providers: the database pool and
 // ORM, the outbound HTTP client, the user audience's authenticator, chain and
-// API listener, pprof) and auth.go, each exactly once.
-func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error {
+// API listener, pprof) and auth.go, each exactly once. major is the
+// connect-go major the providers are born on (zero: projectDir's go.mod's).
+func GenerateGraphProviders(modulePath, databaseDriver, projectDir string, major connectmajor.Major) error {
+	v2 := GenContext{ProjectDir: projectDir, ConnectMajor: major}.connectV2()
 	hasDB := databaseDriver != ""
 	// auth.go and login_broker.go read the config that declares their
 	// fields — a command config's, in a binary_config project — or none.
@@ -1120,8 +1146,9 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	}
 	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
 		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
-		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
+		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptorFor(projectDir, v2), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
 		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && configTypeDeclares(msgs, authConfig, configFields, "Environment"),
+		ConnectV2:        v2,
 		Sessions:         hasDB && hasBroker}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {

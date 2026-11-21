@@ -93,7 +93,7 @@ unrelated test and no cold-cache runner benchmark.
   full `ci.yml` run for the exact source HEAD is completed successfully AND the
   actual full `Test`, `Test (internal/cli)`, and
   `Test (-short whole tier, then guards)` jobs all succeeded. This checks jobs,
-  not just `CI gate`, which can waive known main reds. PR/merge-queue greens,
+  not just `CI gate`, which skips the full tier on PRs. PR/merge-queue greens,
   missing/running/failed/stale runs and API failures are rejected. Local fixture
   remotes have no hosted publication; GitHub publication requires authenticated
   `gh`. No real release was invoked.

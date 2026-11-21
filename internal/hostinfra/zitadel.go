@@ -253,8 +253,7 @@ func startZitadel(ctx context.Context, projectDir string, spec Spec) error {
 			spec.Name, shortPath(projectDir, stepsPath), err)
 	}
 
-	logPath := filepath.Join(dataDir, "zitadel.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644) // #nosec G304 -- path derived from the project's own data dir
+	logFile, logPath, err := spec.openLog(projectDir, "zitadel.log", os.O_TRUNC)
 	if err != nil {
 		return fmt.Errorf("host-infra %s: open log: %w", spec.Name, err)
 	}

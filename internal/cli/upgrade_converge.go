@@ -9,10 +9,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/lint"
@@ -21,6 +25,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 // upgrade_converge.go — `forge project upgrade` as the one verb that takes a
@@ -113,10 +118,31 @@ type upgradeReport struct {
 	// TemplateDrift are frozen files you modified that a newer template
 	// changed; upgrade never overwrites them without --force.
 	TemplateDrift []string `json:"template_drift"`
+	// TemplateDriftRows are every file both template lanes report and do
+	// not write — upgrade-managed ("managed") and scaffold-once — sized,
+	// with whether the range changed its template (upgrade_drift_range.go).
+	// TemplateDriftHidden is how many of them the text did not list, and
+	// TemplateDriftRangeNote why changed_in_range is null for all of them,
+	// when the pinned forge's templates could not be read.
+	TemplateDriftRows      []upgradeDriftRow `json:"template_drift_rows"`
+	TemplateDriftHidden    int               `json:"template_drift_hidden"`
+	TemplateDriftRangeNote string            `json:"template_drift_range_note,omitempty"`
 	// Offers are scaffold-once files this project never had whose
 	// templates are not new across the range: upgrade did not add them,
 	// and Command does.
 	Offers []upgradeOffer `json:"offers"`
+	// Crossed is what forge from..to brings: one entry per release tag the
+	// bump crosses, then the untagged commits up to a pseudo-version
+	// target, each with its changelog entries and the instructions its
+	// PRs address to the agent running the upgrade (upgrade_crossed.go).
+	Crossed []upgradeCrossed `json:"crossed"`
+	// GeneratedChanges are the generated files generate changed, by
+	// generator, with the range's notes on each (upgrade_generated.go).
+	// Under --check, the range's notes alone, planned.
+	GeneratedChanges []upgradeGeneratedChange `json:"generated_changes"`
+	// GeneratedHint is said when generated output changes: tests that pin
+	// it may need updating.
+	GeneratedHint string `json:"generated_hint,omitempty"`
 }
 
 // upgradeOffer is one scaffold-once file upgrade offers instead of writing.
@@ -132,6 +158,11 @@ type upgradePhase struct {
 	// Status is done, skipped, planned (--check) or failed.
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`
+	// DurationMS is the phase's wall time. A phase --skip left out did not
+	// run and records 0; one that ran and found nothing to do under the
+	// mode (generate and lint under --check) records the time it took to
+	// decide that.
+	DurationMS int64 `json:"duration_ms"`
 }
 
 type upgradeCodemodRun struct {
@@ -161,6 +192,24 @@ type upgradePlaybookRun struct {
 	// Resolved: the playbook's detection no longer matches once its
 	// automation ran. A playbook with no automation is never resolved here.
 	Resolved bool `json:"resolved"`
+	// Applies is whether this project needs the playbook: its release is
+	// in the range, it is not recorded as applied, and its detection
+	// matched before any phase changed the tree. Every playbook of a
+	// release after the old pin is listed — those that do not apply with
+	// Reason — so "none exist" and "checked, none apply" read differently.
+	Applies bool `json:"applies"`
+	// Reason says why a playbook does not apply; empty when it does.
+	Reason    string `json:"reason,omitempty"`
+	Version   string `json:"version,omitempty"`
+	SkillPath string `json:"skill_path,omitempty"`
+	Detection string `json:"detection,omitempty"`
+}
+
+// playbookEval is one playbook judged against this run's range and project.
+type playbookEval struct {
+	pendingMigration
+	applies bool
+	reason  string
 }
 
 type upgradeVendoredRun struct {
@@ -187,12 +236,15 @@ type upgradeHumanItem struct {
 }
 
 type upgradeUpcoming struct {
-	Rule         string   `json:"rule"`
-	Count        int      `json:"count"`
-	IntroducedIn string   `json:"introduced_in"`
-	GatesFrom    string   `json:"gates_from"`
-	Fix          string   `json:"fix,omitempty"`
-	Examples     []string `json:"examples"`
+	Rule         string `json:"rule"`
+	Count        int    `json:"count"`
+	IntroducedIn string `json:"introduced_in"`
+	GatesFrom    string `json:"gates_from"`
+	// GatesAfter is set when the pin jumped the rule's warn-first window:
+	// it gates from the next pin after this one, not from GatesFrom.
+	GatesAfter string   `json:"gates_after,omitempty"`
+	Fix        string   `json:"fix,omitempty"`
+	Examples   []string `json:"examples"`
 }
 
 func newUpgradeReport(opts upgradeOptions) *upgradeReport {
@@ -207,6 +259,7 @@ func newUpgradeReport(opts upgradeOptions) *upgradeReport {
 		NeedsHuman: []upgradeHumanItem{}, Upcoming: []upgradeUpcoming{}, StartsGating: []upgradeStartsGating{},
 		TemplateDrift: []string{},
 		Offers:        []upgradeOffer{},
+		Crossed:       []upgradeCrossed{}, GeneratedChanges: []upgradeGeneratedChange{},
 	}
 }
 
@@ -238,6 +291,9 @@ type upgradeRun struct {
 	// applicable are the playbooks the range crosses that this project still
 	// exhibits, evaluated BEFORE any phase changes the tree.
 	applicable []pendingMigration
+	// evaluated is every playbook of a release after the old pin, applying
+	// or not, oldest release first: applicable is its applying subset.
+	evaluated []playbookEval
 	// ran are the codemods already run, by name, so a playbook that names
 	// one an Upgrade crossing ran does not run it twice.
 	ran map[string]bool
@@ -247,6 +303,7 @@ type upgradeRun struct {
 // report; the error, when set, is what the process exits with.
 func runUpgradeConverge(opts upgradeOptions) (*upgradeReport, error) {
 	rep := newUpgradeReport(opts)
+	rep.TemplateDriftRows = []upgradeDriftRow{}
 	err := convergeUpgrade(opts, rep)
 	rep.stamp(err)
 	rep.Converged = err == nil && !opts.check && len(rep.NeedsHuman) == 0
@@ -258,6 +315,10 @@ func convergeUpgrade(opts upgradeOptions, rep *upgradeReport) error {
 	if err != nil {
 		return err
 	}
+	if c := crossedFor(r.from, r.target); c != nil {
+		rep.Crossed = c
+	}
+	r.noteGenerated(nil)
 	// The pin moves in "pin"; generate and lint then judge the project under
 	// the forge it now pins.
 	phases := []struct {
@@ -280,8 +341,9 @@ func convergeUpgrade(opts upgradeOptions, rep *upgradeReport) error {
 		}
 	}
 	if len(rep.NeedsHuman) > 0 && !opts.check {
-		return &exitCodeError{code: exitNeedsHuman, msg: fmt.Sprintf(
-			"upgrade applied every mechanical fix; %d item(s) still need a person (see needs_human in --json, or above)", len(rep.NeedsHuman))}
+		// Exit 9 is the contract's "needs a person", not a failure: it is
+		// printed without "Error:" (exitcode.Line).
+		return &exitCodeError{code: exitNeedsHuman, verdict: true, msg: needsPersonMessage(len(rep.NeedsHuman), false)}
 	}
 	return nil
 }
@@ -331,8 +393,15 @@ func newUpgradeRun(opts upgradeOptions, rep *upgradeReport) (*upgradeRun, error)
 		)
 	}
 	r.startedClean = opts.allowDirty || !upgradeTreeDirty(r.projectDir)
+	// Detection runs once per playbook, here, before any phase changes the
+	// tree; the banner and the playbooks phase both read the verdicts.
+	r.evaluated = r.evaluatePlaybooks()
+	for _, ev := range r.evaluated {
+		if ev.applies {
+			r.applicable = append(r.applicable, ev.pendingMigration)
+		}
+	}
 	r.banner()
-	r.applicable = r.pendingPlaybooks()
 	return r, nil
 }
 
@@ -342,20 +411,21 @@ func (r *upgradeRun) banner() {
 	} else {
 		fmt.Fprintf(r.out, "%s project upgrade: %s → %s\n", Name(), describeVersion(r.from), describeVersion(r.target))
 	}
-	if isPreV01Baseline(r.from) {
-		fmt.Fprintln(r.out, "  Baseline is pre-v0.1: forge has not declared backwards compatibility yet, so expect template churn.")
-	}
 	fmt.Fprintln(r.out)
-	printApplicableMigrations(r.projectDir, r.from)
+	printPlaybookVerdicts(r.out, r.evaluated)
+	printMigrationWorklist(r.out, r.applicable)
 }
 
-// step runs one phase and records its status. A skipped phase is recorded and
-// not run; a failed one stops the run with its error.
+// step runs one phase and records its status and wall time. A skipped phase
+// is recorded and not run (duration 0); a failed one stops the run with its
+// error.
 func (r *upgradeRun) step(name string, run func() error) error {
 	if r.opts.skip[name] {
 		r.rep.Phases = append(r.rep.Phases, upgradePhase{Name: name, Status: "skipped", Detail: r.skipDetail(name)})
 		return nil
 	}
+	start := time.Now()
+	defer func() { r.setPhaseDuration(name, time.Since(start)) }()
 	err := run()
 	switch {
 	case err != nil:
@@ -368,6 +438,16 @@ func (r *upgradeRun) step(name string, run func() error) error {
 		r.setPhase(name, status, "")
 	}
 	return err
+}
+
+// setPhaseDuration records how long a phase that ran took.
+func (r *upgradeRun) setPhaseDuration(name string, d time.Duration) {
+	for i := range r.rep.Phases {
+		if r.rep.Phases[i].Name == name {
+			r.rep.Phases[i].DurationMS = d.Milliseconds()
+			return
+		}
+	}
 }
 
 func (r *upgradeRun) hasPhase(name string) bool {
@@ -465,11 +545,6 @@ func (r *upgradeRun) phaseCodemods() error {
 		fmt.Fprintln(r.out, "📝 UPGRADE_NOTES.md written at the project root.")
 		fmt.Fprintln(r.out, "    Review it for items needing LLM/manual attention, then delete the file once the upgrade lands.")
 	}
-	if !r.check {
-		if err := migrateLegacyChecksums(r.projectDir); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -488,12 +563,22 @@ func (r *upgradeRun) printCodemods(merged CodemodReport) {
 	fmt.Fprintln(r.out)
 }
 
+// migrationSkillManualPath names release version's migration skill as the
+// manual path, when forge still ships it: a codemod outlives its release's
+// playbook once that release ages out of the upgrade window.
+func migrationSkillManualPath(version string) string {
+	if _, err := templates.ProjectTemplates().Get(path.Join("skills", "forge", migrationSkillsRoot, version, "SKILL.md")); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("; `%s skill load %s/%s` is the manual path", Name(), migrationSkillsRoot, version)
+}
+
 func (r *upgradeRun) humanBlocked(cr upgradeCodemodRun) {
 	r.human(upgradeHumanItem{
 		Kind: "codemod-blocked", ID: cr.Name,
 		Message: fmt.Sprintf("forge fix %s wrote nothing: %s", cr.Name, strings.Join(cr.Blocked, "; ")),
-		Fix: fmt.Sprintf("clear each item it lists (`%s fix %s --dry-run`), then re-run `%s project upgrade`; `%s skill load migrations/%s` is the manual path",
-			Name(), cr.Name, Name(), Name(), cr.Version),
+		Fix: fmt.Sprintf("clear each item it lists (`%s fix %s --dry-run`), then re-run `%s project upgrade`", Name(), cr.Name, Name()) +
+			migrationSkillManualPath(cr.Version),
 	})
 }
 
@@ -508,13 +593,22 @@ func (r *upgradeRun) phaseTemplates() error {
 	if err != nil {
 		return err
 	}
-	counts := tallyAndPrintUpgradeResults(results, r.check, r.opts.showAll)
+	rng := newTemplateRange(r.from, r.target)
+	view := driftView{showAll: r.opts.showAll, rng: rng}
+	counts := tallyAndPrintUpgradeResults(results, r.check, view)
 	printSkippedPaths(counts, r.opts.showAll)
 	printUserModifiedRemedies(counts, r.opts.showAll)
 	r.rep.TemplateDrift = append(r.rep.TemplateDrift, counts.userModifiedPaths...)
 	r.rep.Offers = append(r.rep.Offers, counts.offers...)
-	if _, err := runAdvisoryPass(r.projectDir, r.cfg, selection, r.check, r.opts.showAll); err != nil {
+	adv, err := runAdvisoryPassView(r.projectDir, r.cfg, selection, r.check, view)
+	if err != nil {
 		return err
+	}
+	appendDriftRows(r.rep, "managed", counts.modifiedRows)
+	appendDriftRows(r.rep, "scaffold-once", adv.rows)
+	r.rep.TemplateDriftHidden = counts.hiddenByRange + adv.hidden
+	if rng.dir == "" && len(r.rep.TemplateDriftRows) > 0 {
+		r.rep.TemplateDriftRangeNote = rng.why
 	}
 	r.setPhase("templates", map[bool]string{true: "planned", false: "done"}[r.check],
 		fmt.Sprintf("%d updated, %d modified by you (kept), %d up to date", counts.updated, counts.userModified, counts.upToDate))
@@ -539,9 +633,13 @@ func (r *upgradeRun) phasePin() error {
 
 // ── playbooks ────────────────────────────────────────────────────────────────
 
-// pendingPlaybooks are the playbooks this range crosses that the project still
-// exhibits and has not recorded as applied, oldest release first.
-func (r *upgradeRun) pendingPlaybooks() []pendingMigration {
+// evaluatePlaybooks judges every playbook of a release after the old pin, in
+// release order: the ones this range crosses that the project still exhibits
+// and has not recorded as applied apply; the rest say why not. A playbook of a
+// release at or before the old pin was crossed by an earlier upgrade and is not
+// listed. The applying set is migrationApplies' decision (the one `upgrade
+// list` makes) narrowed to the target, so the two cannot disagree.
+func (r *upgradeRun) evaluatePlaybooks() []playbookEval {
 	metas := r.opts.metas
 	if metas == nil {
 		var err error
@@ -553,19 +651,97 @@ func (r *upgradeRun) pendingPlaybooks() []pendingMigration {
 	if err != nil {
 		return nil
 	}
-	var out []pendingMigration
-	for _, row := range applicableMigrations(metas, r.from, r.projectDir) {
-		if _, done := state.Applied[row.Meta.ID]; done || !targetReaches(r.target, row.Meta.Version) {
+	return evaluatePlaybookMetas(metas, r.from, r.target, state, func(script string) bool {
+		return runDetection(r.projectDir, script)
+	})
+}
+
+// evaluatePlaybookMetas is evaluatePlaybooks over explicit inputs: detect runs
+// a detection script in the project, and is called at most once per playbook —
+// only for one the range crosses, not recorded as applied, that declares one.
+func evaluatePlaybookMetas(metas []migrationMeta, from, target string, state migrationsState, detect func(string) bool) []playbookEval {
+	var out []playbookEval
+	for _, m := range metas {
+		if !baselineIsUnknown(from) && !baselinePrecedes(from, m.Version) {
 			continue
 		}
-		out = append(out, row)
+		ev := playbookEval{pendingMigration: pendingMigration{Meta: m}}
+		switch at, done := state.Applied[m.ID]; {
+		case !targetReaches(target, m.Version):
+			ev.reason = fmt.Sprintf("its release %s is past the target %s", m.Version, target)
+		case done:
+			ev.Applied, ev.AppliedAt = true, at
+			ev.reason = "recorded as applied at " + at + " (.forge/migrations.json)"
+		case strings.TrimSpace(m.Detection) == "":
+			ev.reason = "it declares no detection, so it cannot show it applies"
+		case detect(m.Detection):
+			ev.applies = true
+		default:
+			ev.reason = "detection did not match: this project does not have the old shape"
+		}
+		out = append(out, ev)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		vi, vj := semverKey(out[i].Meta.Version), semverKey(out[j].Meta.Version)
+		if vi != vj && vi != "" && vj != "" {
+			return semver.Compare(vi, vj) < 0
+		}
+		return out[i].Meta.ID < out[j].Meta.ID
+	})
 	return out
 }
 
+// printPlaybookVerdicts prints one line per release whose playbooks the
+// range reaches: how many, how many apply, and why each other one does not.
+// Silence used to be the only answer when none applied, which an agent could
+// not tell from "this range ships no playbooks".
+func printPlaybookVerdicts(w io.Writer, evals []playbookEval) {
+	if len(evals) == 0 {
+		return
+	}
+	var releases []string
+	byRelease := map[string][]playbookEval{}
+	for _, ev := range evals {
+		v := ev.Meta.Version
+		if _, seen := byRelease[v]; !seen {
+			releases = append(releases, v)
+		}
+		byRelease[v] = append(byRelease[v], ev)
+	}
+	fmt.Fprintln(w, "Migration playbooks of the releases this range crosses:")
+	for _, v := range releases {
+		rows := byRelease[v]
+		apply := 0
+		var why []string
+		for _, ev := range rows {
+			if ev.applies {
+				apply++
+				continue
+			}
+			why = append(why, ev.Meta.ID+": "+ev.reason)
+		}
+		line := fmt.Sprintf("  %s: %d %s, %d %s", v, len(rows), plural(len(rows), "playbook", "playbooks"), apply, plural(apply, "applies", "apply"))
+		if len(why) > 0 {
+			line += " (" + strings.Join(why, "; ") + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w)
+}
+
 func (r *upgradeRun) phasePlaybooks() error {
+	for _, ev := range r.evaluated {
+		if ev.applies {
+			continue
+		}
+		r.rep.Playbooks = append(r.rep.Playbooks, upgradePlaybookRun{
+			ID: ev.Meta.ID, Description: shorten(ev.Meta.Description, 200), Automation: nonNil(ev.Meta.Automation),
+			Reason: ev.reason, Version: ev.Meta.Version, SkillPath: ev.Meta.SkillPath, Detection: ev.Meta.Detection,
+		})
+	}
 	for _, row := range r.applicable {
-		pr := upgradePlaybookRun{ID: row.Meta.ID, Description: shorten(row.Meta.Description, 200), Automation: nonNil(row.Meta.Automation)}
+		pr := upgradePlaybookRun{ID: row.Meta.ID, Description: shorten(row.Meta.Description, 200), Automation: nonNil(row.Meta.Automation),
+			Applies: true, Version: row.Meta.Version, SkillPath: row.Meta.SkillPath, Detection: row.Meta.Detection}
 		for _, step := range row.Meta.Automation {
 			if err := r.runAutomation(row.Meta, step); err != nil {
 				return err
@@ -716,9 +892,11 @@ func (r *upgradeRun) phaseGenerate() error {
 		return nil
 	}
 	fmt.Fprintln(r.out, "🔁 regenerating")
+	before := snapshotGenerated(r.projectDir)
 	if err := r.steps.generate(r.projectDir); err != nil {
 		return fmt.Errorf("forge generate failed after the upgrade's rewrites (the pin is already moved; fix the cause and run `%s generate`): %w", Name(), err)
 	}
+	r.noteGenerated(diffGenerated(before, snapshotGenerated(r.projectDir)))
 	return nil
 }
 
@@ -793,6 +971,7 @@ type lintDocFinding struct {
 	Grace    *struct {
 		IntroducedIn string `json:"introduced_in"`
 		GatesFrom    string `json:"gates_from"`
+		GatesAfter   string `json:"gates_after"`
 		Fix          string `json:"fix"`
 	} `json:"grace"`
 }
@@ -892,15 +1071,20 @@ func (r *upgradeRun) phaseLint() error {
 		switch {
 		case f.Severity == "error":
 			errs = append(errs, f)
-		case f.Grace != nil:
+		case f.Grace != nil && !(f.Rule == "external" && f.File == ""):
+			// A raw sub-tool line (rule "external", no file) is the output
+			// under the finding before it — a formatter's diff — not a
+			// finding: counted, it made a phantom rule "external" ×30 with
+			// empty examples beside forge-proto-format ×30.
 			u := upcoming[f.Rule]
 			if u == nil {
-				u = &upgradeUpcoming{Rule: f.Rule, IntroducedIn: f.Grace.IntroducedIn, GatesFrom: f.Grace.GatesFrom, Fix: f.Grace.Fix, Examples: []string{}}
+				u = &upgradeUpcoming{Rule: f.Rule, IntroducedIn: f.Grace.IntroducedIn, GatesFrom: f.Grace.GatesFrom,
+					GatesAfter: f.Grace.GatesAfter, Fix: f.Grace.Fix, Examples: []string{}}
 				upcoming[f.Rule] = u
 				order = append(order, f.Rule)
 			}
 			u.Count++
-			if len(u.Examples) < 3 {
+			if len(u.Examples) < 3 && f.File != "" {
 				u.Examples = append(u.Examples, strings.TrimSuffix(fmt.Sprintf("%s:%d", f.File, f.Line), ":0"))
 			}
 		}
@@ -931,12 +1115,28 @@ func countStartsGating(rows []upgradeStartsGating, errs []lintDocFinding) {
 
 // ── printing ─────────────────────────────────────────────────────────────────
 
-// printUpgradeSummary is the human tail: what is left, and what is coming.
+// noteGenerated records generated_changes: the files generate changed (nil
+// before it runs) grouped by generator, with the crossed range's notes.
+func (r *upgradeRun) noteGenerated(changed []string) {
+	r.rep.GeneratedChanges = groupGenerated(changed, generatedNotes(r.rep.Crossed), r.check || changed == nil)
+	r.rep.GeneratedHint = ""
+	if len(r.rep.GeneratedChanges) > 0 {
+		r.rep.GeneratedHint = generatedHint
+	}
+}
+
+// printUpgradeSummary is the human tail: what the range brings, what is
+// left, and what is coming.
 func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
+	printCrossed(w, rep.From, rep.To, rep.Crossed)
+	printGenerated(w, rep.GeneratedChanges, rep.GeneratedHint)
+	if line := slowPhasesLine(rep.Phases); line != "" {
+		fmt.Fprintf(w, "\n%s\n", line)
+	}
 	if len(rep.StartsGating) > 0 {
 		fmt.Fprintf(w, "\nStarts gating at %s (warn-first rules whose grace this pin ends):\n", rep.To)
 		for _, g := range rep.StartsGating {
-			line := fmt.Sprintf("  - %s (new in %s, gates from %s)", g.Rule, g.IntroducedIn, g.GatesFrom)
+			line := fmt.Sprintf("  - %s (new in %s; warned under %s, gates under %s)", g.Rule, g.IntroducedIn, rep.From, rep.To)
 			if g.Findings != nil {
 				line += fmt.Sprintf(": %d %s now %s", *g.Findings, plural(*g.Findings, "finding", "findings"), plural(*g.Findings, "gates", "gate"))
 			}
@@ -949,7 +1149,7 @@ func printUpgradeSummary(w io.Writer, rep *upgradeReport) {
 	if len(rep.Upcoming) > 0 {
 		fmt.Fprintln(w, "\nGating soon (warn-first rules this pin's lint reports; they gate from the release named):")
 		for _, u := range rep.Upcoming {
-			line := fmt.Sprintf("  - %s ×%d, gates from %s", u.Rule, u.Count, u.GatesFrom)
+			line := fmt.Sprintf("  - %s ×%d, %s", u.Rule, u.Count, lint.GatesWhen(u.GatesFrom, u.GatesAfter))
 			if u.Fix != "" {
 				line += "; fix with `" + u.Fix + "`"
 			}
@@ -1086,4 +1286,15 @@ func shorten(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// needsPersonMessage is exit 9's one line: what is left and where it is
+// listed — the JSON document on stdout under --json (it is not "above" when
+// a bot captured stdout), the "Still needs a person" list otherwise.
+func needsPersonMessage(n int, jsonOut bool) string {
+	where := `listed above under "Still needs a person"`
+	if jsonOut {
+		where = "needs_human in the JSON document on stdout"
+	}
+	return fmt.Sprintf("upgrade applied every mechanical fix; %d item(s) need a person (%s)", n, where)
 }

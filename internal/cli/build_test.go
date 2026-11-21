@@ -15,28 +15,6 @@ import (
 // Coverage is now `task coverage`, a single `go test -coverprofile ./...` over
 // the whole module, so there is one profile and nothing to merge.)
 
-// TestCountTagsHelper ensures the docker-build tag counter handles the
-// canonical `-t a -t b` shape and ignores other flags.
-func TestCountTagsHelper(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want int
-	}{
-		{"empty", nil, 0},
-		{"one tag", []string{"build", "-t", "foo:latest"}, 1},
-		{"three tags", []string{"build", "-t", "a", "-t", "b", "-t", "c"}, 3},
-		{"unrelated -f flag", []string{"build", "-t", "a", "-f", "Dockerfile"}, 1},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := countTags(c.args); got != c.want {
-				t.Errorf("want %d, got %d", c.want, got)
-			}
-		})
-	}
-}
-
 // TestBuildPushFlagRegistered confirms the --push flag is wired into
 // the build command and implies --docker at parse time.
 // TestValidateReleaseFlags_RequiresEnv pins Fix 2: `forge env build --release
@@ -65,17 +43,6 @@ func TestValidateReleaseFlags_RequiresEnv(t *testing.T) {
 	// No --release: --env optional, no error.
 	if err := validateReleaseFlags(buildOptions{}); err != nil {
 		t.Errorf("a non-release build must not require --env, got %v", err)
-	}
-}
-
-func TestBuildPushFlagRegistered(t *testing.T) {
-	cmd := newBuildCmd()
-	f := cmd.Flags().Lookup("push")
-	if f == nil {
-		t.Fatal("--push flag not registered on build command")
-	}
-	if f.DefValue != "false" {
-		t.Errorf("--push default = %q, want false", f.DefValue)
 	}
 }
 

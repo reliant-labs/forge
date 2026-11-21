@@ -158,8 +158,10 @@ No database or cluster is needed: the dev env declares only the frontend's dev
 server, and `env up` starts it in the frontend's directory with `PORT` set. A
 site forge started mirrors the browser console to
 `.forge/logs/dev/frontend_<name>.log`. An adopted app does the same once it
-calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` in the
-browser, and its dev server receives the lines. On Vite, the receiver is the
+calls `installDevLogging()` from `@reliantlabs/forge-web-runtime/devlog` in the
+browser, and its dev server receives the lines. That subpath (the release after
+0.13.20) needs no other package; the package root also needs
+`@bufbuild/protobuf` and `@connectrpc/connect` installed. On Vite, the receiver is the
 `forgeDevLog()` plugin from `@reliantlabs/forge-web-runtime/vite` (load
 `debug`).
 
@@ -181,9 +183,21 @@ a Node server, with nothing in `out/` to publish. The error names the
 frontend, the env and both fixes. `forge lint --static-export` runs offline and
 reports, each with file:line, what `next build` would refuse for an export: a
 `[id]` route without `generateStaticParams`, server actions, `next/headers`,
-next/image without `unoptimized`. It also warns on what the export drops
+next/image without `unoptimized`, `cacheComponents: true` (create-next-app's
+Next.js 16 default). It also warns on what the export drops
 silently, such as middleware and rewrites. The real `next build` in CI stays
 authoritative. The lane only tells you sooner.
+
+A Vite site has no server features to lose, so the lane checks the seam with
+the deploy instead: `build.outDir` in `vite.config.*` (or `--outDir` in the
+build script) must be the env's `public_dir` (`dist` when unset), and `base`
+must match where the env mounts the site (`/` at the root, `<base_path>/`
+under a `base_path`). Either mismatch fails with file:line. A relative base
+(`./`) with a path-based router warns, because deep links to nested routes
+then request their assets under the route's path. A value the lane cannot
+read statically, such as a computed `outDir` or a `mergeConfig`, is named in a
+note rather than guessed. Every frontend the lane does not check gets a
+`<name> (<type>): not applicable — <reason>` line.
 
 A hosted deploy ships only what a release froze, never a local build. Without a
 release it refuses, and the error prints the cut-then-deploy command.
@@ -257,7 +271,7 @@ frontend reaches it through `runtime_config` (`forge.WorkloadURL`). The CRUD
 pages generated for its entities are static routes, so it still exports. Write
 your own pages the same way: put the id in the query string and never use a
 `[id]` segment (`frontend/pages`). A frontend scaffolded by forge ≤ v0.1.43
-has `[id]` pages; `forge skill load migrations/v0.1.44` converts them.
+has `[id]` pages; `frontend/serving` converts them.
 
 Two cases leave static hosting behind: server rendering, and request-time
 server APIs such as server actions, middleware, and `cookies()`. For those,

@@ -33,9 +33,9 @@ An incompatible change passes only if both of these hold.
 - a line in the PR body (or a commit body) starts with `API-BREAK:`:
 
   ```
-  API-BREAK: codemod=tx-isolation
+  API-BREAK: codemod=connect-errors
   API-BREAK: playbook=migrations/v1.0.0
-  API-BREAK: codemod=tx-isolation playbook=migrations/v1.0.0
+  API-BREAK: codemod=connect-errors playbook=migrations/v1.0.0
   ```
 
 The marker must start the line (prose that mentions it mid-sentence declares
@@ -54,7 +54,7 @@ re-running the failed job is enough.
   `TestEveryRegisteredCodemodIsReachableFromUpgrade` fails otherwise, so a
   registered codemod is never one a consumer's `forge project upgrade` skips.
   See `internal/codemod/codemod.go` for what a codemod is and the existing ones
-  (`txisolation.go`, `connecterrors.go`) for the shape.
+  (`operatorkit.go`, `connecterrors.go`) for the shape.
 - **a migration playbook entry**: a file under
   `internal/templates/project/skills/forge/migrations/<vX.Y.Z>/`, for a break no
   tool can rewrite (a decision a person has to make). Add a section to that

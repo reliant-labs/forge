@@ -53,6 +53,7 @@ import (
 	"github.com/reliant-labs/forge/internal/secrets"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
 // KCLEntities is the typed view of the JSON contract the KCL deploy module
@@ -114,6 +115,11 @@ type KCLEntities struct {
 	// Preview is Bundle.preview: the env is a preview instance of another
 	// env, and when it expires (forge env preview). Nil for every other env.
 	Preview *release.ShapePreview `json:"preview,omitempty"`
+
+	// Tests is Bundle.tests as declared: nil when the env declares nothing.
+	// The effective coverage of each binary is resolved by RenderKCLWith
+	// (ResolveCoverBinaries) and read through WorkloadEntity.CoverBuild.
+	Tests *TestsEntity `json:"tests,omitempty"`
 
 	// Applier is "forge" when the env DECLARES that forge applies it
 	// (Bundle.applier): a real environment, not a scratch one, none of whose
@@ -224,6 +230,11 @@ type KCLEntities struct {
 	// UptimeChecks are Bundle.uptime resolved: the declared checks plus the
 	// ones forge derives for a hosted env. Empty when the env has none.
 	UptimeChecks []release.ShapeUptimeCheck `json:"uptime_checks,omitempty"`
+
+	// Telemetry is every forge.Telemetry the env declares (output.telemetry),
+	// decoded and normalized: what a collector consumes. Nil when none is
+	// declared. Validate it with telemetry.Validate (forge env render does).
+	Telemetry []telemetry.Target `json:"telemetry,omitempty"`
 	// Identity is Bundle.identity, resolved by the render: the applications
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
@@ -837,6 +848,9 @@ type DNSRecordEntity struct {
 // deploy dispatcher groups by Runtime, and a Hosted workload's Spec is
 // published verbatim as a forge.dev Workload CR.
 type WorkloadEntity struct {
+	// cover is set when the env builds this workload's Go binary with
+	// -cover (ResolveCoverBinaries). Set only by applyCover; never decoded.
+	cover *workloadCover
 	// releaseTemplate is this workload's ShellBuild as a SECOND render of a
 	// --release build composed it, with image_tag bound to a sentinel: the
 	// command and env before the release tag went in. Set only by
@@ -1035,6 +1049,9 @@ type HostInfraEntity struct {
 	// engine = "temporal" only.
 	TemporalNamespaces []string `json:"temporal_namespaces,omitempty"`
 	TemporalUIPort     int      `json:"temporal_ui_port,omitempty"`
+	// TemporalMetricsPort is the Prometheus port the server is started with
+	// (--metrics-port); 0 = a free port the server picks.
+	TemporalMetricsPort int `json:"temporal_metrics_port,omitempty"`
 }
 
 // BuildConfigEntity is the dispatched-by-type view of a workload's build
@@ -1050,6 +1067,19 @@ type BuildConfigEntity struct {
 	Docker     *DockerBuild // populated when Type=="docker"
 	Shell      *ShellBuild  // populated when Type=="shell"
 	Remote     *RemoteBuild // populated when Type=="remote"
+	// Outputs are the files the build produces that the release ships
+	// (kcl/schema.k Build.outputs), recorded by hash as file artifacts —
+	// see harvestDeclaredOutputs. Empty for a build that declares none.
+	Outputs []BuildOutput
+}
+
+// BuildOutput mirrors the kcl/schema.k BuildOutput: one file, directory or
+// glob a build writes, relative to the build's working directory (a
+// ShellBuild's resolved cwd, else the project root), and the platform it is
+// for ("" when platform-neutral).
+type BuildOutput struct {
+	Path     string `json:"path"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
@@ -1069,6 +1099,10 @@ type GoBuild struct {
 	// declares none decodes exactly as before. Read it through
 	// ResolvePGOBinaries, which applies the defaults.
 	PGO *PGOConfig `json:"pgo,omitempty"`
+	// Coverage is the binary's own coverage answer (kcl/schema.k
+	// GoBuild.coverage); nil follows the env's Tests. Read it through
+	// ResolveCoverBinaries / WorkloadEntity.CoverBuild.
+	Coverage *bool `json:"coverage,omitempty"`
 }
 
 // DockerBuild mirrors the kcl/schema.k DockerBuild — the per-service
@@ -1104,6 +1138,15 @@ type DockerBuild struct {
 	// builds, keyed by package path ("./cmd/app"). A binary it does not name
 	// gets the defaults (kcl/schema.k DockerBuild.pgo).
 	PGO map[string]PGOConfig `json:"pgo,omitempty"`
+	// Coverage is the coverage answer of each Go binary the image builds
+	// that it names, keyed by package path; a binary it does not name
+	// follows the env's Tests (kcl/schema.k DockerBuild.coverage).
+	Coverage map[string]bool `json:"coverage,omitempty"`
+	// Inputs are the globs (relative to the project root, or to the resolved
+	// GitSource context) naming the files the image is built from. Declared,
+	// they let a --release build reuse an earlier release's image whose
+	// fingerprint is unchanged — see build_docker_release_reuse.go.
+	Inputs []string `json:"inputs,omitempty"`
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1671,6 +1714,7 @@ type kclRenderRaw struct {
 	ImageTag                 string                                    `json:"image_tag,omitempty"`
 	Lifecycle                string                                    `json:"lifecycle,omitempty"`
 	Preview                  *release.ShapePreview                     `json:"preview,omitempty"`
+	Tests                    *TestsEntity                              `json:"tests,omitempty"`
 	Applier                  string                                    `json:"applier,omitempty"`
 	FluxDelivery             *FluxDeliveryEntity                       `json:"flux_delivery,omitempty"`
 	DeliveryUnits            []deliveryUnitRaw                         `json:"delivery_units,omitempty"`
@@ -1686,6 +1730,7 @@ type kclRenderRaw struct {
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
+	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
 	Gateways                 []GatewayEntity                           `json:"gateways,omitempty"`
@@ -1707,6 +1752,12 @@ type kclRenderRaw struct {
 	RequiredDNS              []DNSRecordEntity                         `json:"required_dns,omitempty"`
 	ControlPlaneSecrets      []ControlPlaneSecretEntity                `json:"control_plane_secrets,omitempty"`
 	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
+	// TelemetryCollector is Observability.telemetry_collector, the env's
+	// own collector, rendered only with telemetry. internal/cluster reads it
+	// (decodeTelemetry) to admit that collector in the targets'
+	// NetworkPolicy rules; it is declared here so the env document schema
+	// carries it.
+	TelemetryCollector *kclTelemetryCollectorRaw `json:"telemetry_collector,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1715,6 +1766,14 @@ type kclRenderRaw struct {
 	// their names are read here, as cluster work (see ClusterWork).
 	BundledCharts []namedRaw `json:"bundled_charts,omitempty"`
 	Generated     []namedRaw `json:"generated,omitempty"`
+}
+
+// kclTelemetryCollectorRaw is output.telemetry_collector: the namespace and
+// pod labels of the collector that scrapes the env's Telemetry when it is
+// not forge's node agent.
+type kclTelemetryCollectorRaw struct {
+	Namespace string            `json:"namespace"`
+	PodLabels map[string]string `json:"pod_labels"`
 }
 
 // namedRaw reads only the name of a render-output entry.
@@ -1970,6 +2029,14 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if _, err := ResolvePGOBinaries(entities); err != nil {
 		return nil, err
 	}
+	// One binary, one build: the same for coverage, and an instrumented
+	// binary in a persistent env must say why. The env's default reads
+	// forge.yaml's opt-in (tests.coverage), so it is resolved here.
+	coverBins, err := ResolveCoverBinaries(entities, config.ReadTestsCoverage(projectDir))
+	if err != nil {
+		return nil, err
+	}
+	entities.applyCover(coverBins)
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -2075,6 +2142,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ImageTag:                 raw.ImageTag,
 		Lifecycle:                raw.Lifecycle,
 		Preview:                  raw.Preview,
+		Tests:                    raw.Tests,
 		Applier:                  raw.Applier,
 		FluxDelivery:             raw.FluxDelivery,
 		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),
@@ -2118,6 +2186,13 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ManifestNamespaces:       renderedNamespaces(raw.Manifests),
 		ManifestUnits:            manifestUnits(raw.Manifests),
 		ClusterWork:              manifestClusterWork(raw.Manifests, raw.Gateways),
+	}
+	targets, err := telemetry.Decode(raw.Telemetry)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) > 0 {
+		out.Telemetry = telemetry.Normalize(targets)
 	}
 	for _, c := range raw.BundledCharts {
 		out.ClusterWork = append(out.ClusterWork, "HelmChart/"+c.Name)
@@ -2273,13 +2348,15 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 // should not silently fall back.
 func dispatchBuild(svcName string, raw json.RawMessage) (result BuildConfigEntity, err error) {
 	var identity struct {
-		Unit       string `json:"unit"`
-		InputsFile string `json:"inputs_file"`
+		Unit       string        `json:"unit"`
+		InputsFile string        `json:"inputs_file"`
+		Outputs    []BuildOutput `json:"outputs"`
 	}
 	defer func() {
 		if err == nil {
 			result.Unit = identity.Unit
 			result.InputsFile = identity.InputsFile
+			result.Outputs = identity.Outputs
 		}
 	}()
 	trimmed := bytes.TrimSpace(raw)

@@ -87,6 +87,7 @@ func devIdentityInput(e *KCLEntities, id *release.ShapeIdentity, projectDir stri
 
 	in := devidentity.Input{
 		Project:         e.Project,
+		Env:             e.Env,
 		Identity:        id,
 		BaseURL:         fmt.Sprintf("http://localhost:%d", zitadel.Port),
 		PATPath:         idpPATLocations(zitadel, projectDir).Checkout,
@@ -158,6 +159,13 @@ func idpPATLocations(zitadel *HostInfraEntity, projectDir string) hostinfra.IDPP
 	}.IDPPATLocations(projectDir)
 }
 
+// idpLogPath is the host IdP's log, project-relative for display: the file
+// hostinfra writes for the zitadel workload, .forge/logs/<env>/<name>.log
+// (named for the workload, whatever its data_dir).
+func idpLogPath(env string, zitadel *HostInfraEntity) string {
+	return filepath.ToSlash(hostinfra.LogPath("", env, zitadel.Name))
+}
+
 // convergeDevIdentityFn is devidentity.Converge, swappable so a test needs no
 // IdP.
 var convergeDevIdentityFn = devidentity.Converge
@@ -190,7 +198,9 @@ func convergeWithIDPPAT(ctx context.Context, in devidentity.Input, loc hostinfra
 		res, err = convergeDevIdentityFn(ctx, in)
 	}
 	if err != nil {
-		return nil, nil, err
+		// res, when the convergence produced one, carries the warnings and
+		// the social callback the failure message points at.
+		return res, nil, err
 	}
 	switch in.PATPath {
 	case loc.Shared:
@@ -250,6 +260,14 @@ func missingIDPPATMessage(id string, zitadel *HostInfraEntity, loc hostinfra.IDP
 	return b.String()
 }
 
+// printSocialCallback prints the redirect URI every declared social
+// provider's DEV OAuth app registers, when one is declared.
+func printSocialCallback(identityName, callback string) {
+	if callback != "" {
+		fmt.Printf("[up] identity %s: social sign-in callback (register it as the callback / authorized redirect URI of your DEV GitHub and Google OAuth apps): %s\n", identityName, callback)
+	}
+}
+
 // devMailInfra is the Mailpit the host-run identity's mail goes to: the
 // HostInfra the declaration names (dev_mail), else the env's only mailpit,
 // else none.
@@ -299,8 +317,14 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 		return
 	}
 	if err != nil {
+		if res != nil {
+			for _, w := range res.Warnings {
+				fmt.Printf("[up] identity %s: warning: %s\n", id.Name, w)
+			}
+			printSocialCallback(id.Name, res.SocialCallbackURL)
+		}
 		fmt.Printf("[up] identity %s FAILED — continuing, because sign-in is the only thing that needs it:\n%v\n", id.Name, err)
-		fmt.Printf("[up] the IdP's log is %s\n", filepath.Join(".forge", "hostinfra", "idp", "zitadel.log"))
+		fmt.Printf("[up] the IdP's log is %s\n", idpLogPath(e.Env, zitadel))
 		return
 	}
 	for _, n := range notes {
@@ -327,9 +351,7 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 			fmt.Printf("[up] identity %s: owner %s has no credential and this env sends no mail; add a forge.HostInfra {engine = \"mailpit\"} to invite them\n", id.Name, email)
 		}
 	}
-	if res.SocialCallbackURL != "" {
-		fmt.Printf("[up] identity %s: social sign-in callback (register it on your DEV OAuth apps): %s\n", id.Name, res.SocialCallbackURL)
-	}
+	printSocialCallback(id.Name, res.SocialCallbackURL)
 	if mailUI != "" {
 		fmt.Printf("[up] identity %s: Mail: %s\n", id.Name, mailUI)
 	}

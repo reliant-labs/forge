@@ -73,6 +73,10 @@ type releasesBackend struct {
 	// Bundle reads one recorded bundle, for the object diff. Local only: the
 	// control plane diffs bundles itself (CompareReleases).
 	Bundle func(id string) (*release.BundleRecord, error)
+	// Release reads one release whole, for what a timeline does not carry
+	// (its file artifacts). Cloud only: a local timeline holds every
+	// release. nil (not found) for a version nobody cut.
+	Release func(ctx context.Context, version string) (*release.Release, error)
 }
 
 // openReleasesBackend resolves env's ledger. A failure to reach or
@@ -106,8 +110,10 @@ var openReleasesBackend = func(ctx context.Context, env string) (releasesBackend
 	if err != nil {
 		return releasesBackend{}, undeterminedf("reach the control plane of %s: %v", env, err)
 	}
-	c := releasetimeline.NewCloud(cloud.NewClient(ep, cred), hostedProjectName())
-	return releasesBackend{Name: backendCloud, Source: c, Cloud: &c, Ledger: ep.URL}, nil
+	client := cloud.NewClient(ep, cred)
+	c := releasetimeline.NewCloud(client, hostedProjectName())
+	store := &hostedStore{client: client, project: hostedProjectName()}
+	return releasesBackend{Name: backendCloud, Source: c, Cloud: &c, Ledger: ep.URL, Release: store.Get}, nil
 }
 
 // releasesLedgerDeclaration is the control plane that keeps env's release

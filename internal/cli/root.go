@@ -279,6 +279,11 @@ path from an empty directory to authored protos, in one call.`,
 	// the ONE surface an agent that has never seen forge already reads —
 	// the `forge --help` command list.
 	rootCmd.AddCommand(newStartCmd())
+	// `forge why` prints the reasons to use forge with the benefits that
+	// back them (why_cmd.go). Top level for the same reason as `start`: it
+	// answers the question a newcomer asks before any noun means anything
+	// (owner, 2026-11-20). `forge project benefits --why` is the same list.
+	rootCmd.AddCommand(newWhyCmd())
 	// The git merge driver forge configures for its generated files
 	// (merge_generated.go). Hidden: git runs it, people do not.
 	rootCmd.AddCommand(newMergeGeneratedCmd())
@@ -310,9 +315,6 @@ path from an empty directory to authored protos, in one call.`,
 	// ran the whole Go suite twice — untagged, then under -tags=integration,
 	// which ADDS files rather than filtering them). Contrast `forge lint`, which
 	// stays because it orchestrates analyzers that exist only inside forge.
-	//
-	// newTestRemovedCmd below is a signpost, not a command: it only errors.
-	rootCmd.AddCommand(newTestRemovedCmd())
 	// `lint` migrated to the internal/cli/lint group (factory registry).
 	rootCmd.AddCommand(newPackageCmd())
 	// `debug` migrated to the internal/cli/debug group (factory registry).
@@ -364,6 +366,9 @@ path from an empty directory to authored protos, in one call.`,
 	// `forge release verify` proves every artifact the ledger names really
 	// exists in its public registry and matches the recorded bytes.
 	rootCmd.AddCommand(newReleaseCmd())
+	rootCmd.AddCommand(newTestCmd()) // `test` records the project's own lanes (test_cmd.go)
+	// `vuln` scans release SBOMs and judges them by the env's vuln_gate (vuln.go).
+	rootCmd.AddCommand(newVulnCmd())
 	// `ledger` is the whole-ledger noun: the verbs that move or inspect a
 	// ledger rather than one env's binding. `ledger import` is the only
 	// way forward from the retired in-checkout ledger, and the only thing

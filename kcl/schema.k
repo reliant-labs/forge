@@ -1853,8 +1853,24 @@ schema HostInfra:
     temporal_namespaces?: [str]
     # The Web UI's port. Unset => headless.
     temporal_ui_port?: int
+    # The Prometheus metrics port, passed as --metrics-port, so a Telemetry
+    # can scrape it (port name `metrics`). Unset => a free port the server
+    # picks.
+    temporal_metrics_port?: int
+
+    # How this engine is observed (see forge.Telemetry). The target IS this
+    # instance; its ports are named `server` (port), `monitor`
+    # (nats_monitor_port), `ui` (temporal_ui_port) and `metrics`
+    # (temporal_metrics_port).
+    telemetry?: Telemetry
 
     check:
+        not telemetry or _tel_targets_self(telemetry), \
+            "HostInfra '${name}': telemetry targets this instance itself, so selector, namespaces, cluster and address are refused"
+        engine == "temporal" or not temporal_metrics_port, \
+            "HostInfra.temporal_metrics_port is for engine 'temporal' only ('${name}' is '${engine}')"
+        not temporal_metrics_port or (temporal_metrics_port > 0 and temporal_metrics_port < 65536 and temporal_metrics_port != port and temporal_metrics_port != temporal_ui_port), \
+            "HostInfra.temporal_metrics_port must be 1..65535 and differ from port and temporal_ui_port"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "HostInfra.name '${name}' must be an RFC-1123 label"
         engine in ["postgres", "zitadel", "nats", "temporal", "mailpit"], \
             "HostInfra.engine must be 'postgres', 'zitadel', 'nats', 'temporal' or 'mailpit' (the engines forge supervises natively)"
@@ -2205,7 +2221,7 @@ schema RenderedSecretKey:
         from != "literal" or value != Undefined, \
             "RenderedSecretKey(from='literal') requires `value`"
         from != "literal" or value == Undefined or option("env") in ["dev", "e2e"], \
-            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='dotenv'"
+            "RenderedSecretKey(from='literal') is only allowed in dev/e2e — other envs must not inline secret values; use from='file'"
 
 schema RenderedSecret:
     """A single k8s Secret forge renders + applies from declared
@@ -2312,7 +2328,7 @@ schema TestJWKS:
                         for one of them can be pointed at this JWKS).
                         `derive_jwk` refuses an alg the key cannot sign.
       * `private_key` — StoreRef to the ES256/RS256 private-key PEM in
-                        `.env.<env>`. Read at render time to derive the
+                        `secrets/<env>.yaml`. Read at render time to derive the
                         public JWK; never published.
     """
     name: str
@@ -3116,6 +3132,49 @@ schema ClusterClient:
 # field from a sibling field).
 # ---------------------------------------------------------------------------
 
+schema BuildOutput:
+    """One FILE a build produces that the release ships: a CLI archive, an
+    installer, a desktop bundle, a checksum list. After a successful build
+    forge hashes every file `path` matches and records each in the release
+    ledger as a file artifact (sha256 + size), keyed `<workload>/<path>`, so
+    a release names the exact bytes it shipped — not only its images.
+
+        build = forge.ShellBuild {
+            cmd = "./scripts/package.sh"
+            outputs = [
+                forge.BuildOutput {path = "dist/acme_linux_amd64.tar.gz", platform = "linux/amd64"}
+                forge.BuildOutput {path = "dist/acme_darwin_arm64.tar.gz", platform = "darwin/arm64"}
+                forge.BuildOutput {path = "dist/checksums.txt"}
+            ]
+        }
+
+    `path` is relative to the build's working directory: a ShellBuild's
+    resolved `cwd` (or its `source` checkout), else the project root. It is
+    a file, a directory (every file beneath it), or a glob: `*` `?` `[...]`
+    match within one path segment and a whole `**` segment matches any
+    depth (`dist/*.tar.gz`, `out/**/*.dmg`). It never leaves that directory.
+
+    A `--release` build refuses a declared output that matches no file (a
+    release records only bytes that exist); a plain build warns. Forge
+    hashes the files and never uploads them: publishing stays the build's
+    (or CI's) job."""
+    # A file, directory or glob, relative to the build's working directory.
+    path: str
+    # The OS/arch the file is for ("darwin/arm64", "windows/amd64"), recorded
+    # with it in the release. Informational; "" for a platform-neutral file.
+    platform: str = ""
+
+    check:
+        path.strip() != "", "BuildOutput.path is required: the file, directory or glob the build writes"
+        not path.startswith("/") and not path.startswith("\\") and not regex.match(path, r"^[A-Za-z]:"), \
+            "BuildOutput.path '${path}' is absolute; outputs are relative to the build's working directory (a ShellBuild's cwd, else the project root)"
+        ".." not in path.replace("\\", "/").split("/"), \
+            "BuildOutput.path '${path}' leaves the build's working directory (`..`); set the ShellBuild's cwd to the directory that holds the output instead"
+        path.strip() not in [".", "./"], \
+            "BuildOutput.path '${path}' names the whole working directory; name the files the release ships (e.g. \"dist/*.tar.gz\")"
+        not platform or regex.match(platform, r"^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$"), \
+            "BuildOutput.platform '${platform}' is not an os/arch pair such as \"linux/amd64\" or \"darwin/arm64\""
+
 schema Build:
     """Base build concept. Concrete build types (GoBuild / DockerBuild /
     ShellBuild) inherit this. Discriminated by `type` in the rendered
@@ -3129,6 +3188,15 @@ schema Build:
     # JSON file consumed by the native planner/receipt helper. Paths relative
     # to the project. Missing/dynamic inputs cannot authorize build reuse.
     inputs_file: str = ""
+    # Files the build produces that the release ships (see BuildOutput):
+    # each is hashed into the release ledger as a file artifact. A
+    # forge.BuildOnly workload that declares outputs needs no `image` — its
+    # artifact is the files, and no image is pushed or resolved for it.
+    outputs: [BuildOutput] = []
+
+    check:
+        len(outputs) == len({o.path: None for o in outputs}), \
+            "Build.outputs names the same path twice: ${[o.path for o in outputs]}"
 
 # A Go binary's package path, relative to the project: "./cmd/app". Already
 # in its one spelling — no `.` or `..` segment — so the key forge's build
@@ -3204,6 +3272,46 @@ schema PGO:
             "PGO.min_weight '${min_weight}' is not a duration — it needs a unit, e.g. '10s' or '500ms'"
         all s in services {s}, "PGO.services must not contain an empty name"
 
+schema Tests:
+    """How this env's Go binaries are built for test coverage: whether forge
+    instruments them (`go build -cover -covermode=atomic`) so the coverage an
+    e2e or integration run drives through a running server is measured.
+
+    Unset, `coverage` is computed, never scaffolded: on for an env with
+    `lifecycle = "local"` or `"ephemeral"` and for a preview instance, when
+    forge.yaml opts the project in (`tests.coverage: true`, which a new
+    scaffold writes and the `tests` upgrade playbook adds); off otherwise.
+    An env with no lifecycle and no preview is PERSISTENT — forge treats it
+    as production — and is never instrumented by default.
+
+        tests = forge.Tests {coverage = False}                # never here
+        tests = forge.Tests {coverage_packages = ["./internal/..."]}
+
+    A persistent env refuses `coverage = True` unless it says why, so a
+    staging deliberately used for e2e is a decision on the record:
+
+        tests = forge.Tests {coverage = True, coverage_in_persistent_env = "staging runs the nightly e2e"}
+
+    A build may override the env for its own binary (GoBuild.coverage,
+    DockerBuild.coverage). One binary has one answer: two workloads of an
+    env that run the same binary must agree on it, or the env does not
+    render.
+    """
+    # Build this env's Go workloads with -cover. Unset: the computed default above.
+    coverage?: bool
+    # The packages a cover build instruments: "main" (the project's module,
+    # minus its gen/ tree), or explicit `-coverpkg` patterns.
+    coverage_packages: "main" | [str] = "main"
+    # Required to turn coverage on in a persistent env: the reason, recorded
+    # with the env.
+    coverage_in_persistent_env?: str
+
+    check:
+        typeof(coverage_packages) == "str" or (coverage_packages and all p in coverage_packages {p.strip()}), \
+            "Tests.coverage_packages is \"main\" or a non-empty list of -coverpkg patterns, e.g. [\"./internal/...\"]"
+        not coverage_in_persistent_env or coverage_in_persistent_env.strip(), \
+            "Tests.coverage_in_persistent_env is the reason a persistent env is instrumented; it cannot be blank"
+
 schema GoBuild(Build):
     """Build the service with `go build`. `cmd` is the build target
     package (e.g. "./cmd/trader") — REQUIRED, so there is no hardcoded
@@ -3220,6 +3328,9 @@ schema GoBuild(Build):
     flags: [str] = []
     env: {str: str} = {}
     pgo: PGO = PGO {}
+    # Build the binary with -cover (True) or without it (False) whatever the
+    # env's `tests.coverage` says. Unset follows the env (see Tests).
+    coverage?: bool
 
     check:
         type == "go", "GoBuild.type must be 'go'"
@@ -3293,12 +3404,51 @@ schema DockerBuild(Build):
     # a disabled one, which the scaffolded Dockerfile's `go build -pgo=`
     # reads (and a Dockerfile without that ARG ignores).
     pgo: {str: PGO} = {}
+    # Coverage per Go binary the image builds, keyed by package path like
+    # `pgo`: True or False whatever the env's `tests.coverage` says. A binary
+    # not named follows the env (see Tests).
+    coverage: {str: bool} = {}
+    # Files the image is built from, as globs — the same pattern grammar as
+    # ShellBuild.inputs, relative to the project root, or to the checkout
+    # when `context` is a GitSource (the base `dockerfile` resolves against).
+    # When set, `forge env build <env> --release <v>` reuses an earlier
+    # release's image instead of building, when these files and the rest of
+    # the declaration are unchanged:
+    #
+    #     build = forge.DockerBuild {
+    #         inputs = ["go.mod", "go.sum", "**/*.go", "!**/*_test.go"]
+    #     }
+    #
+    # The fingerprint is the CONTENT of every selected file plus the Dockerfile
+    # (always — it need not be listed), the declaration (context, dockerfile,
+    # target, build_args, build_contexts, pgo, output_name, unit, the content
+    # of inputs_file, and the patterns themselves), the platform and the
+    # destination repository. The release tag is NOT part of it: forge adds
+    # `-t` itself, so a build arg that carries the tag (a version stamp)
+    # changes every cut and such a build is never reused — by design, since
+    # the reused image would carry the earlier stamp. Reuse is decided exactly
+    # as for a ShellBuild (see its docstring, "release reuse"): the same image
+    # in the release the env runs now or the project's newest release, with
+    # the same `inputs_digest`, still served by the registry — then the new
+    # release's tag is pointed at that digest and `docker build` does not run.
+    # Only a build that pushes is reused; `--rebuild` forces the build. Name
+    # everything the Dockerfile COPYs (including `.dockerignore` and any path
+    # a local build_contexts entry sends): an undeclared file is not an input.
+    # A GitSource build_contexts entry is keyed by its declared repo and ref
+    # only, so pin it to a tag or commit. Empty: every release builds.
+    inputs: [str] = []
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"
         dockerfile, "DockerBuild.dockerfile is required"
+        all p in inputs { p.strip() != "" and p.strip() != "!" }, \
+            "DockerBuild.inputs entries are globs relative to the project root (or the GitSource context); an empty entry selects nothing"
+        all p in inputs { not p.lstrip("!").startswith("/") }, \
+            "DockerBuild.inputs entries are relative to the project root (or the GitSource context), never absolute"
         all k in pgo {_pgo_binary_key(k)}, \
             "DockerBuild.pgo is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
+        all k in coverage {_pgo_binary_key(k)}, \
+            "DockerBuild.coverage is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in coverage if not _pgo_binary_key(k)]}"
 
 schema ShellBuild(Build):
     """Build the service by running `cmd` verbatim via `sh -c`. The ONE
@@ -3359,7 +3509,11 @@ schema ShellBuild(Build):
       * state/digest — on success forge captures the pushed image's
         content-addressed digest (best-effort) and writes the build-state
         file so a subsequent `forge env deploy <env>` pins the same
-        tag/digest, exactly as the project docker build does.
+        tag/digest, exactly as the project docker build does. A workload
+        bound to `forge.BuildOnly {}` that declares neither `image` nor
+        `output_name` builds no image: forge resolves no digest, records no
+        image for it, leaves the env's deploy-side build state alone, and a
+        release does not require an image of it.
       * source — the git checkout `cwd` is in (HEAD, dirty flag) is
         recorded with that state and in the release. A RELEASE refuses a
         checkout outside this project that is dirty, or whose HEAD is not
@@ -3634,6 +3788,8 @@ schema RemoteBuild(Build):
         memory_bytes > 0, "RemoteBuild.memory_bytes must be positive"
         cache_gib >= 0, "RemoteBuild.cache_gib must not be negative"
         timeout_seconds >= 60, "RemoteBuild.timeout_seconds must be at least 60"
+        not outputs, \
+            "RemoteBuild.outputs: a remote build leaves nothing on this machine to hash; build the files with a ShellBuild or GoBuild and declare its outputs there"
 
 # ---------------------------------------------------------------------------
 # Frontend runtimes, and the static-build facts they share.
@@ -4467,8 +4623,8 @@ schema FrontendErrors:
 
 schema BrowserTelemetry:
     """What a frontend declares about its browser telemetry beyond the
-    environment's observability signals (Observability.signals.browser and
-    .replay still decide whether anything is collected at all).
+    environment's observability signals (Observability.signals.browser still
+    decides whether anything is collected at all).
 
         forge.Frontend {
             name = "web"
@@ -6629,7 +6785,9 @@ schema DeliveryPolicy:
     # (the platform signs, and verifies server-side), `off` without one
     # (nothing signs a self-hosted env's bundles yet). Resolved at render.
     signing?: Signing
-    provenance_sbom: Control = Control {mode = "enforce"}
+    # `audit` (owner, 2026-11-20): enforcing it refuses a promotion whose
+    # artifacts have no SBOM, so it is a control that can block a deploy.
+    provenance_sbom: Control = Control {mode = "audit"}
     # Unset follows `signing`'s rule: `audit` with a control plane, `off`
     # without one. `enforce` writes OCIRepository spec.verify on the hub.
     flux_verify?: Control
@@ -7080,15 +7238,12 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
-    # DEPRECATED (kept working within major 1): the env-wide replay opt-in.
-    # Session replay is OPT-IN (the only category that defaults off) and is
-    # switched on per frontend with `forge.BrowserTelemetry {replay = True}`,
-    # which renders the frontend's OTEL_REPLAY = "true" and opts the env in.
-    # The platform drops replay events (browser logs of instrumentation scope
-    # `rum.rr-web`) unless the env is opted in: this True, or any frontend's
-    # `telemetry.replay`. True here opts the env in without switching any
-    # frontend on (each still needs OTEL_REPLAY in its runtime config).
-    replay: bool = False
+    # (Session replay is not a signal here: it is OPT-IN, switched on per
+    # frontend with `forge.BrowserTelemetry {replay = True}`, which renders the
+    # frontend's OTEL_REPLAY = "true" and opts the env in. The platform drops
+    # replay events, browser logs of instrumentation scope `rum.rr-web`, unless
+    # some frontend of the env opted in. The render records the result as
+    # `signals.replay` and `policy.opt_in`.)
     # The product events forge emits on the app's behalf: every create, update
     # and delete that lands through a generated CRUD handler records
     # `<entity>_created|_updated|_deleted` (no ids, no field values). Each event
@@ -7522,8 +7677,26 @@ schema Observability:
     # The project's Events funnels and counts (forge.ProjectAnalytics), drawn
     # on the built-in Product dashboard. Unset: none beyond the frontends'.
     analytics?: ProjectAnalytics
+    # Telemetry for what forge never declares as objects: a HelmChart, an
+    # operator, a system outside this bundle (see forge.Telemetry). Each entry
+    # names its service_name and its pods (`selector` plus the `cluster` whose
+    # collector scrapes them) or a fixed `address`.
+    telemetry: [Telemetry] = []
+    # The collector that scrapes this env's Telemetry when it is not forge's
+    # node agent (a project that runs its own). Unset: forge's agent.
+    telemetry_collector?: TelemetryCollector
 
     check:
+        enabled or len(telemetry) == 0, \
+            "Observability.telemetry is declared with enabled = False: there is no pipeline to collect it into. Drop it or set enabled = True"
+        all t in telemetry { t.service_name }, \
+            "Observability.telemetry: each entry needs a service_name — there is no workload to default it from"
+        all t in telemetry { t.selector or t.address }, \
+            "Observability.telemetry: each entry needs a selector (or an address) naming what to observe"
+        all t in telemetry { not t.selector or t.cluster }, \
+            "Observability.telemetry: an entry with a selector needs the cluster whose collector scrapes it"
+        all t in telemetry { _tel_numeric_ports(t) }, \
+            "Observability.telemetry: ports must be numbers — there are no declared ports to resolve a name against"
         enabled or (len(alerts.rules) == 0 and len(alerts.defaults) == 0 and len(alerts.routes) == 0 and len(alerts.receivers) == 0), \
             "Observability.alerts is declared with enabled = False: alerts evaluate the telemetry, and there is none. Drop the alerts or set enabled = True"
         dev_telemetry in ["auto", "hosted", "local"], "Observability.dev_telemetry '${dev_telemetry}' must be auto, hosted or local"
@@ -7534,7 +7707,7 @@ schema Observability:
         (alertmanager_port == 0) == (alerts_port == 0), \
             "Observability: alertmanager_port and alerts_port go together (the local Alertmanager delivers its in-app alerts to the evaluator on alerts_port, and the evaluator posts to the Alertmanager). Set both or neither"
         not enabled or not signals.profiles or destination or local_port == 0 or profiles_port > 0, \
-            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (see migrations/v0.1.45), or leave signals.profiles unset"
+            "Observability.signals.profiles = True with the local ClickStack needs profiles_port: ClickStack's own collector cannot store profiles, so they go to docker-compose.yml's `otel-profiles` collector. Set profiles_port to the port it publishes (a fresh `forge project new` scaffolds that service), or leave signals.profiles unset"
         not enabled or sampling.traces_ratio >= 1.0 or destination, \
             "Observability.sampling.traces_ratio < 1.0 needs a destination: sampling runs in the collector that forwards, and the local ClickStack stores everything"
 
@@ -7575,9 +7748,25 @@ schema Manifests:
     # Slot keys are exact container:NAME, init:NAME, input:NAME or build-only.
     release_inputs: {str: str} = {}
     release_dependencies?: {str: str}
+    # How the systems these objects run are observed (see forge.Telemetry).
+    # forge cannot see into raw objects, so each entry names its pods by
+    # `selector` (or a fixed `address`) and its ports by number. The cluster
+    # is the group's; `namespaces` defaults to [namespace]; `service_name`
+    # defaults to the group's name.
+    telemetry: [Telemetry] = []
 
     check:
         not name or regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Manifests.name '${name}' must be an RFC-1123 label (it is a --target)"
+        all t in telemetry { t.selector or t.address }, \
+            "Manifests.telemetry: each entry needs a selector (or an address) — forge cannot see into raw objects to find their pods"
+        all t in telemetry { not t.cluster }, \
+            "Manifests.telemetry: cluster is the group's (Manifests.cluster), not the entry's"
+        all t in telemetry { _tel_numeric_ports(t) }, \
+            "Manifests.telemetry: ports must be numbers — a raw group declares no named ports to resolve"
+        name or all t in telemetry { t.service_name }, \
+            "Manifests.telemetry on a group with no name needs a service_name"
+        len(telemetry) <= 1 or all t in telemetry { t.service_name }, \
+            "Manifests.telemetry: several entries in one group need a service_name each"
         not delivery_unit or regex.match(delivery_unit, r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$"), "Manifests.delivery_unit '${delivery_unit}' must be letters, digits, '.', '_' and '-' (it is a path segment in the bundle)"
 
 schema StatefulSetResize:
@@ -7909,12 +8098,6 @@ schema IdentitySeedUser:
 
     check:
         regex.match(email, r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "IdentitySeedUser.email '${email}' must be an email address"
-
-schema IdentitySocialProvider:
-    """Deprecated: declare `forge.IdentityGoogle` or `forge.IdentityGitHub` in
-    `ManagedIdentity.social`. This was the reserved placeholder; it was always
-    refused at render and `social` no longer accepts it."""
-    provider: str
 
 # A first-factor sign-in method (ManagedIdentity.methods).
 type IdentityMethod = "password" | "passkey" | "magic_link"
@@ -8710,8 +8893,16 @@ schema Bundle:
     # the store, because they cannot live in what they bootstrap. UNSET =
     # forge.OutOfBand {} - provisioned by hand, and only checked.
     bootstrap_source?: GCPSecretManager | OutOfBand
+    # Test coverage of this env's Go builds (see Tests): instrumented by
+    # default for local, ephemeral and preview envs of a project that opts in.
+    tests: Tests = Tests {}
 
     check:
+        # A PERSISTENT env (no lifecycle, not a preview) is production as far
+        # as forge knows, and an instrumented build there is a decision, not
+        # a default.
+        not tests.coverage or lifecycle or preview or tests.coverage_in_persistent_env, \
+            "Bundle.tests.coverage = True on a persistent env (no lifecycle, not a preview): instrumented builds are for local, ephemeral and preview envs. If this env really runs e2e against cover builds, say why: tests = forge.Tests {coverage = True, coverage_in_persistent_env = \"<why>\"}"
         # The key grammar, checked at load so a typo'd key is a KCL error
         # pointing at the declaration rather than a "target not found" from
         # the Go apply — which would read as "forge rendered no such object"

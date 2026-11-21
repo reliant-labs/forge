@@ -57,7 +57,9 @@ func TestE2ETraceDepth(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "traceapp", "--mod", "example.com/traceapp", "--service", "widgets")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "traceapp", "--mod", "example.com/traceapp", "--service", "widgets", "--connect", "v1")
 	projectDir := filepath.Join(dir, "traceapp")
 	addCorpusForgePkgReplace(t, projectDir)
 

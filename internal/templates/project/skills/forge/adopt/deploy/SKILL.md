@@ -239,7 +239,6 @@ Append to `.gitignore` (`.forge/*`, never `.forge/`: git cannot re-include
 under an ignored directory, and `forge lint` gates on it):
 
 ```
-.forge-kcl/
 secrets/
 .forge/*
 !.forge/disowned.json
@@ -392,5 +391,6 @@ ORM from SQL migrations, typed frontend hooks and tests (`greenfield`,
   (`migration`, `migration-service`).
 - **Rewriting a non-Go service** is a rewrite, not an adoption: do it one
   endpoint group at a time behind the same route, never all at once.
+- **A CLI, installer or desktop app the repo ships** is a `forge.BuildOnly` workload with no `image` whose `ShellBuild` runs your packaging script and lists its `outputs`; each release then records those files' sha256 and size (`deploy/build`).
 
 **Stop** as soon as the remaining code is cheaper to keep than to move.

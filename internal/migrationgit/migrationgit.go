@@ -311,6 +311,29 @@ func ChangedSince(repoRoot, dir, rev string) (map[string]bool, bool) {
 	return changed, true
 }
 
+// ChangedPathsSince lists every file of the repository whose working-tree
+// content differs from revision rev — modified, added or deleted since rev —
+// plus every untracked file git does not ignore (a new file not yet added is
+// changed too). Paths are repository-relative and slash-separated. False when
+// rev cannot be read.
+func ChangedPathsSince(repoRoot, rev string) (map[string]bool, bool) {
+	diff, ok := runGit(repoRoot, "diff", "--name-only", "--no-renames", rev, "--")
+	if !ok {
+		return nil, false
+	}
+	untracked, ok := runGit(repoRoot, "ls-files", "--others", "--exclude-standard", "--full-name")
+	if !ok {
+		return nil, false
+	}
+	changed := map[string]bool{}
+	for _, line := range strings.Split(diff+"\n"+untracked, "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			changed[p] = true
+		}
+	}
+	return changed, true
+}
+
 // IsTracked reports whether path is tracked by git, which decides whether a
 // rename goes through `git mv` or a plain filesystem rename.
 func IsTracked(repoRoot, path string) bool {

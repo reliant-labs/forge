@@ -13,6 +13,7 @@
 package lint
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,6 +360,41 @@ COMMENT ON COLUMN estimates.total_cents IS 'forge:fill=handler';
 	}
 	if len(findings) != 0 {
 		t.Fatalf("forge:fill= declares who populates the column:\n%+v", findings)
+	}
+}
+
+// TestReadOnlyFields_VersionColumnIsForgeOwned pins obs ea205894: a field
+// declared per the forge:version contract (forge:read-only on the wire,
+// DEFAULT 0, COMMENT 'forge:version') is written by pkg/crud's generated
+// Update, which the Go scan cannot see. It is not reported, and needs no
+// forge:fill=handler workaround.
+func TestReadOnlyFields_VersionColumnIsForgeOwned(t *testing.T) {
+	root := readOnlyProject(t, `syntax = "proto3";
+
+package services.ops.v1;
+
+// forge:entity
+message Incident {
+  string id = 1;
+  int64 revision = 2; // forge:read-only
+  int64 total_cents = 3; // forge:read-only
+}
+`, `CREATE TABLE incidents (
+    id          TEXT PRIMARY KEY,
+    total_cents BIGINT NOT NULL DEFAULT 0
+);
+
+ALTER TABLE incidents ADD COLUMN revision BIGINT NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN incidents.revision IS 'forge:version';
+COMMENT ON COLUMN incidents.total_cents IS 'forge:versioned-elsewhere';
+`, "package ops\n")
+	findings, err := collectReadOnlyFieldFindings(root, filepath.Join("db", "migrations"))
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(findings) != 1 || strings.Contains(fmt.Sprint(findings[0]), "revision") {
+		t.Fatalf("want exactly the total_cents finding (revision is forge:version), got:\n%+v", findings)
 	}
 }
 

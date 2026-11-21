@@ -90,7 +90,7 @@ The recommended design:
    Upload is on by default from CI and off for a local run on a dirty tree
    ([1.7](#17-cli)).
 
-6. **control-plane `TestService`.** Postgres holds run, case, coverage-summary
+6. **control-plane `TestsService`.** Postgres holds run, case, coverage-summary
    and flake rows. Object storage holds the raw reports and merged coverage
    documents, under an org prefix. A worker does ingest and merging, and the
    scope is `tests:read`. The service advertises `test_features`
@@ -409,8 +409,10 @@ that would have reached `flaky` were in that group.
 
 **Correlated failures.** Three or more failures in one run that share a
 package, a harness (testsrv, ClickHouse, pgtest) or a failure signature are
-grouped into one `infra` event, not counted as a flake event per test. The
-same co-failing set on a later commit is the same event. This replaces
+grouped into one infra event, not counted as a flake event per test. Each of
+those failures gets the verdict `correlated` and names the group, its
+`infra_group`. The same co-failing set on a later commit is the same event,
+with the same `infra_group`. This replaces
 control-plane's `broad` cut-off (more than 15 failures in a run), which never
 fired on real data: host failures came 2 to 8 tests at a time.
 
@@ -424,8 +426,9 @@ fired on real data: host failures came 2 to 8 tests at a time.
 - `inconclusive`: the rerun could not run (a build failure, a timeout).
 - `unattributed`: the failure could not be tied to a test.
 - `host`: the failure matched a host signature (above). Not scored.
-- `infra`: the failure is part of a correlated group (above). The group is
-  one event, and its tests are not scored for it.
+- `correlated`: the failure is part of a correlated group (above), named by
+  its `infra_group`. The group is one infra event, and its tests are not
+  scored for it.
 
 **States.** A state counts confirmed events on **distinct commits**: several
 confirmed events on one commit, a burst of re-runs for example, count once. A
@@ -712,7 +715,8 @@ test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|co
           verdict, git_commit, run_ids bigint[], failure_sig_hash, at)
 
 -- Host and correlated failures: never scored, shown as host health.
-test_infra_events(id, org_id, project, kind host|infra, group_key, test_key_ids bigint[],
+-- kind infra: one row per correlated group; its failures carry this infra_group.
+test_infra_events(id, org_id, project, kind host|infra, infra_group, test_key_ids bigint[],
           git_commit, run_ids bigint[], failure_sig_hash, runner, at)
 ```
 
@@ -788,11 +792,13 @@ test_infra_events(id, org_id, project, kind host|infra, group_key, test_key_ids 
 ### 2.3 API
 
 The new service lives in package `controlplane.v1`, at
-`proto/services/tests/v1/tests.proto`. The web reaches every
-`controlplane.v1.*` service directly on platform-api, so it needs no proxy:
+`proto/services/tests/v1/tests.proto`. It is named `TestsService`, not
+`TestService`, because forge requires a service's name to match its proto
+directory (`tests/`). The web reaches every `controlplane.v1.*` service
+directly on platform-api, so it needs no proxy:
 
 ```proto
-service TestService {
+service TestsService {
   // Writes (tests:write, or deploy:write).
   rpc RecordTestRun(RecordTestRunRequest) returns (RecordTestRunResponse);
   //   project, commit, tree, dirty, branch, base, lane, source, env, ci{provider, url},
@@ -820,8 +826,16 @@ service TestService {
 }
 ```
 
-`tests_admin` gets `RecomputeCommit`, `RecomputeFlakes`, `PurgeNow` and
-`GetIngestBacklog` for `control-plane ops call`.
+A flake event's verdict is the `TestFlakeVerdict` enum, the proto twin of
+`pkg/testreport.Verdict` ([1.5](#15-results-and-flaky-tests)). Only
+`CONFIRMED` scores. `HOST` and `CORRELATED` never do; a `CORRELATED` event
+carries `infra_group`, the id of the correlated-failure group it belongs to,
+which is the `infra_group` of its `test_infra_events` row
+([2.1](#21-store)).
+
+`TestsAdminService` (`proto/services/tests_admin/v1/`) gets
+`RecomputeCommit`, `RecomputeFlakes`, `PurgeNow` and `GetIngestBacklog` for
+`control-plane ops call`.
 
 **Capabilities.** A `test_features` list goes on `DeployService/GetCapabilities`,
 with the withheld set used until each name's behaviour is live:
@@ -842,10 +856,14 @@ yet") and keeps the local record.
   - **`tests:write`**, a narrow upload scope like `sourcemaps:write`. A PR's CI
     job needs it and should not hold `deploy:write`. `RecordTestRun` also
     accepts `deploy:write`, so a deploying CI needs no new token.
+    `tests:write` implies nothing, not even `tests:read`, so a PR's CI token
+    can upload results but cannot read failure output back. It is not
+    env-bindable.
   - **`tests:read`**, granted on day one to every holder of `deploy:read` and
     added to the Admin preset. Failure output can quote config, request bodies
     and log lines, so it is not readable by every token that can record a
-    deploy.
+    deploy. It is env-bindable like `vuln:read`: a token bound to an env reads
+    only the runs recorded against that env.
 - An operation with no scope mapping is refused for machine principals, and
   grants are re-read on every request. These are the existing rules.
 - Quarantine and issue settings are never written through the API. They are
@@ -974,7 +992,7 @@ PR on opt-in projects, otherwise shows the command), and **Open issue**.
 This copies the Vulnerabilities stack:
 
 - `services/controlPlane/tests/{testApi,wire,types,errors,TestApiContext}.ts`
-  over `getControlPlaneClient(TestService)`, with `isTestServiceMissing`
+  over `getControlPlaneClient(TestsService)`, with `isTestsServiceMissing`
   driving an "isn't available here yet" state.
 - `hooks/test-queries.ts`: `useTestSummary`, `useTestRuns` (infinite),
   `useTestRun`, `useCoverage`, `useFileCoverage`, `useReleaseTests`,
@@ -1186,7 +1204,7 @@ covered, and move into F5 and F1.
 
 | #   | Task                                                                                                                                                                                                              | Repo                      | Size | Depends on                 | Parallel group |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---- | -------------------------- | -------------- |
-| C1  | Proto: `TestService`, `tests_admin`, `test_features`; `tests:read` and `tests:write` in forge `pkg/accesstoken` (a small forge PR merged first, then pinned)                                                      | control-plane (+ forge S) | S    | —                          | A (with F1/F2) |
+| C1  | Proto: `TestsService`, `TestsAdminService`, `test_features`; `tests:read` and `tests:write` in forge `pkg/accesstoken` (a small forge PR merged first, then pinned)                                               | control-plane (+ forge S) | S    | —                          | A (with F1/F2) |
 | C2  | Migrations and `teststore`; `testbucket` adapter with vulnstore's copy-state machine; scope CHECK widened, `tests:read` granted to `deploy:read` holders; project identity on first upload                        | control-plane             | M    | C1                         | B              |
 | C3  | `RecordTestRun` (digests re-derived, caps, `tests:write`/`deploy:write`, org-scoped) plus `test_ingest` (sandboxed parse via forge's `pkg/testreport`, commit merge, flake events)                                | control-plane             | M    | C2, F1 released and pinned | C              |
 | C4  | Read API: summary, runs, run, coverage, file coverage, release tests, flaky tests, test; `tests:read`, env-bound tokens, NotFound across orgs                                                                     | control-plane             | M    | C2                         | C (with C3)    |
@@ -1508,7 +1526,7 @@ The research behind it:
 That scatter is what the global storage tier design replaces. Tests adds no
 new per-product cap to it.
 
-**The rules** (`TestService` retention, applied by the daily `test_retention`
+**The rules** (`TestsService` retention, applied by the daily `test_retention`
 worker):
 
 | What                        | Kept                                                                                                                                                                                                            |
@@ -1659,7 +1677,8 @@ module`), and capture deduplicates it before anything is stored: raw
    events (network and download errors, `toomanyrequests`, ENOSPC and quota,
    address in use, docker CLI timeouts, `panic: test timed out` under load)
    never score and are reported as host health. Three or more failures in one
-   run sharing a package, harness or signature are one `infra` event, which
+   run sharing a package, harness or signature are one infra event (verdict
+   `correlated`, grouped by `infra_group`), which
    replaces `broad`. At least 30 of the 77 suspected issues had a host or
    harness cause, and host failures came 2 to 8 tests at a time, so `broad`
    never fired ([1.5](#15-results-and-flaky-tests), [2.2](#22-ingest-merge-and-flake-detection)).
@@ -1675,7 +1694,8 @@ three are checked in F5 and F1.
 **Tasks changed by this amendment:**
 
 - **F1** adds block-key dedupe, `covmeta`-hash grouping, the boolean `set`
-  merge, the `host` and `infra` verdicts, and the flake rate as a ranking.
+  merge, the `host` and `correlated` verdicts, and the flake rate as a
+  ranking.
 - **F2** deduplicates `-coverpkg` profiles at capture.
 - **F5** and **F7** pass `-covermode=atomic` everywhere.
 - **C2** adds `test_run_packages`, `test_sets` and `test_infra_events`, and

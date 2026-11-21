@@ -8,9 +8,8 @@
 //
 //   - live, in the process. serverkit serves it at /debug/coverage on the
 //     loopback debug listener (pkg/serverkit/coverage.go): a tar of the
-//     covmeta and covcounters files Go would write; a POST carrying
-//     X-Forge-Coverage-Reset: 1 zeroes the counters after the tar is built
-//     (serverkit refuses a reset in any form a web page could send).
+//     covmeta and covcounters files Go would write. The endpoint is
+//     read-only: nothing a request sends changes the counters.
 //   - flushed, in GOCOVERDIR. Go writes the counters there when main returns
 //     and on os.Exit, so every process that exited cleanly left a file.
 //
@@ -39,11 +38,13 @@
 // go-covdata input, and the stale ones in <run>/<lane>/covdata/<workload>/stale/<hash>/,
 // listed nowhere, so no reader merges them.
 //
-// `--reset` zeroes what a run must not count: it sends each live process the
-// reset POST and discards the tar, and records the counter files flushed
-// before it, by source, name and content digest, in
-// .forge/tests/covdata/<env>/.reset/<workload>; every later collect leaves
-// out exactly those files (fence.go has the whole rule).
+// `--reset` starts a run from zero on the client side: it pulls each live
+// process's counters and records them as that process's baseline, which every
+// later collect subtracts (baseline.go), and records the counter files flushed
+// before it, by source, name and content digest, which every later collect
+// leaves out (fence.go). Both live in .forge/tests/covdata/<env>/.reset/. When
+// a baseline applied, the lane's input is the build's since-reset profile
+// (SinceResetProfile) instead of its raw covdata, which is kept beside it.
 //
 // Collection is best effort per workload: one that cannot be reached is
 // reported, never fatal to the others.

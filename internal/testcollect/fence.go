@@ -20,9 +20,9 @@ import (
 //
 // A reset starts a run's coverage from zero, and the rule is:
 //
-//   - Live counters are zeroed in the process: each reachable process gets the
-//     reset POST, so whatever it counts afterwards, pulled live or flushed when
-//     it exits, begins at zero.
+//   - Live counters are baselined (baseline.go): each reachable process's
+//     counts at the reset are recorded and subtracted from what it later
+//     reports, pulled live or flushed when it exits.
 //   - Flushed counters are fenced off by IDENTITY: every counter file present
 //     at the moment of the reset is recorded in
 //     .forge/tests/covdata/<env>/.reset/<workload> as (source, name, sha256 of
@@ -43,9 +43,9 @@ import (
 //   - A reset that zeroed nothing (refused, or nothing answered) writes nothing,
 //     so the next collect keeps everything it would have kept before.
 //
-// The files are listed after the reset POST. A process that exits in between
-// leaves a file holding only what it counted since the reset, which is then
-// excluded too: the reset errs towards counting nothing from before it.
+// The files are listed after the baseline pull. A process that exits in
+// between leaves a file, which is then excluded whole: the reset errs towards
+// counting nothing from before it.
 
 // fenceSchema names the fence file's format.
 const fenceSchema = "forge.test.collect.reset/v1"

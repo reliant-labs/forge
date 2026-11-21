@@ -25,11 +25,16 @@ func TestCoverageHandler_RealCoverBuild(t *testing.T) {
 	dir := t.TempDir()
 
 	cover := startCovServer(t, filepath.Join(dir, "cover"), "-cover", "-covermode=atomic")
-	if code, _ := requestOnce(t, http.MethodGet, "http://"+cover+serverkit.CoveragePath+"?reset=1"); code != http.StatusMethodNotAllowed {
-		t.Errorf("GET ?reset=1 answered %d, want 405: a reset is POST with %s", code, serverkit.CoverageResetHeader)
+	for _, target := range []string{serverkit.CoveragePath + "?reset=1"} {
+		if code, _ := requestOnce(t, http.MethodGet, "http://"+cover+target); code != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s answered %d, want 405: the endpoint is read-only", target, code)
+		}
 	}
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		code, body := requestOnce(t, method, "http://"+cover+serverkit.CoveragePath, serverkit.CoverageResetHeader, "1")
+	if code, _ := requestOnce(t, http.MethodPost, "http://"+cover+serverkit.CoveragePath); code != http.StatusMethodNotAllowed {
+		t.Errorf("POST answered %d, want 405: the endpoint is read-only", code)
+	}
+	for _, method := range []string{http.MethodGet} {
+		code, body := requestOnce(t, method, "http://"+cover+serverkit.CoveragePath)
 		if code != http.StatusOK {
 			t.Fatalf("%s answered %d: %s", method, code, body)
 		}

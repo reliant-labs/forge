@@ -64,9 +64,9 @@ func NewPprof(cfg Config, logger *slog.Logger) *Pprof {
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	// Coverage of a -cover build (404 for any other), pulled while the
-	// process runs: see CoverageHandler. It reads AND resets process-wide
-	// counters with no auth, so it is served only where loopback is the
-	// auth: a debug listener bound to a reachable address does without it.
+	// process runs: see CoverageHandler. It serves process-wide counters
+	// with no auth, so it is served only where loopback is the auth: a
+	// debug listener bound to a reachable address does without it.
 	if loopbackAddr(cfg.PprofAddr) {
 		mux.Handle(CoveragePath, CoverageHandler())
 	} else if cfg.PprofAddr != "" {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -145,9 +146,6 @@ func (s *coverageServer) start(t *testing.T) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		q := r.Method + " " + r.URL.RequestURI()
-		if h := r.Header.Get(ResetHeader); h != "" {
-			q += " " + ResetHeader + "=" + h
-		}
 		s.queries = append(s.queries, q)
 		s.mu.Unlock()
 		if r.URL.Path != CoveragePath {
@@ -341,9 +339,9 @@ func TestUnreachableResetKeepsEarlierCounters(t *testing.T) {
 	}
 }
 
-// --reset pulls with ?reset=1 and discards what it got, and fences off the
-// counters flushed before it: the next collect leaves them out. No run is
-// created for a reset.
+// --reset reads the counters (a GET: the endpoint is read-only) as a
+// baseline, and fences off the counters flushed before it: the next collect
+// leaves them out. No run is created for a reset.
 func TestResetFencesOffEarlierCounters(t *testing.T) {
 	f := newFixture(t)
 	srv := &coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.300.9000", "LIVE")}
@@ -359,8 +357,8 @@ func TestResetFencesOffEarlierCounters(t *testing.T) {
 	if err != nil || doc.Workloads[0].State != StateReset || doc.Collected != 1 {
 		t.Fatalf("reset: %v %+v", err, doc.Workloads)
 	}
-	if q := srv.got(); len(q) != 1 || q[0] != "POST "+CoveragePath+" "+ResetHeader+"=1" {
-		t.Errorf("reset sent %v, want one POST with %s: 1 (serverkit refuses any other reset)", q, ResetHeader)
+	if q := srv.got(); len(q) != 1 || q[0] != "GET "+CoveragePath {
+		t.Errorf("reset sent %v, want one read: a reset changes nothing in the process", q)
 	}
 	if f.runs != 0 || doc.Run != "" {
 		t.Errorf("a reset asked for a run (%d calls, run %q)", f.runs, doc.Run)
@@ -711,9 +709,11 @@ func TestCollectCluster(t *testing.T) {
 	if _, err := collectErr(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
-	resetCall := "POST k3d-dev/shop-dev/api-old:6060 " + CoveragePath + " host=127.0.0.1:6060 " + ResetHeader + "=1"
-	if len(k.gets) != 2 || k.gets[0] != resetCall || !strings.HasPrefix(k.gets[1], "POST ") {
-		t.Errorf("reset requests %v, want POST with %s on each pod (%q)", k.gets, ResetHeader, resetCall)
+	if !slices.Equal(k.gets, want) {
+		t.Errorf("reset requests %v, want one read of each pod: %v", k.gets, want)
+	}
+	if b, err := readBaseline(BaselineFile(f.root, "dev", "api")); err != nil || len(b) != 2 {
+		t.Errorf("baseline %v (%v), want one process per pod", b, err)
 	}
 }
 
@@ -728,9 +728,6 @@ func (k *fakeKube) Pods(context.Context, string, string, string) ([]Pod, error) 
 
 func (k *fakeKube) Do(_ context.Context, kctx, ns, pod string, port int, req *http.Request) (*http.Response, error) {
 	call := fmt.Sprintf("%s %s/%s/%s:%d %s host=%s", req.Method, kctx, ns, pod, port, req.URL.RequestURI(), req.URL.Host)
-	if h := req.Header.Get(ResetHeader); h != "" {
-		call += " " + ResetHeader + "=" + h
-	}
 	k.gets = append(k.gets, call)
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(bytes.NewReader(k.tars[pod]))}, nil
 }
@@ -877,5 +874,256 @@ func TestWriteText(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("text lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// countingConvert stands in for `go tool covdata textfmt` with counts a test
+// can reason about: a counter file's bytes are "<line>=<count>" pairs, and
+// the profile has one block per line, its counts summed over the counter
+// files in dir.
+func countingConvert(_ context.Context, _, dir string) ([]testreport.CovdataBuild, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]map[int]int64{}
+	for _, e := range entries {
+		f, ok := parseCovName(e.Name())
+		if !ok || e.IsDir() {
+			continue
+		}
+		if counts[f.hash] == nil {
+			counts[f.hash] = map[int]int64{}
+		}
+		if f.meta {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		for _, kv := range strings.Fields(string(data)) {
+			var line int
+			var n int64
+			if _, err := fmt.Sscanf(kv, "%d=%d", &line, &n); err != nil {
+				return nil, fmt.Errorf("counter %s: %q: %w", e.Name(), kv, err)
+			}
+			counts[f.hash][line] += n
+		}
+	}
+	var out []testreport.CovdataBuild
+	for hash, byLine := range counts {
+		lines := make([]int, 0, len(byLine))
+		for l := range byLine {
+			lines = append(lines, l)
+		}
+		slices.Sort(lines)
+		var b strings.Builder
+		b.WriteString("mode: atomic\n")
+		for _, l := range lines {
+			fmt.Fprintf(&b, "example.com/shop/internal/a/a.go:%d.1,%d.2 1 %d\n", l, l, byLine[l])
+		}
+		out = append(out, testreport.CovdataBuild{MetaHash: hash, Profile: []byte(b.String())})
+	}
+	slices.SortFunc(out, func(a, b testreport.CovdataBuild) int { return strings.Compare(a.MetaHash, b.MetaHash) })
+	return out, nil
+}
+
+// liveServer serves a coverage tar the test can change between requests: a
+// running process whose counters grow.
+type liveServer struct {
+	mu  sync.Mutex
+	tar []byte
+}
+
+func (l *liveServer) set(t *testing.T, entries ...string) {
+	t.Helper()
+	b := tarOf(t, entries...)
+	l.mu.Lock()
+	l.tar = b
+	l.mu.Unlock()
+}
+
+func (l *liveServer) start(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "read-only", http.StatusMethodNotAllowed)
+			return
+		}
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		_, _ = w.Write(l.tar)
+	}))
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+// sinceResetCounts collects and returns the since-reset profile's count per
+// line (nil when no baseline applied), and the build.
+func sinceResetCounts(t *testing.T, f *fixture, opts Options) (map[int]int64, *Build) {
+	t.Helper()
+	doc, err := collectErr(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := doc.Workloads[0].Build
+	if b == nil {
+		t.Fatalf("no build: %+v", doc.Workloads[0])
+	}
+	if b.SinceReset == nil {
+		return nil, b
+	}
+	data, err := os.ReadFile(filepath.Join(f.run, filepath.FromSlash(b.SinceReset.Profile)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := parseProfile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[int]int64{}
+	for k, blk := range p.blocks {
+		var line int
+		if _, err := fmt.Sscanf(k[strings.LastIndex(k, ":")+1:], "%d.", &line); err != nil {
+			t.Fatal(err)
+		}
+		out[line] = blk.count
+	}
+	return out, b
+}
+
+// [B1] The reset is a client-side baseline. A live process keeps counting
+// from where it was; the collect after the reset counts only what it counted
+// since, block by block: a block hit only before the reset counts 0, and
+// the lane's input is the since-reset profile, not the raw covdata.
+func TestResetBaselineCountsOnlyTheDelta(t *testing.T) {
+	f := newFixture(t)
+	live := &liveServer{}
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.100", "10=5 20=3 30=0")
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: live.start(t), CoverDir: filepath.Join(f.root, "flushed")}}
+	opts := f.options(target)
+	opts.Convert = countingConvert
+
+	reset := opts
+	reset.Reset = true
+	if doc := Collect(context.Background(), reset); doc.Workloads[0].State != StateReset {
+		t.Fatalf("reset: %+v", doc.Workloads[0])
+	}
+
+	// More traffic: line 20 three more times, line 30 twice; line 10 only
+	// ever ran before the reset.
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.200", "10=5 20=6 30=2")
+	counts, b := sinceResetCounts(t, f, opts)
+	if want := map[int]int64{10: 0, 20: 3, 30: 2}; !maps.Equal(counts, want) {
+		t.Fatalf("since the reset: %v, want %v", counts, want)
+	}
+	if b.SinceReset.Processes != 1 || b.Coverage == nil || b.Coverage.Covered != 2 || b.Coverage.Statements != 3 {
+		t.Errorf("build %+v coverage %+v, want 2 of 3 statements since the reset, from one baselined process", b, b.Coverage)
+	}
+	m, err := testreport.ReadLaneManifest(f.run, "e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []testreport.LaneCoverageInput{{Path: "covdata/api/" + SinceResetProfile, Format: testreport.CoverageGoProfile}}; !slices.Equal(m.Coverage, want) {
+		t.Errorf("lane coverage %+v, want only the since-reset profile", m.Coverage)
+	}
+
+	// Collecting again replaces the input, never lists both.
+	sinceResetCounts(t, f, opts)
+	if m, _ := testreport.ReadLaneManifest(f.run, "e2e"); len(m.Coverage) != 1 {
+		t.Errorf("lane coverage after a second collect %+v, want one input", m.Coverage)
+	}
+}
+
+// A process that restarted after the reset is counted whole: a new pid has
+// no baseline, and a reused pid (pid 1 after a container restart) counts
+// below its baseline somewhere, so its baseline does not apply.
+func TestResetBaselineDoesNotApplyToARestartedProcess(t *testing.T) {
+	for _, tc := range []struct {
+		name, after string
+	}{
+		{"a new pid", "covcounters.aa.43.200"},
+		{"the same pid, counting from zero again", "covcounters.aa.42.200"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			live := &liveServer{}
+			live.set(t, "covmeta.aa", "M", "covcounters.aa.42.100", "10=5 20=3")
+			opts := f.options(Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: live.start(t), CoverDir: filepath.Join(f.root, "flushed")}})
+			opts.Convert = countingConvert
+			reset := opts
+			reset.Reset = true
+			Collect(context.Background(), reset)
+
+			live.set(t, "covmeta.aa", "M", tc.after, "10=1 20=4")
+			counts, b := sinceResetCounts(t, f, opts)
+			if counts != nil {
+				t.Fatalf("a baseline was subtracted (%v) from a process started after the reset", counts)
+			}
+			if b.Coverage == nil || b.Coverage.Covered != 2 {
+				t.Errorf("coverage %+v, want the new process counted whole", b.Coverage)
+			}
+		})
+	}
+}
+
+// A live process that exits after the reset flushes its cumulative counters
+// to GOCOVERDIR: the baseline (same build and pid) still applies to that
+// file, so the time before the reset is not counted through the exit flush.
+func TestResetBaselineAppliesToTheProcessExitFlush(t *testing.T) {
+	f := newFixture(t)
+	live := &liveServer{}
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.100", "10=5 20=3")
+	cover := filepath.Join(f.root, "flushed")
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: live.start(t), CoverDir: cover}}
+	opts := f.options(target)
+	opts.Convert = countingConvert
+	reset := opts
+	reset.Reset = true
+	Collect(context.Background(), reset)
+
+	// The process exits: its pull is gone, its counters are in GOCOVERDIR.
+	opts.Targets[0].Host.PullAddr = ""
+	opts.Targets[0].Host.Withheld = "the process exited"
+	writeFile(t, cover, "covmeta.aa", "M")
+	writeFile(t, cover, "covcounters.aa.42.300", "10=5 20=7")
+	counts, _ := sinceResetCounts(t, f, opts)
+	if want := map[int]int64{10: 0, 20: 4}; !maps.Equal(counts, want) {
+		t.Fatalf("exit flush since the reset: %v, want %v", counts, want)
+	}
+}
+
+// A reset the process could not answer records no baseline and no fence.
+func TestResetConversionFailureRecordsNothing(t *testing.T) {
+	f := newFixture(t)
+	addr := (&coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.1.1", "not counts")}).start(t)
+	opts := f.options(Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: addr, CoverDir: filepath.Join(f.root, "flushed")}})
+	opts.Convert, opts.Reset = countingConvert, true
+	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateFailed {
+		t.Fatalf("reset: %+v, want failed", doc.Workloads[0])
+	}
+	for _, p := range []string{BaselineFile(f.root, "dev", "api"), ResetMarker(f.root, "dev", "api")} {
+		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a failed reset wrote %s: %v", p, err)
+		}
+	}
+}
+
+func TestSubtractProfiles(t *testing.T) {
+	full, err := parseProfile([]byte("mode: atomic\na.go:1.1,2.2 1 5\na.go:3.1,4.2 2 1\na.go:5.1,6.2 1 9\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, _ := parseProfile([]byte("mode: atomic\na.go:1.1,2.2 1 2\na.go:3.1,4.2 2 4\nb.go:1.1,1.2 1 7\n"))
+	if below(full, base) != true {
+		t.Error("3.1 counts 1 against a baseline of 4: not the baselined process")
+	}
+	full.subtract(base)
+	if got, want := string(full.bytes()), "mode: atomic\na.go:1.1,2.2 1 3\na.go:3.1,4.2 2 0\na.go:5.1,6.2 1 9\n"; got != want {
+		t.Errorf("subtracted:\n%s\nwant (clamped at 0, unknown blocks ignored):\n%s", got, want)
+	}
+	if _, err := parseProfile([]byte("a.go:1.1,2.2 1 5\n")); err == nil {
+		t.Error("a profile without a mode line parsed")
 	}
 }

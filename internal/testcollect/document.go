@@ -119,10 +119,22 @@ type Build struct {
 	// Dir is where its files are, relative to the run directory.
 	Dir   string `json:"dir"`
 	Label string `json:"label,omitempty"`
+	// SinceReset is set when a reset's baseline was subtracted from the
+	// build's counts: its Profile is then the lane's input.
+	SinceReset *SinceReset `json:"since_reset,omitempty"`
 	// Coverage is the build converted (`go tool covdata textfmt`): covered
 	// over instrumented statements, generated code excluded. Absent when it
 	// was not converted (Notes say why); the files are kept either way.
 	Coverage *testreport.Tally `json:"coverage,omitempty"`
+}
+
+// SinceReset is a build's counts since `forge test collect --reset`.
+type SinceReset struct {
+	// Processes counts the processes whose reset baseline was subtracted.
+	Processes int `json:"processes"`
+	// Profile is the counts since the reset, a Go text profile, relative to
+	// the run directory.
+	Profile string `json:"profile"`
 }
 
 // WriteText prints the document for a person: one line per workload.

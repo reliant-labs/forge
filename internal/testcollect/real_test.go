@@ -51,13 +51,15 @@ func TestCollect_RealCoverBuild(t *testing.T) {
 	if addr == "" {
 		t.Fatal("covserver printed no address")
 	}
-	hit := func() {
-		resp, err := http.Get("http://" + addr + "/hit")
+	get := func(path string) {
+		t.Helper()
+		resp, err := http.Get("http://" + addr + path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_ = resp.Body.Close()
 	}
+	hit := func() { get("/hit") }
 
 	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: addr, CoverDir: cover}}
 	collect := func(reset bool) *Document {
@@ -82,10 +84,40 @@ func TestCollect_RealCoverBuild(t *testing.T) {
 	if wl := collect(true).Workloads[0]; wl.State != StateReset {
 		t.Fatalf("reset: %+v", wl)
 	}
-	// Nothing ran since the reset, but the handler itself did: a pull is
-	// never zero. It covers less than a pull after /hit.
-	if wl := collect(false).Workloads[0]; wl.Build.Coverage.Covered >= liveCovered {
-		t.Errorf("after reset: %d covered, want fewer than the %d /hit reached", wl.Build.Coverage.Covered, liveCovered)
+	// The reset changed nothing in the process: it is the baseline. With no
+	// traffic since, only what the pulls themselves ran (serverkit's
+	// handler, instrumented with the rest of the module) is counted; main's
+	// setup and /hit, which ran before the reset, are not.
+	wl = collect(false).Workloads[0]
+	if wl.Build.SinceReset == nil || wl.Build.Coverage == nil {
+		t.Fatalf("right after the reset: %+v, want the baseline subtracted", wl.Build)
+	}
+	idle := wl.Build.Coverage.Covered
+	if idle >= liveCovered {
+		t.Fatalf("right after the reset: %d covered, want fewer than the %d before it", idle, liveCovered)
+	}
+
+	// /other runs after the reset, and is counted on top of the pulls' own.
+	get("/other")
+	wl = collect(false).Workloads[0]
+	delta := wl.Build.Coverage.Covered
+	if delta <= idle {
+		t.Fatalf("after /other: %d covered since the reset, want more than the %d of the pulls alone", delta, idle)
+	}
+
+	// The endpoint is read-only: a POST (once the reset) clears nothing.
+	resp, err := http.Post("http://"+addr+CoveragePath, "text/plain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST %s answered %d, want 405", CoveragePath, resp.StatusCode)
+	}
+	// Cleared counters would fall below the baseline, which then would not
+	// apply (the process would read as restarted).
+	if wl := collect(false).Workloads[0]; wl.Build.SinceReset == nil || wl.Build.Coverage.Covered < delta {
+		t.Errorf("after the POST: since-reset %+v, %d covered, want the baseline still applying and at least %d: nothing was cleared", wl.Build.SinceReset, wl.Build.Coverage.Covered, delta)
 	}
 
 	hit()
@@ -102,9 +134,15 @@ func TestCollect_RealCoverBuild(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("covserver did not exit on SIGTERM")
 	}
+	// The exit flush holds the process's counts since it started; the
+	// baseline (same build, same pid) still takes off the time before the
+	// reset.
 	wl = collect(false).Workloads[0]
 	if wl.State != StateCollected || wl.Build.CounterFiles != 1 || wl.Build.Coverage == nil || wl.Build.Coverage.Covered == 0 {
 		t.Fatalf("exit flush: %+v build %+v, want the one counter file Go wrote at exit", wl, wl.Build)
+	}
+	if wl.Build.SinceReset == nil || wl.Build.SinceReset.Processes != 1 {
+		t.Errorf("exit flush: since-reset %+v, want the process's baseline subtracted from its exit flush", wl.Build.SinceReset)
 	}
 	for _, s := range wl.Sources {
 		if s.Kind == SourcePull && s.Status != SourceUnreachable {

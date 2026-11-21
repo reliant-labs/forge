@@ -17,17 +17,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/testcapture"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
-// CoveragePath and ResetHeader are serverkit's endpoint and reset header
-// (pkg/serverkit.CoveragePath, CoverageResetHeader), repeated so the forge
-// binary does not link serverkit; a test holds them equal.
-const (
-	CoveragePath = "/debug/coverage"
-	ResetHeader  = "X-Forge-Coverage-Reset"
-)
+// CoveragePath is serverkit's read-only endpoint (pkg/serverkit.CoveragePath),
+// repeated so the forge binary does not link serverkit; a test holds them
+// equal.
+const CoveragePath = "/debug/coverage"
 
 // DefaultLane is the lane collected coverage is recorded under: servers are
 // exercised by the e2e lane.
@@ -124,7 +122,8 @@ type Options struct {
 	Env         string
 	// Lane records the coverage; default DefaultLane.
 	Lane string
-	// Reset zeroes the counters instead of collecting them.
+	// Reset records the live counters as a baseline (and fences the flushed
+	// ones) instead of collecting them: later collects count from here.
 	Reset   bool
 	Targets []Target
 	// Run resolves the run directory. It is called only when there is
@@ -291,13 +290,16 @@ func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult
 		h := t.Host
 		if h.PullAddr != "" {
 			live++
-			fs, s := pullHTTP(ctx, opts.HTTP, h.PullAddr, false)
+			fs, s := pullHTTP(ctx, opts.HTTP, h.PullAddr)
 			add(s, fs)
 		} else if h.Withheld != "" {
 			r.Notes = append(r.Notes, "no live pull: "+h.Withheld)
 		}
 		fs, err := readDir(h.CoverDir)
 		fs = fenceOut(fs, fenced, dirSource(opts.ProjectRoot, h.CoverDir))
+		for i := range fs {
+			fs[i].scope = hostScope
+		}
 		s := Source{Kind: SourceExitFlush, From: rel(opts.ProjectRoot, h.CoverDir), Status: SourceOK, Files: len(fs)}
 		switch {
 		case err != nil:
@@ -316,7 +318,7 @@ func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult
 			break
 		}
 		live++
-		gatherPods(ctx, opts, c, false, add)
+		gatherPods(ctx, opts, c, add)
 	}
 
 	builds, orphans := groupBuilds(files)
@@ -403,7 +405,7 @@ func gatherCompose(ctx context.Context, opts Options, c *ComposeTarget, fenced f
 	}
 }
 
-func gatherPods(ctx context.Context, opts Options, c *ClusterTarget, reset bool, add func(Source, []covFile)) {
+func gatherPods(ctx context.Context, opts Options, c *ClusterTarget, add func(Source, []covFile)) {
 	from := c.Namespace + " " + c.Selector
 	if opts.Kube == nil {
 		add(Source{Kind: SourcePod, From: from, Status: SourceUnreachable, Error: "no cluster client"}, nil)
@@ -420,41 +422,28 @@ func gatherPods(ctx context.Context, opts Options, c *ClusterTarget, reset bool,
 	}
 	for _, p := range pods {
 		s := Source{Kind: SourcePod, From: c.Namespace + "/" + p.Name}
-		req, err := coverageRequest(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(c.Port)), reset)
+		req, err := coverageRequest(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(c.Port)))
 		var resp *http.Response
 		if err == nil {
 			resp, err = opts.Kube.Do(ctx, c.Context, c.Namespace, p.Name, c.Port, req)
 		}
 		fs := readResponse(resp, err, &s)
 		for i := range fs {
-			fs[i].live, fs[i].started = true, p.Started
+			fs[i].live, fs[i].started, fs[i].scope = true, p.Started, podScope(c.Namespace, p.Name)
 		}
 		add(s, fs)
 	}
 }
 
-// coverageRequest is serverkit's request for addr: GET reads; a reset is
-// POST with ResetHeader (serverkit refuses a reset in any other form, so no
-// web page can trigger one).
-func coverageRequest(ctx context.Context, addr string, reset bool) (*http.Request, error) {
-	method := http.MethodGet
-	if reset {
-		method = http.MethodPost
-	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://"+addr+CoveragePath, nil)
-	if err != nil {
-		return nil, err
-	}
-	if reset {
-		req.Header.Set(ResetHeader, "1")
-	}
-	return req, nil
+// coverageRequest is serverkit's read: GET, the only request it serves.
+func coverageRequest(ctx context.Context, addr string) (*http.Request, error) {
+	return http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+CoveragePath, nil)
 }
 
-// pullHTTP pulls a host's /debug/coverage (with reset, and zeroes it).
-func pullHTTP(ctx context.Context, c *http.Client, addr string, reset bool) ([]covFile, Source) {
+// pullHTTP pulls a host's /debug/coverage.
+func pullHTTP(ctx context.Context, c *http.Client, addr string) ([]covFile, Source) {
 	s := Source{Kind: SourcePull, From: addr}
-	req, err := coverageRequest(ctx, addr, reset)
+	req, err := coverageRequest(ctx, addr)
 	if err != nil {
 		s.Status, s.Error = SourceFailed, err.Error()
 		return nil, s
@@ -463,7 +452,7 @@ func pullHTTP(ctx context.Context, c *http.Client, addr string, reset bool) ([]c
 	fs := readResponse(resp, err, &s)
 	now := time.Now()
 	for i := range fs {
-		fs[i].live, fs[i].started = true, now
+		fs[i].live, fs[i].started, fs[i].scope = true, now, hostScope
 	}
 	return fs, s
 }
@@ -508,29 +497,45 @@ func describeDialErr(err error) string {
 	return err.Error()
 }
 
-// resetTarget zeroes t's counters and fences off the counter files flushed
-// before it, by source, name and content (fence.go has the rule).
+// resetTarget starts t's coverage from zero without changing the process:
+// it records each live process's counters as its baseline (baseline.go) and
+// fences off the counter files flushed before it, by source, name and
+// content (fence.go). Nothing is written unless the live processes answered,
+// so a reset that saw nothing leaves the next collect as it was.
 func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) {
 	at := opts.Now()
-	// fenced records the files; it is called only once the reset has
-	// happened, so a reset that failed leaves the previous fence.
-	fenced := func(seen []fenceEntry) bool {
+	record := func(taken []baselineProcess, seen []fenceEntry) bool {
+		if len(taken) > 0 {
+			if err := writeBaseline(BaselineFile(opts.ProjectRoot, opts.Env, t.Workload), at, taken); err != nil {
+				r.State, r.Reason = StateFailed, "reset baseline not recorded, so the counts before the reset would be collected: "+err.Error()
+				return false
+			}
+		}
 		if err := writeFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload), at, seen); err != nil {
 			r.State, r.Reason = StateFailed, "reset fence not recorded, so the counters flushed before the reset would be collected: "+err.Error()
 			return false
 		}
 		return true
 	}
+	// baselineOf turns a pull into its processes' baselines, or fails the reset.
+	baselineOf := func(fs []covFile, scope string) ([]baselineProcess, bool) {
+		taken, err := takeBaselines(ctx, opts, scope, fs)
+		if err != nil {
+			r.State, r.Reason = StateFailed, "take the reset baseline (nothing recorded, the earlier counters are kept): "+err.Error()
+			return nil, false
+		}
+		return taken, true
+	}
 	switch {
 	case t.Host != nil:
+		var taken []baselineProcess
 		if t.Host.PullAddr == "" {
-			r.Notes = append(r.Notes, "live counters not zeroed: "+t.Host.Withheld)
+			r.Notes = append(r.Notes, "live counters not baselined: "+t.Host.Withheld)
 		} else {
-			_, s := pullHTTP(ctx, opts.HTTP, t.Host.PullAddr, true)
+			fs, s := pullHTTP(ctx, opts.HTTP, t.Host.PullAddr)
 			r.Sources = append(r.Sources, s)
-			// Only an answer the process gave proves the counters were
-			// zeroed: a refusal, or no answer at all (down, timed out),
-			// zeroed nothing, so the fence stays where it was.
+			// Only an answer from the process gives a baseline: a refusal,
+			// or no answer at all (down, timed out), records nothing.
 			switch s.Status {
 			case SourceOK, SourceEmpty:
 			case SourceUnreachable:
@@ -540,13 +545,17 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 				r.State, r.Reason = StateFailed, s.Error+" (not reset: the earlier counters are kept)"
 				return
 			}
+			var ok bool
+			if taken, ok = baselineOf(fs, hostScope); !ok {
+				return
+			}
 		}
 		fs, err := readDir(t.Host.CoverDir)
 		if err != nil {
 			r.State, r.Reason = StateFailed, "list the counters flushed before the reset: "+err.Error()
 			return
 		}
-		if !fenced(fenceEntries(dirSource(opts.ProjectRoot, t.Host.CoverDir), fs)) {
+		if !record(taken, fenceEntries(dirSource(opts.ProjectRoot, t.Host.CoverDir), fs)) {
 			return
 		}
 	case t.Compose != nil:
@@ -555,21 +564,35 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 			r.State, r.Reason = StateFailed, "list the counters flushed before the reset: "+err.Error()
 			return
 		}
-		if !fenced(seen) {
+		if !record(nil, seen) {
 			return
 		}
-		r.Notes = append(r.Notes, "a container's live counters cannot be zeroed (compose withholds "+CoveragePath+"); the counter files flushed before now are left out of every later collect")
+		r.Notes = append(r.Notes, "compose withholds "+CoveragePath+", so a container's live counters cannot be baselined; the counter files flushed before now are left out of every later collect")
 	case t.Cluster != nil:
 		if t.Cluster.Withheld != "" {
 			r.State, r.Reason = StateUnreachable, "no live pull: "+t.Cluster.Withheld
 			return
 		}
 		// A pod's GOCOVERDIR is never read, so there is nothing flushed to
-		// fence: zeroing the live counters is the whole reset.
-		gatherPods(ctx, opts, t.Cluster, true, func(s Source, _ []covFile) { r.Sources = append(r.Sources, s) })
+		// fence: the pods' baselines are the whole reset.
+		var taken []baselineProcess
+		gatherPods(ctx, opts, t.Cluster, func(s Source, fs []covFile) {
+			r.Sources = append(r.Sources, s)
+			if len(fs) > 0 && r.State == "" {
+				if b, ok := baselineOf(fs, fs[0].scope); ok {
+					taken = append(taken, b...)
+				}
+			}
+		})
+		if r.State != "" {
+			return
+		}
 		ok := slices.ContainsFunc(r.Sources, func(s Source) bool { return s.Status == SourceOK || s.Status == SourceEmpty })
 		if !ok {
 			r.State, r.Reason = settleEmpty(r.Sources, 1)
+			return
+		}
+		if !record(taken, nil) {
 			return
 		}
 	default:
@@ -650,12 +673,39 @@ func recordRun(ctx context.Context, opts Options, doc *Document, run string, wri
 		if len(r.Stale) > 0 {
 			r.Notes = append(r.Notes, fmt.Sprintf("%d older build(s) of this binary kept as %q and never merged: the newest build is the workload's coverage", len(r.Stale), StaleBuildLabel))
 		}
-		if tally, err := convert(ctx, opts, dir); err != nil {
+		input := testreport.LaneCoverageInput{Path: relDir + "/", Format: testreport.CoverageGoCovdata}
+		bases, err := readBaseline(BaselineFile(opts.ProjectRoot, opts.Env, r.Name))
+		if err != nil {
+			r.Notes = append(r.Notes, "reset baseline unreadable, so nothing is subtracted: "+err.Error())
+		}
+		delta, subtracted, restarted, err := sinceReset(ctx, opts, p.builds[0], dir, bases)
+		for _, name := range restarted {
+			r.Notes = append(r.Notes, "process of "+name+" restarted since the reset: counted whole")
+		}
+		var tally *testreport.Tally
+		switch {
+		case err != nil:
+			// The counts since the reset are unknown, and the raw ones would
+			// count the time before it: record no input rather than a wrong one.
+			r.State, r.Reason, r.Build, r.Stale = StateFailed, "subtract the reset baseline: "+err.Error(), nil, nil
+			continue
+		case delta != nil:
+			if err := atomicfile.WriteFile(filepath.Join(dir, SinceResetProfile), delta, 0o644); err != nil {
+				r.State, r.Reason, r.Build, r.Stale = StateFailed, "write coverage into the run: "+err.Error(), nil, nil
+				continue
+			}
+			input = testreport.LaneCoverageInput{Path: relDir + "/" + SinceResetProfile, Format: testreport.CoverageGoProfile}
+			r.Build.SinceReset = &SinceReset{Processes: subtracted, Profile: r.Build.Dir + "/" + SinceResetProfile}
+			tally, err = tallyProfiles(opts, [][]byte{delta})
+		default:
+			tally, err = convert(ctx, opts, dir)
+		}
+		if err != nil {
 			r.Notes = append(r.Notes, "not converted (the files are kept; `forge test report` converts them): "+err.Error())
 		} else {
 			r.Build.Coverage = tally
 		}
-		inputs = append(inputs, testreport.LaneCoverageInput{Path: relDir + "/", Format: testreport.CoverageGoCovdata})
+		inputs = append(inputs, input)
 	}
 	if len(inputs) == 0 {
 		return
@@ -687,7 +737,12 @@ func recordLane(opts Options, run string, inputs []testreport.LaneCoverageInput,
 		}
 	}
 	for _, in := range inputs {
-		m.Coverage = slices.DeleteFunc(m.Coverage, func(c testreport.LaneCoverageInput) bool { return c.Path == in.Path })
+		// A workload's input is its covdata directory or its since-reset
+		// profile in it: either replaces whichever an earlier collect listed.
+		dir := strings.TrimSuffix(strings.TrimSuffix(in.Path, SinceResetProfile), "/") + "/"
+		m.Coverage = slices.DeleteFunc(m.Coverage, func(c testreport.LaneCoverageInput) bool {
+			return c.Path == dir || c.Path == dir+SinceResetProfile
+		})
 		m.Coverage = append(m.Coverage, in)
 	}
 	slices.SortFunc(m.Coverage, func(a, b testreport.LaneCoverageInput) int { return strings.Compare(a.Path, b.Path) })
@@ -706,9 +761,18 @@ func convert(ctx context.Context, opts Options, dir string) (*testreport.Tally, 
 	if err != nil {
 		return nil, err
 	}
-	var docs []*testreport.Coverage
+	profiles := make([][]byte, 0, len(builds))
 	for _, b := range builds {
-		d, err := testreport.ParseCoverage(bytes.NewReader(b.Profile), testreport.CoverageOptions{Format: testreport.FormatGoCover, Lane: testreport.Lane(opts.Lane)})
+		profiles = append(profiles, b.Profile)
+	}
+	return tallyProfiles(opts, profiles)
+}
+
+// tallyProfiles tallies text profiles, generated code excluded.
+func tallyProfiles(opts Options, profiles [][]byte) (*testreport.Tally, error) {
+	var docs []*testreport.Coverage
+	for _, prof := range profiles {
+		d, err := testreport.ParseCoverage(bytes.NewReader(prof), testreport.CoverageOptions{Format: testreport.FormatGoCover, Lane: testreport.Lane(opts.Lane)})
 		if errors.Is(err, testreport.ErrNoInput) {
 			continue
 		}

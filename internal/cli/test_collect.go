@@ -54,12 +54,13 @@ pod of the last rollout) is kept under stale/<hash>/, labelled "stale build"
 and never merged. Without --run, FORGE_TEST_RUN is the run, else a new one is
 begun; a collect after ` + "`forge test capture --lane e2e`" + ` joins that lane.
 
---reset zeroes the counters instead: each live process is sent
-POST /debug/coverage with X-Forge-Coverage-Reset: 1 (the result discarded),
-and the counter files already flushed (by any process, including one that
-exited before the reset) are recorded by name and left out of every later
-collect. A file flushed after the reset is always collected. Run it before
-the lane, collect after it.
+--reset starts the counts from zero instead, without changing the running
+processes (the endpoint is read-only): each live process's counters are
+pulled and recorded as its baseline, which every later collect subtracts, and
+the counter files already flushed (by any process, including one that exited
+before the reset) are recorded and left out of every later collect. A process
+started after the reset, or restarted, is counted whole, and a file flushed
+after the reset is always collected. Run it before the lane, collect after it.
 
 A workload that is not a forge Go build reports
 "coverage: unavailable (not a forge Go build)"; one the env does not
@@ -68,7 +69,7 @@ instrument, "not instrumented". Collection is best effort per workload.
 Exit codes: 0 when anything was collected, or there was nothing to collect; 2
 when an instrumented workload could not be reached and nothing was collected;
 1 for a bad argument. --json prints forge.test.collect/v1.`,
-		Example: `  forge test collect dev --reset --run "$RUN"            # zero the counters
+		Example: `  forge test collect dev --reset --run "$RUN"            # baseline: count from here
   forge test capture --run "$RUN" --lane e2e -- go test -tags=e2e -json ./e2e/...
   forge test collect dev --run "$RUN" --lane e2e         # pull, convert, record`,
 		Args:         cobra.ExactArgs(1),
@@ -101,7 +102,7 @@ when an instrumented workload could not be reached and nothing was collected;
 		},
 	}
 	cmd.Flags().StringArrayVar(&workloads, "workload", nil, "Collect only this workload (repeatable; default: every workload of the env)")
-	cmd.Flags().BoolVar(&reset, "reset", false, "Zero the counters instead of collecting them, and leave the counter files flushed before it out of every later collect")
+	cmd.Flags().BoolVar(&reset, "reset", false, "Start the counts from zero instead of collecting: record the live counters as a baseline later collects subtract, and leave the counter files flushed before it out of every later collect")
 	cmd.Flags().StringVar(&run, "run", "", "Run directory to record into (default: $FORGE_TEST_RUN, else a new run)")
 	cmd.Flags().StringVar(&lane, "lane", testcollect.DefaultLane, "Lane to record the coverage under")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Print forge.test.collect/v1")

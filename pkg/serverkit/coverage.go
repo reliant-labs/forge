@@ -19,45 +19,36 @@ import (
 // reaches pprof: localhost on a host, `kubectl port-forward` in a cluster.
 const CoveragePath = "/debug/coverage"
 
-// CoverageResetHeader is the header a reset must carry, set to "1":
-//
-//	POST /debug/coverage
-//	X-Forge-Coverage-Reset: 1
-//
-// A browser cannot send a custom header to another origin without a CORS
-// preflight, which this endpoint never answers, so no web page can reset a
-// process's counters, whatever it can reach.
-const CoverageResetHeader = "X-Forge-Coverage-Reset"
-
 // CoverageHandler serves a binary's coverage data, for a server built with
 // `go build -cover` (forge builds one for local, ephemeral and preview envs).
 // A long-lived process never returns from main, so the counters Go writes to
 // GOCOVERDIR at exit are only half the story: pulling them while it runs
 // loses nothing to a later SIGKILL.
 //
-//	GET  /debug/coverage                              a tar of covmeta.<hash> + covcounters.<hash>.<pid>.<ts>
-//	POST /debug/coverage + X-Forge-Coverage-Reset: 1  the same tar, then the counters are zeroed
+//	GET /debug/coverage   a tar of covmeta.<hash> + covcounters.<hash>.<pid>.<ts>
 //
 // The tar holds exactly what Go would write to GOCOVERDIR, so
 // `go tool covdata textfmt -i=<dir>` reads it once unpacked. The meta file's
 // hash is the build's fingerprint: data from two builds never merges.
 //
+// It is read-only: nothing a request sends changes the process's counters.
+// "Start the counts from zero" is the client's job: `forge test collect
+// --reset` pulls the counters as a baseline and subtracts it from every
+// later pull. A POST (the form a reset once took) answers 405 and clears
+// nothing, and so does a GET with ?reset.
+//
 // It answers 404 when the binary was not built with -cover (a `go test -c
 // -cover` binary counts as one: Go prepares a test binary's meta-data only
-// at exit), and 409 when it
-// was built in a mode other than atomic: Go writes and clears live counters
-// only in atomic mode (`-covermode=atomic`, which every forge cover build
-// uses). It is mounted on the debug listener only, never the public edge,
-// and only when that listener is bound to loopback.
+// at exit), and 409 when it was built in a mode other than atomic: Go writes
+// live counters only in atomic mode (`-covermode=atomic`, which every forge
+// cover build uses). It is mounted on the debug listener only, never the
+// public edge, and only when that listener is bound to loopback.
 //
-// Loopback keeps other machines out, not the browser on this one: a page
-// can make requests to 127.0.0.1. So the handler fails closed against
-// anything a browser originates. A request with an Origin header, a
-// Sec-Fetch-Site other than none or same-origin, or a Host that is not a
-// loopback name (DNS rebinding) is refused with 403, reads included. A reset
-// needs POST and CoverageResetHeader, which no cross-site request can carry
-// without a preflight; POST without it is 403, and GET with ?reset (the form
-// the first version took) is 405 and resets nothing.
+// Loopback keeps other machines out, not the browser on this one: a page can
+// make requests to 127.0.0.1, and the counters it would read describe the
+// process's code paths. So a request with an Origin header, a Sec-Fetch-Site
+// other than none or same-origin, or a Host that is not a loopback name (DNS
+// rebinding) is refused with 403.
 func CoverageHandler() http.Handler {
 	return coverageHandler{rt: goCoverage{}}
 }
@@ -69,7 +60,6 @@ type coverageRuntime interface {
 	Instrumented() bool
 	WriteMetaDir(dir string) error
 	WriteCountersDir(dir string) error
-	ClearCounters() error
 }
 
 type goCoverage struct{}
@@ -79,28 +69,18 @@ type goCoverage struct{}
 func (goCoverage) Instrumented() bool                { return coverage.WriteMeta(io.Discard) == nil }
 func (goCoverage) WriteMetaDir(dir string) error     { return coverage.WriteMetaDir(dir) }
 func (goCoverage) WriteCountersDir(dir string) error { return coverage.WriteCountersDir(dir) }
-func (goCoverage) ClearCounters() error              { return coverage.ClearCounters() }
 
 type coverageHandler struct{ rt coverageRuntime }
 
 func (h coverageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	if r.Method != http.MethodGet || r.URL.Query().Has("reset") {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "coverage: this endpoint is read-only, and nothing was reset; "+
+			"`forge test collect <env> --reset` starts a run from zero by recording these counters as a baseline it subtracts later", http.StatusMethodNotAllowed)
 		return
 	}
 	if why := browserOriginated(r); why != "" {
 		http.Error(w, "coverage: refused: "+why+"; this endpoint serves local tools, never a web page", http.StatusForbidden)
-		return
-	}
-	reset := r.Method == http.MethodPost
-	if !reset && r.URL.Query().Has("reset") {
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, "coverage: a reset is POST "+CoveragePath+" with the header "+CoverageResetHeader+": 1; GET only reads, and nothing was reset", http.StatusMethodNotAllowed)
-		return
-	}
-	if reset && r.Header.Get(CoverageResetHeader) != "1" {
-		http.Error(w, "coverage: a reset needs the header "+CoverageResetHeader+": 1; nothing was reset", http.StatusForbidden)
 		return
 	}
 	if !h.rt.Instrumented() {
@@ -123,18 +103,10 @@ func (h coverageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "coverage: write counters: "+err.Error(), http.StatusConflict)
 		return
 	}
-	// The tar is built before the reset so a failed reset loses nothing:
-	// the caller gets the error and may pull again.
 	var buf bytes.Buffer
 	if err := tarDir(&buf, dir); err != nil {
 		http.Error(w, "coverage: "+err.Error(), http.StatusInternalServerError)
 		return
-	}
-	if reset {
-		if err := h.rt.ClearCounters(); err != nil {
-			http.Error(w, "coverage: reset: "+err.Error(), http.StatusConflict)
-			return
-		}
 	}
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.Header().Set("Content-Length", fmt.Sprint(buf.Len()))

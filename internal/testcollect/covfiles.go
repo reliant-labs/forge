@@ -43,6 +43,10 @@ type covFile struct {
 	// (a pod's start time), which orders live builds.
 	live    bool
 	started time.Time
+	// scope tells its process apart for the reset baseline (baseline.go):
+	// "host" for a host workload's pull and exit flush, the pod for a pod's
+	// pull, "" where no baseline applies (compose).
+	scope string
 }
 
 // parseCovName reads a coverage file name. ok is false for any other file.

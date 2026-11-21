@@ -4693,9 +4693,10 @@ benefits:
     why: >-
       The evaluation SDK ships: a Go store and OpenFeature provider, a browser
       loader and OpenFeature provider, and assignment events recorded as
-      product events. Declaring changes in the project, platform delivery of
-      each environment's policy, and the Experiments screen are not shipped
-      yet. Evaluation is local in the app, from a versioned policy, without a
+      product events, and changes are declared in the project (changes.yaml)
+      and shipped in the release. Platform delivery of each environment's
+      policy and the Experiments screen are not shipped yet. Evaluation is
+      local in the app, from a versioned policy, without a
       network call on each request or changes to load balancers.
     evidence:
       - library: pkg/changes
@@ -4705,6 +4706,8 @@ benefits:
       - path: web-runtime/src/changes-store.ts
       - path: web-runtime/src/changes-provider.ts
       - path: web-runtime/src/exposure.ts
+      - path: internal/changesdecl/changesdecl.go
+      - path: docs/changes.md
       - skill: observability/changes
       - skill: observability/product-analytics
 

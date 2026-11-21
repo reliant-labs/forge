@@ -250,3 +250,52 @@ func stubRenderKCLRaw(t *testing.T, n *atomic.Int64) {
 	}
 	t.Cleanup(func() { renderKCLRawHook = prev })
 }
+
+// A caller waiting for another's evaluation of the same env gives up on its
+// own cancellation at once: it never waits for the evaluation to finish. The
+// evaluation still completes and its answer is shared.
+func TestDeclarationMemo_WaiterHonoursItsOwnCancellation(t *testing.T) {
+	ctx := withDeclarationMemo(context.Background())
+	m := declarationMemoFrom(ctx)
+	dir := t.TempDir()
+	started, release := make(chan struct{}), make(chan struct{})
+	first := make(chan *KCLEntities)
+	go func() {
+		e, _ := m.render(ctx, dir, "prod", func(context.Context) (*KCLEntities, error) {
+			close(started)
+			<-release
+			return &KCLEntities{Env: "prod"}, nil
+		})
+		first <- e
+	}()
+	<-started
+
+	waiter, cancel := context.WithCancel(ctx)
+	cancel()
+	returned := make(chan error, 1)
+	go func() {
+		_, err := m.render(waiter, dir, "prod", func(context.Context) (*KCLEntities, error) {
+			t.Error("the waiter evaluated beside the running evaluation")
+			return nil, nil
+		})
+		returned <- err
+	}()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiter err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled waiter blocked behind the running evaluation")
+	}
+
+	close(release)
+	got := <-first
+	again, err := m.render(ctx, dir, "prod", func(context.Context) (*KCLEntities, error) {
+		t.Error("a finished evaluation was evaluated again")
+		return nil, nil
+	})
+	if err != nil || again != got {
+		t.Fatalf("after the evaluation: %v, %v; want its shared answer", again, err)
+	}
+}

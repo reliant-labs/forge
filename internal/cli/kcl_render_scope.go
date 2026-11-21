@@ -56,8 +56,12 @@ type declarationMemo struct {
 	slots   chan struct{}
 }
 
+// declarationMemoEntry is one key's evaluation, guarded by the memo's mu.
+// While one caller evaluates, running is closed when it finishes, so another
+// caller waits on it beside its own ctx and can give up on its own
+// cancellation without waiting for the evaluation.
 type declarationMemoEntry struct {
-	mu       sync.Mutex
+	running  chan struct{}
 	done     bool
 	entities *KCLEntities
 	err      error
@@ -100,36 +104,58 @@ func declarationMemoKeyFor(ctx context.Context, projectDir, env string) string {
 }
 
 // render returns the env's declaration, evaluating it at most once per key.
+// A second caller for the same env waits for the first rather than
+// evaluating beside it, but only as long as its own ctx allows: a caller
+// whose ctx ends returns its ctx.Err() at once. Callers for other envs are
+// not blocked.
 func (m *declarationMemo) render(ctx context.Context, projectDir, env string, eval func(context.Context) (*KCLEntities, error)) (*KCLEntities, error) {
 	key := declarationMemoKeyFor(ctx, projectDir, env)
-	m.mu.Lock()
-	e, ok := m.entries[key]
-	if !ok {
-		e = &declarationMemoEntry{}
-		m.entries[key] = e
-	}
-	m.mu.Unlock()
+	for {
+		m.mu.Lock()
+		e, ok := m.entries[key]
+		if !ok {
+			e = &declarationMemoEntry{}
+			m.entries[key] = e
+		}
+		if e.done {
+			m.mu.Unlock()
+			return e.entities, e.err
+		}
+		if wait := e.running; wait != nil {
+			m.mu.Unlock()
+			select {
+			case <-wait:
+				continue // done, or cancelled: look again
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		finished := make(chan struct{})
+		e.running = finished
+		m.mu.Unlock()
 
-	// Held across the evaluation, so a second caller for the same env
-	// waits for the first rather than evaluating beside it. Callers for
-	// other envs hold other entries and are not blocked.
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.done {
-		return e.entities, e.err
+		entities, err := m.evaluate(ctx, eval)
+
+		m.mu.Lock()
+		e.running = nil
+		// A cancellation is the caller's deadline, not the declaration's
+		// answer: the next caller (with its own budget) renders afresh.
+		if !(err != nil && (ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))) {
+			e.done, e.entities, e.err = true, entities, err
+		}
+		close(finished)
+		m.mu.Unlock()
+		return entities, err
 	}
+}
+
+// evaluate runs eval under one of the memo's slots.
+func (m *declarationMemo) evaluate(ctx context.Context, eval func(context.Context) (*KCLEntities, error)) (*KCLEntities, error) {
 	select {
 	case m.slots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	entities, err := eval(ctx)
-	<-m.slots
-	if err != nil && (ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-		// The caller's deadline, not the declaration's answer: the next
-		// caller (with its own budget) renders afresh.
-		return nil, err
-	}
-	e.done, e.entities, e.err = true, entities, err
-	return entities, err
+	defer func() { <-m.slots }()
+	return eval(ctx)
 }

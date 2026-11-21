@@ -14,7 +14,7 @@ import (
 )
 
 func TestNewReport(t *testing.T) {
-	res := parseResults(t, "testdata/results/go-test.json", testreport.ResultsOptions{Lane: testreport.LaneUnit})
+	res := parseResults(t, "testdata/results/go-test.jsonl", testreport.ResultsOptions{Lane: testreport.LaneUnit})
 	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
 	server := parseCov(t, "server.profile", testreport.LaneE2E)
 	cov := merge(t, testreport.MergeOptions{ModulePath: "example.com/demo"}, unit, server)

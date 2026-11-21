@@ -93,6 +93,12 @@ func goCoverLine(l string, b *covBuilder) error {
 		// its absolute path.
 		f, err = b.fileFor("", name, GranularityStatement)
 	} else {
+		// Every other name is the file's import-path-qualified name
+		// ("example.com/demo/a/a.go"), on every OS: it is kept whole as
+		// ImportPath (the package is its directory), and Merge derives the
+		// repo-relative Path from MergeOptions.ModulePath. A repo path
+		// cannot be read off the name alone, because the module path's
+		// length is not in the profile.
 		f, err = b.fileFor(name, "", GranularityStatement)
 	}
 	if err != nil {

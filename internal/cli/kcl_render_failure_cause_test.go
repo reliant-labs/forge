@@ -147,6 +147,40 @@ func TestRederiveFrontendInventory_AfterAFailedEnvRenders(t *testing.T) {
 	}
 }
 
+func TestRederiveFrontendInventory_KeepsDeclarationsFromNewlyFailedEnv(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"reports", "shop", "preview"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	frontend := func(env, name string) renderedEnvFrontend {
+		return renderedEnvFrontend{Env: env, Frontend: FrontendEntity{Name: name, Type: "vite-spa", Path: name}}
+	}
+	failed := func(env string) envRenderFailure {
+		return envRenderFailure{Env: env, Err: errors.New(compileErrorRender)}
+	}
+	ctx := &pipelineContext{
+		ProjectDir: root, AbsPath: root, Cfg: &config.ProjectConfig{Name: "example"}, renderedRead: true,
+		rendered: renderedEnvironments{frontends: []renderedEnvFrontend{frontend("prod", "reports")}, failed: []envRenderFailure{failed("preview"), failed("staging")}},
+	}
+	if err := stepDeriveFrontendInventory(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ctx.rendered = renderedEnvironments{frontends: []renderedEnvFrontend{frontend("staging", "shop")}, failed: []envRenderFailure{failed("preview"), failed("prod")}}
+	ctx.rederiveFrontendInventory()
+	if got := frontendNames(ctx.Cfg); !slices.Equal(got, []string{"reports", "shop"}) {
+		t.Errorf("staging recovered while prod failed: got %v, want [reports shop]", got)
+	}
+	// With prod rendering again and reporting no frontend, do not retain
+	// the previous declaration. Preview's successful render adds its app.
+	ctx.rendered = renderedEnvironments{frontends: []renderedEnvFrontend{frontend("preview", "preview"), frontend("staging", "shop")}}
+	ctx.rederiveFrontendInventory()
+	if got := frontendNames(ctx.Cfg); !slices.Equal(got, []string{"preview", "shop"}) {
+		t.Errorf("prod rendered without reports: got %v, want [preview shop]", got)
+	}
+}
+
 func frontendNames(cfg *config.ProjectConfig) []string {
 	var names []string
 	for _, fe := range cfg.Frontends {

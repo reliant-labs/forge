@@ -305,11 +305,10 @@ type pipelineContext struct {
 	rendered     renderedEnvironments
 	renderedRead bool
 
-	// diskFrontends is the inventory before stepDeriveFrontendInventory
-	// overlaid the KCL declarations, and inventoryMissedEnvs the envs whose
-	// declarations that overlay lacked because they did not render; see
-	// rederiveFrontendInventory.
+	// The disk inventory and last usable declarations used to derive frontend
+	// codegen. A failed re-render cannot erase an env's known declarations.
 	diskFrontends       []config.FrontendConfig
+	inventoryFrontends  []renderedEnvFrontend
 	inventoryMissedEnvs []string
 
 	// registry is the memoized parse of the user-owned

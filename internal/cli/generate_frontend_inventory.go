@@ -72,9 +72,11 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 	// Kept for rederiveFrontendInventory: an env that fails here may render
 	// later in the run, once the modules it imports are regenerated.
 	ctx.diskFrontends = slices.Clone(ctx.Cfg.Frontends)
-	ctx.inventoryMissedEnvs = failedEnvNames(ctx.renderedEnvs().failed)
+	rendered := ctx.renderedEnvs()
+	ctx.inventoryMissedEnvs = failedEnvNames(rendered.failed)
+	ctx.inventoryFrontends = rendered.frontends
 
-	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.renderedFrontends()))
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.inventoryFrontends))
 	if len(fromKCL) == 0 {
 		return frontendCodegenProblems(ctx.Cfg.Frontends)
 	}
@@ -133,8 +135,20 @@ func (ctx *pipelineContext) rederiveFrontendInventory() {
 	if !recovered {
 		return
 	}
-	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(rendered.frontends))
-	ctx.Cfg.Frontends = config.MergeFrontendInventory(slices.Clone(ctx.diskFrontends), fromKCL)
+	// Keep the last usable declarations only for environments that failed
+	// this pass. A successful render replaces its older declarations, even
+	// when it now declares no frontends. Preserve environment ordering so
+	// DeriveFrontendsFromKCL resolves duplicate names the same way as before.
+	frontends := slices.Clone(rendered.frontends)
+	for _, old := range ctx.inventoryFrontends {
+		if slices.Contains(stillFailed, old.Env) {
+			frontends = append(frontends, old)
+		}
+	}
+	slices.SortStableFunc(frontends, func(a, b renderedEnvFrontend) int { return strings.Compare(a.Env, b.Env) })
+	ctx.inventoryFrontends = frontends
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(frontends))
+	ctx.Cfg.Frontends = config.MergeFrontendInventory(ctx.diskFrontends, fromKCL)
 	config.ApplyDerivedDefaults(ctx.Cfg)
 }
 

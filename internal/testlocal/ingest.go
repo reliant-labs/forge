@@ -2,7 +2,6 @@ package testlocal
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,8 +10,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/gofrs/flock"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/testcapture"
@@ -93,7 +90,7 @@ func Ingest(opts IngestOptions) (IngestResult, error) {
 			return IngestResult{}, err
 		}
 	}
-	if err := recordLane(opts.RunDir, m); err != nil {
+	if err := testcapture.RecordLane(opts.RunDir, m); err != nil {
 		return IngestResult{}, err
 	}
 	return IngestResult{LaneDir: laneDir, Manifest: m}, nil
@@ -134,24 +131,13 @@ func ingestResults(m *testreport.LaneManifest, laneDir string, f testreport.Form
 	if testreport.DetectFormat(data[:min(len(data), 8<<10)]) == f {
 		m.Results = testreport.LaneResultsParsed
 	}
-	name := resultsName(lf)
+	name := testcapture.ResultsName(lf, files[0])
 	var s testcapture.Scrubber
 	if err := atomicfile.WriteFile(filepath.Join(laneDir, name), []byte(s.Text(string(data))), 0o644); err != nil {
 		return err
 	}
 	m.ResultsFile = name
 	return nil
-}
-
-// resultsName mirrors capture's: one name per format.
-func resultsName(f testreport.LaneFormat) string {
-	switch f {
-	case testreport.LaneFormatJUnit:
-		return "junit.xml"
-	case testreport.LaneFormatVitest:
-		return "vitest.json"
-	}
-	return testreport.LaneResultsFile
 }
 
 func ingestCoverage(m *testreport.LaneManifest, laneDir, format string, files []string) error {
@@ -180,46 +166,4 @@ func ingestCoverage(m *testreport.LaneManifest, laneDir, format string, files []
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
-}
-
-// recordLane writes the lane's capture.json and adds the lane to run.json
-// under the run's lock, the same lock `forge test capture` takes, since lanes
-// of one run may finish at once.
-func recordLane(runDir string, m testreport.LaneManifest) error {
-	data, err := marshalIndented(m)
-	if err != nil {
-		return err
-	}
-	if err := atomicfile.WriteFile(filepath.Join(testreport.LaneDir(runDir, m.Lane), testreport.LaneManifestFile), data, 0o644); err != nil {
-		return err
-	}
-	lock := flock.New(filepath.Join(runDir, ".run.lock"))
-	if err := lock.Lock(); err != nil {
-		return err
-	}
-	defer func() { _ = lock.Unlock() }()
-	rm, err := testreport.ReadRunManifest(runDir)
-	if err != nil {
-		return err
-	}
-	if slices.Contains(rm.Lanes, m.Lane) {
-		return nil
-	}
-	rm.Lanes = append(rm.Lanes, m.Lane)
-	data, err = marshalIndented(rm)
-	if err != nil {
-		return err
-	}
-	return atomicfile.WriteFile(filepath.Join(runDir, testreport.RunManifestFile), data, 0o644)
-}
-
-func marshalIndented(v any) ([]byte, error) {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return b.Bytes(), nil
 }

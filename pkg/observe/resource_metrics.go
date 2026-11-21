@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/metric"
@@ -126,6 +127,17 @@ func joinResourceModes() string {
 	return strings.Join(names, ", ")
 }
 
+// resources is the sampler the last Setup started; nil when it started none.
+var resources atomic.Pointer[resmetrics.Sampler]
+
+// Resources returns the resource sampler Setup started, so code that projects
+// the same numbers into its own protocol (a heartbeat, a status page) reads
+// them without a second sampler: Resources().Latest() or Subscribe. It is nil
+// before Setup, and when resource metrics are off (FORGE_OBSERVE_RESOURCE_METRICS=off,
+// Config.ResourceMetrics) or the sampler could not start. The groups it
+// samples follow the same switch; Sampler.Groups reports them.
+func Resources() *resmetrics.Sampler { return resources.Load() }
+
 // startResourceMetrics starts the sampler and registers its instruments on mp.
 // Best effort by design, like the profiler: a sampler that cannot start is a
 // warning, never a reason for Setup to fail.
@@ -134,6 +146,7 @@ func startResourceMetrics(ctx context.Context, cfg Config, mp metric.MeterProvid
 	for _, w := range warns {
 		slog.WarnContext(ctx, "resource metrics: invalid setting", "error", w)
 	}
+	resources.Store(nil)
 	if settings.mode == ResourceMetricsOff {
 		return
 	}
@@ -142,6 +155,7 @@ func startResourceMetrics(ctx context.Context, cfg Config, mp metric.MeterProvid
 		slog.WarnContext(ctx, "resource metrics are off", "error", err)
 		return
 	}
+	resources.Store(s)
 	if _, err := resmetrics.Register(mp.Meter(resourceMeterName), s); err != nil {
 		slog.WarnContext(ctx, "resource metrics are off", "error", err)
 	}

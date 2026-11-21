@@ -115,6 +115,9 @@ func hostedReleaseDocument(ctx context.Context, src hostedVulnSource, env vulnEn
 		if hostedErrorHasCode(err, cloud.CodeNotFound) {
 			return vulnscan.Document{}, undeterminedf("release %s is not on the control plane at %s (project %q)", version, env.Endpoint, env.Project)
 		}
+		if errors.Is(err, errHostedVulnEnvNotFound) {
+			return vulnscan.Document{}, undeterminedf("could not determine: env %q is not on the control plane at %s (project %q), so it has no scope or vuln_gate to read release %s's findings under; nothing was read", env.Name, env.Endpoint, env.Project, version)
+		}
 		return vulnscan.Document{}, hostedVulnReadError(env, err)
 	}
 	return vulnscan.BuildDocument(vulnscan.DocumentInput{
@@ -147,11 +150,7 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 	if filter.Match != "" {
 		writeHostedAdvisory(ctx, out, src, filter.Match)
 	}
-	judged := "judged by the control plane"
-	if doc.Gate.JudgedBy == vulnscan.JudgedByLocal {
-		judged = "judged locally with this checkout's vuln_gate"
-	}
-	_, _ = fmt.Fprintf(out, "findings: the control plane at %s, %s\n", env.Endpoint, judged)
+	_, _ = fmt.Fprintf(out, "findings: the control plane at %s, judged by the control plane\n", env.Endpoint)
 	if link := hostedVulnConsoleLink(env); link != "" {
 		_, _ = fmt.Fprintf(out, "→ %s\n", link)
 	}

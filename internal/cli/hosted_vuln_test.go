@@ -54,8 +54,10 @@ type fakeVulnService struct {
 	advisory map[string]map[string]any
 	calls    []string
 	next     http.Handler
-	// delay holds every RecordReleaseSBOM answer this long: a slow upload.
-	delay time.Duration
+	// hold, when set, holds every RecordReleaseSBOM answer until it is
+	// closed or the request is abandoned (a slow upload); arrived gets a
+	// value as each such request comes in.
+	hold, arrived chan struct{}
 }
 
 func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +73,14 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	var body map[string]any
 	_ = json.Unmarshal(raw, &body)
+	if f.hold != nil && r.URL.Path == svc+"RecordReleaseSBOM" {
+		f.arrived <- struct{}{}
+		select {
+		case <-f.hold:
+		case <-r.Context().Done():
+			return // the client gave up: nothing was recorded
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, strings.TrimPrefix(r.URL.Path, "/"))
@@ -90,9 +100,6 @@ func (f *fakeVulnService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	str := func(k string) string { s, _ := body[k].(string); return s }
 	switch strings.TrimPrefix(r.URL.Path, svc) {
 	case "RecordReleaseSBOM":
-		if f.delay > 0 {
-			time.Sleep(f.delay)
-		}
 		f.records = append(f.records, body)
 		gz, err := base64.StdEncoding.DecodeString(str("sbom"))
 		if err != nil || str("encoding") != "SBOM_ENCODING_GZIP" {
@@ -276,25 +283,53 @@ func TestHostedCutSkipsTheUploadWithoutTheCapability(t *testing.T) {
 }
 
 // A large SBOM over a slow link outlasts the client's default timeout: the
-// upload runs under its own, scaled to its size.
+// upload runs under its own, scaled to its size. Ordered by events, not
+// durations: the upload is held open until a second call under the default
+// timeout has been held as long and abandoned, then answered.
 func TestHostedCutUploadOutlastsTheDefaultTimeout(t *testing.T) {
 	t.Parallel()
-	fake := &fakeVulnService{features: []string{hostedVulnFeatureFindings}, delay: 300 * time.Millisecond}
+	fake := &fakeVulnService{features: []string{hostedVulnFeatureFindings}, hold: make(chan struct{}), arrived: make(chan struct{}, 2)}
 	hs, r, warn := hostedSBOMCut(t, fake, "api")
 	client := hs.client.(*cloud.Client)
 	client.HTTP.Timeout = 100 * time.Millisecond
-	// The test bites: without the upload's own timeout, the same call fails.
-	if err := client.Call(context.Background(), procRecordReleaseSBOM, map[string]any{"version": "v", "artifactName": "a", "sbom": []byte("x")}, nil); err == nil {
-		t.Fatal("a slow call under the default timeout succeeded; the test does not exercise the timeout")
+
+	cut := make(chan error, 1)
+	go func() {
+		_, err := hs.Cut(context.Background(), r)
+		cut <- err
+	}()
+	<-fake.arrived // the upload is in flight, held
+	// The test bites: a call under the default timeout, held the same way,
+	// fails — and the held upload is still open after it has.
+	probe := make(chan error, 1)
+	go func() {
+		probe <- client.Call(context.Background(), procRecordReleaseSBOM, map[string]any{"version": "v", "artifactName": "a", "sbom": []byte("x")}, nil)
+	}()
+	<-fake.arrived
+	if err := <-probe; err == nil {
+		t.Fatal("a held call under the default timeout succeeded; the test does not exercise the timeout")
 	}
-	fake.mu.Lock()
-	fake.records = nil
-	fake.mu.Unlock()
-	if _, err := hs.Cut(context.Background(), r); err != nil {
+	select {
+	case err := <-cut:
+		t.Fatalf("the upload ended before it was answered (%v): it ran under the default timeout", err)
+	default:
+	}
+	close(fake.hold)
+	if err := <-cut; err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.records) != 1 || warn.Len() != 0 {
-		t.Fatalf("upload under its own timeout: %d recorded, output:\n%s", len(fake.records), warn)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	// The abandoned probe may or may not be recorded (the server learns of a
+	// client that gave up asynchronously); the upload must be, once.
+	uploads := 0
+	for _, rec := range fake.records {
+		if rec["artifactName"] == "api" {
+			uploads++
+		}
+	}
+	if uploads != 1 || warn.Len() != 0 {
+		t.Fatalf("upload under its own timeout: %d recorded, output:\n%s", uploads, warn)
 	}
 }
 
@@ -699,27 +734,34 @@ func TestVulnListTakesTheControlPlanesVerdictOverTheLocalPolicy(t *testing.T) {
 	}
 }
 
-// A control plane that returned no verdict (it has no row for the env, so it
-// applied no vuln_gate) is judged locally, and the document says so.
-func TestVulnListJudgesLocallyWhenTheControlPlaneGaveNoVerdict(t *testing.T) {
+// A control plane with no environment of the name asked for is never read
+// release-wide: the read would carry neither the env's scope nor its
+// vuln_gate. list (and show, scan --deployed) say could not determine, exit
+// 2, and GetReleaseVulnerabilities is never called.
+func TestVulnListOnAnEnvTheControlPlaneDoesNotHaveReadsNothing(t *testing.T) {
 	t.Parallel()
-	fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
-	fake.summary = nil
-	h := hostedVulnHarness(t, fake)
-	out, stderr, code := h.exec("list", "prod", "--release", "v1.0.0", "--json")
-	if code != exitWrong {
-		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
-	}
-	doc := decodeVulnDoc(t, out)
-	if doc.Gate.JudgedBy != vulnscan.JudgedByLocal || strings.Join(doc.Gate.Blocking, ",") != "CVE-2026-1111" {
-		t.Errorf("gate = %+v, want the local rule's verdict, marked local", doc.Gate)
-	}
-	if !strings.Contains(strings.Join(doc.Notes, "\n"), "judged locally: the control plane returned no verdict") {
-		t.Errorf("no note says it was judged locally: %q", doc.Notes)
-	}
-	text, _, _ := h.exec("list", "prod", "--release", "v1.0.0")
-	if !strings.Contains(text, "judged locally with this checkout's vuln_gate") {
-		t.Errorf("text does not say who judged:\n%s", text)
+	for name, summary := range map[string][]map[string]any{
+		"no summary row":         nil,
+		"a row naming no id":     {{"environmentName": "prod", "releaseVersion": "v1.0.0"}},
+		"only another env's row": {{"environmentId": "env-staging", "environmentName": "staging", "releaseVersion": "v1.0.0"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+			fake.summary = summary
+			h := hostedVulnHarness(t, fake)
+			out, stderr, code := h.exec("list", "prod", "--release", "v1.0.0", "--json")
+			if code != exitUndetermined || out != "" || !strings.Contains(stderr, `env "prod" is not on the control plane`) {
+				t.Fatalf("exit %d, want 2 and no document\n%s\n%s", code, out, stderr)
+			}
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			for _, c := range fake.calls {
+				if strings.HasSuffix(c, "/GetReleaseVulnerabilities") {
+					t.Errorf("read release-wide findings for an env the control plane does not have: %v", fake.calls)
+				}
+			}
+		})
 	}
 }
 
@@ -988,6 +1030,23 @@ func TestLedgerOnlyPromoteJudgesTheControlPlanesFindings(t *testing.T) {
 	for _, c := range fake.calls {
 		if strings.Contains(c, "GetReleaseVulnerabilities") {
 			t.Errorf("an enforcing control plane's findings were read: %v", fake.calls)
+		}
+	}
+	fake.mu.Unlock()
+
+	// One with no environment of that name is never read release-wide:
+	// every artifact is unscanned, with the reason.
+	fake = hostedFindings("sha256:" + strings.Repeat("a", 64))
+	fake.summary = nil
+	gates, _ = ledgerOnlyVulnGates(t, fake)
+	if vg := gateNamed(gates, vulnGateGateName); vg == nil || vg.Details["verdict"] != string(vulnscan.VerdictUnscanned) || vg.Details["determined"] != false ||
+		!strings.Contains(vg.Summary, `env "prod" is not on the control plane`) {
+		t.Errorf("env missing on the control plane: %+v", vg)
+	}
+	fake.mu.Lock()
+	for _, c := range fake.calls {
+		if strings.HasSuffix(c, "/GetReleaseVulnerabilities") {
+			t.Errorf("the gate read release-wide findings for an env the control plane does not have: %v", fake.calls)
 		}
 	}
 	fake.mu.Unlock()

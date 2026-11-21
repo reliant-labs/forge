@@ -786,35 +786,42 @@ type hostedVulnSource struct {
 	env    string
 }
 
+// errHostedVulnEnvNotFound is a control plane with no environment of the name a
+// read asked for: it holds no scope and no policy to read findings under.
+var errHostedVulnEnvNotFound = errors.New("the control plane has no such environment")
+
 // releaseFindings reads release version's findings in the source's env.
 //
 // THE VERDICT IS THE CONTROL PLANE'S (decision #4). Asked with the env's id,
 // the control plane judges every finding against the vuln_gate the env
 // recorded there and says which block (VulnerabilityFinding.blocking) and
 // which an exemption covers; those decide the document's gate and its exit
-// code, whatever this checkout's vuln_gate says. Only when it judged nothing —
-// it has no row for the env, so no policy to apply — are the findings judged
-// locally, and the document says so (gate.judged_by "local", and a note).
+// code, whatever this checkout's vuln_gate says.
+//
+// ALWAYS SCOPED TO THE ENV. A control plane with no environment of that name
+// (no summary row, or one with no id) is errHostedVulnEnvNotFound, and nothing is
+// read: a release-wide read would carry neither the env's exemptions nor its
+// policy, and is not what the caller may have been granted. Callers make it
+// "could not determine" (exit 2), and the promote gate makes it unscanned,
+// never clean.
 //
 // proto3 JSON omits a false bool, so a response cannot say "not blocking"
 // apart from "not judged": the rule is that a read naming the environment is
 // judged, which every control plane serving these reads does (C1's contract).
 func (h hostedVulnSource) releaseFindings(ctx context.Context, version string) (hostedReleaseFindings, error) {
-	sum, _, err := h.reader.envSummary(ctx, h.env)
+	sum, ok, err := h.reader.envSummary(ctx, h.env)
 	if err != nil {
 		return hostedReleaseFindings{}, err
+	}
+	if !ok || sum.EnvironmentID == "" {
+		return hostedReleaseFindings{}, fmt.Errorf("env %q: %w", h.env, errHostedVulnEnvNotFound)
 	}
 	rv, err := h.reader.releaseVulns(ctx, version, sum.EnvironmentID, true)
 	if err != nil {
 		return hostedReleaseFindings{}, err
 	}
 	scans, rel, stale, notes := hostedArtifactScans(rv)
-	out := hostedReleaseFindings{Version: version, Scans: scans, Release: rel, Stale: stale, Notes: notes, Artifacts: rv.Artifacts, JudgedBy: vulnscan.JudgedByLocal}
-	if sum.EnvironmentID == "" {
-		out.Notes = append(out.Notes, fmt.Sprintf("judged locally: the control plane returned no verdict (it has no environment %q, so it applied no vuln_gate); this checkout's vuln_gate judged the findings", h.env))
-		return out, nil
-	}
-	out.JudgedBy = vulnscan.JudgedByControlPlane
+	out := hostedReleaseFindings{Version: version, Scans: scans, Release: rel, Stale: stale, Notes: notes, Artifacts: rv.Artifacts, JudgedBy: vulnscan.JudgedByControlPlane}
 	out.Judged = map[string]vulnscan.Judgement{}
 	for _, w := range rv.Findings {
 		j := vulnscan.Judgement{Blocking: w.Blocking}

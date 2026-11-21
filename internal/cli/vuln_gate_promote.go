@@ -29,6 +29,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -469,6 +470,9 @@ func hostedPromoteVulnSource(ctx context.Context, hs *hostedStore, env string, r
 	}
 	src := hostedVulnSource{reader: hostedVulnReader{client: hs.client, project: hs.project}, env: env}
 	read, err := src.releaseFindings(ctx, rel.Version)
+	if errors.Is(err, errHostedVulnEnvNotFound) {
+		return rel, unreadVulnFindings{reason: fmt.Sprintf("env %q is not on the control plane at %s, so it has no scope or vuln_gate to read findings under", env, hs.endpoint)}, false
+	}
 	if err != nil {
 		return rel, unreadVulnFindings{reason: fmt.Sprintf("the control plane's findings could not be read: %v", err)}, false
 	}

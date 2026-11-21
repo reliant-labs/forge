@@ -372,7 +372,7 @@
           "type": "boolean"
         },
         "judged_by": {
-          "description": "JudgedBy says whose judgement of each finding the verdict is: \"control-plane\" when the env's control plane judged them (it is authoritative for an env whose ledger it keeps), \"local\" when forge judged them with this checkout's vuln_gate because that control plane returned no verdict. Absent for an env whose ledger is this machine's, which forge judges by definition.",
+          "description": "JudgedBy says whose judgement of each finding the verdict is: \"control-plane\" when the env's control plane judged them (it is authoritative for an env whose ledger it keeps). Absent for an env whose ledger is this machine's, which forge judges by definition. \"local\" is reserved for a verdict forge gave in a control plane's stead; this forge never gives one (a control plane that cannot judge the env is \"could not determine\").",
           "type": [
             "string",
             "null"

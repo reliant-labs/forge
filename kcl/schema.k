@@ -4718,8 +4718,8 @@ schema FrontendErrors:
 
 schema BrowserTelemetry:
     """What a frontend declares about its browser telemetry beyond the
-    environment's observability signals (Observability.signals.browser still
-    decides whether anything is collected at all).
+    environment's observability signals (Observability.signals.browser and
+    the deprecated .replay still decide whether anything is collected at all).
 
         forge.Frontend {
             name = "web"
@@ -7333,12 +7333,15 @@ schema ObservabilitySignals:
     # The browser SDK (frontends). `False` renders OTEL_ENDPOINT=off into every
     # frontend's runtime config and the platform's /_otel ingest drops it.
     browser: bool = True
-    # (Session replay is not a signal here: it is OPT-IN, switched on per
-    # frontend with `forge.BrowserTelemetry {replay = True}`, which renders the
-    # frontend's OTEL_REPLAY = "true" and opts the env in. The platform drops
-    # replay events, browser logs of instrumentation scope `rum.rr-web`, unless
-    # some frontend of the env opted in. The render records the result as
-    # `signals.replay` and `policy.opt_in`.)
+    # DEPRECATED (kept working within major 1): the env-wide replay opt-in.
+    # Session replay is OPT-IN (the only category that defaults off) and is
+    # switched on per frontend with `forge.BrowserTelemetry {replay = True}`,
+    # which renders the frontend's OTEL_REPLAY = "true" and opts the env in.
+    # The platform drops replay events (browser logs of instrumentation scope
+    # `rum.rr-web`) unless the env is opted in: this True, or any frontend's
+    # `telemetry.replay`. True here opts the env in without switching any
+    # frontend on (each still needs OTEL_REPLAY in its runtime config).
+    replay: bool = False
     # The product events forge emits on the app's behalf: every create, update
     # and delete that lands through a generated CRUD handler records
     # `<entity>_created|_updated|_deleted` (no ids, no field values). Each event
@@ -8195,6 +8198,13 @@ schema IdentitySeedUser:
 
     check:
         regex.match(email, r"^[^@\s]+@[^@\s]+\.[^@\s]+$"), "IdentitySeedUser.email '${email}' must be an email address"
+
+schema IdentitySocialProvider:
+    """Deprecated: declare `forge.IdentityGoogle` or `forge.IdentityGitHub` in
+    `ManagedIdentity.social`. This was the reserved placeholder; it was always
+    refused at render and `social` no longer accepts it. Kept so a module
+    that still names it keeps compiling within major 1."""
+    provider: str
 
 # A first-factor sign-in method (ManagedIdentity.methods).
 type IdentityMethod = "password" | "passkey" | "magic_link"

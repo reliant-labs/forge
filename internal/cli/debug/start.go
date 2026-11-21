@@ -59,6 +59,8 @@ back to "server").
 
 --port is Delve's listen port. --app-port sets the service's PORT, overriding
 the configured one — needed when 'forge env up' already serves that port.
+Without --app-port, --port also sets the PORT of a service launched with a
+cobra subcommand, as it always has (deprecated: pass --app-port).
 
 --attach <pid> attaches to a running process instead, leaving it halted where
 attach found it (--run resumes it at once). forge does not own it: 'stop'
@@ -614,11 +616,20 @@ func mainPackagesUnderCmd() []string {
 
 // launchSpec is the argv and extra env of a launched service. --app-port
 // sets PORT whatever the binary looks like, a cobra service or a plain main
-// package; without it the configured PORT stands. --port is Delve's alone.
+// package. Without it, --port still sets the PORT of a cobra-launched service,
+// as it did before --app-port existed: deprecated, since dlv listens on that
+// port too.
 func launchSpec(target, buildPath string, o startOptions) (args, env []string) {
-	args, env = serviceRunSpec(target, buildPath)
+	legacyPort := 0
+	if o.appPort == 0 {
+		legacyPort = o.port
+	}
+	args, env = serviceRunSpec(target, buildPath, legacyPort)
 	if o.appPort > 0 {
-		env = append(env, fmt.Sprintf("PORT=%d", o.appPort))
+		return args, append(env, fmt.Sprintf("PORT=%d", o.appPort))
+	}
+	if legacyPort > 0 && envValue(env, "PORT") != "" {
+		fmt.Fprintf(os.Stderr, "Deprecated: --port also sets the service's PORT=%d (Delve listens on it too); pass --app-port <port> to set the service's port\n", legacyPort)
 	}
 	return args, env
 }
@@ -640,8 +651,11 @@ func launchSpec(target, buildPath string, o startOptions) (args, env []string) {
 // property (the generated ServiceName constant), and every rendered manifest
 // sets SERVICE_NAME to the PROJECT name, not the component's. OTEL_SERVICE_NAME
 // is the per-process identity knob — the same one the per-env main.k sets per
-// component — and PORT (launchSpec's --app-port) binds the listener.
-func serviceRunSpec(service, buildPath string) (args []string, env []string) {
+// component — and PORT binds the listener.
+//
+// port is the PORT a subcommand-launched service binds: what --port supplied
+// before --app-port existed (launchSpec keeps that).
+func serviceRunSpec(service, buildPath string, port int) (args []string, env []string) {
 	switch {
 	case hasSubcommand(buildPath, service):
 		args = []string{service}
@@ -650,7 +664,11 @@ func serviceRunSpec(service, buildPath string) (args []string, env []string) {
 	default:
 		return nil, nil
 	}
-	return args, []string{"OTEL_SERVICE_NAME=" + service}
+	env = []string{"OTEL_SERVICE_NAME=" + service}
+	if port > 0 {
+		env = append(env, fmt.Sprintf("PORT=%d", port))
+	}
+	return args, env
 }
 
 // hasSubcommand reports whether the binary built from buildPath declares a

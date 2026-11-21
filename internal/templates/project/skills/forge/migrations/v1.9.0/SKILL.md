@@ -1,27 +1,30 @@
 ---
 name: v1.9.0
-description: Upgrade a project to forge v1.9.0, the release that deletes what earlier releases deprecated. Removed forge/pkg APIs (the pkg/approval package, the root pkg/appkit aliases, devidp's ProofLocker family, observe.ForensicIDName/ForensicSecretIDName, obsquery.IssueEventFilterSQL/ActiveEvidence/ServerCulprit, release.ShapeDiff.KindChanged, contractkit's LogCall/TraceStart/Metrics helpers, the forgepb entity/field annotation types); the retired (forge.v1.entity)/(forge.v1.field) proto options no longer compile; removed CLI flags (lint --crud-fixtures, build --push/--release, scaffold entity --from-schema, storage worktrees --reliant-managed), the hidden forge test stub and the FORGE_NO_HOOKS alias; retired forge.yaml keys now fail the load; KCL ObservabilitySignals.replay, the OTEL_REPLAY build-variable carry and IdentitySocialProvider are gone; root_gen.go is no longer generated; every lint rule's grace window ended (forge-proto-format, forgeconv-unproven-signup gate now); the web runtime's `attribution` option is gone; the tx-isolation and harness-mocks codemods and the old .forge/hashes.json and .forge/scaffolded.json ledgers are no longer read. Use when Go code, a script, forge.yaml, deploy/kcl or a frontend still names one of them.
+description: Move a project off what forge deprecated (forge is semver at major 1, so sections 1-5 and the codemods of 9 still work, deprecated, until a v2; 6-8 and the ledgers of 9 are already in force). Deprecated forge/pkg APIs (the pkg/approval package, the root pkg/appkit aliases, devidp's ProofLocker family, observe.ForensicIDName/ForensicSecretIDName, obsquery.IssueEventFilterSQL/ActiveEvidence/ServerCulprit, release.ShapeDiff.KindChanged, contractkit's LogCall/TraceStart/Metrics helpers, the forgepb entity/field annotation types); the retired (forge.v1.entity)/(forge.v1.field) proto options no longer compile; removed CLI flags (lint --crud-fixtures, build --push/--release, scaffold entity --from-schema, storage worktrees --reliant-managed), the hidden forge test stub and the FORGE_NO_HOOKS alias; retired forge.yaml keys now fail the load; KCL ObservabilitySignals.replay, the OTEL_REPLAY build-variable carry and IdentitySocialProvider are gone; root_gen.go is no longer generated; every lint rule's grace window ended (forge-proto-format, forgeconv-unproven-signup gate now); the web runtime's `attribution` option is gone; the tx-isolation and harness-mocks codemods and the old .forge/hashes.json and .forge/scaffolded.json ledgers are no longer read. Use when Go code, a script, forge.yaml, deploy/kcl or a frontend still names one of them.
 version: v1.9.0
 detection: grep -rqsE --include='*.go' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '"github.com/reliant-labs/forge/pkg/(approval|appkit)"|^[^/]*\b(contractkit\.(LogCall|LogCallErr|TraceStart|RecordSpanError|NewMetrics|Metrics)|devidp\.(ProofLocker|UnavailableProofLocker|NewPostgresProofLocker|PostgresProofLocker|PostgresProofLockerOptions|ErrProofLockBusy|DefaultProofLockWait|DefaultProofLockHold|MetaProofLock|MetaProofWindowPrefix)|observe\.Forensic(Secret)?IDName|obsquery\.(IssueEventFilterSQL|ActiveEvidence|ServerCulprit)|release\.KindChange|forgepb\.(EntityOptions|FieldOptions|IndexDef|StoreAs|ValidationRules|E_Entity|E_Field))\b|\bProofLocker:|\.KindChanged\b' . && exit 0; grep -rqsE --include='*.proto' --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules '\(forge\.v1\.(entity|field)\)' proto && exit 0; grep -rqsE --exclude-dir=gen --exclude-dir=vendor --exclude-dir=node_modules --exclude-dir=.git -- '--crud-fixtures|--reliant-managed|--from-schema|\bFORGE_NO_HOOKS\b|forge build[^\n]*--(push|release)\b' Taskfile.yml Makefile scripts .github cmd internal && exit 0; grep -qsE '^(environments|auth|version|hot_reload|packs|pack_overrides|kind|components|services|packages|binaries|test|docs):' forge.yaml && exit 0; grep -rqsE --include='*.k' '(ObservabilitySignals|signals[^=\n]*\|)[[:space:]]*\{[^}\n]*\breplay[[:space:]]*=|IdentitySocialProvider|(NEXT_PUBLIC_|VITE_)OTEL_REPLAY' deploy/kcl && exit 0; for f in cmd/*/cmd/root.go; do test -f "$f" && grep -qs 'generatedCommands(' "$f" && exit 0; done; grep -rqsE --include='*.ts' --include='*.tsx' --exclude-dir=node_modules '\battribution:[[:space:]]*(true|false)\b' frontends src && exit 0; test -f .forge/hashes.json && exit 0; test -f .forge/scaffolded.json && exit 0; exit 1
 ---
 
 # Upgrading to v1.9.0
 
-v1.9.0 deletes what earlier releases deprecated (owner decision,
-2026-11-19). Nothing here changes behaviour you rely on: each removed thing
-already had a replacement, named below. What changes is that the old spelling
-no longer compiles, loads or runs. Every section is independent: apply the
-ones whose "Use when" matches, then run `forge generate && forge lint &&
-go build ./...`.
+This release was first cut to delete what earlier releases deprecated. forge
+is semver at major 1, so that deletion was walked back before it shipped:
+what sections 1 to 5 name, and the two codemods of section 9, still compile,
+load and run, as deprecated aliases that warn and name their replacement.
+They are removed only in a future major. Moving off them now is still the
+right change, and each section says how. Sections 6 to 8 and the ledger
+formats of section 9 are already in force. Every section is independent:
+apply the ones whose "Use when" matches, then run `forge generate && forge
+lint && go build ./...`.
 
-## 1. Removed forge/pkg APIs
+## 1. Deprecated forge/pkg APIs
 
 **Use when** `go build ./...` fails on one of the names below after the pin
 bump.
 
 ### What changed
 
-| Removed | Use instead |
+| Deprecated | Use instead |
 |---|---|
 | package `forge/pkg/approval` (every symbol) | your own copy: it never had a forge caller. Copy the package from the module cache of the release you pin today (`$(go env GOMODCACHE)/github.com/reliant-labs/forge@<old version>/pkg/approval`) into your module and change the import |
 | package `forge/pkg/appkit` (root: `WorkerInstance`, `ContextWorkerInstance`, `WorkerLifecycle`, `NewWorkerInstance`, `NewContextWorkerInstance`, `WrapWorker`) | `forge/pkg/lifecyclekit`, same names. `forge/pkg/appkit/operatorkit` stays |
@@ -44,7 +47,7 @@ bump.
    counters and duration histogram (`forge project libraries observe` prints
    every signature).
 
-## 2. `(forge.v1.entity)` and `(forge.v1.field)` no longer compile
+## 2. `(forge.v1.entity)` and `(forge.v1.field)` are deprecated
 
 **Use when** a `.proto` under `proto/` still sets `option (forge.v1.entity)`
 or a `[(forge.v1.field) = …]` field option.
@@ -52,8 +55,9 @@ or a `[(forge.v1.field) = …]` field option.
 ### What changed
 
 The options were retired long ago and ignored since: the schema is projected
-from `db/migrations`. Their extensions are now gone from `forge/v1/forge.proto`
-(which `forge generate` refreshes), so `buf` refuses a file that still uses one.
+from `db/migrations`. Their extensions stay in `forge/v1/forge.proto` within
+major 1 so a file that still sets one compiles; `forge generate` prints a
+notice for each, and a v2 removes them.
 
 ### What to do
 
@@ -61,7 +65,7 @@ Delete each `option (forge.v1.entity) = {…};` and each
 `[(forge.v1.field) = {…}]`. A column, an index, a default or a check you meant
 by one belongs in a migration (`forge skill load db`).
 
-## 3. Removed CLI flags, commands and environment variables
+## 3. Deprecated CLI flags, commands and environment variables
 
 **Use when** a script, Taskfile, workflow or Go exec site passes one of them.
 
@@ -80,10 +84,11 @@ The top-level `forge build` command is compile-only. Move publishing flags to
 | `mode=orm` for protoc-gen-forge | nothing: the ORM is generated from the applied schema by `forge generate` |
 | `forge project audit --json`: `codegen.forked_files`, `forked_files_note`; the `FORGE_CRUD_SHAPE_MISMATCH` marker | `codegen.disowned_files`; `// forge:custom-read-shape:` in `handlers_crud.go` |
 
-An unknown flag now fails the command, so a script that passed one stops at
-that line. Fix the call site in the same change as the pin bump.
+Each still works as it did, hidden from `--help`, and says on stderr what
+replaces it (the hidden `forge test` stub excepted: `forge test` is now a
+command of its own). Fix the call site before a v2 removes them.
 
-## 4. Retired forge.yaml keys fail the load
+## 4. Retired forge.yaml keys warn
 
 **Use when** `forge.yaml` still has one of `environments`, `auth` (and
 `auth.provider` / `auth.jwt` / `auth.api_key`), `version`, `hot_reload`,
@@ -95,8 +100,8 @@ that line. Fix the call site in the same change as the pin bump.
 
 ### What changed
 
-These keys loaded with a warning and were dropped on the next rewrite. Now the
-load fails and names the key with its fix.
+These keys load with a warning that names the key and its fix, and are dropped
+on the next rewrite of forge.yaml. A v2 makes them fail the load.
 
 ### What to do
 
@@ -113,11 +118,13 @@ in the env's KCL).
 
 ### What changed
 
-- `ObservabilitySignals.replay` is gone: the schema rejects it. Session replay
-  is a per-frontend switch.
-- A `{NEXT_PUBLIC_,VITE_}OTEL_REPLAY` build variable is no longer carried into
-  the runtime config, and the generated `otel_gen.ts` no longer reads it.
-- `IdentitySocialProvider` (a placeholder `social` already refused) is gone.
+- `ObservabilitySignals.replay` is deprecated: it still opts the env in.
+  Session replay is a per-frontend switch.
+- A `{NEXT_PUBLIC_,VITE_}OTEL_REPLAY` build variable is still carried into the
+  runtime config (deprecated), but the generated `otel_gen.ts` no longer reads
+  it as a build-time fallback.
+- `IdentitySocialProvider` (a placeholder `social` already refused) is
+  deprecated; it stays declared so a module naming it compiles.
 
 ### What to do
 
@@ -200,7 +207,7 @@ mode, no consent until granted). `attribution: true` becomes
 `analytics: "full"` plus a call to `grantAnalyticsConsent()` once the person
 consents. `enableAttribution({ search })` is unchanged.
 
-## 9. Removed codemods and ledger formats
+## 9. Deprecated codemods and removed ledger formats
 
 **Use when** a runbook calls `forge fix tx-isolation` or
 `forge fix harness-mocks`, or the project still has `.forge/hashes.json` or
@@ -210,7 +217,9 @@ consents. `enableAttribution({ search })` is unchanged.
 
 - The two codemods converted v1.0.0 shapes (pkg/orm's explicit transaction
   levels; the test harness's per-interface mocks). Every project inside the
-  upgrade window already has both, so they are gone.
+  upgrade window already has both, so they are deprecated: hidden from
+  `forge fix --help`, they still run (with a one-line notice), and
+  `forge project upgrade` still runs them for a project that needs them.
 - `.forge/hashes.json` and `.forge/scaffolded.json` were migrated into
   `.forge/hashes/` and `.forge/scaffolded/` by every forge since v1.0, and
   v1.9.0 no longer reads them.

@@ -84,17 +84,17 @@ func TestServiceRunSpec(t *testing.T) {
 
 	withWD(t, dir, func() {
 		// A service with its own subcommand boots ONLY that service.
-		args, env := serviceRunSpec("admin-server", "./cmd/app")
+		args, env := serviceRunSpec("admin-server", "./cmd/app", 38745)
 		if len(args) != 1 || args[0] != "admin-server" {
 			t.Fatalf("args = %v, want [admin-server]", args)
 		}
 		if !contains(env, "OTEL_SERVICE_NAME=admin-server") {
 			t.Fatalf("env %v missing OTEL_SERVICE_NAME=admin-server", env)
 		}
+		if !contains(env, "PORT=38745") {
+			t.Fatalf("env %v missing PORT=38745", env)
+		}
 		for _, e := range env {
-			if strings.HasPrefix(e, "PORT=") {
-				t.Fatalf("env %v sets PORT; only --app-port does (launchSpec)", env)
-			}
 			if strings.HasPrefix(e, "SERVICE_NAME=") {
 				t.Fatalf("env %v sets SERVICE_NAME, which selects nothing", env)
 			}
@@ -102,13 +102,13 @@ func TestServiceRunSpec(t *testing.T) {
 
 		// No dedicated subcommand (a reserved name, or one the composition
 		// root never named) falls back to the all-services process.
-		args, _ = serviceRunSpec("billing", "./cmd/app")
+		args, _ = serviceRunSpec("billing", "./cmd/app", 38745)
 		if len(args) != 1 || args[0] != "server" {
 			t.Fatalf("args = %v, want [server] fallback", args)
 		}
 
 		// A binary with neither runs as-is (no args/env).
-		args, env = serviceRunSpec("plain", "./cmd/plain")
+		args, env = serviceRunSpec("plain", "./cmd/plain", 38745)
 		if args != nil || env != nil {
 			t.Fatalf("standalone binary should get no run spec, got args=%v env=%v", args, env)
 		}

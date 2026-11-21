@@ -422,12 +422,10 @@ describe("properties", () => {
   it("a previewed unit is never enrolled", () => {
     const ids = unitIds(1000);
     const d = experiment("s_pv", FULL_BP, FIFTY_FIFTY);
-    d["preview"] = ids
-      .slice(0, 100)
-      .map((id) => ({
-        unit_hash: previewHash("pv", id),
-        variant: "treatment",
-      }));
+    d["preview"] = ids.slice(0, 100).map((id) => ({
+      unit_hash: previewHash("pv", id),
+      variant: "treatment",
+    }));
     const s = propSnapshot("pv", AB, d);
     ids.forEach((id, i) => {
       const res = evaluate(s, "pv", { targetingKey: id });

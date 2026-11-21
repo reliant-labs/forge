@@ -227,4 +227,7 @@ func writeHostedStatus(ctx context.Context, w io.Writer, envName string, e *KCLE
 		fmt.Fprintf(w, "  %s:\n", ws.Name)
 		fmt.Fprint(w, deploytarget.FormatCustomDomains("    ", ws.Domains))
 	}
+	if b := deploytarget.FormatBackups("  ", st.Workloads); b != "" {
+		fmt.Fprintf(w, "\nbackups (%s):\n%s", envName, b)
+	}
 }

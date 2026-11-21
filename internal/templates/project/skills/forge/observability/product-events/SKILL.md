@@ -147,10 +147,8 @@ URL into storage, and the first `setTelemetryUser(id)` for a user emits one
 `user_identified {visitor_id, utm_*}`, which is how a funnel joins a visitor
 to a user across days. A marketing site wraps its outbound links in
 `withAttribution(url)` (a no-op below `full`) so the app sees the `rid` and
-utm values. `initBrowserTelemetry({ attribution })` and `enableAttribution()`
-are deprecated spellings that keep working: passing `attribution` at all means
-mode `full`, `true` also grants consent, and `enableAttribution()` raises the
-default mode to `full` and grants.
+utm values. `enableAttribution()` is a deprecated spelling: it raises the
+default mode to `full` and grants consent.
 
 ### Page views, with where the visit came from
 
@@ -197,7 +195,9 @@ OpenFeature.addHooks(forgeExposureHook);
 ```
 
 A failed evaluation is no exposure; an object-valued flag with no variant name
-is recorded as `object`, never its contents.
+is recorded as `object`, never its contents. Forge Changes records the same
+event with `run`, `unit`, `reason` and `revision` (the hook skips its
+provider): `observability/changes`.
 
 ### Reserved event names
 

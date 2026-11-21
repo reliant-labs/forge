@@ -54,7 +54,9 @@ user's terminal; the server's job is to say they exist and what they cost.
 `benefits` lists exactly what applies to the directory, each with its first
 step and the agent's time to first value, worded so the agent can quote it to
 its user (`forge project benefits` is the CLI). Then `skill_load` with `name:
-adopt`: the survey, the estimate rubric and every entry point.
+adopt`: the survey, the estimate rubric and every entry point. `why` is the
+argument behind them: the reasons to use forge, each with the benefits that back
+it (`forge why`).
 
 Once the repo adopts forge's codegen, the forge-project tools apply too:
 `skill_load` with `name: forge` is their entry point, and `capabilities`,
@@ -67,29 +69,34 @@ directory the server was started in (or `-C`). Those marked _codegen_
 answer questions about the code forge generates, so they matter once the repo
 adopts it; the rest are for any repo.
 
-| Tool                                                             | CLI equivalent                                                | Writes files                                                                                                                     |
-| ---------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `benefits` (`all`, `category`)                                   | `forge project benefits --json`                               | no                                                                                                                               |
-| `capabilities`                                                   | `forge project capabilities`                                  | no                                                                                                                               |
-| `schema` (`name`)                                                | `forge project schema [env]`                                  | no                                                                                                                               |
-| `annotations` (`kind`), _codegen_                                | `forge project annotations`                                   | no                                                                                                                               |
-| `libraries` (`packages`)                                         | `forge project libraries [pkg...]`                            | no                                                                                                                               |
-| `audit`, _codegen_                                               | `forge project audit --json`                                  | no                                                                                                                               |
-| `shapes` (`grep`, `kind`, `service`, `unimplemented`), _codegen_ | `forge project shapes`                                        | no                                                                                                                               |
-| `skill_list` (`group`, `all`, `include_migrations`)              | `forge skill list`                                            | no                                                                                                                               |
-| `skill_search` (`query`)                                         | `forge skill search`                                          | no                                                                                                                               |
-| `skill_load` (`name`)                                            | `forge skill load`                                            | no                                                                                                                               |
-| `lint` (`scope`)                                                 | `forge lint --quiet [--scope PATH]...`                        | caches only; never `--fix`                                                                                                       |
-| `generate` (`dry_run`, `check`), _codegen_                       | `forge generate [--dry-run \| --check]`                       | yes: generated files                                                                                                             |
-| `report_bug` (`severity`, `title`, `summary`, ...)               | `forge report-bug`                                            | sends one report ([docs/report-bug.md](report-bug.md))                                                                           |
-| `deploy_claimable` (`env`, `name`, `no_wait`)                    | `forge env deploy <env> --claimable --json`                   | adopts a Vite/Next.js app, or an app with its own Dockerfile, with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
-| `deploy_status` (`env`)                                          | `forge env status <env> --claimable --json`                   | no                                                                                                                               |
-| `explain_error` (`exit_code`, `error_reason`, `error`, `env`)    | none: maps forge's exit codes and reasons to the next command | no                                                                                                                               |
+| Tool                                                                                                         | CLI equivalent                                                                     | Writes files                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `benefits` (`all`, `category`)                                                                               | `forge project benefits --json`                                                    | no                                                                                                                               |
+| `why` (`reason`)                                                                                             | `forge why --json`                                                                 | no                                                                                                                               |
+| `capabilities`                                                                                               | `forge project capabilities`                                                       | no                                                                                                                               |
+| `schema` (`name`)                                                                                            | `forge project schema [env]`                                                       | no                                                                                                                               |
+| `annotations` (`kind`), _codegen_                                                                            | `forge project annotations`                                                        | no                                                                                                                               |
+| `libraries` (`packages`)                                                                                     | `forge project libraries [pkg...]`                                                 | no                                                                                                                               |
+| `audit`, _codegen_                                                                                           | `forge project audit --json`                                                       | no                                                                                                                               |
+| `shapes` (`grep`, `kind`, `service`, `unimplemented`), _codegen_                                             | `forge project shapes`                                                             | no                                                                                                                               |
+| `skill_list` (`group`, `all`, `include_migrations`)                                                          | `forge skill list`                                                                 | no                                                                                                                               |
+| `skill_search` (`query`)                                                                                     | `forge skill search`                                                               | no                                                                                                                               |
+| `skill_load` (`name`)                                                                                        | `forge skill load`                                                                 | no                                                                                                                               |
+| `lint` (`scope`)                                                                                             | `forge lint --quiet [--scope PATH]...`                                             | caches only; never `--fix`                                                                                                       |
+| `generate` (`dry_run`, `check`), _codegen_                                                                   | `forge generate [--dry-run \| --check]`                                            | yes: generated files                                                                                                             |
+| `report_bug` (`severity`, `title`, `summary`, ...)                                                           | `forge report-bug`                                                                 | sends one report ([docs/report-bug.md](report-bug.md))                                                                           |
+| `deploy_claimable` (`env`, `name`, `no_wait`)                                                                | `forge env deploy <env> --claimable --json`                                        | adopts a Vite/Next.js app, or an app with its own Dockerfile, with no `forge.yaml` (adds `forge.yaml`, `deploy/kcl/`); publishes |
+| `deploy_status` (`env`)                                                                                      | `forge env status <env> --claimable --json`                                        | no                                                                                                                               |
+| `db_query` (`env`, `sql`, `workload`, `database`, `max_rows`, `confirm_env`, `reason`)                       | `forge db query <env> <sql> --json` (same policy, read-only role and audit record) | no                                                                                                                               |
+| `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_check` (`env`, and the hosted connector's options) | `forge obs status\|issues\|issue\|logs\|check <env> --json`                        | no                                                                                                                               |
+| `explain_error` (`exit_code`, `error_reason`, `error`, `env`)                                                | none: maps forge's exit codes and reasons to the next command                      | no                                                                                                                               |
 
 The read-only tools are annotated `readOnlyHint`; `lint`, `generate`,
 `report_bug` and `deploy_claimable` are not, so a harness can ask before running
-them. `report_bug`, `deploy_claimable` and `deploy_status` are also
-`openWorldHint`: they are the tools that talk to anything off the machine. `lint` and `audit` report findings in
+them. `report_bug`, `deploy_claimable`, `deploy_status`, `blast_radius`, `db_query`
+and the `obs_*` tools are also `openWorldHint`: they are the tools that may talk to
+anything off the machine. A real env's `db_query` needs `confirm_env` and `reason`,
+exactly as the CLI's `--confirm-env` and `--reason` do. `lint` and `audit` report findings in
 the result rather than as a tool failure. Output past about 220 KB is cut in the
 middle, keeping the end (lint's verdict is its last line).
 
@@ -290,7 +297,7 @@ revokes it.
 | `envs_list` (`project`)                                                                    | the console's environments                   | no                                  |
 | `obs_init` (`project`, `envs`, `service`, `token_name`, `ttl`)                             | `forge obs init <env…> --no-write --json`    | registers envs, mints ingest tokens |
 | `release_record` (`project`, `env`, `version`, `commit`, `workloads`, `run_url`, `run_id`) | `forge release record`                       | records a release and its promotion |
-| `benefits`, `skill_list`, `skill_search`, `skill_load`, `explain_error`                    | as above                                     | no                                  |
+| `benefits`, `why`, `skill_list`, `skill_search`, `skill_load`, `explain_error`             | as above                                     | no                                  |
 
 Every result is the CLI's `--json` document plus `console_url`, the page at
 https://forge.reliantlabs.io that shows it, as structured content and as text.

@@ -64,10 +64,9 @@ COMMENT ON COLUMN accounts.owner IS 'forge:identity-subject forge:secret';
 	if !strings.Contains(fs[0].Message, "accounts.owner") {
 		t.Errorf("message %q does not name the column", fs[0].Message)
 	}
-	ro, ok := lintRollouts[ruleIdentitySubjectUnreadable]
-	if !ok {
-		t.Fatalf("%s has no rollout row", ruleIdentitySubjectUnreadable)
-	}
+	// Graded through a synthetic row: the rule's own grace window closed.
+	ro := ruleRollout{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"}
+	withRollouts(t, map[string]ruleRollout{ruleIdentitySubjectUnreadable: ro})
 	got, gated := gradeProjectLane(pinnedCfg(ro.IntroducedIn, nil), fs, true)
 	if gated || len(got) != 1 || got[0].Severity != lintSevWarning {
 		t.Errorf("pinned to %s: got %+v gated=%v, want a warning", ro.IntroducedIn, got, gated)

@@ -37,10 +37,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -53,6 +55,7 @@ import (
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
 // envShapeDoc is what the command prints, and what the daemon's
@@ -326,11 +329,11 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		}
 		fallbackNamespace = store.Meta().Name + "-" + envName
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDir, kclDir, envName)
 	if !envHasDeclaration(projectDir, envName, mainK) {
 		envs, _ := ListEnvs(projectDir)
 		return envShapeDoc{}, fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists (declared environments: %s)",
-			envName, mainK, envName, strings.Join(envs, ", "))
+			envName, shown, envName, strings.Join(envs, ", "))
 	}
 
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
@@ -408,6 +411,10 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if splitErr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, splitErr)
 	}
+	shapeTelemetry, telErr := shapeTelemetryOf(envName, entities, release.DefaultTelemetryLimits())
+	if telErr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, telErr)
+	}
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
 		Workloads:         withShapeWorkloadUnits(shapeWorkloadsOf(entities), entities, split),
@@ -430,6 +437,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Identity:            shapeIdentityOf(entities),
 		Databases:           shapeDatabasesOf(entities),
 		ExternalDatabases:   shapeExternalDatabasesOf(entities),
+		Telemetry:           shapeTelemetry,
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
 		HostInfra:           len(entities.Infra) > 0,
@@ -809,6 +817,46 @@ func shapeExternalDatabasesOf(e *KCLEntities) []release.ShapeExternalDatabase {
 	return out
 }
 
+// shapeTelemetryOf projects the env's declared telemetry (forge.Telemetry)
+// into what the shape records: its hosted targets, which the Reliant platform
+// collects because forge runs no collector there. It is also where the hosted
+// rules are enforced, because the shape is what reaches the platform: every
+// target passes telemetry.Validate (which carries the hosted rules: every
+// scrape sets allow, no address, only declared ports), and the hosted ones
+// are held to limits (release.HostedTelemetryProblems: sample_limit, pulled
+// targets per env). Every problem is reported at once, each naming its target
+// and field. Nil when the env declares no hosted target, so the shape encodes
+// as it did before the field; such an env's telemetry is forge's own
+// collectors' to check (`forge env render` validates it), not the shape's.
+func shapeTelemetryOf(envName string, e *KCLEntities, limits release.TelemetryLimits) ([]release.ShapeTelemetry, error) {
+	if e == nil || !slices.ContainsFunc(e.Telemetry, func(t telemetry.Target) bool { return t.Runtime == telemetry.RuntimeHosted }) {
+		return nil, nil
+	}
+	if err := checkHostedTelemetry(envName, validateEnvTelemetry(envName, e), e.Telemetry, limits); err != nil {
+		return nil, err
+	}
+	return release.ShapeTelemetryOf(e.Telemetry), nil
+}
+
+// checkHostedTelemetry joins base (telemetry.Validate's verdict, or nil) and
+// the hosted caps' problems over targets into one *telemetry.ValidationError,
+// so every problem is reported at once. Nil when there is none.
+func checkHostedTelemetry(envName string, base error, targets []telemetry.Target, limits release.TelemetryLimits) error {
+	var problems []telemetry.Problem
+	if base != nil {
+		var verr *telemetry.ValidationError
+		if !errors.As(base, &verr) {
+			return base
+		}
+		problems = append(problems, verr.Problems...)
+	}
+	problems = append(problems, release.HostedTelemetryProblems(targets, limits)...)
+	if len(problems) == 0 {
+		return nil
+	}
+	return &telemetry.ValidationError{Env: envName, Problems: problems}
+}
+
 // shapeReleaseHealthOf projects the env's release-health policy. Nil when the
 // env declares none or only the defaults, so the shape encodes as it did
 // before the field.
@@ -1067,6 +1115,12 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 		fmt.Fprintf(w, "  external databases: %d (routes only; forge runs none of them)\n", len(doc.Shape.ExternalDatabases))
 		for _, x := range doc.Shape.ExternalDatabases {
 			fmt.Fprintf(w, "    %s: %s as %s via %s/%s on %s\n", x.Name, x.Database, x.Username, emptyAs(x.Namespace, "(no namespace)"), x.Service, emptyAs(x.Cluster, "(no cluster)"))
+		}
+	}
+	if len(doc.Shape.Telemetry) > 0 {
+		fmt.Fprintf(w, "  telemetry: %d hosted target(s) (the platform collects them)\n", len(doc.Shape.Telemetry))
+		for _, t := range doc.Shape.Telemetry {
+			fmt.Fprintf(w, "    %s (%s): %s\n", t.ServiceName, t.Source, strings.Join(t.Signals(), ", "))
 		}
 	}
 	if len(doc.Shape.Alerts) > 0 {

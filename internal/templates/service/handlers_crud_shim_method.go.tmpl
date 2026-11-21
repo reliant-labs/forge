@@ -16,41 +16,41 @@
 // to those claims.
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
-	req *connect.Request[pb.{{.InputType}}],
-) (*connect.Response[pb.{{.OutputType}}], error) {
+	req {{.RequestParamType}},
+) {{.ResultType}} {
 	_ = req
 	// Best-effort filters mapped from the request's scalar fields onto
 	// declared columns. Refine or replace these for your real query.
 	var opts []orm.QueryOption
 {{- range .CustomFilters}}
 {{- if .IsOptional}}
-	if req.Msg.{{.GoName}} != nil {
+	if {{$.RequestMsg}}.{{.GoName}} != nil {
 {{- if eq .FilterType "search"}}
-		opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+*req.Msg.{{.GoName}}+"%"))
+		opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+*{{$.RequestMsg}}.{{.GoName}}+"%"))
 {{- else}}
-		opts = append(opts, orm.WhereEq("{{.ColumnName}}", *req.Msg.{{.GoName}}))
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", *{{$.RequestMsg}}.{{.GoName}}))
 {{- end}}
 	}
 {{- else}}
 {{- if eq .FilterType "search"}}
-	if req.Msg.{{.GoName}} != "" {
-		opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+req.Msg.{{.GoName}}+"%"))
+	if {{$.RequestMsg}}.{{.GoName}} != "" {
+		opts = append(opts, orm.WhereILikeAny([]string{ {{- range $i, $c := .SearchColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }, "%"+{{$.RequestMsg}}.{{.GoName}}+"%"))
 	}
 {{- else if eq .FieldType "string"}}
-	if req.Msg.{{.GoName}} != "" {
-		opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	if {{$.RequestMsg}}.{{.GoName}} != "" {
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", {{$.RequestMsg}}.{{.GoName}}))
 	}
 {{- else if eq .FieldType "bool"}}
-	opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	opts = append(opts, orm.WhereEq("{{.ColumnName}}", {{$.RequestMsg}}.{{.GoName}}))
 {{- else}}
-	if req.Msg.{{.GoName}} != 0 {
-		opts = append(opts, orm.WhereEq("{{.ColumnName}}", req.Msg.{{.GoName}}))
+	if {{$.RequestMsg}}.{{.GoName}} != 0 {
+		opts = append(opts, orm.WhereEq("{{.ColumnName}}", {{$.RequestMsg}}.{{.GoName}}))
 	}
 {{- end}}
 {{- end}}
 {{- end}}
 
-	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+	rows, err := {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
 	if err != nil {
 		return nil, svcerr.Wrap(err)
 	}
@@ -65,7 +65,7 @@ func (s *Service) {{.MethodName}}(
 	}
 	_ = items // TODO: refine this query and place items onto pb.{{.OutputType}}.
 
-	return connect.NewResponse(&pb.{{.OutputType}}{}), nil
+	return {{.EmptyResponse}}, nil
 }
 {{- else}}
 {{- /*
@@ -93,7 +93,7 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 {{- if eq .Operation "update"}}
 {{- if .UpdateMaskField}}
-// AIP-134: req.Msg.{{.UpdateMaskField}} is honored (empty or "*" = full replace); op.ReadOnly columns are refused in it and kept on a full replace.
+// AIP-134: {{.RequestMsg}}.{{.UpdateMaskField}} is honored (empty or "*" = full replace); op.ReadOnly columns are refused in it and kept on a full replace.
 {{- else}}
 // No update_mask field, so every Update is a whole-row write (op.ReadOnly columns are still kept); add one for AIP-134 partial updates.
 {{- end}}
@@ -104,8 +104,8 @@ func (s *Service) {{.MethodName}}(
 {{- if or .FillHandlerColumns .Scoped}}
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
-	req *connect.Request[pb.{{.InputType}}],
-) (*connect.Response[pb.{{.OutputType}}], error) {
+	req {{.RequestParamType}},
+) {{.ResultType}} {
 {{- if and .Scoped .OwnerResolver}}
 	owner, err := {{.OwnerResolver}}(ctx)
 	if err != nil {
@@ -163,7 +163,7 @@ func (s *Service) {{.MethodName}}(
 	// as an unknown id does. A distinguishable "exists but is not yours"
 	// tells an attacker which ids are real.
 	fetch := op.Fetch
-	op.Fetch = func(ctx context.Context, id string, opts ...orm.QueryOption) (*db.{{.EntityName}}, error) {
+	op.Fetch = func(ctx context.Context, id string, opts ...orm.QueryOption) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
 		return fetch(ctx, id, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
 	}
 {{- end}}
@@ -190,7 +190,7 @@ func (s *Service) {{.MethodName}}(
 	// written row on the same owner, since a maskless update writes every
 	// column of the submitted entity.
 	build := op.Entity
-	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
 		e, err := build(ctx, r)
 		if err != nil {
 			return nil, err
@@ -200,19 +200,19 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 	persist := op.Persist
-	op.Persist = func(ctx context.Context, e *db.{{.EntityName}}, opts ...orm.QueryOption) error {
+	op.Persist = func(ctx context.Context, e *{{$.ORMQualifier}}.{{.EntityName}}, opts ...orm.QueryOption) error {
 		return persist(ctx, e, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
 	}
 {{- if .UpdateMaskField}}
 	persistMasked := op.PersistMasked
-	op.PersistMasked = func(ctx context.Context, e *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
+	op.PersistMasked = func(ctx context.Context, e *{{$.ORMQualifier}}.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
 		return persistMasked(ctx, e, fields, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
 	}
 {{- end}}
 {{- end}}
 {{- else if eq .Operation "create"}}
 	build := op.Entity
-	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
 		e, err := build(ctx, r)
 		if err != nil {
 			return nil, err
@@ -232,24 +232,24 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 {{- if eq .Operation "create"}}
-	resp, err := crud.HandleCreate(op)(ctx, req)
+	resp, err := {{.CRUDFunc}}(op)(ctx, req)
 	metrics.RecordCreated(ctx, "{{.EntityName}}", err)
 	return resp, err
 {{- else}}
-	return crud.Handle{{.Operation | title}}(op)(ctx, req)
+	return {{.CRUDFunc}}(op)(ctx, req)
 {{- end}}
 }
 {{- else}}
 func (s *Service) {{.MethodName}}(
 	ctx context.Context,
-	req *connect.Request[pb.{{.InputType}}],
-) (*connect.Response[pb.{{.OutputType}}], error) {
+	req {{.RequestParamType}},
+) {{.ResultType}} {
 {{- if eq .Operation "create"}}
-	resp, err := crud.HandleCreate(s.crud{{.MethodName}}Op())(ctx, req)
+	resp, err := {{.CRUDFunc}}(s.crud{{.MethodName}}Op())(ctx, req)
 	metrics.RecordCreated(ctx, "{{.EntityName}}", err)
 	return resp, err
 {{- else}}
-	return crud.Handle{{.Operation | title}}(s.crud{{.MethodName}}Op())(ctx, req)
+	return {{.CRUDFunc}}(s.crud{{.MethodName}}Op())(ctx, req)
 {{- end}}
 }
 {{- end}}

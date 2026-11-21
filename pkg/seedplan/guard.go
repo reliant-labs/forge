@@ -164,8 +164,20 @@ func tableGuardSpecs(
 		if !ok {
 			continue
 		}
-		g, ok := parseStatusGuard(body)
-		if !ok {
+		var found []guardRewrite
+		if g, ok := parseStatusGuard(body); ok {
+			found = []guardRewrite{g}
+		} else if bc, ok := parseBiconditional(body); ok {
+			// A biconditional over a discriminator with a vocabulary is a
+			// PAIR of guards over it — "these values require Q" and "the
+			// rest require NOT Q" — and merging it here is what lets it
+			// stand beside the column's one-way guards instead of
+			// rivalling them. Any other biconditional is the union pass's.
+			found, ok = bc.guards(t.Name, pools)
+			if !ok {
+				continue
+			}
+		} else {
 			continue
 		}
 		// The paranoia guard the other passes apply: the expression must
@@ -174,14 +186,15 @@ func tableGuardSpecs(
 		for _, c := range ck.Columns {
 			spans[c] = true
 		}
-		if !spans[g.column] {
+		column := found[0].column
+		if !spans[column] {
 			continue
 		}
-		if _, seen := byColumn[g.column]; !seen {
-			columns = append(columns, g.column)
+		if _, seen := byColumn[column]; !seen {
+			columns = append(columns, column)
 		}
-		byColumn[g.column] = append(byColumn[g.column], g)
-		names[g.column] = append(names[g.column], ck.Name)
+		byColumn[column] = append(byColumn[column], found...)
+		names[column] = append(names[column], ck.Name)
 	}
 
 	// The biconditionals on this table, by name. A rival in this set is not
@@ -192,9 +205,12 @@ func tableGuardSpecs(
 
 	for _, column := range columns {
 		guards := byColumn[column]
+		// Counted in constraints, not rewrites: a biconditional is one
+		// constraint and two guards.
+		n := len(names[column])
 		label := quotedList(names[column])
-		for _, n := range names[column] {
-			claimed[n] = true
+		for _, nm := range names[column] {
+			claimed[nm] = true
 		}
 
 		vocab, ok := pools.get(t.Name, column)
@@ -207,7 +223,7 @@ func tableGuardSpecs(
 				"seed plan: %s constraint%s %s guards %s, but %s declares no value set forge can "+
 					"draw from — add a single-column `CHECK (%s IN (…))` and forge can place %s "+
 					"— until then seeded rows satisfy it only by chance",
-				t.Name, plural(len(guards)), label, column, column, column, itThem(len(guards))))
+				t.Name, plural(n), label, column, column, column, itThem(n)))
 			continue
 		}
 
@@ -229,16 +245,16 @@ func tableGuardSpecs(
 				warns = append(warns, fmt.Sprintf(
 					"seed plan: %s constraint%s %s over %s %s well-formed and would seed, but %q also spans %s and %s — "+
 						"fix that ONE constraint and %s %s placed too. Until then seeded rows satisfy %s only by chance",
-					t.Name, plural(len(guards)), label, column, isAre(len(guards)),
+					t.Name, plural(n), label, column, isAre(n),
 					blocker, column, biconditionalAdvice(rewrite, column),
-					label, areGet(len(guards)), itThem(len(guards))))
+					label, areGet(n), itThem(n)))
 				continue
 			}
 			warns = append(warns, fmt.Sprintf(
 				"seed plan: %s constraint%s %s guard%s %s but forge cannot place %s values (%s) — "+
 					"seeded rows satisfy %s only by chance",
-				t.Name, plural(len(guards)), label, plural(len(guards)), column,
-				itsTheir(len(guards)), why, itThem(len(guards))))
+				t.Name, plural(n), label, plural(n), column,
+				itsTheir(n), why, itThem(n)))
 			continue
 		}
 		specs = append(specs, spec)
@@ -429,7 +445,8 @@ func isForeignKey(t schemadef.Table, col string) bool {
 	return false
 }
 
-// notNullOnlyFor reports whether every term naming col is IS NOT NULL.
+// notNullOnlyFor reports whether every term naming col is IS NOT NULL (or its
+// string form, a non-blank requirement).
 //
 // That is the test for "this branch constrains the column's PRESENCE but not
 // its value", which is what makes it safe to let a branch name a column some
@@ -438,11 +455,44 @@ func isForeignKey(t schemadef.Table, col string) bool {
 // the same cell and the ordinary eligibility refusal must stand.
 func notNullOnlyFor(terms []unionTerm, col string) bool {
 	for _, t := range terms {
-		if t.column == col && t.kind != termNotNull {
+		if t.column == col && t.kind != termNotNull && t.kind != termNonBlank {
 			return false
 		}
 	}
 	return true
+}
+
+// isNullOnlyFor reports whether every term naming col is IS NULL — the
+// branch asks for the column's ABSENCE and places nothing else on it.
+func isNullOnlyFor(terms []unionTerm, col string) bool {
+	for _, t := range terms {
+		if t.column == col && t.kind != termIsNull {
+			return false
+		}
+	}
+	return true
+}
+
+// nullableSoleFK reports whether col is a nullable foreign key that is the
+// whole of its reference — the one kind of key column whose edge the reference
+// path can decline on a given row without breaking anything else. A key
+// member, or a member of a composite reference, is never one: its value is
+// shared with columns this branch says nothing about.
+func nullableSoleFK(t schemadef.Table, col schemadef.Column) bool {
+	if col.NotNull || col.IsPK {
+		return false
+	}
+	found := false
+	for _, fk := range t.ForeignKeys {
+		if fk.Column != col.Name {
+			continue
+		}
+		if len(fk.KeyColumns) > 1 {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // guardRewrite is a status guard resolved into the union shape.

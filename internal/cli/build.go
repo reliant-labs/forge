@@ -97,7 +97,7 @@ func appendNamedBuildContexts(dockerArgs []string, contexts map[string]config.Bu
 			value = c.SourceDir
 		}
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
-		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
+		fmt.Printf("[build] docker build-context %s\n", withholdFlagValue("--build-context", name+"="+value))
 	}
 	return dockerArgs
 }
@@ -126,6 +126,9 @@ type buildOptions struct {
 	// pull from. Unlike push, having none is not a failure. Resolved by
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
+	// noSBOM is --no-sbom: cut the release without generating SBOMs
+	// (build_sbom.go). Each artifact records why it has none.
+	noSBOM bool
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
@@ -303,17 +306,9 @@ mirror config inside k3d resolves that reference at pull time).`,
 				}
 				opts.env = args[0]
 			}
-			// COMPILE-ONLY. Publishing moved to `forge env build <env>`,
-			// where the environment is the subject rather than an optional
-			// modifier. Refused here before any work, naming the
-			// replacement command. See refuseBuildPublishFlag in
-			// env_build.go.
-			if cmd.Flags().Changed("push") {
-				return refuseBuildPublishFlag("push", opts.env)
-			}
-			if cmd.Flags().Changed("release") {
-				return refuseBuildPublishFlag("release", opts.env)
-			}
+			// COMPILE-ONLY. Publishing is `forge env build <env>`, where
+			// the environment is the subject rather than an optional
+			// modifier.
 			if _, err := requireFeature(config.FeatureBuild); err != nil {
 				return err
 			}
@@ -331,25 +326,14 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, rebuildFlagHelp)
-	// --push and --release are REGISTERED but REFUSED here, on purpose.
-	// They moved to `forge env build <env>`, and the two surfaces fail very
-	// differently: an unregistered flag gets cobra's bare "unknown flag:
-	// --push", which tells a user with a working command in their shell
-	// history nothing about where it went. Registered, the RunE answers with
-	// the exact replacement. Hidden so they do not advertise themselves in
-	// --help as things this command can do.
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to 'forge env build <env> --push' — a push destination is declared per workload in an env's render, so publishing is an environment act")
-	_ = cmd.Flags().MarkHidden("push")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: the env's declared platform, then forge.yaml deploy.target_arch, then the host arch)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
 	// as the flag's argument-name placeholder, so a quoted command rendered
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
+	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to 'forge env build <env> --release <version>' — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
-	_ = cmd.Flags().MarkHidden("release")
 	cmd.AddCommand(newBuildReceiptCmd())
 
 	return cmd
@@ -510,8 +494,14 @@ type buildResult struct {
 	// goTargets are the exact recipes compiled into this invocation's project image.
 	goTargets []goBuildTarget
 	// upToDate marks a ShellBuild whose declared inputs were unchanged and
-	// whose last pushed image still stands, so its command did not run.
+	// whose last pushed image still stands, so its command did not run — or
+	// a DockerBuild whose --release build reused an earlier release's image.
 	upToDate bool
+	// releaseInputsDigest and carriedFrom are a DockerBuild's release
+	// evidence (build_docker_release_reuse.go): its declared inputs as a
+	// release compares them, and the release whose image it reused ("" when
+	// it built). persistImageBuildStates records them for the cut.
+	releaseInputsDigest, carriedFrom string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1725,6 +1715,10 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			Digest:    r.digest,
 			Platforms: r.platforms,
 			Source:    r.source,
+			// A DockerBuild's declared inputs, for the next release to
+			// compare, and the release whose image it reused.
+			ReleaseInputsDigest: r.releaseInputsDigest,
+			CarriedFrom:         r.carriedFrom,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -1867,6 +1861,10 @@ type releaseCutOutcome struct {
 	Ledger string
 	// Images, Packages and Files count the artifacts by kind.
 	Images, Packages, Files int
+	// Vulns is the advisory scan of the cut's SBOMs (vuln_gate.go); nil
+	// when nothing was judged (no SBOMs by policy, vuln_gate off, a
+	// claimable deploy).
+	Vulns *cutVulnVerdict
 }
 
 // printReleaseCut is the text rendering of a cut.
@@ -1881,6 +1879,7 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
 		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
 	}
+	printCutVulnVerdict(out, cut.Vulns)
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
@@ -1891,6 +1890,12 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 // were built and pushed by an earlier step.
 func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (releaseCutOutcome, error) {
 	artifacts := harvestReleaseArtifacts(projectDir, env)
+	// What the build state recorded is what this pipeline built: the SBOM
+	// step reads those images from the docker daemon before the registry.
+	built := make(map[string]bool, len(artifacts))
+	for name := range artifacts {
+		built[name] = true
+	}
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
@@ -1985,13 +1990,25 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// The source history this release adds, while the checkout is at its
 	// commit — see release_commits.go.
 	rel.Commits = captureReleaseCommits(ctx, projectDir, rel, ledger.Releases, os.Stderr)
+	// LAST before the record, after every check that can refuse the cut:
+	// an SBOM costs seconds per artifact, and a refused cut should not pay
+	// for them. Never fails the cut (build_sbom.go).
+	generateReleaseSBOMs(ctx, sbomCut{
+		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
+		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
+	}, rel.Artifacts, os.Stderr)
+	// The advisory verdict on those SBOMs, printed under the release line.
+	// Never fails the cut (vuln_gate.go).
+	vulns := scanReleaseAtCut(ctx, cutVulnInput{
+		ProjectDir: projectDir, Env: env, Entities: entities, Release: &rel, Hosted: ledger.Hosted, Log: os.Stderr,
+	})
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
 	}
 	return releaseCutOutcome{
 		Release: rel, Created: created, Ledger: ledger.Releases.Location(),
-		Images: images, Packages: packages, Files: files,
+		Images: images, Packages: packages, Files: files, Vulns: vulns,
 	}, nil
 }
 
@@ -2236,6 +2253,13 @@ type goBuildTarget struct {
 	// pgoOff builds with -pgo=off: the env declares the binary's PGO
 	// disabled (kcl/schema.k PGO). A -pgo of the user's own wins.
 	pgoOff bool
+	// cover builds with -cover -covermode=atomic: the env instruments the
+	// binary (kcl/schema.k Tests, WorkloadEntity.CoverBuild). coverPackages
+	// are the env's explicit -coverpkg patterns (empty is "main"), and
+	// coverFlags the resolved flags buildGoTarget fills in before the build.
+	cover         bool
+	coverPackages []string
+	coverFlags    []string
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2287,6 +2311,8 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	if t.pgoOff && !userSetsPGO(t.flags, t.env) {
 		args = append(args, pgoOffFlag)
 	}
+	// A cover build (kcl/schema.k Tests), resolved by buildGoTarget.
+	args = append(args, t.coverFlags...)
 	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
@@ -2331,6 +2357,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		if i, ok := seen[key]; ok {
 			// A binary shared with a delve-run workload is built for it.
 			out[i].debug = out[i].debug || debug
+			// The env refuses workloads that disagree on a binary's
+			// coverage (ResolveCoverBinaries), so either answers for both.
+			out[i].cover = out[i].cover || w.CoverBuild()
 			continue
 		}
 		seen[key] = len(out)
@@ -2345,6 +2374,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			flags:      g.Flags,
 			env:        g.Env,
 			pgoOff:     pgoOff[normalizePGOPackage(g.Cmd)],
+			cover:      w.CoverBuild(),
+			// The env's -coverpkg patterns; empty is "main".
+			coverPackages: w.coverPackages(),
 		})
 	}
 	return out
@@ -2418,6 +2450,18 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
+	// A cover build: -cover -covermode=atomic -coverpkg=<the env's
+	// packages>. An explicit -cover in the build's own flags or GOFLAGS is
+	// the user's choice and wins; a -covermode or -coverpkg of theirs is
+	// kept in place of forge's (mergeCoverFlags).
+	if owns, _, _ := userCoverFlags(t.flags, t.env); t.cover && !owns {
+		flags, err := coverBuildFlags(ctx, projectDirForKCL(), t.coverPackages)
+		if err != nil {
+			return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
+		}
+		t.coverFlags = mergeCoverFlags(flags, t.flags, t.env)
+		fmt.Printf("[build] %s: instrumented for coverage (-cover -covermode=%s)\n", t.outputName, coverMode)
+	}
 	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {
@@ -2741,8 +2785,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	// `docker-image://`, …). cwd is the project root by construction
 	// (forge build runs alongside forge.yaml).
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	fmt.Printf("[build] %s: %s\n", cfg.Name, dockerCommandLine(dockerArgs))
 
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
@@ -2898,18 +2942,6 @@ func k3dMirrorRepositories(repository string) []string {
 	return []string{"registry.localhost:" + port + "/" + path}
 }
 
-// countTags counts the `-t` flags in a docker build arg list for the
-// progress line. Cheap; only used for human-readable output.
-func countTags(args []string) int {
-	n := 0
-	for _, a := range args {
-		if a == "-t" {
-			n++
-		}
-	}
-	return n
-}
-
 // dockerBuild builds a Docker image for a frontend from its own
 // Dockerfile, tagged with tags.local, and pushes tags.push after a
 // successful build.
@@ -2947,8 +2979,8 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
+	fmt.Printf("[build] %s: %s\n", name, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "frontend image "+name+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: name + " (docker)", kind: "docker", image: name, duration: time.Since(start), err: err}
@@ -3362,6 +3394,11 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	var out []buildResult
 	workloads := e.Workloads
 	aliases := map[string][]WorkloadEntity{}
+	// A --release build compares DockerBuilds that declare inputs against
+	// earlier releases (build_docker_release_reuse.go); the ledger is read
+	// once, and only if one needs it.
+	projectDir := projectDirForKCL()
+	reuseBase := newReleaseReuseBase(ctx, projectDir, opts)
 	if opts.composition != nil {
 		units, err := compositionBuildUnits(e)
 		if err != nil {
@@ -3386,12 +3423,12 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				continue
 			}
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			builder := buildServiceDocker
-			if opts.composition != nil {
-				builder = compositionDockerBuilder
-			}
 			result := timedBuild(ctx, func() buildResult {
-				return builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				if opts.composition != nil {
+					return compositionDockerBuilder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				}
+				target := releaseDockerTarget{repository: repository, tag: imageTag}
+				return buildServiceDockerReusing(ctx, cfg, w, target, opts, cfgArchForDocker, projectDir, reuseBase)
 			})
 			result.workload = w.Name
 			out = append(out, result)
@@ -3473,15 +3510,7 @@ func buildServiceRemote(svcName string) buildResult {
 // DockerBuild.pgo disables.
 func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
-	// platform: the DockerBuild's explicit platform wins; otherwise the
-	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
-	platform := ""
-	if d != nil && d.Platform != "" {
-		platform = d.Platform
-	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
-		platform = "linux/" + a
-	}
-	if platform != "" {
+	if platform := serviceDockerPlatform(d, opts, cfgArchForDocker); platform != "" {
 		dockerArgs = append(dockerArgs, "--platform="+platform)
 	}
 	if d != nil && d.Target != "" {
@@ -3515,6 +3544,19 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 	}
 	dockerArgs = append(dockerArgs, "-f", dockerfile, serviceDockerContext(d))
 	return dockerArgs, pushTags
+}
+
+// serviceDockerPlatform is the platform a DockerBuild builds for: its explicit
+// platform wins; otherwise the env-wide cluster arch (cfgArchForDocker),
+// cross-compiled to linux. "" builds for the daemon's own platform.
+func serviceDockerPlatform(d *DockerBuild, opts buildOptions, cfgArchForDocker string) string {
+	if d != nil && d.Platform != "" {
+		return d.Platform
+	}
+	if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		return "linux/" + a
+	}
+	return ""
 }
 
 // serviceDockerContext is the MAIN `docker build` context directory for a
@@ -3676,7 +3718,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
 	}
 	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
-	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
+	fmt.Printf("[build] %s: %s\n", svcName, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}

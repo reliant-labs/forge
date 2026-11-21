@@ -27,8 +27,9 @@ package hostinfra
 // and starts, adopts or restarts the process.
 //
 // The configuration is regenerated on every `forge env up`. A running agent
-// whose configuration and arguments are byte-identical is adopted; any
-// difference restarts it, after the new configuration passed the collector's
+// whose configuration and arguments are byte-identical, and whose credential
+// files hold what they held when it started, is adopted; any difference
+// restarts it, after the new configuration passed the collector's
 // own `validate` (a configuration that would not load never replaces one that
 // runs). Like the engines, the agent outlives `forge env up` and is stopped by
 // `forge env down`.
@@ -133,6 +134,22 @@ func telemetryAgentPIDFile(projectDir, env string) string {
 	return filepath.Join(TelemetryAgentDir(projectDir, env), TelemetryAgentName+".pid")
 }
 
+// telemetryAgentCredentialsFile records the CredentialsRevision the running
+// agent was started with. 0600 beside the credentials, never in the 0644
+// configuration: it is a digest of their contents.
+func telemetryAgentCredentialsFile(projectDir, env string) string {
+	return filepath.Join(TelemetryAgentDir(projectDir, env), TelemetryAgentName+".credentials")
+}
+
+// readRevision is the recorded revision, "" when none was recorded.
+func readRevision(path string) string {
+	b, err := os.ReadFile(path) // #nosec G304 -- forge's own file
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // TelemetryAgent is one env's agent, as the caller renders it.
 type TelemetryAgent struct {
 	// Env names the env: the agent's directory and log.
@@ -145,6 +162,12 @@ type TelemetryAgent struct {
 	// FeatureGates are passed as --feature-gates (e.g.
 	// service.profilesSupport for profiles pipelines).
 	FeatureGates []string
+	// CredentialsRevision fingerprints the contents of the credential files
+	// Config names ("" when it names none). The collector reads them at
+	// start and the configuration names only their paths, so a running
+	// agent is adopted only when it was started with this revision too: a
+	// rotated token or CA restarts it.
+	CredentialsRevision string
 }
 
 // TelemetryAgentState is what StartTelemetryAgent did.
@@ -197,8 +220,10 @@ func StartTelemetryAgent(ctx context.Context, projectDir string, a TelemetryAgen
 		return res, fmt.Errorf("telemetry agent: %w", err)
 	}
 
+	revFile := telemetryAgentCredentialsFile(projectDir, a.Env)
 	if running {
-		if cur, rerr := os.ReadFile(res.ConfigPath); rerr == nil && bytes.Equal(cur, doc) { // #nosec G304 -- forge's own file
+		cur, rerr := os.ReadFile(res.ConfigPath) // #nosec G304 -- forge's own file
+		if rerr == nil && bytes.Equal(cur, doc) && readRevision(revFile) == a.CredentialsRevision {
 			if err := waitAgentHealthy(ctx, pid, port); err != nil {
 				return res, fmt.Errorf("telemetry agent (pid %d): %w\n  logs: %s", pid, err, shortPath(projectDir, res.LogPath))
 			}
@@ -242,6 +267,10 @@ func StartTelemetryAgent(ctx context.Context, projectDir string, a TelemetryAgen
 	if err := writePIDFile(pidFile, res.PID, port); err != nil {
 		_ = cmd.Process.Kill()
 		return res, fmt.Errorf("telemetry agent: record pid: %w", err)
+	}
+	if err := atomicfile.WriteFile(revFile, []byte(a.CredentialsRevision), 0o600); err != nil {
+		_ = cmd.Process.Kill()
+		return res, fmt.Errorf("telemetry agent: record credentials revision: %w", err)
 	}
 	_ = cmd.Process.Release()
 	if err := waitAgentHealthy(ctx, res.PID, port); err != nil {

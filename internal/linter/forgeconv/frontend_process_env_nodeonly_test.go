@@ -96,3 +96,48 @@ p();
 		t.Fatalf("a plugin imported only by config and its test must produce NO findings, got:\n%s", res.FormatText())
 	}
 }
+
+// TestLintFrontendProcessEnv_UnresolvedAppImportsFailClosed: what the
+// resolver cannot follow from the app's side never exempts a file. An app
+// import through an alias it does not know (`~/shared/origin`) keeps the file
+// it could name scanned, and an app file with a non-literal import() exempts
+// nothing at all.
+func TestLintFrontendProcessEnv_UnresolvedAppImportsFailClosed(t *testing.T) {
+	t.Parallel()
+	nodeOnly := func(t *testing.T, feDir string) {
+		t.Helper()
+		writeFE(t, feDir, "vite.config.ts", `import { origin } from "./shared/origin";
+import p from "./plugins/devlog";
+export default { server: { proxy: origin() }, plugins: [p()] };
+`)
+		writeFE(t, feDir, "shared/origin.ts", `export const origin = () => process.env.SHARED_ORIGIN;`)
+		writeFE(t, feDir, "plugins/devlog.ts", `export default () => process.env.LOG_DIR;`)
+	}
+
+	t.Run("an alias the resolver does not know", func(t *testing.T) {
+		root, feDir := newFrontendWithConfig(t)
+		nodeOnly(t, feDir)
+		writeFE(t, feDir, "src/main.tsx", `import { origin } from "~/shared/origin";
+console.log(origin());
+`)
+		res := LintFrontendProcessEnv(root, []string{feDir}, finding.SeverityWarning)
+		var files []string
+		for _, f := range res.Findings {
+			files = append(files, f.File)
+		}
+		if len(res.Findings) != 1 || !strings.HasSuffix(filepathSlash(files[0]), "shared/origin.ts") {
+			t.Fatalf("want shared/origin.ts scanned (an unknown alias may name it) and plugins/devlog.ts exempt, got:\n%s", res.FormatText())
+		}
+	})
+	t.Run("a non-literal import", func(t *testing.T) {
+		root, feDir := newFrontendWithConfig(t)
+		nodeOnly(t, feDir)
+		writeFE(t, feDir, "src/main.tsx", "const name = location.hash.slice(1);\nimport(`../plugins/${name}`);\n")
+		res := LintFrontendProcessEnv(root, []string{feDir}, finding.SeverityWarning)
+		if len(res.Findings) != 2 {
+			t.Fatalf("a non-literal app import must leave every file scanned, got %d:\n%s", len(res.Findings), res.FormatText())
+		}
+	})
+}
+
+func filepathSlash(p string) string { return strings.ReplaceAll(p, `\`, "/") }

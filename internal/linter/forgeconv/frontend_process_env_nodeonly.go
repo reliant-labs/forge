@@ -33,9 +33,12 @@
 // the resolver cannot follow FROM a Node root leaves its target scanned (a
 // warning that is noise, not a hole). The one way a miss could hide a read
 // is an app file importing a Node-reachable module through an alias the
-// resolver does not know; to bound that, nothing under the conventional app
-// source roots (src/, app/, pages/) is ever exempted by reachability — a
-// Vite plugin or build script does not live there.
+// resolver does not know. That fails closed twice over: a Node-reachable file
+// any unresolved app import could name (its last segment is the file's name)
+// stays scanned, and an app file with a non-literal import() or require()
+// exempts nothing at all. Nothing under the conventional app source roots
+// (src/, app/, pages/) is ever exempted by reachability either — a Vite
+// plugin or build script does not live there.
 
 package forgeconv
 
@@ -92,14 +95,63 @@ func nodeOnlyFiles(feDir string, files []string, pathExempt func(string) bool) m
 	}
 	bundled := closure(appRoots, imports)
 
+	// What the resolver could not follow from the app's side fails closed.
+	// A non-literal import may name anything, so nothing is exempt. An
+	// unresolved specifier (an alias the resolver does not know: `~/x`,
+	// `#shared/x`, a vite resolve.alias) may name any file whose name ends it,
+	// so such a file stays scanned.
+	dynamic, tails := unresolvedAppImports(feDir, bundled, known)
+	if dynamic {
+		return nil
+	}
+
 	out := map[string]bool{}
 	for f := range nodeReach {
-		if bundled[f] || underAppSourceRoot(feDir, f) {
+		if bundled[f] || underAppSourceRoot(feDir, f) || tails[importTail(f)] {
 			continue
 		}
 		out[f] = true
 	}
 	return out
+}
+
+// dynamicImport matches an import() or require() whose argument is not a
+// string literal: a specifier built at run time.
+var dynamicImport = regexp.MustCompile(`\b(?:import|require)\s*\(\s*[^"'\s)]`)
+
+// unresolvedAppImports reads the app's files and reports whether any imports
+// through a non-literal specifier, and the last path segment (extension
+// dropped) of every specifier that resolved to no known file.
+func unresolvedAppImports(feDir string, app, known map[string]bool) (dynamic bool, tails map[string]bool) {
+	tails = map[string]bool{}
+	for f := range app {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if dynamicImport.Match(data) {
+			return true, nil
+		}
+		for _, m := range importSpecifier.FindAllSubmatch(data, -1) {
+			spec := string(m[1])
+			if resolveSpecifier(feDir, f, spec, known) != "" {
+				continue
+			}
+			last := path.Base(strings.TrimSuffix(spec, "/"))
+			tails[strings.TrimSuffix(last, path.Ext(last))] = true
+		}
+	}
+	return false, tails
+}
+
+// importTail is the segment a specifier naming f ends with: its file name
+// without the extension, or its directory's name for an index file.
+func importTail(f string) string {
+	stem := strings.TrimSuffix(filepath.Base(f), filepath.Ext(f))
+	if stem == "index" {
+		return filepath.Base(filepath.Dir(f))
+	}
+	return stem
 }
 
 // isNodeRoot reports whether f is a Node entry point: a root build config

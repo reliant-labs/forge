@@ -57,3 +57,23 @@ func TestHostedStaticSpec_CarriesAssetDir(t *testing.T) {
 		t.Errorf("the published spec does not validate: %v", err)
 	}
 }
+
+// A hosted frontend's named same-origin APIs are published as workload
+// REFERENCES (the control plane resolves them in the same env), and a
+// frontend that declares none publishes no apis key.
+func TestHostedStaticSpec_CarriesNamedAPIsAsReferences(t *testing.T) {
+	spec := hostedStaticSpec(FrontendEntity{Name: "web", APIs: map[string]string{"billing": "billing-api"}})
+	if got := spec.APIs["billing"].Name; got != "billing-api" || len(spec.APIs) != 1 {
+		t.Fatalf("spec.APIs = %v, want billing -> billing-api", spec.APIs)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Errorf("published spec refused: %v", err)
+	}
+	b, err := json.Marshal(hostedStaticSpec(FrontendEntity{Name: "web"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "apis") {
+		t.Errorf("a frontend without apis publishes the key: %s", b)
+	}
+}

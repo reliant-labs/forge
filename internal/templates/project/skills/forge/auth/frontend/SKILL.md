@@ -79,6 +79,8 @@ What you get is an **`Identity`**: `{ authenticated, email?, name?, subject? }`.
 
 **Where the auth calls go.** `native-login.ts` asks `src/lib/api-base.ts`, the same module the transport asks. Under the dev server that is the page's own origin, `<basePath>/_api/auth/login` and so on, which `next.config.ts` (or `vite.config.ts`) proxies to the API. The API's `Set-Cookie` (`Path=/`, no `Domain`, `SameSite=Lax`, not `Secure` in development) passes through unchanged, so the session cookie is first-party to whatever host the page was opened on: localhost, a Reliant workspace preview URL, or a LAN IP. Every later `/_api` RPC carries it. In a build the calls go to `API_URL` from `config.js`, and an empty value means same-origin. On Reliant hosting that value is `/_api`, which the platform serves on the site's own hosts, so the cookie is first-party there too (`deploy/hosting`). See `frontend/serving`.
 
+Two backends, one cookie: `Frontend.apis` (`frontend/serving`).
+
 `credentials: "include"` on every auth `fetch` is load-bearing and easy to lose. Whenever the API is on another origin (a deployed literal `API_URL` naming the API's own host, or the dev loop with `FORGE_DEV_API_PROXY=off`, where the API is on its own port), the default (`"same-origin"`) makes the browser **silently drop the `Set-Cookie`**: login returns 200, the identity comes back, and the user stays signed out with nothing in the console to explain it. The server pairs it with `cors_allow_credentials`. Through the dev proxy it costs nothing.
 
 The same holds for every RPC after sign-in, on both sides:

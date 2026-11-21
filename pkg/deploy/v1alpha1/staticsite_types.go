@@ -229,7 +229,41 @@ type StaticSiteSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=128
 	RuntimeConfig map[string]RuntimeConfigValue `json:"runtimeConfig,omitempty"`
+
+	// APIs are the site's NAMED same-origin APIs, beside the default one
+	// its API_URL reaches at /_api: each key is a name ([SiteAPINamePattern])
+	// and each value the workload, in the site's own environment, that
+	// <any host of the site>/_api/@<name>/* reaches with the prefix
+	// stripped. The browser's config.js names each as
+	// `apis.<name> = "/_api/@<name>"`.
+	//
+	// WHY. A site that calls two backends can send its host-only,
+	// SameSite=Lax session cookie only to its own origin. Serving every
+	// backend it calls on that origin keeps the cookie first-party for all
+	// of them. The `@` keeps a name from ever colliding with a path of the
+	// default API.
+	//
+	// A REFERENCE, NEVER A URL. The cookie reaches every named API, so each
+	// must be in the site's trust domain: a workload of the same
+	// environment, which is the only thing a WorkloadURLRef can name.
+	//
+	// An executor that does not serve named APIs must not accept a spec
+	// carrying them: forge refuses to record one for a control plane that
+	// does not advertise release.CapabilityServesNamedSiteAPIs.
+	// +optional
+	// +kubebuilder:validation:MaxProperties=16
+	APIs map[string]WorkloadURLRef `json:"apis,omitempty"`
 }
+
+// SiteAPINamePattern is the name rule of a StaticSite's named API: the path
+// segment after `/_api/@`, so lowercase, URL-safe and short.
+const SiteAPINamePattern = `^[a-z][a-z0-9-]{0,30}$`
+
+// RuntimeConfigAPIsKey is the config.js key under which the named APIs'
+// base paths are published (window.__FORGE_CONFIG__.apis). A runtime config
+// entry of that name would collide with it, so a spec that declares APIs
+// may not also declare it.
+const RuntimeConfigAPIsKey = "apis"
 
 // MinKeepReleases is the retention floor: the live release plus its
 // predecessor.

@@ -55,6 +55,11 @@ Public Suffix List says about the two hostnames, and no CORS is involved.
   platform's CDN (`Cache-Control` becomes `private`).
 - `/_api` is reserved on hosted sites: with no API it answers 404, not the
   SPA fallback.
+- More backends of the same env go beside it as NAMED APIs
+  (`Frontend.apis = {billing = "billing-api"}`), each at `/_api/@<name>/*`
+  with the same rules, and published in config.js as `apis.<name>`. The
+  control plane must advertise `serves-named-site-apis`, or the deploy is
+  refused. See `frontend/serving`, "Several APIs on one origin".
 - To have the browser call the API's own host instead, set the URL as a
   literal (`API_URL = "https://<api host>"`): a literal is never rewritten,
   and the CORS settings above make it work while the two hosts are same-site.

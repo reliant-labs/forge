@@ -37,7 +37,7 @@ func TestFrontendRuntimeOverlaysListEveryWebFrontendForgeWrites(t *testing.T) {
 func TestFrontendRuntimeDocsNameTheEnvironment(t *testing.T) {
 	// No proto/config: no typed frontend config, so the overlays are the
 	// whole document.
-	docs, err := renderFrontendRuntimeDocsWith(t.TempDir(), "staging", map[string]map[string]string{
+	docs, err := renderFrontendRuntimeDocsWith(t.TempDir(), "staging", map[string]map[string]any{
 		"bare":     {},
 		"declared": {"ENVIRONMENT": "canary", "APP_NAME": "acme"},
 	})

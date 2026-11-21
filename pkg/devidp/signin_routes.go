@@ -162,10 +162,17 @@ type SignInRoutesConfig struct {
 	ResponseFloor time.Duration
 
 	// SignedIn stores tokens as the app's session and returns the identity
-	// body the browser renders. Required.
+	// body the browser renders. Required unless SignedInRequest is set.
 	SignedIn func(http.ResponseWriter, Tokens) any
-	// SessionToken returns the request's session access token, "" when none.
-	// Required.
+	// SignedInRequest is SignedIn for a session kept server-side
+	// (forge/pkg/session): it has the request, for its context and its
+	// User-Agent, and may fail, because the store may be unreachable. When
+	// set it is used instead of SignedIn; an error answers 502 and no
+	// session is issued.
+	SignedInRequest func(w http.ResponseWriter, req *http.Request, tokens Tokens) (any, error)
+	// SessionToken returns the request's session ACCESS token, "" when none:
+	// the cookie's value when it holds the token, the token a server-side
+	// session's id resolves to when it holds an id. Required.
 	SessionToken func(*http.Request) string
 	// PasswordPolicy is the checklist a new password is held to before the
 	// issuer is asked (nil: none). RejectPassword answers a rejected one.
@@ -176,8 +183,8 @@ type SignInRoutesConfig struct {
 // NewSignInRoutes validates the configuration. It refuses a policy-bearing
 // broker with no AppBase: every mailed link and the passkey origin need it.
 func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
-	if cfg.Client == nil || cfg.SignedIn == nil || cfg.SessionToken == nil {
-		return nil, fmt.Errorf("sign-in routes need a client, SignedIn and SessionToken")
+	if cfg.Client == nil || (cfg.SignedIn == nil && cfg.SignedInRequest == nil) || cfg.SessionToken == nil {
+		return nil, fmt.Errorf("sign-in routes need a client, SignedIn (or SignedInRequest) and SessionToken")
 	}
 	u, err := url.Parse(strings.TrimRight(cfg.AppBase, "/"))
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -611,7 +618,9 @@ func (r *SignInRoutes) HandlePasskeyFinish(w http.ResponseWriter, req *http.Requ
 	}
 	r.complete(w, req, session, func(tokens Tokens) {
 		r.clearBinding(w, enrollCookie)
-		writeJSON(w, http.StatusOK, r.cfg.SignedIn(w, tokens))
+		if body, ok := r.signedIn(w, req, tokens); ok {
+			writeJSON(w, http.StatusOK, body)
+		}
 	})
 }
 
@@ -916,7 +925,11 @@ func (r *SignInRoutes) HandleMagicConsume(w http.ResponseWriter, req *http.Reque
 	}
 	r.magicByCode.forget(key)
 	r.clearBinding(w, magicCookie)
-	r.complete(w, req, session, func(tokens Tokens) { writeJSON(w, http.StatusOK, r.cfg.SignedIn(w, tokens)) })
+	r.complete(w, req, session, func(tokens Tokens) {
+		if body, ok := r.signedIn(w, req, tokens); ok {
+			writeJSON(w, http.StatusOK, body)
+		}
+	})
 }
 
 // sessionFromVerification turns a proven email-verification code into a
@@ -990,7 +1003,7 @@ func (r *SignInRoutes) HandleSocialStart(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	authURL, intentID, err := r.cfg.Client.StartIDPIntent(ctx, social.IdPID,
-		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+"/auth/sign-in?error=social")
+		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+SocialFailurePath)
 	if err != nil {
 		r.unavailable(ctx, w, "social sign-in could not start", err)
 		return
@@ -1001,6 +1014,18 @@ func (r *SignInRoutes) HandleSocialStart(w http.ResponseWriter, req *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": authURL})
 }
+
+// SocialFailurePath is where the issuer sends the browser when a social
+// sign-in fails at the provider (the person cancelled, the provider refused
+// the client): the sign-in page, marked social=failed so it can say the sign-in
+// did not complete.
+//
+// The issuer SETS error, error_description and id on this URL, replacing any
+// it carried (Zitadel v4.20.5, proven by the social sign-in e2e: a provider's
+// access_denied arrives as error=access_denied), so error=social never reaches
+// the page that way. It stays for sign-in pages scaffolded before social=failed
+// existed, which test only error=social; social=failed is what survives.
+const SocialFailurePath = "/auth/sign-in?error=social&social=failed"
 
 // SafeReturnTo keeps a same-origin path and turns anything else into "/".
 //
@@ -1092,7 +1117,9 @@ func (r *SignInRoutes) HandleSocialCallback(w http.ResponseWriter, req *http.Req
 			return
 		}
 		r.complete(w, req, s, func(tokens Tokens) {
-			writeJSON(w, http.StatusOK, map[string]any{"identity": r.cfg.SignedIn(w, tokens), "returnTo": b.ReturnTo})
+			if body, ok := r.signedIn(w, req, tokens); ok {
+				writeJSON(w, http.StatusOK, map[string]any{"identity": body, "returnTo": b.ReturnTo})
+			}
 		})
 	}
 	signIn := func(userID string) { signInWith(userID, c.CreateSession) }
@@ -1380,7 +1407,9 @@ func (r *SignInRoutes) setPasswordAndSignIn(w http.ResponseWriter, req *http.Req
 		r.unavailable(ctx, w, "invitation: sign in", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.cfg.SignedIn(w, tokens))
+	if body, ok := r.signedIn(w, req, tokens); ok {
+		writeJSON(w, http.StatusOK, body)
+	}
 }
 
 // enroll lets a user who just proved an emailed code register a passkey: a
@@ -1805,7 +1834,9 @@ func (r *SignInRoutes) registerWithoutMail(w http.ResponseWriter, req *http.Requ
 		r.unavailable(ctx, w, "sign-up: sign in", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, r.cfg.SignedIn(w, tokens))
+	if body, ok := r.signedIn(w, req, tokens); ok {
+		writeJSON(w, http.StatusOK, body)
+	}
 }
 
 // rejectWeak answers (and reports true) when password breaks the known
@@ -1835,6 +1866,22 @@ func (r *SignInRoutes) rejectPassword(ctx context.Context, w http.ResponseWriter
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+// signedIn stores tokens as the app's session and returns the identity body,
+// through SignedInRequest when the app supplied it, else SignedIn. A session
+// that could not be stored answers 502 and reports false: the browser gets no
+// session, and the person can try again.
+func (r *SignInRoutes) signedIn(w http.ResponseWriter, req *http.Request, tokens Tokens) (any, bool) {
+	if r.cfg.SignedInRequest != nil {
+		body, err := r.cfg.SignedInRequest(w, req, tokens)
+		if err != nil {
+			r.unavailable(req.Context(), w, "the session could not be stored", err)
+			return nil, false
+		}
+		return body, true
+	}
+	return r.cfg.SignedIn(w, tokens), true
+}
 
 func (r *SignInRoutes) unavailable(ctx context.Context, w http.ResponseWriter, what string, err error) {
 	r.cfg.Logger.ErrorContext(ctx, what, "error", err)

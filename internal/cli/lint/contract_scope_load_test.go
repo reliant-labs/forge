@@ -153,6 +153,56 @@ func TestContractLane_ScopedRunReportsWhatTheModuleRunDoes(t *testing.T) {
 	}
 }
 
+// The exclusion gate's module search reaches packages a scoped run was never
+// asked about. One that does not compile — another agent's WIP in a shared
+// checkout (control-plane, 2026-11-20: internal/freesite failed a run scoped
+// to internal/operators/...) — must not fail the lane: the gate still judges
+// the scoped package, and says, as a warning on it, which packages it could
+// not search in full. A broken requested package still fails.
+func TestContractLane_ScopedRunToleratesBrokenPackageOutsideScope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("loads a module with go/packages; runs in task test")
+	}
+	dir := writeScopedGateFixture(t)
+	writeFiles(t, dir, map[string]string{
+		"internal/wip/wip.go": "// Package wip is half-written.\npackage wip\n\nfunc F() int { return \"not an int\" }\n",
+		// Compiles on its own, but imports wip: its errors are on wip's node,
+		// yet it was type-checked against a half-checked import.
+		"internal/wipuser/user.go": "// Package wipuser uses wip.\npackage wipuser\n\nimport \"example.com/m/internal/wip\"\n\nfunc G() int { return wip.F() }\n",
+	})
+	t.Chdir(dir)
+	ctx := context.Background()
+
+	scoped, err := runContractAnalysisInProcess(ctx, []string{"./internal/kv"}, nil, contract.ExcludeGateOptions{})
+	if err != nil {
+		t.Fatalf("a scoped run failed on a package outside its scope: %v", err)
+	}
+	kv := gateFindingsIn(scoped, "internal/kv")
+	var judged, warned bool
+	for _, d := range kv {
+		switch d.Analyzer {
+		case "forge-exclude-contract-multi-impl":
+			judged = !d.Warning
+		case "forge-exclude-contract-search-incomplete":
+			warned = d.Warning && strings.Contains(d.Message, "example.com/m/internal/wip") &&
+				strings.Contains(d.Message, "example.com/m/internal/wipuser")
+		}
+	}
+	if !judged {
+		t.Errorf("the scoped run stopped judging kv's marker: %+v", kv)
+	}
+	if !warned {
+		t.Errorf("no non-gating note naming the package the search could not type-check: %+v", kv)
+	}
+
+	writeFiles(t, dir, map[string]string{
+		"internal/kv/broken.go": "package kv\n\nvar _ int = \"not an int\"\n",
+	})
+	if _, err := runContractAnalysisInProcess(ctx, []string{"./internal/kv"}, nil, contract.ExcludeGateOptions{}); err == nil {
+		t.Error("a scoped run passed over a requested package that does not compile")
+	}
+}
+
 // TestAnalysisLoadLeavesDependenciesToExportData pins the memory half: the
 // contract lane's load parses the requested packages and nothing it merely
 // imports. When it type-checked every dependency from source, a 14-package

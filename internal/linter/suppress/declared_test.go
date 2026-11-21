@@ -92,3 +92,27 @@ func coveredLines(t *testing.T, d Declared, lines int) (int, int) {
 		return from, from
 	}
 }
+
+// TestDeclarationsIn_YAMLValueProseIsNotANolint pins TL-84: the scaffolded
+// .golangci.yml's forbidigo message says "add //nolint:forbidigo on this
+// line, or …" in a YAML value. golangci reads //nolint only in Go, and `//`
+// opens no comment in YAML, so it declares nothing — while a `#` comment
+// that carries one still does, and the same line in a Go file still does.
+func TestDeclarationsIn_YAMLValueProseIsNotANolint(t *testing.T) {
+	prose := "            automatically. To opt out: add //nolint:forbidigo on this line, or\n"
+	if got := DeclarationsIn(".golangci.yml", prose); len(got) != 0 {
+		t.Errorf("YAML value prose read as %d suppression(s): %+v", len(got), got)
+	}
+	if got := DeclarationsIn("deploy/x.yaml", "key: v # nolint:forge-secret-literal // fixture\n"); len(got) != 1 {
+		t.Errorf("a nolint in a YAML # comment: %d declarations, want 1", len(got))
+	}
+	if got := DeclarationsIn("x.go", "x := f() //nolint:forbidigo // why\n"); len(got) != 1 {
+		t.Errorf("a trailing Go nolint: %d declarations, want 1", len(got))
+	}
+	// The applier agrees with the inventory.
+	res := ApplyFiles("", []finding.Finding{{Rule: "forbidigo", File: ".golangci.yml", Line: 1}},
+		func(string) ([]byte, error) { return []byte(prose), nil })
+	if len(res.Suppressed) != 0 {
+		t.Errorf("ApplyFiles suppressed a finding by YAML value prose: %+v", res.Suppressed)
+	}
+}

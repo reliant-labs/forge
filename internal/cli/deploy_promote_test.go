@@ -532,3 +532,35 @@ func TestPromote_RunIdentityIsSent(t *testing.T) {
 		t.Fatalf("run = %v, want id manual-42 with its url", run)
 	}
 }
+
+// --override-vuln-gate reaches a control plane's promotion: the control plane
+// judges vuln_gate in the promotion's transaction (control-plane C6), and
+// relaxes its refusal only for a promote that carries the reason. Without the
+// flag nothing is sent, and the control plane's refusal is the deploy's,
+// exitRefused, with its reason and detail.
+func TestHostedPromoteSendsTheVulnGateOverrideReason(t *testing.T) {
+	fake, store := hostedPromoteFixture(t, "v1")
+	fake.vulnGateBlocks = true
+
+	_, err := runHostedPromote(t, store, "v2", promoteOptions{})
+	if got := exitCodeForError(err); got != exitRefused {
+		t.Fatalf("exit code = %d, want %d (%v)", got, exitRefused, err)
+	}
+	var refused *promoteRefusedError
+	if !errors.As(err, &refused) || refused.Reason != reasonVulnGateBlocked || !strings.Contains(err.Error(), "CVE-2026-1111") {
+		t.Fatalf("refusal = %v, want the control plane's vuln_gate_blocked naming the advisory", err)
+	}
+	if body := fake.lastPromoteBody(t); body["vulnGateOverrideReason"] != nil {
+		t.Errorf("a promote with no override sent vulnGateOverrideReason %q", body["vulnGateOverrideReason"])
+	}
+
+	if _, err := runHostedPromote(t, store, "v2", promoteOptions{OverrideVulnGate: "  hotfix for INC-7, fixed in v3  "}); err != nil {
+		t.Fatalf("an overridden promote: %v", err)
+	}
+	if got := fake.lastPromoteBody(t)["vulnGateOverrideReason"]; got != "hotfix for INC-7, fixed in v3" {
+		t.Errorf("vulnGateOverrideReason = %q, want the flag's reason, trimmed", got)
+	}
+	if cur, _, _ := store.Current(context.Background(), "prod"); cur.Release != "v2" {
+		t.Errorf("prod is on %s after the overridden promote, want v2", cur.Release)
+	}
+}

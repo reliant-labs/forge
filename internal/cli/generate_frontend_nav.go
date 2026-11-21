@@ -108,11 +108,17 @@ func syncFrontendLocks(cfg *config.ProjectConfig, projectDir string, cs *checksu
 		if !ok {
 			continue
 		}
-		if frontendManifestDisowned(feDir, cs) {
-			continue
+		if !frontendManifestDisowned(feDir, cs) {
+			if err := generator.SyncFrontendLock(projectDir, feDir); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		if err := generator.SyncFrontendLock(projectDir, feDir); err != nil {
-			errs = append(errs, err)
+		// A range that admits the floor says nothing about the runtime the
+		// lockfile actually installed: name any feature the generated code
+		// uses that the installed runtime does not ship. Disowned manifests
+		// too — the generated files are still forge's.
+		for _, n := range generator.WebRuntimeContentNotices(projectDir, feDir) {
+			fmt.Printf("  ⚠️  frontend %s: %s\n", fe.Name, n)
 		}
 	}
 	return errors.Join(errs...)

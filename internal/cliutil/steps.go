@@ -275,20 +275,53 @@ func TailLines(output string, n int) []string {
 	return lines
 }
 
-// warningLines returns the lines of output forge marked as warnings (⚠️),
-// each once, in order.
+// warningContinuationLines bounds how many of a warning's continuation lines
+// are repeated; the log has the rest.
+const warningContinuationLines = 12
+
+// warningLines returns the warnings forge printed (⚠️), each once, in order.
+//
+// A warning is its ⚠️ line plus the lines under it indented deeper than it,
+// which is how forge prints a warning's detail: the observability step's
+// names each env that did not render and KCL's reason on its own indented
+// line. Repeating the ⚠️ line alone showed `forge project new` the headline
+// and hid the reason in the log (forge bug report aef6d25f).
 func warningLines(output string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, line := range TailLines(output, int(^uint(0)>>1)) {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "⚠") || seen[line] {
+	lines := TailLines(output, int(^uint(0)>>1))
+	for i := 0; i < len(lines); i++ {
+		head := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(head, "⚠") {
 			continue
 		}
-		seen[line] = true
-		out = append(out, line)
+		indent := leadingSpace(lines[i])
+		var block []string
+		more := 0
+		for j := i + 1; j < len(lines) && leadingSpace(lines[j]) > indent; j++ {
+			if len(block) < warningContinuationLines {
+				block = append(block, lines[j][indent:])
+			} else {
+				more++
+			}
+			i = j
+		}
+		if more > 0 {
+			block = append(block, fmt.Sprintf("  … %d more line(s) in the full output", more))
+		}
+		if seen[head] {
+			continue
+		}
+		seen[head] = true
+		out = append(out, head)
+		out = append(out, block...)
 	}
 	return out
+}
+
+// leadingSpace is how many spaces and tabs line starts with.
+func leadingSpace(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
 }
 
 // formatStepDuration is 1.2s under ten seconds, whole seconds above.

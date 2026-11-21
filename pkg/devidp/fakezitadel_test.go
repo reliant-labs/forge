@@ -138,6 +138,8 @@ type fakeIntent struct {
 
 type fakeMail struct {
 	userID, kind, link, code string
+	// to is the address the account had when the mail was sent.
+	to string
 }
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
@@ -668,7 +670,8 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			ok(w, map[string]any{"verificationCode": u.emailCode})
 			return
 		}
-		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode})
+		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode, to: u.email,
+			link: f.render(str(sub(b, "sendCode"), "urlTemplate"), u, u.emailCode, "")})
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/verify", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {

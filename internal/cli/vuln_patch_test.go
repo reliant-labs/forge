@@ -250,11 +250,11 @@ func TestVulnPatchNamedAdvisories(t *testing.T) {
 	if r := doc.Findings[1]; r.ID != "GHSA-nope" || r.Status != vulnpatch.StatusSkipped || !strings.Contains(r.Reason, "prod release v1.0.0") {
 		t.Errorf("missing advisory = %+v", r)
 	}
-	// A named finding outside every patcher (and with no fix) is reported,
-	// not dropped: the env-wide default leaves it out.
+	// A named finding with no fix (an OS package the distro will not fix)
+	// is reported, not dropped: the env-wide default leaves it out.
 	h = newPatchHarness(t)
 	doc, _, _, code = h.patch("prod", "CVE-2026-82560")
-	if code != exitUndetermined || len(doc.Findings) != 1 || !strings.Contains(doc.Findings[0].Reason, "OS package (deb)") {
+	if code != exitUndetermined || len(doc.Findings) != 1 || !strings.Contains(doc.Findings[0].Reason, "no fixed version (fix state: wont-fix)") {
 		t.Errorf("unfixable: exit %d %+v", code, doc.Findings)
 	}
 }

@@ -15,11 +15,10 @@ import (
 // leaves the sequence where it was while rows 1..N now hold the values it
 // would hand out next, and the app's first INSERT after a seed collides on
 // the primary key. So every INSERT that writes such a column is followed by
-// a statement that moves its sequence past the largest value in the table.
-//
-// The move is forward only: a sequence already past the seeded values (an
-// earlier app insert, a START WITH above them) is left alone, as is a
-// descending one.
+// a statement that moves its sequence past the occupied keys in its own
+// direction: beyond the greatest key for positive increments, or below the
+// least key for negative increments. A sequence already past those keys
+// does not move back.
 
 // nextvalDefaultRE captures the sequence a `DEFAULT nextval('seq'::regclass)`
 // draws from, as postgres's catalog spells that default.
@@ -42,9 +41,11 @@ func sequenceExpr(t schemadef.Table, col schemadef.Column) string {
 	return ""
 }
 
-// sequenceSync is the statement that advances every sequence feeding a
-// column tp's INSERT writes past the largest value now in the table, or ""
-// when the INSERT writes none.
+// sequenceSync advances every sequence feeding a column tp's INSERT writes
+// beyond the occupied key range in the sequence's own direction. The next
+// value calculation uses numeric so a bigint sequence at its endpoint does
+// not overflow; a cycle wrapping back into occupied keys has no monotonic
+// safe move and is left to PostgreSQL's configured sequence behavior.
 func (p *Plan) sequenceSync(tp tablePlan) string {
 	if tp.n == 0 {
 		return ""
@@ -58,13 +59,17 @@ func (p *Plan) sequenceSync(tp tablePlan) string {
 		if seq == "" {
 			continue
 		}
-		fmt.Fprintf(&b, `SELECT setval(s.seq, s.hi) FROM (
-    SELECT q.seq, (SELECT max(%s) FROM %s) AS hi,
-           COALESCE(pg_sequence_last_value(q.seq) + ps.seqincrement, ps.seqstart) AS next,
-           ps.seqincrement AS step
+		col, table := quoteIdent(cp.col.Name), QualifiedTable(tp.table)
+		fmt.Fprintf(&b, `SELECT setval(s.seq, s.edge, true) FROM (
+    SELECT q.seq, CASE WHEN ps.seqincrement > 0 THEN (SELECT max(%s) FROM %s)
+                       ELSE (SELECT min(%s) FROM %s) END AS edge,
+           COALESCE(pg_sequence_last_value(q.seq)::numeric + ps.seqincrement, ps.seqstart) AS next,
+           ps.seqincrement AS step, ps.seqmin AS low, ps.seqmax AS high, ps.seqcycle AS cycles
     FROM (SELECT %s AS seq) q JOIN pg_sequence ps ON ps.seqrelid = q.seq
-) s WHERE s.step > 0 AND s.hi >= s.next;
-`, quoteIdent(cp.col.Name), QualifiedTable(tp.table), seq)
+) s WHERE s.edge BETWEEN s.low AND s.high
+    AND (NOT s.cycles OR s.edge::numeric + s.step BETWEEN s.low AND s.high)
+    AND ((s.step > 0 AND s.edge >= s.next) OR (s.step < 0 AND s.edge <= s.next));
+`, col, table, col, table, seq)
 	}
 	return b.String()
 }

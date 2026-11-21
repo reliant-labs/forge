@@ -7,22 +7,18 @@ import (
 	"testing"
 )
 
-// memoryFor renders the framework memory for a minimal project: forge.yaml
-// and a Next.js app at the root, plus a go.mod when goModule is set (the
-// root app is then not the project's frontend: a Go project's root is its
-// module).
+// memoryFor renders the framework memory for a minimal project: forge.yaml,
+// a Next.js app at the root and the dev/staging/prod envs `forge project new`
+// scaffolds, plus a go.mod when goModule is set (the root app is then not the
+// project's frontend: a Go project's root is its module).
 func memoryFor(t *testing.T, goModule bool) string {
 	t.Helper()
 	root := t.TempDir()
-	for rel, body := range map[string]string{
+	writeTree(t, root, deployEnvs(map[string]string{
 		"forge.yaml":     "name: landing\n",
 		"package.json":   `{"name":"landing","dependencies":{"next":"^16"}}`,
 		"next.config.ts": "export default {}\n",
-	} {
-		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	}))
 	if goModule {
 		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/landing\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -57,14 +53,14 @@ func TestProjectMemoryForASiteIsFrontendOnly(t *testing.T) {
 	}
 	for _, want := range []string{
 		"static site",
-		"env up dev",               // run it
-		"lint --static-export",     // the export's constraints
-		"env build prod --release", // build once
-		"env deploy prod",          // ship it
-		"domain add",               // custom domains
-		".forge/logs/",             // frontend logs on disk
-		"frontend/design",          // design brief first
-		"deploy/static-site",       // the skill
+		"env up dev",                // run it
+		"lint --static-export",      // the export's constraints
+		"env build <env> --release", // build once
+		"env deploy <env>",          // ship to the declared runtime
+		"domain add",                // custom domains
+		".forge/logs/",              // frontend logs on disk
+		"frontend/design",           // design brief first
+		"deploy/static-site",        // the skill
 		"One hosted static site per person is free", // the free tier …
 		"counted across environments",               // … per env, precisely
 		"exits 7",                                   // beyond it: queued for billing

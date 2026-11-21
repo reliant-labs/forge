@@ -821,6 +821,12 @@ type hostedStore struct {
 	// for os.Stderr.
 	codeSourceWarned string
 	warn             io.Writer
+	// vulnCaps is GetCapabilities.vulnerability_features, asked once per
+	// process (hosted_vuln.go); nil until asked.
+	vulnCaps *hostedVulnFeatures
+	// sboms opens the machine ledger a cut's SBOM bytes are read from to
+	// upload them (hosted_vuln.go). Nil uploads none.
+	sboms func() (sbomBytesReader, error)
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -1079,6 +1085,17 @@ func (s *hostedStore) Append(ctx context.Context, p release.Promotion, guard app
 	if guard.RaiseFloorReason != "" {
 		req["raiseFloorReason"] = guard.RaiseFloorReason
 	}
+	// `deploy --override-vuln-gate` (PromoteReleaseRequest tag 18): the
+	// control plane judges vuln_gate and provenance_sbom in the promotion's
+	// transaction, and relaxes their refusals for this one promotion only
+	// when it is given a reason, which it records. Sent only when set; a
+	// control plane that predates the gate discards it as an unknown field
+	// and has nothing to relax. Its refusal (vuln_gate_blocked,
+	// vuln_gate_unscanned, sbom_missing) comes back through
+	// refusalFromWire as exitRefused.
+	if guard.VulnGateOverrideReason != "" {
+		req["vulnGateOverrideReason"] = guard.VulnGateOverrideReason
+	}
 	var resp struct {
 		Promotion wirePromotion `json:"promotion"`
 		// Holds is non-empty when the control plane ACCEPTED and RECORDED
@@ -1220,6 +1237,10 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		return false, err
 	}
 	s.noteCodeSourceWarning(deployAttemptFrom(ctx), resp.CodeSources.warning())
+	// The SBOMs, through their own rpc, after the release exists — on a
+	// re-cut too, which is how a release cut before its SBOMs were
+	// recorded gets them. Never fails the cut (hosted_vuln.go).
+	s.recordReleaseSBOMs(ctx, r)
 	return resp.Created, nil
 }
 

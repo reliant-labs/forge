@@ -414,6 +414,14 @@ type Release struct {
 	// part of its identity; see [Release.SameContent] for what identifies a
 	// version-only release.
 	RecordOnly bool `json:"record_only,omitempty"`
+	// SourceSBOM is the SBOM of the source tree the release was recorded
+	// from, for a release whose artifacts carry none of their own: a
+	// version-only record's lockfiles (`forge release record
+	// --sbom-source`). Evidence like each Artifact.SBOM, NOT identity:
+	// [Release.SameContent] ignores it, and [BackfillSBOMs] fills it but
+	// never replaces it. A snapshot release refuses it, as it refuses
+	// artifact SBOMs.
+	SourceSBOM *SBOMRef `json:"source_sbom,omitempty"`
 }
 
 // VersionOnly reports whether the release names no artifacts at all: a
@@ -483,6 +491,9 @@ func (r Release) Validate() error {
 	// older decoder predates refuses the whole document there. SBOMs ride
 	// beside that document, never in it.
 	if len(r.Catalog) > 0 || len(r.SnapshotIntents) > 0 {
+		if r.SourceSBOM != nil {
+			return fmt.Errorf("%w: release %q is a snapshot release and cannot carry a source SBOM: a snapshot release's SBOMs are recorded beside its document", ErrInvalid, r.Version)
+		}
 		for _, name := range r.ArtifactNames() {
 			if r.Artifacts[name].SBOM != nil {
 				return fmt.Errorf("%w: release %q is a snapshot release and cannot carry an SBOM on artifact %q: a snapshot release's SBOMs are recorded beside its document", ErrInvalid, r.Version, name)
@@ -495,11 +506,17 @@ func (r Release) Validate() error {
 	// A FORGE-BUILT release that names nothing is a build that lost its
 	// outputs, and stays refused. Only a release explicitly recorded from an
 	// outside pipeline may be version-only.
+	if err := r.SourceSBOM.validate(); err != nil {
+		return fmt.Errorf("%w: release %q: source %v", ErrInvalid, r.Version, err)
+	}
 	if r.VersionOnly() && !r.RecordOnly {
 		return fmt.Errorf("%w: release %q names no artifacts — a release that names nothing cannot be promoted", ErrInvalid, r.Version)
 	}
 	for _, name := range r.ArtifactNames() {
 		if err := r.Artifacts[name].Validate(name); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
+		if err := validateVariantArtifact(name, r.Artifacts[name]); err != nil {
 			return fmt.Errorf("release %q: %w", r.Version, err)
 		}
 	}

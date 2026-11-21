@@ -549,8 +549,20 @@ type Shape struct {
 	// reconciler converges, and which workloads consume it. Names and
 	// destinations only; every issued value is delivered, never recorded.
 	// Omitted when the env declares none, so every shape recorded before the
-	// field encodes and hashes exactly as it did.
+	// field encodes and hashes exactly as it did. It is set when the env
+	// declares exactly ONE identity, whatever its name and however KCL spells
+	// it (Bundle.identity, or a one-entry Bundle.identities), so a shape with
+	// one identity encodes exactly as it always did and every control plane
+	// keeps converging it. Read every identity through [Shape.AllIdentities].
 	Identity *ShapeIdentity `json:"identity,omitempty"`
+	// Identities are the env's managed identities when it declares SEVERAL
+	// (KCL Bundle.identities), each its own instance keyed by
+	// ShapeIdentity.Name. Identity is then nil. A control plane that predates
+	// it would read only Identity, so converge nothing: a shape carrying it is
+	// refused to one that does not advertise
+	// [CapabilityConvergesSeveralIdentities] ([BundleReader.CheckIdentities]),
+	// and its key is a bundle-document feature ([BundleFeatureIdentities]).
+	Identities []ShapeIdentity `json:"identities,omitempty"`
 	// Databases is what the env declares about its managed databases beyond
 	// their workload entries: today whether live dashboard panels may query
 	// each one, and under which limits (ManagedDatabase.dashboards). One entry
@@ -1283,16 +1295,8 @@ func (s Shape) Validate() error {
 	if err := s.validateStoreSecrets(); err != nil {
 		return err
 	}
-	if s.Identity != nil {
-		if err := s.Identity.validate(s.ControlPlaneSecrets); err != nil {
-			return err
-		}
-	} else {
-		for _, c := range s.ControlPlaneSecrets {
-			if IsIdentityKind(c.Kind) {
-				return fmt.Errorf("%w: shape control-plane secret %s has the identity kind %q, and the shape declares no identity", ErrInvalid, c.Key(), c.Kind)
-			}
-		}
+	if err := s.validateIdentities(); err != nil {
+		return err
 	}
 	return s.validateAlerts()
 }
@@ -1447,6 +1451,7 @@ func (s Shape) Canonical() Shape {
 		id := s.Identity.canonical()
 		out.Identity = &id
 	}
+	out.Identities = canonicalIdentities(s.Identities)
 	// Alerts sort by name. Routes do NOT sort: first match wins, so their order
 	// is part of their meaning.
 	if len(s.Alerts) > 0 {

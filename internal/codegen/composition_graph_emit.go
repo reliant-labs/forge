@@ -20,8 +20,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/connectmajor"
+	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/session"
 )
 
 // GraphGenInput is GenerateGraph's input: the discovered component set.
@@ -1020,6 +1024,10 @@ type providersGraphData struct {
 	// plain-named session cookie read in development only), and the auth
 	// config has Environment to decide it from.
 	DevSessionCookie bool
+	// Sessions: the project has a database and a login broker, so native
+	// sign-in keeps its sessions server-side (the Sessions provider,
+	// forge/pkg/session) in the auth_sessions table.
+	Sessions bool
 	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
 	// the project's go.mod selects it (internal/connectmajor). False, the zero
 	// value, keeps every v1 render byte for byte.
@@ -1140,13 +1148,61 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string, major
 		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
 		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptorFor(projectDir, v2), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
 		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && configTypeDeclares(msgs, authConfig, configFields, "Environment"),
-		ConnectV2:        v2}
+		ConnectV2:        v2,
+		Sessions:         hasDB && hasBroker}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)
 	}
-	if _, err := writeForgeScaffoldOnce(projectDir, rel, content); err != nil {
+	wrote, err := writeForgeScaffoldOnce(projectDir, rel, content)
+	if err != nil {
 		return fmt.Errorf("write internal/app/providers.go: %w", err)
 	}
+	if wrote && data.Sessions {
+		// The Sessions provider just born reads auth_sessions: its table
+		// is born with it, as a migration the project owns from here on.
+		if err := writeSessionsMigration(projectDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sessionsTableRE finds a migration that already creates auth_sessions.
+var sessionsTableRE = regexp.MustCompile(`(?i)create\s+table\s+(if\s+not\s+exists\s+)?("?[a-z_0-9]+"?\.)?"?auth_sessions"?\b`)
+
+// writeSessionsMigration writes the next-numbered
+// <version>_create_auth_sessions.up.sql holding forge/pkg/session's
+// SchemaSQL, unless a migration already creates the table. It runs only when
+// providers.go is scaffolded with the Sessions provider, so a project that
+// deletes the migration does not get it back.
+func writeSessionsMigration(projectDir string) error {
+	dir := filepath.Join(projectDir, config.MigrationsDirIn(projectDir))
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+				continue
+			}
+			if src, err := os.ReadFile(filepath.Join(dir, e.Name())); err == nil && sessionsTableRE.Match(src) {
+				return nil
+			}
+		}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	version, err := migrationgit.Next(dir)
+	if err != nil {
+		return fmt.Errorf("number the auth_sessions migration: %w", err)
+	}
+	body := "-- forge:backward-compatible — a new table no older release reads.\n" +
+		"-- Server-side sign-in sessions (forge/pkg/session.SchemaSQL): the browser's cookie\n" +
+		"-- holds an opaque id; each row holds that session's tokens, sealed under a key\n" +
+		"-- derived from the id, so a copy of this table signs no one in.\n\n" + session.SchemaSQL
+	path := filepath.Join(dir, version+"_create_auth_sessions.up.sql")
+	if err := atomicfile.WriteFile(path, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Printf("  ✅ Scaffolded %s (server-side sign-in sessions — yours)\n", filepath.Join(config.MigrationsDirIn(projectDir), filepath.Base(path)))
 	return nil
 }

@@ -2540,6 +2540,41 @@ benefits:
           An env whose render fails, so its secrets could not be judged (a
           warning; `forge env render` reports the render error itself)
 
+  - id: lint-rules-telemetry
+    category: guardrails
+    title: Declared telemetry rules
+    claim: >-
+      A dashboard panel over a series no scrape keeps, an unbounded scrape and
+      a rate over a gauge are caught from each env's real render.
+    availability: forge
+    evidence:
+      - path: internal/cli/lint/telemetry_rules.go
+      - command: lint --telemetry
+    rules:
+      - id: telemetry-dashboard-metric-uncollected
+        lane: --telemetry
+        bug_class: >-
+          A declared dashboard series whose metric no scrape of its system
+          keeps (allow minus deny), so the panel is empty in every env it ships
+          to with no other symptom
+      - id: telemetry-scrape-unbounded
+        lane: --telemetry
+        bug_class: >-
+          A metrics scrape with no `allow`, which stores every series the
+          endpoint exposes until it passes `sample_limit` and fails whole
+      - id: telemetry-rate-on-gauge
+        lane: --telemetry
+        bug_class: >-
+          A rate or increase over a metric nothing marks as a counter (no
+          `counters` match, no `_total`/`_count`/`_sum`), which reads nothing
+          when the metric is a gauge (a warning)
+      - id: telemetry-high-cardinality-risk
+        lane: --telemetry
+        bug_class: >-
+          A scrape that raises `sample_limit` or keeps every name while
+          dropping no labels, so a per-user or per-id label explodes its
+          series (a warning)
+
   - id: lint-rules-scaffold-ownership
     category: guardrails
     title: Generated-code tampering checks
@@ -2719,36 +2754,79 @@ benefits:
     claim: >-
       `forge ci vuln-scan` runs govulncheck over every Go module and npm audit
       over every frontend, refuses a pass it did not verify, and takes reviewed,
-      expiring exemptions instead of silent ignores.
+      expiring exemptions instead of silent ignores; the generated `ci.yml` also
+      scans the images CI builds with Trivy.
     availability: forge
     headline: true
     why: >-
-      Container images are scanned by Trivy steps in the generated GitHub
-      workflows (`ci.yml`'s docker build and `build-images.yml`), not by `forge
-      ci vuln-scan`, so they run in CI only and `ci.vuln_scan.exemptions` does
-      not cover them.
+      The Trivy step is a generated GitHub Actions step in `ci.yml`'s docker
+      build (`ci.vuln_scan.docker` turns it off), not `forge ci vuln-scan`, so
+      it runs in CI only and `ci.vuln_scan.exemptions` does not cover it. What
+      forge scans itself, from the SBOM of every release it cuts, is
+      `sbom-vuln-scan`; `build-images.yml` scans each image it pushes with
+      `forge vuln scan` (Trivy for a project pinned before forge v1.10.0).
     evidence:
       - command: ci vuln-scan
       - path: internal/cli/ci_vuln_npm.go
       - path: internal/cli/ci_vuln_exempt.go
+      - path: internal/templates/ci/github/ci.yml.tmpl
+
+  - id: sbom-vuln-scan
+    category: security
+    title: SBOM and scan per release
+    claim: >-
+      Every release forge cuts records a CycloneDX SBOM of each artifact's
+      shipped bytes, stored with the release and beside the image in its
+      registry, and scans it with grype, so `forge vuln list <env>` says what a
+      release is known to be vulnerable to and never reports "not scanned" as
+      clean.
+    status: recorded
+    availability: forge
+    headline: true
+    use: >-
+      Nothing to set up: `forge env build <env> --release v1.0.0` (or the cut
+      inside `forge env deploy`) does it. Read it back with `forge vuln list
+      <env>`; `forge vuln db pull` fetches the vulnerability database once per
+      machine. `forge vuln patch <env> --verify` bumps each vulnerable Go or
+      npm/pnpm/yarn dependency to its fix and runs your gate over the result.
+    why: >-
+      forge installs syft and grype as pinned release binaries whose sha256 is
+      compiled into forge. An artifact it could not describe is recorded
+      `unavailable` with the reason, a static site's SBOM is its lockfile (it
+      can overstate the bundle), and nothing is refused unless an env opts in
+      (`vuln-gate-self-hosted`). `--no-sbom` and `provenance_sbom = off` turn
+      it off.
+    evidence:
+      - skill: vuln
+      - command: vuln scan
+      - command: vuln list
+      - command: vuln sbom
+      - command: vuln db status
+      - command: vuln patch
+      - path: internal/sbom/sbom.go
+      - path: internal/vulnscan/doc.go
 
   - id: image-supply-chain
     category: security
-    title: Signed images, SBOM and provenance
+    title: Signed images and provenance
     claim: >-
-      The generated `build-images.yml` signs every image it pushes with a keyless
-      cosign signature bound to its digest, generates an SPDX SBOM for it, and
-      attests its build provenance.
+      The generated `build-images.yml` attaches a keyless cosign signature and a
+      build-provenance attestation to every image it pushes, bound to its
+      digest and stored in the registry beside it (`cosign
+      verify-attestation`), private repositories included.
     availability: forge
     headline: true
     why: >-
-      The SBOM is uploaded as a workflow run artifact, not attached to the image
-      in the registry, and the provenance attestation is skipped for private
-      repositories outside GitHub Enterprise Cloud (GitHub's attestation store
-      refuses them). This is the generated GitHub workflow only; `forge env build` itself does
-      not sign, and the DeliveryPolicy
-      `provenance_sbom`/`trusted_builder`/`admission_verify` controls are
-      recorded, not enforced.
+      Public repositories' provenance goes to GitHub's attestation store; a
+      private repository's, which that store refuses outside GitHub
+      Enterprise Cloud, goes to the registry as a cosign attestation. This is
+      the generated GitHub workflow only; `forge env build` itself does not
+      sign, and the DeliveryPolicy `signing`/`trusted_builder`/`admission_verify`
+      controls do not read these signatures. From forge v1.10.0 the workflow
+      writes no SBOM, because forge records one at every release cut and
+      attaches it as an OCI referrer (`sbom-vuln-scan`); a project pinned to an
+      older forge keeps the workflow's SPDX SBOM, as a run artifact and a
+      cosign attestation.
     evidence:
       - path: internal/templates/ci/github/build-images.yml.tmpl
 
@@ -3820,6 +3898,7 @@ benefits:
     evidence:
       - command: vuln exempt
       - command: ci vuln-sbom
+      - skill: vuln
       - path: internal/cli/vuln_gate.go
     rules:
       - id: vuln-gate
@@ -3840,8 +3919,10 @@ benefits:
       `forge.DeliveryPolicy` declares per env what a release must prove, each
       control `off`, `audit` or `enforce`: `health_gate`, `signing` and
       `flux_verify` are enforced on a control plane, `required_gates` and
-      `approval_hook` wherever the env's ledger lives, while `provenance_sbom`,
-      `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`,
+      `approval_hook` wherever the env's ledger lives, `vuln_gate` and
+      `provenance_sbom` are judged by forge itself for an env with no control
+      plane (warn first, and `audit` unless you opt in), while
+      `trusted_builder`, `admission_verify`, `signed_promotions`,
       `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
     status: recorded
     availability: forge
@@ -3850,6 +3931,9 @@ benefits:
       `deploy/kcl/<env>/main.k`
     why: >-
       Setting a recorded control to `enforce` today is a declaration of intent.
+      `vuln_gate` and `provenance_sbom` are not recorded-only for a
+      self-hosted env (`vuln-gate-self-hosted`); on a control-plane env they are
+      the control plane's to judge, once it advertises `enforces-vuln-gate`.
       `forge env build` does not sign images; only an env with a control plane
       gets its bundles signed, by the platform. A control that cannot block a
       deploy defaults to `enforce`; one that can defaults to `audit`, so you
@@ -4493,9 +4577,12 @@ benefits:
       Issues are fingerprinted with one algorithm, at query time locally and at
       ingest on the control plane; issues that share a cause and first fired
       together collapse into one incident without being merged, and triage
-      (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+      (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log
+      record an authenticated request writes carries `user.id`, so an issue
+      counts the people it reached.
     evidence:
       - command: obs issue
+      - path: pkg/authn/telemetry.go
       - command: obs issues
       - command: obs issue resolve
       - command: obs issue ignore
@@ -5526,9 +5613,10 @@ reasons:
       credential unless its proto opts out, so a forgotten annotation never
       publishes an endpoint; errors reach callers classified while the SQL and
       hosts stay in the server log; secrets are references bound per env, and a
-      `.env` file fails lint. Images are signed with an SBOM, dependencies and
-      images are scanned with expiring exemptions, and production reads go
-      through an audited read-only command. What a caller may do stays your
+      `.env` file fails lint. Every release records and scans an SBOM per
+      artifact, images are signed, dependencies and images are scanned with
+      expiring exemptions, and production reads go through an audited
+      read-only command. What a caller may do stays your
       handler's code, and forge lists the RPCs that never ask who is calling.
     mechanism: >-
       Because forge owns the interceptor chain, the env render and the build, it
@@ -5545,6 +5633,7 @@ reasons:
       - db-grants-lint
       - unscoped-auth-audit
       - vuln-scan
+      - sbom-vuln-scan
       - image-supply-chain
       - middleware-hardening
       - ssrf-guard

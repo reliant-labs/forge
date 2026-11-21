@@ -1,12 +1,11 @@
 package testreport
 
 import (
-	"bufio"
-	"encoding/json"
 	"errors"
 	"io"
 	"sort"
-	"strings"
+
+	pkgtestreport "github.com/reliant-labs/forge/pkg/testreport"
 )
 
 // Outcome is a test's terminal result. It mirrors the `Action` field of the
@@ -19,22 +18,6 @@ const (
 	OutcomeFail Outcome = "fail"
 	OutcomeSkip Outcome = "skip"
 )
-
-// event is the subset of the `go test -json` event shape this package reads.
-// The full shape (Time, Elapsed, Output) carries nothing a skip verdict needs.
-//
-// ImportPath is present because a BUILD failure is reported differently from a
-// test failure: cmd/go emits `{"Action":"build-fail","ImportPath":"..."}` with
-// no Package field. A parser that only knows Package silently drops those, and
-// a package that did not compile then looks identical to a package that was
-// never asked to run — zero tests, no complaint. See [Run.Failed].
-type event struct {
-	Action     string `json:"Action"`
-	Package    string `json:"Package"`
-	ImportPath string `json:"ImportPath"`
-	Test       string `json:"Test"`
-	Output     string `json:"Output"`
-}
 
 // Package holds one package's tally from a run.
 //
@@ -112,208 +95,70 @@ type Run struct {
 // the absence of facts, not the fact that nothing skipped.
 var ErrNoInput = errors.New("no input: expected a `go test -json` stream")
 
-// parseState is the running tally Parse builds as it walks the stream. It
-// exists so each event action is handled by a short method with one level of
-// nesting: the switch used to live inside the read loop, four blocks deep,
-// where the shape of the loop obscured the shape of the rules.
-type parseState struct {
-	// outcomes[pkg][test] = terminal outcome, last write wins (`-count=2`
-	// reruns a test; the final verdict is the one that counts).
-	outcomes map[string]map[string]Outcome
-	// pending holds the last couple of output lines for each test that has
-	// not finished, so a skip can be attributed to its message. Entries are
-	// dropped the moment the test terminates: the alternative is holding
-	// every line of a multi-hundred-megabyte stream in memory.
-	pending map[string][]string
-	// skipWhy[pkg][test] is the t.Skip message. Kept per TEST rather than
-	// pre-aggregated per package so the counts can exclude container
-	// parents at the end, exactly as the test tallies do — a reason count
-	// that disagreed with the skip count beside it would undermine both.
-	skipWhy map[string]map[string]string
-	// parents[pkg] = set of test names that have at least one subtest.
-	parents     map[string]map[string]bool
-	pkgResult   map[string]Outcome
-	buildFailed map[string]bool
-	// seen preserves every package the stream mentioned, including ones
-	// with no test events at all.
-	seen map[string]bool
-}
-
-func newParseState() *parseState {
-	return &parseState{
-		outcomes:    map[string]map[string]Outcome{},
-		pending:     map[string][]string{},
-		skipWhy:     map[string]map[string]string{},
-		parents:     map[string]map[string]bool{},
-		pkgResult:   map[string]Outcome{},
-		buildFailed: map[string]bool{},
-		seen:        map[string]bool{},
-	}
-}
-
-// consume folds one non-blank input line into the tally. A line that is not a
-// JSON object, or carries no action, is counted as malformed rather than
-// being fatal.
-func (s *parseState) consume(trimmed string, run *Run) {
-	var ev event
-	if err := json.Unmarshal([]byte(trimmed), &ev); err != nil || ev.Action == "" {
-		run.Malformed++
-		return
-	}
-	run.Events++
-
-	pkg := ev.Package
-	if pkg == "" {
-		pkg = ev.ImportPath
-	}
-	if pkg != "" {
-		s.seen[pkg] = true
-	}
-
-	switch ev.Action {
-	case "output":
-		s.recordOutput(pkg, ev)
-	case "build-fail":
-		if pkg != "" {
-			s.buildFailed[pkg] = true
-		}
-	case string(OutcomePass), string(OutcomeFail), string(OutcomeSkip):
-		s.recordOutcome(pkg, ev, run)
-	}
-}
-
-// recordOutput keeps only the last two output lines of an unfinished test —
-// enough to attribute a skip to its message, bounded so a huge stream does
-// not accumulate in memory.
-func (s *parseState) recordOutput(pkg string, ev event) {
-	if pkg == "" || ev.Test == "" {
-		return
-	}
-	key := pkg + "\x00" + ev.Test
-	buf := s.pending[key]
-	buf = append(buf, ev.Output)
-	if len(buf) > 2 {
-		buf = buf[len(buf)-2:]
-	}
-	s.pending[key] = buf
-}
-
-// recordOutcome files a terminal pass/fail/skip against its package or test.
-func (s *parseState) recordOutcome(pkg string, ev event, run *Run) {
-	switch {
-	case pkg == "":
-		// An event with neither Package nor ImportPath cannot be
-		// attributed. Do not fold it into some other package.
-		run.Malformed++
-	case ev.Test == "":
-		s.pkgResult[pkg] = Outcome(ev.Action)
-	default:
-		if s.outcomes[pkg] == nil {
-			s.outcomes[pkg] = map[string]Outcome{}
-			s.parents[pkg] = map[string]bool{}
-		}
-		s.outcomes[pkg][ev.Test] = Outcome(ev.Action)
-		if idx := strings.LastIndex(ev.Test, "/"); idx > 0 {
-			s.parents[pkg][ev.Test[:idx]] = true
-		}
-		key := pkg + "\x00" + ev.Test
-		if ev.Action == string(OutcomeSkip) {
-			if why := skipReason(s.pending[key]); why != "" {
-				if s.skipWhy[pkg] == nil {
-					s.skipWhy[pkg] = map[string]string{}
-				}
-				s.skipWhy[pkg][ev.Test] = why
-			}
-		}
-		delete(s.pending, key)
-	}
-}
-
 // Parse reads a `go test -json` stream and tallies it per package.
+//
+// The stream is read by pkg/testreport, the one `go test -json` parser forge
+// has (the record `forge test` keeps and the control plane ingests use it
+// too); Parse tallies that parser's cases into the skip-gate's shape.
 //
 // It is deliberately forgiving about lines it does not recognise and strict
 // about the totals it reports. Unknown actions ("run", "output", "pause") are
 // ignored; non-JSON lines are counted, not fatal. What it never does is
 // invent a total: a package whose stream is truncated is marked Incomplete
-// rather than reported with the partial counts it happens to hold.
-//
-// Reading is line-oriented via bufio.Reader (not Scanner) because a single
-// `output` event can carry a very long line — a scanner's token limit would
-// turn one fat log line into a parse failure for the whole run.
+// rather than reported with the partial counts it happens to hold. The input
+// is the project's own suite output, so it is read without size limits.
 func Parse(r io.Reader) (*Run, error) {
-	br := bufio.NewReader(r)
-	run := &Run{}
-	st := newParseState()
-
-	sawAnyLine := false
-	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
-			sawAnyLine = true
-			if trimmed := strings.TrimSpace(line); trimmed != "" {
-				st.consume(trimmed, run)
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, err
-		}
-	}
-
-	if !sawAnyLine {
+	res, err := pkgtestreport.ParseResults(r, pkgtestreport.ResultsOptions{
+		Format: pkgtestreport.FormatGoJSON,
+		Limits: pkgtestreport.Limits{MaxInputBytes: -1, MaxLineBytes: -1, MaxCases: -1, MaxPackages: -1},
+	})
+	if errors.Is(err, pkgtestreport.ErrNoInput) {
 		return nil, ErrNoInput
 	}
-
-	outcomes := st.outcomes
-	skipWhy := st.skipWhy
-	parents := st.parents
-	pkgResult := st.pkgResult
-	buildFailed := st.buildFailed
-	seen := st.seen
-
-	for pkg := range seen {
-		p := Package{Path: pkg, Result: pkgResult[pkg], BuildFailed: buildFailed[pkg]}
-		for name, outcome := range outcomes[pkg] {
-			if parents[pkg][name] {
-				// A container, not a test. Its own verdict is a
-				// summary of its children, who are counted below.
+	if err != nil {
+		return nil, err
+	}
+	run := &Run{Events: res.Stats.Events, Malformed: res.Stats.Malformed}
+	leaves := map[string][]pkgtestreport.Case{}
+	for _, c := range res.Leaves() {
+		leaves[c.ID.Package] = append(leaves[c.ID.Package], c)
+	}
+	for _, pr := range res.Packages {
+		buildFailed := pr.BuildFailed
+		if pr.BuildID != "" {
+			// cmd/go reported the build under its test variant's name
+			// ("p [p.test]"). The skip gate has always listed that name as
+			// its own package beside p, so it still does.
+			run.Packages = append(run.Packages, Package{Path: pr.BuildID, BuildFailed: pr.BuildFailed, Incomplete: !pr.BuildFailed})
+			buildFailed = false
+		}
+		p := Package{
+			Path: pr.Path, Result: Outcome(pr.Status), BuildFailed: buildFailed,
+			NoTestFiles: pr.NoTestFiles, Incomplete: pr.Incomplete,
+			Tests: pr.Tests, Passed: pr.Passed, Failed: pr.Failed, Skipped: pr.Skipped,
+		}
+		// Leaves arrive sorted by name, so Skips is sorted.
+		for _, c := range leaves[pr.Path] {
+			if c.Status != pkgtestreport.StatusSkip {
 				continue
 			}
-			p.Tests++
-			switch outcome {
-			case OutcomePass:
-				p.Passed++
-			case OutcomeFail:
-				p.Failed++
-			case OutcomeSkip:
-				p.Skipped++
-				p.Skips = append(p.Skips, name)
-				if why := skipWhy[pkg][name]; why != "" {
-					if p.SkipReasons == nil {
-						p.SkipReasons = map[string]int{}
-					}
-					// Bounded: a message interpolating a unique
-					// value would otherwise grow one entry per
-					// test, and the report shows only the top few.
-					if len(p.SkipReasons) < maxDistinctReasons || p.SkipReasons[why] > 0 {
-						p.SkipReasons[why]++
-					}
+			p.Skips = append(p.Skips, c.ID.Name)
+			if why := c.SkipReason; why != "" {
+				if p.SkipReasons == nil {
+					p.SkipReasons = map[string]int{}
+				}
+				// Bounded: a message interpolating a unique value would
+				// otherwise grow one entry per test, and the report shows
+				// only the top few.
+				if len(p.SkipReasons) < maxDistinctReasons || p.SkipReasons[why] > 0 {
+					p.SkipReasons[why]++
 				}
 			}
 		}
-		sort.Strings(p.Skips)
-		switch {
-		case p.Tests == 0 && p.Result == OutcomeSkip:
-			// cmd/go's "[no test files]".
-			p.NoTestFiles = true
-		case p.Result == "" && !p.BuildFailed:
-			// No terminal package event. With test events that means a
-			// truncated stream; with none it means the package was
-			// announced ("start") and the stream stopped there. Both are
-			// "forge does not know", not "nothing skipped".
-			p.Incomplete = true
+		if p.BuildFailed {
+			p.Incomplete = false
+		} else if p.Result == "" {
+			p.Incomplete = !p.NoTestFiles
 		}
 		run.Packages = append(run.Packages, p)
 	}
@@ -325,40 +170,3 @@ func Parse(r io.Reader) (*Run, error) {
 // interpolates a unique value ("skipping shard 37") would otherwise grow one
 // entry per test, and the report only ever shows the top few anyway.
 const maxDistinctReasons = 64
-
-// skipReason extracts the t.Skip message from the output lines that preceded a
-// skip event.
-//
-// cmd/go emits the message as a plain output line, indented and prefixed with
-// the caller's file:line, immediately before `--- SKIP:`. Both markers around
-// it are recognisable, so the message is whatever is left.
-func skipReason(lines []string) string {
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" || isTestMarker(line) {
-			continue
-		}
-		// Strip a leading "file_test.go:42: " so the same message from
-		// two call sites counts as one reason.
-		if idx := strings.Index(line, ": "); idx > 0 && strings.Contains(line[:idx], ".go:") {
-			line = strings.TrimSpace(line[idx+2:])
-		}
-		const maxLen = 100
-		if len(line) > maxLen {
-			line = line[:maxLen] + "..."
-		}
-		return line
-	}
-	return ""
-}
-
-// isTestMarker reports whether a line is one of cmd/go's own status lines
-// rather than something the test printed.
-func isTestMarker(line string) bool {
-	for _, p := range []string{"=== RUN", "=== PAUSE", "=== CONT", "=== NAME", "--- SKIP", "--- PASS", "--- FAIL"} {
-		if strings.HasPrefix(line, p) {
-			return true
-		}
-	}
-	return false
-}

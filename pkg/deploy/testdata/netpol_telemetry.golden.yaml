@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api
   namespace: demo-prod
 spec:
@@ -27,6 +28,7 @@ spec:
         app.kubernetes.io/name: api
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: service
     spec:
       automountServiceAccountToken: false
       containers:
@@ -92,6 +94,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api
   namespace: demo-prod
 spec:
@@ -112,6 +115,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api
   namespace: demo-prod
 ---
@@ -123,6 +127,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api-ingress
   namespace: demo-prod
 spec:
@@ -144,6 +149,7 @@ metadata:
     app.kubernetes.io/name: zitadel
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: zitadel
   namespace: demo-prod
 spec:
@@ -164,6 +170,7 @@ spec:
         app.kubernetes.io/name: zitadel
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: service
     spec:
       automountServiceAccountToken: false
       containers:
@@ -227,6 +234,7 @@ metadata:
     app.kubernetes.io/name: zitadel
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: zitadel
   namespace: demo-prod
 spec:
@@ -247,6 +255,7 @@ metadata:
     app.kubernetes.io/name: zitadel
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: zitadel
   namespace: demo-prod
 ---
@@ -258,6 +267,7 @@ metadata:
     app.kubernetes.io/name: zitadel
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: zitadel-ingress
   namespace: demo-prod
 spec:

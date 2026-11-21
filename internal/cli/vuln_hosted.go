@@ -1,10 +1,10 @@
 package cli
 
-// `forge vuln list|show|sbom` and `scan --deployed` for an env whose ledger is
-// a control plane: the control plane's findings (hosted_vuln.go), mapped into
-// the same forge.dev/vuln-list/v1 document the machine ledger produces and
-// judged by the same rule, so the output and the exit codes do not depend on
-// which ledger answered.
+// `forge vuln list|show|sbom|patch` and `scan --deployed` for an env whose
+// ledger is a control plane: the control plane's findings (hosted_vuln.go),
+// mapped into the same forge.dev/vuln-list/v1 document the machine ledger
+// produces and judged by the same rule, so the output and the exit codes do
+// not depend on which ledger answered.
 //
 // Exit codes on top of vuln.go's: 4 when the control plane refuses (not signed
 // in, no vuln:read); 2 when it does not serve findings yet (no "vuln-findings"
@@ -17,6 +17,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
@@ -96,31 +97,43 @@ func hostedReleaseOf(ctx context.Context, src hostedVulnSource, env vulnEnv, ver
 	return sum.ReleaseVersion, nil
 }
 
+// hostedReleaseDocument reads release version's findings (the env's current
+// release when version is "") from the control plane src reads, and builds
+// the document every control-plane verb reads: list, show, scan --deployed
+// and patch. The verdict is the control plane's when it gave one (Judged);
+// env.Gate then supplies only the mode label and the warn band. Whether the
+// verdict is determined is the control plane's scan state too
+// (FreshnessFromSource; the mapping is hostedArtifactScans'), and a finding
+// it holds at release scope stays there (ReleaseFindings).
+func hostedReleaseDocument(ctx context.Context, src hostedVulnSource, env vulnEnv, version string, filter vulnscan.Filter, now time.Time) (vulnscan.Document, error) {
+	version, err := hostedReleaseOf(ctx, src, env, version)
+	if err != nil {
+		return vulnscan.Document{}, err
+	}
+	f, err := src.releaseFindings(ctx, version)
+	if err != nil {
+		if hostedErrorHasCode(err, cloud.CodeNotFound) {
+			return vulnscan.Document{}, undeterminedf("release %s is not on the control plane at %s (project %q)", version, env.Endpoint, env.Project)
+		}
+		return vulnscan.Document{}, hostedVulnReadError(env, err)
+	}
+	return vulnscan.BuildDocument(vulnscan.DocumentInput{
+		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, ReleaseFindings: f.Release, Filter: filter, Now: now, Notes: f.Notes,
+		Stale: f.Stale, FreshnessFromSource: true, Judged: f.Judged, JudgedBy: f.JudgedBy,
+	}), nil
+}
+
 // runVulnListHosted is runVulnList for an env whose ledger is a control plane.
 func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps, env vulnEnv, version string, filter vulnscan.Filter, asJSON bool) error {
 	src, err := hostedVulnSourceFor(ctx, deps, env)
 	if err != nil {
 		return err
 	}
-	if version, err = hostedReleaseOf(ctx, src, env, version); err != nil {
+	now := deps.now()
+	doc, err := hostedReleaseDocument(ctx, src, env, version, filter, now)
+	if err != nil {
 		return err
 	}
-	f, err := src.releaseFindings(ctx, version)
-	if err != nil {
-		if hostedErrorHasCode(err, cloud.CodeNotFound) {
-			return undeterminedf("release %s is not on the control plane at %s (project %q)", version, env.Endpoint, env.Project)
-		}
-		return hostedVulnReadError(env, err)
-	}
-	now := deps.now()
-	// The control plane's verdict, when it gave one (f.Judged); env.Gate
-	// then supplies only the mode label and the warn band. Whether the
-	// verdict is determined is the control plane's scan state too
-	// (FreshnessFromSource; the mapping is hostedArtifactScans').
-	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, ReleaseFindings: f.Release, Filter: filter, Now: now, Notes: f.Notes,
-		Stale: f.Stale, FreshnessFromSource: true, Judged: f.Judged, JudgedBy: f.JudgedBy,
-	})
 	if asJSON {
 		if err := writeVulnJSON(out, doc); err != nil {
 			return err
@@ -128,7 +141,7 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 		return vulnExit(doc)
 	}
 	if filter.Match != "" && len(doc.Findings) == 0 {
-		_, _ = fmt.Fprintf(out, "no finding in %s release %s matches %q\n", env.Name, version, filter.Match)
+		_, _ = fmt.Fprintf(out, "no finding in %s release %s matches %q\n", env.Name, doc.Release, filter.Match)
 	}
 	writeVulnDocument(out, doc, now, "")
 	if filter.Match != "" {
@@ -143,6 +156,38 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 		_, _ = fmt.Fprintf(out, "→ %s\n", link)
 	}
 	return vulnExit(doc)
+}
+
+// hostedPatchFindings is machineLedgerPatchFindings for an env whose ledger
+// is a control plane (`forge vuln patch <env>`): the findings of the release
+// the control plane says the env runs, read exactly as `forge vuln list`
+// reads them (hostedReleaseDocument), exempt ones included and marked, and
+// release-level ones included. It is gated like list: no vuln-findings
+// capability is exit 2 with list's message, a refusal (no vuln:read) exit 4.
+// Nothing is scanned on this machine.
+func hostedPatchFindings(ctx context.Context, deps vulnDeps, env vulnEnv) (patchFindings, error) {
+	var out patchFindings
+	src, err := hostedVulnSourceFor(ctx, deps, env)
+	if err != nil {
+		return out, err
+	}
+	doc, err := hostedReleaseDocument(ctx, src, env, "", vulnscan.Filter{IncludeExempt: true}, deps.now())
+	if err != nil {
+		return out, err
+	}
+	if doc.Coverage.Scanned == 0 && len(doc.Findings) == 0 {
+		return out, undeterminedf("nothing to patch from: the control plane at %s has no scan of any artifact of %s release %s yet", env.Endpoint, env.Name, doc.Release)
+	}
+	// As on the machine ledger, the patcher reads findings, never the
+	// gate's verdict: stale findings are still worth bumping, and the
+	// document's notes (carried as they are) say when they are stale.
+	out.Release, out.Findings = doc.Release, doc.Findings
+	out.Notes = append(out.Notes, doc.Notes...)
+	for _, u := range doc.Coverage.Unscanned {
+		out.Notes = append(out.Notes, fmt.Sprintf("%s was not scanned (%s): its findings are not patched", u.Artifact, u.Reason))
+	}
+	out.Notes = append(out.Notes, "findings: the control plane at "+env.Endpoint)
+	return out, nil
 }
 
 // writeHostedAdvisory prints what the control plane knows of advisory id

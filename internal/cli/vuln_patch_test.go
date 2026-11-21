@@ -108,7 +108,7 @@ func (h *patchHarness) exec(ctx context.Context, c vulnscan.Command) error {
 
 func (h *patchHarness) patch(args ...string) (doc vulnpatch.Document, stdout, stderr string, code int) {
 	h.t.Helper()
-	deps := vulnPatchDeps{vulnDeps: h.deps, findingsFor: machineLedgerPatchFindings, exec: h.exec}
+	deps := vulnPatchDeps{vulnDeps: h.deps, findingsFor: envPatchFindings, exec: h.exec}
 	deps.run = h.grype
 	cmd := newVulnPatchCmdWith(deps)
 	var out, errOut bytes.Buffer
@@ -324,7 +324,8 @@ func TestVulnPatchFlagsAndInputs(t *testing.T) {
 		t.Errorf("a refused flag set ran %v", h.cmds)
 	}
 
-	// An env that records on a control plane is F8's: say so, exit 2.
+	// An env that records on a control plane this command cannot reach: say
+	// so, exit 2.
 	h = newPatchHarness(t)
 	h.env.Endpoint = "https://cp.example"
 	if _, _, stderr, code := h.patch("prod"); code != exitUndetermined || !strings.Contains(stderr, "control plane") {

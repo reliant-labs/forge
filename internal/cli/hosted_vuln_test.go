@@ -11,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -411,6 +414,113 @@ func hostedFindings(sbomDigest string) *fakeVulnService {
 			"advisory":     map[string]any{"id": "CVE-2026-1111", "summary": "HTTP/2 rapid reset", "references": []string{"https://nvd.nist.gov/vuln/detail/CVE-2026-1111"}},
 			"observations": []map[string]any{{"environmentId": "env-prod", "purl": "pkg:golang/golang.org/x/net@v0.17.0", "firstSeenAt": firstSeen, "firstReleaseVersion": "v0.9.0"}},
 		}},
+	}
+}
+
+// hostedPatchFindingsFake is a control plane holding release v1.0.0 in prod
+// with findings in the patch harness's tree: ws in web (fixable), a
+// react-router finding held at release scope (no artifact_names), and an OS
+// package; worker was never given an SBOM.
+func hostedPatchFindingsFake() *fakeVulnService {
+	fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+	rv := fake.releaseVulns["v1.0.0"]
+	rv["artifacts"] = []map[string]any{
+		{"artifactName": "web", "sbomDigest": "sha256:" + strings.Repeat("a", 64), "scanState": "VULNERABILITY_SCAN_STATE_SCANNED", "lastScannedAt": vulnTestNow.Add(-time.Hour)},
+		{"artifactName": "worker", "scanState": "VULNERABILITY_SCAN_STATE_NO_SBOM"},
+	}
+	rv["findings"] = []map[string]any{
+		{
+			"advisory":      map[string]any{"id": "GHSA-96hv-2xvq-fx4p", "severity": "VULNERABILITY_SEVERITY_HIGH"},
+			"package":       map[string]any{"name": "ws", "version": "8.20.0", "type": "npm", "purl": "pkg:npm/ws@8.20.0", "location": "/web/package-lock.json"},
+			"fixedVersions": []string{"8.21.0"}, "fixState": "VULNERABILITY_FIX_STATE_FIXED",
+			"artifactNames": []string{"web"}, "blocking": true,
+		},
+		{
+			"advisory":      map[string]any{"id": "GHSA-chx6-hx7r-mcp5", "severity": "VULNERABILITY_SEVERITY_HIGH"},
+			"package":       map[string]any{"name": "react-router", "version": "7.14.0", "type": "npm", "purl": "pkg:npm/react-router@7.14.0"},
+			"fixedVersions": []string{"7.18.0"}, "fixState": "VULNERABILITY_FIX_STATE_FIXED",
+		},
+		{
+			"advisory":      map[string]any{"id": "CVE-2026-4738", "severity": "VULNERABILITY_SEVERITY_MEDIUM"},
+			"package":       map[string]any{"name": "zlib", "version": "1.3", "type": "apk", "purl": "pkg:apk/alpine/zlib@1.3"},
+			"fixedVersions": []string{"1.3.1"}, "fixState": "VULNERABILITY_FIX_STATE_FIXED",
+			"artifactNames": []string{"web"},
+		},
+	}
+	return fake
+}
+
+// hostedPatchHarness is the patch harness pointed at a control plane: prod
+// records there, so the findings must come from fake, never this machine.
+func hostedPatchHarness(t *testing.T, fake *fakeVulnService) *patchHarness {
+	t.Helper()
+	h := newPatchHarness(t)
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	h.env.Endpoint = cloud.DefaultEndpoint
+	h.env.Project = "acme"
+	h.deps.hostedClient = func(context.Context, vulnEnv) (cloudCaller, error) {
+		return cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL}, cloud.Credential{Token: "rlat_test"}), nil
+	}
+	return h
+}
+
+// `forge vuln patch <env>` on an env that records on a control plane plans
+// its bumps from the control plane's findings: the release it says the env
+// runs, a release-level finding included, nothing scanned on this machine.
+// It is gated the way list is: no vuln-findings capability is exit 2 with
+// list's message, a refusal exit 4.
+func TestVulnPatchReadsTheControlPlane(t *testing.T) {
+	t.Parallel()
+	h := hostedPatchHarness(t, hostedPatchFindingsFake())
+	doc, _, stderr, code := h.patch("prod")
+	if code != exitUndetermined {
+		t.Fatalf("exit %d, want 2 (the OS package has no patcher): %s", code, stderr)
+	}
+	want := map[string]string{
+		"CVE-2026-4738 zlib":               "skipped",
+		"GHSA-96hv-2xvq-fx4p ws":           "bumped",
+		"GHSA-chx6-hx7r-mcp5 react-router": "bumped",
+	}
+	if got := statuses(doc); !reflect.DeepEqual(got, want) {
+		t.Errorf("statuses = %v, want %v", got, want)
+	}
+	if doc.Env != "prod" || doc.Release != "v1.0.0" || !doc.Changed {
+		t.Errorf("doc head = %s %s changed=%v", doc.Env, doc.Release, doc.Changed)
+	}
+	if wantCmds := []string{"web: npm install", "web: npm install react-router@7.18.0"}; !reflect.DeepEqual(h.cmds, wantCmds) {
+		t.Errorf("commands = %v, want %v", h.cmds, wantCmds)
+	}
+	pkg, _ := os.ReadFile(filepath.Join(h.dir, "web/package.json"))
+	if !strings.Contains(string(pkg), `"ws": "8.21.0"`) {
+		t.Errorf("package.json does not override ws:\n%s", pkg)
+	}
+	notes := strings.Join(doc.Notes, "\n")
+	for _, n := range []string{"worker was not scanned", "findings: the control plane at " + cloud.DefaultEndpoint} {
+		if !strings.Contains(notes, n) {
+			t.Errorf("notes lack %q:\n%s", n, notes)
+		}
+	}
+	if h.scans != 0 || len(h.installs) != 0 {
+		t.Errorf("scanned (%d) or installed (%v) on this machine: the control plane's findings are the record", h.scans, h.installs)
+	}
+	if doc, _, stderr, code = hostedPatchHarness(t, hostedPatchFindingsFake()).patch("prod", "--ecosystem", "npm"); code != 0 || len(doc.Findings) != 2 {
+		t.Errorf("--ecosystem npm: exit %d findings %d: %s", code, len(doc.Findings), stderr)
+	}
+
+	// No findings capability: list's "could not determine", nothing patched.
+	fake := hostedPatchFindingsFake()
+	fake.features = nil
+	h = hostedPatchHarness(t, fake)
+	if _, _, stderr, code := h.patch("prod"); code != exitUndetermined || !strings.Contains(stderr, hostedVulnFindingsNotServedMsg) || len(h.cmds) != 0 {
+		t.Errorf("no vuln-findings: exit %d, commands %v\n%s", code, h.cmds, stderr)
+	}
+	// No vuln:read: refused, nothing patched.
+	fake = hostedPatchFindingsFake()
+	fake.refuse = true
+	h = hostedPatchHarness(t, fake)
+	if _, _, stderr, code := h.patch("prod"); code != exitRefused || !strings.Contains(stderr, "vuln:read") || len(h.cmds) != 0 {
+		t.Errorf("refused: exit %d, commands %v\n%s", code, h.cmds, stderr)
 	}
 }
 

@@ -101,6 +101,19 @@ cannot read — or one not on a func declaration — is an error, not a no-op.
   `40P01`). Still conflicting after the last attempt → a `svcerr.Aborted`
   error (the driver error kept as its cause), which `svcerr.Wrap` maps to
   `CodeAborted`.
+- **Widen what counts as a conflict with `.WithRetryOn(fn)`**, where `fn` is
+  a `func(error) bool` (the same shape as `retry.Policy.Retryable`). It is
+  ORed with `40001`/`40P01`, never replaces them, and `MaxAttempts` still
+  bounds it. With a retry budget, a classified error left after the last
+  attempt is `svcerr.Aborted`, as a `40001` is. With `MaxAttempts=1`, the
+  custom classifier is not called and ordinary errors come back unchanged.
+  Ready-made: `orm.RetryOnSQLState("40002", "25P02")` and
+  `orm.RetryOnCommitRollback` (a COMMIT postgres turned into a ROLLBACK
+  because the body swallowed a failed statement's error). Neither is a default:
+  the swallowed cause is unknown, and retrying a deterministic one only delays
+  the failure. `23505` stays an answer unless the body really races to an
+  insert. A project's own opener asks `opts.Retryable(err)` to honour the same
+  policy.
 - **With `orm.Serializable`, `fn` may run more than once.** A retry rolls back
   the failed attempt's database work and calls `fn` again from the top, so
   `fn` must have no effect outside the database. Send the email, publish the

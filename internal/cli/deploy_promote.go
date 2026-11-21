@@ -65,6 +65,10 @@ type promoteOptions struct {
 	// RaiseFloorReason is `--floor "<why>"`: also set a roll-forward-only
 	// rollback floor at the promoted release, in the same write (floor.go).
 	RaiseFloorReason string
+	// OverrideVulnGate is `--override-vuln-gate "<why>"`: promote past the
+	// env's vuln_gate and provenance_sbom refusals, recorded on the
+	// promotion with who and which findings (vuln_gate_promote.go).
+	OverrideVulnGate string
 
 	// Follow is the apply-and-gate stage that runs after the ledger write
 	// (deploy_promote_follow.go). NIL MEANS LEDGER-WRITE ONLY: nothing is
@@ -245,6 +249,8 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		Env: env, Version: version, FromEnv: source.FromEnv, Note: opts.Note, Gates: gates, Dir: projectDir,
 		Promoter: promoterName(promoteActor(opts.Actor)),
 		Ask:      !opts.DryRun && (opts.Confirm == nil || !opts.Confirm.PlanOnly),
+
+		OverrideVulnGate: opts.OverrideVulnGate,
 	}
 	if floorTarget != nil {
 		checkIn.Project, checkIn.Commit = floorTarget.Project, floorTarget.Git.Commit
@@ -289,6 +295,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	plan.DeployPlan = opts.DeployPlan
 	plan.Capacity = opts.Capacity
 	plan.Floor = floorVerdict
+	plan.Vulnerabilities = hostedVulnPlan(ctx, ledger)
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
 	guard.Target, guard.RaiseFloorReason = floorTarget, opts.RaiseFloorReason
 	if guard.ExpectUnbound {

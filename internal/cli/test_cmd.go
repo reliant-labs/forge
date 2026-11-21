@@ -33,9 +33,9 @@ turns recording off for one invocation.`,
 	}
 	cmd.AddCommand(newTestBeginCmd(), newTestCaptureCmd())
 	cmd.AddCommand(newTestReportCmd(), newTestCoverageCmd(), newTestRunsCmd(), newTestIngestCmd())
-	cmd.AddCommand(newTestFlakesCmd())
-	cmd.AddCommand(newTestQuarantineCmd())
 	cmd.AddCommand(newTestRunCmd())
 	cmd.AddCommand(newTestCollectCmd())
+	cmd.AddCommand(newTestFlakesCmd())
+	cmd.AddCommand(newTestQuarantineCmd())
 	return cmdutil.StrictGroup(cmd)
 }

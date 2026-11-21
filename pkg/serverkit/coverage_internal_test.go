@@ -41,12 +41,22 @@ func (f *fakeCoverage) ClearCounters() error {
 	return nil
 }
 
-func serveCoverage(t *testing.T, rt coverageRuntime, method, target string) *httptest.ResponseRecorder {
+// serveCoverage sends one request as a local tool does: to a loopback Host,
+// with no browser headers. header adds name, value pairs.
+func serveCoverage(t *testing.T, rt coverageRuntime, method, target string, header ...string) *httptest.ResponseRecorder {
 	t.Helper()
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = "127.0.0.1:6060"
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
 	rec := httptest.NewRecorder()
-	coverageHandler{rt: rt}.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	coverageHandler{rt: rt}.ServeHTTP(rec, req)
 	return rec
 }
+
+// resetHeader is what a reset carries.
+var resetHeader = []string{CoverageResetHeader, "1"}
 
 func untar(t *testing.T, body []byte) map[string]string {
 	t.Helper()
@@ -88,7 +98,7 @@ func TestCoverageHandler_ServesMetaAndCountersAsTar(t *testing.T) {
 
 func TestCoverageHandler_ResetClearsAfterSnapshot(t *testing.T) {
 	rt := &fakeCoverage{instrumented: true}
-	rec := serveCoverage(t, rt, http.MethodGet, CoveragePath+"?reset=1")
+	rec := serveCoverage(t, rt, http.MethodPost, CoveragePath, resetHeader...)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body)
 	}
@@ -120,9 +130,69 @@ func TestCoverageHandler_NonAtomicModeIsAConflict(t *testing.T) {
 	}
 
 	clearErr := errors.New("ClearCounters invoked for program built with -covermode=count (please use -covermode=atomic)")
-	rec = serveCoverage(t, &fakeCoverage{instrumented: true, clearErr: clearErr}, http.MethodGet, CoveragePath+"?reset=1")
+	rec = serveCoverage(t, &fakeCoverage{instrumented: true, clearErr: clearErr}, http.MethodPost, CoveragePath, resetHeader...)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "reset") {
 		t.Fatalf("status %d body %q, want 409 for a reset Go refused", rec.Code, rec.Body)
+	}
+}
+
+// [B1] A reset must be something no web page can trigger: loopback keeps
+// other machines out, not the browser on this one. A reset is POST plus a
+// custom header (which a cross-site request cannot carry without a preflight
+// this endpoint never answers); anything that looks browser-originated is
+// refused before any counter is read or touched.
+func TestCoverageHandler_ResetPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		method  string
+		target  string
+		host    string
+		header  []string
+		code    int
+		cleared int
+		says    string
+	}{
+		{name: "GET ?reset=1 is the old form: 405, nothing reset", method: http.MethodGet, target: CoveragePath + "?reset=1", code: http.StatusMethodNotAllowed, says: CoverageResetHeader},
+		{name: "GET ?reset with any value: 405", method: http.MethodGet, target: CoveragePath + "?reset=true", code: http.StatusMethodNotAllowed},
+		{name: "POST without the header: 403", method: http.MethodPost, target: CoveragePath, code: http.StatusForbidden, says: CoverageResetHeader},
+		{name: "POST with the header set to another value: 403", method: http.MethodPost, target: CoveragePath, header: []string{CoverageResetHeader, "true"}, code: http.StatusForbidden},
+		{name: "POST with the header and Origin: 403", method: http.MethodPost, target: CoveragePath, header: append([]string{"Origin", "https://evil.example"}, resetHeader...), code: http.StatusForbidden, says: "Origin"},
+		{name: "POST with the header, cross-site fetch metadata: 403", method: http.MethodPost, target: CoveragePath, header: append([]string{"Sec-Fetch-Site", "cross-site"}, resetHeader...), code: http.StatusForbidden, says: "Sec-Fetch-Site"},
+		{name: "another localhost port is same-site: 403", method: http.MethodPost, target: CoveragePath, header: append([]string{"Sec-Fetch-Site", "same-site"}, resetHeader...), code: http.StatusForbidden},
+		{name: "a DNS-rebound Host: 403", method: http.MethodPost, target: CoveragePath, host: "rebind.evil.example:6060", header: resetHeader, code: http.StatusForbidden, says: "Host"},
+		{name: "a read with Origin: 403", method: http.MethodGet, target: CoveragePath, header: []string{"Origin", "http://localhost:3000"}, code: http.StatusForbidden},
+		{name: "a read from a rebound Host: 403", method: http.MethodGet, target: CoveragePath, host: "rebind.evil.example", code: http.StatusForbidden},
+		{name: "a typed-in navigation (Sec-Fetch-Site none) reads", method: http.MethodGet, target: CoveragePath, header: []string{"Sec-Fetch-Site", "none"}, code: http.StatusOK},
+		{name: "a read from localhost reads", method: http.MethodGet, target: CoveragePath, host: "localhost:6060", code: http.StatusOK},
+		{name: "a read from [::1] reads", method: http.MethodGet, target: CoveragePath, host: "[::1]:6060", code: http.StatusOK},
+		{name: "POST with the header and no Origin resets", method: http.MethodPost, target: CoveragePath, header: resetHeader, code: http.StatusOK, cleared: 1},
+		{name: "a same-origin tool POST resets", method: http.MethodPost, target: CoveragePath + "?reset=1", header: append([]string{"Sec-Fetch-Site", "same-origin"}, resetHeader...), code: http.StatusOK, cleared: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &fakeCoverage{instrumented: true}
+			req := httptest.NewRequest(tc.method, tc.target, nil)
+			req.Host = "127.0.0.1:6060"
+			if tc.host != "" {
+				req.Host = tc.host
+			}
+			for i := 0; i+1 < len(tc.header); i += 2 {
+				req.Header.Set(tc.header[i], tc.header[i+1])
+			}
+			rec := httptest.NewRecorder()
+			coverageHandler{rt: rt}.ServeHTTP(rec, req)
+			if rec.Code != tc.code {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.code, rec.Body)
+			}
+			if rt.cleared != tc.cleared {
+				t.Errorf("ClearCounters called %d times, want %d", rt.cleared, tc.cleared)
+			}
+			if tc.says != "" && !strings.Contains(rec.Body.String(), tc.says) {
+				t.Errorf("body %q does not name %q", rec.Body, tc.says)
+			}
+			if tc.code != http.StatusOK && strings.Contains(rec.Header().Get("Content-Type"), "tar") {
+				t.Error("a refused request was served the counters")
+			}
+		})
 	}
 }
 

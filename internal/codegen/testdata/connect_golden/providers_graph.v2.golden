@@ -259,11 +259,11 @@ func NewAPIListener(d APIListenerDeps) (*APIListener, error) {
 		ChainV2: d.Chain.ChainV2,
 		RoutesV2: serverkit.RoutesFuncV2(func(m *mountkit.MuxV2) []string {
 			mounted := d.Routes.RegisterV2(m)
-			// NATIVE SIGN-IN: /auth/login, /auth/register, /auth/session and
-			// /auth/logout, gated on configuration (login_broker.go, yours).
+			// NATIVE SIGN-IN: the /auth/* routes login_broker.go (yours) mounts
+			// — which depend on its sign-in policy — gated on configuration.
 			if err := LoginBrokerConfigured(d.Broker); err == nil {
 				RegisterLoginBroker(m.Mux(), d.Broker, d.Logger)
-				d.Logger.Info("native sign-in enabled", "routes", "/auth/login /auth/register /auth/session /auth/logout")
+				d.Logger.Info("native sign-in enabled", "routes", "/auth/* as internal/app/login_broker.go mounts them (GET /auth/options lists the sign-in methods and whether sign-up is open)")
 			} else {
 				d.Logger.Debug("native sign-in not configured", "reason", err)
 			}

@@ -97,22 +97,40 @@ func TestZod4FormsPortsAZod3Frontend(t *testing.T) {
 	}
 }
 
-// A zod 4 frontend whose resolvers predate zod 4 support gets the resolver
-// bump alone; its forms are already zod 4.
+// A zod 4 frontend with an old resolver still needs the input/output type
+// split: coerced and defaulted fields can differ before and after parsing.
 func TestZod4FormsBumpsAnOldResolver(t *testing.T) {
-	dir := zodTree(t, map[string]string{
-		"package.json": `{"dependencies": {"zod": "^4.6.6", "@hookform/resolvers": "^3.9.0", "react-hook-form": "^7.60.0"}}`,
-		"src/new.tsx":  zod3Page,
-	})
-	rep, err := runZod4Forms(dir, Options{Write: false})
+	const pkg = `{"dependencies": {"zod": "^4.6.6", "@hookform/resolvers": "^3.9.0", "react-hook-form": "^7.60.0"}}`
+	page := strings.ReplaceAll(zod3Page, "z.nativeEnum(", "z.enum(")
+	migrated := strings.ReplaceAll(page, "type FormValues = z.infer<typeof schema>;", "type FormInput = z.input<typeof schema>;\ntype FormValues = z.output<typeof schema>;")
+	migrated = strings.ReplaceAll(migrated, "useForm<FormValues>(", "useForm<FormInput, unknown, FormValues>(")
+	dir := zodTree(t, map[string]string{"package.json": pkg, "src/new.tsx": page, "src/ported.tsx": migrated})
+	read := func(name string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	rep, err := runZod4Forms(dir, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rep.Rewrites) != 1 || !strings.Contains(rep.Rewrites[0], "@hookform/resolvers ^3.9.0 → ^7.0.7") || strings.Contains(rep.Rewrites[0], "react-hook-form") {
-		t.Fatalf("rewrites = %q, want the resolver alone", rep.Rewrites)
+	if len(rep.Rewrites) != 2 || !strings.Contains(rep.Rewrites[0], "@hookform/resolvers ^3.9.0 → ^7.0.7") || strings.Contains(rep.Rewrites[0], "react-hook-form") {
+		t.Fatalf("rewrites = %q, want the resolver and unported form only", rep.Rewrites)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "package.json")); strings.Contains(string(b), "^7.0.7") {
-		t.Error("a dry run wrote")
+	if read("package.json") != pkg || read("src/new.tsx") != page {
+		t.Fatal("a dry run wrote")
+	}
+	if _, err := runZod4Forms(dir, Options{Write: true}); err != nil {
+		t.Fatal(err)
+	}
+	if read("src/new.tsx") != migrated || read("src/ported.tsx") != migrated || read("package.json") != strings.ReplaceAll(pkg, "^3.9.0", "^7.0.7") {
+		t.Fatal("resolver-only port did not update exactly the dependency and unported form")
+	}
+	if again, err := runZod4Forms(dir, Options{Write: true}); err != nil || again.Changed() {
+		t.Fatalf("second run = %q, %v, want no changes", again.Rewrites, err)
 	}
 }
 

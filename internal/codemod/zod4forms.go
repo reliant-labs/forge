@@ -129,10 +129,10 @@ func runZod4Forms(dir string, opts Options) (Report, error) {
 			}
 			rep.Rewrites = append(rep.Rewrites, pkgRel+": "+strings.Join(bumped, ", "))
 		}
-		if zod3 {
-			if err := portZod4Forms(dir, fe, opts, &rep); err != nil {
-				return rep, err
-			}
+		// Upgrading an old resolver changes how it types the schema input,
+		// even when this frontend already declares Zod 4.
+		if err := portZod4Forms(dir, fe, opts, &rep); err != nil {
+			return rep, err
 		}
 		rep.Next = append(rep.Next, fmt.Sprintf("in %s, install with the frontend's package manager (pnpm install, else npm install) and check nothing resolves zod below 4.6.6 (npm ls zod)", feLabel(fe)))
 	}

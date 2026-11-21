@@ -127,7 +127,11 @@ func (p *Plan) resolveGoStdlib(ctx context.Context, r *Result, idx *index, at in
 	// The golang builder images.
 	for _, df := range idx.dockerfiles {
 		for _, st := range df.stages {
-			if st.opaque {
+			// A variable --platform (FROM --platform=$BUILDPLATFORM
+			// golang:1.22.3) picks an architecture of the same tag, and
+			// every one carries that tag's Go release: the literal tag is
+			// still the one to move. A variable image names no release.
+			if st.imageVariable() {
 				if strings.Contains(strings.ToLower(st.image), "golang") {
 					unresolved = append(unresolved, fmt.Sprintf("%s:%d builds FROM %s: a Go version named by a build argument is left to the agent", df.rel, st.line, st.image))
 				}

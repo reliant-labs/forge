@@ -168,6 +168,12 @@ func TestGoStdlibCases(t *testing.T) {
 			files: map[string]string{"Dockerfile": "ARG GO_VERSION=1.22.3\nFROM golang:${GO_VERSION}-alpine AS b\nFROM scratch\n"},
 			fixed: []string{"1.22.5"}, status: StatusSkipped, reason: "Dockerfile:2 builds FROM golang:${GO_VERSION}-alpine: a Go version named by a build argument is left to the agent",
 		},
+		"a builder for $BUILDPLATFORM still moves its tag": {
+			// The platform picks an architecture of the tag, and every one
+			// carries the tag's Go release.
+			files: map[string]string{"Dockerfile": "FROM --platform=$BUILDPLATFORM golang:1.22.3-alpine3.19 AS b\nFROM scratch\n"},
+			fixed: []string{"1.22.5"}, status: StatusBumped, dockerfile: "FROM --platform=$BUILDPLATFORM golang:1.22.5-alpine3.19 AS b\nFROM scratch\n",
+		},
 		"an untagged builder floats over the fix": {
 			files: map[string]string{"go.mod": goModApp, "Dockerfile": "FROM golang AS b\nFROM scratch\n"},
 			fixed: []string{"1.22.5"}, status: StatusBumped, cmds: []string{".: go mod edit -toolchain=go1.22.5"},

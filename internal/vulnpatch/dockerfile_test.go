@@ -25,7 +25,7 @@ func TestParseDockerfile(t *testing.T) {
 		t.Fatalf("stages = %+v", d.stages)
 	}
 	want := []stage{
-		{line: 3, image: "golang:1.22.3-alpine3.19", name: "build"},
+		{line: 3, image: "golang:1.22.3-alpine3.19", name: "build", variable: "--platform=$BUILDPLATFORM"},
 		{line: 7, image: "build", name: "test"},
 		{line: 9, image: "alpine:3.19.1", name: "final"},
 	}
@@ -43,18 +43,45 @@ func TestParseDockerfile(t *testing.T) {
 	}
 }
 
+// Any variable in a FROM — its image or a flag — makes the stage opaque; a
+// literal --platform is read, not opaque.
+func TestParseFromVariablesAndPlatform(t *testing.T) {
+	t.Parallel()
+	for src, want := range map[string]stage{
+		"FROM --platform=$BUILDPLATFORM alpine:3.19":      {image: "alpine:3.19", variable: "--platform=$BUILDPLATFORM"},
+		"FROM --platform=${TARGETPLATFORM} alpine:3.19":   {image: "alpine:3.19", variable: "--platform=${TARGETPLATFORM}"},
+		"FROM --platform=linux/${ARCH} alpine:3.19":       {image: "alpine:3.19", variable: "--platform=linux/${ARCH}"},
+		"FROM --platform=linux/amd64 alpine:3.19":         {image: "alpine:3.19", platform: "linux/amd64"},
+		"FROM --platform=Linux/ARM64/v8 alpine:3.19 AS x": {image: "alpine:3.19", platform: "linux/arm64/v8", name: "x"},
+		"FROM --platform=linux/amd64 alpine:${V}":         {image: "alpine:${V}", variable: "alpine:${V}", platform: "linux/amd64"},
+		"FROM alpine:3.19":                                {image: "alpine:3.19"},
+	} {
+		d := parseDockerfile("Dockerfile", "/x/Dockerfile", []byte(src+"\n"))
+		want.line = 1
+		if len(d.stages) != 1 || *d.stages[0] != want {
+			t.Errorf("%s: stages %+v, want %+v", src, d.stages, want)
+			continue
+		}
+		if d.stages[0].opaque() != (want.variable != "") {
+			t.Errorf("%s: opaque = %v", src, d.stages[0].opaque())
+		}
+	}
+}
+
 func TestDockerfileFinalBase(t *testing.T) {
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		src, image, reason string
 		none               bool
 	}{
-		"alias":      {src: "FROM debian:12 AS base\nFROM base\n", image: "debian:12"},
-		"scratch":    {src: "FROM golang:1.22 AS b\nFROM scratch\nCOPY --from=b /x /x\n", none: true},
-		"arg":        {src: "ARG BASE=alpine:3.19\nFROM ${BASE}\n", image: "${BASE}", reason: "build argument"},
-		"no from":    {src: "RUN true\n", none: true, reason: "has no FROM"},
-		"escape":     {src: "# escape=`\nFROM `\n  node:20-alpine\n", image: "node:20-alpine"},
-		"lower case": {src: "from ubuntu:22.04 as x\n", image: "ubuntu:22.04"},
+		"alias":                         {src: "FROM debian:12 AS base\nFROM base\n", image: "debian:12"},
+		"scratch":                       {src: "FROM golang:1.22 AS b\nFROM scratch\nCOPY --from=b /x /x\n", none: true},
+		"arg":                           {src: "ARG BASE=alpine:3.19\nFROM ${BASE}\n", image: "${BASE}", reason: "build argument"},
+		"arg platform":                  {src: "FROM --platform=$BUILDPLATFORM alpine:3.19\n", image: "alpine:3.19", reason: "platform comes from a build argument"},
+		"arg platform through an alias": {src: "FROM --platform=${TARGETPLATFORM} debian:12 AS base\nFROM base\n", image: "debian:12", reason: "platform comes from a build argument"},
+		"no from":                       {src: "RUN true\n", none: true, reason: "has no FROM"},
+		"escape":                        {src: "# escape=`\nFROM `\n  node:20-alpine\n", image: "node:20-alpine"},
+		"lower case":                    {src: "from ubuntu:22.04 as x\n", image: "ubuntu:22.04"},
 	} {
 		d := parseDockerfile("Dockerfile", "/x/Dockerfile", []byte(tc.src))
 		base, reason := d.finalBase()

@@ -217,6 +217,35 @@ func TestOSPackageResolvesTheDockerfileConservatively(t *testing.T) {
 			files: map[string]string{"Dockerfile": "FROM alpine:3.19\n", "b/Dockerfile": "ARG BASE\nFROM $BASE\n"},
 			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "ambiguous",
 		},
+		// The scanned image's platform: apkFinding's purl says x86_64.
+		"$BUILDPLATFORM makes the base a build argument's": {
+			files: map[string]string{"Dockerfile": "FROM --platform=$BUILDPLATFORM alpine:3.19\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "builds its final stage FROM --platform=$BUILDPLATFORM alpine:3.19: a base whose platform comes from a build argument is left to the agent",
+		},
+		"${TARGETPLATFORM} through an alias": {
+			files: map[string]string{"Dockerfile": "FROM --platform=${TARGETPLATFORM} alpine:3.19 AS base\nFROM base\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "platform comes from a build argument",
+		},
+		"${TARGETPLATFORM} makes another ambiguous": {
+			files: map[string]string{"Dockerfile": "FROM alpine:3.19\n", "b/Dockerfile": "FROM --platform=${TARGETPLATFORM} alpine:3.19\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "ambiguous (Dockerfile, b/Dockerfile)",
+		},
+		"a literal platform that matches": {
+			files: map[string]string{"Dockerfile": "FROM --platform=linux/amd64 alpine:3.19\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "Dockerfile",
+		},
+		"a literal platform that does not match": {
+			files: map[string]string{"Dockerfile": "FROM --platform=linux/arm64 alpine:3.19\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "the image was scanned for amd64, and these Dockerfiles pin another platform (Dockerfile (alpine:3.19, pinned to linux/arm64))",
+		},
+		"a mismatched platform through an alias": {
+			files: map[string]string{"Dockerfile": "FROM alpine:3.19 AS base\nFROM --platform=linux/arm64/v8 base\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "pinned to linux/arm64/v8",
+		},
+		"a mismatched platform leaves the other one": {
+			files: map[string]string{"arm/Dockerfile": "FROM --platform=linux/arm64 alpine:3.19\n", "Dockerfile": "FROM alpine:3.19\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "Dockerfile",
+		},
 		"no Dockerfile": {
 			files: map[string]string{"go.mod": goModApp},
 			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "the tree has no Dockerfile",

@@ -236,21 +236,25 @@ func newerRef(a, b string) bool {
 // pickDockerfile is the Dockerfile whose final stage built the image an OS
 // package was found in, and that stage's base. It picks only when exactly
 // one Dockerfile of the tree could have: a final stage FROM scratch has no
-// OS packages, and a base that names another distro than the package's
-// (alpine for a deb) did not build it. Anything else — none, several, a
-// base named by a build argument — is the reason it does not pick.
+// OS packages, a base that names another distro than the package's
+// (alpine for a deb) did not build it, and neither did a final stage pinned
+// to a literal --platform other than the one the package was scanned for
+// (its purl's arch). Anything else — none, several, a FROM whose image or
+// any flag (--platform=$BUILDPLATFORM) expands a build argument — is the
+// reason it does not pick.
 func pickDockerfile(pkg vulnscan.Package, dfs []*dockerfile) (*dockerfile, *stage, string) {
 	if len(dfs) == 0 {
 		return nil, nil, fmt.Sprintf("an OS package (%s), and the tree has no Dockerfile whose base could be refreshed", orUnknown(pkg.Type))
 	}
 	distro := packageDistro(pkg)
+	arch := packageArch(pkg)
 	type cand struct {
 		df     *dockerfile
 		base   *stage
 		opaque string
 	}
 	var possible []cand
-	var others []string
+	var others, otherPlatforms []string
 	for _, df := range dfs {
 		base, opaque := df.finalBase()
 		switch {
@@ -264,6 +268,12 @@ func pickDockerfile(pkg vulnscan.Package, dfs []*dockerfile) (*dockerfile, *stag
 				others = append(others, fmt.Sprintf("%s (%s)", df.rel, base.image))
 				continue
 			}
+			// A FROM pinned to another platform than the one scanned
+			// did not build the scanned image.
+			if pinned := otherPlatform(df.finalPlatforms(), arch); pinned != "" {
+				otherPlatforms = append(otherPlatforms, fmt.Sprintf("%s (%s, pinned to %s)", df.rel, base.image, pinned))
+				continue
+			}
 			possible = append(possible, cand{df: df, base: base})
 		}
 	}
@@ -273,8 +283,15 @@ func pickDockerfile(pkg vulnscan.Package, dfs []*dockerfile) (*dockerfile, *stag
 	}
 	switch len(possible) {
 	case 0:
+		var why []string
 		if len(others) > 0 {
-			return nil, nil, fmt.Sprintf("%s, and no Dockerfile of the tree builds on a %s base (%s)", what, orUnknown(distro), strings.Join(others, ", "))
+			why = append(why, fmt.Sprintf("no Dockerfile of the tree builds on a %s base (%s)", orUnknown(distro), strings.Join(others, ", ")))
+		}
+		if len(otherPlatforms) > 0 {
+			why = append(why, fmt.Sprintf("the image was scanned for %s, and these Dockerfiles pin another platform (%s)", arch, strings.Join(otherPlatforms, ", ")))
+		}
+		if len(why) > 0 {
+			return nil, nil, what + ", and " + strings.Join(why, "; ")
 		}
 		return nil, nil, fmt.Sprintf("%s, and every Dockerfile of the tree builds FROM scratch", what)
 	case 1:
@@ -310,6 +327,63 @@ func packageDistro(pkg vulnscan.Package) string {
 		parts := strings.SplitN(rest, "/", 3)
 		if len(parts) == 3 {
 			return normalizeDistro(parts[1])
+		}
+	}
+	return ""
+}
+
+// packageArch is the architecture an OS package's purl says it was built
+// for (arch=x86_64, arch=arm64), in Go's GOARCH spelling, which a
+// --platform uses; "" when it says none forge knows (noarch, all).
+func packageArch(pkg vulnscan.Package) string {
+	_, q, ok := strings.Cut(pkg.PURL, "?")
+	if !ok {
+		return ""
+	}
+	if i := strings.IndexByte(q, '#'); i >= 0 {
+		q = q[:i]
+	}
+	for _, kv := range strings.Split(q, "&") {
+		if k, v, _ := strings.Cut(kv, "="); k == "arch" {
+			return normalizeArch(v)
+		}
+	}
+	return ""
+}
+
+// normalizeArch spells a distro's architecture name as GOARCH does.
+func normalizeArch(a string) string {
+	switch strings.ToLower(a) {
+	case "x86_64", "amd64", "x64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "armv7", "armv7l", "armv7hl", "armhf", "armhfp", "armel", "armv6", "armv6l", "arm":
+		return "arm"
+	case "i386", "i486", "i586", "i686", "x86", "386":
+		return "386"
+	case "ppc64le", "ppc64el":
+		return "ppc64le"
+	case "s390x":
+		return "s390x"
+	case "riscv64":
+		return "riscv64"
+	}
+	return ""
+}
+
+// otherPlatform is the first of the literal platforms (os/arch[/variant])
+// a Dockerfile's final stage pins that cannot have built an OS package of
+// arch: another OS than linux, or another architecture. "" when every one
+// could, or arch is unknown (no judgment without it).
+func otherPlatform(platforms []string, arch string) string {
+	for _, pl := range platforms {
+		parts := strings.Split(pl, "/")
+		if len(parts) >= 1 && parts[0] != "" && parts[0] != "linux" {
+			return pl
+		}
+		if arch != "" && len(parts) >= 2 && normalizeArch(parts[1]) != arch {
+			return pl
 		}
 	}
 	return ""

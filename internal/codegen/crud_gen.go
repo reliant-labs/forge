@@ -171,6 +171,10 @@ type CRUDTemplateData struct {
 	// only TODO stubs, the template skips those imports to keep the
 	// file compiling.
 	NeedsCRUDLib bool
+	// NeedsStrconv gates the strconv import: set when a real get, list,
+	// update or delete op carries an integer primary key across pkg/crud's
+	// text-keyed seam (crud_pk_key.go).
+	NeedsStrconv bool
 	// NeedsOpsFile is true when the Tier-1 ops file must be written:
 	// either NeedsCRUDLib (a real op constructor) OR there is at least
 	// one entity conversion pair a wired custom-read-shape body depends
@@ -235,7 +239,18 @@ type CRUDMethodTemplateData struct {
 	PkDBField    string // "Id" — the PK's field on the db.<Entity> struct (naming.ColumnGoName)
 	PkColumnName string // "id" (raw DB column name)
 	PkGoType     string // "int64"
-	HasPkInInput bool   // true if the request message likely has an ID field
+	// PkRequestKey and PkEntityKey are the Go expressions that render the
+	// key of `req` (get/delete) and of `entity` (update/list) as the text
+	// pkg/crud carries: the field itself for a string key, a strconv call
+	// for an integer one. PkParseBits is the bit size the ops parse that
+	// text back at before calling the ORM delegate (0: a string key, no
+	// parse), and PkKeyArg the argument they then pass it ("id", "key",
+	// "int32(key)"). See crud_pk_key.go.
+	PkRequestKey string
+	PkEntityKey  string
+	PkParseBits  int
+	PkKeyArg     string
+	HasPkInInput bool // true if the request message likely has an ID field
 	// ResponseField is the pb Go field of the response that carries the
 	// entity — the single entity for create/get/update ("Patient"), the
 	// repeated one for list ("Patients"). Read off the response message's
@@ -1369,6 +1384,11 @@ func ensureImportLine(content, imp string) string {
 // is treated as ok so existing projects whose protos do match AIP-158
 // keep generating the same code they did before this check landed.
 func validateCRUDShape(svc ServiceDef, cm CRUDMethod) (ok bool, reason string) {
+	// The key comes first: an op over a key type pkg/crud cannot carry
+	// would not compile whatever the messages look like.
+	if reason := crudPkKeyMismatch(svc, cm); reason != "" {
+		return false, reason
+	}
 	if len(svc.Messages) == 0 {
 		return true, ""
 	}
@@ -1698,6 +1718,16 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		}
 	}
 
+	// The key's text form at the pkg/crud seam (crud_pk_key.go). A shape
+	// validateCRUDShape refused gets no op, so its key needs no rendering.
+	var pkRequestKey, pkEntityKey string
+	var pkParseBits int
+	if shapeOK {
+		pkRequestKey, _ = pkKeyText("req."+naming.GoCamelCase(cm.Entity.PkField), requestPkGoType(svc, cm))
+		pkEntityKey, _ = pkKeyText("entity."+naming.ColumnGoName(cm.Entity.PkField), cm.Entity.PkGoType)
+		pkParseBits, _ = pkKeyParseBits(cm.Entity.PkGoType)
+	}
+
 	return CRUDMethodTemplateData{
 		MethodName:         cm.Method.GoName(),
 		InputType:          cm.Method.InputGoName(),
@@ -1713,6 +1743,10 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		PkDBField:          naming.ColumnGoName(cm.Entity.PkField),
 		PkColumnName:       cm.Entity.PkField,
 		PkGoType:           cm.Entity.PkGoType,
+		PkRequestKey:       pkRequestKey,
+		PkEntityKey:        pkEntityKey,
+		PkParseBits:        pkParseBits,
+		PkKeyArg:           pkKeyArg(cm.Entity.PkGoType),
 		HasPkInInput:       cm.Operation == "get" || cm.Operation == "update" || cm.Operation == "delete",
 		ResponseField:      responseEntityGoField(svc, cm.Method.OutputType, cm.Entity.Name, cm.Operation == "list"),
 		HasPagination:      hasPagination,
@@ -1809,6 +1843,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 	hasFilters := false
 	hasOrderBy := false
 	needsCRUDLib := false
+	needsStrconv := false
 	for _, m := range methods {
 		if m.HasPagination {
 			hasPagination = true
@@ -1821,6 +1856,9 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		}
 		if !m.ShapeMismatch {
 			needsCRUDLib = true
+			if m.Operation != "create" && (m.PkParseBits > 0 || usesStrconv(m.PkRequestKey, m.PkEntityKey)) {
+				needsStrconv = true
+			}
 		}
 	}
 	// Any real op names orm.QueryOption now: the get/update/delete shims
@@ -1895,6 +1933,7 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		HasOrderBy:       hasOrderBy,
 		NeedsORM:         needsORM || ConvNeedsORM(convs),
 		NeedsCRUDLib:     needsCRUDLib,
+		NeedsStrconv:     needsStrconv,
 		NeedsOpsFile:     needsOpsFile,
 		CRUDMethods:      methods,
 		Entities:         convs,
@@ -1940,6 +1979,22 @@ type CRUDTestTemplateData struct {
 	// bare request messages in, bare responses out, codes read with
 	// svcerr.CodeV2.
 	ConnectV2 bool
+	// HasMigrationsFS mirrors the test harness's own gate for
+	// NewMigratedTestDB (ProjectHasSQLMigrations): when true the lifecycle
+	// test clones the migrated template through it instead of replaying
+	// every migration into a fresh database per test.
+	HasMigrationsFS bool
+	// OmitAssert / OmitDBHelpers leave out package-level helpers another
+	// test file of the package already declares: assertCleanError, and
+	// (rendered only without HasMigrationsFS) findMigrationsDir + crudTestDB.
+	// handlers_crud_test.go declares them all; a per-entity file only the
+	// ones no other file of the external test package does, so the two
+	// compile side by side.
+	OmitAssert    bool
+	OmitDBHelpers bool
+	// PerEntity marks a handlers_crud_<entity>_test.go: the lifecycle test
+	// of one entity the service gained after handlers_crud_test.go was born.
+	PerEntity bool
 }
 
 // CRUDTestEntityData groups CRUD operations by entity for lifecycle tests.
@@ -2068,9 +2123,26 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	// migrations past what the scaffolded fixtures satisfy removes this
 	// file, and a presence check read that removal as "absent, write it"
 	// and handed the file back on the next three generate runs.
+	site := lifecycleTestSite{svc: svc, methods: filteredMethods, modulePath: modulePath, projectDir: projectDir, pkg: pkg, targetDir: targetDir, relDir: relDir}
 	lifecycleRel := filepath.Join(relDir, "handlers_crud_test.go")
 	lifecyclePath := filepath.Join(projectDir, lifecycleRel)
 	if !checksums.ScaffoldOnceDecision(projectDir, lifecycleRel) {
+		// handlers_crud_test.go is the user's, and covers the entities the
+		// service had when it was born. An entity the service gained since
+		// gets a lifecycle test of its own, in a file of its own — unless the
+		// user deleted handlers_crud_test.go: that opts the service out of
+		// forge's lifecycle tests, and the entities it covered must not come
+		// back one file at a time.
+		if _, statErr := os.Stat(lifecyclePath); statErr != nil {
+			return CRUDResult{Skipped: "scaffolded once already, then deleted — the service opted out of forge's lifecycle tests", Routine: true}, nil
+		}
+		wrote, err := generateEntityLifecycleTests(site, hasCreate, hasGet, cs)
+		if err != nil {
+			return CRUDResult{}, err
+		}
+		if wrote {
+			return CRUDResult{Wrote: true}, nil
+		}
 		return CRUDResult{Skipped: "scaffolded once already — the file is yours (or you deleted it)", Routine: true}, nil
 	}
 
@@ -2090,17 +2162,7 @@ func GenerateCRUDTests(svc ServiceDef, crudMethods []CRUDMethod, modulePath stri
 	fix := buildCRUDTestFixtures(projectDir, nil)
 	defer fix.close()
 
-	// Package + TestHelperName are overridden with the disk-resolved
-	// package clause so the emitted test file always matches the directory
-	// it lands in AND calls the `app.NewTest<X>` factory the bootstrap
-	// testing generator (which uses the same resolver) actually emitted.
-	data := buildCRUDTestTemplateData(svc, filteredMethods, modulePath, projectDir, fix)
-	data.Package = pkg
-	data.TestHelperName = ComputeTestHelperName(pkg, projectDir)
-	data.UnfilledDeps = UnfilledDepsFor(targetDir)
-	// relDir is internal/handlers/<leaf>; the import needs the leaf.
-	data.ServiceImportPath = filepath.ToSlash(filepath.Base(relDir))
-	data.ConnectV2 = connectV2For(svc, projectDir)
+	data := lifecycleTestData(site, fix)
 
 	content, err := templates.ServiceTemplates().Render("handlers_crud_test.go.tmpl", data)
 	if err != nil {
@@ -2345,9 +2407,7 @@ func buildCRUDTestTemplateData(svc ServiceDef, crudMethods []CRUDMethod, moduleP
 	// exactly or the generated file has an unused import.
 	needsFieldMask := false
 	for _, e := range entities {
-		if e.HasCreate && e.HasGet && e.PkGoType == "string" &&
-			e.HasUpdate && e.MutableStringField != "" &&
-			e.UpdateMethod.UpdateMaskField != "" {
+		if lifecycleNeedsFieldMask(e) {
 			needsFieldMask = true
 			break
 		}

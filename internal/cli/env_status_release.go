@@ -368,6 +368,9 @@ func runEnvStatusRelease(ctx context.Context, envName string, opts envStatusOpti
 	records := collectEnvRecords(ctx, opts.Records, projectDir, envName, time.Now().UTC())
 	records.RollbackFloors, records.RollbackFloorsSupported = statusFloors(ctx, opts.Bindings, envName)
 	offline := collectOfflineCache(opts.Bindings, envName)
+	if hs, ok := opts.Bindings.(*hostedStore); ok && offline != nil {
+		offline.Refused = offlineRefusal(ctx, projectDir, envName, hs.endpoint)
+	}
 
 	if !bound {
 		return reportUnboundEnv(declaredLifecycle(ctx, opts.Resolver, projectDir, envName), envName, opts.JSON, opts.Runtime, ledger, staleErr, records, offline)

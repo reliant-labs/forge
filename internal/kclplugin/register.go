@@ -140,6 +140,17 @@ func init() {
 				return lowerContainer(args.args[0])
 			},
 		},
+		// telemetry_collector(targets, options) -> dict. The collector
+		// configuration forge's own agents render for the env's
+		// normalized telemetry targets (pkg/telemetry/collector.Build),
+		// as plain data, for a project that runs its own collector in
+		// KCL: one translator, whoever runs the collector. Call it
+		// through the typed forge.telemetry_collector (kcl/telemetry.k).
+		"telemetry_collector": {
+			Body: func(args *methodArgs) (any, error) {
+				return telemetryCollector(args.callArg(0, "targets"), args.callArg(1, "options"))
+			},
+		},
 		// probe(token) -> token. Side-effect-free echo, used ONLY by
 		// Probe (probe.go) to prove a KCL program can call back into
 		// this process. Not part of the namespace a project should use.

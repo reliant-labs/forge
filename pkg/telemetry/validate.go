@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/dashspec"
 )
 
 // Options is what Validate needs to know about the env beyond its targets.
@@ -68,17 +70,20 @@ func (e *ValidationError) Error() string {
 }
 
 // Validate checks normalized targets for what the KCL schema cannot: RE2
-// syntax, durations, a service_name used twice, an unresolved port name, the
+// syntax, durations, a service_name used twice, a scrape or check name used
+// twice or made only of digits (which an unnamed one's index could be), an
+// unresolved port name, the
 // attachment rules (a Manifests or Observability target names a selector or
 // an address; a selector needs a cluster), a cluster the env does not
 // declare, and the hosted rules (every scrape sets `allow`; no address, no
-// bearer token, no profiles; only declared ports). It returns a
+// bearer token, no profiles; only declared ports), and every declared
+// dashboard against dashspec.ParseDashboard, its id unique in the env. It returns a
 // *ValidationError naming every problem, or nil.
 //
 // The KCL checks are repeated where they are cheap, so a Target built
 // outside the render (a KCL plugin caller, a test) is held to the same rules.
 func Validate(targets []Target, opts Options) error {
-	v := &validator{opts: opts}
+	v := &validator{opts: opts, dashboardIDs: map[string]string{}}
 	seen := map[string]string{}
 	for _, t := range targets {
 		v.t = t
@@ -121,6 +126,9 @@ type validator struct {
 	opts     Options
 	t        Target
 	problems []Problem
+	// dashboardIDs is every declared dashboard id seen so far in the env,
+	// with the target that declared it.
+	dashboardIDs map[string]string
 }
 
 func (v *validator) add(field, msg string) {
@@ -156,8 +164,10 @@ func (v *validator) target() {
 		v.add("selector", "a scrape, pull or check needs pods (a selector) or an address to reach")
 	}
 
+	scrapeNames := map[string]int{}
 	for i, m := range t.Metrics {
 		f := fmt.Sprintf("metrics[%d]", i)
+		v.entryName(f, "scrape", m.Name, i, scrapeNames)
 		v.port(f, m.Port, m.PortName)
 		v.duration(f+".interval", m.Interval, 10*time.Second)
 		v.duration(f+".timeout", m.Timeout, 0)
@@ -202,8 +212,10 @@ func (v *validator) target() {
 	if t.Runtime == RuntimeHosted && len(t.Profiles) > 0 {
 		v.add("profiles", "are not supported on a hosted env yet (the platform pulls no tenant profiles); forge-built workloads push theirs")
 	}
+	checkNames := map[string]int{}
 	for i, c := range t.Checks {
 		f := fmt.Sprintf("checks[%d]", i)
+		v.entryName(f, "check", c.Name, i, checkNames)
 		v.port(f, c.Port, c.PortName)
 		v.duration(f+".interval", c.Interval, 10*time.Second)
 		if c.Kind != "tcp" && c.Kind != "http" {
@@ -212,6 +224,26 @@ func (v *validator) target() {
 	}
 	v.otlp()
 	v.logs()
+	v.dashboards()
+}
+
+// dashboards runs each declared dashboard through dashspec.ParseDashboard and
+// refuses an id another target of the env already declares: every dashboard
+// becomes one file named for its id.
+func (v *validator) dashboards() {
+	for i, raw := range v.t.Dashboards {
+		f := fmt.Sprintf("dashboards[%d]", i)
+		d, err := dashspec.ParseDashboard(f, raw)
+		if err != nil {
+			v.add(f, err.Error())
+			continue
+		}
+		if prev, dup := v.dashboardIDs[d.ID]; dup {
+			v.add(f+".id", fmt.Sprintf("%q is also a dashboard of %s: a dashboard id is unique within the project", d.ID, prev))
+			continue
+		}
+		v.dashboardIDs[d.ID] = v.t.Source
+	}
 }
 
 func (v *validator) runtime() {
@@ -263,6 +295,33 @@ func (v *validator) port(field string, port int, name string) {
 			v.add(field+".port", fmt.Sprintf("%d is not a port the workload declares (declared: %s): a hosted env reaches only declared ports", port, describe(sortedKeys(t.Ports))))
 		}
 	}
+}
+
+var (
+	rfc1123Label = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	allDigits    = regexp.MustCompile(`^[0-9]+$`)
+)
+
+// entryName checks the name of scrape or check i of the target. A name is
+// an RFC-1123 label with at least one non-digit, unique among its kind: an
+// unnamed entry is identified by its index (collector job and receiver
+// names), so an all-digit name would share that namespace and could collide
+// with it. seen maps the names so far to their index.
+func (v *validator) entryName(field, kind, name string, i int, seen map[string]int) {
+	if name == "" {
+		return
+	}
+	switch {
+	case !rfc1123Label.MatchString(name):
+		v.add(field+".name", fmt.Sprintf("%q must be an RFC-1123 label", name))
+	case allDigits.MatchString(name):
+		v.add(field+".name", fmt.Sprintf("%q is all digits, which are reserved for an unnamed %s's index: give it a letter", name, kind))
+	}
+	if prev, dup := seen[name]; dup {
+		v.add(field+".name", fmt.Sprintf("%q is also the name of %s %d: names are unique within a target", name, kind, prev))
+		return
+	}
+	seen[name] = i
 }
 
 func (v *validator) duration(field, d string, floor time.Duration) {

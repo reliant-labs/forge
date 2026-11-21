@@ -282,10 +282,19 @@ func TestGreenfieldSiteInPlaceInAnEmptyDir(t *testing.T) {
 	}
 }
 
+// A Vite site's next steps never offer `lint --static-export`, which checks
+// only a Next.js export; its build is the check.
+func TestSiteNextStepsForViteNameTheBuild(t *testing.T) {
+	text := strings.Join(siteNextSteps("", "vite"), "\n")
+	if strings.Contains(text, " lint --static-export\n") || !strings.Contains(text, "npm run build") {
+		t.Errorf("a Vite site's next steps must name npm run build, not lint --static-export:\n%s", text)
+	}
+}
+
 // The next steps after a site name the skill, the dev loop and the deploy,
 // and every command in them resolves in the command tree.
 func TestSiteNextStepsArePasteable(t *testing.T) {
-	lines := siteNextSteps("landing")
+	lines := siteNextSteps("landing", "nextjs")
 	want := map[string]bool{"skill load": false, "env up": false, "env deploy": false, "env build": false, "lint": false, "domain add": false}
 	for _, line := range lines {
 		for _, args := range pasteableInvocations(line, Name()) {

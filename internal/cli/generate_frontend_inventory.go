@@ -38,10 +38,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/obsdash"
 )
 
 // stepDeriveFrontendInventory overlays the DEPLOY GRAPH onto the inventory
@@ -67,8 +69,14 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 	if ctx.Cfg == nil {
 		return nil
 	}
+	// Kept for rederiveFrontendInventory: an env that fails here may render
+	// later in the run, once the modules it imports are regenerated.
+	ctx.diskFrontends = slices.Clone(ctx.Cfg.Frontends)
+	rendered := ctx.renderedEnvs()
+	ctx.inventoryMissedEnvs = failedEnvNames(rendered.failed)
+	ctx.inventoryFrontends = rendered.frontends
 
-	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.renderedFrontends()))
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(ctx.inventoryFrontends))
 	if len(fromKCL) == 0 {
 		return frontendCodegenProblems(ctx.Cfg.Frontends)
 	}
@@ -95,6 +103,62 @@ func stepDeriveFrontendInventory(ctx *pipelineContext) (err error) {
 			len(names), names)
 	}
 	return nil
+}
+
+// rederiveFrontendInventory derives the inventory again when an environment
+// that failed to render for stepDeriveFrontendInventory renders now.
+//
+// The inventory is derived early in the run, before per-env deploy config
+// regenerates config_gen.k. An env main.k (or config.k) that sets a config
+// field added to the proto in the same edit cannot evaluate until then, so
+// the frontends it declares were missing from the inventory, and the steps
+// that run after the regeneration — the frontend typed config, the
+// observability dashboards — refused or shrank for a frontend that, by then,
+// was declared by an env that renders. The refusal named no cause, because
+// the failure that dropped the frontend had been forgotten with its stale
+// cache, and the generate rolled back, so re-running it failed the same way
+// (forge bug report 3d0d0a20).
+func (ctx *pipelineContext) rederiveFrontendInventory() {
+	if ctx.Cfg == nil || len(ctx.inventoryMissedEnvs) == 0 {
+		return
+	}
+	rendered := ctx.renderedEnvs()
+	stillFailed := failedEnvNames(rendered.failed)
+	recovered := false
+	for _, env := range ctx.inventoryMissedEnvs {
+		if !slices.Contains(stillFailed, env) {
+			recovered = true
+			break
+		}
+	}
+	ctx.inventoryMissedEnvs = stillFailed
+	if !recovered {
+		return
+	}
+	// Keep the last usable declarations only for environments that failed
+	// this pass. A successful render replaces its older declarations, even
+	// when it now declares no frontends. Preserve environment ordering so
+	// DeriveFrontendsFromKCL resolves duplicate names the same way as before.
+	frontends := slices.Clone(rendered.frontends)
+	for _, old := range ctx.inventoryFrontends {
+		if slices.Contains(stillFailed, old.Env) {
+			frontends = append(frontends, old)
+		}
+	}
+	slices.SortStableFunc(frontends, func(a, b renderedEnvFrontend) int { return strings.Compare(a.Env, b.Env) })
+	ctx.inventoryFrontends = frontends
+	fromKCL := config.DeriveFrontendsFromKCL(ctx.ProjectDir, kclDeclaredFrontends(frontends))
+	ctx.Cfg.Frontends = config.MergeFrontendInventory(ctx.diskFrontends, fromKCL)
+	config.ApplyDerivedDefaults(ctx.Cfg)
+}
+
+// failedEnvNames is the environment of each failure, in order.
+func failedEnvNames(failed []envRenderFailure) []string {
+	names := make([]string, 0, len(failed))
+	for _, f := range failed {
+		names = append(names, f.Env)
+	}
+	return names
 }
 
 // renderedFrontends reads the frontends every renderable environment
@@ -130,6 +194,10 @@ type renderedEnvironments struct {
 	// funnels and counts), in environment order.
 	analytics []renderedEnvAnalytics
 	workloads []WorkloadEntity
+	// telemetry is each env's declared telemetry targets (forge.Telemetry),
+	// in environment order: the systems the observability dashboards and
+	// alert defaults are drawn for.
+	telemetry []obsdash.EnvTelemetry
 	// failed is every environment that did not render, in environment
 	// order. The inventory is built without it (a half-written main.k must
 	// not stop generate), but a step that then misses a frontend that env
@@ -158,6 +226,9 @@ func renderEnvironments(projectDir string) renderedEnvironments {
 			out.frontends = append(out.frontends, renderedEnvFrontend{Env: r.env, Frontend: fe})
 		}
 		out.workloads = append(out.workloads, r.entities.Workloads...)
+		if len(r.entities.Telemetry) > 0 {
+			out.telemetry = append(out.telemetry, obsdash.EnvTelemetry{Env: r.env, Targets: r.entities.Telemetry})
+		}
 		if o := r.entities.Observability; o != nil && o.Analytics != nil {
 			out.analytics = append(out.analytics, renderedEnvAnalytics{Env: r.env, Analytics: *o.Analytics})
 		}

@@ -242,14 +242,46 @@ func dockerfileHasCoverStage(path string) bool {
 	return err == nil && coverStageRE.Match(data)
 }
 
+// coverDockerfile is the Dockerfile d builds with, as a path the stage
+// detection can read: the file a GitSource pin resolved to (DockerfilePath,
+// set by resolveDockerBuildSources) — which under a GitSource context must
+// lie inside that resolved checkout — else the declared path, relative to
+// the project root. It never falls back to a local Dockerfile for a pinned
+// build: reading the deploy repo's own file would answer for the wrong image.
+func coverDockerfile(d *DockerBuild) (string, error) {
+	if d.DockerfilePath != "" {
+		if d.ContextDir != "" && d.DockerfileSource == nil {
+			rel, err := filepath.Rel(d.ContextDir, d.DockerfilePath)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+				return "", fmt.Errorf("the Dockerfile %s is outside its resolved GitSource context %s", d.DockerfilePath, d.ContextDir)
+			}
+		}
+		return d.DockerfilePath, nil
+	}
+	if d.HasGitSource() {
+		return "", fmt.Errorf("its GitSource Dockerfile was not resolved")
+	}
+	p := serviceDockerfile(d)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(projectDirForKCL(), p)
+	}
+	return p, nil
+}
+
 // coverImageArgs are the extra `docker build` args of a DockerBuild workload
 // the env instruments: `--target cover`, and FORGE_COVERPKG (the packages the
 // stage instruments) when the image builds this project's module. nil, with a
 // line saying why, when the image cannot be a cover build: the Dockerfile has
-// no cover stage, or the build names a target of its own, which wins.
-func coverImageArgs(ctx context.Context, svcName, dockerfile string, d *DockerBuild) ([]string, error) {
+// no cover stage, or the build names a target of its own, which wins. The
+// Dockerfile read is the one the build actually uses (coverDockerfile),
+// including a GitSource pin's.
+func coverImageArgs(ctx context.Context, svcName string, d *DockerBuild) ([]string, error) {
 	if d == nil || d.cover == nil {
 		return nil, nil
+	}
+	dockerfile, err := coverDockerfile(d)
+	if err != nil {
+		return nil, fmt.Errorf("service %q: coverage: %w", svcName, err)
 	}
 	if d.Target != "" {
 		fmt.Printf("[build] %s: not instrumented for coverage — the build names its own target %q (the cover image is the `%s` stage)\n", svcName, d.Target, coverImageStage)

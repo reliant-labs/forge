@@ -30,10 +30,7 @@ package checksums
 // dashboards are read by provisioners that forge does not own, and an NDJSON
 // line has nowhere to put a comment.
 //
-// The directory is committed (the project .gitignore re-includes it). Load
-// still reads the legacy .forge/hashes.json, and the next Save writes its
-// entries out as certificate files and deletes it: one `forge generate`
-// migrates a project.
+// The directory is committed (the project .gitignore re-includes it).
 
 import (
 	"bytes"
@@ -126,7 +123,7 @@ func loadHashCerts(root string) (map[string]string, error) {
 
 // saveHashCerts makes root's HashesDir hold exactly certs: it writes each
 // certificate whose content differs, removes those of outputs no longer
-// certified (pruning emptied directories), and deletes the legacy manifest.
+// certified (pruning emptied directories).
 // Every write and removal is journaled, so a failed run restores them.
 func saveHashCerts(root string, certs map[string]string) error {
 	onDisk, err := loadHashCertFiles(root)
@@ -168,67 +165,7 @@ func saveHashCerts(root string, certs map[string]string) error {
 		}
 		pruneEmptyDirs(filepath.Dir(full), filepath.Join(root, filepath.FromSlash(HashesDir)))
 	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(LegacyHashesFile))); err == nil {
-		recordPreWrite(root, LegacyHashesFile)
-		if err := os.Remove(filepath.Join(root, filepath.FromSlash(LegacyHashesFile))); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if len(certs) > 0 {
-		migrateHashesNegation(root)
-	}
 	return nil
-}
-
-// legacyHashesNegation is the .gitignore line that committed the legacy
-// manifest; hashesNegation commits the certificate directory instead.
-const (
-	legacyHashesNegation = "!" + LegacyHashesFile
-	hashesNegation       = "!" + HashesDir + "/"
-)
-
-// migrateHashesNegation rewrites the project .gitignore's re-include of the
-// legacy manifest into one of the certificate directory, so the
-// certificates are committed where the manifest was. Every project forge
-// scaffolded ignores .forge/* and re-includes its state; without this, the
-// certificates would be ignored and every clone would see its JSON outputs
-// as uncertified. Only that exact line is touched: .gitignore is the
-// user's, and journaled like any other write so a failed run restores it.
-func migrateHashesNegation(root string) {
-	migrateGitignoreLine(root, legacyHashesNegation, hashesNegation)
-}
-
-// migrateGitignoreLine rewrites the project .gitignore's line from to to,
-// touching only that exact line (.gitignore is the user's). A file that
-// already holds to keeps one copy. Journaled like any other write, so a
-// failed run restores it.
-func migrateGitignoreLine(root, from, to string) {
-	full := filepath.Join(root, ".gitignore")
-	data, err := os.ReadFile(full)
-	if err != nil {
-		return
-	}
-	lines := strings.SplitAfter(string(data), "\n")
-	changed, present := false, false
-	for i, line := range lines {
-		switch strings.TrimSpace(line) {
-		case to:
-			present = true
-		case from:
-			lines[i] = strings.Replace(line, from, to, 1)
-			changed = true
-		}
-	}
-	if !changed {
-		return
-	}
-	out := strings.Join(lines, "")
-	if present {
-		// Both lines were there: drop the duplicate.
-		out = strings.Replace(out, to+"\n", "", 1)
-	}
-	recordPreWrite(root, ".gitignore")
-	_ = atomicfile.WriteFile(full, []byte(out), 0o644)
 }
 
 // loadHashCertFiles maps each certificate file under root's HashesDir

@@ -292,10 +292,19 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 // builds the handler options — caps included — from a ChainDeps.
 const serverkitPath = "github.com/reliant-labs/forge/pkg/serverkit"
 
-// chainCapUses reports the payload caps of every serverkit.NewChain call in
-// file. NewChain applies the caps itself and maps a zero (an unset field, or a
-// config value that reads zero) to its 4 MiB default, so a chain is capped
-// unless a cap is a NEGATIVE literal — NewChain's spelling of "no cap".
+// chainConstructors maps each serverkit chain constructor to the deps type it
+// takes: NewChain (connect-go v1) and NewChainV2 (connect-go v2). Both carry
+// the same ReadMaxBytes/SendMaxBytes fields with the same rule.
+var chainConstructors = map[string]string{
+	"NewChain":   "ChainDeps",
+	"NewChainV2": "ChainDepsV2",
+}
+
+// chainCapUses reports the payload caps of every serverkit.NewChain or
+// NewChainV2 call in file. Both apply the caps themselves and map a zero (an
+// unset field, or a config value that reads zero) to the 4 MiB default, so a
+// chain is capped unless a cap is a NEGATIVE literal — their spelling of
+// "no cap".
 func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUse, problems []string) {
 	name := ""
 	for _, imp := range file.Imports {
@@ -315,7 +324,12 @@ func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUs
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "NewChain" {
+		if !ok {
+			return true
+		}
+		ctor := sel.Sel.Name
+		depsType, isChain := chainConstructors[ctor]
+		if !isChain {
 			return true
 		}
 		if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != name {
@@ -336,13 +350,13 @@ func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUs
 			{"ReadMaxBytes", "inbound request"},
 			{"SendMaxBytes", "outbound response"},
 		} {
-			use := capUse{file: rel, line: line, option: "NewChain." + f.field, arg: "default 4 MiB"}
+			use := capUse{file: rel, line: line, option: ctor + "." + f.field, arg: "default 4 MiB"}
 			if v, set := fields[f.field]; set {
 				use.arg = exprString(v)
 				if u, neg := v.(*ast.UnaryExpr); neg && u.Op == token.SUB {
 					problems = append(problems, fmt.Sprintf(
-						"%s:%d: serverkit.ChainDeps{%s: %s} — a negative cap is UNLIMITED %s payloads",
-						rel, line, f.field, use.arg, f.kind))
+						"%s:%d: serverkit.%s{%s: %s} — a negative cap is UNLIMITED %s payloads",
+						rel, line, depsType, f.field, use.arg, f.kind))
 				}
 			}
 			uses = append(uses, use)

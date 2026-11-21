@@ -160,12 +160,48 @@ func Serve() {
 }
 `
 
+	// connect-go v2 projects build the chain with serverkit.NewChainV2, which
+	// applies the same caps by the same rule.
+	chainV2Capped := `package cmd
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		Auth:         auth,
+		ReadMaxBytes: skCfg.ReadMaxBytes,
+	})
+	_ = chain
+}
+`
+	chainV2Uncapped := `package cmd
+
+import sk "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := sk.NewChainV2(sk.ChainDepsV2{Auth: auth, SendMaxBytes: -1})
+	_ = chain
+}
+`
+
 	tests := []struct {
 		name     string
 		serve    string
 		want     Status
 		evidence string
 	}{
+		{
+			name:     "a serverkit v2 chain is capped",
+			serve:    chainV2Capped,
+			want:     StatusPass,
+			evidence: "NewChainV2.SendMaxBytes(default 4 MiB)",
+		},
+		{
+			name:     "a v2 chain with a negative cap is unlimited",
+			serve:    chainV2Uncapped,
+			want:     StatusFail,
+			evidence: "serverkit.ChainDepsV2{SendMaxBytes: -1}",
+		},
 		{
 			name:     "a serverkit chain is capped",
 			serve:    chainCapped,

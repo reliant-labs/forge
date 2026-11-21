@@ -18,9 +18,8 @@
 // Every rule lint.rules can grade declares a ruleRollout (lint_rollout_table.go):
 //
 //	IntroducedIn  the forge release that shipped the rule, or tightened it
-//	GatesFrom     the release it starts to gate in. Empty for a rule that has
-//	              always gated; required for any rule introduced after
-//	              rolloutBaseline.
+//	GatesFrom     the release it starts to gate in, projected from an explicit
+//	              Grace declaration. Empty for rules with no warning window.
 //	Fix           the `forge fix <codemod>` that clears it, when one exists.
 //
 // The project's pinned forge_version decides. A finding that would fail the
@@ -72,7 +71,7 @@
 //     NEXT_VERSION predicted, so a commit that ships as v1.6.0 where the row
 //     said v1.5.1 grades by the row.
 //   - Only findings that would have failed the gate are softened. A warning
-//     stays a warning and carries no note; a rule at or before the baseline
+//     stays a warning and carries no note; a rule with no rollout deadline
 //     never softens.
 //
 // ── Passes with no rule ID of their own ───────────────────────────────────
@@ -88,10 +87,9 @@
 //
 // A new rule goes in gradableRules (TestEveryEmittedRuleIsGradable) and in
 // lint_rollout_table.go (TestEveryGradableRuleDeclaresItsRollout). Declare
-// IntroducedIn as the release it will ship in (the one NEXT_VERSION names) and
-// GatesFrom as the release after that. Both tests fail otherwise, and
-// TestRolloutRowsNameTheNextRelease fails a row for a release that is neither
-// shipped nor NEXT_VERSION.
+// IntroducedIn as the release it ships in. The owner-approved v1.9.0 grace
+// window requires an explicit Grace marker; the table guard rejects other
+// grace declarations.
 
 package lint
 
@@ -111,12 +109,6 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
-
-// rolloutBaseline is the last release before warn-first existed. A rule
-// introduced at or before it has gated since it shipped and declares no
-// GatesFrom; one introduced after it must. It is a fixed point, not a moving
-// "current version": it does not change when a release is cut.
-const rolloutBaseline = "v0.1.46"
 
 // rolloutGolangciBuildTags is the pseudo-rule key of the golangci-lint
 // build-tag passes (golangci_build_tags.go): the key lint.rules names to
@@ -396,6 +388,17 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 	// Before the move the project came from whatever history says; after
 	// it, from the old pin.
 	oldPrev, oldPrevKnown := previousPin(cfg, oldPin)
+	// After the move lint reads the previous pin the same way: the first
+	// value in forge.yaml's history that grades differently from the new
+	// pin. That is the old pin, unless both grade as one release (two
+	// pseudo-versions leading to v1.7.1), and then it is whatever the old
+	// pin's own previous was. Using the old pin there regardless reported
+	// the same rules as starting to gate on two consecutive bumps, while
+	// lint under the first of them still warned (upgrade-report defect 4).
+	newPrev, newPrevKnown := oldPin, true
+	if oldPin == newPin {
+		newPrev, newPrevKnown = oldPrev, oldPrevKnown
+	}
 	var out []GatingRule
 	for id, ro := range table {
 		if ro.GatesFrom == "" {
@@ -405,7 +408,7 @@ func rulesStartingToGate(table map[string]ruleRollout, cfg *config.ProjectConfig
 			continue
 		}
 		warnedBefore := graceFor(ro, oldPin, oldPrev, oldPrevKnown, from) != nil
-		gatesAfter := graceFor(ro, newPin, oldPin, oldPin != newPin, to) == nil
+		gatesAfter := graceFor(ro, newPin, newPrev, newPrevKnown, to) == nil
 		if warnedBefore && gatesAfter {
 			out = append(out, GatingRule{Rule: id, IntroducedIn: ro.IntroducedIn, GatesFrom: ro.GatesFrom, Fix: ro.Fix})
 		}
@@ -450,6 +453,25 @@ func withoutRollout(more, base []lintJSONFinding) []lintJSONFinding {
 	return out
 }
 
+// GatesWhen is when a softened finding's rule gates, worded once for every
+// surface that says it — lint's verdict line and `forge project upgrade`'s
+// "Gating soon" — so the two cannot disagree (they did: "gates from v1.8.1"
+// beside "gates from the pin after v1.8.1-0.…"). gatesAfter is set when the
+// pin jumped the rule's window (ruleGrace.GatesAfter): the rule then gates
+// from the pin after that one, whatever its GatesFrom says.
+func GatesWhen(gatesFrom, gatesAfter string) string {
+	if gatesAfter != "" {
+		return "gates from the next forge pin after " + gatesAfter
+	}
+	return "gates from " + gatesFrom
+}
+
+// isRawToolLine reports whether f is a raw sub-tool line — rule "external"
+// with no file — the output under the finding before it, not a finding.
+func isRawToolLine(f lintJSONFinding) bool {
+	return f.Rule == "external" && f.File == ""
+}
+
 // gracedRule is one rule's softened findings in a run, for the verdict line.
 type gracedRule struct {
 	rule string
@@ -467,7 +489,10 @@ func gracedFindings(outcomes []lintStepOutcome) []gracedRule {
 			continue
 		}
 		for _, f := range o.findings {
-			if f.Grace == nil {
+			// A raw sub-tool line (a formatter's diff under the finding it
+			// belongs to) is that finding's output, not a finding: counting
+			// it doubled forge-proto-format (60 for 30 files).
+			if f.Grace == nil || isRawToolLine(f) {
 				continue
 			}
 			key := f.rollout
@@ -476,11 +501,7 @@ func gracedFindings(outcomes []lintStepOutcome) []gracedRule {
 			}
 			g := byRule[key]
 			if g == nil {
-				when := "gates from " + f.Grace.GatesFrom
-				if f.Grace.GatesAfter != "" {
-					when = "gates from the pin after " + f.Grace.GatesAfter
-				}
-				g = &gracedRule{rule: key, gatesFrom: when}
+				g = &gracedRule{rule: key, gatesFrom: GatesWhen(f.Grace.GatesFrom, f.Grace.GatesAfter)}
 				byRule[key] = g
 			}
 			g.n++

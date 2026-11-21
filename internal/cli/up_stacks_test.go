@@ -108,7 +108,7 @@ func testStack(t *testing.T) (dir, projectID, env string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	dir = t.TempDir()
-	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\nversion: \"0.1.0\"\n")
+	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\n")
 	return dir, projectIDForDir(dir), fmt.Sprintf("itest-%d", os.Getpid())
 }
 
@@ -232,7 +232,7 @@ func TestEnvDown_RefusesWhenItCannotTellWhichProject(t *testing.T) {
 	// Identifying the project is insufficient when its environment cannot be
 	// rendered: shutdown of declared host infrastructure remains unverified.
 	dir := t.TempDir()
-	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\nversion: \"0.1.0\"\n")
+	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\n")
 	t.Chdir(dir)
 	if err := runUpStop("dev"); err == nil {
 		t.Fatal("an environment with no renderable KCL reported complete shutdown")
@@ -252,7 +252,7 @@ func TestStackOutlivingItsProjectDirIsStillReachable(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\nversion: \"0.1.0\"\n")
+	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\n")
 	projectID := projectIDForDir(dir)
 	// Resolved while the directory still exists: once it is deleted the path
 	// can no longer be de-symlinked, which is exactly why the record has to be

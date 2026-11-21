@@ -26,7 +26,7 @@ import (
 // tool in the pipeline had a word to say about it. This command is that word.
 //
 // It does NOT run tests, and that is not an oversight. `forge test` was
-// REMOVED (see test_removed.go) precisely because a second spelling of the
+// REMOVED precisely because a second spelling of the
 // project's suite reports on a different suite than the one the project runs —
 // a green exit code for work that never happened. So this reads the record of
 // the run the project ALREADY did: the `go test -json` stream, from a pipe or

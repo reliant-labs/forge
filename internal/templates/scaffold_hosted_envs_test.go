@@ -181,6 +181,15 @@ func TestFreshScaffoldRendersEveryEnvHosted(t *testing.T) {
 					}
 				}
 
+				// The env itself declares them on: an unset signal is OFF on
+				// forge.OnHosted, and the platform reads the declaration, not
+				// the workloads' OTEL_* env, so the check above alone would
+				// pass a bare project that ships no profiles.
+				obs, _ := out["observability"].(map[string]any)
+				if sig, _ := obs["signals"].(map[string]any); sig["profiles"] != true {
+					t.Errorf("%s: observability.signals.profiles = %#v, want true for a new hosted project", env, sig["profiles"])
+				}
+
 				frontends, _ := out["frontends"].([]any)
 				if tc.frontend == "" {
 					if len(frontends) != 0 {

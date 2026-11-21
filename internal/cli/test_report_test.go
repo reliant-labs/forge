@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/schemagen"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -58,7 +59,21 @@ func trProject(t *testing.T, results string, laneExit int) string {
 	}
 	t.Cleanup(func() { testGit = prev })
 	t.Chdir(root)
+	trNoControlPlane(t)
 	return root
+}
+
+// trNoControlPlane keeps the verbs off any real control plane: not in CI (so
+// nothing uploads by default, whatever the test's host sets), and no control
+// plane to resolve when an upload is asked for.
+func trNoControlPlane(t *testing.T) {
+	t.Helper()
+	prevCI, prevCP := testUploadInCI, testUploadControlPlane
+	testUploadInCI = func() bool { return false }
+	testUploadControlPlane = func(context.Context) (*cloud.Declaration, error) {
+		return nil, fmt.Errorf("this test declares no control plane")
+	}
+	t.Cleanup(func() { testUploadInCI, testUploadControlPlane = prevCI, prevCP })
 }
 
 func trWrite(t *testing.T, path, body string) {

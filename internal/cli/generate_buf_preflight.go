@@ -222,7 +222,7 @@ func checkBufLocalPlugin(projectDir string, p bufLocalPlugin, env []string) *buf
 		if declared, known := goToolDeclared(projectDir, p.argv[2], env); known && !declared {
 			return &bufPluginProblem{plugin: p,
 				what: fmt.Sprintf("`go tool %s` finds no tool directive for %s in go.mod", p.argv[2], p.argv[2]),
-				fix:  fmt.Sprintf("declare it: go get -tool %s", goToolPackageHint(p.argv[2])),
+				fix:  fmt.Sprintf("declare it: go get -tool %s", goToolPackageHint(projectDir, p.argv[2])),
 			}
 		}
 	case base == "node" && len(p.argv) >= 2 && !strings.HasPrefix(p.argv[1], "-"):
@@ -463,9 +463,11 @@ func toolListMatches(tools []string, name string) bool {
 	return false
 }
 
-// goToolPackageHint names the package to `go get -tool` for a missing tool.
-func goToolPackageHint(name string) string {
-	for _, t := range requiredProtoTools {
+// goToolPackageHint names the package to `go get -tool` for a missing tool:
+// for protoc-gen-connect-go, the cmd package of the connect-go major the
+// project's go.mod selects (the run's bound major during a generate).
+func goToolPackageHint(projectDir, name string) string {
+	for _, t := range requiredProtoToolsFor(codegenToolsMajor(projectDir)) {
 		if t.Binary == name {
 			return t.Module
 		}

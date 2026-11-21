@@ -60,6 +60,12 @@ func serverSpanOf(ctx context.Context) trace.Span {
 // parsed on its own, so a malformed member another party added (or one that
 // pushes the whole header past baggage's size limits) does not hide the session.
 func SessionIDFromBaggage(header http.Header) string {
+	return sessionIDFromBaggage(header)
+}
+
+// sessionIDFromBaggage is SessionIDFromBaggage over either connect major's
+// request header.
+func sessionIDFromBaggage(header HeaderReader) string {
 	for _, value := range header.Values("baggage") {
 		for _, member := range strings.Split(value, ",") {
 			b, err := baggage.Parse(member)
@@ -97,19 +103,23 @@ func SessionIDFromBaggage(header http.Header) string {
 // An ending the handler declared with svcerr.ExpectedClose — the server ended
 // the call on purpose — is OK too, with rpc.close_reason and an rpc.close event
 // in place of the exception.
+//
+// connect-go v2 projects use RequestSpanInterceptorV2.
 func RequestSpanInterceptor() connect.Interceptor { return RequestSpanInterceptorWith() }
 
 // RequestSpanInterceptorWith is RequestSpanInterceptor with ServerSpanOptions
 // tuning how a failed call reads on its server span.
+//
+// connect-go v2 projects use RequestSpanInterceptorWithV2.
 func RequestSpanInterceptorWith(opts ...ServerSpanOption) connect.Interceptor {
 	return requestSpan{policy: newServerSpanPolicy(opts)}
 }
 
 type requestSpan struct{ policy serverSpanPolicy }
 
-func (requestSpan) enter(ctx context.Context, header http.Header) context.Context {
+func (requestSpan) enter(ctx context.Context, header HeaderReader) context.Context {
 	span := trace.SpanFromContext(ctx)
-	if id := SessionIDFromBaggage(header); id != "" {
+	if id := sessionIDFromBaggage(header); id != "" {
 		span.SetAttributes(attribute.String(AttrSessionID, id))
 	}
 	return context.WithValue(ctx, serverSpanKey{}, span)
@@ -153,6 +163,8 @@ func (r requestSpan) WrapStreamingHandler(next connect.StreamingHandlerFunc) con
 // innermost span, when that is another) from the authenticated caller. It must
 // run after Auth; Chain installs it there. A nil caller reads forge's own claims
 // (authn.ClaimsFromContext).
+//
+// connect-go v2 projects use IdentitySpanInterceptorV2.
 func IdentitySpanInterceptor(caller CallerLookup) connect.Interceptor {
 	if caller == nil {
 		caller = authn.ClaimsFromContext

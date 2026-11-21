@@ -141,6 +141,9 @@ plugins:
 // Defaults to `local:` plugins (resolved from $PATH) so anonymous users
 // can `forge generate` without `buf registry login`. Users who want
 // BSR-hosted plugins can edit the file to `remote:` (see file comments).
+//
+// The remote: example names the connect-go plugin of the run's major
+// (remoteConnectGoPlugin): a v2 project's is pinned, v1's text is unchanged.
 func writeDefaultBufGenYaml(projectDir string) error {
 	config := `version: v2
 # Default: local plugins resolved from $PATH. Anonymous users can
@@ -150,15 +153,15 @@ func writeDefaultBufGenYaml(projectDir string) error {
 # To opt back into BSR-hosted plugins, replace ` + "`local:`" + ` with ` + "`remote:`" + `
 # and the binary name with the BSR plugin path, e.g.
 #   - remote: buf.build/protocolbuffers/go
-#   - remote: buf.build/connectrpc/go
+#   - remote: ` + remoteConnectGoPlugin(codegenToolsMajor(projectDir)) + `
 # and drop ` + "`strategy: all`" + ` (buf accepts it on local plugins only).
 #
 # ` + bufStrategyAllComment + `
 #
 # OpenAPI specs: set ` + "`api.openapi: true`" + ` in forge.yaml. Forge invokes
 # protoc-gen-connect-openapi via a synthesized template; you do NOT
-# need to add it here. Install with:
-#   ` + openAPIPluginInstallCmd + `
+# need to add it here, nor install it: forge installs the version it
+# pins into its tool cache on first use (` + openAPIPluginInstallCmd + `).
 ` + bufGenGoInputs + `plugins:
   - local: protoc-gen-go
     out: gen

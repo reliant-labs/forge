@@ -82,6 +82,8 @@ type Report struct {
 	GeneratedAt   time.Time                     `json:"generated_at"`
 	Categories    map[string]audittype.Category `json:"categories"`
 	OverallStatus audittype.Status              `json:"overall_status"`
+	// Summary rolls the categories up into counts (audit_summary.go).
+	Summary ReportSummary `json:"summary"`
 }
 
 // auditCategoryOrder pins the print-order so human output stays stable
@@ -108,6 +110,7 @@ var auditCategoryOrder = []string{
 	"orphan_stubs",
 	"unhandled_rpcs",
 	"deps",
+	"lockfiles",
 }
 
 // CategoryNames returns every key `forge project audit --json` can put under
@@ -231,8 +234,10 @@ func buildAuditReport(f *factory.Factory, projectDir string) (*Report, error) {
 	report.Categories["orphan_stubs"] = auditOrphanStubs(f, cfg, abs)
 	report.Categories["unhandled_rpcs"] = auditUnhandledRPCs(f, abs)
 	report.Categories["deps"] = auditDeps(abs)
+	report.Categories["lockfiles"] = auditLockfiles(abs)
 
 	report.OverallStatus = rollupStatus(report.Categories)
+	report.Summary = summarize(report.Categories)
 	return report, nil
 }
 
@@ -565,9 +570,8 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// Services are enumerated from the proto descriptor (the authoritative,
 	// non-brittle source) — see codegen.IntrospectComponents.
 	// Workers/operators are owned code with no
-	// proto contract; forge does not inventory them (the app names them in
-	// its own wiring and enumerates them at runtime), so the shape reports
-	// services only.
+	// proto contract, so they are not listed here: the processes that run
+	// them are, as roots and workloads (auditInventory).
 	for _, s := range codegen.IntrospectComponents(projectDir) {
 		info := svcInfo{Name: s.Name, Type: s.EffectiveKind()}
 		// match by ProtoService name suffix (Echo → EchoService)
@@ -621,8 +625,15 @@ func auditShape(f *factory.Factory, cfg *config.ProjectConfig, projectDir string
 	// error to report — under the additive-extension contract, the
 	// field being absent IS the "all good" signal.
 	status := audittype.StatusOK
-	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s) (workers/operators are owned code — not inventoried by forge)",
+	summary := fmt.Sprintf("kind=%s, %d service(s), %d frontend(s)",
 		cfg.EffectiveKind(), len(services), len(frontends))
+	// Processes are inventoried whatever code they run: every //forge:root
+	// and every declared workload (audit_inventory.go).
+	inventory, inventoryWarn := auditInventory(f, projectDir, details)
+	summary += inventory
+	if inventoryWarn {
+		status = audittype.StatusWarn
+	}
 	if len(unmanaged) > 0 {
 		sort.Slice(unmanaged, func(i, j int) bool { return unmanaged[i].Name < unmanaged[j].Name })
 		details["unmanaged_services"] = unmanaged
@@ -861,13 +872,6 @@ func auditCodegen(f *factory.Factory, cfg *config.ProjectConfig, projectDir stri
 	}
 	sort.Slice(disowned, func(i, j int) bool { return disowned[i].Path < disowned[j].Path })
 
-	// Additive-extension contract: the legacy `forked_files` key is never
-	// repurposed. It now always emits an empty array, with a note field
-	// pointing consumers at its replacement; both will be dropped in a
-	// future release.
-	details["forked_files"] = []auditDisownedFile{}
-	details["forked_files_note"] = "deprecated: the fork state was removed; see disowned_files"
-
 	if len(disowned) > 0 {
 		details["disowned_files"] = disowned
 		details["disowned_hint"] = "disowned files are user-owned; forge never regenerates them. Re-adopt one by deleting it and running `forge generate`."
@@ -1045,8 +1049,8 @@ func auditScaffoldMarkers(projectDir string) audittype.Category {
 }
 
 // auditCRUDStubs counts custom-read-shape CodeUnimplemented stubs in
-// the project's CRUD shim files (user-owned handlers_crud.go, plus
-// legacy handlers_crud_gen.go from pre-split projects). These stubs are
+// the project's CRUD shim files (the user-owned handlers_crud.go). These
+// stubs are
 // scaffolded when a request/response message shape deliberately
 // diverges from the AIP-158 CRUD conventions — a legitimate domain
 // decision, not an error; the body is the user's to implement in the
@@ -1054,10 +1058,7 @@ func auditScaffoldMarkers(projectDir string) audittype.Category {
 // CodeUnimplemented at runtime — production traffic to that RPC will
 // 501 until the body lands, which is why the category warns.
 //
-// Markers recognized: `// forge:custom-read-shape: <reason>` (current)
-// and `// FORGE_CRUD_SHAPE_MISMATCH: <reason>` (the pre-rename
-// spelling, kept for one release so existing files and greps keep
-// matching — see the legacy_marker detail).
+// Marker recognized: `// forge:custom-read-shape: <reason>`.
 //
 // Without this audit, the stub is silent: nothing in `forge doctor`
 // or CI tells the operator that an RPC is shipping as Unimplemented
@@ -1090,7 +1091,7 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 			}
 			return nil
 		}
-		if d.Name() != "handlers_crud.go" && d.Name() != "handlers_crud_gen.go" {
+		if d.Name() != "handlers_crud.go" {
 			return nil
 		}
 		data, rerr := os.ReadFile(path)
@@ -1116,11 +1117,6 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 		for i, line := range lines {
 			trimmed := strings.TrimLeft(line, " \t")
 			if marker, ok := strings.CutPrefix(trimmed, "// forge:custom-read-shape:"); ok {
-				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
-				continue
-			}
-			// Pre-rename spelling — recognized for one release.
-			if marker, ok := strings.CutPrefix(trimmed, "// FORGE_CRUD_SHAPE_MISMATCH:"); ok {
 				pending = append(pending, pendingMarker{reason: strings.TrimSpace(marker), idx: i})
 				continue
 			}
@@ -1179,12 +1175,7 @@ func auditCRUDStubs(projectDir string) audittype.Category {
 			"files":       fileNames,
 			"total_stubs": total,
 			"stubs":       stubs,
-			// Grep compatibility: the marker was renamed from
-			// FORGE_CRUD_SHAPE_MISMATCH to forge:custom-read-shape;
-			// both spellings are scanned this release. Consumers
-			// grepping source for the old string should switch.
-			"marker":        "forge:custom-read-shape",
-			"legacy_marker": "FORGE_CRUD_SHAPE_MISMATCH",
+			"marker":      "forge:custom-read-shape",
 		},
 	}
 }

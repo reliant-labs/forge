@@ -266,3 +266,33 @@ func FormatCustomDomains(indent string, domains []HostedCustomDomain) string {
 	}
 	return b.String()
 }
+
+// FormatBackups renders each managed database's backup state for `forge env
+// status`: the last base backup, whether WAL archiving is healthy, and the
+// earliest point a restore reaches, so "could I restore this?" is checked
+// before it is needed (NS HO-19). Empty when no workload reports one.
+func FormatBackups(indent string, workloads []HostedWorkloadStatus) string {
+	var b strings.Builder
+	for _, w := range workloads {
+		bk := w.Backup
+		if bk == nil {
+			continue
+		}
+		last := bk.LastSuccessfulBackup
+		if last == "" {
+			last = "NONE — nothing to restore yet"
+		}
+		wal := "healthy"
+		if !bk.WALArchivingHealthy {
+			wal = "NOT ARCHIVING — writes since the last backup cannot be recovered"
+		}
+		fmt.Fprintf(&b, "%s%s:\n%s  last base backup:  %s\n%s  WAL archiving:     %s\n", indent, w.Name, indent, last, indent, wal)
+		if bk.EarliestRestorableTime != "" {
+			fmt.Fprintf(&b, "%s  restorable from:   %s\n", indent, bk.EarliestRestorableTime)
+		}
+		if bk.LastError != "" {
+			fmt.Fprintf(&b, "%s  last error:        %s\n", indent, bk.LastError)
+		}
+	}
+	return b.String()
+}

@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // crud_owner_append_test.go pins what a scoped shim APPENDED to an existing
@@ -378,6 +380,7 @@ func (s *Service) CreateA(ctx context.Context, req *connect.Request[pb.CreateARe
 	if err != nil {
 		return nil, err
 	}
+	// FORGE_SCAFFOLD: placeholder
 	owner := claims.UserID
 	build := func(e *db.A) { e.TenantID = owner }
 	_ = build
@@ -397,11 +400,11 @@ func (s *Service) scoped(ctx context.Context, tenantID string) orm.QueryOption {
 }
 `
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "p.go", src, parser.SkipObjectResolution)
+	f, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
 		t.Fatal(err)
 	}
-	uses := ScanCRUDOwnerSources(fset, f)
+	uses := ScanCRUDOwnerSources(fset, f, connectmajor.V1)
 	if len(uses) != 3 {
 		t.Fatalf("want 3 uses (GetA, CreateA, ListA), got %d: %+v", len(uses), uses)
 	}
@@ -450,7 +453,7 @@ func TestOwnerSourceFor_EntityAndKeyEvidence(t *testing.T) {
 // entities they would hide a table that scopes the column differently.
 func TestOwnerSourceFor_BorrowedEvidenceMustBeUnanimous(t *testing.T) {
 	src := func(fn string) CRUDOwnerSource { return CRUDOwnerSource{Kind: CRUDOwnerFromResolver, Func: fn} }
-	placeholder := CRUDOwnerSource{Kind: CRUDOwnerFromClaims, Func: crudAuthSeam, Field: "UserID"}
+	placeholder := CRUDOwnerSource{Kind: CRUDOwnerFromClaims, Func: crudAuthSeam, Field: "UserID", Scaffolded: true}
 	target := ownerTarget{entity: "Crew", column: "tenant_id", field: "TenantID", read: true}
 
 	// Reads agree, but another table's write uses another principal.
@@ -586,5 +589,27 @@ func (s *Service) Get` + entity + `(ctx context.Context, req *connect.Request[pb
 		if n := importCount(t, got, imp); n != 0 {
 			t.Errorf("neither resolver's package may be imported (%s):\n%s", imp, got)
 		}
+	}
+}
+
+// TestOwnerSourceFor_DecidedUserIDIsEvidence: claims.UserID with its
+// FORGE_SCAFFOLD reminder removed is the author's decision, so beside a
+// sibling on claims.Email the column's policy is undetermined, rather than
+// the one email wrapper being taken as the whole policy (FG-32).
+func TestOwnerSourceFor_DecidedUserIDIsEvidence(t *testing.T) {
+	decided := CRUDOwnerSource{Kind: CRUDOwnerFromClaims, Func: crudAuthSeam, Field: "UserID"}
+	email := CRUDOwnerSource{Kind: CRUDOwnerFromClaims, Func: crudAuthSeam, Field: "Email"}
+	uses := []CRUDOwnerUse{
+		{Method: "GetOrder", Entity: "Order", Read: true, Column: "user_id", Source: decided},
+		{Method: "UpdateOrder", Entity: "Order", Read: false, Column: "user_id", Source: decided},
+		{Method: "DeleteOrder", Entity: "Order", Read: false, Column: "user_id", Source: email},
+	}
+	target := ownerTarget{entity: "Order", column: "user_id", field: "UserID", read: false}
+	if d, ok := ownerSourceFor(uses, target); !ok || d.Source != nil || d.Undetermined == "" {
+		t.Errorf("decided UserID beside an email sibling must be undetermined, got %+v", d)
+	}
+	d, ok := ownerSourceFor(uses[:2], target)
+	if !ok || d.Source == nil || d.Source.Field != "UserID" {
+		t.Errorf("unanimously decided UserID must be reused, got %+v", d)
 	}
 }

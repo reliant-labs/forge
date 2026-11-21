@@ -36,7 +36,9 @@
 //     when, result, duration), routed via log_type=audit.
 //   - [RateLimitInterceptor] — per-caller token-bucket rate limiting
 //     keyed by claim subject (falling back to peer IP).
-//   - [IdempotencyInterceptor] — RPC-level Idempotency-Key replay.
+//   - [IdempotencyInterceptor] — RPC-level Idempotency-Key replay;
+//     [IdempotencyInterceptorWithCaller] partitions the cache by the
+//     caller and every authority it presented.
 //
 // Plus [Redact], a struct→map helper for logging payloads without
 // leaking PII.

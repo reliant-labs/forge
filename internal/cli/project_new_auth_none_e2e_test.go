@@ -66,7 +66,10 @@ func TestE2EProjectNewAuthModeNone(t *testing.T) {
 	}
 	proto = strings.Replace(proto, anchor,
 		"  rpc CountPosts(CountPostsRequest) returns (CountPostsResponse) {\n"+
-			"    option (forge.v1.method) = { auth_required: false, activity: { none: \"fixture: a read\" } };\n"+
+			"    option (forge.v1.method) = {\n"+
+			"      auth_required: false\n"+
+			"      activity: {none: \"fixture: a read\"}\n"+
+			"    };\n"+
 			"  }", 1)
 	proto += `
 // forge:entity

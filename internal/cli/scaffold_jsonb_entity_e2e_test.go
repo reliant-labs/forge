@@ -38,7 +38,9 @@ func TestE2EJSONBEntityConversion(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "jsonapp", "--mod", "example.com/jsonapp", "--service", "orders")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "jsonapp", "--mod", "example.com/jsonapp", "--service", "orders", "--connect", "v1")
 	projectDir := filepath.Join(dir, "jsonapp")
 	addCorpusForgePkgReplace(t, projectDir)
 

@@ -77,7 +77,6 @@ runs:
     - name: Install ${{ inputs.tool }}
       shell: bash
       env:
-        GH_TOKEN: ${{ github.token }}
         TOOL: ${{ inputs.tool }}
         DIR: ${{ steps.pin.outputs.dir }}
         REPO: ${{ steps.pin.outputs.repo }}

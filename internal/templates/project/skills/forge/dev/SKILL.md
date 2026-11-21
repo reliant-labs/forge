@@ -85,10 +85,13 @@ field, so a binding that cannot work never silently drops a field.
 `forge env up staging` and `forge env deploy prod` see whatever each env's
 `main.k` binds — typically every workload on the env's cluster.
 
-A host workload's env composes three layers: the bundle's
-`secret_provider` values first, then the workload's `env` (the typed config
-projection plus its own entries), then your shell, so an exported variable
-wins. See `secrets` for the provider model.
+A host workload's env composes in layers: your shell first, then the
+bundle's `secret_provider` values, then the workload's `env` (the typed config
+projection plus its own entries). A DECLARED name wins over your shell, and
+`forge env up` prints each shell value it ignored. To let the shell win for a
+name, list it: `FORGE_ENV_OVERRIDE=RESEND_BASE_URL,LOG_LEVEL forge env up dev`.
+A name nothing declares still comes from your shell. See `secrets` for the
+provider model.
 
 ## Inner loop: editing a host-bound workload
 

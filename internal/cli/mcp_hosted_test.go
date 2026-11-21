@@ -168,9 +168,37 @@ func TestHostedSharedToolSchemasMatchLocal(t *testing.T) {
 		return out
 	}
 	l, h := schemas(local), schemas(hosted)
-	for _, name := range []string{"skill_list", "skill_search", "skill_load", "benefits", "explain_error"} {
+	for _, name := range []string{"skill_list", "skill_search", "skill_load", "benefits", "why", "explain_error"} {
 		if !reflect.DeepEqual(l[name], h[name]) {
 			t.Errorf("%s: hosted input schema %v differs from local %v", name, h[name], l[name])
+		}
+	}
+}
+
+// The obs read tools both servers serve (NS FG-23) take one input schema: the
+// hosted one names the project, the local one the repo (dir), and the rest —
+// env and every option — is the same.
+func TestHostedObsToolSchemasMatchLocal(t *testing.T) {
+	local := connectMCP(t, t.TempDir())
+	hosted := connectHosted(t, AccountToolsOptions{ControlPlaneURL: "http://cp.invalid", Token: staticToken("t")})
+	schemas := func(cs *mcp.ClientSession) map[string]map[string]any {
+		res, err := cs.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for _, tool := range res.Tools {
+			props := schemaProps(t, tool.InputSchema)
+			delete(props, "dir")
+			delete(props, "project")
+			out[tool.Name] = props
+		}
+		return out
+	}
+	l, h := schemas(local), schemas(hosted)
+	for _, name := range []string{"obs_status", "obs_issues", "obs_issue", "obs_logs", "obs_check"} {
+		if l[name] == nil || !reflect.DeepEqual(l[name], h[name]) {
+			t.Errorf("%s: local input schema %v differs from hosted %v", name, l[name], h[name])
 		}
 	}
 }
@@ -360,7 +388,7 @@ func TestHostedObsOpsRanksOpsFromTheControlPlane(t *testing.T) {
 			continue
 		}
 		props := schemaProps(t, tool.InputSchema)
-		for _, p := range []string{"project", "env", "since", "from", "to", "services", "sort", "top", "kind"} {
+		for _, p := range []string{"project", "env", "since", "from", "to", "services", "sort", "top", "kind", "name"} {
 			if _, ok := props[p]; !ok {
 				t.Errorf("obs_ops has no %s input", p)
 			}
@@ -397,10 +425,39 @@ func TestHostedObsOpsRanksOpsFromTheControlPlane(t *testing.T) {
 		t.Errorf("an op its spans do not locate has no location on a server with no checkout: %v", second)
 	}
 	cp.mu.Lock()
-	defer cp.mu.Unlock()
 	for _, p := range cp.sent {
 		if p["id"] == "ops-server" {
 			t.Errorf("--kind component sent the server panel: %v", p)
+		}
+	}
+	cp.sent = nil
+	cp.mu.Unlock()
+
+	// name asks the control plane for those ops alone, and lists each.
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "obs_ops", Arguments: map[string]any{
+		"project": "shop", "env": "prod", "name": []any{"widgets.List", "claimable.IsUnclaimedUser"}, "since": "7d"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("obs_ops with name failed: %s", res.Content[0].(*mcp.TextContent).Text)
+	}
+	doc, _ = res.StructuredContent.(map[string]any)
+	var found []string
+	for _, o := range doc["ops"].([]any) {
+		m := o.(map[string]any)
+		found = append(found, fmt.Sprint(m["name"], "=", m["found"]))
+	}
+	// The fake answers every component row it has; the found flag is what
+	// the named ops carry.
+	if s := fmt.Sprint(found); !strings.Contains(s, "widgets.List=true") || !strings.Contains(s, "claimable.IsUnclaimedUser=false") {
+		t.Errorf("named ops: %v", found)
+	}
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	for _, p := range cp.sent {
+		if !strings.Contains(fmt.Sprint(p["where"]), "op:in") {
+			t.Errorf("panel %v not narrowed to the names: %v", p["id"], p["where"])
 		}
 	}
 }

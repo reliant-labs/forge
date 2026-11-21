@@ -126,6 +126,33 @@ func (c *checker) checkNextImage() {
 		"set `images: { unoptimized: true }` in the next.config object (forge's static scaffold does), or a custom `images.loader` that resizes at a CDN"+authoritativeNote)
 }
 
+// partialPrerenderRE matches the next.config switches that turn on partial
+// prerendering: `cacheComponents: true` (Next.js 16, which create-next-app
+// writes by default; `experimental.cacheComponents` in 15.x canaries) and
+// `experimental.ppr` (Next.js 15, `true` or "incremental"). Only a literal
+// on is matched — a computed value is not guessed (see the package doc).
+var partialPrerenderRE = regexp.MustCompile(`\b(cacheComponents|ppr)\s*:\s*(true\b|["']incremental["'])`)
+
+// checkPartialPrerender: an export cannot carry partial prerendering. With
+// it on, `next build` prerenders and then refuses to write the export
+// ("Invariant: PPR cannot be enabled in export mode", next's
+// export/index.ts), and nothing earlier says why.
+func (c *checker) checkPartialPrerender() {
+	cfg := c.nextConfig
+	if cfg == nil {
+		return
+	}
+	for _, loc := range partialPrerenderRE.FindAllStringSubmatchIndex(cfg.code, -1) {
+		key := cfg.code[loc[2]:loc[3]]
+		if !isObjectKey(cfg.code, loc[0]) {
+			continue
+		}
+		c.add(RulePartialPrerender, finding.SeverityError, c.rel(cfg.rel), cfg.lineAt(loc[0]),
+			fmt.Sprintf("%s turns on partial prerendering (%#q), which a static export cannot carry: `next build` fails with \"Invariant: PPR cannot be enabled in export mode\"", cfg.rel, cfg.code[loc[0]:loc[1]]),
+			fmt.Sprintf("remove %#q from %s (a static host serves no dynamic holes for it to fill); a frontend that needs it is a Next.js server and ships as a workload instead%s", key, cfg.rel, authoritativeNote))
+	}
+}
+
 // checkConfigRoutes: rewrites, redirects and headers are applied by the
 // Next.js server. A static host applies none of them, so each is a
 // difference between `next dev` and production unless it is gated to dev.

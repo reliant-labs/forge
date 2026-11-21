@@ -252,6 +252,37 @@ export {
 } from "./changes.js";
 
 /**
+ * Forge Changes for an app: `loadChanges()` fetches the environment's
+ * snapshot (`/_forge/changes.json`) once per page and never rejects;
+ * `store.evaluate(key, ctx)` decides a change and records `flag_evaluated`
+ * (provider forge, with run, unit, reason and revision) for enrolled,
+ * preview and everyone results. `changeBool` / `changeString` /
+ * `changeNumber` / `changeJson` read a result with the default in code.
+ */
+export {
+  CHANGES_SNAPSHOT_URL,
+  changeBool,
+  changeJson,
+  changeNumber,
+  changeString,
+  loadChanges,
+  type ChangesStore,
+  type LoadChangesOptions,
+} from "./changes-store.js";
+
+/**
+ * The OpenFeature web provider for Forge Changes, typed structurally (no
+ * OpenFeature dependency):
+ * `OpenFeature.setProvider(forgeChangesProvider(await loadChanges()))`.
+ */
+export {
+  forgeChangesProvider,
+  type ChangesProvider,
+  type ChangesProviderContext,
+  type ChangesResolution,
+} from "./changes-provider.js";
+
+/**
  * The standard auth events (`auth_signed_up`, `auth_signed_in`,
  * `auth_signed_out`) the console counts users from. `identifyUser(id)` is what
  * an app calls wherever it learns who is signed in: it attaches the id to

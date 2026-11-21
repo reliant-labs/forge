@@ -2,8 +2,10 @@ package vulnpatch
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +75,74 @@ func TestLiveRegistryOverTheDistributionAPI(t *testing.T) {
 	doc, _ := patch(t, root, []vulnscan.Finding{apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6")}, Options{Registry: reg}, nil, nil)
 	if got := readFile(t, root, "Dockerfile"); got != "FROM "+image+":3.19.4\n" || doc.Findings[0].Status != StatusBumped {
 		t.Errorf("Dockerfile %q, %+v", got, doc.Findings[0])
+	}
+}
+
+// LiveRegistry.Platforms reads an index's platforms (attestations left
+// out), and a single image's from its config.
+func TestLiveRegistryPlatforms(t *testing.T) {
+	t.Setenv("DOCKER_CONFIG", t.TempDir()) // no ambient credentials
+	const repo = "library/alpine"
+	blob := func(mediaType string, v any) (string, []byte, string) {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return mediaType, b, "sha256:" + fmt.Sprintf("%x", sha256.Sum256(b))
+	}
+	idxType, idx, idxDigest := blob("application/vnd.oci.image.index.v1+json", map[string]any{
+		"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]any{
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": dg("a"), "size": 1, "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": dg("b"), "size": 1, "platform": map[string]string{"os": "linux", "architecture": "arm", "variant": "v7"}},
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": dg("c"), "size": 1, "platform": map[string]string{"os": "unknown", "architecture": "unknown"}},
+		},
+	})
+	_, cfg, cfgDigest := blob("application/vnd.oci.image.config.v1+json", map[string]any{"os": "linux", "architecture": "arm64", "variant": "v8"})
+	manType, man, manDigest := blob("application/vnd.oci.image.manifest.v1+json", map[string]any{
+		"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+		"config": map[string]any{"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfgDigest, "size": len(cfg)},
+		"layers": []any{},
+	})
+	manifests := map[string][2]any{"3.19": {idxType, idx}, idxDigest: {idxType, idx}, "single": {manType, man}, manDigest: {manType, man}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/":
+			w.WriteHeader(http.StatusOK)
+		case strings.HasPrefix(r.URL.Path, "/v2/"+repo+"/manifests/"):
+			m, ok := manifests[strings.TrimPrefix(r.URL.Path, "/v2/"+repo+"/manifests/")]
+			if !ok {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"errors":[{"code":"MANIFEST_UNKNOWN","message":"manifest unknown"}]}`))
+				return
+			}
+			body := m[1].([]byte)
+			w.Header().Set("Content-Type", m[0].(string))
+			w.Header().Set("Docker-Content-Digest", "sha256:"+fmt.Sprintf("%x", sha256.Sum256(body)))
+			w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+			_, _ = w.Write(body)
+		case r.URL.Path == "/v2/"+repo+"/blobs/"+cfgDigest:
+			w.Header().Set("Content-Length", fmt.Sprint(len(cfg)))
+			_, _ = w.Write(cfg)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	repository := strings.TrimPrefix(srv.URL, "http://") + "/" + repo
+	reg := LiveRegistry()
+	ctx := context.Background()
+	for _, ref := range []string{"3.19", idxDigest} {
+		if pl, index, err := reg.Platforms(ctx, repository, ref); err != nil || !index || strings.Join(pl, ",") != "linux/amd64,linux/arm/v7" {
+			t.Errorf("Platforms(%s) = %v %v %v", ref, pl, index, err)
+		}
+	}
+	if pl, index, err := reg.Platforms(ctx, repository, "single"); err != nil || index || strings.Join(pl, ",") != "linux/arm64/v8" {
+		t.Errorf("Platforms(single) = %v %v %v", pl, index, err)
+	}
+	if _, _, err := reg.Platforms(ctx, repository, "3.17"); !errors.Is(err, ErrImageNotFound) {
+		t.Errorf("a missing tag: %v, want ErrImageNotFound", err)
 	}
 }
 

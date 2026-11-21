@@ -25,7 +25,7 @@ func TestParseDockerfile(t *testing.T) {
 		t.Fatalf("stages = %+v", d.stages)
 	}
 	want := []stage{
-		{line: 3, image: "golang:1.22.3-alpine3.19", name: "build", variable: "--platform=$BUILDPLATFORM"},
+		{line: 3, image: "golang:1.22.3-alpine3.19", name: "build", platformVariable: "--platform=$BUILDPLATFORM"},
 		{line: 7, image: "build", name: "test"},
 		{line: 9, image: "alpine:3.19.1", name: "final"},
 	}
@@ -43,17 +43,21 @@ func TestParseDockerfile(t *testing.T) {
 	}
 }
 
-// Any variable in a FROM — its image or a flag — makes the stage opaque; a
-// literal --platform is read, not opaque.
+// A variable in a FROM's image, or in a flag other than --platform, makes
+// the stage opaque. A variable --platform picks an architecture of the
+// literal base and is only recorded; a literal one is read.
 func TestParseFromVariablesAndPlatform(t *testing.T) {
 	t.Parallel()
 	for src, want := range map[string]stage{
-		"FROM --platform=$BUILDPLATFORM alpine:3.19":      {image: "alpine:3.19", variable: "--platform=$BUILDPLATFORM"},
-		"FROM --platform=${TARGETPLATFORM} alpine:3.19":   {image: "alpine:3.19", variable: "--platform=${TARGETPLATFORM}"},
-		"FROM --platform=linux/${ARCH} alpine:3.19":       {image: "alpine:3.19", variable: "--platform=linux/${ARCH}"},
+		"FROM --platform=$BUILDPLATFORM alpine:3.19":      {image: "alpine:3.19", platformVariable: "--platform=$BUILDPLATFORM"},
+		"FROM --platform=${TARGETPLATFORM} alpine:3.19":   {image: "alpine:3.19", platformVariable: "--platform=${TARGETPLATFORM}"},
+		"FROM --platform=linux/${ARCH} alpine:3.19":       {image: "alpine:3.19", platformVariable: "--platform=linux/${ARCH}"},
 		"FROM --platform=linux/amd64 alpine:3.19":         {image: "alpine:3.19", platform: "linux/amd64"},
 		"FROM --platform=Linux/ARM64/v8 alpine:3.19 AS x": {image: "alpine:3.19", platform: "linux/arm64/v8", name: "x"},
 		"FROM --platform=linux/amd64 alpine:${V}":         {image: "alpine:${V}", variable: "alpine:${V}", platform: "linux/amd64"},
+		"FROM alpine@${DIGEST}":                           {image: "alpine@${DIGEST}", variable: "alpine@${DIGEST}"},
+		"FROM ${REGISTRY}/alpine:3.19":                    {image: "${REGISTRY}/alpine:3.19", variable: "${REGISTRY}/alpine:3.19"},
+		"FROM --future=$X alpine:3.19":                    {image: "alpine:3.19", variable: "--future=$X"},
 		"FROM alpine:3.19":                                {image: "alpine:3.19"},
 	} {
 		d := parseDockerfile("Dockerfile", "/x/Dockerfile", []byte(src+"\n"))
@@ -77,8 +81,10 @@ func TestDockerfileFinalBase(t *testing.T) {
 		"alias":                         {src: "FROM debian:12 AS base\nFROM base\n", image: "debian:12"},
 		"scratch":                       {src: "FROM golang:1.22 AS b\nFROM scratch\nCOPY --from=b /x /x\n", none: true},
 		"arg":                           {src: "ARG BASE=alpine:3.19\nFROM ${BASE}\n", image: "${BASE}", reason: "build argument"},
-		"arg platform":                  {src: "FROM --platform=$BUILDPLATFORM alpine:3.19\n", image: "alpine:3.19", reason: "platform comes from a build argument"},
-		"arg platform through an alias": {src: "FROM --platform=${TARGETPLATFORM} debian:12 AS base\nFROM base\n", image: "debian:12", reason: "platform comes from a build argument"},
+		"arg tag":                       {src: "ARG V=3.19\nFROM alpine:${V}\n", image: "alpine:${V}", reason: "build argument"},
+		"arg flag":                      {src: "FROM --future=$X alpine:3.19\n", image: "alpine:3.19", reason: "FROM flag expands a build argument"},
+		"arg platform":                  {src: "FROM --platform=$BUILDPLATFORM alpine:3.19\n", image: "alpine:3.19"},
+		"arg platform through an alias": {src: "FROM --platform=${TARGETPLATFORM} debian:12 AS base\nFROM base\n", image: "debian:12"},
 		"no from":                       {src: "RUN true\n", none: true, reason: "has no FROM"},
 		"escape":                        {src: "# escape=`\nFROM `\n  node:20-alpine\n", image: "node:20-alpine"},
 		"lower case":                    {src: "from ubuntu:22.04 as x\n", image: "ubuntu:22.04"},

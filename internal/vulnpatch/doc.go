@@ -11,8 +11,8 @@
 //     pnpm-lock.yaml or yarn.lock that pins it at the version the finding
 //     names, and only one package manager's; an OS package (deb, apk, rpm)
 //     to the one Dockerfile whose final stage could have built the image
-//     for the scanned platform, with no build argument in any FROM on its
-//     way to the base (ospkg.go); the Go standard library to every go.mod's
+//     for the scanned platform, with no build argument in the image of any
+//     FROM on its way to the base (ospkg.go); the Go standard library to every go.mod's
 //     toolchain directive and golang builder image (gostdlib.go). A finding
 //     is bumped
 //     everywhere it is needed or nowhere: one the tree cannot be tied to (no

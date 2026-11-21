@@ -62,6 +62,55 @@ func (p *Plan) resolveOS(ctx context.Context, r *Result, f vulnscan.Finding, idx
 	r.Target = to.String()
 	p.planImage(&plannedBump{eco: EcosystemDocker, manifest: df.rel, dir: filepath.Dir(df.abs), pkg: ref.short(), from: ref.String(), to: to.String(), direct: true, line: base.line}, at)
 	r.Status, r.Reason = StatusBumped, ""
+	if _, variable := df.finalPlatforms(); variable != "" {
+		if note := p.platformNote(ctx, to, packageArch(f.Package)); note != "" {
+			p.Notes = appendUnique(p.Notes, fmt.Sprintf("%s: %s builds FROM %s %s; %s", r.ID, df.rel, variable, base.image, note))
+		}
+	}
+}
+
+// platformNote is what to tell the agent when a Dockerfile's --platform
+// comes from a build argument, so which platform of its base built the
+// scanned image is unknown: nothing when ref is a multi-platform index that
+// has the scanned architecture (the refreshed tag or digest moves every
+// platform), else why the attribution is not confirmed. The bump is made
+// either way: the base is the literal image the FROM names.
+func (p *Plan) platformNote(ctx context.Context, ref imageRef, arch string) string {
+	reference := ref.digest
+	if reference == "" {
+		reference = ref.tag
+	}
+	if reference == "" {
+		reference = "latest"
+	}
+	scanned := "of an unknown platform"
+	if arch != "" {
+		scanned = "for linux/" + arch
+	}
+	platforms, isIndex, err := p.registry.Platforms(ctx, ref.repository(), reference)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("which platforms %s covers could not be read (%v): that it built the image scanned %s is not confirmed", ref, err, scanned)
+	case isIndex && (arch == "" || coversArch(platforms, arch)):
+		return ""
+	case isIndex:
+		return fmt.Sprintf("%s covers %s and not linux/%s: that it built the image scanned %s is not confirmed", ref, orNone(platforms), arch, scanned)
+	case arch != "" && coversArch(platforms, arch):
+		return ""
+	}
+	return fmt.Sprintf("%s is a single-platform image (%s): that it built the image scanned %s is not confirmed", ref, orNone(platforms), scanned)
+}
+
+// coversArch reports whether one of platforms (os/arch[/variant]) is a
+// linux image of arch.
+func coversArch(platforms []string, arch string) bool {
+	for _, pl := range platforms {
+		parts := strings.Split(pl, "/")
+		if len(parts) >= 2 && parts[0] == "linux" && normalizeArch(parts[1]) == arch {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshBase is the newer reference of ref's base by the rules above, or
@@ -239,9 +288,12 @@ func newerRef(a, b string) bool {
 // OS packages, a base that names another distro than the package's
 // (alpine for a deb) did not build it, and neither did a final stage pinned
 // to a literal --platform other than the one the package was scanned for
-// (its purl's arch). Anything else — none, several, a FROM whose image or
-// any flag (--platform=$BUILDPLATFORM) expands a build argument — is the
-// reason it does not pick.
+// (its purl's arch). A --platform named by a build argument
+// (--platform=$TARGETPLATFORM) picks an architecture of the literal base,
+// any of which may be the one scanned, so it neither excludes the
+// Dockerfile nor makes it opaque. Anything else — none, several, a FROM
+// whose image or other flag expands a build argument — is the reason it
+// does not pick.
 func pickDockerfile(pkg vulnscan.Package, dfs []*dockerfile) (*dockerfile, *stage, string) {
 	if len(dfs) == 0 {
 		return nil, nil, fmt.Sprintf("an OS package (%s), and the tree has no Dockerfile whose base could be refreshed", orUnknown(pkg.Type))
@@ -268,9 +320,12 @@ func pickDockerfile(pkg vulnscan.Package, dfs []*dockerfile) (*dockerfile, *stag
 				others = append(others, fmt.Sprintf("%s (%s)", df.rel, base.image))
 				continue
 			}
-			// A FROM pinned to another platform than the one scanned
-			// did not build the scanned image.
-			if pinned := otherPlatform(df.finalPlatforms(), arch); pinned != "" {
+			// A FROM pinned to another literal platform than the one
+			// scanned did not build the scanned image. A --platform named
+			// by a build argument picks an architecture of the same base,
+			// any of which may be the one scanned: never excluded.
+			literal, variable := df.finalPlatforms()
+			if pinned := otherPlatform(literal, arch); pinned != "" && variable == "" {
 				otherPlatforms = append(otherPlatforms, fmt.Sprintf("%s (%s, pinned to %s)", df.rel, base.image, pinned))
 				continue
 			}

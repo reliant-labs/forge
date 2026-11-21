@@ -14,13 +14,29 @@ import (
 )
 
 // fakeRegistry answers from maps: tags by repository (host/path), digests
-// by repository:tag. A repository in fail errors.
+// by repository:tag, and the platforms of a single-platform image by
+// repository:reference (any other reference is an index of linux/amd64
+// and linux/arm64). A repository in fail errors.
 type fakeRegistry struct {
 	mu      sync.Mutex
 	tags    map[string][]string
 	digests map[string]string
+	single  map[string]string
 	fail    map[string]bool
 	calls   []string
+}
+
+func (r *fakeRegistry) Platforms(_ context.Context, repository, reference string) ([]string, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, "platforms "+repository+":"+reference)
+	if r.fail[repository] {
+		return nil, false, errors.New("connection refused")
+	}
+	if pl, ok := r.single[repository+":"+reference]; ok {
+		return []string{pl}, false, nil
+	}
+	return []string{"linux/amd64", "linux/arm64"}, true, nil
 }
 
 func (r *fakeRegistry) Digest(_ context.Context, repository, tag string) (string, error) {
@@ -218,23 +234,27 @@ func TestOSPackageResolvesTheDockerfileConservatively(t *testing.T) {
 			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "ambiguous",
 		},
 		// The scanned image's platform: apkFinding's purl says x86_64.
-		"$BUILDPLATFORM makes the base a build argument's": {
+		"$BUILDPLATFORM on the base is patched": {
 			files: map[string]string{"Dockerfile": "FROM --platform=$BUILDPLATFORM alpine:3.19\n"},
-			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "builds its final stage FROM --platform=$BUILDPLATFORM alpine:3.19: a base whose platform comes from a build argument is left to the agent",
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "Dockerfile",
 		},
-		"${TARGETPLATFORM} through an alias": {
-			files: map[string]string{"Dockerfile": "FROM --platform=${TARGETPLATFORM} alpine:3.19 AS base\nFROM base\n"},
-			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "platform comes from a build argument",
+		"$TARGETPLATFORM through a stage alias is patched": {
+			files: map[string]string{"Dockerfile": "FROM --platform=$TARGETPLATFORM alpine:3.19 AS base\nFROM base\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "Dockerfile",
 		},
-		"${TARGETPLATFORM} makes another ambiguous": {
-			files: map[string]string{"Dockerfile": "FROM alpine:3.19\n", "b/Dockerfile": "FROM --platform=${TARGETPLATFORM} alpine:3.19\n"},
-			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "ambiguous (Dockerfile, b/Dockerfile)",
+		"a variable in the image tag is skipped": {
+			files: map[string]string{"Dockerfile": "ARG V=3.19.1\nFROM alpine:${V}\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "builds its final stage FROM alpine:${V}: a base named by a build argument is left to the agent",
+		},
+		"a variable in another FROM flag is skipped": {
+			files: map[string]string{"Dockerfile": "FROM --future=$X alpine:3.19.1\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "a base whose FROM flag expands a build argument is left to the agent",
 		},
 		"a literal platform that matches": {
 			files: map[string]string{"Dockerfile": "FROM --platform=linux/amd64 alpine:3.19\n"},
 			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "Dockerfile",
 		},
-		"a literal platform that does not match": {
+		"a literal mismatched platform is excluded": {
 			files: map[string]string{"Dockerfile": "FROM --platform=linux/arm64 alpine:3.19\n"},
 			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), reason: "the image was scanned for amd64, and these Dockerfiles pin another platform (Dockerfile (alpine:3.19, pinned to linux/arm64))",
 		},
@@ -245,6 +265,10 @@ func TestOSPackageResolvesTheDockerfileConservatively(t *testing.T) {
 		"a mismatched platform leaves the other one": {
 			files: map[string]string{"arm/Dockerfile": "FROM --platform=linux/arm64 alpine:3.19\n", "Dockerfile": "FROM alpine:3.19\n"},
 			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "Dockerfile",
+		},
+		"a variable platform is picked over a mismatched literal one": {
+			files: map[string]string{"arm/Dockerfile": "FROM --platform=linux/arm64 alpine:3.19\n", "multi/Dockerfile": "FROM --platform=$TARGETPLATFORM alpine:3.19\n"},
+			f:     apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"), want: "multi/Dockerfile",
 		},
 		"no Dockerfile": {
 			files: map[string]string{"go.mod": goModApp},
@@ -266,6 +290,46 @@ func TestOSPackageResolvesTheDockerfileConservatively(t *testing.T) {
 		}
 		if r.Status != StatusBumped || strings.Join(r.Manifests, ",") != tc.want {
 			t.Errorf("%s: %s %q manifests %v, want %s", name, r.Status, r.Reason, r.Manifests, tc.want)
+		}
+	}
+}
+
+// A --platform named by a build argument does not stop the refresh: the base
+// is the literal image, and a refreshed tag moves every platform of its
+// index. Only when the base cannot be shown to have the scanned
+// architecture does the agent get a note.
+func TestOSPackageVariablePlatformNotes(t *testing.T) {
+	t.Parallel()
+	df := "FROM --platform=$TARGETPLATFORM alpine:3.19.1\n"
+	for name, tc := range map[string]struct {
+		single map[string]string
+		pkg    vulnscan.Finding
+		note   string
+	}{
+		"an index with the scanned arch": {pkg: apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6")},
+		"a single-platform base of the scanned arch": {
+			single: map[string]string{alpineRepo + ":3.19.4": "linux/amd64"}, pkg: apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"),
+		},
+		"a single-platform base of another arch": {
+			single: map[string]string{alpineRepo + ":3.19.4": "linux/arm64"}, pkg: apkFinding("CVE-1", "openssl", "3.1.4-r5", "3.1.4-r6"),
+			note: "CVE-1: Dockerfile builds FROM --platform=$TARGETPLATFORM alpine:3.19.1; alpine:3.19.4 is a single-platform image (linux/arm64): that it built the image scanned for linux/amd64 is not confirmed",
+		},
+		"a single-platform base and no arch in the purl": {
+			single: map[string]string{alpineRepo + ":3.19.4": "linux/amd64"},
+			pkg:    vulnscan.Finding{ID: "CVE-1", Severity: vulnscan.SeverityHigh, FixState: vulnscan.FixStateFixed, FixedIn: []string{"3.1.4-r6"}, Package: vulnscan.Package{Name: "openssl", Version: "3.1.4-r5", Type: "apk", PURL: "pkg:apk/alpine/openssl@3.1.4-r5?distro=alpine-3.19.1"}},
+			note:   "single-platform image (linux/amd64): that it built the image scanned of an unknown platform is not confirmed",
+		},
+	} {
+		reg := alpineRegistry()
+		reg.single = tc.single
+		root := writeTree(t, map[string]string{"Dockerfile": df})
+		doc, _ := patch(t, root, []vulnscan.Finding{tc.pkg}, Options{Registry: reg}, nil, nil)
+		if r := doc.Findings[0]; r.Status != StatusBumped || readFile(t, root, "Dockerfile") != "FROM --platform=$TARGETPLATFORM alpine:3.19.4\n" {
+			t.Errorf("%s: %s %q, Dockerfile %q", name, r.Status, r.Reason, readFile(t, root, "Dockerfile"))
+		}
+		notes := strings.Join(doc.Notes, "\n")
+		if tc.note == "" && strings.Contains(notes, "not confirmed") || !strings.Contains(notes, tc.note) {
+			t.Errorf("%s: notes %v, want %q", name, doc.Notes, tc.note)
 		}
 	}
 }

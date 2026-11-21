@@ -27,18 +27,23 @@ type stage struct {
 	line  int    // 1-based line the image token is on
 	image string // the image as written
 	name  string // the stage's AS name, lowercased; "" when unnamed
-	// variable is the first part of the FROM that expands a variable — the
-	// image (FROM ${BASE}) or a flag (--platform=$BUILDPLATFORM) — and ""
-	// when none does. Either way the image the stage starts from depends on
-	// build arguments forge does not see.
+	// variable is the part of the FROM that expands a variable and makes
+	// the base it starts from unknown: the image (FROM ${BASE},
+	// alpine:${V}, alpine@${DIGEST}) or a flag other than --platform. ""
+	// when none does.
 	variable string
 	// platform is the literal --platform the FROM pins (linux/arm64), ""
 	// when it pins none or names it through a variable.
 	platform string
+	// platformVariable is a --platform named through a variable
+	// (--platform=$BUILDPLATFORM): it picks an architecture of the literal
+	// base, not another base, so the stage is not opaque, but which
+	// architecture is unknown.
+	platformVariable string
 }
 
-// opaque reports a FROM whose effective base depends on a build argument,
-// in its image or in any of its flags.
+// opaque reports a FROM whose base depends on a build argument: one in its
+// image, or in a flag other than --platform.
 func (s *stage) opaque() bool { return s.variable != "" }
 
 // imageVariable reports a FROM whose image itself is named through a
@@ -116,15 +121,18 @@ func parseDockerfile(rel, abs string, data []byte) *dockerfile {
 			continue
 		}
 		st := &stage{image: args[0], line: start + 1}
-		for _, tok := range append(flags, args[0]) {
-			if strings.Contains(tok, "$") {
-				st.variable = tok
-				break
-			}
+		if strings.Contains(st.image, "$") {
+			st.variable = st.image
 		}
 		for _, f := range flags {
-			if v, ok := strings.CutPrefix(f, "--platform="); ok && !strings.Contains(v, "$") {
+			v, isPlatform := strings.CutPrefix(f, "--platform=")
+			switch {
+			case isPlatform && strings.Contains(v, "$"):
+				st.platformVariable = f
+			case isPlatform:
 				st.platform = strings.ToLower(v)
+			case strings.Contains(f, "$") && st.variable == "":
+				st.variable = f // conservatively: forge does not know what it changes
 			}
 		}
 		if len(args) >= 3 && strings.EqualFold(args[1], "AS") {
@@ -203,13 +211,16 @@ func (d *dockerfile) baseOf(i int) *stage {
 }
 
 // finalPlatforms are the literal platforms the FROMs from the last stage to
-// its base pin, each once.
-func (d *dockerfile) finalPlatforms() []string {
-	var out []string
+// its base pin, each once, and the first --platform named through a
+// variable on the way ("" when none is).
+func (d *dockerfile) finalPlatforms() (literal []string, variable string) {
 	for i := len(d.stages) - 1; i >= 0; {
 		st := d.stages[i]
 		if st.platform != "" {
-			out = appendUnique(out, st.platform)
+			literal = appendUnique(literal, st.platform)
+		}
+		if variable == "" {
+			variable = st.platformVariable
 		}
 		j := d.stageNamed(st.image, i)
 		if st.opaque() || j < 0 {
@@ -217,7 +228,7 @@ func (d *dockerfile) finalPlatforms() []string {
 		}
 		i = j
 	}
-	return out
+	return literal, variable
 }
 
 // finalBase is the base image of the image the Dockerfile builds (its last
@@ -232,7 +243,7 @@ func (d *dockerfile) finalBase() (*stage, string) {
 	case st.imageVariable():
 		return st, fmt.Sprintf("%s builds its final stage FROM %s: a base named by a build argument is left to the agent", d.rel, st.image)
 	case st.opaque():
-		return st, fmt.Sprintf("%s builds its final stage FROM %s %s: a base whose platform comes from a build argument is left to the agent (which variant was scanned is unknown)", d.rel, st.variable, st.image)
+		return st, fmt.Sprintf("%s builds its final stage FROM %s %s: a base whose FROM flag expands a build argument is left to the agent", d.rel, st.variable, st.image)
 	case strings.EqualFold(st.image, "scratch"):
 		return nil, ""
 	}

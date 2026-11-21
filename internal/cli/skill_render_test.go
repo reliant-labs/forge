@@ -156,6 +156,27 @@ func TestRewriteForgeCommandsPreservesNamesAcrossFences(t *testing.T) {
 	}
 }
 
+// The preview skill's GitHub Actions recipe installs the standalone forge from
+// npm, so a runner has no `reliant` binary: under the mount its steps must
+// still call `forge`, or every step fails with "reliant: command not found".
+func TestPreviewSkillCIRecipeCallsStandaloneForgeUnderTheMount(t *testing.T) {
+	out, err := RenderSkillContentAt("", "deploy/preview", SkillAudienceAll, "reliant forge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte("npm i -g @reliantlabs/forge")) {
+		t.Fatal("deploy/preview no longer installs forge from npm; revisit this test")
+	}
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		if bytes.Contains(line, []byte("run: ")) && bytes.Contains(line, []byte("reliant forge")) {
+			t.Errorf("CI recipe step calls the mount the runner does not have: %s", bytes.TrimSpace(line))
+		}
+	}
+	if !bytes.Contains(out, []byte("run: forge env gc --yes")) {
+		t.Error("CI recipe's gc step is not `forge env gc --yes` under the mount")
+	}
+}
+
 func TestConnectSkillRendersPasteableUnderTheMount(t *testing.T) {
 	out, err := RenderSkillContentAt("", "connect", SkillAudienceAll, "reliant forge")
 	if err != nil {

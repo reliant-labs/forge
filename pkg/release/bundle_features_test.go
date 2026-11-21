@@ -39,6 +39,7 @@ var bundleFeatureKeys = map[string][]string{
 		"shape.identity.passkey_rp_id", "shape.identity.social", "shape.identity.email", "shape.identity.dev_mail",
 	},
 	BundleFeatureIdentityCodeLifetime: {"shape.identity.code_lifetime"},
+	BundleFeatureIdentities:           {"shape.identities"},
 	BundleFeatureStorage:              {"shape.buckets", "shape.data_access.storage"},
 	BundleFeaturePromotionChecks:      {"shape.delivery_policy.required_gates", "shape.delivery_policy.approval_hook"},
 	BundleFeaturePreview:              {"shape.preview"},

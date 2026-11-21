@@ -350,6 +350,12 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 	if err := shape.Validate(); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
+	// Before composition or publication, like the placement prerequisites:
+	// a recording backend that converges one identity per env must never be
+	// handed a bundle declaring several (Limit would strip them silently).
+	if err := in.Reader.CheckIdentities(shape); err != nil {
+		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
+	}
 
 	extra, err := observabilityEntries(in.Observability)
 	if err != nil {

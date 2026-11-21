@@ -26,3 +26,11 @@ func (q TraceQuery) CompileOnePass() (Stmt, error) {
 		"ORDER BY " + q.pageOrder() + "\n" +
 		"LIMIT " + strconv.Itoa(q.Limit+1)), nil
 }
+
+// SpanThresholdSQL is the span's sampling threshold as the weight reads it,
+// and SpanThresholdRegexSQL its definition; the integration test holds the
+// two to the same value.
+const (
+	SpanThresholdSQL      = spanThreshold
+	SpanThresholdRegexSQL = spanThresholdRegex
+)

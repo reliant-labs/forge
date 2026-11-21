@@ -8031,7 +8031,9 @@ _OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]
 
 # ---------------------------------------------------------------------------
 # ManagedIdentity — the env's users, declared. One identity-provider instance
-# per env (or one shared with a sibling env), converged by the control plane.
+# per declaration (or one shared with a sibling env), converged by the control
+# plane; an env declares one (Bundle.identity) or several, by name
+# (Bundle.identities).
 # ---------------------------------------------------------------------------
 
 schema IdentityRole:
@@ -8201,6 +8203,9 @@ type IdentityMethod = "password" | "passkey" | "magic_link"
 # passkey_rp_id): lower case, no wildcard, no trailing dot.
 _IDN_DNS_RE = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
 _IDN_EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+# A ManagedIdentity.name in Bundle.identities: part of the issuer slug
+# (pkg/release.IdentitySlugFor) and of the delivered Secrets' names.
+_IDN_LIST_NAME_RE = r"^[a-z][a-z0-9-]{0,23}$"
 
 schema IdentityGoogle:
     """Sign in with Google, through the APP'S OWN OAuth client. Register the
@@ -8309,6 +8314,11 @@ schema ManagedIdentity:
         # a preview env reusing staging's users
         identity = forge.ManagedIdentity {share_with = "staging"}
 
+        # SEVERAL instances in one env, keyed by `name`: the operators'
+        # identity beside the app's end users. Each declares its own
+        # applications and consumers (a workload brokers sign-in for one).
+        identities = [idn.OPERATORS, idn.USERS | {name = "users"}]
+
     WHERE IT RUNS is `runtime`: `forge.OnHosted {}` (the default) is an
     instance on the control plane's shared identity deployment and needs
     `Bundle.control_plane`; `forge.IdentityOnHost {infra}` is the env's own
@@ -8324,8 +8334,14 @@ schema ManagedIdentity:
     public route; the control plane also raises it by itself for a consumer
     that runs outside the network.
 
+    `name` is the instance's key: its delivered Secrets
+    (forge-identity-<name>), its managed secrets, its issuer slug
+    (pkg/release.IdentitySlugFor) and, in an env with several, what an
+    IdentityRef's `identity` names. Renaming an identity replaces it.
+
     `share_with` reuses the instance of another env of THE SAME PROJECT (it
-    is a bare env name, so another project is unspellable). The owner must
+    is a bare env name, so another project is unspellable), the one of the
+    same `name` there. The owner must
     declare an identity and must not itself be a sharer: no chains (checked
     at render, which renders the owner). A sharer declares only applications
     and consumers; roles, smtp, seed users, machine users, domain and
@@ -8973,7 +8989,17 @@ schema Bundle:
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).
     # Declaring it AND hand-setting a config field it fills is refused.
+    # Sugar for `identities = [identity]`: the two render byte-identically.
     identity?: ManagedIdentity
+    # SEVERAL managed identities in one env, each its own instance (its own
+    # issuer, keys and users), keyed by ManagedIdentity.name: an operator
+    # identity beside the app's end users, say. Each application (login
+    # broker) belongs to one of them, and a workload reading two maps one's
+    # outputs onto other config fields (IdentityConsumer.fields). Set this OR
+    # `identity`, never both. Names are unique and match
+    # ^[a-z][a-z0-9-]{0,23}$; an IdentityRef names the one it reads with
+    # `identity = "<name>"`.
+    identities: [ManagedIdentity] = []
     # The env's own secret store (forge.OpenBao): opt-in, like `observability`
     # and `identity`. UNSET renders nothing. A forge.ExternalSecret reads from
     # it with `source = forge.StoreSource {store = forge.OpenBaoStore {}}`.
@@ -9172,22 +9198,32 @@ schema Bundle:
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \
             "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+        # SEVERAL IDENTITIES (Bundle.identities): which instances exist is
+        # judged before anything derived from them (their Secrets, below).
+        not (identity and len(identities) > 0), \
+            "Bundle.identity and Bundle.identities are both set: put every instance in identities (identity is sugar for identities = [identity])"
+        len(_duplicates([i.name for i in identities])) == 0, \
+            "Bundle.identities: a name is declared twice: ${_duplicates([i.name for i in identities])}. ManagedIdentity.name is the instance's key (its issuer, its delivered Secrets and its users), so each identity names its own"
+        len(_duplicates([_idn_tok(i.name) for i in identities])) == 0, \
+            "Bundle.identities: ${[i.name for i in identities if _idn_tok(i.name) in _duplicates([_idn_tok(j.name) for j in identities])]} differ only in their punctuation, so a hosted consumer would read all of them from the same managed secrets (RELIANT_IDENTITY_${_duplicates([_idn_tok(i.name) for i in identities])[0] if _duplicates([_idn_tok(i.name) for i in identities]) else ''}_*): rename one"
+        all i in identities { regex.match(i.name, _IDN_LIST_NAME_RE) }, \
+            "Bundle.identities names ${[i.name for i in identities if not regex.match(i.name, _IDN_LIST_NAME_RE)]} must match ^[a-z][a-z0-9-]{0,23}$: the name is part of the instance's issuer slug and of its delivered Secrets' names"
         # A CONTROL-PLANE SECRET NEEDS A CONTROL PLANE TO DELIVER IT, AND A
         # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
         # are refused here, while the author is looking at the KCL, rather than
         # as a deploy that is accepted and never delivers.
-        len(_cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0 or control_plane, \
-            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
-        len(_cps_unbound(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
-            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), cluster_target, connected_clusters)
+        len(_cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
         not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
             "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
-        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
-        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
-        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
@@ -9200,48 +9236,21 @@ schema Bundle:
             "Bundle.required_secrets ${_unsourced_required(required_secrets)} declare no `source`, but other ExternalSecrets in this Bundle do. Once any Secret is store-backed, each one that is not says why with `out_of_band_reason = \"...\"` (or gets a `source`)"
         len(_duplicates([s.namespace + "/" + s.name for s in required_secrets if s.source])) == 0, \
             "Bundle.required_secrets: a store-backed Secret is declared twice: ${_duplicates([s.namespace + '/' + s.name for s in required_secrets if s.source])}. Two ExternalSecrets for one Secret would fight over its keys"
-        not openbao or openbao.writer.type != "oidc" or identity, \
+        not openbao or openbao.writer.type != "oidc" or len(_idn_all(identity, identities)) > 0, \
             "Bundle.openbao.writer is an OpenBaoOIDCWriter, which signs writers in with the env's ManagedIdentity, but the Bundle declares no `identity`. Declare `identity = forge.ManagedIdentity {...}`, or keep the default writer (forge.OpenBaoSAWriter {}), which needs only cluster access"
-        not openbao or openbao.writer.type != "oidc" or openbao.writer.role in [r.key for r in identity.roles if identity], \
-            "Bundle.openbao.writer.role '${openbao.writer.role if openbao and openbao.writer.type == 'oidc' else ''}' is not a role of Bundle.identity (declared: ${[r.key for r in identity.roles] if identity else []})"
+        not openbao or openbao.writer.type != "oidc" or openbao.writer.role in [r.key for i in _idn_all(identity, identities) for r in i.roles], \
+            "Bundle.openbao.writer.role '${openbao.writer.role if openbao and openbao.writer.type == 'oidc' else ''}' is not a role of Bundle.identity (declared: ${[r.key for i in _idn_all(identity, identities) for r in i.roles]})"
         not openbao or not openbao.public or openbao.public.gateway in [g.name for g in gateways], \
             "Bundle.openbao.public.gateway '${openbao.public.gateway if openbao and openbao.public else ''}' is not a forge.Gateway in Bundle.gateways (declared: ${[g.name for g in gateways]}). Declare the Gateway, or name an existing one"
         # MANAGED IDENTITY (forge.ManagedIdentity). The structural rules live on
         # the schema; these need the Bundle: its control plane, workloads,
-        # infra and lifecycle.
+        # infra and lifecycle. Every rule is judged per identity, and the
+        # rules between identities (names, brokers, the host IdP, social
+        # clients) once over all of them: see _idn_bundle_errors.
         all s in control_plane_secrets { s.kind not in IDENTITY_SECRET_KINDS }, \
             "Bundle.control_plane_secrets ${[s.name for s in control_plane_secrets if s.kind in IDENTITY_SECRET_KINDS]} have an identity kind. Those are DERIVED from Bundle.identity (forge.ManagedIdentity) and never declared by hand: declare the identity and forge lists its Secrets"
-        not (identity and _idn_rt(identity) == "hosted") or control_plane, \
-            "Bundle.identity runs on the hosted runtime, which needs control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what provisions the instance and delivers its outputs. For a local env use `runtime = forge.IdentityOnHost {infra = \"idp\"}`"
-        not (identity and identity.runtime and identity.runtime.type == "host") or any i in infra { i.name == identity.runtime.infra and i.engine == "zitadel" }, \
-            "Bundle.identity.runtime = IdentityOnHost names infra '${identity.runtime.infra if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'zitadel' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
-        len(identity.seed_users if identity else []) == 0 or lifecycle in ["local", "ephemeral"], \
-            "Bundle.identity.seed_users create users with known passwords, so they are only allowed in an env that declares `lifecycle = \"local\"` or \"ephemeral\" (a real environment's users sign up or are invited). Remove them from this env, or declare the lifecycle if it really is scratch"
-        # V15: a named dev mail server is a mailpit HostInfra.
-        not (identity and identity.runtime and identity.runtime.type == "host" and identity.runtime.mail) or any i in infra { i.name == identity.runtime.mail and i.engine == "mailpit" }, \
-            "Bundle.identity.runtime = IdentityOnHost names mail '${identity.runtime.mail if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'mailpit' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
-        # V5 / V6: a magic link is an email, and open or domain signup verifies
-        # the address by email before any session.
-        not identity or "magic_link" not in identity.methods or _idn_mail_available(identity, infra), \
-            "Bundle.identity.methods offer \"magic_link\", but the identity can send no mail: ${_idn_no_mail_msg(identity)}"
-        not identity or identity.signup == "invite" or _idn_mail_available(identity, infra), \
-            "Bundle.identity.signup = \"${identity.signup if identity else ''}\" verifies every new address by email before a session, but the identity can send no mail: ${_idn_no_mail_msg(identity)}"
-        # A social client secret is read only by the identity reconciler: no
-        # workload is handed it.
-        len(_idn_social_secret_readers(workloads, identity)) == 0, \
-            "${_idn_social_secret_readers(workloads, identity)} read a secret that Bundle.identity.social names as an OAuth client secret. Only the identity reconciler reads it (it is stored in the identity provider), so drop it from the workload's env"
-        not identity or not identity.share_with or identity.share_with != env, \
-            "Bundle.identity.share_with '${identity.share_with if identity else ''}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"
-        len(_idn_bad_apps(workloads, identity, env, project)) == 0, \
-            "Bundle.identity.applications name workloads that are not service workloads of this env: ${_idn_bad_apps(workloads, identity, env, project)}. An application's workload runs the sign-in endpoint. Declared: ${[w.name for w in workloads if w.kind == 'service']}"
-        len(_idn_bad_consumers(workloads, identity, env, project)) == 0, \
-            "Bundle.identity.consumers name workloads that are not service workloads on a runtime that can reach the instance (${_idn_reach(identity) if identity else []}): ${_idn_bad_consumers(workloads, identity, env, project)}"
-        not identity or len(_idn_apps(workloads, identity, env, project)) > 0 or len(_idn_consumers(workloads, identity, env, project)) == 0, \
-            "Bundle.identity has consumers but no application: no workload can broker a sign-in. Declare `applications`, or bind a service workload named 'api'"
-        not identity or _idn_rt(identity) != "host" or all m in identity.machine_users { not m.key_secret }, \
-            "Bundle.identity.machine_users key_secret/cluster apply to a hosted instance, where the control plane delivers the key. A host-run IdP keeps the key in the env's secret store: drop key_secret and cluster"
-        not identity or _idn_rt(identity) != "hosted" or all m in identity.machine_users { m.key_secret }, \
-            "Bundle.identity.machine_users ${[m.name for m in (identity.machine_users if identity else []) if not m.key_secret]} have no key_secret/cluster: a hosted instance delivers a machine user's key to a Secret on a connected cluster, so say which"
+        len(_idn_bundle_errors(_idn_all(identity, identities), workloads, infra, env, project, lifecycle, control_plane)) == 0, \
+            _idn_first_error(_idn_bundle_errors(_idn_all(identity, identities), workloads, infra, env, project, lifecycle, control_plane))
         # THE DESTINATION'S HEADERS MUST RESOLVE. The node agent reads them
         # through a secretKeyRef in its own namespace, and a Secret nothing
         # supplies leaves the DaemonSet in CreateContainerConfigError with
@@ -9250,7 +9259,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))), \
+        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

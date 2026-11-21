@@ -209,6 +209,14 @@ type unscopedRPC struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
+// unimplementedRPC is one authenticated RPC whose handler only answers
+// CodeUnimplemented, so it has no data to scope.
+type unimplementedRPC struct {
+	Service string `json:"service"`
+	Method  string `json:"method"`
+	File    string `json:"file"`
+}
+
 // acknowledgedRPC is one authenticated RPC the author has explicitly
 // declared global, with the reason they gave.
 type acknowledgedRPC struct {
@@ -283,8 +291,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 	var (
 		unscoped     []unscopedRPC
 		acknowledged []acknowledgedRPC
-		authTotal    int
-		scopedTotal  int
+		// unimplemented lists the handlers that only answer
+		// CodeUnimplemented: counted, never a finding (see
+		// audit_unscoped_auth_unimplemented.go).
+		unimplemented []unimplementedRPC
+		authTotal     int
+		scopedTotal   int
 		// The two raw-SQL states. Kept apart from `unscoped` because
 		// they are a different finding with a different remedy: these
 		// RPCs DID resolve the caller, and what is missing is the
@@ -353,7 +365,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 			continue
 		}
 
-		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)))
+		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)), svc)
 		if herr != nil {
 			unresolvedSvcs = append(unresolvedSvcs, svc.Name)
 			continue
@@ -383,6 +395,10 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 			case h.AckReason != "":
 				acknowledged = append(acknowledged, acknowledgedRPC{
 					Service: svc.Name, Method: name, File: rel, Reason: h.AckReason,
+				})
+			case h.Unimplemented:
+				unimplemented = append(unimplemented, unimplementedRPC{
+					Service: svc.Name, Method: name, File: rel,
 				})
 			case h.ReadsCaller:
 				// Resolving the caller is the WHOLE answer only when
@@ -415,6 +431,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 
 	sortUnscoped(unscoped)
 	sortAcknowledged(acknowledged)
+	sort.Slice(unimplemented, func(i, j int) bool {
+		if unimplemented[i].Service != unimplemented[j].Service {
+			return unimplemented[i].Service < unimplemented[j].Service
+		}
+		return unimplemented[i].Method < unimplemented[j].Method
+	})
 	sortRawSQL(rawSQLUnscoped)
 	sortRawSQL(rawSQLUnverifiable)
 
@@ -452,6 +474,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 		"owner_scoped_tables":        sortedKeys(ownerTables),
 		"owner_marker":               schemadef.ColumnMarkerOwner,
 		"acknowledged_rpcs":          acknowledged,
+		"unimplemented_rpcs":         unimplemented,
 		"raw_sql_unscoped_rpcs":      rawSQLUnscoped,
 		"raw_sql_unverifiable_rpcs":  rawSQLUnverifiable,
 		"auth_seam":                  seam,
@@ -539,10 +562,16 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 		// global with the marker, and is counted apart so the summary does
 		// not claim it does.
 		summary := fmt.Sprintf("all %d authenticated RPC(s) resolve the caller", authTotal)
-		if len(acknowledged) > 0 {
-			summary = fmt.Sprintf("%d of %d authenticated RPC(s) resolve the caller; the other %d are acknowledged global with `// %s`",
-				scopedTotal, authTotal, len(acknowledged), AuthUnscopedOKDirective)
+		implemented, noun := authTotal, "authenticated"
+		if len(unimplemented) > 0 {
+			implemented, noun = authTotal-len(unimplemented), "implemented authenticated"
+			summary = fmt.Sprintf("all %d %s RPC(s) resolve the caller", implemented, noun)
 		}
+		if len(acknowledged) > 0 {
+			summary = fmt.Sprintf("%d of %d %s RPC(s) resolve the caller; the other %d are acknowledged global with `// %s`",
+				scopedTotal, implemented, noun, len(acknowledged), AuthUnscopedOKDirective)
+		}
+		summary += unimplementedNote(len(unimplemented))
 		if authTotal == 0 {
 			summary = "no authenticated RPCs with handlers to inspect (n/a)"
 		}
@@ -577,7 +606,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 		// summary that says "rows" would read as a CRUD-only finding.
 		Summary: fmt.Sprintf(
 			"%d of %d authenticated RPC(s) never resolve the caller — every signed-in caller is treated identically (%s)",
-			len(unscoped), authTotal, seam),
+			len(unscoped), authTotal-len(unimplemented), seam) + unimplementedNote(len(unimplemented)),
 		Details: details,
 	}
 }
@@ -822,6 +851,9 @@ type handlerAuthUse struct {
 	ReadsCaller bool
 	Delegating  bool
 	AckReason   string
+	// Unimplemented is true when the body only answers CodeUnimplemented
+	// (bodyServesUnimplemented): there is nothing behind it to scope.
+	Unimplemented bool
 	// AckMalformed is a `forge:auth-unscoped-ok` comment on the handler
 	// that ackReason did not accept, as written; AckLine is its line.
 	AckMalformed string
@@ -863,7 +895,7 @@ type handlerAuthUse struct {
 // that package, up to maxWrapperHops packages deep — a package-level
 // function is unique in its package, so the import names it exactly (see
 // audit_unscoped_auth_module.go).
-func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handlerAuthUse, error) {
+func scanHandlerAuthUse(dir string, callers packageCallerSeam, svc codegen.ServiceDef) (map[string]handlerAuthUse, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -926,10 +958,12 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 		astFiles = append(astFiles, pf.file)
 	}
 	sqlByName := reachableSQL(decls, sqlLiteralsByDecl(decls, packageSQLConsts(astFiles)))
+	embeddedReceivers := embeddedUnimplementedReceivers(astFiles, svc)
 
 	out := map[string]handlerAuthUse{}
 	rank := map[string]int{}
 	for _, pf := range files {
+		imports := importIdents(pf.file)
 		for _, decl := range pf.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) == 0 {
@@ -943,6 +977,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 				Delegating: bodyIsCRUDDelegation(fn.Body),
 				AckReason:  ackReason(fn.Doc),
 			}
+			use.Unimplemented = bodyServesUnimplemented(fn, imports, embeddedReceivers, svc.Name)
 			if use.AckReason == "" {
 				if c := malformedAckComment(fn.Doc); c != nil {
 					use.AckMalformed = strings.TrimSpace(c.Text)

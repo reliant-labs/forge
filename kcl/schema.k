@@ -4989,8 +4989,42 @@ schema Frontend:
     # itself (the dev server's public/, a Firebase or own-bucket deploy).
     runtime_config: {str:str | WorkloadURL} = {}
 
+    # NAMED same-origin APIs, beside the default one API_URL reaches at
+    # /_api. Each key is a name; each value names a WORKLOAD of this env (its
+    # name as a string, or a forge.WorkloadURL — never a URL):
+    #
+    #     apis = {billing = "billing-api"}
+    #
+    # The browser calls it on the page's own origin at /_api/@<name>/…, which
+    # reaches that workload with "/_api/@<name>" stripped, so the site's
+    # host-only session cookie is first-party for every backend it calls.
+    # config.js publishes each base as `apis.<name>` and the scaffolded
+    # src/lib/api-base.ts resolves one with apiBaseFor("<name>").
+    #
+    #   OnHosted   the platform routes /_api/@<name>/* on every host of the
+    #              site (custom domains too); the control plane must
+    #              advertise "serves-named-site-apis", or the deploy is
+    #              refused naming it. The target must be hosted too.
+    #   OnHost     `forge env up`'s dev server proxies the same paths to each
+    #              workload's dev URL, so dev URLs equal hosted ones.
+    #   elsewhere  (your bucket, Firebase) nothing serves the route, so
+    #              config.js carries each workload's own URL instead.
+    #
+    # THE TRUST RULE. The session cookie reaches every named API, so each
+    # must be in the site's trust domain: render admits only a workload this
+    # env's Bundle declares. A backend elsewhere is a literal URL in
+    # runtime_config, which the browser calls cross-origin.
+    apis: {str:str | WorkloadURL} = {}
+
     check:
         name, "Frontend.name is required"
+        all k, _v in apis { regex.match(k, "^[a-z][a-z0-9-]{0,30}$") }, \
+            "Frontend '${name}'.apis names must match ^[a-z][a-z0-9-]{0,30}$: each is the path segment after /_api/@"
+        all _k, v in apis { typeof(v) != "str" or regex.match(str(v), "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") }, \
+            "Frontend '${name}'.apis values name a workload of this environment (e.g. apis = {billing = \"billing-api\"}), never a URL: the session cookie reaches every named API, so each must be a workload this env runs. Call a backend elsewhere by a literal URL in runtime_config instead"
+        len(apis) <= 16, "Frontend '${name}'.apis allows at most 16 entries"
+        not (apis and "apis" in runtime_config), \
+            "Frontend '${name}'.runtime_config.apis collides with Frontend.apis, which config.js publishes under that key: rename the runtime_config entry"
         all k, _v in runtime_config { regex.match(k, "^[A-Za-z_$][A-Za-z0-9_$]*$") }, \
             "Frontend '${name}'.runtime_config keys must be JavaScript identifiers (e.g. API_URL): the bundle reads each as window.__FORGE_CONFIG__.<KEY>"
         len(runtime_config) <= 128, "Frontend '${name}'.runtime_config allows at most 128 entries"

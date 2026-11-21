@@ -162,13 +162,54 @@ const devOtelUpstream = (): Promise<string> => {
 //
 // There is no production equivalent, for the same reasons as /_otel above. A
 // build reads the API's URL from the runtime config (config.js), as before.
+//
+// NAMED APIs (KCL Frontend.apis): <basePath>/_api/@<name>/* -> that workload,
+// with "/_api/@<name>" stripped, as Reliant hosting routes /_api/@<name>, so
+// dev URLs equal hosted ones. `forge env up` sets FORGE_DEV_APIS to
+// {"<name>": "<upstream>"}. Their rewrites come BEFORE /_api's, which would
+// otherwise match them. (Next's rewrite proxy cannot drop headers, so in dev
+// an API must not trust the X-Forwarded-* a client sent; the hosted origin
+// and the Vite dev server replace them.)
 const apiUpstream = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const devApis = parseDevApis(process.env.FORGE_DEV_APIS);
 const devApiProxy =
   process.env.NODE_ENV === "development" &&
-  apiUpstream !== "" &&
+  (apiUpstream !== "" || Object.keys(devApis).length > 0) &&
   !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+
+// parseDevApis reads FORGE_DEV_APIS. A malformed value proxies no named API
+// and says so, rather than failing the dev server.
+function parseDevApis(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("[forge] FORGE_DEV_APIS is not a JSON object; named APIs are not proxied");
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [name, url] of Object.entries(parsed)) {
+    if (/^[a-z][a-z0-9-]{0,30}$/.test(name) && typeof url === "string" && url !== "") {
+      out[name] = url.replace(/\/+$/, "");
+    }
+  }
+  return out;
+}
+
+// The named APIs' rewrites (see NAMED APIs above).
+const devApiRewrites = (prefix: string) =>
+  prefix
+    ? Object.entries(devApis).map(([name, target]) => ({
+        source: `${prefix}/@${name}/:path*`,
+        destination: `${target}/:path*`,
+      }))
+    : [];
 const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
 
 // ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
@@ -275,7 +316,8 @@ const nextConfig: NextConfig = {
           const otel = await devOtelUpstream();
           return [
             ...(otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : []),
-            ...(devApiProxy
+            ...devApiRewrites(devApiProxy),
+            ...(devApiProxy && apiUpstream
               ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
               : []),
           ];
@@ -523,13 +565,54 @@ const devOtelUpstream = (): Promise<string> => {
 //
 // There is no production equivalent, for the same reasons as /_otel above. A
 // build reads the API's URL from the runtime config (config.js), as before.
+//
+// NAMED APIs (KCL Frontend.apis): <basePath>/_api/@<name>/* -> that workload,
+// with "/_api/@<name>" stripped, as Reliant hosting routes /_api/@<name>, so
+// dev URLs equal hosted ones. `forge env up` sets FORGE_DEV_APIS to
+// {"<name>": "<upstream>"}. Their rewrites come BEFORE /_api's, which would
+// otherwise match them. (Next's rewrite proxy cannot drop headers, so in dev
+// an API must not trust the X-Forwarded-* a client sent; the hosted origin
+// and the Vite dev server replace them.)
 const apiUpstream = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const devApis = parseDevApis(process.env.FORGE_DEV_APIS);
 const devApiProxy =
   process.env.NODE_ENV === "development" &&
-  apiUpstream !== "" &&
+  (apiUpstream !== "" || Object.keys(devApis).length > 0) &&
   !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+
+// parseDevApis reads FORGE_DEV_APIS. A malformed value proxies no named API
+// and says so, rather than failing the dev server.
+function parseDevApis(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("[forge] FORGE_DEV_APIS is not a JSON object; named APIs are not proxied");
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [name, url] of Object.entries(parsed)) {
+    if (/^[a-z][a-z0-9-]{0,30}$/.test(name) && typeof url === "string" && url !== "") {
+      out[name] = url.replace(/\/+$/, "");
+    }
+  }
+  return out;
+}
+
+// The named APIs' rewrites (see NAMED APIs above).
+const devApiRewrites = (prefix: string) =>
+  prefix
+    ? Object.entries(devApis).map(([name, target]) => ({
+        source: `${prefix}/@${name}/:path*`,
+        destination: `${target}/:path*`,
+      }))
+    : [];
 const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
 
 // ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
@@ -608,7 +691,8 @@ const nextConfig: NextConfig = {
           const otel = await devOtelUpstream();
           return [
             ...(otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : []),
-            ...(devApiProxy
+            ...devApiRewrites(devApiProxy),
+            ...(devApiProxy && apiUpstream
               ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
               : []),
           ];
@@ -856,13 +940,54 @@ const devOtelUpstream = (): Promise<string> => {
 //
 // There is no production equivalent, for the same reasons as /_otel above. A
 // build reads the API's URL from the runtime config (config.js), as before.
+//
+// NAMED APIs (KCL Frontend.apis): <basePath>/_api/@<name>/* -> that workload,
+// with "/_api/@<name>" stripped, as Reliant hosting routes /_api/@<name>, so
+// dev URLs equal hosted ones. `forge env up` sets FORGE_DEV_APIS to
+// {"<name>": "<upstream>"}. Their rewrites come BEFORE /_api's, which would
+// otherwise match them. (Next's rewrite proxy cannot drop headers, so in dev
+// an API must not trust the X-Forwarded-* a client sent; the hosted origin
+// and the Vite dev server replace them.)
 const apiUpstream = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const devApis = parseDevApis(process.env.FORGE_DEV_APIS);
 const devApiProxy =
   process.env.NODE_ENV === "development" &&
-  apiUpstream !== "" &&
+  (apiUpstream !== "" || Object.keys(devApis).length > 0) &&
   !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+
+// parseDevApis reads FORGE_DEV_APIS. A malformed value proxies no named API
+// and says so, rather than failing the dev server.
+function parseDevApis(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("[forge] FORGE_DEV_APIS is not a JSON object; named APIs are not proxied");
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [name, url] of Object.entries(parsed)) {
+    if (/^[a-z][a-z0-9-]{0,30}$/.test(name) && typeof url === "string" && url !== "") {
+      out[name] = url.replace(/\/+$/, "");
+    }
+  }
+  return out;
+}
+
+// The named APIs' rewrites (see NAMED APIs above).
+const devApiRewrites = (prefix: string) =>
+  prefix
+    ? Object.entries(devApis).map(([name, target]) => ({
+        source: `${prefix}/@${name}/:path*`,
+        destination: `${target}/:path*`,
+      }))
+    : [];
 const DEV_API_PROXY_TIMEOUT_MS = 3_600_000; // one hour: far past any server deadline
 
 // ── Dev origins (DEV ONLY) ──────────────────────────────────────────────
@@ -1005,7 +1130,8 @@ const nextConfig: NextConfig = {
           const otel = await devOtelUpstream();
           return [
             ...(otel ? [{ source: "/_otel/:path*", destination: `${otel}/:path*` }] : []),
-            ...(devApiProxy
+            ...devApiRewrites(devApiProxy),
+            ...(devApiProxy && apiUpstream
               ? [{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }]
               : []),
           ];

@@ -91,6 +91,77 @@ writes the module, `forge project upgrade --force <file>` adopts an unedited
 `src/lib/auth/native-login.ts`, and an edited one takes the template's
 `FORGE_DEV_API_PROXY` block by hand (each file's diff shows it).
 
+## Several APIs on one origin (`/_api/@<name>`)
+
+**When.** The frontend calls more than one backend of its own — its product
+API and a billing or platform API — and each must see the signed-in user. The
+session cookie is host-only and `SameSite=Lax`, so it reaches only this
+page's own origin: a second backend on its own hostname gets no cookie. Put
+both behind one API instead when you can; when you cannot, name the second.
+
+**KCL.** On the frontend, per env, name each extra backend by its workload
+(never a URL):
+
+```kcl
+forge.Frontend {
+    name = "web"
+    runtime_config = {API_URL = forge.WorkloadURL {workload = "api"}}   # the default, at /_api
+    apis = {billing = "billing-api"}                                   # /_api/@billing
+}
+```
+
+A name matches `^[a-z][a-z0-9-]{0,30}$`; a value is a workload name or a
+`forge.WorkloadURL`. The `@` means a name can never collide with a path of the
+default API.
+
+**In code.** `src/lib/api-base.ts` resolves a base by name, so build the
+second transport from it:
+
+```ts
+import { createConnectTransport } from "@connectrpc/connect-web";
+import { apiBaseFor } from "@/lib/api-base";
+
+// Beside src/lib/connect.ts's transport, with the same session-carrying fetch.
+const billing = createConnectTransport({
+  baseUrl: apiBaseFor("billing"),
+  fetch: (input, init) => fetch(input, { ...init, credentials: "include" }),
+});
+```
+
+`apiBaseFor` throws for a name the environment does not declare rather than
+sending the call to the default API.
+
+**Dev.** `forge env up` hands the dev server `FORGE_DEV_APIS`
+(`{"billing": "http://localhost:<port>"}`, the ports this run settled), and
+`vite.config.ts` / `next.config.ts` proxy `<basePath>/_api/@<name>/*` to each,
+with `/_api/@<name>` stripped, ahead of the `/_api` route. Vite answers an
+undeclared `@name` with 404 and drops the client's `X-Forwarded-*` /
+`Forwarded` headers, as the hosted origin does. Next's rewrite proxy cannot
+drop headers, so in dev an API must not trust a forwarding header.
+
+**Hosted.** The platform routes `/_api/@<name>/*` on every host of the site
+(custom domains too) and writes `apis: {"<name>": "/_api/@<name>"}` into
+`config.js`. The control plane must advertise `serves-named-site-apis`;
+an older one refuses the deploy, naming it, instead of shipping a site whose
+calls 404. Each target must be bound to `forge.OnHosted` too.
+
+**Elsewhere** (your own bucket, Firebase) nothing serves the route, so
+`config.js` carries each workload's own URL, called cross-origin with CORS.
+
+**The trust rule.** The session cookie reaches every named API, so each must
+be in the site's trust domain: render admits only a workload of this env's
+Bundle. A backend outside it is a literal URL in `runtime_config`.
+
+**Sessions.** A second API that reads a server-side session id (the login
+broker's `fs_…` cookie, `auth/sessions`) can resolve it only where the
+broker's session store is: give it the same store (`session.PostgresStore` on
+the same database), or have it call an internal resolver on the broker
+(session id to access token) reachable only on the platform network.
+
+A frontend scaffolded before this keeps its `api-base.ts`, `vite.config.ts` /
+`next.config.ts` (all scaffold-once): `forge project upgrade --check --all`
+shows each diff; take `apiBaseFor` and the `FORGE_DEV_APIS` block by hand.
+
 ## Static export: what a route may be
 
 An export holds only the pages Next can enumerate at build time. That gives

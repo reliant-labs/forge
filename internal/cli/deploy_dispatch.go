@@ -819,6 +819,17 @@ func hostedStaticSpec(f FrontendEntity) *v1alpha1.StaticSiteSpec {
 	if len(f.RuntimeConfigSpec) > 0 {
 		spec.RuntimeConfig = f.RuntimeConfigSpec
 	}
+	// Named same-origin APIs: references, never URLs. The control plane
+	// resolves each against the named workload in the same environment,
+	// routes /_api/@<name> to it and publishes the paths in config.js; one
+	// that does not serve them is refused before anything is recorded
+	// (release.CapabilityServesNamedSiteAPIs).
+	if len(f.APIs) > 0 {
+		spec.APIs = make(map[string]v1alpha1.WorkloadURLRef, len(f.APIs))
+		for name, workload := range f.APIs {
+			spec.APIs[name] = v1alpha1.WorkloadURLRef{Name: workload}
+		}
+	}
 	return spec
 }
 

@@ -248,6 +248,12 @@ promotes across envs unchanged. There an `API_URL` that references a workload
 becomes `"/_api"`, which the platform serves on the site's own hosts
 (`deploy/hosting`): the browser never calls the API's hostname.
 
+A site that calls several backends of its own names the others with
+`apis = {billing = "billing-api"}`: each is served on the site's own origin at
+`/_api/@<name>` (dev and hosted alike), so the session cookie reaches every
+one. Only a workload of the same env may be named. See `frontend/serving`,
+"Several APIs on one origin".
+
 Secrets do not belong in a static site: everything in `config.js` is public.
 A value that must stay secret belongs on a service (`forge secret set`).
 

@@ -33,9 +33,13 @@ package scaffold
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,10 +47,12 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/factory"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/pkg/activity"
 )
 
 // rpcDeclaredInServiceProtoDir reports whether any .proto file under the
@@ -205,7 +211,7 @@ func runRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 			if perr != nil {
 				return perr
 			}
-			return writeBareRPCStub(ctxLabel, dir, naming.ServicePackage(svc), rpcName, pbPath, mode, true)
+			return writeBareRPCStub(ctxLabel, dir, naming.ServicePackage(svc), rpcName, pbPath, mode, true, rpcStubConnect(root, dir, svc, pbPath))
 		}
 		return err
 	}
@@ -236,6 +242,11 @@ func runRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 		fmt.Println("     generated CRUD ops) until you do.")
 		fmt.Printf("  2. Iterate with `task test:short -- ./internal/handlers/%s/...`;\n", hc.ImportLeaf)
 		fmt.Println("     run `task test` before you finish.")
+		if activity.IsMutatingName(rpcName) {
+			fmt.Println("  3. Unless its proto already does, declare the activity event it records,")
+			fmt.Println("     or `forge lint` fails (forgeconv-activity-declared):")
+			fmt.Print(activityOptionHint("       "))
+		}
 		return nil
 	}
 
@@ -244,7 +255,7 @@ func runRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 	if perr != nil {
 		return perr
 	}
-	return writeBareRPCStub(ctxLabel, hc.Dir, hc.PackageName, rpcName, pbPath, mode, true)
+	return writeBareRPCStub(ctxLabel, hc.Dir, hc.PackageName, rpcName, pbPath, mode, true, rpcStubConnect(root, hc.Dir, svc, pbPath))
 }
 
 // writeBareRPCStub is the historical scaffold: the correctly-signed
@@ -270,7 +281,7 @@ func pbImportPathFor(root, svc string) (string, error) {
 	return cfg.ModulePath + "/gen/services/" + naming.ServicePackage(svc) + "/v1", nil
 }
 
-func writeBareRPCStub(ctxLabel, handlerDir, pkg, rpcName, pbImportPath string, mode rpcStreamMode, printSnippet bool) error {
+func writeBareRPCStub(ctxLabel, handlerDir, pkg, rpcName, pbImportPath string, mode rpcStreamMode, printSnippet bool, v2 *v2ConnectRef) error {
 	// One file per RPC keeps the diff readable and avoids any merge with
 	// existing handler files. mock_gen.go discovers methods across every
 	// non-test .go file in the package, so the new file is auto-picked
@@ -291,6 +302,9 @@ func writeBareRPCStub(ctxLabel, handlerDir, pkg, rpcName, pbImportPath string, m
 	}
 
 	content := buildRPCHandlerStub(pkg, rpcName, pbImportPath, mode)
+	if v2 != nil {
+		content = buildRPCHandlerStubV2(pkg, rpcName, pbImportPath, *v2, mode)
+	}
 	if err := atomicfile.WriteFile(targetPath, []byte(content), 0o644); err != nil {
 		return cliutil.WrapUserErr(ctxLabel, "write rpc file", targetPath,
 			"verify the directory is writable", err)
@@ -446,6 +460,157 @@ import (
 	)
 }
 
+// v2ConnectRef names what a connect-go v2 streaming stub refers to in the
+// service's generated <pkg>connect package: the per-rpc stream type is
+// <Alias>.<ServiceGoName><Method>ServerStream (protoc-gen-connect-go v2's
+// naming), imported from ImportPath.
+type v2ConnectRef struct {
+	Alias         string // e.g. "billingv1connect"
+	ImportPath    string // e.g. "example.com/app/gen/services/billing/v1/billingv1connect"
+	ServiceGoName string // e.g. "BillingService"
+}
+
+// rpcStubConnect returns the v2 references a stub needs when the project
+// builds against connect-go v2, nil for a v1 project.
+//
+// They are read from the handler's own service.go — the
+// `<alias>.Unimplemented<Svc>Handler` it embeds and the import that alias
+// names — so the stub agrees with the file next to it. A directory without
+// a readable service.go falls back to forge's scaffolding convention
+// (go_package `<svc>v1`, service `<Svc>Service`).
+func rpcStubConnect(root, handlerDir, svc, pbImportPath string) *v2ConnectRef {
+	if !connectmajor.DetectOrDefault(root).IsV2() {
+		return nil
+	}
+	ref := v2ConnectRef{
+		Alias:         naming.ServicePackage(svc) + "v1connect",
+		ServiceGoName: naming.ConnectServiceGoName(naming.ToPascalCase(naming.ServicePackage(svc)) + "Service"),
+	}
+	ref.ImportPath = pbImportPath + "/" + ref.Alias
+	if found, ok := connectRefFromServiceFile(filepath.Join(handlerDir, "service.go"), pbImportPath); ok {
+		ref = found
+	}
+	return &ref
+}
+
+// connectRefFromServiceFile reads the generated-connect import and the
+// embedded Unimplemented<Svc>Handler out of a handler's service.go.
+func connectRefFromServiceFile(path, pbImportPath string) (v2ConnectRef, bool) {
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return v2ConnectRef{}, false
+	}
+	aliases := map[string]string{} // alias -> import path
+	for _, imp := range file.Imports {
+		p, _ := strconv.Unquote(imp.Path.Value)
+		dir, leaf := filepath.ToSlash(filepath.Dir(p)), filepath.Base(p)
+		if dir != pbImportPath || !strings.HasSuffix(leaf, "connect") {
+			continue
+		}
+		alias := leaf
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		aliases[alias] = p
+	}
+	var ref v2ConnectRef
+	ast.Inspect(file, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok || ref.Alias != "" {
+			return ref.Alias == ""
+		}
+		x, ok := sel.X.(*ast.Ident)
+		if !ok || aliases[x.Name] == "" {
+			return true
+		}
+		name := sel.Sel.Name
+		if base, ok := strings.CutPrefix(name, "Unimplemented"); ok && strings.HasSuffix(base, "Handler") && base != "Handler" {
+			ref = v2ConnectRef{Alias: x.Name, ImportPath: aliases[x.Name], ServiceGoName: strings.TrimSuffix(base, "Handler")}
+		}
+		return true
+	})
+	return ref, ref.Alias != ""
+}
+
+// buildRPCHandlerStubV2 is buildRPCHandlerStub for a connect-go v2
+// project: the signatures protoc-gen-connect-go v2 declares on the
+// service's Handler interface — bare request and response messages, and
+// a per-rpc <Svc><Method>ServerStream value for every streaming shape —
+// mirroring codegen's handler templates. A unary stub names no connect
+// type at all; a streaming one imports the generated <pkg>connect package.
+func buildRPCHandlerStubV2(pkg, rpcName, pbImportPath string, conn v2ConnectRef, mode rpcStreamMode) string {
+	goMethod := naming.GoCamelCase(rpcName)
+	reqType := "pb." + naming.GoCamelCase(rpcName+"Request")
+	respType := "pb." + naming.GoCamelCase(rpcName+"Response")
+	errExpr := fmt.Sprintf(`svcerr.Wrap(svcerr.ScaffoldStub(%q))`, goMethod)
+	stream := conn.Alias + "." + conn.ServiceGoName + goMethod + "ServerStream"
+
+	var sig, body string
+	switch mode {
+	case rpcServerStream:
+		sig = fmt.Sprintf("func (s *Service) %s(ctx context.Context, req *%s, stream %s) error", goMethod, reqType, stream)
+		body = "\treturn " + errExpr
+	case rpcClientStream:
+		sig = fmt.Sprintf("func (s *Service) %s(ctx context.Context, stream %s) (*%s, error)", goMethod, stream, respType)
+		body = "\treturn nil, " + errExpr
+	case rpcBidiStream:
+		sig = fmt.Sprintf("func (s *Service) %s(ctx context.Context, stream %s) error", goMethod, stream)
+		body = "\treturn " + errExpr
+	default: // rpcUnary
+		sig = fmt.Sprintf("func (s *Service) %s(ctx context.Context, req *%s) (*%s, error)", goMethod, reqType, respType)
+		body = "\treturn nil, " + errExpr
+	}
+
+	// A bidirectional v2 handler names no pb message (both directions ride
+	// the stream type), and an unused import does not compile.
+	pbImport := fmt.Sprintf("\n\tpb %q\n", pbImportPath)
+	if mode == rpcBidiStream {
+		pbImport = "\n"
+	}
+	connImport := ""
+	if mode != rpcUnary {
+		alias := ""
+		if conn.Alias != filepath.Base(conn.ImportPath) {
+			alias = conn.Alias + " "
+		}
+		connImport = fmt.Sprintf("\t%s%q\n", alias, conn.ImportPath)
+	}
+	nolint := ""
+	if naming.TripsReviveVarNaming(goMethod) {
+		nolint = "//nolint:revive // var-naming: name fixed by the generated Handler interface (proto rpc " + goMethod + ")\n"
+	}
+	return fmt.Sprintf(`package %s
+
+import (
+	"context"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
+%s%s)
+
+// %s is a hand-written RPC stub. Returned by `+"`forge scaffold rpc`"+`.
+// Fill in the body when ready; the stub returns Unimplemented so
+// `+"`go build`"+` succeeds before you have an implementation.
+//
+// Declare the RPC in the service .proto (the snippet is printed for you),
+// then run `+"`forge generate`"+` so %s / %s exist.
+%s
+%s%s {
+%s
+}
+`,
+		pkg,
+		pbImport,
+		connImport,
+		goMethod,
+		reqType,
+		respType,
+		codegen.UnwiredStubMarkerComment(pkg, goMethod),
+		nolint,
+		sig,
+		body,
+	)
+}
+
 // buildRPCProtoSnippet returns the proto block the user pastes into
 // the service's .proto file. The snippet has two parts: the rpc line
 // (goes inside the service block) and the request/response messages
@@ -470,6 +635,15 @@ func buildRPCProtoSnippet(rpcName string, mode rpcStreamMode) string {
 		rpcLine = fmt.Sprintf("  rpc %s(%s) returns (%s);", rpcName, reqType, respType)
 	}
 
+	if mode == rpcUnary && activity.IsMutatingName(rpcName) {
+		// A mutating rpc must declare the activity it records, or forge lint
+		// fails: carry the option in the snippet, not as a later surprise.
+		rpcLine = strings.TrimSuffix(rpcLine, ";") + " {\n" +
+			"    // Declare the event it records (forge lint: forgeconv-activity-declared),\n" +
+			"    // or `activity: { none: \"<why>\" }` if it changes nothing worth recording.\n" +
+			"    option (forge.v1.method) = { activity: { verb: \"<verb>\", target: { kind: \"<kind>\", id: \"<field path>\" } } };\n" +
+			"  }"
+	}
 	return fmt.Sprintf(`
 // Paste inside `+"`service <YourService> { ... }`"+`:
 %s
@@ -484,4 +658,11 @@ message %s {
 }
 
 `, rpcLine, reqType, respType)
+}
+
+// activityOptionHint is the declaration a mutating rpc's proto carries, each
+// line prefixed with indent.
+func activityOptionHint(indent string) string {
+	return indent + "option (forge.v1.method) = { activity: { verb: \"<verb>\", target: { kind: \"<kind>\", id: \"<field path>\" } } };\n" +
+		indent + "(or `activity: { none: \"<why>\" }` when it changes nothing worth recording)\n"
 }

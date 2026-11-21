@@ -248,6 +248,32 @@ func (s *Service) Call() error {
 `,
 		},
 		{
+			// forge report b43668fe: a reason after the marker, as the
+			// marker grammar allows (`: <reason>`), suppressed nothing.
+			name: "suppression-comment-with-reason",
+			methods: `
+func (s *Service) Call() error {
+	// forge:optional-checked: Call is only wired when Svc is set
+	return s.deps.Svc.Do()
+}
+
+func (s *Service) Trail() error {
+	return s.deps.Svc.Do() //forge:optional-checked: New refuses a nil Svc
+}
+`,
+		},
+		{
+			// Prose that merely names the marker is not the marker.
+			name: "marker-mentioned-in-prose-does-not-suppress",
+			methods: `
+func (s *Service) Call() error {
+	// see forge:optional-checked for how to silence this
+	return s.deps.Svc.Do()
+}
+`,
+			want: []want{{field: "Svc", method: "Call"}},
+		},
+		{
 			name: "non-optional-field-never-flagged",
 			// Repo lacks the marker — unguarded derefs are validateDeps'
 			// jurisdiction, not this lint's.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -130,27 +131,130 @@ func TestRegisterServiceV2_GroupsServicesByChain(t *testing.T) {
 	}
 }
 
-// An rpc a mounted service does not have answers unimplemented — the
-// per-service subtree connecthttp.Mount registers — and its siblings on the
-// shared server are unaffected by later mounts.
-func TestRegisterServiceV2_UnknownMethodIsUnimplemented(t *testing.T) {
-	mux := http.NewServeMux()
-	m := mountkit.NewMuxV2(mux, nil)
-	svc := echoV2{service: "test.v1.ChatService"}
-	mountkit.RegisterServiceV2(m, svc)
-	mountkit.RegisterServiceV2(m, echoV2{service: "test.v1.OtherService"})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
+// v1ChatService is what a connect-go v1 generated New<Svc>Handler mounts: a
+// "/pkg.Svc/" handler whose path switch serves the known procedures and
+// sends http.NotFound for every other path under the service.
+func v1ChatService(mux *http.ServeMux, service string) {
+	echo := connect.NewUnaryHandler("/"+service+"/Echo",
+		func(_ context.Context, req *connect.Request[wrapperspb.BytesValue]) (*connect.Response[wrapperspb.BytesValue], error) {
+			return connect.NewResponse(req.Msg), nil
+		})
+	mux.Handle("/"+service+"/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + service + "/Echo":
+			echo.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
 
+// rawResponse is what a client reads back from an HTTP exchange, minus the
+// headers that differ per exchange (Date).
+type rawResponse struct {
+	status      int
+	contentType string
+	nosniff     string
+	grpcStatus  string
+	body        string
+}
+
+func post(t *testing.T, url, contentType string, body []byte, header map[string]string) rawResponse {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	for k, v := range header {
+		req.Header.Set(k, v)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rawResponse{
+		status:      res.StatusCode,
+		contentType: res.Header.Get("Content-Type"),
+		nosniff:     res.Header.Get("X-Content-Type-Options"),
+		grpcStatus:  res.Header.Get("Grpc-Status") + res.Trailer.Get("Grpc-Status"),
+		body:        string(b),
+	}
+}
+
+// An rpc a mounted service does not have answers a plain HTTP 404, byte for
+// byte what a connect-go v1 generated handler sends, over Connect, gRPC and
+// gRPC-Web — not v2's unimplemented RPC error. A client older than the
+// server tells "this rpc was retired" from a failure by that 404. An unknown
+// service is the mux's own 404, as before. It holds for a service on the
+// shared server, one on a server of its own, and testkit's test server.
+func TestRegisterServiceV2_UnknownMethodIsV1NotFound(t *testing.T) {
+	const service = "test.v1.ChatService"
+	v1Mux := http.NewServeMux()
+	v1ChatService(v1Mux, service)
+	v1 := httptest.NewServer(v1Mux)
+	t.Cleanup(v1.Close)
+
+	shared := http.NewServeMux()
+	m := mountkit.NewMuxV2(shared, nil)
+	svc := echoV2{service: service}
+	mountkit.RegisterServiceV2(m, svc)
+	// A later mount must not disturb the first service's patterns.
+	mountkit.RegisterServiceV2(m, echoV2{service: "test.v1.OtherService"})
+	own := http.NewServeMux()
+	mountkit.RegisterServiceV2(mountkit.NewMuxV2(own, nil), svc,
+		mountkit.WithInterceptorsV2(func(next connectv2.ServerFunc) connectv2.ServerFunc { return next }))
+	hand := http.NewServeMux()
+	handServer := connectv2.NewServer()
+	svc.RegisterV2(handServer)
+	mountkit.MountV2(hand, handServer)
+
+	empty := []byte{}
+	grpcFrame := []byte{0, 0, 0, 0, 0}
+	requests := map[string]struct {
+		contentType string
+		body        []byte
+		header      map[string]string
+	}{
+		"connect":       {"application/json", []byte("{}"), map[string]string{"Connect-Protocol-Version": "1"}},
+		"connect-proto": {"application/proto", empty, map[string]string{"Connect-Protocol-Version": "1"}},
+		"grpc":          {"application/grpc", grpcFrame, map[string]string{"Te": "trailers"}},
+		"grpc-web":      {"application/grpc-web+proto", grpcFrame, nil},
+	}
+	for name, mux := range map[string]*http.ServeMux{"shared server": shared, "own server": own, "MountV2": hand} {
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		if err := callEchoV2(t, srv, svc, []byte("still here")); err != nil {
+			t.Fatalf("%s: a registered rpc must still answer: %v", name, err)
+		}
+		for proto, r := range requests {
+			for _, path := range []string{"/" + service + "/Missing", "/test.v1.NoSuchService/Echo"} {
+				want := post(t, v1.URL+path, r.contentType, r.body, r.header)
+				got := post(t, srv.URL+path, r.contentType, r.body, r.header)
+				if want.status != http.StatusNotFound {
+					t.Fatalf("precondition: v1 answers %s %s with %d", proto, path, want.status)
+				}
+				if got != want {
+					t.Errorf("%s, %s POST %s:\n got %+v\nwant %+v (connect-go v1)", name, proto, path, got, want)
+				}
+			}
+		}
+	}
+
+	// A v2 client reads the 404 as unimplemented, as a v1 client did.
+	srv := httptest.NewServer(shared)
+	t.Cleanup(srv.Close)
 	client := connectv2.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL))
 	err := client.CallUnary(context.Background(),
-		connectv2.Spec{Procedure: "/test.v1.ChatService/Missing", StreamType: connectv2.StreamTypeUnary},
+		connectv2.Spec{Procedure: "/" + service + "/Missing", StreamType: connectv2.StreamTypeUnary},
 		&emptypb.Empty{}, &emptypb.Empty{})
 	if got := connectv2.CodeOf(err); got != connectv2.CodeUnimplemented {
-		t.Fatalf("unknown method: code %v (%v), want unimplemented", got, err)
-	}
-	if err := callEchoV2(t, srv, svc, []byte("still here")); err != nil {
-		t.Fatalf("call after a second mount: %v", err)
+		t.Fatalf("unknown method: a v2 client reads %v (%v), want unimplemented", got, err)
 	}
 }
 

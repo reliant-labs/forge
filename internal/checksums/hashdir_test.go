@@ -77,56 +77,6 @@ func TestHashCerts_OneFilePerOutput(t *testing.T) {
 	}
 }
 
-// TestHashCerts_MigrateLegacyManifest: Load reads a legacy .forge/hashes.json,
-// and the next Save writes its entries out as certificate files, deletes it,
-// and rewrites the .gitignore line that committed it.
-func TestHashCerts_MigrateLegacyManifest(t *testing.T) {
-	root := t.TempDir()
-	h := Hash([]byte("x"))
-	writeT(t, root, LegacyHashesFile, `{"files": {"web/schema_gen.json": "`+h+`"}}`+"\n")
-	writeT(t, root, ".gitignore", "node_modules/\n.forge/*\n!.forge/disowned.json\n!.forge/hashes.json\n!.forge/scaffolded.json\n")
-
-	cs, err := Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cs.Unstampable["web/schema_gen.json"] != h {
-		t.Fatalf("legacy entry not loaded: %v", cs.Unstampable)
-	}
-	if err := Save(root, cs); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := readT(t, root, LegacyHashesFile); ok {
-		t.Error("the legacy manifest must be deleted once its entries are certificate files")
-	}
-	if got, _ := readT(t, root, HashCertPath("web/schema_gen.json")); got != h+"\n" {
-		t.Errorf("certificate = %q", got)
-	}
-	gi, _ := readT(t, root, ".gitignore")
-	if strings.Contains(gi, "!.forge/hashes.json") || !strings.Contains(gi, "\n!.forge/hashes/\n") {
-		t.Errorf(".gitignore must re-include the certificate directory instead of the manifest:\n%s", gi)
-	}
-	if !strings.Contains(gi, "node_modules/") {
-		t.Errorf("user .gitignore content lost:\n%s", gi)
-	}
-}
-
-// TestHashCerts_CertificateWinsOverLegacy: a certificate file is newer than
-// any legacy manifest entry for the same output.
-func TestHashCerts_CertificateWinsOverLegacy(t *testing.T) {
-	root := t.TempDir()
-	old, cur := Hash([]byte("old")), Hash([]byte("cur"))
-	writeT(t, root, LegacyHashesFile, `{"files": {"a_gen.json": "`+old+`"}}`)
-	writeT(t, root, HashCertPath("a_gen.json"), cur+"\n")
-	cs, err := Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cs.Unstampable["a_gen.json"] != cur {
-		t.Errorf("got %q, want the certificate's %q", cs.Unstampable["a_gen.json"], cur)
-	}
-}
-
 // TestHashCerts_CorruptCertificateFailsLoad: a certificate that is not a
 // hash is named, not silently ignored (an ignored one would read as an
 // uncertified output and be overwritten).

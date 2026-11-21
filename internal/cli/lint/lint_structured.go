@@ -566,6 +566,8 @@ func runLintStructured(ctx context.Context, flags lintFlags, paths []string) err
 			fix:           fix,
 			strict:        flags.strict,
 			skipFrontends: runSkip,
+			install:       flags.install,
+			installOut:    installOutput(flags.quiet),
 			paths:         paths,
 			cfg:           cfg,
 			cwd:           cwd,

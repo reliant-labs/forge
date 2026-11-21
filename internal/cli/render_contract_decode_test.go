@@ -152,6 +152,21 @@ func TestRenderContract_RuntimeFacts(t *testing.T) {
 		if len(bo) == 0 || len(bo[0].Runtime.BuildOnly.BuildVariants) == 0 {
 			t.Fatalf("build-only workload or its variants not decoded: %+v", bo)
 		}
+		// A variant's KCL `env` and `output_name` reach the fields the
+		// variant build reads; an unset one decodes empty.
+		vs := bo[0].Runtime.BuildOnly.BuildVariants
+		if len(vs) != 2 {
+			t.Fatalf("want 2 variants, got %+v", vs)
+		}
+		if vs[0].OutputName != "" || len(vs[0].EnvAtBuild) != 0 {
+			t.Errorf("variant without env/output_name decoded %+v", vs[0])
+		}
+		if got := vs[1].EnvAtBuild["CGO_ENABLED"]; got != "1" {
+			t.Errorf("variant env not decoded: %+v", vs[1].EnvAtBuild)
+		}
+		if vs[1].OutputName != "acme-cli-darwin-arm64" {
+			t.Errorf("variant output_name = %q, want acme-cli-darwin-arm64", vs[1].OutputName)
+		}
 	})
 	t.Run("build-outputs", func(t *testing.T) {
 		e, _ := loadContract(t, "build-outputs")

@@ -139,6 +139,10 @@ Exit 7 is a person's turn, not a failure: relay the link to the user, do not
 retry in a loop. A newer deploy to the same env supersedes a queued one. An
 older control plane (no holds) still refuses with the billing reason.
 
+A hosted deploy at a terminal (not CI or `--json`) prints the launcher's
+`FORGE_HOST_CONNECT_HINT` (how to connect this machine for agents) before
+`RESULT`. forge only prints it.
+
 ### What hosting provides and refuses
 
 | Provides | Refuses (bind to a cluster you operate) |
@@ -251,8 +255,10 @@ cluster is registered once (`forge cluster connect`) and named in
 `connected_cluster`; the render refuses an unconnected one, naming the
 command. An `_on_cluster` workload pulls the image workloads.k declares (push
 it: `forge env build <env> --push`), gets the env's capacity floor, and reads
-`DATABASE_URL` from the `<project>-secrets` Secret you provision in its
-namespace (the managed database is reachable from the platform only). Moving
+`DATABASE_URL` from key `database_url` of the `<project>-secrets` Secret you
+provision in its namespace and list in the Bundle's `required_secrets` (a
+`forge.ExternalSecret`, which the deploy preflight checks; the managed
+database is reachable from the platform only). Moving
 a whole env? Also add the commented `cluster_target`, `network_policy` and
 gateway lines at the bottom of the Bundle; leaving hosting altogether, drop
 `control_plane`, `_db`/`databases` and use `forge.ExternalSecrets {}` (then

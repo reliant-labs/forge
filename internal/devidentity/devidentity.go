@@ -178,6 +178,34 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	return res, nil
 }
 
+// Import imports users into the dev instance's identity: pkg/identity's
+// ImportUsers, against the declaration Converge converges, with the IdP's
+// bootstrap PAT. It writes nothing but the users (no outputs, no store), so a
+// migration can be rehearsed on the dev IdP with the file it will run against
+// a hosted env. Converge first: the project and the social providers rows
+// refer to must exist.
+func Import(ctx context.Context, in Input, users []identity.ImportUser, opts identity.ImportOptions) ([]identity.ImportResult, []string, error) {
+	spec, warnings, err := Spec(in)
+	if err != nil {
+		return nil, warnings, err
+	}
+	rec, err := identity.New(identity.Options{
+		BaseURL:      in.BaseURL,
+		Issuer:       in.BaseURL,
+		Credential:   identity.PATFile(in.PATPath),
+		ReadyTimeout: readyTimeout,
+		Logger:       in.Logger,
+	})
+	if err != nil {
+		return nil, warnings, err
+	}
+	res, err := rec.ImportUsers(ctx, spec, users, opts)
+	if err != nil {
+		return res, warnings, fmt.Errorf("import into identity %q: %w", in.Identity.Name, err)
+	}
+	return res, warnings, nil
+}
+
 // SocialCallbackURL is the redirect URI every social provider's DEV OAuth app
 // registers: the dev IdP's own <issuer>/idps/callback, which is where the
 // issuer sends the provider back (it does the code exchange itself). Empty

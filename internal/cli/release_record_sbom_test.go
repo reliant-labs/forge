@@ -2,9 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -167,6 +170,58 @@ func TestReleaseRecordSBOM_ProvidedCycloneDXAndSPDX(t *testing.T) {
 	}
 	if calls := rt.syft.calls(); len(calls) != 1 || !strings.Contains(calls[0], "ghcr.io/acme/web") {
 		t.Errorf("syft ran for %v, want only web", calls)
+	}
+}
+
+// On a control plane that keeps SBOMs, a record uploads each workload's SBOM
+// with its cut, as a forge cut does: the bytes recorded on this machine (a
+// pipeline's --sbom verbatim, a generated one), under the record's project,
+// version and workload. One that does not keep them is sent none.
+func TestReleaseRecordSBOM_UploadsToAControlPlaneThatKeepsThem(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	rt.cp.vulnFeatures = []string{hostedVulnFeatureSBOMUpload}
+	cdx := writeSBOMFile(t, "api.cdx.json", recordCycloneDX)
+	o := twoWorkloads(releaseRecordOptions{sbom: recordSBOMOptions{specs: []string{"api=" + cdx}}})
+	res, err := recordReleaseIn(context.Background(), o, rt.sc, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	uploads := rt.cp.called("RecordReleaseSBOM")
+	if len(uploads) != 2 {
+		t.Fatalf("%d uploads, want one per workload: %+v", len(uploads), uploads)
+	}
+	got := map[string]map[string]any{}
+	for _, u := range uploads {
+		got[u["artifactName"].(string)] = u
+	}
+	for _, w := range []string{"api", "web"} {
+		u, e := got[w], sbomEntry(t, res, w)
+		if u == nil {
+			t.Fatalf("%s's SBOM was not uploaded: %+v", w, uploads)
+		}
+		if u["version"] != "v1.4.0" || u["project"] != "shop" || u["encoding"] != sbomEncodingGzip || u["format"] != e.Format || u["source"] != e.Source {
+			t.Errorf("%s upload = %+v, want v1.4.0 of shop as recorded (%+v)", w, u, e)
+		}
+	}
+	gz, _ := base64.StdEncoding.DecodeString(got["api"]["sbom"].(string))
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := io.ReadAll(zr); string(data) != recordCycloneDX {
+		t.Errorf("api uploaded %q, want the pipeline's file verbatim", data)
+	}
+	if cuts := rt.cp.called("CutRelease"); len(cuts) != 1 {
+		t.Errorf("%d cuts", len(cuts))
+	}
+
+	// A control plane that does not keep SBOMs is sent none.
+	rt = newSBOMRecordTest(t)
+	if _, err := recordReleaseIn(context.Background(), twoWorkloads(releaseRecordOptions{}), rt.sc, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rt.cp.called("RecordReleaseSBOM")); n != 0 {
+		t.Errorf("%d uploads to a control plane without vuln-sbom-upload", n)
 	}
 }
 

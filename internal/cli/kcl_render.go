@@ -239,8 +239,13 @@ type KCLEntities struct {
 	// and consumers derived, the deliveries and reserved managed-secret names
 	// listed. Nil when the env declares none. See release.ShapeIdentity: the
 	// render emits the shape's own vocabulary, so there is nothing to
-	// translate between the two.
+	// translate between the two. Set when the env declares exactly one
+	// identity; several are Identities, and this is nil. Read both through
+	// AllIdentities.
 	Identity *release.ShapeIdentity `json:"identity,omitempty"`
+	// Identities is Bundle.identities resolved, when the env declares
+	// several (release.Shape.Identities). Nil otherwise.
+	Identities []release.ShapeIdentity `json:"identities,omitempty"`
 	// RenderedSecrets are the Bundle-level forge.RenderedSecret
 	// declarations (Bundle.rendered_secrets): Secrets forge renders and
 	// applies itself, INDEPENDENT of SecretProvider, each at the
@@ -1148,8 +1153,11 @@ type DockerBuild struct {
 	// fingerprint is unchanged — see build_docker_release_reuse.go.
 	Inputs []string `json:"inputs,omitempty"`
 	// cover is set when the env builds this image instrumented: the binary
-	// its workload runs is a cover build (applyCover). Never decoded.
-	cover *workloadCover
+	// its workload runs is a cover build (applyCover). coverVariant is set
+	// when a release build of it also pushes its cover stage beside it, for
+	// a preview of the release. Never decoded.
+	cover        *workloadCover
+	coverVariant *workloadCover
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1342,11 +1350,24 @@ type BuildVariant struct {
 	// `tags` (kcl/render.k _render_build_variant); this field read
 	// `build_tags`, which no render emits, so a variant's tags were dropped
 	// until the env schema's fixture check caught the mismatch.
-	BuildTags  []string          `json:"tags,omitempty"`
-	GOOS       string            `json:"goos,omitempty"`
-	GOARCH     string            `json:"goarch,omitempty"`
+	BuildTags []string `json:"tags,omitempty"`
+	GOOS      string   `json:"goos,omitempty"`
+	GOARCH    string   `json:"goarch,omitempty"`
+	// EnvAtBuild is the variant's build-time process env (KCL
+	// BuildVariant.env), merged over forge's own so a declared key wins.
 	EnvAtBuild map[string]string `json:"env_at_build,omitempty"`
 	OutputName string            `json:"output_name,omitempty"` // default: <service>-<variant>
+}
+
+// variantOutputName is the basename a variant's binary is built to and
+// recorded in the release under: the declared output_name, else
+// <workload>-<variant>. It carries no platform suffix; the file on disk is
+// hostlaunch.ExeName(goos, name), so a windows variant ends in .exe.
+func variantOutputName(workload string, v BuildVariant) string {
+	if v.OutputName != "" {
+		return v.OutputName
+	}
+	return workload + "-" + v.Name
 }
 
 // FrontendEntity is one frontend from rendered KCL: a dev server, or a
@@ -1749,6 +1770,7 @@ type kclRenderRaw struct {
 	ReleaseHealth            *release.ShapeReleaseHealth               `json:"release_health,omitempty"`
 	UptimeChecks             []release.ShapeUptimeCheck                `json:"uptime_checks,omitempty"`
 	Identity                 *release.ShapeIdentity                    `json:"identity,omitempty"`
+	Identities               []release.ShapeIdentity                   `json:"identities,omitempty"`
 	Telemetry                json.RawMessage                           `json:"telemetry,omitempty"`
 	Infra                    []HostInfraEntity                         `json:"infra,omitempty"`
 	Frontends                []FrontendEntity                          `json:"frontends,omitempty"`
@@ -1995,7 +2017,15 @@ func (t *ClusterTargetEntity) field(name string) string {
 // The override env var FORGE_KCL_RENDER_FIXTURE points at a JSON file
 // whose contents are read in lieu of shelling kcl. Used by unit tests so
 // they can exercise the dispatch logic without a real KCL toolchain.
+//
+// Inside a withDeclarationMemo scope, each env's declaration is evaluated
+// once and shared by every caller in that command (kcl_render_scope.go).
 func RenderKCL(ctx context.Context, projectDir, env string) (*KCLEntities, error) {
+	if m := declarationMemoFrom(ctx); m != nil {
+		return m.render(ctx, projectDir, env, func(ctx context.Context) (*KCLEntities, error) {
+			return RenderKCLWith(ctx, projectDir, env, nil)
+		})
+	}
 	return RenderKCLWith(ctx, projectDir, env, nil)
 }
 
@@ -2051,11 +2081,12 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	// One binary, one build: the same for coverage, and an instrumented
 	// binary in a persistent env must say why. The env's default reads
 	// forge.yaml's opt-in (tests.coverage), so it is resolved here.
-	coverBins, err := ResolveCoverBinaries(entities, config.ReadTestsCoverage(projectDir))
+	optIn := config.ReadTestsCoverage(projectDir)
+	coverBins, err := ResolveCoverBinaries(entities, optIn)
 	if err != nil {
 		return nil, err
 	}
-	entities.applyCover(coverBins)
+	entities.applyCover(coverBins, optIn)
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -2191,6 +2222,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ReleaseHealth:            raw.ReleaseHealth,
 		UptimeChecks:             raw.UptimeChecks,
 		Identity:                 raw.Identity,
+		Identities:               raw.Identities,
 		RenderedSecrets:          raw.RenderedSecrets,
 		ControlPlane:             raw.ControlPlane,
 		RequiredSecrets:          raw.RequiredSecrets,

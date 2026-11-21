@@ -135,11 +135,12 @@ func (e *envTelemetry) workloads(cluster string, refs map[string]collector.Colle
 	return &deploy.WorkloadTelemetry{Collector: ref, Targets: targets}
 }
 
-// insertTelemetryPolicies adds the standalone NetworkPolicies Manifests and
-// Observability targets ask for (network_policy = True) to the stream: after
-// the last object of the target's Manifests group, carrying its owner and
-// delivery unit, or at the end for an Observability target (or an unnamed
-// group, whose objects carry no owner to find them by).
+// insertTelemetryPolicies adds the standalone NetworkPolicies Manifests,
+// Observability and ManagedDatabase targets ask for (network_policy = True)
+// to the stream: after the last object of the target's Manifests group or
+// ManagedDatabase, carrying its owner and delivery unit, or at the end for
+// an Observability target, a ManagedDatabase's CloudNativePG operator target
+// (or an unnamed group, whose objects carry no owner to find them by).
 func insertTelemetryPolicies(items []any, e *envTelemetry, refs map[string]collector.CollectorRef) ([]any, error) {
 	if e == nil {
 		return items, nil
@@ -155,7 +156,7 @@ func insertTelemetryPolicies(items []any, e *envTelemetry, refs map[string]colle
 	for _, c := range clusters {
 		for _, t := range e.targets {
 			if t.Runtime != telemetry.RuntimeCluster || t.Cluster != c ||
-				(t.Attachment != telemetry.AttachManifests && t.Attachment != telemetry.AttachObservability) {
+				!standalonePolicyAttachment(t.Attachment) {
 				continue
 			}
 			policies, skipped := collector.NetworkPolicies([]telemetry.Target{t}, refs[c])
@@ -198,17 +199,35 @@ func insertTelemetryPolicies(items []any, e *envTelemetry, refs map[string]colle
 	return append(out, tail...), nil
 }
 
-// groupEnd is the index of the last object of the Manifests group source
-// names ("manifests:<name>") on cluster c, -1 when there is none.
+// standalonePolicyAttachment is whether a target of attachment a gets its
+// own NetworkPolicy when it asks for one. A Workload's or HostInfra's rule
+// joins the policy forge already renders for it instead (deploy.Context).
+func standalonePolicyAttachment(a telemetry.Attachment) bool {
+	switch a {
+	case telemetry.AttachManifests, telemetry.AttachObservability, telemetry.AttachManagedDatabase:
+		return true
+	}
+	return false
+}
+
+// groupEnd is the index of the last object on cluster c of the Manifests
+// group source names ("manifests:<name>") or of the ManagedDatabase it names
+// ("manageddatabase:<name>": the objects its record expanded into, grouped by
+// name like every object forge renders), -1 when there is none.
 func groupEnd(items []any, source, c string) int {
+	group := func(l map[string]string) string { return l[WorkloadLabel] }
 	name, ok := strings.CutPrefix(source, "manifests:")
+	if !ok {
+		name, ok = strings.CutPrefix(source, "manageddatabase:")
+		group = ManifestGroup
+	}
 	if !ok || name == "" {
 		return -1
 	}
 	at := -1
 	for i, it := range items {
 		l := itemLabels(it)
-		if l[WorkloadLabel] == name && l[ClusterRoutingLabel] == c {
+		if group(l) == name && l[ClusterRoutingLabel] == c {
 			at = i
 		}
 	}

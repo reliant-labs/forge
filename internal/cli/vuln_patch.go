@@ -63,16 +63,16 @@ type patchFindings struct {
 type vulnPatchDeps struct {
 	vulnDeps
 	// findingsFor reads an env's findings for its current release. The
-	// default reads this machine's ledger and says an env that records on
-	// a control plane cannot be read yet; the control-plane read (F8 of the
-	// SBOM design) replaces it there.
+	// default (envPatchFindings) reads the env's own ledger: this machine's
+	// (machineLedgerPatchFindings), or the control plane's findings for an
+	// env that records there (hostedPatchFindings).
 	findingsFor func(ctx context.Context, deps vulnPatchDeps, projectDir string, env vulnEnv) (patchFindings, error)
 	// exec runs go, npm, pnpm, yarn, the verify command, git and gh.
 	exec vulnscan.Runner
 }
 
 func newVulnPatchCmd(deps vulnDeps) *cobra.Command {
-	return newVulnPatchCmdWith(vulnPatchDeps{vulnDeps: deps, findingsFor: machineLedgerPatchFindings, exec: vulnscan.Exec})
+	return newVulnPatchCmdWith(vulnPatchDeps{vulnDeps: deps, findingsFor: envPatchFindings, exec: vulnscan.Exec})
 }
 
 func newVulnPatchCmdWith(deps vulnPatchDeps) *cobra.Command {
@@ -362,14 +362,21 @@ func verifyCommand(flag, projectDir, tree string) (command, source string) {
 	return vulnpatch.DefaultVerify(tree)
 }
 
+// envPatchFindings reads an env's findings from the ledger it records in, as
+// `forge vuln list` does: the control plane's for an env whose ledger is a
+// control plane, else this machine's.
+func envPatchFindings(ctx context.Context, deps vulnPatchDeps, projectDir string, env vulnEnv) (patchFindings, error) {
+	if env.hosted() {
+		return hostedPatchFindings(ctx, deps.vulnDeps, env)
+	}
+	return machineLedgerPatchFindings(ctx, deps, projectDir, env)
+}
+
 // machineLedgerPatchFindings reads an env's findings the way `forge vuln
 // list` does: its current release from this machine's ledger, rescanned
 // when the local database is newer than its stored scan. It never downloads.
 func machineLedgerPatchFindings(ctx context.Context, deps vulnPatchDeps, projectDir string, env vulnEnv) (patchFindings, error) {
 	var out patchFindings
-	if env.hosted() {
-		return out, hostedVulnError(env)
-	}
 	store, err := deps.machineLedger(projectDir)
 	if err != nil {
 		return out, undeterminedf("open this machine's ledger: %v", err)

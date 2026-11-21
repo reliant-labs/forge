@@ -1,6 +1,7 @@
 package cloud
 
 import (
+	"context"
 	"net/http"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestHTTPClientFor_ContentScannedProceduresOutlastTheScanBudget(t *testing.T
 		"controlplane.v1.DeployService/CreateDeployment",
 		"controlplane.v1.DeployService/UpdateDeployment",
 	} {
-		got := c.httpClientFor(proc)
+		got := c.httpClientFor(context.Background(), proc)
 		if got.Timeout != ContentScannedTimeout || ContentScannedTimeout <= 11*time.Minute {
 			t.Errorf("%s: timeout %s, want ContentScannedTimeout (%s), longer than the gateway's 11m", proc, got.Timeout, ContentScannedTimeout)
 		}
@@ -27,12 +28,31 @@ func TestHTTPClientFor_ContentScannedProceduresOutlastTheScanBudget(t *testing.T
 			t.Errorf("%s: the configured transport was dropped", proc)
 		}
 	}
-	if got := c.httpClientFor("controlplane.v1.DeployService/ListReleases"); got != c.HTTP {
+	if got := c.httpClientFor(context.Background(), "controlplane.v1.DeployService/ListReleases"); got != c.HTTP {
 		t.Errorf("an ordinary procedure got a different client (timeout %s); only scanned uploads need longer", got.Timeout)
 	}
 	unbounded := &Client{HTTP: &http.Client{}}
-	if got := unbounded.httpClientFor("controlplane.v1.DeployService/RecordBundle"); got.Timeout != 0 {
+	if got := unbounded.httpClientFor(context.Background(), "controlplane.v1.DeployService/RecordBundle"); got.Timeout != 0 {
 		t.Errorf("a client with no timeout gained one (%s)", got.Timeout)
+	}
+	if c.HTTP.Timeout != 30*time.Second {
+		t.Errorf("the shared client was mutated: timeout %s", c.HTTP.Timeout)
+	}
+}
+
+// WithRequestTimeout lengthens one call's timeout (an SBOM upload), never
+// shortens one, and leaves the shared client alone.
+func TestHTTPClientFor_WithRequestTimeoutLengthensOnly(t *testing.T) {
+	c := &Client{HTTP: &http.Client{Timeout: 30 * time.Second}}
+	ctx := WithRequestTimeout(context.Background(), 5*time.Minute)
+	if got := c.httpClientFor(ctx, "controlplane.v1.VulnerabilityService/RecordReleaseSBOM"); got.Timeout != 5*time.Minute {
+		t.Errorf("timeout %s, want 5m", got.Timeout)
+	}
+	if got := c.httpClientFor(WithRequestTimeout(context.Background(), time.Second), "controlplane.v1.DeployService/ListReleases"); got != c.HTTP {
+		t.Errorf("a shorter request timeout replaced the client (timeout %s)", got.Timeout)
+	}
+	if got := c.httpClientFor(WithRequestTimeout(context.Background(), time.Minute), "controlplane.v1.DeployService/RecordBundle"); got.Timeout != ContentScannedTimeout {
+		t.Errorf("a request timeout shortened a content-scanned procedure's: %s", got.Timeout)
 	}
 	if c.HTTP.Timeout != 30*time.Second {
 		t.Errorf("the shared client was mutated: timeout %s", c.HTTP.Timeout)

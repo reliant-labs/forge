@@ -2771,9 +2771,10 @@ benefits:
     category: security
     title: Signed images, SBOM and provenance
     claim: >-
-      The generated `build-images.yml` signs every image it pushes with a keyless
-      cosign signature bound to its digest, generates an SPDX SBOM for it, and
-      attests its build provenance.
+      The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign
+      signature and a build-provenance attestation to every image, bound to its
+      digest and stored in the registry beside it (`cosign
+      verify-attestation`), private repositories included.
     availability: forge
     headline: true
     why: >-
@@ -4528,9 +4529,12 @@ benefits:
       Issues are fingerprinted with one algorithm, at query time locally and at
       ingest on the control plane; issues that share a cause and first fired
       together collapse into one incident without being merged, and triage
-      (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+      (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log
+      record an authenticated request writes carries `user.id`, so an issue
+      counts the people it reached.
     evidence:
       - command: obs issue
+      - path: pkg/authn/telemetry.go
       - command: obs issues
       - command: obs issue resolve
       - command: obs issue ignore

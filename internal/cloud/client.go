@@ -258,7 +258,7 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 	// agent harness, for the control plane's product analytics.
 	setClientIdentity(httpReq.Header)
 
-	resp, err := c.httpClientFor(procedure).Do(httpReq)
+	resp, err := c.httpClientFor(ctx, procedure).Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
 	}
@@ -298,17 +298,36 @@ var contentScannedProcedures = map[string]bool{
 	"controlplane.v1.DeployService/UpdateDeployment": true,
 }
 
-// httpClientFor is httpClient with the timeout procedure needs: a
-// content-scanned procedure gets at least ContentScannedTimeout, and a
-// configured transport is kept.
-func (c *Client) httpClientFor(procedure string) *http.Client {
+// WithRequestTimeout lets each call made with ctx run for at least d, where
+// the client's default timeout (30s) is shorter: for a request whose BODY
+// takes long to send, such as an SBOM upload of tens of MiB over a slow CI
+// link, which the default would abandon mid-upload. It only lengthens: a
+// client with no timeout, or a longer one, is kept, and ctx's own deadline
+// still applies.
+func WithRequestTimeout(ctx context.Context, d time.Duration) context.Context {
+	return context.WithValue(ctx, requestTimeoutKey{}, d)
+}
+
+type requestTimeoutKey struct{}
+
+// httpClientFor is httpClient with the timeout one call needs: a
+// content-scanned procedure gets at least ContentScannedTimeout, a call whose
+// ctx carries WithRequestTimeout at least that, and a configured transport is
+// kept.
+func (c *Client) httpClientFor(ctx context.Context, procedure string) *http.Client {
 	base := c.httpClient()
-	if !contentScannedProcedures[strings.TrimPrefix(procedure, "/")] ||
-		base.Timeout == 0 || base.Timeout >= ContentScannedTimeout {
+	var need time.Duration
+	if contentScannedProcedures[strings.TrimPrefix(procedure, "/")] {
+		need = ContentScannedTimeout
+	}
+	if d, ok := ctx.Value(requestTimeoutKey{}).(time.Duration); ok && d > need {
+		need = d
+	}
+	if need == 0 || base.Timeout == 0 || base.Timeout >= need {
 		return base
 	}
 	longer := *base
-	longer.Timeout = ContentScannedTimeout
+	longer.Timeout = need
 	return &longer
 }
 

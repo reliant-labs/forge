@@ -75,7 +75,9 @@ export default defineConfig({
       ? {
           // Naming reporters replaces Vitest's defaults, so the GitHub
           // Actions annotations it adds by itself are named here too.
-          reporters: process.env.GITHUB_ACTIONS ? ["default", "json", "github-actions"] : ["default", "json"],
+          reporters: process.env.GITHUB_ACTIONS
+            ? ["default", "json", "github-actions"]
+            : ["default", "json"],
           outputFile: { json: join(laneDir, "vitest.json") },
           coverage: {
             enabled: process.env.FORGE_TEST_COVERAGE !== "off",

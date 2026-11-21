@@ -139,6 +139,15 @@ Exit 7 is a person's turn, not a failure: relay the link to the user, do not
 retry in a loop. A newer deploy to the same env supersedes a queued one. An
 older control plane (no holds) still refuses with the billing reason.
 
+### The connect hint after a deploy
+
+After a successful hosted deploy run by a person at a terminal (not CI, not
+`--json` or a preview), forge prints one line before `RESULT` naming how to
+connect this machine so agents can work on the app, when the launcher sets
+`FORGE_HOST_CONNECT_HINT` (the reliant CLI sets it to a command such as
+`reliant daemon start --attach .` only when this machine is not a connected
+agent sandbox). forge only prints it; it never runs it or registers anything.
+
 ### What hosting provides and refuses
 
 | Provides | Refuses (bind to a cluster you operate) |

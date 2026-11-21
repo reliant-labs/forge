@@ -37,10 +37,17 @@ listed (`gate.blocking`, and "the old data would block: …"), so you see what t
 data found. A blocking finding from a current scan outranks an unscanned artifact.
 `forge vuln db pull` then `forge vuln scan --release <v>` replaces a stale scan.
 
-**Cache it in CI.** The key is `forge vuln db status --json | jq -r .cache_key`
-(`forge-vulndb-v6-<build date>`); restore with the prefix `forge-vulndb-v6-` so a job
-downloads at most once a day. The scaffolded `build-images.yml` scan job does
-exactly this with `actions/cache` over `~/.cache/forge/vulndb`.
+**Cache it in CI.** Set `FORGE_VULN_DB_DIR` explicitly and cache that directory
+under a key computed before the restore: today's UTC date
+(`forge-vulndb-v6-<YYYY-MM-DD>`), with `restore-keys: forge-vulndb-v6-` as the
+fallback. A later run the same day hits the exact key and downloads nothing; the
+first run of a day restores the newest earlier cache, and `forge vuln db pull`
+downloads only when the listing has a newer build; a cold cache downloads once.
+Save under today's key after the pull, and skip the save on an exact hit. The
+scaffolded `build-images.yml` scan job does exactly this with
+`actions/cache/restore` and `actions/cache/save` over `~/.cache/forge/vulndb`.
+(`forge vuln db status --json`'s `cache_key` names the database's build date. It
+cannot be the restore key, because it is known only once the database is on disk.)
 
 forge runs grype with every `GRYPE_*` variable removed and an empty config, so a
 user's or project's `.grype.yaml` (an `ignore:` rule, `only-fixed`) can never change

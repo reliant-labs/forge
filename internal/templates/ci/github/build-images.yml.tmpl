@@ -185,17 +185,39 @@ jobs:
 {{- end}}
 
       # The grype vulnerability database is 205 MB to download and 3.3 GiB
-      # unpacked, shared by every forge on a machine at
-      # ~/.cache/forge/vulndb ($FORGE_VULN_DB_DIR moves it). Caching it keyed
-      # by its build date means a job downloads at most once a day. Drop the
-      # three cache steps to download it on every run instead.
+      # unpacked. It is cached per UTC day: the primary key is today's date,
+      # the fallback the newest earlier day. The database's own key
+      # (`forge vuln db status --json`'s cache_key, its build date) cannot be
+      # the restore key: it is only known once the database is on disk. So:
+      #   - a later run today hits today's key exactly: no download, no save;
+      #   - the first run of a day restores the newest earlier cache, `forge
+      #     vuln db pull` downloads only when the listing names a newer build,
+      #     and the result is saved under today's key;
+      #   - a cold cache downloads once.
+      # Drop the cache steps to download on every run instead.
+      - name: Name today's vulnerability database cache
+        id: vulndb-key
+        # FORGE_VULN_DB_DIR is where forge keeps the database; set here so it
+        # is the directory the cache steps restore and save.
+        run: |
+          echo "FORGE_VULN_DB_DIR=$HOME/.cache/forge/vulndb" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Restore the vulnerability database
         id: vulndb
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/forge/vulndb
-          key: forge-vulndb-v6-none
+          path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
+          key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
           restore-keys: forge-vulndb-v6-
+
+      - name: Refresh the vulnerability database
+        id: vulndb-pull
+        # Skipped on an exact hit: today's cache was saved after a pull.
+        # Otherwise it downloads only when the listing has a newer build than
+        # the one restored (or none was).
+        if: steps.vulndb.outputs.cache-hit != 'true'
+        run: forge vuln db pull
 
       - name: Scan the pushed image
         # The digest-pinned ref the build pushed — the exact bytes scanned.
@@ -209,17 +231,14 @@ jobs:
           IMAGE_REF: ${{"{{"}} needs.build-push.outputs.ref {{"}}"}}
         run: forge vuln scan --image "$IMAGE_REF"
 
-      - name: Name the vulnerability database for the cache
-        id: dbkey
-        if: always()
-        run: echo "key=$({ forge vuln db status --json || true; } | jq -r '.cache_key // empty')" >> "$GITHUB_OUTPUT"
-
       - name: Save the vulnerability database
-        if: always() && steps.dbkey.outputs.key != '' && steps.dbkey.outputs.key != steps.vulndb.outputs.cache-matched-key
+        # Under today's key, whatever the scan found, once the refresh left a
+        # current database in place; never after an exact hit.
+        if: always() && steps.vulndb-pull.outcome == 'success'
         uses: actions/cache/save@v4
         with:
-          path: ~/.cache/forge/vulndb
-          key: ${{"{{"}} steps.dbkey.outputs.key {{"}}"}}
+          path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
+          key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
 {{- end}}
 {{- /*
   No frontend job here. A frontend image is ENVIRONMENT-SPECIFIC — each env

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -198,8 +199,66 @@ func RebaseMigrations(dir string, paths []string) ([]RebaseResult, error) {
 	if err := refreshPointerHeaders(dir, results, time.Now().UTC()); err != nil {
 		return results, err
 	}
+	if err := rewriteBatchReferences(results); err != nil {
+		return results, err
+	}
 	return results, nil
 }
+
+// rewriteBatchReferences rewrites, in each re-versioned file's comments, every
+// mention of a version this batch renamed to the version it now has. A batch
+// that depends on being applied in order often says so in prose ("-- 20261118112732
+// validates it"), and after the rename those notes named versions that no
+// longer exist (forge report ee1f039a). Only `--` comments change: a version
+// in SQL is data, and rewriting it is not this command's call. A version is
+// matched as a whole run of digits, so one never matches inside another.
+func rewriteBatchReferences(results []RebaseResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+	renamed := make(map[string]string, len(results))
+	for _, r := range results {
+		renamed[strconv.FormatUint(r.OldVersion, 10)] = strconv.FormatUint(r.NewVersion, 10)
+	}
+	for _, r := range results {
+		info, err := os.Stat(r.NewPath)
+		if err != nil {
+			return fmt.Errorf("rewrite version references in %s: %w", filepath.Base(r.NewPath), err)
+		}
+		data, err := os.ReadFile(r.NewPath)
+		if err != nil {
+			return fmt.Errorf("rewrite version references in %s: %w", filepath.Base(r.NewPath), err)
+		}
+		lines := strings.SplitAfter(string(data), "\n")
+		changed := false
+		for i, line := range lines {
+			at := strings.Index(line, "--")
+			if at < 0 {
+				continue
+			}
+			comment := versionRun.ReplaceAllStringFunc(line[at:], func(v string) string {
+				if nv, ok := renamed[v]; ok {
+					return nv
+				}
+				return v
+			})
+			if comment != line[at:] {
+				lines[i] = line[:at] + comment
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+		if err := atomicfile.WriteFile(r.NewPath, []byte(strings.Join(lines, "")), info.Mode().Perm()); err != nil {
+			return fmt.Errorf("rewrite version references in %s: %w", filepath.Base(r.NewPath), err)
+		}
+	}
+	return nil
+}
+
+// versionRun is a whole run of digits: a candidate migration version.
+var versionRun = regexp.MustCompile(`\d+`)
 
 // refreshPointerHeaders brings the header GeneratePointerComment wrote up to
 // date in each re-versioned file. The header records when the file was

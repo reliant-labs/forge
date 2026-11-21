@@ -3515,6 +3515,10 @@ _render_docker_build = lambda b: DockerBuild -> any {
         # Per-binary PGO, keyed by package path; absent when none is named.
         if b.pgo:
             "pgo": {k: _render_pgo(v) for k, v in b.pgo}
+        # The files a --release build compares to reuse an earlier image;
+        # absent when none are declared.
+        if b.inputs:
+            "inputs": b.inputs
     }
 }
 

@@ -2354,6 +2354,12 @@ benefits:
           A frontend on a bucket with `trailingSlash` off: the export writes
           `<route>.html` and a bucket serves objects by exact name, so every
           route but `/` 404s
+      - id: static-export-partial-prerender
+        lane: --static-export
+        bug_class: >-
+          `cacheComponents: true` (create-next-app's Next.js 16 default) or
+          `experimental.ppr` in `next.config`, which turns on partial
+          prerendering and makes `next build` refuse the export
       - id: static-export-vite-out-dir
         lane: --static-export
         bug_class: >-

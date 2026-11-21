@@ -115,6 +115,19 @@ func runRequireContract(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// Skip the ORM projection's package (internal/db by default, wherever
+	// database.orm.package puts it), on the same structural terms: it holds
+	// forge's generated stores (store_gen.go, <entity>_orm_gen.go), whose
+	// generated <Entity>Store interfaces ARE the package's contract, and the
+	// user-owned <entity>_repo_ext.go the db skill names as THE seam for the
+	// queries generated CRUD cannot express. An exported method there is a
+	// query on that seam, and the finding pointed at a generated file's
+	// package clause asking for a contract.go nobody could write sensibly
+	// (forge report 63a34d66).
+	if isORMProjectionPackage(pass) {
+		return nil, nil
+	}
+
 	// Honor forge.yaml's contracts.exclude AND the per-package
 	// //forge:exclude-contract header — these packages are intentionally kept
 	// contract-free (utility packages with no behavioral interface), opted out
@@ -327,6 +340,20 @@ func roleHasMethods(pass *analysis.Pass, pkgPath, role string, methods []string)
 		}
 	}
 	return true
+}
+
+// isORMProjectionPackage reports whether the package holds forge's ORM
+// projection: a forge-generated store_gen.go or <entity>_orm_gen.go. The
+// generated header is required, so a hand-written file that happens to use
+// the name does not make a package exempt.
+func isORMProjectionPackage(pass *analysis.Pass) bool {
+	for _, file := range pass.Files {
+		base := filepath.Base(pass.Fset.Position(file.Pos()).Filename)
+		if (base == "store_gen.go" || strings.HasSuffix(base, "_orm_gen.go")) && isForgeGeneratedFile(file) {
+			return true
+		}
+	}
+	return false
 }
 
 // composeSeamFiles are the forge-defined files of the app composition seam.

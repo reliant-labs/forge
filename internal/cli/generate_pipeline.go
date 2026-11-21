@@ -305,6 +305,12 @@ type pipelineContext struct {
 	rendered     renderedEnvironments
 	renderedRead bool
 
+	// The disk inventory and last usable declarations used to derive frontend
+	// codegen. A failed re-render cannot erase an env's known declarations.
+	diskFrontends       []config.FrontendConfig
+	inventoryFrontends  []renderedEnvFrontend
+	inventoryMissedEnvs []string
+
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
 	// see generate_serve.go). Lazily populated via
@@ -1713,11 +1719,9 @@ func stepDescriptorGenerate(ctx *pipelineContext) error {
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs
 // protoc-gen-connect-openapi over each proto/services/<svc>/ to emit
-// `openapi/<service>.yaml`. Best-effort: a missing plugin or a single
-// failing service surfaces as a warning so the rest of the pipeline
-// still completes. The hard "plugin not on PATH" case bubbles up as an
-// error because that's an actionable misconfiguration (the user opted
-// in via forge.yaml but didn't install the binary).
+// `openapi/<service>.yaml`. The project opted in via forge.yaml, so a
+// plugin forge cannot provision, or a service whose spec is not written,
+// fails the step rather than warning past it.
 func stepOpenAPIGenerate(ctx *pipelineContext) error {
 	if err := runOpenAPIGenerate(ctx.ProjectDir, ctx.Cfg); err != nil {
 		return fmt.Errorf("openapi generation: %w", err)
@@ -2038,6 +2042,7 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
+	ctx.rederiveFrontendInventory()
 	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums, func() []envRenderFailure { return ctx.renderedEnvs().failed })
 }
 
@@ -2739,6 +2744,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		}
 		in.Services = append(in.Services, svc)
 	}
+	ctx.rederiveFrontendInventory()
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	// An env that did not render would drop its frontends and processes from

@@ -3309,10 +3309,43 @@ schema DockerBuild(Build):
     # a disabled one, which the scaffolded Dockerfile's `go build -pgo=`
     # reads (and a Dockerfile without that ARG ignores).
     pgo: {str: PGO} = {}
+    # Files the image is built from, as globs — the same pattern grammar as
+    # ShellBuild.inputs, relative to the project root, or to the checkout
+    # when `context` is a GitSource (the base `dockerfile` resolves against).
+    # When set, `forge env build <env> --release <v>` reuses an earlier
+    # release's image instead of building, when these files and the rest of
+    # the declaration are unchanged:
+    #
+    #     build = forge.DockerBuild {
+    #         inputs = ["go.mod", "go.sum", "**/*.go", "!**/*_test.go"]
+    #     }
+    #
+    # The fingerprint is the CONTENT of every selected file plus the Dockerfile
+    # (always — it need not be listed), the declaration (context, dockerfile,
+    # target, build_args, build_contexts, pgo, output_name, unit, the content
+    # of inputs_file, and the patterns themselves), the platform and the
+    # destination repository. The release tag is NOT part of it: forge adds
+    # `-t` itself, so a build arg that carries the tag (a version stamp)
+    # changes every cut and such a build is never reused — by design, since
+    # the reused image would carry the earlier stamp. Reuse is decided exactly
+    # as for a ShellBuild (see its docstring, "release reuse"): the same image
+    # in the release the env runs now or the project's newest release, with
+    # the same `inputs_digest`, still served by the registry — then the new
+    # release's tag is pointed at that digest and `docker build` does not run.
+    # Only a build that pushes is reused; `--rebuild` forces the build. Name
+    # everything the Dockerfile COPYs (including `.dockerignore` and any path
+    # a local build_contexts entry sends): an undeclared file is not an input.
+    # A GitSource build_contexts entry is keyed by its declared repo and ref
+    # only, so pin it to a tag or commit. Empty: every release builds.
+    inputs: [str] = []
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"
         dockerfile, "DockerBuild.dockerfile is required"
+        all p in inputs { p.strip() != "" and p.strip() != "!" }, \
+            "DockerBuild.inputs entries are globs relative to the project root (or the GitSource context); an empty entry selects nothing"
+        all p in inputs { not p.lstrip("!").startswith("/") }, \
+            "DockerBuild.inputs entries are relative to the project root (or the GitSource context), never absolute"
         all k in pgo {_pgo_binary_key(k)}, \
             "DockerBuild.pgo is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
 

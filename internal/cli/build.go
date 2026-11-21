@@ -494,8 +494,14 @@ type buildResult struct {
 	// goTargets are the exact recipes compiled into this invocation's project image.
 	goTargets []goBuildTarget
 	// upToDate marks a ShellBuild whose declared inputs were unchanged and
-	// whose last pushed image still stands, so its command did not run.
+	// whose last pushed image still stands, so its command did not run — or
+	// a DockerBuild whose --release build reused an earlier release's image.
 	upToDate bool
+	// releaseInputsDigest and carriedFrom are a DockerBuild's release
+	// evidence (build_docker_release_reuse.go): its declared inputs as a
+	// release compares them, and the release whose image it reused ("" when
+	// it built). persistImageBuildStates records them for the cut.
+	releaseInputsDigest, carriedFrom string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1709,6 +1715,10 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			Digest:    r.digest,
 			Platforms: r.platforms,
 			Source:    r.source,
+			// A DockerBuild's declared inputs, for the next release to
+			// compare, and the release whose image it reused.
+			ReleaseInputsDigest: r.releaseInputsDigest,
+			CarriedFrom:         r.carriedFrom,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -1980,7 +1990,7 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// for them. Never fails the cut (build_sbom.go).
 	generateReleaseSBOMs(ctx, sbomCut{
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
-		Entities: entities, Built: built, NoSBOM: opts.noSBOM,
+		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
@@ -3359,6 +3369,11 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	var out []buildResult
 	workloads := e.Workloads
 	aliases := map[string][]WorkloadEntity{}
+	// A --release build compares DockerBuilds that declare inputs against
+	// earlier releases (build_docker_release_reuse.go); the ledger is read
+	// once, and only if one needs it.
+	projectDir := projectDirForKCL()
+	reuseBase := newReleaseReuseBase(ctx, projectDir, opts)
 	if opts.composition != nil {
 		units, err := compositionBuildUnits(e)
 		if err != nil {
@@ -3383,12 +3398,12 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				continue
 			}
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			builder := buildServiceDocker
-			if opts.composition != nil {
-				builder = compositionDockerBuilder
-			}
 			result := timedBuild(ctx, func() buildResult {
-				return builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				if opts.composition != nil {
+					return compositionDockerBuilder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				}
+				target := releaseDockerTarget{repository: repository, tag: imageTag}
+				return buildServiceDockerReusing(ctx, cfg, w, target, opts, cfgArchForDocker, projectDir, reuseBase)
 			})
 			result.workload = w.Name
 			out = append(out, result)
@@ -3470,15 +3485,7 @@ func buildServiceRemote(svcName string) buildResult {
 // DockerBuild.pgo disables.
 func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
-	// platform: the DockerBuild's explicit platform wins; otherwise the
-	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
-	platform := ""
-	if d != nil && d.Platform != "" {
-		platform = d.Platform
-	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
-		platform = "linux/" + a
-	}
-	if platform != "" {
+	if platform := serviceDockerPlatform(d, opts, cfgArchForDocker); platform != "" {
 		dockerArgs = append(dockerArgs, "--platform="+platform)
 	}
 	if d != nil && d.Target != "" {
@@ -3512,6 +3519,19 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 	}
 	dockerArgs = append(dockerArgs, "-f", dockerfile, serviceDockerContext(d))
 	return dockerArgs, pushTags
+}
+
+// serviceDockerPlatform is the platform a DockerBuild builds for: its explicit
+// platform wins; otherwise the env-wide cluster arch (cfgArchForDocker),
+// cross-compiled to linux. "" builds for the daemon's own platform.
+func serviceDockerPlatform(d *DockerBuild, opts buildOptions, cfgArchForDocker string) string {
+	if d != nil && d.Platform != "" {
+		return d.Platform
+	}
+	if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		return "linux/" + a
+	}
+	return ""
 }
 
 // serviceDockerContext is the MAIN `docker build` context directory for a

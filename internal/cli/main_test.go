@@ -102,6 +102,9 @@ func TestMain(m *testing.M) {
 		return "", "", errors.New("unit tests do not install syft")
 	}
 	sbomCacheDir = func() string { return "" }
+	// Nor does any cut push an SBOM referrer to a registry: a test of the
+	// attach points it at an in-process one (build_sbom_referrer_test.go).
+	sbomReferrerAttach = nil
 	// Nor does any build ask a registry's token realm about push access: the
 	// clean-CI answer is "not verified", which proceeds. A test of the
 	// preflight states the realm's answer (registry_push_preflight_test.go).

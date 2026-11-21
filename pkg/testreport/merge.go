@@ -123,6 +123,11 @@ type MergeOptions struct {
 // already in an earlier document is skipped, so merging the same upload
 // twice changes nothing.
 //
+// A file is one file however its inputs name it: a Go file named by import
+// path (a Go profile) and by repo path (a path-named profile, LCOV) is
+// joined once its repo path is known, whether from opts.ModulePath or from
+// any input that carries both names, in any input order.
+//
 // It refuses, with a typed error and never a partial result, inputs that
 // cannot describe the same source. Two checks carry that rule: the tree
 // check ([*TreeMismatchError]: every input names the same tree hash) and
@@ -210,13 +215,7 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 		laneIdx[l.Name] = i
 	}
 
-	type mfile struct {
-		file  CoverageFile
-		index map[blockKey]int
-	}
-	files := map[string]*mfile{}
-	var order []string
-	blocks := 0
+	agg := newFileAggregator(len(out.Lanes), lim)
 	for _, d := range live {
 		remap := make([]int, len(d.Lanes))
 		for i, l := range d.Lanes {
@@ -224,70 +223,16 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 		}
 		for _, f := range d.Files {
 			f.Path = repoPath(f, opts)
-			mf := files[f.Key()]
-			if mf == nil {
-				if len(files) >= lim.MaxCases {
-					return nil, &LimitError{Limit: "MaxCases", Max: int64(lim.MaxCases)}
-				}
-				nf := f
-				nf.Blocks = nil
-				nf.Excluded = ""
-				mf = &mfile{file: nf, index: map[blockKey]int{}}
-				files[f.Key()] = mf
-				order = append(order, f.Key())
-			} else {
-				if mf.file.Granularity != f.Granularity {
-					return nil, &GranularityMismatchError{File: f.DisplayPath()}
-				}
-				if f.Lang == LangGo && f.Granularity == GranularityStatement && len(mf.file.Blocks) > 0 {
-					if err := sameBlockSet(mf.file, f); err != nil {
-						return nil, err
-					}
-				}
-				if mf.file.ImportPath == "" {
-					mf.file.ImportPath = f.ImportPath
-					mf.file.Package = f.Package
-				}
-				if mf.file.BlobID == "" {
-					mf.file.BlobID = f.BlobID
-				}
-			}
-			for _, b := range f.Blocks {
-				k := b.key()
-				i, ok := mf.index[k]
-				if !ok {
-					if blocks >= lim.MaxBlocks {
-						return nil, &LimitError{Limit: "MaxBlocks", Max: int64(lim.MaxBlocks)}
-					}
-					blocks++
-					nb := b
-					nb.Hits = make([]int64, len(out.Lanes))
-					for j := range nb.Hits {
-						nb.Hits[j] = -1
-					}
-					i = len(mf.file.Blocks)
-					mf.index[k] = i
-					mf.file.Blocks = append(mf.file.Blocks, nb)
-				}
-				have := &mf.file.Blocks[i]
-				if have.Statements != b.Statements {
-					return nil, &SourceMismatchError{File: f.DisplayPath(), Block: blockPos(b), Statements: [2]int{have.Statements, b.Statements}}
-				}
-				for li, h := range b.Hits {
-					if li >= len(remap) || h < 0 {
-						continue
-					}
-					j := remap[li]
-					if have.Hits[j] < 0 {
-						have.Hits[j] = 0
-					}
-					have.Hits[j] = addHits(have.Hits[j], h)
-				}
+			if err := agg.add(f, remap); err != nil {
+				return nil, err
 			}
 		}
 	}
-	for _, k := range order {
-		f := files[k].file
+	for _, mf := range agg.order {
+		if mf.absorbed {
+			continue
+		}
+		f := mf.file
 		for i := range f.Blocks {
 			for j, l := range out.Lanes {
 				if l.Mode == ModeSet && f.Blocks[i].Hits[j] > 1 {
@@ -304,6 +249,191 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 		out.Changed = mergeChanged(out.Changed, d.Changed)
 	}
 	return out, nil
+}
+
+// mergedFile is one file's aggregate in a merge.
+type mergedFile struct {
+	file  CoverageFile
+	index map[blockKey]int
+	// absorbed is set when a later input showed this aggregate and another
+	// to be one file: its blocks moved into that one.
+	absorbed bool
+}
+
+// fileAggregator collects files across inputs under one canonical identity
+// each. A file may be named by its import path (a Go profile), by its repo
+// path (an LCOV report, a profile of files outside the module path, or a
+// producer that filled Path), or by both (a document an earlier Merge
+// derived). Every name an aggregate has been seen under is an alias of it,
+// so the same file arriving under either name, in any order, lands in one
+// aggregate; an input naming two aggregates at once joins them.
+type fileAggregator struct {
+	lanes   int
+	lim     Limits
+	aliases map[string]*mergedFile
+	order   []*mergedFile
+	live    int
+	blocks  int
+}
+
+func newFileAggregator(lanes int, lim Limits) *fileAggregator {
+	return &fileAggregator{lanes: lanes, lim: lim, aliases: map[string]*mergedFile{}}
+}
+
+// fileAliases are the names a file is known by: its language plus its repo
+// path, and its language plus its import path. The two are namespaced so a
+// path can never collide with an import path.
+func fileAliases(f CoverageFile) []string {
+	var out []string
+	if f.Path != "" {
+		out = append(out, string(f.Lang)+":path:"+f.Path)
+	}
+	if f.ImportPath != "" {
+		out = append(out, string(f.Lang)+":import:"+f.ImportPath)
+	}
+	return out
+}
+
+// add merges one input file, its lanes remapped to the output's.
+func (a *fileAggregator) add(f CoverageFile, remap []int) error {
+	names := fileAliases(f)
+	var target *mergedFile
+	for _, n := range names {
+		mf := a.aliases[n]
+		switch {
+		case mf == nil:
+		case target == nil:
+			target = mf
+		case mf != target:
+			// This input names two aggregates: they are one file.
+			if err := a.absorb(target, mf); err != nil {
+				return err
+			}
+		}
+	}
+	if target == nil {
+		if a.live >= a.lim.MaxCases {
+			return &LimitError{Limit: "MaxCases", Max: int64(a.lim.MaxCases)}
+		}
+		nf := f
+		nf.Blocks = nil
+		nf.Excluded = ""
+		target = &mergedFile{file: nf, index: map[blockKey]int{}}
+		a.order = append(a.order, target)
+		a.live++
+	} else if err := a.check(target, f); err != nil {
+		return err
+	}
+	a.adopt(target, f)
+	for _, n := range names {
+		a.aliases[n] = target
+	}
+	for _, b := range f.Blocks {
+		hits := make([]int64, a.lanes)
+		for j := range hits {
+			hits[j] = -1
+		}
+		for li, h := range b.Hits {
+			if li < len(remap) && h >= 0 {
+				hits[remap[li]] = h
+			}
+		}
+		if err := a.addBlock(target, b, hits, f.DisplayPath()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// check refuses an input file that cannot be the same source as the
+// aggregate it resolved to.
+func (a *fileAggregator) check(mf *mergedFile, f CoverageFile) error {
+	if mf.file.Granularity != f.Granularity {
+		return &GranularityMismatchError{File: displayOf(mf.file, f)}
+	}
+	if f.Lang == LangGo && f.Granularity == GranularityStatement && len(mf.file.Blocks) > 0 && len(f.Blocks) > 0 {
+		return sameBlockSet(mf.file, f)
+	}
+	return nil
+}
+
+// adopt fills the aggregate's identity fields from an input that knows more.
+func (a *fileAggregator) adopt(mf *mergedFile, f CoverageFile) {
+	if mf.file.Path == "" {
+		mf.file.Path = f.Path
+	}
+	if mf.file.ImportPath == "" && f.ImportPath != "" {
+		mf.file.ImportPath = f.ImportPath
+		mf.file.Package = f.Package
+	}
+	if mf.file.BlobID == "" {
+		mf.file.BlobID = f.BlobID
+	}
+}
+
+// absorb moves src's blocks into dst and points src's aliases at dst.
+func (a *fileAggregator) absorb(dst, src *mergedFile) error {
+	if err := a.check(dst, src.file); err != nil {
+		return err
+	}
+	a.adopt(dst, src.file)
+	for _, b := range src.file.Blocks {
+		a.blocks-- // addBlock counts it again if it is new to dst
+		if err := a.addBlock(dst, b, b.Hits, src.file.DisplayPath()); err != nil {
+			return err
+		}
+	}
+	for n, mf := range a.aliases {
+		if mf == src {
+			a.aliases[n] = dst
+		}
+	}
+	src.absorbed = true
+	src.file.Blocks, src.index = nil, nil
+	a.live--
+	return nil
+}
+
+// addBlock sums one block's per-lane hits (output lane space; -1 = the lane
+// did not instrument it) into the aggregate.
+func (a *fileAggregator) addBlock(mf *mergedFile, b Block, hits []int64, name string) error {
+	k := b.key()
+	i, ok := mf.index[k]
+	if !ok {
+		if a.blocks >= a.lim.MaxBlocks {
+			return &LimitError{Limit: "MaxBlocks", Max: int64(a.lim.MaxBlocks)}
+		}
+		a.blocks++
+		nb := b
+		nb.Hits = make([]int64, a.lanes)
+		for j := range nb.Hits {
+			nb.Hits[j] = -1
+		}
+		i = len(mf.file.Blocks)
+		mf.index[k] = i
+		mf.file.Blocks = append(mf.file.Blocks, nb)
+	}
+	have := &mf.file.Blocks[i]
+	if have.Statements != b.Statements {
+		return &SourceMismatchError{File: name, Block: blockPos(b), Statements: [2]int{have.Statements, b.Statements}}
+	}
+	for j, h := range hits {
+		if j >= len(have.Hits) || h < 0 {
+			continue
+		}
+		if have.Hits[j] < 0 {
+			have.Hits[j] = 0
+		}
+		have.Hits[j] = addHits(have.Hits[j], h)
+	}
+	return nil
+}
+
+func displayOf(a, b CoverageFile) string {
+	if a.Path != "" {
+		return a.Path
+	}
+	return b.DisplayPath()
 }
 
 // repoPath is a file's repo-relative path: its own, or for a Go file named

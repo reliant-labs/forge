@@ -576,6 +576,13 @@ func (p *pausingStore) Delete(ctx context.Context, key []byte) error {
 	return p.Store.Delete(ctx, key)
 }
 
+func (p *pausingStore) Take(ctx context.Context, key []byte) (Record, error) {
+	if g := p.take(&p.beforeDelete); g != nil {
+		g()
+	}
+	return p.Store.Take(ctx, key)
+}
+
 // pause arms *hook to block until release is closed, and returns the
 // channel closed when the paused call reaches it.
 func (p *pausingStore) pause(hook *func(), release <-chan struct{}) <-chan struct{} {
@@ -692,5 +699,84 @@ func TestUseExtendsTheIdleDeadlineWithoutARefresh(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A session used only through the cache still has its idle deadline pushed
+// out: with an idle timeout shorter than the cache TTL, a request every 2s
+// keeps it alive however many of them the cache answers.
+func TestCachedUseStillExtendsTheIdleDeadline(t *testing.T) {
+	clk := newClock()
+	is := newIssuer(clk)
+	m := newTestManager(t, NewMemoryStore(), clk, is, func(c *Config) {
+		c.IdleTimeout, c.CacheTTL = 5*time.Second, 15*time.Second
+	})
+	s := mustCreate(t, m, is.mint(), "u1")
+	for i := 1; i <= 15; i++ { // 30s of use, six idle timeouts
+		clk.Advance(2 * time.Second)
+		if _, err := m.AccessToken(context.Background(), s.ID); err != nil {
+			t.Fatalf("request at +%ds of a session in use (idle timeout 5s, cache TTL 15s): %v", 2*i, err)
+		}
+	}
+	clk.Advance(6 * time.Second)
+	if _, err := m.AccessToken(context.Background(), s.ID); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("after 6s unused (idle timeout 5s): %v, want ErrNoSession", err)
+	}
+}
+
+// gatedRefresher blocks each Refresh until release is closed, and closes
+// entered when the first one starts.
+type gatedRefresher struct {
+	Refresher
+	entered, release chan struct{}
+	once             sync.Once
+}
+
+func (g *gatedRefresher) Refresh(ctx context.Context, rt string) (Tokens, error) {
+	g.once.Do(func() { close(g.entered) })
+	<-g.release
+	return g.Refresher.Refresh(ctx, rt)
+}
+
+// A sign-out racing a renewal returns the refresh token the renewal rotated
+// in, so the caller revokes the live one at the issuer, not the one the
+// renewal already spent.
+func TestRevokeRacingARefreshReturnsTheRotatedTokens(t *testing.T) {
+	clk := newClock()
+	is := newIssuer(clk)
+	g := &gatedRefresher{Refresher: is, entered: make(chan struct{}), release: make(chan struct{})}
+	store := &pausingStore{Store: NewMemoryStore()}
+	m := newTestManager(t, store, clk, g, nil)
+	s := mustCreate(t, m, is.mint(), "u1") // rt-1
+	clk.Advance(is.life - time.Minute)     // due: AccessToken refreshes
+
+	refreshed := make(chan error, 1)
+	go func() { _, err := m.AccessToken(context.Background(), s.ID); refreshed <- err }()
+	<-g.entered // the renewal holds the session and is at the issuer
+
+	closed := make(chan struct{})
+	close(closed)
+	taking := store.pause(&store.beforeDelete, closed)
+	type result struct {
+		t   Tokens
+		err error
+	}
+	revoked := make(chan result, 1)
+	go func() { tok, _, err := m.Revoke(context.Background(), s.ID); revoked <- result{tok, err} }()
+	<-taking // Revoke is removing the session
+	close(g.release)
+
+	if err := <-refreshed; err != nil {
+		t.Fatalf("the renewal: %v", err)
+	}
+	r := <-revoked
+	if r.err != nil {
+		t.Fatalf("Revoke: %v", r.err)
+	}
+	if r.t.RefreshToken != "rt-2" {
+		t.Fatalf("Revoke returned refresh token %q, want rt-2: the one the racing renewal rotated in (rt-1 is already spent)", r.t.RefreshToken)
+	}
+	if _, err := m.AccessToken(context.Background(), s.ID); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("after Revoke: %v, want ErrNoSession", err)
 	}
 }

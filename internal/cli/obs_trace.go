@@ -158,7 +158,9 @@ type obsTraceDoc struct {
 type obsTraceOpts struct {
 	obsCommon
 	full bool
-	logs int
+	// attributes carries every span's attributes, not only a failing one's.
+	attributes bool
+	logs       int
 }
 
 func newObsTraceCmd() *cobra.Command {
@@ -179,7 +181,9 @@ that emitted no span, which is where to look next.
 The tree is capped for an agent's context: depth 8, 100 rendered spans, runs of
 identical siblings collapsed ("×37 SELECT jobs … p50 2ms p95 9ms"); failing
 spans, their ancestors and the critical path (the child that ends last at each
-level, marked *) are always expanded. --full lifts the caps.
+level, marked *) are always expanded. --full lifts the caps. --attributes gives
+every span its attributes (tree.attributes: the whole db.query.text, every rpc
+and http attribute), which otherwise only a failing span carries.
 
 A trace is read up to 10,000 spans, in start order. A bigger one (an N+1 loop
 that ran until its deadline) says how many spans it has and how many were read;
@@ -199,6 +203,7 @@ counted over every span, follow the tree.
 	}
 	o.register(cmd, 72*time.Hour, 0)
 	cmd.Flags().BoolVar(&o.full, "full", false, "lift the depth, span and collapse caps")
+	cmd.Flags().BoolVar(&o.attributes, "attributes", false, "carry every span's attributes (the whole db.query.text, every rpc and http attribute), not only a failing span's")
 	cmd.Flags().IntVar(&o.logs, "logs", 20, "most correlated log lines to include (0 = none)")
 	_ = cmd.Flags().MarkHidden("limit")
 	return cmd
@@ -272,7 +277,7 @@ func runObsTrace(ctx context.Context, d obsDeps, traceID, env string, o obsTrace
 		}
 	}
 	for _, r := range tree.Roots {
-		doc.Tree = append(doc.Tree, nodeDoc(r))
+		doc.Tree = append(doc.Tree, nodeDoc(r, o.attributes))
 	}
 	for _, s := range obsbackend.ErrorSpans(res.Spans) {
 		doc.Errors = append(doc.Errors, obsTraceErrorDoc{SpanID: s.SpanID, Service: s.Service, Name: s.Name, Message: s.StatusMessage, Exception: exceptionOf(s)})
@@ -310,7 +315,10 @@ func exceptionOf(s obsbackend.Span) string {
 	return ""
 }
 
-func nodeDoc(n *obsbackend.TreeNode) *obsTraceNodeDoc {
+// nodeDoc is one tree node's document. all carries every single span's
+// attributes (--attributes); otherwise only a failing span's are carried,
+// beside the key ones.
+func nodeDoc(n *obsbackend.TreeNode, all bool) *obsTraceNodeDoc {
 	d := &obsTraceNodeDoc{
 		SpanID: n.Span.SpanID, Service: n.Span.Service, Name: n.Span.Name, Kind: n.Span.Kind, Status: n.Span.StatusCode,
 		OffsetMs: durMs(n.Offset), DurationMs: float64(n.Span.DurationNs) / 1e6, Error: n.Error, Critical: n.Critical, Hidden: n.Hidden,
@@ -325,8 +333,10 @@ func nodeDoc(n *obsbackend.TreeNode) *obsTraceNodeDoc {
 			}
 			d.KeyAttributes[kv.Key] = kv.Value
 		}
-		if n.Error {
+		if n.Error || all {
 			d.Attributes = n.Span.Attributes
+		}
+		if n.Error {
 			d.Message = obsbackend.SpanMessage(n.Span)
 		}
 		if n.Uninstrumented > 0 {
@@ -340,7 +350,7 @@ func nodeDoc(n *obsbackend.TreeNode) *obsTraceNodeDoc {
 		d.WholeTrace = spanGroupDoc(*n.WholeTrace, false)
 	}
 	for _, c := range n.Children {
-		d.Children = append(d.Children, nodeDoc(c))
+		d.Children = append(d.Children, nodeDoc(c, all))
 	}
 	return d
 }

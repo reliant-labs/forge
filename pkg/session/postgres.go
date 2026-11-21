@@ -152,6 +152,19 @@ func (s *PostgresStore) Delete(ctx context.Context, key []byte) error {
 	return nil
 }
 
+// Take implements [Store]. A DELETE waits for the row lock an Update holds
+// and then removes, and returns, the row that Update committed.
+func (s *PostgresStore) Take(ctx context.Context, key []byte) (Record, error) {
+	r, err := scanRecord(s.db.QueryRowContext(ctx, `DELETE FROM `+s.table+` WHERE id_hash = $1 RETURNING `+recordColumns, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, ErrNoSession
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("session store: take: %w", err)
+	}
+	return r, nil
+}
+
 // DeleteSubject implements [Store].
 func (s *PostgresStore) DeleteSubject(ctx context.Context, subject string) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM `+s.table+` WHERE subject = $1`, subject)

@@ -821,6 +821,12 @@ type hostedStore struct {
 	// for os.Stderr.
 	codeSourceWarned string
 	warn             io.Writer
+	// vulnCaps is GetCapabilities.vulnerability_features, asked once per
+	// process (hosted_vuln.go); nil until asked.
+	vulnCaps *hostedVulnFeatures
+	// sboms opens the machine ledger a cut's SBOM bytes are read from to
+	// upload them (hosted_vuln.go). Nil uploads none.
+	sboms func() (sbomBytesReader, error)
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -1220,6 +1226,10 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		return false, err
 	}
 	s.noteCodeSourceWarning(deployAttemptFrom(ctx), resp.CodeSources.warning())
+	// The SBOMs, through their own rpc, after the release exists — on a
+	// re-cut too, which is how a release cut before its SBOMs were
+	// recorded gets them. Never fails the cut (hosted_vuln.go).
+	s.recordReleaseSBOMs(ctx, r)
 	return resp.Created, nil
 }
 

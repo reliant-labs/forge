@@ -2540,6 +2540,41 @@ benefits:
           An env whose render fails, so its secrets could not be judged (a
           warning; `forge env render` reports the render error itself)
 
+  - id: lint-rules-telemetry
+    category: guardrails
+    title: Declared telemetry rules
+    claim: >-
+      A dashboard panel over a series no scrape keeps, an unbounded scrape and
+      a rate over a gauge are caught from each env's real render.
+    availability: forge
+    evidence:
+      - path: internal/cli/lint/telemetry_rules.go
+      - command: lint --telemetry
+    rules:
+      - id: telemetry-dashboard-metric-uncollected
+        lane: --telemetry
+        bug_class: >-
+          A declared dashboard series whose metric no scrape of its system
+          keeps (allow minus deny), so the panel is empty in every env it ships
+          to with no other symptom
+      - id: telemetry-scrape-unbounded
+        lane: --telemetry
+        bug_class: >-
+          A metrics scrape with no `allow`, which stores every series the
+          endpoint exposes until it passes `sample_limit` and fails whole
+      - id: telemetry-rate-on-gauge
+        lane: --telemetry
+        bug_class: >-
+          A rate or increase over a metric nothing marks as a counter (no
+          `counters` match, no `_total`/`_count`/`_sum`), which reads nothing
+          when the metric is a gauge (a warning)
+      - id: telemetry-high-cardinality-risk
+        lane: --telemetry
+        bug_class: >-
+          A scrape that raises `sample_limit` or keeps every name while
+          dropping no labels, so a per-user or per-id label explodes its
+          series (a warning)
+
   - id: lint-rules-scaffold-ownership
     category: guardrails
     title: Generated-code tampering checks
@@ -4493,9 +4528,12 @@ benefits:
       Issues are fingerprinted with one algorithm, at query time locally and at
       ingest on the control plane; issues that share a cause and first fired
       together collapse into one incident without being merged, and triage
-      (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+      (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log
+      record an authenticated request writes carries `user.id`, so an issue
+      counts the people it reached.
     evidence:
       - command: obs issue
+      - path: pkg/authn/telemetry.go
       - command: obs issues
       - command: obs issue resolve
       - command: obs issue ignore

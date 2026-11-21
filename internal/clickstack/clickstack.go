@@ -105,3 +105,14 @@ const (
 	// TelemetryParseFile holds transform/telemetry_logs's config.
 	TelemetryParseFile = "logs-parse.yaml"
 )
+
+// IsTelemetryService reports whether a compose service is part of forge's
+// local telemetry stack. None of them is something the application needs in
+// order to run, so a stack starts without one that fails to come up.
+func IsTelemetryService(service string) bool {
+	switch service {
+	case Service, ProfilesService, ForwarderService, AlertmanagerService:
+		return true
+	}
+	return false
+}

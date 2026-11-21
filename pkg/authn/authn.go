@@ -594,6 +594,7 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string, ch
 	}
 
 	ctx = a.policy.ContextWithClaims(ctx, claims)
+	ctx = withTelemetryUser(ctx, claims)
 	// How the caller authenticated, from the request and the credential the
 	// validator proved (restored after Enrich above) — never from the token's
 	// contents. Before Decorate, so Decorate can read it too.

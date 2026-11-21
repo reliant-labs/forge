@@ -34,11 +34,11 @@ type fakeVulnSource struct {
 	fetched *bool
 }
 
-func (f fakeVulnSource) releaseScans(_ context.Context, _ *release.Release, fetch bool) ([]vulnscan.ArtifactScan, []string, error) {
+func (f fakeVulnSource) gateFindings(_ context.Context, _ *release.Release, fetch bool) (vulnGateFindings, error) {
 	if f.fetched != nil {
 		*f.fetched = fetch
 	}
-	return f.scans, nil, nil
+	return vulnGateFindings{Scans: f.scans}, nil
 }
 
 func criticalFinding() vulnscan.Finding {

@@ -3,9 +3,6 @@ package observe
 import (
 	"context"
 	"log/slog"
-	"net"
-	"regexp"
-	"strings"
 	"sync/atomic"
 
 	"github.com/reliant-labs/forge/pkg/authn"
@@ -94,14 +91,8 @@ func ActorFrom(ctx context.Context) Actor {
 // that kind). Opaque ids are long random runs by nature, so the property
 // guard's other patterns do not apply.
 func ValidActorID(id string) bool {
-	if id == "" {
-		return true
-	}
-	return len(id) <= MaxAuthUserIDLen && !strings.Contains(id, "@") &&
-		net.ParseIP(strings.Trim(id, "[]")) == nil && !jwtRE.MatchString(id)
+	return authn.OpaqueUserID(id)
 }
-
-var jwtRE = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.`)
 
 // actorIDRefused is set once the first refused actor id has been warned
 // about, so a misconfigured caller logs once per process.

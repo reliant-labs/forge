@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -382,11 +383,10 @@ func harvestFileArtifacts(projectDir, outputDir string, entities *KCLEntities) m
 
 	for _, svc := range entities.WorkloadsOn(RuntimeBuildOnly) {
 		for _, v := range svc.Runtime.BuildOnly.BuildVariants {
-			name := v.OutputName
-			if name == "" {
-				name = svc.Name + "-" + v.Name
-			}
-			sum, ok := sha256File(filepath.Join(outputDir, name))
+			name := variantOutputName(svc.Name, v)
+			// The disk file has the platform's executable suffix; the
+			// ledger key stays the declared name.
+			sum, ok := sha256File(filepath.Join(outputDir, variantBinaryFilename(svc.Name, v, runtime.GOOS)))
 			if !ok {
 				// The variant declared a binary this build did not produce
 				// (a --target run that skipped it, or a failed variant). A

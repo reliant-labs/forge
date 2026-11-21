@@ -130,6 +130,14 @@ type fixture struct {
 	// that whole half of the template unexercised, and the file then
 	// looks constant while really only being untested.
 	BinaryConfigs []binaryConfigBlock
+	// DatabaseTelemetryOff sets `default_telemetry = False` on the
+	// scaffolded forge.ManagedDatabase of every env. Its default
+	// telemetry (kcl/database_telemetry.k) is what the database's system
+	// dashboard, declared dashboard and spec part under
+	// deploy/observability/ are projected from; with every fixture keeping
+	// the default, those files render the same bytes and look like library
+	// code while really only being unexercised.
+	DatabaseTelemetryOff bool
 }
 
 // binaryConfigBlock is one config message bound to a binary — the
@@ -286,6 +294,9 @@ func projectD() fixture {
 		// auth_sessions migration server-side sign-in sessions read, so D
 		// deletes it (NoMigrations) to keep db/migrations/ empty.
 		NoMigrations: true,
+		// The database keeps no default telemetry, so its dashboards and
+		// spec part are not emitted (presence-derived).
+		DatabaseTelemetryOff: true,
 	}
 }
 
@@ -368,6 +379,12 @@ func render(parent string, fx fixture) (*renderResult, error) {
 
 	if err := retargetGatewayListener(root, fx.GatewayHTTPPort); err != nil {
 		return nil, err
+	}
+
+	if fx.DatabaseTelemetryOff {
+		if err := disableDatabaseTelemetry(root); err != nil {
+			return nil, err
+		}
 	}
 
 	for _, svc := range fx.Services[1:] {
@@ -486,6 +503,36 @@ func retargetGatewayListener(root string, port int) error {
 	}
 	out := strings.Replace(string(raw), scaffolded, fmt.Sprintf("port = %d", port), 1)
 	return atomicfile.WriteFile(path, []byte(out), 0o644)
+}
+
+// disableDatabaseTelemetry sets `default_telemetry = False` on the
+// scaffolded forge.ManagedDatabase in every env's main.k — the one-line
+// edit a user makes to stop forge watching the database.
+func disableDatabaseTelemetry(root string) error {
+	mains, err := filepath.Glob(filepath.Join(root, "deploy", "kcl", "*", "main.k"))
+	if err != nil {
+		return err
+	}
+	const scaffolded = "_db = forge.ManagedDatabase {\n"
+	edited := 0
+	for _, path := range mains {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		if !strings.Contains(string(raw), scaffolded) {
+			continue
+		}
+		out := strings.Replace(string(raw), scaffolded, scaffolded+"    default_telemetry = False\n", 1)
+		if err := atomicfile.WriteFile(path, []byte(out), 0o644); err != nil {
+			return err
+		}
+		edited++
+	}
+	if edited == 0 {
+		return fmt.Errorf("no deploy/kcl/*/main.k declares %q — the fixture's anchor moved with the env templates", strings.TrimSpace(scaffolded))
+	}
+	return nil
 }
 
 // binPlaceholder stands in for the binary-name path segment so renders

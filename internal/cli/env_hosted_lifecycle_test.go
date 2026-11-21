@@ -132,6 +132,48 @@ func TestRunLifecycle_WaitPollsUntilObservedMatches(t *testing.T) {
 	}
 }
 
+// The operator suspends a workload by holding it at phase Pending with
+// Suspended=True, and the control plane reports that as observed PENDING plus
+// a suspend reason, never SUSPENDED (bug report cf768c43: every
+// `env stop --wait` timed out on an env the platform had suspended). The
+// reason is the suspension.
+func TestRunLifecycle_WaitReadsASuspendReasonAsSuspended(t *testing.T) {
+	stopping := `{"deployments":[{"deployment":{"name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_READY"}}}]}`
+	held := `{"deployments":[{"deployment":{"name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_PENDING","suspendReason":"DEPLOY_SUSPEND_REASON_OWNER"}}}]}`
+	f := &fakeLifecycleCaller{
+		replies:  map[string]string{"SetEnvironmentRunState": twoDeployments},
+		statuses: []string{stopping, held},
+	}
+	var out bytes.Buffer
+	err := runLifecycleRunState(context.Background(), f, "env_1", runStateSuspended,
+		lifecycleOptions{Env: "prod", Wait: true, Timeout: time.Minute, Interval: time.Millisecond}, &out)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "api=suspended") || !strings.Contains(out.String(), "every deployment is suspended") {
+		t.Errorf("progress:\n%s", out.String())
+	}
+	// A pending deployment with no reason is still converging, not suspended.
+	pending := `{"deployments":[{"deployment":{"name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_PENDING","suspendReason":"DEPLOY_SUSPEND_REASON_UNSPECIFIED"}}}]}`
+	f = &fakeLifecycleCaller{replies: map[string]string{"SetEnvironmentRunState": twoDeployments}, statuses: []string{pending}}
+	err = runLifecycleRunState(context.Background(), f, "env_1", runStateSuspended,
+		lifecycleOptions{Env: "prod", Wait: true, Timeout: 20 * time.Millisecond, Interval: 5 * time.Millisecond}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("pending with no suspend reason must keep waiting: %v", err)
+	}
+	// A stale suspend reason beside any state but PENDING is a workload still
+	// running or failing, not a confirmed stop: keep waiting.
+	for _, state := range []string{"READY", "PROGRESSING", "DEGRADED", "FAILED"} {
+		stale := `{"deployments":[{"deployment":{"name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_` + state + `","suspendReason":"DEPLOY_SUSPEND_REASON_OWNER"}}}]}`
+		f = &fakeLifecycleCaller{replies: map[string]string{"SetEnvironmentRunState": twoDeployments}, statuses: []string{stale}}
+		err = runLifecycleRunState(context.Background(), f, "env_1", runStateSuspended,
+			lifecycleOptions{Env: "prod", Wait: true, Timeout: 20 * time.Millisecond, Interval: 5 * time.Millisecond}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "timed out") {
+			t.Errorf("%s with a stale suspend reason must keep waiting: %v", state, err)
+		}
+	}
+}
+
 func TestRunLifecycle_WaitTimesOutNonZero(t *testing.T) {
 	stuck := `{"deployments":[{"deployment":{"name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_PROGRESSING"}}}]}`
 	f := &fakeLifecycleCaller{replies: map[string]string{"SetEnvironmentRunState": twoDeployments}, statuses: []string{stuck}}
@@ -359,11 +401,15 @@ func TestEnvDelete_ResolvesAnUndeclaredEnvByName(t *testing.T) {
 }
 
 func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
-	t.Run("none bound", func(t *testing.T) {
+	t.Run("none bound: Reliant cloud is asked", func(t *testing.T) {
+		cloudCP := controlPlaneServer(t, map[string]string{
+			"ListEnvironments": `{"environments":[{"id":"env_9","name":"prod-web","project":"shop"}]}`,
+		})
+		useUnboundControlPlane(t, cloudCP.URL)
 		undeclaredDeleteProject(t)
-		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
-		if err == nil || !strings.Contains(err.Error(), "--endpoint "+cloud.DefaultEndpoint) {
-			t.Fatalf("err = %v; want an --endpoint fix", err)
+		got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+		if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != cloudCP.URL {
+			t.Fatalf("target = %+v, %v; want env_9 on Reliant cloud (%s)", got, err, cloudCP.URL)
 		}
 	})
 	t.Run("several bound", func(t *testing.T) {
@@ -431,4 +477,29 @@ func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
 			t.Fatalf("err = %v; want --endpoint refused for a declared env", err)
 		}
 	})
+}
+
+// TestEnvDelete_MonitoringOnlyEnvDocument pins TL-58: a monitoring-only env
+// `forge obs init` registered is declared by deploy/envs/<env>.yaml, places
+// nothing on the control plane, and is still deleted through its declaration
+// — by name, on the control plane the document names, with no --endpoint.
+func TestEnvDelete_MonitoringOnlyEnvDocument(t *testing.T) {
+	srv := envListServer(t)
+	undeclaredDeleteProject(t)
+	doc := "apiVersion: forge.dev/env/v1\nproject: \"shop\"\nenv: \"prod-web\"\n" +
+		"control_plane: {endpoint: \"" + srv.URL + "\"}\nobservability:\n  enabled: true\n  destination: {token_from_control_plane: true}\n"
+	if err := os.MkdirAll(filepath.Join("deploy", "envs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("deploy", "envs", "prod-web.yaml"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+	if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != srv.URL {
+		t.Fatalf("target = %+v, %v; want env_9 on the document's control plane %s", got, err, srv.URL)
+	}
+	// stop/start still need a hosted part: there is nothing to suspend.
+	if _, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "stop", "tok", ""); err == nil {
+		t.Error("stop resolved a monitoring-only env; want it refused (it runs nothing on the control plane)")
+	}
 }

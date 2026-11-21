@@ -134,6 +134,47 @@ func storeContract(t *testing.T, newStore func(*testing.T) session.Store) {
 		}
 	})
 
+	t.Run("take returns what an update in progress wrote", func(t *testing.T) {
+		s := newStore(t)
+		r := record(t, "u1", base)
+		r.Sealed = []byte("old")
+		if err := s.Create(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		inside, release := make(chan struct{}), make(chan struct{})
+		updated := make(chan error, 1)
+		go func() {
+			updated <- s.Update(ctx, r.Key, func(rec *session.Record) error {
+				close(inside)
+				<-release
+				rec.Sealed = []byte("rotated")
+				return nil
+			})
+		}()
+		<-inside
+		took := make(chan session.Record, 1)
+		tookErr := make(chan error, 1)
+		go func() {
+			got, err := s.Take(ctx, r.Key)
+			took <- got
+			tookErr <- err
+		}()
+		close(release)
+		if err := <-updated; err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		got, err := <-took, <-tookErr
+		if err != nil || string(got.Sealed) != "rotated" || got.Subject != "u1" {
+			t.Fatalf("Take = %q (%s), %v; want the update's write", got.Sealed, got.Subject, err)
+		}
+		if _, err := s.Get(ctx, r.Key); !errors.Is(err, session.ErrNoSession) {
+			t.Errorf("Get after Take = %v", err)
+		}
+		if _, err := s.Take(ctx, r.Key); !errors.Is(err, session.ErrNoSession) {
+			t.Errorf("Take of a missing key = %v", err)
+		}
+	})
+
 	t.Run("list delete subject sweep", func(t *testing.T) {
 		s := newStore(t)
 		old, mid, other := record(t, "u1", base), record(t, "u1", base.Add(time.Minute)), record(t, "u2", base)

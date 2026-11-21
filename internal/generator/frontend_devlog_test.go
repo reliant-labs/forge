@@ -14,9 +14,10 @@ import (
 
 func TestViteDevLogFromRuntimeFollowsTheFloor(t *testing.T) {
 	for floor, want := range map[string]bool{
-		"^0.13.19":                     false, // the newest release without forgeDevLog
+		"^0.13.19":                     false,
 		"0.13.19":                      false,
-		"^0.13.20":                     true, // webRuntimeForgeDevLogSince
+		"^0.13.20":                     false, // the newest release without forgeDevLog
+		"^0.13.21":                     true,  // webRuntimeForgeDevLogSince
 		"~0.13.21":                     true,
 		"^0.14.0":                      true, // a later line keeps the export
 		"^1.2.0":                       true,
@@ -84,7 +85,7 @@ func TestViteSPAScaffoldFollowsTheRuntimeFloor(t *testing.T) {
 	for _, tc := range []struct {
 		floor       string
 		fromRuntime bool
-	}{{"^0.13.19", false}, {"^0.13.20", true}} {
+	}{{"^0.13.20", false}, {"^0.13.21", true}} {
 		t.Run(tc.floor, func(t *testing.T) {
 			root := t.TempDir()
 			if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
@@ -115,7 +116,7 @@ func TestViteSiteStarterFollowsTheRuntimeFloor(t *testing.T) {
 	for _, tc := range []struct {
 		floor       string
 		fromRuntime bool
-	}{{"^0.13.19", false}, {"^0.13.20", true}} {
+	}{{"^0.13.20", false}, {"^0.13.21", true}} {
 		t.Run(tc.floor, func(t *testing.T) {
 			dir := t.TempDir()
 			if err := writeSiteStarter(dir, "landing", fe, tc.floor); err != nil {

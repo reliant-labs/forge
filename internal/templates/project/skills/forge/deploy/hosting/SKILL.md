@@ -153,6 +153,8 @@ A hosted deploy at a terminal (not CI or `--json`) prints the launcher's
 | a managed Postgres (`forge.ManagedDatabase`) | `nodeSelector`, `tolerations`, `priorityClassName`: the platform decides placement |
 | static frontends on hosted static hosting (static export only) | `ports.domains` (use `forge domain`); raw `secretRef`/`configMapRef`/`fieldRef` env; a hostless or unpinned image |
 
+A port can also restrict which client addresses reach it (`allowedSourceCIDRs`): `deploy/domains`.
+
 `preStopSeconds` is newer than the other fields: a control plane still on an
 older forge refuses it as an unknown field when you deploy (it decodes the
 spec strictly; nothing is dropped silently). Leave it unset there; it is

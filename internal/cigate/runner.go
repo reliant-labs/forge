@@ -145,6 +145,12 @@ type Check struct {
 	// says it could not run here: the row is SKIPPED with its last output
 	// line as the reason.
 	SkipExitCode int
+	// AllowedSkipExitCode, when non-zero, is the exit status by which the
+	// command says it could not run here AND that not running fails
+	// nothing: a check whose verdict would not gate yet (a warn-first rule
+	// below its GatesFrom release). The row is SKIPPED with its last
+	// output line as the reason, and allowed, like a CI_SKIP.
+	AllowedSkipExitCode int
 	// Note annotates the row when the command runs: how it was narrowed
 	// (affected-package mode) or anything else the reader needs.
 	Note string
@@ -163,9 +169,13 @@ type Result struct {
 	// heavy slot or the gate's job cap before it started.
 	Queued time.Duration
 	Note   string
-	// Allowed marks a SKIPPED row the caller asked for (CI_SKIP), which does
-	// not fail the gate.
+	// Allowed marks a SKIPPED row the caller asked for (CI_SKIP), or one
+	// the check itself said fails nothing (Check.AllowedSkipExitCode),
+	// which does not fail the gate.
 	Allowed bool
+	// selfAllowed marks an Allowed row the check allowed itself, so the
+	// table does not credit CI_SKIP for it.
+	selfAllowed bool
 	// Cached is the short commit a reused PASS was recorded at; "" when the
 	// check ran.
 	Cached string
@@ -320,7 +330,7 @@ func (res Result) resultCell() string {
 
 func (res Result) note() string {
 	note := res.Note
-	if res.Status == Skip && res.Allowed {
+	if res.Status == Skip && res.Allowed && !res.selfAllowed {
 		note += " (allowed by " + SkipEnv + ")"
 	}
 	if res.Status == Fail && res.Log != "" {
@@ -944,6 +954,11 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 		res.Status, res.Note = Pass, c.Note
 	case s.ctx.Err() != nil:
 		res.Status, res.Note = Skip, "gate interrupted"
+	case c.AllowedSkipExitCode != 0 && exitCode(err) == c.AllowedSkipExitCode:
+		res.Status, res.Note, res.Allowed, res.selfAllowed = Skip, lastLine(tail), true, true
+		if res.Note == "" {
+			res.Note = fmt.Sprintf("exit status %d: could not run here, and does not gate yet", c.AllowedSkipExitCode)
+		}
 	case c.SkipExitCode != 0 && exitCode(err) == c.SkipExitCode:
 		res.Status, res.Note = Skip, lastLine(tail)
 		if res.Note == "" {

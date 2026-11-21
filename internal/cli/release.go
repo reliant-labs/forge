@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/gitsource"
 	"github.com/reliant-labs/forge/internal/statefile"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -177,6 +178,18 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 		}
 	}
 
+	// A build variant rides BESIDE the shared artifact as its own
+	// `<repository>#<variant>` artifact (release.VariantArtifactName), never
+	// in its place: a cover image is not what a persistent env runs.
+	addVariant := func(repository, variant, digest string) {
+		if repository == "" || !release.ValidDigest(digest) {
+			return
+		}
+		out[release.VariantArtifactName(repository, variant)] = release.Artifact{
+			Kind: release.KindOCI, Mode: release.ModeVariant, Digests: map[string]string{variant: digest},
+		}
+	}
+
 	// Aggregate project-image build state(s): env-specific, then the
 	// env-agnostic default a plain `forge env build --release` (no --env) writes.
 	for _, key := range buildStateLookupEnvs(envName) {
@@ -208,7 +221,14 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 			if err != nil || st == nil {
 				continue
 			}
-			add(st.Image, st.Digest, st.Platforms, st.Source.ForRelease(), st.ReleaseInputsDigest, st.CarriedFrom)
+			if st.Variant != "" {
+				addVariant(st.Image, st.Variant, st.Digest)
+			} else {
+				add(st.Image, st.Digest, st.Platforms, st.Source.ForRelease(), st.ReleaseInputsDigest, st.CarriedFrom)
+			}
+			if st.CoverDigest != "" {
+				addVariant(st.Image, release.CoverVariant, st.CoverDigest)
+			}
 		}
 	}
 
@@ -394,6 +414,11 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 	if envName == "" {
 		envName = "<env>"
 	}
+	if hint := projectImageRenameHint(entities, artifacts); hint != "" {
+		return fmt.Errorf("--release %s: the release does not cover everything %s declares.\n"+
+			"  Missing from the ledger:\n    %s\n"+
+			"%s", opts.release, envName, strings.Join(missing, "\n    "), hint)
+	}
 	return fmt.Errorf("--release %s: the release does not cover everything %s declares.\n"+
 		"  Missing from the ledger:\n    %s\n"+
 		"  These are declared in deploy/kcl/%s/main.k but no digest or commit was captured for them,\n"+
@@ -402,6 +427,68 @@ func checkReleaseCoversEnv(entities *KCLEntities, artifacts map[string]release.A
 		"  Build the full set (drop --target, and pass --push so images are digest-addressable),\n"+
 		"  or remove what the environment no longer ships",
 		opts.release, envName, strings.Join(missing, "\n    "), envName)
+}
+
+// projectImageRenameHint explains the one coverage gap that "build the full
+// set" cannot fix: the project image is named after forge.yaml's `name`, and a
+// workload pulls it by its image's last path segment (imagePinFor,
+// pushPlan.repositoryFor). Rename the project and the build pushes an image
+// no workload declares, while every forge.GoBuild workload still declares the
+// old name, which nothing builds. "" when the gap is anything else.
+func projectImageRenameHint(entities *KCLEntities, artifacts map[string]release.Artifact) string {
+	if entities == nil {
+		return ""
+	}
+	declared := map[string]bool{}
+	for _, w := range entities.Workloads {
+		if w.Image != "" {
+			declared[repositoryName(imageRepository(w.Image))] = true
+		}
+	}
+	for _, fe := range entities.Frontends {
+		declared[fe.Name] = true
+		if fe.Image != "" {
+			declared[repositoryName(imageRepository(fe.Image))] = true
+		}
+	}
+	var built []string
+	for repo, a := range artifacts {
+		if a.Kind == release.KindOCI && !strings.HasSuffix(repo, "/"+deploytarget.StaticSiteRepositorySegment) && !declared[repositoryName(repo)] {
+			built = append(built, repo)
+		}
+	}
+	if len(built) != 1 {
+		return ""
+	}
+	pulled := map[string][]string{}
+	var images []string
+	for _, w := range entities.Workloads {
+		if w.Image == "" || w.GoBuild() == nil {
+			continue
+		}
+		repo := imageRepository(w.Image)
+		if w.OnRuntime(RuntimeHosted) {
+			repo = hostedImageForDecl(entities, repo)
+		}
+		if _, ok := artifacts[repo]; ok {
+			continue
+		}
+		if _, seen := pulled[repo]; !seen {
+			images = append(images, repo)
+		}
+		pulled[repo] = append(pulled[repo], w.Name)
+	}
+	if len(images) != 1 {
+		return ""
+	}
+	name := repositoryName(built[0])
+	sort.Strings(pulled[images[0]])
+	return fmt.Sprintf("  This build makes the project image %q, which no workload declares, while %s (forge.GoBuild,\n"+
+		"  packaged by the project Dockerfile) declare %q. The project image is named after forge.yaml's\n"+
+		"  `name`, and a workload pulls it by its image's last path segment, so a renamed project leaves\n"+
+		"  the old name behind. Rename that image to .../%s in deploy/kcl/workloads.k and every\n"+
+		"  deploy/kcl/<env>/main.k that declares it, or set forge.yaml's `name` back to %q",
+		name, strings.Join(pulled[images[0]], ", "), repositoryName(images[0]), name, repositoryName(images[0]))
 }
 
 // releaseCoverageGaps is every artifact the rendered env declares that

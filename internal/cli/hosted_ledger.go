@@ -120,6 +120,10 @@ type wireArtifact struct {
 	// reuses: the safe reading of "not known".
 	InputsDigest string `json:"inputsDigest,omitempty"`
 	CarriedFrom  string `json:"carriedFrom,omitempty"`
+	// Size is a file artifact's length in bytes, sent ahead of the control
+	// plane storing it exactly like BuiltFrom. Until it does, a hosted
+	// release comes back without it: informational, never identity.
+	Size wireInt64 `json:"size,omitempty"`
 }
 
 type wireRelease struct {
@@ -665,7 +669,7 @@ func releaseToWire(r release.Release) []wireArtifact {
 		base := wireArtifact{
 			Name: name, Kind: string(a.Kind), Mode: string(a.Mode),
 			Platforms: a.Platforms, Version: a.Version, Integrity: a.Integrity, URI: a.URI,
-			InputsDigest: a.InputsDigest, CarriedFrom: a.CarriedFrom,
+			InputsDigest: a.InputsDigest, CarriedFrom: a.CarriedFrom, Size: wireInt64(a.Size),
 		}
 		if a.Source != nil {
 			s := wireSource(*a.Source)
@@ -740,6 +744,7 @@ func releaseFromWire(w wireRelease) (release.Release, error) {
 			a = release.Artifact{
 				Kind: release.Kind(row.Kind), Mode: release.Mode(row.Mode),
 				Platforms: row.Platforms, Version: row.Version, Integrity: row.Integrity, URI: row.URI,
+				Size: row.Size.Int64(),
 			}
 			// Evidence for the next release's reuse check, never a reason the
 			// ledger cannot be read: a malformed value is dropped (rebuild).
@@ -816,6 +821,12 @@ type hostedStore struct {
 	// for os.Stderr.
 	codeSourceWarned string
 	warn             io.Writer
+	// vulnCaps is GetCapabilities.vulnerability_features, asked once per
+	// process (hosted_vuln.go); nil until asked.
+	vulnCaps *hostedVulnFeatures
+	// sboms opens the machine ledger a cut's SBOM bytes are read from to
+	// upload them (hosted_vuln.go). Nil uploads none.
+	sboms func() (sbomBytesReader, error)
 }
 
 // hostedLedger binds both halves of an env's ledger to one client. project
@@ -1176,6 +1187,11 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		// recorded through their own RPC, never inside this document.
 		doc := r.WithoutSBOMs()
 		doc.Migrations = nil
+		// A file artifact's size is left out of the document for the same
+		// reason: a server pinned to a forge that predates the field would
+		// refuse the whole cut. It is informational (the hash is the
+		// identity), so a snapshot release records files without it.
+		doc.Artifacts = artifactsWithoutSize(r.Artifacts)
 		req = map[string]any{"version": r.Version, "project": r.Project, "snapshotRelease": doc}
 	}
 	if r.Migrations != nil {
@@ -1210,6 +1226,10 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		return false, err
 	}
 	s.noteCodeSourceWarning(deployAttemptFrom(ctx), resp.CodeSources.warning())
+	// The SBOMs, through their own rpc, after the release exists — on a
+	// re-cut too, which is how a release cut before its SBOMs were
+	// recorded gets them. Never fails the cut (hosted_vuln.go).
+	s.recordReleaseSBOMs(ctx, r)
 	return resp.Created, nil
 }
 
@@ -1307,4 +1327,18 @@ func (s *hostedStore) List(ctx context.Context) ([]release.Release, error) {
 	}
 	topology.SortReleasesNewestFirst(out)
 	return out, nil
+}
+
+// artifactsWithoutSize is a copy of artifacts with every Size cleared, for a
+// document a strict decoder that predates the field reads.
+func artifactsWithoutSize(artifacts map[string]release.Artifact) map[string]release.Artifact {
+	if artifacts == nil {
+		return nil
+	}
+	out := make(map[string]release.Artifact, len(artifacts))
+	for name, a := range artifacts {
+		a.Size = 0
+		out[name] = a
+	}
+	return out
 }

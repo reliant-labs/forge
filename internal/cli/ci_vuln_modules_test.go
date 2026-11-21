@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -211,5 +212,39 @@ func TestScanGoModules_NoModuleIsAnError(t *testing.T) {
 		func(context.Context, string) ([]byte, error) { return nil, nil }, &bytes.Buffer{}, time.Now())
 	if err == nil {
 		t.Fatal("a project with no Go module must not report a pass")
+	}
+}
+
+// TestVulnScanDefaultSkipsGoWithoutAGoModule pins NS FG-34: on a project with
+// no Go module (a static site), `forge ci vuln-scan` with no flags must not
+// demand govulncheck. With nothing for npm either, it still refuses to pass
+// an empty scan, but for that reason, not a missing Go scanner.
+func TestVulnScanDefaultSkipsGoWithoutAGoModule(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: site\nfeatures:\n  ci: true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("PATH", t.TempDir()) // no govulncheck, no npm
+
+	cmd := newCIVulnScanCmd()
+	cmd.SetArgs(nil)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("an empty scan passed")
+	}
+	if strings.Contains(err.Error(), "govulncheck is not on PATH") || !strings.Contains(err.Error(), "nothing was actually scanned") {
+		t.Fatalf("default selection on a project with no Go module: %v; want the empty-scan refusal, not a demand for govulncheck", err)
+	}
+
+	// An explicit --go still demands it.
+	cmd = newCIVulnScanCmd()
+	cmd.SetArgs([]string{"--go"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "govulncheck is not on PATH") {
+		t.Fatalf("--go without govulncheck: %v", err)
 	}
 }

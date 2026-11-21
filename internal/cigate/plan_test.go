@@ -70,7 +70,7 @@ func TestPlan_OrderAndLanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(names(all), " ")
-	want := "deps-web verify-generated golangci-lint buf-lint migration-safety lint-web typecheck-web css-health-web go-build build-web vuln-go vuln-npm secret-scan license-check validate-kcl deployability deps-web unit-tests integration-tests"
+	want := "deps-web verify-generated golangci-lint buf-lint migration-safety lint-web typecheck-web css-health-web go-build build-web vuln-go vuln-npm vuln-sbom secret-scan license-check validate-kcl deployability deps-web unit-tests integration-tests"
 	if got != want {
 		t.Errorf("plan order:\n got %s\nwant %s", got, want)
 	}
@@ -105,11 +105,12 @@ func TestPlan_FollowsTheWorkflowToggles(t *testing.T) {
 	testkit.Slow(t, "execs go")
 	in := serviceInput(t)
 	in.CI.LintGolangci, in.CI.VulnGo, in.CI.LicenseCheck, in.CI.HasKCL, in.CI.HasFrontends, in.CI.Frontends = false, false, false, false, false, nil
+	in.CI.VulnNPM = false // with vuln-go off too: no vuln-sbom
 	all, err := Plan(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, gone := range []string{"golangci-lint", "vuln-go", "license-check", "validate-kcl", "deployability", "deps-web", "lint-web", "build-web", "vuln-npm"} {
+	for _, gone := range []string{"golangci-lint", "vuln-go", "license-check", "validate-kcl", "deployability", "deps-web", "lint-web", "build-web", "vuln-npm", "vuln-sbom"} {
 		for _, n := range names(all) {
 			if n == gone {
 				t.Errorf("%s is planned though its toggle is off", gone)
@@ -550,5 +551,23 @@ func TestPlan_PNPMFrontendRowsUsePNPM(t *testing.T) {
 	write(t, in.Root, "frontends/web/node_modules/.modules.yaml", "")
 	if note := deps.Done(); note != "already installed" {
 		t.Errorf("a pnpm install newer than its lockfile is current: Done = %q", note)
+	}
+}
+
+// vuln-sbom: the SBOM scan of the source tree, uncached (the database moves
+// daily), with its two "could not run" statuses wired so the warn-first grade
+// decides whether a skip fails the gate.
+func TestPlan_VulnSBOMStep(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	all, err := Plan(serviceInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := find(t, all, VulnSBOMCheck)
+	if !c.NoCache || c.Lane != LaneChecks || c.SkipExitCode != VulnSBOMSkipExit || c.AllowedSkipExitCode != VulnSBOMAllowedSkipExit {
+		t.Errorf("vuln-sbom planned as %+v", c)
+	}
+	if got := strings.Join(c.Argv[len(c.Argv)-2:], " "); got != "ci vuln-sbom" {
+		t.Errorf("vuln-sbom runs %v", c.Argv)
 	}
 }

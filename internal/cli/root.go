@@ -366,6 +366,9 @@ path from an empty directory to authored protos, in one call.`,
 	// `forge release verify` proves every artifact the ledger names really
 	// exists in its public registry and matches the recorded bytes.
 	rootCmd.AddCommand(newReleaseCmd())
+	rootCmd.AddCommand(newTestCmd()) // `test` records the project's own lanes (test_cmd.go)
+	// `vuln` scans release SBOMs and judges them by the env's vuln_gate (vuln.go).
+	rootCmd.AddCommand(newVulnCmd())
 	// `ledger` is the whole-ledger noun: the verbs that move or inspect a
 	// ledger rather than one env's binding. `ledger import` is the only
 	// way forward from the retired in-checkout ledger, and the only thing

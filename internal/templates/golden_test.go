@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -403,6 +404,13 @@ func TestGoldenSnapshots(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.render(t)
 			goldenPath := filepath.Join("testdata", "golden", tc.name+".golden")
+			// A file written as rendered (no gofmt pass, unlike the Go
+			// outputs) ends in exactly one newline: a trailing blank line is
+			// what end-of-file-fixer and `git diff --check` flag in the
+			// project that receives it.
+			if !strings.HasSuffix(tc.name, ".go") && strings.HasSuffix(string(got), "\n\n") {
+				t.Errorf("%s ends with a blank line; the rendered file must end in exactly one newline", tc.name)
+			}
 
 			if *updateGolden {
 				if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {

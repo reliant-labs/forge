@@ -30,6 +30,22 @@ func newObsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "obs",
 		Short: "Ask what happened: logs, traces, endpoints, metrics, SQL, profiles and alerts",
+		Long: `Ask what happened: logs, traces, endpoints, metrics, SQL, profiles and alerts.
+
+Every verb reads, except these, which change state:
+  obs init                                    registers envs and mints ingest tokens
+  obs tokens create|rotate|revoke             an env's telemetry ingest tokens
+  obs receivers create|delete|test            where the org's alerts are sent
+  obs issue resolve|ignore|unresolve|assign|comment   an issue's triage state
+  obs dashboards add-panel                    writes a dashboard file in this checkout
+
+What a control-plane credential needs (a person's ` + "`forge login`" + ` is elevated as
+needed; a CI or agent token must carry the scope):
+  reads                    obs:read
+  issue triage             obs:triage (obs:read does not imply it)
+  init, tokens, receivers  a person who is a member of the org holding the
+                           obs:write permission; never a machine credential
+                           for init and tokens`,
 	}
 	cmd.AddCommand(newObsProfileCmd())
 	cmd.AddCommand(newObsAlertsCmd())
@@ -88,6 +104,12 @@ the heap interval still shows the heap as last measured. Raw samples (so --trace
 per-minute aggregate behind --since is kept 30 days. --sql prints the query so
 you can run it yourself against the ClickStack ClickHouse.
 
+--trace finds samples only when a CPU capture (5s of every 5 minutes) overlapped
+the trace, so most traces have none. To find the traces that do:
+
+  forge obs query dev --sql "SELECT TraceId, ServiceName, count() AS n FROM otel_profiles
+    WHERE TraceId != '' AND Timestamp > now() - INTERVAL 1 HOUR GROUP BY TraceId, ServiceName ORDER BY n DESC LIMIT 20"
+
 Needs the local ClickStack running (` + "`forge env up`" + `).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -97,7 +119,7 @@ Needs the local ClickStack running (` + "`forge env up`" + `).`,
 	f := cmd.Flags()
 	f.StringVar(&o.service, "service", "", "service.name to export (default: the only service that sent profiles)")
 	f.StringVar(&o.sampleType, "type", "cpu", "sample type: cpu, alloc_space, inuse_space, alloc_objects, inuse_objects, goroutine")
-	f.StringVar(&o.env, "env", "", "only samples from this deployment.environment.name")
+	f.StringVar(&o.env, "env", "", "only samples from this deployment.environment.name. A FILTER on the local ClickStack's samples, not the backend: unlike the other obs verbs' [env], it never reads a hosted env")
 	obsDurationVar(f, &o.since, "since", time.Hour, "how far back to read (ignored with --from)")
 	f.StringVar(&o.from, "from", "", "range start, RFC 3339")
 	f.StringVar(&o.to, "to", "", "range end, RFC 3339 (default now)")

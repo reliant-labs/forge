@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 // ComposeProvider deploys each service in a group via docker-compose
@@ -46,14 +48,35 @@ func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	// it is a property of the installed CLI, not of any one service, and
 	// re-shelling for every service would add a process per deploy to
 	// re-learn the same answer.
-	if err := p.checkWaitSupport(ctx, runner, group); err != nil {
+	// A best-effort service is left out of the fatal probe: a compose too
+	// old for its readiness wait is that service's failure, handled below
+	// like any other, never the whole group's.
+	if err := p.checkWaitSupport(ctx, runner, group, false); err != nil {
 		return err
 	}
+	var bestEffortWait error
+	bestEffortProbed := false
 	for _, svc := range group.Services {
 		if svc.Compose == nil {
 			return fmt.Errorf("compose %s: Compose spec is nil (group misrouted?)", svc.Name)
 		}
-		if err := p.deployOne(ctx, runner, group, svc); err != nil {
+		err := error(nil)
+		if svc.Compose.BestEffort && composeWait(svc.Compose) && !group.DryRun {
+			if !bestEffortProbed {
+				bestEffortWait, bestEffortProbed = ensureComposeSupportsWait(ctx, runner), true
+			}
+			err = bestEffortWait
+		}
+		if err == nil {
+			err = p.deployOne(ctx, runner, group, svc)
+		}
+		if err != nil {
+			if svc.Compose.BestEffort {
+				fmt.Printf("  warning: %s did not come up, and nothing the app needs depends on it, so the stack starts without it: %v\n"+
+					"  (local telemetry is unavailable until it does; retry with `%s env up %s --target %s`)\n",
+					svc.Name, err, cmdutil.Name(), group.Env, svc.Name)
+				continue
+			}
 			return err
 		}
 	}
@@ -63,13 +86,14 @@ func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 // checkWaitSupport verifies the installed docker compose understands
 // the readiness flags, but only when some service in the group actually
 // asks to wait. A group that has opted out entirely should not need a
-// newer compose than the one it was working with before.
-func (p ComposeProvider) checkWaitSupport(ctx context.Context, runner commandRunner, group ServiceGroup) error {
+// newer compose than the one it was working with before. bestEffort says
+// whether best-effort services count.
+func (p ComposeProvider) checkWaitSupport(ctx context.Context, runner commandRunner, group ServiceGroup, bestEffort bool) error {
 	if group.DryRun {
 		return nil
 	}
 	for _, svc := range group.Services {
-		if svc.Compose != nil && composeWait(svc.Compose) {
+		if svc.Compose != nil && composeWait(svc.Compose) && (bestEffort || !svc.Compose.BestEffort) {
 			return ensureComposeSupportsWait(ctx, runner)
 		}
 	}
@@ -287,13 +311,29 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	if envFile != "" {
 		upArgs = append(upArgs, "--env-file", envFile)
 	}
-	upArgs = append(upArgs, "up", "-d")
-	upArgs = appendComposeWaitArgs(upArgs, spec)
-	upArgs = append(upArgs, target)
+	//
+	//    The wait is a SECOND, --no-deps up of the target alone (NS FG-18).
+	//    `up -d --wait <target>` also waits on every dependency it starts,
+	//    and fails on a one-shot one (`depends_on: [migrate]`, a migrate
+	//    service that exits 0) that a bare `compose up` handles. Starting
+	//    the target with its dependencies first honours whatever
+	//    depends_on conditions the compose file declares, exactly as
+	//    `compose up` does; the waited up then judges only the target.
+	baseUpArgs := upArgs
+	upArgs = append(append([]string{}, baseUpArgs...), "up", "-d", target)
+	var waitArgs []string
+	if composeWait(spec) {
+		waitArgs = append(append([]string{}, baseUpArgs...), "up", "-d")
+		waitArgs = appendComposeWaitArgs(waitArgs, spec)
+		waitArgs = append(waitArgs, "--no-deps", target)
+	}
 
 	if group.DryRun {
 		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(pullArgs, " "))
 		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(upArgs, " "))
+		if waitArgs != nil {
+			fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(waitArgs, " "))
+		}
 		return nil
 	}
 
@@ -323,12 +363,17 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 		return fmt.Errorf("compose %s: inventory before up: %w", svc.Name, err)
 	}
 	upErr := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...)
+	waitFailed := false
+	if upErr == nil && waitArgs != nil {
+		upErr = runner.RunWithEnv(ctx, envOverlay, "docker", waitArgs...)
+		waitFailed = upErr != nil
+	}
 	// Even an unhealthy up can have created containers. Remember them before
 	// returning so env down can clean up a partially started stack.
-	ownedErr := p.recordOwned(ctx, runner, envOverlay, spec, group.Env, target, strings.Fields(string(before)))
+	ownedErr := p.recordOwned(ctx, runner, envOverlay, spec, group.Env, target, composeContainerIDs(before))
 	if upErr != nil {
 		err := errors.Join(upErr, ownedErr)
-		if composeWait(spec) {
+		if waitFailed {
 			// With --wait, an `up` failure most often means the
 			// container came up but never became healthy. Say so —
 			// "up: exit status 1" sends people looking at the wrong

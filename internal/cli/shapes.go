@@ -211,7 +211,16 @@ Register are not listed.`,
 			}
 
 			if n == 0 {
-				fmt.Fprintln(out, "no shapes matched (is this a forge project with protos?)")
+				switch {
+				case len(shapes) == 0:
+					fmt.Fprintln(out, "no shapes matched (is this a forge project with protos?)")
+				case grepPat != "":
+					// The index has shapes; the pattern named none. Fields and
+					// columns are not shapes, so say where those live.
+					fmt.Fprintf(out, "no shape matched %q among %d shapes. Shapes are rpcs, messages, enums, tables, stores, handlers, hooks, roots and workloads — not fields or columns: for one, `rg -n '%s' proto db/migrations`\n", grepPat, len(shapes), grepPat)
+				default:
+					fmt.Fprintf(out, "no shape of the requested kind among %d shapes\n", len(shapes))
+				}
 			}
 			return nil
 		},

@@ -406,6 +406,17 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	if err != nil {
 		return envLedger{}, err
 	}
+	base, err := offlineLedgerShape(env, entities, ep.URL)
+	if err != nil {
+		return envLedger{}, err
+	}
+	return openOfflineLedger(projectDir, env, ep.URL, base)
+}
+
+// offlineLedgerShape is the part of --offline-ledger's selection that reads
+// only the declaration: the env's unit split, and the refusal when the control
+// plane (not this machine) applies some of it.
+func offlineLedgerShape(env string, entities *KCLEntities, endpoint string) (envLedger, error) {
 	units, err := unitSplitOf(entities)
 	if err != nil {
 		return envLedger{}, err
@@ -413,9 +424,9 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	base := envLedger{Units: units, HostedTiers: hostedTiersOf(entities)}
 	base.Mixed = forgeAppliesLocally(entities, units)
 	if !base.ledgerOnly() {
-		return envLedger{}, offlineShapeError(env, ep.URL, base.Units, base.HostedTiers)
+		return envLedger{}, offlineShapeError(env, endpoint, base.Units, base.HostedTiers)
 	}
-	return openOfflineLedger(projectDir, env, ep.URL, base)
+	return base, nil
 }
 
 // ledgerForEntities is the render-free half of ledgerFor, split out so the
@@ -472,7 +483,30 @@ func ledgerForEntities(env string, entities *KCLEntities, projectDir string) (en
 	l.Units = units
 	l.Mixed = forgeAppliesLocally(entities, units)
 	l.HostedTiers = hostedTiersOf(entities)
-	return attachCodeSource(attachHostedMirror(l, projectDir), projectDir, os.Getenv), nil
+	return attachSBOMSource(attachCodeSource(attachHostedMirror(l, projectDir), projectDir, os.Getenv), projectDir), nil
+}
+
+// attachSBOMSource gives a hosted ledger the machine ledger its cuts' SBOM
+// bytes are stored in (build_sbom.go), so a cut can upload them to the
+// control plane (hosted_vuln.go). Opened on first use: a ledger that cuts
+// nothing never opens it.
+func attachSBOMSource(l envLedger, projectDir string) envLedger {
+	if projectDir == "" {
+		return l
+	}
+	return attachSBOMStore(l, func() (sbomBytesReader, error) { return openMachineLedger(projectDir) })
+}
+
+// attachSBOMStore is attachSBOMSource with the store named: a ledger whose
+// cuts store their SBOM bytes somewhere other than the checkout's machine
+// ledger (`forge release record`, which files them under the record's
+// project, openRecordSBOMStore) reads them from there. A ledger that already
+// has a source keeps it.
+func attachSBOMStore(l envLedger, open func() (sbomBytesReader, error)) envLedger {
+	if hs, ok := l.Bindings.(*hostedStore); ok && hs.sboms == nil && open != nil {
+		hs.sboms = open
+	}
+	return l
 }
 
 // bindingStoreFor is ledgerFor for the callers that need only the promotion

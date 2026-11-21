@@ -115,6 +115,7 @@ func (r *registrar) process() func(Snapshot, metric.Observer) {
 	faults := r.int("process.paging.faults")
 	diskIO := r.int("process.disk.io")
 	uptime := r.float("process.uptime")
+	handles := r.int("forge.process.handle.count")
 
 	user, system := attrs("cpu.mode", "user"), attrs("cpu.mode", "system")
 	voluntary, involuntary := attrs("process.context_switch_type", "voluntary"), attrs("process.context_switch_type", "involuntary")
@@ -163,6 +164,9 @@ func (r *registrar) process() func(Snapshot, metric.Observer) {
 			o.ObserveInt64(diskIO, i64(io.ReadBytes), read)
 			o.ObserveInt64(diskIO, i64(io.WriteBytes), write)
 		}
+		if p.Handles != nil {
+			o.ObserveInt64(handles, *p.Handles)
+		}
 	}
 }
 
@@ -186,10 +190,15 @@ func (r *registrar) host() func(Snapshot, metric.Observer) {
 	procLimit := r.int("forge.system.process.limit")
 
 	mode := func(m string) metric.ObserveOption { return attrs("cpu.mode", m) }
-	observeModes := func(o metric.Observer, inst metric.Float64Observable, m CPUModes) {
+	// observeModes leaves out iowait and steal where the platform does not
+	// account them: a zero there would read as a measured idle disk.
+	observeModes := func(o metric.Observer, inst metric.Float64Observable, m CPUModes, noIOWaitSteal bool) {
 		o.ObserveFloat64(inst, m.User, mode("user"))
 		o.ObserveFloat64(inst, m.System, mode("system"))
 		o.ObserveFloat64(inst, m.Idle, mode("idle"))
+		if noIOWaitSteal {
+			return
+		}
 		o.ObserveFloat64(inst, m.IOWait, mode("iowait"))
 		o.ObserveFloat64(inst, m.Steal, mode("steal"))
 	}
@@ -202,9 +211,9 @@ func (r *registrar) host() func(Snapshot, metric.Observer) {
 		o.ObserveInt64(scope, 1, attrs("scope", string(h.Scope)))
 		o.ObserveInt64(logical, int64(h.LogicalCPUs))
 		if c := h.CPU; c != nil {
-			observeModes(o, cpuTime, c.Seconds)
+			observeModes(o, cpuTime, c.Seconds, c.NoIOWaitSteal)
 			if c.Utilization != nil {
-				observeModes(o, cpuUtil, *c.Utilization)
+				observeModes(o, cpuUtil, *c.Utilization, c.NoIOWaitSteal)
 			}
 		}
 		if l := h.Load; l != nil {

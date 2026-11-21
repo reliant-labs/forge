@@ -68,6 +68,7 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		// (a fixed node-version), the one scalar the other cases miss.
 		{"e2e frontend without path", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true}},
 		{"dependabot", "dependabot.yml.tmpl", DependabotData{FrontendName: "web", RunsProtocGenGo: true}},
+		{"pgo-refresh", "pgo-refresh.yml.tmpl", PGORefreshWorkflowData{ProjectName: "demo", Env: "prod"}},
 	}
 	out := map[string][]byte{}
 	for _, c := range cases {

@@ -1,22 +1,42 @@
 # Forge
 
-**Forge is an opinionated, open-source Go + React framework and deploy platform
-that ships the production system — dev environments, tests, secrets, multiple
-environments, releases, observability and hosting — from the first commit, built
-for AI agents to work in.**
+**Forge is guardrails for apps.** It is an open-source (Apache-2.0) framework,
+CLI and MCP server that supercharges any agent harness: Claude Code, Codex,
+Cursor, a harness you wrote, or CI. It scaffolds Go services, React frontends
+and SQL migrations into the right places, lints for your architecture and for
+unsafe migrations, tests against a real Postgres, and builds each release once
+and promotes it by digest. Use it piece by piece in any repo, in any language,
+with no rewrite. Deploy with no account: in a Vite or Next.js app, or an app
+with its own Dockerfile, run
+`npx -y @reliantlabs/forge@latest env deploy prod --claimable` to get a live URL
+and a claim link that is good for 72 hours.
 
-The Go framework for AI-generated code, with an MCP server that deploys your app:
+## Deploy with your agent
 
 ```bash
-# Deploy a Vite or Next.js static app without an account (live URL + 72-hour claim link)
+# No account: a live URL plus a 72-hour claim link
 npx -y @reliantlabs/forge@latest env deploy prod --claimable
 
-# Use from your agent: an MCP server to deploy your app (Claude Code; Cursor, Codex and Gemini below)
-claude mcp add forge -- npx -y @reliantlabs/forge mcp
+# Give your agent the MCP server; its deploy_claimable tool does the same
+claude mcp add forge -- npx -y @reliantlabs/forge mcp   # Claude Code
+codex mcp add forge -- npx -y @reliantlabs/forge mcp    # Codex
+# Cursor, VS Code and Gemini CLI: see Use as an MCP server below
 
 # Not sure where to start? forge start prints the one next command for this directory
 forge start
 ```
+
+Then ask your agent:
+
+```text
+Deploy this app with Reliant Forge. Run
+`npx -y @reliantlabs/forge@latest env deploy prod --claimable` (or call the forge
+MCP server's deploy_claimable tool), then give me the live URL and the claim link.
+```
+
+The claim link is good for 72 hours; treat it like a password. Opening it signs
+you up free and makes the deploy yours. It fits one static site, or one service
+with one database: [Deploying with no account](docs/mcp.md#deploying-with-no-account).
 
 Install `forge`, and the other ways to run it: [Install](#install).
 
@@ -38,9 +58,10 @@ Install `forge`, and the other ways to run it: [Install](#install).
   <a href="https://www.npmjs.com/package/@reliantlabs/forge"><img alt="npm" src="https://img.shields.io/npm/v/@reliantlabs/forge" /></a>
 </p>
 
-Most teams build that system in year two, under deadline, on top of a codebase
-that wasn't shaped for it. With Forge the first commit already has it, wired
-into files you own and can change.
+Most teams build the production system (dev environments, tests, secrets,
+multiple environments, releases, observability and hosting) in year two, under
+deadline, on top of a codebase that wasn't shaped for it. With Forge the first
+commit already has it, wired into files you own and can change.
 
 **Try it in the browser first: [the live demo](https://demo.reliantlabs.io/forge/demo?section=built).**
 

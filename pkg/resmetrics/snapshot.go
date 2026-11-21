@@ -24,11 +24,18 @@ type Snapshot struct {
 }
 
 // ProcessStats is the binary's own resource use. The runtime fields and
-// StartTime are always set; each pointer is nil when its reader failed.
+// StartTime are always set; each pointer is nil when its reader failed or
+// the platform has no such number:
+//
+//   - linux reports every field but Handles;
+//   - darwin leaves out DiskIO and Handles;
+//   - windows leaves out Faults (it does not split major from minor),
+//     ContextSwitches, FDCount, FDLimit and DiskIO, and reports Handles;
+//   - any other platform reports only the runtime fields.
 type ProcessStats struct {
-	// StartTime is when the process started: from the kernel on linux, and
-	// otherwise when this package was initialised, which is within the
-	// binary's start-up.
+	// StartTime is when the process started: from the kernel on linux,
+	// darwin and windows, and otherwise when this package was initialised,
+	// which is within the binary's start-up.
 	StartTime time.Time
 	// Goroutines is runtime.NumGoroutine at the sample.
 	Goroutines int
@@ -47,13 +54,16 @@ type ProcessStats struct {
 	Threads *int64
 	// ContextSwitches is the scheduler's switches away from the process.
 	ContextSwitches *ContextSwitches
-	// FDCount is the number of open file descriptors.
+	// FDCount is the number of open file descriptors (unix).
 	FDCount *int64
-	// FDLimit is the soft RLIMIT_NOFILE.
+	// FDLimit is the soft RLIMIT_NOFILE (unix).
 	FDLimit *int64
 	// DiskIO is the bytes the process caused to be read from and written to
-	// storage.
+	// storage (linux).
 	DiskIO *DiskIO
+	// Handles is the number of open kernel object handles: files, sockets,
+	// events, threads and the rest (windows, which has no file descriptors).
+	Handles *int64
 }
 
 // Uptime is how long the process has run at the sample's time.
@@ -112,7 +122,14 @@ const (
 )
 
 // HostStats is the machine the process runs on. Each pointer is nil when its
-// reader failed or Scope leaves it out.
+// reader failed, Scope leaves it out, or the platform has no such number:
+//
+//   - linux reports every field;
+//   - darwin leaves out Processes, and its CPU has no iowait or steal time;
+//   - windows leaves out Load, Swap, FileDescriptors and Processes (it has
+//     handle and process counts but no limit to set them against), and its
+//     CPU has no iowait or steal time;
+//   - any other platform reports only Scope and LogicalCPUs.
 type HostStats struct {
 	// Scope is the view reported.
 	Scope Scope
@@ -157,6 +174,11 @@ type HostCPU struct {
 	// Utilization is each mode's share of all CPU time between the previous
 	// sample and this one, from 0 to 1; nil on the first sample.
 	Utilization *CPUModes
+	// NoIOWaitSteal is set where the platform does not account iowait and
+	// steal time apart (darwin, windows): those two modes are zero here
+	// because they are unknown, not because they are idle, and are not
+	// reported as metrics. User, System and Idle then add up to the whole.
+	NoIOWaitSteal bool
 }
 
 // LoadAverage is the kernel's run-queue load average.
@@ -170,9 +192,12 @@ type HostMemory struct {
 	Total uint64
 	Free  uint64
 	// Available is the kernel's estimate of memory a new workload can use
-	// without swapping (MemAvailable).
+	// without swapping: MemAvailable on linux, the available physical
+	// memory (free plus standby) on windows, and free plus cached on darwin.
 	Available uint64
-	// Cached is page cache, buffers and reclaimable slab.
+	// Cached is page cache, buffers and reclaimable slab on linux; file-backed
+	// and purgeable pages on darwin; the system cache's share of available
+	// memory on windows.
 	Cached uint64
 	// Used is Total minus Free and Cached.
 	Used uint64
@@ -186,7 +211,7 @@ type Swap struct {
 // Filesystem is one volume the process writes to, named by its role and never
 // by its path.
 type Filesystem struct {
-	// Role is "cwd" or "tmp".
+	// Role is the Volume's: VolumeCwd, VolumeTmp or VolumeData.
 	Role string
 	// UsedBytes is the space in use; FreeBytes the space available to an
 	// unprivileged process. The blocks reserved for root are in neither.

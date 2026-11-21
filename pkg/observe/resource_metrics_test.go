@@ -86,6 +86,13 @@ func TestResourceMetricsOnMetricsWithoutExport(t *testing.T) {
 			t.Errorf("/metrics lacks %s", want)
 		}
 	}
+	s := Resources()
+	if s == nil {
+		t.Fatal("Resources() is nil after Setup started the sampler")
+	}
+	if snap := s.Latest(); snap.Process == nil || snap.Host == nil || s.Groups() != resmetrics.GroupAll {
+		t.Errorf("Resources() = groups %v, snapshot %+v; want both groups", s.Groups(), snap)
+	}
 }
 
 func TestResourceMetricsOff(t *testing.T) {
@@ -100,6 +107,9 @@ func TestResourceMetricsOff(t *testing.T) {
 	defer flush(t, shutdown)
 	if body := scrape(t, handler); strings.Contains(body, "process_uptime_seconds") || strings.Contains(body, "forge_resource_scope") {
 		t.Error("FORGE_OBSERVE_RESOURCE_METRICS=off still registered resource metrics")
+	}
+	if Resources() != nil {
+		t.Error("Resources() kept a sampler with resource metrics off")
 	}
 }
 

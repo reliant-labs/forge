@@ -540,7 +540,8 @@ func socialIDP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
 	if !ok {
 		return identity.IdP{}, missingSocialSecret(in.Env, s.Type, s.ClientSecretSecret)
 	}
-	return identity.IdP{Name: identity.IdPName(t), Type: t, ClientID: clientID, ClientSecret: clientSecret, Scopes: s.Scopes}, ""
+	return identity.IdP{Name: identity.IdPName(t), Type: t, ClientID: clientID, ClientSecret: clientSecret, Scopes: s.Scopes,
+		PassTokens: s.PassTokens}, ""
 }
 
 func missingSocialSecret(env, typ, name string) string {

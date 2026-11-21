@@ -305,8 +305,8 @@ func (p *Plan) fkParentRowAt(tp tablePlan, cp columnPlan, i, depth int) (int, bo
 		}
 		return idx, true
 	}
-	if ap, isDirect, ok := p.authPairFor(tp.table.Name, cp.col.Name); ok {
-		if row, found := p.authoritativeRow(tp, cp, ap, isDirect, i, depth); found {
+	if ap, route, ok := p.authPairFor(tp.table.Name, cp.col.Name); ok {
+		if row, found := p.authoritativeRow(tp, cp, ap, route, i, depth); found {
 			return row, true
 		}
 	}

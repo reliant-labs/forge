@@ -1638,7 +1638,22 @@ func writeMissingProviderRemedy(b *strings.Builder, m MissingProvider) {
 	fmt.Fprintf(b, "      //    %s %s\n", m.Field, m.Type)
 	// 2. OpenInfra construction.
 	fmt.Fprintf(b, "      // 2. construct it in OpenInfra, assigning onto that field:\n")
-	fmt.Fprintf(b, "      //    infra.%s = /* your %s implementation */\n", m.Field, m.Type)
+	if strings.HasSuffix(m.Type, "crud.OwnerResolver") {
+		// The owner-scoped CRUD ops' caller resolver: the common shape is
+		// one function per owner kind the migrations name.
+		fmt.Fprintf(b, "      //    infra.%s = crud.OwnerKinds{\n", m.Field)
+		fmt.Fprintf(b, "      //        \"user\": func(ctx context.Context) ([]string, error) {\n")
+		fmt.Fprintf(b, "      //            claims, err := middleware.GetUser(ctx)\n")
+		fmt.Fprintf(b, "      //            if err != nil {\n")
+		fmt.Fprintf(b, "      //                return nil, crud.ErrNoCaller\n")
+		fmt.Fprintf(b, "      //            }\n")
+		fmt.Fprintf(b, "      //            return []string{claims.UserID}, nil\n")
+		fmt.Fprintf(b, "      //        },\n")
+		fmt.Fprintf(b, "      //        // one entry per other kind a forge:owner= names (\"org\": the caller's org ids, …)\n")
+		fmt.Fprintf(b, "      //    }\n")
+	} else {
+		fmt.Fprintf(b, "      //    infra.%s = /* your %s implementation */\n", m.Field, m.Type)
+	}
 	// 3. compose wiring (automatic).
 	fmt.Fprintf(b, "      // 3. compose.go then wires it for you: NewComponents sets %s.Deps.%s = infra.%s\n\n", m.Component, m.Field, m.Field)
 }

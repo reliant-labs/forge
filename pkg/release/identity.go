@@ -265,6 +265,10 @@ type ShapeIdentitySocial struct {
 	// ClientSecretSecret names the client secret, always.
 	ClientSecretSecret string   `json:"client_secret_secret"`
 	Scopes             []string `json:"scopes"`
+	// PassTokens hands the provider's tokens from each sign-in to the app's
+	// login-broker hook, server-side (KCL `pass_tokens`). Omitted when
+	// false, so a shape recorded before it encodes and hashes as it did.
+	PassTokens bool `json:"pass_tokens,omitempty"`
 }
 
 // ShapeIdentityEmail is how the instance's mail is addressed.

@@ -81,6 +81,10 @@ accessor, `s.deps.DB.Estimates()`, lives in that entity's file so entities born
 on different branches merge), so a package that fakes persistence in a test
 depends on the per-entity stores.
 
+A handler's generated CRUD ops persist an entity through its store field when
+`Deps` declares one, so its CRUD path tests against the harness double with no
+database (`testing/patterns`).
+
 To see the methods available on one, ask your own package — `go doc
 ./internal/db EstimateStore`, or `forge project shapes --kind store` for the
 list. Both answer from the file generated for *your* schema. Reading forge's

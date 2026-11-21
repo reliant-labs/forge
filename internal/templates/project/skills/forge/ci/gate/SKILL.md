@@ -186,6 +186,17 @@ or `--base`. List files no Go test reads in `ci.gate.affected_ignore`
 (`["*.md", "docs/**"]`) so they do not force it. A direct `task test` always
 runs the whole suite: affected mode is the gate's, for a branch.
 
+## The flake gate: flake-check
+
+`flake-check` runs every top-level test the branch adds or edits three times
+(`forge test flakes gate --graded`: `-short -count=3`, through `go test`, from
+the same base as affected mode), and records the run as lane `flake-gate`.
+A test that fails one run in three is reported, and it **blocks only when the
+project opts in** with `lint.rules: {flake-check: error}` in forge.yaml; for
+everyone else the row passes with a warning. A branch that changed no test
+passes it. Quarantined tests (`forge test quarantine`) stay skipped through the
+lanes' `-skip "$(forge test quarantine skip-regex go)"`.
+
 ## Selecting and recording
 
 | | |

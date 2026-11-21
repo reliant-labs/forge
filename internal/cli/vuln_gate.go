@@ -20,7 +20,7 @@ package cli
 // through the lint rollout rows vuln-gate and sbom-required
 // (internal/cli/lint/rollout_grade.go): while the project's forge pin is below
 // the rule's GatesFrom release, enforce is judged as audit and says "would
-// block (new in v1.9.0; gates from v1.10.0)". lint.rules dials it the way it
+// block (new in v1.10.0; gates from v1.11.0)". lint.rules dials it the way it
 // dials every rule ({vuln-gate: error} gates now, {vuln-gate: warn} keeps it a
 // warning). Both schema defaults are audit — vuln_gate (owner decision 5)
 // and provenance_sbom (owner, 2026-11-20) — so a project that declares
@@ -256,7 +256,7 @@ func cutScanProblem(err error) string {
 // printCutVulnVerdict prints the verdict under the release line:
 //
 //	[build] vulnerabilities: 1 critical, 4 high, 11 medium, 0 low (3 fixable, 1 KEV) · grype v0.122.1, db 2026-11-20
-//	[build]   vuln_gate (prod, enforce): would block: CVE-2026-1234 in golang.org/x/net v0.30.0 (fixed in 0.33.0) (new in v1.9.0; gates from v1.10.0; …)
+//	[build]   vuln_gate (prod, enforce): would block: CVE-2026-1234 in golang.org/x/net v0.30.0 (fixed in 0.33.0) (new in v1.10.0; gates from v1.11.0; …)
 //	[build]   → forge vuln show prod CVE-2026-1234 · forge vuln list prod --release v1.7.0
 func printCutVulnVerdict(w io.Writer, v *cutVulnVerdict) {
 	if v == nil || cloud.ClaimableActive() {

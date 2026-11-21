@@ -32,7 +32,7 @@ func newClosedSetMigration(ctx context.Context, constraint, name, dir, dsn strin
 	}
 	switch {
 	case len(match) == 0:
-		return fmt.Errorf("constraint %s has no closed-set finding in %s: its CHECK already lists exactly its set, or it carries no forge:closed-set declaration (`forge lint --closed-sets` shows every declared CHECK that is out of step)", constraint, dir)
+		return noClosedSetFinding(constraint, dir, findings)
 	case len(match) > 1:
 		var tables []string
 		for _, f := range match {
@@ -61,4 +61,20 @@ func newClosedSetMigration(ctx context.Context, constraint, name, dir, dsn strin
 		})
 	}
 	return nil
+}
+
+// noClosedSetFinding is the refusal for a constraint with nothing to fix. It
+// names the constraints that ARE out of step, so a near-miss name
+// (access_tokens_scopes for ck_cp_access_tokens_scopes) reads as a typo
+// rather than as "this CHECK is fine".
+func noClosedSetFinding(constraint, dir string, findings []closedset.Finding) error {
+	if len(findings) == 0 {
+		return fmt.Errorf("constraint %s has no closed-set finding in %s, and no forge:closed-set CHECK there is out of step: there is nothing to write", constraint, dir)
+	}
+	var names []string
+	for _, f := range findings {
+		names = append(names, fmt.Sprintf("%s (on %s)", f.Constraint, f.Table))
+	}
+	return fmt.Errorf("constraint %s has no closed-set finding in %s: it is not one of the out-of-step forge:closed-set CHECKs, which are %s. Name one of those exactly; a CHECK not listed already holds its set or carries no forge:closed-set declaration (`forge lint --closed-sets` prints each with its fix)",
+		constraint, dir, strings.Join(names, ", "))
 }

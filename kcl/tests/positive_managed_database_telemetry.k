@@ -14,6 +14,8 @@ Pins:
   5. `default_telemetry = False` renders nothing for the database, and no
      operator target when no database on the cluster keeps the default.
   6. A Telemetry named like the operator's default replaces it.
+  7. The default leaves out a signal the env's observability does not ship
+     (signals.metrics / signals.logs = False).
 """
 
 import forge
@@ -102,3 +104,20 @@ _two = _t([
 ], Undefined)
 assert_operator_per_cluster = "cloudnative-pg-k3d-shop" in _two and "cloudnative-pg-gke_acme_us-central1_daemon" in _two \
     and _two["ledger-postgres"].namespaces == ["ledger"]
+
+# 7: the default follows the env's signals. The node agent refuses a declared
+# signal the env does not ship, so an env with metrics or logs off keeps
+# rendering once the default exists.
+_nometrics = _t([forge.ManagedDatabase {name = "orders"}], forge.Observability {
+    local_port = 4318
+    signals = forge.ObservabilitySignals {metrics = False}
+})
+assert_no_metrics_default = _nometrics["orders-postgres"].metrics == [] and _nometrics["orders-postgres"].checks == [] \
+    and _nometrics["orders-postgres"].dashboards == [] and _nometrics["orders-postgres"].logs.body == "record.message" \
+    and _nometrics["cloudnative-pg"].metrics == [] and _nometrics["cloudnative-pg"].dashboards == []
+_nologs = _t([forge.ManagedDatabase {name = "orders"}], forge.Observability {
+    local_port = 4318
+    signals = forge.ObservabilitySignals {logs = False}
+})
+assert_no_logs_default = not _nologs["orders-postgres"].logs and len(_nologs["orders-postgres"].metrics) == 1 \
+    and not _nologs["cloudnative-pg"].logs

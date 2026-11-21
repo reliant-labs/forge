@@ -105,19 +105,9 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	if git == nil {
 		git = runGit
 	}
-	baseRef := in.BaseRef
-	defaultBranch := ""
+	baseRef, defaultBranch := in.BaseRef, ""
 	if baseRef == "" {
-		if ref, err := git(ctx, in.Root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil && ref != "" {
-			baseRef = strings.TrimPrefix(ref, "refs/remotes/")
-		} else {
-			for _, cand := range []string{"origin/main", "origin/master"} {
-				if _, err := git(ctx, in.Root, "rev-parse", "--verify", "--quiet", "refs/remotes/"+cand); err == nil {
-					baseRef = cand
-					break
-				}
-			}
-		}
+		baseRef = defaultBaseRef(ctx, git, in.Root)
 		if baseRef == "" {
 			return full("no origin/<default branch> to diff against")
 		}
@@ -405,6 +395,20 @@ func uniqueLines(s string) []string {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	return line
+}
+
+// defaultBaseRef is origin/<default branch> — origin/HEAD's target, else
+// origin/main or origin/master — or "" when the clone has none.
+func defaultBaseRef(ctx context.Context, git func(ctx context.Context, dir string, args ...string) (string, error), root string) string {
+	if ref, err := git(ctx, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil && ref != "" {
+		return strings.TrimPrefix(ref, "refs/remotes/")
+	}
+	for _, cand := range []string{"origin/main", "origin/master"} {
+		if _, err := git(ctx, root, "rev-parse", "--verify", "--quiet", "refs/remotes/"+cand); err == nil {
+			return cand
+		}
+	}
+	return ""
 }
 
 func runGit(ctx context.Context, dir string, args ...string) (string, error) {

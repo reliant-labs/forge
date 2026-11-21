@@ -387,7 +387,7 @@ func collectSingleLinterJSON(
 	case flags.scaffolds:
 		return report(collectScaffoldsJSON(cwd))
 	case flags.tests:
-		return report(collectTestsJSON(cwd))
+		return report(collectTestLanesJSON(cwd))
 	case flags.banners:
 		return reportUngated(collectBannersJSON(cwd))
 	case flags.checkWorkarounds:

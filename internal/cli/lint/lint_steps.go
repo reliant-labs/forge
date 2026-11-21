@@ -437,6 +437,22 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 11a. Tests-capture lint: a Taskfile test lane whose go test runs
+		// without `forge test capture`, so nothing it runs is recorded.
+		// Advisory at every pin; lint.rules raises it
+		// (lint_tests_capture.go).
+		{
+			name:  "tests-capture lint",
+			gates: false,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && fileExists(filepath.Join(rc.cwd, testsCaptureTaskfile)), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectTestsCaptureJSON(rc.cwd)
+			},
+		},
+
 		// 11b. Lifecycle-banner lint — forge repo only; warnings only.
 		{
 			name:  "banner lint",

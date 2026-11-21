@@ -1,0 +1,2 @@
+  # $env:FORGE_GO_BUILD_FLAGS is split into separate arguments and splatted;
+  # unset, @f is empty and passes nothing.

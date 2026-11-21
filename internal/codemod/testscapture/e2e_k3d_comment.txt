@@ -1,0 +1,3 @@
+        # ENV=e2e: the lane zeroes the e2e env's server coverage counters
+        # before the suite and collects them after it (`forge test collect`),
+        # when its Go workloads run cover builds; otherwise it warns and moves on.

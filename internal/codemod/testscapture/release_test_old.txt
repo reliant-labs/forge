@@ -1,0 +1,6 @@
+        # second spelling of `go test` that could drift from it. `-json` is
+        # the record verify-test-run reads; it never re-runs anything.
+        run: |
+          set -o pipefail
+          task test -- -json ./... | tee test.json >/dev/null
+          forge ci verify-test-run --from test.json --gate-json gates/test.json

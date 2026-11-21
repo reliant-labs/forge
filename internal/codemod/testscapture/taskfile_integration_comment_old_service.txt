@@ -1,0 +1,1 @@
+      # heavy DB-backed scenarios room while still surfacing hangs.

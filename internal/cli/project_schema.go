@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/schemagen"
+	"github.com/reliant-labs/forge/internal/vulnpatch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -62,6 +63,14 @@ func publishedSchemas() map[string]struct {
 		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
 		"test-report":   testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
 		"test-flakes":   testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
+		"vuln-patch": {
+			spec: SchemaSpec{
+				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
+				Command:   "forge project schema vuln-patch",
+				Describes: "`forge vuln patch --json`: what the patcher bumped per finding, the verification, and the exit code",
+			},
+			body: vulnPatchSchemaJSON,
+		},
 	}
 }
 
@@ -139,6 +148,10 @@ func newProjectSchemaCmd() *cobra.Command {
         forge.test.results/v1, forge.test.coverage/v1, forge.test.report/v1,
         forge.test.flakes/v1: the test record's documents, generated from the
         pkg/testreport types forge and the control plane write them with.
+
+  vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
+        what was bumped per finding, the verification, and the exit code the
+        vuln-patch workflow branches on.
 
 With no name, lists the schemas. The schema printed is the one embedded in
 this binary, so it is exactly what this forge validates against. Point an

@@ -340,6 +340,30 @@ func TestMerge_PathsAndExclusions(t *testing.T) {
 	}
 }
 
+// The ordinary Go text profile names each file by its import-path-qualified
+// name. Parsing keeps that name whole as ImportPath (its directory is the
+// package) and leaves Path empty; Merge with the module path derives the
+// repo path, which path filters, generated-file exclusion and diff coverage
+// then read (TestMerge_PathsAndExclusions, TestViews_LanesCombinedOnlyE2E).
+func TestParseCoverage_GoProfileNamesFilesByImportPath(t *testing.T) {
+	c, err := parseCovString(t, "mode: set\nexample.com/demo/internal/db/store.go:3.2,4.10 2 1\n", testreport.CoverageOptions{Lane: testreport.LaneUnit, Root: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := c.Files[0]
+	if f.ImportPath != "example.com/demo/internal/db/store.go" || f.Package != "example.com/demo/internal/db" || f.Path != "" || f.Lang != testreport.LangGo {
+		t.Fatalf("parsed file %+v", f)
+	}
+	m := merge(t, testreport.MergeOptions{ModulePath: "example.com/demo"}, c)
+	if got := m.Files[0]; got.Path != "internal/db/store.go" || got.ImportPath != f.ImportPath {
+		t.Errorf("merged file %+v, want Path internal/db/store.go and the import path kept", got)
+	}
+	d := m.Diff([]testreport.ChangedFile{{Path: "internal/db/store.go", Ranges: []testreport.LineRange{{Start: 3, End: 4}}}})
+	if d.Lines != 2 || d.Covered != 2 {
+		t.Errorf("diff coverage over the derived path: %+v", d)
+	}
+}
+
 // A Go profile names a file by import path; another input may name the same
 // file by its path (an absolute path under Root, an LCOV or Cobertura
 // report). Once Merge derives the path from the module path, both are one

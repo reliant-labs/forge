@@ -2764,7 +2764,7 @@ benefits:
       it runs in CI only and `ci.vuln_scan.exemptions` does not cover it. What
       forge scans itself, from the SBOM of every release it cuts, is
       `sbom-vuln-scan`; `build-images.yml` scans each image it pushes with
-      `forge vuln scan`.
+      `forge vuln scan` (Trivy for a project pinned before forge v1.10.0).
     evidence:
       - command: ci vuln-scan
       - path: internal/cli/ci_vuln_npm.go
@@ -2821,8 +2821,9 @@ benefits:
       is the generated GitHub workflow only; `forge env build` itself does not
       sign, and the DeliveryPolicy
       `signing`/`trusted_builder`/`admission_verify` controls do not read these
-      signatures. The workflow writes no SBOM: forge records one at every
-      release cut (`sbom-vuln-scan`).
+      signatures. From forge v1.10.0 the workflow writes no SBOM, because
+      forge records one at every release cut (`sbom-vuln-scan`); a project
+      pinned to an older forge keeps the workflow's SPDX SBOM artifact.
     evidence:
       - path: internal/templates/ci/github/build-images.yml.tmpl
 

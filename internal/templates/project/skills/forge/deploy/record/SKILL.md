@@ -310,7 +310,7 @@ source SBOM (`--sbom-source`) is the entry whose `workload` is `""`.
 
 ## Next
 
-- SBOMs: a recorded workload has none yet, so it reads "not scanned"; `--sbom`, `--no-sbom` and `--sbom-source` are pending (forge#2489). `vuln` has the details and `forge vuln scan --image` for now.
+- An SBOM per workload is recorded too (generated from each `--image`, or your own with `--sbom`; `--sbom-source`, `--no-sbom`); `vuln` has the flags and what reads them.
 - Monitoring first, if it is not set up yet: `observability`.
 - Hand the deploy to forge when you are ready: `deploy` (`forge env deploy`); the
   recorded history stays in the same ledger, and forge's own releases follow it.

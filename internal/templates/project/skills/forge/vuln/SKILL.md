@@ -23,8 +23,8 @@ At every cut (`forge env build <env> --release v1.2.0`, or the cut inside
 3. **Stored three ways.** The bytes go to this machine's ledger (always);
    an image or hosted static site also gets the SBOM beside it in its registry as
    an OCI 1.1 referrer (the `sha256-<hex>` tag fallback where the registry has no
-   referrers API). An env whose ledger is a control plane will keep its own
-   copy there once forge uploads it (see "Control-plane envs").
+   referrers API); an env whose ledger is a control plane gets it uploaded, and
+   keeps its own copy there (see "Control-plane envs").
 4. **A scan.** If this machine already has the vulnerability database, grype
    scans each SBOM and the cut prints the counts and the env's `vuln_gate`
    verdict. A cut **never downloads the first database** (205 MB): without one it
@@ -50,7 +50,7 @@ forge vuln list prod                # what the release prod runs is known to be 
 | Host binary (`forge.OnHost`) | the file (Go buildinfo lists every linked module) | `binary` |
 | Static site (hosted, bucket, Firebase), npm package | the frontend's or package's lockfile, dev dependencies excluded | `lockfile` |
 | Go module | its `go.mod` | `lockfile` |
-| An SBOM your CI produced (`release record --sbom`, pending: see "Deploys your own CI does") | nothing: recorded verbatim | `ci-provided` |
+| An SBOM your CI produced (`release record --sbom`) | nothing: recorded verbatim | `ci-provided` |
 
 A static site's SBOM is **"from lockfile"** and **overstates the bundle**: a
 built `dist/` carries no package metadata, so the production dependencies in the
@@ -84,8 +84,8 @@ its JSON Schema). Exit codes (the same for every verb that judges):
 |---|---|
 | 0 | nothing the env's `vuln_gate` would block |
 | 1 | at least one blocking finding (in **any** gate mode: the exit says what was found, the mode decides whether a promotion is refused) |
-| 2 | could not determine: an artifact with no SBOM or scan, grype missing, the database absent, findings whose newest scan used a database older than 5 days (`stale`), or an env whose ledger is a control plane that this forge cannot read yet. **Never a pass** |
-| 4 | refused (a promotion; see below) |
+| 2 | could not determine: an artifact with no SBOM or scan, grype missing, the database absent, findings whose newest scan used a database older than 5 days (`stale`), or a control plane that does not serve findings yet. **Never a pass** |
+| 4 | refused: a promotion (see below), or a control plane that will not let you read its findings |
 
 `forge vuln patch` has its own reading of the same codes (`vuln/patch`).
 
@@ -235,7 +235,9 @@ durable answer is an exemption.
 ## Fixing findings: `forge vuln patch`
 
 `forge vuln patch <env|dir>` bumps each vulnerable Go and npm/pnpm/yarn dependency
-to the lowest version that fixes it inside its major, with the ecosystem's own tool;
+to the lowest version that fixes it inside its major, with the ecosystem's own tool,
+moves a base image's `FROM` for an OS package and raises the Go toolchain for a
+standard-library finding;
 `--verify` runs your gate (`vuln.patch.verify` in forge.yaml) and rescans; `--pr`
 opens the pull request. Exit 0 patched, 1 a bump or the verification failed, 2
 nothing deterministic to do, 4 refused. Ecosystems, what is skipped, the verify
@@ -243,23 +245,19 @@ command and every flag: `vuln/patch`.
 
 ## Deploys your own CI does
 
-**Pending (forge#2489, not on main yet).** Today `forge release record`
-(`deploy/record`) records no SBOM: the workloads it records read "not scanned", and
-a `vuln_gate = enforce` env refuses them `vuln_gate_unscanned` once the rule gates.
-`forge vuln scan --image <ref@sha256:…>` scans one of those images yourself.
-
-What forge#2489 adds, when it merges: each `--image` described from its registry by
-digest with the credentials the CI already has; `--sbom <workload>=<path>`
-(repeatable) records an SBOM your pipeline produced, CycloneDX or SPDX JSON, verbatim
-(`source: ci-provided`); `--no-sbom` records none; `--sbom-source <dir>` describes a
-version-only record's source tree by its lockfiles and records it as the release's
-source SBOM (`Release.SourceSBOM`), evidence outside the release's identity, so a
-later record of the same version without it is not a conflict. Under
-`provenance_sbom = off` nothing is generated from `--image`, but what `--sbom` and
-`--sbom-source` explicitly supply is still recorded. An SBOM that cannot be produced
-warns and the record still succeeds; a flag mistake (an `--sbom` for a workload the
-record does not name, a file that is not an SBOM) refuses the record before anything
-is written.
+`forge release record` (`deploy/record`) records an SBOM per workload too. Each
+`--image` is described from its registry by digest, with the registry credentials the
+CI already has. `--sbom <workload>=<path>` (repeatable) records an SBOM your pipeline
+produced instead, CycloneDX or SPDX JSON, verbatim (`source: ci-provided`);
+`--no-sbom` records none, and each workload reads "not scanned". `--sbom-source <dir>`
+describes a version-only record's source tree by its lockfiles and records it as the
+release's source SBOM (`Release.SourceSBOM`): evidence outside the release's identity,
+so a later record of the same version without it is no conflict. Under `provenance_sbom
+= off` nothing is generated from `--image`, but what `--sbom` and `--sbom-source`
+explicitly supply is still recorded. An SBOM that cannot be produced warns and the
+record still succeeds; a flag mistake (an `--sbom` for a workload the record does not
+name, a file that is not an SBOM) refuses the record before anything is written.
+`--json` gains an `sboms` list.
 
 ## In `task ci`: the `vuln-sbom` step
 
@@ -281,18 +279,17 @@ refuses nothing for it at promote; the control plane enforces `vuln_gate` once i
 advertises `enforces-vuln-gate`. Reading findings from a control plane needs a token
 with the `vuln:read` scope, which `deploy:read` does not imply.
 
-**What this forge does today.** It does not upload SBOMs to a control plane or read
-its findings yet. `forge vuln list`, `show`, `sbom`, `scan --deployed` and `patch` for
-such an env say so and exit 2 (never a guess from this machine's ledger, which holds
-none of its releases); `FORGE_LEDGER=machine` reads this machine's ledger instead, for
-releases it holds. `forge vuln scan --image <ref@sha256:…>` still scans an image of
-that env yourself.
+**Upload.** After a cut, forge uploads each SBOM to the control plane when it
+advertises the `vuln-sbom-upload` capability (or `vuln-findings`, which implies it);
+the machine ledger keeps its own copy whatever the control plane does with it.
 
-**Pending (forge#2491, not on main yet).** The cut uploads each SBOM to the control
-plane when it advertises the `vuln-sbom-upload` capability, and the read verbs read
-its findings and verdicts when it advertises `vuln-findings`; the control plane's
-verdict is the one shown and the one a promotion meets. A control plane that
-advertises neither keeps today's exit-2 answer.
+**Reads.** `forge vuln list`, `show`, `sbom`, `scan --deployed` and `patch` for such an
+env read the control plane's findings when it advertises `vuln-findings`, mapped into
+the same `forge.dev/vuln-list/v1` document and the same exit codes. Without a sign-in,
+or without `vuln:read`, they exit 4 (refused); a control plane that does not serve
+findings yet exits 2, never a guess from this machine's ledger, which holds none of
+its releases (`FORGE_LEDGER=machine` reads that ledger instead, for releases it
+holds). `forge vuln scan --image <ref@sha256:…>` scans an image of that env yourself.
 
 ## Next
 

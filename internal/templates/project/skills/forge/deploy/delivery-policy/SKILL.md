@@ -217,10 +217,10 @@ date and stops applying at that date; it is the same vocabulary as forge's own
   `provenance_sbom = enforce` over an artifact with no SBOM refuses it `sbom_missing`.
   All exit 4. Under `audit` they print "would block" and refuse nothing. Each check
   records a gate (`vuln_gate`, `provenance_sbom`) on the promotion.
-- **A control plane**: it scans the SBOM it receives and its findings are the
-  record; forge's cut-time scan is advisory and forge refuses nothing. It enforces once
-  it advertises `enforces-vuln-gate`; until then the declaration is intent. (forge
-  uploads no SBOM to a control plane yet: forge#2491.)
+- **A control plane**: forge uploads each SBOM after the cut, the control plane scans
+  it, and its findings are the record; forge's cut-time scan is advisory and forge
+  refuses nothing. It enforces once it advertises `enforces-vuln-gate`; until then
+  the declaration is intent.
 - A release cut before SBOMs existed is never refused for lacking one.
 
 **Warn first.** Both are graded through the lint rollout rows `vuln-gate` and

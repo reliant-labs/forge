@@ -44,7 +44,8 @@ fallback. A later run the same day hits the exact key and downloads nothing; the
 first run of a day restores the newest earlier cache, and `forge vuln db pull`
 downloads only when the listing has a newer build; a cold cache downloads once.
 Save under today's key after the pull, and skip the save on an exact hit. The
-scaffolded `build-images.yml` scan job does exactly this with
+scaffolded `build-images.yml` scan job (for a project pinned to forge v1.10.0 or
+later, the first release with `forge vuln`) does exactly this with
 `actions/cache/restore` and `actions/cache/save` over `~/.cache/forge/vulndb`.
 (`forge vuln db status --json`'s `cache_key` names the database's build date. It
 cannot be the restore key, because it is known only once the database is on disk.)

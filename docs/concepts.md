@@ -472,7 +472,9 @@ What is generated into the scaffolded `build-images.yml` is the part forge does
 not do itself: a keyless cosign signature and a build-provenance attestation on
 the pushed image, bound to its immutable digest rather than a mutable tag. forge's
 own release path signs nothing; only a control-plane env gets its bundles signed,
-by the platform.
+by the platform. Its scan job runs `forge vuln scan` over the pushed digest when the
+project pins forge v1.10.0 or later; a project pinned to an older forge, which has
+no `forge vuln`, gets the Trivy scan and the SPDX SBOM action instead.
 
 What is **not** there today: secret scanning, SAST, IaC/manifest scanning, and
 an npm license check. The generated workflows are among the less-exercised

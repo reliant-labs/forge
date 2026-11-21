@@ -2155,7 +2155,7 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** The Trivy step is a generated GitHub Actions step in `ci.yml`'s docker build (`ci.vuln_scan.docker` turns it off), not `forge ci vuln-scan`, so it runs in CI only and `ci.vuln_scan.exemptions` does not cover it. What forge scans itself, from the SBOM of every release it cuts, is `sbom-vuln-scan`; `build-images.yml` scans each image it pushes with `forge vuln scan`.
+**Why:** The Trivy step is a generated GitHub Actions step in `ci.yml`'s docker build (`ci.vuln_scan.docker` turns it off), not `forge ci vuln-scan`, so it runs in CI only and `ci.vuln_scan.exemptions` does not cover it. What forge scans itself, from the SBOM of every release it cuts, is `sbom-vuln-scan`; `build-images.yml` scans each image it pushes with `forge vuln scan` (Trivy for a project pinned before forge v1.10.0).
 
 **Evidence:**
 
@@ -2195,7 +2195,7 @@ The generated `build-images.yml` attaches a keyless cosign signature and a build
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** The provenance attestation is skipped for private repositories outside GitHub Enterprise Cloud (GitHub's attestation store refuses them). This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `signing`/`trusted_builder`/`admission_verify` controls do not read these signatures. The workflow writes no SBOM: forge records one at every release cut (`sbom-vuln-scan`).
+**Why:** The provenance attestation is skipped for private repositories outside GitHub Enterprise Cloud (GitHub's attestation store refuses them). This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `signing`/`trusted_builder`/`admission_verify` controls do not read these signatures. From forge v1.10.0 the workflow writes no SBOM, because forge records one at every release cut (`sbom-vuln-scan`); a project pinned to an older forge keeps the workflow's SPDX SBOM artifact.
 
 **Evidence:**
 

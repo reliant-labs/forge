@@ -640,8 +640,8 @@ func TestObsTraceShowsWhyAndWhereTheTimeWent(t *testing.T) {
 	if failed["message"] != "context canceled" || failed["key_attributes"].(map[string]any)["query_id"] != "q-1" {
 		t.Errorf("failed statement node = %v", failed)
 	}
-	// A healthy span carries only its key attributes, unless --full asks for
-	// every attribute: the whole statement of a span named "SELECT accounts"
+	// A healthy span carries only its key attributes, unless --attributes
+	// asks for every attribute (--full alone keeps the prior shape): the whole statement of a span named "SELECT accounts"
 	// is in no key attribute (bug report 2d2db3bc).
 	child := func(d map[string]any, name string) map[string]any {
 		for _, c := range d["tree"].([]any)[0].(map[string]any)["children"].([]any) {
@@ -654,9 +654,12 @@ func TestObsTraceShowsWhyAndWhereTheTimeWent(t *testing.T) {
 	if a := child(doc, "SELECT accounts")["attributes"]; a != nil {
 		t.Errorf("a healthy span's attributes without --full: %v", a)
 	}
-	full := decode(t, run("--json", "--full"))
-	if a, _ := child(full, "SELECT accounts")["attributes"].(map[string]any); a["db.query.text"] != "SELECT id FROM accounts WHERE org_id = $1" {
-		t.Errorf("--full must carry every span's attributes: %v", child(full, "SELECT accounts"))
+	if a := child(decode(t, run("--json", "--full")), "SELECT accounts")["attributes"]; a != nil {
+		t.Errorf("--full alone must keep its prior shape, got attributes %v", a)
+	}
+	all := decode(t, run("--json", "--attributes"))
+	if a, _ := child(all, "SELECT accounts")["attributes"].(map[string]any); a["db.query.text"] != "SELECT id FROM accounts WHERE org_id = $1" {
+		t.Errorf("--attributes must carry every span's attributes: %v", child(all, "SELECT accounts"))
 	}
 	log := doc["logs"].([]any)[0].(map[string]any)
 	attrs := log["attributes"].(map[string]any)

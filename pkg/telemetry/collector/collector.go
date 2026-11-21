@@ -53,7 +53,9 @@ const (
 	// IdentityProcessor stamps service.name (and the env's resource
 	// attributes) on the records of the pods or files a target names. The
 	// caller runs it in its logs pipeline and its node-metrics pipeline, after
-	// k8sattributes.
+	// k8sattributes, and in every other pipeline that k8sattributes enriches
+	// (it has trace, metric, log and profile statements), because it is what
+	// deletes the selector labels K8sAttributesLabels extracts.
 	IdentityProcessor = "transform/telemetry_identity"
 	// LogsProcessor parses each target's lines as its LogParse declares. The
 	// caller runs it in its logs pipeline, after IdentityProcessor.

@@ -15,6 +15,7 @@ import (
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/dockercred"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 )
 
@@ -73,7 +74,16 @@ func dockerLoginArgs(host, username string) []string {
 // Its output is captured, not inherited: a successful login prints "Login
 // Succeeded" and a plaintext-credentials warning that read as an error in a
 // deploy that was working. It is shown only when the login fails.
+//
+// With no docker CLI on PATH the same login is written in-process to the same
+// credential store (dockercred.Login). A frontend-only deploy pushes nothing
+// with `docker push`: its site, source maps and cut journal go over oras,
+// which reads that store, so it must not need docker installed. A push that
+// does need docker still fails, naming docker.
 var dockerLogin = func(ctx context.Context, args []string, password io.Reader) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return storeLoginWithoutDocker(ctx, args, password)
+	}
 	c := exec.CommandContext(ctx, "docker", args...)
 	c.Stdin = password
 	var out bytes.Buffer
@@ -83,6 +93,22 @@ var dockerLogin = func(ctx context.Context, args []string, password io.Reader) e
 			return fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, detail)
 		}
 		return fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+// storeLoginWithoutDocker is dockerLogin's argv (dockerLoginArgs) carried out
+// by dockercred.Login.
+func storeLoginWithoutDocker(ctx context.Context, args []string, password io.Reader) error {
+	if len(args) != 5 || args[0] != "login" || args[2] != "--username" || args[4] != "--password-stdin" {
+		return fmt.Errorf("docker is not on PATH, and forge cannot store the login %q without it", strings.Join(args, " "))
+	}
+	secret, err := io.ReadAll(password)
+	if err != nil {
+		return err
+	}
+	if err := dockercred.Login(ctx, args[1], args[3], string(secret)); err != nil {
+		return fmt.Errorf("log in to %s (no docker CLI on PATH, so forge stored the credential in the docker credential store itself): %w", args[1], err)
 	}
 	return nil
 }

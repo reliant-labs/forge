@@ -42,10 +42,14 @@ func SplitStatements(src string) []Statement {
 func (st Statement) NonTransactional() string { return sqllex.NonTransactional(st.words) }
 
 // NonConcurrently returns a CREATE [UNIQUE] INDEX CONCURRENTLY statement
-// without CONCURRENTLY, which can run inside a transaction: a pass that needs
-// the index to exist inside one (a query plan that should use it) builds it
-// this way. The migration pass does not: it runs the concurrent statement
-// itself, on a disposable database. False for any other statement.
+// without CONCURRENTLY, which can run inside a transaction. False for any
+// other statement.
+//
+// Deprecated: no pass needs an index built inside a transaction any more.
+// Both passes run on a disposable database (a scratch database, or a
+// CloneDatabase copy), where AnalyzeMigrations runs CREATE INDEX CONCURRENTLY
+// itself and the query pass plans on the index it built. Kept for the v1
+// API.
 func (st Statement) NonConcurrently() (string, bool) {
 	loc := concurrentIndexRE.FindStringSubmatchIndex(st.SQL)
 	if loc == nil {

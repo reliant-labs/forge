@@ -108,6 +108,9 @@ func TestGenerateStepsPlanStable(t *testing.T) {
 		// frontend_config_gen.k module and the env's config.k instance —
 		// both emitted by the step above — must exist first.
 		"frontend typed config",
+		// Before cleanup: the step retires its own outputs when changes.yaml
+		// goes away, and cleanup would otherwise see them as stale.
+		"changes accessors (changes.yaml)",
 		// AFTER the env config modules: which workflows exist is read off a
 		// render of every env (a hosted env gets release.yml), and an env
 		// cannot render before the config modules it imports exist.

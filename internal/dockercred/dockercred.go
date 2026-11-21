@@ -83,6 +83,50 @@ func pin(ds *credentials.DynamicStore) (auth.CredentialFunc, error) {
 	}, nil
 }
 
+// Login stores a credential for host where `docker login` would: the ambient
+// docker config's credential store ($DOCKER_CONFIG/config.json, else
+// ~/.docker/config.json), so Credential, and docker itself, read it back.
+// It is the login for a machine with no docker CLI. A static site, source
+// maps, a bundle and the cut journal all push in-process (oras), so a
+// frontend-only deploy needs the login and not the docker client.
+//
+// It writes where docker would write, so it adds no second keychain: the
+// host's credHelpers entry when it has one ("" pins it to config.json, as
+// Credential reads it), else credsStore, else config.json's `auths` in
+// plaintext. docker login falls back to that last one too, with a warning.
+func Login(ctx context.Context, host, username, password string) error {
+	ds, err := credentials.NewStoreFromDocker(credentials.StoreOptions{AllowPlaintextPut: true})
+	if err != nil {
+		return err
+	}
+	return put(ctx, ds, host, auth.Credential{Username: username, Password: password})
+}
+
+// LoginTo is Login for the docker config file at configPath.
+func LoginTo(ctx context.Context, configPath, host, username, password string) error {
+	ds, err := credentials.NewStore(configPath, credentials.StoreOptions{AllowPlaintextPut: true})
+	if err != nil {
+		return err
+	}
+	return put(ctx, ds, host, auth.Credential{Username: username, Password: password})
+}
+
+func put(ctx context.Context, ds *credentials.DynamicStore, host string, cred auth.Credential) error {
+	path := ds.ConfigPath()
+	hosts, err := fileHelperHosts(path)
+	if err != nil {
+		return fmt.Errorf("read docker config %s: %w", path, err)
+	}
+	if hosts[serverAddress(host)] {
+		file, err := credentials.NewFileStore(path)
+		if err != nil {
+			return err
+		}
+		return file.Put(ctx, serverAddress(host), cred)
+	}
+	return ds.Put(ctx, serverAddress(host), cred)
+}
+
 // serverAddress is the key docker files hostport's credential under — the
 // same mapping credentials.Credential applies before it asks a store.
 func serverAddress(hostport string) string {

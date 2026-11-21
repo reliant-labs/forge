@@ -20,6 +20,11 @@
 //     pg_stat_xact_user_tables, wall time) and applies the rules. The
 //     migrated schema stays in the copy for a later pass (EXPLAIN) until the
 //     caller drops it.
+//   - [AnalyzeQueries] is that later pass: it plans captured query shapes
+//     (forge/pkg/querycapture) on the migrated copy with EXPLAIN
+//     (GENERIC_PLAN) — as is, and with enable_seqscan off — and reports, per
+//     table, whether an index serves the statement's filters, joins and
+//     ORDER BY … LIMIT.
 //   - [Document] and its parts are the JSON document.
 //
 // Design: docs/proposals/db-analyze.md in the forge repository.

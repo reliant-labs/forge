@@ -16,9 +16,9 @@ func compositionConsumers(e *KCLEntities) ([]release.Consumer, error) {
 	}
 	var out []release.Consumer
 	for _, w := range e.Workloads {
-		if w.Runtime.Type == RuntimeBuildOnly && w.Build.Type == "shell" && w.Image == "" {
-			// A build-only ShellBuild that declares no image builds none
-			// (kcl/render.k _artifact): it has no image slot to bind.
+		if w.Runtime.Type == RuntimeBuildOnly && w.Image == "" && (w.Build.Type == "shell" || len(w.Build.Outputs) > 0) {
+			// A build-only ShellBuild with no image, or another files-only
+			// build with declared outputs, has no image slot to bind.
 			continue
 		}
 		cluster := ""

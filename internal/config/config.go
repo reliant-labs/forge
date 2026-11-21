@@ -1548,6 +1548,10 @@ type LintConfig struct {
 	// Tracing configures the tracing lane (`forge lint --tracing`).
 	Tracing TracingLintConfig `yaml:"tracing,omitempty"`
 
+	// Auth configures the static auth analyses — today the unscoped_auth
+	// category of `forge project audit`.
+	Auth AuthLintConfig `yaml:"auth,omitempty"`
+
 	// AllowSkip accepts, by name and with a reason, a gating lane that
 	// could NOT run. Such a lane fails `forge lint` by default — a check
 	// that did not run is not a check that passed — so this is the
@@ -1591,6 +1595,29 @@ type LogWrapperConfig struct {
 	// (log/slog.InfoContext). Empty means "<Call>Context" in the helper's
 	// own package.
 	ContextCall string `yaml:"context_call,omitempty"`
+}
+
+// AuthLintConfig configures the static auth analyses.
+type AuthLintConfig struct {
+	// CallerResolvers names functions that resolve the caller — read the
+	// authenticated principal off the request context — beside forge's own
+	// seam (middleware.GetUser). A handler that calls one, directly or
+	// through a wrapper, counts as resolving the caller in the unscoped_auth
+	// audit.
+	//
+	// It is the forge.yaml twin of the //forge:resolves-caller marker, for a
+	// function the marker cannot reach: one in a dependency or a sibling
+	// module (the marker is read from the main module only), or in a
+	// package the project would rather not annotate.
+	CallerResolvers []CallerResolverConfig `yaml:"caller_resolvers,omitempty"`
+}
+
+// CallerResolverConfig is one lint.auth.caller_resolvers entry.
+type CallerResolverConfig struct {
+	// Call is the function, as "<import path>.<Func>":
+	// github.com/acme/app/internal/auth.MustGetUserID. Package-level
+	// functions only: a call site does not name a method's receiver type.
+	Call string `yaml:"call"`
 }
 
 // ValidateRules reports rule-severity entries whose SEVERITY forge cannot

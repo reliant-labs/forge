@@ -74,7 +74,7 @@ func TestBuildImagesPrivateProvenancePredicate(t *testing.T) {
 		"REPOSITORY": "acme/myapp", "REPOSITORY_ID": "42", "REPOSITORY_OWNER_ID": "7",
 		"SOURCE_REF": "refs/heads/main", "SOURCE_SHA": strings.Repeat("b", 40),
 		"WORKFLOW_REF": "acme/myapp/.github/workflows/build-images.yml@refs/heads/main",
-		"EVENT_NAME": "push", "RUNNER_ENV": "github-hosted", "RUN_ID": "1001", "RUN_ATTEMPT": "2",
+		"EVENT_NAME":   "push", "RUNNER_ENV": "github-hosted", "RUN_ID": "1001", "RUN_ATTEMPT": "2",
 	}
 	runStep := func(t *testing.T, vars map[string]string) (string, []byte, error) {
 		dir := t.TempDir()

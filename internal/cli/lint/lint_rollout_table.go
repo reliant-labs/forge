@@ -22,6 +22,7 @@ package lint
 import (
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
@@ -271,6 +272,16 @@ var newRules = []rolloutGroup{
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
 		Fix:          "forge lint --install",
 		Rules:        []string{ruleFrontendNoInstall},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
+		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
+		Rules:        []string{staticexport.RulePartialPrerender},
 	},
 }
 

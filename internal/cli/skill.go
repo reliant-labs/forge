@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -572,17 +574,16 @@ func RenderSkillContentAt(projectRoot, skillPath string, audience SkillAudience,
 // copy-pasteable under the mount that served it. "" and "forge" leave the
 // content unchanged.
 //
-// A ```yaml (or ```yml) fence is left as written: it is a file — a CI
-// workflow whose runner installs the standalone forge (`npm i -g
-// @reliantlabs/forge`), a Taskfile, a config value such as `tool: forge` —
-// not a command typed into the shell that loaded the skill, so `reliant
-// forge` there names a binary the runner does not have.
+// A YAML fence is a file (workflow, Taskfile or config), not a command typed
+// in the current shell; it stays as written. Outside YAML, package and server
+// names and commands already under the mount also stay as written.
 func rewriteForgeCommands(content []byte, cliName string) []byte {
 	if cliName == "" || cliName == "forge" {
 		return content
 	}
+	mountPrefix := []byte(strings.TrimSuffix(cliName, "forge"))
 	lines := bytes.SplitAfter(content, []byte("\n"))
-	fence := "" // the open fence's info string; "" outside a fence
+	fence := ""
 	inFence := false
 	for i, line := range lines {
 		if info, ok := fenceLine(line); ok {
@@ -593,12 +594,62 @@ func rewriteForgeCommands(content []byte, cliName string) []byte {
 			}
 			continue
 		}
-		if inFence && (fence == "yaml" || fence == "yml") {
-			continue
+		if !inFence || (fence != "yaml" && fence != "yml") {
+			lines[i] = rewriteForgeCommandLine(line, cliName, mountPrefix)
 		}
-		lines[i] = forgeCmdRE.ReplaceAll(line, []byte(cliName+"$1"))
 	}
 	return bytes.Join(lines, nil)
+}
+
+func rewriteForgeCommandLine(content []byte, cliName string, mountPrefix []byte) []byte {
+	var out []byte
+	last := 0
+	for _, m := range forgeCmdRE.FindAllIndex(content, -1) {
+		start, end := m[0], m[1] // end is just past the space
+		if !isForgeCommandAt(content, start, end, mountPrefix) {
+			continue
+		}
+		out = append(out, content[last:start]...)
+		out = append(out, cliName...)
+		out = append(out, ' ')
+		last = end
+	}
+	if out == nil {
+		return content
+	}
+	return append(out, content[last:]...)
+}
+
+// isForgeCommandAt reports whether the "forge " at content[start:end] is the
+// forge command, rather than part of a name or already under the mount.
+func isForgeCommandAt(content []byte, start, end int, mountPrefix []byte) bool {
+	if start > 0 {
+		switch content[start-1] {
+		case '/', '@', '-', '.', '_', ':':
+			return false // @reliantlabs/forge, reliant-forge, pkg.forge
+		}
+	}
+	if hasForgeMount(content[:start], mountPrefix) {
+		return false // already `reliant forge …`
+	}
+	if rest := content[end:]; bytes.HasPrefix(rest, []byte("-- ")) || bytes.Equal(rest, []byte("--")) {
+		return false // `mcp add forge -- npx …`: a server name, then the command it runs
+	}
+	return true
+}
+
+// hasForgeMount matches the mount itself, not its suffix inside a word
+// (myreliant) or another executable's name (other-reliant). A path to the
+// mount executable still qualifies, as does a shell/Markdown delimiter.
+func hasForgeMount(before, mount []byte) bool {
+	if len(mount) == 0 || !bytes.HasSuffix(before, mount) {
+		return false
+	}
+	if len(before) == len(mount) {
+		return true
+	}
+	r, _ := utf8.DecodeLastRune(before[:len(before)-len(mount)])
+	return unicode.IsSpace(r) || strings.ContainsRune("/`'\"([{=;|&<>", r)
 }
 
 // fenceLine reports whether line opens or closes a ``` code fence, and the

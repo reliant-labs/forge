@@ -99,6 +99,8 @@ type MemoryStore struct {
 	// locks serializes Update per key without holding mu across fn, which
 	// may make a network call.
 	locks map[string]*sync.Mutex
+	// subjectLocks serializes LockSubject per subject (subject_lock.go).
+	subjectLocks sync.Map
 }
 
 // NewMemoryStore returns an empty MemoryStore.

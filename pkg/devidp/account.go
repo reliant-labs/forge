@@ -98,6 +98,10 @@ const (
 	CodeSameAddress = "same_address"
 	// CodeInvalidAddress: the address is not one.
 	CodeInvalidAddress = "invalid_address"
+	// CodeSessionsNotRevoked: the password changed, but the other sessions
+	// could not all be signed out; POST AccountSessionsRevokeOthersPath
+	// again finishes it.
+	CodeSessionsNotRevoked = "sessions_not_revoked"
 )
 
 // MetaEmailChangeFrom holds, while an address change waits for its code, the
@@ -550,18 +554,28 @@ func (a *AccountRoutes) HandleEmailChange(w http.ResponseWriter, req *http.Reque
 		a.unavailable(ctx, w, "account: look the address up", err)
 		return
 	}
-	// The address being replaced, for the confirmation's rename (below in
-	// HandleEmailConfirm). Written before the change, so a confirmation can
-	// always find it.
-	if err := c.SetMetadata(ctx, s.info.Subject, MetaEmailChangeFrom, normalizeEmail(current.Email)); err != nil {
-		a.unavailable(ctx, w, "account: record the address change", err)
-		return
-	}
-	if a.cfg.DevMode {
+	// Under the account's lock, so two changes cannot interleave their
+	// marker and their change at the issuer.
+	err = a.cfg.Sessions.LockSubject(ctx, s.info.Subject, func(ctx context.Context) error {
+		// The address that named the account BEFORE any change still
+		// pending, for the confirmation's rename (HandleEmailConfirm).
+		// Written once, before the first change, and kept across later
+		// changes and failed ones until a confirmation settles it: a
+		// second change (A→B, then B→C) must not make B the one renamed
+		// from.
+		if _, pending, err := c.Metadata(ctx, s.info.Subject, MetaEmailChangeFrom); err != nil {
+			return err
+		} else if !pending {
+			if err := c.SetMetadata(ctx, s.info.Subject, MetaEmailChangeFrom, normalizeEmail(current.Email)); err != nil {
+				return err
+			}
+		}
+		if !a.cfg.DevMode {
+			return c.ChangeEmail(ctx, s.info.Subject, email, a.cfg.EmailConfirmURL)
+		}
 		code, err := c.ChangeEmailReturnCode(ctx, s.info.Subject, email)
 		if err != nil {
-			a.unavailable(ctx, w, "account: change the address", err)
-			return
+			return err
 		}
 		// A dev stack has no mail: the link goes to the log, never to the
 		// response, so the flow is the one production mail drives.
@@ -569,7 +583,9 @@ func (a *AccountRoutes) HandleEmailChange(w http.ResponseWriter, req *http.Reque
 			Replace(a.cfg.EmailConfirmURL)
 		a.cfg.Logger.InfoContext(ctx, "development: confirm the new address with this link (no mail is sent)",
 			"user_id", s.info.Subject, "email", email, "link", link)
-	} else if err := c.ChangeEmail(ctx, s.info.Subject, email, a.cfg.EmailConfirmURL); err != nil {
+		return nil
+	})
+	if err != nil {
 		a.unavailable(ctx, w, "account: change the address", err)
 		return
 	}
@@ -603,36 +619,58 @@ func (a *AccountRoutes) HandleEmailConfirm(w http.ResponseWriter, req *http.Requ
 		writeErr(w, http.StatusTooManyRequests, CodeRateLimited, msgTooMany)
 		return
 	}
-	before, err := c.FindUserByID(ctx, s.info.Subject)
-	if err != nil {
-		a.unavailable(ctx, w, "account: read the account", err)
-		return
-	}
-	if err := c.VerifyEmail(ctx, s.info.Subject, code); err != nil {
-		if errors.Is(err, ErrInvalidCode) {
-			writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
-			return
+	var before User
+	invalid := false
+	err := a.cfg.Sessions.LockSubject(ctx, s.info.Subject, func(ctx context.Context) error {
+		var err error
+		if before, err = c.FindUserByID(ctx, s.info.Subject); err != nil {
+			return err
 		}
+		if err := c.VerifyEmail(ctx, s.info.Subject, code); err != nil {
+			if errors.Is(err, ErrInvalidCode) {
+				invalid = true
+				return nil
+			}
+			return err
+		}
+		a.settleRename(ctx, s.info.Subject, before)
+		return nil
+	})
+	switch {
+	case err != nil:
 		a.unavailable(ctx, w, "account: confirm the address", err)
+		return
+	case invalid:
+		writeErr(w, http.StatusUnauthorized, CodeInvalidCode, msgInvalidCode)
 		return
 	}
 	a.reauthBySubject.forget("email:" + s.info.Subject)
-	// The broker names the accounts it creates by their address. One whose
-	// username was the address the change replaced is renamed to the new
-	// one, so the old address stops naming the account. A username of its
-	// own is kept.
-	if old, found, err := c.Metadata(ctx, s.info.Subject, MetaEmailChangeFrom); err == nil && found {
-		if old != "" && strings.EqualFold(before.Username, old) && !strings.EqualFold(before.Username, before.Email) {
-			if err := c.setUsername(ctx, s.info.Subject, normalizeEmail(before.Email)); err != nil {
-				a.cfg.Logger.WarnContext(ctx, "account: the username still names the old address", "user_id", s.info.Subject, "error", err)
-			}
-		}
-		if err := c.DeleteMetadata(ctx, s.info.Subject, MetaEmailChangeFrom); err != nil {
-			a.cfg.Logger.DebugContext(ctx, "account: the address change's marker was not cleared", "error", err)
-		}
-	}
 	a.cfg.Logger.InfoContext(ctx, "account: address confirmed", "user_id", s.info.Subject)
 	writeJSON(w, http.StatusOK, map[string]any{"email": before.Email, "emailVerified": true})
+}
+
+// settleRename finishes a confirmed address change (the account's address is
+// now u.Email, verified). The broker names the accounts it creates by their
+// address, so an account whose username is still the address that named it
+// before the change (MetaEmailChangeFrom) is renamed to the new one, and the
+// old address stops naming it. A username of its own is kept: the
+// intentional no-rename. The marker is cleared only once one of the two is
+// settled; a rename that failed keeps it for the next confirmation.
+func (a *AccountRoutes) settleRename(ctx context.Context, subject string, u User) {
+	c := a.cfg.Client
+	old, found, err := c.Metadata(ctx, subject, MetaEmailChangeFrom)
+	if err != nil || !found {
+		return
+	}
+	if old != "" && strings.EqualFold(u.Username, old) && !strings.EqualFold(u.Username, u.Email) {
+		if err := c.setUsername(ctx, subject, normalizeEmail(u.Email)); err != nil {
+			a.cfg.Logger.WarnContext(ctx, "account: the username still names the old address; the next confirmation retries", "user_id", subject, "error", err)
+			return
+		}
+	}
+	if err := c.DeleteMetadata(ctx, subject, MetaEmailChangeFrom); err != nil {
+		a.cfg.Logger.DebugContext(ctx, "account: the address change's marker was not cleared", "error", err)
+	}
 }
 
 // ── Password ───────────────────────────────────────────────────────────
@@ -695,10 +733,21 @@ func (a *AccountRoutes) HandlePasswordChange(w http.ResponseWriter, req *http.Re
 	// changes a password — is signed out. This one stays.
 	ended, err := a.cfg.Sessions.RevokeOthers(ctx, s.info.Subject, s.id)
 	if err != nil {
-		a.cfg.Logger.ErrorContext(ctx, "account: the password changed, but other sessions could not be signed out", "user_id", s.info.Subject, "error", err)
+		// Never a success: the password changed, but whoever else holds a
+		// session may still be signed in. Say so, and how to finish it.
+		a.cfg.Logger.ErrorContext(ctx, "account: the password changed, but other sessions could not be signed out", "user_id", s.info.Subject, "ended", ended, "error", err)
+		writeJSON(w, http.StatusBadGateway, map[string]any{
+			"code":                 CodeSessionsNotRevoked,
+			"error":                "Your password changed, but other devices could not be signed out. Sign out other devices again.",
+			"changed":              true,
+			"otherSessionsRevoked": false,
+			"otherSessionsEnded":   ended,
+			"retry":                strings.TrimPrefix(AccountSessionsRevokeOthersPath, "POST "),
+		})
+		return
 	}
 	a.cfg.Logger.InfoContext(ctx, "account: password changed", "user_id", s.info.Subject, "other_sessions_ended", ended)
-	writeJSON(w, http.StatusOK, map[string]any{"changed": true, "otherSessionsEnded": ended})
+	writeJSON(w, http.StatusOK, map[string]any{"changed": true, "otherSessionsRevoked": true, "otherSessionsEnded": ended})
 }
 
 func (a *AccountRoutes) rejectWeak(ctx context.Context, w http.ResponseWriter, password string) bool {
@@ -886,7 +935,7 @@ func (a *AccountRoutes) handUpstream(ctx context.Context, social LoginPolicySoci
 
 // HandleUnlink disconnects a social account (the route's {provider}: the
 // policy entry's type, or the identity provider id an AccountLink names).
-// Recent proof; refused for the account's last credential.
+// Recent proof; refused for the account's last usable credential.
 func (a *AccountRoutes) HandleUnlink(w http.ResponseWriter, req *http.Request) {
 	if !a.admit(w, req) {
 		return
@@ -895,49 +944,24 @@ func (a *AccountRoutes) HandleUnlink(w http.ResponseWriter, req *http.Request) {
 	if !ok || !a.requireRecent(w, req, s) {
 		return
 	}
-	ctx := req.Context()
-	c := a.cfg.Client
 	name := strings.TrimSpace(req.PathValue("provider"))
 	idpID := name
 	if social, ok := a.cfg.Policy.SocialByType(name); ok {
 		idpID = social.IdPID
 	}
-	links, err := c.ListIDPLinks(ctx, s.info.Subject)
-	if err != nil {
-		a.unavailable(ctx, w, "account: read the social links", err)
-		return
-	}
-	var remove []IDPLink
-	for _, l := range links {
-		if l.IdPID == idpID && idpID != "" {
-			remove = append(remove, l)
+	a.removeCredential(w, req, s, func(cr accountCredentials) ([]IDPLink, string, bool) {
+		var remove []IDPLink
+		for _, l := range cr.links {
+			if l.IdPID == idpID && idpID != "" {
+				remove = append(remove, l)
+			}
 		}
-	}
-	if len(remove) == 0 {
-		writeErr(w, http.StatusNotFound, CodeNotLinked, "That account is not connected.")
-		return
-	}
-	n, err := a.credentials(ctx, s.info.Subject, links)
-	if err != nil {
-		a.unavailable(ctx, w, "account: count the sign-in methods", err)
-		return
-	}
-	if n-len(remove) < 1 {
-		writeErr(w, http.StatusConflict, CodeLastCredential, "This is your only way to sign in. Add another first.")
-		return
-	}
-	for _, l := range remove {
-		if err := c.RemoveIDPLink(ctx, s.info.Subject, l); err != nil {
-			a.unavailable(ctx, w, "account: remove the social link", err)
-			return
-		}
-	}
-	a.cfg.Logger.InfoContext(ctx, "account: social account disconnected", "user_id", s.info.Subject, "idp_id", idpID)
-	writeJSON(w, http.StatusOK, map[string]any{"unlinked": true})
+		return remove, "", len(remove) > 0
+	}, "That account is not connected.")
 }
 
 // HandlePasskeyRemove removes one of the account's passkeys. Recent proof;
-// refused for the account's last credential.
+// refused for the account's last usable credential.
 func (a *AccountRoutes) HandlePasskeyRemove(w http.ResponseWriter, req *http.Request) {
 	if !a.admit(w, req) {
 		return
@@ -946,62 +970,136 @@ func (a *AccountRoutes) HandlePasskeyRemove(w http.ResponseWriter, req *http.Req
 	if !ok || !a.requireRecent(w, req, s) {
 		return
 	}
-	ctx := req.Context()
-	c := a.cfg.Client
 	id := strings.TrimSpace(req.PathValue("id"))
-	keys, err := c.ListPasskeys(ctx, s.info.Subject)
-	if err != nil {
-		a.unavailable(ctx, w, "account: read the passkeys", err)
-		return
-	}
-	found := false
-	for _, k := range keys {
-		found = found || (k.ID == id && id != "")
-	}
-	if !found {
-		writeErr(w, http.StatusNotFound, CodeNotLinked, "No such passkey.")
-		return
-	}
-	n, err := a.credentials(ctx, s.info.Subject, nil)
-	if err != nil {
-		a.unavailable(ctx, w, "account: count the sign-in methods", err)
-		return
-	}
-	if n-1 < 1 {
-		writeErr(w, http.StatusConflict, CodeLastCredential, "This is your only way to sign in. Add another first.")
-		return
-	}
-	if err := c.RemovePasskey(ctx, s.info.Subject, id); err != nil {
-		a.unavailable(ctx, w, "account: remove the passkey", err)
-		return
-	}
-	a.cfg.Logger.InfoContext(ctx, "account: passkey removed", "user_id", s.info.Subject)
-	writeJSON(w, http.StatusOK, map[string]any{"removed": true})
+	a.removeCredential(w, req, s, func(cr accountCredentials) ([]IDPLink, string, bool) {
+		for _, k := range cr.passkeys {
+			if k.ID == id && id != "" {
+				return nil, id, true
+			}
+		}
+		return nil, "", false
+	}, "No such passkey.")
 }
 
-// credentials counts the account's ways in: a password, each ready passkey,
-// each social link (links, when the caller read them already).
-func (a *AccountRoutes) credentials(ctx context.Context, subject string, links []IDPLink) (int, error) {
+// removeCredential removes what pick chooses from s's account (links and/or
+// a passkey), unless that would leave the account no USABLE way in. The
+// count, the check and the removal run under the account's lock in the
+// session store (session.Manager.LockSubject), so two removals — on this
+// replica or another — cannot each count the other's credential as the one
+// that remains. A store that cannot lock refuses the removal.
+func (a *AccountRoutes) removeCredential(w http.ResponseWriter, req *http.Request, s signedInSession,
+	pick func(accountCredentials) (links []IDPLink, passkey string, found bool), notFound string) {
+	ctx := req.Context()
 	c := a.cfg.Client
-	n := 0
-	has, err := c.HasPassword(ctx, subject)
-	if err != nil {
-		return 0, err
+	var (
+		outcome  int // http status to answer with
+		code     string
+		message  string
+		removing []IDPLink
+		passkey  string
+	)
+	err := a.cfg.Sessions.LockSubject(ctx, s.info.Subject, func(ctx context.Context) error {
+		cr, err := a.credentialsOf(ctx, s.info.Subject)
+		if err != nil {
+			return err
+		}
+		var found bool
+		removing, passkey, found = pick(cr)
+		if !found {
+			outcome, code, message = http.StatusNotFound, CodeNotLinked, notFound
+			return nil
+		}
+		if cr.usableWithout(a.cfg.Policy, removing, passkey) < 1 {
+			outcome, code, message = http.StatusConflict, CodeLastCredential, "This is your only way to sign in. Add another first."
+			return nil
+		}
+		for _, l := range removing {
+			if err := c.RemoveIDPLink(ctx, s.info.Subject, l); err != nil {
+				return err
+			}
+		}
+		if passkey != "" {
+			if err := c.RemovePasskey(ctx, s.info.Subject, passkey); err != nil {
+				return err
+			}
+		}
+		outcome = http.StatusOK
+		return nil
+	})
+	switch {
+	case err != nil:
+		a.unavailable(ctx, w, "account: remove a sign-in method", err)
+	case outcome != http.StatusOK:
+		writeErr(w, outcome, code, message)
+	case passkey != "":
+		a.cfg.Logger.InfoContext(ctx, "account: passkey removed", "user_id", s.info.Subject)
+		writeJSON(w, http.StatusOK, map[string]any{"removed": true})
+	default:
+		a.cfg.Logger.InfoContext(ctx, "account: social account disconnected", "user_id", s.info.Subject, "links", len(removing))
+		writeJSON(w, http.StatusOK, map[string]any{"unlinked": true})
 	}
-	if has {
+}
+
+// accountCredentials is what the account holds that could let its person in.
+type accountCredentials struct {
+	password      bool
+	passkeys      []Passkey
+	links         []IDPLink
+	emailVerified bool
+}
+
+func (a *AccountRoutes) credentialsOf(ctx context.Context, subject string) (accountCredentials, error) {
+	c := a.cfg.Client
+	var cr accountCredentials
+	var err error
+	if cr.password, err = c.HasPassword(ctx, subject); err != nil {
+		return cr, err
+	}
+	if cr.passkeys, err = c.ListPasskeys(ctx, subject); err != nil {
+		return cr, err
+	}
+	if cr.links, err = c.ListIDPLinks(ctx, subject); err != nil {
+		return cr, err
+	}
+	u, err := c.FindUserByID(ctx, subject)
+	if err != nil {
+		return cr, err
+	}
+	cr.emailVerified = u.EmailVerified
+	return cr, nil
+}
+
+// usableWithout counts the ways in that would remain, after removing the
+// links and the passkey named, that THIS broker serves under policy p: a
+// password only where passwords are offered, passkeys only where passkeys
+// are, a link only to a provider p declares, and a magic link to the
+// account's verified address where p offers magic links. A credential the
+// policy does not serve is no way in, however it is stored.
+func (cr accountCredentials) usableWithout(p LoginPolicy, links []IDPLink, passkey string) int {
+	n := 0
+	if cr.password && (!p.Present || p.Offers(MethodPassword)) {
 		n++
 	}
-	keys, err := c.ListPasskeys(ctx, subject)
-	if err != nil {
-		return 0, err
-	}
-	n += len(keys)
-	if links == nil {
-		if links, err = c.ListIDPLinks(ctx, subject); err != nil {
-			return 0, err
+	if p.Present && p.Offers(MethodPasskey) {
+		for _, k := range cr.passkeys {
+			if k.ID != passkey {
+				n++
+			}
 		}
 	}
-	return n + len(links), nil
+	for _, l := range cr.links {
+		removed := false
+		for _, r := range links {
+			removed = removed || (r.IdPID == l.IdPID && r.UserID == l.UserID)
+		}
+		if _, declared := p.SocialByIdPID(l.IdPID); declared && !removed {
+			n++
+		}
+	}
+	if p.Present && p.Offers(MethodMagicLink) && cr.emailVerified {
+		n++
+	}
+	return n
 }
 
 // ── Sessions ───────────────────────────────────────────────────────────

@@ -37,14 +37,17 @@ package cli
 // state beyond the ledger itself.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -353,10 +356,35 @@ func readCheckoutReleases(ctx context.Context, projectDir string) ([]release.Rel
 			}
 		}
 	}
+	// Every file listed at HEAD is read in ONE `git cat-file --batch`.
+	// Reading them one `git show` at a time cost two git processes per
+	// release — control-plane's 40 retired releases were ~4s of a
+	// `forge env status` whose real work is elsewhere.
+	var atHead map[string][]byte
+	if isGit {
+		specs := make([]string, len(paths))
+		for i, p := range paths {
+			specs[i] = "HEAD:" + prefix + filepath.ToSlash(p)
+		}
+		if blobs, err := gitCatFileBatch(ctx, projectDir, specs); err == nil {
+			atHead = make(map[string][]byte, len(blobs))
+			for i, p := range paths {
+				if b, ok := blobs[specs[i]]; ok {
+					atHead[p] = b
+				}
+			}
+		}
+	}
 	var out []release.Release
 	for _, p := range paths {
-		data, err := readCheckoutFile(ctx, projectDir, filepath.ToSlash(p))
-		if err != nil || len(data) == 0 {
+		data, ok := atHead[p]
+		if !ok {
+			var err error
+			if data, err = readCheckoutFile(ctx, projectDir, filepath.ToSlash(p)); err != nil {
+				continue
+			}
+		}
+		if len(data) == 0 {
 			continue
 		}
 		// The retired files are statefile envelopes; the release is
@@ -392,6 +420,67 @@ func gitPrefix(ctx context.Context, projectDir string) (string, bool) {
 
 func gitShow(ctx context.Context, projectDir, spec string) ([]byte, error) {
 	return gitLedgerCmd(ctx, projectDir, "show", spec)
+}
+
+// gitCatFileBatch reads each object spec (`HEAD:<path>`) with one `git
+// cat-file --batch`, returning the contents of those that exist. A spec git
+// reports missing is absent from the map, so the caller can fall back for it
+// alone.
+func gitCatFileBatch(ctx context.Context, projectDir string, specs []string) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(specs))
+	if len(specs) == 0 {
+		return out, nil
+	}
+	for _, s := range specs {
+		// The batch protocol is line-oriented: a spec with a newline
+		// would desynchronize every answer after it.
+		if strings.ContainsAny(s, "\r\n") {
+			return nil, fmt.Errorf("git cat-file: object spec %q contains a newline", s)
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, ledgerGitReadTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, "git", "cat-file", "--batch")
+	cmd.Dir = projectDir
+	cmd.Stdin = strings.NewReader(strings.Join(specs, "\n") + "\n")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git cat-file --batch: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+	r := bufio.NewReader(bytes.NewReader(raw))
+	for _, spec := range specs {
+		header, err := r.ReadString('\n')
+		if err != nil {
+			return nil, fmt.Errorf("git cat-file --batch: truncated answer for %s", spec)
+		}
+		line := strings.TrimRight(header, "\n")
+		// "<spec> missing" / "<spec> ambiguous": no body follows.
+		if strings.HasSuffix(line, " missing") || strings.HasSuffix(line, " ambiguous") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("git cat-file --batch: malformed header %q", line)
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || size < 0 {
+			return nil, fmt.Errorf("git cat-file --batch: malformed header %q", line)
+		}
+		body := make([]byte, size)
+		if _, err := io.ReadFull(r, body); err != nil {
+			return nil, fmt.Errorf("git cat-file --batch: truncated body for %s", spec)
+		}
+		// Each body is followed by one newline.
+		if _, err := r.ReadByte(); err != nil {
+			return nil, fmt.Errorf("git cat-file --batch: truncated answer for %s", spec)
+		}
+		if fields[1] == "blob" {
+			out[spec] = body
+		}
+	}
+	return out, nil
 }
 
 func gitLedgerCmd(ctx context.Context, projectDir string, args ...string) ([]byte, error) {

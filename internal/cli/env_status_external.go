@@ -30,33 +30,34 @@ type envExternalResolver interface {
 
 // envStatusRenderMemo shares one render of an env between the resolver's methods,
 // so adding the external split costs no second evaluation of the KCL.
+//
+// Under a context that carries a command-wide declaration memo (the
+// all-environments view installs one) it defers to that, so the resolver's
+// render is the same one the ledger, destination and rollout reads share.
+// Otherwise it keeps its own, per env: one env's render never waits on
+// another's.
 type envStatusRenderMemo struct {
-	mu   sync.Mutex
-	done map[string]*KCLEntities
+	once sync.Once
+	memo *declarationMemo
 }
 
 func (m *envStatusRenderMemo) render(ctx context.Context, projectDir, envName string) *KCLEntities {
-	if m == nil {
+	if m == nil || declarationMemoFrom(ctx) != nil {
 		e, err := RenderKCL(ctx, projectDir, envName)
 		if err != nil {
 			return nil
 		}
 		return e
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := projectDir + "\x00" + envName
-	if e, ok := m.done[key]; ok {
-		return e
-	}
-	e, err := RenderKCL(ctx, projectDir, envName)
+	m.once.Do(func() {
+		m.memo = declarationMemoFrom(withDeclarationMemo(context.Background()))
+	})
+	e, err := m.memo.render(ctx, projectDir, envName, func(ctx context.Context) (*KCLEntities, error) {
+		return RenderKCL(ctx, projectDir, envName)
+	})
 	if err != nil {
-		e = nil
+		return nil
 	}
-	if m.done == nil {
-		m.done = map[string]*KCLEntities{}
-	}
-	m.done[key] = e
 	return e
 }
 

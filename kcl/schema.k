@@ -7320,7 +7320,9 @@ schema ObservabilitySignals:
     ClickStack (no destination and a `profiles_port`, the dev default), OFF
     everywhere else (a destination, a cluster, forge.OnHosted). Set it to
     say otherwise: False turns profiling off locally, True ships profiles to
-    a destination (its collector must accept OTLP profiles)."""
+    a destination (its collector must accept OTLP profiles) or to the
+    platform from forge.OnHosted, which a scaffolded hosted env declares so
+    `forge pgo pull` has CPU profiles to build each default.pgo from."""
     traces: bool = True
     metrics: bool = True
     logs: bool = True

@@ -161,8 +161,9 @@ func specOf(env, name string, spec *HostInfraSpec) hostinfra.Spec {
 		IDPStepsFile:    spec.IDPStepsFile,
 		IDPPATPath:      spec.IDPPATPath,
 
-		NATSMonitorPort:    spec.NATSMonitorPort,
-		TemporalNamespaces: spec.TemporalNamespaces,
-		TemporalUIPort:     spec.TemporalUIPort,
+		NATSMonitorPort:     spec.NATSMonitorPort,
+		TemporalNamespaces:  spec.TemporalNamespaces,
+		TemporalUIPort:      spec.TemporalUIPort,
+		TemporalMetricsPort: spec.TemporalMetricsPort,
 	}
 }

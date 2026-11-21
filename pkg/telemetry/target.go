@@ -48,6 +48,33 @@ const (
 	// AttachObservability is Observability.telemetry: anything else, by
 	// selector and cluster, or by address.
 	AttachObservability Attachment = "observability"
+	// AttachManagedDatabase is a forge.ManagedDatabase's telemetry: its
+	// declared one, or the default forge renders for it (kcl/
+	// database_telemetry.k), whose target is the database's CloudNativePG
+	// instances (pods `cnpg.io/cluster: <name>`). The default CloudNativePG
+	// operator target of a cluster holding such databases attaches here too.
+	// Like Manifests, forge renders no NetworkPolicy for it unless asked:
+	// one selecting the instances would deny every other Postgres caller.
+	AttachManagedDatabase Attachment = "manageddatabase"
+)
+
+// Origin is who declared a target.
+type Origin string
+
+const (
+	// OriginDeclared is a target the project declared: a forge.Telemetry on
+	// a Workload, HostInfra, Manifests group, Observability, or a
+	// ManagedDatabase's own telemetry (an extended default included). It is
+	// the zero value and is never written.
+	OriginDeclared Origin = ""
+	// OriginDefault is a target forge rendered on its own, with no line of
+	// the project's: a forge.ManagedDatabase's default telemetry and the
+	// CloudNativePG operator target that comes with it. It is collected
+	// like any other; what changes is what forge SAYS about it: a person
+	// deploying is not warned that a default goes uncollected where the
+	// control plane does not collect hosted telemetry yet, because they
+	// asked for nothing.
+	OriginDefault Origin = "default"
 )
 
 // Runtime is where the target runs, and so which collector reaches it.
@@ -101,11 +128,16 @@ type Target struct {
 	ServiceName string `json:"service_name"`
 	Scope       Scope  `json:"scope"`
 	// Source names the declaration: "workload:<name>", "hostinfra:<name>",
-	// "manifests:<name>" ("manifests" for an unnamed group) or
-	// "observability".
+	// "manifests:<name>" ("manifests" for an unnamed group),
+	// "observability", "manageddatabase:<name>", or
+	// "manageddatabase-operator:<cluster>" for a cluster's default
+	// CloudNativePG operator target.
 	Source     string     `json:"source"`
 	Attachment Attachment `json:"attachment"`
-	Runtime    Runtime    `json:"runtime"`
+	// Origin is OriginDefault for a target forge rendered with no
+	// declaration of the project's; empty (OriginDeclared) otherwise.
+	Origin  Origin  `json:"origin,omitempty"`
+	Runtime Runtime `json:"runtime"`
 	// Cluster is the kubectl context whose collector reaches the target, on
 	// RuntimeCluster. Empty elsewhere.
 	Cluster string `json:"cluster,omitempty"`
@@ -139,6 +171,8 @@ type Target struct {
 	//   - nil on AttachManifests/AttachObservability: render NO policy. forge
 	//     cannot know whether those pods are already policy-selected; the
 	//     project owns admission (Warnings notes that the collector needs it).
+	//   - nil on AttachManagedDatabase: render NO policy either. A policy
+	//     selecting the instances would deny every other Postgres caller.
 	//   - true: render it. false: never.
 	//
 	// AdmitCollector resolves it.
@@ -152,9 +186,10 @@ type Target struct {
 	Dashboard SystemDashboard `json:"dashboard"`
 	// Dashboards are the system's own dashboards, each one forge.dashboards/v1
 	// object exactly as a dashboard file carries it (pkg/dashspec). Validate
-	// runs each through dashspec.ParseDashboard, the validator a release cut
-	// runs; they are kept raw so that validator, with its line and column, is
-	// the one judge of them.
+	// runs each through Options.ValidateDashboard (forge passes
+	// dashspec.ParseDashboard, the validator a release cut runs); they are
+	// kept raw so that validator, with its line and column, is the one judge
+	// of them.
 	Dashboards []json.RawMessage `json:"dashboards"`
 	// DefaultAlerts arms <Service>TargetDown and <Service>CheckFailing.
 	DefaultAlerts bool `json:"default_alerts"`

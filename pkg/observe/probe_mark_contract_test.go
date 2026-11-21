@@ -1,6 +1,8 @@
-// External test package: pkg/release reaches pkg/observe (through
-// pkg/telemetry, pkg/dashspec and pkg/alerting), so an in-package test of
-// observe that imports release is an import cycle.
+// External test package, so this test never makes observe's in-package tests
+// import pkg/release: once pkg/release reached pkg/observe (through
+// pkg/telemetry and pkg/dashspec), that was an import cycle. pkg/release no
+// longer does (its TestImportGraphHasNoObserve), but nothing here depends on
+// that staying true.
 package observe_test
 
 import (

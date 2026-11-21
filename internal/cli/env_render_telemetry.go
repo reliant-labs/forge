@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 
+	"github.com/reliant-labs/forge/pkg/dashspec"
 	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
@@ -38,7 +39,20 @@ func validateEnvTelemetry(envName string, entities *KCLEntities) error {
 	if entities == nil || len(entities.Telemetry) == 0 {
 		return nil
 	}
-	return telemetry.Validate(entities.Telemetry, telemetry.Options{Env: envName, Clusters: envKubeContexts(entities)})
+	return telemetry.Validate(entities.Telemetry, telemetry.Options{
+		Env:               envName,
+		Clusters:          envKubeContexts(entities),
+		ValidateDashboard: validateTelemetryDashboard,
+	})
+}
+
+// validateTelemetryDashboard is telemetry.Options.ValidateDashboard:
+// dashspec.ParseDashboard, the validator a release cut runs, so a declared
+// dashboard is refused at render with the same message generate and the cut
+// give it. pkg/telemetry takes it as a func to stay a dependency leaf.
+func validateTelemetryDashboard(name string, raw []byte) error {
+	_, err := dashspec.ParseDashboard(name, raw)
+	return err
 }
 
 // envKubeContexts is every kubectl context the env's declaration names: its

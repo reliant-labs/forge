@@ -10,7 +10,10 @@ import (
 
 // siteAnswer is a control plane's GetReleaseHealth answer for a frontend-only
 // env (a hosted static site): no server spans, only its pages' browser
-// figures (control-plane#2752), protojson-encoded as the wire carries it.
+// figures (control-plane#2752), protojson-encoded as the wire carries it: the
+// field names are control-plane's ServiceHealthDelta / BrowserHealthDelta /
+// BrowserWindowStats as merged in control-plane#2955 (08eb56fa), int64s as
+// JSON strings.
 func siteAnswer(t *testing.T, verdict string, before, after string, findings string) wireReleaseHealth {
 	t.Helper()
 	var w wireReleaseHealth

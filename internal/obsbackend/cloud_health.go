@@ -99,11 +99,16 @@ type wireReleaseHealth struct {
 		After        wireHealthStats `json:"after"`
 		VersionShare *float64        `json:"versionShare"`
 		// Signal and Browser: a control plane that reads browser telemetry
-		// (control-plane#2752) says what each service was judged on and
-		// sends a frontend's browser figures, so the folds below (the
-		// baseline rule, --fail-on) see a frontend-only env's page views
-		// rather than a service that sent nothing. An older one sends
-		// neither: spans, no browser figures.
+		// (control-plane#2752, shipped by control-plane#2955 at 08eb56fa:
+		// ServiceHealthDelta.signal = 5 and .browser = 6, a
+		// BrowserHealthDelta of two BrowserWindowStats, in
+		// proto/services/observability/v1/observability.proto, filled by
+		// rpc_get_release_health.go from this module's releasehealth, so
+		// the Signal values are releasehealth's own) says what each service
+		// was judged on and sends a frontend's browser figures, so the folds
+		// below (the baseline rule, --fail-on) see a frontend-only env's
+		// page views rather than a service that sent nothing. An older one
+		// sends neither, and decodes as before: spans, no browser figures.
 		Signal  string `json:"signal"`
 		Browser *struct {
 			Before wireBrowserStats `json:"before"`

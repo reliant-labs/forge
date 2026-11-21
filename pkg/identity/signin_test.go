@@ -545,3 +545,28 @@ func TestValidateSignInDeclarations(t *testing.T) {
 		t.Errorf("the full v2 spec is valid: %v", err)
 	}
 }
+
+func TestLoginPolicyDocCarriesPassTokensOnlyWhereDeclared(t *testing.T) {
+	f := newFake(t)
+	r, _ := newRec(t, f, nil)
+	spec := v2Spec()
+	spec.IdPs[1].PassTokens = true // github
+	rep, err := r.Reconcile(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	doc := rep.Output.LoginPolicy
+	if doc == nil || len(doc.Social) != 2 {
+		t.Fatalf("doc = %+v", doc)
+	}
+	g, gh := doc.Social[0], doc.Social[1]
+	if g.PassTokens || g.Scopes != "" || !gh.PassTokens || gh.Scopes != "read:user user:email" {
+		t.Errorf("social = %+v", doc.Social)
+	}
+	raw, _ := json.Marshal(doc)
+	if strings.Count(string(raw), `"pass_tokens":true`) != 1 {
+		t.Errorf("document %s", raw)
+	}
+	// Turning it on changes nothing at the issuer: the next pass is quiet.
+	quiet(t, f, r, spec)
+}

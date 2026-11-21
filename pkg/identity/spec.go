@@ -100,6 +100,10 @@ type IdP struct {
 	// last value applied is kept in the KeyStore to detect a rotation.
 	ClientSecret string `json:"-"`
 	Scopes       []string
+	// PassTokens marks the provider's LOGIN_POLICY entry so the app's login
+	// broker hands the provider's tokens from each sign-in to its
+	// server-side hook. It changes nothing at the issuer.
+	PassTokens bool
 }
 
 // Owner is a person who must be able to get in.

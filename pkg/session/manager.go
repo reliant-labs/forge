@@ -306,7 +306,7 @@ func (m *Manager) AccessToken(ctx context.Context, id string) (string, error) {
 		return "", ErrNoSession
 	}
 	if m.fresh(t, now) {
-		m.touch(ctx, k.lookup, rec, now)
+		rec = m.touch(ctx, k.lookup, rec, now)
 		m.remember(k.lookup, t, rec, now, since)
 		return t.AccessToken, nil
 	}
@@ -324,26 +324,36 @@ func valid(t Tokens, now time.Time) bool {
 	return t.AccessToken != "" && !t.Expiry.IsZero() && now.Before(t.Expiry)
 }
 
-// touch pushes the idle deadline out, at most once per touchEvery, or per
-// half the IdleTimeout when that is shorter (so a short idle timeout is
-// still extended before it ends a session in use). A failed write costs
-// nothing but an earlier idle end, so it is only logged.
-func (m *Manager) touch(ctx context.Context, key []byte, rec Record, now time.Time) {
-	every := touchEvery
-	if half := m.cfg.IdleTimeout / 2; half < every {
-		every = half
+// touchInterval is how stale a session's LastSeenAt may get before a use
+// writes it: touchEvery, or half the IdleTimeout when that is shorter (so a
+// short idle timeout is still extended before it ends a session in use).
+func (m *Manager) touchInterval() time.Duration {
+	if half := m.cfg.IdleTimeout / 2; half < touchEvery {
+		return half
 	}
-	if m.cfg.IdleTimeout < 0 || rec.Key == nil || now.Sub(rec.LastSeenAt) < every {
-		return
+	return touchEvery
+}
+
+// touch pushes the idle deadline out, at most once per touchInterval, and
+// returns rec as the store now holds it. A failed write costs nothing but an
+// earlier idle end, so it is only logged, and rec comes back unchanged.
+func (m *Manager) touch(ctx context.Context, key []byte, rec Record, now time.Time) Record {
+	if m.cfg.IdleTimeout < 0 || rec.Key == nil || now.Sub(rec.LastSeenAt) < m.touchInterval() {
+		return rec
 	}
 	err := m.cfg.Store.Update(ctx, key, func(r *Record) error {
 		r.LastSeenAt = now
 		r.IdleExpiresAt = m.idleFrom(now, r.ExpiresAt)
 		return nil
 	})
-	if err != nil && !errors.Is(err, ErrNoSession) {
-		m.cfg.Logger.DebugContext(ctx, "session: could not record a use", "error", err)
+	if err != nil {
+		if !errors.Is(err, ErrNoSession) {
+			m.cfg.Logger.DebugContext(ctx, "session: could not record a use", "error", err)
+		}
+		return rec
 	}
+	rec.LastSeenAt, rec.IdleExpiresAt = now, m.idleFrom(now, rec.ExpiresAt)
+	return rec
 }
 
 // Sentinels the refresh callback returns to abort the store's write.
@@ -506,27 +516,23 @@ func (m *Manager) MarkProved(ctx context.Context, id string) error {
 }
 
 // Revoke ends session id and returns the tokens it held, so the caller can
-// also revoke them at the issuer (RFC 7009). The tokens are the last ones
-// stored; a revocation racing a renewal on another replica may return the
-// tokens that renewal replaced, which the issuer then answers as already
-// invalid. Either way the session is gone. A session that does not exist is
-// ErrNoSession.
+// also revoke them at the issuer (RFC 7009). The tokens are the ones the
+// session held when it was removed: the store's Take waits for a renewal in
+// progress on any replica, so a sign-out racing a refresh returns the
+// refresh token that refresh rotated in, never the one it spent. A session
+// that does not exist is ErrNoSession.
 func (m *Manager) Revoke(ctx context.Context, id string) (Tokens, Info, error) {
 	k, err := deriveKeys(id)
 	if err != nil {
 		return Tokens{}, Info{}, ErrNoSession
 	}
-	rec, err := m.cfg.Store.Get(ctx, k.lookup)
+	done := m.revoking(func(c map[string]cacheEntry) { delete(c, string(k.lookup)) })
+	defer done()
+	rec, err := m.cfg.Store.Take(ctx, k.lookup)
 	if errors.Is(err, ErrNoSession) {
-		m.forget(k.lookup)
 		return Tokens{}, Info{}, ErrNoSession
 	}
 	if err != nil {
-		return Tokens{}, Info{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
-	}
-	done := m.revoking(func(c map[string]cacheEntry) { delete(c, string(k.lookup)) })
-	defer done()
-	if err := m.cfg.Store.Delete(ctx, k.lookup); err != nil {
 		return Tokens{}, Info{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	t, _ := open(k, rec.Sealed)
@@ -671,16 +677,23 @@ func (m *Manager) revoking(evict func(map[string]cacheEntry)) (done func()) {
 }
 
 // remember caches t's access token until the earliest of: CacheTTL from now,
-// the moment it is due for a refresh, and the session's end. since is the
-// epoch read before the store read rec came from; a revocation since then
-// means rec may describe a session that no longer exists, so nothing is
+// the moment it is due for a refresh, the session's end, and the moment its
+// next use is due to be recorded (rec.LastSeenAt plus touchInterval), so a
+// session used only through the cache still has its idle deadline pushed
+// out before it ends; rec is the record as stored after any touch. since is
+// the epoch read before the store read rec came from; a revocation since
+// then means rec may describe a session that no longer exists, so nothing is
 // cached.
 func (m *Manager) remember(key []byte, t Tokens, rec Record, now time.Time, since uint64) {
 	if m.cfg.CacheTTL < 0 || t.AccessToken == "" {
 		return
 	}
 	until := now.Add(m.cfg.CacheTTL)
-	for _, limit := range []time.Time{t.Expiry.Add(-m.cfg.RefreshBefore), rec.IdleExpiresAt, rec.ExpiresAt} {
+	limits := []time.Time{t.Expiry.Add(-m.cfg.RefreshBefore), rec.IdleExpiresAt, rec.ExpiresAt}
+	if m.cfg.IdleTimeout >= 0 && !rec.LastSeenAt.IsZero() {
+		limits = append(limits, rec.LastSeenAt.Add(m.touchInterval()))
+	}
+	for _, limit := range limits {
 		if !limit.IsZero() && limit.Before(until) {
 			until = limit
 		}

@@ -74,6 +74,12 @@ type Store interface {
 	Update(ctx context.Context, key []byte, fn func(*Record) error) error
 	// Delete removes the record for key. A missing record is not an error.
 	Delete(ctx context.Context, key []byte) error
+	// Take removes the record for key and returns it as it was removed, or
+	// ErrNoSession. It is serialized with Update like another Update of the
+	// key: one in progress finishes first, and Take returns what it wrote.
+	// That is what lets a sign-out revoke the refresh token a concurrent
+	// renewal just rotated in, rather than the one the renewal spent.
+	Take(ctx context.Context, key []byte) (Record, error)
 	// DeleteSubject removes every record of subject and returns how many.
 	DeleteSubject(ctx context.Context, subject string) (int64, error)
 	// ListSubject returns subject's records, newest first.
@@ -160,6 +166,29 @@ func (s *MemoryStore) Delete(_ context.Context, key []byte) error {
 	delete(s.records, string(key))
 	delete(s.locks, string(key))
 	return nil
+}
+
+// Take implements [Store].
+func (s *MemoryStore) Take(_ context.Context, key []byte) (Record, error) {
+	s.mu.Lock()
+	lock, ok := s.locks[string(key)]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.locks[string(key)] = lock
+	}
+	s.mu.Unlock()
+
+	lock.Lock()
+	defer lock.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[string(key)]
+	delete(s.records, string(key))
+	delete(s.locks, string(key))
+	if !ok {
+		return Record{}, ErrNoSession
+	}
+	return cloneRecord(r), nil
 }
 
 // DeleteSubject implements [Store].

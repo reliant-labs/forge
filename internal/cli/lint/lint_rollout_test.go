@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -98,35 +99,13 @@ func TestRolloutRowsAreWellFormed(t *testing.T) {
 	}
 }
 
-// carriedToV110 reports a row whose every rule was approved in the v1.9.0
-// grace cohort but shipped after tag v1.9.0 (which points at a commit before
-// them): it ships in v1.10.0, so its one release of warning is v1.10.0 and it
-// gates from v1.11.0. Keyed by rule, so the exception cannot reach a rule that
-// is new in v1.10.0. vuln-gate and sbom-required: forge#2486, #2490.
-func carriedToV110(rules []string) bool {
-	carried := map[string]bool{RuleVulnGate: true, RuleSBOMRequired: true}
-	for _, r := range rules {
-		if !carried[r] {
-			return false
-		}
-	}
-	return len(rules) > 0
-}
-
 func validateRolloutGroup(g rolloutGroup) error {
-	// Fixed to the approved NEXT_VERSION at the time of the decision. Reading
-	// the live file here would reopen the exception for later introductions
-	// and invalidate the v1.9.0 rows when the release moves NEXT_VERSION.
-	const introduced, until = "v1.9.0", "v1.10.0"
-	if g.Grace != nil && g.IntroducedIn == "v1.10.0" && carriedToV110(g.Rules) {
-		if strings.TrimSpace(g.Grace.Reason) == "" {
-			return fmt.Errorf("Grace requires a non-empty Reason")
-		}
-		if g.Grace.Until != "v1.11.0" {
-			return fmt.Errorf("Grace.Until must be v1.11.0, got %q", g.Grace.Until)
-		}
-		return nil
-	}
+	// Fixed to the approved cohort. Reading the live NEXT_VERSION here would
+	// reopen the exception for later introductions and invalidate these rows
+	// when the release moves it. The cohort was approved as v1.9.0 → v1.10.0
+	// and moved one release by the owner (2026-11-21, "Move whole cohort"):
+	// tag v1.9.0 predates every rule in it.
+	const introduced, until = "v1.10.0", "v1.11.0"
 	switch {
 	case !semver.IsValid(g.IntroducedIn):
 		return fmt.Errorf("introduced_in %q is not a vX.Y.Z version", g.IntroducedIn)
@@ -168,24 +147,22 @@ func TestLinkedFixtureRows(t *testing.T) {
 	}
 }
 
-func TestRolloutGraceRequiresExplicitV19OptIn(t *testing.T) {
+func TestRolloutGraceRequiresExplicitV110OptIn(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		row  rolloutGroup
 		want string
 	}{
-		{name: "old rule", row: rolloutGroup{IntroducedIn: "v1.8.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "old"}}, want: "only allowed"},
-		{name: "later rule", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "later"}}, want: "only allowed"},
-		{name: "later unmarked rule", row: rolloutGroup{IntroducedIn: "v1.10.0"}, want: "beyond the approved"},
-		{name: "missing reason", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: " \t"}}, want: "Reason"},
-		{name: "missing deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Reason: "test"}}, want: "Grace.Until"},
-		{name: "invalid deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "later", Reason: "test"}}, want: "Grace.Until"},
-		{name: "same release", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.9.0", Reason: "test"}}, want: "Grace.Until"},
-		{name: "patch deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.9.1", Reason: "test"}}, want: "Grace.Until"},
-		{name: "later deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "test"}}, want: "Grace.Until"},
-		// The carried rows' exception reaches no other rule, and no other deadline.
-		{name: "later rule beside a carried one", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "later"}, Rules: []string{RuleVulnGate, "forge-closed-set"}}, want: "only allowed"},
-		{name: "carried rule, wrong deadline", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.10.1", Reason: "x"}, Rules: []string{RuleVulnGate}}, want: "Grace.Until"},
+		{name: "old rule", row: rolloutGroup{IntroducedIn: "v1.8.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "old"}}, want: "only allowed"},
+		{name: "the cohort's old declaration", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "missed the tag"}}, want: "only allowed"},
+		{name: "later rule", row: rolloutGroup{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "later"}}, want: "only allowed"},
+		{name: "later unmarked rule", row: rolloutGroup{IntroducedIn: "v1.11.0"}, want: "beyond the approved"},
+		{name: "missing reason", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: " \t"}}, want: "Reason"},
+		{name: "missing deadline", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Reason: "test"}}, want: "Grace.Until"},
+		{name: "invalid deadline", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "later", Reason: "test"}}, want: "Grace.Until"},
+		{name: "same release", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "test"}}, want: "Grace.Until"},
+		{name: "patch deadline", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.10.1", Reason: "test"}}, want: "Grace.Until"},
+		{name: "later deadline", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "test"}}, want: "Grace.Until"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := validateRolloutGroup(tc.row); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -196,19 +173,19 @@ func TestRolloutGraceRequiresExplicitV19OptIn(t *testing.T) {
 }
 
 func TestExplicitRolloutGraceWarnsUntilNextMinor(t *testing.T) {
-	g := rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "New findings need time to fix"}, Rules: []string{rolloutRule}}
+	g := rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "New findings need time to fix"}, Rules: []string{rolloutRule}}
 	if err := validateRolloutGroup(g); err != nil {
 		t.Fatal(err)
 	}
 	table := buildRollouts([]rolloutGroup{g})
-	for _, pin := range []string{"v1.9.0", "v1.9.1", "v1.10.0"} {
+	for _, pin := range []string{"v1.10.0", "v1.10.1", "v1.11.0"} {
 		got, gated := gradeProjectLaneWith(table, pinnedCfg(pin, nil), []lintJSONFinding{rolloutFinding(lintSevError)}, true)
-		if pin == "v1.10.0" {
+		if pin == "v1.11.0" {
 			if !gated || got[0].Severity != lintSevError || got[0].Grace != nil {
 				t.Errorf("%s: want an error with no grace, got %+v gated=%t", pin, got, gated)
 			}
-		} else if gated || got[0].Severity != lintSevWarning || got[0].Grace == nil || got[0].Grace.GatesFrom != "v1.10.0" {
-			t.Errorf("%s: want a warning until v1.10.0, got %+v gated=%t", pin, got, gated)
+		} else if gated || got[0].Severity != lintSevWarning || got[0].Grace == nil || got[0].Grace.GatesFrom != "v1.11.0" {
+			t.Errorf("%s: want a warning until v1.11.0, got %+v gated=%t", pin, got, gated)
 		}
 	}
 }
@@ -930,13 +907,22 @@ func TestGatesWhenIsOneWording(t *testing.T) {
 	}
 }
 
-// vuln-gate and sbom-required ship in v1.10.0 (tag v1.9.0 predates
-// forge#2486 and #2490): a project that pins v1.10.0 — from v1.9.0, from an
-// older pin, or with no history — sees them warn, and the next pin gates.
-func TestVulnRulesWarnThroughTheReleaseThatShipsThem(t *testing.T) {
+// The grace cohort ships in v1.10.0 (tag v1.9.0 predates every rule in it):
+// a project that pins v1.10.0 — from v1.9.0, from an older pin, or with no
+// history — sees each rule warn, and the next pin gates.
+func TestGraceCohortWarnsThroughTheReleaseThatShipsIt(t *testing.T) {
 	prev := previousPinFromHistory
 	t.Cleanup(func() { previousPinFromHistory = prev })
-	for _, rule := range []string{RuleVulnGate, RuleSBOMRequired} {
+	var cohort []string
+	for _, g := range newRules {
+		cohort = append(cohort, g.Rules...)
+	}
+	for _, want := range []string{RuleVulnGate, RuleSBOMRequired, ruleFrontendNoInstall, ruleTelemetryMetricUncollected} {
+		if !slices.Contains(cohort, want) {
+			t.Fatalf("%s is not in the grace cohort", want)
+		}
+	}
+	for _, rule := range cohort {
 		ro := lintRollouts[rule]
 		if ro.IntroducedIn != "v1.10.0" || ro.GatesFrom != "v1.11.0" {
 			t.Fatalf("%s: rollout %+v, want introduced v1.10.0, gates from v1.11.0", rule, ro)

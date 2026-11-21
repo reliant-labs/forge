@@ -2726,12 +2726,19 @@ _tel_otlp = lambda t: Telemetry, svc: str, rt: str, b: Bundle -> any {
     } if _o else None
 }
 
-_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle -> any {
+# origin is "default" for a target forge renders with no declaration of the
+# project's (a ManagedDatabase's default and its operator's): collected like
+# any other, but a deploy does not warn that it goes uncollected on a control
+# plane that does not collect hosted telemetry yet (pkg/telemetry
+# OriginDefault). Absent for a declared target.
+_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle, origin: str = "" -> any {
     {
         "service_name": svc
         "scope": t.scope
         "source": source
         "attachment": attachment
+        if origin:
+            "origin": origin
         "runtime": rt
         "cluster": cluster
         "namespaces": namespaces
@@ -2833,7 +2840,7 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
     _tel_target(t, t.service_name or managed_database_service_name(db.name), "manageddatabase:${db.name}", "manageddatabase", _p.runtime, \
         "" if _hosted else (_p.cluster or ""), \
         [_p.namespace] if not _hosted and _p.namespace else [], \
-        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b)
+        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b, "" if db.telemetry else "default")
 }
 
 # Every Telemetry the env declares, beside its resolved service name:
@@ -2860,7 +2867,7 @@ _tel_cnpg_operators = lambda b: Bundle -> [any] {
         "svc": CNPG_OPERATOR_SERVICE if len(_clusters) == 1 else CNPG_OPERATOR_SERVICE + "-" + regex.replace(c.lower(), r"[^-a-z0-9_.]", "-").strip("-_.")
     } for c in _clusters]
     [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc, _tel_ships(b, "metrics"), _tel_ships(b, "logs")), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
-        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b) for o in _named if o.svc not in _taken]
+        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b, "default") for o in _named if o.svc not in _taken]
 }
 
 _render_telemetry = lambda b: Bundle -> [any] {

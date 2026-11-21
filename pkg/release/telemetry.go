@@ -227,20 +227,34 @@ func (r *BundleReader) missingTelemetryCapabilities() []string {
 
 // TelemetryWarning is what to tell the person deploying s when this reader
 // does not collect its hosted telemetry ([BundleReader.CollectsTelemetry]):
-// the hosted targets LimitShape leaves out, which the platform will therefore
-// not collect, and the capability the control plane did not advertise. ""
-// when there is nothing to say. A warning and not a refusal: the env still
-// deploys and its workloads still run, only these signals go uncollected
-// until the control plane is upgraded.
+// the declared hosted targets LimitShape leaves out, which the platform will
+// therefore not collect, and the capability the control plane did not
+// advertise. "" when there is nothing to say. A warning and not a refusal: the
+// env still deploys and its workloads still run, only these signals go
+// uncollected until the control plane is upgraded.
+//
+// Only targets the project declared are named. One forge rendered on its own
+// (telemetry.OriginDefault: a ManagedDatabase's default) is left out just the
+// same, silently: the person deploying asked for nothing, so every hosted
+// deploy with a database would otherwise warn about a choice nobody made.
 func (r *BundleReader) TelemetryWarning(env string, s Shape) string {
 	missing := r.missingTelemetryCapabilities()
-	if len(missing) == 0 || len(s.Telemetry) == 0 {
+	if len(missing) == 0 {
+		return ""
+	}
+	var declared []ShapeTelemetry
+	for _, t := range s.Telemetry {
+		if t.Origin != telemetry.OriginDefault {
+			declared = append(declared, t)
+		}
+	}
+	if len(declared) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "env %s declares telemetry this control plane does not collect yet (it does not advertise %s), "+
 		"so it is left out of the release, and these targets will NOT be collected:", env, strings.Join(missing, " or "))
-	for _, t := range s.Telemetry {
+	for _, t := range declared {
 		fmt.Fprintf(&b, "\n  - %s (%s): %s", t.ServiceName, t.Source, strings.Join(t.Signals(), ", "))
 	}
 	b.WriteString("\nThe deploy continues and the workloads run; their declared telemetry is collected once the control plane is upgraded.")

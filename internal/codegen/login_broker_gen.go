@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -15,8 +17,9 @@ import (
 // internal/app/login_broker.go scaffold (app-login-broker.go.tmpl).
 type LoginBrokerTemplateData struct {
 	Module string
-	// Name is the project's binary name, used in the error message that
-	// tells an operator which command provisions the broker credential.
+	// Name is the stem of the cookie names the broker declares itself
+	// (brokerCookieStem): the project's name, as pkg/middleware's
+	// SessionCookieName was scaffolded from it.
 	Name string
 	// MiddlewareDeclaresSessionCookie reports whether the project's OWN
 	// pkg/middleware/middleware.go declares SessionCookieName — the one
@@ -62,6 +65,43 @@ const (
 	proxyHopsConfigField   = "TrustedProxyHops"
 	scopesConfigField      = "OidcScopes"
 )
+
+// brokerCookieStem is the stem of the cookie names the broker declares
+// itself (<stem>_session, and devidp's <stem>_pk, <stem>_ml, …): the project's
+// name reduced to cookie-name characters. A name with none — "." is what
+// filepath.Base gives for the project root generate usually runs in, and
+// "._session" names nothing — falls back to forge.yaml's name, then "app",
+// devidp's own default prefix.
+func brokerCookieStem(projectName, projectDir, modulePath string) string {
+	if stem := cookieNameChars(projectName); stem != "" {
+		return stem
+	}
+	if stem := cookieNameChars(configproto.ProjectName(projectDir, modulePath)); stem != "" {
+		return stem
+	}
+	return "app"
+}
+
+// cookieNameChars keeps the letters, digits, '-' and '_' of name (a subset of
+// RFC 6265's cookie-name token, safe after the __Host- prefix), and "" when
+// it holds no letter or digit.
+func cookieNameChars(name string) string {
+	var b strings.Builder
+	alnum := false
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			alnum = true
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		}
+	}
+	if !alnum {
+		return ""
+	}
+	return strings.Trim(b.String(), "-_")
+}
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
 // pkg/middleware/middleware.go declares.
@@ -149,7 +189,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) (bool, erro
 	mw, _ := os.ReadFile(filepath.Join(projectDir, "pkg", "middleware", "middleware.go"))
 	content, err := templates.ProjectTemplates().Render("app-login-broker.go.tmpl", LoginBrokerTemplateData{
 		Module:                                modulePath,
-		Name:                                  projectName,
+		Name:                                  brokerCookieStem(projectName, projectDir, modulePath),
 		MiddlewareDeclaresSessionCookie:       middlewareSessionCookieDecl.Match(mw),
 		MiddlewareDeclaresSecureSessionCookie: middlewareSecureSessionCookieDecl.Match(mw),
 		ConfigType:                            configType,

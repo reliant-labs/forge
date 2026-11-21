@@ -25,6 +25,9 @@ That is the whole integration. forge builds nothing and applies nothing.
   compares the window after the deploy with the one before (exit 0 good, 1
   regressed, 2 not proven, 8 not enough data yet). Recorded releases are judged
   like forge-built ones: from telemetry, by `service.version`.
+- An **SBOM per workload**, generated from each `--image` digest with no
+  extra flag, so vulnerability findings cover what your pipeline shipped
+  (below).
 - A **Releases page** in the console —
   `https://forge.reliantlabs.io/forge/p/<project>/releases/<version>` — showing
   the commit, the run and each workload's digest, labelled "recorded by CI".
@@ -106,6 +109,41 @@ file and the lines to add.
   shipped is the point. When forge takes
   over deploying an env, its own `forge env deploy` releases follow the
   recorded ones in the same history.
+
+## SBOMs
+
+The zero-flag path records one: forge's pinned syft reads each `--image` from
+its registry by digest (`source: registry`) and the record carries the SBOM's
+digest on that workload. It reads with the registry credentials the CI already
+has: the docker credential store your `docker login` step wrote, or syft's
+`SYFT_REGISTRY_AUTH_*` variables. An env whose document or deploy/kcl declares
+a control plane reads its platform registry with that control plane's
+credential (`FORGE_CONTROL_PLANE_TOKEN`), as `forge env build` does. The bytes go to the machine ledger's SBOM
+store. An SBOM that cannot be produced (no syft for the platform, a registry
+401) warns, is recorded as unavailable with the reason, and the record still
+succeeds.
+
+Each workload's SBOM, generated or supplied with `--sbom`, is also attached
+beside its image as an OCI referrer, with the same credentials: the image is
+one your pipeline pushed. Nothing is written beside an image until the record
+is accepted: a record refused as a conflict runs no syft and attaches nothing,
+and one whose promotion fails attaches nothing until its retry. The release
+records the referrer's address (a control plane does not store it yet; the
+`--json` result lists it). A registry that refuses the write warns and keeps
+the ledger copy; `vuln: {attach_sbom: false}` in forge.yaml stops trying.
+
+| Flag | What it records |
+|---|---|
+| `--sbom <workload>=<path>` (repeatable) | the SBOM your pipeline already produced, CycloneDX or SPDX 2.x JSON, verbatim (`source: ci-provided`, the format the document states, the digest of the bytes as given). A workload the record does not name, or a file that is not an SBOM, refuses the record before anything is cut |
+| `--no-sbom` | no SBOMs: each workload shows as not scanned (`skipped: --no-sbom`) |
+| `--sbom-source <dir>` | version-only records: syft scans that source tree's lockfiles (dev dependencies excluded, `source: lockfile`) and the SBOM is recorded on the release itself (`source_sbom`), not on an artifact. It adds nothing to the release's identity, so the same version recorded with or without the flag is the same release, and a later record with it fills in an SBOM an earlier one lacked (never replacing one) |
+
+**An env that declares `provenance_sbom` off** (`forge.Control {mode =
+"off"}`) turns off the default only: no SBOM is generated from `--image`,
+and those workloads get no `sboms` entry. Evidence you supply is never
+discarded: an `--sbom` file, and an `--sbom-source` scan you asked for, are
+recorded under any policy, and listed in `sboms` as usual. `--no-sbom` with
+`--sbom` or `--sbom-source` is refused as contradictory, whatever the policy.
 
 ## Where it records
 
@@ -265,7 +303,10 @@ verdict cannot tell the new release's traffic from the old.
 
 `--json` prints one object: `project`, `env`, `version`, `commit`, `workloads`
 (name → ref@digest), `ledger` (`hosted` | `machine`), `location`,
-`release_created`, `promoted`, `promotion_id`, `run_url`, `console_url`.
+`release_created`, `promoted`, `promotion_id`, `run_url`, `console_url`, and
+`sboms`: one `{workload, digest, status, source, format, referrer, reason}` per recorded
+artifact (`status` `ok`, or `unavailable` with the `reason`). The release's
+source SBOM (`--sbom-source`) is the entry whose `workload` is `""`.
 
 ## Next
 

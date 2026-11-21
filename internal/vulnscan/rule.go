@@ -153,9 +153,11 @@ func (c Coverage) Complete() bool { return len(c.Unscanned) == 0 && c.Scanned ==
 type GateResult struct {
 	// Mode is the env's vuln_gate mode: off, audit or enforce.
 	Mode string `json:"mode"`
-	// GradedAs is the mode the gate is judged at. It is the declared mode
-	// today; the warn-first rollout (an enforce graded as audit until the
-	// rule's GatesFrom release) is the promotion gate's to apply.
+	// GradedAs is the mode the gate is judged at: the declared mode, except
+	// that the warn-first rollout grades an enforce as audit until the
+	// project's forge pin reaches the vuln-gate rule's GatesFrom release
+	// (internal/cli/lint/rollout_grade.go). The caller grades; Evaluate
+	// records what it was told (EvaluateInput.GradedAs).
 	GradedAs string `json:"graded_as"`
 	// Verdict is the gate's answer.
 	Verdict Verdict `json:"verdict"`
@@ -178,6 +180,9 @@ type EvaluateInput struct {
 	// Gate is the env's vuln_gate, resolved (release.ShapeDeliveryPolicy's
 	// Resolved().VulnGate: the defaults when the env declares none).
 	Gate release.ShapeVulnGate
+	// GradedAs is the mode the rollout grades Gate.Mode as; "" is the
+	// declared mode.
+	GradedAs release.DeliveryMode
 	// Findings are every finding of the release, across its artifacts.
 	Findings []Finding
 	// Coverage says what was scanned.
@@ -207,6 +212,9 @@ func Evaluate(in EvaluateInput) Evaluation {
 	}}
 	if ev.Gate.Mode == "" {
 		ev.Gate.Mode, ev.Gate.GradedAs = string(release.DeliveryAudit), string(release.DeliveryAudit)
+	}
+	if in.GradedAs != "" && in.Gate.Mode != release.DeliveryOff {
+		ev.Gate.GradedAs = string(in.GradedAs)
 	}
 	off := in.Gate.Mode == release.DeliveryOff
 	warned := false

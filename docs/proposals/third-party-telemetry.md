@@ -967,3 +967,36 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
   per scraped endpoint its newest `up` and samples (`obsquery.TelemetryScrapes`). Platform
   systems are read without the env predicate. A table the store lacks costs only its signal;
   an unreachable store or the cloud backend lists the targets with arrival `unknown`.
+
+**F4 (forge's cluster node agent):**
+
+- The agent record of a cluster carries that cluster's targets (`ObservabilityAgentSpec.Telemetry`,
+  appended by `_tel_agent_spec` in `kcl/render.k`; absent when there are none, so the record and
+  the agent render byte-identically). `RenderObservabilityAgent` builds them through
+  `collector.Build` (`DiscoverNodePods`, `MountRoot = deploy.TelemetryMountRoot`, env identity
+  from the record's env and part-of) and splices the pieces: `Logs.Preserve` after the
+  `container` operator, `Logs.Processors` and `NodeMetricsProcessors` after k8sattributes, and
+  `K8sAttributesLabels` into its extract. `exporterName()+"_telemetry_isolated"` is the isolated
+  exporter (the destination, with Build's bounded in-memory queue).
+- The identity processor also runs in every pushed (OTLP) pipeline, traces included, because they
+  share k8sattributes and only it deletes the extracted selector labels. `IdentityProcessor` gained
+  `trace_statements` for that.
+- Declaring `Observability.telemetry_collector` moves every target off the agent: it is "the
+  collector that scrapes this env's Telemetry, when it is not forge's agent". The render projects
+  it as `output.telemetry_collector` for the NetworkPolicy rules.
+- No singleton, so the agent REFUSES (render error) a cluster target it would pull at an
+  `address`. It also refuses a target whose signal the env's observability does not ship. With a
+  destination, profiles need `signals.profiles = True`; the agent already sends profiles there,
+  and the feature gate follows that signal. It refuses an `optional` credential too, because the
+  collector reads every credentials file at config load.
+- Every referenced Secret is mounted from the agent's namespace, not optionally. The render refuses
+  one that no `required_secrets`, `rendered_secrets` or `control_plane_secrets` entry supplies
+  there (`_check_agent_telemetry`).
+- The agent's ClusterRole is unchanged: it already lists and watches pods, namespaces and nodes, which is all
+  pod discovery and `k8s_observer` need.
+- NetworkPolicy (`internal/cluster/telemetry.go`): the collector for a cluster is the env's own
+  collector, else the agent (`deploy.AgentCollectorRef`). A Workload target's rule joins its own
+  policy (`deploy.Context.Telemetry`). A Manifests or Observability target with
+  `network_policy = True` gets `collector.NetworkPolicies`, inserted after its Manifests group's
+  last object with the group's owner and delivery unit (an Observability target: at the end of the
+  stream). The agent namespace carries no NetworkPolicy, so its egress to the pulled ports is open.

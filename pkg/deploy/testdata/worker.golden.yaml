@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: reconciler
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: reconciler
   namespace: demo-prod
 spec:
@@ -27,6 +28,7 @@ spec:
         app.kubernetes.io/name: reconciler
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: worker
     spec:
       automountServiceAccountToken: true
       containers:
@@ -76,6 +78,7 @@ metadata:
     app.kubernetes.io/name: reconciler
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: reconciler
   namespace: demo-prod
 ---
@@ -87,6 +90,7 @@ metadata:
     app.kubernetes.io/name: reconciler
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: reconciler-role
   namespace: demo-prod
 rules:
@@ -115,6 +119,7 @@ metadata:
     app.kubernetes.io/name: reconciler
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: reconciler-rolebinding
   namespace: demo-prod
 roleRef:

@@ -100,8 +100,8 @@ func TestMetrics_RecordCall_NilContextSafe(t *testing.T) {
 
 func TestMetrics_RecordDuration(t *testing.T) {
 	m := NewMetrics(newFakeMeter(), "p")
-	m.RecordDuration(context.Background(), "M", time.Now())
-	m.RecordDuration(nil, "M", time.Now())
+	m.RecordDuration(context.Background(), "M", testStart)
+	m.RecordDuration(nil, "M", testStart)
 }
 
 func TestMetrics_RecordError_NilNoOp(t *testing.T) {
@@ -115,6 +115,9 @@ func TestMetrics_RecordError_NilNoOp(t *testing.T) {
 func TestMetrics_NilReceiverSafe(t *testing.T) {
 	var m *Metrics
 	m.RecordCall(context.Background(), "M")
-	m.RecordDuration(context.Background(), "M", time.Now())
+	m.RecordDuration(context.Background(), "M", testStart)
 	m.RecordError(context.Background(), "M", errors.New("x"))
 }
+
+// testStart is a fixed call start: no assertion reads the duration.
+var testStart = time.Unix(1_700_000_000, 0)

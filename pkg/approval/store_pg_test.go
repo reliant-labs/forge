@@ -62,7 +62,7 @@ func TestStore_SchemaRequiresADeadline(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "expires_at") {
 		t.Errorf("insert with no deadline: err = %v, want a NOT NULL violation on expires_at", err)
 	}
-	_, err = client.Exec(context.Background(), `INSERT INTO approvals (kind, subject_ref, expires_at, state) VALUES ('k', 's', now(), 'bogus')`)
+	_, err = client.Exec(context.Background(), `INSERT INTO approvals (kind, subject_ref, expires_at, state) VALUES ('k', 's', '2026-01-01T00:00:00Z', 'bogus')`)
 	if err == nil {
 		t.Error("insert with an unknown state succeeded")
 	}
@@ -285,8 +285,11 @@ func TestStore_RedriveWaitsForAHeldItem(t *testing.T) {
 		waiter <- result{items, err}
 	}()
 
-	// Release the holder only once the waiter is blocked on the row lock.
-	deadline := time.Now().Add(30 * time.Second)
+	// Release the holder only once the waiter is blocked on the row lock:
+	// poll for it, with a timeout, rather than read the clock.
+	timeout := time.After(30 * time.Second)
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
 	for {
 		rows, err := client.Query(ctx, `SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND wait_event_type = 'Lock'`)
@@ -303,10 +306,11 @@ func TestStore_RedriveWaitsForAHeldItem(t *testing.T) {
 		if waiting > 0 {
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case <-timeout:
 			t.Fatal("second redriver never waited on the held item")
+		case <-poll.C:
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	close(release)
 
@@ -380,7 +384,7 @@ func TestStore_ExpiryRacingApprovalRepeated(t *testing.T) {
 
 func TestStore_ListBadPageTokenID(t *testing.T) {
 	client := newPG(t)
-	tok := encodePageToken(time.Now(), "not-a-uuid")
+	tok := encodePageToken(time.Unix(1_700_000_000, 0), "not-a-uuid")
 	if _, err := NewStore(client).List(context.Background(), Filter{PageToken: tok}); !errors.Is(err, ErrBadPageToken) {
 		t.Errorf("err = %v, want ErrBadPageToken", err)
 	}

@@ -3,6 +3,10 @@ package codemod
 import (
 	"bufio"
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,5 +125,43 @@ func TestTxIsolation_NothingToDoWithoutORM(t *testing.T) {
 	}
 	if rep.Changed() || len(rep.Next) != 0 {
 		t.Errorf("rewrote a project that does not use pkg/orm: %+v", rep)
+	}
+}
+
+// A computed ReadOnly or MaxAttempts is spliced into the rewrite verbatim:
+// one longer than a diagnostic line, or spanning lines with a line comment,
+// must come out as the same expression, never shortened or joined (a joined
+// line comment would swallow the rest of the literal).
+func TestTxIsolation_ComputedFieldsKeepTheirExactSource(t *testing.T) {
+	readOnly := "cfg.Database.ReadReplicaPreferred && // only the reporting path\n\t\trequest.Header.Get(\"X-Reliant-Read-Only-Hint-For-Reporting\") == \"yes-please\""
+	attempts := "budget.AttemptsFor(ctx, \"a-rather-long-operation-name-that-pushes-this-past-eighty-columns\") + 1"
+	src := "package p\n\nvar _ = orm.TxOptions{Isolation: IsolationSerializable, ReadOnly: " + readOnly + ", MaxAttempts: " + attempts + "}\n"
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lit *ast.CompositeLit
+	ast.Inspect(f, func(n ast.Node) bool {
+		if l, ok := n.(*ast.CompositeLit); ok && lit == nil {
+			lit = l
+		}
+		return true
+	})
+	r := &txRewriter{fset: fset, info: &types.Info{Types: map[ast.Expr]types.TypeAndValue{}}, file: f, src: []byte(src), rel: "p.go", prefix: "orm."}
+	text, desc, _, ok := r.mapTxOptionsLit(lit, false, false)
+	if !ok {
+		t.Fatal("the literal was not rewritten")
+	}
+	for _, want := range []string{"ReadOnly: " + readOnly, "MaxAttempts: " + attempts} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rewrite does not keep %q verbatim:\n%s", want, text)
+		}
+	}
+	if _, err := parser.ParseExpr(text); err != nil {
+		t.Errorf("rewrite is not a valid expression: %v\n%s", err, text)
+	}
+	if strings.Contains(desc, "\n") {
+		t.Errorf("the diagnostic description spans lines: %q", desc)
 	}
 }

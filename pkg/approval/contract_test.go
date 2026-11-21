@@ -507,7 +507,6 @@ func runContract(t *testing.T, newStore func(t *testing.T, clock *fakeClock) App
 				_, err := s.Decide(ctx, Decision{ID: it.ID, Approve: true, By: "sean"},
 					func(context.Context, Item, Decision) (string, error) {
 						followUps.Add(1)
-						time.Sleep(20 * time.Millisecond)
 						return "filled", nil
 					})
 				switch {

@@ -81,6 +81,8 @@ package chat
 type StubPause struct{}
 type StubNarrow struct{}
 type StubRepo struct{}
+
+func (*StubRepo) Get(string) (string, error) { return "", nil }
 `,
 	"internal/handlers/chat/internal_test.go": `package chat
 
@@ -183,9 +185,17 @@ func TestHarnessMocks_RenamesRetiredStubs(t *testing.T) {
 	if strings.Count(external, `"example.com/proj/internal/runs"`) != 1 {
 		t.Errorf("external_test.go already imported internal/runs; it must not gain a second import:\n%s", external)
 	}
-	if wrapped := readFile(t, dir, "internal/handlers/chat/wrapped_test.go"); !strings.Contains(wrapped, "*runs.MockPauseController") {
+	wrapped := readFile(t, dir, "internal/handlers/chat/wrapped_test.go")
+	if !strings.Contains(wrapped, "*runs.MockPauseController") {
 		t.Errorf("wrapped_test.go must embed the mock, importing internal/runs:\n%s", wrapped)
 	}
+	// Its only use of the handler was the stub it embedded: the import goes
+	// with it, or the package would not compile.
+	if strings.Contains(wrapped, "internal/handlers/chat") {
+		t.Errorf("wrapped_test.go keeps the handler import the rewrite left unused:\n%s", wrapped)
+	}
+	// The rewritten tests compile.
+	goCmd(t, dir, "vet", "./...")
 	if got := readFile(t, dir, "internal/handlers/chat/helpers_gen_test.go"); got != harnessMocksProject["internal/handlers/chat/helpers_gen_test.go"] {
 		t.Errorf("the generated harness was rewritten:\n%s", got)
 	}
@@ -228,5 +238,53 @@ func TestHarnessMocks_NothingToDoWithoutHandlers(t *testing.T) {
 	rep, err := c.Run(dir, Options{Write: true})
 	if err != nil || rep.Changed() || len(rep.Next) > 0 {
 		t.Fatalf("a project with no handlers: rep %+v, err %v", rep, err)
+	}
+}
+
+// A field spelled like an embedded stub that belongs to another struct is
+// not renamed: a literal of that struct is left as it is, and a selector,
+// whose receiver the syntax cannot name, is reported rather than guessed.
+func TestHarnessMocks_AnotherFieldOfTheStubsNameIsLeftAlone(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	project := map[string]string{}
+	for k, v := range harnessMocksProject {
+		project[k] = v
+	}
+	project["internal/handlers/chat/unrelated_test.go"] = `package chat_test
+
+type unrelated struct{ StubPause bool }
+
+func useUnrelated() bool {
+	u := unrelated{StubPause: true}
+	return u.StubPause
+}
+`
+	dir := writeTree(t, project)
+	c, _ := Lookup("harness-mocks")
+	rep, err := c.Run(dir, Options{Write: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, dir, "internal/handlers/chat/unrelated_test.go"); got != project["internal/handlers/chat/unrelated_test.go"] {
+		t.Errorf("another struct's StubPause field was rewritten:\n%s", got)
+	}
+	external := readFile(t, dir, "internal/handlers/chat/external_test.go")
+	for _, want := range []string{
+		"w := &wrapped{MockPauseController: &rr.MockPauseController{}}", // wrapped's own literal: known
+		"w.StubPause.PauseFunc = nil",                                   // a selector: left, and reported
+	} {
+		if !strings.Contains(external, want) {
+			t.Errorf("external_test.go lacks %q:\n%s", want, external)
+		}
+	}
+	var reported []string
+	for _, n := range rep.Next {
+		if strings.Contains(n, "may be the embedded StubPause's field") {
+			reported = append(reported, n)
+		}
+	}
+	// w.StubPause in external_test.go and u.StubPause in unrelated_test.go.
+	if len(reported) != 2 {
+		t.Errorf("want both StubPause selectors reported, got %q", rep.Next)
 	}
 }

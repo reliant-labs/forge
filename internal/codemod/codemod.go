@@ -83,7 +83,7 @@ type Codemod struct {
 	// project. A codemod whose rewrite is one decision over the whole tree
 	// (a restructuring) leaves it false, and `forge fix` offers no --scope.
 	Scoped bool
-	// Deprecated, when set, retires the `forge fix <name>` spelling without
+	// A non-empty Deprecated retires the `forge fix <name>` spelling without
 	// breaking it (semver v1): the command is hidden from --help, still runs,
 	// and prints one stderr line, "Command <name> is deprecated, <Deprecated>",
 	// which names what replaces it. `forge project upgrade` still runs an

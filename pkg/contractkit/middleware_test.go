@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestLogCallErr_FingerprintLocked verifies the slog record shape:
@@ -17,7 +16,7 @@ func TestLogCallErr_FingerprintLocked(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	start := time.Now()
+	start := testStart
 	want := errors.New("boom")
 	LogCallErr(logger, "Send", start, want)
 
@@ -40,7 +39,7 @@ func TestLogCallErr_NilErrStillEmitsErrorAttr(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	LogCallErr(logger, "Close", time.Now(), nil)
+	LogCallErr(logger, "Close", testStart, nil)
 	out := buf.String()
 	// Match the previous generated behaviour: the error attribute is
 	// always emitted on error-returning methods, even when nil.
@@ -53,7 +52,7 @@ func TestLogCall_VoidNoErrorAttr(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	LogCall(logger, "Tick", time.Now())
+	LogCall(logger, "Tick", testStart)
 	out := buf.String()
 	if !strings.Contains(out, "msg=Tick") {
 		t.Errorf("missing msg=Tick in %q", out)
@@ -68,6 +67,6 @@ func TestLogCall_VoidNoErrorAttr(t *testing.T) {
 
 func TestLogCall_NilLoggerSafe(t *testing.T) {
 	// nil logger must not panic — the helper short-circuits.
-	LogCall(nil, "M", time.Now())
-	LogCallErr(nil, "M", time.Now(), errors.New("x"))
+	LogCall(nil, "M", testStart)
+	LogCallErr(nil, "M", testStart, errors.New("x"))
 }

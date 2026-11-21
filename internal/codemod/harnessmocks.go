@@ -92,7 +92,7 @@ func runHarnessMocks(dir string, opts Options) (Report, error) {
 	}
 	sort.Strings(dirs)
 	for _, d := range dirs {
-		if err := rewriteHarnessMockDir(dir, d, module+"/"+d, byDir[d], opts, &rep); err != nil {
+		if err := rewriteHarnessMockDir(dir, d, module, byDir[d], opts, &rep); err != nil {
 			return rep, err
 		}
 	}
@@ -103,7 +103,8 @@ func runHarnessMocks(dir string, opts Options) (Report, error) {
 }
 
 // rewriteHarnessMockDir rewrites one handler directory's test files.
-func rewriteHarnessMockDir(root, rel, importPath string, renames []codegen.HarnessMockRename, opts Options, rep *Report) error {
+func rewriteHarnessMockDir(root, rel, module string, renames []codegen.HarnessMockRename, opts Options, rep *Report) error {
+	importPath := module + "/" + rel
 	abs := filepath.Join(root, filepath.FromSlash(rel))
 	entries, err := os.ReadDir(abs)
 	if err != nil {
@@ -142,9 +143,6 @@ func rewriteHarnessMockDir(root, rel, importPath string, renames []codegen.Harne
 		if err != nil {
 			return fmt.Errorf("%s: %w", fileRel, err)
 		}
-		if hf == nil {
-			continue // an external test file that does not import the handler
-		}
 		for stub := range hf.embeddedStubs(byStub) {
 			if embedded[hf.f.Name.Name] == nil {
 				embedded[hf.f.Name.Name] = map[string]bool{}
@@ -153,11 +151,19 @@ func rewriteHarnessMockDir(root, rel, importPath string, renames []codegen.Harne
 		}
 		files = append(files, testFile{fileRel, p, src, hf})
 	}
+	var parsed []*harnessFile
+	for _, tf := range files {
+		parsed = append(parsed, tf.hf)
+	}
+	fields, err := gatherHarnessFields(root, abs, module, parsed, byStub)
+	if err != nil {
+		return fmt.Errorf("%s: %w", rel, err)
+	}
 	for _, tf := range files {
 		if !opts.Scope.Contains(tf.rel) {
 			continue
 		}
-		out, lines, next, err := tf.hf.rewrite(tf.src, byStub, embedded[tf.hf.f.Name.Name])
+		out, lines, next, err := tf.hf.rewrite(tf.src, byStub, embedded[tf.hf.f.Name.Name], fields)
 		if err != nil {
 			return fmt.Errorf("%s: %w", tf.rel, err)
 		}
@@ -193,8 +199,7 @@ type harnessFile struct {
 	names       map[string]bool   // every local import name in the file
 }
 
-// parseHarnessFile parses one test file; nil for an external test file
-// that does not import the handler, which can name none of its stubs.
+// parseHarnessFile parses one test file.
 func parseHarnessFile(filename string, src []byte, importPath string) (*harnessFile, error) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, filename, src, parser.ParseComments|parser.SkipObjectResolution)
@@ -218,10 +223,10 @@ func parseHarnessFile(filename string, src []byte, importPath string) (*harnessF
 		hf.names[name] = true
 	}
 	if hf.external {
+		// "" when the file does not import the handler: it names none of
+		// its stubs, but it can still reach the field of a struct another
+		// file of its package embeds one in.
 		hf.handlerName = hf.imported[importPath]
-		if hf.handlerName == "" {
-			return nil, nil
-		}
 	}
 	return hf, nil
 }
@@ -285,7 +290,7 @@ type harnessEdit struct {
 // and, where the package embeds it (embedded), the field named after it. It
 // returns the new source (nil when nothing changed), one line per rename,
 // and what it could not decide.
-func (hf *harnessFile) rewrite(src []byte, byStub map[string]codegen.HarnessMockRename, embedded map[string]bool) ([]byte, []string, []string, error) {
+func (hf *harnessFile) rewrite(src []byte, byStub map[string]codegen.HarnessMockRename, embedded map[string]bool, fields *harnessFields) ([]byte, []string, []string, error) {
 	fset := hf.fset
 	var edits []harnessEdit
 	counts := map[string]int{}
@@ -327,6 +332,13 @@ func (hf *harnessFile) rewrite(src []byte, byStub map[string]codegen.HarnessMock
 		field := mockFieldName(r)
 		edit(id, field, "field "+id.Name+" → "+field)
 	}
+	// leave reports a reference spelled like the embedded stub's field
+	// that the codemod cannot prove is that field.
+	leave := func(id *ast.Ident) {
+		r := byStub[id.Name]
+		next = append(next, fmt.Sprintf("line %d: %s may be the embedded %s's field (now %s) or another struct's field of that name; rename it by hand if it is the embedded one",
+			fset.Position(id.Pos()).Line, id.Name, id.Name, mockFieldName(r)))
+	}
 	var visit func(n ast.Node) bool
 	visit = func(n ast.Node) bool {
 		switch x := n.(type) {
@@ -337,35 +349,45 @@ func (hf *harnessFile) rewrite(src []byte, byStub map[string]codegen.HarnessMock
 			}
 			// The Sel of any other selector is a field, a method or another
 			// package's name — never this package's stub type. It is the
-			// embedded stub's FIELD when the package embeds one.
+			// embedded stub's FIELD when the package embeds one, unless a
+			// field of that name is declared elsewhere too: without types
+			// the receiver's struct is unknown, so that one is reported.
 			if embedded[x.Sel.Name] {
-				renameField(x.Sel)
+				if fields.ambiguous[x.Sel.Name] {
+					leave(x.Sel)
+				} else {
+					renameField(x.Sel)
+				}
 			}
 			ast.Inspect(x.X, visit)
 			return false
-		case *ast.KeyValueExpr:
-			// A composite-literal key names a field, not a type.
-			if id, ok := x.Key.(*ast.Ident); ok && embedded[id.Name] {
-				renameField(id)
-			} else if !ok {
-				ast.Inspect(x.Key, visit)
+		case *ast.CompositeLit:
+			if x.Type != nil {
+				ast.Inspect(x.Type, visit)
 			}
-			ast.Inspect(x.Value, visit)
+			for _, elt := range x.Elts {
+				kv, ok := elt.(*ast.KeyValueExpr)
+				if !ok {
+					ast.Inspect(elt, visit)
+					continue
+				}
+				switch id, _ := kv.Key.(*ast.Ident); hf.keyAction(x, kv, byStub, embedded, fields) {
+				case keyRename:
+					renameField(id)
+				case keyReport:
+					leave(id)
+				case keyVisit:
+					ast.Inspect(kv.Key, visit)
+				}
+				ast.Inspect(kv.Value, visit)
+			}
 			return false
 		case *ast.Ident:
 			if stub, ok := hf.stubRef(x, byStub); ok {
 				renameType(x, stub)
 			}
 		case *ast.BasicLit:
-			if x.Kind != token.STRING {
-				return true
-			}
-			for stub, r := range byStub {
-				if strings.Contains(x.Value, stub+".") {
-					next = append(next, fmt.Sprintf("line %d expects %s's error text; an unset mock method returns contractkit.MockNotSet (\"%s.<Method>Func not set\") — update the expected text",
-						fset.Position(x.Pos()).Line, stub, mockFieldName(r)))
-				}
-			}
+			next = append(next, hf.errorTextNotes(x, byStub)...)
 		}
 		return true
 	}
@@ -375,29 +397,55 @@ func (hf *harnessFile) rewrite(src []byte, byStub map[string]codegen.HarnessMock
 		return nil, nil, next, nil
 	}
 
-	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
-	out := append([]byte(nil), src...)
-	for _, e := range edits {
-		out = append(out[:e.start], append([]byte(e.text), out[e.end:]...)...)
+	out, err := hf.fixImports(applyHarnessEdits(src, edits), toImport)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	if len(toImport) > 0 {
-		var err error
-		if out, err = addHarnessImports(hf.filename, out, toImport); err != nil {
-			return nil, nil, nil, err
-		}
-	}
+	return out, countLines(counts), next, nil
+}
+
+// countLines is one sorted "<rename> (<n>)" line per kind of rename.
+func countLines(counts map[string]int) []string {
 	var lines []string
 	for k, n := range counts {
 		lines = append(lines, fmt.Sprintf("%s (%d)", k, n))
 	}
 	sort.Strings(lines)
-	return out, lines, next, nil
+	return lines
 }
 
-// addHarnessImports adds each import to src and gofmts the result.
-func addHarnessImports(filename string, src []byte, imports []codegen.ExtraImport) ([]byte, error) {
+// errorTextNotes reports a string literal that expects a retired stub's
+// unset-method error text, which the mock spells differently.
+func (hf *harnessFile) errorTextNotes(x *ast.BasicLit, byStub map[string]codegen.HarnessMockRename) []string {
+	if x.Kind != token.STRING {
+		return nil
+	}
+	var notes []string
+	for stub, r := range byStub {
+		if strings.Contains(x.Value, stub+".") {
+			notes = append(notes, fmt.Sprintf("line %d expects %s's error text; an unset mock method returns contractkit.MockNotSet (\"%s.<Method>Func not set\") — update the expected text",
+				hf.fset.Position(x.Pos()).Line, stub, mockFieldName(r)))
+		}
+	}
+	return notes
+}
+
+// applyHarnessEdits applies non-overlapping byte-range edits to src.
+func applyHarnessEdits(src []byte, edits []harnessEdit) []byte {
+	sort.Slice(edits, func(i, j int) bool { return edits[i].start > edits[j].start })
+	out := append([]byte(nil), src...)
+	for _, e := range edits {
+		out = append(out[:e.start], append([]byte(e.text), out[e.end:]...)...)
+	}
+	return out
+}
+
+// fixImports adds each import to the rewritten src, removes every import the
+// rewrite left unused (an external test whose only use of the handler was
+// the stub it embedded), and gofmts the result.
+func (hf *harnessFile) fixImports(src []byte, imports []codegen.ExtraImport) ([]byte, error) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, filename, src, parser.ParseComments)
+	f, err := parser.ParseFile(fset, hf.filename, src, parser.ParseComments)
 	if err != nil {
 		return nil, err
 	}
@@ -408,9 +456,247 @@ func addHarnessImports(filename string, src []byte, imports []codegen.ExtraImpor
 		}
 		astutil.AddNamedImport(fset, f, name, imp.Path)
 	}
+	before, after := importUses(hf.f), importUses(f)
+	type unused struct{ name, path string }
+	var drop []unused
+	for _, spec := range f.Imports {
+		p, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			continue
+		}
+		local, ok := hf.imported[p]
+		if !ok || local == "_" || local == "." || before[local] == 0 || after[local] > 0 {
+			continue
+		}
+		name := ""
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		drop = append(drop, unused{name, p})
+	}
+	for _, u := range drop {
+		astutil.DeleteNamedImport(fset, f, u.name, u.path)
+	}
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, f); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// importUses counts, per local name, the qualified identifiers (name.X) in f.
+func importUses(f *ast.File) map[string]int {
+	uses := map[string]int{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok {
+				uses[id.Name]++
+			}
+		}
+		return true
+	})
+	return uses
+}
+
+// harnessFields is what the rewrite knows about struct fields spelled like a
+// retired stub, gathered over a handler directory before any file changes.
+type harnessFields struct {
+	// embeds is, per "<package clause>.<type>" for every top-level struct
+	// type of the directory's test files, the retired stubs it embeds.
+	embeds map[string]map[string]bool
+	// ambiguous is every retired stub name that is ALSO some other
+	// field's name: a named field, or an embedding of another type, in
+	// this directory or in a package of the module its tests import. A
+	// selector of that name cannot be told apart without types.
+	ambiguous map[string]bool
+}
+
+func gatherHarnessFields(root, abs, module string, files []*harnessFile, byStub map[string]codegen.HarnessMockRename) (*harnessFields, error) {
+	hf := &harnessFields{embeds: map[string]map[string]bool{}, ambiguous: map[string]bool{}}
+	other := func(name string) {
+		if _, ok := byStub[name]; ok {
+			hf.ambiguous[name] = true
+		}
+	}
+	dirs := map[string]bool{}
+	for _, f := range files {
+		ast.Inspect(f.f, func(n ast.Node) bool {
+			st, ok := n.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			for _, field := range st.Fields.List {
+				for _, id := range field.Names {
+					other(id.Name)
+				}
+				if len(field.Names) > 0 {
+					continue
+				}
+				if _, isStub := f.stubRef(unstar(field.Type), byStub); !isStub {
+					other(embeddedName(field.Type))
+				}
+			}
+			return true
+		})
+		for _, decl := range f.f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts := spec.(*ast.TypeSpec)
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				hf.embeds[f.f.Name.Name+"."+ts.Name.Name] = f.structEmbeds(st, byStub)
+			}
+		}
+		for p := range f.imported {
+			if strings.HasPrefix(p, module+"/") {
+				dirs[filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(p, module+"/")))] = true
+			}
+		}
+	}
+	// The package's own non-test files, and the module's packages its tests
+	// import: none can embed a test-only stub, so every field there spelled
+	// like one is another field.
+	dirs[abs] = true
+	for d := range dirs {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+				continue
+			}
+			f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(d, e.Name()), nil, parser.SkipObjectResolution)
+			if err != nil {
+				continue // not this codemod's to judge
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if st, ok := n.(*ast.StructType); ok {
+					for _, field := range st.Fields.List {
+						for _, id := range field.Names {
+							other(id.Name)
+						}
+						if len(field.Names) == 0 {
+							other(embeddedName(field.Type))
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	return hf, nil
+}
+
+// structEmbeds is the retired stubs st embeds.
+func (hf *harnessFile) structEmbeds(st *ast.StructType, byStub map[string]codegen.HarnessMockRename) map[string]bool {
+	out := map[string]bool{}
+	for _, field := range st.Fields.List {
+		if len(field.Names) > 0 {
+			continue
+		}
+		if stub, ok := hf.stubRef(unstar(field.Type), byStub); ok {
+			out[stub] = true
+		}
+	}
+	return out
+}
+
+// litEmbeds is the retired stubs the struct type of lit embeds; known is
+// false when the literal's type cannot be read from the syntax (an elided
+// type, or a type the directory's test files do not declare).
+func (hf *harnessFile) litEmbeds(lit *ast.CompositeLit, byStub map[string]codegen.HarnessMockRename, fields *harnessFields) (map[string]bool, bool) {
+	switch t := lit.Type.(type) {
+	case *ast.StructType:
+		return hf.structEmbeds(t, byStub), true
+	case *ast.Ident:
+		// A top-level struct type of this package's test files. Any other
+		// (a function-local type, a non-test type) is not read here.
+		e, ok := fields.embeds[hf.f.Name.Name+"."+t.Name]
+		return e, ok
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			return nil, false
+		}
+		if hf.external && id.Name == hf.handlerName {
+			// The handler's test files are compiled into it; its other
+			// types cannot embed a test-only stub.
+			return fields.embeds[strings.TrimSuffix(hf.f.Name.Name, "_test")+"."+t.Sel.Name], true
+		}
+		// Another package's type cannot embed this package's test stub.
+		return nil, true
+	case *ast.MapType, *ast.ArrayType:
+		return nil, true
+	}
+	return nil, false
+}
+
+// keysAreFields reports whether lit's keys can be field names: not a map or
+// slice literal, whose keys are values.
+func (hf *harnessFile) keysAreFields(lit *ast.CompositeLit) bool {
+	switch lit.Type.(type) {
+	case *ast.MapType, *ast.ArrayType:
+		return false
+	}
+	return true
+}
+
+func unstar(e ast.Expr) ast.Expr {
+	if star, ok := e.(*ast.StarExpr); ok {
+		return star.X
+	}
+	return e
+}
+
+// embeddedName is the field name an embedded field of type e gets.
+func embeddedName(e ast.Expr) string {
+	switch t := unstar(e).(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr:
+		return embeddedName(t.X)
+	case *ast.IndexListExpr:
+		return embeddedName(t.X)
+	}
+	return ""
+}
+
+// keyAction is what the rewrite does with one key of a composite literal.
+type keyAction int
+
+const (
+	keyVisit  keyAction = iota // not a field spelled like an embedded stub
+	keyRename                  // the embedded stub's field
+	keyKeep                    // another struct's field of the same name
+	keyReport                  // cannot tell which without types
+)
+
+// keyAction decides kv's key: a key names a field of the literal's own type,
+// so it is renamed only when that type is the one embedding the stub.
+func (hf *harnessFile) keyAction(lit *ast.CompositeLit, kv *ast.KeyValueExpr, byStub map[string]codegen.HarnessMockRename, embedded map[string]bool, fields *harnessFields) keyAction {
+	id, isIdent := kv.Key.(*ast.Ident)
+	if !isIdent || !embedded[id.Name] || !hf.keysAreFields(lit) {
+		return keyVisit
+	}
+	embeds, known := hf.litEmbeds(lit, byStub, fields)
+	switch {
+	case known && embeds[id.Name]:
+		return keyRename
+	case known:
+		return keyKeep
+	case fields.ambiguous[id.Name]:
+		return keyReport
+	}
+	return keyRename
 }

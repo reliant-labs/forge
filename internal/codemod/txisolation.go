@@ -398,7 +398,7 @@ func (r *txRewriter) walk() {
 				return true // its old constant names are still renamed
 			}
 			r.replace(n, text)
-			r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s → %s  [%s]", r.site(n), oneLine(r.text(n)), text, desc))
+			r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s → %s  [%s]", r.site(n), oneLine(r.text(n)), oneLine(text), desc))
 			return false
 		}
 		return true
@@ -464,7 +464,7 @@ func (r *txRewriter) call(call *ast.CallExpr, sel *ast.SelectorExpr) {
 		if newArg == "" {
 			newArg, desc = oneLine(r.text(arg)), "options as given"
 		}
-		r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.%s(ctx, %s%s → %s.%s(ctx, %s%s  [%s]", r.site(call), recv, name, oneLine(r.text(arg)), argsTail(call), recv, target, newArg, argsTail(call), desc))
+		r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.%s(ctx, %s%s → %s.%s(ctx, %s%s  [%s]", r.site(call), recv, name, oneLine(r.text(arg)), argsTail(call), recv, target, oneLine(newArg), argsTail(call), desc))
 	case "RunTransactionWithOptions", "BeginTx":
 		target := "RunTransaction"
 		if name == "BeginTx" {
@@ -482,7 +482,7 @@ func (r *txRewriter) call(call *ast.CallExpr, sel *ast.SelectorExpr) {
 		r.replace(sel.Sel, target)
 		r.replace(call.Args[1], text)
 		r.beganTx = r.beganTx || name == "BeginTx"
-		r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.%s(ctx, %s%s → %s.%s(ctx, %s%s  [%s]", r.site(call), recv, name, oneLine(r.text(call.Args[1])), argsTail(call), recv, target, text, argsTail(call), desc))
+		r.rep.Rewrites = append(r.rep.Rewrites, fmt.Sprintf("%s: %s.%s(ctx, %s%s → %s.%s(ctx, %s%s  [%s]", r.site(call), recv, name, oneLine(r.text(call.Args[1])), argsTail(call), recv, target, oneLine(text), argsTail(call), desc))
 	}
 }
 
@@ -684,13 +684,15 @@ func (r *txRewriter) mapTxOptionsLit(lit *ast.CompositeLit, detached, typed bool
 			if b, isConst := r.boolValue(kv.Value); isConst {
 				readOnly = b
 			} else {
-				readOnlySrc = oneLine(r.text(kv.Value))
+				// The exact source: it is spliced into code. Only the
+				// diagnostics shorten it (oneLine).
+				readOnlySrc = r.text(kv.Value)
 			}
 		case "MaxAttempts":
 			if n, isConst := r.intValue(kv.Value); isConst {
 				attempts = n
 			} else {
-				attemptsSrc = oneLine(r.text(kv.Value))
+				attemptsSrc = r.text(kv.Value)
 			}
 		default:
 			return "", "", fmt.Sprintf("%s: %s — unknown orm.TxOptions field; fix it by hand", r.site(lit), oneLine(r.text(lit))), false
@@ -712,11 +714,11 @@ func (r *txRewriter) mapTxOptionsLit(lit *ast.CompositeLit, detached, typed bool
 	switch {
 	case detached:
 		if attemptsSrc != "" || attempts > 1 {
-			note = fmt.Sprintf("%s: BeginDetached ignored MaxAttempts (%s) and ran once; it now requires 1, which the rewrite spells", r.site(lit), firstNonEmpty(attemptsSrc, fmt.Sprint(attempts)))
+			note = fmt.Sprintf("%s: BeginDetached ignored MaxAttempts (%s) and ran once; it now requires 1, which the rewrite spells", r.site(lit), oneLine(firstNonEmpty(attemptsSrc, fmt.Sprint(attempts))))
 		}
 		attempts, attemptsSrc = 1, ""
 	case attemptsSrc != "":
-		note = fmt.Sprintf("%s: MaxAttempts %s ≤ 0 used to mean %d attempts and is now rejected; make sure it is at least 1", r.site(lit), attemptsSrc, defaultTxMaxAttempts)
+		note = fmt.Sprintf("%s: MaxAttempts %s ≤ 0 used to mean %d attempts and is now rejected; make sure it is at least 1", r.site(lit), oneLine(attemptsSrc), defaultTxMaxAttempts)
 	case attempts <= 0:
 		attempts = defaultTxMaxAttempts
 	}
@@ -769,7 +771,7 @@ func policyDesc(level, attempts int, attemptsSrc string, readOnly bool, readOnly
 	s := levelNames[level]
 	switch {
 	case readOnlySrc != "":
-		s += " read only if " + readOnlySrc
+		s += " read only if " + oneLine(readOnlySrc)
 	case readOnly:
 		s += " read only"
 		if level == oldSerializable {
@@ -778,7 +780,7 @@ func policyDesc(level, attempts int, attemptsSrc string, readOnly bool, readOnly
 	}
 	switch {
 	case attemptsSrc != "":
-		return s + ", " + attemptsSrc + " attempts"
+		return s + ", " + oneLine(attemptsSrc) + " attempts"
 	case attempts == 1:
 		return s + ", 1 attempt"
 	}

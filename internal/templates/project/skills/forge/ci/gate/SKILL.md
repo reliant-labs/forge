@@ -24,7 +24,8 @@ CI cannot drift from the local verdict. `forge ci gate --list` names every check
 and its lane. For a project with services and a frontend the `checks` lane is:
 `deps-<fe>`, `verify-generated`, `golangci-lint`, `buf-lint`, `migration-safety`,
 `lint-<fe>`, `typecheck-<fe>`, `css-health-<fe>`, `go-build`, `build-<fe>`,
-`vuln-go`, `vuln-npm`, `secret-scan`, `license-check`, `validate-kcl`,
+`vuln-go`, `vuln-npm`, `vuln-sbom` (the lockfiles' SBOM scanned by grype,
+graded warn-first: `vuln`), `secret-scan`, `license-check`, `validate-kcl`,
 `deployability`. Which rows exist follows the same forge.yaml toggles the
 workflow renders from (`ci.lint`, `ci.vuln_scan`, ...), so a toggle means the
 same thing in both.

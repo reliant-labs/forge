@@ -70,7 +70,7 @@ func TestBufTemplatesRunEachPluginOnce(t *testing.T) {
 	templates["frontendBufGenYaml"] = frontendBufGenYaml("frontends/web")
 	templates["workspaceBufGenYaml"] = workspaceBufGenYaml("frontends/web")
 	templates["descriptorBufTemplate"] = descriptorBufTemplate(`["forge", "protoc-gen-forge"]`, "/work/out", "/work")
-	templates["openapiBufTemplate"] = openapiBufTemplate("openapi")
+	templates["openapiBufTemplate"] = openapiBufTemplate("openapi", "users.yaml")
 
 	for _, problem := range checkBufPluginStrategies(templates, perDirectoryBufPlugins) {
 		t.Error(problem)

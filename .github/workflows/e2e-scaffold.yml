@@ -37,6 +37,12 @@ jobs:
     name: forge project new smoke test
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
     runs-on: ubuntu-latest
+    # 12 minutes at worst (the header). Without a bound a hang runs for
+    # GitHub's 6h default, and on main — where cancel-in-progress is off —
+    # holds the concurrency group the whole time, so every later push's run
+    # is cancelled while pending: a deadlocked `forge generate` (forge#948)
+    # left main with no scaffold verdict for over a day.
+    timeout-minutes: 30
     env:
       # Set once so every step uses the same workspace path.
       E2E_DIR: ${{ github.workspace }}/e2e-workspace

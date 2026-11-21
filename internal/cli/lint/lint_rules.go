@@ -117,6 +117,8 @@ func gradableRules() []string {
 		"hosted-image-base/host-bearing-image", pdbRuleID,
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
+		// delivery policy verdicts graded outside forge lint (rollout_grade.go)
+		RuleVulnGate, RuleSBOMRequired,
 		// auth scaffold
 		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault,
 		// secrets

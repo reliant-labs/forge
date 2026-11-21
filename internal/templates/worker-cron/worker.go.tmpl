@@ -54,7 +54,7 @@ func New(deps Deps) *Worker {
 
 // Name returns the worker's identifier. It is also the key each tick is
 // claimed under, so renaming the worker starts a fresh claim history.
-func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
+func (w *Worker) Name() string { return "{{.Package}}" }
 
 // Start runs the schedule until ctx is cancelled, then waits for an
 // in-flight Run to return (its ctx is cancelled too).

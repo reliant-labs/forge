@@ -19,6 +19,7 @@ const (
 	procDeliveries = "controlplane.v1.TelemetryStatusService/ListTelemetryDeliveries"
 	procSearchLogs = "controlplane.v1.ObservabilityService/SearchLogs"
 	procTraces     = "controlplane.v1.ObservabilityService/ListTraces"
+	procWorkloads  = "controlplane.v1.ObservabilityService/ListWorkloads"
 )
 
 // statusCaller answers every read of `forge obs status prod`.
@@ -38,6 +39,9 @@ func statusCaller() *seqCaller {
 			"state":"DELIVERY_STATE_FAILING","expiresAt":"2026-10-23T12:00:00Z","lastError":"forbidden","consecutiveFailures":3}]}`,
 		procSearchLogs: `{"logs":[{"timestamp":"2026-10-22T11:59:00Z","severityText":"INFO","service":"api","body":"ok"}]}`,
 		procTraces:     `{"traces":[{"traceId":"t1","startTime":"2026-10-22T11:59:30Z","durationMs":12}]}`,
+		procWorkloads: `{"workloads":[
+			{"workload":"api","namespace":"shop","health":"WORKLOAD_HEALTH_HEALTHY","restartsInWindow":"0"},
+			{"workload":"worker","namespace":"shop","health":"WORKLOAD_HEALTH_HEALTHY","restartsInWindow":"0"}]}`,
 	} {
 		c.replies[proc] = []string{reply}
 	}
@@ -216,7 +220,7 @@ func TestObsStatusEmptySectionsArePresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{`"services": []`, `"issues": []`, `"alerts": []`} {
+	for _, k := range []string{`"services": []`, `"issues": []`, `"alerts": []`, `"workloads": []`} {
 		if !strings.Contains(out, k) {
 			t.Errorf("document lacks %s:\n%s", k, out)
 		}
@@ -225,7 +229,7 @@ func TestObsStatusEmptySectionsArePresent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"no service traffic in the range", "no new or regressed issues", "no alerts firing"} {
+	for _, want := range []string{"no service traffic in the range", "no new or regressed issues", "no alerts firing", "workloads: 2, every one healthy"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("text lacks %q:\n%s", want, text)
 		}
@@ -270,7 +274,7 @@ func TestObsStatusLocal(t *testing.T) {
 	if is := doc["issues"].([]any); len(is) != 2 {
 		t.Errorf("locally every error group in the range is listed: %v", is)
 	}
-	if got := fmt.Sprint(doc["not_evaluated"]); got != "[alerts]" {
+	if got := fmt.Sprint(doc["not_evaluated"]); got != "[alerts workloads]" {
 		t.Errorf("not_evaluated = %s", got)
 	}
 	if doc["unread"] != nil {
@@ -357,5 +361,107 @@ func TestStatusTelemetryDeliveryOffNeedsADeclaredSecret(t *testing.T) {
 	if got := declared.String(); !strings.Contains(got, "1 declared Secret(s) on connected clusters are not delivered") ||
 		!strings.Contains(got, "reconciler is off") || !strings.Contains(got, "obs/reliant-otel-auth on prod: disabled") {
 		t.Errorf("a declared delivery with the reconciler off must say so:\n%s", got)
+	}
+}
+
+// A suspended env serves nothing and emits nothing, so its services, issues
+// and alerts all read as a quiet, healthy env (bug report 8488cc10: a prod
+// env suspended by its owner looked healthy for 44h). Status names the
+// suspension, leads with it, and suggests resuming.
+func TestObsStatusNamesASuspendedEnv(t *testing.T) {
+	caller := statusCaller()
+	caller.replies[procOverview] = []string{`{"services":[]}`}
+	caller.replies[cloudList] = []string{`{}`}
+	caller.replies[procAlerts] = []string{`{}`}
+	caller.replies[procWorkloads] = []string{`{"workloads":[
+		{"workload":"api","namespace":"shop","health":"WORKLOAD_HEALTH_SUSPENDED","healthReason":"UserSuspended: suspended by its owner","restartsInWindow":"0"},
+		{"workload":"web","namespace":"shop","health":"WORKLOAD_HEALTH_SUSPENDED","healthReason":"UserSuspended: suspended by its owner","restartsInWindow":"0"}]}`}
+	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := decode(t, out)
+	ws, _ := doc["workloads"].([]any)
+	if len(ws) != 2 || ws[0].(map[string]any)["health"] != "suspended" || doc["workloads_total"] != float64(2) {
+		t.Errorf("workloads = %v, total = %v", doc["workloads"], doc["workloads_total"])
+	}
+	if sug := fmt.Sprint(doc["suggested"]); !strings.Contains(sug, "forge env start prod") {
+		t.Errorf("suggested lacks the resume: %s", sug)
+	}
+	text, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SUSPENDED: every workload of prod (2) is suspended and serves no traffic", "env start prod", "UserSuspended: suspended by its owner"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "SUSPENDED") > strings.Index(text, "no service traffic") {
+		t.Errorf("the suspension must lead, before the quiet sections:\n%s", text)
+	}
+}
+
+// The hosted backend may cap the returned workload rows. An observed
+// subset cannot prove that the whole environment is suspended or healthy.
+func TestObsStatusMarksTruncatedWorkloads(t *testing.T) {
+	for _, tc := range []struct {
+		name, rows string
+		count      int
+	}{
+		{"suspended", `[{"workload":"api","health":"WORKLOAD_HEALTH_SUSPENDED"}]`, 1},
+		{"healthy", `[{"workload":"api","health":"WORKLOAD_HEALTH_HEALTHY"}]`, 1},
+		{"empty", `[]`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			caller := statusCaller()
+			caller.replies[procWorkloads] = []string{fmt.Sprintf(`{"truncated":true,"workloads":%s}`, tc.rows)}
+			out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := decode(t, out)
+			if doc["workloads_truncated"] != true || (tc.count > 0 && doc["workloads_total"] != float64(tc.count)) {
+				t.Errorf("truncation or returned row count missing: %s", out)
+			}
+			text, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, falseClaim := range []string{"every workload of prod", "every one healthy", "1 of 1 workloads of prod are suspended"} {
+				if strings.Contains(text, falseClaim) {
+					t.Errorf("partial output claimed %q:\n%s", falseClaim, text)
+				}
+			}
+			if !strings.Contains(text, fmt.Sprintf("workloads: %d read; result truncated", tc.count)) {
+				t.Errorf("text did not disclose truncation:\n%s", text)
+			}
+			if tc.name == "suspended" && !strings.Contains(text, "1 of 1 returned workloads") {
+				t.Errorf("text did not preserve bounded suspension evidence:\n%s", text)
+			}
+		})
+	}
+}
+
+// A workload needing a look is listed with the workloads view to open; a
+// read longer than ListWorkloads takes asks for its last 7 days.
+func TestObsStatusListsUnhealthyWorkloads(t *testing.T) {
+	caller := statusCaller()
+	caller.replies[procWorkloads] = []string{`{"workloads":[
+		{"workload":"api","namespace":"shop","health":"WORKLOAD_HEALTH_CRASH_LOOPING","healthReason":"restarted 14x, last exit OOMKilled","restartsInWindow":"14"},
+		{"workload":"worker","namespace":"shop","health":"WORKLOAD_HEALTH_HEALTHY","restartsInWindow":"0"}]}`}
+	out, _, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "status", "prod", "--json", "--since", "30d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := decode(t, out)
+	if ws, _ := doc["workloads"].([]any); len(ws) != 1 || ws[0].(map[string]any)["workload"] != "api" {
+		t.Errorf("only the workload needing a look is listed: %v", doc["workloads"])
+	}
+	if sug := fmt.Sprint(doc["suggested"]); !strings.Contains(sug, "forge obs workloads prod") || strings.Contains(sug, "env start") {
+		t.Errorf("suggested = %s", sug)
+	}
+	if c := callTo(caller.calls, procWorkloads); c == nil || !strings.Contains(c.body, `"2026-10-15T12:00:00Z"`) {
+		t.Errorf("a 30d status reads the workloads' last 7 days: %+v", c)
 	}
 }

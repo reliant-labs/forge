@@ -11,8 +11,10 @@ import (
 //
 // It used to be defined twice. forge's KCL SimpleBackend check required the
 // request to sit exactly on the band. control-plane's
-// inframeter.RatioFloor repriced an off-band request to
-// max(requested, band-implied) on each axis. Two definitions of one rule
+// inframeter.RatioFloor once repriced an off-band request to
+// max(requested, band-implied) on each axis; it no longer touches a billed
+// quantity (the meter bills exactly what a pod requests) and only rounds
+// admission ceilings onto the band. Two definitions of one rule
 // agree only by luck. The hosted path also never ran forge's KCL, so the
 // "enforcement" was bypassed: the live dev cluster ran a SimpleBackend at
 // 100m/128Mi.
@@ -44,11 +46,10 @@ func BandMemoryBytes(cpuMillicores int64) int64 {
 // CheckShapeBand reports whether a resource request sits exactly ON the band,
 // with a reason naming the conformant shape when it does not.
 //
-// EQUALITY, not a floor. The platform bills the max of what was asked and what
-// the band implies, so an off-band request is not rejected at billing time: it
-// is REPRICED silently, and the invoice stops matching the declaration.
-// Requiring the request to be on the band at deploy time is what makes the bill
-// equal the request. Only the REQUEST pair is checked, because requests are
+// EQUALITY, not a floor. The control plane's meter bills exactly what a pod
+// requests, with no shape floor; the band is what the hosted platform rounds
+// its quota and admission ceilings onto, so a request on the band is one those
+// ceilings fit exactly. Only the REQUEST pair is checked, because requests are
 // what is reserved and billed; limits are the workload's burst ceiling.
 //
 // Defaults are applied first, so an omitted resources block (the 250m / 1 GiB
@@ -63,7 +64,7 @@ func CheckShapeBand(r v1alpha1.Resources) error {
 		return fmt.Errorf("resources.cpuRequestMillicores %d must be a multiple of %dm for a hosted environment (125m/250m/500m/1000m/…): the coarsest step at which the %d GiB-per-vCPU band lands on a whole byte", cpu, BandGranularityMillicores, MemGiBPerVCPU)
 	}
 	if want := BandMemoryBytes(cpu); mem != want {
-		return fmt.Errorf("resources (%dm, %d bytes) are off the hosted %d GiB-per-vCPU shape band: %dm needs exactly %d bytes (%s). The platform bills the max of what you ask for and what the band implies, so an off-band shape would be repriced silently rather than rejected",
+		return fmt.Errorf("resources (%dm, %d bytes) are off the hosted %d GiB-per-vCPU shape band: %dm needs exactly %d bytes (%s). Hosted quota and admission ceilings are rounded onto the band (billing is exactly the request), so a hosted shape must sit on it",
 			cpu, mem, MemGiBPerVCPU, cpu, want, humanBytes(want))
 	}
 	return nil

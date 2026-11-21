@@ -39,7 +39,7 @@ func TestDevSecretStoreHeader_ExplainsTheEmptySlot(t *testing.T) {
 	// It must state the real precedence. The previous wording claimed only
 	// that "KCL env vars override this store", which is true but was read as
 	// a guarantee that the blank could not matter.
-	for _, want := range []string{"project config", "KCL env_vars", "your shell"} {
+	for _, want := range []string{"project config", "KCL env_vars", "your shell", "FORGE_ENV_OVERRIDE"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("header omits %q from the precedence chain; the chain is what tells a\n"+
 				"developer whether setting a slot will actually take effect:\n%s", want, got)

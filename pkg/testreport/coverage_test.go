@@ -340,6 +340,30 @@ func TestMerge_PathsAndExclusions(t *testing.T) {
 	}
 }
 
+// The ordinary Go text profile names each file by its import-path-qualified
+// name. Parsing keeps that name whole as ImportPath (its directory is the
+// package) and leaves Path empty; Merge with the module path derives the
+// repo path, which path filters, generated-file exclusion and diff coverage
+// then read (TestMerge_PathsAndExclusions, TestViews_LanesCombinedOnlyE2E).
+func TestParseCoverage_GoProfileNamesFilesByImportPath(t *testing.T) {
+	c, err := parseCovString(t, "mode: set\nexample.com/demo/internal/db/store.go:3.2,4.10 2 1\n", testreport.CoverageOptions{Lane: testreport.LaneUnit, Root: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := c.Files[0]
+	if f.ImportPath != "example.com/demo/internal/db/store.go" || f.Package != "example.com/demo/internal/db" || f.Path != "" || f.Lang != testreport.LangGo {
+		t.Fatalf("parsed file %+v", f)
+	}
+	m := merge(t, testreport.MergeOptions{ModulePath: "example.com/demo"}, c)
+	if got := m.Files[0]; got.Path != "internal/db/store.go" || got.ImportPath != f.ImportPath {
+		t.Errorf("merged file %+v, want Path internal/db/store.go and the import path kept", got)
+	}
+	d := m.Diff([]testreport.ChangedFile{{Path: "internal/db/store.go", Ranges: []testreport.LineRange{{Start: 3, End: 4}}}})
+	if d.Lines != 2 || d.Covered != 2 {
+		t.Errorf("diff coverage over the derived path: %+v", d)
+	}
+}
+
 // A Go profile names a file by import path; another input may name the same
 // file by its path (an absolute path under Root, an LCOV or Cobertura
 // report). Once Merge derives the path from the module path, both are one
@@ -385,6 +409,112 @@ func TestMerge_ImportPathAndRepoPathAreOneFile(t *testing.T) {
 	// In either order.
 	if _, err := testreport.Merge([]*testreport.Coverage{lcov, byImport}, testreport.MergeOptions{ModulePath: "example.com/demo"}); !errors.As(err, &gm) {
 		t.Errorf("LCOV first: %v", err)
+	}
+}
+
+// identityInputs are three inputs of one Go file, x.com/m/p/f.go at repo
+// path p/f.go, each naming it differently and each in its own lane:
+//
+//	byImport  a Go profile: import path only
+//	byPath    a profile of absolute paths: repo path only
+//	bridge    a document an earlier Merge derived: both names
+//
+// Each lane hits one block, so a split or double-counted file shows in the
+// per-lane counts.
+func identityInputs(t *testing.T) (byImport, byPath, bridge *testreport.Coverage) {
+	t.Helper()
+	parse := func(in string, lane testreport.Lane, root string) *testreport.Coverage {
+		c, err := parseCovString(t, in, testreport.CoverageOptions{Lane: lane, Tree: "t", Root: root})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	byImport = parse("mode: atomic\nx.com/m/p/f.go:1.1,2.1 2 5\nx.com/m/p/f.go:3.1,4.1 3 0\nx.com/m/p/f.go:5.1,6.1 1 0\n", "unit", "")
+	byPath = parse("mode: atomic\n/r/p/f.go:1.1,2.1 2 0\n/r/p/f.go:3.1,4.1 3 7\n/r/p/f.go:5.1,6.1 1 0\n", "e2e", "/r")
+	raw := parse("mode: atomic\nx.com/m/p/f.go:1.1,2.1 2 0\nx.com/m/p/f.go:3.1,4.1 3 0\nx.com/m/p/f.go:5.1,6.1 1 9\n", "integration", "")
+	var err error
+	if bridge, err = testreport.Merge([]*testreport.Coverage{raw}, testreport.MergeOptions{ModulePath: "x.com/m"}); err != nil {
+		t.Fatal(err)
+	}
+	if f := bridge.Files[0]; f.Path != "p/f.go" || f.ImportPath != "x.com/m/p/f.go" {
+		t.Fatalf("bridge names %+v", f)
+	}
+	return byImport, byPath, bridge
+}
+
+// assertOneIdentityFile checks a merge of identityInputs holds p/f.go once,
+// with each lane's own counts.
+func assertOneIdentityFile(t *testing.T, name string, m *testreport.Coverage, lanes map[testreport.Lane][2]int) {
+	t.Helper()
+	if len(m.Files) != 1 {
+		t.Fatalf("%s: %d files, want 1: %+v", name, len(m.Files), m.Files)
+	}
+	f := m.Files[0]
+	if f.Path != "p/f.go" || f.ImportPath != "x.com/m/p/f.go" || len(f.Blocks) != 3 || f.Granularity != testreport.GranularityStatement {
+		t.Errorf("%s: file %+v", name, f)
+	}
+	s := m.Summary()
+	if s.Combined.Statements != 6 {
+		t.Errorf("%s: %d statements, want 6 (double-counted?)", name, s.Combined.Statements)
+	}
+	for lane, want := range lanes {
+		if got := s.Lanes[lane]; got.Statements != want[0] || got.Covered != want[1] {
+			t.Errorf("%s: lane %s = %d/%d, want %d/%d", name, lane, got.Covered, got.Statements, want[1], want[0])
+		}
+	}
+	if len(s.Lanes) != len(lanes) {
+		t.Errorf("%s: lanes %+v", name, s.Lanes)
+	}
+}
+
+// [B1] A Go file named by import path in one input and by repo path in
+// another is one file however Merge learns the two names are the same, and
+// in whichever order the inputs arrive.
+func TestMerge_OneFileWhicheverNameComesFirst(t *testing.T) {
+	byImport, byPath, bridge := identityInputs(t)
+
+	// Two inputs, both orders: the module path links the names.
+	for _, order := range [][]*testreport.Coverage{{byImport, byPath}, {byPath, byImport}} {
+		m := merge(t, testreport.MergeOptions{ModulePath: "x.com/m"}, order...)
+		assertOneIdentityFile(t, "module path, "+string(order[0].Lanes[0].Name)+" first", m,
+			map[testreport.Lane][2]int{"unit": {6, 2}, "e2e": {6, 3}})
+	}
+
+	// Two inputs, both orders, no module path: a document that already
+	// carries both names (an earlier merge) links them.
+	for _, order := range [][]*testreport.Coverage{{bridge, byImport}, {byImport, bridge}, {bridge, byPath}, {byPath, bridge}} {
+		m := merge(t, testreport.MergeOptions{}, order...)
+		other := order[0].Lanes[0].Name
+		if other == "integration" {
+			other = order[1].Lanes[0].Name
+		}
+		want := map[testreport.Lane][2]int{"integration": {6, 1}, "unit": {6, 2}}
+		if other == "e2e" {
+			want = map[testreport.Lane][2]int{"integration": {6, 1}, "e2e": {6, 3}}
+		}
+		assertOneIdentityFile(t, "bridge with "+string(other), m, want)
+	}
+
+	// Three inputs, every order, no module path: the import-only and the
+	// path-only input are two aggregates until the bridge joins them, which
+	// may arrive first, between them, or last.
+	three := []*testreport.Coverage{byImport, byPath, bridge}
+	for _, perm := range [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		in := []*testreport.Coverage{three[perm[0]], three[perm[1]], three[perm[2]]}
+		m := merge(t, testreport.MergeOptions{}, in...)
+		assertOneIdentityFile(t, "three inputs "+strconv.Itoa(perm[0])+strconv.Itoa(perm[1])+strconv.Itoa(perm[2]), m,
+			map[testreport.Lane][2]int{"unit": {6, 2}, "e2e": {6, 3}, "integration": {6, 1}})
+	}
+
+	// A bridge joining two aggregates still refuses different source.
+	shifted, err := parseCovString(t, "mode: atomic\n/r/p/f.go:2.1,3.1 2 1\n/r/p/f.go:3.1,4.1 3 0\n/r/p/f.go:5.1,6.1 1 0\n", testreport.CoverageOptions{Lane: "e2e", Tree: "t", Root: "/r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sm *testreport.SourceMismatchError
+	if _, err := testreport.Merge([]*testreport.Coverage{byImport, shifted, bridge}, testreport.MergeOptions{}); !errors.As(err, &sm) {
+		t.Errorf("a shifted path-named input joined by the bridge: %v", err)
 	}
 }
 

@@ -358,3 +358,71 @@ func TestCoverBuildFlags_RealBuild(t *testing.T) {
 		t.Errorf("instrumented packages = %v, want internal/orders and not gen/api", pkgs)
 	}
 }
+
+// An image is built from the Dockerfile's cover stage when the env instruments
+// the binary its workload runs; a Dockerfile without the stage, or a build
+// that names its own target, builds exactly as before.
+func TestCoverImageArgs(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	for name, body := range map[string]string{
+		"forge.yaml":       "name: shop\n",
+		"Dockerfile":       "FROM golang:1.27 AS builder\nFROM builder AS cover-builder\nfrom alpine:3.21 as cover\nFROM alpine:3.21 AS production\n",
+		"old.Dockerfile":   "FROM golang:1.27 AS builder\nFROM builder AS cover-builder\nFROM alpine:3.21 AS production\n",
+		"cmd/shop/main.go": "package main\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !dockerfileHasCoverStage("Dockerfile") || dockerfileHasCoverStage("old.Dockerfile") {
+		t.Fatalf("cover stage detection: new=%v old=%v (cover-builder is not the cover stage)",
+			dockerfileHasCoverStage("Dockerfile"), dockerfileHasCoverStage("old.Dockerfile"))
+	}
+
+	e := &KCLEntities{Env: "dev", Lifecycle: "local", Project: "shop",
+		Tests: &TestsEntity{CoveragePackages: []string{"./internal/..."}},
+		Workloads: []WorkloadEntity{
+			clusterWL("api", "k3d-x", "ns", pgoDocker(DockerBuild{Dockerfile: "Dockerfile"})),
+			clusterWL("edge", "k3d-x", "ns", pgoDocker(DockerBuild{Dockerfile: "Dockerfile", Coverage: map[string]bool{"./cmd/proxy": false}}, "/app/proxy")),
+		}}
+	bins, err := ResolveCoverBinaries(e, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.applyCover(bins)
+	api, edge := e.Workloads[0].Build.Docker, e.Workloads[1].Build.Docker
+	if !e.Workloads[0].CoverBuild() || e.Workloads[1].CoverBuild() {
+		t.Fatalf("api runs ./cmd/shop (instrumented), edge ./cmd/proxy (declared off): got api=%v edge=%v",
+			e.Workloads[0].CoverBuild(), e.Workloads[1].CoverBuild())
+	}
+
+	args, err := coverImageArgs(context.Background(), "api", "Dockerfile", api)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"--target", "cover", "--build-arg", "FORGE_COVERPKG=./internal/..."}; !slices.Equal(args, want) {
+		t.Errorf("args = %v, want %v", args, want)
+	}
+	for name, tc := range map[string]struct {
+		dockerfile string
+		d          *DockerBuild
+	}{
+		"not instrumented": {"Dockerfile", edge},
+		"no cover stage":   {"old.Dockerfile", api},
+		"its own target":   {"Dockerfile", &DockerBuild{Target: "debug", cover: api.cover}},
+		"no docker build":  {"Dockerfile", nil},
+	} {
+		if args, err := coverImageArgs(context.Background(), "api", tc.dockerfile, tc.d); err != nil || args != nil {
+			t.Errorf("%s: args = %v (err %v), want none", name, args, err)
+		}
+	}
+	// Another context builds another module: Go's default packages, not ours.
+	other := &DockerBuild{Context: "svc", cover: api.cover}
+	if args, _ := coverImageArgs(context.Background(), "api", "Dockerfile", other); !slices.Equal(args, []string{"--target", "cover"}) {
+		t.Errorf("another context: args = %v, want only the target", args)
+	}
+}

@@ -1129,6 +1129,9 @@ type DockerBuild struct {
 	// that it names, keyed by package path; a binary it does not name
 	// follows the env's Tests (kcl/schema.k DockerBuild.coverage).
 	Coverage map[string]bool `json:"coverage,omitempty"`
+	// cover is set when the env builds this image instrumented: the binary
+	// its workload runs is a cover build (applyCover). Never decoded.
+	cover *workloadCover
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):

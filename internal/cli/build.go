@@ -496,6 +496,12 @@ type buildResult struct {
 	// upToDate marks a ShellBuild whose declared inputs were unchanged and
 	// whose last pushed image still stands, so its command did not run.
 	upToDate bool
+	// variant is the build variant this image IS ("cover": built from the
+	// Dockerfile's cover stage), empty for the shared build; coverDigest the
+	// digest of a cover build pushed BESIDE the shared one by a release
+	// build. Both are persisted to the build state and recorded by the cut.
+	variant     string
+	coverDigest string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1702,13 +1708,15 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			repository = opts.pushPlan.repositoryFor(r.image)
 		}
 		state := buildtarget.State{
-			Service:   r.image,
-			Image:     repository,
-			Tag:       r.tag,
-			PushedAt:  nowRFC3339(),
-			Digest:    r.digest,
-			Platforms: r.platforms,
-			Source:    r.source,
+			Service:     r.image,
+			Image:       repository,
+			Tag:         r.tag,
+			PushedAt:    nowRFC3339(),
+			Digest:      r.digest,
+			Platforms:   r.platforms,
+			Source:      r.source,
+			Variant:     r.variant,
+			CoverDigest: r.coverDigest,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -3744,12 +3752,24 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", ref, derr)
 		}
 	}
+	// A release build of an image whose project opts in to coverage also
+	// builds and pushes its cover stage, BESIDE the shared image: a preview
+	// of the release runs it (release.CoverVariant).
+	coverDigest, cerr := buildReleaseCoverVariant(ctx, svcName, dockerfile, d, dockerArgs, pushTags, len(coverArgs) > 0)
+	if cerr != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: cerr}
+	}
+	variant := ""
+	if len(coverArgs) > 0 {
+		variant = release.CoverVariant
+	}
 	return buildResult{
 		name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
 		// The state file is keyed by the SERVICE name (a path segment), while
 		// what it records is the repository. Keying it by the repository would
 		// put slashes in the filename.
 		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
+		variant: variant, coverDigest: coverDigest,
 		// The other repository's checkout, when the context is a GitSource:
 		// the build state and the release ledger (built_from) record it.
 		source: d.sourceForRecord(),

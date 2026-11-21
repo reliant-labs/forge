@@ -642,6 +642,12 @@ func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art rele
 	res := artifactVerification{Name: name, Kind: string(release.KindOCI)}
 
 	digest, ok := art.SharedDigest()
+	location := name
+	// A build variant (`<repository>#cover`) is pushed to its image's
+	// repository under its own digest: verified there like the shared one.
+	if repo, variant, isVariant := release.SplitVariantArtifactName(name); !ok && isVariant && art.Mode == release.ModeVariant {
+		digest, ok, location = art.Digests[variant], art.Digests[variant] != "", repo
+	}
 	if !ok {
 		res.Status = verifyUnverifiable
 		res.Detail = "no shared digest recorded (variant-mode artifacts are not yet resolvable)"
@@ -652,7 +658,6 @@ func verifyOCIArtifact(ctx context.Context, f httpFetcher, name string, art rele
 	// needs no second field — but a ledger entry with no host is still
 	// unverifiable (a local/compose build that pushed nowhere), and says so
 	// rather than guessing Docker Hub and reporting a spurious failure.
-	location := name
 	if art.URI != "" {
 		location = art.URI
 	}

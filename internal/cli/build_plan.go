@@ -305,11 +305,14 @@ func planKCLDockerRemote(in planInputs) []buildPlanStep {
 			}
 			dockerfile := serviceDockerfile(b.Docker)
 			imageName, imageTag := serviceDockerImage(svc, in.resolvedTag, in.opts)
-			_, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
+			args, pushes := serviceDockerBuildArgs(in.cfg, imageName, dockerfile, b.Docker, in.opts, in.targets.cfgArchForDocker, imageTag)
+			// The command the build will run, as the build prints it. The
+			// SOURCE_DATE_EPOCH build arg is the one argument missing: it
+			// comes from git history, which a plan does not read.
 			step := buildPlanStep{
 				kind:   "docker",
 				name:   svc.Name,
-				what:   "docker build -f " + dockerfile + " " + serviceDockerContext(b.Docker),
+				what:   dockerCommandLine(appendSourceDateEpoch(args, "")),
 				pushes: pushes,
 			}
 			if err := checkServiceDockerContext(in.projectDir, svc.Name, b.Docker); err != nil {

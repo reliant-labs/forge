@@ -255,7 +255,7 @@ func ignoreRunsDir(testsDir string) {
 		return
 	}
 	if os.MkdirAll(testsDir, 0o755) == nil {
-		_ = os.WriteFile(path, []byte("# forge test records: per-machine, never committed\n*\n"), 0o644)
+		_ = atomicfile.WriteFile(path, []byte("# forge test records: per-machine, never committed\n*\n"), 0o644)
 	}
 }
 

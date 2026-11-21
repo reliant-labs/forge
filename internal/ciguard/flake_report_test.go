@@ -10,37 +10,13 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// scripts/flake-report.sh reads a failed main run's logs, reruns each failing
-// Go test once and files the ones that pass as flake:suspected. Two ways it
-// got a run wrong, both pinned here against fixtures in the shape the real
-// scripts print:
-//
-//   - ATTRIBUTION. scripts/ci-test-shard.sh prints every package summary
-//     (`ok`/`FAIL <pkg>`) BEFORE the failed tests' output, so a `--- FAIL`
-//     cannot be attributed to the `FAIL <pkg>` line that follows it: there is
-//     none in its step, and the next step's unrelated `FAIL` must not claim it.
-//   - RACE. main's test jobs run under -race. A retry without it "passes" a
-//     race-only failure, which would then be filed as a flake.
+// scripts/flake-report.sh is, for a red run, a thin wrapper over `forge test
+// flakes confirm` and `forge test flakes --issues` (internal/testflakes pins
+// their attribution, race handling and issue filing, with the fixtures these
+// tests used to hold). What the script still owns, and these tests pin: its
+// arguments become forge's, it always exits 0, and --sweep is its own.
 
 const flakeModule = "github.com/reliant-labs/forge"
-
-// shardLog is ci-test-shard.sh's console output for a shard with two failed
-// packages: summaries first, then the failed tests' output, then the
-// annotations naming package and test.
-const shardLog = "ok  \t" + flakeModule + "/internal/a\t0.1s\n" +
-	"FAIL\t" + flakeModule + "/internal/b\t0.2s\n" +
-	"FAIL\t" + flakeModule + "/internal/c\t0.3s\n" +
-	"shard 0/2: 12s wall\n\n" +
-	"::group::output of failed tests\n" +
-	"=== RUN   TestB\n    b_test.go:5: boom\n--- FAIL: TestB (0.00s)\n" +
-	"=== RUN   TestC\n    c_test.go:9: bang\n--- FAIL: TestC (0.01s)\n" +
-	"::endgroup::\n" +
-	"::error::FAIL internal/b TestB\n" +
-	"::error::FAIL internal/c TestC\n"
-
-// laterStepLog is a later step of the same run with a package failure of its
-// own (a build failure: no test named).
-const laterStepLog = "FAIL\t" + flakeModule + "/internal/z [build failed]\n"
 
 // fakeGo answers `go list -m` with the module and records every `go test`,
 // passing whatever it was asked to run.
@@ -52,10 +28,6 @@ func fakeGo(t *testing.T, dir string) (binDir, calls string) {
 if [ "$1 $2" = "list -m" ]; then echo ` + flakeModule + `; exit 0; fi
 if [ "$1" = test ]; then
   echo "$*" >>"` + calls + `"
-  for a in "$@"; do case "$a" in '^('*) re="$a" ;; esac; done
-  re="${re#^(}"; re="${re%)\$}"
-  IFS='|' read -r -a ts <<<"$re"
-  for t in "${ts[@]}"; do echo "--- PASS: $t (0.00s)"; done
   exit 0
 fi
 exit 1
@@ -67,110 +39,6 @@ exit 1
 		t.Fatal(err)
 	}
 	return binDir, calls
-}
-
-// runFlakeReport runs the script from a module tree holding the given
-// packages, over a --logs directory holding files.
-func runFlakeReport(t *testing.T, files map[string]string, pkgs []string, args ...string) (out, calls string) {
-	t.Helper()
-	script, err := filepath.Abs(filepath.Join("..", "..", "scripts", "flake-report.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The script runs as a child, which Go's test cache cannot see: read it here.
-	if _, err := os.ReadFile(script); err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	logs := filepath.Join(dir, "logs")
-	for name, body := range files {
-		p := filepath.Join(logs, name)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mod := filepath.Join(dir, "mod")
-	if err := os.MkdirAll(mod, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range pkgs {
-		if err := os.MkdirAll(filepath.Join(mod, p), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	bin, callsFile := fakeGo(t, dir)
-	cmd := exec.Command("bash", append([]string{script, "--logs", logs, "--sha", "abc"}, args...)...)
-	cmd.Dir = mod
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_REPOSITORY=reliant-labs/forge")
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("flake-report.sh: %v\n%s", err, b)
-	}
-	c, _ := os.ReadFile(callsFile)
-	return string(b), string(c)
-}
-
-func TestFlakeReportAttributesShardFailuresRegardlessOfOrder(t *testing.T) {
-	testkit.Slow(t, "execs bash")
-	for _, tool := range []string{"bash", "jq", "awk"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip(tool + " not on PATH")
-		}
-	}
-	out, _ := runFlakeReport(t, map[string]string{"1-short.log": shardLog, "2-later.log": laterStepLog}, nil, "--list")
-	for _, want := range []string{
-		"  " + flakeModule + "/internal/b\tTestB",
-		"  " + flakeModule + "/internal/c\tTestC",
-		"2 failing test(s)",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "internal/z") {
-		t.Errorf("a later step's package failure claimed the shard's tests:\n%s", out)
-	}
-
-	// The short tier's go test -json artifact names package and test outright,
-	// with no console log at all.
-	json := `{"Action":"run","Package":"` + flakeModule + `/internal/d","Test":"TestD"}` + "\n" +
-		`{"Action":"output","Package":"` + flakeModule + `/internal/d","Test":"TestD","Output":"    d_test.go:3: no\n"}` + "\n" +
-		`{"Action":"fail","Package":"` + flakeModule + `/internal/d","Test":"TestD"}` + "\n" +
-		`{"Action":"fail","Package":"` + flakeModule + `/internal/d"}` + "\n"
-	out, _ = runFlakeReport(t, map[string]string{"test-short-0/test-shard.json": json, "2-later.log": laterStepLog}, nil, "--list")
-	if !strings.Contains(out, "  "+flakeModule+"/internal/d\tTestD") || strings.Contains(out, "internal/z") {
-		t.Errorf("the -json stream was not attributed by its own package:\n%s", out)
-	}
-}
-
-func TestFlakeReportNeverRetriesARaceWithoutTheDetector(t *testing.T) {
-	testkit.Slow(t, "execs bash")
-	for _, tool := range []string{"bash", "jq", "awk"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skip(tool + " not on PATH")
-		}
-	}
-	raceLog := "FAIL\t" + flakeModule + "/internal/r\t0.4s\n" +
-		"=== RUN   TestRacy\n==================\nWARNING: DATA RACE\nWrite at 0x00c0000a by goroutine 8:\n==================\n" +
-		"    testing.go:1490: race detected during execution of test\n--- FAIL: TestRacy (0.00s)\n" +
-		"=== RUN   TestFlaky\n    r_test.go:20: timeout\n--- FAIL: TestFlaky (1.00s)\n" +
-		"::error::FAIL internal/r TestRacy\n::error::FAIL internal/r TestFlaky\n"
-	out, calls := runFlakeReport(t, map[string]string{"race.log": raceLog}, []string{"internal/r"}, "--dry-run")
-	if !strings.Contains(out, "TestRacy reported a data race: a real failure") {
-		t.Errorf("the race was not recognised:\n%s", out)
-	}
-	if strings.Contains(calls, "TestRacy") {
-		t.Errorf("a race-only failure was retried (it would pass without the detector and be filed):\n%s", calls)
-	}
-	if !strings.Contains(calls, "-race") || !strings.Contains(calls, "TestFlaky") {
-		t.Errorf("the other failure must be retried under -race, got:\n%s", calls)
-	}
-	if !strings.Contains(out, "TestFlaky PASSED on retry") || !strings.Contains(out, "would file 1 flake:suspected issue(s)") {
-		t.Errorf("want TestFlaky alone reported:\n%s", out)
-	}
 }
 
 // fakeIssueGH logs every call to $GH_LOG and answers `issue list` (from
@@ -228,6 +96,9 @@ func runWithFakeGH(t *testing.T, script string, files map[string]string, env []s
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(fakeIssueGH), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The script runs from mod/ as from the module root, so its
+	// scripts/ci-forge.sh is mod/scripts/ci-forge.sh, here running the stub.
+	env = append(env, installStubForge(t, filepath.Join(dir, "mod")))
 	log := filepath.Join(dir, "gh.log")
 	cmd := exec.Command("bash", append([]string{abs}, args...)...)
 	cmd.Dir = filepath.Join(dir, "mod")
@@ -244,27 +115,13 @@ func runWithFakeGH(t *testing.T, script string, files map[string]string, env []s
 	return string(b), string(c)
 }
 
-// One issue per test: a later flake reopens a closed one rather than filing a
-// second, and --sweep closes the ones nothing keeps alive.
-func TestFlakeReportReopensAndSweepsItsIssues(t *testing.T) {
+// --sweep closes the open issues nothing keeps alive, and never runs forge.
+func TestFlakeReportSweepsItsIssues(t *testing.T) {
 	testkit.Slow(t, "execs bash and git")
 	script := filepath.Join("..", "..", "scripts", "flake-report.sh")
-	logs := "FAIL\t" + flakeModule + "/internal/b\t0.2s\n" +
-		"=== RUN   TestB\n    b_test.go:5: boom\n--- FAIL: TestB (0.00s)\n::error::FAIL internal/b TestB\n"
-	out, calls := runWithFakeGH(t, script, map[string]string{
-		"logs/1.log":               logs,
-		"mod/internal/b/b_test.go": "package b\n",
-		"list.json":                `[{"number":7,"title":"flake:suspected: TestB (internal/b)","state":"CLOSED"}]`,
-	}, nil, "--logs", "../logs", "--sha", "abc")
-	if !strings.Contains(calls, "issue reopen 7 ") || !strings.Contains(calls, "issue comment 7 ") {
-		t.Errorf("a closed issue for the same test must be reopened and commented on:\n%s\n%s", out, calls)
-	}
-	if strings.Contains(calls, "issue create") {
-		t.Errorf("a second issue was filed for one test:\n%s", calls)
-	}
-
+	forgeLog := filepath.Join(t.TempDir(), "forge-log")
 	// now = 2026-11-01T00:00:00Z
-	_, calls = runWithFakeGH(t, script, map[string]string{
+	_, calls := runWithFakeGH(t, script, map[string]string{
 		"mod/go.mod":               "module " + flakeModule + "\n",
 		"mod/internal/b/b_test.go": "package b\n\nfunc TestFresh(t *testing.T) {}\n\nfunc TestQuiet(t *testing.T) {}\n",
 		"list.json": `[
@@ -274,7 +131,7 @@ func TestFlakeReportReopensAndSweepsItsIssues(t *testing.T) {
   {"number":3,"title":"flake:suspected: TestQuiet (internal/b)","createdAt":"2026-10-20T00:00:00Z",
    "comments":[{"body":"Looking into it","createdAt":"2026-10-31T00:00:00Z"}]}
 ]`,
-	}, []string{"FLAKE_SWEEP_NOW=1793491200"}, "--sweep")
+	}, []string{"FLAKE_SWEEP_NOW=1793491200", "FORGE_LOG=" + forgeLog}, "--sweep")
 	var closed []string
 	for _, l := range strings.Split(calls, "\n") {
 		if strings.HasPrefix(l, "issue close ") {
@@ -284,5 +141,48 @@ func TestFlakeReportReopensAndSweepsItsIssues(t *testing.T) {
 	if len(closed) != 2 || !strings.HasPrefix(closed[0], "issue close 2 ") || !strings.Contains(closed[0], "`TestGone` no longer exists") ||
 		!strings.HasPrefix(closed[1], "issue close 3 ") || !strings.Contains(closed[1], "not flaked again for 12 days") {
 		t.Errorf("want #2 closed as deleted and #3 as quiet (a human comment is no occurrence), #1 kept; got:\n%s", strings.Join(closed, "\n"))
+	}
+	if b, _ := os.ReadFile(forgeLog); len(b) > 0 {
+		t.Errorf("--sweep must not run forge:\n%s", b)
+	}
+}
+
+// A red run is confirmed by forge and its issues synced: the script's
+// arguments and MAX_TESTS become confirm's flags, --list stops after
+// confirm, --dry-run reaches --issues, and nothing forge does fails it.
+func TestFlakeReportConfirmsThroughForge(t *testing.T) {
+	testkit.Slow(t, "execs bash")
+	script := filepath.Join("..", "..", "scripts", "flake-report.sh")
+	for _, tc := range []struct {
+		name string
+		env  []string
+		args []string
+		want []string
+	}{
+		{"run", []string{"MAX_TESTS=7"}, []string{"12345", "--dry-run"}, []string{
+			"test flakes confirm --run 12345 --repo o/r --max 7",
+			"test flakes --issues --repo o/r --dry-run",
+		}},
+		{"logs", nil, []string{"--logs", "../logs", "--sha", "abc", "--run-url", "https://ci/run/1"}, []string{
+			"test flakes confirm --logs ../logs --sha abc --run-url https://ci/run/1 --repo o/r --max 15",
+			"test flakes --issues --repo o/r",
+		}},
+		{"list", nil, []string{"--logs", "../logs", "--list"}, []string{
+			"test flakes confirm --logs ../logs --repo o/r --list --max 15",
+		}},
+		{"forge fails", []string{"STUB_EXIT=3"}, []string{"12345"}, []string{
+			"test flakes confirm --run 12345 --repo o/r --max 15",
+			"test flakes --issues --repo o/r",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "forge-log")
+			// runWithFakeGH fails the test unless the script exits 0.
+			_, _ = runWithFakeGH(t, script, map[string]string{"logs/1.log": "ok\n"}, append(tc.env, "FORGE_LOG="+log), tc.args...)
+			b, _ := os.ReadFile(log)
+			if got := strings.Split(strings.TrimSpace(string(b)), "\n"); strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+				t.Errorf("forge calls:\n%s\nwant:\n%s", b, strings.Join(tc.want, "\n"))
+			}
+		})
 	}
 }

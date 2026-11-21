@@ -565,6 +565,13 @@ func generateSteps() []GenStep {
 		// project had nothing to read and silently fell back to proto
 		// defaults, which is the bug this ordering fixes.
 		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
+		// Typed accessors for changes.yaml (Go and every web frontend). Not
+		// gated on frontends or services: a Go-only project and a static site
+		// both declare changes. A project without changes.yaml writes nothing
+		// here, and the step retires what an earlier declaration wrote. Before
+		// "cleanup stale codegen", which deletes the certified files this run
+		// did not write.
+		{Name: "changes accessors (changes.yaml)", Gate: always, Run: stepChangesAccessors, Tag: "codegen"},
 		// AFTER the env config modules, deliberately. Which workflows exist
 		// is read off a RENDER of every env (generate_ci_hosted.go: a hosted
 		// env gets release.yml, not deploy.yml), and an env cannot render

@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,6 +50,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/changesdecl"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -329,11 +331,11 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		}
 		fallbackNamespace = store.Meta().Name + "-" + envName
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDir, kclDir, envName)
 	if !envHasDeclaration(projectDir, envName, mainK) {
 		envs, _ := ListEnvs(projectDir)
 		return envShapeDoc{}, fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists (declared environments: %s)",
-			envName, mainK, envName, strings.Join(envs, ", "))
+			envName, shown, envName, strings.Join(envs, ", "))
 	}
 
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
@@ -411,6 +413,14 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if splitErr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, splitErr)
 	}
+	// The project's changes are one declaration (changes.yaml), the same in
+	// every env, so a release declares what each change can be wherever it
+	// ships. An invalid file is the declaration's error, not a missing
+	// feature: a release must never ship a declaration nobody validated.
+	changes, cerr := changesdecl.Load(projectDir)
+	if cerr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, cerr)
+	}
 	shapeTelemetry, telErr := shapeTelemetryOf(envName, entities, release.DefaultTelemetryLimits())
 	if telErr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, telErr)
@@ -443,6 +453,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		HostInfra:           len(entities.Infra) > 0,
 		Buckets:             shapeBucketsOf(entities),
 		Preview:             entities.Preview,
+		Changes:             changes.Shape(),
 		Store:               store,
 	})
 	if err != nil {
@@ -1146,6 +1157,14 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 				line += " (public read)"
 			}
 			fmt.Fprintf(w, "    %s\n", line)
+		}
+	}
+	if len(doc.Shape.Changes) > 0 {
+		keys := slices.Sorted(maps.Keys(doc.Shape.Changes))
+		fmt.Fprintf(w, "  changes:   %d declared in %s (who gets which variant is the control plane's)\n", len(keys), changesdecl.FileName)
+		for _, k := range keys {
+			c := doc.Shape.Changes[k]
+			fmt.Fprintf(w, "    %s [%s]: %d variant(s), default %s\n", k, c.Type, len(c.Variants), c.Default)
 		}
 	}
 	fmt.Fprintf(w, "  objects:   %d\n", len(doc.Shape.Objects))

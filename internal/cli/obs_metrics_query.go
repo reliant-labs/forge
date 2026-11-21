@@ -520,7 +520,11 @@ func runObsMetricsQuery(ctx context.Context, d obsDeps, env, metric string, o ob
 	if err != nil {
 		return fail(err)
 	}
-	res.Warnings = append(res.Warnings, undeclaredGroupByWarnings(panel, res.Series)...)
+	var comparison []obsbackend.MetricSeries
+	if res.Compare != nil {
+		comparison = res.Compare.Series
+	}
+	res.Warnings = append(res.Warnings, undeclaredGroupByWarnings(panel, res.Series, comparison)...)
 	for _, m := range res.Meta {
 		for i := range panel.Series {
 			if panel.Series[i].Label == m.Label && panel.Series[i].MetricType == "" {
@@ -719,22 +723,36 @@ const warnGroupByUndeclared = "group_by_undeclared"
 
 // undeclaredGroupByWarnings names each --group-by key that one of forge's own
 // metrics (pkg/observe/metrics) does not declare, when the result bears it
-// out: every series has an empty value for the key. `--group-by rpc.method`
+// out: every series in at least one returned range has an empty value for
+// the key. `--group-by rpc.method`
 // on rpc.server.duration read as one empty group with no hint that the
 // interceptor records the RPC as `procedure` (obs 03279cf8). A key the panel
 // reads off the resource (service.name, k8s.*) is never judged, nor is a
 // project's own metric, whose attributes the CLI does not know.
-func undeclaredGroupByWarnings(panel obsquery.Panel, series []obsbackend.MetricSeries) []string {
+func undeclaredGroupByWarnings(panel obsquery.Panel, primary, comparison []obsbackend.MetricSeries) []string {
 	var out []string
+	seen := make(map[[2]string]bool)
 	for _, key := range panel.GroupBy {
 		bare, isMetricAttr := strings.CutPrefix(panelField(key), "metric.attr.")
-		if !isMetricAttr || !allSeriesEmptyFor(series, key) {
+		if !isMetricAttr {
 			continue
 		}
+		a, b := allSeriesEmptyFor(primary, key), allSeriesEmptyFor(comparison, key)
+		if !a && !b {
+			continue
+		}
+		rangeNote := ""
+		if !a {
+			rangeNote = " in the comparison range"
+		} else if len(comparison) > 0 && !b {
+			rangeNote = " in the primary range"
+		}
 		for _, ps := range panel.Series {
-			if !metrics.IsBuiltin(ps.Field) {
+			pair := [2]string{ps.Field, bare}
+			if seen[pair] || !metrics.IsBuiltin(ps.Field) {
 				continue
 			}
+			seen[pair] = true
 			spec := metrics.BuiltinSpec(ps.Field)
 			declared := make([]string, 0, len(spec.Attributes))
 			found := false
@@ -749,8 +767,8 @@ func undeclaredGroupByWarnings(panel obsquery.Panel, series []obsbackend.MetricS
 			if len(declared) > 0 {
 				has = "its attributes: " + strings.Join(declared, ", ")
 			}
-			out = append(out, fmt.Sprintf("%s: %s records no %q attribute, so every point is in one group with an empty %s (%s)",
-				warnGroupByUndeclared, ps.Field, bare, key, has))
+			out = append(out, fmt.Sprintf("%s: %s records no %q attribute, so every point%s is in one group with an empty %s (%s)",
+				warnGroupByUndeclared, ps.Field, bare, rangeNote, key, has))
 		}
 	}
 	return out

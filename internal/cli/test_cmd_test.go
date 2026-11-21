@@ -17,7 +17,7 @@ func TestTestGroupSaysItRunsNoSuiteOfItsOwn(t *testing.T) {
 		}
 	}
 	for _, path := range [][]string{{"test", "begin"}, {"test", "capture"}} {
-		found, _, err := NewRootCmd().Find(path)
+		found, _, err := newTestRootCmd(t).Find(path)
 		if err != nil || found.Name() != path[1] {
 			t.Errorf("forge %s is not registered: %v", strings.Join(path, " "), err)
 		}

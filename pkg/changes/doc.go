@@ -39,13 +39,25 @@
 // ReasonRollout and ReasonExperiment are enrolled, and only enrolled results
 // belong in an experiment's denominator.
 //
-// # What this package is, and is not
+// # Two layers
 //
-// It is the provider-agnostic core: parse a snapshot (ParseSnapshot), decide
-// one change (Evaluate), and hash a preview unit (PreviewHash). It does no
-// I/O, records no telemetry and holds no globals. Loading snapshots, polling
-// for new revisions and recording evaluations as product events belong to
-// the layers above it (an OpenFeature provider, the web runtime).
+// The core is provider-agnostic and pure: parse a snapshot (ParseSnapshot),
+// decide one change (Evaluate), and hash a preview unit (PreviewHash). It
+// does no I/O, records no telemetry and holds no globals.
+//
+// The Store is what an app uses. OpenFile reads the snapshot file the
+// platform maintains (its path is in EnvFile), keeps the last good snapshot
+// current by polling, and records each useful evaluation as the product
+// event flag_evaluated, once per unit, change, run and variant per day:
+//
+//	store := changes.OpenFile(ctx, os.Getenv(changes.EnvFile), changes.Options{})
+//	defer store.Close()
+//	ec := changes.EvalContext{TargetingKey: userID}
+//	if changes.Bool(store.Evaluate(ctx, "new-checkout", ec), false) { … }
+//
+// Bool, String, Float64 and Decode read a result with the default written in
+// code. An app that evaluates through OpenFeature registers the provider in
+// the openfeature subpackage instead, which wraps a Store.
 //
 // The web runtime's changes module (@reliantlabs/forge-web-runtime,
 // src/changes.ts) is this package's twin. Both read the same golden vectors

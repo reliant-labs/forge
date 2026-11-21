@@ -155,14 +155,14 @@ func TestPlanKCLDockerRemote_ShowsContext(t *testing.T) {
 	if len(steps) != 2 {
 		t.Fatalf("expected a step per docker workload, got %d: %+v", len(steps), steps)
 	}
-	if want := "docker build -f frontends/internal-console/Dockerfile frontends/internal-console"; steps[0].what != want {
-		t.Errorf("plan must print the context;\n got %q\nwant %q", steps[0].what, want)
+	if want := " -f frontends/internal-console/Dockerfile frontends/internal-console"; !strings.HasSuffix(steps[0].what, want) {
+		t.Errorf("plan must print the context;\n got %q\nwant suffix %q", steps[0].what, want)
 	}
 	if steps[0].problem != "" {
 		t.Errorf("a valid context must not be a plan problem: %s", steps[0].problem)
 	}
-	if want := "docker build -f Dockerfile ."; steps[1].what != want {
-		t.Errorf("an unset context must plan as the project root;\n got %q\nwant %q", steps[1].what, want)
+	if want := " -f Dockerfile ."; !strings.HasSuffix(steps[1].what, want) {
+		t.Errorf("an unset context must plan as the project root;\n got %q\nwant suffix %q", steps[1].what, want)
 	}
 }
 

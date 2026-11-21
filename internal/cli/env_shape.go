@@ -331,11 +331,11 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		}
 		fallbackNamespace = store.Meta().Name + "-" + envName
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDir, kclDir, envName)
 	if !envHasDeclaration(projectDir, envName, mainK) {
 		envs, _ := ListEnvs(projectDir)
 		return envShapeDoc{}, fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists (declared environments: %s)",
-			envName, mainK, envName, strings.Join(envs, ", "))
+			envName, shown, envName, strings.Join(envs, ", "))
 	}
 
 	entities, kerr := RenderKCL(ctx, projectDir, envName)

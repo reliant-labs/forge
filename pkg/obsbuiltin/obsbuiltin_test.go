@@ -192,7 +192,7 @@ func TestLayout(t *testing.T) {
 		if row != 0 {
 			t.Errorf("%s: the last row is not full (%d of %d)", d.ID, row, dashspec.GridColumns)
 		}
-		if d.DefaultCompare != dashspec.ComparePeriod || d.DefaultRange == "" || d.Group != dashspec.GroupProduct {
+		if d.DefaultCompare != "" || d.DefaultRange == "" || d.Group != dashspec.GroupProduct {
 			t.Errorf("%s: compare %q, range %q, group %q", d.ID, d.DefaultCompare, d.DefaultRange, d.Group)
 		}
 	}

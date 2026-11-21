@@ -146,3 +146,34 @@ func TestEnsureHostedEnvironment_RefusesToGuessWhenCapabilitiesFail(t *testing.T
 		t.Error("an ensure was sent after the capability question failed")
 	}
 }
+
+// Several identities are refused to a control plane that does not converge
+// them — the ensure is never sent, rather than sent with the identities
+// stripped (which would converge none) — and sent whole to one that does.
+func TestEnsureHostedEnvironment_RefusesSeveralIdentitiesToAControlPlaneThatConvergesOne(t *testing.T) {
+	id := func(name string) release.ShapeIdentity {
+		return release.ShapeIdentity{Name: name, Runtime: release.IdentityRuntimeHosted, Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative}}
+	}
+	shape := &release.Shape{Kind: release.EnvSelfManaged, Identities: []release.ShapeIdentity{id("identity"), id("users")}}
+	ref := HostedEnvRef{Name: "prod", Kind: HostedEnvSelfManaged, Shape: shape}
+	for name, features := range map[string][]string{
+		"predates identities":    nil,
+		"decodes, not converges": release.BundleDocFeatures(),
+	} {
+		c := &capsCaller{features: features}
+		_, _, err := EnsureHostedEnvironment(context.Background(), c, ref)
+		if err == nil || !strings.Contains(err.Error(), release.CapabilityConvergesSeveralIdentities) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if c.ensured != nil {
+			t.Errorf("%s: the ensure was sent", name)
+		}
+	}
+	c := &capsCaller{features: append(release.BundleDocFeatures(), release.CapabilityConvergesSeveralIdentities)}
+	if _, _, err := EnsureHostedEnvironment(context.Background(), c, ref); err != nil {
+		t.Fatal(err)
+	}
+	if got := sentShape(t, c); !strings.Contains(got, `"identities"`) || !strings.Contains(got, `"users"`) {
+		t.Errorf("a control plane that converges several identities was not sent them: %s", got)
+	}
+}

@@ -493,7 +493,7 @@ func TestWorkloadStatements(t *testing.T) {
 		"usage": q.Usage, "restarts": q.Restarts, "terminations": q.Terminations, "warnings": q.LatestWarnings,
 		"events": q.Events, "images": q.ImageChanges, "versions": func() (Stmt, error) { return q.Versions([]string{h, "b"}) },
 		"latest versions": func() (Stmt, error) { return q.LatestVersions([]string{h, "b"}) }, "series": func() (Stmt, error) { return q.Series(60) }, "restart series": func() (Stmt, error) { return q.RestartSeries(60) },
-		"replicas": q.Replicas, "readiness": func() (Stmt, error) { return q.Readiness(60) }, "pods": q.Pods, "pod restarts": q.PodRestarts, "jobs": q.Jobs,
+		"replicas": q.Replicas, "readiness": func() (Stmt, error) { return q.Readiness(60) }, "pods": q.Pods, "pod restarts": q.PodRestarts, "pod usage": q.PodUsage, "jobs": q.Jobs,
 	} {
 		st, err := f()
 		if err != nil {

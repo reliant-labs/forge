@@ -516,6 +516,9 @@ func (r Release) Validate() error {
 		if err := r.Artifacts[name].Validate(name); err != nil {
 			return fmt.Errorf("release %q: %w", r.Version, err)
 		}
+		if err := validateVariantArtifact(name, r.Artifacts[name]); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
 	}
 	return nil
 }

@@ -60,6 +60,14 @@ func Ingest(opts IngestOptions) (IngestResult, error) {
 		return IngestResult{}, fmt.Errorf("run %s: %w", opts.RunDir, err)
 	}
 	laneDir := testreport.LaneDir(opts.RunDir, opts.Lane)
+	// Ingest copies reports INTO the lane, so a report already inside it
+	// is refused before anything is written: the copy could otherwise land
+	// on, or beside, the very file it reads (a symlink resolved too).
+	for _, p := range opts.Files {
+		if insideDir(laneDir, p) {
+			return IngestResult{}, fmt.Errorf("%s is already inside lane %s of the run (%s); ingest copies a report into the run, so pass the runner's own file", p, opts.Lane, laneDir)
+		}
+	}
 	if err := os.MkdirAll(laneDir, 0o755); err != nil {
 		return IngestResult{}, err
 	}
@@ -143,7 +151,10 @@ func ingestResults(m *testreport.LaneManifest, laneDir string, f testreport.Form
 func ingestCoverage(m *testreport.LaneManifest, laneDir, format string, files []string) error {
 	ext := map[string]string{"lcov": ".info", "cobertura": ".xml", "istanbul": ".json"}[format]
 	conventional := map[string]string{"lcov": "lcov.info", "cobertura": "cobertura-coverage.xml", "istanbul": "coverage-final.json"}[format]
-	for _, p := range files {
+	// Every input is read and checked before the first write, so a bad
+	// one leaves the lane as it was.
+	staged := make([][]byte, len(files))
+	for i, p := range files {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return err
@@ -151,6 +162,9 @@ func ingestCoverage(m *testreport.LaneManifest, laneDir, format string, files []
 		if got := testreport.DetectFormat(b[:min(len(b), 8<<10)]); got != testreport.Format(format) {
 			return fmt.Errorf("%s is not %s coverage (it reads as %s)", p, format, got)
 		}
+		staged[i] = b
+	}
+	for _, b := range staged {
 		name := conventional
 		for i := 2; fileExists(filepath.Join(laneDir, name)); i++ {
 			name = fmt.Sprintf("%s-%d%s", strings.TrimSuffix(conventional, filepath.Ext(conventional)), i, ext)
@@ -161,6 +175,28 @@ func ingestCoverage(m *testreport.LaneManifest, laneDir, format string, files []
 		m.Coverage = append(m.Coverage, testreport.LaneCoverageInput{Path: name, Format: format})
 	}
 	return nil
+}
+
+// insideDir reports whether p, with symlinks resolved, is dir or lies
+// beneath it. A dir that does not exist yet holds nothing.
+func insideDir(dir, p string) bool {
+	canon := func(x string) (string, bool) {
+		a, err := filepath.Abs(x)
+		if err != nil {
+			return "", false
+		}
+		if r, err := filepath.EvalSymlinks(a); err == nil {
+			a = r
+		}
+		return a, true
+	}
+	d, ok1 := canon(dir)
+	f, ok2 := canon(p)
+	if !ok1 || !ok2 {
+		return false
+	}
+	rel, err := filepath.Rel(d, f)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
 func fileExists(p string) bool {

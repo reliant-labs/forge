@@ -318,6 +318,10 @@ var newRules = []rolloutGroup{
 		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
 		Rules:        dbanalyze.QueryRuleIDs(),
 	},
+	// forge lint --crud-ownership: a table served by generated CRUD on an
+	// authenticated rpc that declares no owner (forge:owner=, a forge:owner
+	// column) and no forge:public / forge:unscoped reason.
+	{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

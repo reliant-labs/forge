@@ -88,6 +88,12 @@ message CountPostsResponse {
 	}
 
 	runCmd(t, projectDir, forgeBin, "scaffold")
+	// The born posts table declares no owner and no exemption: whose rows
+	// they are is the author's to say (the crud-table-unowned lint asks).
+	// A project with no users has no caller to scope by.
+	writeFileE2E(t, nextMigrationPathE2E(t, projectDir, "declare_posts_scope"),
+		"-- forge:backward-compatible — a table comment only; no schema change\n"+
+			"COMMENT ON TABLE posts IS 'forge:unscoped: the project has no users to scope rows by';\n")
 	runCmd(t, projectDir, forgeBin, "generate")
 	runCmd(t, projectDir, "go", "build", "./...")
 

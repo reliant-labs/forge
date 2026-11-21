@@ -114,7 +114,7 @@ GROUP BY service
 HAVING requests >= 20 AND value > 1
 ORDER BY service
 
--- ServiceSilent (service-silent) severity=warning for=0s interval=1m
+-- ServiceSilent (service-silent) severity=warning for=0s interval=5m
 WITH moves AS (
     SELECT service, arrayJoin(t) AS t
     FROM (

@@ -642,3 +642,32 @@ func TestConnectHandlerEvidence(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckPayloadLimitsReadsTheGraphProvider pins NS FG-25: a graph-composed
+// project builds its serverkit chain, caps and all, in a provider under
+// internal/app/, and cmd/ only projects the config. A fresh service scaffold
+// is that shape, and the check, reading cmd/ alone, failed the scaffold's own
+// `task ci` with "payloads are unbounded".
+func TestCheckPayloadLimitsReadsTheGraphProvider(t *testing.T) {
+	dir := payloadProject(t, map[string]string{
+		"cmd/app/cmd/serve.go": "package cmd\n\nfunc serverkitConfig() {}\n",
+		"internal/app/providers.go": `package app
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func provideChain(d deps) {
+	chain, err := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		ReadMaxBytes: d.ServerCfg.ReadMaxBytes,
+		SendMaxBytes: d.ServerCfg.SendMaxBytes,
+	})
+	_, _ = chain, err
+}
+`,
+		"forge.yaml":                        payloadForgeYAML,
+		"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
+	})
+	got := CheckPayloadLimits(context.Background(), &Environment{ProjectDir: dir})
+	if got.Status != StatusPass || !strings.Contains(got.Evidence, filepath.FromSlash("internal/app/providers.go")) {
+		t.Fatalf("status = %q (%s), evidence %q; want a pass sourced from internal/app/providers.go", got.Status, got.Message, got.Evidence)
+	}
+}

@@ -500,7 +500,7 @@ func markerSpecs() []MarkerSpec {
 			AppliesTo: "deps-field",
 			Effect:    "Suppresses `forge lint --optional-deps-guard` on one dereference of a `forge:optional-dep` field that is provably safe by reasoning the analyzer cannot follow.",
 			Placement: "on the dereferencing line, or the line above it",
-			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked",
+			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked: New refuses a nil Stripe in prod",
 		},
 		{
 			Name:      "forge:constructor",

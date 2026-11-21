@@ -601,7 +601,7 @@ design is unchanged; these are the API details building it settled.
   and air-gapped machines. The package's test verifies forge v1.8.0's real
   signed `checksums.txt` against a pinned snapshot of the public-good root, and
   that each rule above refuses.
-- **`ManifestSource{URL, Client}`** reads schema 1 of the channel manifest,
+- **`ManifestSource{URL, Repository, Client}`** requires the manifest's repository to match the caller's expected `owner/repo` and reads schema 1 of the channel manifest,
   the format reliant's R0 publishes as `daemon-channels.json`
   (`dev-docs/cli-release-artifacts.md`): one channel's version, tag, commit
   time, `checksums`, `bundle` and per-`goos/goarch` archives, each named by the

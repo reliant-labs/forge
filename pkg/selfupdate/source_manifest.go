@@ -24,6 +24,7 @@ import (
 //
 //	{
 //	  "schema": 1,
+//	  "repository": "owner/repo",
 //	  "channels": {
 //	    "<channel>": {
 //	      "version": "1.9.0", "tag": "v1.9.0", "commit": "<sha>",
@@ -43,6 +44,9 @@ import (
 type ManifestSource struct {
 	// URL is the manifest's https URL.
 	URL string
+	// Repository is the required expected repository ("owner/repo"). The
+	// manifest must name exactly this repository before any release is returned.
+	Repository string
 	// AllowedOrigins are the https origins ("https://host[:port]") the
 	// manifest may name files on. Empty allows only the manifest's own
 	// origin. A manifest naming a file anywhere else is refused, and so is a
@@ -75,8 +79,9 @@ type manifestChannel struct {
 }
 
 type manifestDoc struct {
-	Schema   int                        `json:"schema"`
-	Channels map[string]manifestChannel `json:"channels"`
+	Schema     int                        `json:"schema"`
+	Repository string                     `json:"repository"`
+	Channels   map[string]manifestChannel `json:"channels"`
 }
 
 // Latest returns the release the manifest names for channel.
@@ -85,9 +90,15 @@ func (m ManifestSource) Latest(ctx context.Context, channel string) (Release, er
 	if err != nil {
 		return Release{}, err
 	}
+	if strings.TrimSpace(m.Repository) == "" {
+		return Release{}, errors.New("selfupdate: ManifestSource.Repository is required")
+	}
 	doc, err := m.fetch(ctx)
 	if err != nil {
 		return Release{}, err
+	}
+	if doc.Repository != m.Repository {
+		return Release{}, fmt.Errorf("selfupdate: channel manifest repository %q does not match expected repository %q", doc.Repository, m.Repository)
 	}
 	return doc.release(channel, allowed)
 }

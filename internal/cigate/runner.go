@@ -1076,6 +1076,11 @@ type heavyQueue struct {
 	// the chosen request has asked, so which check gets it never depends on
 	// goroutine scheduling.
 	ready func() []int
+	// held, when set, is called each time choose evaluates the waiting
+	// requests and holds the slot back for an earlier ready check that has
+	// not asked yet, with the positions waiting at that moment. Tests wait on
+	// it instead of on the clock.
+	held func(waiting []int)
 
 	mu      sync.Mutex
 	waiting []heavyReq
@@ -1185,7 +1190,14 @@ func (q *heavyQueue) choose() (heavyReq, error) {
 			q.mu.Unlock()
 			return req, nil
 		}
+		waiting := make([]int, len(q.waiting))
+		for k, r := range q.waiting {
+			waiting[k] = r.pos
+		}
 		q.mu.Unlock()
+		if q.held != nil {
+			q.held(waiting)
+		}
 		select {
 		case <-q.wake:
 		case <-q.ctx.Done():

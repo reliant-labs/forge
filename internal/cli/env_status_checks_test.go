@@ -113,6 +113,22 @@ func TestRuntimeTargetRemoteOnlyFollowsTheDeclaration(t *testing.T) {
 	}
 }
 
+// ClusterOnly: a local cluster runs on this machine (so not RemoteOnly), but
+// an env with only cluster workloads has no host stack (TL-75).
+func TestRuntimeTargetClusterOnly(t *testing.T) {
+	local := &KCLEntities{Workloads: []WorkloadEntity{clusterWL("api", "k3d-acme", "k8s")}}
+	if got := runtimeTargetFor(local, nil); got.RemoteOnly || !got.ClusterOnly {
+		t.Errorf("local-cluster-only env: %+v, want ClusterOnly and not RemoteOnly", got)
+	}
+	mixed := &KCLEntities{Workloads: []WorkloadEntity{clusterWL("api", "k3d-acme", "dev"), hostWL("web")}}
+	if runtimeTargetFor(mixed, nil).ClusterOnly {
+		t.Error("an env with a host service is not cluster-only")
+	}
+	if runtimeTargetFor(nil, nil).ClusterOnly {
+		t.Error("ClusterOnly with no render must be false")
+	}
+}
+
 func TestPprofPortFromAddr(t *testing.T) {
 	cases := map[string]string{
 		":6060":            "6060",

@@ -401,11 +401,15 @@ func TestEnvDelete_ResolvesAnUndeclaredEnvByName(t *testing.T) {
 }
 
 func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
-	t.Run("none bound", func(t *testing.T) {
+	t.Run("none bound: Reliant cloud is asked", func(t *testing.T) {
+		cloudCP := controlPlaneServer(t, map[string]string{
+			"ListEnvironments": `{"environments":[{"id":"env_9","name":"prod-web","project":"shop"}]}`,
+		})
+		useUnboundControlPlane(t, cloudCP.URL)
 		undeclaredDeleteProject(t)
-		_, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
-		if err == nil || !strings.Contains(err.Error(), "--endpoint "+cloud.DefaultEndpoint) {
-			t.Fatalf("err = %v; want an --endpoint fix", err)
+		got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+		if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != cloudCP.URL {
+			t.Fatalf("target = %+v, %v; want env_9 on Reliant cloud (%s)", got, err, cloudCP.URL)
 		}
 	})
 	t.Run("several bound", func(t *testing.T) {
@@ -473,4 +477,29 @@ func TestEnvDelete_UndeclaredEnvNeedsOneControlPlane(t *testing.T) {
 			t.Fatalf("err = %v; want --endpoint refused for a declared env", err)
 		}
 	})
+}
+
+// TestEnvDelete_MonitoringOnlyEnvDocument pins TL-58: a monitoring-only env
+// `forge obs init` registered is declared by deploy/envs/<env>.yaml, places
+// nothing on the control plane, and is still deleted through its declaration
+// — by name, on the control plane the document names, with no --endpoint.
+func TestEnvDelete_MonitoringOnlyEnvDocument(t *testing.T) {
+	srv := envListServer(t)
+	undeclaredDeleteProject(t)
+	doc := "apiVersion: forge.dev/env/v1\nproject: \"shop\"\nenv: \"prod-web\"\n" +
+		"control_plane: {endpoint: \"" + srv.URL + "\"}\nobservability:\n  enabled: true\n  destination: {token_from_control_plane: true}\n"
+	if err := os.MkdirAll(filepath.Join("deploy", "envs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("deploy", "envs", "prod-web.yaml"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", "")
+	if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != srv.URL {
+		t.Fatalf("target = %+v, %v; want env_9 on the document's control plane %s", got, err, srv.URL)
+	}
+	// stop/start still need a hosted part: there is nothing to suspend.
+	if _, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "stop", "tok", ""); err == nil {
+		t.Error("stop resolved a monitoring-only env; want it refused (it runs nothing on the control plane)")
+	}
 }

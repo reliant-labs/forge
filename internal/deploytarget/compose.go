@@ -287,13 +287,29 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 	if envFile != "" {
 		upArgs = append(upArgs, "--env-file", envFile)
 	}
-	upArgs = append(upArgs, "up", "-d")
-	upArgs = appendComposeWaitArgs(upArgs, spec)
-	upArgs = append(upArgs, target)
+	//
+	//    The wait is a SECOND, --no-deps up of the target alone (NS FG-18).
+	//    `up -d --wait <target>` also waits on every dependency it starts,
+	//    and fails on a one-shot one (`depends_on: [migrate]`, a migrate
+	//    service that exits 0) that a bare `compose up` handles. Starting
+	//    the target with its dependencies first honours whatever
+	//    depends_on conditions the compose file declares, exactly as
+	//    `compose up` does; the waited up then judges only the target.
+	baseUpArgs := upArgs
+	upArgs = append(append([]string{}, baseUpArgs...), "up", "-d", target)
+	var waitArgs []string
+	if composeWait(spec) {
+		waitArgs = append(append([]string{}, baseUpArgs...), "up", "-d")
+		waitArgs = appendComposeWaitArgs(waitArgs, spec)
+		waitArgs = append(waitArgs, "--no-deps", target)
+	}
 
 	if group.DryRun {
 		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(pullArgs, " "))
 		fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(upArgs, " "))
+		if waitArgs != nil {
+			fmt.Printf("  [DRY-RUN] would run: docker %s\n", strings.Join(waitArgs, " "))
+		}
 		return nil
 	}
 
@@ -323,12 +339,17 @@ func (p ComposeProvider) deployOne(ctx context.Context, runner commandRunner, gr
 		return fmt.Errorf("compose %s: inventory before up: %w", svc.Name, err)
 	}
 	upErr := runner.RunWithEnv(ctx, envOverlay, "docker", upArgs...)
+	waitFailed := false
+	if upErr == nil && waitArgs != nil {
+		upErr = runner.RunWithEnv(ctx, envOverlay, "docker", waitArgs...)
+		waitFailed = upErr != nil
+	}
 	// Even an unhealthy up can have created containers. Remember them before
 	// returning so env down can clean up a partially started stack.
-	ownedErr := p.recordOwned(ctx, runner, envOverlay, spec, group.Env, target, strings.Fields(string(before)))
+	ownedErr := p.recordOwned(ctx, runner, envOverlay, spec, group.Env, target, composeContainerIDs(before))
 	if upErr != nil {
 		err := errors.Join(upErr, ownedErr)
-		if composeWait(spec) {
+		if waitFailed {
 			// With --wait, an `up` failure most often means the
 			// container came up but never became healthy. Say so —
 			// "up: exit status 1" sends people looking at the wrong

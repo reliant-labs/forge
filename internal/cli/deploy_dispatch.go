@@ -152,9 +152,10 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 				IDPStepsFile:    hi.IDPStepsFile,
 				IDPPATPath:      hi.IDPPATPath,
 
-				NATSMonitorPort:    hi.NATSMonitorPort,
-				TemporalNamespaces: hi.TemporalNamespaces,
-				TemporalUIPort:     hi.TemporalUIPort,
+				NATSMonitorPort:     hi.NATSMonitorPort,
+				TemporalNamespaces:  hi.TemporalNamespaces,
+				TemporalUIPort:      hi.TemporalUIPort,
+				TemporalMetricsPort: hi.TemporalMetricsPort,
 			},
 		})
 	}

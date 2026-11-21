@@ -97,6 +97,40 @@ _ae = _env(_agent, "sys")
 assert_agent_grpc_endpoint = _ae.SYS_ENDPOINT == "http://otel-agent.forge-observability.svc.cluster.local:4317"
 assert_agent_grpc_address = _ae.SYS_GRPC == "otel-agent.forge-observability.svc.cluster.local:4317"
 
+# Workload declarations take precedence over environment defaults, while
+# literal workload env still wins when it sets a sampler or transport.
+_sdk = fw.Telemetry {otlp = fw.OtlpPush {protocol = "grpc", sampler_ratio = 0.25, env = forge.otlp_env()}}
+_override = forge.render(forge.Bundle {
+    project = "demo"
+    env = "dev"
+    observability = forge.Observability {
+        destination = forge.ObservabilityDestination {endpoint = "https://otlp.example.com"}
+        sampling = forge.ObservabilitySampling {traces_ratio = 0.1}
+        telemetry_collector = forge.TelemetryCollector {
+            namespace = "otel"
+            pod_labels = {app = "otel"}
+            otlp_http_endpoint = "https://otel.otel.svc:4318/"
+            otlp_grpc_address = "otel.otel.svc:4317"
+        }
+    }
+    workloads = [
+        fw.Workload {name = "defaults", image = "docker.io/example/sys:1", runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {name = "sdk", image = "docker.io/example/sys:1", telemetry = _sdk, runtime = forge.OnCluster {target = _k3d}}
+        fw.Workload {
+            name = "literal", image = "docker.io/example/sys:1", telemetry = _sdk, runtime = forge.OnCluster {target = _k3d}
+            env = {OTEL_TRACES_SAMPLER = "always_off", OTEL_EXPORTER_OTLP_ENDPOINT = "https://sdk.example.com", OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf"}
+        }
+    ]
+})
+_de = _env(_override, "defaults")
+_se = _env(_override, "sdk")
+_le = _env(_override, "literal")
+assert_default_sampler = _de.OTEL_TRACES_SAMPLER_ARG == "0.1"
+assert_workload_sampler = _se.OTEL_TRACES_SAMPLER == "parentbased_traceidratio" and _se.OTEL_TRACES_SAMPLER_ARG == "0.25"
+assert_workload_transport = _se.OTEL_EXPORTER_OTLP_PROTOCOL == "grpc" and _se.OTEL_EXPORTER_OTLP_ENDPOINT == "http://otel.otel.svc:4317"
+assert_literal_sampler = _le.OTEL_TRACES_SAMPLER == "always_off" and "OTEL_TRACES_SAMPLER_ARG" not in _le
+assert_literal_transport = _le.OTEL_EXPORTER_OTLP_PROTOCOL == "http/protobuf" and _le.OTEL_EXPORTER_OTLP_ENDPOINT == "https://sdk.example.com"
+
 _hosted = forge.render(forge.Bundle {
     project = "demo"
     env = "prod"

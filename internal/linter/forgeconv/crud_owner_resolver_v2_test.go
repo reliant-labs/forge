@@ -30,6 +30,7 @@ func (s *Service) GetTask(ctx context.Context, req *connect.Request[pb.GetTaskRe
 	if err != nil {
 		return nil, err
 	}
+	// FORGE_SCAFFOLD: placeholder
 	owner := claims.UserID
 	_ = orm.WhereEq("tenant_id", owner)
 	return nil, nil
@@ -64,6 +65,7 @@ func (s *Service) GetTask(ctx context.Context, req *pb.GetTaskRequest) (*pb.GetT
 	if err != nil {
 		return nil, err
 	}
+	// FORGE_SCAFFOLD: placeholder
 	owner := claims.UserID
 	_ = orm.WhereEq("tenant_id", owner)
 	return nil, nil

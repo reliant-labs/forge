@@ -48,6 +48,10 @@
       "types": "./dist/auth/supabase.d.ts",
       "default": "./dist/auth/supabase.js"
     },
+    "./devlog": {
+      "types": "./dist/devlog.d.ts",
+      "default": "./dist/devlog.js"
+    },
     "./interceptors": {
       "types": "./dist/interceptors.d.ts",
       "default": "./dist/interceptors.js"

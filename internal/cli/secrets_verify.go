@@ -83,6 +83,11 @@ compares the live Secret with Google Secret Manager, using your Application
 Default Credentials. A key reads the GSM secret of its store name unless --map
 names another id.
 
+On a hosted env (secret_provider hosted) with no <secret> argument, it checks
+instead that every secret the env declares holds a value in the control
+plane's store — set or MISSING per name, non-zero if any is missing — so a
+pipeline can verify before it deploys. The store never returns a value.
+
 The output is a verdict per key (match / no-match, with which side is missing)
 and nothing else. No value is printed, and no hash of one: a digest of a
 low-entropy secret is as good as the secret to anyone who can guess. The exit
@@ -168,6 +173,13 @@ func runSecretsVerify(ctx context.Context, envName, secretArg string, opts secre
 	e, err := renderEntitiesForSecrets(ctx, envName)
 	if err != nil {
 		return fmt.Errorf("render KCL: %w", err)
+	}
+	// A hosted env's values live in the control plane, which never hands
+	// one back. What can be verified before a deploy is that every secret
+	// the env declares HOLDS a value there (NS FG-37); it used to say
+	// "nothing to verify" and exit 1.
+	if isHostedSecretEnv(e) && secretArg == "" && opts.Against == "" && !hasStoreSources(e) {
+		return verifyHostedPresence(ctx, envName, e, out)
 	}
 	targets, err := findStoreSecrets(e, secretArg)
 	if err != nil {
@@ -473,3 +485,40 @@ func runSecretsAdopt(ctx context.Context, envName, secretArg, kubeContext string
 	fmt.Fprintf(out, "%s: no ownerReferences\n", id)
 	return nil
 }
+
+// verifyHostedPresence checks that every secret a hosted env declares holds a
+// value in the control plane's store, by name: ListSecrets has no value
+// field, so nothing here can carry one. A missing declared secret fails the
+// run and names the command that sets it.
+func verifyHostedPresence(ctx context.Context, envName string, e *KCLEntities, out io.Writer) error {
+	store, err := hostedSecretListStoreFn(ctx, envName, e)
+	if err != nil {
+		return err
+	}
+	report := buildSecretListReport(envName, e, store)
+	fmt.Fprintf(out, "verify env %s against the hosted secret store (presence only: values never leave it)\n\n", envName)
+	if len(report.Secrets) == 0 {
+		fmt.Fprintln(out, "the env declares no secrets: nothing to verify")
+		return nil
+	}
+	var missing []string
+	for _, s := range report.Secrets {
+		verdict := "set"
+		if s.Presence != secretPresenceSet {
+			verdict = strings.ToUpper(s.Presence)
+			missing = append(missing, s.Name)
+		}
+		fmt.Fprintf(out, "  %-40s %s\n", s.Name, verdict)
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(out, "\n%d of %d declared secret(s) hold no value: set each with `%s secret set --env %s <KEY>`\n",
+			len(missing), len(report.Secrets), Name(), envName)
+		return fmt.Errorf("%d declared secret(s) are not set in env %s: %s", len(missing), envName, strings.Join(missing, ", "))
+	}
+	fmt.Fprintf(out, "\nall %d declared secret(s) are set\n", len(report.Secrets))
+	return nil
+}
+
+// hostedSecretListStoreFn reads the hosted store's names. A seam, so the
+// verify path is testable without a control plane.
+var hostedSecretListStoreFn = hostedSecretListStore

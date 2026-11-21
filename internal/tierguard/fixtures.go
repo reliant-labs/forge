@@ -85,6 +85,9 @@ type fixture struct {
 	Entities map[string][]entityMessage
 	// Frontends are `--frontend` names (forge.yaml shape + features).
 	Frontends []string
+	// MakeTestGate replaces the scaffolded Taskfile with a project-owned
+	// Makefile. AGENTS.md's guide must reflect the project's actual gate.
+	MakeTestGate bool
 	// GatewayHTTPPort, when non-zero, moves the scaffolded `public` Gateway's
 	// http listener off its default (18080) in deploy/kcl/ingress.k.
 	//
@@ -264,9 +267,10 @@ func projectB() fixture {
 // it produces is still attributable to something the user wrote.
 func projectD() fixture {
 	return fixture{
-		Label:  "D(no entities → no migrations, built-in-colliding service name)",
-		Name:   FixedProjectName,
-		Module: FixedModulePath,
+		Label:        "D(no entities → no migrations, built-in-colliding service name, Makefile gate)",
+		Name:         FixedProjectName,
+		Module:       FixedModulePath,
+		MakeTestGate: true,
 		// `version` collides with the built-in version subcommand. It is a
 		// legal service name (ReservedServiceNames covers only the
 		// worker/scheduler family), and the cmd-group generator skips its
@@ -401,6 +405,17 @@ func render(parent string, fx fixture) (*renderResult, error) {
 	for _, pkg := range fx.InternalPackages {
 		if err := forgeIn(root, "package", "new", pkg.Name); err != nil {
 			return nil, fmt.Errorf("package new %s: %w", pkg.Name, err)
+		}
+	}
+
+	// Exercise a real gate input immediately before the measured generate;
+	// leaving every scaffold's Taskfile in place gives every Go guide the same gate.
+	if fx.MakeTestGate {
+		if err := os.Remove(filepath.Join(root, "Taskfile.yml")); err != nil {
+			return nil, fmt.Errorf("replace scaffolded Taskfile: %w", err)
+		}
+		if err := atomicfile.WriteFile(filepath.Join(root, "Makefile"), []byte("test:\n\tgo test ./...\n"), 0o644); err != nil {
+			return nil, fmt.Errorf("write project Makefile: %w", err)
 		}
 	}
 

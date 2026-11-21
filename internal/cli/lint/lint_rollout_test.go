@@ -62,10 +62,8 @@ func TestEveryGradableRuleDeclaresItsRollout(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("lint rule(s) with no rollout declaration in lint_rollout_table.go: %s\n"+
-			"A rule that joins `forge lint` (or is tightened) declares the forge release that introduced it "+
-			"and the next release it gates from, so a project that pins it sees warnings for one release "+
-			"instead of a red gate: add `newRule(%q, ...)` — see lint_rollout.go.",
-			strings.Join(missing, ", "), missing[0])
+			"Declare the release that introduced each rule; see lint_rollout_table.go for when a new rule can opt into grace.",
+			strings.Join(missing, ", "))
 	}
 
 	gradable := gradableRuleSet()
@@ -76,27 +74,122 @@ func TestEveryGradableRuleDeclaresItsRollout(t *testing.T) {
 	}
 }
 
-// Rows are well formed: real releases, and a rule introduced after the
-// baseline gates strictly later than it was introduced.
+// Validate the declarations before projection hides the authoring marker
+// or lets a later declaration overwrite a shipped rule.
 func TestRolloutRowsAreWellFormed(t *testing.T) {
-	for rule, ro := range lintRollouts {
-		if !semver.IsValid(ro.IntroducedIn) {
-			t.Errorf("%s: introduced_in %q is not a vX.Y.Z version", rule, ro.IntroducedIn)
-			continue
+	for _, g := range shippedRules {
+		if g.Grace != nil {
+			t.Errorf("%v: shipped rules may not reopen a grace window", g.Rules)
 		}
-		afterBaseline := semver.Compare(ro.IntroducedIn, rolloutBaseline) > 0
-		switch {
-		case afterBaseline && ro.GatesFrom == "":
-			t.Errorf("%s: introduced in %s, after the baseline %s, so it must declare gates_from "+
-				"(the release after the one that ships it)", rule, ro.IntroducedIn, rolloutBaseline)
-		case afterBaseline && !semver.IsValid(ro.GatesFrom):
-			t.Errorf("%s: gates_from %q is not a vX.Y.Z version", rule, ro.GatesFrom)
-		case afterBaseline && semver.Compare(ro.GatesFrom, ro.IntroducedIn) <= 0:
-			t.Errorf("%s: gates_from %s must be later than introduced_in %s — a rule warns for at least "+
-				"one release before it gates", rule, ro.GatesFrom, ro.IntroducedIn)
-		case !afterBaseline && ro.GatesFrom != "":
-			t.Errorf("%s: introduced in %s, at or before the baseline %s, so it has gated since it shipped; "+
-				"drop gates_from", rule, ro.IntroducedIn, rolloutBaseline)
+	}
+	seen := make(map[string]bool)
+	for _, groups := range [][]rolloutGroup{shippedRules, newRules} {
+		for _, g := range groups {
+			if err := validateRolloutGroup(g); err != nil {
+				t.Errorf("%v: %v", g.Rules, err)
+			}
+			for _, rule := range g.Rules {
+				if seen[rule] {
+					t.Errorf("%s: duplicate rollout declaration", rule)
+				}
+				seen[rule] = true
+			}
+		}
+	}
+}
+
+func validateRolloutGroup(g rolloutGroup) error {
+	// Fixed to the approved NEXT_VERSION at the time of the decision. Reading
+	// the live file here would reopen the exception for later introductions
+	// and invalidate the v1.9.0 rows when the release moves NEXT_VERSION.
+	const introduced, until = "v1.9.0", "v1.10.0"
+	switch {
+	case !semver.IsValid(g.IntroducedIn):
+		return fmt.Errorf("introduced_in %q is not a vX.Y.Z version", g.IntroducedIn)
+	case g.Grace == nil:
+		if semver.Compare(g.IntroducedIn, introduced) > 0 {
+			return fmt.Errorf("rollout for %s is beyond the approved %s cohort; ask the owner before declaring its policy", g.IntroducedIn, introduced)
+		}
+		return nil
+	case g.IntroducedIn != introduced:
+		return fmt.Errorf("Grace is only allowed for newly introduced %s rules, not %s", introduced, g.IntroducedIn)
+	case strings.TrimSpace(g.Grace.Reason) == "":
+		return fmt.Errorf("Grace requires a non-empty Reason")
+	case g.Grace.Until != until:
+		return fmt.Errorf("Grace.Until must be %s, got %q", until, g.Grace.Until)
+	}
+	return nil
+}
+
+// The link-time fixture is one grace row, "<rule>@<introduced_in>@<until>",
+// and anything else is no row at all: a release build (empty) declares
+// nothing, and no test binary links one.
+func TestLinkedFixtureRows(t *testing.T) {
+	got := linkedFixtureRows("forge-column-markers@v1.0.0@v1.0.1")
+	if len(got) != 1 || got[0].IntroducedIn != "v1.0.0" || got[0].Grace == nil || got[0].Grace.Until != "v1.0.1" ||
+		len(got[0].Rules) != 1 || got[0].Rules[0] != "forge-column-markers" {
+		t.Fatalf("got %+v", got)
+	}
+	if ro := buildRollouts(shippedRules, got)["forge-column-markers"]; ro.IntroducedIn != "v1.0.0" || ro.GatesFrom != "v1.0.1" {
+		t.Errorf("the linked row must override the shipped declaration, got %+v", ro)
+	}
+	for _, bad := range []string{"", "forge-column-markers", "forge-column-markers@v1.0.0", "@v1.0.0@v1.0.1",
+		"forge-column-markers@@v1.0.1", "forge-column-markers@v1.0.0@", "a@b@c@d"} {
+		if got := linkedFixtureRows(bad); got != nil {
+			t.Errorf("%q: got %+v, want no row", bad, got)
+		}
+	}
+	if rolloutLinkFixture != "" {
+		t.Errorf("rolloutLinkFixture = %q in a test binary: only the e2e forge build links one", rolloutLinkFixture)
+	}
+}
+
+func TestRolloutGraceRequiresExplicitV19OptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  rolloutGroup
+		want string
+	}{
+		{name: "old rule", row: rolloutGroup{IntroducedIn: "v1.8.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "old"}}, want: "only allowed"},
+		{name: "later rule", row: rolloutGroup{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "later"}}, want: "only allowed"},
+		{name: "later unmarked rule", row: rolloutGroup{IntroducedIn: "v1.10.0"}, want: "beyond the approved"},
+		{name: "missing reason", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: " \t"}}, want: "Reason"},
+		{name: "missing deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Reason: "test"}}, want: "Grace.Until"},
+		{name: "invalid deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "later", Reason: "test"}}, want: "Grace.Until"},
+		{name: "same release", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.9.0", Reason: "test"}}, want: "Grace.Until"},
+		{name: "patch deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.9.1", Reason: "test"}}, want: "Grace.Until"},
+		{name: "later deadline", row: rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "test"}}, want: "Grace.Until"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateRolloutGroup(tc.row); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateRolloutGroup: got %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExplicitRolloutGraceWarnsUntilNextMinor(t *testing.T) {
+	g := rolloutGroup{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "New findings need time to fix"}, Rules: []string{rolloutRule}}
+	if err := validateRolloutGroup(g); err != nil {
+		t.Fatal(err)
+	}
+	table := buildRollouts([]rolloutGroup{g})
+	for _, pin := range []string{"v1.9.0", "v1.9.1", "v1.10.0"} {
+		got, gated := gradeProjectLaneWith(table, pinnedCfg(pin, nil), []lintJSONFinding{rolloutFinding(lintSevError)}, true)
+		if pin == "v1.10.0" {
+			if !gated || got[0].Severity != lintSevError || got[0].Grace != nil {
+				t.Errorf("%s: want an error with no grace, got %+v gated=%t", pin, got, gated)
+			}
+		} else if gated || got[0].Severity != lintSevWarning || got[0].Grace == nil || got[0].Grace.GatesFrom != "v1.10.0" {
+			t.Errorf("%s: want a warning until v1.10.0, got %+v gated=%t", pin, got, gated)
+		}
+	}
+}
+
+func TestClosedV19RolloutRowsStayClosed(t *testing.T) {
+	for _, rule := range []string{ruleUnprovenSignupDefault, "forgeconv-one-rpc-per-file"} {
+		if ro := lintRollouts[rule]; ro.IntroducedIn != "v1.9.0" || ro.GatesFrom != "" {
+			t.Errorf("%s: #2410 closed this window, got %+v", rule, ro)
 		}
 	}
 }

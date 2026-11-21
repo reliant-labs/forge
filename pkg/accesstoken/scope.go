@@ -278,6 +278,61 @@ const (
 	// that can launch can also stop). A protected environment's policy may
 	// further require a person to approve; the scope alone never opens one.
 	ScopeChangesLaunch Scope = "changes:launch"
+
+	// ScopeVulnRead reads the vulnerability findings of the org's releases
+	// and environments: the per-env summary, the findings list, one advisory
+	// across every artifact it touches, and a release's findings.
+	//
+	// ITS OWN SCOPE, NOT A DEPLOY READ. A list of exploitable
+	// vulnerabilities in what is running is an attack map, so it implies
+	// nothing and nothing implies it:
+	//
+	//   - not deploy:write. The CI token that records releases (and their
+	//     SBOMs) must not, by default, read what is exploitable in every
+	//     env. A machine token carries this only when it was minted in.
+	//   - not deploy:read. Seeing which release runs where is not seeing
+	//     which of its packages are exploitable; a store grants it to
+	//     deploy:read holders once, explicitly, rather than through an
+	//     implication every future deploy:read token would inherit.
+	//
+	// Like obs:read it may be bound to one environment, confining the token
+	// to that env's findings.
+	ScopeVulnRead Scope = "vuln:read"
+
+	// The two scopes below are the Tests product: test results, coverage and
+	// flaky tests recorded per commit, release and environment (control-plane
+	// TestService).
+
+	// ScopeTestsRead reads the org's test record: runs and their failures,
+	// coverage per package, file and line, flake states and a release's
+	// tests.
+	//
+	// ITS OWN SCOPE, NOT A DEPLOY READ. A test's failure output can quote
+	// config, request bodies and log lines, so it is not readable by every
+	// token that can see or record a deploy. It implies nothing and nothing
+	// implies it — not deploy:read, not deploy:write, not tests:write. A
+	// store grants it to deploy:read holders once, explicitly, rather than
+	// through an implication every future deploy:read token would inherit
+	// (the vuln:read rule).
+	//
+	// Like vuln:read it may be bound to one environment, confining the
+	// token to the runs recorded against that env.
+	ScopeTestsRead Scope = "tests:read"
+	// ScopeTestsWrite uploads test runs (control-plane RecordTestRun), and
+	// does nothing else. A narrow upload scope like sourcemaps:write: a pull
+	// request's CI job records its tests holding this, without deploy:write
+	// and the release, promotion and gate authority that comes with it. A
+	// consumer that also accepts deploy:write for an upload (so a deploying
+	// CI needs no second token) says so in its own rpc mapping; this package
+	// does not imply it.
+	//
+	// It implies nothing and nothing implies it. In particular it does not
+	// imply tests:read: an upload reads nothing back, and the CI token of
+	// every pull request must not become a way to read every run's failure
+	// output. Unlike sourcemaps:write it is not registry-only: its whole
+	// authority is a control-plane rpc. It binds to nothing (an upload names
+	// its environment in the request, which this binding would not confine).
+	ScopeTestsWrite Scope = "tests:write"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -321,6 +376,9 @@ var AllScopes = []Scope{
 	ScopeSourcemapsWrite,
 	ScopeChangesWrite,
 	ScopeChangesLaunch,
+	ScopeVulnRead,
+	ScopeTestsRead,
+	ScopeTestsWrite,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an

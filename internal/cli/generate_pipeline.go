@@ -305,6 +305,12 @@ type pipelineContext struct {
 	rendered     renderedEnvironments
 	renderedRead bool
 
+	// The disk inventory and last usable declarations used to derive frontend
+	// codegen. A failed re-render cannot erase an env's known declarations.
+	diskFrontends       []config.FrontendConfig
+	inventoryFrontends  []renderedEnvFrontend
+	inventoryMissedEnvs []string
+
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
 	// see generate_serve.go). Lazily populated via
@@ -559,6 +565,13 @@ func generateSteps() []GenStep {
 		// project had nothing to read and silently fell back to proto
 		// defaults, which is the bug this ordering fixes.
 		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
+		// Typed accessors for changes.yaml (Go and every web frontend). Not
+		// gated on frontends or services: a Go-only project and a static site
+		// both declare changes. A project without changes.yaml writes nothing
+		// here, and the step retires what an earlier declaration wrote. Before
+		// "cleanup stale codegen", which deletes the certified files this run
+		// did not write.
+		{Name: "changes accessors (changes.yaml)", Gate: always, Run: stepChangesAccessors, Tag: "codegen"},
 		// AFTER the env config modules, deliberately. Which workflows exist
 		// is read off a RENDER of every env (generate_ci_hosted.go: a hosted
 		// env gets release.yml, not deploy.yml), and an env cannot render
@@ -897,6 +910,26 @@ var templatesOnlyStepAllow = map[string]bool{
 	"per-env deploy config":                           true,
 	"frontend mocks + transport":                      true,
 }
+
+// stepPresetValue is generate's --steps flag: a step preset name, checked
+// when the flag is parsed. The check used to wait for the pipeline, so
+// `generate --steps <typo>` first ran the root's clone setup — which can
+// rewrite the merge driver in the git config every worktree of the clone
+// shares — and only then failed. Parsing precedes every PersistentPreRun.
+type stepPresetValue string
+
+func (v *stepPresetValue) Set(s string) error {
+	if _, ok := stepPresetAllowlist[s]; s != "" && !ok {
+		return fmt.Errorf("unknown pipeline step preset %q (valid: %s)", s, knownStepPresetNames())
+	}
+	*v = stepPresetValue(s)
+	return nil
+}
+
+func (v *stepPresetValue) String() string { return string(*v) }
+
+// Type is "string", as the StringVar it replaced, so --help reads the same.
+func (v *stepPresetValue) Type() string { return "string" }
 
 // knownStepPresetNames returns a comma-joined string of every
 // registered step preset for error messages. Kept as a helper so the
@@ -1693,11 +1726,9 @@ func stepDescriptorGenerate(ctx *pipelineContext) error {
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs
 // protoc-gen-connect-openapi over each proto/services/<svc>/ to emit
-// `openapi/<service>.yaml`. Best-effort: a missing plugin or a single
-// failing service surfaces as a warning so the rest of the pipeline
-// still completes. The hard "plugin not on PATH" case bubbles up as an
-// error because that's an actionable misconfiguration (the user opted
-// in via forge.yaml but didn't install the binary).
+// `openapi/<service>.yaml`. The project opted in via forge.yaml, so a
+// plugin forge cannot provision, or a service whose spec is not written,
+// fails the step rather than warning past it.
 func stepOpenAPIGenerate(ctx *pipelineContext) error {
 	if err := runOpenAPIGenerate(ctx.ProjectDir, ctx.Cfg); err != nil {
 		return fmt.Errorf("openapi generation: %w", err)
@@ -2018,6 +2049,7 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
+	ctx.rederiveFrontendInventory()
 	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums, func() []envRenderFailure { return ctx.renderedEnvs().failed })
 }
 
@@ -2719,6 +2751,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		}
 		in.Services = append(in.Services, svc)
 	}
+	ctx.rederiveFrontendInventory()
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	// An env that did not render would drop its frontends and processes from
@@ -2751,6 +2784,9 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		in.Deployed, err = deployedIdentities(ctx, ctx.renderedEnvs().workloads)
 		if err != nil {
 			return fmt.Errorf("deriving the deployed processes from deploy/kcl: %w", err)
+		}
+		if in.Telemetry, err = obsdash.TelemetrySystemsOf(ctx.renderedEnvs().telemetry); err != nil {
+			return fmt.Errorf("deriving the declared telemetry dashboards from deploy/kcl: %w", err)
 		}
 		written, err := obsdash.Write(ctx.AbsPath, in, ctx.Checksums)
 		if err != nil {

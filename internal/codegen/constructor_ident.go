@@ -84,6 +84,14 @@ func DetectConstructorName(dir string) string {
 	// one. Scanning file-by-file and returning the first hit would let file
 	// ordering pick the answer. os.ReadDir sorts by name, so ties between two
 	// marked funcs resolve deterministically.
+	//
+	// Two marked funcs are a package with two components' constructors (New
+	// for its Service, NewMaintenance for a Maintenance it also exports).
+	// The package's constructor is the one shaped like it: taking Deps and
+	// returning the package's contract. Taking the first marked one by file
+	// order emitted NewMaintenance(Deps{...}) as the Service's constructor,
+	// which does not compile (forge report 5d62e49e).
+	var marked []*ast.FuncDecl
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") ||
@@ -100,9 +108,55 @@ func DetectConstructorName(dir string) string {
 				continue
 			}
 			if anyCommentGroupHasDirective(directiveConstructorMarker, fn.Doc) {
-				return fn.Name.Name
+				marked = append(marked, fn)
 			}
 		}
 	}
-	return DefaultConstructorName
+	switch len(marked) {
+	case 0:
+		return DefaultConstructorName
+	case 1:
+		return marked[0].Name.Name
+	}
+	contract := DetectServiceInterfaceName(dir)
+	best, bestScore := marked[0], -1
+	for _, fn := range marked {
+		score := 0
+		if firstResultIs(fn, contract) {
+			score += 2
+		}
+		if firstParamIs(fn, "Deps") {
+			score++
+		}
+		if score > bestScore {
+			best, bestScore = fn, score
+		}
+	}
+	return best.Name.Name
+}
+
+// firstResultIs reports whether fn's first result is the named type of this
+// package (T or *T).
+func firstResultIs(fn *ast.FuncDecl, name string) bool {
+	if name == "" || fn.Type.Results == nil || len(fn.Type.Results.List) == 0 {
+		return false
+	}
+	return isLocalIdent(fn.Type.Results.List[0].Type, name)
+}
+
+// firstParamIs reports whether fn's first parameter is the named type of
+// this package (T or *T).
+func firstParamIs(fn *ast.FuncDecl, name string) bool {
+	if fn.Type.Params == nil || len(fn.Type.Params.List) == 0 {
+		return false
+	}
+	return isLocalIdent(fn.Type.Params.List[0].Type, name)
+}
+
+func isLocalIdent(expr ast.Expr, name string) bool {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		expr = star.X
+	}
+	id, ok := expr.(*ast.Ident)
+	return ok && id.Name == name
 }

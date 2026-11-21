@@ -247,3 +247,98 @@ func projectDeclaresName(dbDir, name string) bool {
 	}
 	return false
 }
+
+// storeMethodKey is how a method of the aggregate Store is keyed among
+// package-level declarations: "Store.<Method>". A method is not a package
+// scope name, but two declarations of one Store method do not compile either.
+func storeMethodKey(method string) string { return storeTypeName + "." + method }
+
+// storeTypeName is the aggregate store's type (renderStoreAggregate).
+const storeTypeName = "Store"
+
+// displayDeclName is a declaration key as a reader spells it: the bare name,
+// or `func (Store) PlansExt` for a Store method.
+func displayDeclName(key string) string {
+	if method, ok := strings.CutPrefix(key, storeTypeName+"."); ok {
+		return "func (" + storeTypeName + ") " + method
+	}
+	return key
+}
+
+// fileDeclarations is packageLevelDecls plus the methods file declares on
+// the aggregate Store, keyed by storeMethodKey.
+func fileDeclarations(file *ast.File) []*ast.Ident {
+	ids := packageLevelDecls(file)
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || len(fn.Recv.List) != 1 || recvTypeName(fn.Recv.List[0].Type) != storeTypeName {
+			continue
+		}
+		ids = append(ids, &ast.Ident{NamePos: fn.Name.NamePos, Name: storeMethodKey(fn.Name.Name)})
+	}
+	return ids
+}
+
+// declaredNames is fileDeclarations' names for a rendered source.
+func declaredNames(src []byte) []string {
+	file, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, id := range fileDeclarations(file) {
+		names = append(names, id.Name)
+	}
+	return names
+}
+
+// projectDeclarations maps every name a file the project owns in the ORM
+// package dbDir declares (fileDeclarations) to where: "internal/db/x.go:12".
+// It is how a generated name that only joins the projection later — an
+// ext store — yields to a declaration the project made first instead of
+// failing its build.
+func projectDeclarations(dbDir, relDir string) map[string]string {
+	out := map[string]string{}
+	entries, err := os.ReadDir(dbDir)
+	if err != nil {
+		return out
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		path := filepath.Join(dbDir, name)
+		body, rerr := os.ReadFile(path)
+		if rerr != nil || ormOwnsFile(name) {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, path, body, parser.SkipObjectResolution)
+		if perr != nil || strings.HasSuffix(file.Name.Name, "_test") {
+			continue
+		}
+		for _, id := range fileDeclarations(file) {
+			if _, seen := out[id.Name]; !seen {
+				out[id.Name] = fmt.Sprintf("%s/%s:%d", relDir, name, fset.Position(id.Pos()).Line)
+			}
+		}
+	}
+	return out
+}
+
+// recvTypeName is a receiver's base type name: `s Store`, `s *Store`.
+func recvTypeName(expr ast.Expr) string {
+	for {
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			expr = e.X
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.Ident:
+			return e.Name
+		default:
+			return ""
+		}
+	}
+}

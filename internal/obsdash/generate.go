@@ -86,9 +86,25 @@ func OverridePath(project string, d Dashboard) string {
 // or kept.
 func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, error) {
 	project, parts := BuildParts(in)
-	sp := Assemble(project, parts)
+	telemetryParts := BuildTelemetryParts(in)
+	sp := Assemble(withTelemetryParts(project, telemetryParts), parts)
+	if err := checkUniqueDashboardIDs(sp); err != nil {
+		return nil, err
+	}
 
-	files, err := RenderHyperDX(sp)
+	// A declared telemetry dashboard is the project's: the local file draws
+	// what HyperDX can of it (localDrawable), the bundle ships it whole.
+	local := sp
+	if declared := declaredDashboardIDs(in.Telemetry); len(declared) > 0 {
+		local.Dashboards = make([]Dashboard, len(sp.Dashboards))
+		for i, d := range sp.Dashboards {
+			if declared[d.ID] {
+				d = localDrawable(d)
+			}
+			local.Dashboards[i] = d
+		}
+	}
+	files, err := RenderHyperDX(local)
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +172,12 @@ func Write(projectDir string, in Input, cs *checksums.FileChecksums) ([]string, 
 			nd.WriteByte('\n')
 		}
 		if err := emit(SavedSearchesFile(sp.Project, part.Process.Name), nd.Bytes()); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, part := range telemetryParts {
+		if err := emitJSON(emit, TelemetrySpecFile(part.Service), part); err != nil {
 			return nil, err
 		}
 	}
@@ -325,7 +347,8 @@ func ReadSpec(projectDir string) (sp Spec, ok bool, err error) {
 	return Assemble(project, parts), true, nil
 }
 
-// readParts reads ProjectSpecFile and every ProcessSpecFile.
+// readParts reads ProjectSpecFile and every ProcessSpecFile, with every
+// TelemetrySpecFile's dashboards after the project's own.
 func readParts(projectDir string) (ProjectPart, []ProcessPart, bool, error) {
 	var project ProjectPart
 	raw, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(ProjectSpecFile)))
@@ -356,7 +379,25 @@ func readParts(projectDir string) (ProjectPart, []ProcessPart, bool, error) {
 		}
 		parts = append(parts, part)
 	}
-	return project, parts, true, nil
+	telemetry, err := filepath.Glob(filepath.Join(projectDir, filepath.FromSlash(SpecDir), TelemetryDashboardPrefix+"*"+genSuffix))
+	if err != nil {
+		return ProjectPart{}, nil, false, err
+	}
+	sort.Strings(telemetry)
+	var telemetryParts []TelemetryPart
+	for _, m := range telemetry {
+		rel := SpecDir + "/" + filepath.Base(m)
+		raw, err := os.ReadFile(m)
+		if err != nil {
+			return ProjectPart{}, nil, false, err
+		}
+		var part TelemetryPart
+		if err := decodePart(rel, raw, &part, &part.Version); err != nil {
+			return ProjectPart{}, nil, false, err
+		}
+		telemetryParts = append(telemetryParts, part)
+	}
+	return withTelemetryParts(project, telemetryParts), parts, true, nil
 }
 
 // decodePart unmarshals one part file into v and checks the version it read

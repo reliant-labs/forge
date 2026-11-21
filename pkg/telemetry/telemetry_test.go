@@ -169,6 +169,33 @@ func TestValidatePortNames(t *testing.T) {
 	requireProblem(t, Validate(Normalize([]Target{tg}), Options{}), `metrics[0].port: "prom" is not a port of workload:temporal (it declares: grpc, metrics)`)
 }
 
+// An unnamed scrape or check is identified by its index, so a name that is
+// all digits could take the same job or receiver name: an unnamed first
+// entry followed by one named "0" is refused, as is a repeated name.
+func TestValidateScrapeAndCheckNames(t *testing.T) {
+	tg := workloadTarget()
+	tg.Metrics = append(tg.Metrics, MetricsScrape{Name: "0", PortName: "metrics", Allow: "x"})
+	tg.Checks = append(tg.Checks, HealthCheck{Name: "0", PortName: "grpc"})
+	requireProblem(t, Validate(Normalize([]Target{tg}), Options{}),
+		`metrics[1].name: "0" is all digits, which are reserved for an unnamed scrape's index`,
+		`checks[1].name: "0" is all digits, which are reserved for an unnamed check's index`)
+
+	tg = workloadTarget()
+	tg.Metrics = []MetricsScrape{{Name: "a", PortName: "metrics"}, {Name: "a", PortName: "metrics"}, {Name: "Bad_Name", PortName: "metrics"}}
+	tg.Checks = []HealthCheck{{Name: "up", PortName: "grpc"}, {Name: "up", PortName: "grpc"}}
+	requireProblem(t, Validate(Normalize([]Target{tg}), Options{}),
+		`metrics[1].name: "a" is also the name of scrape 0`,
+		`metrics[2].name: "Bad_Name" must be an RFC-1123 label`,
+		`checks[1].name: "up" is also the name of check 0`)
+
+	tg = workloadTarget()
+	tg.Metrics = append(tg.Metrics, MetricsScrape{Name: "0a", PortName: "metrics"})
+	tg.Checks = append(tg.Checks, HealthCheck{Name: "9-x", PortName: "grpc"})
+	if err := Validate(Normalize([]Target{tg}), Options{}); err != nil {
+		t.Fatalf("a name with a digit and a letter is not an index: %v", err)
+	}
+}
+
 func TestValidateRE2AndDurations(t *testing.T) {
 	tg := workloadTarget()
 	tg.Metrics[0].Allow = "service_(requests"

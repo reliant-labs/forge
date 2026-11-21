@@ -103,7 +103,7 @@ var goMarkers = []GoMarker{
 	{Name: directiveNoObserve, Grammar: GoMarkerBare, Form: "// forge:no-observe"},
 	{Name: "forge:no-orm", Grammar: GoMarkerWordArgs, Form: "//forge:no-orm: <why>"},
 	{Name: directiveNotAComponent, Grammar: GoMarkerReasoned, Form: "//forge:not-a-component: <reason>"},
-	{Name: "forge:optional-checked", Grammar: GoMarkerBare, Form: "// forge:optional-checked"},
+	{Name: "forge:optional-checked", Grammar: GoMarkerReasoned, Form: "// forge:optional-checked: <reason>"},
 	{Name: "forge:optional-dep", Grammar: GoMarkerBare, Form: "// forge:optional-dep"},
 	{Name: "forge:outbound-io", Grammar: GoMarkerBare, Form: "// forge:outbound-io"},
 	{Name: "forge:placeholder", Grammar: GoMarkerReasonRequired, Form: "// forge:placeholder: <pkg>.<Type>"},
@@ -175,6 +175,14 @@ const (
 	// Go-source recognizer reads — a typo, or a marker from another
 	// vocabulary (a proto or column marker) that does nothing in a .go file.
 	GoMarkerUnknown
+	// GoMarkerReasonMissing — a marker whose reason is mandatory
+	// (GoMarkerReasonRequired), written with none: `// forge:auth-unscoped-ok`
+	// alone, or with nothing after its colon. Its recognizer ignores it, the
+	// same silent no-op as GoMarkerMalformed, but the spaced bare form is
+	// also how a sentence could start, so the lint reports it as a warning
+	// under its own rule rather than failing on it. (The unspaced directive
+	// with no colon stays GoMarkerMalformed, as it always was.)
+	GoMarkerReasonMissing
 )
 
 // GoMarkerUse is one classified comment.
@@ -246,6 +254,10 @@ func ClassifyGoMarkerComment(raw string) GoMarkerUse {
 		return use
 	}
 	use.Marker = m
+	if m.Grammar == GoMarkerReasonRequired && reasonMissing(rest) && !(directive && rest == "") {
+		use.Status = GoMarkerReasonMissing
+		return use
+	}
 	if m.Accepts(rest) {
 		use.Status = GoMarkerOK
 		return use
@@ -254,6 +266,13 @@ func ClassifyGoMarkerComment(raw string) GoMarkerUse {
 		use.Status = GoMarkerMalformed
 	}
 	return use
+}
+
+// reasonMissing reports a marker tail that carries no reason: nothing at
+// all, or a colon with nothing after it.
+func reasonMissing(rest string) bool {
+	t := strings.TrimSpace(rest)
+	return t == "" || t == ":"
 }
 
 // startsWithLookalike reports whether rest opens (after optional spaces) with

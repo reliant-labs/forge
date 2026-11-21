@@ -11,6 +11,8 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/telemetry"
+	"github.com/reliant-labs/forge/pkg/telemetry/collector"
 )
 
 // Context carries the TARGET facts a spec deliberately does not: where the
@@ -84,6 +86,22 @@ type Context struct {
 	// that may hold data. Empty renders no placement, which is what a
 	// single-pool cluster wants.
 	DatabasePlacement *DatabasePlacement
+
+	// Telemetry, when set, is the declared telemetry (forge.Telemetry) of
+	// the workloads being rendered and the collector that pulls it: each
+	// Workload target that admits its collector (Target.AdmitCollector) adds
+	// one ingress rule to the workload's own NetworkPolicy, admitting only
+	// that collector on only the pulled ports. nil adds nothing, so a render
+	// with no declared telemetry is unchanged.
+	Telemetry *WorkloadTelemetry
+}
+
+// WorkloadTelemetry is Context.Telemetry: the env's telemetry targets (only
+// Workload attachments are read, matched by Source "workload:<name>") and
+// the collector their pulls come from.
+type WorkloadTelemetry struct {
+	Collector collector.CollectorRef
+	Targets   []telemetry.Target
 }
 
 // DatabaseBackup is the object store behind the managed-database tier, as the

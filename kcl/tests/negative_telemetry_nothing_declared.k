@@ -1,8 +1,8 @@
 """
-Negative test — a Telemetry that declares no signal and no alert is refused.
+Negative test — a Telemetry that declares no signal, no dashboard and no alert is refused.
 """
 
-# expect: declares nothing to collect or alert on
+# expect: declares nothing to collect, draw or alert on
 
 import forge
 import forge.workloads as fw

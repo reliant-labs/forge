@@ -110,6 +110,12 @@ func classifyIdentity(doc identityStatusDocument) *envIdentityReport {
 			InstanceState: identityInstanceState(doc.State), Issuer: doc.Issuer, terminal: true}
 	}
 	if !doc.HasInstance {
+		if doc.NotEnabledReason == "IDENTITY_NOT_ENABLED_REASON_REFUSED" {
+			// Refused before any instance existed: as terminal as a refusal
+			// with one, even when the control plane sent no text.
+			return &envIdentityReport{State: identityFailed, terminal: true,
+				Reason: "the control plane refused the declaration (`forge env status` shows the reason it recorded)"}
+		}
 		if doc.NotEnabledReason == "IDENTITY_NOT_ENABLED_REASON_PENDING" {
 			return &envIdentityReport{State: identityProvisioning, Reason: "the identity reconciler has not created the instance yet"}
 		}
@@ -174,6 +180,12 @@ func (w *identityWatch) observe(ctx context.Context) *envIdentityReport {
 			// Never known to be declared: report, never gate.
 			w.stopped = identityReadIsPermanent(err)
 			w.last = &envIdentityReport{State: identityUnknown, Reason: "could not read it from the control plane: " + err.Error()}
+			if hostedErrorHasCode(err, cloud.CodePermissionDenied) {
+				// One line, not the credential error's sign-in advice: a
+				// deploy-scoped CI token never holds identity:read, and
+				// nothing about the deploy failed.
+				w.last.Reason = "not checked: this credential lacks the identity:read scope (the deploy itself is unaffected; `forge env status` with a signed-in credential shows it)"
+			}
 			return w.last
 		}
 		// Known to be declared: keep the last state (it still gates) and

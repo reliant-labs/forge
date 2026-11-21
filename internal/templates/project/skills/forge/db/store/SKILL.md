@@ -14,7 +14,13 @@ the wire. Every applied BASE TABLE gets:
   `Update<E>`, `Update<E>Masked`, `Delete<E>`);
 - an `<E>Store` interface in `<entity>_store_gen.go`, which also declares the
   aggregate's accessor for it (`Store` itself, a struct, is in `store_gen.go`);
-- a scaffold-once `<entity>_repo_ext.go` seam for hand-written queries.
+- a scaffold-once `<entity>_repo_ext.go` seam for hand-written queries, and,
+  once it holds any, an `<E>ExtStore` interface over them in
+  `<entity>_ext_store_gen.go`: each exported `func F(ctx context.Context, db
+  orm.Context, …)` of the seam, the handle bound, with `New<E>ExtStore(db)`,
+  `WithTx` and the aggregate's `Store.<Es>Ext()` accessor. It is regenerated
+  from the seam every run, is removed when the seam's last query goes, and
+  yields (with an ℹ️ line) to a name the package already declares.
 
 Two answers every store gives the same way. A by-key method (`Get<E>ByID`,
 `Get<E>ByPK`, `Update<E>`, `Update<E>Masked`, `Delete<E>`, `Delete<E>ByPK`)

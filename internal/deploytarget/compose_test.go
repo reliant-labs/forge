@@ -45,9 +45,12 @@ func TestCompose_Deploy_HappyPath(t *testing.T) {
 		"docker compose -f docker-compose.yml ps --all --format",
 		"docker compose -f docker-compose.yml pull edge",
 		// --wait by default: the deploy blocks on the service's
-		// healthcheck rather than returning at container-create time.
+		// healthcheck rather than returning at container-create time —
+		// in a second, --no-deps up, so a one-shot dependency that exits
+		// is not judged by it (NS FG-18).
 		"docker compose -f docker-compose.yml ps --all --quiet",
-		"docker compose -f docker-compose.yml up -d --wait edge",
+		"docker compose -f docker-compose.yml up -d edge",
+		"docker compose -f docker-compose.yml up -d --wait --no-deps edge",
 		"docker compose -f docker-compose.yml ps --all --quiet",
 		"docker compose -f docker-compose.yml ps --status running edge",
 	}
@@ -208,7 +211,8 @@ func TestCompose_Deploy_DryRun(t *testing.T) {
 	}
 	wantLines := []string{
 		"[DRY-RUN] would run: docker compose -f docker-compose.yml pull edge",
-		"[DRY-RUN] would run: docker compose -f docker-compose.yml up -d --wait edge",
+		"[DRY-RUN] would run: docker compose -f docker-compose.yml up -d edge",
+		"[DRY-RUN] would run: docker compose -f docker-compose.yml up -d --wait --no-deps edge",
 	}
 	for _, want := range wantLines {
 		if !strings.Contains(out, want) {

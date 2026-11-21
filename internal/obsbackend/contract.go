@@ -64,6 +64,14 @@ type UserActivityReader interface {
 	UserActivity(ctx context.Context, req UserActivityRequest) (UserActivityResult, error)
 }
 
+// TelemetryArrivalReader reads whether the systems an env declares
+// forge.Telemetry for are reaching the store: per signal the newest row, per
+// scraped endpoint the newest result (`forge obs telemetry`). Only the local
+// backend implements it.
+type TelemetryArrivalReader interface {
+	TelemetryArrival(ctx context.Context, req TelemetryArrivalRequest) (TelemetryArrivalResult, error)
+}
+
 // HealthReader judges a release: the windows before and after a promotion,
 // per service, and what the release opened (`forge obs check`). The local
 // backend judges from the ClickStack with pkg/releasehealth; the cloud
@@ -170,4 +178,14 @@ type DashboardReader interface {
 	ListDashboards(ctx context.Context, project string) ([]DashboardInfo, error)
 	GetDashboard(ctx context.Context, ref DashboardRef) (DashboardDocument, error)
 	QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (PanelReadout, error)
+}
+
+// PGOExporter reads an env's merged CPU profile in the shape `go build -pgo`
+// takes: what `forge pgo pull` fetches from the control plane. Only the cloud
+// backend implements it; a ClickStack's profiles are read through
+// pkg/profilequery instead.
+//
+//forge:contract
+type PGOExporter interface {
+	ExportPGOProfile(ctx context.Context, req ExportPGORequest) (ExportPGOResult, error)
 }

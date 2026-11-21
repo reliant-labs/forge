@@ -3,7 +3,8 @@ render contract — forge.Telemetry on all four attachments: an image-only
 cluster Workload (named ports, a regex log parse, OtlpPush env remaps, an
 alert), a HostInfra engine, a raw Manifests group, and an
 Observability.telemetry entry for a system outside the bundle, collected by
-the project's own collector (Observability.telemetry_collector).
+the project's own collector (Observability.telemetry_collector). The raw
+group's Telemetry declares a typed dashboard (forge.dashspec).
 
 The vendor facts here (metric names, env keys, log layout) are illustrative
 fixtures, as a project would declare them: forge knows none of them.
@@ -11,6 +12,7 @@ fixtures, as a project would declare them: forge knows none of them.
 # kcl-args: env="dev"
 
 import forge
+import forge.dashspec as ds
 import forge.workloads as fw
 
 _k3d = forge.ClusterTarget {cluster = "k3d-acme", namespace = "acme-dev"}
@@ -104,6 +106,14 @@ output = forge.render(forge.Bundle {
                 tls = forge.ScrapeTLS {ca = forge.SecretRef {name = "ch-ca", key = "ca.crt"}}
             }]
             checks = [forge.HealthCheck {kind = "http", port = 8123, path = "/ping"}]
+            dashboards = [ds.Dashboard {
+                id = "clickhouse-parts"
+                title = "ClickHouse parts"
+                panels = [ds.Panel {
+                    id = "parts", title = "Active parts", kind = "line", signal = "metrics"
+                    series = [ds.gauge("parts", "ClickHouseMetrics_PartsActive")]
+                }]
+            }]
         }]
     }]
 })

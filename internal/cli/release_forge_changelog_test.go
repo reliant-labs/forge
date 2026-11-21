@@ -217,6 +217,56 @@ func TestChangelogRelease_EmptyReleaseSaysSo(t *testing.T) {
 	}
 }
 
+// A PR's Agent-Instructions and Generated-Change trailers become nested
+// bullets under its entry, and `forge project upgrade` reads them back from
+// the released CHANGELOG.md: the round trip an agent upgrading across the
+// release depends on.
+func TestChangelogRelease_RendersTrailersUpgradeReads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the release script under bash against a git fixture; runs in task test")
+	}
+	repo := newForgeFixtureRepo(t) // tagged v0.1.0
+	writeRepoFile(t, repo, "CHANGELOG.md", "# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n")
+	gitIn(t, repo, "add", "CHANGELOG.md")
+	gitIn(t, repo, "commit", "-q", "-m", "docs: seed changelog (#100)")
+	commitEmpty(t, repo, "feat(observe): record failing calls' argument shapes (#2349)\n\n"+
+		"* feat(observe): first commit\n\nAgent-Instructions: mark a sensitive argument forge:no-capture,\n  then regenerate\n"+
+		"Generated-Change: middleware_gen.go: failing calls record redacted argument shapes\n")
+	commitEmpty(t, repo, "feat(cfg)!: drop the legacy key (#104)\n\nAgent-Instructions: move old_key to new_key in forge.yaml")
+	commitEmpty(t, repo, "fix(lint): no trailers here (#105)")
+
+	runChangelogScript(t, repo, "--changelog", "CHANGELOG.md", "--version", "v0.2.0", "--date", "2026-02-03",
+		"--prev-tag", "v0.1.0", "--repo-url", "https://github.com/reliant-labs/forge")
+	md := readRepoFile(t, repo, "CHANGELOG.md")
+	sec := section(t, md, "v0.2.0")
+	for _, want := range []string{
+		"([#2349](https://github.com/reliant-labs/forge/pull/2349))\n  - Agent: mark a sensitive argument forge:no-capture, then regenerate\n" +
+			"  - Generated: middleware_gen.go: failing calls record redacted argument shapes\n",
+		"([#104](https://github.com/reliant-labs/forge/pull/104))\n  - Agent: move old_key to new_key in forge.yaml\n",
+	} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("section lacks %q:\n%s", want, sec)
+		}
+	}
+	if strings.Count(sec, "- Agent:") != 2 {
+		t.Errorf("want exactly two Agent bullets:\n%s", sec)
+	}
+
+	rels := parseChangelog([]byte(md))
+	if len(rels) == 0 || rels[0].Version != "v0.2.0" {
+		t.Fatalf("upgrade did not parse the release: %+v", rels)
+	}
+	c := newCrossed("v0.2.0")
+	for _, h := range rels[0].Headings {
+		for _, e := range rels[0].Entries[h] {
+			c.add(h, e)
+		}
+	}
+	if len(c.AgentInstructions) != 2 || c.Breaking[0].PR != 104 || len(c.Added[0].Generated) != 1 {
+		t.Errorf("read back: %+v", c)
+	}
+}
+
 // fakeGH writes a gh stand-in to dir and returns its path plus the log it
 // appends to. `pr list` answers with breakingPRs; `release create` records its
 // arguments and the notes file's contents; failRelease makes it exit non-zero.

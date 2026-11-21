@@ -32,6 +32,7 @@ Every query goes through ONE data-access path: the generated store, then the own
 
 - Generated: `go doc ./internal/db <Entity>Store` covers reads by key, filtered lists (`orm.QueryOption`) and writes.
 - Anything else: `internal/db/<entity>_repo_ext.go`, the custom-query seam forge scaffolds beside every entity, once, and never rewrites. Its header names the tools: the generated delegates with `orm.QueryOption` filters, SQL via `db.Bun()`, and the `orm.Context` that runs a method in or out of a transaction. bun takes joins, CTEs (`NewSelect().With(...)`), `FOR UPDATE SKIP LOCKED`, advisory locks and fully raw statements (`NewRaw`), so a hand-tuned hot-path query stays hand-tuned SQL.
+- Its exported `func F(ctx context.Context, db orm.Context, …)` queries are a type too: `<Entity>ExtStore` (`<entity>_ext_store_gen.go`, regenerated from the seam each run) holds each with the handle bound, and `Store.<Entities>Ext()` reaches it. Name it in `Deps` — forge wires and mocks it — rather than hand-writing an adapter over your own queries. Other shapes stay package functions; `forge generate` lists them in an ℹ️ line.
 - Test every `_repo_ext.go` query against a real migrated database (`testing/integration`). That is what checks the SQL against the schema; nothing does it at generate time.
 - Bucketing by time has a silent timezone trap: load `db/time-buckets`.
 - Dashboard panels over this database: `db/dashboards`.

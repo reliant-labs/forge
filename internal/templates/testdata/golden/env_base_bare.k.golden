@@ -62,8 +62,14 @@ hosted = lambda w: fw.Workload, app_config: any, db_name: str -> fw.Workload {
 # --context <kubectl context> --env <env>`. Until `_cluster` is declared, a
 # workload bound here fails the render, naming itself. A cluster workload
 # pulls the image workloads.k declares (`forge env build <env> --push`), gets
-# the env's capacity floor, and reads DATABASE_URL from the
-# `shop-secrets` Secret you provision in its namespace.
+# the env's capacity floor, and reads DATABASE_URL from the key `database_url`
+# (lowercase) of the `shop-secrets` Secret you provision in its
+# namespace. Declare that Secret in the env's Bundle, or the deploy preflight
+# refuses it as mounted but undeclared:
+#     required_secrets = [forge.ExternalSecret {
+#         name = "shop-secrets", namespace = "shop-" + option("env")
+#         keys = ["database_url"], reason = "the API's DATABASE_URL"
+#     }]
 on_cluster = lambda w: fw.Workload, app_config: any, cluster: any, env_name: str, resources: fw.Resources, replicas: int -> fw.Workload {
     assert cluster, "workload '${w.name}' is bound to _on_cluster, but deploy/kcl/${env_name}/main.k declares no `_cluster`: declare the cluster you operate there" \
         + (" — the hosted platform refuses ${w.kind}s, so it cannot be rebound `_hosted`; drop the line to not run it here" if w.kind in ["cron", "operator"] else ", or rebind the line `_hosted`")

@@ -97,8 +97,7 @@ type laneRun struct {
 	Error      string
 	// Stream is the lane's `go test -json` output, every invocation's
 	// concatenated.
-	Stream   []byte
-	Warnings []string
+	Stream []byte
 }
 
 // openRun is the run a flake command records into: $FORGE_TEST_RUN when it
@@ -143,7 +142,6 @@ func recordLane(runDir string, l laneRun) (string, error) {
 		Format:     testreport.LaneFormatGoJSON,
 		Stream:     &stats,
 		Coverage:   []testreport.LaneCoverageInput{},
-		Warnings:   l.Warnings,
 	}
 	if err := atomicfile.WriteFile(filepath.Join(laneDir, testreport.LaneResultsFile), stored, 0o644); err != nil {
 		m.Results = testreport.LaneResultsMissing

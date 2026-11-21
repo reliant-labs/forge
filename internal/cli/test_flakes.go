@@ -107,7 +107,6 @@ type testFlakesArgs struct {
 	json         bool
 	all          bool
 	gh           testflakes.GH
-	now          time.Time
 	issuesStdout io.Writer
 }
 
@@ -124,10 +123,7 @@ func runTestFlakes(ctx context.Context, out io.Writer, a testFlakesArgs) error {
 	if a.all && len(want) == 0 {
 		want = allFlakeStates
 	}
-	now := a.now
-	if now.IsZero() {
-		now = time.Now()
-	}
+	now := time.Now()
 	// Issues need every state, healthy included, to see a test leave one.
 	doc, warnings := testflakes.ComputeFlakes(testflakes.FlakesOptions{Root: a.root, Now: now, States: allFlakeStates})
 	for _, w := range warnings {

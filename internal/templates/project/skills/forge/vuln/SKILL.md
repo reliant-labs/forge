@@ -199,10 +199,11 @@ delivery_policy = forge.DeliveryPolicy {
   (the schema default is `audit`) and an artifact the release ships has no SBOM.
 
 **Warn first.** Both are graded through the lint rollout rows `vuln-gate` and
-`sbom-required`: introduced in v1.9.0, with a grace period until **v1.10.0**
-(`ci/lint-rollout`). While the project's `forge_version` is below v1.10.0, an
-`enforce` is judged as `audit` and says `would block (new in v1.9.0; gates from
-v1.10.0)`; a pin that jumps the window warns at that pin and gates from the next.
+`sbom-required`: introduced in v1.10.0 (the first release with SBOMs and `forge
+vuln`), gating from **v1.11.0** (`ci/lint-rollout`). While the project's
+`forge_version` is below v1.11.0, an `enforce` is judged as `audit` and says `would
+block (new in v1.10.0; gates from v1.11.0)`; a pin that jumps the window warns at
+that pin and gates from the next.
 `lint.rules: {vuln-gate: error}` (or `{sbom-required: error}`) gates now; `{vuln-gate:
 warn}` extends the warning. A release an older forge cut (no SBOMs) is never refused
 for lacking one.

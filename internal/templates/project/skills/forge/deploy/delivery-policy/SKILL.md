@@ -224,9 +224,9 @@ date and stops applying at that date; it is the same vocabulary as forge's own
 - A release cut before SBOMs existed is never refused for lacking one.
 
 **Warn first.** Both are graded through the lint rollout rows `vuln-gate` and
-`sbom-required` (introduced v1.9.0, a grace period until v1.10.0, `ci/lint-rollout`):
-while the project's `forge_version` is below v1.10.0, `enforce` is judged as `audit`
-and says `would block (new in v1.9.0; gates from v1.10.0)`. `lint.rules: {vuln-gate:
+`sbom-required` (introduced v1.10.0, gating from v1.11.0, `ci/lint-rollout`):
+while the project's `forge_version` is below v1.11.0, `enforce` is judged as `audit`
+and says `would block (new in v1.10.0; gates from v1.11.0)`. `lint.rules: {vuln-gate:
 error}` gates now. Both defaults stay `audit`.
 
 **Getting past it.** Fix the advisory (`forge vuln patch`, `vuln/patch`), or accept it in the env's own file:

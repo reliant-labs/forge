@@ -576,7 +576,8 @@ func (b richTraceBackend) Trace(_ context.Context, req obsbackend.TraceRequest) 
 		Spans: []obsbackend.Span{
 			{SpanID: "r", Name: "a.v1.Obs/GetServiceSignals", Kind: "server", Service: "admin", Start: at(0), DurationNs: 10_000 * 1e6, StatusCode: "unset",
 				Attributes: map[string]string{"rpc.method": "a.v1.Obs/GetServiceSignals", "rpc.response.status_code": "CANCELED", "error.type": "CANCELED"}},
-			{SpanID: "c", ParentID: "r", Name: "SELECT accounts", Kind: "client", Service: "admin", Start: at(11), DurationNs: 3e6, StatusCode: "unset"},
+			{SpanID: "c", ParentID: "r", Name: "SELECT accounts", Kind: "client", Service: "admin", Start: at(11), DurationNs: 3e6, StatusCode: "unset",
+				Attributes: map[string]string{"db.query.text": "SELECT id FROM accounts WHERE org_id = $1"}},
 			{SpanID: "q", ParentID: "r", Name: "SELECT t.otel_logs", Kind: "client", Service: "admin", Start: at(1), DurationNs: 2e6, StatusCode: "error",
 				StatusMessage: "context canceled", Attributes: map[string]string{"db.query.summary": "SELECT t.otel_logs", "db.clickhouse.query_id": "q-1", "db.clickhouse.read_rows": "2500000"}},
 		},
@@ -638,6 +639,24 @@ func TestObsTraceShowsWhyAndWhereTheTimeWent(t *testing.T) {
 	}
 	if failed["message"] != "context canceled" || failed["key_attributes"].(map[string]any)["query_id"] != "q-1" {
 		t.Errorf("failed statement node = %v", failed)
+	}
+	// A healthy span carries only its key attributes, unless --full asks for
+	// every attribute: the whole statement of a span named "SELECT accounts"
+	// is in no key attribute (bug report 2d2db3bc).
+	child := func(d map[string]any, name string) map[string]any {
+		for _, c := range d["tree"].([]any)[0].(map[string]any)["children"].([]any) {
+			if m := c.(map[string]any); m["name"] == name {
+				return m
+			}
+		}
+		return nil
+	}
+	if a := child(doc, "SELECT accounts")["attributes"]; a != nil {
+		t.Errorf("a healthy span's attributes without --full: %v", a)
+	}
+	full := decode(t, run("--json", "--full"))
+	if a, _ := child(full, "SELECT accounts")["attributes"].(map[string]any); a["db.query.text"] != "SELECT id FROM accounts WHERE org_id = $1" {
+		t.Errorf("--full must carry every span's attributes: %v", child(full, "SELECT accounts"))
 	}
 	log := doc["logs"].([]any)[0].(map[string]any)
 	attrs := log["attributes"].(map[string]any)

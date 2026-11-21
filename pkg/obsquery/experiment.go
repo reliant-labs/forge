@@ -29,9 +29,13 @@ import (
 //     carry other reasons and never count, and a unit that was never enrolled
 //     emits nothing, so it is never "control".
 //   - CONFLICTED: an assigned unit whose rows in the run name more than one
-//     variant (an id shared across devices that hashed before a fix, a
-//     tampered client). It is counted in no arm and reported on its own: a
-//     non-zero count is a bug to find, not a unit to guess about.
+//     variant, at any time in [Scope.Start, Scope.End) and in any order (an
+//     id shared across devices that hashed before a fix, a tampered client).
+//     A run's assignment is a pure function of the run and the unit, so a
+//     second variant is never a correction: it means the record cannot be
+//     trusted, two rows at one timestamp included. Such a unit is counted in
+//     no arm and reported on its own: a non-zero count is a bug to find, not
+//     a unit to guess about.
 //   - CONVERTED: an assigned unit with at least one outcome event (Outcome,
 //     optionally narrowed by OutcomeFilter) by the same unit, in the same
 //     environment, with Timestamp in [first_at, first_at + WindowHours],
@@ -277,11 +281,14 @@ func (q ExperimentReadoutQuery) Compile() (Stmt, error) {
 	}
 
 	sql := "WITH\n" +
-		// One row per (environment, unit): its first assignment and how many
-		// variants it was assigned.
+		// One row per (environment, unit): its first assignment's time, how
+		// many distinct variants its rows in the run name, and its variant
+		// when that is exactly one. A unit with two is conflicted whenever
+		// the second appears (CONFLICTED above), so its variant is never
+		// picked: no tie between rows at one timestamp can choose an arm.
 		"asg AS (\n" +
 		"  SELECT EnvId, " + unit + " AS unit, min(Timestamp) AS first_at,\n" +
-		"         argMin(Props['variant'], Timestamp) AS variant, uniqExact(Props['variant']) AS variants\n" +
+		"         uniqExact(Props['variant']) AS variants, if(variants = 1, any(Props['variant']), '') AS variant\n" +
 		"  FROM " + table + "\n" +
 		"  WHERE " + assigned + "\n" +
 		"    AND " + unit + " != '' AND Timestamp >= " + from + " AND Timestamp < " + to + scopeSQL + "\n" +

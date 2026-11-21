@@ -1,7 +1,7 @@
 WITH
 asg AS (
   SELECT EnvId, UserId AS unit, min(Timestamp) AS first_at,
-         argMin(Props['variant'], Timestamp) AS variant, uniqExact(Props['variant']) AS variants
+         uniqExact(Props['variant']) AS variants, if(variants = 1, any(Props['variant']), '') AS variant
   FROM t_org.product_events
   WHERE EventName = 'flag_evaluated' AND Props['provider'] = 'forge' AND Props['reason'] = 'experiment' AND Props['flag'] = {p5:String} AND Props['run'] = {p6:String} AND Props['unit'] = {p7:String}
     AND UserId != '' AND Timestamp >= fromUnixTimestamp64Nano({p2:Int64}) AND Timestamp < fromUnixTimestamp64Nano({p3:Int64}) AND EnvId = {p1:String}

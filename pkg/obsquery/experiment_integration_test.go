@@ -120,6 +120,15 @@ func TestExperimentReadoutOverAPopulation(t *testing.T) {
 		assign("2026-11-02T00:00:00Z", "user", "control", run, user("u5")),
 		assign("2026-11-02T01:00:00Z", "user", "treatment", run, user("u5")),
 		order("2026-11-02T02:00:00Z", user("u5"), "paid"),
+		// u16: two variants at one timestamp: conflicted, not whichever
+		// row a tie-break would pick.
+		assign("2026-11-03T00:00:00Z", "user", "control", run, user("u16")),
+		assign("2026-11-03T00:00:00Z", "user", "treatment", run, user("u16")),
+		order("2026-11-03T01:00:00Z", user("u16"), "paid"),
+		// u17: assigned treatment, later a control row: conflicted, the
+		// later row is not a correction.
+		assign("2026-11-03T00:00:00Z", "user", "treatment", run, user("u17")),
+		assign("2026-11-05T00:00:00Z", "user", "control", run, user("u17")),
 		// u6: treatment, assigned 12h before the horizon: converted so far,
 		// window not complete.
 		assign("2026-11-07T12:00:00Z", "user", "treatment", run, user("u6")),
@@ -188,7 +197,7 @@ func TestExperimentReadoutOverAPopulation(t *testing.T) {
 		if !reflect.DeepEqual(got.Arms, want) {
 			t.Errorf("settings %v: arms\n got %+v\nwant %+v", settings, got.Arms, want)
 		}
-		if got.Conflicted != 1 || got.Assigned != 6 || got.WindowComplete != 5 || got.Pending() != 1 || len(got.Undeclared) != 0 {
+		if got.Conflicted != 3 || got.Assigned != 6 || got.WindowComplete != 5 || got.Pending() != 1 || len(got.Undeclared) != 0 {
 			t.Errorf("settings %v: conflicted %d, assigned %d, complete %d, undeclared %v", settings, got.Conflicted, got.Assigned, got.WindowComplete, got.Undeclared)
 		}
 		if !got.FirstAssignedAt.Equal(at("2026-11-01T10:00:00Z")) || !got.LastAssignedAt.Equal(at("2026-11-07T12:00:00Z")) {

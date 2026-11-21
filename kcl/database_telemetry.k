@@ -183,19 +183,22 @@ _managed_database_dashboard = lambda svc: str, name: str -> dashspec.Dashboard {
     }
 }
 
-managed_database_telemetry = lambda name: str -> Telemetry {
+managed_database_telemetry = lambda name: str, metrics: bool = True, logs: bool = True -> Telemetry {
     """The Telemetry a ManagedDatabase named `name` gets when it declares
     none: its CloudNativePG instances' exporter (`metrics`, 9187) with a
     bounded allow list, their Postgres logs (record.error_severity is the
     severity, record.message the body), a tcp check on Postgres (5432), and
-    a database dashboard. Extend it with `|`; replace it with your own."""
+    a database dashboard. Extend it with `|`; replace it with your own.
+    metrics = False leaves out the scrape, the check and the dashboard, and
+    logs = False the log parse: forge passes the env's observability
+    signals, so a default never declares a signal the env does not ship."""
     _svc = managed_database_service_name(name)
     Telemetry {
         service_name = _svc
         # The instance pod's Postgres container (its init container is the
         # bootstrap copy of the manager binary).
         container = "postgres"
-        metrics = [MetricsScrape {port = "metrics", allow = MANAGED_DATABASE_METRICS_ALLOW, sample_limit = _DB_SAMPLE_LIMIT}]
+        metrics = [MetricsScrape {port = "metrics", allow = MANAGED_DATABASE_METRICS_ALLOW, sample_limit = _DB_SAMPLE_LIMIT}] if metrics else []
         logs = LogParse {
             format = "json"
             timestamp = LogTimestamp {field = "ts", layout = "rfc3339"}
@@ -210,9 +213,9 @@ managed_database_telemetry = lambda name: str -> Telemetry {
                 LogSeverityRule {field = "level", value_match = "^warning$", severity = "warn"}
                 LogSeverityRule {field = "level", value_match = "^(debug|trace)$", severity = "debug"}
             ]
-        }
-        checks = [HealthCheck {port = "postgres"}]
-        dashboards = [_managed_database_dashboard(_svc, name)]
+        } if logs else Undefined
+        checks = [HealthCheck {port = "postgres"}] if metrics else []
+        dashboards = [_managed_database_dashboard(_svc, name)] if metrics else []
     }
 }
 
@@ -237,7 +240,7 @@ _cnpg_operator_dashboard = lambda svc: str -> dashspec.Dashboard {
     }
 }
 
-cnpg_operator_telemetry = lambda cluster: str, service_name: str = CNPG_OPERATOR_SERVICE -> Telemetry {
+cnpg_operator_telemetry = lambda cluster: str, service_name: str = CNPG_OPERATOR_SERVICE, metrics: bool = True, logs: bool = True -> Telemetry {
     """The Telemetry of the CloudNativePG operator on `cluster`: its pods
     (`app.kubernetes.io/name: cloudnative-pg`, in every namespace), their
     :8080 controller metrics with a bounded allow list, their JSON logs and
@@ -248,13 +251,13 @@ cnpg_operator_telemetry = lambda cluster: str, service_name: str = CNPG_OPERATOR
         service_name = service_name
         cluster = cluster
         selector = {"app.kubernetes.io/name" = "cloudnative-pg"}
-        metrics = [MetricsScrape {port = 8080, allow = CNPG_OPERATOR_METRICS_ALLOW, sample_limit = _DB_SAMPLE_LIMIT}]
+        metrics = [MetricsScrape {port = 8080, allow = CNPG_OPERATOR_METRICS_ALLOW, sample_limit = _DB_SAMPLE_LIMIT}] if metrics else []
         logs = LogParse {
             format = "json"
             timestamp = LogTimestamp {field = "ts", layout = "rfc3339"}
             severity = LogSeverity {field = "level", mapping = _CNPG_LEVEL}
             body = "msg"
-        }
-        dashboards = [_cnpg_operator_dashboard(service_name)]
+        } if logs else Undefined
+        dashboards = [_cnpg_operator_dashboard(service_name)] if metrics else []
     }
 }

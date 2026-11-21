@@ -2634,8 +2634,16 @@ _tel_observability = lambda t: Telemetry, b: Bundle -> any {
 
 # A ManagedDatabase's Telemetry (kcl/database_telemetry.k): its own, else
 # the default unless default_telemetry is off.
-_db_telemetry = lambda db: any -> any {
-    db.telemetry if db.telemetry else (managed_database_telemetry(db.name) if db.default_telemetry else Undefined)
+_db_telemetry = lambda db: any, b: Bundle -> any {
+    db.telemetry if db.telemetry else (managed_database_telemetry(db.name, _tel_ships(b, "metrics"), _tel_ships(b, "logs")) if db.default_telemetry else Undefined)
+}
+
+# Whether the env's observability ships signal c (metrics, logs). A default
+# Telemetry leaves out what it does not: the node agent refuses a declared
+# signal the env turned off, so a default carrying one would fail an env
+# that rendered before the default existed.
+_tel_ships = lambda b: Bundle, c: str -> bool {
+    not (_obs_on(b) and _obs_category_off(b.observability.signals, c))
 }
 
 # Whether a database has a place a collector reaches: hosted, or a known
@@ -2649,7 +2657,7 @@ _db_placed = lambda db: any, b: Bundle -> bool {
 
 # Every database whose Telemetry renders: {db, t}, in declaration order.
 _db_telemetries = lambda b: Bundle -> [any] {
-    [{"db": db, "t": _db_telemetry(db)} for db in b.databases if db.telemetry or (db.default_telemetry and _db_placed(db, b))]
+    [{"db": db, "t": _db_telemetry(db, b)} for db in b.databases if db.telemetry or (db.default_telemetry and _db_placed(db, b))]
 }
 
 # A database's target: its CloudNativePG instances, by the label the
@@ -2687,7 +2695,7 @@ _tel_cnpg_operators = lambda b: Bundle -> [any] {
         "cluster": c
         "svc": CNPG_OPERATOR_SERVICE if len(_clusters) == 1 else CNPG_OPERATOR_SERVICE + "-" + regex.replace(c.lower(), r"[^-a-z0-9_.]", "-").strip("-_.")
     } for c in _clusters]
-    [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
+    [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc, _tel_ships(b, "metrics"), _tel_ships(b, "logs")), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
         o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b) for o in _named if o.svc not in _taken]
 }
 

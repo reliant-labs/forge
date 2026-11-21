@@ -129,6 +129,13 @@ succeeds.
 | `--no-sbom` | no SBOMs: each workload shows as not scanned (`skipped: --no-sbom`) |
 | `--sbom-source <dir>` | version-only records: syft scans that source tree's lockfiles (dev dependencies excluded, `source: lockfile`) and the SBOM is recorded on the release itself (`source_sbom`), not on an artifact. It adds nothing to the release's identity, so the same version recorded with or without the flag is the same release, and a later record with it fills in an SBOM an earlier one lacked (never replacing one) |
 
+**An env that declares `provenance_sbom` off** (`forge.Control {mode =
+"off"}`) turns off the default only: no SBOM is generated from `--image`,
+and those workloads get no `sboms` entry. Evidence you supply is never
+discarded: an `--sbom` file, and an `--sbom-source` scan you asked for, are
+recorded under any policy, and listed in `sboms` as usual. `--no-sbom` with
+`--sbom` or `--sbom-source` is refused as contradictory, whatever the policy.
+
 ## Where it records
 
 | Situation | Ledger |

@@ -465,3 +465,122 @@ func TestReleaseRecordSBOM_SharesTheCutsSBOMForAnImage(t *testing.T) {
 		t.Errorf("record SBOM %s, cut SBOM %s: want one SBOM", got, cut["ghcr.io/acme/api"].SBOM.Digest)
 	}
 }
+
+// useOffPolicyEnv declares the record's env prod in deploy/kcl, every
+// workload external, with provenance_sbom off.
+func useOffPolicyEnv(t *testing.T, projectDir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(projectDir, "deploy", "kcl", "prod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "deploy", "kcl", "prod", "main.k"), []byte("# prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := release.DefaultDeliveryPolicy()
+	policy.ProvenanceSBOM.Mode = release.DeliveryOff
+	off := &KCLEntities{DeliveryPolicy: &policy, Workloads: []WorkloadEntity{externalWL("api"), externalWL("web")}}
+	prev := renderRecordEnv
+	renderRecordEnv = func(context.Context, string, string) (*KCLEntities, error) { return off, nil }
+	t.Cleanup(func() { renderRecordEnv = prev })
+}
+
+// Explicit evidence is never discarded: under provenance_sbom off, an
+// --sbom file is recorded (and listed in --json and the text output), while
+// the workload named only by --image gets no SBOM and no entry, and syft
+// never runs.
+func TestReleaseRecordSBOM_PolicyOffRecordsOnlyExplicitSBOMs(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	useOffPolicyEnv(t, rt.sc.projectDir)
+	cdx := writeSBOMFile(t, "api.cdx.json", recordCycloneDX)
+	var warn bytes.Buffer
+	res, err := recordReleaseIn(context.Background(),
+		twoWorkloads(releaseRecordOptions{sbom: recordSBOMOptions{specs: []string{"api=" + cdx}}}), rt.sc, &warn)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if len(res.SBOMs) != 1 {
+		t.Fatalf("sboms = %+v, want only the supplied api SBOM", res.SBOMs)
+	}
+	e := res.SBOMs[0]
+	if e.Workload != "api" || e.Status != release.SBOMStatusOK || e.Source != release.SBOMSourceCIProvided || e.Digest != sbom.Digest([]byte(recordCycloneDX)) {
+		t.Errorf("api entry: %+v", e)
+	}
+	if data, err := rt.store(t).GetSBOM(e.Digest); err != nil || string(data) != recordCycloneDX {
+		t.Errorf("the supplied SBOM is not in the machine ledger: %q %v", data, err)
+	}
+	if n := len(rt.syft.calls()); n != 0 {
+		t.Errorf("syft ran %d time(s) under provenance_sbom off", n)
+	}
+	if !strings.Contains(warn.String(), "provenance_sbom off") || strings.Contains(warn.String(), "not recorded") {
+		t.Errorf("output: %q", warn.String())
+	}
+	raw, _ := json.Marshal(res)
+	if !strings.Contains(string(raw), `"sboms":[{"workload":"api"`) || strings.Contains(string(raw), `"workload":"web"`) {
+		t.Errorf("--json: %s", raw)
+	}
+	var out bytes.Buffer
+	printReleaseRecord(&out, res)
+	if !strings.Contains(out.String(), "sbom     api") || strings.Contains(out.String(), "sbom     web") {
+		t.Errorf("text output:\n%s", out.String())
+	}
+	arts := rt.cp.called("CutRelease")[0]["artifacts"].([]any)
+	if len(arts) != 2 {
+		t.Errorf("CutRelease artifacts = %v", arts)
+	}
+}
+
+// Under provenance_sbom off with no explicit SBOM, nothing is generated,
+// nothing is listed, and nothing is said, as at the cut.
+func TestReleaseRecordSBOM_PolicyOffSkipsImplicitGeneration(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	useOffPolicyEnv(t, rt.sc.projectDir)
+	var warn bytes.Buffer
+	res, err := recordReleaseIn(context.Background(), twoWorkloads(releaseRecordOptions{}), rt.sc, &warn)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if len(res.SBOMs) != 0 || len(rt.syft.calls()) != 0 || warn.Len() != 0 {
+		t.Errorf("sboms %+v, syft %v, output %q; want none of them", res.SBOMs, rt.syft.calls(), warn.String())
+	}
+	if raw, _ := json.Marshal(res); strings.Contains(string(raw), "sboms") {
+		t.Errorf("--json lists sboms: %s", raw)
+	}
+}
+
+// --sbom-source is an explicit request, recorded as the release's source
+// SBOM under provenance_sbom off.
+func TestReleaseRecordSBOM_PolicyOffRecordsTheSourceSBOM(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	useOffPolicyEnv(t, rt.sc.projectDir)
+	tree := t.TempDir()
+	res, err := recordReleaseIn(context.Background(),
+		releaseRecordOptions{env: "prod", version: "v1.4.0", sbom: recordSBOMOptions{source: tree}}, rt.sc, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if len(res.SBOMs) != 1 || res.SBOMs[0].Workload != "" || res.SBOMs[0].Status != release.SBOMStatusOK || res.SBOMs[0].Source != release.SBOMSourceLockfile {
+		t.Fatalf("sboms = %+v, want the source SBOM", res.SBOMs)
+	}
+	if calls := rt.syft.calls(); len(calls) != 1 || calls[0] != "dir:"+tree {
+		t.Errorf("syft read %v, want a dir scan of %s", calls, tree)
+	}
+	if _, err := rt.store(t).GetSBOM(res.SBOMs[0].Digest); err != nil {
+		t.Errorf("the source SBOM is not in the machine ledger: %v", err)
+	}
+}
+
+// --no-sbom with --sbom is contradictory whatever the policy, and refused
+// before anything is cut.
+func TestReleaseRecordSBOM_NoSBOMWithSBOMIsRefusedUnderPolicyOff(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	useOffPolicyEnv(t, rt.sc.projectDir)
+	cdx := writeSBOMFile(t, "api.cdx.json", recordCycloneDX)
+	_, err := recordReleaseIn(context.Background(),
+		twoWorkloads(releaseRecordOptions{sbom: recordSBOMOptions{noSBOM: true, specs: []string{"api=" + cdx}}}), rt.sc, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("err %v, want the contradiction refused", err)
+	}
+	if n := len(rt.cp.called("CutRelease")); n != 0 {
+		t.Errorf("a refused record cut %d release(s)", n)
+	}
+}

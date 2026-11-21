@@ -153,7 +153,9 @@ the registry credentials the CI already has (docker login), stored in this
 machine's ledger and recorded on the workload. --sbom <workload>=<path> records
 one your pipeline produced instead (CycloneDX or SPDX JSON); --sbom-source <dir>
 describes a version-only record's source tree; --no-sbom records none. An SBOM
-that cannot be produced warns, and the record still succeeds.
+that cannot be produced warns, and the record still succeeds. An env declaring
+provenance_sbom off generates none from --image, but still records what --sbom
+and --sbom-source supply.
 
 Examples:
   ` + Name() + ` release record --env prod --version v1.4.0

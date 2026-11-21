@@ -20,6 +20,11 @@ package cli
 //     release's identity never depends on a flag, so the same version
 //     recorded with or without it is the same release.
 //
+// An env that declares provenance_sbom off skips only the default, the
+// generation from each --image. An SBOM the caller supplies (--sbom) or
+// explicitly asks for (--sbom-source) is recorded under any policy:
+// explicit evidence is never discarded.
+//
 // WARN-FIRST, as at the cut: an SBOM forge could not produce warns, is
 // recorded unavailable with the reason, and the record still succeeds. What
 // fails the record is a mistake in the flags themselves (an --sbom for a
@@ -172,18 +177,23 @@ type recordSBOMRun struct {
 // hooks over each SBOM it stored, exactly as the cut does. It never fails
 // the record: an SBOM it could not produce or store is recorded unavailable
 // and warned. It returns one entry per artifact with an SBOM ref.
+//
+// EXPLICIT EVIDENCE IS NEVER DISCARDED. An env that declares provenance_sbom
+// off turns off what forge does by default, generating an SBOM from each
+// --image (and requiring one), not what a caller may hand it: an --sbom file
+// is recorded under any policy, exactly as it is with the policy on. Under
+// off the workloads named only by --image get no SBOM and no entry, as at
+// the cut, which records nothing for them and says nothing.
 func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[string]release.Artifact, warn io.Writer) []recordSBOMEntry {
 	if len(artifacts) == 0 {
 		return nil
 	}
-	if sbomPolicyOff(in.declared) {
-		if len(in.plan.provided) > 0 {
-			fmt.Fprintf(warn, "warning: env %s declares provenance_sbom off, so the --sbom files are not recorded\n", in.env)
-		}
-		return nil
-	}
+	off := sbomPolicyOff(in.declared)
 	names := sortedArtifactNames(artifacts)
 	if in.plan.noSBOM {
+		if off {
+			return nil // the policy already records none, and says nothing
+		}
 		for _, name := range names {
 			setArtifactSBOM(artifacts, name, release.SBOMRef{Status: release.SBOMStatusUnavailable, Reason: "skipped: --no-sbom"})
 		}
@@ -231,6 +241,9 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 			}
 			continue
 		}
+		if off {
+			continue // implicit generation is what provenance_sbom off turns off
+		}
 		digest, ok := art.SharedDigest()
 		if !ok {
 			continue // a record names shared images only; anything else describes no shipped bytes here
@@ -267,6 +280,11 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 
 	runRecordSBOMHooks(ctx, in, artifacts, stored, warn)
 
+	if off && len(in.plan.provided) > 0 {
+		fmt.Fprintf(warn, "note: env %s declares provenance_sbom off, so forge generated no SBOM; the %d SBOM(s) passed with --sbom are recorded\n",
+			in.env, len(in.plan.provided))
+	}
+
 	for _, name := range names {
 		if ref := artifacts[name].SBOM; ref != nil && !ref.HasSBOM() {
 			fmt.Fprintf(warn, "warning: release %s recorded without an SBOM for %s: %s\n", in.version, name, ref.Reason)
@@ -291,13 +309,17 @@ func newRecordSBOMGenerator(in recordSBOMRun) *sbom.Generator {
 
 // recordSourceSBOM describes --sbom-source's tree for a version-only record
 // and stores the bytes in this machine's ledger: the release's SourceSBOM.
-// Like every record SBOM it never fails the record; nil when there is none
-// to describe (no --sbom-source, or the env declares SBOMs off).
+// Like every record SBOM it never fails the record; nil without
+// --sbom-source.
+//
+// It runs whatever the env's provenance_sbom policy: --sbom-source is the
+// caller explicitly asking for this SBOM, and explicit evidence is never
+// discarded (recordReleaseSBOMs).
 //
 // The post-generate hooks do not run for it: they act on an artifact (a
 // referrer is attached to an image), and a source SBOM has none.
 func recordSourceSBOM(ctx context.Context, in recordSBOMRun, warn io.Writer) *release.SBOMRef {
-	if in.plan.sourceDir == "" || sbomPolicyOff(in.declared) {
+	if in.plan.sourceDir == "" {
 		return nil
 	}
 	// A tree has no one digest, so the scan is never cached (the cache

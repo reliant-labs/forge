@@ -108,7 +108,11 @@ func TestMetricSemanticsAgainstClickHouse(t *testing.T) {
 
 	// A cumulative counter at 60s, true rate 2/s, for 2h before `base+2h`.
 	start := base.Add(-time.Hour)
-	seedSum(t, c, "reqs", true, 2, start, base, 125, 60, 1000, 120, "map()")
+	// reqs is a long-running counter: its series started before any read
+	// below reaches (the 6h range reads from base-1h minus the lookback), so
+	// its first sample is a delta from an unseen predecessor, not growth since
+	// a start inside the read (which a counter born mid-range would be).
+	seedSum(t, c, "reqs", true, 2, base.Add(-12*time.Hour), base, 125, 60, 1000, 120, "map()")
 	end := base.Add(2 * time.Hour)
 
 	t.Run("rate is 2/s in every complete bucket at every range, no gaps", func(t *testing.T) {
@@ -264,6 +268,37 @@ func TestMetricSemanticsAgainstClickHouse(t *testing.T) {
 				if !near(p.Value, 2) {
 					t.Errorf("step %d: rate %s = %v, want 2 across the replacement", step, p.Time.Format("15:04"), p.Value)
 				}
+			}
+		}
+	})
+
+	t.Run("distinct series, one group, disjoint coverage: the rate is the group's over the covered time", func(t *testing.T) {
+		// Two series that share the grouping (none here) but differ in other
+		// identity (pod), at DIFFERENT rates and never at once: pod a at 2/s
+		// until 10:29, pod b at 6/s from 10:29. The group's rate at every
+		// instant is the live series' rate, so over 10:10-10:50 it is
+		// (2*1140 + 6*1260) / 2400 = 4.1, and the increase is 9840. Summing
+		// each series' own rate would read 8.
+		seedSum(t, c, "disjoint", true, 2, base.Add(9*time.Minute), base.Add(10*time.Minute), 20, 60, 120, 120, "map('pod','a')")
+		seedSum(t, c, "disjoint", true, 2, base.Add(29*time.Minute), base.Add(30*time.Minute), 21, 60, 360, 360, "map('pod','b')")
+		sc := scope(base.Add(10*time.Minute), base.Add(50*time.Minute))
+		rate := eval(t, c, sc, panel("number", ser("A", "disjoint", "rate", "sum")), obsquery.EvalOptions{})
+		if s := rate.Series[0]; s.Reduced == nil || !near(*s.Reduced, 4.1) {
+			t.Errorf("rate = %v, want 4.1 (the group's rate over the time it was covered)", reducedOf(s))
+		}
+		inc := eval(t, c, sc, panel("number", ser("A", "disjoint", "increase", "sum")), obsquery.EvalOptions{})
+		if s := inc.Series[0]; s.Reduced == nil || !near(*s.Reduced, 9840) {
+			t.Errorf("increase = %v, want 9840", reducedOf(s))
+		}
+		// Per minute, each bucket is the live pod's own rate.
+		line := eval(t, c, sc, panel("line", ser("A", "disjoint", "rate", "sum")), obsquery.EvalOptions{StepSeconds: 60})
+		for _, p := range line.Series[0].Points {
+			want := 2.0
+			if !p.Time.Before(base.Add(29 * time.Minute)) {
+				want = 6
+			}
+			if !near(p.Value, want) {
+				t.Errorf("rate %s = %v, want %v", p.Time.Format("15:04"), p.Value, want)
 			}
 		}
 	})
@@ -538,3 +573,11 @@ func (r *countingRows) Next() bool {
 }
 
 var _ driver.Rows = (driver.Rows)(nil)
+
+// reducedOf is a series' reduced value for a message ("<nil>" when absent).
+func reducedOf(s obsquery.MetricSeriesResult) any {
+	if s.Reduced == nil {
+		return nil
+	}
+	return *s.Reduced
+}

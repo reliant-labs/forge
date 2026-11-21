@@ -108,7 +108,7 @@ func (h *patchHarness) exec(ctx context.Context, c vulnscan.Command) error {
 
 func (h *patchHarness) patch(args ...string) (doc vulnpatch.Document, stdout, stderr string, code int) {
 	h.t.Helper()
-	deps := vulnPatchDeps{vulnDeps: h.deps, findingsFor: machineLedgerPatchFindings, exec: h.exec}
+	deps := vulnPatchDeps{vulnDeps: h.deps, findingsFor: envPatchFindings, exec: h.exec}
 	deps.run = h.grype
 	cmd := newVulnPatchCmdWith(deps)
 	var out, errOut bytes.Buffer
@@ -250,11 +250,11 @@ func TestVulnPatchNamedAdvisories(t *testing.T) {
 	if r := doc.Findings[1]; r.ID != "GHSA-nope" || r.Status != vulnpatch.StatusSkipped || !strings.Contains(r.Reason, "prod release v1.0.0") {
 		t.Errorf("missing advisory = %+v", r)
 	}
-	// A named finding outside every patcher (and with no fix) is reported,
-	// not dropped: the env-wide default leaves it out.
+	// A named finding with no fix (an OS package the distro will not fix)
+	// is reported, not dropped: the env-wide default leaves it out.
 	h = newPatchHarness(t)
 	doc, _, _, code = h.patch("prod", "CVE-2026-82560")
-	if code != exitUndetermined || len(doc.Findings) != 1 || !strings.Contains(doc.Findings[0].Reason, "OS package (deb)") {
+	if code != exitUndetermined || len(doc.Findings) != 1 || !strings.Contains(doc.Findings[0].Reason, "no fixed version (fix state: wont-fix)") {
 		t.Errorf("unfixable: exit %d %+v", code, doc.Findings)
 	}
 }
@@ -324,7 +324,8 @@ func TestVulnPatchFlagsAndInputs(t *testing.T) {
 		t.Errorf("a refused flag set ran %v", h.cmds)
 	}
 
-	// An env that records on a control plane is F8's: say so, exit 2.
+	// An env that records on a control plane this command cannot reach: say
+	// so, exit 2.
 	h = newPatchHarness(t)
 	h.env.Endpoint = "https://cp.example"
 	if _, _, stderr, code := h.patch("prod"); code != exitUndetermined || !strings.Contains(stderr, "control plane") {

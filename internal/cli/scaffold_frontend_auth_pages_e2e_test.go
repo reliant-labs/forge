@@ -40,12 +40,15 @@ func TestE2EFrontendAuthPagesBuildAndTest(t *testing.T) {
 		"src/components/forgot-password-form.tsx",
 		"src/components/reset-password-form.tsx",
 		"src/lib/auth/password.test.tsx",
+		// The account page's body, where a person enrols a passkey.
+		"src/components/account-settings.tsx",
 	} {
 		assertPathExistsE2E(t, filepath.Join(webDir, filepath.FromSlash(f)))
 		assertPathExistsE2E(t, filepath.Join(spaDir, filepath.FromSlash(f)))
 	}
 	assertPathExistsE2E(t, filepath.Join(webDir, "src", "app", "auth", "forgot", "page.tsx"))
 	assertPathExistsE2E(t, filepath.Join(webDir, "src", "app", "auth", "reset", "page.tsx"))
+	assertPathExistsE2E(t, filepath.Join(webDir, "src", "app", "account", "page.tsx"))
 
 	prebuildWebRuntimeE2E(t)
 	for _, d := range []string{webDir, spaDir} {

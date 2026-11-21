@@ -143,9 +143,9 @@ func (v *validator) target() {
 		v.add("scope", fmt.Sprintf("%q must be project or platform", t.Scope))
 	}
 	switch t.Attachment {
-	case AttachWorkload, AttachHostInfra, AttachManifests, AttachObservability:
+	case AttachWorkload, AttachHostInfra, AttachManifests, AttachObservability, AttachManagedDatabase:
 	default:
-		v.add("attachment", fmt.Sprintf("%q is not one of workload, hostinfra, manifests, observability", t.Attachment))
+		v.add("attachment", fmt.Sprintf("%q is not one of workload, hostinfra, manifests, observability, manageddatabase", t.Attachment))
 	}
 	v.runtime()
 	if len(t.Selector) > 0 && t.Address != "" {
@@ -159,6 +159,9 @@ func (v *validator) target() {
 			v.add("selector", "keys and values must be non-empty")
 			break
 		}
+	}
+	if t.Attachment == AttachWorkload && t.Runtime == RuntimeCluster && len(t.Namespaces) == 0 {
+		v.add("namespaces", "a workload target on a cluster needs its namespace: without one its selector matches same-named pods in every namespace, and their signals would be stamped as this service")
 	}
 	if t.Pulled() && t.Runtime != RuntimeHosted && len(t.Selector) == 0 && t.Address == "" {
 		v.add("selector", "a scrape, pull or check needs pods (a selector) or an address to reach")

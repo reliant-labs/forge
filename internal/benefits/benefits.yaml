@@ -711,6 +711,44 @@ benefits:
           A statement that does not finish within statement_timeout on
           production-shaped data
 
+  - id: query-index-analysis
+    category: data
+    title: Index check of tested queries
+    claim: >-
+      `forge db analyze queries` plans every query shape a test run recorded
+      on a disposable database at the head schema, with sequential scans
+      disabled, and reports each
+      filter, join and ORDER BY … LIMIT no index serves, with the caller's
+      file and line.
+    availability: forge
+    headline: false
+    use: >-
+      Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then
+      `forge db analyze queries --capture /tmp/qc` (the shapes whose callers
+      changed since the merge-base; `--all` for every one), or add
+      `--capture` to `forge db analyze` to run it after the migrations.
+    why: >-
+      A new filter or join without an index passes every test on a small
+      table and becomes a full scan in production; whether an index can serve
+      it depends on the schema at head, which only the planner knows.
+    evidence:
+      - command: db analyze queries
+      - path: pkg/dbanalyze/queries.go
+      - path: pkg/querycapture
+      - path: internal/cli/db_analyze_queries.go
+      - skill: db/analyze
+    rules:
+      - id: db-analyze-query-no-usable-index
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A filter, join or ORDER BY … LIMIT that no index can serve, which
+          reads every row of the table once it holds production data
+      - id: db-analyze-query-large-seqscan
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A query whose plan on an anonymized production snapshot
+          sequentially scans a large table
+
   - id: keep-your-migration-tool
     category: data
     title: Keep your migration tool
@@ -2502,6 +2540,41 @@ benefits:
           An env whose render fails, so its secrets could not be judged (a
           warning; `forge env render` reports the render error itself)
 
+  - id: lint-rules-telemetry
+    category: guardrails
+    title: Declared telemetry rules
+    claim: >-
+      A dashboard panel over a series no scrape keeps, an unbounded scrape and
+      a rate over a gauge are caught from each env's real render.
+    availability: forge
+    evidence:
+      - path: internal/cli/lint/telemetry_rules.go
+      - command: lint --telemetry
+    rules:
+      - id: telemetry-dashboard-metric-uncollected
+        lane: --telemetry
+        bug_class: >-
+          A declared dashboard series whose metric no scrape of its system
+          keeps (allow minus deny), so the panel is empty in every env it ships
+          to with no other symptom
+      - id: telemetry-scrape-unbounded
+        lane: --telemetry
+        bug_class: >-
+          A metrics scrape with no `allow`, which stores every series the
+          endpoint exposes until it passes `sample_limit` and fails whole
+      - id: telemetry-rate-on-gauge
+        lane: --telemetry
+        bug_class: >-
+          A rate or increase over a metric nothing marks as a counter (no
+          `counters` match, no `_total`/`_count`/`_sum`), which reads nothing
+          when the metric is a gauge (a warning)
+      - id: telemetry-high-cardinality-risk
+        lane: --telemetry
+        bug_class: >-
+          A scrape that raises `sample_limit` or keeps every name while
+          dropping no labels, so a per-user or per-id label explodes its
+          series (a warning)
+
   - id: lint-rules-scaffold-ownership
     category: guardrails
     title: Generated-code tampering checks
@@ -2698,9 +2771,10 @@ benefits:
     category: security
     title: Signed images, SBOM and provenance
     claim: >-
-      The generated `build-images.yml` signs every image it pushes with a keyless
-      cosign signature bound to its digest, generates an SPDX SBOM for it, and
-      attests its build provenance.
+      The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign
+      signature and a build-provenance attestation to every image, bound to its
+      digest and stored in the registry beside it (`cosign
+      verify-attestation`), private repositories included.
     availability: forge
     headline: true
     why: >-
@@ -3758,6 +3832,43 @@ benefits:
       - path: pkg/releasehealth/releasehealth.go
       - command: obs check
 
+  - id: vuln-gate-self-hosted
+    category: ship
+    title: Vulnerability gate, warn first
+    claim: >-
+      Every release cut prints what its SBOMs are known to be vulnerable to
+      and what each env's `vuln_gate` would do, and an env with no control
+      plane has `vuln_gate = enforce` and `provenance_sbom` judged before
+      forge writes its promotion, warning for one release before it refuses.
+    availability: forge
+    use: >-
+      `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy {
+      mode = "enforce" } }`; accept one advisory with `forge vuln exempt
+      <env> <id> --reason "..." --expires YYYY-MM-DD`
+    why: >-
+      Graded through the lint rollout rows `vuln-gate` and `sbom-required`:
+      below their `gates_from` release an enforce is judged as audit and says
+      "would block". From it, a self-hosted promotion is refused
+      `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale
+      database: could not determine is never a pass) or `sbom_missing`, each
+      exit 4; `--override-vuln-gate "<why>"` records who overrode it, why,
+      and which findings. `lint.rules: {vuln-gate: error}` gates now.
+    evidence:
+      - command: vuln exempt
+      - command: ci vuln-sbom
+      - path: internal/cli/vuln_gate.go
+    rules:
+      - id: vuln-gate
+        lane: forge env deploy
+        bug_class: >-
+          An env that declares `vuln_gate = enforce` promoting a release with
+          a fixable critical or KEV-listed advisory, or one nobody scanned
+      - id: sbom-required
+        lane: forge env deploy
+        bug_class: >-
+          A release promoted with no SBOM for an artifact it ships, so nothing
+          can say what it contains or what it is vulnerable to
+
   - id: delivery-policy-recorded
     category: ship
     title: Per-env delivery policy controls
@@ -4418,9 +4529,12 @@ benefits:
       Issues are fingerprinted with one algorithm, at query time locally and at
       ingest on the control plane; issues that share a cause and first fired
       together collapse into one incident without being merged, and triage
-      (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+      (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log
+      record an authenticated request writes carries `user.id`, so an issue
+      counts the people it reached.
     evidence:
       - command: obs issue
+      - path: pkg/authn/telemetry.go
       - command: obs issues
       - command: obs issue resolve
       - command: obs issue ignore
@@ -4596,6 +4710,44 @@ benefits:
     evidence:
       - library: pkg/obsbuiltin
       - path: pkg/obsbuiltin/population_clickhouse_test.go
+      - skill: observability/product-analytics
+
+  - id: controlled-rollouts-and-experiments
+    category: run
+    title: Controlled rollouts and A/B tests
+    claim: >-
+      Planned: one change ships new app behavior to everyone, as a gradual
+      rollout, or as a comparison of versions, with stable cohorts by user,
+      account, or visitor.
+    status: in-progress
+    availability: hosted
+    use: >-
+      Create a change with its default and new behavior, then choose who gets
+      it: everyone (remote config), a gradual rollout to a stable percentage,
+      or compare versions (an A/B test measured against your own product
+      events). The same user, account, or visitor keeps the same outcome, and
+      ramping up only adds people. The planned project-level Experiments
+      screen and Reliant agents use the same permissions and audit trail; apps
+      still implement both behaviors.
+    why: >-
+      The evaluation SDK ships: a Go store and OpenFeature provider, a browser
+      loader and OpenFeature provider, and assignment events recorded as
+      product events, and changes are declared in the project (changes.yaml)
+      and shipped in the release. Platform delivery of each environment's
+      policy and the Experiments screen are not shipped yet. Evaluation is
+      local in the app, from a versioned policy, without a
+      network call on each request or changes to load balancers.
+    evidence:
+      - library: pkg/changes
+      - library: pkg/changes/openfeature
+      - library: pkg/observe
+      - path: web-runtime/src/track.ts
+      - path: web-runtime/src/changes-store.ts
+      - path: web-runtime/src/changes-provider.ts
+      - path: web-runtime/src/exposure.ts
+      - path: internal/changesdecl/changesdecl.go
+      - path: docs/changes.md
+      - skill: observability/changes
       - skill: observability/product-analytics
 
   - id: builtin-ai-hub

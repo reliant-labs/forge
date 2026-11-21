@@ -200,7 +200,7 @@ func (g *Graph) newCleanup() (*cleanup.Worker, error) {
 A root selects what a process builds and supervises. With no `//forge:root` declared, the generated `Server` root runs every runnable node nothing depends on (the API listener, every worker, every operator), which is what `<bin> server` runs. To run a worker as a process of its own, declare a root that names it and deploy that root (load `architecture`, "Roots and commands"):
 
 ```go
-// internal/app/roots.go — yours
+// internal/app, conventionally roots.go — yours
 //forge:root worker
 type Worker struct {
     Cleanup *cleanup.Worker // `<bin> worker` builds the cleanup worker's closure alone

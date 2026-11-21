@@ -88,7 +88,8 @@ forge component install	cmd	allow-version-skew:bool dir/d:string project-dir/C:s
 forge component list	cmd	allow-version-skew:bool category/c:string project-dir/C:string
 forge component search	cmd	allow-version-skew:bool project-dir/C:string
 forge db	group	allow-version-skew:bool project-dir/C:string
-forge db analyze	cmd	allow-version-skew:bool base:string dir:string dsn-env:string json:bool project-dir/C:string target:string
+forge db analyze	cmd	all:bool allow-version-skew:bool base:string capture:string dir:string dsn-env:string json:bool project-dir/C:string target:string
+forge db analyze queries	cmd	all:bool allow-version-skew:bool base:string capture:string dir:string dsn-env:string json:bool project-dir/C:string target:string
 forge db introspect	cmd	allow-version-skew:bool dsn:string format:string project-dir/C:string table:string
 forge db migrate	group	allow-version-skew:bool project-dir/C:string
 forge db migrate force	cmd	allow-version-skew:bool dir:string dsn:string project-dir/C:string
@@ -162,7 +163,7 @@ forge domain unbind	cmd	allow-version-skew:bool env:string project-dir/C:string 
 forge domain verify	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string token:string
 forge env	group	allow-version-skew:bool project-dir/C:string
 forge env build	cmd	allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool base-promotion:string bundle-envs:string config-check:string debug:bool docker:bool gate-json:string json:bool no-build:bool no-generate:bool no-run:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string push:bool rebuild:bool release:string run-id:string run-url:string snapshot-bootstrap:bool tag:string target-arch:string target/t:stringArray
-forge env config	cmd	allow-version-skew:bool json:bool project-dir/C:string strict:bool workload:string
+forge env config	cmd	allow-version-skew:bool json:bool project-dir/C:string show-secrets:bool strict:bool workload:string
 forge env delete	cmd	allow-version-skew:bool endpoint:string id:string keep-data:bool project-dir/C:string token:string yes:bool
 forge env deploy	cmd	acknowledge-destructive:stringSlice actor:string allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool approve:string claimable:bool dry-run:bool expect-current:string expect-unbound:bool explain:bool fail-fast:bool floor:string from-promotion:string from:string frontends-only:bool gate:stringArray json:bool live-diff:bool namespace:string no-digest:bool no-run:bool no-wait:bool note:string offline-ledger:bool option/D:stringArray org:string override-health-gate:string plan-only:bool plan:bool project-dir/C:string prune:bool rerecord-bundle:bool rollout-fail-fast:bool rollout-order:stringArray rollout-timeout:duration rollout:string run-id:string run-url:string skip-frontend:bool skip-hub-check:bool skip-preflight:bool supersede:bool tag:string target-arch:string target:stringArray timeout:duration to:string wait:bool yes:bool
 forge env devstack	group	project-dir/C:string
@@ -247,7 +248,7 @@ forge ledger export	cmd	allow-version-skew:bool dir:string env:string project-di
 forge ledger import	cmd	allow-version-skew:bool apply:bool from-file-ledger:string from-git:bool project-dir/C:string rev:string
 forge ledger show	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge ledger where	cmd	allow-version-skew:bool json:bool project-dir/C:string
-forge lint	cmd	allow-skip:stringArray allow-version-skew:bool banners:bool check-workarounds:bool check:bool closed-sets:bool column-markers:bool computed-fields:bool config-deps:bool config-reach:bool contract:bool conventions:bool create-nullability:bool db-grants:bool exported-vars:bool fix:bool fixture-drift:bool frontend-stores:bool gate-json:string generated-drift:bool go-markers:bool graph:bool guarded-fields:bool help-dev:bool install:bool json:bool migration-safety:bool no-fix:bool optional-deps-guard:bool project-dir/C:string proto-markers:bool proto-options:bool quiet/q:bool read-only-fields:bool scaffolds:bool scope:stringSlice secrets:bool show-suppressed:bool skip-frontends:bool slow-tests:bool static-export:bool strict:bool suggest-buf-excepts:bool suggest-excludes:bool test-waits:bool tests:bool time-bucketing:bool tracing:bool vendored-protos:bool
+forge lint	cmd	allow-skip:stringArray allow-version-skew:bool banners:bool check-workarounds:bool check:bool closed-sets:bool column-markers:bool computed-fields:bool config-deps:bool config-reach:bool contract:bool conventions:bool create-nullability:bool db-grants:bool exported-vars:bool fix:bool fixture-drift:bool frontend-stores:bool gate-json:string generated-drift:bool go-markers:bool graph:bool guarded-fields:bool help-dev:bool install:bool json:bool migration-safety:bool no-fix:bool optional-deps-guard:bool project-dir/C:string proto-format:bool proto-markers:bool proto-options:bool quiet/q:bool read-only-fields:bool scaffolds:bool scope:stringSlice secrets:bool show-suppressed:bool skip-frontends:bool slow-tests:bool static-export:bool strict:bool suggest-buf-excepts:bool suggest-excludes:bool telemetry:bool test-waits:bool tests:bool time-bucketing:bool tracing:bool vendored-protos:bool
 forge lint fix	group	allow-version-skew:bool project-dir/C:string
 forge lint fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge lint fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string

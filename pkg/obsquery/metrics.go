@@ -452,9 +452,14 @@ func (q MetricQuery) lookbackSeconds() int64 {
 // distinct bound set in a (bucket, labels), which MergeHistograms folds.
 //
 // Counters are rates per series first, Σinc/Σdt over the series' samples in the
-// bucket, and then summed across series. A cumulative sample's increment is its
-// value less its predecessor's, or its whole value when it follows a reset (the
-// StartTimeUnix moved, or the counter decreased); a delta sample's is its value.
+// bucket, each weighted by the part of the bucket the series covers; an
+// increase is the sum of those, and a rate is that over the span the group's
+// series cover. A series that exists for all of a bucket therefore contributes
+// rate × width, and one that starts or stops inside it only the time it
+// existed. A cumulative sample's increment is its value less its
+// predecessor's, or its whole value when it follows a reset (the StartTimeUnix
+// moved, or the counter decreased) or starts a series inside the read; a delta
+// sample's is its value.
 func (q MetricQuery) Compile() (Stmt, error) {
 	agg, err := q.validate()
 	if err != nil {
@@ -468,7 +473,11 @@ func (q MetricQuery) Compile() (Stmt, error) {
 	if fam == famCounter || fam == famHistAvg || fam == famHistQuantile {
 		readFrom = readFrom.Add(-time.Duration(q.lookbackSeconds()) * time.Second)
 	}
-	conds := []string{"TimeUnix >= " + b.secTime(readFrom) + " AND TimeUnix < " + b.secTime(q.Scope.End), "MetricName = " + b.str(q.Name)}
+	readTo := q.Scope.End
+	if fam == famCounter {
+		readTo = readTo.Add(time.Duration(q.continuationSeconds()) * time.Second)
+	}
+	conds := []string{"TimeUnix >= " + b.secTime(readFrom) + " AND TimeUnix < " + b.secTime(readTo), "MetricName = " + b.str(q.Name)}
 	sc, err := b.scopeConds(SigMetrics, q.Scope)
 	if err != nil {
 		return Stmt{}, err
@@ -518,12 +527,14 @@ func (q MetricQuery) Compile() (Stmt, error) {
 		conds = append(append([]string{}, conds...), tuple+" IN ("+top+")")
 	}
 
+	// A counter buckets its samples' intervals itself; every other family
+	// buckets by TimeUnix.
 	var bucket string
-	multiplier := float64(q.StepSeconds)
-	if q.Reduce {
+	switch {
+	case fam == famCounter:
+	case q.Reduce:
 		bucket = "toDateTime(" + b.u32(uint32(q.Scope.Start.Unix())) + ")"
-		multiplier = q.Scope.End.Sub(q.Scope.Start).Seconds()
-	} else {
+	default:
 		bucket = "toStartOfInterval(TimeUnix, toIntervalSecond(" + b.u32(uint32(q.StepSeconds)) + "))"
 	}
 	sid := "cityHash64(ResourceAttributes, Attributes)"
@@ -533,7 +544,7 @@ func (q MetricQuery) Compile() (Stmt, error) {
 	// Bound only where used: the lookback read pulls in samples before Start
 	// that the outer layer must drop.
 	startCond := ""
-	if fam == famCounter || fam == famHistAvg || fam == famHistQuantile {
+	if fam == famHistAvg || fam == famHistQuantile {
 		startCond = "TimeUnix >= " + b.secTime(q.Scope.Start)
 	}
 	tail := " GROUP BY bucket" + gNameList + " ORDER BY bucket" + gNameList + " LIMIT " + strconv.Itoa(MaxMetricRows)
@@ -568,15 +579,40 @@ func (q MetricQuery) Compile() (Stmt, error) {
 				vCol = "Sum"
 			}
 		}
-		mult := ""
-		if agg != AggRate {
-			mult = " * " + b.f64(multiplier)
+		// Each sample's increment is spread evenly over the interval it
+		// covers, [ts−dt, ts], and every bucket that interval overlaps takes
+		// its share, clipped to the range. So an increase is what the counter
+		// actually grew by in the bucket, never a rate extrapolated over time
+		// a series did not exist (a pod that started or stopped mid-bucket, a
+		// counter first written mid-range, the live edge), and the buckets of
+		// a range add up to the range's increase. A rate is the increase over
+		// the time in the bucket the group's samples cover, so a series
+		// replaced by its successor is not counted twice and the live edge is
+		// not diluted. The read runs a little past End, so the sample after
+		// End gives the last bucket its share.
+		startSec, endSec := b.i64(q.Scope.Start.Unix()), b.i64(q.Scope.End.Unix())
+		inner := "      SELECT " + strings.TrimPrefix(gNameList+", ", ", ") + "inc / dt AS r, greatest(ts - dt, " + startSec + ") AS s0, least(ts, " + endSec + ") AS s1 FROM (\n" +
+			q.incrementsSQL(b, readFrom, vCol, cCol, gSelList, sid, from, conds, window) + "\n      )\n" +
+			"      WHERE (tmp = 1 OR NOT is_first OR born) AND dt > 0 AND ts > " + startSec + " AND ts - dt < " + endSec + "\n    )"
+		var spread string
+		if q.Reduce {
+			spread = "    SELECT " + startSec + " AS bs" + gNameList + ", r, s0 AS c0, s1 AS c1 FROM (\n" + inner + "\n"
+		} else {
+			step := b.i64(q.StepSeconds)
+			spread = "    SELECT b AS bs" + gNameList + ", r, greatest(s0, b) AS c0, least(s1, b + " + step + ") AS c1 FROM (\n" + inner +
+				" ARRAY JOIN range(toInt64(toUnixTimestamp(toStartOfInterval(toDateTime(s0), toIntervalSecond(" + step + ")))), s1, " + step + ") AS b\n"
 		}
-		sql = "SELECT bucket, " + labels + " AS labels, toFloat64(sum(r)" + mult + ") AS value, " + total + " AS series_total FROM (\n" +
-			"  SELECT " + bucket + " AS bucket" + gNameList + ", sid, sum(inc) / sum(dt) AS r FROM (\n" +
-			q.incrementsSQL(vCol, cCol, gSelList, sid, from, conds, window) + "\n  )\n" +
-			"  WHERE (tmp = 1 OR NOT is_first) AND dt > 0 AND " + startCond + "\n  GROUP BY bucket" + gNameList + ", sid\n" +
-			")" + tail
+		value := "sum(r * (c1 - c0))"
+		if agg == AggRate {
+			// The covered time is the union of the intervals: each adds what
+			// reaches past every interval that starts before it. A gap no
+			// sample covers (a restart, a pod replaced) is not time at rate 0.
+			value += " / sum(fresh)"
+			spread = "    SELECT bs" + gNameList + ", r, c0, c1, greatest(0, c1 - greatest(c0, max(c1) OVER (PARTITION BY bs" + gNameList +
+				" ORDER BY c0, c1 ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING))) AS fresh FROM (\n" + spread + "    )\n"
+		}
+		sql = "SELECT toDateTime(bs) AS bucket, " + labels + " AS labels, toFloat64(" + value + ") AS value, " + total + " AS series_total FROM (\n" +
+			spread + ")" + tail
 
 	case famHistAvg:
 		sql = "SELECT bucket, " + labels + " AS labels, sum(incS) / sum(incC) AS value, " + total + " AS series_total FROM (\n" +
@@ -625,23 +661,35 @@ func commaIf(s string) string {
 	return ","
 }
 
+// continuationSeconds is how far past End a counter statement reads, so the
+// sample that follows End (its interval overlaps the last bucket) is seen: two
+// export intervals, so one lost export does not hide it, and at least a minute.
+func (q MetricQuery) continuationSeconds() int64 {
+	return max(2*q.Info.IntervalSeconds, 60)
+}
+
 // incrementsSQL is the per-sample layer of a counter statement: each sample's
-// increment (inc) and the time it covers (dt), with is_first marking a
-// cumulative sample that has no predecessor. v is the counter column, c the
-// column whose decrease marks a reset (the count, for a histogram).
-func (q MetricQuery) incrementsSQL(v, c, gSelList, sid, from string, conds []string, window string) string {
+// increment (inc), the seconds it covers (dt) and its time in seconds (ts).
+// is_first
+// marks a cumulative sample that has no predecessor; born marks one whose
+// series started inside the read (its StartTimeUnix is at or after readFrom),
+// so its whole value is new. v is the counter column, c the column whose
+// decrease marks a reset (the count, for a histogram).
+func (q MetricQuery) incrementsSQL(b *builder, readFrom time.Time, v, c, gSelList, sid, from string, conds []string, window string) string {
 	gNames := ""
 	for i := range q.GroupBy {
 		gNames += ", g" + strconv.Itoa(i)
 	}
-	return "    SELECT TimeUnix, tmp, is_first, sid" + gNames + ",\n" +
-		"           if(tmp = 1 OR is_reset, v, v - pv) AS inc,\n" +
-		"           if(tmp = 1 OR (is_reset AND StartTimeUnix > pt), dateDiff('second', StartTimeUnix, TimeUnix), dateDiff('second', pt, TimeUnix)) AS dt FROM (\n" +
-		"      SELECT TimeUnix, StartTimeUnix, tmp, v, pv, pt, sid" + gNames + ", isNaN(pc) AS is_first, (NOT isNaN(pc)) AND (StartTimeUnix != ps OR c < pc) AS is_reset FROM (\n" +
-		"        SELECT TimeUnix, StartTimeUnix, " + q.tmpExpr() + " AS tmp, toFloat64(" + v + ") AS v, toFloat64(" + c + ") AS c, " + sid + " AS sid" + gSelList + ",\n" +
-		"               lagInFrame(toFloat64(" + v + "), 1, nan) OVER w AS pv, lagInFrame(toFloat64(" + c + "), 1, nan) OVER w AS pc,\n" +
-		"               lagInFrame(TimeUnix, 1, toDateTime(0)) OVER w AS pt, lagInFrame(StartTimeUnix, 1, toDateTime(0)) OVER w AS ps\n" +
-		"        FROM " + from + "\n        " + where(conds) + "\n        " + window + "\n      )\n    )"
+	return "      SELECT TimeUnix, tmp, is_first, born, sid" + gNames + ", toInt64(toUnixTimestamp(TimeUnix)) AS ts,\n" +
+		"             if(tmp = 1 OR is_reset OR born, v, v - pv) AS inc,\n" +
+		"             if(tmp = 1 OR born OR (is_reset AND StartTimeUnix > pt), dateDiff('second', StartTimeUnix, TimeUnix), dateDiff('second', pt, TimeUnix)) AS dt FROM (\n" +
+		"        SELECT TimeUnix, StartTimeUnix, tmp, v, pv, pt, sid" + gNames + ", isNaN(pc) AS is_first,\n" +
+		"               isNaN(pc) AND tmp != 1 AND StartTimeUnix >= " + b.secTime(readFrom) + " AND StartTimeUnix < TimeUnix AS born,\n" +
+		"               (NOT isNaN(pc)) AND (StartTimeUnix != ps OR c < pc) AS is_reset FROM (\n" +
+		"          SELECT TimeUnix, StartTimeUnix, " + q.tmpExpr() + " AS tmp, toFloat64(" + v + ") AS v, toFloat64(" + c + ") AS c, " + sid + " AS sid" + gSelList + ",\n" +
+		"                 lagInFrame(toFloat64(" + v + "), 1, nan) OVER w AS pv, lagInFrame(toFloat64(" + c + "), 1, nan) OVER w AS pc,\n" +
+		"                 lagInFrame(TimeUnix, 1, toDateTime(0)) OVER w AS pt, lagInFrame(StartTimeUnix, 1, toDateTime(0)) OVER w AS ps\n" +
+		"          FROM " + from + "\n          " + where(conds) + "\n          " + window + "\n        )\n      )"
 }
 
 // HistogramQuantile estimates the q-th quantile from explicit bucket bounds and

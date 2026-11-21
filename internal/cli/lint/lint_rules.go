@@ -150,6 +150,8 @@ func gradableRules() []string {
 		slowtest.RuleUnmarked, slowtest.RuleInputs,
 		// test waits
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
+		// the flake gate (`forge ci gate`'s flake-check step)
+		RuleFlakeCheck,
 		// golangci-lint's build-tag passes (rolled out as one unit)
 		rolloutGolangciBuildTags,
 	}

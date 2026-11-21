@@ -321,6 +321,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
 		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
 	})
+	selected = cigate.WithFlakeBase(selected, base)
 
 	opt := cigate.Options{
 		Out:      out,

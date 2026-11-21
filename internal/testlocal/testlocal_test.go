@@ -342,6 +342,47 @@ func TestExports(t *testing.T) {
 	}
 }
 
+// A report already inside the lane it is ingested into is refused before
+// anything is written, and it stays byte for byte as it was; a batch with one
+// bad input writes none of them.
+func TestIngestRefusesAReportInsideItsLane(t *testing.T) {
+	root := fxProject(t, map[string]string{})
+	dir := fxWriteRun(t, root, fxRun{id: "01X", created: time.Unix(1_700_000_000, 0), commit: fxCommit, tree: fxTree})
+	lane := filepath.Join(dir, "py")
+	if err := os.MkdirAll(lane, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lcovBody := []byte("TN:\nSF:a.py\nDA:1,1\nend_of_record\n")
+	inside := filepath.Join(lane, "lcov.info")
+	if err := os.WriteFile(inside, lcovBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ingest(IngestOptions{RunDir: dir, Lane: "py", Format: "lcov", Files: []string{inside}}); err == nil || !strings.Contains(err.Error(), "already inside lane py") {
+		t.Fatalf("a report inside its lane: err %v, want it refused", err)
+	}
+	if got, err := os.ReadFile(inside); err != nil || !bytes.Equal(got, lcovBody) {
+		t.Fatalf("the report inside the lane changed: %q (%v)", got, err)
+	}
+	if names, _ := os.ReadDir(lane); len(names) != 1 {
+		t.Errorf("the refused ingest wrote into the lane: %v", names)
+	}
+
+	good := filepath.Join(t.TempDir(), "lcov.info")
+	bad := filepath.Join(t.TempDir(), "not-lcov.info")
+	if err := os.WriteFile(good, lcovBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte(`<testsuites></testsuites>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ingest(IngestOptions{RunDir: dir, Lane: "py2", Format: "lcov", Files: []string{good, bad}}); err == nil {
+		t.Fatal("a batch with a non-LCOV input was accepted")
+	}
+	if names, _ := os.ReadDir(filepath.Join(dir, "py2")); len(names) != 0 {
+		t.Errorf("a refused batch wrote its good inputs: %v", names)
+	}
+}
+
 func TestIngest(t *testing.T) {
 	root := fxProject(t, map[string]string{})
 	dir := fxWriteRun(t, root, fxRun{id: "01X", created: time.Now(), commit: fxCommit, tree: fxTree})

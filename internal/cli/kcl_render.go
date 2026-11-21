@@ -1129,6 +1129,11 @@ type DockerBuild struct {
 	// that it names, keyed by package path; a binary it does not name
 	// follows the env's Tests (kcl/schema.k DockerBuild.coverage).
 	Coverage map[string]bool `json:"coverage,omitempty"`
+	// Inputs are the globs (relative to the project root, or to the resolved
+	// GitSource context) naming the files the image is built from. Declared,
+	// they let a --release build reuse an earlier release's image whose
+	// fingerprint is unchanged — see build_docker_release_reuse.go.
+	Inputs []string `json:"inputs,omitempty"`
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):

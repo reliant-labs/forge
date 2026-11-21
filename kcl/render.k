@@ -3532,6 +3532,10 @@ _render_docker_build = lambda b: DockerBuild -> any {
         # Per-binary coverage, keyed by package path; absent when none is named.
         if b.coverage:
             "coverage": b.coverage
+        # The files a --release build compares to reuse an earlier image;
+        # absent when none are declared.
+        if b.inputs:
+            "inputs": b.inputs
     }
 }
 

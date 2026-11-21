@@ -206,7 +206,7 @@ type hostedTools struct {
 // hostedTarget is the project and env every account tool takes.
 type hostedTarget struct {
 	Project string `json:"project" jsonschema:"the forge project name: forge.yaml name, the console's /forge/p/<project>"`
-	Env     string `json:"env" jsonschema:"the environment, e.g. prod or staging (envs_list names them)"`
+	Env     string `json:"env" jsonschema:"the environment, e.g. prod or staging"`
 }
 
 // hostedRange is the time range and services of a read.
@@ -242,13 +242,29 @@ func (w hostedWindow) args() []string {
 	return a
 }
 
+// The obs tools both servers serve (obs_status, obs_issues, obs_issue,
+// obs_logs, obs_check) take one args struct each: the hosted input adds the
+// project and env (hostedTarget), the local one the repo and env
+// (mcp_obs_local.go), so the two schemas cannot drift. Each args struct
+// builds the flags it maps to.
+
 type hostedObsStatusInput struct {
 	hostedTarget
+	obsStatusArgs
+}
+
+type obsStatusArgs struct {
 	hostedWindow
 }
 
+func (a obsStatusArgs) args() []string { return a.hostedWindow.args() }
+
 type hostedObsIssuesInput struct {
 	hostedTarget
+	obsIssuesArgs
+}
+
+type obsIssuesArgs struct {
 	hostedWindow
 	Status       []string `json:"status,omitempty" jsonschema:"only issues in these states (default: the open ones)"`
 	SinceRelease string   `json:"since_release,omitempty" jsonschema:"only issues first seen in this release version"`
@@ -256,20 +272,61 @@ type hostedObsIssuesInput struct {
 	PageToken    string   `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
 }
 
+func (in obsIssuesArgs) args() []string {
+	a := in.hostedWindow.args()
+	for _, s := range in.Status {
+		a = flagArg(a, "--status", s)
+	}
+	a = flagArg(a, "--since-release", in.SinceRelease)
+	a = flagArg(a, "--sort", in.Sort)
+	return flagArg(a, "--page-token", in.PageToken)
+}
+
 type hostedObsIssueInput struct {
 	hostedTarget
+	obsIssueArgs
+}
+
+type obsIssueArgs struct {
 	ID     string `json:"id" jsonschema:"the issue id from obs_issues or obs_status, e.g. ISS-7f3a or sfp1-…"`
 	Events int    `json:"events,omitempty" jsonschema:"also list this many of its latest events"`
 }
 
+// args is the command line after the issue id and the env positionals.
+func (in obsIssueArgs) args() []string {
+	if in.Events > 0 {
+		return []string{"--events", fmt.Sprint(in.Events)}
+	}
+	return nil
+}
+
 type hostedObsLogsInput struct {
 	hostedTarget
+	obsLogsArgs
+}
+
+type obsLogsArgs struct {
 	hostedWindow
 	Query     string   `json:"query,omitempty" jsonschema:"the log query: service:api severity:error \"connection refused\", body:timeout OR body:deadline, trace_id:…"`
 	Severity  []string `json:"severity,omitempty" jsonschema:"only these severities: trace, debug, info, warn, error, fatal"`
 	Trace     string   `json:"trace,omitempty" jsonschema:"only the logs of this trace id"`
 	Oldest    bool     `json:"oldest,omitempty" jsonschema:"oldest first"`
 	PageToken string   `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
+}
+
+// args is the command line after the env and query positionals: two always,
+// so the env is never read as a query.
+func (in obsLogsArgs) args() []string {
+	args := in.hostedWindow.args()
+	for _, s := range in.Severity {
+		args = flagArg(args, "--severity", s)
+	}
+	args = flagArg(args, "--trace", in.Trace)
+	args = flagArg(args, "--page-token", in.PageToken)
+	if in.Oldest {
+		args = append(args, "--oldest")
+	}
+	return args
 }
 
 type hostedObsTracesInput struct {
@@ -294,9 +351,19 @@ type hostedObsOpsInput struct {
 
 type hostedObsCheckInput struct {
 	hostedTarget
+	obsCheckArgs
+}
+
+type obsCheckArgs struct {
 	Release   string `json:"release,omitempty" jsonschema:"judge the promotion of this release version (default: the env's current one)"`
 	Promotion string `json:"promotion,omitempty" jsonschema:"judge this promotion id"`
 	Window    string `json:"window,omitempty" jsonschema:"width of each window (default the env's release_health.window, 15m; max 6h)"`
+}
+
+func (in obsCheckArgs) args() []string {
+	a := flagArg(nil, "--release", in.Release)
+	a = flagArg(a, "--promotion", in.Promotion)
+	return flagArg(a, "--window", in.Window)
 }
 
 type hostedObsChangesInput struct {
@@ -441,20 +508,11 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 	switch info.Name {
 	case "obs_status":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsStatusInput) (*mcp.CallToolResult, any, error) {
-			return obs(newObsStatusCmdWith, in.hostedWindow.args, func(c hostedCall) string { return c.console.Home(c.target.Env) })(ctx, req, in.hostedTarget)
+			return obs(newObsStatusCmdWith, in.obsStatusArgs.args, func(c hostedCall) string { return c.console.Home(c.target.Env) })(ctx, req, in.hostedTarget)
 		})
 	case "obs_issues":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsIssuesInput) (*mcp.CallToolResult, any, error) {
-			args := func() []string {
-				a := in.hostedWindow.args()
-				for _, s := range in.Status {
-					a = flagArg(a, "--status", s)
-				}
-				a = flagArg(a, "--since-release", in.SinceRelease)
-				a = flagArg(a, "--sort", in.Sort)
-				return flagArg(a, "--page-token", in.PageToken)
-			}
-			return obs(newObsIssuesCmdWith, args, func(c hostedCall) string { return c.console.View("errors", c.target.Env) })(ctx, req, in.hostedTarget)
+			return obs(newObsIssuesCmdWith, in.obsIssuesArgs.args, func(c hostedCall) string { return c.console.View("errors", c.target.Env) })(ctx, req, in.hostedTarget)
 		})
 	case "obs_issue":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsIssueInput) (*mcp.CallToolResult, any, error) {
@@ -465,10 +523,7 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 			if err != nil {
 				return hostedRefused(err), nil, nil
 			}
-			args := []string{in.ID, in.Env}
-			if in.Events > 0 {
-				args = append(args, "--events", fmt.Sprint(in.Events))
-			}
+			args := append([]string{in.ID, in.Env}, in.obsIssueArgs.args()...)
 			return h.runObs(ctx, c, newObsIssueCmdWith, args, c.console.View("errors", c.target.Env)), nil, nil
 		})
 	case "obs_logs":
@@ -477,16 +532,7 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 			if err != nil {
 				return hostedRefused(err), nil, nil
 			}
-			// Two positionals always, so the env is never read as a query.
-			args := append([]string{in.Env, in.Query}, in.hostedWindow.args()...)
-			for _, s := range in.Severity {
-				args = flagArg(args, "--severity", s)
-			}
-			args = flagArg(args, "--trace", in.Trace)
-			args = flagArg(args, "--page-token", in.PageToken)
-			if in.Oldest {
-				args = append(args, "--oldest")
-			}
+			args := append([]string{in.Env, in.Query}, in.obsLogsArgs.args()...)
 			return h.runObs(ctx, c, newObsLogsCmdWith, args, c.console.View("logs", c.target.Env)), nil, nil
 		})
 	case "obs_traces":
@@ -528,11 +574,7 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 		})
 	case "obs_check":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsCheckInput) (*mcp.CallToolResult, any, error) {
-			args := func() []string {
-				a := flagArg(nil, "--release", in.Release)
-				a = flagArg(a, "--promotion", in.Promotion)
-				return flagArg(a, "--window", in.Window)
-			}
+			args := in.obsCheckArgs.args
 			link := func(c hostedCall) string {
 				if in.Release != "" {
 					return c.console.Release(in.Release, c.target.Env)

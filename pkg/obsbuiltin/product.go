@@ -47,12 +47,11 @@ func Product(in Input) dashspec.Dashboard {
 		Description: "What people do in the product: visits and page views (cookieless, by the platform's daily visitor hash), the pages visits start " +
 			"and end on, declared goals, every product event, the records written through the generated CRUD handlers, the built-in visit → sign-up → " +
 			"activation funnel, declared funnels and flag exposures. Hosted environments only: a local forge env up has no product_events table.",
-		Group:          dashspec.GroupProduct,
-		Replaces:       []string{SupersededUsageID},
-		Filters:        envFilter(),
-		Sections:       productSections,
-		DefaultRange:   "7d",
-		DefaultCompare: dashspec.ComparePeriod,
+		Group:        dashspec.GroupProduct,
+		Replaces:     []string{SupersededUsageID},
+		Filters:      envFilter(),
+		Sections:     productSections,
+		DefaultRange: "7d",
 	}
 	web := webCTE(inRange)
 	visits := with(web, visitsCTE)

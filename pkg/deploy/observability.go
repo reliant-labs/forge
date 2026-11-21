@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/pkg/observe"
+	"github.com/reliant-labs/forge/pkg/telemetry"
+	"github.com/reliant-labs/forge/pkg/telemetry/collector"
 )
 
 // The observability collector, rendered two ways from ONE declaration:
@@ -41,16 +43,27 @@ import (
 // hosted platform renders its own agent and forge emits only the OTEL_*
 // contract for hosted workloads.
 
-// ClientIdentityKeyPattern matches the resource attributes a client must not
+// ClientIdentityKeyPattern matches the identity attributes a client must not
 // be allowed to set on the node agent's OTLP input: Kubernetes identity
 // (k8s.*), which the node supplies, and the hosting platform's own namespace
-// (reliant.*). The node agent deletes them before k8sattributes runs.
-// service.* and deployment.* are the app's own and are kept.
+// (reliant.*). service.* and deployment.* are the app's own and are kept.
+//
+// Deprecated: use StrippedClientKeyPattern; it does not cover
+// forge.telemetry.label.*.
 const ClientIdentityKeyPattern = `^(k8s|reliant)\..*`
+
+// StrippedClientKeyPattern matches every resource attribute the node agent
+// deletes from a client's OTLP input before k8sattributes runs: Kubernetes
+// identity (k8s.*), which the node supplies, the hosting platform's own
+// namespace (reliant.*), and the declared telemetry's reserved target
+// selectors (forge.telemetry.label.*, collector.LabelAttributePrefix), so
+// only discovered pod labels can select a target. service.* and
+// deployment.* are the app's own and are kept.
+const StrippedClientKeyPattern = `^(k8s|reliant|forge\.telemetry\.label)\..*`
 
 // stripIdentityStatement is the OTTL form: a string literal, so the regex's
 // backslash is doubled.
-var stripIdentityStatement = `delete_matching_keys(resource.attributes, "` + strings.ReplaceAll(ClientIdentityKeyPattern, `\`, `\\`) + `")`
+var stripIdentityStatement = `delete_matching_keys(resource.attributes, "` + strings.ReplaceAll(StrippedClientKeyPattern, `\`, `\\`) + `")`
 
 // ObservabilityAgentKind is the kind of the forge.dev/v1alpha1 record kcl/render.k
 // emits, one per cluster that runs a forge workload.
@@ -110,6 +123,23 @@ type ObservabilityAgentSpec struct {
 	// Image is the collector image; MemoryLimitMiB bounds the agent.
 	Image          string `json:"image,omitempty"`
 	MemoryLimitMiB int    `json:"memoryLimitMiB,omitempty"`
+	// Telemetry is the declared telemetry (forge.Telemetry) this agent's
+	// cluster collects: kcl/render.k lists the env's cluster targets of the
+	// agent's cluster, unless the env names its own collector
+	// (Observability.telemetry_collector). Nil or empty renders the agent
+	// exactly as before. See observability_telemetry.go.
+	//
+	// A pointer, so the spec stays comparable (a slice field is not); on
+	// the wire it is the same JSON list.
+	Telemetry *[]telemetry.Target `json:"telemetry,omitempty"`
+}
+
+// declaredTelemetry is s.Telemetry, nil when it declares none.
+func (s ObservabilityAgentSpec) declaredTelemetry() []telemetry.Target {
+	if s.Telemetry == nil {
+		return nil
+	}
+	return *s.Telemetry
 }
 
 var (
@@ -316,9 +346,23 @@ func (s ObservabilityAgentSpec) common(receivers, processors map[string]any) {
 	processors["batch"] = map[string]any{"send_batch_size": 8192, "timeout": "5s"}
 }
 
-// AgentConfig is the node agent's collector configuration, as YAML.
+// AgentConfig is the node agent's collector configuration, as YAML, for an
+// agent in namespace. Declared telemetry is stamped with no env identity
+// here; AgentConfigFor takes the whole placement.
 func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
+	return s.AgentConfigFor(ObservabilityContext{Namespace: namespace})
+}
+
+// AgentConfigFor is the node agent's collector configuration, as YAML, for
+// the agent placed by ctx: ctx.Env and ctx.PartOf are the env identity a
+// project-scoped Telemetry target's signals carry.
+func (s ObservabilityAgentSpec) AgentConfigFor(ctx ObservabilityContext) (string, error) {
 	if err := s.validate(); err != nil {
+		return "", err
+	}
+	namespace := ctx.Namespace
+	tel, err := s.telemetryFragment(ctx)
+	if err != nil {
 		return "", err
 	}
 	receivers := map[string]any{}
@@ -342,21 +386,27 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 		"log_statements":     []any{map[string]any{"context": "resource", "statements": strs(stripIdentityStatement)}},
 		"profile_statements": []any{map[string]any{"context": "resource", "statements": strs(stripIdentityStatement)}},
 	}
+	labels := []any{
+		map[string]any{"tag_name": "service.name", "key": "app.kubernetes.io/name", "from": "pod"},
+		map[string]any{"tag_name": "service.namespace", "key": "app.kubernetes.io/part-of", "from": "pod"},
+		map[string]any{"tag_name": "deployment.environment.name", "key": "forge.dev/env", "from": "pod"},
+		// File-scraped logs carry no SDK resource, so the version the
+		// pod runs comes from its label. k8sattributes never
+		// overwrites an attribute already set, so an SDK's own
+		// service.version on pushed telemetry wins.
+		map[string]any{"tag_name": "service.version", "key": "app.kubernetes.io/version", "from": "pod"},
+	}
+	if tel != nil {
+		// The pod labels the declared targets' selectors name, which the
+		// identity processor matches on (and deletes).
+		labels = append(labels, tel.K8sAttributesLabels...)
+	}
 	processors["k8sattributes"] = map[string]any{
 		"auth_type": "serviceAccount",
 		"filter":    map[string]any{"node_from_env_var": "K8S_NODE_NAME"},
 		"extract": map[string]any{
 			"metadata": strs("k8s.namespace.name", "k8s.pod.name", "k8s.pod.uid", "k8s.node.name", "k8s.deployment.name", "k8s.container.name"),
-			"labels": []any{
-				map[string]any{"tag_name": "service.name", "key": "app.kubernetes.io/name", "from": "pod"},
-				map[string]any{"tag_name": "service.namespace", "key": "app.kubernetes.io/part-of", "from": "pod"},
-				map[string]any{"tag_name": "deployment.environment.name", "key": "forge.dev/env", "from": "pod"},
-				// File-scraped logs carry no SDK resource, so the version the
-				// pod runs comes from its label. k8sattributes never
-				// overwrites an attribute already set, so an SDK's own
-				// service.version on pushed telemetry wins.
-				map[string]any{"tag_name": "service.version", "key": "app.kubernetes.io/version", "from": "pod"},
-			},
+			"labels":   labels,
 		},
 		// Enrichment only. OTLP from a pod is associated by the resource's
 		// pod uid when the SDK set one, else by the connection's source IP;
@@ -378,7 +428,13 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 		"error_mode":     "ignore",
 		"log_statements": []any{map[string]any{"context": "resource", "statements": lineResourceStatements()}},
 	}
-	logOps := append([]any{map[string]any{"type": "container", "id": "container-parser"}}, logLines(atLineResource)...)
+	logOps := []any{map[string]any{"type": "container", "id": "container-parser"}}
+	if tel != nil && tel.Logs.Preserve != nil {
+		// The raw line, kept for the per-target parse before logLines'
+		// JSON stage consumes it.
+		logOps = append(logOps, tel.Logs.Preserve)
+	}
+	logOps = append(logOps, logLines(atLineResource)...)
 	receivers["filelog"] = map[string]any{
 		"include":           strs("/var/log/pods/*/*/*.log"),
 		"exclude":           strs("/var/log/pods/" + namespace + "_*/*/*.log"),
@@ -404,8 +460,13 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 		"exporters":  exporters,
 		"service": map[string]any{
 			"extensions": strs(extNames...),
-			"pipelines":  s.agentPipelines(),
+			"pipelines":  s.agentPipelines(tel),
 		},
+	}
+	if tel != nil {
+		if err := tel.MergeInto(cfg); err != nil {
+			return "", err
+		}
 	}
 	return marshalConfig(cfg)
 }
@@ -414,28 +475,71 @@ func (s ObservabilityAgentSpec) AgentConfig(namespace string) (string, error) {
 // from what the node itself produces (container stdout, kubelet stats). The
 // pushed pipelines strip client-supplied identity before enrichment; the node
 // ones must not, because their k8s.* attributes are the trustworthy kind.
-func (s ObservabilityAgentSpec) agentPipelines() map[string]any {
-	pushed := []string{"memory_limiter", "transform/strip_client_identity", "k8sattributes"}
+//
+// tel is the declared telemetry's fragment (nil: none). Its processors run
+// after k8sattributes: the logs ones in the file-logs pipeline, the node
+// metrics ones in metrics/node, and its identity processor in every pushed
+// pipeline too, because those share k8sattributes, which then extracts the
+// selector labels on pushed data as well, and only the identity processor
+// deletes them.
+func (s ObservabilityAgentSpec) agentPipelines(tel *collector.Fragment) map[string]any {
+	var logsTel, nodeTel, pushedTel []string
+	if tel != nil {
+		logsTel, nodeTel = tel.Logs.Processors, tel.NodeMetricsProcessors
+		if _, ok := tel.Processors[collector.IdentityProcessor]; ok {
+			pushedTel = []string{collector.IdentityProcessor}
+		}
+	}
+	pushed := append([]string{"memory_limiter", "transform/strip_client_identity", "k8sattributes"}, pushedTel...)
 	node := []string{"memory_limiter", "k8sattributes"}
 	all := s.pipelines([]string{"otlp"}, []string{"otlp"}, nil, []string{"otlp"}, pushed, true)
 	if s.Signals.Metrics {
 		// kubeletstats is pulled, not pushed: its own pipeline, same exporter.
 		all["metrics/node"] = map[string]any{
-			"receivers": strs("kubeletstats"), "processors": strs(append(append([]string{}, node...), "batch")...), "exporters": strs(s.exporterName()),
+			"receivers": strs("kubeletstats"), "processors": strs(concatStrings(node, nodeTel, []string{"batch"})...), "exporters": strs(s.exporterName()),
 		}
 	}
 	if s.Signals.Logs {
 		all["logs"] = map[string]any{
-			"receivers": strs("filelog"), "processors": strs(append(append([]string{}, node...), "transform/line_resource", "batch")...), "exporters": strs(s.exporterName()),
+			"receivers": strs("filelog"), "processors": strs(concatStrings(node, logsTel, []string{"transform/line_resource", "batch"})...), "exporters": strs(s.exporterName()),
 		}
 	}
 	return all
+}
+
+func concatStrings(parts ...[]string) []string {
+	var out []string
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
 }
 
 // ForwarderConfig is the local forwarder's collector configuration: OTLP in
 // on 4317/4318, the files `forge env up` writes under /var/log/forge in, and
 // the destination out. There is no Kubernetes here to enrich from.
 func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
+	return s.ForwarderConfigWith(ForwarderLogs{})
+}
+
+// ForwarderLogs is what declared telemetry (forge.Telemetry) splices into the
+// local forwarder's logs path: pkg/telemetry/collector's Fragment.Logs and the
+// processors it names. The zero value splices nothing.
+type ForwarderLogs struct {
+	// Preserve is one filelog operator, inserted right after the file's
+	// path has named the service (Fragment.Logs.Preserve). Nil inserts none.
+	Preserve map[string]any
+	// Processors are the definitions of Pipeline's processors.
+	Processors map[string]any
+	// Pipeline is the processors' order in the logs pipeline, after
+	// memory_limiter and before batch (Fragment.Logs.Processors).
+	Pipeline []string
+}
+
+// ForwarderConfigWith is ForwarderConfig with logs spliced into its logs
+// path. The ClickStack collector's file (otel-collector.yaml.tmpl) includes
+// the same pieces at the same places, so the two parse a line alike.
+func (s ObservabilityAgentSpec) ForwarderConfigWith(logs ForwarderLogs) (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
 	}
@@ -446,12 +550,26 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 	processors := map[string]any{}
 	s.common(receivers, processors)
 	processors["memory_limiter"] = map[string]any{"check_interval": "1s", "limit_mib": 200, "spike_limit_mib": 50}
-	logOps := append([]any{
+	for _, name := range logs.Pipeline {
+		def, ok := logs.Processors[name]
+		if !ok {
+			return "", fmt.Errorf("forwarder logs: processor %q is in the pipeline but not defined", name)
+		}
+		if _, dup := processors[name]; dup {
+			return "", fmt.Errorf("forwarder logs: processor %q is already defined", name)
+		}
+		processors[name] = def
+	}
+	logOps := []any{
 		map[string]any{"type": "regex_parser", "regex": `^/var/log/forge/(?P<env>[^/]+)/(?P<service>[^/]+)\.log$`, "parse_from": `attributes["log.file.path"]`},
 		map[string]any{"type": "move", "from": "attributes.service", "to": `resource["service.name"]`},
 		map[string]any{"type": "move", "from": "attributes.env", "to": `resource["deployment.environment.name"]`},
 		map[string]any{"type": "remove", "field": `attributes["log.file.path"]`},
-	}, logLines(atResource)...)
+	}
+	if logs.Preserve != nil {
+		logOps = append(logOps, logs.Preserve)
+	}
+	logOps = append(logOps, logLines(atResource)...)
 	receivers["filelog"] = map[string]any{
 		"include": strs("/var/log/forge/*/*.log"),
 		"exclude": strs(
@@ -467,6 +585,12 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 	exp := s.exporter()
 	// No persistent queue locally: there is no host directory to keep it in.
 	delete(exp["sending_queue"].(map[string]any), "storage")
+	pipelines := s.pipelines(
+		[]string{"otlp"}, []string{"otlp"}, []string{"filelog"}, []string{"otlp"},
+		[]string{"memory_limiter"}, true)
+	if lp, ok := pipelines["logs"].(map[string]any); ok && len(logs.Pipeline) > 0 {
+		lp["processors"] = strs(append(append([]string{"memory_limiter"}, logs.Pipeline...), "batch")...)
+	}
 	cfg := map[string]any{
 		"extensions": map[string]any{"health_check": map[string]any{"endpoint": "0.0.0.0:13133"}},
 		"receivers":  receivers,
@@ -474,9 +598,7 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 		"exporters":  map[string]any{s.exporterName(): exp},
 		"service": map[string]any{
 			"extensions": strs("health_check"),
-			"pipelines": s.pipelines(
-				[]string{"otlp"}, []string{"otlp"}, []string{"filelog"}, []string{"otlp"},
-				[]string{"memory_limiter"}, true),
+			"pipelines":  pipelines,
 		},
 	}
 	return marshalConfig(cfg)
@@ -531,9 +653,9 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 	if s.Image == "" || !imageRE.MatchString(s.Image) {
 		return nil, fmt.Errorf("observability agent: image %q is required", s.Image)
 	}
-	cfg, err := s.AgentConfig(ctx.Namespace)
+	cfg, err := s.AgentConfigFor(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("observability agent: %w", err)
 	}
 	limit := s.MemoryLimitMiB
 	if limit <= 0 {
@@ -611,6 +733,9 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 		}}})
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{Name: "otlp-token", MountPath: agentTokenDir, ReadOnly: true})
 	}
+	telVolumes, telMounts := s.telemetrySecretVolumes()
+	volumes = append(volumes, telVolumes...)
+	volumeMounts = append(volumeMounts, telMounts...)
 	podLabels := copyLabels(labels)
 	ds := &appsv1.DaemonSet{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"},

@@ -246,7 +246,8 @@ func exitCodeForRefusal(reason string) int {
 		return exitConflict
 	case reasonRolloutInFlight, reasonEnvironmentPinned, reasonPlanUnacknowledged,
 		reasonHealthGateUnproven, reasonHealthGatePending,
-		reasonRequiredGateMissing, reasonApprovalDenied, reasonApprovalPending:
+		reasonRequiredGateMissing, reasonApprovalDenied, reasonApprovalPending,
+		reasonVulnGateBlocked, reasonVulnGateUnscanned, reasonSBOMMissing:
 		return exitRefused
 	case reasonBundleMissing, reasonHealthGateRegressed, reasonBelowRollbackFloor, reasonRequiredGateFailed:
 		return exitWrong

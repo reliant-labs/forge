@@ -17,11 +17,29 @@ const (
 	RuleBlockingIndexBuild = "db-analyze-blocking-index-build"
 	// RuleStatementTimeout: a statement exceeded statement_timeout.
 	RuleStatementTimeout = "db-analyze-statement-timeout"
+
+	// RuleQueryNoUsableIndex: with sequential scans disabled, a captured
+	// query still reads a filtered, joined or ORDER BY … LIMIT table without
+	// an index serving it.
+	RuleQueryNoUsableIndex = "db-analyze-query-no-usable-index"
+	// RuleQueryLargeSeqScan: on a dsn target with statistics, a captured
+	// query's plan sequentially scans a table of at least large_table_rows.
+	RuleQueryLargeSeqScan = "db-analyze-query-large-seqscan"
 )
 
-// RuleIDs is every rule the migration pass reports.
-func RuleIDs() []string {
+// MigrationRuleIDs is every rule the migration pass reports.
+func MigrationRuleIDs() []string {
 	return []string{RuleTableRewrite, RuleAccessExclusiveLock, RuleValidationScan, RuleBlockingIndexBuild, RuleStatementTimeout}
+}
+
+// QueryRuleIDs is every rule the query pass reports.
+func QueryRuleIDs() []string {
+	return []string{RuleQueryNoUsableIndex, RuleQueryLargeSeqScan}
+}
+
+// RuleIDs is every rule forge db analyze reports.
+func RuleIDs() []string {
+	return append(MigrationRuleIDs(), QueryRuleIDs()...)
 }
 
 // Fix texts, one per rule (validation scans have one per kind of check).
@@ -57,4 +75,9 @@ const (
 	fixStatementTimeout = "the statement did not finish within statement_timeout on this target: it would hold " +
 		"its locks at least that long in production. Batch the work, or split it so the long part runs " +
 		"without a blocking lock"
+	fixNoUsableIndex = "add an index that serves it in a new migration (CREATE INDEX CONCURRENTLY, alone in its file): " +
+		"leading with the filtered or joined column, or with the ORDER BY column(s) for ORDER BY … LIMIT. For a " +
+		"filter on a literal (status = 'open'), a partial index … WHERE status = 'open' is smaller"
+	fixLargeSeqScan = "the planner reads every row of a large table for this statement on the target: add an index " +
+		"that serves its filter or join, or bound it (a LIMIT the planner can push into an index scan)"
 )

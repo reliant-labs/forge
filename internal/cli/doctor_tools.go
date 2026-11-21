@@ -35,6 +35,7 @@ import (
 	"github.com/reliant-labs/forge/internal/doctor"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolfetch"
 )
 
 // toolCheck declares a host binary forge depends on plus the metadata
@@ -633,5 +634,48 @@ func runToolDoctorChecks(ctx context.Context, cfg *config.ProjectConfig, project
 	if signal != "" {
 		return nil
 	}
-	return runToolChecks(ctx, defaultToolChecks(runtime.GOOS), cfg, projectDir, realBinaryLookup, realVersionRunner)
+	results := runToolChecks(ctx, defaultToolChecks(runtime.GOOS), cfg, projectDir, realBinaryLookup, realVersionRunner)
+	results = append(results, fetchedToolChecks(toolfetch.New(), toolfetch.Tools())...)
+	sort.Slice(results, func(i, j int) bool { return results[i].Name < results[j].Name })
+	return results
+}
+
+// fetchedToolChecks reports the tools forge installs for itself from
+// sha256-verified release archives (internal/toolfetch): syft and grype.
+// They are not looked up on PATH — forge never runs a PATH copy — but in
+// forge's tool cache, and nothing here installs or touches the network.
+//
+//   - installed                       → pass, with the pinned version and path
+//   - not installed, installable      → pass: forge fetches it on first use
+//   - no binary and no Go toolchain   → warn: whatever needs it reports "not
+//     scanned" on this machine, never clean
+func fetchedToolChecks(f *toolfetch.Fetcher, tools []toolfetch.Tool) []doctor.CheckResult {
+	results := make([]doctor.CheckResult, 0, len(tools))
+	for _, t := range tools {
+		start := time.Now()
+		r := doctor.CheckResult{Name: "tool: " + t.Name}
+		in, installed := f.Find(t)
+		method := f.Method(t)
+		switch {
+		case installed:
+			r.Status = doctor.StatusPass
+			r.Message = fmt.Sprintf("%s %s installed (forge-managed, %s)", t.Name, t.Version, in.Source)
+			r.Evidence = "path: " + in.Path
+		case method == toolfetch.MethodRelease:
+			r.Status = doctor.StatusPass
+			r.Message = fmt.Sprintf("%s %s not installed yet — forge fetches the sha256-verified release on first use", t.Name, t.Version)
+			r.Evidence = fmt.Sprintf("install now: %s tools install %s\nfrom: %s", Name(), t.Name, f.URL(t))
+		case method == toolfetch.MethodGoInstall:
+			r.Status = doctor.StatusPass
+			r.Message = fmt.Sprintf("%s %s not installed yet — no release binary for this platform; forge builds it with go install on first use", t.Name, t.Version)
+			r.Evidence = fmt.Sprintf("install now: %s tools install %s\nbuilds: go install %s@%s", Name(), t.Name, t.GoPackage, t.Version)
+		default:
+			r.Status = doctor.StatusWarn
+			r.Message = fmt.Sprintf("%s %s cannot be installed here: no release binary for this platform and no Go toolchain on PATH", t.Name, t.Version)
+			r.Evidence = fmt.Sprintf("SBOM generation and vulnerability scans that need %s report \"not scanned\", never clean\ninstall: Go (https://go.dev/dl/), then %s tools install %s", t.Name, Name(), t.Name)
+		}
+		r.Duration = time.Since(start)
+		results = append(results, r)
+	}
+	return results
 }

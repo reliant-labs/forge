@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,13 +105,42 @@ func evalKCLCommand(ctx context.Context, projectDir, source, env string, options
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("evaluate KCL in %s: %w\n%s", root, err, stderr.String())
+		return nil, fmt.Errorf("evaluate KCL in %s: %w\n%s", root, err, kclChildFailureOutput(stderr.Bytes(), stdout.Bytes()))
 	}
 	if stderr.Len() > 0 {
 		_, _ = os.Stderr.Write(stderr.Bytes())
 	}
 	return stdout.Bytes(), nil
 }
+
+// kclChildFailureTailLines bounds how much of a failed child's stdout is
+// quoted when it said nothing on stderr.
+const kclChildFailureTailLines = 20
+
+// kclChildFailureOutput is what a failed `forge kcl eval` child said, for the
+// error that reports it. It is the child's stderr, where kcl and forge print
+// the failure. When that is empty, the failure is wherever the child did
+// print — the tail of its stdout — and when the child printed nothing at all
+// the error says so, rather than ending at a bare "exit status 1" that reads
+// as if forge dropped the reason (forge bug reports c8b7a3f6, aef6d25f).
+func kclChildFailureOutput(stderr, stdout []byte) string {
+	if len(bytes.TrimSpace(stderr)) > 0 {
+		return string(stderr)
+	}
+	if out := bytes.TrimSpace(stdout); len(out) > 0 {
+		lines := strings.Split(string(out), "\n")
+		if len(lines) > kclChildFailureTailLines {
+			lines = lines[len(lines)-kclChildFailureTailLines:]
+		}
+		return kclChildStdoutTailHeader + "\n" + strings.Join(lines, "\n") + "\n"
+	}
+	return kclChildSilentNote + "\n"
+}
+
+const (
+	kclChildStdoutTailHeader = "(the KCL child printed nothing on stderr; the end of its stdout:)"
+	kclChildSilentNote       = "(the KCL child printed nothing on stderr or stdout before it exited)"
+)
 
 func armChildKCLContext(projectDir, env, mode string, materialize, active bool) error {
 	if mode != "read" && mode != "inspect" && mode != "claim" {

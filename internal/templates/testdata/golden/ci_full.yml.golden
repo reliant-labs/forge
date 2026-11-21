@@ -315,15 +315,27 @@ jobs:
         # Without the pass-through the key would go silently dead the moment
         # the test command moved out of this workflow.
         run: task test
-      # `task coverage` (not a second hand-rolled `go test -coverprofile`):
-      # same reason as above, and it keeps the profile flags in one place.
+      # Every lane above recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This summarises that record and sends it
+      # to the control plane, authenticated by FORGE_CONTROL_PLANE_TOKEN (a
+      # token with tests:write or deploy:write). It never decides the job: the
+      # lane's own step carries the verdict, and an upload that cannot happen
+      # (no token, as on a fork's pull request) is a warning.
+      - name: Report tests
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: task test:report -- --upload
+      # `task coverage` renders what the Tests step recorded (forge test
+      # report --format html), so the profile flags stay in Taskfile.yml.
       - name: Go test coverage
         run: task coverage
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.out
+          path: coverage.html
 
   # The integration lane, for repos that have one (`//go:build integration`
   # test files). PRs only: a push to main already merged something that passed
@@ -351,6 +363,18 @@ jobs:
         run: docker info > /dev/null
       - name: Integration tests
         run: task test:integration
+      # Every lane above recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This summarises that record and sends it
+      # to the control plane, authenticated by FORGE_CONTROL_PLANE_TOKEN (a
+      # token with tests:write or deploy:write). It never decides the job: the
+      # lane's own step carries the verdict, and an upload that cannot happen
+      # (no token, as on a fork's pull request) is a warning.
+      - name: Report tests
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: task test:report -- --upload
 
   # Built only after `checks` passes: an image build on a PR that already
   # failed lint is minutes spent learning nothing.
@@ -421,6 +445,18 @@ jobs:
         # for the same ports, and it pointed at a root-level
         # docker-compose.e2e.yml that forge has never written.
         run: task test:e2e
+      # Every lane above recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This summarises that record and sends it
+      # to the control plane, authenticated by FORGE_CONTROL_PLANE_TOKEN (a
+      # token with tests:write or deploy:write). It never decides the job: the
+      # lane's own step carries the verdict, and an upload that cannot happen
+      # (no token, as on a fork's pull request) is a warning.
+      - name: Report tests
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: task test:report -- --upload
       - name: Upload test artifacts
         if: failure()
         uses: actions/upload-artifact@v4

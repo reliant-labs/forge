@@ -86,6 +86,18 @@ jobs:
         env:
           E2E: "true"
 
+      # The lane recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This sends that record to the control
+      # plane with FORGE_CONTROL_PLANE_TOKEN (tests:write or deploy:write). It
+      # never decides the job: the suite's step carries the verdict, and an
+      # upload that cannot happen (no token) is a warning.
+      - name: Report tests
+        if: ${{"{{"}} !cancelled() {{"}}"}}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
+        run: task test:report -- --upload
+
       - name: Upload test artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -134,9 +146,24 @@ jobs:
         run: forge env deploy e2e --yes
 
       - name: Run E2E tests
-        run: task test:e2e
+        # ENV=e2e: the lane zeroes the e2e env's server coverage counters
+        # before the suite and collects them after it (`forge test collect`),
+        # when its Go workloads run cover builds; otherwise it warns and moves on.
+        run: task test:e2e ENV=e2e
         env:
           E2E: "true"
+
+      # The lane recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This sends that record to the control
+      # plane with FORGE_CONTROL_PLANE_TOKEN (tests:write or deploy:write). It
+      # never decides the job: the suite's step carries the verdict, and an
+      # upload that cannot happen (no token) is a warning.
+      - name: Report tests
+        if: ${{"{{"}} !cancelled() {{"}}"}}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
+        run: task test:report -- --upload
 
       - name: Dump logs on failure
         if: failure()

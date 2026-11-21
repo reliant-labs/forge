@@ -10,6 +10,7 @@ version: "3"
 # │   task test:integration  `integration`-tagged tests     │
 # │   task test:e2e          End-to-end tests               │
 # │   task test:all          Unit + frontend + integration  │
+# │   task test:report       What those lanes recorded      │
 # │   task ci                The whole PR gate, locally     │
 # │   task ci:checks         Static + build lane of it      │
 # │                                                         │
@@ -325,12 +326,19 @@ tasks:
 
   test:integration:
     desc: Run integration tests (uses -tags=integration; may require docker compose)
+    vars:
+      RUN: { sh: "{{`{{.TEST_BEGIN}}`}}" }
+      SKIP: { sh: "{{`{{.TEST_SKIP}}`}}" }
     cmds:
       # Integration tests are guarded by the `integration` build tag and are
       # therefore excluded from `task test`. They typically need a real
       # database / running infra (see docker-compose.yml). -timeout=10m gives
-      # heavy DB-backed scenarios room while still surfacing hangs.
-      - "{{`{{.SLOT}}`}} go test {{`{{.GOTESTRACE}}`}} -tags=integration -count=1 -timeout=10m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}"
+      # heavy DB-backed scenarios room while still surfacing hangs. Recorded
+      # as lane `integration`, the same way `task test` records `unit`.
+      - >-
+        {{`{{.SLOT}}`}} {{`{{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane integration -- {{end}}`}}go test {{`{{.GOTESTRACE}}`}} -tags=integration -count=1
+        {{`{{- if .RUN}} -json{{if eq .COVERAGE "true"}} -covermode=atomic '-coverprofile={{.RUN}}/integration/cover.out'{{.COVERPKG}}{{end}}{{end}}`}}
+        {{`{{- if .SKIP}} -skip '{{.SKIP}}'{{end}}`}} -timeout=10m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}`}}
 
   test:e2e:
     # `--` args replace the default `./e2e/...`, same as `task test`, so
@@ -338,9 +346,58 @@ tasks:
     # lane accepts them for the same reason: a target that ACCEPTS arguments
     # and ignores them reports success for a run the caller never asked for.
     # Already verbose (-v) — e2e failures are unreadable without it.
+    #
+    # The coverage that matters here is the SERVERS': an env whose Go
+    # workloads run instrumented (`cover`) builds — dev and every preview by
+    # default — counts what the suite reached. The lane zeroes their
+    # counters first and collects them afterwards, failed run or not, into
+    # lane `e2e` of the run (`forge test collect`). ENV names the env the
+    # suite runs against: `task test:e2e ENV=preview-pr-12`; default dev.
+    # Collecting is best effort: an env that is not up, or runs no cover
+    # build, warns and the lane's verdict is the suite's alone.
     desc: Run end-to-end tests (requires docker compose; uses -tags=e2e)
+    vars:
+      RUN: { sh: "{{`{{.TEST_BEGIN}}`}}" }
+      SKIP: { sh: "{{`{{.TEST_SKIP}}`}}" }
+      # An env name, or dev. Not any $ENV the shell happens to carry (some
+      # images set ENV=/etc/profile for sh's startup file).
+      ENV: '{{`{{if and .ENV (regexMatch "^[a-z][a-z0-9-]*$" (toString .ENV))}}{{.ENV}}{{else}}dev{{end}}`}}'
     cmds:
-      - go test -tags=e2e -v -count=1 -timeout=20m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}`}}
+      - cmd: "{{`{{.FORGE}}`}} test collect {{`{{.ENV}}`}} --reset --run '{{`{{.RUN}}`}}'"
+        if: '[ -n "{{`{{.RUN}}`}}" ]'
+        ignore_error: true
+      - defer: { task: test:e2e:collect, vars: { RUN: "{{`{{.RUN}}`}}", ENV: "{{`{{.ENV}}`}}" } }
+      - >-
+        {{`{{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane e2e -- {{end}}`}}go test -tags=e2e -v -count=1
+        {{`{{- if .RUN}} -json{{end}}`}}
+        {{`{{- if .SKIP}} -skip '{{.SKIP}}'{{end}}`}} -timeout=20m {{`{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}`}}
+
+  test:e2e:collect:
+    # Pulls the servers' counters into the e2e lane (converted with
+    # `go tool covdata textfmt`). Deferred by test:e2e, so it runs whatever
+    # the suite's verdict; its own failure never changes that verdict.
+    internal: true
+    cmds:
+      - cmd: "{{`{{.FORGE}}`}} test collect {{`{{.ENV}}`}} --run '{{`{{.RUN}}`}}' --lane e2e"
+        if: '[ -n "{{`{{.RUN}}`}}" ]'
+        ignore_error: true
+
+  test:report:
+    # What the lanes recorded: results, coverage merged across lanes, diff
+    # coverage against the base, failures. `forge test report` runs no test;
+    # it reads .forge/tests/runs/. Arguments after `--` go to it:
+    #
+    #   task test:report                       the newest run
+    #   task test:report -- --json             forge.test.report/v1
+    #   task test:report -- --format lcov      for an editor or another tool
+    #   task test:report -- --upload           send it to the control plane
+    #
+    # Exits 0 when every recorded test passed, 1 when one failed, 2 when the
+    # record proves nothing (no runs, every test skipped). Coverage never
+    # decides it.
+    desc: Summarise the recorded test runs (results, coverage, diff coverage); runs no test
+    cmds:
+      - "{{`{{.FORGE}}`}} test report {{`{{.CLI_ARGS}}`}}"
 
   test:all:
     # The full-suite gate. `task test` (unit + frontend) is what the CI test
@@ -501,16 +558,15 @@ tasks:
       - "{{`{{.FORGE}}`}} ci verify-generated"
 
   coverage:
-    # HTML coverage report at coverage.html. We deliberately omit -race
-    # here (race + coverage requires -covermode=atomic, which in turn
-    # needs the `covdata` tool — not always present in auto-installed
-    # toolchains). Race testing happens in `task test`; this task is for
-    # measuring exercised code. Skips integration / e2e (those have their
-    # own tasks) so coverage reflects unit tests.
-    desc: Run unit tests with coverage and emit coverage.html
+    # HTML coverage report at coverage.html, from what the lanes RECORDED:
+    # the newest run's coverage, merged across every lane it holds (unit,
+    # integration, e2e, the frontends). It runs no test, so run the lanes
+    # first: `task test coverage`, or `forge test run` for unit and
+    # integration in one run. Other formats: `task test:report -- --format
+    # lcov` (or cobertura, json).
+    desc: Write coverage.html from the recorded test runs (run `task test` first)
     cmds:
-      - go test -coverprofile=coverage.out -timeout 60s ./...
-      - go tool cover -html=coverage.out -o coverage.html
+      - "{{`{{.FORGE}}`}} test report --format html > coverage.html"
       - cmd: echo "Coverage report written to coverage.html"
         silent: true
 

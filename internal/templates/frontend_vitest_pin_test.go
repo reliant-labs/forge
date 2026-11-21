@@ -36,6 +36,13 @@ func TestFrontendVitestMajor(t *testing.T) {
 			if got := pkg.DevDependencies["vitest"]; got != "^5.0.4" {
 				t.Fatalf("vitest = %q; deliberate tested major/floor is ^5.0.4", got)
 			}
+			// The test lanes' v8 coverage (vitest.config's coverage block,
+			// read when FORGE_TEST_LANE_DIR is set). @vitest/coverage-v8 peers
+			// on the EXACT vitest release, so its range is vitest's: the two
+			// resolve to one release and move together.
+			if got, want := pkg.DevDependencies["@vitest/coverage-v8"], pkg.DevDependencies["vitest"]; got != want {
+				t.Fatalf("@vitest/coverage-v8 = %q; want vitest's range %q", got, want)
+			}
 			settings, err := templateFS.ReadFile("frontend/shared-web/pnpm-workspace.yaml.tmpl")
 			if err != nil {
 				t.Fatal(err)

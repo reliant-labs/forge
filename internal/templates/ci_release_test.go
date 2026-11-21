@@ -141,8 +141,13 @@ func TestRelease_NoCurlNoIdsNoDeployToken(t *testing.T) {
 func TestRelease_ChecksThroughTaskAndBuildCutsTheRelease(t *testing.T) {
 	out := renderCIText(t, "release.yml.tmpl", releaseFixture())
 	checks := between(t, out, "\n  checks:", "\n  build-release:")
-	if !strings.Contains(checks, "task test -- -json ./...") {
+	if !strings.Contains(checks, "task test || status=$?") {
 		t.Errorf("the checks job must run the suite through `task test`:\n%s", checks)
+	}
+	// The tests gate comes from what the lanes recorded (forge test capture),
+	// not from a second -json stream piped out of `task test`.
+	if !strings.Contains(checks, "forge test report --gate-json gates/test.json") {
+		t.Errorf("the checks job must write the tests gate with `forge test report --gate-json`:\n%s", checks)
 	}
 	if strings.Contains(checks, "go test ") {
 		t.Errorf("the checks job re-spells `go test`; the Taskfile is the one definition:\n%s", checks)

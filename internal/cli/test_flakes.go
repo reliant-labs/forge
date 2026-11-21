@@ -79,9 +79,11 @@ existing one, and closes an open one whose test left those states.
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// TODO(tests.flakes.issues): forge.yaml's tests.flakes.issues
-			// (design 1.8, task F5a) turns --issues on for a project; until
-			// that block lands only the flag does.
+			// forge.yaml's tests.flakes.issues turns --issues on for the
+			// project; an explicit --issues=false still turns it off.
+			if !cmd.Flags().Changed("issues") {
+				issues = testFlakesIssuesConfigured()
+			}
 			return runTestFlakes(cmd.Context(), cmd.OutOrStdout(), testFlakesArgs{
 				root: testRoot(), states: states, issues: issues, dryRun: dry, repo: repo, json: jsonOut, all: includeHealth,
 			})
@@ -90,12 +92,23 @@ existing one, and closes an open one whose test left those states.
 	f := cmd.Flags()
 	f.StringSliceVar(&states, "state", nil, "Only tests in these states (suspected, flaky, quarantined, removed, fixed, healthy); default every state but healthy")
 	f.BoolVar(&includeHealth, "all", false, "Include healthy tests that have flake history")
-	f.BoolVar(&issues, "issues", false, "File, update and close flake:suspected issues with gh")
+	f.BoolVar(&issues, "issues", false, "File, update and close flake:suspected issues with gh (default: forge.yaml's tests.flakes.issues)")
 	f.BoolVar(&dry, "dry-run", false, "With --issues: say what would be filed, commented and closed, and do none of it")
 	f.StringVar(&repo, "repo", "", "With --issues: the owner/name to file in (default $GITHUB_REPOSITORY, else the current repository)")
 	f.BoolVar(&jsonOut, "json", false, "Print a "+testreport.SchemaFlakes+" document")
 	cmd.AddCommand(newTestFlakesGateCmd(), newTestFlakesConfirmCmd())
 	return cmd
+}
+
+// testFlakesIssuesConfigured is forge.yaml's tests.flakes.issues; false
+// outside a project or when forge.yaml cannot be read (the command's own
+// errors say why a project is unreadable, not this default).
+func testFlakesIssuesConfigured() bool {
+	store, err := loadProjectStore()
+	if err != nil {
+		return false
+	}
+	return store.Config().Tests.Flakes.Issues
 }
 
 type testFlakesArgs struct {

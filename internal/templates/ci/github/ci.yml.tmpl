@@ -255,16 +255,17 @@ jobs:
         # Without the pass-through the key would go silently dead the moment
         # the test command moved out of this workflow.
         run: task test{{if not .TestRace}} GOTESTRACE={{end}}
+{{- template "test-report" .}}
 {{- if .TestCoverage}}
-      # `task coverage` (not a second hand-rolled `go test -coverprofile`):
-      # same reason as above, and it keeps the profile flags in one place.
+      # `task coverage` renders what the Tests step recorded (forge test
+      # report --format html), so the profile flags stay in Taskfile.yml.
       - name: Go test coverage
         run: task coverage
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage
-          path: coverage.out
+          path: coverage.html
 {{- end}}
 
   # The integration lane, for repos that have one (`//go:build integration`
@@ -293,6 +294,7 @@ jobs:
         run: docker info > /dev/null
       - name: Integration tests
         run: task test:integration{{if not .TestRace}} GOTESTRACE={{end}}
+{{- template "test-report" .}}
 
 {{- if .HasDocker}}
 
@@ -376,6 +378,7 @@ jobs:
         # for the same ports, and it pointed at a root-level
         # docker-compose.e2e.yml that forge has never written.
         run: task test:e2e
+{{- template "test-report" .}}
       - name: Upload test artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -406,10 +409,14 @@ jobs:
       - name: Deploy and test
         # `forge env deploy` waits for every workload to become ready.
         # CI has no TTY; --yes is "I read the plan", and the plan is printed
-        # above. Without it forge exits 5, plan_unconfirmed.
+        # above. Without it forge exits 5, plan_unconfirmed. ENV=e2e: the
+        # lane zeroes and collects the e2e env's server coverage (an env
+        # whose Go workloads run cover builds; it warns and moves on when
+        # they do not).
         run: |
           forge env deploy e2e --yes
-          task test:e2e
+          task test:e2e ENV=e2e
+{{- template "test-report" .}}
       - name: Upload test artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -448,6 +455,20 @@ jobs:
         working-directory: {{.Path}}
         run: {{.FrozenInstall}}
 {{- end}}
+{{- end}}
+{{- define "test-report"}}
+      # Every lane above recorded what it ran under .forge/tests/ (`forge test
+      # capture`, in Taskfile.yml). This summarises that record and sends it
+      # to the control plane, authenticated by FORGE_CONTROL_PLANE_TOKEN (a
+      # token with tests:write or deploy:write). It never decides the job: the
+      # lane's own step carries the verdict, and an upload that cannot happen
+      # (no token, as on a fork's pull request) is a warning.
+      - name: Report tests
+        if: ${{"{{"}} !cancelled() {{"}}"}}
+        continue-on-error: true
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
+        run: task test:report -- --upload
 {{- end}}
 {{- define "install-forge"}}
         # The version comes from the project at run time — go.mod's forge, the

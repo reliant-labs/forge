@@ -47,6 +47,12 @@ func setOf(items ...string) map[string]bool {
 
 var taskTemplateExpr = regexp.MustCompile(`\{\{.*?\}\}`)
 
+// taskVarRef matches an sh value that is a reference to one var, {{.NAME}}.
+var taskVarRef = regexp.MustCompile(`^\{\{\.([A-Za-z_][A-Za-z0-9_]*)\}\}$`)
+
+// taskTemplateControl matches a Task template control action: if, else, end.
+var taskTemplateControl = regexp.MustCompile(`\{\{-?\s*(?:if|else|end)\b.*?-?\}\}`)
+
 func taskfileShellSnippets(t *testing.T, rendered []byte) []string {
 	t.Helper()
 	var doc struct {
@@ -64,6 +70,13 @@ func taskfileShellSnippets(t *testing.T, rendered []byte) []string {
 		for _, v := range vars {
 			if m, ok := v.(map[string]any); ok {
 				if sh, ok := m["sh"].(string); ok {
+					// `sh: "{{.TEST_BEGIN}}"` runs a top-level var's text: check
+					// that text, which is the shell.
+					if ref := taskVarRef.FindStringSubmatch(sh); ref != nil {
+						if s, ok := doc.Vars[ref[1]].(string); ok {
+							sh = s
+						}
+					}
 					out = append(out, sh)
 				}
 			}
@@ -98,6 +111,12 @@ func externalCommands(t *testing.T, snippet string) []string {
 	// task runs in each frontend.
 	text = strings.ReplaceAll(text, "{{.FORGE}}", "go")
 	text = strings.ReplaceAll(text, "{{.SCRIPT}}", "npm")
+	// A control action ({{if .RUN}}…{{end}}) prints nothing itself: a
+	// conditional command prefix (`{{if .RUN}}forge test capture … -- {{end}}go
+	// test`) leaves the command after it in command position either way, so
+	// both branches are checked by dropping the actions, not by turning them
+	// into a word that would read as the command.
+	text = taskTemplateControl.ReplaceAllString(text, "")
 	text = taskTemplateExpr.ReplaceAllString(text, "x")
 	// Task parses with mvdan's bash dialect.
 	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(text), "")

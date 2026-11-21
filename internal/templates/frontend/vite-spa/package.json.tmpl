@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "// vite range note": "vite, vitest, @vitejs/plugin-react and @tailwindcss/vite must resolve ONE vite. vite.config.ts takes defineConfig from vitest's copy and its plugins from theirs, and two copies of vite are two copies of its TYPES: `tsc --noEmit` fails vite.config.ts with TS2769 ('Plugin<any> is not assignable to PluginOption', or \"Property 'rolldownVersion' is missing\" across vite 7 and 8). So the range names the one major every one of them accepts, and it matches the Next.js scaffold's, so a project with both kinds hoists a single vite. Pinning an older major alone never kept a newer one out; it only guaranteed a SECOND copy beside it, whenever anything else in the tree resolved the newer one (a Next.js frontend did with vite 7; forge's dev bridge does with vite 8, through web-runtime's vitest). Bump vite, vitest and @vitejs/plugin-react together; `pnpm why vite` should list one version. This note sits at the TOP LEVEL because npm rejects a comment key inside devDependencies with EINVALIDPACKAGENAME.",
-  "// vitest range note": "vitest is ^5 on purpose, and internal/templates/frontend_vitest_pin_test.go pins the major so the next bump is a decision rather than a drift. 3.x pulls tinypool (GHSA-5gmw-xhrv-c9v3 and GHSA-85c8-ppgw-ccpr, critical) and a vulnerable @vitest/mocker (GHSA-82fw-gwwq-j7x9), which failed a fresh project's own vuln-npm gate. 4.x carries neither, but npm 10 (the npm Node 22 ships) crashes resolving its peer set with \"Cannot read properties of null (reading 'edgesOut')\", so `npm install` never finishes. 5.x installs and audits clean. Same pin as the Next.js scaffold.",
+  "// vitest range note": "vitest is ^5 on purpose, and internal/templates/frontend_vitest_pin_test.go pins the major so the next bump is a decision rather than a drift. @vitest/coverage-v8 (the test lanes' coverage) carries the same range: it peers on the exact vitest release, so the two move together. 3.x pulls tinypool (GHSA-5gmw-xhrv-c9v3 and GHSA-85c8-ppgw-ccpr, critical) and a vulnerable @vitest/mocker (GHSA-82fw-gwwq-j7x9), which failed a fresh project's own vuln-npm gate. 4.x carries neither, but npm 10 (the npm Node 22 ships) crashes resolving its peer set with \"Cannot read properties of null (reading 'edgesOut')\", so `npm install` never finishes. 5.x installs and audits clean. Same pin as the Next.js scaffold.",
   "// zod note": "zod and @hookform/resolvers move together, and forge reads both here: a create/edit page it generates later is written for the majors this file declares (zod 3 or a resolver below 5 gets the older form). zod stays at 4.6.6 or later for GHSA-mrhx-c7xc-m3w5; react-hook-form at 7.55 or later, which @hookform/resolvers 5+ requires.",
   "packageManager": "pnpm@{{pnpmVersion}}",
   "engines": {
@@ -63,6 +63,7 @@
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.30.0",
     "vite": "^8.0.0",
-    "vitest": "^5.0.4"
+    "vitest": "^5.0.4",
+    "@vitest/coverage-v8": "^5.0.4"
   }
 }

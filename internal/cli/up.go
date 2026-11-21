@@ -550,7 +550,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 // derive it from. Either form signals only processes carrying forge's own
 // ownership markers.
 func newEnvDownCmd() *cobra.Command {
-	var all bool
+	var all, collect bool
 	cmd := &cobra.Command{
 		Use:   "down [environment]",
 		Short: "Stop Forge host processes for an environment (or --all: across projects)",
@@ -607,10 +607,11 @@ refreshes is discarded after 24h regardless.`,
 			if len(args) == 0 {
 				return errors.New("name the environment to stop (e.g. `forge env down dev`), or pass --all for every forge stack on this machine")
 			}
-			return runUpStop(args[0])
+			return runUpStopCollecting(args[0], collect)
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "Stop every forge stack running on this machine, across all projects (the only way to reach a stack whose project directory is gone)")
+	cmd.Flags().BoolVar(&collect, "collect", false, "First pull the env's coverage (as forge test collect does) into the active test run, or a new one; FORGE_TEST_RUN set does this too. Best effort: never fails the teardown")
 	return cmd
 }
 
@@ -4274,11 +4275,16 @@ func trackedStack(projectID, env string) []trackedProc {
 // matches no recorded stack — so `forge env down dev` from the wrong directory
 // printed "no tracked stack for env=dev" and exited 0 while the stack it meant
 // to stop kept running. A teardown that cannot fail is not a teardown.
-func runUpStop(env string) error {
+func runUpStop(env string) error { return runUpStopCollecting(env, false) }
+
+// runUpStopCollecting is runUpStop, collecting the env's coverage first when
+// collect (--collect) or an active test run asks (test_collect_teardown.go).
+func runUpStopCollecting(env string, collect bool) error {
 	projectDir, err := requireStackProjectDir("forge env down")
 	if err != nil {
 		return err
 	}
+	collectBeforeTeardown(context.Background(), projectDir, env, collect, nil, os.Stdout)
 	projectID := projectIDForDir(projectDir)
 	return stopEnv(env, projectDir, envDownSteps{
 		hosts: func() (stackStop, error) { return stopStack(projectID, env) },

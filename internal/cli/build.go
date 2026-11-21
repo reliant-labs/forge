@@ -2041,6 +2041,10 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
 		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// The commit's test report, on a ledger forge fills it on (the machine
+	// ledger; a control plane binds its own). Never fails the cut
+	// (release_tests_evidence.go).
+	rel.Tests = captureReleaseTests(ctx, projectDir, rel, ledger.Releases, os.Stderr)
 	// The advisory verdict on those SBOMs, printed under the release line.
 	// Never fails the cut (vuln_gate.go).
 	vulns := scanReleaseAtCut(ctx, cutVulnInput{

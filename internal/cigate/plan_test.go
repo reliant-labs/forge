@@ -70,7 +70,7 @@ func TestPlan_OrderAndLanes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(names(all), " ")
-	want := "deps-web verify-generated golangci-lint buf-lint migration-safety lint-web typecheck-web css-health-web go-build build-web vuln-go vuln-npm vuln-sbom secret-scan license-check validate-kcl deployability deps-web unit-tests integration-tests"
+	want := "deps-web verify-generated golangci-lint buf-lint migration-safety lint-web typecheck-web css-health-web go-build build-web vuln-go vuln-npm vuln-sbom secret-scan license-check validate-kcl deployability deps-web unit-tests flake-check integration-tests"
 	if got != want {
 		t.Errorf("plan order:\n got %s\nwant %s", got, want)
 	}
@@ -78,7 +78,7 @@ func TestPlan_OrderAndLanes(t *testing.T) {
 	if checks := names(Select(all, []Lane{LaneChecks})); checks[len(checks)-1] != "deployability" || checks[1] != "verify-generated" {
 		t.Errorf("checks lane = %v", checks)
 	}
-	if test := names(Select(all, []Lane{LaneTest})); strings.Join(test, " ") != "deps-web unit-tests" {
+	if test := names(Select(all, []Lane{LaneTest})); strings.Join(test, " ") != "deps-web unit-tests flake-check" {
 		t.Errorf("test lane = %v", test)
 	}
 }
@@ -551,6 +551,35 @@ func TestPlan_PNPMFrontendRowsUsePNPM(t *testing.T) {
 	write(t, in.Root, "frontends/web/node_modules/.modules.yaml", "")
 	if note := deps.Done(); note != "already installed" {
 		t.Errorf("a pnpm install newer than its lockfile is current: Done = %q", note)
+	}
+}
+
+// flake-check re-enters forge's flake gate graded by lint.rules, needs a Go
+// module, and runs against the gate's own base.
+func TestPlan_FlakeCheck(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	in := serviceInput(t)
+	all, err := Plan(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := find(t, all, FlakeCheck); c.NotApplicable != "no go.mod" {
+		t.Errorf("without a Go module flake-check is N/A: %+v", c)
+	}
+	write(t, in.Root, "go.mod", "module example.com/app\n")
+	if all, err = Plan(in); err != nil {
+		t.Fatal(err)
+	}
+	c := find(t, all, FlakeCheck)
+	if c.Lane != LaneTest || c.NotApplicable != "" || !strings.HasSuffix(strings.Join(c.Argv, " "), "test flakes gate --graded") {
+		t.Errorf("flake-check = %+v", c)
+	}
+	based := find(t, WithFlakeBase(all, "origin/stack"), FlakeCheck)
+	if len(based.Env) != 1 || based.Env[0] != BaseEnv+"=origin/stack" {
+		t.Errorf("env = %v", based.Env)
+	}
+	if len(c.Env) != 0 {
+		t.Error("a copy taken before WithFlakeBase keeps its env")
 	}
 }
 

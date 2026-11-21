@@ -10,6 +10,7 @@ version: "3"
 # │   task test:integration  `integration`-tagged tests     │
 # │   task test:e2e          End-to-end tests               │
 # │   task test:all          Unit + frontend + integration  │
+# │   task test:report       What those lanes recorded      │
 # │   task ci                The whole PR gate, locally     │
 # │   task ci:checks         Static + build lane of it      │
 # │                                                         │
@@ -100,6 +101,48 @@ vars:
   # `go run`.
   SLOT:
     sh: forge slot status --class heavy >/dev/null 2>&1 && echo 'forge slot run --class heavy --' || true
+  # ── Test records ──────────────────────────────────────────────────────────
+  # `task test`, `test:integration`, `test:e2e` and `test:frontend` record
+  # what they ran into .forge/tests/runs/<id>/: `forge test begin` allocates
+  # the run (or joins $FORGE_TEST_RUN, which `forge test run` sets so several
+  # lanes form one run), and `forge test capture` runs the lane's command
+  # UNCHANGED, stores its results and coverage, prints ordinary `go test`
+  # output and exits with the command's own status. `forge test report`
+  # (`task test:report`) summarises the record. `test:short` records nothing.
+  #
+  # Recording never decides a verdict, and never breaks a lane: with
+  # FORGE_TESTS=off, or a forge that cannot begin a run (one that predates
+  # `forge test`, an offline `go run`), RUN is empty and every lane runs
+  # exactly the command it would without recording — no capture, no -json,
+  # no coverage flags.
+  #
+  # TEST_BEGIN prints the run directory, or nothing. Each lane evaluates it
+  # in its own vars, so a `task` that runs no test lane never pays for it.
+  TEST_BEGIN: '[ "$FORGE_TESTS" = off ] || { d="$({{.FORGE}} test begin)" && [ -d "$d" ] && echo "$d"; } || true'
+  # TEST_SKIP is the `go test -skip` pattern of the quarantined tests
+  # (ci/quarantine/go/, written by `forge test quarantine add`), or nothing.
+  # forge is asked only when something is quarantined.
+  TEST_SKIP: '{ [ ! -d ci/quarantine/go ] && [ -z "$CI_QUARANTINE_EXTRA" ]; } || {{.FORGE}} test quarantine skip-regex go || true'
+  # COVERAGE is forge.yaml's `tests.coverage`: `true`/`false`, or a map whose
+  # `enabled` defaults to true (the legacy `ci.test.coverage` when the tests
+  # block does not say), always rendered as exactly "true" or "false". "false"
+  # keeps the coverage flags out of every lane, which then record results only.
+  # COVERPKG is ` -coverpkg=./...` under `tests.coverage.packages: module`:
+  # each test binary then counts the whole module, not just its own package.
+  COVERAGE: >-
+    {{- $cfg := fromYaml .FORGE_YAML -}}
+    {{- $tests := index $cfg "tests" -}}
+    {{- $cov := "" -}}
+    {{- if kindIs "map" $tests}}{{$cov = index $tests "coverage"}}{{end -}}
+    {{- if kindIs "bool" $cov}}{{if $cov}}true{{else}}false{{end}}
+    {{- else if kindIs "map" $cov}}{{if hasKey $cov "enabled"}}{{eq (toString (index $cov "enabled")) "true"}}{{else}}true{{end}}
+    {{- else}}{{$ci := index $cfg "ci"}}{{$t := ""}}{{if kindIs "map" $ci}}{{$t = index $ci "test"}}{{end}}{{if kindIs "map" $t}}{{eq (toString (index $t "coverage")) "true"}}{{else}}false{{end}}
+    {{- end -}}
+  COVERPKG: >-
+    {{- $tests := index (fromYaml .FORGE_YAML) "tests" -}}
+    {{- $cov := "" -}}
+    {{- if kindIs "map" $tests}}{{$cov = index $tests "coverage"}}{{end -}}
+    {{- if and (kindIs "map" $cov) (eq (toString (index $cov "packages")) "module")}} -coverpkg=./...{{end -}}
 
 tasks:
   default:
@@ -151,6 +194,9 @@ tasks:
     # scoped run can never quietly widen into a whole-module run that still
     # reports success.
     desc: Run Go unit tests and every frontend's tests (excludes integration + e2e)
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+      SKIP: { sh: "{{.TEST_SKIP}}" }
     cmds:
       # Integration and e2e tests are guarded by the `integration` and `e2e`
       # build tags respectively, so they are physically excluded from this
@@ -161,8 +207,17 @@ tasks:
       # waits. It is not 30s because the born CRUD tests boot an embedded
       # postgres on first use: a cold boot alone can eat most of a 30s budget,
       # so the tighter bound failed the suite for being slow rather than wrong.
-      - "{{.SLOT}} go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
-      - task: test:frontend
+      #
+      # Recorded as lane `unit` (see TEST_BEGIN): -json is the stream capture
+      # stores and renders back as plain `go test` output, and
+      # -covermode=atomic -coverprofile writes the lane's coverage beside it.
+      # atomic, not the default `set`, so hit counts add up across lanes.
+      - >-
+        {{.SLOT}} {{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane unit -- {{end}}go test {{.GOTESTRACE}} -count=1
+        {{- if .RUN}} -json{{if eq .COVERAGE "true"}} -covermode=atomic '-coverprofile={{.RUN}}/unit/cover.out'{{.COVERPKG}}{{end}}{{end}}
+        {{- if .SKIP}} -skip '{{.SKIP}}'{{end}} -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
+      - task: test:frontend:lanes
+        vars: { RUN: "{{.RUN}}" }
 
   test:short:
     # The inner loop: run this after each edit, scoped to the packages you
@@ -196,6 +251,22 @@ tasks:
 
   test:frontend:
     desc: Run every frontend's tests
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+    cmds:
+      - task: test:frontend:lanes
+        vars: { RUN: "{{.RUN}}" }
+
+  test:frontend:lanes:
+    # The frontend lanes of a run RUN (`test` and `test:frontend` pass theirs
+    # in: a task's own vars would win over the caller's). Each frontend is
+    # its own lane, `frontend-<dir>`. capture exports FORGE_TEST_LANE_DIR,
+    # and the scaffolded Vitest config writes its results (vitest.json) and
+    # its v8 coverage (coverage-final.json) there only when that
+    # is set, so a bare `npm test` is unchanged. FORGE_TEST_COVERAGE=off is
+    # how `tests.coverage: false` reaches it. A frontend with no Vite or
+    # Vitest config (an Expo app's jest) records its output unparsed.
+    internal: true
     cmds:
       # A scoped run (`task test -- ./some/pkg/...`) selected Go packages,
       # which says nothing about any frontend — running the JS suites anyway
@@ -207,7 +278,13 @@ tasks:
       - task: frontends
         if: '[ -z "{{.CLI_ARGS}}" ]'
         vars:
-          SCRIPT: '{{.SLOT}} $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests'
+          LABEL: "$PM test"
+          SCRIPT: >-
+            {{if .RUN}}lane="frontend-${dir##*/}"; set --;
+            if [ -f vitest.config.ts ] || [ -f vite.config.ts ]; then set -- --results "{{.RUN}}/$lane/vitest.json"; fi;
+            {{if ne .COVERAGE "true"}}FORGE_TEST_COVERAGE=off {{end}}{{end}}{{.SLOT}}
+            {{- if .RUN}} {{.FORGE}} test capture --run '{{.RUN}}' --lane "$lane" "$@" --{{end}}
+            $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests
 
   frontends:
     # Runs SCRIPT in every frontend of this project in turn, stopping at the
@@ -242,20 +319,27 @@ tasks:
             PM="${frontend%%:*}"
             dir="${frontend#*:}"
             export PM
-            echo "==> {{.SCRIPT}} ($dir, $PM)"
-            (cd "$dir" && {{.SCRIPT}}) || exit 1
+            echo "==> {{.LABEL | default .SCRIPT}} ($dir, $PM)"
+            (cd "$dir" && { {{.SCRIPT}}; }) || exit 1
             ran=$((ran + 1))
           done
           [ "$ran" -gt 0 ] || echo "This project has no frontends — nothing to run."
 
   test:integration:
     desc: Run integration tests (uses -tags=integration; may require docker compose)
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+      SKIP: { sh: "{{.TEST_SKIP}}" }
     cmds:
       # Integration tests are guarded by the `integration` build tag and are
       # therefore excluded from `task test`. They typically need a real
       # database / running infra (see docker-compose.yml). -timeout=10m gives
-      # heavy DB-backed scenarios room while still surfacing hangs.
-      - "{{.SLOT}} go test {{.GOTESTRACE}} -tags=integration -count=1 -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
+      # heavy DB-backed scenarios room while still surfacing hangs. Recorded
+      # as lane `integration`, the same way `task test` records `unit`.
+      - >-
+        {{.SLOT}} {{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane integration -- {{end}}go test {{.GOTESTRACE}} -tags=integration -count=1
+        {{- if .RUN}} -json{{if eq .COVERAGE "true"}} -covermode=atomic '-coverprofile={{.RUN}}/integration/cover.out'{{.COVERPKG}}{{end}}{{end}}
+        {{- if .SKIP}} -skip '{{.SKIP}}'{{end}} -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}
 
   test:e2e:
     # `--` args replace the default `./e2e/...`, same as `task test`, so
@@ -263,9 +347,58 @@ tasks:
     # lane accepts them for the same reason: a target that ACCEPTS arguments
     # and ignores them reports success for a run the caller never asked for.
     # Already verbose (-v) — e2e failures are unreadable without it.
+    #
+    # The coverage that matters here is the SERVERS': an env whose Go
+    # workloads run instrumented (`cover`) builds — dev and every preview by
+    # default — counts what the suite reached. The lane zeroes their
+    # counters first and collects them afterwards, failed run or not, into
+    # lane `e2e` of the run (`forge test collect`). ENV names the env the
+    # suite runs against: `task test:e2e ENV=preview-pr-12`; default dev.
+    # Collecting is best effort: an env that is not up, or runs no cover
+    # build, warns and the lane's verdict is the suite's alone.
     desc: Run end-to-end tests (requires docker compose; uses -tags=e2e)
+    vars:
+      RUN: { sh: "{{.TEST_BEGIN}}" }
+      SKIP: { sh: "{{.TEST_SKIP}}" }
+      # An env name, or dev. Not any $ENV the shell happens to carry (some
+      # images set ENV=/etc/profile for sh's startup file).
+      ENV: '{{if and .ENV (regexMatch "^[a-z][a-z0-9-]*$" (toString .ENV))}}{{.ENV}}{{else}}dev{{end}}'
     cmds:
-      - go test -tags=e2e -v -count=1 -timeout=20m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}
+      - cmd: "{{.FORGE}} test collect {{.ENV}} --reset --run '{{.RUN}}'"
+        if: '[ -n "{{.RUN}}" ]'
+        ignore_error: true
+      - defer: { task: test:e2e:collect, vars: { RUN: "{{.RUN}}", ENV: "{{.ENV}}" } }
+      - >-
+        {{if .RUN}}{{.FORGE}} test capture --run '{{.RUN}}' --lane e2e -- {{end}}go test -tags=e2e -v -count=1
+        {{- if .RUN}} -json{{end}}
+        {{- if .SKIP}} -skip '{{.SKIP}}'{{end}} -timeout=20m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}
+
+  test:e2e:collect:
+    # Pulls the servers' counters into the e2e lane (converted with
+    # `go tool covdata textfmt`). Deferred by test:e2e, so it runs whatever
+    # the suite's verdict; its own failure never changes that verdict.
+    internal: true
+    cmds:
+      - cmd: "{{.FORGE}} test collect {{.ENV}} --run '{{.RUN}}' --lane e2e"
+        if: '[ -n "{{.RUN}}" ]'
+        ignore_error: true
+
+  test:report:
+    # What the lanes recorded: results, coverage merged across lanes, diff
+    # coverage against the base, failures. `forge test report` runs no test;
+    # it reads .forge/tests/runs/. Arguments after `--` go to it:
+    #
+    #   task test:report                       the newest run
+    #   task test:report -- --json             forge.test.report/v1
+    #   task test:report -- --format lcov      for an editor or another tool
+    #   task test:report -- --upload           send it to the control plane
+    #
+    # Exits 0 when every recorded test passed, 1 when one failed, 2 when the
+    # record proves nothing (no runs, every test skipped). Coverage never
+    # decides it.
+    desc: Summarise the recorded test runs (results, coverage, diff coverage); runs no test
+    cmds:
+      - "{{.FORGE}} test report {{.CLI_ARGS}}"
 
   test:all:
     # The full-suite gate. `task test` (unit + frontend) is what the CI test
@@ -421,16 +554,15 @@ tasks:
       - "{{.FORGE}} ci verify-generated"
 
   coverage:
-    # HTML coverage report at coverage.html. We deliberately omit -race
-    # here (race + coverage requires -covermode=atomic, which in turn
-    # needs the `covdata` tool — not always present in auto-installed
-    # toolchains). Race testing happens in `task test`; this task is for
-    # measuring exercised code. Skips integration / e2e (those have their
-    # own tasks) so coverage reflects unit tests.
-    desc: Run unit tests with coverage and emit coverage.html
+    # HTML coverage report at coverage.html, from what the lanes RECORDED:
+    # the newest run's coverage, merged across every lane it holds (unit,
+    # integration, e2e, the frontends). It runs no test, so run the lanes
+    # first: `task test coverage`, or `forge test run` for unit and
+    # integration in one run. Other formats: `task test:report -- --format
+    # lcov` (or cobertura, json).
+    desc: Write coverage.html from the recorded test runs (run `task test` first)
     cmds:
-      - go test -coverprofile=coverage.out -timeout 60s ./...
-      - go tool cover -html=coverage.out -o coverage.html
+      - "{{.FORGE}} test report --format html > coverage.html"
       - cmd: echo "Coverage report written to coverage.html"
         silent: true
 

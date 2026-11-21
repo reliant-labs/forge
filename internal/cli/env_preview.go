@@ -433,9 +433,10 @@ func sharedNamespaces(a, b *KCLEntities) []string {
 
 func newEnvPreviewDeleteCmd() *cobra.Command {
 	var (
-		f    previewKeyFlags
-		name string
-		yes  bool
+		f       previewKeyFlags
+		name    string
+		yes     bool
+		collect bool
 	)
 	cmd := &cobra.Command{
 		Use:   "delete",
@@ -459,12 +460,13 @@ checkout) is re-created from the template first, to know what to delete.`,
 					return err
 				}
 			}
-			return deletePreview(cmd.Context(), projectDir, f, name, cmd.OutOrStdout())
+			return deletePreview(withTeardownCollect(cmd.Context(), collect), projectDir, f, name, cmd.OutOrStdout())
 		},
 	}
 	f.register(cmd)
 	cmd.Flags().StringVar(&name, "name", "", "The instance to delete, by name (instead of --pr / --branch)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Confirm the deletion (required when non-interactive)")
+	cmd.Flags().BoolVar(&collect, "collect", false, "First pull the preview's coverage (as forge test collect does) into the active test run, or a new one; FORGE_TEST_RUN set does this too. Best effort: never fails the deletion")
 	return cmd
 }
 
@@ -493,6 +495,7 @@ func deletePreview(ctx context.Context, projectDir string, f previewKeyFlags, na
 	if err != nil {
 		return fmt.Errorf("render preview %s: %w", name, err)
 	}
+	collectBeforeTeardown(ctx, projectDir, name, teardownCollectRequested(ctx), inst, out)
 	if inst.HasHosted() || inst.ControlPlane != nil {
 		if err := previewDeleteHosted(ctx, name, out); err != nil {
 			return err

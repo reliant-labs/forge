@@ -46,6 +46,15 @@ const readRuntimePeers = (): string[] => {
 
 const webRuntimePeers: string[] = readRuntimePeers();
 
+// A `forge test capture` lane (the Taskfile's test lanes) sets
+// FORGE_TEST_LANE_DIR to the lane's record directory, .forge/tests/runs/<id>/
+// <lane>/. Then, and only then, Vitest writes its results there as JSON
+// (vitest.json) and measures v8 coverage into the same directory
+// (coverage-final.json), which `forge test report` merges with the
+// Go lanes. A bare `npm test` is unchanged. FORGE_TEST_COVERAGE=off is
+// forge.yaml's `tests.coverage: false`: results only.
+const laneDir = process.env.FORGE_TEST_LANE_DIR;
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -62,5 +71,27 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    ...(laneDir
+      ? {
+          // Naming reporters replaces Vitest's defaults, so the GitHub
+          // Actions annotations it adds by itself are named here too.
+          reporters: process.env.GITHUB_ACTIONS
+            ? ["default", "json", "github-actions"]
+            : ["default", "json"],
+          outputFile: { json: join(laneDir, "vitest.json") },
+          coverage: {
+            enabled: process.env.FORGE_TEST_COVERAGE !== "off",
+            provider: "v8" as const,
+            // Istanbul JSON (coverage-final.json): statement blocks, the
+            // granularity the Go lanes record. An lcov.info beside it would be
+            // a second, line-granular copy of the same files, which
+            // `forge test report` refuses to merge with it.
+            reporter: ["json"],
+            reportsDirectory: laneDir,
+            // The lane directory is capture's; Vitest must not empty it.
+            clean: false,
+          },
+        }
+      : {}),
   },
 });

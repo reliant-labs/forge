@@ -104,6 +104,11 @@ type Manager struct {
 	mu      sync.Mutex
 	cache   map[string]cacheEntry
 	flights map[string]*flight
+	// revocations counts the revocations this process has begun or
+	// finished (see revoking). A cache entry is published only when it has
+	// not moved since the store read the entry is built from, so a read
+	// that raced a revocation never brings the revoked session back.
+	revocations uint64
 
 	noRefreshOnce sync.Once
 }
@@ -235,6 +240,7 @@ func (m *Manager) Create(ctx context.Context, tokens Tokens, meta Meta) (Issued,
 		ua = ua[:userAgentMax]
 	}
 	expires := now.Add(m.cfg.Lifetime)
+	since := m.epoch()
 	rec := Record{Key: k.lookup, Subject: meta.Subject, Sealed: sealed, UserAgent: ua, IssuerSession: meta.IssuerSession,
 		CreatedAt: now, ProvedAt: now, LastSeenAt: now, RefreshedAt: now,
 		IdleExpiresAt: m.idleFrom(now, expires), ExpiresAt: expires}
@@ -247,7 +253,7 @@ func (m *Manager) Create(ctx context.Context, tokens Tokens, meta Meta) (Issued,
 				"request the offline_access scope (oidc_scopes) to keep people signed in")
 		})
 	}
-	m.remember(k.lookup, tokens, rec, now)
+	m.remember(k.lookup, tokens, rec, now, since)
 	return Issued{ID: id, Handle: handleOf(k.lookup), ExpiresAt: expires}, nil
 }
 
@@ -282,6 +288,7 @@ func (m *Manager) AccessToken(ctx context.Context, id string) (string, error) {
 	if token, ok := m.cached(k.lookup, now); ok {
 		return token, nil
 	}
+	since := m.epoch()
 	rec, err := m.cfg.Store.Get(ctx, k.lookup)
 	if errors.Is(err, ErrNoSession) {
 		return "", ErrNoSession
@@ -300,7 +307,7 @@ func (m *Manager) AccessToken(ctx context.Context, id string) (string, error) {
 	}
 	if m.fresh(t, now) {
 		m.touch(ctx, k.lookup, rec, now)
-		m.remember(k.lookup, t, rec, now)
+		m.remember(k.lookup, t, rec, now, since)
 		return t.AccessToken, nil
 	}
 	return m.refresh(ctx, k)
@@ -317,10 +324,16 @@ func valid(t Tokens, now time.Time) bool {
 	return t.AccessToken != "" && !t.Expiry.IsZero() && now.Before(t.Expiry)
 }
 
-// touch pushes the idle deadline out, at most once per touchEvery. A failed
-// write costs nothing but an earlier idle end, so it is only logged.
+// touch pushes the idle deadline out, at most once per touchEvery, or per
+// half the IdleTimeout when that is shorter (so a short idle timeout is
+// still extended before it ends a session in use). A failed write costs
+// nothing but an earlier idle end, so it is only logged.
 func (m *Manager) touch(ctx context.Context, key []byte, rec Record, now time.Time) {
-	if m.cfg.IdleTimeout < 0 || now.Sub(rec.LastSeenAt) < touchEvery {
+	every := touchEvery
+	if half := m.cfg.IdleTimeout / 2; half < every {
+		every = half
+	}
+	if m.cfg.IdleTimeout < 0 || rec.Key == nil || now.Sub(rec.LastSeenAt) < every {
 		return
 	}
 	err := m.cfg.Store.Update(ctx, key, func(r *Record) error {
@@ -372,8 +385,9 @@ func (m *Manager) refresh(ctx context.Context, k keys) (string, error) {
 func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 	var (
 		got, latest Tokens
-		after       Record
+		after, read Record
 	)
+	since := m.epoch()
 	err := m.cfg.Store.Update(ctx, k.lookup, func(r *Record) error {
 		now := m.cfg.Now()
 		if r.expired(now) {
@@ -383,7 +397,7 @@ func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 		if err != nil {
 			return err
 		}
-		latest = t
+		latest, read = t, *r
 		if m.fresh(t, now) {
 			// Another replica renewed it while this one waited for the row.
 			got, after = t, *r
@@ -420,7 +434,7 @@ func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 	now := m.cfg.Now()
 	switch {
 	case err == nil || errors.Is(err, errFresh):
-		m.remember(k.lookup, got, after, now)
+		m.remember(k.lookup, got, after, now, since)
 		return got.AccessToken, nil
 	case errors.Is(err, ErrNoSession), errors.Is(err, errCorrupt), errors.Is(err, ErrRefreshRejected):
 		if errors.Is(err, ErrRefreshRejected) {
@@ -430,6 +444,9 @@ func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 		return "", ErrNoSession
 	case errors.Is(err, errCannotRefresh):
 		if valid(latest, now) {
+			// A use like any other: the session's idle deadline moves
+			// even though its token could not be renewed.
+			m.touch(ctx, k.lookup, read, now)
 			return latest.AccessToken, nil
 		}
 		m.drop(ctx, k.lookup)
@@ -439,6 +456,7 @@ func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 		// ended over it. While its token is still valid it keeps working.
 		if valid(latest, now) {
 			m.cfg.Logger.WarnContext(ctx, "session: refresh failed; using the current access token until it expires", "error", err)
+			m.touch(ctx, k.lookup, read, now)
 			return latest.AccessToken, nil
 		}
 		return "", fmt.Errorf("%w: refresh: %w", ErrUnavailable, err)
@@ -506,7 +524,8 @@ func (m *Manager) Revoke(ctx context.Context, id string) (Tokens, Info, error) {
 	if err != nil {
 		return Tokens{}, Info{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	m.forget(k.lookup)
+	done := m.revoking(func(c map[string]cacheEntry) { delete(c, string(k.lookup)) })
+	defer done()
 	if err := m.cfg.Store.Delete(ctx, k.lookup); err != nil {
 		return Tokens{}, Info{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
@@ -548,7 +567,8 @@ func (m *Manager) RevokeHandle(ctx context.Context, subject, handle string) erro
 	if rec.Subject != subject {
 		return ErrNoSession
 	}
-	m.forget(key)
+	done := m.revoking(func(c map[string]cacheEntry) { delete(c, string(key)) })
+	defer done()
 	if err := m.cfg.Store.Delete(ctx, key); err != nil {
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
@@ -560,13 +580,14 @@ func (m *Manager) RevokeHandle(ctx context.Context, subject, handle string) erro
 // revoked at the issuer: they are sealed under ids nobody holds once the rows
 // are gone.
 func (m *Manager) RevokeSubject(ctx context.Context, subject string) (int64, error) {
-	m.mu.Lock()
-	for k, e := range m.cache {
-		if e.subject == subject {
-			delete(m.cache, k)
+	done := m.revoking(func(c map[string]cacheEntry) {
+		for k, e := range c {
+			if e.subject == subject {
+				delete(c, k)
+			}
 		}
-	}
-	m.mu.Unlock()
+	})
+	defer done()
 	n, err := m.cfg.Store.DeleteSubject(ctx, subject)
 	if err != nil {
 		return n, fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -623,9 +644,38 @@ func (m *Manager) cached(key []byte, now time.Time) (string, bool) {
 	return e.token, true
 }
 
+// epoch is the revocation count a cache publication is checked against:
+// read it BEFORE the store read the entry is built from.
+func (m *Manager) epoch() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.revocations
+}
+
+// revoking begins a revocation: it evicts the cache entries evict removes
+// and counts the revocation, and returns the func that ends it (evicting and
+// counting again) once the store's delete returned. A request that read the
+// session before the delete and publishes after it finds the count moved and
+// publishes nothing; one that published before the delete returned is evicted
+// by the second pass. So after a revocation on this replica the next request
+// reads the store, which no longer has the session.
+func (m *Manager) revoking(evict func(map[string]cacheEntry)) (done func()) {
+	pass := func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.revocations++
+		evict(m.cache)
+	}
+	pass()
+	return pass
+}
+
 // remember caches t's access token until the earliest of: CacheTTL from now,
-// the moment it is due for a refresh, and the session's end.
-func (m *Manager) remember(key []byte, t Tokens, rec Record, now time.Time) {
+// the moment it is due for a refresh, and the session's end. since is the
+// epoch read before the store read rec came from; a revocation since then
+// means rec may describe a session that no longer exists, so nothing is
+// cached.
+func (m *Manager) remember(key []byte, t Tokens, rec Record, now time.Time, since uint64) {
 	if m.cfg.CacheTTL < 0 || t.AccessToken == "" {
 		return
 	}
@@ -640,6 +690,9 @@ func (m *Manager) remember(key []byte, t Tokens, rec Record, now time.Time) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.revocations != since {
+		return
+	}
 	if len(m.cache) >= cacheMax {
 		m.cache = map[string]cacheEntry{}
 	}

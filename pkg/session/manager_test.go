@@ -533,3 +533,164 @@ func TestInfoAndMarkProved(t *testing.T) {
 		t.Errorf("Info(garbage) = %v", err)
 	}
 }
+
+// pausingStore pauses one store call at a chosen point, so a test can put a
+// revocation exactly between a resolution's store read and its cache
+// publication.
+type pausingStore struct {
+	Store
+	// afterGet / afterUpdate / beforeDelete, when set, run once at that
+	// point of the next such call, then are cleared.
+	mu                                  sync.Mutex
+	afterGet, afterUpdate, beforeDelete func()
+}
+
+func (p *pausingStore) take(f *func()) func() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	g := *f
+	*f = nil
+	return g
+}
+
+func (p *pausingStore) Get(ctx context.Context, key []byte) (Record, error) {
+	r, err := p.Store.Get(ctx, key)
+	if g := p.take(&p.afterGet); g != nil {
+		g()
+	}
+	return r, err
+}
+
+func (p *pausingStore) Update(ctx context.Context, key []byte, fn func(*Record) error) error {
+	err := p.Store.Update(ctx, key, fn)
+	if g := p.take(&p.afterUpdate); g != nil {
+		g()
+	}
+	return err
+}
+
+func (p *pausingStore) Delete(ctx context.Context, key []byte) error {
+	if g := p.take(&p.beforeDelete); g != nil {
+		g()
+	}
+	return p.Store.Delete(ctx, key)
+}
+
+// pause arms *hook to block until release is closed, and returns the
+// channel closed when the paused call reaches it.
+func (p *pausingStore) pause(hook *func(), release <-chan struct{}) <-chan struct{} {
+	reached := make(chan struct{})
+	p.mu.Lock()
+	*hook = func() { close(reached); <-release }
+	p.mu.Unlock()
+	return reached
+}
+
+// A resolution that read the session before a revocation on THIS replica
+// and publishes to the cache after it never brings the session back: the
+// next request is refused. Every revocation path, and both the plain read
+// and the refresh write, are covered.
+func TestRevocationRacingAResolutionIsNotUndoneByTheCache(t *testing.T) {
+	revocations := map[string]func(m *Manager, s Issued) error{
+		"Revoke":        func(m *Manager, s Issued) error { _, _, err := m.Revoke(context.Background(), s.ID); return err },
+		"RevokeHandle":  func(m *Manager, s Issued) error { return m.RevokeHandle(context.Background(), "u1", s.Handle) },
+		"RevokeSubject": func(m *Manager, s Issued) error { _, err := m.RevokeSubject(context.Background(), "u1"); return err },
+	}
+	for name, revoke := range revocations {
+		for _, path := range []string{"read", "refresh"} {
+			t.Run(name+"/"+path, func(t *testing.T) {
+				clk := newClock()
+				is := newIssuer(clk)
+				store := &pausingStore{Store: NewMemoryStore()}
+				m := newTestManager(t, store, clk, is, nil)
+				s := mustCreate(t, m, is.mint(), "u1")
+				hook := &store.afterGet
+				if path == "refresh" {
+					clk.Advance(is.life - time.Minute) // due: AccessToken refreshes
+					hook = &store.afterUpdate
+				} else {
+					clk.Advance(DefaultCacheTTL) // Create's cache entry is gone
+				}
+				release := make(chan struct{})
+				reached := store.pause(hook, release)
+				done := make(chan error, 1)
+				go func() { _, err := m.AccessToken(context.Background(), s.ID); done <- err }()
+				<-reached
+				if err := revoke(m, s); err != nil {
+					t.Fatalf("revoke: %v", err)
+				}
+				close(release)
+				if err := <-done; err != nil {
+					t.Fatalf("the resolution that read before the revocation: %v", err)
+				}
+				if _, err := m.AccessToken(context.Background(), s.ID); !errors.Is(err, ErrNoSession) {
+					t.Fatalf("after the revocation: %v, want ErrNoSession (a racing resolution cached the revoked session)", err)
+				}
+			})
+		}
+	}
+}
+
+// A resolution that reads the session after a revocation began but before
+// its delete landed, and publishes in that window, is evicted when the
+// revocation finishes.
+func TestAResolutionInsideARevocationIsEvictedWhenItEnds(t *testing.T) {
+	clk := newClock()
+	is := newIssuer(clk)
+	store := &pausingStore{Store: NewMemoryStore()}
+	m := newTestManager(t, store, clk, is, nil)
+	s := mustCreate(t, m, is.mint(), "u1")
+	clk.Advance(DefaultCacheTTL)
+	release := make(chan struct{})
+	reached := store.pause(&store.beforeDelete, release)
+	done := make(chan error, 1)
+	go func() { _, _, err := m.Revoke(context.Background(), s.ID); done <- err }()
+	<-reached
+	if _, err := m.AccessToken(context.Background(), s.ID); err != nil {
+		t.Fatalf("before the delete landed the row is still there: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.AccessToken(context.Background(), s.ID); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("after the revocation: %v, want ErrNoSession", err)
+	}
+}
+
+// A session in use keeps extending its idle deadline even when its token
+// cannot be renewed: a token shorter-lived than RefreshBefore with no
+// refresh token, or an issuer that is down while the token still works.
+func TestUseExtendsTheIdleDeadlineWithoutARefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(is *issuer) (Refresher, Tokens)
+	}{
+		{"no refresh token", func(is *issuer) (Refresher, Tokens) {
+			tok := is.mint()
+			tok.RefreshToken = ""
+			return nil, tok
+		}},
+		{"issuer down", func(is *issuer) (Refresher, Tokens) {
+			is.setFail(errors.New("issuer unreachable"))
+			return is, is.mint()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := newClock()
+			is := newIssuer(clk)
+			is.life = time.Minute // below DefaultRefreshBefore: never "fresh"
+			r, tok := tc.setup(is)
+			m := newTestManager(t, NewMemoryStore(), clk, r, func(c *Config) {
+				c.IdleTimeout, c.CacheTTL = 30*time.Second, -1
+			})
+			s := mustCreate(t, m, tok, "u1")
+			for i := 1; i <= 5; i++ { // a request every 10s, 50s in all
+				clk.Advance(10 * time.Second)
+				if _, err := m.AccessToken(context.Background(), s.ID); err != nil {
+					t.Fatalf("request at +%ds of a session in use (idle timeout 30s): %v", 10*i, err)
+				}
+			}
+		})
+	}
+}

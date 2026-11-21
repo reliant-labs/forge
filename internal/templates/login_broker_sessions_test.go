@@ -151,8 +151,10 @@ func TestSessionsAreServerSide(t *testing.T) {
 		cookie.SameSite != http.SameSiteLaxMode || cookie.Domain != "" || cookie.MaxAge < 29*24*3600 {
 		t.Fatalf("session cookie = %+v", cookie)
 	}
-	if strings.Contains(cookie.Value, "e30") {
-		t.Fatal("the cookie carries the token")
+	for _, tok := range []string{almostExpired, "rt-1"} {
+		if strings.Contains(cookie.Value, tok) {
+			t.Fatal("the cookie carries a token")
+		}
 	}
 	list, _ := m.List(context.Background(), "u1")
 	if len(list) != 1 || list[0].UserAgent != "test-browser" {

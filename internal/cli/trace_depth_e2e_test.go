@@ -4,7 +4,6 @@ package cli
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,9 +19,7 @@ import (
 	"testing"
 	"time"
 
-	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -167,48 +164,6 @@ func (s *Service) QuoteWidget(
 `)
 	// The scaffolded row test asserts the stub's Unimplemented answer.
 	_ = os.Remove(filepath.Join(projectDir, "internal", "handlers", "widgets", "handlers_scaffold_quote_widget_test.go"))
-}
-
-// otlpSink is an OTLP/HTTP trace receiver: it keeps every span it is sent.
-type otlpSink struct {
-	mu    sync.Mutex
-	spans []*tracepb.Span
-}
-
-func (s *otlpSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/v1/traces" {
-		w.WriteHeader(http.StatusOK) // metrics, logs, profiles: accepted, ignored
-		return
-	}
-	var body io.Reader = r.Body
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		zr, err := gzip.NewReader(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		body = zr
-	}
-	raw, err := io.ReadAll(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	var req collectortrace.ExportTraceServiceRequest
-	if err := proto.Unmarshal(raw, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	s.mu.Lock()
-	for _, rs := range req.GetResourceSpans() {
-		for _, ss := range rs.GetScopeSpans() {
-			s.spans = append(s.spans, ss.GetSpans()...)
-		}
-	}
-	s.mu.Unlock()
-	out, _ := proto.Marshal(&collectortrace.ExportTraceServiceResponse{})
-	w.Header().Set("Content-Type", "application/x-protobuf")
-	_, _ = w.Write(out)
 }
 
 // trace returns the spans of one trace, keyed by hex span id.

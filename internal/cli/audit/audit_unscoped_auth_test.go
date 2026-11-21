@@ -207,6 +207,11 @@ func TestUnscopedAuth_AcknowledgementSuppressesWithReason(t *testing.T) {
 	if !strings.Contains(acks[0].Reason, "operator") {
 		t.Errorf("reason = %q, want the author's text preserved for review", acks[0].Reason)
 	}
+	// An acknowledged RPC never resolves the caller, so the summary must not
+	// count it among those that do.
+	if strings.HasPrefix(cat.Summary, "all ") || !strings.Contains(cat.Summary, "0 of 1") || !strings.Contains(cat.Summary, "acknowledged") {
+		t.Errorf("summary = %q, want it to count the acknowledged RPC apart (\"0 of 1 … resolve the caller; the other 1 are acknowledged …\")", cat.Summary)
+	}
 }
 
 // TestUnscopedAuth_BareAcknowledgementDoesNotCount is the whole point of

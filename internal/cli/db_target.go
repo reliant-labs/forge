@@ -3,8 +3,8 @@
 // Reconciling the DSN a db command ACTS ON with the environment it CLAIMS.
 //
 // The dev gate and the connection string were resolved on two paths that
-// never met. `requireDevSeedTarget(env)` classifies the environment by
-// reading deploy/kcl/<env>/config.k for `environment = "development"` — it is
+// never met. `requireDevSeedTarget(env)` classifies the environment by the
+// runtime MODE of its evaluated deploy/kcl/<env>/config.k (classifySeedEnv) — it is
 // fail-closed and has no override, which is right. But `resolveDSN` took
 // --dsn, else $DATABASE_URL, else error, and never consulted --env at all.
 //
@@ -223,10 +223,10 @@ func declaredEnvDSN(ctx context.Context, projectDir, env string) string {
 
 // kclConfigDBURLRE extracts `database_url = "value"` from a per-env config.k
 // AppConfig instance. KCL uses `=`; the `:` form is accepted defensively.
-// A best-effort text read, matching how the neighbouring MODE gate
-// (envModeFromKCLConfig) reads `environment` from the same file: the value is
-// a plain string literal in a scaffolded instance, and a full KCL evaluation
-// would be disproportionate.
+// A best-effort text read, the way the neighbouring MODE gate's FALLBACK
+// (envModeFromKCLConfig) reads `environment` from the same file; the gate
+// itself now evaluates the config (classifySeedEnv), because a typed config
+// can nest the field where no line match sees it.
 var kclConfigDatabaseURLRE = regexp.MustCompile(`(?m)^\s*database_url\s*[:=]\s*"([^"]*)"`)
 
 // envConfigDatabaseURL reads database_url from deploy/kcl/<env>/config.k, or

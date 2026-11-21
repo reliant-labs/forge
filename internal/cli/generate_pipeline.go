@@ -1697,6 +1697,9 @@ func stepBufGenerateGo(ctx *pipelineContext) error {
 	if err := runBufGenerateGo(ctx.ProjectDir); err != nil {
 		return fmt.Errorf("buf generate (Go) failed: %w", err)
 	}
+	// buf never prunes: drop the stubs of protos that are gone before the
+	// descriptor and every later emitter read gen/ (generate_stale_buf.go).
+	pruneStaleBufOutput(ctx, goBufOutDirs(ctx))
 	return nil
 }
 
@@ -1788,6 +1791,20 @@ func stepFrontendBufTS(ctx *pipelineContext) error {
 	// bridge's gitignored npm config must already be in place: a project
 	// bridged by an older forge has none and the install would crash.
 	generator.EnsureDevWebRuntimeLink(ctx.ProjectDir)
+	if err := runFrontendBufTS(ctx); err != nil {
+		return err
+	}
+	// buf never prunes: drop the _pb.ts of protos that are gone before the
+	// hooks and service-defaults mocks are emitted from what src/gen holds
+	// (generate_stale_buf.go).
+	pruneStaleBufOutput(ctx, frontendBufOutDirs(ctx))
+	return nil
+}
+
+// runFrontendBufTS runs the TypeScript buf generation stepFrontendBufTS
+// describes: one shared invocation in workspace mode, else one per
+// TypeScript frontend.
+func runFrontendBufTS(ctx *pipelineContext) error {
 	if ctx.Cfg.IsFrontendWorkspacesEnabled() {
 		return runBufGenerateTypeScriptWorkspace(ctx.Cfg, ctx.ProjectDir)
 	}

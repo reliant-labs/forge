@@ -34,6 +34,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
+	"github.com/reliant-labs/forge/internal/envdoc"
 )
 
 const (
@@ -62,12 +63,31 @@ type lifecycleDeployment struct {
 	Observed *struct {
 		State     string `json:"state,omitempty"`
 		LastError string `json:"lastError,omitempty"`
+		// SuspendReason is why the tier CR is suspended (its Suspended
+		// condition), DEPLOY_SUSPEND_REASON_UNSPECIFIED or absent when it
+		// is not.
+		SuspendReason string `json:"suspendReason,omitempty"`
 	} `json:"observed,omitempty"`
 }
 
+// observedSuspendedState is the wire's SUSPENDED observed state.
+const observedSuspendedState = "DEPLOY_OBSERVED_STATE_SUSPENDED"
+
+// observedState is the deployment's observed state, with a suspension the
+// observation only states as a reason read as SUSPENDED. The operator
+// suspends a workload by holding its phase at Pending with Suspended=True,
+// and the control plane reports that as PENDING plus a suspend reason, so
+// `forge env stop --wait` waited for a SUSPENDED it was never sent. Only
+// PENDING is read that way: a suspend reason beside PROGRESSING, DEGRADED,
+// FAILED or READY is a stale condition on a workload still running (or
+// failing), never a confirmed stop.
 func (d lifecycleDeployment) observedState() string {
 	if d.Observed == nil {
 		return ""
+	}
+	if d.Observed.State == "DEPLOY_OBSERVED_STATE_PENDING" &&
+		d.Observed.SuspendReason != "" && d.Observed.SuspendReason != "DEPLOY_SUSPEND_REASON_UNSPECIFIED" {
+		return observedSuspendedState
 	}
 	return d.Observed.State
 }
@@ -162,7 +182,12 @@ func resolveDeclaredLifecycleTarget(ctx context.Context, env, verb, flagToken, e
 	if err != nil {
 		return lifecycleTarget{}, fmt.Errorf("render KCL for env %q: %w", env, err)
 	}
-	if err := requireHostedEnv(env, verb, summarizePlacements(entities)); err != nil {
+	parts := summarizePlacements(entities)
+	if verb == "delete" && !parts.Hosted && !parts.Cluster && entities != nil && entities.ControlPlane != nil {
+		// A control-plane env with nothing placed on it — a monitoring-only
+		// env `forge obs init` registered — is still a record on that
+		// control plane, and delete is how it goes away.
+	} else if err := requireHostedEnv(env, verb, parts); err != nil {
 		return lifecycleTarget{}, err
 	}
 	noteUnownedParts(os.Stderr, verb, entities)
@@ -186,10 +211,19 @@ func checkLifecycleEnvName(env string) error {
 	return nil
 }
 
-// envDeclared reports whether projectDir declares env: deploy/kcl/<env>/.
+// envDeclared reports whether projectDir declares env: deploy/kcl/<env>/, or
+// an env document (deploy/envs/<env>.yaml) — what `forge obs init` writes for
+// a monitoring-only env, which renders through the same seam. Two env
+// documents for one env (prod.yaml and prod.json) count as declared: the
+// declared path renders it, and the render refuses the ambiguity before
+// anything is resolved by name or deleted.
 func envDeclared(projectDir, env string) bool {
 	st, err := os.Stat(filepath.Join(projectDir, "deploy", "kcl", env))
-	return err == nil && st.IsDir()
+	if err == nil && st.IsDir() {
+		return true
+	}
+	p, err := envdoc.Path(projectDir, env)
+	return p != "" || err != nil
 }
 
 // resolveUndeclaredLifecycleTarget finds env by name on a control plane when
@@ -200,8 +234,7 @@ func envDeclared(projectDir, env string) bool {
 // one. Nothing — not the credential, not the lookup — is sent to any other host.
 func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flagToken, endpoint string) (lifecycleTarget, error) {
 	url, err := undeclaredControlPlane(projectDir, endpoint,
-		fmt.Sprintf("env %q is not declared (no deploy/kcl/%s/)", env, env), "forge env delete "+env,
-		fmt.Sprintf("; if %q is a typo, the declared envs are the directories under deploy/kcl/", env))
+		fmt.Sprintf("env %q is not declared (no deploy/kcl/%s/ or deploy/envs/%s.yaml)", env, env, env), "forge env delete "+env)
 	if err != nil {
 		return lifecycleTarget{}, err
 	}
@@ -218,12 +251,17 @@ func resolveUndeclaredLifecycleTarget(ctx context.Context, projectDir, env, flag
 	return t, err
 }
 
+// unboundControlPlane is the control plane an unbound project's envs are looked
+// up on: Reliant cloud. A var so tests reach a fake one.
+var unboundControlPlane = cloud.DefaultEndpoint
+
 // undeclaredControlPlane picks the control plane to look an env up on when no
 // KCL names it: endpoint (--endpoint), which must be a control plane this
 // project has used, or else the one control plane the project is bound to.
-// lead says why there is no declaration, retry is the command a fix re-runs
-// with --endpoint, and hint ends the no-binding fix. Nothing is contacted.
-func undeclaredControlPlane(projectDir, endpoint, lead, retry, hint string) (string, error) {
+// lead says why there is no declaration and retry is the command a fix re-runs
+// with --endpoint. With no binding at all it is Reliant cloud, the control
+// plane forge trusts without one. Nothing is contacted.
+func undeclaredControlPlane(projectDir, endpoint, lead, retry string) (string, error) {
 	url := strings.TrimSpace(endpoint)
 	if url != "" {
 		if err := checkLifecycleEndpoint(url); err != nil {
@@ -244,9 +282,13 @@ func undeclaredControlPlane(projectDir, endpoint, lead, retry, hint string) (str
 	case 1:
 		return bound[0], nil
 	case 0:
-		return "", fmt.Errorf("%s, and this project records no hosted control plane (%s) to look it up on\n"+
-			"fix: name the control plane that holds it: `%s --endpoint %s` (Reliant cloud)%s",
-			lead, hostedProjectBindingFile, retry, cloud.DefaultEndpoint, hint)
+		// No binding is written when the deploys ran under a delegated
+		// credential (an agent's or CI's), so its absence does not mean the
+		// project never deployed. Reliant cloud is the control plane forge
+		// trusts without a binding (checkEndpointUsedByProject), so ask it.
+		fmt.Fprintf(os.Stderr, "  note: %s, and this project records no hosted control plane (%s; deploys under a delegated credential record none), so it is looked up on Reliant cloud, %s; name another with `%s --endpoint <url>`\n",
+			lead, hostedProjectBindingFile, unboundControlPlane, retry)
+		return unboundControlPlane, nil
 	default:
 		return "", fmt.Errorf("%s, and this project is bound to %d control planes (%s): %s\n"+
 			"fix: name the one that holds it: `%s --endpoint <url>`",
@@ -273,7 +315,7 @@ func resolveLifecycleTargetFromID(ctx context.Context, id, env, flagToken, endpo
 	}
 	projectDir := projectDirForKCL()
 	url, err := undeclaredControlPlane(projectDir, endpoint,
-		fmt.Sprintf("environment %q is looked up by id", id), "forge env delete --id "+id, "")
+		fmt.Sprintf("environment %q is looked up by id", id), "forge env delete --id "+id)
 	if err != nil {
 		return lifecycleTarget{}, err
 	}
@@ -345,8 +387,11 @@ func runEnvListOrphaned(ctx context.Context, projectDir, flagToken, endpoint str
 			return err
 		}
 		if len(bound) == 0 {
-			return fmt.Errorf("this project records no hosted control plane (%s) to ask for its envs\n"+
-				"fix: name one: `forge env list --orphaned --endpoint %s` (Reliant cloud)", hostedProjectBindingFile, cloud.DefaultEndpoint)
+			// See undeclaredControlPlane: a delegated credential's deploys
+			// record no binding, and Reliant cloud needs none.
+			fmt.Fprintf(os.Stderr, "  note: this project records no hosted control plane (%s; deploys under a delegated credential record none), so this asks Reliant cloud, %s; name another with --endpoint <url>\n",
+				hostedProjectBindingFile, unboundControlPlane)
+			bound = []string{unboundControlPlane}
 		}
 		urls = bound
 	}
@@ -475,7 +520,15 @@ func boundHostedEndpoints(projectDir string) ([]string, error) {
 func lifecycleTargetAt(ctx context.Context, env string, ep cloud.Endpoint, flagToken string) (lifecycleTarget, error) {
 	cred, err := cloud.ResolveCredential(flagToken, ep)
 	if err != nil {
-		return lifecycleTarget{}, err
+		// Not signed in: an env this machine deployed with --claimable is
+		// still this machine's to stop, start or delete, with the anonymous
+		// token it stored beside the claim link (obs 81e743cf). A login, when
+		// there is one, always wins: it is resolved first.
+		stored, ok := cloud.StoredClaimableCredential(ep, hostedProjectName(), env, claimableNow())
+		if !ok {
+			return lifecycleTarget{}, err
+		}
+		cred = stored
 	}
 	client := cloud.NewClient(ep, cred)
 	he, err := deploytarget.FindHostedEnvironment(ctx, client, hostedProjectName(), env)
@@ -599,7 +652,7 @@ func reasonSuffix(reason string) string {
 func observedSettled(d lifecycleDeployment, runState string) bool {
 	switch runState {
 	case runStateSuspended:
-		return d.observedState() == "DEPLOY_OBSERVED_STATE_SUSPENDED"
+		return d.observedState() == observedSuspendedState
 	default:
 		return d.observedState() == "DEPLOY_OBSERVED_STATE_READY"
 	}

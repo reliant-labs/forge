@@ -139,6 +139,10 @@ Exit 7 is a person's turn, not a failure: relay the link to the user, do not
 retry in a loop. A newer deploy to the same env supersedes a queued one. An
 older control plane (no holds) still refuses with the billing reason.
 
+A hosted deploy at a terminal (not CI or `--json`) prints the launcher's
+`FORGE_HOST_CONNECT_HINT` (how to connect this machine for agents) before
+`RESULT`. forge only prints it.
+
 ### What hosting provides and refuses
 
 | Provides | Refuses (bind to a cluster you operate) |
@@ -251,8 +255,10 @@ cluster is registered once (`forge cluster connect`) and named in
 `connected_cluster`; the render refuses an unconnected one, naming the
 command. An `_on_cluster` workload pulls the image workloads.k declares (push
 it: `forge env build <env> --push`), gets the env's capacity floor, and reads
-`DATABASE_URL` from the `<project>-secrets` Secret you provision in its
-namespace (the managed database is reachable from the platform only). Moving
+`DATABASE_URL` from key `database_url` of the `<project>-secrets` Secret you
+provision in its namespace and list in the Bundle's `required_secrets` (a
+`forge.ExternalSecret`, which the deploy preflight checks; the managed
+database is reachable from the platform only). Moving
 a whole env? Also add the commented `cluster_target`, `network_policy` and
 gateway lines at the bottom of the Bundle; leaving hosting altogether, drop
 `control_plane`, `_db`/`databases` and use `forge.ExternalSecrets {}` (then
@@ -287,29 +293,5 @@ cluster keeps binding there.
 
 ## Adopting hosting in an existing project
 
-Env files are scaffolded once and never rewritten, so a project scaffolded
-before this default keeps its `_on_cluster` envs. To host one (try it beside
-prod first: `forge env new cloud --from prod --bind <name>=hosted` derives the
-env and adds the control plane):
-
-1. In the Bundle: `control_plane = forge.ControlPlane {}`, `secret_provider =
-   forge.HostedSecrets {}`, `databases = [_db]` with `_db =
-   forge.ManagedDatabase {name = "<project>", runtime = forge.OnHosted {}}`
-   (`<project>-db` when the project is named `api` or `migrate`: a workload
-   and a database may not share a name).
-2. In `_hosted`: `image = w.image[w.image.rfind("/") + 1:] if w.image else
-   w.image`, and `DATABASE_URL = forge.DatabaseRef {name = _db.name}` in its
-   env (or keep your own Postgres: `forge secret set --env <env> DATABASE_URL`).
-3. Declare `_api` (above) and bind `_hosted(_api)` in place of every service
-   and worker line; rebind the rest (`migrate`, other jobs) `_hosted(wl.<name>)`.
-   A frontend `_on_bucket(...)` → hosted (`image = "<name>"`, `runtime =
-   forge.OnHosted {}`, `runtime_config = {API_URL = forge.WorkloadURL
-   {workload = "api"}}`). A project scaffolded hosted BEFORE `_api` existed
-   binds each service `_hosted(wl.<name>)` and its frontend reaches only the
-   first: make the same `_api` edit.
-4. Drop the cluster-only fields (`cluster_target`, `network_policy`,
-   gateways/routes, `ExternalSecrets`) once nothing is bound to the cluster.
-
-`forge env render <env>` then `forge env new <env> --check` (renders, no
-placeholder left, admissible to the control plane). The scaffold's current
-shape: `forge project new` in a scratch dir, `deploy/kcl/prod/main.k`.
+A project scaffolded before hosting was the default keeps its `_on_cluster` envs.
+To move one onto hosting, load `deploy/hosting/adopt`.

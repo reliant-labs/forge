@@ -111,6 +111,12 @@ func runEnvTopology(ctx context.Context, envArgs []string, opts envTopologyOptio
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Every helper below that needs one fact of an env's declaration
+	// (lifecycle, destination, ledger, control plane, cluster, namespace)
+	// renders it; under this scope they share ONE evaluation per env, and
+	// the envs evaluate concurrently. This view arms no dev stack and binds
+	// no release, so a render here cannot change between those callers.
+	ctx = withDeclarationMemo(ctx)
 	if opts.Timeout <= 0 {
 		opts.Timeout = defaultEnvStatusReleaseTimeout
 	}
@@ -227,24 +233,42 @@ func gatherTopologyEnv(
 	declared bool,
 	releases []release.Release,
 	opts envTopologyOptions,
-) topology.EnvInput {
-	in := topology.EnvInput{Name: envName, Declared: declared}
+) (in topology.EnvInput) {
+	in = topology.EnvInput{Name: envName, Declared: declared}
 	if declared {
 		in.Lifecycle = declaredLifecycle(ctx, opts.Resolver, projectDir, envName)
 	}
-	var dest envDestination
+	// awaitDestination merges the destination into the row; a no-op once
+	// done, and for an env that resolves none.
+	awaitDestination := func() {}
 	if !declared {
 		in.Note = fmt.Sprintf("not declared in this checkout (%s does not exist) — it may be declared on another branch",
 			filepath.Join(projectDir, "deploy", "kcl", envName, "main.k"))
 	} else if opts.Destinations != nil {
-		// Resolved FIRST and independently of the ledger: where an env runs
-		// is a fact of its declaration, and a ledger that cannot be read
-		// must not also blank the destination badge.
-		dest = opts.Destinations(ctx, projectDir, envName)
-		in.Destination, in.Endpoint, in.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
-		in.ControlPlaneKind = dest.ControlPlaneKind
-		in.Verdict, in.Workloads, in.Placements = dest.Verdict, dest.Workloads, dest.Placements
-		in.Note = dest.Note
+		// Resolved independently of the ledger: where an env runs is a
+		// fact of its declaration, and a ledger that cannot be read must
+		// not also blank the destination badge. Independent, so it is
+		// read CONCURRENTLY with the ledger below: for a hosted env both
+		// are control-plane round trips, and in series their latencies
+		// add.
+		destDone := make(chan envDestination, 1)
+		go func() { destDone <- opts.Destinations(ctx, projectDir, envName) }()
+		var merged bool
+		awaitDestination = func() {
+			if merged {
+				return
+			}
+			merged = true
+			dest := <-destDone
+			in.Destination, in.Endpoint, in.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
+			in.ControlPlaneKind = dest.ControlPlaneKind
+			in.Verdict, in.Workloads, in.Placements = dest.Verdict, dest.Workloads, dest.Placements
+			in.Note = dest.Note
+		}
+		// Every return waits for it: no read outlives the row, and the
+		// destination is set however the ledger fared. (in is the named
+		// result, so the merge lands in what is returned.)
+		defer awaitDestination()
 	}
 
 	ledger, err := opts.Ledgers(ctx, envName)
@@ -295,7 +319,9 @@ func gatherTopologyEnv(
 
 	// Where the env runs is resolved declaratively from its KCL. An env
 	// not declared in this checkout has no KCL to read, so skip it rather
-	// than paying for a render that is certain to fail.
+	// than paying for a render that is certain to fail. A hosted env has
+	// no cluster of its own to name, so this needs the destination.
+	awaitDestination()
 	if declared && in.Destination != destinationHosted {
 		target := opts.Resolver.Resolve(ctx, projectDir, envName)
 		in.KubeContext = target.KubeContext

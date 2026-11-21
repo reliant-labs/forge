@@ -8,6 +8,7 @@ package cli
 //	forge vuln show <env> <advisory-id | package> [--json]
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
 //	forge vuln db status|pull|import <file>
+//	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD
 //
 // The scanning, the shared grype database and the gate rule are
 // internal/vulnscan; this file and its vuln_*.go siblings are flags, the
@@ -133,6 +134,8 @@ these verbs read this machine's ledger only, and say so for such an env.`,
 	cmd.AddCommand(newVulnShowCmd(deps))
 	cmd.AddCommand(newVulnSBOMCmd(deps))
 	cmd.AddCommand(newVulnDBCmd(deps))
+	cmd.AddCommand(newVulnExemptCmd(deps))
+	cmd.AddCommand(newVulnPatchCmd(deps))
 	return cmdutil.StrictGroup(cmd)
 }
 
@@ -145,6 +148,12 @@ type vulnEnv struct {
 	// Gate is the env's vuln_gate, resolved (the defaults when the env
 	// declares none).
 	Gate release.ShapeVulnGate
+	// GradedAs is the mode the warn-first rollout judges Gate.Mode at
+	// (vuln_gate.go): audit for an enforce while the vuln-gate rule does
+	// not gate the project yet. "" is the declared mode.
+	GradedAs release.DeliveryMode
+	// GradeNote says why GradedAs differs from the declared mode.
+	GradeNote string
 }
 
 // hosted reports an env whose ledger is a control plane.
@@ -169,6 +178,11 @@ func resolveVulnEnv(ctx context.Context, projectDir, env string) (vulnEnv, error
 		return out, fmt.Errorf("render deploy/kcl/%s: %w", env, err)
 	}
 	out.Gate = entities.DeliveryPolicy.Resolved().VulnGate
+	grade := gradeVulnRules(projectDir).Vuln
+	out.GradedAs = gradedMode(out.Gate.Mode, grade)
+	if out.GradedAs != out.Gate.Mode {
+		out.GradeNote = fmt.Sprintf("vuln_gate enforce is judged as audit: %s; gate now with %s", grade.Note(), grade.OptIn())
+	}
 	if decl := declarationFromEntities(entities); decl != nil && selection != ledgerSelectMachine {
 		out.Endpoint = strings.TrimRight(strings.TrimSpace(decl.Endpoint), "/")
 		if out.Endpoint == "" {
@@ -272,7 +286,11 @@ func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, label 
 	if len(doc.Gate.Blocking) > 0 {
 		gate += ": " + strings.Join(doc.Gate.Blocking, ", ")
 	}
-	_, _ = fmt.Fprintf(w, "vuln_gate (%s): %s\n", doc.Gate.Mode, gate)
+	mode := doc.Gate.Mode
+	if doc.Gate.GradedAs != "" && doc.Gate.GradedAs != doc.Gate.Mode {
+		mode += ", graded " + doc.Gate.GradedAs
+	}
+	_, _ = fmt.Fprintf(w, "vuln_gate (%s): %s\n", mode, gate)
 	c := doc.Counts
 	_, _ = fmt.Fprintf(w, "%d critical, %d high, %d medium, %d low, %d unknown\n", c.Critical, c.High, c.Medium, c.Low, c.Unknown)
 	if len(doc.Findings) > 0 {

@@ -182,7 +182,6 @@ func AIOverview(in Input) dashspec.Dashboard {
 			{ID: "glance", Title: "At a glance", Description: "The range's runs and model calls. Each figure opens beside its change against the previous period."},
 			{ID: "daily", Title: "By day", Description: "Runs by outcome, model calls and tokens per UTC day."},
 		})
-	d.DefaultCompare = dashspec.ComparePeriod
 	d.Panels = []dashspec.Panel{
 		exact(figure("glance", "runs", "Runs",
 			"Distinct workflow runs (forge.ai.run.id) with any span in the range. A run that continues in a new trace stays one run. The trend is each UTC day's.",
@@ -384,7 +383,6 @@ func AIErrors(in Input) dashspec.Dashboard {
 			{ID: "calls", Title: "Model calls", Description: "Failed calls and retries."},
 			{ID: "runs", Title: "Failed runs", Description: "Runs whose last workflow segment failed. A trace id opens the trace."},
 		})
-	d.DefaultCompare = dashspec.ComparePeriod
 	d.Panels = []dashspec.Panel{
 		figure("calls", "error-rate", "Call error rate",
 			"Failed model calls over all model calls in the range. The trend is each UTC day's.",

@@ -8,8 +8,9 @@ import (
 )
 
 // VulnConfig is the `vuln:` block: how forge keeps the SBOM it records for
-// each release artifact. Every key is optional, and an absent block is the
-// default — the SBOM goes everywhere it can.
+// each release artifact, and how it handles the vulnerabilities it finds in
+// them. Every key is optional, and an absent block is the default — the SBOM
+// goes everywhere it can.
 type VulnConfig struct {
 	// AttachSBOM says whether the release cut attaches each OCI artifact's
 	// SBOM (an image, a hosted static site) to it in its registry, as an OCI
@@ -25,12 +26,29 @@ type VulnConfig struct {
 	//	vuln:
 	//	  attach_sbom: false
 	AttachSBOM *bool `yaml:"attach_sbom,omitempty"`
+	// Patch steers `forge vuln patch`. See [VulnPatchConfig].
+	Patch VulnPatchConfig `yaml:"patch,omitempty"`
+}
+
+// VulnPatchConfig is `vuln.patch:`.
+type VulnPatchConfig struct {
+	// Verify is the command `forge vuln patch --verify` runs (with `sh -c`,
+	// in the project) to prove a patched tree still builds and passes its
+	// tests. Unset, the patcher uses the project's own gate: `task
+	// test:short` when the Taskfile has it, else `go build ./... && go test
+	// -short ./...` for a Go module, else the package manager's `test`
+	// script. `--verify=<cmd>` overrides both.
+	//
+	//	vuln:
+	//	  patch:
+	//	    verify: task test:short && task lint
+	Verify string `yaml:"verify,omitempty"`
 }
 
 // ReadVulnConfig reads only the `vuln:` block of the forge.yaml in
-// projectDir, for the release cut, which holds no loaded project. A missing
-// or unreadable file is the zero value (every default on); an invalid one is
-// left to the full loader to report.
+// projectDir, for verbs that hold no loaded project (the release cut,
+// `forge vuln patch`). A missing or unreadable file is the zero value (every
+// default on); an invalid one is left to the full loader to report.
 func ReadVulnConfig(projectDir string) VulnConfig {
 	data, err := os.ReadFile(filepath.Join(projectDir, "forge.yaml"))
 	if err != nil {

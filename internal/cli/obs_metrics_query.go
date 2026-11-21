@@ -14,6 +14,7 @@ import (
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/internal/obsout"
 	"github.com/reliant-labs/forge/pkg/dashspec"
+	"github.com/reliant-labs/forge/pkg/observe/metrics"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 )
 
@@ -277,7 +278,7 @@ positional metric is series A; --query adds more. Locally and on a hosted env th
 same evaluator runs it, so the same panel over the same data returns the same
 numbers.
 
-  ` + Name() + ` obs metrics query dev rpc.server.duration --agg p95 --group-by rpc.method
+  ` + Name() + ` obs metrics query dev rpc.server.duration --agg p95 --group-by procedure
   ` + Name() + ` obs metrics query dev rpc.server.calls --since 6h --group-by service.name
   ` + Name() + ` obs metrics query prod rpc.server.calls --agg rate --where A:status=error \
       --query B=rpc.server.calls:rate --formula 'A / B * 100' --kind number --compare 24h
@@ -519,6 +520,11 @@ func runObsMetricsQuery(ctx context.Context, d obsDeps, env, metric string, o ob
 	if err != nil {
 		return fail(err)
 	}
+	var comparison []obsbackend.MetricSeries
+	if res.Compare != nil {
+		comparison = res.Compare.Series
+	}
+	res.Warnings = append(res.Warnings, undeclaredGroupByWarnings(panel, res.Series, comparison)...)
 	for _, m := range res.Meta {
 		for i := range panel.Series {
 			if panel.Series[i].Label == m.Label && panel.Series[i].MetricType == "" {
@@ -709,6 +715,72 @@ func renderMetricsQuery(w io.Writer, p obsquery.Panel, res obsbackend.MetricsQue
 	if res.Truncated {
 		fmt.Fprintf(w, "\n(showing %d of %d series; raise --limit or narrow with --where / --filter)\n", maxLabelCount(res.Series), res.SeriesTotal)
 	}
+}
+
+// warnGroupByUndeclared is the warning code for a --group-by key a built-in
+// metric never records: every point lands in one group with an empty value.
+const warnGroupByUndeclared = "group_by_undeclared"
+
+// undeclaredGroupByWarnings names each --group-by key that one of forge's own
+// metrics (pkg/observe/metrics) does not declare, when the result bears it
+// out: every series in at least one returned range has an empty value for
+// the key. `--group-by rpc.method`
+// on rpc.server.duration read as one empty group with no hint that the
+// interceptor records the RPC as `procedure` (obs 03279cf8). A key the panel
+// reads off the resource (service.name, k8s.*) is never judged, nor is a
+// project's own metric, whose attributes the CLI does not know.
+func undeclaredGroupByWarnings(panel obsquery.Panel, primary, comparison []obsbackend.MetricSeries) []string {
+	var out []string
+	seen := make(map[[2]string]bool)
+	for _, key := range panel.GroupBy {
+		bare, isMetricAttr := strings.CutPrefix(panelField(key), "metric.attr.")
+		if !isMetricAttr {
+			continue
+		}
+		a, b := allSeriesEmptyFor(primary, key), allSeriesEmptyFor(comparison, key)
+		if !a && !b {
+			continue
+		}
+		rangeNote := ""
+		if !a {
+			rangeNote = " in the comparison range"
+		} else if len(comparison) > 0 && !b {
+			rangeNote = " in the primary range"
+		}
+		for _, ps := range panel.Series {
+			pair := [2]string{ps.Field, bare}
+			if seen[pair] || !metrics.IsBuiltin(ps.Field) {
+				continue
+			}
+			seen[pair] = true
+			spec := metrics.BuiltinSpec(ps.Field)
+			declared := make([]string, 0, len(spec.Attributes))
+			found := false
+			for _, a := range spec.Attributes {
+				declared = append(declared, a.Key)
+				found = found || a.Key == bare
+			}
+			if found {
+				continue
+			}
+			has := "no attributes"
+			if len(declared) > 0 {
+				has = "its attributes: " + strings.Join(declared, ", ")
+			}
+			out = append(out, fmt.Sprintf("%s: %s records no %q attribute, so every point%s is in one group with an empty %s (%s)",
+				warnGroupByUndeclared, ps.Field, bare, rangeNote, key, has))
+		}
+	}
+	return out
+}
+
+func allSeriesEmptyFor(series []obsbackend.MetricSeries, key string) bool {
+	for _, s := range series {
+		if s.Labels[key] != "" {
+			return false
+		}
+	}
+	return len(series) > 0
 }
 
 func labelText(m map[string]string) string {

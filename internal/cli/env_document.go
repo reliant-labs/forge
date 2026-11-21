@@ -43,6 +43,19 @@ func loadEnvDocument(ctx context.Context, projectDir, env string, dArgs ...strin
 	return envdoc.Load(projectDir, env, opts)
 }
 
+// envEntrypoint is env's KCL entrypoint under kclDir: display as declared
+// (kclDir-relative, for messages), and path resolved against projectDir, for
+// every read. A relative kclDir is the PROJECT's, not the working
+// directory's: under -C <dir> the two differ, and stat'ing the display path
+// reported a declared env missing (forge report 017a7441).
+func envEntrypoint(projectDir, kclDir, env string) (display, path string) {
+	display = filepath.Join(kclDir, env, "main.k")
+	if filepath.IsAbs(display) || projectDir == "" {
+		return display, display
+	}
+	return display, filepath.Join(projectDir, display)
+}
+
 // envHasDeclaration reports whether env is declared in the project: its KCL
 // entrypoint mainK exists, or an env document declares it. The "environment
 // not found" checks ask this instead of stat'ing main.k.

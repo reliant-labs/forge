@@ -521,11 +521,16 @@ func describeDialErr(err error) string {
 // resetTarget zeroes t's counters and fences off what was flushed before.
 func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) {
 	marked := false
+	// at is when the reset began: counters flushed before it are fenced off.
+	// The fence is written only once the reset has happened, so a reset that
+	// failed leaves the previous fence, and the next collect keeps every
+	// counter it would have kept before.
+	at := opts.Now()
 	mark := func() {
 		p := ResetMarker(opts.ProjectRoot, opts.Env, t.Workload)
 		err := os.MkdirAll(filepath.Dir(p), 0o755)
 		if err == nil {
-			err = os.WriteFile(p, []byte(opts.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+			err = os.WriteFile(p, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
 		}
 		if err != nil {
 			r.Notes = append(r.Notes, "reset time not recorded: "+err.Error())
@@ -535,17 +540,18 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 	}
 	switch {
 	case t.Host != nil:
-		mark()
 		if t.Host.PullAddr == "" {
+			mark()
 			r.Notes = append(r.Notes, "live counters not zeroed: "+t.Host.Withheld)
 			break
 		}
 		_, s := pullHTTP(ctx, opts.HTTP, t.Host.PullAddr, true)
 		r.Sources = append(r.Sources, s)
 		if s.Status == SourceFailed {
-			r.State, r.Reason = StateFailed, s.Error
+			r.State, r.Reason = StateFailed, s.Error+" (not reset: the earlier counters are kept)"
 			return
 		}
+		mark()
 	case t.Compose != nil:
 		mark()
 		r.Notes = append(r.Notes, "a container's live counters cannot be zeroed (compose withholds "+CoveragePath+"); counters flushed before now are left out of the next collect")

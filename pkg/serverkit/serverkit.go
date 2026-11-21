@@ -163,6 +163,30 @@ type Server struct {
 	// itself as Ready through an entire rollout. Register the pool with
 	// AddReadyCheck(DBReadyCheck("database", db)). See readiness.go.
 	ReadyChecks []ReadyCheck
+
+	// SelfUpdate, when set, lets this binary replace itself with a newer
+	// signed release: forge/pkg/selfupdate/autoupdate builds one, off unless
+	// its Settings enable it. Run starts its Serve once the listener is
+	// bound, handing it this process's readiness (the /readyz verdict, so a
+	// swapped-in binary is confirmed only once it really serves, and is
+	// reverted otherwise) and the graceful shutdown as the drain, and calls
+	// ExecPending as Run's last act, after the teardown and the telemetry
+	// flush. Optional; nil is no self-update.
+	SelfUpdate SelfUpdater
+}
+
+// SelfUpdater is what Run needs of a self-updater
+// (forge/pkg/selfupdate/autoupdate.Updater satisfies it); serverkit knows
+// nothing else about how a binary updates itself.
+type SelfUpdater interface {
+	// Serve runs until ctx ends. ready reports whether this process serves
+	// (nil: listener bound, not draining, every ReadyCheck passing);
+	// shutdown begins Run's graceful shutdown, after which Run calls
+	// ExecPending. A Serve error is logged, never a component failure.
+	Serve(ctx context.Context, ready func(context.Context) error, shutdown func()) error
+	// ExecPending execs a swap Serve armed. It returns nil at once when
+	// none is, and otherwise only on failure; Run returns that error.
+	ExecPending() error
 }
 
 // FlowCheck is one named app-flow health assertion mounted at /flow-health.

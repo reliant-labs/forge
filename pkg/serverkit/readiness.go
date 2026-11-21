@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -103,6 +105,35 @@ func DBReadyCheck(name string, db *sql.DB) ReadyCheck {
 		Name:  name,
 		Check: db.PingContext,
 	}
+}
+
+// errNotReady and errDraining are readyNow's gate answers.
+var (
+	errNotReady = errors.New("serverkit: not ready: the listener is not bound yet")
+	errDraining = errors.New("serverkit: not ready: draining")
+)
+
+// readyNow is /readyz's verdict as an error, for an in-process consumer (a
+// self-updater confirming a new binary): the gate, then every check under
+// one shared timeout. The first failing check's error names it.
+func readyNow(ctx context.Context, gate *Drainer, checks []ReadyCheck, timeout time.Duration) error {
+	if gate.Draining() {
+		return errDraining
+	}
+	if !gate.Ready() {
+		return errNotReady
+	}
+	if timeout <= 0 {
+		timeout = defaultReadinessTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for _, c := range checks {
+		if err := c.Check(ctx); err != nil {
+			return fmt.Errorf("serverkit: not ready: %s: %w", c.Name, err)
+		}
+	}
+	return nil
 }
 
 // readyzResponse is the JSON body of /readyz. Additive: new fields may

@@ -215,3 +215,26 @@ func TestNotSelfOwnedError(t *testing.T) {
 		t.Fatal("errors.As must reach the Install")
 	}
 }
+
+func TestDetectRefusesContainers(t *testing.T) {
+	t.Parallel()
+	p := writeExe(t, filepath.Join(t.TempDir(), "bin", "app"))
+	env := detectEnv{container: func() (string, string, string, bool) {
+		return "kubernetes", "roll the workload", "running in a Kubernetes pod", true
+	}}
+	in, err := detect(DetectOptions{Path: p}, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Kind != Managed || in.Owner != "kubernetes" || in.Hint != "roll the workload" || in.SelfOwned() {
+		t.Fatalf("got %+v, want managed by kubernetes", in)
+	}
+	// A stamp still wins: it is authoritative and names the real owner.
+	in, err = detect(DetectOptions{Path: p}, detectEnv{stamp: "homebrew", container: env.container})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Kind != Stamped || in.Owner != "homebrew" {
+		t.Fatalf("got %+v, want the stamp to win", in)
+	}
+}

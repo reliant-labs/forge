@@ -10,7 +10,7 @@ const (
 	// drainSince is the release serverkit's shutdown phases were first measured in.
 	drainSince = "v0.1.46"
 	// resourceSince is the release pkg/resmetrics first reported in.
-	resourceSince = "v1.9.0"
+	resourceSince = "v1.10.0"
 )
 
 const rejectedName = "forge.metrics.rejected_attributes"
@@ -98,6 +98,7 @@ func resourceSpecs() []Spec {
 		spec("process.paging.faults", Counter, "{fault}", "Page faults the process has taken, by type.", attr("system.paging.fault.type", "major", "minor")),
 		spec("process.disk.io", Counter, "By", "Bytes the process caused to be read from or written to storage.", attr("disk.io.direction", "read", "write")),
 		spec("process.uptime", Gauge, "s", "Time since the process started."),
+		spec("forge.process.handle.count", UpDownCounter, "{handle}", "Open kernel object handles of the process (windows, which has no file descriptors)."),
 
 		// Group host: the machine, or the container's share of it.
 		spec("forge.resource.scope", Gauge, "{scope}", "1 for the view the host metrics report: host (the whole machine) or cgroup (inside a Kubernetes pod, the container only).", attr("scope", "host", "cgroup")),

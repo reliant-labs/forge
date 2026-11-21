@@ -612,4 +612,26 @@ PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
   bundle (a manifest pointing at another release's files fails the replay
   rule), and `Updater.Check` never moves backwards, so a held-back manifest can
   delay an upgrade but never install anything. An unknown schema is refused.
-- **Windows swap** is still `ErrUnsupported`.
+- **Windows swap** (`platform_windows.go`, `swap.go`, `spawn.go`). The running
+  `.exe` is renamed aside to `<stem>.old-<unixnano><ext>` (`reliant.exe` becomes
+  `reliant.old-<ns>.exe`; never `.exe.old`, so it stays an `.exe`, and never an
+  existing name, which may be another instance's running image), the staged
+  binary is copied beside it and renamed into place, `state.json` records the
+  swap, and "exec" starts the new binary with the same argv, environment,
+  working directory and stdio (`exec.Cmd.Start`, not `forgedelegate.Exec`'s
+  wait-and-relay: a supervisor would otherwise see the old pid forever) and
+  exits 0. So `ExecInPlace` on Windows is spawn-and-exit, with a new pid and
+  orphaned children; `ExitForSupervisor` swaps the same way and exits 75. If
+  the new binary cannot take the install's name, the running image is renamed
+  back, so the install path is never empty. Revert (watchdog and boot-loop
+  guard) and the exec-failure rollback use the same rename, because on Windows
+  the file at the install path is then the running image. The boot-loop guard
+  asks `OpenProcess`/`GetExitCodeProcess` whether a recorded pid still runs
+  (access denied counts as alive). `Boot` and `Confirm` remove the images set
+  aside once nothing runs them: the new process's `Boot` can race the old
+  process's exit, and a later start or the confirmation retries. The file
+  operations are a seam (`swapFS`), so the Windows path is unit-tested on every
+  platform against a fake that refuses to replace or remove a locked running
+  image, and `TestReexecEndToEndWindows` does a real swap, confirm and
+  watchdog revert on Windows. Other non-unix targets still return
+  `ErrUnsupported`.

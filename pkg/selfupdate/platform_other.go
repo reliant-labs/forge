@@ -1,12 +1,14 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package selfupdate
 
-// Windows (and every other non-unix target) can stage a release but not swap
-// it yet: a running .exe can be renamed but not replaced, and there is no
-// exec(2). The Windows swap is phase F2 of docs/proposals/self-upgrade.md.
+// Every target that is neither unix nor windows can stage a release but not
+// swap it.
 
 func swapSupported() bool { return false }
+
+// runningImageLocked: nothing is ever swapped here.
+const runningImageLocked = false
 
 func execBinary(string, []string, []string) error { return ErrUnsupported }
 
@@ -16,6 +18,4 @@ func isTextBusy(error) bool { return false }
 // die is never counted as a crash.
 func processAlive(int) bool { return true }
 
-// syncDir is a no-op: Windows cannot open a directory for FlushFileBuffers
-// without backup semantics, and NTFS journals the rename itself.
 func syncDir(string) error { return nil }

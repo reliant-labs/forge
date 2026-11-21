@@ -7,7 +7,7 @@ import (
 )
 
 // ErrUnsupported is returned where this platform cannot swap a running
-// binary yet (Windows: a running .exe can be renamed but not replaced).
+// binary (neither unix nor Windows).
 var ErrUnsupported = errors.New("selfupdate: replacing a running binary is not supported on this platform yet")
 
 // Build is what is running, in the same ordering a [Release] carries.

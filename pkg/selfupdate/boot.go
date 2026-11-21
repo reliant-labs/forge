@@ -49,12 +49,13 @@ type Pending struct {
 }
 
 // bootEnv is Boot's seams: which binary is running, how to exec, whether a
-// pid is alive.
+// pid is alive, and how to put a file at the install path.
 type bootEnv struct {
 	exe   string
 	pid   int
 	exec  func(path string, argv, env []string) error
 	alive func(pid int) bool
+	fs    swapFS
 }
 
 // Boot is the first call in main. After a swap it starts the revert
@@ -70,6 +71,7 @@ func Boot(opts BootOptions) *Pending {
 }
 
 func boot(opts BootOptions, env bootEnv) *Pending {
+	env.fs = env.fs.orHost()
 	p := &Pending{log: opts.Logger, env: env}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -91,6 +93,9 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 		p.log.Warn("selfupdate: boot: resolve the running binary", "err", err)
 		return p
 	}
+	// Windows: the images earlier swaps renamed aside, now that the
+	// processes that ran them have exited.
+	sweepAside(env.fs, exe)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -225,6 +230,9 @@ func (p *Pending) confirm() error {
 		}
 		// Proven good: only its own rollback image is worth keeping.
 		pruneBackups(filepath.Join(p.dir, "previous"), map[string]bool{rec.Previous: true})
+		// The process that swapped this binary in has long exited, so the
+		// image it set aside (Windows) is no longer running.
+		sweepAside(p.env.fs, rec.Path)
 		if safeName(rec.ToVersion) {
 			_ = os.RemoveAll(filepath.Join(p.dir, "staged", rec.ToVersion))
 		}
@@ -272,7 +280,9 @@ func (p *Pending) revert(reason string) {
 			return errors.New("swap is " + rec.Phase)
 		}
 		st.markFailed(rec.ToVersion, reason, now)
-		if err := replaceWithCopy(rec.Previous, rec.Path); err != nil {
+		// On Windows rec.Path is this process's running image: it is moved
+		// aside, as at the swap.
+		if err := p.env.fs.replaceWithCopy(rec.Previous, rec.Path, now); err != nil {
 			rec.Phase, rec.Reason, rec.UpdatedAt = "revert_failed", reason+"; revert failed: "+err.Error(), now
 			return errors.Join(err, saveState(p.dir, st))
 		}

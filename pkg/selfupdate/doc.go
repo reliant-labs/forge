@@ -20,6 +20,17 @@
 //     StateDir/state.json and execs it with the same argv, environment and
 //     pid.
 //
+// # Windows
+//
+// A running .exe can be renamed but neither replaced nor removed, and there
+// is no exec(2). So the swap renames the running binary aside to
+// <name>.old-<unixnano>.exe in its own directory, moves the staged one into
+// place, starts it as a new process with the same argv, environment,
+// working directory and stdio, and exits: under [ExecInPlace] the pid
+// changes and this process's children are orphaned. A revert (the watchdog,
+// the boot-loop guard) goes through the same rename. [Boot] and
+// [Pending.Confirm] remove the images set aside once no process runs them.
+//
 // # Confirm and revert
 //
 // [Boot] runs first in main. After a swap it starts a watchdog: the app calls
@@ -45,5 +56,6 @@
 // and [ManifestSource] (a signed channel manifest such as reliant's
 // daemon-channels.json) find the target release.
 //
-// Windows: staging works; the swap does not yet ([ErrUnsupported]).
+// Targets that are neither unix nor Windows stage but do not swap
+// ([ErrUnsupported]).
 package selfupdate

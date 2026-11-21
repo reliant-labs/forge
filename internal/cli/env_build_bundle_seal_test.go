@@ -32,6 +32,16 @@ func fullyDeclaredShape() release.Shape {
 		Kind: release.ControlPlaneSecretIdentity, Name: "forge-identity-identity", Namespace: "app",
 		Cluster: "prod-ctx", ConnectedCluster: "prod",
 	}
+	identity := release.ShapeIdentity{
+		Name: "identity", Runtime: release.IdentityRuntimeHosted,
+		Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
+		Roles: []release.ShapeIdentityRole{{Key: "admin", MembersFrom: release.IdentityMembersConsole}},
+		Applications: []release.ShapeIdentityApplication{
+			{Name: "prod:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
+		},
+		Consumers:  []release.ShapeIdentityConsumer{{Workload: "api", Application: "prod:api"}},
+		Deliveries: []release.ShapeIdentityDelivery{delivery},
+	}
 	return release.Shape{
 		Kind:      release.EnvPersistent,
 		Workloads: []release.ShapeWorkload{{Name: "api", Runtime: "cluster", Cluster: "prod-ctx", Artifact: "api", Replicas: &replicas, Unit: "reliant"}},
@@ -81,16 +91,11 @@ func fullyDeclaredShape() release.Shape {
 			WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2,
 			NewIssueMinEvents: 5, FailOn: []string{release.HealthErrorRate, release.HealthLatency},
 		},
-		Identity: &release.ShapeIdentity{
-			Name: "identity", Runtime: release.IdentityRuntimeHosted,
-			Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
-			Roles: []release.ShapeIdentityRole{{Key: "admin", MembersFrom: release.IdentityMembersConsole}},
-			Applications: []release.ShapeIdentityApplication{
-				{Name: "prod:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
-			},
-			Consumers:  []release.ShapeIdentityConsumer{{Workload: "api", Application: "prod:api"}},
-			Deliveries: []release.ShapeIdentityDelivery{delivery},
-		},
+		Identity: &identity,
+		// The same identity in both keys: the one form in which a shape may
+		// carry both (release.Shape.validateIdentities), so this one shape
+		// can set every field.
+		Identities: []release.ShapeIdentity{identity},
 		StoreSecrets: []release.ShapeStoreSecret{{
 			Cluster: "prod-ctx", ConnectedCluster: "prod", Namespace: "app", Store: release.StoreOpenBao,
 			Names: []string{"SIGNING_KEY", "SIGNING_PUB"}, Pins: []release.ShapeStorePin{{Name: "SIGNING_KEY", Version: 2}},

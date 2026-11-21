@@ -137,9 +137,15 @@ schema IdentityRef:
     reads a reserved managed secret, a cluster workload a key of the Secret
     the control plane delivers (`forge-identity-<name>`), a host process the
     env's secret store. The control plane is the only writer of all three.
+
+    `identity` names the `forge.ManagedIdentity` to read from, for an env
+    that declares several (`Bundle.identities`). Empty is accepted only while
+    the env declares exactly one; with several it is ambiguous, and the
+    render says which names to choose from.
     """
     output: str
     application: str = ""
+    identity: str = ""
 
     check:
         output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim", "login_policy"], \
@@ -338,12 +344,24 @@ schema OnHosted:
     check:
         platform in ["amd64", "arm64"], "OnHosted.platform must be 'amd64' or 'arm64' (the GOARCH of the control plane's platform's nodes)"
 
+# Match hostlaunch.ExeName for a declared target. Do not append a second
+# extension when the output name already ends in .exe (in any casing).
+_build_variant_filename = lambda v: BuildVariant -> str {
+    v.output_name + (".exe" if v.goos == "windows" and not v.output_name.lower().endswith(".exe") else "")
+}
+
 schema BuildOnly:
     """Built and shipped, never run: a CLI in a release artifact, an image
     other workloads pull. `build_variants` emits several binaries from one
     Go build (different ldflags / tags / arch)."""
     type: "build-only" = "build-only"
     build_variants: [BuildVariant] = []
+
+    check:
+        len([v.output_name for v in build_variants if v.output_name]) == len({v.output_name: None for v in build_variants if v.output_name}), \
+            "BuildOnly.build_variants: two variants share an output_name — each would overwrite the other's binary"
+        len([v.output_name for v in build_variants if v.output_name]) == len({_build_variant_filename(v): None for v in build_variants if v.output_name}), \
+            "BuildOnly.build_variants: two variants write the same binary filename after adding the Windows .exe suffix"
 
 # The env-var names forge sets for an OnExternal hook. A hook's own `env`
 # may not redefine one: forge's value would win anyway, so a redefinition

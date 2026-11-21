@@ -38,6 +38,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -66,9 +67,88 @@ var (
 	stopTelemetryAgentFn  = hostinfra.StopTelemetryAgent
 )
 
+// withPublishedComposePorts returns e with each compose workload target's
+// ports moved from the container port it declares to the loopback port compose
+// publishes it on (`19090:9090` scrapes 127.0.0.1:19090), read from the
+// running service. The compose file owns publishing, so only docker knows the
+// mapping, and a dynamic one exists only once the container does. A declared
+// port the service does not publish is dropped with a warning: nothing on the
+// host can reach it. e is never written.
+func withPublishedComposePorts(ctx context.Context, w io.Writer, projectDir, env string, e *KCLEntities) *KCLEntities {
+	if e == nil {
+		return nil
+	}
+	byName := map[string]WorkloadEntity{}
+	for _, wl := range e.WorkloadsOn(RuntimeCompose) {
+		byName[wl.Name] = wl
+	}
+	var out []telemetry.Target
+	changed := false
+	for _, t := range e.Telemetry {
+		wl, ok := byName[strings.TrimPrefix(t.Source, "workload:")]
+		if t.Runtime != telemetry.RuntimeCompose || t.Attachment != telemetry.AttachWorkload || !ok || wl.Runtime.Compose == nil || !t.Pulled() {
+			out = append(out, t)
+			continue
+		}
+		changed = true
+		pubs, err := composePublishersFn(ctx, projectDir, composeSpecFor(projectDir, env, wl.Runtime.Compose), composeServiceName(wl))
+		published := map[int]int{}
+		for _, p := range pubs {
+			if p.PublishedPort > 0 && (p.Protocol == "" || p.Protocol == "tcp") {
+				published[p.TargetPort] = p.PublishedPort
+			}
+		}
+		host := func(what string, port int) (int, bool) {
+			if hp, ok := published[port]; ok {
+				return hp, true
+			}
+			why := "the service does not publish it to this machine"
+			if err != nil {
+				why = "docker could not say what the service publishes: " + firstLine(err.Error())
+			}
+			fmt.Fprintf(w, "  telemetry: ⚠ not collecting %s %s :%d: %s (publish it in the compose file, e.g. \"%d\" or \"<host>:%d\")\n", t.ServiceName, what, port, why, port, port)
+			return 0, false
+		}
+		t.Metrics = slices.Clone(t.Metrics)
+		for i := range t.Metrics {
+			if hp, ok := host("metrics", t.Metrics[i].Port); ok {
+				t.Metrics[i].Port = hp
+			} else {
+				t.Metrics[i].Port = 0
+			}
+		}
+		t.Metrics = slices.DeleteFunc(t.Metrics, func(m telemetry.MetricsScrape) bool { return m.Port == 0 })
+		t.Profiles = slices.Clone(t.Profiles)
+		for i := range t.Profiles {
+			if hp, ok := host("profiles", t.Profiles[i].Port); ok {
+				t.Profiles[i].Port = hp
+			} else {
+				t.Profiles[i].Port = 0
+			}
+		}
+		t.Profiles = slices.DeleteFunc(t.Profiles, func(p telemetry.PprofScrape) bool { return p.Port == 0 })
+		t.Checks = slices.Clone(t.Checks)
+		for i := range t.Checks {
+			if hp, ok := host(t.Checks[i].Kind+" check", t.Checks[i].Port); ok {
+				t.Checks[i].Port = hp
+			} else {
+				t.Checks[i].Port = 0
+			}
+		}
+		t.Checks = slices.DeleteFunc(t.Checks, func(c telemetry.HealthCheck) bool { return c.Port == 0 })
+		out = append(out, t)
+	}
+	if !changed {
+		return e
+	}
+	cp := *e
+	cp.Telemetry = out
+	return &cp
+}
+
 // hostTelemetryTargets are the env's declared targets the local stack
 // reaches: host processes, host-run engines and addresses, and compose
-// services on their published loopback ports.
+// services on their published loopback ports (withPublishedComposePorts).
 func hostTelemetryTargets(e *KCLEntities) []telemetry.Target {
 	if e == nil {
 		return nil
@@ -497,7 +577,7 @@ func upLocalTelemetry(ctx context.Context, w io.Writer, projectDir, env string, 
 		}
 	}
 
-	plan, err := planTelemetryAgent(projectDir, env, e)
+	plan, err := planTelemetryAgent(projectDir, env, withPublishedComposePorts(ctx, w, projectDir, env, e))
 	stop := func(why string) {
 		if stopped, serr := stopTelemetryAgentFn(projectDir, env); serr != nil {
 			fmt.Fprintf(w, "  telemetry agent: stop: %v\n", serr)

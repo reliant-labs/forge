@@ -143,7 +143,9 @@ func TestTestRunExitCodes(t *testing.T) {
 	}
 	// And a project whose Taskfile cannot be listed (no task binary).
 	trTaskLanes(t, []string{"test"}, nil, nil)
-	testRunListTasks = func(context.Context, string) (map[string]bool, error) { return nil, errors.New("`task` is not installed") }
+	testRunListTasks = func(context.Context, string) (map[string]bool, error) {
+		return nil, errors.New("`task` is not installed")
+	}
 	if doc, code, _ := trRunJSON(t); code != exitRefused || !strings.Contains(doc.Error, "not installed") {
 		t.Fatalf("exit %d: %+v", code, doc)
 	}

@@ -413,6 +413,18 @@ export default nextConfig;
 			t.Errorf("message should quote the build's error: %s", fs[0].Message)
 		}
 	})
+	t.Run("experimental.cacheComponents, Next 15 canary", func(t *testing.T) {
+		assertFindings(t, check(t, frontendTree(t, map[string]string{
+			"next.config.ts": "export default {\n  output: 'export',\n  experimental: {\n    cacheComponents: true,\n  },\n};\n",
+		})), "static-export-partial-prerender error frontends/web/next.config.ts:4")
+	})
+	t.Run("experimental cacheComponents disabled or computed", func(t *testing.T) {
+		for _, value := range []string{"false", "process.env.CACHE_COMPONENTS === '1'"} {
+			assertFindings(t, check(t, frontendTree(t, map[string]string{
+				"next.config.ts": "export default { output: 'export', experimental: { cacheComponents: " + value + " } };\n",
+			})))
+		}
+	})
 	t.Run("experimental.ppr, Next 15", func(t *testing.T) {
 		assertFindings(t, check(t, frontendTree(t, map[string]string{
 			"next.config.mjs": "export default {\n  output: \"export\",\n  images: { unoptimized: true },\n  experimental: { ppr: \"incremental\" },\n};\n",

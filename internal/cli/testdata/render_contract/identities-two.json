@@ -590,7 +590,7 @@
             },
             {
               "name": "USERS_JWT_JWKS_SNAPSHOT_FILE",
-              "value": "/var/run/secrets/forge/identity-jwks-users/jwks.json"
+              "value": "/var/run/secrets/forge/identity-jwks--users/jwks.json"
             }
           ],
           "image": "ghcr.io/acme/gateway:stable",
@@ -619,8 +619,8 @@
               }
             },
             {
-              "mountPath": "/var/run/secrets/forge/identity-jwks-users",
-              "name": "forge-identity-jwks-users",
+              "mountPath": "/var/run/secrets/forge/identity-jwks--users",
+              "name": "forge-identity-jwks--users",
               "readOnly": true,
               "source": {
                 "secret": {
@@ -1031,7 +1031,7 @@
             },
             {
               "name": "USERS_JWT_JWKS_SNAPSHOT_FILE",
-              "value": "/var/run/secrets/forge/identity-jwks-users/jwks.json"
+              "value": "/var/run/secrets/forge/identity-jwks--users/jwks.json"
             }
           ],
           "image": "ghcr.io/acme/gateway:stable",
@@ -1060,8 +1060,8 @@
               }
             },
             {
-              "mountPath": "/var/run/secrets/forge/identity-jwks-users",
-              "name": "forge-identity-jwks-users",
+              "mountPath": "/var/run/secrets/forge/identity-jwks--users",
+              "name": "forge-identity-jwks--users",
               "readOnly": true,
               "source": {
                 "secret": {

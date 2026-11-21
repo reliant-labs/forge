@@ -823,3 +823,7 @@ func (t *treeSnapshot) wasClean() bool {
 	})
 	return t.clean
 }
+
+// GovulncheckTool is the govulncheck the gate pins, for a command that runs
+// it outside the gate (`forge ci vuln-scan` with none on PATH).
+func GovulncheckTool() Tool { return govulncheck }

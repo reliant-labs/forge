@@ -395,6 +395,48 @@ func TestNextImage(t *testing.T) {
 	})
 }
 
+// ── partial prerendering ─────────────────────────────────────────────────
+
+func TestPartialPrerender(t *testing.T) {
+	t.Run("cacheComponents, create-next-app's Next 16 default", func(t *testing.T) {
+		fs := check(t, frontendTree(t, map[string]string{"next.config.ts": `import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  output: "export",
+  images: { unoptimized: true },
+  cacheComponents: true,
+};
+export default nextConfig;
+`}))
+		assertFindings(t, fs, "static-export-partial-prerender error frontends/web/next.config.ts:6")
+		if !strings.Contains(fs[0].Message, "PPR cannot be enabled in export mode") {
+			t.Errorf("message should quote the build's error: %s", fs[0].Message)
+		}
+	})
+	t.Run("experimental.cacheComponents, Next 15 canary", func(t *testing.T) {
+		assertFindings(t, check(t, frontendTree(t, map[string]string{
+			"next.config.ts": "export default {\n  output: 'export',\n  experimental: {\n    cacheComponents: true,\n  },\n};\n",
+		})), "static-export-partial-prerender error frontends/web/next.config.ts:4")
+	})
+	t.Run("experimental cacheComponents disabled or computed", func(t *testing.T) {
+		for _, value := range []string{"false", "process.env.CACHE_COMPONENTS === '1'"} {
+			assertFindings(t, check(t, frontendTree(t, map[string]string{
+				"next.config.ts": "export default { output: 'export', experimental: { cacheComponents: " + value + " } };\n",
+			})))
+		}
+	})
+	t.Run("experimental.ppr, Next 15", func(t *testing.T) {
+		assertFindings(t, check(t, frontendTree(t, map[string]string{
+			"next.config.mjs": "export default {\n  output: \"export\",\n  images: { unoptimized: true },\n  experimental: { ppr: \"incremental\" },\n};\n",
+		})), "static-export-partial-prerender error frontends/web/next.config.mjs:4")
+	})
+	t.Run("off, commented out, or not a literal", func(t *testing.T) {
+		assertFindings(t, check(t, frontendTree(t, map[string]string{
+			"next.config.ts": "const ppr = process.env.PPR === \"1\";\nexport default {\n  output: \"export\",\n  images: { unoptimized: true },\n  cacheComponents: false,\n  // cacheComponents: true,\n  experimental: { ppr },\n};\n",
+		})))
+	})
+}
+
 // ── rewrites / redirects / headers ───────────────────────────────────────
 
 func TestConfigRoutes(t *testing.T) {

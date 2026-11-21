@@ -20,6 +20,9 @@
 package lint
 
 import (
+	"strings"
+
+	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
@@ -251,6 +254,15 @@ var shippedRules = []rolloutGroup{
 	// A handler file implementing more than one custom rpc. Its findings
 	// stay advisory at any pin; the row lets lint.rules raise them.
 	{IntroducedIn: "v1.9.0", Rules: []string{"forgeconv-one-rpc-per-file"}},
+	// forge lint --migration-safety: a plain CREATE INDEX on a table that
+	// may hold rows (NS FG-35), the static twin of db analyze's
+	// db-analyze-blocking-index-build. A warning at any pin (it cannot see
+	// the table's size); the row lets lint.rules raise it.
+	{IntroducedIn: "v1.9.0", Rules: []string{"blocking-index-build"}},
+	// A reason-required Go marker (forge:auth-unscoped-ok, …) written with
+	// no reason, which its recognizer silently ignored (FG-32). Advisory at
+	// any pin; the row lets lint.rules raise it.
+	{IntroducedIn: "v1.9.0", Rules: []string{ruleGoMarkersReasonMissing}},
 }
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.
@@ -261,10 +273,41 @@ var newRules = []rolloutGroup{
 		Fix:          "forge lint --install",
 		Rules:        []string{ruleFrontendNoInstall},
 	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
+		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
+		Rules:        []string{staticexport.RulePartialPrerender},
+	},
 }
 
+// rolloutLinkFixture is a grace row linked into a test build of the forge
+// binary, "<rule>@<introduced_in>@<grace_until>", so the warn-first path is
+// proven through the real binary on a rule whose window the test controls
+// (TestE2ENewRuleWarnsUntilPinReachesGatesFrom). Only the linker sets it
+// (-ldflags -X); no flag, env var or file reaches it, and it is empty in
+// every release build.
+var rolloutLinkFixture string
+
 // lintRollouts is the declaration of every rule, by ID.
-var lintRollouts = buildRollouts(shippedRules, newRules)
+var lintRollouts = buildRollouts(shippedRules, newRules, linkedFixtureRows(rolloutLinkFixture))
+
+// linkedFixtureRows is the grace row rolloutLinkFixture names, if any.
+func linkedFixtureRows(fixture string) []rolloutGroup {
+	parts := strings.Split(fixture, "@")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return nil
+	}
+	return []rolloutGroup{{
+		IntroducedIn: parts[1],
+		Grace:        &rolloutGrace{Until: parts[2], Reason: "linked e2e fixture"},
+		Rules:        []string{parts[0]},
+	}}
+}
 
 func buildRollouts(groups ...[]rolloutGroup) map[string]ruleRollout {
 	out := map[string]ruleRollout{}

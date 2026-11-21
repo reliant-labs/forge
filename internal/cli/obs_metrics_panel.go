@@ -110,8 +110,10 @@ func parsePredicate(s string) (obsquery.PanelPredicate, error) {
 // metric.attr.*, resource.attr.*) is kept, so a panel read back from the
 // console's copy-as-CLI round-trips; a bare resource key (k8s.pod.name,
 // service.version) is read off the resource; any other is the metric's own
-// attribute. --group-by keys are passed through as typed: the evaluator reads
-// an allowlisted or declared key from the metric's attributes first.
+// attribute. --group-by keys are passed through as typed to the query: the
+// evaluator reads an allowlisted or declared key from the metric's attributes
+// first. A panel written for a dashboard (--panel-out) names them through
+// panelField too, because a dashboard groups only by the panel vocabulary.
 func panelField(key string) string {
 	switch {
 	case key == dashspec.FieldService, key == dashspec.FieldEnv,
@@ -239,8 +241,17 @@ func dashPanel(p obsquery.Panel) dashspec.Panel {
 }
 
 // writePanel writes p as one dashspec panel, indented, to dest (- is stdout).
+// Its group-by keys are named in the panel vocabulary (--group-by procedure is
+// metric.attr.procedure), so obs dashboards add-panel accepts what it wrote.
 func writePanel(dest string, stdout io.Writer, p obsquery.Panel) error {
-	raw, err := json.MarshalIndent(dashPanel(p), "", "  ")
+	dp := dashPanel(p)
+	if len(p.GroupBy) > 0 {
+		dp.GroupBy = make([]string, len(p.GroupBy))
+		for i, k := range p.GroupBy {
+			dp.GroupBy[i] = panelField(k)
+		}
+	}
+	raw, err := json.MarshalIndent(dp, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -20,7 +20,7 @@ import (
 )
 
 // rebuildFlagHelp is --rebuild's help on every command that builds an env.
-const rebuildFlagHelp = "Run every ShellBuild's command, even one whose declared inputs are unchanged since its last successful build (or, with --release, since the previous release) and whose image is still in the registry"
+const rebuildFlagHelp = "Run every ShellBuild's command, even one whose declared inputs are unchanged since its last successful build (or, with --release, since the previous release) and whose image is still in the registry; with --release, also build every DockerBuild that would reuse an earlier release's image"
 
 // shellInputsVerdict is what a ShellBuild's declared inputs say about running
 // its command.

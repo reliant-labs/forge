@@ -164,19 +164,19 @@ data:
         log_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant|forge\\.telemetry\\.label)\\..*")
         metric_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant|forge\\.telemetry\\.label)\\..*")
         profile_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant|forge\\.telemetry\\.label)\\..*")
         trace_statements:
         - context: resource
           statements:
-          - delete_matching_keys(resource.attributes, "^(k8s|reliant)\\..*")
+          - delete_matching_keys(resource.attributes, "^(k8s|reliant|forge\\.telemetry\\.label)\\..*")
     receivers:
       filelog:
         exclude:

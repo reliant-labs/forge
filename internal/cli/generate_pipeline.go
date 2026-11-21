@@ -565,6 +565,13 @@ func generateSteps() []GenStep {
 		// project had nothing to read and silently fell back to proto
 		// defaults, which is the bug this ordering fixes.
 		{Name: "frontend typed config", Gate: gateFrontendHasFrontends, GateReason: "no frontends (frontends/<name>/ or a KCL forge.Frontend) or features.frontend=false", Run: stepFrontendConfig, Tag: "frontend"},
+		// Typed accessors for changes.yaml (Go and every web frontend). Not
+		// gated on frontends or services: a Go-only project and a static site
+		// both declare changes. A project without changes.yaml writes nothing
+		// here, and the step retires what an earlier declaration wrote. Before
+		// "cleanup stale codegen", which deletes the certified files this run
+		// did not write.
+		{Name: "changes accessors (changes.yaml)", Gate: always, Run: stepChangesAccessors, Tag: "codegen"},
 		// AFTER the env config modules, deliberately. Which workflows exist
 		// is read off a RENDER of every env (generate_ci_hosted.go: a hosted
 		// env gets release.yml, not deploy.yml), and an env cannot render
@@ -1690,6 +1697,9 @@ func stepBufGenerateGo(ctx *pipelineContext) error {
 	if err := runBufGenerateGo(ctx.ProjectDir); err != nil {
 		return fmt.Errorf("buf generate (Go) failed: %w", err)
 	}
+	// buf never prunes: drop the stubs of protos that are gone before the
+	// descriptor and every later emitter read gen/ (generate_stale_buf.go).
+	pruneStaleBufOutput(ctx, goBufOutDirs(ctx))
 	return nil
 }
 
@@ -1781,6 +1791,20 @@ func stepFrontendBufTS(ctx *pipelineContext) error {
 	// bridge's gitignored npm config must already be in place: a project
 	// bridged by an older forge has none and the install would crash.
 	generator.EnsureDevWebRuntimeLink(ctx.ProjectDir)
+	if err := runFrontendBufTS(ctx); err != nil {
+		return err
+	}
+	// buf never prunes: drop the _pb.ts of protos that are gone before the
+	// hooks and service-defaults mocks are emitted from what src/gen holds
+	// (generate_stale_buf.go).
+	pruneStaleBufOutput(ctx, frontendBufOutDirs(ctx))
+	return nil
+}
+
+// runFrontendBufTS runs the TypeScript buf generation stepFrontendBufTS
+// describes: one shared invocation in workspace mode, else one per
+// TypeScript frontend.
+func runFrontendBufTS(ctx *pipelineContext) error {
 	if ctx.Cfg.IsFrontendWorkspacesEnabled() {
 		return runBufGenerateTypeScriptWorkspace(ctx.Cfg, ctx.ProjectDir)
 	}

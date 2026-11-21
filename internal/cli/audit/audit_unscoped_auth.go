@@ -309,10 +309,20 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 	ownerTables := ownerScopedTables(cfg, projectDir)
 
 	// The CALLER half's vocabulary: forge's own seam, plus whatever the
-	// project declared resolves the caller (//forge:resolves-caller). Read
-	// once — the declarations are module-wide, not per service.
-	resolvers, ignoredMarkers := codegen.DeclaredCallerResolvers(projectDir)
+	// project declared resolves the caller (//forge:resolves-caller in
+	// code, lint.auth.caller_resolvers in forge.yaml). Read once — the
+	// declarations are module-wide, not per service. mod follows a
+	// handler's calls into the module's other packages (see
+	// audit_unscoped_auth_module.go).
+	mod := newModuleReach(projectDir)
+	declaredResolvers, ignoredMarkers := codegen.DeclaredCallerResolvers(projectDir)
+	configuredResolvers, invalidConfig := configuredCallerResolvers(cfg, mod)
+	resolvers := mergeCallerResolvers(declaredResolvers, configuredResolvers)
 	callers := newCallerSeam(resolvers)
+	callers.mod = mod
+	if mod != nil {
+		mod.seam = callers
+	}
 
 	for _, svc := range services {
 		// Only RPCs the proto declares authenticated are in scope. A
@@ -456,6 +466,9 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 	if len(ignoredMarkers) > 0 {
 		details["caller_resolver_markers_ignored"] = ignoredMarkers
 	}
+	if len(invalidConfig) > 0 {
+		details["caller_resolvers_config_invalid"] = invalidConfig
+	}
 
 	// FAIL LOUDLY ON AN EMPTY DERIVATION. The project declares
 	// authenticated RPCs, and this category matched a handler for NONE of
@@ -522,7 +535,14 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat auditt
 				Details: details,
 			}
 		}
+		// An acknowledged RPC never resolves the caller: it is declared
+		// global with the marker, and is counted apart so the summary does
+		// not claim it does.
 		summary := fmt.Sprintf("all %d authenticated RPC(s) resolve the caller", authTotal)
+		if len(acknowledged) > 0 {
+			summary = fmt.Sprintf("%d of %d authenticated RPC(s) resolve the caller; the other %d are acknowledged global with `// %s`",
+				scopedTotal, authTotal, len(acknowledged), AuthUnscopedOKDirective)
+		}
 		if authTotal == 0 {
 			summary = "no authenticated RPCs with handlers to inspect (n/a)"
 		}
@@ -828,17 +848,21 @@ type handlerAuthUse struct {
 // that set. The second pass stays a single lookup because the first has
 // already done the transitive work.
 //
-// The analysis is deliberately PACKAGE-LOCAL. It reads the same file
-// set — one handler package, no imports followed — so a helper that
-// lives in another package still reports as unscoped. That is the safe
-// direction: this pass resolves names, not types, and following a name
-// across a package boundary without a type checker would start clearing
-// handlers on coincidence.
+// The NAME analysis is package-local: a bare or receiver call
+// (`scope(ctx)`, `s.caller(ctx)`) is resolved only against this package's
+// declarations, because this pass resolves names, not types, and following
+// a bare name across a package boundary would clear handlers on
+// coincidence.
 //
-// The one crossing is a DECLARATION, not an inference: a function the
-// project marked `//forge:resolves-caller` (reliant's auth accessors) is
-// matched through the import that binds its package in each file, so
-// `auth.GetUserIDFromContext` counts only where `auth` IS that package.
+// Two crossings are exact rather than inferred. A function the project
+// declared a resolver (`//forge:resolves-caller`, or forge.yaml
+// lint.auth.caller_resolvers) is matched through the import that binds its
+// package in each file, so `auth.GetUserIDFromContext` counts only where
+// `auth` IS that package. And an import-qualified call into another
+// package of the same module (`auth.MustGetUserID(ctx)`) is followed into
+// that package, up to maxWrapperHops packages deep — a package-level
+// function is unique in its package, so the import names it exactly (see
+// audit_unscoped_auth_module.go).
 func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handlerAuthUse, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -871,6 +895,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 	// how a declared resolver's package identifier is bound.
 	var decls []*ast.FuncDecl
 	fileSeams := map[*ast.FuncDecl]fileCallerSeam{}
+	fileOf := map[*ast.FuncDecl]*ast.File{}
 	for _, pf := range files {
 		fs := callers.forFile(pf.file)
 		for _, decl := range pf.file.Decls {
@@ -880,10 +905,17 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 			}
 			decls = append(decls, fn)
 			fileSeams[fn] = fs
+			fileOf[fn] = pf.file
 		}
 	}
+	// reachesDirectly: the body names the seam or a declared resolver, or
+	// calls a function in another package of the module that reaches one.
+	reachesDirectly := func(fn *ast.FuncDecl) bool {
+		return bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
+			callers.mod.callsReachingImport(fn, fileOf[fn], maxWrapperHops)
+	}
 	seamReaching := seamReachingNames(decls, func(fn *ast.FuncDecl) bool {
-		return callers.declaresLocal(fn) || bodyReachesAuthSeam(fn.Body, fileSeams[fn])
+		return callers.declaresLocal(fn) || reachesDirectly(fn)
 	})
 
 	// The SQL half, computed over the SAME declaration set and the same
@@ -896,6 +928,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 	sqlByName := reachableSQL(decls, sqlLiteralsByDecl(decls, packageSQLConsts(astFiles)))
 
 	out := map[string]handlerAuthUse{}
+	rank := map[string]int{}
 	for _, pf := range files {
 		for _, decl := range pf.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -916,14 +949,38 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 					use.AckLine = fset.Position(c.Pos()).Line
 				}
 			}
-			use.ReadsCaller = bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
+			use.ReadsCaller = reachesDirectly(fn) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
 			use.SQL = sqlByName[fn.Name.Name]
 			use.HasSQL = len(use.SQL) > 0
-			out[fn.Name.Name] = use
+			// Two exported methods can share an rpc's name — the handler
+			// and a generated mock of a dependency (mock_gen.go's
+			// MockRepository.GetChat). The handler is the one to judge,
+			// so the scaffolded receiver wins, then hand-written code.
+			if r := handlerRank(pf.path, fn); r >= rank[fn.Name.Name] {
+				rank[fn.Name.Name] = r
+				out[fn.Name.Name] = use
+			}
 		}
 	}
 	return out, nil
+}
+
+// handlerRank orders the exported methods sharing one name by how likely
+// each is to be the rpc's handler: a method on the scaffolded `Service`
+// type, then one in a hand-written file, then one in a generated file.
+func handlerRank(path string, fn *ast.FuncDecl) int {
+	recv := fn.Recv.List[0].Type
+	if star, ok := recv.(*ast.StarExpr); ok {
+		recv = star.X
+	}
+	if id, ok := recv.(*ast.Ident); ok && id.Name == "Service" {
+		return 2
+	}
+	if !strings.HasSuffix(path, "_gen.go") {
+		return 1
+	}
+	return 0
 }
 
 // seamReachingNames returns the names in one handler package that
@@ -1142,6 +1199,9 @@ func bodyReachesAuthSeam(body *ast.BlockStmt, fs fileCallerSeam) bool {
 // them.
 type callerSeam struct {
 	byPath map[string]declaredPackage
+	// mod follows import-qualified calls into the module's other
+	// packages; nil disables that (no go.mod, or a test of the local pass).
+	mod *moduleReach
 }
 
 type declaredPackage struct {

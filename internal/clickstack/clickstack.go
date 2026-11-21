@@ -85,4 +85,34 @@ const (
 	AlertsWorkload = "alerts"
 	// AlertOrg is a local stack's one routing org.
 	AlertOrg = "local"
+
+	// TelemetryIncludeDir is the project-relative directory `forge env up`
+	// writes the declared log parsing (forge.Telemetry `logs`) into, for the
+	// collector's filelog chain to include. It is inside .forge/logs ON
+	// PURPOSE: the collector already mounts that directory (it tails the
+	// logs there), so the include needs no new mount, and a project whose
+	// docker-compose.yml predates the hook still loads it. Nothing in it
+	// ends in .log, so the filelog never tails it.
+	TelemetryIncludeDir = ".forge/logs/.telemetry"
+	// TelemetryIncludeMount is TelemetryIncludeDir inside the collector
+	// container (.forge/logs is mounted at /var/log/forge).
+	TelemetryIncludeMount = "/var/log/forge/.telemetry"
+	// TelemetryPreserveFile holds the one filelog operator that keeps a
+	// declared target's raw line for its parse (a noop when none parses).
+	TelemetryPreserveFile = "logs-preserve.yaml"
+	// TelemetryIdentityFile holds transform/telemetry_identity's config.
+	TelemetryIdentityFile = "logs-identity.yaml"
+	// TelemetryParseFile holds transform/telemetry_logs's config.
+	TelemetryParseFile = "logs-parse.yaml"
 )
+
+// IsTelemetryService reports whether a compose service is part of forge's
+// local telemetry stack. None of them is something the application needs in
+// order to run, so a stack starts without one that fails to come up.
+func IsTelemetryService(service string) bool {
+	switch service {
+	case Service, ProfilesService, ForwarderService, AlertmanagerService:
+		return true
+	}
+	return false
+}

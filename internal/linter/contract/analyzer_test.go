@@ -143,6 +143,24 @@ func TestRequireContract_StdlibConventionMethodsOnly(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requirestringer")
 }
 
+// Regression (obs 4c0e4706): an unexported type that never escapes the
+// package's API, whose exported method exists only to satisfy another
+// package's interface (Quantize for image/draw.Quantizer, handed to
+// gif.Options), has no surface a contract.go would describe and no
+// "unexport it" repair. The method is skipped. An unexported implementation
+// of the package's OWN exported interface, and an unexported type that
+// escapes through an exported signature, are still reported, as is a
+// helper-only exported method (requirebad).
+func TestRequireContract_InterfaceMethodsOnPrivateTypes(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer,
+		"internal/requireprivateiface", "internal/requireprivatelocal", "internal/requireprivateescape",
+		// Two imported interfaces with a same-named method: a method is
+		// exempt only on a type that implements the interface requiring it.
+		"internal/requireprivatesamename", "internal/requireprivatesamenameok")
+}
+
 // Regression: external test packages (`package <name>_test`) host black-box
 // tests and helper structs that are not part of the package's API surface.
 // Previously the analyzer flagged `package <name>_test` with exported test

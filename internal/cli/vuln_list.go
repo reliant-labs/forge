@@ -36,9 +36,14 @@ the scanner: ` + "`forge vuln db pull`" + ` refreshes the database.
 
 Filters narrow what is listed, never the verdict: the gate judges every finding.
 
+For an env whose ledger is a control plane, the findings are the control
+plane's: it scanned the SBOMs each cut uploaded, and rescans what is deployed
+daily. Nothing is scanned on this machine; reading needs the vuln:read scope.
+
 Exit codes: 0 nothing blocking; 1 a blocking finding; 2 could not determine (an
-artifact with no SBOM or scan, findings from a database older than 5 days, or an
-env whose ledger is a control plane, which a later forge reads).`,
+artifact with no SBOM or scan, findings from a database older than 5 days, or a
+control plane that does not serve findings yet); 4 refused (not signed in to the
+env's control plane, or no vuln:read).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if s := strings.ToLower(opts.severity); s != "" && !validSeverityFilter(s) {
@@ -75,8 +80,9 @@ func newVulnShowCmd(deps vulnDeps) *cobra.Command {
 		Short: "Show one advisory, or every finding in one package, in the release an env runs",
 		Long: `Show the findings of one advisory (by its id or any alias: a CVE finds the GHSA
 of the same advisory) or of one package (by name or purl) in the release an env
-runs, exempt ones included. Reads the machine ledger the way ` + "`forge vuln list`" + ` does,
-and exits the way it does.`,
+runs, exempt ones included. Reads the ledger the way ` + "`forge vuln list`" + ` does, and
+exits the way it does; on a control-plane env the advisory's summary, references
+and history per environment follow.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			filter := vulnscan.Filter{Match: args[1], IncludeExempt: true}
@@ -98,7 +104,7 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		return undeterminedf("env %q: %v", envName, err)
 	}
 	if env.hosted() {
-		return hostedVulnError(env)
+		return runVulnListHosted(ctx, out, errOut, deps, env, version, filter, asJSON)
 	}
 	store, err := deps.machineLedger(projectDir)
 	if err != nil {
@@ -144,8 +150,11 @@ func runVulnList(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envN
 		return undeterminedf("%v", err)
 	}
 	notes = append(notes, rs.Notes...)
+	if env.GradeNote != "" {
+		notes = append(notes, env.GradeNote)
+	}
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: envName, Release: rel.Version, Gate: env.Gate, Artifacts: rs.Artifacts, Filter: filter, Now: now, Notes: notes,
+		Env: envName, Release: rel.Version, Gate: env.Gate, GradedAs: env.GradedAs, Artifacts: rs.Artifacts, Filter: filter, Now: now, Notes: notes,
 	})
 	if asJSON {
 		if err := writeVulnJSON(out, doc); err != nil {

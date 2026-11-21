@@ -114,10 +114,17 @@ func pinGateFor(rel string) (readOnlyFlags []string, gated bool) {
 //     reads forge.yaml. reliant's `task test` runs through `slot run`, and
 //     printed the warning on every run (forge bug report afa50061).
 //
+//   - test begin, test capture: plumbing in front of every test lane, like
+//     slot. What they write is the versioned forge.test.run/v1 and
+//     forge.test.lane/v1 layout (pkg/testreport), the same under every forge
+//     that has them, and capture's one promise is the command's own exit
+//     status: a hand-off that failed (the pinned forge cannot be built
+//     offline) would fail a lane the tests passed.
+//
 // `storage` is deliberately absent: it runs THIS forge's cache-trimming rules
 // (handOffExempt says why), and those differ between forges, so which forge
 // trimmed the cache is worth saying.
-var pinIndependentCommands = []string{"slot"}
+var pinIndependentCommands = []string{"slot", "test begin", "test capture"}
 
 // pinIndependent reports whether rel (relative to forge's root) is, or is
 // under, a pinIndependentCommands group.

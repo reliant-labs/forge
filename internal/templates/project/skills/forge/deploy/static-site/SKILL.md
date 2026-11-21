@@ -158,8 +158,10 @@ No database or cluster is needed: the dev env declares only the frontend's dev
 server, and `env up` starts it in the frontend's directory with `PORT` set. A
 site forge started mirrors the browser console to
 `.forge/logs/dev/frontend_<name>.log`. An adopted app does the same once it
-calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` in the
-browser, and its dev server receives the lines. On Vite, the receiver is the
+calls `installDevLogging()` from `@reliantlabs/forge-web-runtime/devlog` in the
+browser, and its dev server receives the lines. That subpath (the release after
+0.13.20) needs no other package; the package root also needs
+`@bufbuild/protobuf` and `@connectrpc/connect` installed. On Vite, the receiver is the
 `forgeDevLog()` plugin from `@reliantlabs/forge-web-runtime/vite` (load
 `debug`).
 

@@ -211,9 +211,14 @@ default = true
 `})
 		runIn(t, run, root, "uv", "lock")
 		fixes(t, ix)
-		patchReal(t, root, run, lib)
+		doc := patchReal(t, root, run, lib)
+		// 1.1.0 is published too: only the specifier in --upgrade-package
+		// keeps uv on the fix, so this proves uv reads it as a constraint.
 		if got := lockedVersion(t, root, "uv.lock", "forgetestlib"); got != "1.0.1" {
 			t.Errorf("uv.lock locks forgetestlib %s, want exactly the fix 1.0.1", got)
+		}
+		if cmd := strings.Join(doc.Bumps[0].Commands[0], " "); cmd != "uv lock --upgrade-package forgetestlib==1.0.1" {
+			t.Errorf("command = %s", cmd)
 		}
 	})
 

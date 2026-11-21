@@ -58,6 +58,10 @@ type testRunTask struct {
 	DurationMS int64 `json:"duration_ms"`
 	// Error says why the task could not start.
 	Error string `json:"error,omitempty"`
+	// Canceled: the run was interrupted before this task finished. A task
+	// never started has exit_code -1 and duration 0; one that was running
+	// has whatever exit status the interruption left it.
+	Canceled bool `json:"canceled,omitempty"`
 }
 
 // The seams `forge test run` reaches the Taskfile through: the task binary
@@ -92,6 +96,9 @@ so a failing unit lane does not hide the integration lane's result.
 Exit codes:
   0  every lane exited 0
   1  a lane failed (each lane's own exit code is in --json)
+  2  interrupted before every lane finished: the run proves nothing either
+     way (--json lists every requested lane; the ones cut short or never
+     started are canceled)
   4  refused, nothing run: the Taskfile has no such lane, or ` + "`task`" + ` is not
      installed
 
@@ -172,10 +179,13 @@ func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 		env = append(env, testcapture.EnvRun+"="+begun.Dir)
 	}
 
-	failed := []string{}
+	failed, canceled := []string{}, []string{}
 	for _, lane := range lanes {
 		if err := ctx.Err(); err != nil {
-			break
+			// Every requested lane gets a row: one never started says so.
+			doc.Tasks = append(doc.Tasks, testRunTask{Task: lane, ExitCode: -1, Error: "not started: the run was interrupted", Canceled: true})
+			canceled = append(canceled, lane)
+			continue
 		}
 		fmt.Fprintf(errOut, "forge test run: task %s\n", lane)
 		started := time.Now()
@@ -184,10 +194,15 @@ func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 		if err != nil {
 			t.Error = err.Error()
 		}
-		doc.Tasks = append(doc.Tasks, t)
-		if code != 0 {
+		switch {
+		case code != 0 && ctx.Err() != nil:
+			// Cut short by the interruption: not a verdict on the lane.
+			t.Canceled = true
+			canceled = append(canceled, lane)
+		case code != 0:
 			failed = append(failed, fmt.Sprintf("%s (exit %d)", lane, code))
 		}
+		doc.Tasks = append(doc.Tasks, t)
 	}
 
 	if begun.Recording {
@@ -207,8 +222,12 @@ func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 	}
 
 	switch {
-	case ctx.Err() != nil:
-		return finish(exitWrong, "FAIL: interrupted: "+ctx.Err().Error())
+	case len(canceled) > 0:
+		msg := "UNDETERMINED: interrupted (" + ctx.Err().Error() + "): " + strings.Join(canceled, ", ") + " did not finish"
+		if len(failed) > 0 {
+			msg += "; failed before the interruption: " + strings.Join(failed, ", ")
+		}
+		return finish(exitUndetermined, msg)
 	case len(failed) > 0:
 		return finish(exitWrong, "FAIL: "+strings.Join(failed, ", "))
 	}
@@ -243,6 +262,9 @@ func renderTestRun(w io.Writer, doc testRunResultDoc) {
 	fmt.Fprintln(w, head)
 	for _, t := range doc.Tasks {
 		line := fmt.Sprintf("  %-20s exit %d  %.1fs", t.Task, t.ExitCode, float64(t.DurationMS)/1000)
+		if t.Canceled {
+			line += "  canceled"
+		}
 		if t.Error != "" {
 			line += "  " + t.Error
 		}

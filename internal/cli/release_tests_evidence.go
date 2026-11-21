@@ -86,7 +86,7 @@ func releaseTestsRef(ctx context.Context, in releaseTestsInput) (ref release.Tes
 	if err != nil {
 		return unavailable("the test record could not be read: %v", err)
 	}
-	runs := testlocal.CommitRuns(all, in.Commit)
+	runs := exactCommitRuns(all, in.Commit)
 	if len(runs) == 0 {
 		return unavailable("no clean-tree test run of commit %s is recorded under %s", testShortID(in.Commit), testreport.RunsRoot(in.Root))
 	}
@@ -134,6 +134,22 @@ func releaseTestsRef(ctx context.Context, in releaseTestsInput) (ref release.Tes
 	}
 	ref.Reason = strings.Join(reasons, "; ")
 	return ref
+}
+
+// exactCommitRuns are the clean-tree runs whose manifest names exactly
+// commit. testlocal.CommitRuns matches a prefix (what `forge test report
+// <sha>` wants); evidence stored on a release forever takes only a run that
+// proves it tested that commit, so a run with no commit, or another commit
+// sharing the prefix, never joins it.
+func exactCommitRuns(all []*testlocal.Run, commit string) []*testlocal.Run {
+	commit = strings.ToLower(strings.TrimSpace(commit))
+	var out []*testlocal.Run
+	for _, r := range testlocal.CommitRuns(all, commit) {
+		if r.Commit != "" && strings.ToLower(r.Commit) == commit {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // runLaneNames are the lanes of runs, sorted and unique.

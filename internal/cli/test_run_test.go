@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/schemagen"
 	"github.com/reliant-labs/forge/internal/testcapture"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -148,6 +149,46 @@ func TestTestRunExitCodes(t *testing.T) {
 	}
 	if doc, code, _ := trRunJSON(t); code != exitRefused || !strings.Contains(doc.Error, "not installed") {
 		t.Fatalf("exit %d: %+v", code, doc)
+	}
+}
+
+// An interruption during the first lane is not a failed run: every
+// requested lane is listed, the cut-short and never-started ones canceled,
+// and the run exits 2 (undetermined), not 1.
+func TestTestRunInterruptedListsEveryLane(t *testing.T) {
+	t.Setenv(testcapture.EnvRun, "")
+	t.Setenv(testcapture.EnvTests, "")
+	ran := trTaskLanes(t, []string{"test", "test:integration"}, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inner := testRunTaskExec
+	testRunTaskExec = func(c context.Context, root string, env []string, stdout, stderr io.Writer, lane string) (int, error) {
+		_, _ = inner(c, root, env, stdout, stderr, lane)
+		cancel() // the interrupt lands while the first lane runs
+		return -1, errors.New("signal: interrupt")
+	}
+	cmd := newTestRunCmd()
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--json"})
+	code := exitcode.Of(cmd.ExecuteContext(ctx))
+	var doc testRunResultDoc
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	if code != exitUndetermined || doc.ExitCode != exitUndetermined || doc.OK {
+		t.Fatalf("exit %d, doc %+v", code, doc.Head)
+	}
+	if len(*ran) != 1 || len(doc.Tasks) != 2 {
+		t.Fatalf("ran %v, tasks %+v", *ran, doc.Tasks)
+	}
+	first, second := doc.Tasks[0], doc.Tasks[1]
+	if first.Task != "test" || !first.Canceled || second.Task != "test:integration" || !second.Canceled || second.ExitCode != -1 || second.DurationMS != 0 {
+		t.Fatalf("tasks %+v", doc.Tasks)
+	}
+	if !strings.HasPrefix(doc.Error, "UNDETERMINED: interrupted") || strings.Contains(doc.Error, "FAIL") {
+		t.Fatalf("error %q", doc.Error)
 	}
 }
 

@@ -98,9 +98,18 @@ func TestReleaseTestsRefUnavailable(t *testing.T) {
 		}
 	}
 
+	// A clean run with no commit, or of a longer commit that merely starts
+	// with the release's, proves nothing about the release's commit.
+	evRun(t, root, "019", "", evAt, false, "unit")
+	evRun(t, root, "01Z", trCommit+"ff", evAt, false, "unit")
+	ref := releaseTestsRef(context.Background(), releaseTestsInput{Root: root, Commit: trCommit, At: evAt, Git: git, Put: store.put})
+	if ref.Status != release.TestsStatusUnavailable || ref.HasReport() || !strings.Contains(ref.Reason, "no clean-tree test run") {
+		t.Fatalf("a commit-less or other-commit run joined the evidence: %+v", ref)
+	}
+
 	evRun(t, root, "01A", trCommit, evAt, false, "unit")
 	failing := func([]byte) (string, error) { return "", errors.New("disk full") }
-	ref := releaseTestsRef(context.Background(), releaseTestsInput{Root: root, Commit: trCommit, At: evAt, Git: git, Put: failing})
+	ref = releaseTestsRef(context.Background(), releaseTestsInput{Root: root, Commit: trCommit, At: evAt, Git: git, Put: failing})
 	if ref.Status != release.TestsStatusUnavailable || !strings.Contains(ref.Reason, "disk full") {
 		t.Fatalf("a report that cannot be stored: %+v", ref)
 	}

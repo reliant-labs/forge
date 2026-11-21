@@ -1,6 +1,6 @@
 ---
 name: auth
-description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, sessions, shared-issuer, external-provider, api-keys, chain.
+description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, sessions, shared-issuer, external-provider, import-users, api-keys, chain.
 ---
 
 # Authentication
@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/sessions`** (server-side sessions: refresh, sign-out, lifetimes), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/sessions`** (server-side sessions: refresh, sign-out, lifetimes), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/import-users`** (moving users from another provider onto managed identity, ids and password hashes kept), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
 
 ## The default: managed identity
 
@@ -128,20 +128,6 @@ Two forge-specific facts worth knowing before you write it:
   on one.
 - **`middleware.GetUser(ctx)` is where the principal comes from.** The
   interceptor already proved the caller has an identity; that call gets it.
-
-## Requiring a person in the browser
-
-The same user can call you from the app (the HttpOnly session cookie) and from software holding their token (`Authorization: Bearer`, a CLI, an agent). For a sensitive action — approving something, managing keys — require a browser session:
-
-```go
-m, _ := middleware.AuthMethod(ctx) // forge/pkg/authn: Channel + Credential kind
-if !m.IsBrowserSession() {          // a server-side session id, in the cookie
-    return nil, connect.NewError(connect.CodePermissionDenied,
-        errors.New("approve this in the app, signed in"))
-}
-```
-
-`IsBrowserSession` passes only for a server-side session id (`auth.CredentialSession`, forge/pkg/session) in a cookie: an id the session store resolved, issued to nothing but the browser that signed in. A bearer token in a cookie, an API key or an unknown credential kind never passes, since any client can send a `Cookie` header. Without server-side sessions the guard refuses every caller (fails closed). `m.ViaCookie()` is transport metadata, not proof. Neither a token's contents nor `Enrich` can set the method. It adds nothing against CSRF beyond the cookie's SameSite. Existing projects get the channel with no edit: inferred from where `credentialFrom`'s token sits, and the cookie only when no other header carries it; `authn.Policy.ExtractCredential` names it exactly. Test such a handler with `authn.ContextWithAuthMethod`.
 
 ## Making a principal an application principal: the `Enrich` seam
 

@@ -9,15 +9,19 @@ package cli
 // with.
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/schemagen"
 	"github.com/reliant-labs/forge/internal/vulnpatch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
+	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
 // SchemaSpec names one schema forge publishes, for `forge project
@@ -55,6 +59,10 @@ func publishedSchemas() map[string]struct {
 			},
 			body: vulnListSchemaJSON,
 		},
+		"test-results":  testDocumentSchema("test-results", testreport.SchemaResults, reflect.TypeOf(testreport.Results{}), "one lane run's test cases, normalised from go test -json, JUnit or Vitest JSON (.forge/tests/runs/<id>/<lane>/)"),
+		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
+		"test-report":   testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
+		"test-flakes":   testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
 		"vuln-patch": {
 			spec: SchemaSpec{
 				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
@@ -64,6 +72,50 @@ func publishedSchemas() map[string]struct {
 			body: vulnPatchSchemaJSON,
 		},
 	}
+}
+
+// testDocumentSchema publishes one of pkg/testreport's documents. Its schema
+// is generated from the Go types the documents are written with, at the
+// moment it is printed, so it cannot drift from them.
+func testDocumentSchema(name, apiVersion string, root reflect.Type, describes string) struct {
+	spec SchemaSpec
+	body func() []byte
+} {
+	return struct {
+		spec SchemaSpec
+		body func() []byte
+	}{
+		spec: SchemaSpec{Name: name, APIVersion: apiVersion, ID: apiVersion, Command: "forge project schema " + name, Describes: describes},
+		body: func() []byte {
+			b, err := testDocumentSchemaJSON(apiVersion, root, describes)
+			if err != nil {
+				// The types are fixed at compile time and a test generates
+				// every schema, so this is a forge bug, not a user error.
+				panic(fmt.Sprintf("forge project schema %s: %v", name, err))
+			}
+			return b
+		},
+	}
+}
+
+func testDocumentSchemaJSON(apiVersion string, root reflect.Type, describes string) ([]byte, error) {
+	str := func(*schemagen.Generator) (*schemagen.Schema, error) {
+		return &schemagen.Schema{Types: []string{"string"}, Description: "a test id, <lang>:<package>:<name>"}, nil
+	}
+	s, err := schemagen.Generate(root, schemagen.Options{
+		ID: apiVersion, Title: apiVersion, Description: describes,
+		Types: map[reflect.Type]func(*schemagen.Generator) (*schemagen.Schema, error){
+			reflect.TypeOf(testreport.TestID{}): str,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
 }
 
 // schemaSpecs lists the published schemas, sorted by name.
@@ -92,6 +144,11 @@ func newProjectSchemaCmd() *cobra.Command {
         prints — a release's vulnerability findings and the env's vuln_gate
         verdict. Generated from the Go type forge encodes it with.
 
+  test-results, test-coverage, test-report, test-flakes
+        forge.test.results/v1, forge.test.coverage/v1, forge.test.report/v1,
+        forge.test.flakes/v1: the test record's documents, generated from the
+        pkg/testreport types forge and the control plane write them with.
+
   vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
         what was bumped per finding, the verification, and the exit code the
         vuln-patch workflow branches on.
@@ -103,7 +160,8 @@ editor at it with "$schema" (JSON) or a yaml-language-server comment (YAML).
 Examples:
   forge project schema
   forge project schema env > env.v1.schema.json
-  forge project schema vuln-list`,
+  forge project schema vuln-list
+  forge project schema test-report`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
@@ -131,9 +189,16 @@ func runProjectSchema(w io.Writer, name string) error {
 	return err
 }
 
+// writeSchemaList prints one entry per schema, its name padded to the longest
+// name so a new registration needs no change here.
 func writeSchemaList(w io.Writer) error {
-	for _, s := range schemaSpecs() {
-		if _, err := fmt.Fprintf(w, "%-9s %s  %s\n          %s\n", s.Name, s.APIVersion, s.Command, s.Describes); err != nil {
+	specs := schemaSpecs()
+	width := 0
+	for _, s := range specs {
+		width = max(width, len(s.Name))
+	}
+	for _, s := range specs {
+		if _, err := fmt.Fprintf(w, "%-*s %s  %s\n%*s%s\n", width, s.Name, s.APIVersion, s.Command, width+1, "", s.Describes); err != nil {
 			return err
 		}
 	}

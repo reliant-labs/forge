@@ -69,6 +69,12 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // and 0.13.12 is the first release that exports no session replay after
 // analytics consent is withdrawn (#2159); a compatible latest release is
 // insufficient when a lockfile retains the floor.
+//
+// The bookkeeping lands AFTER the release tag, so a released binary carries
+// the previous floor (v1.8.0 scaffolds ^0.13.17; its commit published
+// 0.13.19), and a pin of an untagged commit can generate code that only the
+// next runtime release ships. Neither shows in a version number, so generate
+// checks content: WebRuntimeContentNotices (webruntime_vocabulary.go).
 const webRuntimePublishedRange = "^0.13.19"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a

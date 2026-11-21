@@ -124,8 +124,10 @@ jobs:
       # e2e against the preview, with the servers' coverage. A preview runs
       # the release's instrumented (cover) variant, so `task test:e2e` zeroes
       # its counters, runs the suite and collects what it reached into the
-      # run's e2e lane; the report step uploads it. Skipped when the project
-      # has no e2e suite. Report-only: the suite's step carries the verdict.
+      # run's e2e lane (`forge test collect`; on a cluster you operate — a
+      # hosted preview's pods are not reachable, so it records results only).
+      # The report step uploads it. Skipped when the project has no e2e
+      # suite. Report-only: the suite's step carries the verdict.
       - if: hashFiles('e2e/**/*_test.go') != ''
         uses: actions/setup-go@v5
         with:

@@ -617,9 +617,9 @@ PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
 ## 12. F3 implementation notes (opt-in and serverkit)
 
 - **`pkg/selfupdate/autoupdate`** is the opt-in wiring: `New(Options{Settings,
-  Binary, Current, …})` runs `Boot`, validates the `Settings` and builds the
+Binary, Current, …})` runs `Boot`, validates the `Settings` and builds the
   `selfupdate.Updater` with a Sigstore verifier; `(*Updater).Serve(ctx, ready,
-  shutdown)` confirms a swapped binary once `ready` passes, then checks two
+shutdown)` confirms a swapped binary once `ready` passes, then checks two
   minutes after start and every `Interval` (default 6h, floor 1m, jittered by
   a tenth), stages and applies; `ExecPending` is the last act. It is its own
   package because it imports `selfupdate/sigstore` (which imports
@@ -659,4 +659,3 @@ PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
   That makes §3's "a pod cannot reach the swap path even if opted in by
   mistake" hold for every consumer, not only one that passes a `Managed`
   predicate. Stamps still win (they name the real owner).
-

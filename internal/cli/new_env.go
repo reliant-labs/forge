@@ -194,6 +194,17 @@ func runNewEnvWithBinds(ctx context.Context, name, fromEnv string, check, force 
 		rel, _ := filepath.Rel(projectDir, f)
 		fmt.Printf("  %s\n", rel)
 	}
+	if len(binds) > 0 {
+		if body, err := os.ReadFile(filepath.Join(envDir, "main.k")); err == nil {
+			if left := hostedLeftovers(string(body)); len(left) > 0 {
+				fmt.Printf("\nnote: %s binds no workload hosted, but still declares the hosted parts copied from %s: %s.\n"+
+					"  They are published (and billed) on the control plane while no cluster workload reads them;\n"+
+					"  a cluster workload reads DATABASE_URL from its namespace's Secret (deploy/kcl/base/env.k on_cluster).\n"+
+					"  Remove them from deploy/kcl/%s/main.k unless you keep them on purpose.\n",
+					name, template, strings.Join(left, "; "), name)
+			}
+		}
+	}
 	// THE SHARED BASE (deploy/kcl/base/): a template env that binds through
 	// it carries only its own values, so the copy just written IS the new
 	// env's deltas. Say so, and say where the rest lives.
@@ -536,6 +547,15 @@ func transformLine(line, template, name, tIdent, nIdent string) []string {
 		}
 	}
 
+	// 4b. The template env's NAME where it names the env, not a value: the
+	//     env-name argument a shared binder takes (`envbase.on_cluster(…,
+	//     "prod", …)`), the docstring's "The `prod` environment", and the
+	//     commands that act on the env (`--env prod`, `forge env deploy
+	//     prod`). Left as the template's, the copy calls itself prod.
+	if template != name {
+		line = renameEnvMentions(line, template, name)
+	}
+
 	// 5. Rename the template's cluster-target local var to the new env's, so
 	//    the derived file is self-consistent (_staging_k8s → _preview_k8s).
 	if tIdent != nIdent {
@@ -694,4 +714,17 @@ func countPlaceholders(envDir string) int {
 		return 0
 	}
 	return len(offenders)
+}
+
+// renameEnvMentions rewrites the places a line names the template env as an
+// env: a quoted argument to a shared binder, the docstring's lead, and env
+// verbs' arguments.
+func renameEnvMentions(line, template, name string) string {
+	q := regexp.QuoteMeta(template)
+	if strings.Contains(line, "envbase.") {
+		line = regexp.MustCompile(`([(,]\s*)"`+q+`"(\s*[,)])`).ReplaceAllString(line, `${1}"`+name+`"${2}`)
+	}
+	line = regexp.MustCompile("The `"+q+"` environment").ReplaceAllString(line, "The `"+name+"` environment")
+	line = regexp.MustCompile(`(--env\s+|forge env [a-z]+\s+)`+q+`\b`).ReplaceAllString(line, "${1}"+name)
+	return line
 }

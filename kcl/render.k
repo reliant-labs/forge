@@ -1101,6 +1101,23 @@ _idn_rt = lambda id: any -> str {
     id.runtime.type if id.runtime else "hosted"
 }
 
+# Every identity the Bundle declares, in declaration order. `identity` is
+# sugar for `identities = [identity]`, so everything below reads this list and
+# never Bundle.identity: one identity renders the same whichever way it is
+# spelled.
+_idn_all = lambda identity: any, identities: [any] -> [any] {
+    [identity] if identity else (identities if identities else [])
+}
+_idns = lambda b: Bundle -> [any] {
+    _idn_all(b.identity, b.identities)
+}
+
+# How a message names an identity: "Bundle.identity" while the env declares
+# one, so every message a single identity gets reads as it always did.
+_idn_label = lambda ids: [any], id: any -> str {
+    "Bundle.identity" if len(ids) <= 1 else "Bundle.identities[${id.name}]"
+}
+
 # The runtimes a consumer may run on, given where the instance runs.
 _idn_reach = lambda id: any -> [str] {
     ["host", "cluster"] if _idn_rt(id) == "host" else ["cluster", "hosted"]
@@ -1219,6 +1236,87 @@ _idn_social_secret_readers = lambda workloads: [any], id: any -> [str] {
     [w.name for w in workloads if _names and w.env and any _, v in w.env { (typeof(v) == "ManagedSecret" and v.name in _names) or (typeof(v) == "SecretRef" and v.store_key and v.store_key in _names) }]
 }
 
+# --- the Bundle's rules over its identities ---------------------------------
+
+# The Bundle-level rules of one identity, as the messages of those it breaks
+# (empty = fine), in the order they were always judged. l names the identity
+# in each message (_idn_label).
+_idn_bundle_errors_of = lambda l: str, id: any, workloads: [any], infra: [any], env: str, project: str, lifecycle: any, control_plane: any -> [str] {
+    _host = True if id.runtime and id.runtime.type == "host" else False
+    _bad_apps = _idn_bad_apps(workloads, id, env, project)
+    _bad_consumers = _idn_bad_consumers(workloads, id, env, project)
+    _readers = _idn_social_secret_readers(workloads, id)
+    [str(r[1]) for r in [
+        [True if _idn_rt(id) != "hosted" or control_plane else False, \
+            "${l} runs on the hosted runtime, which needs control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what provisions the instance and delivers its outputs. For a local env use `runtime = forge.IdentityOnHost {infra = \"idp\"}`"]
+        [True if not _host or any i in infra { i.name == id.runtime.infra and i.engine == "zitadel" } else False, \
+            "${l}.runtime = IdentityOnHost names infra '${id.runtime.infra if _host else ''}', which is not a forge.HostInfra with engine 'zitadel' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"]
+        [True if len(id.seed_users) == 0 or lifecycle in ["local", "ephemeral"] else False, \
+            "${l}.seed_users create users with known passwords, so they are only allowed in an env that declares `lifecycle = \"local\"` or \"ephemeral\" (a real environment's users sign up or are invited). Remove them from this env, or declare the lifecycle if it really is scratch"]
+        # V15: a named dev mail server is a mailpit HostInfra.
+        [True if not _host or not id.runtime.mail or any i in infra { i.name == id.runtime.mail and i.engine == "mailpit" } else False, \
+            "${l}.runtime = IdentityOnHost names mail '${id.runtime.mail if _host else ''}', which is not a forge.HostInfra with engine 'mailpit' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"]
+        # V5 / V6: a magic link is an email, and open or domain signup
+        # verifies the address by email before any session.
+        [True if "magic_link" not in id.methods or _idn_mail_available(id, infra) else False, \
+            "${l}.methods offer \"magic_link\", but the identity can send no mail: ${_idn_no_mail_msg(id)}"]
+        [True if id.signup == "invite" or _idn_mail_available(id, infra) else False, \
+            "${l}.signup = \"${id.signup}\" verifies every new address by email before a session, but the identity can send no mail: ${_idn_no_mail_msg(id)}"]
+        # A social client secret is read only by the identity reconciler: no
+        # workload is handed it.
+        [len(_readers) == 0, \
+            "${_readers} read a secret that ${l}.social names as an OAuth client secret. Only the identity reconciler reads it (it is stored in the identity provider), so drop it from the workload's env"]
+        [True if not id.share_with or id.share_with != env else False, \
+            "${l}.share_with '${id.share_with}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"]
+        [len(_bad_apps) == 0, \
+            "${l}.applications name workloads that are not service workloads of this env: ${_bad_apps}. An application's workload runs the sign-in endpoint. Declared: ${[w.name for w in workloads if w.kind == 'service']}"]
+        [len(_bad_consumers) == 0, \
+            "${l}.consumers name workloads that are not service workloads on a runtime that can reach the instance (${_idn_reach(id)}): ${_bad_consumers}"]
+        [len(_idn_apps(workloads, id, env, project)) > 0 or len(_idn_consumers(workloads, id, env, project)) == 0, \
+            "${l} has consumers but no application: no workload can broker a sign-in. Declare `applications`, or bind a service workload named 'api'"]
+        [True if _idn_rt(id) != "host" or all m in id.machine_users { not m.key_secret } else False, \
+            "${l}.machine_users key_secret/cluster apply to a hosted instance, where the control plane delivers the key. A host-run IdP keeps the key in the env's secret store: drop key_secret and cluster"]
+        [True if _idn_rt(id) != "hosted" or all m in id.machine_users { m.key_secret } else False, \
+            "${l}.machine_users ${[m.name for m in id.machine_users if not m.key_secret]} have no key_secret/cluster: a hosted instance delivers a machine user's key to a Secret on a connected cluster, so say which"]
+    ] if not r[0]]
+}
+
+# A social provider's client, as the per-env uniqueness rule compares it: the
+# literal client id, or the store entry that holds it.
+_idn_social_client = lambda s: any -> str {
+    s.client_id if typeof(s.client_id) == "str" else "forge.ManagedSecret ${s.client_id.name}"
+}
+
+# Every Bundle-level identity rule, as messages (empty = fine): the rules
+# BETWEEN identities first, then each identity's own (_idn_bundle_errors_of).
+#
+#   brokers  an application belongs to one identity, so a workload is the
+#            native broker of at most one (one broker token, one login URI)
+#   host     a host-run IdP serves ONE instance per env (its default
+#            instance), so at most one identity runs on it
+#   social   an OAuth app has one callback, and each issuer has its own, so
+#            two identities never share a social client
+_idn_bundle_errors = lambda ids: [any], workloads: [any], infra: [any], env: str, project: str, lifecycle: any, control_plane: any -> [str] {
+    _brokers = [[a.workload, id.name] for id in ids for a in _idn_apps(workloads, id, env, project) if a.kind == "native_broker"]
+    _double = sorted({b[0]: 0 for b in _brokers if len({x[1]: 0 for x in _brokers if x[0] == b[0]}) > 1})
+    _hosts = [i.name for i in ids if _idn_rt(i) == "host"]
+    _social = [[_idn_social_client(s), id.name] for id in ids for s in id.social]
+    _shared = sorted({s[0]: 0 for s in _social if len({x[1]: 0 for x in _social if x[0] == s[0]}) > 1})
+    ["workload '${w}' is the native_broker of identities ${_idn_names_of(_brokers, w)}: an application belongs to one identity, so a workload brokers sign-in for at most one. Give each identity its own broker workload, and declare `applications` on each so only one names '${w}'" for w in _double] \
+    + (["Bundle.identities ${_hosts} all run on forge.IdentityOnHost, but a host-run IdP serves one instance per env (its default instance, which answers only to localhost), so their issuers, keys and users would be one. Run at most one identity of this env on the host IdP"] if len(_hosts) > 1 else []) \
+    + ["social client_id '${c}' is declared by identities ${_idn_names_of(_social, c)}: each issuer has its own callback, so each needs its own OAuth app" for c in _shared] \
+    + [e for id in ids for e in _idn_bundle_errors_of(_idn_label(ids, id), id, workloads, infra, env, project, lifecycle, control_plane)]
+}
+
+# The identity names paired with key in pairs ([[key, name]]), sorted, once each.
+_idn_names_of = lambda pairs: [any], key: str -> [str] {
+    sorted({p[1]: 0 for p in pairs if p[0] == key})
+}
+
+_idn_first_error = lambda errs: [str] -> str {
+    errs[0] if errs else ""
+}
+
 # The config field an output fills for c, and its env var.
 _idn_field = lambda c: any, o: str -> str {
     _f = {
@@ -1283,9 +1381,10 @@ _idn_cps = lambda workloads: [any], id: any, env: str, project: str -> [ControlP
     } for m in id.machine_users if m.key_secret and _idn_rt(id) == "hosted"]
 }
 
-# The author's control-plane secrets plus the ones the identity derives.
-_cps_decl = lambda workloads: [any], id: any, env: str, project: str, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
-    declared + (_idn_cps(workloads, id, env, project) if id else [])
+# The author's control-plane secrets plus the ones each identity derives, in
+# the order the identities are declared. ids is _idn_all's list.
+_cps_decl = lambda workloads: [any], ids: [any], env: str, project: str, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
+    declared + [s for id in ids for s in _idn_cps(workloads, id, env, project)]
 }
 
 # --- lowering: an output as an env value ------------------------------------
@@ -1303,12 +1402,23 @@ _idn_key = lambda o: str, app: str -> str {
     }[o] if o in ["audience", "issuer", "idp_base", "scopes", "client_id", "redirect_uri", "login_uri", "broker_token"] else "")
 }
 
+# The identity an IdentityRef reads: the one it names, else the env's only
+# one. With several, an unnamed ref is ambiguous, and the refusal lists the
+# names to choose from.
+_idn_ref_target = lambda v: any, where: str, bundle: Bundle -> any {
+    _ids = _idns(bundle)
+    assert len(_ids) > 0, "${where}: forge.IdentityRef needs Bundle.identity (forge.ManagedIdentity): there is no identity to read ${v.output} from"
+    assert v.identity or len(_ids) == 1, "${where}: forge.IdentityRef(${v.output}) is ambiguous: this env declares identities ${[i.name for i in _ids]}; set identity = \"<name>\""
+    _m = [i for i in _ids if i.name == v.identity] if v.identity else _ids
+    assert len(_m) > 0, "${where}: forge.IdentityRef names identity '${v.identity}', which this env does not declare (declared: ${[i.name for i in _ids]})"
+    _m[0]
+}
+
 # An IdentityRef as the value its referrer reads. Only called with a bundle
 # that declares an identity. `roles_claim` is a literal, and the rest lower to
 # the channel the referrer's runtime reads (see _idn_lowering).
 _idn_resolve = lambda v: any, where: str, rt: any, bundle: Bundle -> any {
-    _id = bundle.identity
-    assert _id, "${where}: forge.IdentityRef needs Bundle.identity (forge.ManagedIdentity): there is no identity to read ${v.output} from"
+    _id = _idn_ref_target(v, where, bundle)
     _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)
     _app = v.application or (_apps[0].name if len(_apps) == 1 else "")
     assert v.output not in IDENTITY_APP_OUTPUTS or _app, "${where}: forge.IdentityRef output '${v.output}' belongs to an application: name one with `application = ...` (declared: ${[a.name for a in _apps]})"
@@ -1334,64 +1444,96 @@ _idn_hand_set = lambda env: {str:}, k: str -> bool {
     False if _t == "none" else ((env[k] != "") if _t == "str" else (False if _t == "IdentityRef" else (not env[k].store_key if _t == "SecretRef" else True)))
 }
 
-_idn_entries = lambda c: any, rt: any, bundle: Bundle -> {str:} {
-    _id = bundle.identity
-    _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project)
-    _outs = _idn_outputs(c, _apps, _id)
-    _files = ["broker_token", "jwks"] if _idn_lowering(_id, rt) == "secret" else []
+# The consumer entry of identity id for workload w that is projected into it
+# (none for a deliver_only consumer): a list of at most one.
+_idn_cs_of = lambda w: any, id: any, bundle: Bundle -> [IdentityConsumer] {
+    [c for c in _idn_consumers(bundle.workloads, id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only]
+}
+
+# The identities whose outputs are projected into w, in declaration order.
+_idn_of = lambda w: any, bundle: Bundle -> [any] {
+    [id for id in _idns(bundle) if len(_idn_cs_of(w, id, bundle)) > 0]
+}
+
+# Where a cluster consumer's identity FILES are mounted: IDENTITY_DIR and
+# IDENTITY_JWKS_DIR, plus "--<name>" for an identity other than the default
+# one ("identity") when the workload reads files of several. A workload that
+# reads one identity mounts exactly as it always did, whatever its name.
+#
+# The separator is "--" because a name starts with a letter: the default
+# pair is forge-identity and forge-identity-jwks, a named pair
+# forge-identity--<name> and forge-identity-jwks--<name>, and no name can
+# make one of those another (a single "-" did: an identity named "jwks"
+# mounted its broker token as forge-identity-jwks, the default's snapshot).
+# Volume names and mount paths share the suffix, so both stay disjoint.
+_idn_dir_suffix = lambda w: any, id: any, rt: any, bundle: Bundle -> str {
+    _files = [i for i in _idn_of(w, bundle) if _idn_lowering(i, rt) == "secret"]
+    "--" + id.name if len(_files) > 1 and id.name != "identity" else ""
+}
+
+_idn_entries = lambda c: any, id: any, rt: any, bundle: Bundle, sfx: str -> {str:} {
+    _apps = _idn_apps(bundle.workloads, id, bundle.env, bundle.project)
+    _outs = _idn_outputs(c, _apps, id)
+    _files = ["broker_token", "jwks"] if _idn_lowering(id, rt) == "secret" else []
     {
-        _idn_envname(c, o): ("auto" if o == "roles_claim" else IdentityRef {output = o, application = c.application}) for o in _outs if o not in _files
+        _idn_envname(c, o): ("auto" if o == "roles_claim" else IdentityRef {output = o, application = c.application, identity = id.name}) for o in _outs if o not in _files
     } | {
-        "${_idn_envname(c, o)}_FILE": (IDENTITY_DIR + "/broker_token" if o == "broker_token" else IDENTITY_JWKS_DIR + "/jwks.json") for o in _outs if o in _files
+        "${_idn_envname(c, o)}_FILE": (IDENTITY_DIR + sfx + "/broker_token" if o == "broker_token" else IDENTITY_JWKS_DIR + sfx + "/jwks.json") for o in _outs if o in _files
     }
 }
 
-# The env a consumer is given, after refusing a field the author also set.
+# The env a consumer is given, after refusing a field the author also set,
+# and a field two identities would both fill.
 _idn_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
-    _id = bundle.identity
-    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id else []
-    _c = _cs[0] if _cs else Undefined
+    _all = _idns(bundle)
+    _ids = _idn_of(w, bundle)
     _env = w.env if w.env else {}
-    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project), _id) if _c else []
-    _clash = ["${_idn_envname(_c, o)} (config field ${_idn_field(_c, o)})" for o in _outs if o in IDENTITY_CONFLICT_OUTPUTS and _idn_hand_set(_env, _idn_envname(_c, o))] if _c else []
-    assert len(_clash) == 0, "workload '${w.name}' sets ${_clash} by hand AND Bundle.identity fills it. One source per field: drop the value from the workload's env / deploy/kcl/${bundle.env or '<env>'}/config.k and let the identity supply it, or remove Bundle.identity to bring your own issuer"
-    _idn_entries(_c, rt, bundle) if _c else {}
+    _by = lambda id: any -> str {
+        "Bundle.identity" if len(_all) == 1 else "Bundle.identities[${id.name}]"
+    }
+    _clash = ["${_idn_envname(c, o)} (config field ${_idn_field(c, o)})" for id in _ids for c in _idn_cs_of(w, id, bundle) for o in _idn_outputs(c, _idn_apps(bundle.workloads, id, bundle.env, bundle.project), id) if o in IDENTITY_CONFLICT_OUTPUTS and _idn_hand_set(_env, _idn_envname(c, o))]
+    _first = [id for id in _ids for c in _idn_cs_of(w, id, bundle) for o in _idn_outputs(c, _idn_apps(bundle.workloads, id, bundle.env, bundle.project), id) if o in IDENTITY_CONFLICT_OUTPUTS and _idn_hand_set(_env, _idn_envname(c, o))]
+    assert len(_clash) == 0, "workload '${w.name}' sets ${_clash} by hand AND ${_by(_first[0]) if _first else 'Bundle.identity'} fills it. One source per field: drop the value from the workload's env / deploy/kcl/${bundle.env or '<env>'}/config.k and let the identity supply it, or remove Bundle.identity to bring your own issuer"
+    _per = [[id.name, _idn_entries(_idn_cs_of(w, id, bundle)[0], id, rt, bundle, _idn_dir_suffix(w, id, rt, bundle))] for id in _ids]
+    _keys = [k for p in _per for k, _ in p[1]]
+    _dups = sorted({k: 0 for k in _keys if len([x for x in _keys if x == k]) > 1})
+    _msg = ["${k} (from identities ${[p[0] for p in _per if k in p[1]]})" for k in _dups]
+    _other = _ids[len(_ids) - 1].name if _ids else "<name>"
+    assert len(_dups) == 0, "workload '${w.name}' consumes identities ${[i.name for i in _ids]}, and more than one fills ${_msg}. One config field has one source: on one of them, map those outputs onto other config fields, e.g. `forge.IdentityConsumer {workload = \"${w.name}\", fields = forge.IdentityFields {issuer = \"${regex.replace(_other, '-', '_')}_jwt_issuer\", audience = \"${regex.replace(_other, '-', '_')}_jwt_audience\", ...}}` in that identity's consumers, or list them in its `omit`"
+    {k: v for p in _per for k, v in p[1]}
 }
 
 # The env vars an identity FILE output replaces: the file wins, so the plain
 # variable a config projection (or a hand) left behind must not stay beside it.
 _idn_shadowed = lambda w: any, rt: any, bundle: Bundle -> [str] {
-    _id = bundle.identity
-    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id else []
-    _c = _cs[0] if _cs else Undefined
-    _outs = _idn_outputs(_c, _idn_apps(bundle.workloads, _id, bundle.env, bundle.project), _id) if _c else []
-    [_idn_envname(_c, o) for o in ["broker_token", "jwks"] if o in _outs] if _c and _idn_lowering(_id, rt) == "secret" else []
+    [_idn_envname(c, o) for id in _idn_of(w, bundle) if _idn_lowering(id, rt) == "secret" for c in _idn_cs_of(w, id, bundle) for o in ["broker_token", "jwks"] if o in _idn_outputs(c, _idn_apps(bundle.workloads, id, bundle.env, bundle.project), id)]
 }
 
 # The Secret volumes a cluster consumer re-reads the broker token and the JWKS
 # snapshot from. Whole-directory mounts: the kubelet refreshes them in place.
 # The identity Secret is NOT optional, so the pod waits for the first delivery;
-# the snapshot is a fallback, so its Secret is.
+# the snapshot is a fallback, so its Secret is. One pair per identity the
+# workload reads, named and mounted with _idn_dir_suffix.
 _idn_volumes = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
-    _id = bundle.identity
-    _cs = [c for c in _idn_consumers(bundle.workloads, _id, bundle.env, bundle.project) if c.workload == w.name and not c.deliver_only] if _id and rt.type == "cluster" and _idn_rt(_id) == "hosted" else []
-    _c = _cs[0] if _cs else Undefined
-    _apps = _idn_apps(bundle.workloads, _id, bundle.env, bundle.project) if _c else []
-    _outs = _idn_outputs(_c, _apps, _id) if _c else []
+    [v for id in _idn_of(w, bundle) if rt.type == "cluster" and _idn_rt(id) == "hosted" for v in _idn_volumes_of(_idn_cs_of(w, id, bundle)[0], id, bundle, _idn_dir_suffix(w, id, rt, bundle))]
+}
+
+_idn_volumes_of = lambda c: any, id: any, bundle: Bundle, sfx: str -> [tiers.Volume] {
+    _outs = _idn_outputs(c, _idn_apps(bundle.workloads, id, bundle.env, bundle.project), id)
     ([tiers.Volume {
-        name = "forge-identity"
-        mountPath = IDENTITY_DIR
+        name = "forge-identity" + sfx
+        mountPath = IDENTITY_DIR + sfx
         readOnly = True
         source = tiers.VolumeSource {secret = tiers.SecretVolumeSource {
-            name = _idn_secret(_id)
-            items = [tiers.KeyToPath {key = _idn_key("broker_token", _c.application), path = "broker_token"}]
+            name = _idn_secret(id)
+            items = [tiers.KeyToPath {key = _idn_key("broker_token", c.application), path = "broker_token"}]
         }}
     }] if "broker_token" in _outs else []) + ([tiers.Volume {
-        name = "forge-identity-jwks"
-        mountPath = IDENTITY_JWKS_DIR
+        name = "forge-identity-jwks" + sfx
+        mountPath = IDENTITY_JWKS_DIR + sfx
         readOnly = True
         source = tiers.VolumeSource {secret = tiers.SecretVolumeSource {
-            name = _idn_secret(_id) + "-jwks"
+            name = _idn_secret(id) + "-jwks"
             optional = True
             items = [tiers.KeyToPath {key = "jwks.json", path = "jwks.json"}]
         }}
@@ -1400,15 +1542,13 @@ _idn_volumes = lambda w: any, rt: any, bundle: Bundle -> [tiers.Volume] {
 
 # --- the shape's identity ---------------------------------------------------
 
-_idn_managed_names = lambda b: Bundle -> [str] {
-    _id = b.identity
+_idn_managed_names = lambda b: Bundle, _id: any -> [str] {
     _apps = _idn_apps(b.workloads, _id, b.env, b.project)
     _hosted = [c for c in _idn_consumers(b.workloads, _id, b.env, b.project) if _idn_workload(b.workloads, c.workload) and _idn_workload(b.workloads, c.workload).runtime.type == "hosted"] if _idn_rt(_id) == "hosted" else []
     sorted({IDENTITY_MANAGED_PREFIX + _idn_tok(_id.name) + "_" + _idn_key(o, c.application): 0 for c in _hosted for o in _idn_outputs(c, _apps, _id) if o != "roles_claim"})
 }
 
-_render_identity = lambda b: Bundle -> any {
-    _id = b.identity
+_render_identity = lambda b: Bundle, _id: any -> any {
     _apps = _idn_apps(b.workloads, _id, b.env, b.project)
     _dl = [s for s in _idn_cps(b.workloads, _id, b.env, b.project) if s.kind in IDENTITY_SECRET_KINDS]
     {
@@ -1470,7 +1610,7 @@ _render_identity = lambda b: Bundle -> any {
             "cluster": s.cluster.cluster
             "connected_cluster": _cps_connected(s.cluster.cluster, s.cluster, b.workloads, b.cluster_target, b.connected_clusters)
         } for s in _dl]
-        "managed_secrets": _idn_managed_names(b) or None
+        "managed_secrets": _idn_managed_names(b, _id) or None
         # v2. Each key is emitted only when its field leaves the default, so a
         # declaration that uses none of them renders, and hashes, exactly as
         # it did before they existed.
@@ -1560,21 +1700,23 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
 #
-# Except where no image exists to name: a forge.BuildOnly workload whose
-# ShellBuild declares neither `image` nor `output_name` (a desktop bundle, a
-# tree of static files a frontend's `bundle` copies in). The command owns
-# everything it writes and forge composes no image reference into it, so a
-# name derived from the workload would be a placeholder: it was recorded as
-# the workload's image, overwrote the env's deploy-side build state, and was
-# demanded of every release cut. It renders no artifact name instead.
+# A build-only ShellBuild with neither an image nor an output_name never
+# invents a placeholder image, even with no declared file outputs. A build-only
+# GoBuild/ShellBuild can instead declare file outputs; those are recorded by
+# hash and need no image when the workload declares none.
 _artifact = lambda w: any -> str {
-    "" if _shell_builds_no_image(w) else \
+    "" if _shell_builds_no_image(w) or _files_only(w) else \
     ((img_lib.repository(w.image) if w.image \
         else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
 }
 
 _shell_builds_no_image = lambda w: any -> bool {
     bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
+}
+
+_files_only = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.outputs and w.build.type in ["go", "shell"] \
         and _bound_runtime(w).type == "build-only")
 }
 
@@ -2158,7 +2300,7 @@ _tel_agent_secret_refs = lambda b: Bundle -> [any] {
 _check_agent_telemetry = lambda b: Bundle -> bool {
     _refs = _tel_agent_secret_refs(b)
     _ns = b.observability.agent.namespace if _refs else ""
-    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, b.identity, b.env, b.project, b.control_plane_secrets)) if _refs else []
+    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, _idns(b), b.env, b.project, b.control_plane_secrets)) if _refs else []
     _missing = [d for d in _refs if not (any s in b.required_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in b.rendered_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in _delivered { s.name == d.ref.secret and _cps_ns(s) == _ns and d.ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] })]
@@ -2595,12 +2737,15 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
     }
 }
 
+# A cluster workload's target is always scoped to its namespace (ClusterTarget
+# requires one): an empty list would let the app.kubernetes.io/name selector
+# match same-named pods of every namespace and stamp them as this service.
 _tel_workload = lambda w: any, b: Bundle -> any {
     _rt = w.runtime
     _c = _rt.type == "cluster"
     _tel_target(w.telemetry, _tel_service_name(w), "workload:${w.name}", "workload", _rt.type, \
         _rt.target.cluster if _c else "", \
-        [_rt.target.namespace] if _c and _rt.target.namespace else [], \
+        [_rt.target.namespace] if _c else [], \
         {"app.kubernetes.io/name": w.name} if _rt.type in ["cluster", "hosted"] else {}, \
         "127.0.0.1" if _rt.type in ["host", "compose"] else "", \
         {p.name: p.port for p in w.ports} if w.ports else {}, b)
@@ -2937,6 +3082,16 @@ render = lambda bundle: Bundle -> any {
         # expires. Absent for every other env.
         if bundle.preview:
             "preview": {"of": bundle.preview.of, "expires_at": bundle.preview.expires_at, "source": bundle.preview.source if bundle.preview.source else None}
+        # Test coverage of the env's Go builds (Bundle.tests), as declared:
+        # forge computes the default (kcl/schema.k Tests), because it reads
+        # forge.yaml's opt-in. Absent when the env declares nothing, so an
+        # env that predates it renders exactly as before.
+        if typeof(bundle.tests.coverage) == "bool" or typeof(bundle.tests.coverage_packages) == "list" or bundle.tests.coverage_in_persistent_env:
+            "tests": {
+                "coverage": bundle.tests.coverage if typeof(bundle.tests.coverage) == "bool" else None
+                "coverage_packages": bundle.tests.coverage_packages if typeof(bundle.tests.coverage_packages) == "list" else None
+                "coverage_in_persistent_env": bundle.tests.coverage_in_persistent_env if bundle.tests.coverage_in_persistent_env else None
+            }
         # WHO APPLIES, declared: "forge" for a real env forge applies (the
         # platform's own env), "flux" for one an in-cluster Flux forge installs
         # reconciles, else null. See Bundle.applier.
@@ -3015,9 +3170,15 @@ render = lambda bundle: Bundle -> any {
             "release_health": _render_release_health(bundle.release_health)
         # The env's managed identity as DECLARED, with the applications and
         # consumers derived and the deliveries listed. It is release.Shape's
-        # `identity` in the shape's own vocabulary.
-        if bundle.identity:
-            "identity": _render_identity(bundle)
+        # `identity` in the shape's own vocabulary. ONE identity, however it
+        # is spelled (Bundle.identity, or a one-entry Bundle.identities), is
+        # `identity`, exactly as it always rendered, so every control plane
+        # keeps reading it; SEVERAL are `identities` (release.Shape.Identities),
+        # in declaration order, and `identity` is absent.
+        if len(_idns(bundle)) == 1:
+            "identity": _render_identity(bundle, _idns(bundle)[0])
+        if len(_idns(bundle)) > 1:
+            "identities": [_render_identity(bundle, id) for id in _idns(bundle)]
         "infra": [_render_host_infra(i) for i in bundle.infra]
         "frontends": [_render_frontend(f, bundle) for f in bundle.frontends]
         "databases": [_render_database(db, bundle) for db in bundle.databases]
@@ -3085,7 +3246,7 @@ render = lambda bundle: Bundle -> any {
         # logs in. A declaration only; no value.
         if bundle.openbao:
             "openbao": _openbao(bundle).block
-        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, bundle.identity, bundle.env, bundle.project, bundle.control_plane_secrets))]
+        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, _idns(bundle), bundle.env, bundle.project, bundle.control_plane_secrets))]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:
@@ -3511,6 +3672,8 @@ _render_build_variant = lambda bv: BuildVariant -> any {
         "tags": bv.tags
         "goos": bv.goos if bv.goos else None
         "goarch": bv.goarch if bv.goarch else None
+        "env_at_build": bv.env if bv.env else None
+        "output_name": bv.output_name if bv.output_name else None
     }
 }
 
@@ -3533,12 +3696,21 @@ _pgo_is_default = lambda p: PGO -> bool {
     p.enabled and not p.from_env and p.since == "168h" and p.min_weight == "10s" and not p.services
 }
 
+# A build's declared outputs (kcl/schema.k BuildOutput). A build that
+# declares none renders no `outputs` key, so every existing render is
+# byte-identical; an output's platform is emitted only when set.
+_render_build_outputs = lambda outputs: [BuildOutput] -> any {
+    [{"path": o.path} | ({"platform": o.platform} if o.platform else {}) for o in outputs]
+}
+
 _render_go_build = lambda b: GoBuild -> any {
     {
         "type": "go"
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         "cmd": b.cmd
         "goos": b.goos if b.goos else None
         "goarch": b.goarch if b.goarch else None
@@ -3548,6 +3720,10 @@ _render_go_build = lambda b: GoBuild -> any {
         "env": b.env if b.env else {}
         if not _pgo_is_default(b.pgo):
             "pgo": _render_pgo(b.pgo)
+        # The binary's own coverage answer (kcl/schema.k Tests); absent
+        # follows the env's.
+        if typeof(b.coverage) == "bool":
+            "coverage": b.coverage
     }
 }
 
@@ -3557,6 +3733,8 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         # A path string, or a GitSource pin projected in its stable dict form.
         "dockerfile": _render_git_source_member(b.dockerfile) if typeof(b.dockerfile) == "GitSource" else b.dockerfile
         # The MAIN build context (a project-root-relative dir, or a GitSource
@@ -3573,6 +3751,9 @@ _render_docker_build = lambda b: DockerBuild -> any {
         # Per-binary PGO, keyed by package path; absent when none is named.
         if b.pgo:
             "pgo": {k: _render_pgo(v) for k, v in b.pgo}
+        # Per-binary coverage, keyed by package path; absent when none is named.
+        if b.coverage:
+            "coverage": b.coverage
         # The files a --release build compares to reuse an earlier image;
         # absent when none are declared.
         if b.inputs:
@@ -3586,6 +3767,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         "cmd": b.cmd
         "cwd": b.cwd if b.cwd else None
         if b.source:
@@ -3595,6 +3778,10 @@ _render_shell_build = lambda b: ShellBuild -> any {
             "built_images": b.built_images
         if b.inputs:
             "inputs": b.inputs
+        # Per-binary PGO (ShellPGO), keyed by cwd-relative package path;
+        # absent when none is named.
+        if b.pgo:
+            "pgo": {k: _render_pgo(v) | {"out": v.out, "namespace": v.namespace} for k, v in b.pgo}
     }
 }
 

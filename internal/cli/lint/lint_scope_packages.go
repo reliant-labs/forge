@@ -14,7 +14,14 @@ package lint
 //   - a file excluded by its build constraint on every pass (`ignore`, a
 //     foreign GOOS/GOARCH, by `//go:build` or by file name);
 //   - a nested module's source (a directory with its own go.mod is not this
-//     module's package, whatever `./dir/...` looks like);
+//     module's package, whatever `./dir/...` looks like). That holds for a
+//     path anywhere inside the nested module, not only at its root: a
+//     pre-push hook scoping to a changed gen/services/x/v1/x.pb.go, where
+//     gen/ has its own go.mod, handed `./gen/services/x/v1` to the parent
+//     module, and both Go lanes failed "main module does not contain
+//     package". An unscoped run never lints a nested module either (`./...`
+//     stops at its go.mod), so dropping the path keeps the two agreeing; the
+//     skip note names the module (scopeSkipMsg);
 //   - the trees `go list ./...` itself skips (testdata, vendor, node_modules,
 //     `.`- and `_`-prefixed directories).
 //
@@ -26,11 +33,13 @@ package lint
 // each with a one-line note.
 
 import (
+	"fmt"
 	"go/build"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -51,6 +60,9 @@ func (s *lintScope) goPackages() []string {
 		fi, err := os.Stat(abs)
 		if err != nil {
 			continue
+		}
+		if s.nestedModuleOf(abs, fi.IsDir()) != "" {
+			continue // another module's source, at any depth inside it
 		}
 		var pattern string
 		switch {
@@ -138,6 +150,67 @@ func someLintPassCompiles(dir, name string, tags []string) bool {
 		}
 	}
 	return false
+}
+
+// nestedModuleOf returns the project-relative directory of the nested module
+// the scope path abs lies in — the nearest go.mod at or above it (at or above
+// its directory, for a file) and below the project root — or "" when abs is
+// this module's.
+func (s *lintScope) nestedModuleOf(abs string, isDir bool) string {
+	dir := abs
+	if !isDir {
+		dir = filepath.Dir(abs)
+	}
+	root := filepath.Clean(s.root)
+	for dir = filepath.Clean(dir); dir != root; dir = filepath.Dir(dir) {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "" // not under the root (parseLintScope refuses that)
+		}
+		if hasGoMod(dir) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return ""
+}
+
+// nestedModules lists the nested modules the scope's paths lie in, sorted.
+func (s *lintScope) nestedModules() []string {
+	if s == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range s.paths {
+		abs := filepath.Join(s.root, filepath.FromSlash(p))
+		fi, err := os.Stat(abs)
+		if err != nil {
+			continue
+		}
+		if mod := s.nestedModuleOf(abs, fi.IsDir()); mod != "" && !seen[mod] {
+			seen[mod] = true
+			out = append(out, mod)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// scopeSkipMsg is the note a package lane prints when the scope reaches no
+// Go package of this module. When scope paths lie in a nested module it says
+// so by name, so a scope of only generated gen/ files does not read as a
+// typo: that module is linted by a run inside it, never by this one.
+func (s *lintScope) scopeSkipMsg(lane string) string {
+	mods := s.nestedModules()
+	if len(mods) == 0 {
+		return "no Go package under --scope — skipping " + lane
+	}
+	noun := "is its own Go module"
+	if len(mods) > 1 {
+		noun = "are their own Go modules"
+	}
+	return fmt.Sprintf("no Go package of this module under --scope (%s %s, which forge lint lints only when run inside it) — skipping %s",
+		strings.Join(mods, ", "), noun, lane)
 }
 
 func hasGoMod(dir string) bool {

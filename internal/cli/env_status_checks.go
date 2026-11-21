@@ -58,6 +58,7 @@ const envStatusCheckTimeout = 15 * time.Second
 // the status table already reports whether it is listening.
 func runtimeTargetFor(e *KCLEntities, rows []upServiceRow) doctor.RuntimeTarget {
 	t := doctor.RuntimeTarget{RemoteOnly: e != nil && !entitiesTargetThisMachine(e)}
+	t.ClusterOnly = !t.RemoteOnly && e != nil && !entitiesRunHostStack(e)
 	for _, r := range rows {
 		if r.Kind != "host" || !r.Listening || r.HeldBy != "" || r.Port <= 0 {
 			continue
@@ -129,4 +130,20 @@ func runEnvRuntimeChecks(ctx context.Context, projectName, projectDir, env strin
 	fmt.Printf("\n  Runtime checks · env=%s\n\n", env)
 	d.PrintReport(os.Stdout, report, verbose)
 	return report, nil
+}
+
+// entitiesRunHostStack reports whether the env declares anything `forge env
+// up` runs on this machine outside a cluster: a host or compose workload, or
+// compose infra. An env with none — every workload on a cluster, a local k3d
+// one included — has no host stack for the machine-local checks to probe.
+func entitiesRunHostStack(e *KCLEntities) bool {
+	if len(e.Infra) > 0 {
+		return true
+	}
+	for _, w := range e.Workloads {
+		if w.Runtime.Type == RuntimeHost || w.Runtime.Type == RuntimeCompose {
+			return true
+		}
+	}
+	return false
 }

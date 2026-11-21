@@ -260,6 +260,15 @@ func TestMapCloudError(t *testing.T) {
 			t.Errorf("%s: exit %d, want %d", code, got, want)
 		}
 	}
+	// A project the caller cannot see is the request's fault, whichever
+	// answer the control plane gave, never "could not be reached".
+	unavailable := &cloud.ProjectUnavailableError{ProjectID: "hp-1", Wire: &cloud.Error{Code: "permission_denied"}}
+	if exitOf(MapCloudError(unavailable)) != ExitWrong {
+		t.Error("a hosted project the caller cannot see is not ExitWrong")
+	}
+	if f := FailureOf(unavailable); f.Class != ClassNotFound || f.Reason != cloud.ReasonHostedProjectNotFound {
+		t.Errorf("FailureOf(project unavailable) = %+v, want not_found / %s", f, cloud.ReasonHostedProjectNotFound)
+	}
 	if exitOf(MapCloudError(errors.New("dial tcp: refused"))) != ExitUndetermined {
 		t.Error("a transport failure is undetermined")
 	}

@@ -18,6 +18,9 @@ func TestGoTestDropsOnlyTheAmbientSlotLease(t *testing.T) {
 		"test.sh": body,
 		"go": `#!/usr/bin/env bash
 if [[ ${FORGE_SLOT_HELD+x} ]]; then echo "lease reached cmd/go"; exit 1; fi
+for v in FORGE_TEST_RUN FORGE_TEST_LANE FORGE_TEST_LANE_DIR; do
+  if [[ ${!v+x} ]]; then echo "$v reached cmd/go"; exit 1; fi
+done
 [[ $FIXTURE_INPUT == preserved ]] || exit 2
 printf '%s\n' "$*"
 `,
@@ -27,7 +30,10 @@ printf '%s\n' "$*"
 		}
 	}
 	cmd := exec.Command("bash", filepath.Join(root, "test.sh"), "-short", "./fixture")
-	cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_SLOT_HELD=heavy:1:unique-lease", "FIXTURE_INPUT=preserved")
+	cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "FORGE_SLOT_HELD=heavy:1:unique-lease", "FIXTURE_INPUT=preserved",
+		// What forge test capture exports to the command it records: a new
+		// run directory every time, which would key the test cache on it.
+		"FORGE_TEST_RUN=/runs/01ABC", "FORGE_TEST_LANE=unit", "FORGE_TEST_LANE_DIR=/runs/01ABC/unit")
 	out, err := cmd.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "test -short ./fixture" {
 		t.Fatalf("test helper: %v\n%s", err, out)

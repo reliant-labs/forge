@@ -18,6 +18,18 @@
 # picture plain `go test` prints, without the -v noise -json implies.
 # $GITHUB_STEP_SUMMARY gets the counts and the shard's slowest tests, which is
 # where a test that crept past the ~2s -short budget shows up first.
+#
+# RECORD. forge dogfoods its own test record: the run goes through
+# `forge test capture --lane unit` (this checkout's forge, scripts/ci-forge.sh)
+# into .forge/tests/runs/<run>/unit/ — the -json stream as results.json and,
+# with -covermode=atomic -coverprofile, the lane's coverage as cover.out.
+# Capture changes nothing about the run: it execs the same command, prints
+# the stream unchanged (--render raw, so $CI_TEST_JSON is what it was) and
+# exits with the command's status. Replay survives it: -coverprofile is a
+# cacheable flag whose path Go's cache ignores, the cover build is main's
+# warmed variant too (test-short-warm runs this script), and
+# scripts/ci-go-test.sh drops the FORGE_TEST_* variables capture exports
+# before cmd/go starts. FORGE_TESTS=off records nothing.
 set -euo pipefail
 
 json=${CI_TEST_JSON:-test-shard.json}
@@ -42,9 +54,17 @@ echo "::group::package shard $i of $n — ${#pkgs[@]} packages"
 printf '%s\n' "${pkgs[@]}"
 echo "::endgroup::"
 
+# The run to record into ($FORGE_TEST_RUN joins one an outer lane began), and
+# its lane directory, which -coverprofile writes into: made here, so a run
+# recorded nowhere (FORGE_TESTS=off) still has a place for the profile.
+# Before the clock: building forge is setup, not test time.
+run=$(scripts/ci-forge.sh test begin)
+mkdir -p "$run/unit"
+
 status=0
 started=$SECONDS
-scripts/ci-go-test.sh -short -json -timeout "$timeout" "${pkgs[@]}" >"$json" || status=$?
+scripts/ci-forge.sh test capture --run "$run" --lane unit --render raw -- \
+  scripts/ci-go-test.sh -short -json -covermode=atomic -coverprofile="$run/unit/cover.out" -timeout "$timeout" "${pkgs[@]}" >"$json" || status=$?
 elapsed=$((SECONDS - started))
 echo "shard $i/$n: ${elapsed}s wall (compile, link and tests; includes any cache replay)"
 # Observe the test-command budget, leaving setup/artifact headroom within 5m.

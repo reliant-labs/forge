@@ -38,7 +38,7 @@ printf '%s\n' '{"Action":"pass","Package":"fixture/package","Test":"TestCheap","
 	}
 	cmd := exec.Command("bash", "shard.sh", "0", "1")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "CI_TEST_JSON="+filepath.Join(root, "events.json"), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"), "CI_TEST_BUDGET_SECONDS=-1")
+	cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"), "CI_TEST_JSON="+filepath.Join(root, "events.json"), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"), "CI_TEST_BUDGET_SECONDS=-1", installStubForge(t, root))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("shard: %v\n%s", err, out)

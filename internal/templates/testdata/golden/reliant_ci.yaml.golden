@@ -424,4 +424,3 @@ finally:
         [ -d "./$run" ] && [ ! -L "./$run" ] && [ -O "./$run" ] || exit 0
         rm -rf -- "./$run"
         exit 0
-

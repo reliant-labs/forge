@@ -165,6 +165,11 @@ func TestEmitRootCommands_WritesOneCommandPerRoot(t *testing.T) {
 			t.Errorf("roots_gen.go lacks %q:\n%s", want, src)
 		}
 	}
+	// A root that fails to boot prints its error, not every flag first, even
+	// under a root.go written before newRootCmd silenced usage.
+	if got := strings.Count(string(src), "SilenceUsage: true,"); got != len(roots) {
+		t.Errorf("roots_gen.go sets SilenceUsage on %d root commands, want %d:\n%s", got, len(roots), src)
+	}
 }
 
 // A root's doc comment is its command's help: the first paragraph the Short,

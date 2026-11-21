@@ -2,6 +2,7 @@
 name: v1.8.0
 description: Upgrade a project to forge v1.8.0. Frontends move to zod 4 for GHSA-mrhx-c7xc-m3w5 (high; zod below 4.6.6, with no 3.x fix). A frontend scaffolded since v1.8.0 pins zod ^4.6.6, @hookform/resolvers ^7.0.7 and react-hook-form ^7.55.0, and its generated create/edit forms use the zod 4 API (z.enum over a TypeScript enum, z.email(), and a form typed by z.input and z.output). Nothing breaks on upgrade: forge reads each frontend's package.json and keeps writing pages for the zod it declares, but the advisory stays until you bump. Use when a frontend's package.json declares zod 3 or an @hookform/resolvers below 5.
 version: v1.8.0
+automation: fix:zod4-forms
 detection: forge-detect pre-zod4-forms
 ---
 
@@ -60,7 +61,12 @@ until you bump it.
 
 ### What to do
 
-For each frontend that declares zod 3:
+`forge fix zod4-forms` (`--dry-run` to see it first; `forge project upgrade`
+runs it for this playbook) does steps 1 and 2 except the install: it sets the
+three versions in each such `package.json` and makes the table's first, third
+and fourth edits in every `.tsx` under `src/` that calls `zodResolver`. Then
+install (step 1), and do steps 3 and 4. By hand, for each frontend that
+declares zod 3:
 
 1. **Bump the three packages** in its `package.json` to the versions above,
    then install with the frontend's own package manager (`pnpm install` with

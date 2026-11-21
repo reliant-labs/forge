@@ -483,7 +483,7 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 // directory and is already indifferent to filenames. Projects born before
 // the split keep their handlers.go and keep working, untouched.
 func RPCHandlerFileName(rpc string) string {
-	return rpcHandlerPrefix + naming.ToSnakeCase(rpc) + ".go"
+	return rpcHandlerPrefix + buildSafeStem(naming.ToSnakeCase(rpc)) + ".go"
 }
 
 const rpcHandlerPrefix = "rpc_"
@@ -500,7 +500,7 @@ const rpcHandlerPrefix = "rpc_"
 // (IsScaffoldTestFile) — including the pre-split
 // `handlers_scaffold_test.go` that older projects still carry on disk.
 func ScaffoldTestFileName(rpc string) string {
-	return scaffoldTestPrefix + naming.ToSnakeCase(rpc) + "_test.go"
+	return scaffoldTestPrefix + buildSafeStem(naming.ToSnakeCase(rpc)) + "_test.go"
 }
 
 const scaffoldTestPrefix = "handlers_scaffold_"

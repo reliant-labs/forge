@@ -115,11 +115,11 @@ func findPkg(t *testing.T, r *testreport.Results, path string) testreport.Packag
 	return testreport.PackageResult{}
 }
 
-// testdata/results/go-test.json is a real `go test -json -count=2 ./...` of a
+// testdata/results/go-test.jsonl is a real `go test -json -count=2 ./...` of a
 // module with a passing, a skipping, a failing and a flaky test, a table test
 // with subtests, a package that does not build, and one with no tests.
 func TestParseGoJSON_RealStream(t *testing.T) {
-	r := parseResults(t, "testdata/results/go-test.json", testreport.ResultsOptions{Lane: testreport.LaneUnit})
+	r := parseResults(t, "testdata/results/go-test.jsonl", testreport.ResultsOptions{Lane: testreport.LaneUnit})
 	if r.Schema != testreport.SchemaResults || r.Format != testreport.FormatGoJSON || r.Lane != "unit" || r.OK || r.ExitCode != 1 {
 		t.Errorf("head = %+v format %s lane %s", r.Head, r.Format, r.Lane)
 	}

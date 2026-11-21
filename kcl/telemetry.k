@@ -118,7 +118,10 @@ schema Telemetry:
         HostInfra's ports are named `server` (port), `monitor`
         (nats_monitor_port), `ui` (temporal_ui_port) and `metrics`
         (temporal_metrics_port). `selector`, `namespaces`, `cluster` and
-        `address` are refused.
+        `address` are refused. On forge.OnCompose a port is the CONTAINER
+        port: `forge env up` collects it on the loopback port the compose file
+        publishes it on (`19090:9090` is scraped at 127.0.0.1:19090), and one
+        the file does not publish is not collected, with a warning.
       * `Manifests.telemetry`: forge cannot see into raw objects, so
         `selector` (or `address`) is required and ports are numbers.
         `namespaces` defaults to [Manifests.namespace], and the cluster is

@@ -213,12 +213,15 @@ func TestValidateAttachmentRules(t *testing.T) {
 	unknownCluster := Target{ServiceName: "z", Source: "observability", Attachment: AttachObservability, Runtime: RuntimeCluster, Cluster: "elsewhere", Selector: map[string]string{"a": "b"}, Checks: []HealthCheck{{Port: 80}}}
 	hostSelector := Target{ServiceName: "w", Source: "observability", Attachment: AttachObservability, Runtime: RuntimeHost, Selector: map[string]string{"a": "b"}, Checks: []HealthCheck{{Port: 80}}}
 	external := Target{ServiceName: "v", Source: "workload:v", Attachment: AttachWorkload, Runtime: RuntimeExternal, Address: "x", Checks: []HealthCheck{{Port: 80}}}
-	requireProblem(t, Validate(Normalize([]Target{noTarget, noCluster, unknownCluster, hostSelector, external}), Options{Clusters: []string{"c"}}),
+	unscoped := workloadTarget()
+	unscoped.ServiceName, unscoped.Source, unscoped.Cluster, unscoped.Namespaces = "u", "workload:u", "c", nil
+	requireProblem(t, Validate(Normalize([]Target{noTarget, noCluster, unknownCluster, hostSelector, external, unscoped}), Options{Clusters: []string{"c"}}),
 		"a manifests target needs a selector (or an address)",
 		"telemetry observability (service y): cluster: a cluster target needs the cluster",
 		`"elsewhere" is not a cluster this env declares (it declares: c)`,
 		"service w): selector: selects pods, which only a cluster has",
-		"forge.OnExternal")
+		"forge.OnExternal",
+		"service u): namespaces: a workload target on a cluster needs its namespace")
 }
 
 func TestValidateHostedRules(t *testing.T) {

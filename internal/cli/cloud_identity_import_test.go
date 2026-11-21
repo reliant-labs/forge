@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -134,7 +135,9 @@ func TestCloudIdentityImport_BatchesTheRowsAndReportsWithoutHashes(t *testing.T)
 			t.Fatalf("a credential reached the output or the report: %q", leaked)
 		}
 	}
-	if fi, _ := os.Stat(report); fi.Mode().Perm() != 0o600 {
+	// Windows has no Unix permission bits (a file reads back 0666 or
+	// 0444), so the mode is only meaningful elsewhere.
+	if fi, _ := os.Stat(report); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("report mode = %v", fi.Mode().Perm())
 	}
 }

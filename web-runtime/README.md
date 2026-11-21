@@ -700,8 +700,19 @@ const relay = await startOtelRelay({ upstream: "http://127.0.0.1:4318" });
 
 ## The Vite dev server's browser-log receiver (`/vite`)
 
-`installDevLogging()` (the barrel) posts each browser console line, uncaught
-error and unhandled rejection to `/__forge/log` in dev. `forgeDevLog()` is the
+`installDevLogging()` posts each browser console line, uncaught error and
+unhandled rejection to `/__forge/log` in dev. Import it from `/devlog`, which
+imports no other package, when that is all an app takes from the runtime (an
+adopted site with no RPC client). The barrel exports it too, but the barrel
+also needs the optional peers `@connectrpc/connect` and `@bufbuild/protobuf`.
+
+```ts
+// src/main.tsx
+import { installDevLogging } from "@reliantlabs/forge-web-runtime/devlog";
+if (import.meta.env.DEV) installDevLogging({ dev: true });
+```
+
+`forgeDevLog()` is the
 Vite dev server's end of that: it prints each line as `[browser:<level>] <msg>`
 on the dev server's stdout, which `forge env up` tees to
 `.forge/logs/<env>/frontend_<name>.log`. It accepts both wire shapes: the

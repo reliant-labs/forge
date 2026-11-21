@@ -1113,6 +1113,11 @@ type DockerBuild struct {
 	// builds, keyed by package path ("./cmd/app"). A binary it does not name
 	// gets the defaults (kcl/schema.k DockerBuild.pgo).
 	PGO map[string]PGOConfig `json:"pgo,omitempty"`
+	// Inputs are the globs (relative to the project root, or to the resolved
+	// GitSource context) naming the files the image is built from. Declared,
+	// they let a --release build reuse an earlier release's image whose
+	// fingerprint is unchanged — see build_docker_release_reuse.go.
+	Inputs []string `json:"inputs,omitempty"`
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1717,6 +1722,12 @@ type kclRenderRaw struct {
 	RequiredDNS              []DNSRecordEntity                         `json:"required_dns,omitempty"`
 	ControlPlaneSecrets      []ControlPlaneSecretEntity                `json:"control_plane_secrets,omitempty"`
 	ExternalSecretsOperators []release.RenderedExternalSecretsOperator `json:"external_secrets_operators,omitempty"`
+	// TelemetryCollector is Observability.telemetry_collector, the env's
+	// own collector, rendered only with telemetry. internal/cluster reads it
+	// (decodeTelemetry) to admit that collector in the targets'
+	// NetworkPolicy rules; it is declared here so the env document schema
+	// carries it.
+	TelemetryCollector *kclTelemetryCollectorRaw `json:"telemetry_collector,omitempty"`
 	// Manifests is the applyable stream. Parsed loosely: only kind, name
 	// and namespace are read here (see rawManifest).
 	Manifests []rawManifest `json:"manifests,omitempty"`
@@ -1725,6 +1736,14 @@ type kclRenderRaw struct {
 	// their names are read here, as cluster work (see ClusterWork).
 	BundledCharts []namedRaw `json:"bundled_charts,omitempty"`
 	Generated     []namedRaw `json:"generated,omitempty"`
+}
+
+// kclTelemetryCollectorRaw is output.telemetry_collector: the namespace and
+// pod labels of the collector that scrapes the env's Telemetry when it is
+// not forge's node agent.
+type kclTelemetryCollectorRaw struct {
+	Namespace string            `json:"namespace"`
+	PodLabels map[string]string `json:"pod_labels"`
 }
 
 // namedRaw reads only the name of a render-output entry.

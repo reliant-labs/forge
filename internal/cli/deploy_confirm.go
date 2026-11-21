@@ -56,6 +56,10 @@ type deployConfirm struct {
 	// AutoVersion is the version a no-version deploy cut, for the
 	// --plan-only line and the JSON document. Empty for a versioned deploy.
 	AutoVersion string
+	// From is --from / --from-promotion, carried into the approve command
+	// --plan-only prints: approving without it would drop the source_moved
+	// assertion the plan was computed under.
+	From promoteFromOptions
 
 	// Interactive is whether forge may prompt. PRODUCTION ALWAYS SETS IT,
 	// from cliutil.StdinIsTTY at the command boundary
@@ -87,6 +91,7 @@ func newDeployConfirm(p promoteCmdFlags, autoVersion string) *deployConfirm {
 		Approve:     p.approve,
 		PlanOnly:    p.planOnly,
 		AutoVersion: autoVersion,
+		From:        p.fromSource(),
 		Interactive: cliutil.StdinIsTTY(),
 	}
 }
@@ -161,7 +166,7 @@ func confirmDeployPlan(env string, plan promotePlan, c deployConfirm, jsonMode b
 		} else {
 			fmt.Fprintf(out, "\n--plan-only: NO promotion was written.\n")
 		}
-		next, why := approveCommand(env, planOnlyVersion(plan, c), plan.DeployPlan)
+		next, why := approveCommand(env, planOnlyVersion(plan, c), c.From, plan.DeployPlan)
 		fmt.Fprintf(out, "  Approve it with: %s\n", next)
 		if why != "" {
 			fmt.Fprintf(out, "  %s\n", why)
@@ -238,11 +243,20 @@ func planOnlyVersion(plan promotePlan, c deployConfirm) string {
 // no plan could be computed at all (a never-built env, or a control plane that
 // predates bundles — F-15). Nil is not "no changes", so the fallback says why
 // it is the fallback rather than looking like the normal answer.
-func approveCommand(env, version string, plan *release.Plan) (command, why string) {
+//
+// A --from deploy keeps its source: the version alone would deploy the same
+// release without the control plane's check that the source still runs it.
+func approveCommand(env, version string, from promoteFromOptions, plan *release.Plan) (command, why string) {
 	var b strings.Builder
 	b.WriteString("forge env deploy " + env)
 	if version != "" {
 		b.WriteString(" " + version)
+	}
+	if from.Env != "" {
+		b.WriteString(" --from " + from.Env)
+	}
+	if from.PromotionID != "" {
+		b.WriteString(" --from-promotion " + from.PromotionID)
 	}
 	if plan == nil || plan.Digest == "" {
 		b.WriteString(" --yes")

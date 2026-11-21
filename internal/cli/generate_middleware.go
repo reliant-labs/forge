@@ -829,6 +829,11 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
 		return err
 	}
+	// A block inside a block is not projected (one level, as the flattener
+	// documents); the Go loader still reads it, so say what config.k lacks.
+	for _, w := range codegen.UnprojectedNestedConfigBlocks(messages) {
+		fmt.Fprintf(os.Stderr, "  ⚠️  %s\n", w)
+	}
 
 	// Flatten all proto config fields. Most projects have a single
 	// AppConfig message; multiple are supported but rendered as one set.

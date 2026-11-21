@@ -852,6 +852,29 @@ the same "parallel group" can run at the same time. → means "blocked by".
 | R1  | Built-in `vuln-patch.yaml` (deterministic → agent takeover → verify gate → `git_publish` → `github/pr.create@1`) plus scenario tests for each exit-code branch | reliant | M    | F9a released and pinned (P1 or a later pin) | B              |
 | W3  | Patch / Patch with agent buttons → `StartRun`, run and PR links, disabled-with-reason states; "Exempt…" through the same PR path                               | reliant | S    | R1, W1                                      | C              |
 
+### Phase 4b: on by default, and our own products adopt it
+
+The owner settled this on 2026-11-20: every forge feature that is safe to have
+on is on by default for new projects, and is offered to existing ones through a
+`forge project upgrade` playbook. "Safe" means the default can never block a
+deploy on its own, so `vuln_gate` and `provenance_sbom` stay `audit`. Once a
+feature is built, our own products adopt it, and each adoption is a tracked
+task.
+
+SBOM generation needs no opt-in. F3 runs it at every release cut of every
+project that pins the release that ships it. So "on by default" is mostly about
+the parts a project owns: its CI template and its env declarations.
+
+| #   | Task                                                                                                                                                                                                                                                                                                                                                                                 | Repo                | Size | Depends on |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------- | ---- | ---------- |
+| D0  | Default-on for new projects: `forge project new` (every kind, `--kind site` and `--kind app` included) scaffolds nothing that turns SBOMs off, the scaffolded CI caches the grype DB and runs `forge vuln scan`, and an e2e test proves a fresh scaffold's first cut records an SBOM per artifact                                                                                    | forge               | S    | F3, F4, F7 |
+| D1  | Upgrade playbook `migrations/<NEXT_VERSION>/sbom-vulnerabilities` for existing projects: replace the scaffolded `build-images.yml`'s `sbom-action`/`trivy-action` steps with `forge vuln scan` and the DB cache (an automation step where the file is still the scaffold's), and explain `vuln_gate`, `vuln exempt` and `vuln.attach_sbom`. Surfaced by `forge project upgrade list` | forge               | S    | D0         |
+| D2  | control-plane dogfood: its releases carry SBOMs (its cut runs a forge with F3), `vuln_store.ENABLED` on in prod with the bucket provisioned (phase 19, an owner-run step), the scanner's egress NetworkPolicy, `vuln-findings` advertised, and its Security page shows findings                                                                                                      | control-plane       | M    | P1, C3–C5  |
+| D3  | reliant dogfood: reliant's releases carry SBOMs, uploaded to the control plane, and its Security page shows findings                                                                                                                                                                                                                                                                 | reliant             | S    | P1, D2     |
+| D4  | forge dogfood: forge's own release (`scripts/release-forge.sh`) records an SBOM per published binary with `forge release record --sbom` or `forge vuln scan`, and attaches it to the GitHub release                                                                                                                                                                                  | forge               | S    | P1         |
+| D5  | landing-page dogfood: the static site's lockfile SBOM is recorded at its cut, which needs only the pin bump                                                                                                                                                                                                                                                                          | landing-page        | S    | P1         |
+| D6  | `vuln-patch` runs on our repos: a scheduled trigger (weekly) on control-plane, reliant and forge, opening PRs through the normal review pipeline                                                                                                                                                                                                                                     | reliant + each repo | S    | R1, D2, D3 |
+
 ### Phase 5: follow-ups (each optional and independent)
 
 | #   | Task                                                                                                        | Repo                    | Size | Depends on |
@@ -984,6 +1007,10 @@ each one, and they are settled.
    with a "not scanned yet" state. It is not a separate Vulnerabilities row
    that hides on an empty read (this supersedes W2's "hidden on a definite
    empty read").
+7. **On by default, and dogfooded.** New projects get SBOMs and scanning with
+   no setup, existing projects get an upgrade playbook, and control-plane,
+   reliant, forge and the landing page adopt it after the pin bump. See
+   phase 4b.
 
 ## Phase 0 results and amendments (2026-11-20)
 

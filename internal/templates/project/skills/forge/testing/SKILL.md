@@ -70,7 +70,10 @@ stays real at every tier.
     returns a request the schema accepts; variants 0 and 1 are distinct rows.
     The scaffold-once `handlers_crud_test.go` builds its rows from these, so a
     migration you edit later (a GENERATED column, a new CHECK) flows into the
-    test through `forge generate` instead of breaking it.
+    test through `forge generate` instead of breaking it. An entity the
+    service gains later gets its own scaffold-once
+    `handlers_crud_<entity>_test.go` (unless you deleted `handlers_crud_test.go`,
+    which opts the service out).
   A factory forge cannot derive a valid row for still compiles; calling it fails
   the test with postgres's reason, and `forge generate` prints the same warning.
 - **Older lifecycle tests embed literal fixture SQL.** `forge lint

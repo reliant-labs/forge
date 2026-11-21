@@ -95,6 +95,9 @@ type ShapeInput struct {
 	// (forge.ExternalDatabase), as routes: names, never a password. Nil when
 	// it declares none.
 	ExternalDatabases []release.ShapeExternalDatabase
+	// Telemetry is the env's hosted telemetry targets (release.ShapeTelemetryOf),
+	// or nil when it declares none.
+	Telemetry []release.ShapeTelemetry
 
 	// Applier is the env's declared applier (release.ApplierForge or
 	// release.ApplierFlux), or "".
@@ -163,6 +166,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		Identity:            in.Identity,
 		Databases:           in.Databases,
 		ExternalDatabases:   in.ExternalDatabases,
+		Telemetry:           in.Telemetry,
 		Applier:             in.Applier,
 		Units:               in.Units,
 		HostInfra:           in.HostInfra,

@@ -10,7 +10,9 @@ package cli
 // images, oras for a bundle, go-containerregistry for a static site — so one
 // login to a host makes all three work. A second keychain, a forge-owned
 // credential cache or a per-path auth header would be three ways to be half
-// logged in.
+// logged in. On a machine with no docker CLI the same login is written
+// in-process to the same store (dockercred.Login), so a frontend-only deploy,
+// whose pushes all run in-process, needs no docker.
 //
 // WHY THE CREDENTIAL IS NOT THE AUTHOR'S PROBLEM. The registry's realm
 // derives the org from the token row, scopes the token to that org's subtree,

@@ -112,6 +112,7 @@ jobs:
     # main, so a dispatch on a feature branch never files an issue.
     if: ${{ always() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write

@@ -269,3 +269,56 @@ func TestCRUDOwnerResolver_NonIDPrimaryKeyOwner(t *testing.T) {
 		})
 	}
 }
+
+const (
+	// viaDecidedUserID is the placeholder's expression with its
+	// FORGE_SCAFFOLD reminder removed: the author kept claims.UserID.
+	viaDecidedUserID = "\tclaims, err := middleware.GetUser(ctx)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\towner := claims.UserID\n"
+	viaClaimsEmail   = "\tclaims, err := middleware.GetUser(ctx)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\towner := claims.Email\n"
+)
+
+// TestCRUDOwnerResolver_DeliberateUserIDIsADecision is the
+// scope-rows-to-owner run (FG-32): four wrappers kept claims.UserID with the
+// reminder removed and one changed to claims.Email. The UserID wrappers are
+// the policy, so they are not flagged; the email one is, and it is told to
+// converge on UserID, never the other way round.
+func TestCRUDOwnerResolver_DeliberateUserIDIsADecision(t *testing.T) {
+	fs := lintOwnerFile(t, userIDOwnerFile([][2]string{
+		{"CreateOrder", viaDecidedUserID},
+		{"GetOrder", viaDecidedUserID},
+		{"ListOrders", viaDecidedUserID},
+		{"UpdateOrder", viaDecidedUserID},
+		{"DeleteOrder", viaClaimsEmail},
+	}))
+	if len(fs) != 1 || !strings.Contains(fs[0].Message, "DeleteOrder scopes user_id by middleware.GetUser(ctx).Email") {
+		t.Fatalf("want one finding, on DeleteOrder, got %+v", fs)
+	}
+	if !strings.Contains(fs[0].Message, "not a stable owner key") {
+		t.Errorf("the email wrapper's message must say why email is wrong: %s", fs[0].Message)
+	}
+	if !strings.Contains(fs[0].Remediation, "siblings do (middleware.GetUser(ctx).UserID)") {
+		t.Errorf("the email wrapper must be told to converge on UserID: %s", fs[0].Remediation)
+	}
+}
+
+// TestCRUDOwnerResolver_NeverRecommendsEmail: placeholders whose only
+// decided sibling scopes by email are still unfinished, but the fix is a
+// stable id, not the sibling's email.
+func TestCRUDOwnerResolver_NeverRecommendsEmail(t *testing.T) {
+	fs := lintOwnerFile(t, userIDOwnerFile([][2]string{
+		{"CreateOrder", viaPlaceholder},
+		{"GetOrder", viaPlaceholder},
+		{"DeleteOrder", viaClaimsEmail},
+	}))
+	if len(fs) != 2 {
+		t.Fatalf("want a finding on each placeholder, got %+v", fs)
+	}
+	for _, f := range fs {
+		if strings.Contains(f.Remediation, "siblings do") || !strings.Contains(f.Remediation, "do not converge on middleware.GetUser(ctx).Email") {
+			t.Errorf("remediation must refuse the email source: %s", f.Remediation)
+		}
+		if !strings.Contains(f.Remediation, "remove the FORGE_SCAFFOLD comment") {
+			t.Errorf("remediation must say how to record claims.UserID as the decision: %s", f.Remediation)
+		}
+	}
+}

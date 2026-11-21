@@ -1,7 +1,7 @@
 <!-- forge:version=1 -->
 # shop
 
-This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands. It is a **static site**: a frontend with no backend, shipped by forge with environments, build-once releases and hosted static hosting.
+This is a **Reliant Forge** project (github.com/reliant-labs/forge), driven by the `forge` CLI — not Atlassian Forge, Foundry's `forge` or Laravel Forge; do not use their commands. It is a **static site**: a frontend with no backend, shipped by forge with environments, build-once releases.
 
 This file is loaded into every session, so it holds only what to know before your first edit. Depth is one `forge skill load <name>` away, named where you need it.
 
@@ -17,9 +17,7 @@ A static site — a landing page, a marketing or docs site, a SPA — is a compl
 package.json, src/, public/   ← the site: a plain Next.js or Vite app — yours, forge never rewrites it
 forge.yaml                    ← name, forge pin, harness (no module_path: there is no Go module)
 deploy/kcl/kcl.mod
-deploy/kcl/dev/main.k         ← the frontend (path = ".") bound to its dev server
-deploy/kcl/staging/main.k     ← … bound to hosted static hosting (forge.OnHosted {})
-deploy/kcl/prod/main.k        ← … same
+deploy/kcl/<env>/main.k       ← where the frontend (path = ".") runs, one per env: dev, prod, staging
 ```
 
 The frontend's `type` (`nextjs` or `vite`) and `public_dir` (where `npm run build` lands: `out/` or `dist/`) are declared in each env's `main.k`. The envs are the declaration: change a binding there, then check it with `forge env render <env>`.
@@ -42,7 +40,7 @@ A site forge started (`forge project new --kind site`) mirrors every `console.*`
 grep '\[browser:error\]' .forge/logs/dev/*.log
 ```
 
-An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` and serves the dev-server receiver; `forge skill load debug` covers both halves.
+An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime/devlog` and serves the dev-server receiver; `forge skill load debug` covers both halves.
 
 ## Build it as a static export
 
@@ -51,18 +49,17 @@ Hosted static hosting serves files: `npm run build` must produce a directory of 
 ## Ship it
 
 ```bash
-forge lint --static-export && forge env render prod
-forge env build prod --release v0.1.0   # build ONCE, push, record the release
-forge env deploy staging v0.1.0         # promote the same bytes … (a 2nd hosted env needs billing — below)
-forge env deploy prod v0.1.0            # … to prod, by digest — no rebuild
-forge env status prod                   # verify
+forge lint --static-export && forge env render <env>
+forge env build <env> --release v0.1.0   # build ONCE, push, record the release
+forge env deploy <env> v0.1.0            # promote the same bytes to each env in turn, by digest — no rebuild
+forge env status <env>                   # verify
 ```
 
-Staging and prod are already bound to Reliant hosted static hosting: the platform owns the bucket, the CDN and a hostname. A hosted deploy ships only a recorded release, never a local build; recovery rolls forward to a new release. Another env is `forge env new preview --from prod`. Your own bucket or Firebase instead: change the frontend's `runtime` in that env's `main.k` (`deploy/static-site`).
+This project's envs are `dev`, `prod`, `staging`. Names don't establish where an env runs, so never assume one is hosted: its `main.k` declares the bindings, and `forge env render <env>` resolves them (`forge.OnHosted` is Reliant hosting). A new env on hosting is `forge env new <name> --from <env> --bind <frontend>=hosted` (`deploy/hosting`). On Reliant hosted static hosting the platform owns the bucket, the CDN and a hostname. A hosted deploy ships only a recorded release, never a local build; recovery rolls forward to a new release. Your own bucket or Firebase instead: change the frontend's `runtime` in that env's `main.k` (`deploy/static-site`).
 
-**Billing.** One hosted static site per person is free, across every org they own without a plan — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. Staging and prod are both bound to hosting, so without billing ONE of them deploys free (deploy prod first if the user wants it live) and the second queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
+**Billing.** One hosted static site per person is free, across every org they own without a plan — no billing, 1 GiB storage cap — and it is counted across environments: each env's deployed site is one site. So without billing one env's site deploys free, and a second hosted env's queues with `STATIC_FREE_TIER_EXCEEDED`. Anything beyond the free site — a second env or site, any hosted workload or managed database — needs billing; until it is set up the deploy is queued, not refused: `env deploy` exits 7 and prints the billing link. Give the user that link; don't retry. Never ask for `forge login` when running under Reliant: you are already signed in.
 
-**Custom domains:** `forge domain add <host> --env prod` (`deploy/domains`).
+**Custom domains (on Reliant hosting):** `forge domain add <host> --env <env>` (`deploy/domains`).
 
 ## Config
 
@@ -84,7 +81,7 @@ When the site needs a backend — a waitlist, checkout, login — that is a Go A
 
 1. **The site's files are yours.** forge generates no code into a site and never rewrites `package.json`, `src/` or the build config. What forge owns is `forge.yaml` and `deploy/kcl/` — declarations you edit, not generated output.
 2. **Gate with `forge lint`.** Never pipe it through `head` — the verdict is the LAST line; `forge lint --quiet` prints only failures plus that verdict. `--static-export` is the lane that matters most here.
-3. **`npm run build` before you call it done.** It is the only proof the export builds; `forge env render prod` is the proof the envs still declare a shippable site.
+3. **`npm run build` before you call it done.** It is the only proof the export builds; `forge env render <env>` is the proof the envs still declare a shippable site.
 4. **Ship releases, not builds.** Build once (`env build <env> --release <v>`), then deploy that release to each env in turn.
 
 ## When forge itself is wrong — FIX IT

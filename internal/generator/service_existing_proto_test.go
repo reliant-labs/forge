@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,5 +64,35 @@ func TestGenerateServiceFiles_ExistingProtoWithForeignGoPackage(t *testing.T) {
 	err := GenerateServiceFiles(root, "example.com/myapp", "billing", "myapp")
 	if err == nil || !strings.Contains(err.Error(), "proto/api/billing.proto declares service BillingService") {
 		t.Fatalf("err = %v; want a refusal naming the existing file", err)
+	}
+}
+
+// Two proto files declaring the service is ambiguous: refused by name, never
+// resolved by walk order. One in forge's default layout is the contract.
+func TestGenerateServiceFiles_ExistingProtoDeclaredTwice(t *testing.T) {
+	src := "syntax = \"proto3\";\npackage %s;\noption go_package = \"example.com/myapp/gen/%s/v1;%sv1\";\nservice BillingService {}\n"
+	write := func(root, rel, pkg string) {
+		t.Helper()
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(fmt.Sprintf(src, pkg, pkg, pkg)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	write(root, "proto/a/v1/billing.proto", "a")
+	write(root, "proto/b/v1/billing.proto", "b")
+	err := GenerateServiceFiles(root, "example.com/myapp", "billing", "myapp")
+	if err == nil || !strings.Contains(err.Error(), "proto/a/v1/billing.proto, proto/b/v1/billing.proto") {
+		t.Fatalf("err = %v; want a refusal naming both files", err)
+	}
+
+	root = t.TempDir()
+	write(root, "proto/a/v1/billing.proto", "a")
+	write(root, "proto/services/billing/v1/billing.proto", "services/billing")
+	if _, found, err := findExistingServiceProto(root, "example.com/myapp", "BillingService", filepath.Join("proto", "services", "billing", "v1", "billing.proto")); err != nil || found {
+		t.Fatalf("found %v, err %v; want the default layout's declaration to stay the contract", found, err)
 	}
 }

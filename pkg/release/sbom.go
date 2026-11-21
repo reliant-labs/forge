@@ -90,41 +90,77 @@ func (s *SBOMRef) validate() error {
 // only says [SBOMStatusUnavailable] names no SBOM, so a later ref that names
 // one fills it.
 //
+// The same rule holds within a recorded SBOM: when requested names the SAME
+// SBOM (equal Digest) and knows where it was attached beside its artifact
+// (Referrer) while the record does not, the Referrer is filled in. A
+// recorded Referrer is never replaced, and a Referrer for another SBOM is
+// never taken.
+//
+// The release's own [Release.SourceSBOM] follows the same rule.
+//
 // existing is not modified; the result has its own Artifacts map.
 func BackfillSBOMs(existing, requested Release) (Release, bool) {
 	out := existing
 	changed := false
+	if ref, ok := backfillRef(existing.SourceSBOM, requested.SourceSBOM); ok {
+		out.SourceSBOM = ref
+		changed = true
+	}
+	artifactsCopied := false
 	for name, a := range existing.Artifacts {
 		req, ok := requested.Artifacts[name]
-		if !ok || req.SBOM == nil || a.SBOM.HasSBOM() {
+		if !ok {
 			continue
 		}
-		if a.SBOM != nil && !req.SBOM.HasSBOM() {
-			// Both say "none"; the first reason recorded stands.
+		ref, fill := backfillRef(a.SBOM, req.SBOM)
+		if !fill {
 			continue
 		}
-		if !changed {
+		if !artifactsCopied {
 			out.Artifacts = make(map[string]Artifact, len(existing.Artifacts))
 			for n, v := range existing.Artifacts {
 				out.Artifacts[n] = v
 			}
-			changed = true
+			artifactsCopied = true
 		}
-		ref := *req.SBOM
-		a.SBOM = &ref
+		changed = true
+		a.SBOM = ref
 		out.Artifacts[name] = a
 	}
 	return out, changed
 }
 
-// WithoutSBOMs returns r with every artifact's SBOM cleared, for a document
-// an older decoder reads strictly (a snapshot release's CutRelease document).
-// r is not modified.
-func (r Release) WithoutSBOMs() Release {
-	if len(r.Artifacts) == 0 {
-		return r
+// backfillRef is the one fill-never-replace rule: a copy of requested when
+// the record should take it, and whether it should.
+func backfillRef(existing, requested *SBOMRef) (*SBOMRef, bool) {
+	if requested == nil {
+		return nil, false
 	}
+	if existing.HasSBOM() {
+		if existing.Referrer == "" && requested.Referrer != "" && requested.Digest == existing.Digest {
+			ref := *existing
+			ref.Referrer = requested.Referrer
+			return &ref, true
+		}
+		return nil, false
+	}
+	if existing != nil && !requested.HasSBOM() {
+		// Both say "none"; the first reason recorded stands.
+		return nil, false
+	}
+	ref := *requested
+	return &ref, true
+}
+
+// WithoutSBOMs returns r with every SBOM cleared, each artifact's and the
+// release's SourceSBOM, for a document an older decoder reads strictly (a
+// snapshot release's CutRelease document). r is not modified.
+func (r Release) WithoutSBOMs() Release {
 	out := r
+	out.SourceSBOM = nil
+	if len(r.Artifacts) == 0 {
+		return out
+	}
 	out.Artifacts = make(map[string]Artifact, len(r.Artifacts))
 	for n, a := range r.Artifacts {
 		a.SBOM = nil

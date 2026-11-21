@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,17 +18,100 @@ import (
 // disk, and the format= opt drives yaml vs json. Tightening the test
 // here means future churn surfaces as a deliberate edit.
 func TestOpenAPIBufTemplateShape(t *testing.T) {
-	got := openapiBufTemplate("openapi")
+	got := openapiBufTemplate("openapi", "users.yaml")
 	for _, want := range []string{
 		"version: v2",
 		"- local: protoc-gen-connect-openapi",
 		"out: openapi",
 		"format=yaml",
+		"path=users.yaml",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("openapiBufTemplate missing %q\ngot:\n%s", want, got)
 		}
 	}
+	// base= names a base-spec FILE; the plugin rejects any value that is
+	// not a .yaml/.json path, so passing it failed every spec (obs 3923ec30).
+	if strings.Contains(got, "base=") {
+		t.Errorf("openapiBufTemplate must not pass base=:\n%s", got)
+	}
+}
+
+func TestOpenAPISpecName(t *testing.T) {
+	for in, want := range map[string]string{
+		"proto/services/users":   "users.yaml",
+		"proto/services/orders/": "orders.yaml",
+	} {
+		if got := openAPISpecName(in); got != want {
+			t.Errorf("openAPISpecName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// stubOpenAPIPlugin points the plugin seams at a fake PATH and installer.
+// onPath is the version of the plugin on PATH ("" = none); installErr is what
+// the pinned install returns. It reports how many installs were attempted.
+func stubOpenAPIPlugin(t *testing.T, onPath string, installErr error) *int {
+	t.Helper()
+	installs := 0
+	oldLook, oldInstall, oldVer := openAPILookPath, installOpenAPIPluginFn, openAPIPluginVersionFor
+	t.Cleanup(func() { openAPILookPath, installOpenAPIPluginFn, openAPIPluginVersionFor = oldLook, oldInstall, oldVer })
+	openAPILookPath = func(string) (string, error) {
+		if onPath == "" {
+			return "", exec.ErrNotFound
+		}
+		return "/fake/bin/" + openAPIPluginBinary, nil
+	}
+	openAPIPluginVersionFor = func(context.Context, string) (string, bool) {
+		return onPath, onPath == openAPIPluginPinnedVersion
+	}
+	installOpenAPIPluginFn = func(context.Context, string) (string, error) {
+		installs++
+		if installErr != nil {
+			return "", installErr
+		}
+		return "/fake/cache", nil
+	}
+	return &installs
+}
+
+func TestResolveOpenAPIPlugin(t *testing.T) {
+	ctx := context.Background()
+	t.Run("pinned version on PATH is used without installing", func(t *testing.T) {
+		installs := stubOpenAPIPlugin(t, openAPIPluginPinnedVersion, nil)
+		dir, err := resolveOpenAPIPlugin(ctx)
+		if err != nil || dir != "" || *installs != 0 {
+			t.Fatalf("dir=%q err=%v installs=%d, want PATH build, no install", dir, err, *installs)
+		}
+	})
+	t.Run("another version on PATH is replaced by the pinned one", func(t *testing.T) {
+		installs := stubOpenAPIPlugin(t, "v0.25.0", nil)
+		dir, err := resolveOpenAPIPlugin(ctx)
+		if err != nil || dir != "/fake/cache" || *installs != 1 {
+			t.Fatalf("dir=%q err=%v installs=%d, want the cache dir", dir, err, *installs)
+		}
+	})
+	t.Run("install fails but PATH has a build: use it", func(t *testing.T) {
+		stubOpenAPIPlugin(t, "v0.25.0", errors.New("offline"))
+		dir, err := resolveOpenAPIPlugin(ctx)
+		if err != nil || dir != "" {
+			t.Fatalf("dir=%q err=%v, want the PATH build", dir, err)
+		}
+	})
+	t.Run("install fails and nothing on PATH: actionable error", func(t *testing.T) {
+		stubOpenAPIPlugin(t, "", errors.New("offline"))
+		_, err := resolveOpenAPIPlugin(ctx)
+		if err == nil {
+			t.Fatal("want an error")
+		}
+		msg := err.Error()
+		// The old sudorandom path no longer installs: the module declares
+		// connectrpc.com (obs 3923ec30).
+		want := "go install connectrpc.com/protoc-gen-connect-openapi@" + openAPIPluginPinnedVersion
+		if !strings.Contains(msg, want) || strings.Contains(msg, "sudorandom") {
+			t.Errorf("error should name %q (and not the retired sudorandom path): %s", want, msg)
+		}
+	})
 }
 
 // TestGateOpenAPIEnabled covers the three states that decide whether
@@ -104,25 +190,12 @@ func TestRunOpenAPIGenerateOffByDefault(t *testing.T) {
 	}
 }
 
-// TestRunOpenAPIGenerateMissingPluginGivesActionableError pins the
-// error path: when the user opts in but hasn't installed the binary,
-// the error message must include the exact install command. This is
-// the highest-friction failure mode for a feature that's gated on a
-// separate go install — a generic "fork/exec" error from buf would
-// strand users.
-func TestRunOpenAPIGenerateMissingPluginGivesActionableError(t *testing.T) {
-	// Skip if the plugin happens to already be on PATH (CI runner
-	// might have it pre-installed). The error path is the test
-	// subject; happy path requires a real plugin invocation which
-	// belongs in an e2e test.
-	if isPluginAvailable(openAPIPluginBinary) {
-		t.Skipf("%s is on PATH; this test exercises the missing-plugin error path", openAPIPluginBinary)
-	}
-
+// TestRunOpenAPIGenerateMissingPluginFails pins that a plugin forge cannot
+// provision fails the step, and leaves no openapi/ dir behind to look like
+// output.
+func TestRunOpenAPIGenerateMissingPluginFails(t *testing.T) {
+	stubOpenAPIPlugin(t, "", errors.New("offline"))
 	dir := t.TempDir()
-	// Need at least one service dir with a proto so we get past the
-	// discoverServiceProtoDirs no-op. Otherwise we'd hit the
-	// "no services" silent return instead of the plugin-check error.
 	svcDir := filepath.Join(dir, "proto", "services", "users")
 	if err := os.MkdirAll(svcDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -136,12 +209,59 @@ func TestRunOpenAPIGenerateMissingPluginGivesActionableError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when plugin missing, got nil")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, openAPIPluginBinary) {
-		t.Errorf("error message should name the plugin %q: %s", openAPIPluginBinary, msg)
+	if !strings.Contains(err.Error(), openAPIPluginInstallCmd) {
+		t.Errorf("error message should include the install command: %s", err)
 	}
-	if !strings.Contains(msg, "go install") {
-		t.Errorf("error message should include the install command: %s", msg)
+	if _, err := os.Stat(filepath.Join(dir, "openapi")); !os.IsNotExist(err) {
+		t.Errorf("openapi/ must not be created when the plugin is unavailable")
+	}
+}
+
+// TestRunOpenAPIGenerateEndToEnd runs the real buf and the pinned plugin
+// (installed into forge's tool cache): a valid service gets
+// openapi/<svc>.yaml, and a service buf cannot compile fails the step
+// instead of being warned past under a success line (obs 3923ec30).
+func TestRunOpenAPIGenerateEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs buf and go-installs protoc-gen-connect-openapi; runs in task test")
+	}
+	if _, err := exec.LookPath("buf"); err != nil {
+		t.Skip("buf is not on PATH")
+	}
+	dir := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("buf.yaml", "version: v2\nmodules:\n  - path: proto\n")
+	write("proto/services/users/v1/users.proto", `syntax = "proto3";
+package services.users.v1;
+message GetUserRequest { string id = 1; }
+message GetUserResponse { string name = 1; }
+service UserService { rpc GetUser(GetUserRequest) returns (GetUserResponse); }
+`)
+	cfg := &config.ProjectConfig{API: config.APIConfig{OpenAPI: true}}
+	if err := runOpenAPIGenerate(dir, cfg); err != nil {
+		t.Fatalf("runOpenAPIGenerate: %v", err)
+	}
+	spec, err := os.ReadFile(filepath.Join(dir, "openapi", "users.yaml"))
+	if err != nil {
+		t.Fatalf("spec not written: %v", err)
+	}
+	if !strings.Contains(string(spec), "UserService/GetUser") {
+		t.Errorf("spec does not describe UserService.GetUser:\n%s", spec)
+	}
+
+	write("proto/services/orders/v1/orders.proto", "syntax = \"proto3\";\nmessage Broken { NoSuchType x = 1; }\n")
+	err = runOpenAPIGenerate(dir, cfg)
+	if err == nil || !strings.Contains(err.Error(), "proto/services/orders") {
+		t.Fatalf("a service buf cannot compile must fail the step, naming it; got %v", err)
 	}
 }
 

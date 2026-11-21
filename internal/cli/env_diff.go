@@ -56,6 +56,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/kclplugin"
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -323,6 +324,13 @@ type liveSide struct {
 	Source string
 	// ConfigDigest is the applied bundle's, for the §8.2 short-circuit.
 	ConfigDigest string
+	// Release is the release the applied bundle was built for, "" when
+	// none is known. The candidate render is bound to it, as the deploy that
+	// produced the bundle was (kclrender.WithRelease): an unbound render
+	// omits service.version from every workload's OTEL_RESOURCE_ATTRIBUTES,
+	// and every workload then read "config changed" right after a deploy of
+	// the same checkout (forge report 0c712860).
+	Release string
 	// Known: the control plane has a row for this env. False means the
 	// env would be CREATED, which is different from an env that exists
 	// with nothing recorded.
@@ -395,6 +403,7 @@ func fetchLiveShapes(ctx context.Context, projectDir string, envs []string, errO
 			// would hide the change the user is looking for.
 			side.Shape, side.Source = bundleShape, "bundle"
 			side.ConfigDigest = env.CurrentBundle.ConfigDigest
+			side.Release = env.CurrentBundle.Release
 		case env.CurrentBundle == nil && declared != nil:
 			// Pre-bundle history only.
 			side.Shape, side.Source = declared, "declared_shape"
@@ -540,7 +549,7 @@ func renderAndDiffOnce(ctx context.Context, projectDir, env string, live liveSid
 	// measure" must not read as "it moved".
 	before := checkoutTreeHash(ctx, projectDir)
 
-	doc, wrote, err := renderEnvShapeForDiff(ctx, projectDir, env, errOut)
+	doc, wrote, err := renderEnvShapeForDiff(kclrender.WithRelease(ctx, live.Release), projectDir, env, errOut)
 
 	// GUARD 2, closing half — taken BEFORE the error is reported, so a
 	// render that failed BECAUSE the tree moved under it is reported as

@@ -119,3 +119,51 @@ func TestRenderSkillContentAtFiltersAudienceBeforeRewriting(t *testing.T) {
 		t.Errorf("forge audience dropped or failed to rewrite the @forge-only block:\n%s", full)
 	}
 }
+
+// A "forge " that is not the forge command is left as written: a package or
+// server name, an MCP server name followed by the command it runs, and a
+// reference already written under the mount. Rewriting them printed
+// `npx -y @reliantlabs/reliant forge mcp`, so pasted MCP setup failed.
+func TestRewriteForgeCommandsLeavesNamesAlone(t *testing.T) {
+	cases := map[string]string{
+		"run `forge generate` now":                                "run `reliant forge generate` now",
+		"forge --help":                                            "reliant forge --help",
+		"npx -y @reliantlabs/forge mcp":                           "npx -y @reliantlabs/forge mcp",
+		"claude mcp add forge -- npx -y @reliantlabs/forge mcp":   "claude mcp add forge -- npx -y @reliantlabs/forge mcp",
+		"claude mcp add --transport http reliant-forge https://x": "claude mcp add --transport http reliant-forge https://x",
+		"myreliant forge lint":                                    "myreliant reliant forge lint",
+		"other-reliant forge lint":                                "other-reliant reliant forge lint",
+		"λreliant forge lint":                                     "λreliant reliant forge lint",
+		"`/opt/bin/reliant forge lint`":                           "`/opt/bin/reliant forge lint`",
+		"already `reliant forge lint` here":                       "already `reliant forge lint` here",
+		"then forge lint, and forge generate":                     "then reliant forge lint, and reliant forge generate",
+	}
+	for in, want := range cases {
+		if got := string(rewriteForgeCommands([]byte(in), "reliant forge")); got != want {
+			t.Errorf("rewrite(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := string(rewriteForgeCommands([]byte("forge generate"), "forge")); got != "forge generate" {
+		t.Errorf("forge mount changed the content: %q", got)
+	}
+}
+
+func TestRewriteForgeCommandsPreservesNamesAcrossFences(t *testing.T) {
+	input := "```yml\nrun: forge generate\n```\n```bash\nnpx -y @reliantlabs/forge mcp\nclaude mcp add forge -- forge generate\n```\n"
+	want := "```yml\nrun: forge generate\n```\n```bash\nnpx -y @reliantlabs/forge mcp\nclaude mcp add forge -- reliant forge generate\n```\n"
+	if got := string(rewriteForgeCommands([]byte(input), "reliant forge")); got != want {
+		t.Fatalf("rewritten skill differs:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestConnectSkillRendersPasteableUnderTheMount(t *testing.T) {
+	out, err := RenderSkillContentAt("", "connect", SkillAudienceAll, "reliant forge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"@reliantlabs/reliant forge", "reliant-reliant forge", "reliant reliant forge", "add reliant forge --"} {
+		if bytes.Contains(out, []byte(bad)) {
+			t.Errorf("connect skill under `reliant forge` contains %q", bad)
+		}
+	}
+}

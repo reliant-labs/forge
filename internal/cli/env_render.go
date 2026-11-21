@@ -309,11 +309,11 @@ func envRenderMainK(kclDir, projectDir, envName string) (string, error) {
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDir, kclDir, envName)
 	if !envHasDeclaration(projectDir, envName, mainK) {
 		envs, _ := ListEnvs(projectDir)
 		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists (declared environments: %s)",
-			envName, mainK, envName, strings.Join(envs, ", "))
+			envName, shown, envName, strings.Join(envs, ", "))
 	}
 	return mainK, nil
 }

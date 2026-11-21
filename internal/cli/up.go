@@ -3124,8 +3124,9 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
-	if err := prepareLocalCollector(projectDir, entities); err != nil {
-		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config): %w", err)
+	collectorChanged, err := prepareLocalCollector(projectDir, entities)
+	if err != nil {
+		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config, declared log parsing): %w", err)
 	}
 	// The local Alertmanager's configuration is rendered before compose
 	// mounts it, from the env's alerts and its secret store's receiver keys.
@@ -3161,10 +3162,23 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 	// nothing in the dev loop dials it, and prewarming it would publish a
 	// production workload during `forge env up`, before the deploy the
 	// user asked for. The omission is a DECISION.
-	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
+	infraErr := deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
 		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
 		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
 	})
+	// Declared telemetry (forge.Telemetry) for what runs on this machine:
+	// a collector that was already running re-reads the log parsing it
+	// includes, and the local telemetry agent pulls the scrapes. Both after
+	// the infrastructure, so the engines and the collector are serving.
+	if collectorChanged {
+		reloadLocalCollector(ctx, projectDir, env, localCollectorService(entities))
+	}
+	var store map[string]string
+	if prov, perr := secretProviderFromEntities(entities, projectDir); perr == nil {
+		store = prov.All()
+	}
+	upLocalTelemetry(ctx, os.Stdout, projectDir, env, entities, store)
+	return infraErr
 }
 
 // deployInfraGroups runs each INFRASTRUCTURE group through its provider and
@@ -3298,6 +3312,9 @@ func reportEnvConflicts(service string, conflicts []envutil.EnvConflict) {
 // workload declares.
 func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
 	spec := hostRunnerSpec(w)
+	if err := withHostCover(ctx, &spec, w, env); err != nil {
+		return nil, "", err
+	}
 	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
 	if err != nil {
 		return nil, "", err
@@ -3324,7 +3341,11 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
+	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
+	// A bare `forge` the process runs (the scaffolded .air.toml's `forge
+	// storage check`) is the forge running this env.
+	cmd.Env = withForgeShimOnPath(cmd.Env, w.Name)
 
 	return cmd, w.Name, nil
 }
@@ -4274,7 +4295,13 @@ func runUpStop(env string) error {
 			if err != nil {
 				err = fmt.Errorf("host infrastructure: %w", err)
 			}
-			return infraStopped, errors.Join(err, composeErr)
+			agentStopped, agentErr := stopLocalTelemetryAgent(projectDir, env)
+			if agentErr != nil {
+				agentErr = fmt.Errorf("telemetry agent: %w", agentErr)
+			} else if agentStopped {
+				infraStopped++
+			}
+			return infraStopped, errors.Join(err, agentErr, composeErr)
 		},
 	})
 }

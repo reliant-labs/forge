@@ -25,6 +25,10 @@ import (
 //   - an open issue whose test has left those states — healthy again, fixed,
 //     removed or quarantined — is closed, saying why.
 //
+// A test whose failures in the record were all real (it failed again on a
+// rerun), host or infra is healthy without ever having been suspected here:
+// it gets no issue, and an open one is left alone.
+//
 // A test the local record knows nothing about is never touched: the local
 // record is one machine's, and silence there is not evidence.
 
@@ -121,6 +125,16 @@ func SyncIssues(ctx context.Context, o IssueOptions, doc *testreport.Flakes) Iss
 		switch t.State {
 		case testreport.StateSuspected, testreport.StateFlaky:
 			s.file(ctx, t)
+		case testreport.StateHealthy:
+			// Healthy with no Since was never suspected in this record: its
+			// failures were all real, host or infra. That is no evidence it
+			// stopped flaking, so its issue is left alone.
+			if t.Since == nil {
+				continue
+			}
+			if existing, ok := open[IssueTitle(t.ID, s.module)]; ok {
+				s.close(ctx, t, existing)
+			}
 		default:
 			if existing, ok := open[IssueTitle(t.ID, s.module)]; ok {
 				s.close(ctx, t, existing)

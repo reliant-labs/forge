@@ -19,9 +19,14 @@ import (
 	"testing"
 	"time"
 
+	"oras.land/oras-go/v2/registry/remote/auth"
+
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/sbom"
+	"github.com/reliant-labs/forge/internal/sbomoci"
+	"github.com/reliant-labs/forge/internal/sbomoci/ocitest"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -688,6 +693,72 @@ func TestVulnSBOMOnAControlPlaneReadsThisMachinesCopy(t *testing.T) {
 	_, stderr, code = h3.exec("sbom", "prod", "--artifact", "api")
 	if code != exitUndetermined || !strings.Contains(stderr, "no copy") || !strings.Contains(stderr, "registry.test/acme/api@") {
 		t.Fatalf("missing copy: exit %d\n%s", code, stderr)
+	}
+}
+
+// hostedReferrerSBOM is a control plane holding release v1.0.0 whose one
+// image, pushed to an in-process registry, has its SBOM beside it as an OCI
+// referrer (attach=true) or none (attach=false), and a harness pointed at it
+// whose machine ledger holds no copy: the release was cut elsewhere.
+func hostedReferrerSBOM(t *testing.T, attach bool) (*vulnHarness, []byte) {
+	t.Helper()
+	prevCred := sbomRegistryCredential
+	sbomRegistryCredential = func(string, string, *KCLEntities, string) (auth.CredentialFunc, error) {
+		return func(context.Context, string) (auth.Credential, error) { return auth.EmptyCredential, nil }, nil
+	}
+	t.Cleanup(func() { sbomRegistryCredential = prevCred })
+
+	reg := ocitest.New(t, nil)
+	subject := reg.PutSubject("acme/api", "v1")
+	repository, imageDigest, _ := strings.Cut(subject, "@")
+	data := []byte(`{"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"name":"x"}]}`)
+	referrer := ""
+	if attach {
+		var err error
+		referrer, err = sbomoci.Attach(context.Background(), subject, data, sbomoci.AttachOptions{
+			Registry: sbomoci.RegistryOptions{Credential: func(context.Context, string) (auth.Credential, error) { return auth.EmptyCredential, nil }},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	fake := hostedFindings(sbom.Digest(data))
+	deploy := newFakeDeployService(map[string]string{"prod": "env-prod"})
+	fake.next = deploy
+	rv := fake.releaseVulns["v1.0.0"]
+	rv["artifacts"] = []map[string]any{{"artifactName": repository, "sbomDigest": sbom.Digest(data), "referrer": referrer, "scanState": "VULNERABILITY_SCAN_STATE_SCANNED"}}
+	h := hostedVulnHarness(t, fake)
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	cutter := hostedLedger(cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL}, cloud.Credential{Token: "rlat_test"}), srv.URL, "acme", deploytarget.HostedEnvPersistent)
+	if _, err := cutter.Releases.Cut(context.Background(), ociRelease("v1.0.0", map[string]string{repository: imageDigest})); err != nil {
+		t.Fatal(err)
+	}
+	h.deps.hostedClient = func(context.Context, vulnEnv) (cloudCaller, error) {
+		return cloud.NewClient(cloud.Endpoint{Env: "prod", URL: srv.URL}, cloud.Credential{Token: "rlat_test"}), nil
+	}
+	return h, data
+}
+
+// An SBOM cut on another machine is read from beside its image: the OCI
+// referrer the control plane names, checked against the image digest the
+// control plane's release records, verified against the recorded digest, and
+// cached in this machine's ledger. Without a referrer, the answer is what it
+// was: could not determine, naming why.
+func TestVulnSBOMOnAControlPlaneReadsTheOCIReferrer(t *testing.T) {
+	h, data := hostedReferrerSBOM(t, true)
+	out, stderr, code := h.exec("sbom", "prod")
+	if code != 0 || out != string(data) {
+		t.Fatalf("exit %d, want the referrer's bytes\n%s\n%s", code, out, stderr)
+	}
+	if cached, err := h.store.GetSBOM(sbom.Digest(data)); err != nil || string(cached) != string(data) {
+		t.Errorf("the referrer's bytes were not cached in this machine's ledger: %v", err)
+	}
+
+	h, _ = hostedReferrerSBOM(t, false)
+	_, stderr, code = h.exec("sbom", "prod")
+	if code != exitUndetermined || !strings.Contains(stderr, "no copy") || !strings.Contains(stderr, "could not be read from beside the image") {
+		t.Fatalf("no referrer: exit %d\n%s", code, stderr)
 	}
 }
 

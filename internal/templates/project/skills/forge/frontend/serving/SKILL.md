@@ -175,6 +175,8 @@ being exportable without anything noticing. Two checks catch it:
     - `next/headers`
     - `dynamic = "force-dynamic"` or `revalidate = 0`
     - next/image without `images.unoptimized`
+    - `cacheComponents: true` (create-next-app's Next.js 16 default) or
+      `experimental.ppr`: partial prerendering
     - a next.config that does not export, or that disagrees with forge.yaml
   - Warnings are what the export drops silently:
     - `middleware.ts` / `proxy.ts`
@@ -194,6 +196,14 @@ The real `next build` stays authoritative. CI's
 run it. The lint is a text scan: it does not follow a re-exported
 `generateStaticParams` or a computed next.config, and stays silent rather
 than guess.
+
+The same lane checks each **Vite** frontend bound to a static runtime: that
+`vite build` writes into the env's `public_dir` (`build.outDir`, `dist` by
+default), and that `base` matches the env's `base_path` (`/` at the site
+root). A relative `base` with a path-based client router warns. A value it
+cannot read statically is named in a note, not guessed. Every other frontend,
+such as an unbound Vite app or an Expo app, gets an explicit "not applicable"
+line.
 
 ## Serving under a path prefix (`base_path`)
 

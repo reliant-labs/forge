@@ -57,7 +57,7 @@ func main() {
 		t.Fatalf("build timezone probe: %v\n%s", err, out)
 	}
 	src := string(renderProject(t, "Dockerfile.tmpl", projectData()))
-	start := strings.Index(src, "FROM alpine:3.21 AS production\n")
+	start := strings.Index(src, "FROM alpine:3.24 AS production\n")
 	if start < 0 {
 		t.Fatal("missing production stage")
 	}

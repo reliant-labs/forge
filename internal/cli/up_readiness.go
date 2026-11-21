@@ -26,7 +26,7 @@ func waitHostReadiness(ctx context.Context, env string, e *KCLEntities, timeout,
 			return nil
 		}
 		for _, r := range unready {
-			if r.state == portReadyForeign || r.exited != "" {
+			if r.state == portReadyForeign || r.exited != "" || r.buildFailed != "" {
 				return hostReadyError(env, unready, e)
 			}
 		}

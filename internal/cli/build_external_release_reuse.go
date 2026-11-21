@@ -281,8 +281,10 @@ func releaseInputsFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, pr
 		Unit             string                   `json:"unit"`
 		OutputName       string                   `json:"output_name"`
 		InputsFileDigest string                   `json:"inputs_file_digest"`
+		PGOProfiles      map[string]string        `json:"pgo_profiles,omitempty"`
 	}{releaseInputsScheme, releaseTagSentinel, identity, externalPushedRepository(svc, opts.pushPlan.pushBase),
-		templatedEnv(tpl.Env, spec.BuildEnv, spec.Tag), svc.Build.Unit, shellBuildOutputName(svc), inputsFileDigest})
+		templatedEnv(tpl.Env, spec.BuildEnv, spec.Tag), svc.Build.Unit, shellBuildOutputName(svc), inputsFileDigest,
+		shellBuildPGODigests(svc, projectDir)})
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}
@@ -447,7 +449,7 @@ func pointTagAt(ctx context.Context, tagged, pinned, digest string,
 func carryReleaseImage(ctx context.Context, svc WorkloadEntity, opts buildOptions, projectDir, cwd, tag string, aliases map[string][]WorkloadEntity, v shellInputsVerdict) buildResult {
 	c := v.carry
 	fmt.Printf("[build] %s: reusing %s@%s from release %s — declared inputs unchanged (%s; %s); tagged %s; not running the command (--rebuild forces it)\n",
-		svc.Name, c.repository, c.digest, c.from, describeFingerprint(v.releaseFP, v.hashed), describeMatchedInputs(svc, v.releaseFP), c.tagged)
+		svc.Name, c.repository, c.digest, c.from, describeFingerprint(v.releaseFP, v.hashed), describeMatchedInputs(externalBuildInputs(svc), v.releaseFP), c.tagged)
 	for _, alias := range aliases[svc.Name] {
 		fmt.Printf("[build] %s: sharing ShellBuild artifact with %s\n", alias.Name, svc.Name)
 	}
@@ -484,8 +486,8 @@ func carryReleaseImage(ctx context.Context, svc WorkloadEntity, opts buildOption
 
 // describeMatchedInputs names what matched: the declared patterns and the
 // first few files they selected.
-func describeMatchedInputs(svc WorkloadEntity, fp *buildtarget.Fingerprint) string {
-	s := "inputs " + strings.Join(externalBuildInputs(svc), ", ")
+func describeMatchedInputs(patterns []string, fp *buildtarget.Fingerprint) string {
+	s := "inputs " + strings.Join(patterns, ", ")
 	if fp == nil {
 		return s
 	}

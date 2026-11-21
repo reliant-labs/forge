@@ -6,12 +6,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/reliant-labs/forge/internal/testhost"
 	"github.com/reliant-labs/forge/pkg/alerting"
 	"github.com/reliant-labs/forge/pkg/alerting/pgstore"
 	"github.com/reliant-labs/forge/pkg/pgtest"
@@ -23,7 +26,13 @@ func scratchSchema(t *testing.T) (*sql.DB, string) {
 		t.Skip("-short: needs a real Postgres")
 	}
 	dsn, drop, err := pgtest.NewURL()
+	var fetchErr *pgtest.FetchError
+	if errors.As(err, &fetchErr) && fetchErr.Status != http.StatusNotFound {
+		// The host lacks the registry, not the code under test.
+		t.Skipf("the embedded postgres binary registry is unreachable: %v", err)
+	}
 	if err != nil {
+		testhost.SkipIfPostgresDownloadFailed(t, err)
 		t.Fatalf("provision a scratch Postgres database: %v", err)
 	}
 	t.Cleanup(drop)

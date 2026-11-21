@@ -78,15 +78,15 @@ prints this list for the directory you run it in.
 | [Measured migration locks and rewrites](#migration-analysis)  | Run `forge db analyze` in a project whose migrations forge's migrator applies; it needs no database of yours.                                                                                                                                                                    | ~5 min     |
 | [Keep your migration tool](#keep-your-migration-tool)         | Add `database: {migrations: {dir: migrations, tool: goose}}` (your directory and tool) to a forge.yaml, then run `forge lint --migration-safety`.                                                                                                                                | ~10 min    |
 | [Real Postgres in every test](#pgtest-real-postgres)          | `go get github.com/reliant-labs/forge`, then `db, cleanup, err := pgtest.New()` in a Go test: an embedded Postgres, no Docker.                                                                                                                                                   | ~15 min    |
-| [Fast test tier stays fast](#slow-test-enforcement)           | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                                                                                                                                        | ~15 min    |
+| [Slow-test gating for the fast tier](#slow-test-enforcement)  | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                                                                                                                                        | ~15 min    |
 | [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                                                                                                                                                   | ~5 min     |
-| [A skipped suite isn't green](#skipped-pass-detector)         | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                                                                                                                                      | ~5 min     |
+| [Skipped-test detection in CI](#skipped-pass-detector)        | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                                                                                                                                      | ~5 min     |
 | [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                                                                                                                                                      | ~10 min    |
 | [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                                                                                                                                            | ~5 min     |
-| [Traces that never break](#lint-rules-tracing)                | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                                                                                                                               | ~10 min    |
+| [Broken-trace detection and fixes](#lint-rules-tracing)       | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                                                                                                                               | ~10 min    |
 | [Errors never leak internals](#svcerr-redaction)              | In a Go Connect service, `go get github.com/reliant-labs/forge`, add `svcerr.Interceptor()` and return `svcerr.Wrap(err)` from handlers.                                                                                                                                         | ~30 min    |
 | [Declare an env in YAML](#env-document)                       | `forge obs init prod` writes the monitoring-only `deploy/envs/prod.yaml` (`apiVersion: forge.dev/env/v1`, `project`, `env`, `control_plane: {}`, `observability`); grow it by hand from there                                                                                    | ~5 min     |
-| [Prove parity before deploying](#env-verify-parity)           | `forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`.                                                                          | ~1 hour    |
+| [Pre-deploy parity verification](#env-verify-parity)          | `forge project new --in-place --kind app`, bind the workload to `forge.OnExternal {status = [...], plan = [...]}` in deploy/kcl/<env>/main.k, then `forge env verify <env> --image api=<ref>@sha256:…`.                                                                          | ~1 hour    |
 | [Record deploys from existing CI](#record-deploys)            | List your deployed workloads as `runtime: {type: external}` in deploy/envs/prod.yaml (from `forge obs init prod`), then after your deploy job run `forge release record --env prod --version "$TAG" --workload api --image <ref>@sha256:…` with `FORGE_CONTROL_PLANE_TOKEN` set. | ~15 min    |
 | [Static sites are full projects](#static-site-first-class)    | In a Vite or Next.js app, `forge project new --in-place --kind site --name <name>` writes forge.yaml and deploy/kcl and leaves your code alone.                                                                                                                                  | ~10 min    |
 | [Telemetry for any Node process](#node-telemetry)             | `npm i @reliantlabs/forge-web-runtime @opentelemetry/api`, then `initNodeTelemetry({ serviceName, serviceVersion, endpoint })` at process start.                                                                                                                                 | ~15 min    |
@@ -94,9 +94,9 @@ prints this list for the directory you run it in.
 | [Skills that match your forge](#skills-in-the-binary)         | `forge skill load adopt`: what forge can do for this repo, with estimates to quote.                                                                                                                                                                                              | ~2 min     |
 | [Built-in MCP server](#mcp-server)                            | `claude mcp add forge -- npx -y @reliantlabs/forge mcp` (or any MCP client); then call the `benefits` tool.                                                                                                                                                                      | ~2 min     |
 | [Hosted MCP connector](#hosted-mcp)                           | Add `https://api.reliantapi.com/forge/mcp` as a custom connector and sign in; `forge skill load connect` has the steps per client.                                                                                                                                               | ~2 min     |
-| [Whole surface in one call](#capabilities-introspection)      | `forge project capabilities` in any directory.                                                                                                                                                                                                                                   | ~2 min     |
+| [Capabilities introspection](#capabilities-introspection)     | `forge project capabilities` in any directory.                                                                                                                                                                                                                                   | ~2 min     |
 | [Library API without source diving](#libraries-introspection) | In a Go module that requires `github.com/reliant-labs/forge`, `forge project libraries <pkg>`.                                                                                                                                                                                   | ~2 min     |
-| [Agents report framework bugs](#report-bug)                   | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                                                                                                                                | ~2 min     |
+| [Bug reports from agents](#report-bug)                        | `forge report-bug --dry-run …` prints exactly what would be sent.                                                                                                                                                                                                                | ~2 min     |
 
 ---
 
@@ -165,7 +165,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="owned-seams-disown"></a>
 
-### Every generated file has an exit
+### Disown any generated file
 
 Generated code sits beside owned seams you edit freely, and `forge project disown` permanently hands any generated file to you.
 
@@ -179,7 +179,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="scaffold-exclude"></a>
 
-### Areas forge never writes
+### Exclude paths from codegen
 
 `scaffold.exclude` in forge.yaml names the parts of an existing repo forge must never write, and every generate, scaffold, upgrade and rescaffold leaves them exactly as they are and says which writes it skipped.
 
@@ -197,7 +197,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="prune-orphans"></a>
 
-### Clean up after a feature
+### Prune orphaned generated files
 
 When a feature is pinned off, `forge generate` lists the files it left behind and `forge project prune --orphans` deletes the ones still exactly as forge wrote them, never an edited one.
 
@@ -350,7 +350,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="frontend-runtime-config"></a>
 
-### One bundle, every env
+### Runtime frontend config per env
 
 Frontend config is a typed `config_gen.ts` read at runtime from a per-env `config.js`, so one bundle promotes unchanged, a key not in the schema gets a did-you-mean, and build-time env inlining is a lint error.
 
@@ -537,24 +537,26 @@ _Enforced · Forge, on any infrastructure_
 - source [`internal/linter/migrationlint/compat_declaration.go`](../internal/linter/migrationlint/compat_declaration.go)
 - source [`internal/linter/migrationlint/add_column.go`](../internal/linter/migrationlint/add_column.go)
 - source [`internal/linter/migrationlint/transaction_block.go`](../internal/linter/migrationlint/transaction_block.go)
+- source [`internal/linter/migrationlint/blocking_index.go`](../internal/linter/migrationlint/blocking_index.go)
 - source [`internal/cli/lint/lint_rules.go`](../internal/cli/lint/lint_rules.go)
 
-| Rule                                  | Bug class it prevents                                                                                                                              | Lane                 |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
-| `no-down-migration`                   | A down migration claims to undo a release and cannot: by the time anyone would run it, rows are in the new shape and other services have read them | `--migration-safety` |
-| `duplicate-migration-version`         | Two files claiming one version, so whichever reached a shared database first leaves the other permanently unapplied                                | `--migration-safety` |
-| `non-timestamp-migration-version`     | Sequential numbering makes parallel branches collide; a UTC timestamp cannot without two allocations in one second                                 | `--migration-safety` |
-| `migration-version-below-merged-head` | A new migration numbered at or below the default branch's head is invisible: every already-migrated database never runs it                         | `--migration-safety` |
-| `destructive-change`                  | A `DROP`/`TRUNCATE`-class statement; split it into data-preserving steps or allow it by `forge:allow-destructive`                                  | `--migration-safety` |
-| `unsafe-add-not-null-column`          | `ADD COLUMN … NOT NULL` without a default fails on a populated table                                                                               | `--migration-safety` |
-| `set-not-null-without-backfill`       | `SET NOT NULL` with no earlier backfill fails on a populated table                                                                                 | `--migration-safety` |
-| `volatile-default`                    | A volatile `DEFAULT` in `ADD COLUMN` can rewrite and lock a populated table                                                                        | `--migration-safety` |
-| `non-transactional-statement`         | `CREATE INDEX CONCURRENTLY` and kin cannot run in a transaction block; the statement must be alone in its file                                     | `--migration-safety` |
-| `enum-value-used-before-commit`       | Using an enum value the same file adds fails with SQLSTATE 55P04                                                                                   | `--migration-safety` |
-| `invalid-adopts-directive`            | A `-- forge:adopts` baseline declaration the migrator would refuse at boot on every database                                                       | `--migration-safety` |
-| `migration-compat-conflict`           | A migration that declares both `forge:backward-compatible` and `forge:breaks-rollback`                                                             | `--migration-safety` |
-| `migration-compat-reason`             | A compatibility declaration with no reason, so the rollback decision that reads it has nothing to go on                                            | `--migration-safety` |
-| `migration-compat-undeclared`         | A migration that says neither `forge:backward-compatible` nor `forge:breaks-rollback`, which a rollback decision and the release guard read        | `--migration-safety` |
+| Rule                                  | Bug class it prevents                                                                                                                                                           | Lane                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `no-down-migration`                   | A down migration claims to undo a release and cannot: by the time anyone would run it, rows are in the new shape and other services have read them                              | `--migration-safety` |
+| `duplicate-migration-version`         | Two files claiming one version, so whichever reached a shared database first leaves the other permanently unapplied                                                             | `--migration-safety` |
+| `non-timestamp-migration-version`     | Sequential numbering makes parallel branches collide; a UTC timestamp cannot without two allocations in one second                                                              | `--migration-safety` |
+| `migration-version-below-merged-head` | A new migration numbered at or below the default branch's head is invisible: every already-migrated database never runs it                                                      | `--migration-safety` |
+| `destructive-change`                  | A `DROP`/`TRUNCATE`-class statement; split it into data-preserving steps or allow it by `forge:allow-destructive`                                                               | `--migration-safety` |
+| `unsafe-add-not-null-column`          | `ADD COLUMN … NOT NULL` without a default fails on a populated table                                                                                                            | `--migration-safety` |
+| `set-not-null-without-backfill`       | `SET NOT NULL` with no earlier backfill fails on a populated table                                                                                                              | `--migration-safety` |
+| `volatile-default`                    | A volatile `DEFAULT` in `ADD COLUMN` can rewrite and lock a populated table                                                                                                     | `--migration-safety` |
+| `non-transactional-statement`         | `CREATE INDEX CONCURRENTLY` and kin cannot run in a transaction block; the statement must be alone in its file                                                                  | `--migration-safety` |
+| `blocking-index-build`                | A plain `CREATE INDEX` on a table that may hold rows blocks every write to it for the whole build (a warning: lint cannot see the table's size; `forge db analyze` measures it) | `--migration-safety` |
+| `enum-value-used-before-commit`       | Using an enum value the same file adds fails with SQLSTATE 55P04                                                                                                                | `--migration-safety` |
+| `invalid-adopts-directive`            | A `-- forge:adopts` baseline declaration the migrator would refuse at boot on every database                                                                                    | `--migration-safety` |
+| `migration-compat-conflict`           | A migration that declares both `forge:backward-compatible` and `forge:breaks-rollback`                                                                                          | `--migration-safety` |
+| `migration-compat-reason`             | A compatibility declaration with no reason, so the rollback decision that reads it has nothing to go on                                                                         | `--migration-safety` |
+| `migration-compat-undeclared`         | A migration that says neither `forge:backward-compatible` nor `forge:breaks-rollback`, which a rollback decision and the release guard read                                     | `--migration-safety` |
 
 <a id="migration-analysis"></a>
 
@@ -584,6 +586,31 @@ _Enforced · Forge, on any infrastructure_
 | `db-analyze-validation-scan`       | A constraint validated by a full scan under a lock that blocks writes, where NOT VALID then VALIDATE would not block them | `forge db analyze` |
 | `db-analyze-blocking-index-build`  | An index built without CONCURRENTLY on a populated table, blocking writes until the build finishes                        | `forge db analyze` |
 | `db-analyze-statement-timeout`     | A statement that does not finish within statement_timeout on production-shaped data                                       | `forge db analyze` |
+
+<a id="query-index-analysis"></a>
+
+### Index check of tested queries
+
+`forge db analyze queries` plans every query shape a test run recorded on a disposable database at the head schema, with sequential scans disabled, and reports each filter, join and ORDER BY … LIMIT no index serves, with the caller's file and line.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then `forge db analyze queries --capture /tmp/qc` (the shapes whose callers changed since the merge-base; `--all` for every one), or add `--capture` to `forge db analyze` to run it after the migrations.
+
+**Why:** A new filter or join without an index passes every test on a small table and becomes a full scan in production; whether an index can serve it depends on the schema at head, which only the planner knows.
+
+**Evidence:**
+
+- command `forge db analyze queries`
+- source [`pkg/dbanalyze/queries.go`](../pkg/dbanalyze/queries.go)
+- source [`pkg/querycapture`](../pkg/querycapture)
+- source [`internal/cli/db_analyze_queries.go`](../internal/cli/db_analyze_queries.go)
+- skill `db/analyze` (`forge skill load db/analyze`)
+
+| Rule                               | Bug class it prevents                                                                                                        | Lane                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `db-analyze-query-no-usable-index` | A filter, join or ORDER BY … LIMIT that no index can serve, which reads every row of the table once it holds production data | `forge db analyze queries` |
+| `db-analyze-query-large-seqscan`   | A query whose plan on an anonymized production snapshot sequentially scans a large table                                     | `forge db analyze queries` |
 
 <a id="keep-your-migration-tool"></a>
 
@@ -706,7 +733,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="never-waiting-migrations"></a>
 
-### Migrations that never wedge prod
+### Migration lock and statement timeouts
 
 A migration never waits for a lock without a limit (`lock_timeout` 5s, five attempts with backoff, `statement_timeout` 30m, overridable per file), and `CREATE INDEX CONCURRENTLY` cleans up an invalid index, so one slow reader plus one `ALTER TABLE` is not an outage.
 
@@ -758,7 +785,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="dev-db-recovery"></a>
 
-### Wedged dev DB recovers
+### Dev database reset and repair
 
 `forge db migrate force` repairs and clears dirty migration state, and `forge db reset` drops, recreates, migrates and seeds a dev database (dev only).
 
@@ -868,7 +895,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="test-tiers"></a>
 
-### Three tiers, real subject
+### Unit, integration and e2e tiers
 
 Unit tests use the real subject plus generated mocks, integration tests a real migrated Postgres and end-to-end tests a running dev stack, so the subject under test stays real at every tier.
 
@@ -882,7 +909,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="slow-test-enforcement"></a>
 
-### Fast test tier stays fast
+### Slow-test gating for the fast tier
 
 A test that execs a tool, drives a container or dials the network calls `testkit.Slow` and skips under `-short`, and `forge lint --slow-tests` fails one that does not, so the fast tier stays fast.
 
@@ -902,7 +929,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="cache-soundness"></a>
 
-### No stale cached passes
+### Go test cache soundness checks
 
 A test whose child process reads repo files must skip under `-short` or open those inputs itself, so Go's test cache cannot replay a PASS after the edit that broke it.
 
@@ -933,7 +960,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="skipped-pass-detector"></a>
 
-### A skipped suite isn't green
+### Skipped-test detection in CI
 
 `forge ci verify-test-run` reports packages that skipped so much that their pass proves nothing.
 
@@ -1006,7 +1033,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="kcl-eval-tests"></a>
 
-### Test what you declared
+### Test assertions on KCL declarations
 
 `forge/pkg/kcleval` lets a Go test assert against the project's KCL declarations instead of restating them.
 
@@ -1130,7 +1157,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="env-down-self-safe"></a>
 
-### Stopping never kills yourself
+### Safe env shutdown for agents
 
 `forge env down` walks its own parent chain first, so it can't end the agent or shell that started it.
 
@@ -1193,7 +1220,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="storage-gc"></a>
 
-### Disk kept in check
+### Disk space reserve and cleanup
 
 `forge storage` reports host capacity, refuses a build below the free-space reserve, trims Go build caches and removes idle, clean, pushed worktrees.
 
@@ -1412,7 +1439,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="lint-skip-is-failure"></a>
 
-### A skipped lane never passes
+### Skipped lint lanes fail the gate
 
 A gating lint lane that could not run fails the build unless you accept the skip by name with a reason, and `--strict` escalates advisory findings to errors.
 
@@ -1471,7 +1498,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="version-skew-guard"></a>
 
-### Pinned forge, no skew
+### Pinned forge version enforcement
 
 Forge refuses to lint or generate with a binary other than the one `forge.yaml` pins, so every machine and CI produce the same output.
 
@@ -1484,7 +1511,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="unwritten-fields"></a>
 
-### Catches fields nothing writes
+### Unwritten read-only field detection
 
 A read-only or computed field that no code populates fails lint, instead of every row shipping a silent zero.
 
@@ -1499,7 +1526,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="guarded-field-bypass"></a>
 
-### Guarded fields stay guarded
+### Guarded-column write detection
 
 Lint flags an edit page or handler that writes a `forge:guards` column directly, bypassing the rpc that owns its state transitions.
 
@@ -1512,7 +1539,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="create-nullability"></a>
 
-### Create requests keep presence
+### Optional-field presence checks
 
 Lint fails when a field's optional label differs between an entity and its Create request, which would silently drop "unset" vs "zero".
 
@@ -1617,7 +1644,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="deps-boundary-lints"></a>
 
-### Dependency injection stays honest
+### Dependency injection lint
 
 Lint keeps Deps interface-typed and narrow, forbids downcasts and container-style deps, and pushes scalars into typed config, so every component unit-tests against mocks.
 
@@ -1633,7 +1660,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="optional-deps-guard"></a>
 
-### No nil-dep panics
+### Optional dependency nil checks
 
 Lint flags an unguarded dereference of a Deps field marked `forge:optional-dep`, a nil-pointer panic no construction-time check can catch.
 
@@ -1672,7 +1699,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="marker-typo-lints"></a>
 
-### Misspelled markers are caught
+### Unknown marker detection
 
 A misspelled `forge:` marker in Go, proto or a SQL comment, or a `(forge.v1.*)` option this binary does not define, fails lint instead of being silently inert.
 
@@ -1741,7 +1768,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Static-export breakage caught early
 
-For a statically hosted Next.js app, `forge lint --static-export` names each route, server action, `cookies()` call or `next/image` use the export would refuse, with file and line.
+For a statically hosted Next.js app, `forge lint --static-export` names each route, server action, `cookies()` call or `next/image` use the export would refuse, with file and line. For a Vite app it checks that the build lands in the directory the deploy publishes and its asset URLs match the mount.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -1801,7 +1828,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="lint-rules-composition-deps"></a>
 
-### Architecture stays testable
+### Architecture and wiring rules
 
 Lint keeps Deps interface-typed and narrow, every component reachable and audience-correct, so services stay mockable and wired.
 
@@ -1861,6 +1888,7 @@ _Enforced · Forge, on any infrastructure_
 | `forge-proto-format`                 | A `.proto` that `buf format` would rewrite, which the scaffolded pre-commit hook refuses at commit time after `forge lint` passed                                                                                                         | `--proto-format`    |
 | `forge-vendored-proto-drift`         | A vendored `forge.proto` that diverged from the binary's copy: annotations compile, then are ignored                                                                                                                                      | `--vendored-protos` |
 | `forge-go-markers`                   | A `//forge:` comment in Go that forge does not read, an unknown name or a spelling its parser ignores                                                                                                                                     | `--go-markers`      |
+| `forge-go-markers-reason-missing`    | A marker whose reason is mandatory (`forge:auth-unscoped-ok`) written with none, which forge ignores; advisory                                                                                                                            | `--go-markers`      |
 | `forgeconv-open-signup`              | A login broker that mounts `POST /auth/register` unconditionally: outside development an unverified address gets a signed-in account, which opens email-bound invitations to takeover (advisory)                                          | bare `forge lint`   |
 | `forgeconv-identity-methods`         | A `forge.ManagedIdentity` declaring a sign-in method or signup mode the project's own broker does not serve, so the declaration is converged and silently ignored                                                                         | bare `forge lint`   |
 | `forgeconv-unproven-signup`          | A deployed sign-up whose address nobody proves (identity mail `delivery = "none"`, or `auth_self_signup` outside development): the email is a contact field anyone can type, so whatever the app binds to it is bound to whoever typed it | bare `forge lint`   |
@@ -1869,7 +1897,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="lint-rules-tracing"></a>
 
-### Traces that never break
+### Broken-trace detection and fixes
 
 `forge lint --tracing` names every place a request's trace is cut (a log call without its context, a hand-built HTTP client, an untraced database pool, an uninstrumented contract) and `--fix` rewrites most of them.
 
@@ -1928,23 +1956,26 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/cli/lint/lint_rules.go`](../internal/cli/lint/lint_rules.go)
 
-| Rule                                       | Bug class it prevents                                                                                                                                                                                      | Lane                |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| `static-export-not-exported`               | A frontend bound to a static runtime whose build is not a static export (`output: "export"`), so there is nothing to publish                                                                               | `--static-export`   |
-| `static-export-dynamic-segment`            | A dynamic route with no `generateStaticParams`, which `next build` refuses because an export renders every page at build time                                                                              | `--static-export`   |
-| `static-export-route-handler`              | A route-handler GET not declared static, which `next build` refuses, or another method the export drops so a static host answers it with 404                                                               | `--static-export`   |
-| `static-export-middleware`                 | Middleware that runs only under `next dev`: a static host has no server, so whatever it guards, rewrites or redirects is unguarded in production                                                           | `--static-export`   |
-| `static-export-server-action`              | A `'use server'` Server Action, which needs the Next.js server a static export does not have                                                                                                               | `--static-export`   |
-| `static-export-next-headers`               | `cookies()`, `headers()` or `draftMode()` from `next/headers`, which read a request a static export never has                                                                                              | `--static-export`   |
-| `static-export-dynamic-config`             | `export const dynamic = "force-dynamic"` or `revalidate = 0`, which ask for per-request rendering an export cannot do                                                                                      | `--static-export`   |
-| `static-export-next-image`                 | `next/image` with its default server-side optimizer, which the export refuses unless `images.unoptimized` is set                                                                                           | `--static-export`   |
-| `static-export-config-routes`              | `rewrites`, `redirects` or `headers` in `next.config` not gated to development: they work under `next dev` and 404 or vanish on a static host                                                              | `--static-export`   |
-| `static-export-trailing-slash`             | A frontend on a bucket with `trailingSlash` off: the export writes `<route>.html` and a bucket serves objects by exact name, so every route but `/` 404s                                                   | `--static-export`   |
-| `forgeconv-frontend-process-env`           | Reading `process.env` or `import.meta.env` in frontend source freezes the bundle to the environment it was built for, defeating build-once promotion, and bypasses the typed schema and the secret refusal | `--conventions`     |
-| `forgeconv-frontend-env-forge-owned`       | A committed dotenv line setting a forge-owned variable (mock API, API URL) drifts from KCL and risks shipping a mock build                                                                                 | `--conventions`     |
-| `forgeconv-frontend-stores-no-server-data` | A Zustand store importing a generated Connect client creates a second source of truth beside React Query                                                                                                   | `--frontend-stores` |
-| `forge-frontend-lock-drift`                | A `package.json` range the lockfile does not record: the state `npm ci` and `pnpm --frozen-lockfile` refuse                                                                                                | bare `forge lint`   |
-| `forge-frontend-no-install`                | A linter that installs dependencies mutates the checkout it judges and hides a pipeline that never prepared its frontends                                                                                  | bare `forge lint`   |
+| Rule                                       | Bug class it prevents                                                                                                                                                                                                                                   | Lane                |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `static-export-not-exported`               | A frontend bound to a static runtime whose build is not a static export (`output: "export"`), so there is nothing to publish                                                                                                                            | `--static-export`   |
+| `static-export-dynamic-segment`            | A dynamic route with no `generateStaticParams`, which `next build` refuses because an export renders every page at build time                                                                                                                           | `--static-export`   |
+| `static-export-route-handler`              | A route-handler GET not declared static, which `next build` refuses, or another method the export drops so a static host answers it with 404                                                                                                            | `--static-export`   |
+| `static-export-middleware`                 | Middleware that runs only under `next dev`: a static host has no server, so whatever it guards, rewrites or redirects is unguarded in production                                                                                                        | `--static-export`   |
+| `static-export-server-action`              | A `'use server'` Server Action, which needs the Next.js server a static export does not have                                                                                                                                                            | `--static-export`   |
+| `static-export-next-headers`               | `cookies()`, `headers()` or `draftMode()` from `next/headers`, which read a request a static export never has                                                                                                                                           | `--static-export`   |
+| `static-export-dynamic-config`             | `export const dynamic = "force-dynamic"` or `revalidate = 0`, which ask for per-request rendering an export cannot do                                                                                                                                   | `--static-export`   |
+| `static-export-next-image`                 | `next/image` with its default server-side optimizer, which the export refuses unless `images.unoptimized` is set                                                                                                                                        | `--static-export`   |
+| `static-export-config-routes`              | `rewrites`, `redirects` or `headers` in `next.config` not gated to development: they work under `next dev` and 404 or vanish on a static host                                                                                                           | `--static-export`   |
+| `static-export-trailing-slash`             | A frontend on a bucket with `trailingSlash` off: the export writes `<route>.html` and a bucket serves objects by exact name, so every route but `/` 404s                                                                                                | `--static-export`   |
+| `static-export-partial-prerender`          | `cacheComponents: true` (create-next-app's Next.js 16 default) or `experimental.ppr` in `next.config`, which turns on partial prerendering and makes `next build` refuse the export                                                                     | `--static-export`   |
+| `static-export-vite-out-dir`               | A Vite frontend on a static runtime whose `build.outDir` is not the env's `public_dir`, so the deploy publishes a directory the build never wrote: missing, or stale from an older build                                                                | `--static-export`   |
+| `static-export-vite-base`                  | A Vite `base` that misses where the env mounts the frontend (`base_path`, or the site root), so every script and stylesheet 404s and the page loads blank; or a relative base with a path-based client router, which breaks deep links to nested routes | `--static-export`   |
+| `forgeconv-frontend-process-env`           | Reading `process.env` or `import.meta.env` in frontend source freezes the bundle to the environment it was built for, defeating build-once promotion, and bypasses the typed schema and the secret refusal                                              | `--conventions`     |
+| `forgeconv-frontend-env-forge-owned`       | A committed dotenv line setting a forge-owned variable (mock API, API URL) drifts from KCL and risks shipping a mock build                                                                                                                              | `--conventions`     |
+| `forgeconv-frontend-stores-no-server-data` | A Zustand store importing a generated Connect client creates a second source of truth beside React Query                                                                                                                                                | `--frontend-stores` |
+| `forge-frontend-lock-drift`                | A `package.json` range the lockfile does not record: the state `npm ci` and `pnpm --frozen-lockfile` refuse                                                                                                                                             | bare `forge lint`   |
+| `forge-frontend-no-install`                | A linter that installs dependencies mutates the checkout it judges and hides a pipeline that never prepared its frontends                                                                                                                               | bare `forge lint`   |
 
 <a id="lint-rules-deploy-secrets"></a>
 
@@ -1979,9 +2010,29 @@ _Enforced · Forge, on any infrastructure_
 | `secrets-escrow-in-cluster`            | An OpenBao whose seal key and init output are escrowed in the cluster they protect, so losing the cluster loses every backup of the store                                        | `--secrets`       |
 | `secrets-env-not-rendered`             | An env whose render fails, so its secrets could not be judged (a warning; `forge env render` reports the render error itself)                                                    | `--secrets`       |
 
+<a id="lint-rules-telemetry"></a>
+
+### Declared telemetry rules
+
+A dashboard panel over a series no scrape keeps, an unbounded scrape and a rate over a gauge are caught from each env's real render.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- source [`internal/cli/lint/telemetry_rules.go`](../internal/cli/lint/telemetry_rules.go)
+- command `forge lint --telemetry`
+
+| Rule                                     | Bug class it prevents                                                                                                                                                      | Lane          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `telemetry-dashboard-metric-uncollected` | A declared dashboard series whose metric no scrape of its system keeps (allow minus deny), so the panel is empty in every env it ships to with no other symptom            | `--telemetry` |
+| `telemetry-scrape-unbounded`             | A metrics scrape with no `allow`, which stores every series the endpoint exposes until it passes `sample_limit` and fails whole                                            | `--telemetry` |
+| `telemetry-rate-on-gauge`                | A rate or increase over a metric nothing marks as a counter (no `counters` match, no `_total`/`_count`/`_sum`), which reads nothing when the metric is a gauge (a warning) | `--telemetry` |
+| `telemetry-high-cardinality-risk`        | A scrape that raises `sample_limit` or keeps every name while dropping no labels, so a per-user or per-id label explodes its series (a warning)                            | `--telemetry` |
+
 <a id="lint-rules-scaffold-ownership"></a>
 
-### Generated code stays honest
+### Generated-code tampering checks
 
 Hand-edited generated files, ignored generated code and committed machine-local state fail lint.
 
@@ -2010,7 +2061,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="lint-rules-forge-internal"></a>
 
-### Forge's own template checks
+### Template lint for forge itself
 
 Forge lints its own templates for the ownership banner each tier must carry and for symbols a regenerated template no longer defines, so a forge release never scaffolds a project that fails to build.
 
@@ -2100,9 +2151,11 @@ _Enforced · Forge, on any infrastructure_
 
 ### Dependency and image scanning
 
-`forge ci vuln-scan` runs govulncheck, npm audit and image scans per `forge.yaml`, refuses a pass it did not verify, and takes reviewed, expiring exemptions instead of silent ignores.
+`forge ci vuln-scan` runs govulncheck over every Go module and npm audit over every frontend, refuses a pass it did not verify, and takes reviewed, expiring exemptions instead of silent ignores.
 
 _Enforced · Forge, on any infrastructure_
+
+**Why:** Container images are scanned by Trivy steps in the generated GitHub workflows (`ci.yml`'s docker build and `build-images.yml`), not by `forge ci vuln-scan`, so they run in CI only and `ci.vuln_scan.exemptions` does not cover them.
 
 **Evidence:**
 
@@ -2118,7 +2171,7 @@ The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign signatu
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `provenance_sbom`/`trusted_builder`/`admission_verify` controls are recorded, not enforced.
+**Why:** The SBOM is uploaded as a workflow run artifact, not attached to the image in the registry, and the provenance attestation is skipped for private repositories outside GitHub Enterprise Cloud (GitHub's attestation store refuses them). This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `provenance_sbom`/`trusted_builder`/`admission_verify` controls are recorded, not enforced.
 
 **Evidence:**
 
@@ -2200,7 +2253,7 @@ _Enforced · Reliant hosting_
 
 ### Find rpcs that ignore the caller
 
-`forge project audit` includes an `unscoped_auth` list of authenticated rpcs that never resolve who is calling, with `// forge:auth-unscoped-ok: <reason>` as the only acknowledged exception.
+`forge project audit` includes an `unscoped_auth` list of authenticated rpcs that never resolve who is calling, with `// forge:auth-unscoped-ok: <reason>` as the only acknowledged exception; a marker with no reason is listed as malformed, never silently ignored.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -2231,7 +2284,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Owner scoping at one chokepoint
 
-Claims are enriched by stable subject (never email) before any handler runs, and a `forge:owner` column makes forge scaffold the owner-scoping wrapper that lint keeps consistent across siblings.
+Claims are enriched by stable subject (never email) before any handler runs, and a `forge:owner` column makes forge scaffold the owner-scoping wrapper that lint keeps consistent across siblings, never recommending an email address as the owner.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -2279,7 +2332,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="jwks-outage-survival"></a>
 
-### Restarts survive an IdP outage
+### Cached JWKS for IdP outages
 
 A JWKS snapshot lets a service restart and keep validating tokens while its issuer is down.
 
@@ -2666,7 +2719,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="env-verify-parity"></a>
 
-### Prove parity before deploying
+### Pre-deploy parity verification
 
 `forge env verify <env>` compares, per workload, the digest the env's promotion pins against the digest running and runs your tool's own dry run, while building, recording and deploying nothing, so forge's first deploy of an existing project is known to change nothing.
 
@@ -2741,7 +2794,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="declared-env-catalog"></a>
 
-### Every env in the release
+### Release lists every declared env
 
 A released bundle carries one `declared_envs` entry per `deploy/kcl/<env>/main.k`, so the console lists environments that never recorded anything, and `forge env status --json` with no env prints the whole project's topology.
 
@@ -2849,7 +2902,7 @@ _Enforced · Reliant hosting_
 
 <a id="promote-cas"></a>
 
-### No stale deploy overwrites a hotfix
+### Compare-and-set promotions
 
 Every promote is a compare-and-set against the promotion the plan read, so a CI job that waited on approval cannot overwrite a hotfix that landed meanwhile, and a retry that already landed is a no-op.
 
@@ -2865,7 +2918,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="rollout-not-trampled"></a>
 
-### In-flight rollouts aren't trampled
+### Concurrent rollout protection
 
 Promoting while the current promotion is still rolling out is refused (exit 4) unless `--supersede` is given, and the override is recorded on the new entry.
 
@@ -2935,7 +2988,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="interrupted-cut-resume"></a>
 
-### A half-pushed release resumes
+### Resumable release builds
 
 A cut that died after pushing images is resumed from its journal by re-running the same build, rebuilding nothing.
 
@@ -2982,7 +3035,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="roll-forward"></a>
 
-### Roll forward, deliberately
+### Roll-forward recovery
 
 A failed deploy leaves the previous ReplicaSet serving and a bad migration is stopped before any workload changes, so recovery is a new release, and binding an older release is an ordinary promote labelled BEHIND in the plan and the ledger.
 
@@ -3106,9 +3159,32 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/releasehealth/releasehealth.go`](../pkg/releasehealth/releasehealth.go)
 - command `forge obs check`
 
+<a id="vuln-gate-self-hosted"></a>
+
+### Vulnerability gate, warn first
+
+Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate = enforce` and `provenance_sbom` judged before forge writes its promotion, warning for one release before it refuses.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "enforce" } }`; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`
+
+**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required`: below their `gates_from` release an enforce is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now.
+
+**Evidence:**
+
+- command `forge vuln exempt`
+- command `forge ci vuln-sbom`
+- source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
+
+| Rule            | Bug class it prevents                                                                                                                | Lane               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `vuln-gate`     | An env that declares `vuln_gate = enforce` promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
+| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to            | `forge env deploy` |
+
 <a id="delivery-policy-recorded"></a>
 
-### Delivery policy, stated honestly
+### Per-env delivery policy controls
 
 `forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, while `provenance_sbom`, `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
 
@@ -3165,7 +3241,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="flux-safe"></a>
 
-### Reconciler-safe manifests
+### GitOps-safe manifests
 
 Forge refuses a Job that a GitOps reconciler would re-run or wedge (a TTL, an unhashed name) and a force-recreate on a kind that holds data at bundle build, and a bare `forge lint` catches them earlier across every env.
 
@@ -3465,7 +3541,7 @@ _Enforced · Reliant hosting_
 
 <a id="billing-queued-exit7"></a>
 
-### Billing never fails silently
+### Deploys queued on billing holds
 
 A deploy that needs billing is recorded and queued (exit 7) with the link to fix it, and proceeds on its own when the hold clears.
 
@@ -3708,7 +3784,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="obs-status-changes"></a>
 
-### What's wrong, what changed
+### Env status and change log
 
 `forge obs status` summarizes services, open issues, firing alerts and the release in force; `forge obs changes` lists promotions, rollbacks, failed deploys and activity.
 
@@ -3721,7 +3797,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="readable-traces"></a>
 
-### Traces that show missing spans
+### Trace trees with uninstrumented time
 
 `forge obs trace` prints a capped tree with errors and the critical path expanded, linked logs, and how much time went to uninstrumented code.
 
@@ -3753,7 +3829,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Error issues tied to releases
 
-Errors group into issues with culprit, frames, trace, events per version and suspect commits, and `resolve --in next` ties a fix to a release so a later event from an older one is a regression.
+Errors group into issues with culprit, frames, trace, events per version and suspect commits, and `resolve --in next` ties a fix to the next release: events from what is live stay quiet, and an event from a release promoted after the resolve reopens the issue as a regression.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -3918,16 +3994,42 @@ _Enforced · Forge, on any infrastructure_
 
 A hosted app gets Product overview, Users, Product and Acquisition dashboards and the Overview's Traffic and Users sections with no code: visitors, channels, sign-ups and their attribution, active and new users, retention, goals and funnels.
 
-_In progress · Reliant hosting_
+_Enforced · Reliant hosting_
 
 **Use:** `forge.Analytics` adds goals, an activation event and channel rules; a `<project>-users.json` replaces a dashboard; `dashboards = False` drops them.
 
-**Why:** Visitors are counted by the platform's cookieless daily hash at the ingest edge, which ships with the control plane's edge columns and hash.
+**Why:** Visitors are counted by the platform's cookieless daily hash, computed at the control plane's ingest edge, so no cookie is set.
 
 **Evidence:**
 
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
+- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
+<a id="controlled-rollouts-and-experiments"></a>
+
+### Controlled rollouts and A/B tests
+
+Planned: one change ships new app behavior to everyone, as a gradual rollout, or as a comparison of versions, with stable cohorts by user, account, or visitor.
+
+_In progress · Reliant hosting_
+
+**Use:** Create a change with its default and new behavior, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The planned project-level Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
+
+**Why:** The evaluation SDK ships: a Go store and OpenFeature provider, a browser loader and OpenFeature provider, and assignment events recorded as product events, and changes are declared in the project (changes.yaml) and shipped in the release. Platform delivery of each environment's policy and the Experiments screen are not shipped yet. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
+
+**Evidence:**
+
+- library [`pkg/changes`](../pkg/changes)
+- library [`pkg/changes/openfeature`](../pkg/changes/openfeature)
+- library [`pkg/observe`](../pkg/observe)
+- source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
+- source [`web-runtime/src/changes-store.ts`](../web-runtime/src/changes-store.ts)
+- source [`web-runtime/src/changes-provider.ts`](../web-runtime/src/changes-provider.ts)
+- source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
+- source [`internal/changesdecl/changesdecl.go`](../internal/changesdecl/changesdecl.go)
+- source [`docs/changes.md`](../docs/changes.md)
+- skill `observability/changes` (`forge skill load observability/changes`)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>
@@ -4012,7 +4114,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="real-opt-out"></a>
 
-### Opt-out enforced at the source
+### Telemetry opt-out at the source
 
 Turning telemetry off for an env, or for one category (traces, metrics, logs, profiles, metadata, browser), means it is never collected or stored, so never billed, and session replay is opt-in.
 
@@ -4169,7 +4271,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Built-in MCP server
 
-`forge mcp` exposes forge on stdio to any MCP-capable harness, deploys and bug reports included, with no shell scraping.
+`forge mcp` exposes forge on stdio to any MCP-capable harness, deploys, bug reports, guarded database reads and monitoring included, with no shell scraping.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -4180,6 +4282,7 @@ _Enforced · Forge, on any infrastructure_
 - command `forge mcp`
 - source [`internal/cli/mcp_tools.go`](../internal/cli/mcp_tools.go)
 - source [`internal/cli/mcp_deploy.go`](../internal/cli/mcp_deploy.go)
+- source [`internal/cli/mcp_obs_local.go`](../internal/cli/mcp_obs_local.go)
 
 <a id="hosted-mcp"></a>
 
@@ -4199,7 +4302,7 @@ _Enforced · Reliant harness_
 
 <a id="capabilities-introspection"></a>
 
-### Whole surface in one call
+### Capabilities introspection
 
 `forge project capabilities --json` enumerates every command, lint analyzer and marker from the binary itself, and `forge project annotations` the entity-authoring vocabulary, so neither can drift from the code.
 
@@ -4269,7 +4372,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="report-bug"></a>
 
-### Agents report framework bugs
+### Bug reports from agents
 
 `forge report-bug` sends a redacted defect report with evidence, deduplicated, and sends nothing unless invoked; `--dry-run` prints exactly what would go.
 
@@ -4329,7 +4432,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="predictable-layout"></a>
 
-### Layout agents can predict
+### Predictable project layout
 
 Every project shares one enforced layout (one service per proto file, a service's files in one directory, contracts beside their packages), so an agent knows where code goes.
 
@@ -4354,7 +4457,7 @@ _Enforced · Forge, on any infrastructure_
 
 <a id="llm-placement-guidance"></a>
 
-### The LLM proposes, code decides
+### LLM features as workflows
 
 The `llm` skill puts agentic or judgement work in a Reliant workflow that calls the app's API, keeps money, limits and approvals as rules in the app, and never calls a model from the browser.
 

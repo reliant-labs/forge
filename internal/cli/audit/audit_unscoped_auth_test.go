@@ -207,6 +207,11 @@ func TestUnscopedAuth_AcknowledgementSuppressesWithReason(t *testing.T) {
 	if !strings.Contains(acks[0].Reason, "operator") {
 		t.Errorf("reason = %q, want the author's text preserved for review", acks[0].Reason)
 	}
+	// An acknowledged RPC never resolves the caller, so the summary must not
+	// count it among those that do.
+	if strings.HasPrefix(cat.Summary, "all ") || !strings.Contains(cat.Summary, "0 of 1") || !strings.Contains(cat.Summary, "acknowledged") {
+		t.Errorf("summary = %q, want it to count the acknowledged RPC apart (\"0 of 1 … resolve the caller; the other 1 are acknowledged …\")", cat.Summary)
+	}
 }
 
 // TestUnscopedAuth_BareAcknowledgementDoesNotCount is the whole point of
@@ -460,5 +465,77 @@ func TestUnscopedAuth_AmbiguousNameDoesNotClear(t *testing.T) {
 
 	if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOrder" {
 		t.Fatalf("unscoped = %v, want [GetOrder] — `scope` names two different functions and only one resolves the caller, so it vouches for neither", names)
+	}
+}
+
+// TestUnscopedAuth_MalformedAcknowledgementIsReported (FG-32): a marker
+// that acknowledges nothing used to be silently ignored — the RPC stayed
+// unscoped and nothing said the line above it had been read and refused.
+// Each spelling forge does not accept is now listed with its file:line and
+// named in the summary; the RPC is still graded as if it were absent.
+func TestUnscopedAuth_MalformedAcknowledgementIsReported(t *testing.T) {
+	for name, comment := range map[string]string{
+		"bare":            "// forge:auth-unscoped-ok",
+		"bare directive":  "//forge:auth-unscoped-ok",
+		"empty reason":    "// forge:auth-unscoped-ok:",
+		"em-dash":         "// forge:auth-unscoped-ok — operators only",
+		"space separator": "// forge:auth-unscoped-ok operators only",
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := handlerHeader + comment + "\n" + delegationBody("GetOrder") + "\n" + scopedBody("ListOrders")
+			dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true, "ListOrders": true}, src)
+
+			cat := auditUnscopedAuth(nil, dir)
+
+			if names := unscopedMethods(t, cat); len(names) != 1 || names[0] != "GetOrder" {
+				t.Fatalf("unscoped = %v, want [GetOrder] — a malformed marker acknowledges nothing", names)
+			}
+			got, ok := cat.Details["malformed_acknowledgements"].([]malformedAck)
+			if !ok || len(got) != 1 {
+				t.Fatalf("malformed_acknowledgements = %#v, want one entry", cat.Details["malformed_acknowledgements"])
+			}
+			if got[0].Method != "GetOrder" || got[0].File != "internal/handlers/shop/handlers_crud.go" || got[0].Line != 8 || got[0].Written != comment {
+				t.Errorf("entry = %+v, want GetOrder at handlers_crud.go:8 written %q", got[0], comment)
+			}
+			if !strings.Contains(cat.Summary, "acknowledge nothing") || !strings.Contains(cat.Summary, "ShopService.GetOrder (internal/handlers/shop/handlers_crud.go:8)") {
+				t.Errorf("summary must name the ignored marker: %s", cat.Summary)
+			}
+		})
+	}
+}
+
+// TestUnscopedAuth_MalformedAcknowledgementOnScopedRPCWarns: a malformed
+// marker above a handler that does resolve the caller changes no
+// classification, but a marker that does nothing is still a defect, so a
+// category that would be ok reports warn.
+func TestUnscopedAuth_MalformedAcknowledgementOnScopedRPCWarns(t *testing.T) {
+	src := handlerHeader + "// forge:auth-unscoped-ok\n" + scopedBody("ListOrders")
+	dir := writeProject(t, "ShopService", map[string]bool{"ListOrders": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if cat.Status != audittype.StatusWarn {
+		t.Fatalf("status = %q, want warn\nsummary: %s", cat.Status, cat.Summary)
+	}
+	if _, ok := cat.Details["malformed_acknowledgements"]; !ok {
+		t.Fatalf("details carry no malformed_acknowledgements: %v", cat.Details)
+	}
+}
+
+// TestUnscopedAuth_WellFormedAcknowledgementIsNotMalformed: neither a valid
+// acknowledgement nor a longer marker name sharing its prefix is reported.
+func TestUnscopedAuth_WellFormedAcknowledgementIsNotMalformed(t *testing.T) {
+	src := handlerHeader +
+		"// forge:auth-unscoped-ok: operators only\n" + delegationBody("GetOrder") + "\n" +
+		"// forge:auth-unscoped-okay is prose about something else\n" + scopedBody("ListOrders")
+	dir := writeProject(t, "ShopService", map[string]bool{"GetOrder": true, "ListOrders": true}, src)
+
+	cat := auditUnscopedAuth(nil, dir)
+
+	if cat.Status != audittype.StatusOK {
+		t.Fatalf("status = %q, want ok\nsummary: %s", cat.Status, cat.Summary)
+	}
+	if _, ok := cat.Details["malformed_acknowledgements"]; ok {
+		t.Fatalf("no marker here is malformed: %v", cat.Details["malformed_acknowledgements"])
 	}
 }

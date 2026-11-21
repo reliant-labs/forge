@@ -21,6 +21,14 @@
 //     which prose never uses) whose name no Go-source recognizer reads —
 //     a typo, or a proto/column marker that does nothing in a .go file.
 //
+// A third verdict is a warning under its own rule,
+// forge-go-markers-reason-missing: a marker whose reason is mandatory
+// written with none — `// forge:auth-unscoped-ok` alone, or with nothing
+// after the colon. Its recognizer ignores it (a bare acknowledgement is the
+// unfalsifiable comment the marker exists to replace), and that used to be
+// silent (FG-32). It warns rather than gates because the spaced bare form
+// is also how a sentence could begin; lint.rules can raise it.
+//
 // It GATES, unlike its proto and column twins: those markers sit in free-text
 // comments where `forge:` is often prose, while a Go directive comment has one
 // purpose, and a gated finding is what turns "the lint fails for no reason"
@@ -54,6 +62,10 @@ import (
 // `forge:lint-disable-next-line` suppression names.
 const ruleGoMarkers = "forge-go-markers"
 
+// ruleGoMarkersReasonMissing is the advisory rule for a reason-required
+// marker written with no reason (codegen.GoMarkerReasonMissing).
+const ruleGoMarkersReasonMissing = "forge-go-markers-reason-missing"
+
 // goMarkerFinding is one rejected marker comment.
 type goMarkerFinding struct {
 	File string
@@ -64,6 +76,9 @@ type goMarkerFinding struct {
 }
 
 func (f goMarkerFinding) message() string {
+	if f.Use.Status == codegen.GoMarkerReasonMissing {
+		return fmt.Sprintf("%s has no reason, and forge ignores it without one — this marker currently does NOTHING", f.Use.Name)
+	}
 	if f.Use.Status == codegen.GoMarkerMalformed {
 		return fmt.Sprintf("%s is followed by %q, which forge does not read — this marker currently does NOTHING",
 			f.Use.Name, strings.TrimSpace(f.Use.Rest))
@@ -72,7 +87,7 @@ func (f goMarkerFinding) message() string {
 }
 
 func (f goMarkerFinding) fixHint() string {
-	if f.Use.Status == codegen.GoMarkerMalformed {
+	if f.Use.Status == codegen.GoMarkerMalformed || f.Use.Status == codegen.GoMarkerReasonMissing {
 		return fmt.Sprintf("write it as %#q (%s)", f.Use.Marker.Form, goMarkerGrammarNote(f.Use.Marker.Grammar))
 	}
 	var b strings.Builder
@@ -140,9 +155,13 @@ func collectGoMarkerFindings(root string) ([]finding.Finding, error) {
 	})
 	fs := make([]finding.Finding, 0, len(raw))
 	for _, f := range raw {
+		rule, sev := ruleGoMarkers, finding.SeverityError
+		if f.Use.Status == codegen.GoMarkerReasonMissing {
+			rule, sev = ruleGoMarkersReasonMissing, finding.SeverityWarning
+		}
 		fs = append(fs, finding.Finding{
-			Rule:        ruleGoMarkers,
-			Severity:    finding.SeverityError,
+			Rule:        rule,
+			Severity:    sev,
 			File:        f.File,
 			Line:        f.Line,
 			Message:     f.message(),
@@ -181,7 +200,7 @@ func findGoMarkers(file string, src []byte) []goMarkerFinding {
 		}
 		use := codegen.ClassifyGoMarkerComment(lit)
 		switch use.Status {
-		case codegen.GoMarkerMalformed:
+		case codegen.GoMarkerMalformed, codegen.GoMarkerReasonMissing:
 			out = append(out, goMarkerFinding{File: file, Line: fset.Position(pos).Line, Use: use})
 		case codegen.GoMarkerUnknown:
 			if suppress.IsDirectiveToken(use.Name) {

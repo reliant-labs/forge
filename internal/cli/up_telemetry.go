@@ -32,6 +32,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -362,19 +364,29 @@ func agentMounts(targets []telemetry.Target) []telemetry.SecretMount {
 	return out
 }
 
-// writeAgentSecrets writes each mount's value from the env's secret store to
-// <dir>/<path>, 0600, after clearing what an earlier run wrote (a credential
-// the declaration dropped must not linger). A host target's credential comes
-// from the store (SecretRef.store_key); one without a store key, or whose key
-// the store lacks, is an error naming it — unless it is optional, then
-// skipped.
-func writeAgentSecrets(dir string, mounts []telemetry.SecretMount, store map[string]string, env string) error {
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	if len(mounts) == 0 {
-		return nil
-	}
+// agentSecrets is the agent's next credential set, staged beside the live
+// one (<dir>.new) by stageAgentSecrets, so the set a running agent reads is
+// never touched until its replacement is complete: swap puts it in place
+// (keeping the previous set at <dir>.prev), rollback restores the previous
+// set when the agent did not start on the new one, and commit drops it.
+type agentSecrets struct {
+	dir string
+	// revision fingerprints the set's paths and contents
+	// (hostinfra.TelemetryAgent.CredentialsRevision): the agent reads its
+	// credentials at start, so another revision restarts it.
+	revision string
+}
+
+// stageAgentSecrets resolves each mount's value from the env's secret store
+// and writes the whole set to <dir>.new, each at <path>, 0600. A credential
+// the declaration dropped is not in the new set, so it does not linger. A
+// host target's credential comes from the store (SecretRef.store_key); one
+// without a store key, or whose key the store lacks, is an error naming it —
+// unless it is optional, then skipped. Every value is resolved before
+// anything is written, and nothing at dir changes here, so an error leaves
+// the running agent's credentials as they were.
+func stageAgentSecrets(dir string, mounts []telemetry.SecretMount, store map[string]string, env string) (*agentSecrets, error) {
+	values := map[string]string{}
 	var missing []string
 	for _, m := range mounts {
 		v, ok := store[m.StoreKey]
@@ -389,20 +401,71 @@ func writeAgentSecrets(dir string, mounts []telemetry.SecretMount, store map[str
 			}
 			continue
 		}
-		p := filepath.Join(dir, filepath.FromSlash(m.Path))
-		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-			return err
-		}
-		if err := atomicfile.WriteFile(p, []byte(v), 0o600); err != nil {
-			return err
-		}
+		values[m.Path] = v
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return fmt.Errorf("credentials the scrapes need are not in the env's secret store:\n    %s", strings.Join(missing, "\n    "))
+		return nil, fmt.Errorf("credentials the scrapes need are not in the env's secret store:\n    %s", strings.Join(missing, "\n    "))
+	}
+	paths := make([]string, 0, len(values))
+	for p := range values {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	staged := dir + ".new"
+	if err := os.RemoveAll(staged); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(staged, 0o700); err != nil {
+		return nil, err
+	}
+	sum := sha256.New()
+	for _, rel := range paths {
+		p := filepath.Join(staged, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return nil, err
+		}
+		if err := atomicfile.WriteFile(p, []byte(values[rel]), 0o600); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(sum, "%d:%s%d:%s", len(rel), rel, len(values[rel]), values[rel])
+	}
+	rev := ""
+	if len(paths) > 0 {
+		rev = "sha256:" + hex.EncodeToString(sum.Sum(nil))
+	}
+	return &agentSecrets{dir: dir, revision: rev}, nil
+}
+
+// swap makes the staged set the live one, keeping the previous at <dir>.prev.
+func (s *agentSecrets) swap() error {
+	prev := s.dir + ".prev"
+	if err := os.RemoveAll(prev); err != nil {
+		return err
+	}
+	if err := os.Rename(s.dir, prev); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(s.dir+".new", s.dir); err != nil {
+		_ = os.Rename(prev, s.dir)
+		return err
 	}
 	return nil
 }
+
+// rollback puts the previous set back: the agent did not start on the new
+// one, so the agent still running (if any) keeps the credentials it reads.
+func (s *agentSecrets) rollback() {
+	prev := s.dir + ".prev"
+	if _, err := os.Stat(prev); err != nil {
+		return
+	}
+	_ = os.RemoveAll(s.dir)
+	_ = os.Rename(prev, s.dir)
+}
+
+// commit drops the previous set once the agent runs on the new one.
+func (s *agentSecrets) commit() { _ = os.RemoveAll(s.dir + ".prev") }
 
 // upLocalTelemetry converges the env's local telemetry agent: started (or
 // adopted, or restarted) with this run's configuration when a host target is
@@ -458,15 +521,25 @@ func upLocalTelemetry(ctx context.Context, w io.Writer, projectDir, env string, 
 	for _, warn := range plan.Warnings {
 		fmt.Fprintf(w, "  telemetry agent: %s\n", warn)
 	}
-	if err := writeAgentSecrets(hostinfra.TelemetryAgentSecretsDir(projectDir, env), plan.Mounts, store, env); err != nil {
+	// The new credentials replace the live ones only once all of them are
+	// written, and go back if the agent does not start on them: a running
+	// agent is left with the set it was started with, never a partial one.
+	secrets, err := stageAgentSecrets(hostinfra.TelemetryAgentSecretsDir(projectDir, env), plan.Mounts, store, env)
+	if err == nil {
+		err = secrets.swap()
+	}
+	if err != nil {
 		fmt.Fprintf(w, "  telemetry agent: ⚠ not started: %v\n", err)
 		return
 	}
+	plan.Agent.CredentialsRevision = secrets.revision
 	res, err := startTelemetryAgentFn(ctx, projectDir, plan.Agent)
 	if err != nil {
+		secrets.rollback()
 		fmt.Fprintf(w, "  telemetry agent: ⚠ %v\n", err)
 		return
 	}
+	secrets.commit()
 	fmt.Fprintf(w, "  telemetry agent: %s (pid %d, otelcol-contrib %s) → %s\n", res.State, res.PID, hostinfra.OtelcolContribVersion, collectorLabel(svc))
 	for _, t := range plan.Pulled {
 		fmt.Fprintf(w, "    collecting %s: %s\n", t.ServiceName, strings.Join(pulledSignals(t), ", "))

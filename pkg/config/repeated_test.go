@@ -469,6 +469,27 @@ func TestLoadInto_RepeatedFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+// A repeated list flag appends: `--allowed-registries a --allowed-registries b`
+// is [a b], as `--allowed-registries a,b` is. It used to keep only b
+// (forge report 3090dbbf). The first occurrence still replaces the default.
+func TestLoadInto_RepeatedListFlagAppends(t *testing.T) {
+	t.Setenv("REQUIRED_HOSTS", "a.example")
+	m := buildListTestMessage(t)
+	cmd := newCmd(t, m.Interface())
+	for _, v := range []string{"one.flag", "two.flag,three.flag"} {
+		if err := cmd.Flags().Set("allowed-registries", v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := LoadInto(cmd, m.Interface()); err != nil {
+		t.Fatalf("LoadInto: %v", err)
+	}
+	want := []string{"one.flag", "two.flag", "three.flag"}
+	if got := strListOf(t, m, "allowed_registries"); !eqStrs(got, want) {
+		t.Errorf("allowed_registries = %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Semantic guards on repeated fields (semantic.go).
 //

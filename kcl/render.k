@@ -2634,13 +2634,71 @@ _tel_observability = lambda t: Telemetry, b: Bundle -> any {
         t.cluster or "", t.namespaces or [], t.selector or {}, t.address or "", {}, b)
 }
 
+# A ManagedDatabase's Telemetry (kcl/database_telemetry.k): its own, else
+# the default unless default_telemetry is off.
+_db_telemetry = lambda db: any, b: Bundle -> any {
+    db.telemetry if db.telemetry else (managed_database_telemetry(db.name, _tel_ships(b, "metrics"), _tel_ships(b, "logs")) if db.default_telemetry else Undefined)
+}
+
+# Whether the env's observability ships signal c (metrics, logs). A default
+# Telemetry leaves out what it does not: the node agent refuses a declared
+# signal the env turned off, so a default carrying one would fail an env
+# that rendered before the default existed.
+_tel_ships = lambda b: Bundle, c: str -> bool {
+    not (_obs_on(b) and _obs_category_off(b.observability.signals, c))
+}
+
+# Whether a database has a place a collector reaches: hosted, or a known
+# cluster. A default is rendered only there, so a database the env does not
+# place yet gains no target that would fail validation; a declared Telemetry
+# renders anyway, and says so.
+_db_placed = lambda db: any, b: Bundle -> bool {
+    _p = _render_database(db, b)
+    _p.runtime == "hosted" or bool(_p.cluster)
+}
+
+# Every database whose Telemetry renders: {db, t}, in declaration order.
+_db_telemetries = lambda b: Bundle -> [any] {
+    [{"db": db, "t": _db_telemetry(db, b)} for db in b.databases if db.telemetry or (db.default_telemetry and _db_placed(db, b))]
+}
+
+# A database's target: its CloudNativePG instances, by the label the
+# operator puts on every pod of the Cluster forge renders (on hosting, the
+# platform places the namespace and cluster).
+_tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
+    _p = _render_database(db, b)
+    _hosted = _p.runtime == "hosted"
+    _tel_target(t, t.service_name or managed_database_service_name(db.name), "manageddatabase:${db.name}", "manageddatabase", _p.runtime, \
+        "" if _hosted else (_p.cluster or ""), \
+        [_p.namespace] if not _hosted and _p.namespace else [], \
+        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b)
+}
+
 # Every Telemetry the env declares, beside its resolved service name:
-# {t, svc}, in render order.
+# {t, svc}, in render order. A ManagedDatabase's default counts: it is the
+# database's Telemetry until replaced.
 _tel_declared = lambda b: Bundle -> [any] {
     [{"t": w.telemetry, "svc": _tel_service_name(w)} for w in b.workloads if w.telemetry] \
         + [{"t": d.telemetry, "svc": d.telemetry.service_name or d.name} for d in b.infra if d.telemetry] \
         + [{"t": t, "svc": t.service_name or g.name} for g in b.manifests for t in g.telemetry] \
-        + ([{"t": t, "svc": t.service_name} for t in b.observability.telemetry] if b.observability else [])
+        + ([{"t": t, "svc": t.service_name} for t in b.observability.telemetry] if b.observability else []) \
+        + [{"t": d.t, "svc": d.t.service_name or managed_database_service_name(d.db.name)} for d in _db_telemetries(b)]
+}
+
+# The CloudNativePG operator's default targets: one per cluster holding a
+# database that keeps its default telemetry, as `cloudnative-pg` (suffixed
+# with the cluster when the databases span several), unless the env already
+# declares a Telemetry of that service name, which replaces it.
+_tel_cnpg_operators = lambda b: Bundle -> [any] {
+    _places = [_render_database(db, b) for db in b.databases if db.default_telemetry]
+    _clusters = sorted([c for c in {p.cluster: 1 for p in _places if p.runtime == "cluster" and p.cluster}])
+    _taken = [d.svc for d in _tel_declared(b)]
+    _named = [{
+        "cluster": c
+        "svc": CNPG_OPERATOR_SERVICE if len(_clusters) == 1 else CNPG_OPERATOR_SERVICE + "-" + regex.replace(c.lower(), r"[^-a-z0-9_.]", "-").strip("-_.")
+    } for c in _clusters]
+    [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc, _tel_ships(b, "metrics"), _tel_ships(b, "logs")), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
+        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b) for o in _named if o.svc not in _taken]
 }
 
 _render_telemetry = lambda b: Bundle -> [any] {
@@ -2648,7 +2706,9 @@ _render_telemetry = lambda b: Bundle -> [any] {
     [_tel_workload(w, b) for w in b.workloads if w.telemetry] \
         + [_tel_host_infra(d, b) for d in b.infra if d.telemetry] \
         + [_tel_manifests(g, t, _pt, b) for g in b.manifests for t in g.telemetry] \
-        + ([_tel_observability(t, b) for t in b.observability.telemetry] if b.observability else [])
+        + ([_tel_observability(t, b) for t in b.observability.telemetry] if b.observability else []) \
+        + [_tel_managed_database(d.db, d.t, b) for d in _db_telemetries(b)] \
+        + _tel_cnpg_operators(b)
 }
 
 # A Telemetry's alerts, as _render_alerts' extra rules: each labelled

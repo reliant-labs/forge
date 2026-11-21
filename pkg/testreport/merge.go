@@ -223,6 +223,7 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 			remap[i] = laneIdx[l.Name]
 		}
 		for _, f := range d.Files {
+			f.Path = repoPath(f, opts)
 			mf := files[f.Key()]
 			if mf == nil {
 				if len(files) >= lim.MaxCases {
@@ -243,8 +244,9 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 						return nil, err
 					}
 				}
-				if mf.file.Path == "" {
-					mf.file.Path = f.Path
+				if mf.file.ImportPath == "" {
+					mf.file.ImportPath = f.ImportPath
+					mf.file.Package = f.Package
 				}
 				if mf.file.BlobID == "" {
 					mf.file.BlobID = f.BlobID
@@ -294,11 +296,6 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 			}
 		}
 		sortBlocks(f.Blocks)
-		if f.Path == "" && f.ImportPath != "" && opts.ModulePath != "" {
-			if rest, ok := strings.CutPrefix(f.ImportPath, opts.ModulePath+"/"); ok {
-				f.Path = path.Join(opts.ModuleDir, rest)
-			}
-		}
 		f.Excluded = exclusion(f, opts)
 		out.Files = append(out.Files, f)
 	}
@@ -307,6 +304,18 @@ func Merge(docs []*Coverage, opts MergeOptions) (*Coverage, error) {
 		out.Changed = mergeChanged(out.Changed, d.Changed)
 	}
 	return out, nil
+}
+
+// repoPath is a file's repo-relative path: its own, or for a Go file named
+// by import path under opts.ModulePath, ModuleDir plus the rest.
+func repoPath(f CoverageFile, opts MergeOptions) string {
+	if f.Path != "" || f.ImportPath == "" || opts.ModulePath == "" {
+		return f.Path
+	}
+	if rest, ok := strings.CutPrefix(f.ImportPath, opts.ModulePath+"/"); ok {
+		return path.Join(opts.ModuleDir, rest)
+	}
+	return ""
 }
 
 // sameBlockSet checks that a Go file has the same blocks in an input as in

@@ -123,13 +123,16 @@ const (
 	ExcludedFiltered  = "filtered"
 )
 
-// Key is the file's identity across inputs: language plus import path (Go)
-// or path.
+// Key is the file's identity across inputs: language plus its repo-relative
+// path when known, else its import path. [Merge] derives a Go file's path
+// from its import path first (MergeOptions.ModulePath), so a Go profile
+// (named by import path) and an LCOV or Cobertura report of the same file
+// (named by path) land on one file.
 func (f CoverageFile) Key() string {
-	if f.ImportPath != "" {
-		return string(f.Lang) + ":" + f.ImportPath
+	if f.Path != "" {
+		return string(f.Lang) + ":" + f.Path
 	}
-	return string(f.Lang) + ":" + f.Path
+	return string(f.Lang) + ":" + f.ImportPath
 }
 
 // DisplayPath is Path when known, else ImportPath.

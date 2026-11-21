@@ -246,7 +246,7 @@ var shippedRules = []rolloutGroup{
 	// forge db analyze: what a migration measurably does on a real
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
-	{IntroducedIn: "v1.7.0", Rules: dbanalyze.RuleIDs()},
+	{IntroducedIn: "v1.7.0", Rules: dbanalyze.MigrationRuleIDs()},
 	// forge lint --proto-format: a .proto `buf format` would rewrite — the
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
@@ -285,10 +285,26 @@ var newRules = []rolloutGroup{
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
 		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
 	},
+	// The vulnerability gate made real (rollout_grade.go): an env's declared
+	// `vuln_gate = enforce` is judged as audit until it gates — at the cut,
+	// at a self-hosted promote and in the vuln-sbom gate step — and a
+	// declared `provenance_sbom = enforce` refuses a promotion whose
+	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
+	// rollout (forge#2468 §1.8).
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
+	},
 	{
 		IntroducedIn: "v1.9.0",
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
 		Rules:        []string{staticexport.RulePartialPrerender},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
+		Rules:        dbanalyze.QueryRuleIDs(),
 	},
 }
 

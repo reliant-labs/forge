@@ -27,7 +27,6 @@
     }
   ],
   "defaultRange": "7d",
-  "defaultCompare": "period",
   "panels": [
     {
       "section": "glance",

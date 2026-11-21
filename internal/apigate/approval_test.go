@@ -128,11 +128,11 @@ func TestPRDeclarationAPIErrorsFail(t *testing.T) {
 		f    *fakeGitHub
 		want string
 	}{
-		{"reading the PR fails", &fakeGitHub{prErr: errors.New("HTTP 502")}, "read PR 5 from GitHub"},
-		{"the PR is not JSON", &fakeGitHub{pr: "<html>"}, "decode PR 5"},
-		{"reading the events fails", &fakeGitHub{pr: prApproved, eventsErr: errors.New("HTTP 403")}, "label events"},
+		{"reading the PR fails", &fakeGitHub{prErr: errors.New("HTTP 502")}, "GitHub API error (HTTP 502) reading PR 5 from GitHub"},
+		{"the PR is not JSON", &fakeGitHub{pr: "<html>"}, "unreadable response reading PR 5 from GitHub"},
+		{"reading the events fails", &fakeGitHub{pr: prApproved, eventsErr: errors.New("HTTP 403")}, "reading PR 5's label events"},
 		{"an events page is not JSON", &fakeGitHub{pr: prApproved,
-			events: []string{page(labeled("reliant-01", ApprovedLabel)), "{oops"}}, "decode PR 5's label events"},
+			events: []string{page(labeled("reliant-01", ApprovedLabel)), "{oops"}}, "unreadable response reading PR 5's label events"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,10 +141,83 @@ func TestPRDeclarationAPIErrorsFail(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want one naming %q", err, tc.want)
 			}
+			var gh *githubReadError
+			if !errors.As(err, &gh) || !strings.Contains(err.Error(), "infrastructure:") || !strings.Contains(err.Error(), "not an API break") {
+				t.Errorf("err = %v: a failed read must be reported as infrastructure, not as a break", err)
+			}
 			if approved {
 				t.Error("an error must never report approval")
 			}
 		})
+	}
+}
+
+// forge#2459: an anonymous read hit the runner's shared rate limit, curl said
+// only "returned error: 403", and the required check read like a verdict. Every
+// way a read can fail names its cause.
+func TestClassifyGitHubFailure(t *testing.T) {
+	cases := []struct {
+		name     string
+		exitCode int
+		stderr   string
+		want     string
+	}{
+		{"forge#2459: curl --fail on an anonymous 403", 22,
+			"curl: (22) The requested URL returned error: 403", "GitHub API refused the read (HTTP 403, most often a rate limit)"},
+		{"the adapter's exhausted rate limit", 75,
+			"ci-public-gh: infrastructure: GitHub API rate limit (HTTP 403) reading repos/reliant-labs/forge/pulls/7 after 1 attempt(s)",
+			"GitHub API rate limit (HTTP 403)"},
+		{"gh's primary rate limit", 1,
+			"gh: API rate limit exceeded for installation ID 1. (HTTP 403)", "GitHub API rate limit (HTTP 403)"},
+		{"a secondary rate limit", 1, "HTTP 429: Too Many Requests", "GitHub API rate limit (HTTP 429)"},
+		{"a rate limit with no status", 1, "You have exceeded a secondary rate limit", "GitHub API rate limit"},
+		{"a 5xx", 75, "ci-public-gh: infrastructure: GitHub API error (HTTP 502) reading x", "GitHub API error (HTTP 502)"},
+		{"curl cannot connect", 75,
+			"ci-public-gh: infrastructure: GitHub API unreachable (curl: (7) Failed to connect to api.github.com port 443)", "GitHub API unreachable"},
+		{"gh cannot resolve the host", 1,
+			"Get \"https://api.github.com/repos/o/r/pulls/5\": dial tcp: lookup api.github.com: no such host", "GitHub API unreachable"},
+		{"a 404", 1, "ci-public-gh: GitHub API returned HTTP 404 reading x: Not Found", "GitHub API returned HTTP 404"},
+		{"tempfail with nothing said", 75, "", "GitHub API temporarily unavailable"},
+		{"anything else", 1, "boom", "GitHub API read failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := classifyGitHubFailure(tc.exitCode, tc.stderr); got != tc.want {
+				t.Errorf("classifyGitHubFailure(%d, %q) = %q, want %q", tc.exitCode, tc.stderr, got, tc.want)
+			}
+		})
+	}
+}
+
+// A read GitHub refused exits exitInfrastructure with a message that says it is
+// not an API break; a verdict keeps exit 1.
+func TestReportSeparatesInfrastructureFromVerdicts(t *testing.T) {
+	useFakeGitHub(t, &fakeGitHub{prErr: &ghFailure{bin: "./scripts/ci-public-gh.sh", started: true, exitCode: 75, err: errors.New("exit status 75"),
+		stderr: "ci-public-gh: infrastructure: GitHub API rate limit (HTTP 403) reading repos/o/r/pulls/5 after 1 attempt(s)"}})
+	_, _, _, err := prDeclaration("5")
+	var stdout, stderr strings.Builder
+	if code := report(err, &stdout, &stderr, true); code != exitInfrastructure {
+		t.Fatalf("exit %d, want %d (infrastructure)\n%s", code, exitInfrastructure, stderr.String())
+	}
+	for _, want := range []string{
+		"apigate: infrastructure: GitHub API rate limit (HTTP 403) reading PR 5 from GitHub; this is not an API break",
+		"nothing in the diff was judged incompatible",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, stderr.String())
+		}
+	}
+	if !strings.HasPrefix(stdout.String(), "::error title=") || strings.Count(stdout.String(), "\n") != 1 {
+		t.Errorf("want one GitHub Actions error annotation on stdout, got %q", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := report(errStaleMarker, &stdout, &stderr, true); code != 1 || stdout.Len() != 0 {
+		t.Errorf("a verdict must exit 1 with no infrastructure annotation: exit %d, stdout %q", code, stdout.String())
+	}
+	if code := report(nil, &stdout, &stderr, true); code != 0 {
+		t.Errorf("no error must exit 0, got %d", code)
 	}
 }
 

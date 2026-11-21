@@ -272,7 +272,7 @@ func (c *Client) connectError(procedure string, resp *http.Response, raw []byte)
 		// The login is valid, so the 403 remedy below (`forge login`) would
 		// send the user round a loop: another login is another CLI login.
 		out.message = fmt.Sprintf(
-			"%s needs a person signed in to the Reliant web app, not a CLI login (HTTP %d%s, %s)\n"+
+			"%s needs a person signed in to the Reliant web app, not a CLI login or a machine token (HTTP %d%s, %s)\n"+
 				"fix: %s; signing in again with `forge login` does not help%s\n  reason: %s",
 			procedure, resp.StatusCode, codeSuffix(out.Code), c.Endpoint.URL,
 			webAppFix(c.Endpoint.URL), detailSuffix(detail), out.Reason)

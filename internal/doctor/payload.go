@@ -140,6 +140,7 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 	}
 
 	var (
+		visit    func(root, path string, d os.DirEntry, err error) error
 		uses     []capUse
 		problems []string
 		mounting []string
@@ -149,7 +150,17 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 	// connect-go v2's mount, and proves one only in v2 code.
 	projectV2 := connectmajor.DetectOrDefault(env.ProjectDir).IsV2()
 
-	walkErr := filepath.WalkDir(cmdDir, func(path string, d os.DirEntry, err error) error {
+	// scan reads one tree's Go files. The composition root is cmd/**, and in
+	// a graph-composed project (internal/app/compose.go) the serverkit chain
+	// that carries the caps is built by a provider in internal/app/, so that
+	// tree is read too: a fresh service scaffold set its caps there and this
+	// check, reading cmd/ alone, failed it (NS FG-25).
+	scan := func(root string) func(path string, d os.DirEntry, err error) error {
+		return func(path string, d os.DirEntry, err error) error {
+			return visit(root, path, d, err)
+		}
+	}
+	visit = func(root, path string, d os.DirEntry, err error) error {
 		if err != nil {
 			// An unreadable SUBTREE is not this check's failure — the
 			// composition root is still readable and still answers.
@@ -158,7 +169,7 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 			// "no Go files under cmd/" (a Skip — "not applicable") about a
 			// tree it never opened. Propagate it so the caller can say it
 			// could not obtain the facts.
-			if path == cmdDir {
+			if path == root {
 				return err
 			}
 			return nil //nolint:nilerr // an unreadable subtree is not this check's failure
@@ -223,7 +234,15 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 			return true
 		})
 		return nil
-	})
+	}
+	walkErr := filepath.WalkDir(cmdDir, scan(cmdDir))
+	if walkErr == nil {
+		if appDir := filepath.Join(env.ProjectDir, "internal", "app"); isDir(appDir) {
+			// Best effort: cmd/ answered the question of whether the
+			// project has a composition root at all.
+			_ = filepath.WalkDir(appDir, scan(appDir))
+		}
+	}
 	if walkErr != nil {
 		// The composition root is the only place the answer lives, so an
 		// unreadable cmd/ is not a benign "nothing found" — forge could not
@@ -292,10 +311,19 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 // builds the handler options — caps included — from a ChainDeps.
 const serverkitPath = "github.com/reliant-labs/forge/pkg/serverkit"
 
-// chainCapUses reports the payload caps of every serverkit.NewChain call in
-// file. NewChain applies the caps itself and maps a zero (an unset field, or a
-// config value that reads zero) to its 4 MiB default, so a chain is capped
-// unless a cap is a NEGATIVE literal — NewChain's spelling of "no cap".
+// chainConstructors maps each serverkit chain constructor to the deps type it
+// takes: NewChain (connect-go v1) and NewChainV2 (connect-go v2). Both carry
+// the same ReadMaxBytes/SendMaxBytes fields with the same rule.
+var chainConstructors = map[string]string{
+	"NewChain":   "ChainDeps",
+	"NewChainV2": "ChainDepsV2",
+}
+
+// chainCapUses reports the payload caps of every serverkit.NewChain or
+// NewChainV2 call in file. Both apply the caps themselves and map a zero (an
+// unset field, or a config value that reads zero) to the 4 MiB default, so a
+// chain is capped unless a cap is a NEGATIVE literal — their spelling of
+// "no cap".
 func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUse, problems []string) {
 	name := ""
 	for _, imp := range file.Imports {
@@ -315,7 +343,12 @@ func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUs
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "NewChain" {
+		if !ok {
+			return true
+		}
+		ctor := sel.Sel.Name
+		depsType, isChain := chainConstructors[ctor]
+		if !isChain {
 			return true
 		}
 		if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != name {
@@ -336,13 +369,13 @@ func chainCapUses(file *ast.File, fset *token.FileSet, rel string) (uses []capUs
 			{"ReadMaxBytes", "inbound request"},
 			{"SendMaxBytes", "outbound response"},
 		} {
-			use := capUse{file: rel, line: line, option: "NewChain." + f.field, arg: "default 4 MiB"}
+			use := capUse{file: rel, line: line, option: ctor + "." + f.field, arg: "default 4 MiB"}
 			if v, set := fields[f.field]; set {
 				use.arg = exprString(v)
 				if u, neg := v.(*ast.UnaryExpr); neg && u.Op == token.SUB {
 					problems = append(problems, fmt.Sprintf(
-						"%s:%d: serverkit.ChainDeps{%s: %s} — a negative cap is UNLIMITED %s payloads",
-						rel, line, f.field, use.arg, f.kind))
+						"%s:%d: serverkit.%s{%s: %s} — a negative cap is UNLIMITED %s payloads",
+						rel, line, depsType, f.field, use.arg, f.kind))
 				}
 			}
 			uses = append(uses, use)
@@ -703,4 +736,9 @@ func exprString(e ast.Expr) string {
 	default:
 		return strconv.Quote(fmt.Sprintf("%T", e))
 	}
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }

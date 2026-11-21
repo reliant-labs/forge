@@ -141,6 +141,10 @@ message Ping%[2]sResponse {
 	// Adding an RPC changes the process that mounts it. Its part is rebuilt
 	// from both branches, while independent alert inputs merge unchanged.
 	runCmd(t, projectDir, forgeBin, "generate")
+	guide := readFileE2E(t, filepath.Join(projectDir, "AGENTS.md"))
+	if strings.Contains(guide, "**Services forge does not manage:**") {
+		t.Error("the certified AGENTS.md guide was not refreshed after both services were adopted")
+	}
 	// Reusable fragments merge/reconcile without claiming process ownership.
 	// The selected environment's rendered workload supplies that at bundle time.
 	if matches, _ := filepath.Glob(filepath.Join(projectDir, "deploy/observability/spec/process-*_gen.json")); len(matches) != 0 {

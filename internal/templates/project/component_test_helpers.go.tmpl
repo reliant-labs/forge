@@ -55,7 +55,7 @@ import (
 {{- end}}
 {{- if .IsService}}
 
-	"connectrpc.com/connect"
+{{if connectV2 .}}	connect "connectrpc.com/connect/v2"{{else}}	"connectrpc.com/connect"{{end}}
 {{- end}}
 {{- if .NeedsULID}}
 	"github.com/oklog/ulid/v2"
@@ -107,6 +107,9 @@ type testConfig struct {
 {{- end}}
 {{- if .HasDB}}
 	db     orm.Context
+	// newDB makes the default database on first use (database), so a test
+	// that supplies its own through WithDB never pays for a second one.
+	newDB func() orm.Context
 {{- end}}
 	deps   *Deps
 {{- if .IsService}}
@@ -138,7 +141,18 @@ func WithConfig(cfg *config.{{.ConfigType}}) TestOption {
 // WithDB overrides the default test database.
 // Use this to provide a pre-seeded database or a custom ORM context.
 func WithDB(db orm.Context) TestOption {
-	return func(c *testConfig) { c.db = db }
+	return func(c *testConfig) { c.db, c.newDB = db, nil }
+}
+
+// database is the database the factories inject: WithDB's when a test
+// supplied one, else the default, made once, on first use. The default's
+// factory fails the test (t.Fatal) rather than return nil, so the one result
+// cached here is always a usable database.
+func (c *testConfig) database() orm.Context {
+	if c.newDB != nil {
+		c.db, c.newDB = c.newDB(), nil
+	}
+	return c.db
 }
 {{- end}}
 
@@ -163,7 +177,7 @@ func WithoutPrincipal() TestOption {
 
 // WithRequestValidation makes NewTest{{.FieldName}}Server reject a request that
 // breaks its protovalidate rules with invalid_argument before the handler
-// runs, as production does (testkit.ValidateRequests). Without it the server
+// runs, as production does (testkit.ValidateRequests{{if connectV2 .}}V2{{end}}). Without it the server
 // only logs the violation on the test; a later forge release makes rejecting
 // the default.
 func WithRequestValidation() TestOption {
@@ -193,7 +207,8 @@ func WithPlaceholderDeps() TestOption {
 // test defaults. By default, deps are minimal (discard logger).
 {{- if .HasDB}}
 // A fresh isolated database on the shared ephemeral postgres is created
-// automatically for CRUD operations.
+// automatically{{if .HasMigrationsFS}}, with the project's migrations applied
+// (NewMigratedTestDB){{end}}; WithDB supplies another.
 {{- end}}
 //
 // When With{{.FieldName}}Deps is supplied, any zero bare-Deps fields
@@ -262,7 +277,7 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- end}}
 {{- if .HasDB}}
 	if deps.DB == nil {
-		deps.DB = cfg.db
+		deps.DB = cfg.database()
 	}
 {{- end}}
 {{- $parent := . }}
@@ -402,6 +417,16 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 	t.Helper()
 	cfg := testkit.ApplyOptions(defaultTestConfig(t), opts...)
 	svc := newTest{{.FieldName}}Service(t, cfg)
+{{- if connectV2 .}}
+	var interceptors []connect.ServerInterceptor
+	if !cfg.anonymous {
+		interceptors = append(interceptors, testkit.ServerPrincipalV2(middleware.ContextWithClaims, cfg.principal...))
+	}
+	if cfg.validateRequests {
+		interceptors = append(interceptors, testkit.ValidateRequestsV2())
+	}
+	return testkit.NewConnectClientV2(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}RegisterV2{{end}}, {{.ProtoConnectPkg}}.New{{.ConnectServiceGoName}}Client, interceptors...)
+{{- else}}
 	var handlerOpts []connect.HandlerOption
 	if !cfg.anonymous {
 		handlerOpts = append(handlerOpts, testkit.ServerPrincipal(middleware.ContextWithClaims, cfg.principal...))
@@ -410,6 +435,7 @@ func NewTest{{.FieldName}}Server(t *testing.T, opts ...TestOption) (*httptest.Se
 		handlerOpts = append(handlerOpts, testkit.ValidateRequests())
 	}
 	return testkit.NewConnectClient(t, svc.{{if .MountMethod}}{{.MountMethod}}{{else}}Register{{end}}, {{.ProtoConnectPkg}}.New{{.ConnectServiceGoName}}Client, handlerOpts...)
+{{- end}}
 }
 {{- else}}
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} package with
@@ -434,7 +460,7 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{if .ConstructorTy
 		Config: cfg.cfg,
 {{- end}}
 {{- if .HasDB}}
-		DB: cfg.db,
+		DB: cfg.database(),
 {{- end}}
 	})
 	if err != nil {
@@ -453,7 +479,7 @@ func NewTest{{.FieldName}}(t *testing.T, opts ...TestOption) {{if .ConstructorTy
 		Config: cfg.cfg,
 {{- end}}
 {{- if .HasDB}}
-		DB: cfg.db,
+		DB: cfg.database(),
 {{- end}}
 	})
 {{- end}}
@@ -468,12 +494,20 @@ func defaultTestConfig(t *testing.T) *testConfig {
 		cfg:    {{with .ConfigDefaults}}config.{{.}}(){{else}}&config.{{.ConfigType}}{}{{end}},
 {{- end}}
 {{- if .HasDB}}
-		// Bare real postgres — no schema (a fresh isolated database on the
-		// shared ephemeral postgres). Tests that exercise real SQL should
-		// opt in to the migrated database{{if .HasMigrationsFS}} via
-		// WithDB(NewMigratedTestDB(t)){{end}}; the migrations run on the
-		// same engine production does, so there is no portability subset.
-		db: testkit.NewPostgresDB(t),
+{{- if .HasMigrationsFS}}
+		// The project's migrations applied (NewMigratedTestDB): a fresh
+		// isolated database cloned from the migrated template on the shared
+		// ephemeral postgres, so a handler meets the tables it queries. A
+		// bare database here made every handler call fail with an opaque
+		// internal error. WithDB replaces it.
+		newDB: func() orm.Context { return NewMigratedTestDB(t) },
+{{- else}}
+		// Bare real postgres (a fresh isolated database on the shared
+		// ephemeral postgres): the project has no migrations yet, so there
+		// is no schema to apply. Once db/migrations holds one, forge
+		// generate makes the migrated database the default.
+		newDB: func() orm.Context { return testkit.NewPostgresDB(t) },
+{{- end}}
 {{- end}}
 	}
 }
@@ -482,9 +516,11 @@ func defaultTestConfig(t *testing.T) *testConfig {
 // NewMigratedTestDB returns a real-postgres ORM context with the
 // project's embedded db/migrations applied — the same FS AutoMigrate
 // uses in production — so handler preconditions (tables, indexes) hold
-// in tests. Inject it where the schema matters:
+// in tests. It is NewTest{{.FieldName}}'s default database; call it to
+// seed rows before constructing the service on the same database:
 //
-//	svc := NewTest{{.FieldName}}(t, WithDB(NewMigratedTestDB(t)))
+//	db := NewMigratedTestDB(t)
+//	svc := NewTest{{.FieldName}}(t, WithDB(db))
 //
 // The migrations run on real postgres (the production engine), so they
 // apply verbatim; a migration postgres rejects fails the test LOUDLY,

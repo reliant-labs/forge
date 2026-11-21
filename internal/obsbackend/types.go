@@ -383,7 +383,7 @@ type MetricsQueryResult struct {
 	StepSeconds int64
 	// Warnings are stable codes: mixed_bounds, mixed_temporality,
 	// step_raised, metric_stored_as_n_kinds, metric_absent,
-	// metric_kind_mismatch.
+	// metric_kind_mismatch; the CLI adds group_by_undeclared.
 	Warnings   []string
 	Compare    *MetricsCompare
 	Statements []Statement

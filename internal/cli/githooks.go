@@ -53,19 +53,11 @@ func hookActivationSkipped(cmd *cobra.Command) bool {
 // either, and has its own opt-out, FORGE_NO_MERGE_DRIVER (merge_generated.go).
 const gitHooksOptOutEnv = "FORGE_NO_GIT_HOOKS"
 
-// legacyGitHooksOptOutEnv is gitHooksOptOutEnv's earlier spelling, still
-// honoured so a clone opted out under it stays opted out. It was renamed
-// because "hooks" read as forge.yaml's generate hooks too: people set it
-// expecting `forge generate` to skip `make sqlc`, and it never did.
-const legacyGitHooksOptOutEnv = "FORGE_NO_HOOKS"
-
 // gitHooksOptOut returns the variable that opts this process out of forge
-// configuring git hooks, or "" when neither is set.
+// configuring git hooks, or "" when it is not set.
 func gitHooksOptOut() string {
-	for _, k := range []string{gitHooksOptOutEnv, legacyGitHooksOptOutEnv} {
-		if os.Getenv(k) != "" {
-			return k
-		}
+	if os.Getenv(gitHooksOptOutEnv) != "" {
+		return gitHooksOptOutEnv
 	}
 	return ""
 }

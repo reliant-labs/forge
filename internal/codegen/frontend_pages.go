@@ -115,15 +115,6 @@ type PageTemplateData struct {
 	// minus the identity/audit fields — see listColumnExcluded for why a
 	// table and a detail view want different sets.
 	ListColumns []EntityPageField
-	// SearchFields are the camelCase string-typed fields client-side
-	// search filters over. Empty → the list page omits the search box.
-	//
-	// DEPRECATED for the list page: the born list page now filters
-	// SERVER-SIDE via the List RPC's own filter fields (SearchFilterField /
-	// ExactFilterFields below), so it no longer client-side-filters a single
-	// fetched page. SearchFields is retained because DisplayField derivation
-	// shares this pass and older tooling still reads it.
-	SearchFields []string
 	// DisplayField is the camelCase string field used as the human title.
 	// See deriveDisplayField for the ranking and for what is deliberately
 	// left out; empty when the entity carries no whole-label column, and
@@ -1852,10 +1843,6 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 		// list is the record's only view, so they stay.
 		if !page.EmitsDetailPage() || !listColumnExcluded(f.Name) {
 			page.ListColumns = append(page.ListColumns, col)
-		}
-
-		if f.ProtoType == "string" {
-			page.SearchFields = append(page.SearchFields, camel)
 		}
 	}
 

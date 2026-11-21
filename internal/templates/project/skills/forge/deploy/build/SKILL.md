@@ -74,7 +74,10 @@ that is not reproducible no longer rolls every workload pinned to it. The log
 names the matched inputs and the reused digest, or why it ran (no inputs,
 no earlier release, a release cut before forge recorded inputs, inputs
 changed, digest gone). A command that bakes the tag into the image (a
-version stamp) would carry the old stamp: give it no `inputs`. A hosted
+version stamp) would carry the old stamp: give it no `inputs`. A
+`DockerBuild` takes `inputs` too (project-root relative, or inside a GitSource
+`context`): the Dockerfile's content and the whole declaration are keyed, the
+tag is not (forge adds `-t`), so a build arg carrying the tag never reuses. A hosted
 ledger keeps `inputs_digest` only once its control plane stores it; until
 then hosted releases rebuild as before.
 

@@ -1174,7 +1174,12 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		// Release, so a field that forge predates would refuse the whole
 		// cut; beside it, an older server ignores it like any unknown
 		// field, and a newer one stores it in the release's column.
-		doc := r
+		//
+		// SBOMs stay out of it for the same reason (release.Validate
+		// already refuses a snapshot release that carries one; this keeps
+		// the document safe even if that rule is ever relaxed): they are
+		// recorded through their own RPC, never inside this document.
+		doc := r.WithoutSBOMs()
 		doc.Migrations = nil
 		// A file artifact's size is left out of the document for the same
 		// reason: a server pinned to a forge that predates the field would

@@ -173,7 +173,7 @@ forge env devstack port	cmd	project-dir/C:string
 forge env devstack prune	cmd	apply:bool project-dir/C:string
 forge env devstack release	cmd	apply:bool project-dir/C:string
 forge env diff	cmd	against:string all:bool allow-version-skew:bool charts:bool json:bool project-dir/C:string
-forge env down	cmd	all:bool allow-version-skew:bool project-dir/C:string
+forge env down	cmd	all:bool allow-version-skew:bool collect:bool project-dir/C:string
 forge env exec	cmd	allow-version-skew:bool project-dir/C:string workload:string
 forge env floor	group	allow-version-skew:bool project-dir/C:string
 forge env floor check	cmd	allow-version-skew:bool json:bool project-dir/C:string
@@ -191,7 +191,7 @@ forge env new	cmd	allow-version-skew:bool bind:stringArray check:bool force:bool
 forge env options	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge env preview	group	allow-version-skew:bool project-dir/C:string
 forge env preview create	cmd	allow-version-skew:bool branch:string from:string json:bool name-template:string pr:int project-dir/C:string ttl:string
-forge env preview delete	cmd	allow-version-skew:bool branch:string from:string name-template:string name:string pr:int project-dir/C:string yes:bool
+forge env preview delete	cmd	allow-version-skew:bool branch:string collect:bool from:string name-template:string name:string pr:int project-dir/C:string yes:bool
 forge env preview name	cmd	allow-version-skew:bool branch:string from:string name-template:string pr:int project-dir/C:string
 forge env ps	cmd	json:bool project-dir/C:string
 forge env releases	group	allow-version-skew:bool project-dir/C:string
@@ -441,6 +441,7 @@ forge telemetry status	cmd	project-dir/C:string
 forge test	group	allow-version-skew:bool project-dir/C:string
 forge test begin	cmd	base:string project-dir/C:string
 forge test capture	cmd	format:string lane:string project-dir/C:string render:string results:string run:string
+forge test collect	cmd	allow-version-skew:bool json:bool lane:string project-dir/C:string reset:bool run:string workload:stringArray
 forge test coverage	cmd	allow-version-skew:bool by:string commit:string diff:string json:bool lane:string project-dir/C:string run:string
 forge test flakes	group	all:bool allow-version-skew:bool dry-run:bool issues:bool json:bool project-dir/C:string repo:string state:stringSlice
 forge test flakes confirm	cmd	allow-version-skew:bool from:string json:bool list:bool logs:string max:int project-dir/C:string repo:string run-url:string run:string sha:string

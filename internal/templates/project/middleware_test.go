@@ -248,7 +248,7 @@ func TestCredentialFrom_ReadsBearerThenAPIKeyThenTheSessionCookie(t *testing.T) 
 		for i := 0; i+1 < len(tc.header); i += 2 {
 			h.Set(tc.header[i], tc.header[i+1])
 		}
-		if got := credentialFrom(h); got != tc.want {
+		if got, _ := credentialFrom(h); got != tc.want {
 			t.Errorf("%s: credentialFrom = %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -262,20 +262,20 @@ func TestCredentialFrom_PlainSessionCookieOnlyInDevelopment(t *testing.T) {
 	t.Parallel()
 	plain := http.Header{}
 	plain.Set("Cookie", (&http.Cookie{Name: SessionCookieName, Value: "planted"}).String())
-	if got := credentialFrom(plain); got != "" {
+	if got, _ := credentialFrom(plain); got != "" {
 		t.Errorf("deployed: a plain-named session cookie was read (%q)", got)
 	}
 	plain.Set("X-Forwarded-Proto", "http")
-	if got := credentialFrom(plain); got != "" {
+	if got, _ := credentialFrom(plain); got != "" {
 		t.Errorf("deployed, no https header: a plain-named session cookie was read (%q)", got)
 	}
-	if got := devCredentialFrom(plain); got != "planted" {
+	if got, _ := devCredentialFrom(plain); got != "planted" {
 		t.Errorf("development: the plain-named session cookie was not read (%q)", got)
 	}
 	blocked := http.Header{}
 	blocked.Set("Authorization", "")
 	blocked.Set("Cookie", (&http.Cookie{Name: SessionCookieName, Value: "x"}).String())
-	if got := devCredentialFrom(blocked); got != "" {
+	if got, _ := devCredentialFrom(blocked); got != "" {
 		t.Errorf("development: an empty Authorization header fell through to the cookie (%q)", got)
 	}
 }

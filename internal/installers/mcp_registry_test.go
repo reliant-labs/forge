@@ -72,3 +72,47 @@ func TestMCPRegistryListingMatchesTheNpmPackage(t *testing.T) {
 		t.Errorf("npm/smithery.yaml does not start `npx -y %s mcp` over stdio:\n%s", pkg.Name, smithery)
 	}
 }
+
+// Every listing an agent or a search engine reads before it ever runs forge
+// opens with the same one-line definition: the MCP registry's description
+// (npm/server.json, at most 100 characters, so it is the canonical short
+// form), the npm package's description (what npmjs.com and npm search show),
+// the Gemini extension's description, and the first paragraph of
+// npm/README.md (the npm page and the Smithery listing). One definition, so a
+// rewording of one listing cannot leave the others describing another product.
+func TestListingsShareOneDefinition(t *testing.T) {
+	descriptionOf := func(rel string) string {
+		t.Helper()
+		data, err := os.ReadFile(repoFile(t, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v struct {
+			Description string `json:"description"`
+		}
+		if err := json.Unmarshal(data, &v); err != nil {
+			t.Fatalf("%s: %v", rel, err)
+		}
+		return v.Description
+	}
+	canonical := descriptionOf("npm/server.json")
+	if canonical == "" {
+		t.Fatal("npm/server.json has no description")
+	}
+	if got := descriptionOf("npm/package.json"); !strings.HasPrefix(got, canonical) {
+		t.Errorf("npm/package.json description does not open with the registry's %q:\n%s", canonical, got)
+	}
+	if got := descriptionOf("gemini-extension.json"); got != canonical {
+		t.Errorf("gemini-extension.json description = %q, want the registry's %q", got, canonical)
+	}
+	readme, err := os.ReadFile(repoFile(t, "npm/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readme), "\n\n"+canonical+"\n") {
+		t.Errorf("npm/README.md does not carry the registry's %q as a paragraph of its own", canonical)
+	}
+	if !strings.Contains(string(readme), "env deploy prod --claimable") {
+		t.Error("npm/README.md does not give the no-account deploy command")
+	}
+}

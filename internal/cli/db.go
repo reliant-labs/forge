@@ -571,7 +571,11 @@ the compatibility line (a widening is backward-compatible, a narrowing breaks
 rollback). A widening adds the CHECK NOT VALID, so its ACCESS EXCLUSIVE lock is
 never held for a scan of the table, and writes a second migration,
 <name>_validate, that validates the existing rows under a lock that blocks
-neither reads nor writes. The name defaults to <constraint>_closed_set.`,
+neither reads nor writes. The name defaults to <constraint>_closed_set.
+<constraint> is the CHECK's name exactly as the migrations write it (prefix
+included); an unknown name is refused with the out-of-step constraints listed.
+The pair sets no lock_timeout of its own: forge db migrate up runs every
+migration under one (default 5s, -- forge:lock-timeout to override).`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if closedSet != "" {
 				return cobra.MaximumNArgs(1)(cmd, args)

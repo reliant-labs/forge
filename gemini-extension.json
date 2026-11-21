@@ -1,7 +1,7 @@
 {
   "name": "forge",
   "version": "1.9.0",
-  "description": "Deploy a site or app with no account: live URL plus a claim link. Scaffold, lint and generate Go and Connect RPC projects with Reliant Forge.",
+  "description": "Guardrails for apps in any agent harness. Deploy with no account: a live URL plus a claim link.",
   "mcpServers": {
     "forge": {
       "command": "npx",

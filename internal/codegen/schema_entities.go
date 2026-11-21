@@ -121,7 +121,13 @@ func entitiesForTables(tables []schemadef.Table, services []ServiceDef) []Entity
 					table.Name, strings.Join(table.PKCols, ", "))
 				continue
 			}
-			entities = append(entities, buildEntityDef(name, table, svc))
+			e := buildEntityDef(name, table, svc)
+			// A declaration that does not resolve is refused earlier, by
+			// schemadef.CheckMarkers; here it can only be absent or valid.
+			if terms, declared, err := schemadef.ResolveOwnership(table, tables); declared && err == nil {
+				e.Ownership = terms
+			}
+			entities = append(entities, e)
 		}
 	}
 	sort.Slice(entities, func(i, j int) bool { return entities[i].Name < entities[j].Name })

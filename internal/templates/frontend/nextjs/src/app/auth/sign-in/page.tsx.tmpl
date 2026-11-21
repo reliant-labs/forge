@@ -85,7 +85,8 @@ function SignIn() {
   // The provider round trip came back failed (Google/GitHub sign-in). The
   // issuer replaces `error` with the provider's own (access_denied, …), so the
   // broker marks its failure URL social=failed (devidp.SocialFailurePath).
-  const socialFailed = searchParams?.get("social") === "failed" || searchParams?.get("error") === "social";
+  const socialFailed =
+    searchParams?.get("social") === "failed" || searchParams?.get("error") === "social";
   // What a password must contain. Only shown when signing up: signing in
   // takes whatever the account already has.
   const policy = usePasswordPolicy();

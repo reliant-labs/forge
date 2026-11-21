@@ -315,6 +315,24 @@ func graphProblemsError(problems []graphProblem) error {
 		for _, p := range missing {
 			fmt.Fprintf(&b, "  - %s.Deps.%s (%s) has no provider. Add one to internal/app/providers.go:\n\n", p.Node, p.Field, p.Type)
 			x := providerNameFor(p.Field)
+			if strings.HasSuffix(p.Type, "crud.OwnerResolver") {
+				// The owner-scoped CRUD ops' caller resolver: one function
+				// per owner kind a forge:owner= marker names.
+				fmt.Fprintf(&b, "      type %sDeps struct{}\n\n", x)
+				fmt.Fprintf(&b, "      func New%s(%sDeps) (crud.OwnerResolver, error) {\n", x, x)
+				b.WriteString("          return crud.OwnerKinds{\n")
+				b.WriteString("              \"user\": func(ctx context.Context) ([]string, error) {\n")
+				b.WriteString("                  claims, err := middleware.GetUser(ctx)\n")
+				b.WriteString("                  if err != nil {\n")
+				b.WriteString("                      return nil, crud.ErrNoCaller\n")
+				b.WriteString("                  }\n")
+				b.WriteString("                  return []string{claims.UserID}, nil\n")
+				b.WriteString("              },\n")
+				b.WriteString("              // one entry per other kind a forge:owner= names (\"org\": the caller's org ids, ...)\n")
+				b.WriteString("          }, nil\n")
+				b.WriteString("      }\n\n")
+				continue
+			}
 			fmt.Fprintf(&b, "      type %sDeps struct{ /* what it needs, resolved by type */ }\n", x)
 			fmt.Fprintf(&b, "      func New%s(d %sDeps) (%s, error) { /* construct it */ }\n\n", x, x, p.Type)
 		}

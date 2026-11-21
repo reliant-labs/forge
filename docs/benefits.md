@@ -2167,7 +2167,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Signed images, SBOM and provenance
 
-The generated `build-images.yml` signs every image it pushes with a keyless cosign signature bound to its digest, generates an SPDX SBOM for it, and attests its build provenance.
+The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign signature and a build-provenance attestation to every image, bound to its digest and stored in the registry beside it (`cosign verify-attestation`), private repositories included.
 
 _Enforced · Forge, on any infrastructure_
 

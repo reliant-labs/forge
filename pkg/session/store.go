@@ -99,11 +99,13 @@ type MemoryStore struct {
 	// locks serializes Update per key without holding mu across fn, which
 	// may make a network call.
 	locks map[string]*sync.Mutex
+	// handoffs holds HandoffStore records (handoff.go).
+	handoffs map[string]Handoff
 }
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{records: map[string]Record{}, locks: map[string]*sync.Mutex{}}
+	return &MemoryStore{records: map[string]Record{}, locks: map[string]*sync.Mutex{}, handoffs: map[string]Handoff{}}
 }
 
 // Create implements [Store].

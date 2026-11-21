@@ -1200,7 +1200,10 @@ func writeSessionsMigration(projectDir string) error {
 		"-- holds an opaque id; each row holds that session's tokens, sealed under a key\n" +
 		"-- derived from the id, so a copy of this table signs no one in.\n" +
 		"-- This migration is YOURS from birth: forge writes it once and never rewrites\n" +
-		"-- it. Evolve the table with a NEW migration.\n\n" + session.SchemaSQL
+		"-- it. Evolve the table with a NEW migration.\n\n" + session.SchemaSQL +
+		"\n-- Sign-in handoffs (forge/pkg/session.HandoffSchemaSQL): the one-time requests and codes\n" +
+		"-- a signed-in session hands to a desktop app or sibling host, sealed the same way.\n" +
+		"-- Unused (and empty) until handoff_redirects turns the handoff on.\n\n" + session.HandoffSchemaSQL
 	path := filepath.Join(dir, version+"_create_auth_sessions.up.sql")
 	if err := atomicfile.WriteFile(path, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)

@@ -24,3 +24,5 @@ A project with no database, or a `providers.go` scaffolded before this, keeps th
 4. Run `forge generate`. compose.go gains `newSessions` and the new Deps keys.
 
 Cookies issued before the switch hold access tokens and still authenticate until they expire.
+
+**Another client signing in from this session** (a desktop app, a sibling host) is a handoff, not a shared cookie: each sign-in seals the issuer's session with the server-side one so a new, independent session can be minted from it. `forge skill load auth/handoff`.

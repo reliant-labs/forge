@@ -1,6 +1,6 @@
 ---
 name: auth
-description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, sessions, shared-issuer, external-provider, import-users, api-keys, chain.
+description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, sessions, handoff, shared-issuer, external-provider, import-users, api-keys, chain.
 ---
 
 # Authentication
@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/sessions`** (server-side sessions: refresh, sign-out, lifetimes), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/import-users`** (moving users from another provider onto managed identity, ids and password hashes kept), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/sessions`** (server-side sessions: refresh, sign-out, lifetimes), **`auth/handoff`** (a desktop app or sibling host signing in from a web session: PKCE one-time codes, never a shared cookie), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/import-users`** (moving users from another provider onto managed identity, ids and password hashes kept), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
 
 ## The default: managed identity
 

@@ -52,6 +52,10 @@ type LoginBrokerTemplateData struct {
 	// broker keeping sessions server-side asks the issuer for (with
 	// offline_access added). Without it the standard OIDC set is asked for.
 	ScopesField bool
+	// HandoffRedirectsField reports whether that config declares
+	// handoff_redirects, the allowlist that turns the sign-in handoff
+	// on. Without it the broker serves no handoff and still compiles.
+	HandoffRedirectsField bool
 }
 
 // Go names of the optional broker fields.
@@ -61,6 +65,7 @@ const (
 	audienceConfigField    = "JwtAudience"
 	proxyHopsConfigField   = "TrustedProxyHops"
 	scopesConfigField      = "OidcScopes"
+	handoffConfigField     = "HandoffRedirects"
 )
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
@@ -158,6 +163,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) (bool, erro
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
 		ScopesField:                           declares(scopesConfigField),
+		HandoffRedirectsField:                 declares(handoffConfigField),
 	})
 	if err != nil {
 		return false, fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

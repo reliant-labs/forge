@@ -231,6 +231,14 @@ type Tokens struct {
 	RefreshToken string `json:"refresh_token"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
+	// IssuerSession is the issuer's own session the tokens were finalized
+	// from, when a sign-in in this package produced them. Its Token is a
+	// bearer credential for that session (see Session), so it is never
+	// serialized; SessionTokens seals it with the server-side session, which
+	// is what lets a sign-in handoff mint another client tokens of its own
+	// (ReissueTokens, HandoffRoutes). Zero for tokens that came from a
+	// refresh.
+	IssuerSession Session `json:"-"`
 }
 
 // RedeemCode exchanges an authorization code for tokens.

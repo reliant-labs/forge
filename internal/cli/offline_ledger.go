@@ -485,6 +485,11 @@ type offlineCacheReport struct {
 	// env runs.
 	Releases []offlineCachedRelease `json:"releases,omitempty"`
 	Detail   string                 `json:"detail,omitempty"`
+	// Refused is why `--offline-ledger` refuses this env whatever the copy
+	// holds (the control plane applies its workloads); empty when it can
+	// serve it. A refused env's copy is still listed in --json, as the
+	// record of what the control plane last said, but it is no break-glass.
+	Refused string `json:"refused,omitempty"`
 }
 
 type offlineCachedRelease struct {
@@ -536,6 +541,11 @@ func writeOfflineCache(w io.Writer, env string, r *offlineCacheReport) {
 	if r == nil {
 		return
 	}
+	if r.Refused != "" {
+		// Never advertise a break-glass the deploy then refuses.
+		fmt.Fprintf(w, "\nOffline copy: no break-glass for this env — %s\n", r.Refused)
+		return
+	}
 	fmt.Fprintf(w, "\nOffline copy (break-glass: forge env deploy %s --offline-ledger [--to previous|<release>])\n", env)
 	if !r.Warm {
 		fmt.Fprintf(w, "  %s\n", r.Detail)
@@ -555,4 +565,19 @@ func writeOfflineCache(w io.Writer, env string, r *offlineCacheReport) {
 	if r.Detail != "" {
 		fmt.Fprintf(w, "  %s\n", r.Detail)
 	}
+}
+
+// offlineRefusal is why --offline-ledger refuses env, from its declaration;
+// "" when it would serve it, or when the declaration cannot be read (the
+// deploy then says why itself). `forge env status` asks it so it never
+// advertises a break-glass the deploy would refuse.
+func offlineRefusal(ctx context.Context, projectDir, env, endpoint string) string {
+	entities, err := RenderKCL(ctx, projectDir, env)
+	if err != nil {
+		return ""
+	}
+	if _, err := offlineLedgerShape(env, entities, endpoint); err != nil {
+		return err.Error()
+	}
+	return ""
 }

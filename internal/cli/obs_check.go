@@ -224,6 +224,9 @@ Exit status:
      current control plane starts the after window when the release went
      live (subject.live_at), so a retried promotion is judged on what it
      served; only an older one, which anchors it at promoted_at, gets here.
+     permission_denied / unauthenticated: the credential may not read
+     release health (a CI token needs obs:read) — nothing was judged, and
+     no retry changes that.
   8  check again later; nothing final was learned. Either --wait ran out
      (--timeout) before the after window finished, or the control plane
      refused the read because the org's query quota is spent

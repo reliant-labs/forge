@@ -4,9 +4,12 @@
 smaller calls on 2026-11-20 ([Decisions](#decisions-owner-2026-11-20)).
 Decisions 3 (coverage source) and 5 (retention) were reopened and then decided
 on the research in [Amendment 1](#amendment-1-coverage-source-and-retention-2026-11-20).
-Where the body below disagrees with those two, the decisions win.
-Nothing here is implemented in forge, control-plane or reliant.
-**Date:** 2026-11-20
+Where the body below disagrees with those two, the decisions win. Phase 0
+measured the design on 2026-11-20/21, and the eight amendments that came out
+of it are folded into the body
+([Amendment 2](#amendment-2-phase-0-results-2026-11-21)). Phase 1 is in
+progress; nothing is merged in forge, control-plane or reliant yet.
+**Date:** 2026-11-20, updated 2026-11-21
 **Scope:** forge (test capture, coverage merge, instrumented builds, KCL, CLI,
 scaffold and upgrade playbook), control-plane (test-run store, merge, flake
 scoring, API), reliant (the Tests pages, two agent workflows), plus moving
@@ -57,8 +60,8 @@ The recommended design:
    for a persistent env is a render error unless it is explicitly allowed. An
    instrumented build is a `cover` variant of the release, so it can never be
    promoted to a persistent env. Its coverage is pulled from the running
-   process through serverkit's localhost debug listener, and written on a
-   graceful exit as a fallback
+   process through serverkit's localhost debug listener, and written on exit
+   as a fallback
    ([1.3](#13-instrumented-builds-integration-and-e2e-coverage)).
 3. **One merge function, `pkg/testreport`,** is used both by the forge CLI and
    by the control plane (which pins forge), so local and hosted numbers agree.
@@ -67,10 +70,12 @@ The recommended design:
    forge knows which files it generated ([1.4](#14-merging-and-accumulating-across-lanes)).
 4. **Flakes are detected from the record.** There are three signals: a pass
    and a fail of the same test on the same tree, a pass on retry within a run,
-   and a score over the test's history on the default branch. control-plane's
-   taxonomy, already in production (confirmed / real / raced / inconclusive /
-   broad), becomes the product's vocabulary. So does its quarantine file
-   format, `ci/quarantine/<lang>/<pkg>/<Test>.yaml`
+   and repeat events on distinct commits of the default branch. Host failures
+   are matched by signature first and never score. control-plane's taxonomy,
+   already in production (confirmed / real / raced / inconclusive), becomes
+   the product's vocabulary, with `host` added and `broad` replaced by
+   correlated-failure grouping. So does its quarantine file format,
+   `ci/quarantine/<lang>/<pkg>/<Test>.yaml`
    ([1.5](#15-results-and-flaky-tests)).
 5. **`reliant forge test`**, a verb group with `--json` documents and the
    shared exit-code table:
@@ -85,7 +90,7 @@ The recommended design:
    Upload is on by default from CI and off for a local run on a dirty tree
    ([1.7](#17-cli)).
 
-6. **control-plane `TestService`.** Postgres holds run, case, coverage-summary
+6. **control-plane `TestsService`.** Postgres holds run, case, coverage-summary
    and flake rows. Object storage holds the raw reports and merged coverage
    documents, under an org prefix. A worker does ingest and merging, and the
    scope is `tests:read`. The service advertises `test_features`
@@ -171,7 +176,7 @@ test:
     RUN: { sh: "{{.FORGE}} test begin" } # reuses $FORGE_TEST_RUN when an outer `forge test run` set it
   cmds:
     - "{{.SLOT}} {{.FORGE}} test capture --run {{.RUN}} --lane unit --
-      go test {{.GOTESTRACE}} -count=1 -json -coverprofile={{.RUN}}/unit/cover.out -timeout 120s ./..."
+      go test {{.GOTESTRACE}} -count=1 -json -covermode=atomic -coverprofile={{.RUN}}/unit/cover.out -timeout 120s ./..."
     - task: test:frontend
       vars: { RUN: "{{.RUN}}" }
 ```
@@ -187,27 +192,45 @@ test:
   stream it cannot parse is stored as-is and recorded `results: unparsed`. The
   test verdict never changes.
 - **Coverage in the unit lane uses `-coverprofile`, not `-test.gocoverdir`.**
-  Checked on Go 1.27: a `-coverprofile` run is served from the test cache, and
-  a run that passes `-test.gocoverdir` through `-args` is not. The cached
-  inner loop is a hard rule in all three repos, so the default must not break
-  it. Each package covers its own statements, which is Go's default.
+  Checked on Go 1.27.4 in all three repos: a `-coverprofile` run replays from
+  the test cache with the same blocks and counts, and a run that passes
+  `-test.gocoverdir` through `-args` never does. Replay only helps the cached
+  `-short` lanes: forge's merge-tier shards, control-plane's `task ci` tier
+  and reliant's merge gate, which carry most of the runs. Capturing coverage
+  there is close to free (a warm `-coverprofile` run took 4.3s, 2.8s and 5.1s,
+  every package cached). A `-count=1` lane such as `task test` never replays,
+  with or without coverage.
+- **Each package covers its own statements**, which is Go's default.
   `tests.coverage.packages: module` in forge.yaml switches to
   `-coverpkg=<module>/...`, which counts code reached from other packages'
-  tests but instruments every package in every test binary. Phase 0 measures
-  the cost before that could become a default.
-- **`-race` stays.** With `-race`, Go uses `-covermode=atomic`, which is the
-  mode the merge expects.
-- **`test:short` is not captured.** It is the inner loop, and it stays exactly
-  what it is. `task test` and the CI lanes are what get recorded.
+  tests but instruments every package in every test binary. It stays opt-in:
+  it cost up to 2.7× the cold instrumented compile (forge: 241s against 88s),
+  and its raw profile repeats each block once per test binary that links it,
+  18 to 31 times over (105, 228 and 457 MB on a fifth of each repo's
+  packages). Capture deduplicates such a profile by block key before anything
+  is stored.
+- **`-covermode=atomic`, always.** Every scaffolded lane, `GoBuild` and the
+  Dockerfile `cover` stage pass it explicitly. Without it a lane that does
+  not run `-race` gets `set` mode, which records 0 or 1 instead of a count.
+  Phase 0 measured no difference in test time between the two. A `set`
+  profile from a project's own lane is still accepted, and is merged as
+  covered or not covered ([1.4](#14-merging-and-accumulating-across-lanes)).
+- **`test:short` is not captured locally.** It is the inner loop, and it
+  stays exactly what it is. `task test` and the CI lanes are what get
+  recorded, including a CI lane that runs the `-short` tier.
 - **Frontend.** The scaffolded `vitest.config.ts` gets `coverage: {provider:
 "v8", reporter: ["json", "lcov"], reportsDirectory: process.env.FORGE_TEST_LANE_DIR}`.
   Coverage stays off when the variable is unset, so a bare `npm test` is
   unchanged. `@vitest/coverage-v8` becomes a devDependency, pinned to the same
   major as `vitest` (`frontend_vitest_pin_test.go` holds both).
-- **Overhead.** Phase 0 measures `task test` with and without `-cover` on
-  forge, control-plane and reliant. `tests.coverage: false` in forge.yaml turns
-  coverage off for a project, and `FORGE_TESTS=off` turns capture into a
-  pass-through for one invocation.
+- **Overhead.** Phase 0 found no measurable test time from instrumentation,
+  with or without `-race`, in paired runs on all three repos. The cost is
+  compilation: a cover build is a second build-cache variant of every tested
+  package, paid once per source change (30 to 150s more for the cold build of
+  the sample). Instrumented binaries are about 3% larger and use about 4%
+  more memory. `tests.coverage: false` in forge.yaml turns coverage off for a
+  project, and `FORGE_TESTS=off` turns capture into a pass-through for one
+  invocation.
 
 ### 1.3 Instrumented builds: integration and e2e coverage
 
@@ -250,12 +273,12 @@ schema Bundle:
 
 **Build, per runtime:**
 
-| Runtime                                      | What changes                                                                                                                                                                                                                                                                                                                     |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host (`forge.OnHost`, forge runs `go build`) | `-cover -covermode=atomic -coverpkg=<pkgs>` is appended to the build. The process gets `GOCOVERDIR=.forge/tests/covdata/<env>/<workload>/`                                                                                                                                                                                       |
-| Dev under air                                | The scaffolded `air.toml` builds with `go build $FORGE_GO_BUILD_FLAGS …`, and `forge env up dev` sets the variable. Every restart writes a counter file. Counters are grouped by build fingerprint, and a report uses the newest build's (older builds are kept and labelled `stale build`, never merged across a source change) |
-| Image (Dockerfile)                           | A new `cover` stage beside `debug`, built with `--target cover`. The prod stage stays byte-identical, so its digest is unchanged. The env var is `GOCOVERDIR=/var/run/forge/covdata` on an `emptyDir`                                                                                                                            |
-| Prebuilt image, non-Go server                | Not instrumented. Recorded as `coverage: unavailable (not a forge Go build)`. Other languages come later ([phase 6](#phase-6-follow-ups-each-optional))                                                                                                                                                                          |
+| Runtime                                      | What changes                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host (`forge.OnHost`, forge runs `go build`) | `-cover -covermode=atomic -coverpkg=<pkgs>` is appended to the build. The process gets `GOCOVERDIR=.forge/tests/covdata/<env>/<workload>/`                                                                                                                                                                                                            |
+| Dev under air                                | The scaffolded `air.toml` builds with `go build $FORGE_GO_BUILD_FLAGS …`, and `forge env up dev` sets the variable. Every restart writes a counter file. Counters are grouped by build fingerprint (the `covmeta` hash), and a report uses the newest build's (older builds are kept and labelled `stale build`, never merged across a source change) |
+| Image (Dockerfile)                           | A new `cover` stage beside `debug` (`go build -cover -covermode=atomic`), built with `--target cover`. The prod stage stays byte-identical, so its digest is unchanged. The env var is `GOCOVERDIR=/var/run/forge/covdata` on an `emptyDir`                                                                                                           |
+| Prebuilt image, non-Go server                | Not instrumented. Recorded as `coverage: unavailable (not a forge Go build)`. Other languages come later ([phase 6](#phase-6-follow-ups-each-optional))                                                                                                                                                                                               |
 
 **Identity.** A `-cover` build is still reproducible (SOURCE_DATE_EPOCH), but
 it is a different digest. It is recorded as a `cover` variant of the same
@@ -274,12 +297,15 @@ control plane checks again inside `Promote` (capability
    mode, so a run can start from zero. A binary built without `-cover` answers 404. `forge test collect <env>` reaches it with a port-forward (cluster),
    `exec` (compose) or localhost (host). The pod keeps running, and a later
    SIGKILL loses nothing that was already pulled.
-2. **Exit flush.** On SIGTERM the server drains and returns from `main`, and
-   Go writes its counters to `GOCOVERDIR`. `forge env down` and `forge env
-preview delete` run `forge test collect` before teardown, best effort, with a
-   warning on failure. A crash, a SIGKILL after the grace period, or
-   `os.Exit(1)` on a failed shutdown loses the counters since the last pull,
-   and the report says so.
+2. **Exit flush.** Go writes the counters to `GOCOVERDIR` when `main`
+   returns and on `os.Exit`, whatever the code. On SIGTERM the server drains
+   and returns from `main`, and a server that fails and calls `os.Exit(1)`
+   writes them too (phase 0 saw both). Only a SIGKILL after the grace period,
+   an unrecovered panic or a fatal signal loses the counters since the last
+   pull, and the report says so. `forge env down` and `forge env preview
+delete` run `forge test collect` before teardown, best effort, with a
+   warning on failure. Pull stays the preferred path for long-lived pods,
+   which may never exit cleanly.
 
 **The e2e lane** wraps the run in a reset and a collect:
 
@@ -306,17 +332,35 @@ merge function:
 - **Unit of coverage: the statement block.** Blocks are keyed by `(file, start
 line.col, end line.col)`. That key is the same in a unit profile, an
   integration profile and covdata converted by `textfmt`, so the union is
-  exact. Hit counts sum. Duplicate input (the same report digest) is
-  idempotent.
+  exact. Phase 0 checked it against Go's own `covdata merge` on six reliant
+  packages: 1,402 covered blocks in each, 82.7% from `go tool cover -func`
+  for both. Hit counts sum, which is only meaningful because every input is
+  `atomic` or `count`. A `set` profile is merged as boolean: a block it hit
+  counts as covered, with no count. Duplicate input (the same report digest)
+  is idempotent.
+- **Deduplicated by block key.** `textfmt` over covdata from several binaries
+  prints each block once per binary, and a `-coverpkg` profile repeats it
+  once per test binary. Blocks with the same key become one block, and their
+  counts sum.
 - **Same source only.** Lanes merge only when their tree hashes are equal.
   Runs on a dirty tree merge only with runs on the same dirty state, and never
   into a commit's report. Mixing them is refused (`exit 2`, "lanes come from
   different trees"), never averaged.
+- **Same build only.** Go does not enforce the rule above: phase 0 ran
+  `covdata merge` over two builds of one package after a one-line shift, and
+  it reported 72 statements for a 36-statement package, at 66.7%, with no
+  error. So covdata is grouped by its `covmeta` hash, which fingerprints the
+  build, and two builds of one package are never merged. While deduplicating,
+  two blocks with one key but different statement counts prove the source
+  differs. That is refused (`exit 2`, "coverage from different builds of
+  `<pkg>`"), never averaged.
 - **The denominator is every instrumented statement.** Since Go 1.22, packages
   without tests appear at 0%, so untested code counts.
 - **Generated code is excluded by default.** That is `gen/`, `*_gen.go`,
-  `mock_gen.go`, `*-hooks.ts` and anything forge's own ownership record marks
-  as generated. It is reported on its own line. `tests.coverage.exclude` adds
+  `mock_gen.go`, `*.pb.go`, `*-hooks.ts` and anything forge's own ownership
+  record marks as generated. It is reported on its own line. It matters most
+  for servers: 21% of reliant's API server statements (42.6k of 205k) are
+  generated. `tests.coverage.exclude` adds
   globs, and `tests.coverage.include_generated: true` turns the default off.
 - **Languages are kept apart.** Go and TypeScript percentages are shown
   separately. A combined project figure is weighted by statements and labelled
@@ -346,7 +390,31 @@ has so far, so "62%, unit only" is never mistaken for a full figure.
 | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------- |
 | **Same-tree split.** The test passed in one run and failed in another on the same tree hash | the commit's runs (sharded jobs, re-runs, a local run plus CI)                            | confirmed |
 | **Retry pass.** The test failed, then passed on retry, within one run                       | `go test -count=N` attempts in the stream, and `forge test flakes confirm` reruns (below) | confirmed |
-| **History.** The test flips on the default branch                                           | outcomes over the last 30 days of default-branch runs                                     | scored    |
+| **History.** The test flips on the default branch                                           | outcomes over the last 30 days of default-branch runs                                     | ranked    |
+
+**Per-test outcomes.** Every signal reads one record: per run, each test's
+`(test id, lane, commit, run id, attempt, status)`. Nothing in the three
+repos records this today, and phase 0 found it is the input the flake states
+need. How it is stored without a row per passing test is in
+[2.1](#21-store).
+
+**Host failures first.** Before any verdict or score, each failure's output is
+matched against host signatures: network and download errors,
+`toomanyrequests`, ENOSPC and quota errors, `address already in use`, docker
+CLI timeouts, and `panic: test timed out` on a loaded host. A match is a
+`host` event. It never scores, and it is reported as host health, per runner
+and per signature. In phase 0, at least 30 of the 77 `flake:suspected` issues
+in the three repos had a host or harness cause, and about 40% of the tests
+that would have reached `flaky` were in that group.
+
+**Correlated failures.** Three or more failures in one run that share a
+package, a harness (testsrv, ClickHouse, pgtest) or a failure signature are
+grouped into one infra event, not counted as a flake event per test. Each of
+those failures gets the verdict `correlated` and names the group, its
+`infra_group`. The same co-failing set on a later commit is the same event,
+with the same `infra_group`. This replaces
+control-plane's `broad` cut-off (more than 15 failures in a run), which never
+fired on real data: host failures came 2 to 8 tests at a time.
 
 **Classification.** This uses control-plane's taxonomy, now
 `pkg/testreport.Verdict`:
@@ -357,21 +425,40 @@ has so far, so "62%, unit only" is never mistaken for a full figure.
   counted as a flake.
 - `inconclusive`: the rerun could not run (a build failure, a timeout).
 - `unattributed`: the failure could not be tied to a test.
-- `broad`: more than 15 tests failed in the run (`MAX_TESTS`), which is a
-  break, not a flake. They are not scored.
+- `host`: the failure matched a host signature (above). Not scored.
+- `correlated`: the failure is part of a correlated group (above), named by
+  its `infra_group`. The group is one infra event, and its tests are not
+  scored for it.
 
-**Score.** `flake_score` is the Wilson lower bound (95%) of
-`commits_with_confirmed_flake / commits_with_runs` over the test's last 30
-days on the default branch. A commit where the test failed in **every** run is
-a real break, not a flake, and does not count. The Wilson bound stops one
-event in two runs from reading as 50%.
+**States.** A state counts confirmed events on **distinct commits**: several
+confirmed events on one commit, a burst of re-runs for example, count once. A
+commit where the test failed in **every** run is a real break, not a flake,
+and does not count.
 
-| State         | Enters when                                              | Leaves when                                                           |
-| ------------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
-| `suspected`   | one confirmed event                                      | 14 days with no event → `healthy`                                     |
-| `flaky`       | two or more confirmed events in 30 days, or score ≥ 0.02 | the test's file changes and then 14 days pass with no event → `fixed` |
-| `quarantined` | a quarantine entry for it exists on the default branch   | the entry is removed (the test was deleted or rewritten)              |
-| `removed`     | the test no longer appears in runs after it was flaky    | —                                                                     |
+| State         | Enters when                                                 | Leaves when                                                           |
+| ------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| `suspected`   | one confirmed event                                         | 14 days with no event → `healthy`                                     |
+| `flaky`       | confirmed events on two or more distinct commits in 30 days | the test's file changes and then 14 days pass with no event → `fixed` |
+| `quarantined` | a quarantine entry for it exists on the default branch      | the entry is removed (the test was deleted or rewritten)              |
+| `removed`     | the test no longer appears in runs after it was flaky       | —                                                                     |
+
+For forge, control-plane and reliant, `suspected` is the state people act on:
+the owner's policy deletes a flaky test on its first event, so the issue and
+the quarantine follow from `suspected`, not `flaky`. In phase 0 every test
+later deleted as flaky would have reached `suspected` on its first confirmed
+event, and the 17 tests with two or more events would have reached `flaky`
+within two days of the second.
+
+**Flake rate: a ranking, not a trigger.** `flake_score` is the Wilson lower
+bound (95%) of `commits_with_confirmed_flake / commits_with_runs` over the
+test's last 30 days, shown as the "flake rate" with its `n`. It orders the
+flaky page and never moves a test between states. Its denominator `n` is the
+completed default-branch runs of the test's lane in which the test ran, not
+skipped, excluding cancelled runs (265 of about 1,000 forge runs in 30 days
+were cancelled). Phase 0 showed a threshold would never decide anything at
+our volumes: a lower bound of 0.02 needs 5 flaky commits at 100 runs, 17 at
+500 and 29 at 1,000, while the worst known flake had 5 events in about 1,000
+runs (0.002).
 
 **Quarantine.** control-plane's format becomes forge's standard:
 `ci/quarantine/<lang>/<package dir>/<Test>.yaml`, holding `{issue, reason,
@@ -420,7 +507,7 @@ read, which is the existing rule.
 | Where                                          | What runs                                                                                                                                       | Upload                                                                                                                                                             |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Locally** (`task test`, `forge test run`)    | capture into `.forge/tests/runs/`                                                                                                               | Off for a dirty tree. On a clean tree, only with `tests.upload: always` or `forge test report --upload`. A local clean run counts toward its commit like any other |
-| **Scaffolded CI** (`ci.yml`)                   | the lanes through capture, then `forge test report --upload`                                                                                    | On, with a `tests:write` token (`FORGE_TOKEN`). Upload failure is a warning                                                                                        |
+| **Scaffolded CI** (`ci.yml`)                   | the lanes through capture, then `forge test report --upload`                                                                                    | On, with a `tests:write` token in `FORGE_CONTROL_PLANE_TOKEN`, the variable forge reads everywhere else. Upload failure is a warning                               |
 | **External CI**                                | `forge test report --upload` after the project's own steps, or `forge test ingest` for runners forge does not wrap (pytest JUnit, jest LCOV, …) | On with a token, like `forge release record`                                                                                                                       |
 | **Preview envs** (scaffolded preview workflow) | deploy the `cover` variant, `task test:e2e ENV=<preview>`, then upload                                                                          | On                                                                                                                                                                 |
 | **Dev**                                        | the dev stack runs `cover` builds, and `task test:e2e` collects from it                                                                         | Dirty-tree rules apply                                                                                                                                             |
@@ -550,10 +637,23 @@ project schema <name>`:
 }
 ```
 
-`forge.test.coverage/v1` is the per-file document (blocks and hits per lane,
-plus the changed line ranges). `forge.test.flakes/v1` is `{tests: [{id, state,
-score, events: [{kind, commit, run, at}], quarantine, issue}]}`.
-`forge.test.run/v1` is the `run.json` manifest.
+The other documents:
+
+- `forge.test.coverage/v1` is the stored per-file document (blocks and hits
+  per lane, plus the changed line ranges).
+- `forge.test.coverage-view/v1` is what `forge test coverage --json` prints:
+  `summary`, `rollup` (by package or file), `diff` and `suggested`, with the
+  stored `forge.test.coverage/v1` document embedded as `coverage`.
+- `forge.test.flakes/v1` is `{tests: [{id, state, score, n, events: [{kind,
+commit, run, at}], quarantine, issue}], host: [{signature, events, runs}]}`,
+  where `score` with `n` is the flake rate (a ranking) and `host` is host
+  health.
+- `forge.test.runs/v1` is `forge test runs --json`.
+- `forge.test.run-result/v1` is `forge test run --json`: the lanes it ran and
+  each one's exit code.
+- `forge.test.collect/v1` is `forge test collect --json`.
+- `forge.test.confirm/v1` is `forge test flakes confirm --json`.
+- `forge.test.run/v1` is the `run.json` manifest.
 
 ### 1.8 forge.yaml
 
@@ -591,9 +691,19 @@ test_runs(id, org_id, project, git_commit, tree_hash, dirty, branch, base_sha,
 test_keys(id, org_id, project, lang, package, name, file, line, first_seen_at,
           UNIQUE (org_id, project, lang, package, name))
 
--- One per case per run (capped at 200k per run; monthly partitions).
-test_case_results(run_id, org_id, test_key_id, status pass|fail|skip, attempts,
-          retry_passed bool, duration_ms, failure_sig_hash, PRIMARY KEY (run_id, test_key_id))
+-- Which tests a run ran, per package: a digest of the sorted test-key list.
+-- Test sets rarely change between commits, so each distinct set is stored once.
+test_run_packages(run_id, org_id, package, test_set_digest, attempts_per_test,
+          PRIMARY KEY (run_id, package))
+test_sets(org_id, digest, test_key_ids bigint[], PRIMARY KEY (org_id, digest))
+
+-- Row condition: a test has rows iff at least one of its attempts in the run
+-- did not pass (fail or skip); it then has one row for EVERY attempt, from 1,
+-- passing ones included, so a retry pass is stored as fail, pass. A test whose
+-- attempts all passed has none. At most 200k rows per run (below).
+test_case_results(run_id, org_id, test_key_id, attempt, status pass|fail|skip,
+          duration_ms, failure_sig_hash, verdict NULL,
+          PRIMARY KEY (run_id, test_key_id, attempt))
 
 -- Raw and normalised documents in object storage; vulnstore's copy-state machine verbatim.
 test_blobs(org_id, digest, kind results|coverage|diff|raw, size_bytes, storage_key,
@@ -611,11 +721,16 @@ test_commit_packages(org_id, project, git_commit, package, lang, statements,
 deploy_release_tests(release_id, org_id, git_commit, PRIMARY KEY (release_id))
 
 -- Flake state per test, and the events that drove it.
-test_flakes(org_id, project, test_key_id, state, score, confirmed_events_30d,
+test_flakes(org_id, project, test_key_id, state, score, score_n, confirmed_commits_30d,
           first_seen_at, last_event_at, quarantined_at, issue_url, updated_at,
           PRIMARY KEY (org_id, project, test_key_id))
 test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|confirm,
           verdict, git_commit, run_ids bigint[], failure_sig_hash, at)
+
+-- Host and correlated failures: never scored, shown as host health.
+-- kind infra: one row per correlated group; its failures carry this infra_group.
+test_infra_events(id, org_id, project, kind host|infra, infra_group, test_key_ids bigint[],
+          git_commit, run_ids bigint[], failure_sig_hash, runner, at)
 ```
 
 - A **project** here is the forge project name, as in releases. A project that
@@ -626,16 +741,56 @@ test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|co
   and each covered file's git blob id. The browser fetches source from the
   linked GitHub repo at view time
   ([Amendment 1, part A](#a-where-the-coverage-browser-gets-source)).
-- **Pass rows are implied, not stored** ([Amendment 1, part B](#b-retention)).
-  `test_case_results` holds only fail, skip and retry-pass rows. Each run
-  records which packages it ran, so a test in a package the run covered with
-  no row in `test_case_results` passed. For our repos this removes about 99% of
-  the rows.
-- **Sizes.** An upload is capped at 32 MiB compressed (`gzip` required above 1
-  MiB) and 200k cases, matching `RecordReleaseSBOM`. A larger upload is refused
-  with a reason, never truncated. A 200-package Go module's statement profile
-  is a few MiB as text and about a tenth of that normalised and compressed.
-  Phase 0 records the real numbers for our three repos.
+- **Every per-test outcome is kept; pass rows are implied, not stored**
+  ([Amendment 1, part B](#b-retention)). The flake states need the
+  `(test id, lane, commit, run id, attempt, status)` tuple for every test in
+  every run ([1.5](#15-results-and-flaky-tests)), and it is recoverable
+  exactly:
+
+  - `test_runs` gives the lane and the commit.
+  - `test_run_packages` names each package the run ran, the set of tests it
+    ran there, and how many attempts each got (`-count`).
+  - `test_case_results` stores every attempt, pass included, of each test
+    that had **any** non-pass attempt in the run. So a retry pass is stored
+    as `fail, pass`, which is what retry-pass classification reads.
+  - A test whose attempts all passed has no row. It is in the run's test set,
+    and its pass is implied by it.
+
+  The test set is exact where a package list is not: a lane run with `-run`
+  (the flake gate), a build-tagged test, or a test added or deleted on that
+  commit. For our repos this removes about 99% of the rows.
+
+  | A test's attempts in one run                | `test_case_results` rows     | Read back as            |
+  | ------------------------------------------- | ---------------------------- | ----------------------- |
+  | passed (`-count=1`, or 3/3 with `-count=3`) | none                         | pass, from the test set |
+  | failed                                      | `1 fail`                     | fail                    |
+  | failed, then passed on retry                | `1 fail`, `2 pass`           | pass, retry pass        |
+  | failed twice, then passed (`-count=3`)      | `1 fail`, `2 fail`, `3 pass` | pass, retry pass        |
+  | passed, then failed (`-count=2`)            | `1 pass`, `2 fail`           | fail (the last attempt) |
+  | skipped (`t.Skip`)                          | `1 skip`                     | skip                    |
+
+  The last attempt is the test's outcome in the run. A pass after a fail is
+  a retry pass.
+
+- **Caps, never truncation.**
+
+  - `RecordTestRun` refuses an upload over 32 MiB across its parts as sent
+    (`gzip` required for a part above 1 MiB), or over 256 MiB inflated across
+    its parts, with `InvalidArgument` and the reason. It parses nothing, so
+    it cannot count cases.
+  - **The case cap is 200k stored attempt rows per run, counted at ingest.**
+    It counts `test_case_results` rows, not every attempt a run made: a lane
+    of 70k tests run `-count=3` that all pass stores no rows. Ingest refuses
+    a run over the cap: the run is settled failed with the reason, and none
+    of its results are written. It is never truncated.
+
+- **Sizes.** Phase 0 measured the three repos: a full
+  unit lane's per-package profile is about 9, 13.5 and 17 MB as text and 0.9,
+  1.2 and 1.5 MB gzipped (forge, control-plane, reliant), and one server's
+  covdata is a 1.15 MB gzipped meta file plus 5 to 18 KB of counters per
+  process exit. A commit's raw upload (unit, integration and one server) is
+  2 to 4 MB gzipped, and about 1 MB gzipped once merged into per-file
+  blocks.
 
 ### 2.2 Ingest, merge and flake detection
 
@@ -646,20 +801,27 @@ test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|co
   claims unprocessed runs and does the following:
   1. It parses them with `pkg/testreport`, in a subprocess with CPU, memory
      and time limits (the `vuln_scan` rule).
-  2. It writes the case rows.
+  2. It writes the run's test sets and case rows.
   3. It recomputes the commit report: the merge of all of the commit's
      coverage documents, written to a new merged blob with
      `test_commit_reports` and `test_commit_packages` updated in one
-     transaction.
-  4. It writes flake events for same-tree splits and retry passes, and
-     recomputes the affected tests' scores and states.
-  5. It binds the commit report to any release cut from that commit.
+     transaction. Coverage from a different build of a package (another
+     `covmeta` hash, or a statement-count mismatch on a block key) is not
+     merged, and the run records why ([1.4](#14-merging-and-accumulating-across-lanes)).
+  4. It matches each failure against the host signatures and groups
+     correlated failures, writing `test_infra_events`. This runs **before**
+     scoring, so a host or infra failure never becomes a flake event.
+  5. From the failures that remain, it writes flake events for same-tree
+     splits and retry passes, and recomputes the affected tests' states and
+     flake rates.
+  6. It binds the commit report to any release cut from that commit.
 - **`test_flake_sweep`**, daily, ages states out (`suspected → healthy`,
   `flaky → fixed`). It reconciles `quarantined` against what the default branch
   reports, and on opt-in projects it files and closes issues and opens
   quarantine PRs through the GitHub connection (once per test and transition).
-- **`test_retention`**, daily, collects blobs and case partitions past the
-  retention rules ([Amendment 1, part B](#b-retention)), keeping anything a retained release references
+- **`test_retention`**, daily, collects blobs and runs past the retention
+  rules (a run's test-set references and case rows go with it, by cascade;
+  the case table is not partitioned) ([Amendment 1, part B](#b-retention)), keeping anything a retained release references
   (`deploystore.RetainedReleaseIDs`, the vulnstore rule).
 - **Fairness.** Per-org concurrency caps and bounded batches, as in
   `vuln_rescan`.
@@ -667,11 +829,14 @@ test_flake_events(id, org_id, project, test_key_id, kind same_tree|retry_pass|co
 ### 2.3 API
 
 The new service lives in package `controlplane.v1`, at
-`proto/services/tests/v1/tests.proto`. The web reaches every
-`controlplane.v1.*` service directly on platform-api, so it needs no proxy:
+`proto/services/tests/v1/tests.proto`. It is named `TestsService`, not
+`TestService`, because forge requires a service's name to match its proto
+directory (`tests/`); the owner settled the name on 2026-11-21
+([Decisions](#decision-2026-11-21-service-names)). The web reaches every `controlplane.v1.*` service
+directly on platform-api, so it needs no proxy:
 
 ```proto
-service TestService {
+service TestsService {
   // Writes (tests:write, or deploy:write).
   rpc RecordTestRun(RecordTestRunRequest) returns (RecordTestRunResponse);
   //   project, commit, tree, dirty, branch, base, lane, source, env, ci{provider, url},
@@ -680,11 +845,13 @@ service TestService {
   // Reads (tests:read). Every filter is optional; lists are paged.
   rpc GetTestSummary(GetTestSummaryRequest) returns (GetTestSummaryResponse);
   //   per branch (default branch by default): coverage trend points (commit, at, combined, by_lane),
-  //   pass rate over the last N runs, flaky / quarantined counts, last run, release markers
+  //   pass rate over the last N runs, flaky / quarantined counts, last run, release markers,
+  //   host health: one row per host signature {signature, events, runs, tests}
   rpc ListTestRuns(ListTestRunsRequest) returns (ListTestRunsResponse);
   //   filters: branch, commit, release, environment, lane, source, status
   rpc GetTestRun(GetTestRunRequest) returns (GetTestRunResponse);
-  //   totals, failures with output, retry passes, slowest tests, zero-evidence packages
+  //   totals, failures with output (each TestFailure carries its verdict and infra_group),
+  //   retry passes, slowest tests, zero-evidence packages
   rpc GetCoverage(GetCoverageRequest) returns (GetCoverageResponse);
   //   project + one of commit | release | environment; lane?; path prefix; base?
   //   → the children of that path (package or file) with statements, combined and per-lane %, diff %
@@ -699,8 +866,27 @@ service TestService {
 }
 ```
 
-`tests_admin` gets `RecomputeCommit`, `RecomputeFlakes`, `PurgeNow` and
-`GetIngestBacklog` for `control-plane ops call`.
+A flake event's verdict is the `TestFlakeVerdict` enum, the proto twin of
+`pkg/testreport.Verdict` ([1.5](#15-results-and-flaky-tests)). Only
+`CONFIRMED` scores. `HOST` and `CORRELATED` never do; a `CORRELATED` event
+carries `infra_group`, the id of the correlated-failure group it belongs to,
+which is the `infra_group` of its `test_infra_events` row
+([2.1](#21-store)).
+
+Two read shapes follow from that, and cp#3286's proto does not have them yet,
+so a later proto change adds both:
+
+- **`TestFailure` carries `infra_group`** in `GetTestRun`, beside its
+  verdict, so a run page can group its correlated failures into one infra
+  event instead of listing them as separate failures.
+- **`GetTestSummary` returns host-health rows**, one per host signature:
+  `{signature, events, runs, tests}`, the shape of `pkg/testreport`'s
+  `HostHealth`. That replaces a bare count (`host_failures_30d`) as what the
+  Flaky tests page's Host health list reads.
+
+`TestsAdminService` (`proto/services/tests_admin/v1/`) gets
+`RecomputeCommit`, `RecomputeFlakes`, `PurgeNow` and `GetIngestBacklog` for
+`control-plane ops call`.
 
 **Capabilities.** A `test_features` list goes on `DeployService/GetCapabilities`,
 with the withheld set used until each name's behaviour is live:
@@ -721,10 +907,20 @@ yet") and keeps the local record.
   - **`tests:write`**, a narrow upload scope like `sourcemaps:write`. A PR's CI
     job needs it and should not hold `deploy:write`. `RecordTestRun` also
     accepts `deploy:write`, so a deploying CI needs no new token.
+    `tests:write` implies nothing, not even `tests:read`, so a PR's CI token
+    can upload results but cannot read failure output back. It is not
+    env-bindable.
   - **`tests:read`**, granted on day one to every holder of `deploy:read` and
     added to the Admin preset. Failure output can quote config, request bodies
     and log lines, so it is not readable by every token that can record a
-    deploy.
+    deploy. It is env-bindable like `vuln:read`: a token bound to an env reads
+    only the runs recorded against that env.
+  - **The grant goes to roles and presets, not to existing tokens.** Machine
+    tokens that already hold `deploy:read` are not rewritten to add
+    `tests:read`. A token minted before the release that ships Tests must be
+    re-minted to read Tests. This fails closed: an old token reads nothing it
+    could not read before. It is also reversible, because removing the scope
+    from a role or preset rewrites no stored token either.
 - An operation with no scope mapping is refused for machine principals, and
   grants are re-read on every request. These are the existing rules.
 - Quarantine and issue settings are never written through the API. They are
@@ -823,8 +1019,10 @@ The filters are branch, lane, source and status. A run's page shows failures
 with output and file:line, retry passes, the slowest tests (the
 `test-budget` view), and zero-evidence packages (the `verify-test-run` rule).
 
-**Flaky tests** (`/tests/flaky`): a table with test, package, score, state,
-signals (same-tree / retry / history), last seen and issue. A test opens a
+**Flaky tests** (`/tests/flaky`): a table with test, package, state, flake
+rate with its n (the sort order), signals (same-tree / retry / history), last
+seen and issue. Below it, **Host health** lists host and infra events by
+signature and runner, which are never counted against a test. A test opens a
 drawer:
 
 - a strip of outcomes over the last 50 runs;
@@ -851,7 +1049,7 @@ PR on opt-in projects, otherwise shows the command), and **Open issue**.
 This copies the Vulnerabilities stack:
 
 - `services/controlPlane/tests/{testApi,wire,types,errors,TestApiContext}.ts`
-  over `getControlPlaneClient(TestService)`, with `isTestServiceMissing`
+  over `getControlPlaneClient(TestsService)`, with `isTestsServiceMissing`
   driving an "isn't available here yet" state.
 - `hooks/test-queries.ts`: `useTestSummary`, `useTestRuns` (infinite),
   `useTestRun`, `useCoverage`, `useFileCoverage`, `useReleaseTests`,
@@ -1035,6 +1233,11 @@ the same parallel group can run at the same time. → means "blocked by".
 
 ### Phase 0: measure (2 tasks)
 
+Done on 2026-11-20/21. The results and the amendments they led to are in
+[Amendment 2](#amendment-2-phase-0-results-2026-11-21). The `/debug/coverage`
+prototype, SIGTERM collection in k3d and the Vitest LCOV merge were not
+covered, and move into F5 and F1.
+
 | #   | Task                                                                                                                                                                                                                                                                                                                                                                                                                          | Repo  | Size | Depends on |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---- | ---------- |
 | 0.1 | Spike on forge, control-plane and reliant, writing the numbers into this doc: `task test` with and without `-cover` (build time, test time, profile size, cache hit rate with `-coverprofile` under `-race` across many packages); `-coverpkg=<module>/...` cost; covdata from a `-cover` serverkit binary through a `/debug/coverage` prototype and through SIGTERM in k3d; `covdata merge` across two builds of one package | forge | S    | —          |
@@ -1042,30 +1245,30 @@ the same parallel group can run at the same time. → means "blocked by".
 
 ### Phase 1: forge, local (no server)
 
-| #   | Task                                                                                                                                                                                                                                                                                                                                              | Repo  | Size | Depends on       | Parallel group |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---- | ---------------- | -------------- |
-| F1  | `pkg/testreport`: results model and parsers (go-json, JUnit, Vitest), coverage model (Go profile, covdata via `textfmt`, LCOV, Cobertura, istanbul), merge, views, diff coverage, verdict taxonomy, Wilson score; the `forge.test.*/v1` schemas. `internal/testreport` (verify-test-run) moves onto its parser, behaviour unchanged               | forge | M    | 0.2              | A              |
-| F2  | `forge test begin/capture`: run dir and manifest, human rendering of `-json`, exit-code passthrough, `FORGE_TESTS=off`, secret scrub and truncation                                                                                                                                                                                               | forge | S    | F1 (parser only) | A              |
-| F3  | `forge test report/coverage/runs` on the local store: views, `--format lcov/cobertura/html`, `--gate-json`, `--base` diff, exit codes; `forge test ingest`                                                                                                                                                                                        | forge | M    | F1, F2           | B              |
-| F4  | `forge test flakes` (local), `flakes gate` (port of `ci-changed-tests.sh`), `flakes confirm` (port of `flake-report.sh` with the taxonomy), `forge test quarantine` (control-plane's format, `skip-regex`); `flake-check` gate step plus rollout row                                                                                              | forge | M    | F1, F2           | B              |
-| F5  | Instrumented builds: KCL `forge.Tests`, computed default, persistent-env check, one-binary rule; GoBuild flags; Dockerfile `cover` stage; air flags; `cover` release variant plus forge-side refusal on persistent envs; serverkit `/debug/coverage`; `forge test collect` (host, compose, cluster); collect before `env down` / `preview delete` | forge | L    | 0.1, F2          | B              |
-| F6  | `Release.Tests` evidence (machine ledger), old-decoder test; `forge test run`                                                                                                                                                                                                                                                                     | forge | S    | F3               | C              |
-| F7  | Scaffold default-on: Taskfile lanes, Vitest block, forge.yaml `tests:`, `ci.yml` upload step, preview workflow e2e plus collect, `release.yml` gate swap; goldens                                                                                                                                                                                 | forge | M    | F3, F4, F5       | C              |
-| F8  | `migrations/v1.N/tests` playbook with codemod, `tests-capture` lint rule plus rollout row                                                                                                                                                                                                                                                         | forge | M    | F7               | D              |
-| F9  | Docs and skills: `testing/coverage`, `testing/flakes`, `benefits.md`, the `deploy/record` skill (`forge test report --upload` from external CI)                                                                                                                                                                                                   | forge | S    | F7               | D              |
+| #   | Task                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Repo  | Size | Depends on       | Parallel group |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ---- | ---------------- | -------------- |
+| F1  | `pkg/testreport`: results model and parsers (go-json, JUnit, Vitest), coverage model (Go profile, covdata via `textfmt`, LCOV, Cobertura, istanbul), merge (block-key dedupe, `covmeta`-hash grouping, boolean `set` merge), views, diff coverage, verdict taxonomy with `host` signatures and correlated grouping, Wilson flake rate; the `forge.test.*/v1` schemas. `internal/testreport` (verify-test-run) moves onto its parser, behaviour unchanged | forge | M    | 0.2              | A              |
+| F2  | `forge test begin/capture`: run dir and manifest, human rendering of `-json`, exit-code passthrough, `FORGE_TESTS=off`, secret scrub and truncation                                                                                                                                                                                                                                                                                                      | forge | S    | F1 (parser only) | A              |
+| F3  | `forge test report/coverage/runs` on the local store: views, `--format lcov/cobertura/html`, `--gate-json`, `--base` diff, exit codes; `forge test ingest`                                                                                                                                                                                                                                                                                               | forge | M    | F1, F2           | B              |
+| F4  | `forge test flakes` (local), `flakes gate` (port of `ci-changed-tests.sh`), `flakes confirm` (port of `flake-report.sh` with the taxonomy), `forge test quarantine` (control-plane's format, `skip-regex`); `flake-check` gate step plus rollout row                                                                                                                                                                                                     | forge | M    | F1, F2           | B              |
+| F5  | Instrumented builds: KCL `forge.Tests`, computed default, persistent-env check, one-binary rule; GoBuild flags; Dockerfile `cover` stage; air flags; `cover` release variant plus forge-side refusal on persistent envs; serverkit `/debug/coverage`; `forge test collect` (host, compose, cluster); collect before `env down` / `preview delete`                                                                                                        | forge | L    | 0.1, F2          | B              |
+| F6  | `Release.Tests` evidence (machine ledger), old-decoder test; `forge test run`                                                                                                                                                                                                                                                                                                                                                                            | forge | S    | F3               | C              |
+| F7  | Scaffold default-on: Taskfile lanes, Vitest block, forge.yaml `tests:`, `ci.yml` upload step, preview workflow e2e plus collect, `release.yml` gate swap; goldens                                                                                                                                                                                                                                                                                        | forge | M    | F3, F4, F5       | C              |
+| F8  | `migrations/v1.N/tests` playbook with codemod, `tests-capture` lint rule plus rollout row                                                                                                                                                                                                                                                                                                                                                                | forge | M    | F7               | D              |
+| F9  | Docs and skills: `testing/coverage`, `testing/flakes`, `benefits.md`, the `deploy/record` skill (`forge test report --upload` from external CI)                                                                                                                                                                                                                                                                                                          | forge | S    | F7               | D              |
 
 ### Phase 2: control-plane store, merge, flakes
 
-| #   | Task                                                                                                                                                                                                              | Repo                      | Size | Depends on                 | Parallel group |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---- | -------------------------- | -------------- |
-| C1  | Proto: `TestService`, `tests_admin`, `test_features`; `tests:read` and `tests:write` in forge `pkg/accesstoken` (a small forge PR merged first, then pinned)                                                      | control-plane (+ forge S) | S    | —                          | A (with F1/F2) |
-| C2  | Migrations and `teststore`; `testbucket` adapter with vulnstore's copy-state machine; scope CHECK widened, `tests:read` granted to `deploy:read` holders; project identity on first upload                        | control-plane             | M    | C1                         | B              |
-| C3  | `RecordTestRun` (digests re-derived, caps, `tests:write`/`deploy:write`, org-scoped) plus `test_ingest` (sandboxed parse via forge's `pkg/testreport`, commit merge, flake events)                                | control-plane             | M    | C2, F1 released and pinned | C              |
-| C4  | Read API: summary, runs, run, coverage, file coverage, release tests, flaky tests, test; `tests:read`, env-bound tokens, NotFound across orgs                                                                     | control-plane             | M    | C2                         | C (with C3)    |
-| C5  | `test_flake_sweep` (states, opt-in issues and quarantine PRs through the GitHub connection), `test_retention` (the rules in Amendment 1, part B) and the `test_storage_gib` shadow meter, admin RPCs              | control-plane             | M    | C3                         | D              |
-| C6  | Releases: bind commit reports at `CutRelease` and on later ingest (`deploy_release_tests`); `Promote` refuses a `cover` digest on a persistent env; advertise `release-test-evidence` and `refuses-cover-variant` | control-plane             | S    | C3, F5                     | D              |
-| F10 | forge hosted: `report --upload`, `collect` uploads, reads (`coverage`, `runs`, `flakes`) from the control plane, `Release.Tests` from the server, `Unimplemented` handled                                         | forge                     | S    | C1, F3, F6                 | C              |
-| P1  | Pin bumps: reliant to the forge with F1–F10, then control-plane in lockstep                                                                                                                                       | reliant, control-plane    | S    | F1–F10 released            | E              |
+| #   | Task                                                                                                                                                                                                                                  | Repo                      | Size | Depends on                 | Parallel group |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ---- | -------------------------- | -------------- |
+| C1  | Proto: `TestsService`, `TestsAdminService`, `test_features`; `tests:read` and `tests:write` in forge `pkg/accesstoken` (a small forge PR merged first, then pinned)                                                                   | control-plane (+ forge S) | S    | —                          | A (with F1/F2) |
+| C2  | Migrations and `teststore`; `testbucket` adapter with vulnstore's copy-state machine; scope CHECK widened, `tests:read` granted to roles and presets with `deploy:read` (existing tokens untouched); project identity on first upload | control-plane             | M    | C1                         | B              |
+| C3  | `RecordTestRun` (digests re-derived, caps, `tests:write`/`deploy:write`, org-scoped) plus `test_ingest` (sandboxed parse via forge's `pkg/testreport`, commit merge, flake events)                                                    | control-plane             | M    | C2, F1 released and pinned | C              |
+| C4  | Read API: summary, runs, run, coverage, file coverage, release tests, flaky tests, test; `tests:read`, env-bound tokens, NotFound across orgs                                                                                         | control-plane             | M    | C2                         | C (with C3)    |
+| C5  | `test_flake_sweep` (states, opt-in issues and quarantine PRs through the GitHub connection), `test_retention` (the rules in Amendment 1, part B) and the `test_storage_gib` shadow meter, admin RPCs                                  | control-plane             | M    | C3                         | D              |
+| C6  | Releases: bind commit reports at `CutRelease` and on later ingest (`deploy_release_tests`); `Promote` refuses a `cover` digest on a persistent env; advertise `release-test-evidence` and `refuses-cover-variant`                     | control-plane             | S    | C3, F5                     | D              |
+| F10 | forge hosted: `report --upload`, `collect` uploads, reads (`coverage`, `runs`, `flakes`) from the control plane, `Release.Tests` from the server, `Unimplemented` handled                                                             | forge                     | S    | C1, F3, F6                 | C              |
+| P1  | Pin bumps: reliant to the forge with F1–F10, then control-plane in lockstep                                                                                                                                                           | reliant, control-plane    | S    | F1–F10 released            | E              |
 
 ### Phase 3: web
 
@@ -1108,6 +1311,13 @@ the same parallel group can run at the same time. → means "blocked by".
 | X4  | Instrumented servers in other languages for adopted apps (coverage.py, `c8` for Node) through `forge test collect` hooks | forge                   | M    |
 | X5  | `source: tests` trigger for opt-in agent automation                                                                      | control-plane + reliant | S    |
 | X6  | Org-wide Tests rollup; per-test analytics in the org's ClickHouse                                                        | reliant + control-plane | M    |
+
+**Merge order for F7.** The scaffold runs forge commands in a project's
+Taskfile and CI, and `TestScaffoldTemplatesRunOnlyReleasedForgeCommands`
+fails a template that runs a command no released forge has. So F7 merges only
+after a forge release that contains F2–F6 and F5b (`forge test collect`,
+split out of F5), followed by a refresh of
+`internal/cli/testdata/released_commands.txt`.
 
 **Critical path to "a hosted project shows real coverage and flakes":** F1 →
 F2 → F3 → F10 → P1, with C1 → C2 → C3 → C4 running alongside, then W0 → W1.
@@ -1227,6 +1437,14 @@ The two smaller calls are settled too:
 - **Quarantine PRs and flake issues are opt-in for customers**
   (`tests.flakes`) and on for forge, control-plane and reliant
   ([1.5](#15-results-and-flaky-tests), [section 6](#6-dogfood-forge-control-plane-reliant)).
+
+### Decision (2026-11-21): service names
+
+The owner settled the control-plane service names: **`TestsService`** in
+`proto/services/tests/v1/` and **`TestsAdminService`** in
+`proto/services/tests_admin/v1/`. forge requires a service's name to match
+its proto directory, so the name follows from the directory and is not
+reopened ([2.3](#23-api)).
 
 ## Amendment 1: coverage source and retention (2026-11-20)
 
@@ -1380,7 +1598,7 @@ The research behind it:
 That scatter is what the global storage tier design replaces. Tests adds no
 new per-product cap to it.
 
-**The rules** (`TestService` retention, applied by the daily `test_retention`
+**The rules** (`TestsService` retention, applied by the daily `test_retention`
 worker):
 
 | What                        | Kept                                                                                                                                                                                                            |
@@ -1425,7 +1643,10 @@ allowance. The org's tier decides how much an org may store in total.
   summaries, releases or open branches' latest reports.
 
 **Sizes.** These were measured on 2026-11-20 on a fifth of forge's packages
-and scaled; phase 0 (`tests/phase0-results.md`) refines them:
+and scaled. Phase 0 confirmed them: a commit's report (unit, integration and
+one server) is 2 to 4 MB gzipped raw, deleted after ingest, and about 1 MB
+gzipped as merged per-file blocks
+([Amendment 2](#amendment-2-phase-0-results-2026-11-21)):
 
 - **One stored commit report** is about **1 MB** for forge (about 245
   packages: a 0.8 MB gzip cover profile plus normalised results and about 50 KB
@@ -1448,3 +1669,108 @@ and scaled; phase 0 (`tests/phase0-results.md`) refines them:
   restricted to blob ids in a retained report, with the line-numbers fallback
   and its reasons.
 - No source-upload task exists.
+
+## Amendment 2: phase 0 results (2026-11-21)
+
+Phase 0 (tasks 0.1 and 0.2) measured the design on 2026-11-20/21 and
+confirmed it, with the eight amendments below. The owner settled them, and
+they are folded into the body; the decisions above are unchanged.
+
+**Setup.** All three repos pin `toolchain go1.27.4`. Snapshots of `origin/main`
+(forge `d75f656d9`, control-plane `8bcf5bf9b`, reliant `5830ffe07`), with
+every fifth package of `go list ./...` minus `gen/`: forge 49 of 241,
+control-plane 76 of 380, reliant 73 of 415. Every run was the repo's own
+`task test:short -- -json [flags] <pkgs>` on the shared build cache, on a
+48-CPU host shared with other agents, so the conclusions rest on paired,
+interleaved re-runs.
+
+**Coverage cost, `-short` unit lanes** (wall seconds):
+
+| Run                                | forge (49) | control-plane (76) | reliant (73) |
+| ---------------------------------- | ---------- | ------------------ | ------------ |
+| plain, cold build                  | 42.0       | 55.9               | 145.6        |
+| plain, warm (all cached)           | 9.2        | 2.5                | 5.6          |
+| `-coverprofile`, cold build        | 87.7       | 85.3               | 300.3        |
+| `-coverprofile`, warm (all cached) | 4.3        | 2.8                | 5.1          |
+| `-coverpkg=<module>/...`, cold     | 241.2      | 101.3              | 201.6        |
+
+Paired, interleaved re-runs showed that the apparent slowdowns under
+`-count=1` and `-race` were load (reliant's shared embedded Postgres, noise
+under `-race`), not instrumentation: summed package time with cover
+against plain was 0.77 (forge) and 0.86 (control-plane), and `set` against
+`atomic` was within noise.
+
+**Instrumented server** (reliant `server api`, plain against
+`-cover -covermode=atomic`, 1,000 interleaved requests per endpoint): binary
+425.7 against 438.3 MB (+2.9%), RSS 263 against 274 MB (+4%), p50 and p90
+within noise (ListProjects p50 0.93 against 0.94 ms), SIGTERM exit 0 with
+counters written. One `covmeta` file of 1.15 MB gzipped covers 315 packages
+and 205k statements, 21% of them generated.
+
+**Unit plus server merge** (six reliant packages): unit 80.8%, server 48.4%,
+union 82.7%. The union equals Go's `covdata merge`, block for block.
+
+**Flake data:** 77 `flake:suspected` and 103 `flake:removed` issues across the
+three repos, against about 500 control-plane `ci:full` runs and about 1,000 to
+1,100 forge and reliant push-to-main runs in 30 days. There was no per-test
+run history to read, so `n` could only be a lane's run count.
+
+**The amendments:**
+
+1. **Cache replay applies to the cached `-short` lanes only** (forge's
+   merge-tier shards, control-plane's `task ci`, reliant's merge gate), where
+   capturing coverage is close to free. A `-count=1` lane such as `task test`
+   never replays ([1.2](#12-producing-it-the-projects-own-lanes)).
+2. **`-covermode=atomic` everywhere:** scaffolded lanes, `GoBuild` and the
+   Dockerfile `cover` stage. Hit counts sum only because every input is
+   `atomic` or `count`; a `set` profile is accepted and merged as boolean
+   ([1.2](#12-producing-it-the-projects-own-lanes), [1.4](#14-merging-and-accumulating-across-lanes)).
+3. **`-coverpkg=<module>/...` stays opt-in** (`tests.coverage.packages:
+module`), and capture deduplicates it before anything is stored: raw
+   profiles repeat each block 18 to 31 times (105, 228 and 457 MB on the
+   samples) ([1.2](#12-producing-it-the-projects-own-lanes)).
+4. **Counters are written on `os.Exit`** and on return from `main`. Only
+   SIGKILL, an unrecovered panic or a fatal signal lose them. Pull stays
+   preferred for long-lived pods ([1.3](#13-instrumented-builds-integration-and-e2e-coverage)).
+5. **No merge across builds.** covdata is grouped by `covmeta` hash and two
+   builds of one package are never merged; disagreeing statement counts for
+   one block key are a source mismatch and are refused (`exit 2`). Go's own
+   `covdata merge` accepted two builds and reported 72 statements for a
+   36-statement package ([1.4](#14-merging-and-accumulating-across-lanes)).
+6. **`flaky` is two or more confirmed events on distinct commits** in 30
+   days. The Wilson bound is a displayed ranking with its `n`, never a
+   trigger: 0.02 needs 5, 17 and 29 flaky commits at 100, 500 and 1,000 runs,
+   and the worst known flake had 5 (0.002). The denominator is completed
+   default-branch runs of the lane in which the test ran, excluding cancelled
+   runs. Per-test outcomes `(test id, lane, commit, run id, attempt, status)`
+   are recorded per run. `suspected` is the actionable state for our repos'
+   delete-on-first-flake policy ([1.5](#15-results-and-flaky-tests), [2.1](#21-store)).
+7. **`host` verdict and correlated grouping**, matched before scoring. Host
+   events (network and download errors, `toomanyrequests`, ENOSPC and quota,
+   address in use, docker CLI timeouts, `panic: test timed out` under load)
+   never score and are reported as host health. Three or more failures in one
+   run sharing a package, harness or signature are one infra event (verdict
+   `correlated`, grouped by `infra_group`), which
+   replaces `broad`. At least 30 of the 77 suspected issues had a host or
+   harness cause, and host failures came 2 to 8 tests at a time, so `broad`
+   never fired ([1.5](#15-results-and-flaky-tests), [2.2](#22-ingest-merge-and-flake-detection)).
+8. **Generated code is excluded by default**, now including `*.pb.go`, and
+   reported on its own line: 21% of reliant's API server statements
+   ([1.4](#14-merging-and-accumulating-across-lanes)).
+
+**Not covered by phase 0:** the `/debug/coverage` prototype, SIGTERM
+collection in k3d, Vitest LCOV in the merge, a cold-CI number with an empty
+build cache, and the build-cache growth from the cover variant. The first
+three are checked in F5 and F1.
+
+**Tasks changed by this amendment:**
+
+- **F1** adds block-key dedupe, `covmeta`-hash grouping, the boolean `set`
+  merge, the `host` and `correlated` verdicts, and the flake rate as a
+  ranking.
+- **F2** deduplicates `-coverpkg` profiles at capture.
+- **F5** and **F7** pass `-covermode=atomic` everywhere.
+- **C2** adds `test_run_packages`, `test_sets` and `test_infra_events`, and
+  keys case rows by attempt.
+- **C3** matches host signatures and groups correlated failures before it
+  writes flake events.

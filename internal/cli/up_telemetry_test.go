@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -99,6 +100,9 @@ func goldenFile(t *testing.T, name string, got []byte) {
 // exported to the local collector and the profiles collector, with the
 // supervisor's health extension and the self-telemetry listener off.
 func TestTelemetryAgentConfigGolden(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the golden pins POSIX paths (/project/...); Windows renders them with backslashes")
+	}
 	e := telemetryEntities(hostEngineTarget(), hostWorkloadTarget(), clusterTarget())
 	plan, err := planTelemetryAgent("/project", "dev", e)
 	if err != nil {
@@ -170,7 +174,7 @@ func TestTelemetryIncludes(t *testing.T) {
 		all.WriteString("=== " + name + "\n")
 		all.Write(files[name])
 	}
-	goldenFile(t, "includes_dev.golden.yaml", all.Bytes())
+	goldenFile(t, "includes_dev.golden.txt", all.Bytes()) // .txt: a stream of "=== <file>" sections, not YAML (pre-commit check-yaml)
 
 	empty, err := localTelemetryLogs(telemetryEntities())
 	if err != nil {
@@ -289,7 +293,7 @@ func TestWriteAgentSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != "s3cret" || info.Mode().Perm() != 0o600 {
+	if b, _ := os.ReadFile(p); string(b) != "s3cret" || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Errorf("token file = %q mode %v, want the store's value at 0600", b, info.Mode().Perm())
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {

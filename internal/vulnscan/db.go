@@ -164,6 +164,15 @@ func (d *DB) BaseURL() string {
 // ListingURL is the listing a refresh reads.
 func (d *DB) ListingURL() string { return d.BaseURL() + "/" + SchemaMajor + "/latest.json" }
 
+// OnDisk reports whether a database file is in the directory at all,
+// without running grype: a cheap "has this machine ever pulled one" for a
+// caller that must not download the first one (a release cut). Status says
+// whether grype can open it.
+func (d *DB) OnDisk() bool {
+	fi, err := os.Stat(filepath.Join(d.grypeDir(), strings.TrimPrefix(SchemaMajor, "v"), "vulnerability.db"))
+	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
+}
+
 func (d *DB) grypeDir() string   { return filepath.Join(d.Dir, "grype") }
 func (d *DB) configPath() string { return filepath.Join(d.Dir, "grype.yaml") }
 func (d *DB) statePath() string  { return filepath.Join(d.Dir, "state.json") }

@@ -509,6 +509,45 @@ describe("the published surface", () => {
     expect(changes).not.toMatch(/^\s*import\s/m);
   });
 
+  it("keeps the Changes store and OpenFeature provider IN the barrel, off the SDK", () => {
+    // loadChanges and forgeChangesProvider sit in the barrel's import
+    // closure, so they may reach only the evaluator and exposure.ts (which
+    // reaches the import-free track.ts): no SDK, no OpenFeature, nothing
+    // fetched on import.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "loadChanges",
+      "CHANGES_SNAPSHOT_URL",
+      "ChangesStore",
+      "changeBool",
+      "changeString",
+      "changeNumber",
+      "changeJson",
+      "forgeChangesProvider",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    for (const name of ["changes-store.js", "changes-provider.js"]) {
+      const js = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const imports = [
+        ...js.matchAll(
+          /^\s*(?:import|export)\b[^;]*?from\s*["']([^"']+)["']/gm,
+        ),
+      ].map((m) => m[1]);
+      expect(
+        imports.filter(
+          (i) =>
+            i !== "./changes.js" &&
+            i !== "./changes-store.js" &&
+            i !== "./exposure.js",
+        ),
+        `dist/${name} imports more than changes.js, changes-store.js and exposure.js`,
+      ).toEqual([]);
+    }
+  });
+
   it("declares a React type surface that is identical on React 18 and 19", () => {
     // The peer range is the promise; this is the property that makes it true.
     expect(pkg.peerDependencies["react"]).toBe("^18.3.0 || ^19.0.0");

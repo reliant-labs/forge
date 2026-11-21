@@ -322,8 +322,9 @@ type HostInfraSpec struct {
 	// engine = "nats" only.
 	NATSMonitorPort int
 	// engine = "temporal" only.
-	TemporalNamespaces []string
-	TemporalUIPort     int
+	TemporalNamespaces  []string
+	TemporalUIPort      int
+	TemporalMetricsPort int
 }
 
 // ErrProviderNotImplemented is the sentinel future providers (Lambda,

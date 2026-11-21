@@ -353,7 +353,7 @@
           "type": "string"
         },
         "graded_as": {
-          "description": "GradedAs is the mode the gate is judged at. It is the declared mode today; the warn-first rollout (an enforce graded as audit until the rule's GatesFrom release) is the promotion gate's to apply.",
+          "description": "GradedAs is the mode the gate is judged at: the declared mode, except that the warn-first rollout grades an enforce as audit until the project's forge pin reaches the vuln-gate rule's GatesFrom release (internal/cli/lint/rollout_grade.go). The caller grades; Evaluate records what it was told (EvaluateInput.GradedAs).",
           "type": "string"
         },
         "verdict": {

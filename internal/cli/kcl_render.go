@@ -1067,6 +1067,19 @@ type BuildConfigEntity struct {
 	Docker     *DockerBuild // populated when Type=="docker"
 	Shell      *ShellBuild  // populated when Type=="shell"
 	Remote     *RemoteBuild // populated when Type=="remote"
+	// Outputs are the files the build produces that the release ships
+	// (kcl/schema.k Build.outputs), recorded by hash as file artifacts —
+	// see harvestDeclaredOutputs. Empty for a build that declares none.
+	Outputs []BuildOutput
+}
+
+// BuildOutput mirrors the kcl/schema.k BuildOutput: one file, directory or
+// glob a build writes, relative to the build's working directory (a
+// ShellBuild's resolved cwd, else the project root), and the platform it is
+// for ("" when platform-neutral).
+type BuildOutput struct {
+	Path     string `json:"path"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
@@ -2338,13 +2351,15 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 // should not silently fall back.
 func dispatchBuild(svcName string, raw json.RawMessage) (result BuildConfigEntity, err error) {
 	var identity struct {
-		Unit       string `json:"unit"`
-		InputsFile string `json:"inputs_file"`
+		Unit       string        `json:"unit"`
+		InputsFile string        `json:"inputs_file"`
+		Outputs    []BuildOutput `json:"outputs"`
 	}
 	defer func() {
 		if err == nil {
 			result.Unit = identity.Unit
 			result.InputsFile = identity.InputsFile
+			result.Outputs = identity.Outputs
 		}
 	}()
 	trimmed := bytes.TrimSpace(raw)

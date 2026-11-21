@@ -8,17 +8,18 @@ package cli
 //	forge vuln show <env> <advisory-id | package> [--json]
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
 //	forge vuln db status|pull|import <file>
+//	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD
 //
 // The scanning, the shared grype database and the gate rule are
 // internal/vulnscan; this file and its vuln_*.go siblings are flags, the
 // env's ledger and policy, output and exit codes.
 //
-// MACHINE LEDGER ONLY, FOR NOW. An env whose ledger is a control plane keeps
-// its SBOMs and findings there, and reading them needs the control plane's
-// VulnerabilityService (task F8 of the SBOM design). Until then `list`,
-// `show`, `sbom` and `scan --deployed` say so and exit 2 for such an env;
-// they never guess from this machine's ledger, which holds none of its
-// releases.
+// TWO LEDGERS, ONE DOCUMENT. An env whose ledger is a control plane keeps
+// its SBOMs and findings there: `list`, `show` and `scan --deployed` read
+// them from its VulnerabilityService (vuln_hosted.go) and print the same
+// forge.dev/vuln-list/v1 document, judged by the same rule, with the same
+// exit codes. They never guess from this machine's ledger, which holds none
+// of such an env's releases (only the SBOM bytes the cuts made here).
 //
 // Exit codes (exitcodes.go): 0 nothing the env's vuln_gate would block; 1 at
 // least one blocking finding (in any mode: the exit says what was found, the
@@ -39,6 +40,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
@@ -64,6 +66,9 @@ type vulnDeps struct {
 	// projectDir is the project the command acts on.
 	projectDir func() string
 	now        func() time.Time
+	// hostedClient reaches the control plane that keeps a hosted env's
+	// ledger (vuln_hosted.go).
+	hostedClient func(ctx context.Context, env vulnEnv) (cloudCaller, error)
 }
 
 func defaultVulnDeps() vulnDeps {
@@ -75,6 +80,7 @@ func defaultVulnDeps() vulnDeps {
 		machineLedger: openMachineLedger,
 		projectDir:    projectDirForKCL,
 		now:           time.Now,
+		hostedClient:  hostedVulnClient,
 	}
 }
 
@@ -125,14 +131,16 @@ Exit codes: 0 nothing the env's vuln_gate would block; 1 at least one blocking
 finding (in any gate mode); 2 could not determine (an artifact with no SBOM, the
 scanner missing, the database stale or absent); 4 refused.
 
-An env that records on a control plane is read from it in a later forge; today
-these verbs read this machine's ledger only, and say so for such an env.`,
+An env that records on a control plane is read from it: its findings are the
+control plane's (it scans the SBOMs each cut uploads, and rescans deployed
+releases daily), which needs the vuln:read scope (exit 4 without it).`,
 	}
 	cmd.AddCommand(newVulnScanCmd(deps))
 	cmd.AddCommand(newVulnListCmd(deps))
 	cmd.AddCommand(newVulnShowCmd(deps))
 	cmd.AddCommand(newVulnSBOMCmd(deps))
 	cmd.AddCommand(newVulnDBCmd(deps))
+	cmd.AddCommand(newVulnExemptCmd(deps))
 	cmd.AddCommand(newVulnPatchCmd(deps))
 	return cmdutil.StrictGroup(cmd)
 }
@@ -146,6 +154,21 @@ type vulnEnv struct {
 	// Gate is the env's vuln_gate, resolved (the defaults when the env
 	// declares none).
 	Gate release.ShapeVulnGate
+	// Project is the forge project the control plane files the env under
+	// (hosted envs only).
+	Project string
+	// decl is the env's control-plane declaration (hosted envs only).
+	decl *cloud.Declaration
+	// entities is the env's render, nil for an env with no declaration:
+	// where a hosted release's artifacts were pushed, and the registry
+	// identity a read of them presents (vuln_hosted.go).
+	entities *KCLEntities
+	// GradedAs is the mode the warn-first rollout judges Gate.Mode at
+	// (vuln_gate.go): audit for an enforce while the vuln-gate rule does
+	// not gate the project yet. "" is the declared mode.
+	GradedAs release.DeliveryMode
+	// GradeNote says why GradedAs differs from the declared mode.
+	GradeNote string
 }
 
 // hosted reports an env whose ledger is a control plane.
@@ -170,20 +193,21 @@ func resolveVulnEnv(ctx context.Context, projectDir, env string) (vulnEnv, error
 		return out, fmt.Errorf("render deploy/kcl/%s: %w", env, err)
 	}
 	out.Gate = entities.DeliveryPolicy.Resolved().VulnGate
+	grade := gradeVulnRules(projectDir).Vuln
+	out.GradedAs = gradedMode(out.Gate.Mode, grade)
+	if out.GradedAs != out.Gate.Mode {
+		out.GradeNote = fmt.Sprintf("vuln_gate enforce is judged as audit: %s; gate now with %s", grade.Note(), grade.OptIn())
+	}
 	if decl := declarationFromEntities(entities); decl != nil && selection != ledgerSelectMachine {
 		out.Endpoint = strings.TrimRight(strings.TrimSpace(decl.Endpoint), "/")
 		if out.Endpoint == "" {
 			out.Endpoint = "its control plane"
 		}
+		out.Project = hostedEnvRefFor(env, entities).Project
+		out.decl = decl
+		out.entities = entities
 	}
 	return out, nil
-}
-
-// hostedVulnError is the answer for an env whose ledger is a control plane.
-func hostedVulnError(e vulnEnv) error {
-	return undeterminedf("env %q keeps its releases, SBOMs and findings on the control plane at %s.\n"+
-		"Reading vulnerabilities from a control plane lands in a later forge release; this forge reads only this machine's ledger.\n"+
-		"Nothing was read. To scan an image of that env yourself: forge vuln scan --image <ref@sha256:…>", e.Name, e.Endpoint)
 }
 
 // releaseOf resolves the release a verb reads: --release, else the one the
@@ -273,7 +297,11 @@ func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, label 
 	if len(doc.Gate.Blocking) > 0 {
 		gate += ": " + strings.Join(doc.Gate.Blocking, ", ")
 	}
-	_, _ = fmt.Fprintf(w, "vuln_gate (%s): %s\n", doc.Gate.Mode, gate)
+	mode := doc.Gate.Mode
+	if doc.Gate.GradedAs != "" && doc.Gate.GradedAs != doc.Gate.Mode {
+		mode += ", graded " + doc.Gate.GradedAs
+	}
+	_, _ = fmt.Fprintf(w, "vuln_gate (%s): %s\n", mode, gate)
 	c := doc.Counts
 	_, _ = fmt.Fprintf(w, "%d critical, %d high, %d medium, %d low, %d unknown\n", c.Critical, c.High, c.Medium, c.Low, c.Unknown)
 	if len(doc.Findings) > 0 {
@@ -288,7 +316,11 @@ func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, label 
 				action = "EXEMPT"
 			}
 			where := ""
-			if doc.Coverage.Artifacts > 1 {
+			switch {
+			case len(f.Artifacts) == 0:
+				// Attributed to the release as a whole, to no artifact.
+				where = "release"
+			case doc.Coverage.Artifacts > 1:
 				where = strings.Join(f.Artifacts, ", ")
 			}
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", action, f.ID, severityLabel(f.Finding), f.Package.Name+" "+f.Package.Version, fixLabel(f.Finding), where)

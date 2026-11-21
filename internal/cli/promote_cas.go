@@ -78,6 +78,15 @@ type appendGuard struct {
 	// (hosted: PromoteReleaseRequest.raise_floor_reason; machine ledger:
 	// the same lock hold as the append).
 	RaiseFloorReason string
+	// VulnGateOverrideReason is `forge env deploy --override-vuln-gate
+	// "<why>"`, trimmed: the recorded reason to promote past the env's
+	// vuln_gate and provenance_sbom refusals. A control plane judges those
+	// in the promotion's transaction, so the hosted backend sends it
+	// (PromoteReleaseRequest.vuln_gate_override_reason) and the server
+	// records it with who overrode which findings. A backend without a
+	// server ignores it: forge judged and recorded the override before the
+	// write (vuln_gate_promote.go).
+	VulnGateOverrideReason string
 }
 
 // expects reports whether the guard asserts anything about the current

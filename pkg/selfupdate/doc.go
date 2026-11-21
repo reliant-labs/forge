@@ -41,6 +41,9 @@
 //
 // [New] refuses a [Config] with no [Verifier] unless
 // [Config.InsecureAllowUnsigned] is set, and logs that opt-out at every start.
+// The keyless Sigstore verifier is in the sigstore subpackage. [GitHubSource]
+// and [ManifestSource] (a signed channel manifest such as reliant's
+// daemon-channels.json) find the target release.
 //
 // Windows: staging works; the swap does not yet ([ErrUnsupported]).
 package selfupdate

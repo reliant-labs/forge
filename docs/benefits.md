@@ -587,6 +587,31 @@ _Enforced · Forge, on any infrastructure_
 | `db-analyze-blocking-index-build`  | An index built without CONCURRENTLY on a populated table, blocking writes until the build finishes                        | `forge db analyze` |
 | `db-analyze-statement-timeout`     | A statement that does not finish within statement_timeout on production-shaped data                                       | `forge db analyze` |
 
+<a id="query-index-analysis"></a>
+
+### Index check of tested queries
+
+`forge db analyze queries` plans every query shape a test run recorded on a disposable database at the head schema, with sequential scans disabled, and reports each filter, join and ORDER BY … LIMIT no index serves, with the caller's file and line.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then `forge db analyze queries --capture /tmp/qc` (the shapes whose callers changed since the merge-base; `--all` for every one), or add `--capture` to `forge db analyze` to run it after the migrations.
+
+**Why:** A new filter or join without an index passes every test on a small table and becomes a full scan in production; whether an index can serve it depends on the schema at head, which only the planner knows.
+
+**Evidence:**
+
+- command `forge db analyze queries`
+- source [`pkg/dbanalyze/queries.go`](../pkg/dbanalyze/queries.go)
+- source [`pkg/querycapture`](../pkg/querycapture)
+- source [`internal/cli/db_analyze_queries.go`](../internal/cli/db_analyze_queries.go)
+- skill `db/analyze` (`forge skill load db/analyze`)
+
+| Rule                               | Bug class it prevents                                                                                                        | Lane                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `db-analyze-query-no-usable-index` | A filter, join or ORDER BY … LIMIT that no index can serve, which reads every row of the table once it holds production data | `forge db analyze queries` |
+| `db-analyze-query-large-seqscan`   | A query whose plan on an anonymized production snapshot sequentially scans a large table                                     | `forge db analyze queries` |
+
 <a id="keep-your-migration-tool"></a>
 
 ### Keep your migration tool
@@ -1985,6 +2010,26 @@ _Enforced · Forge, on any infrastructure_
 | `secrets-escrow-in-cluster`            | An OpenBao whose seal key and init output are escrowed in the cluster they protect, so losing the cluster loses every backup of the store                                        | `--secrets`       |
 | `secrets-env-not-rendered`             | An env whose render fails, so its secrets could not be judged (a warning; `forge env render` reports the render error itself)                                                    | `--secrets`       |
 
+<a id="lint-rules-telemetry"></a>
+
+### Declared telemetry rules
+
+A dashboard panel over a series no scrape keeps, an unbounded scrape and a rate over a gauge are caught from each env's real render.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- source [`internal/cli/lint/telemetry_rules.go`](../internal/cli/lint/telemetry_rules.go)
+- command `forge lint --telemetry`
+
+| Rule                                     | Bug class it prevents                                                                                                                                                      | Lane          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `telemetry-dashboard-metric-uncollected` | A declared dashboard series whose metric no scrape of its system keeps (allow minus deny), so the panel is empty in every env it ships to with no other symptom            | `--telemetry` |
+| `telemetry-scrape-unbounded`             | A metrics scrape with no `allow`, which stores every series the endpoint exposes until it passes `sample_limit` and fails whole                                            | `--telemetry` |
+| `telemetry-rate-on-gauge`                | A rate or increase over a metric nothing marks as a counter (no `counters` match, no `_total`/`_count`/`_sum`), which reads nothing when the metric is a gauge (a warning) | `--telemetry` |
+| `telemetry-high-cardinality-risk`        | A scrape that raises `sample_limit` or keeps every name while dropping no labels, so a per-user or per-id label explodes its series (a warning)                            | `--telemetry` |
+
 <a id="lint-rules-scaffold-ownership"></a>
 
 ### Generated-code tampering checks
@@ -2106,27 +2151,51 @@ _Enforced · Forge, on any infrastructure_
 
 ### Dependency and image scanning
 
-`forge ci vuln-scan` runs govulncheck over every Go module and npm audit over every frontend, refuses a pass it did not verify, and takes reviewed, expiring exemptions instead of silent ignores.
+`forge ci vuln-scan` runs govulncheck over every Go module and npm audit over every frontend, refuses a pass it did not verify, and takes reviewed, expiring exemptions instead of silent ignores; the generated `ci.yml` also scans the images CI builds with Trivy.
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** Container images are scanned by Trivy steps in the generated GitHub workflows (`ci.yml`'s docker build and `build-images.yml`), not by `forge ci vuln-scan`, so they run in CI only and `ci.vuln_scan.exemptions` does not cover them.
+**Why:** The Trivy step is a generated GitHub Actions step in `ci.yml`'s docker build (`ci.vuln_scan.docker` turns it off), not `forge ci vuln-scan`, so it runs in CI only and `ci.vuln_scan.exemptions` does not cover it. What forge scans itself, from the SBOM of every release it cuts, is `sbom-vuln-scan`; `build-images.yml` scans each image it pushes with `forge vuln scan` (Trivy for a project pinned before forge v1.10.0).
 
 **Evidence:**
 
 - command `forge ci vuln-scan`
 - source [`internal/cli/ci_vuln_npm.go`](../internal/cli/ci_vuln_npm.go)
 - source [`internal/cli/ci_vuln_exempt.go`](../internal/cli/ci_vuln_exempt.go)
+- source [`internal/templates/ci/github/ci.yml.tmpl`](../internal/templates/ci/github/ci.yml.tmpl)
+
+<a id="sbom-vuln-scan"></a>
+
+### SBOM and scan per release
+
+Every release forge cuts records a CycloneDX SBOM of each artifact's shipped bytes, stored with the release and beside the image in its registry, and scans it with grype, so `forge vuln list <env>` says what a release is known to be vulnerable to and never reports "not scanned" as clean.
+
+_Recorded · Forge, on any infrastructure_
+
+**Use:** Nothing to set up: `forge env build <env> --release v1.0.0` (or the cut inside `forge env deploy`) does it. Read it back with `forge vuln list <env>`; `forge vuln db pull` fetches the vulnerability database once per machine. `forge vuln patch <env> --verify` bumps each vulnerable Go or npm/pnpm/yarn dependency to its fix and runs your gate over the result.
+
+**Why:** forge installs syft and grype as pinned release binaries whose sha256 is compiled into forge. An artifact it could not describe is recorded `unavailable` with the reason, a static site's SBOM is its lockfile (it can overstate the bundle), and nothing is refused unless an env opts in (`vuln-gate-self-hosted`). `--no-sbom` and `provenance_sbom = off` turn it off.
+
+**Evidence:**
+
+- skill `vuln` (`forge skill load vuln`)
+- command `forge vuln scan`
+- command `forge vuln list`
+- command `forge vuln sbom`
+- command `forge vuln db status`
+- command `forge vuln patch`
+- source [`internal/sbom/sbom.go`](../internal/sbom/sbom.go)
+- source [`internal/vulnscan/doc.go`](../internal/vulnscan/doc.go)
 
 <a id="image-supply-chain"></a>
 
-### Signed images, SBOM and provenance
+### Signed images and provenance
 
-The generated `build-images.yml` signs every image it pushes with a keyless cosign signature bound to its digest, generates an SPDX SBOM for it, and attests its build provenance.
+The generated `build-images.yml` attaches a keyless cosign signature and a build-provenance attestation to every image it pushes, bound to its digest and stored in the registry beside it (`cosign verify-attestation`), private repositories included.
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** The SBOM is uploaded as a workflow run artifact, not attached to the image in the registry, and the provenance attestation is skipped for private repositories outside GitHub Enterprise Cloud (GitHub's attestation store refuses them). This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `provenance_sbom`/`trusted_builder`/`admission_verify` controls are recorded, not enforced.
+**Why:** Public repositories' provenance goes to GitHub's attestation store; a private repository's, which that store refuses outside GitHub Enterprise Cloud, goes to the registry as a cosign attestation. This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `signing`/`trusted_builder`/`admission_verify` controls do not read these signatures. From forge v1.10.0 the workflow writes no SBOM, because forge records one at every release cut and attaches it as an OCI referrer (`sbom-vuln-scan`); a project pinned to an older forge keeps the workflow's SPDX SBOM, as a run artifact and a cosign attestation.
 
 **Evidence:**
 
@@ -3114,17 +3183,41 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/releasehealth/releasehealth.go`](../pkg/releasehealth/releasehealth.go)
 - command `forge obs check`
 
+<a id="vuln-gate-self-hosted"></a>
+
+### Vulnerability gate, warn first
+
+Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate = enforce` and `provenance_sbom` judged before forge writes its promotion, warning for one release before it refuses.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "enforce" } }`; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`
+
+**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required`: below their `gates_from` release an enforce is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now.
+
+**Evidence:**
+
+- command `forge vuln exempt`
+- command `forge ci vuln-sbom`
+- skill `vuln` (`forge skill load vuln`)
+- source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
+
+| Rule            | Bug class it prevents                                                                                                                | Lane               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `vuln-gate`     | An env that declares `vuln_gate = enforce` promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
+| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to            | `forge env deploy` |
+
 <a id="delivery-policy-recorded"></a>
 
 ### Per-env delivery policy controls
 
-`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, while `provenance_sbom`, `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
+`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, `vuln_gate` and `provenance_sbom` are judged by forge itself for an env with no control plane (warn first, and `audit` unless you opt in), while `trusted_builder`, `admission_verify`, `signed_promotions`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
 
 _Recorded · Forge, on any infrastructure_
 
 **Use:** `delivery_policy = forge.DeliveryPolicy { ... }` in `deploy/kcl/<env>/main.k`
 
-**Why:** Setting a recorded control to `enforce` today is a declaration of intent. `forge env build` does not sign images; only an env with a control plane gets its bundles signed, by the platform. A control that cannot block a deploy defaults to `enforce`; one that can defaults to `audit`, so you read its would-deny verdicts before turning it on.
+**Why:** Setting a recorded control to `enforce` today is a declaration of intent. `vuln_gate` and `provenance_sbom` are not recorded-only for a self-hosted env (`vuln-gate-self-hosted`); on a control-plane env they are the control plane's to judge, once it advertises `enforces-vuln-gate`. `forge env build` does not sign images; only an env with a control plane gets its bundles signed, by the platform. A control that cannot block a deploy defaults to `enforce`; one that can defaults to `audit`, so you read its would-deny verdicts before turning it on.
 
 **Evidence:**
 
@@ -3767,11 +3860,12 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `forge obs issue <id>`; `forge obs issues --since-release|--since-deploy` lists what a release introduced.
 
-**Why:** Issues are fingerprinted with one algorithm, at query time locally and at ingest on the control plane; issues that share a cause and first fired together collapse into one incident without being merged, and triage (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+**Why:** Issues are fingerprinted with one algorithm, at query time locally and at ingest on the control plane; issues that share a cause and first fired together collapse into one incident without being merged, and triage (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log record an authenticated request writes carries `user.id`, so an issue counts the people it reached.
 
 **Evidence:**
 
 - command `forge obs issue`
+- source [`pkg/authn/telemetry.go`](../pkg/authn/telemetry.go)
 - command `forge obs issues`
 - command `forge obs issue resolve`
 - command `forge obs issue ignore`
@@ -3937,6 +4031,32 @@ _Enforced · Reliant hosting_
 
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
+- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
+<a id="controlled-rollouts-and-experiments"></a>
+
+### Controlled rollouts and A/B tests
+
+Planned: one change ships new app behavior to everyone, as a gradual rollout, or as a comparison of versions, with stable cohorts by user, account, or visitor.
+
+_In progress · Reliant hosting_
+
+**Use:** Create a change with its default and new behavior, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The planned project-level Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
+
+**Why:** The evaluation SDK ships: a Go store and OpenFeature provider, a browser loader and OpenFeature provider, and assignment events recorded as product events, and changes are declared in the project (changes.yaml) and shipped in the release. Platform delivery of each environment's policy and the Experiments screen are not shipped yet. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
+
+**Evidence:**
+
+- library [`pkg/changes`](../pkg/changes)
+- library [`pkg/changes/openfeature`](../pkg/changes/openfeature)
+- library [`pkg/observe`](../pkg/observe)
+- source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
+- source [`web-runtime/src/changes-store.ts`](../web-runtime/src/changes-store.ts)
+- source [`web-runtime/src/changes-provider.ts`](../web-runtime/src/changes-provider.ts)
+- source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
+- source [`internal/changesdecl/changesdecl.go`](../internal/changesdecl/changesdecl.go)
+- source [`docs/changes.md`](../docs/changes.md)
+- skill `observability/changes` (`forge skill load observability/changes`)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>

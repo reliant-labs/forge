@@ -104,7 +104,14 @@ type fUser struct {
 	// email-verification codes.
 	ResetCode, EmailCode string
 	Metadata             map[string]string
+	// DisplayName, Hash (an imported password hash) and Links (social links)
+	// are what a user import writes.
+	DisplayName string
+	Hash        string
+	Links       []fLink
 }
+
+type fLink struct{ IdPID, UserID, UserName string }
 
 type fCred struct {
 	ID, Token string
@@ -1106,18 +1113,72 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]any{"result": hits[lo:hi]})
 	case path == "/human" && r.Method == "POST":
 		email, _ := body["username"].(string)
-		u := &fUser{ID: f.id(), UserName: email, Email: email}
+		id, _ := body["userId"].(string)
+		if id == "" {
+			id = f.id()
+		} else if f.users[id] != nil {
+			zerr(w, 400, 9, "COMMAND-7yiox1isql", "Errors.User.AlreadyExisting")
+			return
+		}
+		for _, o := range f.users {
+			if strings.EqualFold(o.UserName, email) {
+				zerr(w, 409, 6, "V3-DKcYh", "Errors.User.AlreadyExists")
+				return
+			}
+		}
+		u := &fUser{ID: id, UserName: email, Email: email}
 		if em, ok := body["email"].(map[string]any); ok {
 			verified, _ := em["isVerified"].(bool)
 			u.Unverified = !verified
+			if e, _ := em["email"].(string); e != "" {
+				u.Email = e
+			}
+			if _, ret := em["returnCode"]; ret && !verified {
+				u.EmailCode = "EVR-import"
+			}
 		}
 		if prof, ok := body["profile"].(map[string]any); ok {
 			u.Given, _ = prof["givenName"].(string)
 			u.Family, _ = prof["familyName"].(string)
+			u.DisplayName, _ = prof["displayName"].(string)
 		}
 		if pw, ok := body["password"].(map[string]any); ok {
 			u.PasswordSetBy, _ = pw["password"].(string)
 			u.AuthMethods = []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}
+		}
+		if hp, ok := body["hashedPassword"].(map[string]any); ok {
+			hash, _ := hp["hash"].(string)
+			if !strings.HasPrefix(hash, "$2") {
+				// This fake instance verifies bcrypt only, as an instance
+				// with no Verifiers configured does, and refuses another
+				// scheme the way Zitadel v4.20.5 does: CRYPT-r8Qm2, not
+				// CRYPT-2xK7d (Errors.Hash.NotSupported).
+				zerr(w, 400, 3, "CRYPT-r8Qm2", "Password is invalid")
+				return
+			}
+			u.Hash = hash
+			u.AuthMethods = []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}
+		}
+		links, _ := body["idpLinks"].([]any)
+		for _, l := range links {
+			lm, _ := l.(map[string]any)
+			link := fLink{IdPID: fmt.Sprint(lm["idpId"]), UserID: fmt.Sprint(lm["userId"]), UserName: fmt.Sprint(lm["userName"])}
+			if status, code, eid, msg := f.linkRefusal(link); status != 0 {
+				zerr(w, status, code, eid, msg)
+				return
+			}
+			u.Links = append(u.Links, link)
+		}
+		md, _ := body["metadata"].([]any)
+		for _, e := range md {
+			m, _ := e.(map[string]any)
+			k, _ := m["key"].(string)
+			v, _ := m["value"].(string)
+			raw, _ := base64.StdEncoding.DecodeString(v)
+			if u.Metadata == nil {
+				u.Metadata = map[string]string{}
+			}
+			u.Metadata[k] = string(raw)
 		}
 		f.users[u.ID] = u
 		if f.projectionLag {
@@ -1142,11 +1203,70 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
 			return
 		}
+		what := "update user "
 		if name, _ := body["username"].(string); name != "" {
 			u.UserName = name
+			what = "rename user "
 		}
-		f.mutate("rename user " + u.ID)
+		if prof, ok := body["profile"].(map[string]any); ok {
+			u.Given, _ = prof["givenName"].(string)
+			u.Family, _ = prof["familyName"].(string)
+			u.DisplayName, _ = prof["displayName"].(string)
+		}
+		if pw, ok := body["password"].(map[string]any); ok {
+			hp, _ := pw["hashedPassword"].(map[string]any)
+			hash, _ := hp["hash"].(string)
+			if !strings.HasPrefix(hash, "$2") {
+				zerr(w, 400, 3, "CRYPT-r8Qm2", "Password is invalid")
+				return
+			}
+			u.Hash = hash
+		}
+		f.mutate(what + u.ID)
 		return200(w)
+	case strings.HasSuffix(path, "/links/_search") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/links/_search"), "/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		var all []any
+		for _, l := range u.Links {
+			all = append(all, map[string]any{"idpId": l.IdPID, "userId": l.UserID, "userName": l.UserName})
+		}
+		lo, hi := f.pageOf(body, len(all))
+		reply(w, 200, map[string]any{"result": all[lo:hi]})
+	case strings.HasSuffix(path, "/links") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/links"), "/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		lm, _ := body["idpLink"].(map[string]any)
+		link := fLink{IdPID: fmt.Sprint(lm["idpId"]), UserID: fmt.Sprint(lm["userId"]), UserName: fmt.Sprint(lm["userName"])}
+		if status, code, eid, msg := f.linkRefusal(link); status != 0 {
+			zerr(w, status, code, eid, msg)
+			return
+		}
+		u.Links = append(u.Links, link)
+		f.mutate("link " + u.ID)
+		return200(w)
+	case strings.HasSuffix(path, "/metadata/search") && r.Method == "POST":
+		u := f.users[strings.Trim(strings.TrimSuffix(path, "/metadata/search"), "/")]
+		if u == nil {
+			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
+			return
+		}
+		var all []any
+		keys := make([]string, 0, len(u.Metadata))
+		for k := range u.Metadata {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			all = append(all, map[string]any{"key": k, "value": base64.StdEncoding.EncodeToString([]byte(u.Metadata[k]))})
+		}
+		reply(w, 200, map[string]any{"metadata": all})
 	case strings.HasSuffix(path, "/email/resend") && r.Method == "POST":
 		u := f.users[strings.Trim(strings.TrimSuffix(path, "/email/resend"), "/")]
 		if u == nil {
@@ -1223,12 +1343,22 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && strings.Count(strings.Trim(path, "/"), "/") == 0 && path != "":
 		// What devidp.FindUserByID reads.
 		u := f.users[strings.Trim(path, "/")]
-		if u == nil || u.Machine {
+		if u == nil || f.unprojected[u.ID] {
 			zerr(w, 404, 5, "QUERY-Dfbg2", "User could not be found")
 			return
 		}
+		if u.Machine {
+			reply(w, 200, map[string]any{"user": map[string]any{"userId": u.ID, "username": u.UserName,
+				"state": "USER_STATE_ACTIVE", "machine": map[string]any{"name": u.Name}}})
+			return
+		}
+		profile := map[string]any{"givenName": u.Given, "familyName": u.Family}
+		if u.DisplayName != "" {
+			profile["displayName"] = u.DisplayName
+		}
 		reply(w, 200, map[string]any{"user": map[string]any{"userId": u.ID, "username": u.UserName, "preferredLoginName": u.UserName,
-			"state": "USER_STATE_ACTIVE", "human": map[string]any{"email": map[string]any{"email": u.Email, "isVerified": !u.Unverified}}}})
+			"state": "USER_STATE_ACTIVE", "human": map[string]any{"profile": profile,
+				"email": map[string]any{"email": u.Email, "isVerified": !u.Unverified}}}})
 	case strings.HasSuffix(path, "/invite_code") && r.Method == "POST":
 		id := strings.Trim(strings.TrimSuffix(path, "/invite_code"), "/")
 		u := f.users[id]
@@ -1251,6 +1381,29 @@ func (f *fakeZitadel) v2Users(w http.ResponseWriter, r *http.Request) {
 		f.t.Errorf("fake: unhandled v2 path %s %s", r.Method, r.URL.Path)
 		zerr(w, 404, 5, "FAKE-1", "unhandled")
 	}
+}
+
+// linkRefusal is real Zitadel's answer to a social link it will not record:
+// an unknown provider, or a provider account another user already holds
+// (the external_idps unique constraint). Zero when the link is acceptable.
+func (f *fakeZitadel) linkRefusal(l fLink) (status, code int, id, msg string) {
+	known := false
+	for _, i := range f.idps {
+		if i.ID == l.IdPID {
+			known = true
+		}
+	}
+	if !known {
+		return 400, 9, "COMMAND-39nf2", "Errors.IDPConfig.NotExisting"
+	}
+	for _, o := range f.users {
+		for _, have := range o.Links {
+			if have.IdPID == l.IdPID && have.UserID == l.UserID {
+				return 409, 6, "V3-DKcYh", "Errors.User.ExternalIDP.AlreadyExists"
+			}
+		}
+	}
+	return 0, 0, "", ""
 }
 
 // --- email providers, IdPs, login policy lists, secret generators ----------

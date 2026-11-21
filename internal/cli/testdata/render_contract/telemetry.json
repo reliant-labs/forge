@@ -552,6 +552,12 @@
         "source": "observability"
       }
     ],
+    "telemetry_collector": {
+      "namespace": "platform-otel",
+      "pod_labels": {
+        "app.kubernetes.io/name": "otel-agent"
+      }
+    },
     "workloads": [
       {
         "build": null,

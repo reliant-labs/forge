@@ -24,7 +24,8 @@ CI cannot drift from the local verdict. `forge ci gate --list` names every check
 and its lane. For a project with services and a frontend the `checks` lane is:
 `deps-<fe>`, `verify-generated`, `golangci-lint`, `buf-lint`, `migration-safety`,
 `lint-<fe>`, `typecheck-<fe>`, `css-health-<fe>`, `go-build`, `build-<fe>`,
-`vuln-go`, `vuln-npm`, `license-check`, `validate-kcl`, `deployability`. Which
+`vuln-go`, `vuln-npm`, `vuln-sbom` (the lockfiles' SBOM scanned by grype,
+graded warn-first: `vuln`), `license-check`, `validate-kcl`, `deployability`. Which
 rows exist follows the same forge.yaml toggles the workflow renders from
 (`ci.lint`, `ci.vuln_scan`, ...), so a toggle means the same thing in both.
 `license-check` judges the licenses of your dependencies, not your own code:
@@ -102,7 +103,9 @@ ci:
 Reason and expiry are required. Expired/incomplete entries fail the gate;
 entries matching nothing are reported for removal. A new advisory in the same
 package still fails. Each scanner considers only its ID namespace, so Go entries
-do not appear stale to npm and vice versa. Scaffolding Next.js records a
+do not appear stale to npm and vice versa. Any other advisory id (a CVE) is the
+SBOM scan's (`vuln-sbom`, which matches an id or any alias, so a CVE covers the
+GHSA of the same advisory); govulncheck and npm audit never judge it. Scaffolding Next.js records a
 90-day reviewed acceptance for its unfixable dev-only braces advisory in
 `forge.yaml`, visibly, rather than disabling the npm scan.
 

@@ -469,6 +469,9 @@ func TestMetricsPanelOutRoundTrip(t *testing.T) {
 	if a["label"] != "A" || a["field"] != "rpc.server.calls" || a["metricType"] != "sum" || a["agg"] != "rate" {
 		t.Errorf("the kind and default aggregation are written in: %v", a)
 	}
+	if g, _ := json.Marshal(panel["groupBy"]); string(g) != `["metric.attr.rpc.method"]` {
+		t.Errorf("--group-by rpc.method is written as the panel field metric.attr.rpc.method: %s", g)
+	}
 
 	viaFlags, _, err := mxRun(t, mxLocal(f), append(append([]string{"metrics", "query", "dev"}, flags...), "--json")...)
 	if err != nil {
@@ -502,6 +505,33 @@ func TestMetricsPanelOutRoundTrip(t *testing.T) {
 	_, _, err = mxRun(t, mxLocal(f), "metrics", "query", "dev", "heap", "--agg", "avg", "--kind", "bar", "--panel-out", "-")
 	if exitCodeForError(err) != 1 || !strings.Contains(err.Error(), "group_by") {
 		t.Errorf("a bar with no group-by: %v", err)
+	}
+}
+
+// TestMetricsPanelOutPipesIntoAddPanel: the panel --panel-out writes is one
+// obs dashboards add-panel accepts, whatever spelling --group-by took (a bare
+// metric attribute, an allowlisted resource key, the service), as add-panel's
+// help documents the pipe.
+func TestMetricsPanelOutPipesIntoAddPanel(t *testing.T) {
+	f := mxFixture()
+	path := filepath.Join(t.TempDir(), "calls.json")
+	if _, _, err := mxRun(t, mxLocal(f), "metrics", "query", "dev", "rpc.server.calls", "--agg", "rate",
+		"--group-by", "status", "--group-by", "k8s.pod.name", "--group-by", "service.name", "--panel-out", path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"metric.attr.status",`) || !strings.Contains(string(raw), `"resource.attr.k8s.pod.name",`) || !strings.Contains(string(raw), `"service.name"`) {
+		t.Errorf("group-by keys are not panel fields:\n%s", raw)
+	}
+	dir := t.TempDir()
+	if r := addPanel(t, dir, obsDashboardsAddOpts{slug: "calls", panel: path}, ""); r.err != nil {
+		t.Fatalf("add-panel refuses what --panel-out wrote: %v\n%s\n%s", r.err, r.errOut, raw)
+	}
+	if d := readDashboard(t, dir, "calls"); len(d.Panels) != 1 {
+		t.Errorf("panels = %v", panelIDs(d))
 	}
 }
 

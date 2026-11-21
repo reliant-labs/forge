@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
@@ -88,6 +89,10 @@ func TestMain(m *testing.M) {
 	// registry, no buildx. A test that needs a different answer sets one,
 	// and hermetic_host_test.go fails the suite if any of these binaries
 	// is reached again.
+	// Nor does a host launch write a `forge` shim for the test binary into
+	// the developer's tool cache (up_forge_shim.go); up_forge_shim_test.go
+	// exercises the real one against a temporary cache.
+	forgeShimDir = func() (string, error) { return "", errors.New("unit tests write no forge shim") }
 	listK3dClustersFn = func(context.Context) ([]k3dClusterListEntry, error) { return nil, nil }
 	pinKubectlContextFn = func(context.Context, string) error { return nil }
 	imagetoolsInspect = func(context.Context, string, string) ([]byte, error) {
@@ -102,6 +107,22 @@ func TestMain(m *testing.M) {
 		return "", "", errors.New("unit tests do not install syft")
 	}
 	sbomCacheDir = func() string { return "" }
+	// Nor does any cut push an SBOM referrer to a registry: a test of the
+	// attach points it at an in-process one (build_sbom_referrer_test.go).
+	sbomReferrerAttach = nil
+	// Nor does a cut or a promote scan with this machine's vulnerability
+	// database or grype: the clean-CI answer is "no database", which prints
+	// "not scanned" at the cut and reads only stored findings at promote. A
+	// test of either states its deps (vuln_gate_test.go).
+	noVulnDB := func() vulnDeps {
+		d := defaultVulnDeps()
+		d.dbDir = func() (string, error) { return filepath.Join(os.TempDir(), "forge-unit-tests-have-no-vulndb"), nil }
+		d.tool = func(context.Context, toolfetch.Tool, bool) (string, string, error) {
+			return "", "", errors.New("unit tests do not install grype or syft")
+		}
+		return d
+	}
+	cutVulnDeps, promoteVulnDeps, vulnSBOMDeps = noVulnDB, noVulnDB, noVulnDB
 	// Nor does any build ask a registry's token realm about push access: the
 	// clean-CI answer is "not verified", which proceeds. A test of the
 	// preflight states the realm's answer (registry_push_preflight_test.go).

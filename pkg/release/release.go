@@ -178,6 +178,10 @@ type Artifact struct {
 	// URI locates the artifact when name+version does not (a download URL,
 	// a non-default registry, or the registry an image was pushed to).
 	URI string `json:"uri,omitempty"`
+	// Size is a file artifact's length in bytes, beside its Integrity.
+	// Informational, and NOT part of the identity (the hash names the
+	// bytes); 0 when not recorded.
+	Size int64 `json:"size,omitempty"`
 	// BuiltFrom is the git checkout the artifact's build command ran in, when
 	// that is a checkout forge can name — a ShellBuild's cwd. Informational
 	// provenance like Platforms, and NOT part of the identity: the digest
@@ -304,6 +308,9 @@ func (a Artifact) Validate(name string) error {
 	if a.InputsDigest != "" && !ValidDigest(a.InputsDigest) {
 		return bad("inputs_digest %q is not a canonical sha256 digest", a.InputsDigest)
 	}
+	if a.Size < 0 {
+		return bad("size %d is negative", a.Size)
+	}
 	if err := a.SBOM.validate(); err != nil {
 		return bad("%v", err)
 	}
@@ -321,11 +328,12 @@ func (a Artifact) SharedDigest() (string, bool) {
 	return d, ok && d != ""
 }
 
-// sameIdentity compares the fields that name the bytes. Platforms, BuiltFrom,
-// InputsDigest, CarriedFrom and SBOM are informational and deliberately
-// excluded: re-stating a release with a different platform list, the same
-// digests built in another checkout or carried from an earlier release, or an
-// SBOM a newer generator wrote, has not claimed different bytes.
+// sameIdentity compares the fields that name the bytes. Platforms, Size,
+// BuiltFrom, InputsDigest, CarriedFrom and SBOM are informational and
+// deliberately excluded: re-stating a release with a different platform list,
+// a file whose size a ledger did not keep, the same digests built in another
+// checkout or carried from an earlier release, or an SBOM a newer generator
+// wrote, has not claimed different bytes.
 func (a Artifact) sameIdentity(b Artifact) bool {
 	if a.Kind != b.Kind || a.Mode != b.Mode || a.Version != b.Version ||
 		a.Integrity != b.Integrity || a.URI != b.URI {

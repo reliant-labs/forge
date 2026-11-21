@@ -121,6 +121,47 @@ func TestSpec_ASocialProviderWithoutItsSecretIsLeftOut(t *testing.T) {
 	}
 }
 
+// The DEV OAuth app is registered before its secrets exist, so the callback
+// `forge env up` prints must not wait for them: it is reported whenever a
+// provider is declared, and with the warnings, even when the pass cannot
+// converge at all (social-only with no provider usable).
+func TestConverge_TheSocialCallbackIsReportedBeforeTheSecretsExist(t *testing.T) {
+	in := v2Input()
+	in.BaseURL = "http://localhost:8080/"
+	in.Identity.Methods = nil
+	in.Secret = func(string) (string, bool) { return "", false }
+	res, err := Converge(t.Context(), in)
+	if err == nil || !strings.Contains(err.Error(), "nobody could sign in") {
+		t.Fatalf("err = %v", err)
+	}
+	if res == nil || res.SocialCallbackURL != "http://localhost:8080/idps/callback" {
+		t.Fatalf("result = %+v, want the callback despite the failure", res)
+	}
+	joined := strings.Join(res.Warnings, "\n")
+	for _, want := range []string{"GOOGLE_CLIENT_SECRET", "GITHUB_CLIENT_ID"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings missing %q (the failure says \"see the warnings above\"):\n%s", want, joined)
+		}
+	}
+}
+
+func TestSocialCallbackURLAndTheSecretHintNameTheEnv(t *testing.T) {
+	in := v2Input()
+	in.Env, in.BaseURL = "dev", "http://localhost:8080"
+	in.Secret = func(string) (string, bool) { return "", false }
+	_, warnings, _ := Spec(in)
+	if joined := strings.Join(warnings, "\n"); !strings.Contains(joined, "forge secret set --env dev GOOGLE_CLIENT_SECRET") {
+		t.Errorf("warnings do not name the env's command:\n%s", joined)
+	}
+	if got := SocialCallbackURL(in); got != "http://localhost:8080/idps/callback" {
+		t.Errorf("SocialCallbackURL = %q", got)
+	}
+	in.Identity.Social = nil
+	if got := SocialCallbackURL(in); got != "" {
+		t.Errorf("no provider declared: SocialCallbackURL = %q", got)
+	}
+}
+
 func TestSpec_APreV2DeclarationLeavesTheLoginPolicyAlone(t *testing.T) {
 	spec, _, err := Spec(baseInput())
 	if err != nil {

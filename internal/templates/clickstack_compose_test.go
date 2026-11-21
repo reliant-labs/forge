@@ -4,6 +4,7 @@ package templates
 // compose graph. Each one is a failure the first ClickStack attempt shipped.
 
 import (
+	"fmt"
 	"path"
 	"reflect"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 
 	yaml "gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/clickstack"
 	"github.com/reliant-labs/forge/pkg/deploy"
 )
 
@@ -163,9 +165,7 @@ func TestClickstackCollectorConfigTailsForgeLogs(t *testing.T) {
 		Receivers map[string]struct {
 			Include   []string `yaml:"include"`
 			Exclude   []string `yaml:"exclude"`
-			Operators []struct {
-				Type string `yaml:"type"`
-			} `yaml:"operators"`
+			Operators []any    `yaml:"operators"`
 		} `yaml:"receivers"`
 		Service struct {
 			Pipelines map[string]struct {
@@ -200,7 +200,9 @@ func TestClickstackCollectorConfigTailsForgeLogs(t *testing.T) {
 	}
 	var types []string
 	for _, op := range fl.Operators {
-		types = append(types, op.Type)
+		if m, ok := op.(map[string]any); ok {
+			types = append(types, fmt.Sprint(m["type"]))
+		}
 	}
 	for _, want := range []string{"regex_parser", "json_parser", "trace_parser"} {
 		if !strings.Contains(strings.Join(types, " "), want) {
@@ -374,33 +376,89 @@ func TestProfilesCollectorConfigAndSchema(t *testing.T) {
 // The two must agree operator for operator — in particular on lifting the
 // workload's resource (observe.LogKeyResource) off each JSON line — or a
 // project's local logs lose service.version where the forwarder's keep it.
+//
+// Declared log parsing (forge.Telemetry `logs`) reaches the two by different
+// roads at the same places: the template INCLUDES the preserve operator and
+// the two processors from the files `forge env up` writes, the forwarder gets
+// them spliced into its rendered config. So the template with its include
+// replaced by a preserve operator is the forwarder given that operator, and
+// with the include removed it is the forwarder given none; and the processors
+// sit in the same order, between memory_limiter and batch.
 func TestClickstackCollectorOperatorsAreTheForwarders(t *testing.T) {
 	out, err := ProjectTemplates().Render("otel-collector.yaml.tmpl", struct{}{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fwd, err := deploy.ObservabilityAgentSpec{
-		Endpoint: "http://collector:4318", Protocol: "http/protobuf", Image: "collector",
-		Signals: deploy.ObservabilitySignals{Logs: true}, MemoryLimitMiB: 256,
-	}.ForwarderConfig()
-	if err != nil {
-		t.Fatal(err)
+	type logsConfig struct {
+		Receivers map[string]struct {
+			Operators []any `yaml:"operators"`
+		} `yaml:"receivers"`
+		Processors map[string]any `yaml:"processors"`
+		Service    struct {
+			Pipelines map[string]struct {
+				Processors []string `yaml:"processors"`
+			} `yaml:"pipelines"`
+		} `yaml:"service"`
 	}
-	ops := func(doc []byte, receiver string) []any {
-		var cfg struct {
-			Receivers map[string]struct {
-				Operators []any `yaml:"operators"`
-			} `yaml:"receivers"`
-		}
+	parse := func(doc []byte) logsConfig {
+		var cfg logsConfig
 		if err := yaml.Unmarshal(doc, &cfg); err != nil {
 			t.Fatal(err)
 		}
-		return cfg.Receivers[receiver].Operators
+		return cfg
 	}
-	tmpl, want := ops(out, "filelog/forge"), ops([]byte(fwd), "filelog")
-	if !reflect.DeepEqual(tmpl, want) {
-		got, _ := yaml.Marshal(tmpl)
-		exp, _ := yaml.Marshal(want)
-		t.Errorf("otel-collector.yaml.tmpl's filelog operators differ from ForwarderConfig's:\n--- template\n%s\n--- forwarder\n%s", got, exp)
+	tmpl := parse(out)
+	tmplOps := tmpl.Receivers["filelog/forge"].Operators
+	hook := "${file:" + clickstack.TelemetryIncludeMount + "/" + clickstack.TelemetryPreserveFile + "}"
+	at := slices.IndexFunc(tmplOps, func(op any) bool { return op == hook })
+	if at < 0 {
+		t.Fatalf("otel-collector.yaml.tmpl's filelog operators do not include %s", hook)
+	}
+
+	preserve := map[string]any{"type": "copy", "id": "forge_telemetry_original", "from": "body", "to": `attributes["forge.telemetry.original"]`, "if": `resource["service.name"] in ["temporal"]`}
+	identity := "transform/telemetry_identity"
+	parseProc := "transform/telemetry_logs"
+	for _, c := range []struct {
+		name string
+		logs deploy.ForwarderLogs
+		ops  []any
+	}{
+		{"nothing declared", deploy.ForwarderLogs{}, slices.Delete(slices.Clone(tmplOps), at, at+1)},
+		{"a declared parse", deploy.ForwarderLogs{
+			Preserve:   preserve,
+			Processors: map[string]any{identity: map[string]any{"error_mode": "ignore"}, parseProc: map[string]any{"error_mode": "silent"}},
+			Pipeline:   []string{identity, parseProc},
+		}, slices.Replace(slices.Clone(tmplOps), at, at+1, any(preserve))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fwdDoc, err := deploy.ObservabilityAgentSpec{
+				Endpoint: "http://collector:4318", Protocol: "http/protobuf", Image: "collector",
+				Signals: deploy.ObservabilitySignals{Logs: true}, MemoryLimitMiB: 256,
+			}.ForwarderConfigWith(c.logs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fwd := parse([]byte(fwdDoc))
+			if got := fwd.Receivers["filelog"].Operators; !reflect.DeepEqual(c.ops, got) {
+				g, _ := yaml.Marshal(c.ops)
+				w, _ := yaml.Marshal(got)
+				t.Errorf("otel-collector.yaml.tmpl's filelog operators differ from ForwarderConfig's:\n--- template\n%s\n--- forwarder\n%s", g, w)
+			}
+			if len(c.logs.Pipeline) == 0 {
+				return
+			}
+			// ClickStack's own `transform` (its base config's) is the one
+			// processor the forwarder has no counterpart of.
+			tp := slices.DeleteFunc(slices.Clone(tmpl.Service.Pipelines["logs/forge"].Processors), func(p string) bool { return p == "transform" })
+			if fp := fwd.Service.Pipelines["logs"].Processors; !slices.Equal(tp, fp) {
+				t.Errorf("logs processors: template %v (minus transform), forwarder %v", tp, fp)
+			}
+		})
+	}
+	// The processors are defined by the files env up writes.
+	for name, file := range map[string]string{identity: clickstack.TelemetryIdentityFile, parseProc: clickstack.TelemetryParseFile} {
+		if want := "${file:" + clickstack.TelemetryIncludeMount + "/" + file + "}"; tmpl.Processors[name] != want {
+			t.Errorf("processors.%s = %v, want %s", name, tmpl.Processors[name], want)
+		}
 	}
 }

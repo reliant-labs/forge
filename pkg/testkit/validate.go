@@ -44,6 +44,8 @@ import (
 //
 // It panics if protovalidate cannot build a validator, which only a broken
 // build of the protovalidate module does.
+//
+// connect-go v2 test servers use ValidateRequestsV2.
 func ValidateRequests() connect.HandlerOption {
 	ic, err := validate.Interceptor()
 	if err != nil {
@@ -64,6 +66,9 @@ var requestValidator = sync.OnceValues(func() (protovalidate.Validator, error) {
 type warnInvalidRequests struct {
 	t testing.TB
 	v protovalidate.Validator
+	// optIn names the opt-in the warning points at; empty is
+	// "testkit.ValidateRequests()" (the v2 harness names its own).
+	optIn string
 }
 
 // newWarnInvalidRequests returns the warning interceptor for t, or nil when
@@ -82,10 +87,14 @@ func (w *warnInvalidRequests) check(procedure string, msg any) {
 		return
 	}
 	if err := w.v.Validate(m); err != nil {
+		optIn := w.optIn
+		if optIn == "" {
+			optIn = "testkit.ValidateRequests()"
+		}
 		w.t.Logf("testkit: %s request breaks its protovalidate rules (%v). Production rejects it with "+
 			"invalid_argument before the handler runs; this test server let it through and only warns, and a "+
-			"later forge release rejects it too. Pass testkit.ValidateRequests() to test with production's "+
-			"behaviour now (forge#2283).", procedure, err)
+			"later forge release rejects it too. Pass %s to test with production's "+
+			"behaviour now (forge#2283).", procedure, err, optIn)
 	}
 }
 

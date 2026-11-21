@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -38,7 +39,7 @@ func (p ComposeProvider) recordOwned(ctx context.Context, runner commandRunner, 
 	if err != nil {
 		return err
 	}
-	ids := strings.Fields(string(out))
+	ids := composeContainerIDs(out)
 	record := composeOwned{Directory: composeProjectDir(spec), Checkout: p.projectDir(), Env: env, Service: service, Services: map[string]string{}}
 	preexisting := map[string]bool{}
 	for _, id := range before {
@@ -83,6 +84,28 @@ func (p ComposeProvider) recordOwned(ctx context.Context, runner commandRunner, 
 		return nil
 	}
 	return statefile.Write(composeOwnedPath(p.projectDir(), env, service), "compose ownership", record)
+}
+
+// containerIDRe matches one line of `compose ps --quiet`: a container id
+// (hex, from docker or podman) and nothing else.
+var containerIDRe = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z_.-]*$`)
+
+// composeContainerIDs reads the container ids out of `compose ps --quiet`
+// output, one per line. The runner captures stderr with stdout, and compose
+// writes its diagnostics there — `WARN[0000] The "API_KEY" variable is not
+// set. Defaulting to a blank string.` for an unset ${VAR} — so splitting the
+// whole output on whitespace took each word of the warning for a container,
+// failed the ownership check on "time=…", and left every container
+// unrecorded for `env down` (NS FG-17). A line with anything but one id on
+// it is a diagnostic.
+func composeContainerIDs(out []byte) []string {
+	var ids []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); containerIDRe.MatchString(line) {
+			ids = append(ids, line)
+		}
+	}
+	return ids
 }
 
 func containerLabels(ctx context.Context, runner commandRunner, id string) (map[string]string, error) {

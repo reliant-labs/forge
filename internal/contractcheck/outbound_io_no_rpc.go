@@ -1,9 +1,9 @@
 // File: internal/contractcheck/outbound_io_no_rpc.go
 //
 // The forgeconv-outbound-io-no-rpc rule warns when a package marked
-// `// forge:outbound-io` also imports `connectrpc.com/connect` and
-// registers Connect RPC handlers (i.e., calls something matching
-// `connect.NewXxxHandler(...)`).
+// `// forge:outbound-io` also registers Connect RPC handlers (i.e., calls
+// something matching `connect.NewXxxHandler(...)` under connect-go v1, or
+// a generated `<pkg>connect.RegisterXxxHandler(server, impl)` under v2).
 //
 // Why the marker is named for the property, not for a role
 //
@@ -35,7 +35,8 @@
 //   3. An RPC-handler shape is a call expression whose function name
 //      matches `connect.NewXxxHandler` (registration helper exposed by
 //      buf-generated `*_connect.go` files), OR an import of any
-//      `*_connect` package paired with such a call.
+//      `*_connect` package paired with such a call — or, for connect-go
+//      v2, `<pkg>connect.RegisterXxxHandler` on a generated package.
 //
 // Severity is warning — a boundary under construction may temporarily
 // import connect for type re-exports, and the cost of a stray warning
@@ -55,6 +56,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
@@ -99,9 +101,13 @@ func lintOutboundIONoRPC(rootDir string) (forgeconv.Result, error) {
 	}
 	sort.Strings(pkgDirs)
 
+	// connect-go v2's registration shape is read only in v2 code: the
+	// project's go.mod selects v2, or the file imports it.
+	projectV2 := connectmajor.DetectOrDefault(rootDir).IsV2()
+
 	var result forgeconv.Result
 	for _, dir := range pkgDirs {
-		findings, lintErr := lintOutboundIOPkg(dir, rootDir)
+		findings, lintErr := lintOutboundIOPkg(dir, rootDir, projectV2)
 		if lintErr != nil {
 			return forgeconv.Result{}, lintErr
 		}
@@ -124,7 +130,7 @@ func lintOutboundIONoRPC(rootDir string) (forgeconv.Result, error) {
 // If the package carries the `forge:outbound-io` marker AND any file
 // invokes a Connect RPC handler shape, emit one warning per offending
 // file (so the user can chase down each call site independently).
-func lintOutboundIOPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
+func lintOutboundIOPkg(pkgDir, rootDir string, projectV2 bool) ([]forgeconv.Finding, error) {
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", pkgDir, err)
@@ -157,7 +163,7 @@ func lintOutboundIOPkg(pkgDir, rootDir string) ([]forgeconv.Finding, error) {
 		if hasOutboundIOMarker(file) {
 			isOutboundIO = true
 		}
-		rpcHits = append(rpcHits, findConnectHandlerCalls(fset, file, fp)...)
+		rpcHits = append(rpcHits, findConnectHandlerCalls(fset, file, fp, projectV2)...)
 	}
 
 	if !isOutboundIO || len(rpcHits) == 0 {
@@ -238,19 +244,30 @@ func containsForgeMarker(text, name string) bool {
 }
 
 // findConnectHandlerCalls walks the file for call expressions matching
-// the Connect RPC-handler-registration shape:
+// a Connect RPC-handler-registration shape, in either connect-go major:
 //
-//   - a function call whose callee identifier starts with `New` and
-//     ends with `Handler`, AND is qualified by an imported package
-//     whose path contains a `_connect` segment OR is exactly
-//     `connectrpc.com/connect`.
+//   - v1: a function call whose callee identifier starts with `New` and
+//     ends with `Handler`, qualified by an imported package whose path
+//     contains a `_connect` segment OR is exactly
+//     `connectrpc.com/connect` (connectImportAliases). `New<Svc>Handler`
+//     is the name v1's protoc-gen-connect-go emits for every service.
+//   - v2: a call to `Register<Svc>Handler`, qualified by a package
+//     protoc-gen-connect-go generated — an import whose last element ends
+//     in `connect` (`billingv1connect`). v2 registers a service on a
+//     *connect.Server (`RegisterXHandler(server, impl)`) and has no
+//     handler constructor at all. The shape names nothing of v2, so it is
+//     read only in v2 code: projectV2 (go.mod selects v2) or a file that
+//     imports connectrpc.com/connect/v2. In v1 code a Register…Handler on
+//     a package that merely ends in `connect` is no handler, as before.
 //
-// Returns one rpcHit per match. The shape is intentionally narrow:
-// `New<Svc>Handler` is the canonical name buf's protoc-gen-connect-go
-// emits for every service.
-func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string) []rpcHit {
+// Returns one rpcHit per match.
+func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string, projectV2 bool) []rpcHit {
 	connectAliases := connectImportAliases(f)
-	if len(connectAliases) == 0 {
+	var generatedAliases map[string]bool
+	if projectV2 || importsConnectV2(f) {
+		generatedAliases = generatedConnectAliases(f)
+	}
+	if len(connectAliases) == 0 && len(generatedAliases) == 0 {
 		return nil
 	}
 	var hits []rpcHit
@@ -267,11 +284,11 @@ func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string) []rp
 		if !ok {
 			return true
 		}
-		if !connectAliases[pkgIdent.Name] {
-			return true
-		}
 		name := sel.Sel.Name
-		if !strings.HasPrefix(name, "New") || !strings.HasSuffix(name, "Handler") {
+		v1 := connectAliases[pkgIdent.Name] && strings.HasPrefix(name, "New") && strings.HasSuffix(name, "Handler")
+		v2 := generatedAliases[pkgIdent.Name] && strings.HasPrefix(name, "Register") && strings.HasSuffix(name, "Handler") &&
+			len(name) > len("RegisterHandler")
+		if !v1 && !v2 {
 			return true
 		}
 		hits = append(hits, rpcHit{
@@ -282,6 +299,53 @@ func findConnectHandlerCalls(fset *token.FileSet, f *ast.File, path string) []rp
 		return true
 	})
 	return hits
+}
+
+// importsConnectV2 reports whether f imports connect-go v2's runtime or
+// one of its subpackages (connecthttp, …).
+func importsConnectV2(f *ast.File) bool {
+	for _, imp := range f.Imports {
+		if imp.Path == nil {
+			continue
+		}
+		p := strings.Trim(imp.Path.Value, `"`)
+		if p == connectmajor.ModuleV2 || strings.HasPrefix(p, connectmajor.ModuleV2+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// generatedConnectAliases returns the file-local names of the packages
+// protoc-gen-connect-go generates — `<proto package>connect` leaves such as
+// `billingv1connect`, the same suffix rule internal/doctor uses. The v2
+// runtime (connectrpc.com/connect/v2, last element `v2`) and its
+// subpackages (connecthttp, connectproto) do not end in `connect`, so only
+// generated code qualifies.
+func generatedConnectAliases(f *ast.File) map[string]bool {
+	out := map[string]bool{}
+	for _, imp := range f.Imports {
+		if imp.Path == nil {
+			continue
+		}
+		path := strings.Trim(imp.Path.Value, `"`)
+		base := path
+		if i := strings.LastIndex(base, "/"); i >= 0 {
+			base = base[i+1:]
+		}
+		if !strings.HasSuffix(base, "connect") || path == "connectrpc.com/connect" {
+			continue
+		}
+		alias := base
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		if alias == "_" || alias == "." {
+			continue
+		}
+		out[alias] = true
+	}
+	return out
 }
 
 // connectImportAliases returns the set of package names (as used in

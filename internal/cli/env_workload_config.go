@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/deploytarget"
@@ -78,36 +79,37 @@ const (
 //
 // missing is the declared secrets the store cannot supply. Under
 // secretsRequired it is always empty: a non-empty set is the error instead.
-func localWorkloadConfig(ctx context.Context, projectDir, env string, e *KCLEntities, w WorkloadEntity, mode secretMode) (values map[string]string, missing []secrets.SecretRef, err error) {
+func localWorkloadConfig(ctx context.Context, projectDir, env string, e *KCLEntities, w WorkloadEntity, mode secretMode) (values map[string]string, missing []secrets.SecretRef, secretVars []string, err error) {
 	if w.Runtime.Type != RuntimeHost && w.Runtime.Type != RuntimeCompose {
-		return nil, nil, fmt.Errorf("workload %q is not local", w.Name)
+		return nil, nil, nil, fmt.Errorf("workload %q is not local", w.Name)
 	}
 	if err := armLocalSecretsForUp(ctx, env, e, func(string, ...any) {}); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer disarmPulledSecrets()
 	prov, err := secretProviderFromEntities(e, projectDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("secret provider: %w", err)
+		return nil, nil, nil, fmt.Errorf("secret provider: %w", err)
 	}
 	refs := secretRefsForService(&w)
 	if w.OnRuntime(RuntimeHost) {
 		refs = append(refs, managedSecretRefsForService(&w)...)
 	}
 	if mode == secretsRequired && requiresAnySecret(refs) && hostedSecretsWriteOnly(e) {
-		return nil, nil, writeOnlySecretsError(env, e, w.Name)
+		return nil, nil, nil, writeOnlySecretsError(env, e, w.Name)
 	}
 	missing = secrets.MissingDeclaredRefs(prov, refs)
 	if len(missing) > 0 && mode == secretsRequired {
-		return nil, nil, withEnvInSecretFix(secrets.MissingRefsError(prov, missing, secretStoreLabel(e)), env)
+		return nil, nil, nil, withEnvInSecretFix(secrets.MissingRefsError(prov, missing, secretStoreLabel(e)), env)
 	}
-	values, err = localWorkloadValues(projectDir, env, w, prov)
-	return values, missing, err
+	providerValues := prov.All()
+	values, err = localWorkloadValues(projectDir, env, w, providerValues)
+	return values, missing, secretVarNames(w, values, providerValues), err
 }
 
 // localWorkloadValues resolves a local workload's values once its secrets
 // have been judged.
-func localWorkloadValues(projectDir, env string, w WorkloadEntity, prov secrets.Provider) (map[string]string, error) {
+func localWorkloadValues(projectDir, env string, w WorkloadEntity, providerValues map[string]string) (map[string]string, error) {
 	if w.Runtime.Type == RuntimeCompose {
 		cm := w.Runtime.Compose
 		if cm == nil {
@@ -120,7 +122,7 @@ func localWorkloadValues(projectDir, env string, w WorkloadEntity, prov secrets.
 		// Pin relative env_file exactly as the Compose deploy path does for a
 		// shared project, and to this project otherwise (exec retains the cwd).
 		spec := &deploytarget.ComposeSpec{EnvFile: cm.EnvFile, Env: cm.Env, ProjectDirectory: dir}
-		return deploytarget.ComposeProcessEnv(spec, prov.All())
+		return deploytarget.ComposeProcessEnv(spec, providerValues)
 	}
 	var cfg *config.ProjectConfig
 	if store, err := loadProjectStoreFrom(filepath.Join(projectDir, "forge.yaml")); err == nil {
@@ -128,7 +130,42 @@ func localWorkloadValues(projectDir, env string, w WorkloadEntity, prov secrets.
 	} else {
 		return nil, err
 	}
-	return hostWorkloadConfig(cfg, w, prov.All(), env), nil
+	return hostWorkloadConfig(cfg, w, providerValues, env), nil
+}
+
+// secretVarNames lists values that must not be printed in the default table.
+// Compose gets the entire provider map, not just the declared refs. Compare
+// actual values so an override with a different, public value stays visible
+// and a host declaration repeating a secret under another name is masked.
+func secretVarNames(w WorkloadEntity, values, providerValues map[string]string) []string {
+	seen := map[string]bool{}
+	for _, r := range secretRefsForService(&w) {
+		if _, ok := values[r.EnvName]; ok {
+			seen[r.EnvName] = true
+		}
+	}
+	for _, ref := range w.Spec.Env {
+		if _, ok := values[ref.Name]; ok && ref.ManagedSecret != nil {
+			seen[ref.Name] = true
+		}
+	}
+	secretValues := make(map[string]bool, len(providerValues))
+	for _, value := range providerValues {
+		if value != "" {
+			secretValues[value] = true
+		}
+	}
+	for name, value := range values {
+		if secretValues[value] {
+			seen[name] = true
+		}
+	}
+	var out []string
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // resolvedEnvConfigReport reads the configuration of every selected workload.
@@ -149,11 +186,12 @@ func resolvedEnvConfigReport(ctx context.Context, projectDir, env string, e *KCL
 				continue
 			}
 			if w.Runtime.Type == RuntimeHost || w.Runtime.Type == RuntimeCompose {
-				values, missing, err := localWorkloadConfig(ctx, projectDir, env, e, w, mode)
+				values, missing, secretVars, err := localWorkloadConfig(ctx, projectDir, env, e, w, mode)
 				if err != nil {
 					return report, err
 				}
 				row.Env = values
+				row.SecretVars = secretVars
 				for _, r := range missing {
 					row.MissingSecrets = append(row.MissingSecrets, envConfigMissingSecret{
 						Name: r.EnvName, Secret: r.SecretName, Key: r.Key(),

@@ -346,20 +346,50 @@ func frontendNotInInventoryError(cfg *config.ProjectConfig, message, want string
 // "Check failed on the condition:", or an assert's after "Assertion
 // failure"), or the message of kcl's source-annotated diagnostic (the
 // `   |  <message>` line under the offending source line, which is how an
-// assert in a module reports), with ANSI colour stripped, else the error's
-// first line — which for a KCL failure is only "evaluate KCL in <dir>: exit
-// status 1".
+// assert in a module reports) with the `--> file:line:col` it points at,
+// with ANSI colour stripped.
+//
+// Failing those, it is the first line the KCL child itself printed, never
+// forge's wrapper around it: the wrapper's first line is only "evaluate KCL in
+// <dir>: exit status 1", and quoting it alone hid every KCL error kcl prints
+// in another shape (forge bug reports c8b7a3f6, aef6d25f). Only an error that
+// carries nothing past the wrapper falls back to the wrapper.
 func renderFailureCause(err error) string {
 	msg := ansiEscapeRE.ReplaceAllString(err.Error(), "")
 	for _, marker := range []string{"Check failed on the condition:", "Assertion failure:", "EvaluationError:"} {
 		if i := strings.Index(msg, marker); i >= 0 {
-			if cause := strings.TrimSpace(firstLine(msg[i+len(marker):])); cause != "" {
+			if cause := strings.TrimSpace(firstLine(msg[i+len(marker):])); cause != "" && cause != "(blank)" {
 				return cause
 			}
 		}
 	}
-	if m := kclDiagnosticMessageRE.FindStringSubmatch(msg); m != nil {
-		return strings.TrimSpace(m[1])
+	if loc := kclDiagnosticMessageRE.FindStringSubmatchIndex(msg); loc != nil {
+		cause := strings.TrimSpace(msg[loc[2]:loc[3]])
+		if at := kclDiagnosticLocationRE.FindAllStringSubmatch(msg[:loc[0]], -1); len(at) > 0 {
+			cause += " (at " + strings.TrimSpace(at[len(at)-1][1]) + ")"
+		}
+		return cause
+	}
+	wrapper := ""
+	for _, line := range strings.Split(msg, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == kclChildStdoutTailHeader {
+			continue
+		}
+		if kclWrapperLineRE.MatchString(line) {
+			if wrapper == "" {
+				wrapper = line
+			}
+			continue
+		}
+		if line == kclChildSilentNote && wrapper != "" {
+			return wrapper + " " + line
+		}
+		line = strings.TrimPrefix(line, "Error: ")
+		if r := []rune(line); len(r) > 300 {
+			line = string(r[:299]) + "…"
+		}
+		return line
 	}
 	return firstLine(msg)
 }
@@ -370,6 +400,16 @@ var ansiEscapeRE = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // gutter with no line number (`   |`), then the text. The source line above
 // it carries its number (`69 |`), and the gutter's blank lines carry none.
 var kclDiagnosticMessageRE = regexp.MustCompile(`(?m)^[ \t]*\|[ \t^~]+(\S.*)$`)
+
+// kclDiagnosticLocationRE matches the `--> file:line:col` line kcl prints
+// above a diagnostic's source excerpt.
+var kclDiagnosticLocationRE = regexp.MustCompile(`(?m)^[ \t]*-->[ \t]*(\S.*)$`)
+
+// kclWrapperLineRE matches the lines forge (and kpm) wrap a KCL child's
+// output in, which name the failed evaluation but not why it failed:
+// "render deploy/kcl/dev/: evaluate KCL in /p: exit status 1", and kpm's
+// "Error: kpm run /p/deploy/kcl/dev:" with nothing after the colon.
+var kclWrapperLineRE = regexp.MustCompile(`^(render \S.*: )?evaluate KCL in .*: (exit status -?\d+|signal: .*)$|^(Error: )?kpm run .*:$`)
 
 func knownFrontendsSuffix(cfg *config.ProjectConfig) string {
 	if len(cfg.Frontends) == 0 {

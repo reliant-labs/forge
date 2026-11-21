@@ -26,7 +26,11 @@ func MarkProbeSpans(ctx context.Context) {
 	mark := attribute.Bool(attrForgeProbe, true)
 	server := serverSpanOf(ctx)
 	server.SetAttributes(mark)
-	if inner := trace.SpanFromContext(ctx); inner != server {
+	// Compare by SpanContext, never `inner != server`: a span is an
+	// interface, and otel's non-recording spans (what every span is with no
+	// tracer provider installed) hold a TraceState with a slice in it, so
+	// comparing two of them panics.
+	if inner := trace.SpanFromContext(ctx); !inner.SpanContext().Equal(server.SpanContext()) {
 		inner.SetAttributes(mark)
 	}
 }
@@ -46,5 +50,10 @@ const HeaderHealthProbe = "Forge-Health-Probe"
 // health handler marks its spans (MarkProbeSpans). Setting the header can
 // hide nothing but a health check.
 func IsHealthProbe(procedure string, h http.Header) bool {
+	return isHealthProbe(procedure, h)
+}
+
+// isHealthProbe is IsHealthProbe over either connect major's request header.
+func isHealthProbe(procedure string, h interface{ Get(string) string }) bool {
 	return procedure == HealthCheckProcedure && h.Get(HeaderHealthProbe) != ""
 }

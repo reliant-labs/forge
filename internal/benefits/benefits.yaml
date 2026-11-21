@@ -4574,9 +4574,12 @@ benefits:
       Issues are fingerprinted with one algorithm, at query time locally and at
       ingest on the control plane; issues that share a cause and first fired
       together collapse into one incident without being merged, and triage
-      (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+      (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log
+      record an authenticated request writes carries `user.id`, so an issue
+      counts the people it reached.
     evidence:
       - command: obs issue
+      - path: pkg/authn/telemetry.go
       - command: obs issues
       - command: obs issue resolve
       - command: obs issue ignore

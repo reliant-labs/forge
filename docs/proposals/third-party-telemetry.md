@@ -1000,3 +1000,52 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
   `network_policy = True` gets `collector.NetworkPolicies`, inserted after its Manifests group's
   last object with the group's owner and delivery unit (an Observability target: at the end of the
   stream). The agent namespace carries no NetworkPolicy, so its egress to the pulled ports is open.
+
+**F11 (a ManagedDatabase is watched by default):**
+
+Owner decision 2026-11-20: the CloudNativePG operator and every user's managed database are
+monitored by default. This is the generic primitive with a working default, not a pack: forge
+renders the database itself (a CloudNativePG `Cluster`, `pkg/deploy` `RenderManagedDatabase`; on
+hosting the control plane renders the same object), so the exporter port, pod labels and log
+shape are facts of forge's own output. The default is an ordinary `forge.Telemetry`, built in
+`kcl/database_telemetry.k`, and rides every existing path: the targets, the collectors, the
+system dashboard, the default alerts, declared dashboards and, on hosting, the release shape.
+
+- `ManagedDatabase.telemetry?: Telemetry` replaces the default; `default_telemetry: bool = True`
+  turns it off. An explicit empty Telemetry was rejected as the off switch: `Telemetry`
+  refuses a declaration that collects nothing, and loosening that check would weaken it for
+  every attachment. `forge.managed_database_telemetry(name)` returns the default, so a project
+  extends it with `|` rather than copying it.
+- The default target (`attachment: manageddatabase`, source `manageddatabase:<name>`, service
+  `<name>-postgres`) is the database's instances: selector `cnpg.io/cluster: <name>`, container
+  `postgres`, ports `metrics` 9187 and `postgres` 5432. On a cluster it carries the database's
+  cluster and namespace; on hosting neither (the platform places them). It declares one scrape
+  of `metrics` with `MANAGED_DATABASE_METRICS_ALLOW` (the instance collector, the default
+  monitoring queries' backends, size, xid age, replication, archiver and per-database
+  transactions, and the Barman Cloud plugin's backup timestamps) at `sample_limit` 2000; a
+  JSON log parse (severity `record.error_severity` with Postgres's levels mapped, body
+  `record.message`, timestamp `ts`, and rules mapping the instance manager's own `level`); a
+  tcp check on `postgres`; and the dashboard `<name>-postgres`.
+- The CloudNativePG operator: one default target per cluster that holds a database keeping its
+  default (`manageddatabase-operator:<cluster>`, service `cloudnative-pg`, suffixed with the
+  cluster when the databases span several), selecting `app.kubernetes.io/name: cloudnative-pg`
+  in every namespace, scraping :8080 with `CNPG_OPERATOR_METRICS_ALLOW`, with its JSON logs and a
+  dashboard. forge does not install the operator, so the selector is the label the upstream chart
+  and manifest put on it. A Telemetry of the same service name anywhere in the env replaces it
+  (`forge.cnpg_operator_telemetry(cluster)` is that Telemetry, to narrow or extend). On hosting
+  the operator is the platform's, so there is no tenant target for it.
+- A default is rendered only for a database that is placed (hosted, or on a known cluster), so
+  no previously valid env gains an invalid target. A declared `telemetry` renders anyway.
+- `network_policy` stays unset ("auto"), which renders no policy for a `manageddatabase` target
+  (`AdmitCollector` is false, as for Manifests): a policy selecting the instances would deny
+  every other Postgres caller. No `telemetry.Warnings` note either, since every database would
+  carry one. Where the namespace already denies ingress, admitting the collector on 9187 and 5432
+  is the project's (or, on hosting, the control plane's).
+- No default alert rules beyond the two catalog defaults (TargetDown on the scrape,
+  CheckFailing on the check): a `Telemetry.alerts` entry needs the env's observability on, and a
+  default must not fail an env that has it off. Lag, archiving, backup age and xid age alerts
+  are a follow-up, as catalog defaults.
+- A project without a ManagedDatabase renders byte-identically
+  (`TestRenderContract_NoTelemetryWithoutDeclaration`). A project with one gains telemetry,
+  dashboards and the two default alerts on its next render and `forge generate`, which is the
+  intent.

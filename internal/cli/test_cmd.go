@@ -36,5 +36,6 @@ turns recording off for one invocation.`,
 	cmd.AddCommand(newTestFlakesCmd())
 	cmd.AddCommand(newTestQuarantineCmd())
 	cmd.AddCommand(newTestRunCmd())
+	cmd.AddCommand(newTestCollectCmd())
 	return cmdutil.StrictGroup(cmd)
 }

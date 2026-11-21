@@ -68,7 +68,7 @@ func helperMain(mode string) int {
 	case "wait-term":
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGTERM)
-		_ = os.WriteFile(arg, []byte("ready"), 0o644)
+		fmt.Println("ready")
 		select {
 		case <-sigs:
 			return 42
@@ -314,18 +314,12 @@ func TestExecuteForwardsSignals(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("signals are not delivered to a child process on Windows")
 	}
-	ready := filepath.Join(t.TempDir(), "ready")
+	// The helper prints "ready" once it listens for SIGTERM; the signal is
+	// sent on seeing that line, so nothing here waits on a clock.
 	sigs := make(chan os.Signal, 1)
-	go func() {
-		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-			if _, err := os.Stat(ready); err == nil {
-				sigs <- syscall.SIGTERM
-				return
-			}
-		}
-	}()
+	onReady := &readyWriter{fire: func() { sigs <- syscall.SIGTERM }}
 	code, err := executeForwarding(context.Background(), []string{os.Args[0], "-test.run=^$"},
-		append(os.Environ(), helperEnv+"=wait-term:"+ready), strings.NewReader(""), io.Discard, io.Discard, sigs)
+		append(os.Environ(), helperEnv+"=wait-term"), strings.NewReader(""), onReady, io.Discard, sigs)
 	if err != nil || code != 42 {
 		t.Fatalf("executeForwarding = %d, %v; want the command's own 42 after the forwarded SIGTERM", code, err)
 	}
@@ -334,7 +328,7 @@ func TestExecuteForwardsSignals(t *testing.T) {
 	killed := make(chan os.Signal, 1)
 	killed <- syscall.SIGKILL
 	code, _ = executeForwarding(context.Background(), []string{os.Args[0], "-test.run=^$"},
-		append(os.Environ(), helperEnv+"=wait-term:"+filepath.Join(t.TempDir(), "r")), strings.NewReader(""), io.Discard, io.Discard, killed)
+		append(os.Environ(), helperEnv+"=wait-term"), strings.NewReader(""), io.Discard, io.Discard, killed)
 	if code != 128+int(syscall.SIGKILL) {
 		t.Fatalf("killed: exit %d, want %d", code, 128+int(syscall.SIGKILL))
 	}
@@ -384,4 +378,20 @@ func TestResultsName(t *testing.T) {
 			t.Errorf("ResultsName(%s) = %q, want %q", f, got, want)
 		}
 	}
+}
+
+// readyWriter calls fire once, when the command's output first holds "ready".
+type readyWriter struct {
+	buf   bytes.Buffer
+	fire  func()
+	fired bool
+}
+
+func (w *readyWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	if !w.fired && strings.Contains(w.buf.String(), "ready") {
+		w.fired = true
+		w.fire()
+	}
+	return len(p), nil
 }

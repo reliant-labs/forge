@@ -290,10 +290,13 @@ var newRules = []rolloutGroup{
 	// at a self-hosted promote and in the vuln-sbom gate step — and a
 	// declared `provenance_sbom = enforce` refuses a promotion whose
 	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
-	// rollout (forge#2468 §1.8).
+	// rollout (forge#2468 §1.8). They were declared in the v1.9.0 cohort, but
+	// tag v1.9.0 predates the PRs that ship them (forge#2486, #2490), so they
+	// ship in v1.10.0 and warn through it (validateRolloutGroup's
+	// carriedToV110).
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
 		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
 	},
 	{

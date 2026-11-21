@@ -326,50 +326,7 @@ func renderTestReport(w io.Writer, rep *testreport.Report, a *testlocal.Assembly
 	}
 	fmt.Fprintln(w)
 
-	if c := rep.Coverage; c != nil {
-		fmt.Fprintf(w, "Coverage (%s): combined %.1f%%", orDash(string(c.Granularity)), c.Combined)
-		for _, l := range sortedLanes(c.Lanes) {
-			fmt.Fprintf(w, " · %s %.1f%%", l, c.Lanes[testreport.Lane(l)])
-		}
-		if c.OnlyE2E > 0 {
-			fmt.Fprintf(w, " · only e2e %.1f%%", c.OnlyE2E)
-		}
-		fmt.Fprintln(w)
-		if c.CombinedLabel != "" {
-			fmt.Fprintf(w, "  combined is %s\n", c.CombinedLabel)
-		}
-		if len(c.Languages) > 1 {
-			for _, l := range c.Languages {
-				fmt.Fprintf(w, "  %s: %.1f%% of %d statements\n", l.Lang, l.Combined, l.Statements)
-			}
-		}
-		if c.Excluded.GeneratedStatements > 0 {
-			fmt.Fprintf(w, "  generated code, not counted: %d statements\n", c.Excluded.GeneratedStatements)
-		}
-		if c.Excluded.FilteredStatements > 0 {
-			fmt.Fprintf(w, "  excluded by filter, not counted: %d statements\n", c.Excluded.FilteredStatements)
-		}
-		if d := c.Diff; d != nil && rep.Base != nil {
-			if d.Lines == 0 {
-				fmt.Fprintf(w, "  diff vs %s: no changed executable lines\n", testShortID(rep.Base.SHA))
-			} else {
-				fmt.Fprintf(w, "  diff vs %s: %d of %d changed lines covered (%.1f%%)\n", testShortID(rep.Base.SHA), d.Covered, d.Lines, d.Pct)
-			}
-		}
-		if c.Delta != nil {
-			fmt.Fprintf(w, "  delta vs base: %+.1f\n", *c.Delta)
-		} else if rep.Base != nil && c.DeltaReason != "" {
-			fmt.Fprintf(w, "  delta: %s\n", c.DeltaReason)
-		}
-		if len(rep.Packages) > 0 {
-			fmt.Fprintln(w, "  lowest covered:")
-			for _, p := range rep.Packages[:min(5, len(rep.Packages))] {
-				fmt.Fprintf(w, "    %5.1f%%  %s (%d statements)\n", p.Combined, p.Path, p.Statements)
-			}
-		}
-	} else {
-		fmt.Fprintln(w, "Coverage: none recorded")
-	}
+	renderReportCoverage(w, rep)
 
 	if len(rep.Failures) > 0 {
 		fmt.Fprintf(w, "Failures (%d):\n", len(rep.Failures))
@@ -410,6 +367,55 @@ func renderTestReport(w io.Writer, rep *testreport.Report, a *testlocal.Assembly
 		fmt.Fprintf(w, "  next: %s\n", s)
 	}
 	fmt.Fprintln(w, reportVerdictLine(rep))
+}
+
+func renderReportCoverage(w io.Writer, rep *testreport.Report) {
+	c := rep.Coverage
+	if c == nil {
+		fmt.Fprintln(w, "Coverage: none recorded")
+		return
+	}
+	fmt.Fprintf(w, "Coverage (%s): combined %.1f%%", orDash(string(c.Granularity)), c.Combined)
+	for _, l := range sortedLanes(c.Lanes) {
+		fmt.Fprintf(w, " · %s %.1f%%", l, c.Lanes[testreport.Lane(l)])
+	}
+	if c.OnlyE2E > 0 {
+		fmt.Fprintf(w, " · only e2e %.1f%%", c.OnlyE2E)
+	}
+	fmt.Fprintln(w)
+	if c.CombinedLabel != "" {
+		fmt.Fprintf(w, "  combined is %s\n", c.CombinedLabel)
+	}
+	for _, l := range c.Languages {
+		if len(c.Languages) > 1 {
+			fmt.Fprintf(w, "  %s: %.1f%% of %d statements\n", l.Lang, l.Combined, l.Statements)
+		}
+	}
+	if c.Excluded.GeneratedStatements > 0 {
+		fmt.Fprintf(w, "  generated code, not counted: %d statements\n", c.Excluded.GeneratedStatements)
+	}
+	if c.Excluded.FilteredStatements > 0 {
+		fmt.Fprintf(w, "  excluded by filter, not counted: %d statements\n", c.Excluded.FilteredStatements)
+	}
+	if d := c.Diff; d != nil && rep.Base != nil {
+		if d.Lines == 0 {
+			fmt.Fprintf(w, "  diff vs %s: no changed executable lines\n", testShortID(rep.Base.SHA))
+		} else {
+			fmt.Fprintf(w, "  diff vs %s: %d of %d changed lines covered (%.1f%%)\n", testShortID(rep.Base.SHA), d.Covered, d.Lines, d.Pct)
+		}
+	}
+	switch {
+	case c.Delta != nil:
+		fmt.Fprintf(w, "  delta vs base: %+.1f\n", *c.Delta)
+	case rep.Base != nil && c.DeltaReason != "":
+		fmt.Fprintf(w, "  delta: %s\n", c.DeltaReason)
+	}
+	if len(rep.Packages) > 0 {
+		fmt.Fprintln(w, "  lowest covered:")
+	}
+	for _, p := range rep.Packages[:min(5, len(rep.Packages))] {
+		fmt.Fprintf(w, "    %5.1f%%  %s (%d statements)\n", p.Combined, p.Path, p.Statements)
+	}
 }
 
 func sortedLanes(m map[testreport.Lane]float64) []string {

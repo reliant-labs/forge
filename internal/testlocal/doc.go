@@ -10,4 +10,6 @@
 //
 // Git is reached only through the [Git] seam, so everything here is testable
 // on run directories written into a temp dir with a fake git.
+//
+//forge:exclude-contract: a reader of on-disk records plus pure functions over what it read; the exported methods are accessors on those records (Run, Lane, Assembly), and the one seam callers substitute is the Git func, so there is no service for a contract to describe
 package testlocal

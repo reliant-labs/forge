@@ -190,8 +190,8 @@ jobs:
           go install "$forge/cmd/forge@${v}"
 
       - name: Log in to the declared registry
-        # `forge vuln scan --image` reads the image from its registry with the
-        # docker credential this step writes.
+        # The scanner reads the image from its registry with the docker
+        # credential this step writes.
         # The platform registry takes the control-plane credential, so this
         # passes no --username and no password: forge resolves the same rlat_
         # it reaches the control plane with. Unlike the build job, the login

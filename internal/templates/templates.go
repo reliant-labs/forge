@@ -551,6 +551,17 @@ type BuildImagesWorkflowData struct {
 	// its per-commit image for a cluster env and promote releases through
 	// hosted ones, and only the env this job builds for decides.
 	Hosted bool
+
+	// ForgeVersion is the project's pinned forge_version. The scan job runs
+	// `forge vuln scan` only for a pin that has it (ForgeAtLeast); an older
+	// pin keeps the Trivy scan and the SBOM action its forge cannot replace.
+	ForgeVersion string
+}
+
+// ForgeAtLeast reports whether the project's pinned forge has everything
+// release has; see forgeAtLeast.
+func (d BuildImagesWorkflowData) ForgeAtLeast(release string) bool {
+	return forgeAtLeast(d.ForgeVersion, release)
 }
 
 // ReleaseWorkflowData holds data for release.yml and the vendored

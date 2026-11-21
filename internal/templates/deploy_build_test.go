@@ -148,8 +148,9 @@ func TestDeployTemplate_EmptyEnvironments(t *testing.T) {
 
 func TestBuildImagesTemplate_Full(t *testing.T) {
 	data := BuildImagesWorkflowData{
-		ProjectName: "myapp",
-		VulnDocker:  true,
+		ProjectName:  "myapp",
+		VulnDocker:   true,
+		ForgeVersion: "v1.10.0",
 	}
 
 	out, err := CITemplates("github").Render("build-images.yml.tmpl", data)
@@ -222,6 +223,39 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 	// Summary includes all jobs
 	if !strings.Contains(s, "vulnerability scan") {
 		t.Error("summary should include the vulnerability scan")
+	}
+}
+
+// A project pinned to a forge that predates `forge vuln` (v1.10.0) must not
+// run it: its CI runs the pinned forge. It keeps the scan and the SBOM it had
+// before, and a pin at or past v1.10.0 (a pre-release of it included) gets
+// forge's own.
+func TestBuildImagesTemplate_ScanFollowsThePinnedForge(t *testing.T) {
+	for _, c := range []struct {
+		pin       string
+		forgeScan bool
+	}{
+		{"v1.10.0", true},
+		{"v1.10.1-0.20261121000000-abcdef123456", true},
+		{"v1.11.0-rc.1", true},
+		{"v1.9.0", false},
+		{"v1.9.1-0.20261121000000-abcdef123456", false},
+		{"", false},
+		{"devel", false},
+	} {
+		out, err := CITemplates("github").Render("build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "myapp", BuildEnv: "staging", VulnDocker: true, ForgeVersion: c.pin})
+		if err != nil {
+			t.Fatalf("pin %q: %v", c.pin, err)
+		}
+		s := string(out)
+		if !strings.Contains(s, "vuln-scan:") {
+			t.Errorf("pin %q: the scan job is missing", c.pin)
+		}
+		forge := strings.Contains(s, `forge vuln scan --image "$IMAGE_REF"`) && strings.Contains(s, "run: forge vuln db pull")
+		legacy := strings.Contains(s, "aquasecurity/trivy-action@") && strings.Contains(s, "anchore/sbom-action@")
+		if forge != c.forgeScan || legacy == c.forgeScan {
+			t.Errorf("pin %q: forge scan %v, Trivy + SBOM action %v; want the forge scan %v", c.pin, forge, legacy, c.forgeScan)
+		}
 	}
 }
 

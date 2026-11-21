@@ -113,6 +113,17 @@ jobs:
       # These steps run AFTER the image is pushed and act on the immutable
       # digest forge recorded. Using the digest (not a mutable tag) binds the
       # signature/attestation to the exact bytes pushed.
+{{- /*
+  WHAT THE PINNED FORGE HAS. A project's CI runs the forge its forge.yaml
+  pins, so a step that runs a newer forge command renders only for a pin that
+  has it (BuildImagesWorkflowData.ForgeAtLeast, naming the first release with
+  the command). The vuln verbs and the SBOM at the cut ship in v1.10.0
+  (v1.9.0 was tagged before them): a project pinned to v1.10.0 or later gets the
+  forge scan and no SBOM action; an older pin keeps the anchore SBOM action
+  and the Trivy scan its forge cannot replace. Moving forge_version past
+  v1.10.0 and regenerating switches it over.
+*/}}
+{{- if .ForgeAtLeast "v1.10.0"}}
       #
       # No SBOM step lives here: this workflow pushes an image and cuts no
       # release. forge writes an SBOM per artifact at every release cut
@@ -120,6 +131,7 @@ jobs:
       # deploy`), records its digest in the release, and attaches it beside
       # the image as an OCI referrer. The scan job below judges the pushed
       # image itself with `forge vuln scan`.
+{{- end}}
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -131,6 +143,23 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
           IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
         run: cosign sign --yes "$IMAGE_REF"
+{{- if not (.ForgeAtLeast "v1.10.0")}}
+
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+          format: spdx-json
+          artifact-name: sbom-{{.ProjectName}}.spdx.json
+          output-file: sbom-{{.ProjectName}}.spdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-{{.ProjectName}}
+          path: sbom-{{.ProjectName}}.spdx.json
+          if-no-files-found: error
+{{- end}}
 
       - name: Attest build provenance
         # GitHub's attestation store only accepts public repositories (or
@@ -167,8 +196,8 @@ jobs:
 {{installForgeRun 8}}
 
       - name: Log in to the declared registry
-        # `forge vuln scan --image` reads the image from its registry with the
-        # docker credential this step writes.
+        # The scanner reads the image from its registry with the docker
+        # credential this step writes.
 {{- if .Hosted}}
         # The platform registry takes the control-plane credential, so this
         # passes no --username and no password: forge resolves the same rlat_
@@ -183,6 +212,8 @@ jobs:
           LOGIN_TOKEN: ${{"{{"}} secrets.GITHUB_TOKEN {{"}}"}}
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "{{.BuildEnv}}" --username "${{"{{"}} github.actor {{"}}"}}" --password-stdin
 {{- end}}
+
+{{- if .ForgeAtLeast "v1.10.0"}}
 
       # The grype vulnerability database is 205 MB to download and 3.3 GiB
       # unpacked. It is cached per UTC day: the primary key is today's date,
@@ -239,6 +270,18 @@ jobs:
         with:
           path: ${{"{{"}} env.FORGE_VULN_DB_DIR {{"}}"}}
           key: forge-vulndb-v6-${{"{{"}} steps.vulndb-key.outputs.day {{"}}"}}
+{{- else}}
+
+      - name: Run Trivy vulnerability scanner
+        # This project's forge predates `forge vuln` (v1.10.0).
+        uses: aquasecurity/trivy-action@v0.35.0
+        with:
+          # The digest-pinned ref the build pushed — the exact bytes scanned.
+          image-ref: ${{"{{"}} needs.build-push.outputs.ref {{"}}"}}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+{{- end}}
 {{- end}}
 {{- /*
   No frontend job here. A frontend image is ENVIRONMENT-SPECIFIC — each env

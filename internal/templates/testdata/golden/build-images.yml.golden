@@ -196,8 +196,8 @@ jobs:
           go install "$forge/cmd/forge@${v}"
 
       - name: Log in to the declared registry
-        # `forge vuln scan --image` reads the image from its registry with the
-        # docker credential this step writes.
+        # The scanner reads the image from its registry with the docker
+        # credential this step writes.
         env:
           LOGIN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "staging" --username "${{ github.actor }}" --password-stdin

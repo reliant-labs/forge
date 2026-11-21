@@ -9,6 +9,12 @@ Seed data is not a file in your project — it materializes at runtime,
 deterministically, from the applied schema: FK-coherent, ~20 rows/table,
 idempotent.
 
+Integer keys are written explicitly (1..N, so foreign keys can name them).
+After each table the seeder moves the sequence that feeds the key (SERIAL,
+IDENTITY, or a `DEFAULT nextval(...)`) past the largest key, and never moves
+it backwards. The app's next INSERT then gets a new key. A
+`GENERATED ALWAYS` identity is seeded with `OVERRIDING SYSTEM VALUE`.
+
 ## Do this first: fill in `db/seeds/vocab.yaml`
 
 **Write the vocabulary BEFORE the first seed, not after you dislike the rows.**
@@ -48,7 +54,10 @@ forge db seed reset    # wipe seeded tables and re-seed (dev only)
 
 `forge env up` auto-seed a fresh dev database on first boot
 (every in-scope table empty): the synthesized rows, then `db/seeds/custom/`. `apply`/`reset` refuse any non-dev environment,
-and the applier is never compiled into your server binary.
+and the applier is never compiled into your server binary. An env is dev when its
+evaluated `deploy/kcl/<env>/config.k` sets the runtime MODE field (the one annotated
+`role: CONFIG_FIELD_ROLE_MODE`, else a field named `environment`, nested in a block
+or not) to `development` or `dev`; a refusal names the file and value it read.
 
 **What auto-seed writes to.** Only the tables behind your CRUD entities (a service
 with `Create<X>`/`List<Xs>`/… RPCs over a matching table), plus any table those

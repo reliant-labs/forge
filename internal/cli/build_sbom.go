@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/mod/modfile"
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -58,9 +59,14 @@ var sbomCacheDir = func() string {
 // sbomGenerated is one artifact's freshly produced SBOM, as a post-generate
 // hook sees it.
 type sbomGenerated struct {
-	Env, Version string
+	ProjectDir, Env, Version string
+	// CutAt is the release's CreatedAt: fixed for the release, unlike now.
+	CutAt time.Time
 	// Name is the artifact's key in the release (an image's repository).
 	Name string
+	// Built reports that this cut's build state recorded the artifact: this
+	// pipeline built (or carried) and pushed it.
+	Built bool
 	// Artifact is the artifact as the release will record it, with
 	// Artifact.SBOM the ref so far (status ok, digest set).
 	Artifact release.Artifact
@@ -90,6 +96,8 @@ var sbomPostGenerate []sbomPostGenerateHook
 type sbomCut struct {
 	ProjectDir, Env, Version, OutputDir string
 	Entities                            *KCLEntities
+	// CreatedAt is the release's cut time, handed to the hooks.
+	CreatedAt time.Time
 	// Built is the set of artifact names the build state recorded: images
 	// this pipeline built and pushed (and hosted static sites).
 	Built map[string]bool
@@ -225,7 +233,7 @@ func recordGeneratedSBOMs(ctx context.Context, in sbomCut, artifacts map[string]
 	)
 	inputs := make([]sbomGenerated, 0, len(jobs))
 	for _, j := range jobs {
-		inputs = append(inputs, sbomGenerated{Env: in.Env, Version: in.Version, Name: j.name, Artifact: artifacts[j.name], Bytes: j.data, Entities: in.Entities})
+		inputs = append(inputs, sbomGenerated{ProjectDir: in.ProjectDir, Env: in.Env, Version: in.Version, CutAt: in.CreatedAt, Name: j.name, Built: in.Built[j.name], Artifact: artifacts[j.name], Bytes: j.data, Entities: in.Entities})
 	}
 	for _, in := range inputs {
 		wg.Add(1)

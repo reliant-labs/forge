@@ -313,7 +313,8 @@ func (c *Client) begin(ctx context.Context, opts *sql.TxOptions) (*Tx, error) {
 // handle, or call handle.Join to get such a ctx.
 //
 // opts mean exactly what they mean to RunTx: orm.ReadCommitted runs fn once,
-// orm.Serializable re-runs it on 40001 / 40P01, so fn must then have no
+// orm.Serializable re-runs it on 40001 / 40P01 (plus what WithRetryOn
+// adds), so fn must then have no
 // effect outside the database. There is no default; an unset level is
 // rejected with ErrInvalidTxOptions.
 //

@@ -3220,6 +3220,46 @@ schema PGO:
             "PGO.min_weight '${min_weight}' is not a duration — it needs a unit, e.g. '10s' or '500ms'"
         all s in services {s}, "PGO.services must not contain an empty name"
 
+schema Tests:
+    """How this env's Go binaries are built for test coverage: whether forge
+    instruments them (`go build -cover -covermode=atomic`) so the coverage an
+    e2e or integration run drives through a running server is measured.
+
+    Unset, `coverage` is computed, never scaffolded: on for an env with
+    `lifecycle = "local"` or `"ephemeral"` and for a preview instance, when
+    forge.yaml opts the project in (`tests.coverage: true`, which a new
+    scaffold writes and the `tests` upgrade playbook adds); off otherwise.
+    An env with no lifecycle and no preview is PERSISTENT — forge treats it
+    as production — and is never instrumented by default.
+
+        tests = forge.Tests {coverage = False}                # never here
+        tests = forge.Tests {coverage_packages = ["./internal/..."]}
+
+    A persistent env refuses `coverage = True` unless it says why, so a
+    staging deliberately used for e2e is a decision on the record:
+
+        tests = forge.Tests {coverage = True, coverage_in_persistent_env = "staging runs the nightly e2e"}
+
+    A build may override the env for its own binary (GoBuild.coverage,
+    DockerBuild.coverage). One binary has one answer: two workloads of an
+    env that run the same binary must agree on it, or the env does not
+    render.
+    """
+    # Build this env's Go workloads with -cover. Unset: the computed default above.
+    coverage?: bool
+    # The packages a cover build instruments: "main" (the project's module,
+    # minus its gen/ tree), or explicit `-coverpkg` patterns.
+    coverage_packages: "main" | [str] = "main"
+    # Required to turn coverage on in a persistent env: the reason, recorded
+    # with the env.
+    coverage_in_persistent_env?: str
+
+    check:
+        typeof(coverage_packages) == "str" or (coverage_packages and all p in coverage_packages {p.strip()}), \
+            "Tests.coverage_packages is \"main\" or a non-empty list of -coverpkg patterns, e.g. [\"./internal/...\"]"
+        not coverage_in_persistent_env or coverage_in_persistent_env.strip(), \
+            "Tests.coverage_in_persistent_env is the reason a persistent env is instrumented; it cannot be blank"
+
 schema GoBuild(Build):
     """Build the service with `go build`. `cmd` is the build target
     package (e.g. "./cmd/trader") — REQUIRED, so there is no hardcoded
@@ -3236,6 +3276,9 @@ schema GoBuild(Build):
     flags: [str] = []
     env: {str: str} = {}
     pgo: PGO = PGO {}
+    # Build the binary with -cover (True) or without it (False) whatever the
+    # env's `tests.coverage` says. Unset follows the env (see Tests).
+    coverage?: bool
 
     check:
         type == "go", "GoBuild.type must be 'go'"
@@ -3338,6 +3381,10 @@ schema DockerBuild(Build):
     # A GitSource build_contexts entry is keyed by its declared repo and ref
     # only, so pin it to a tag or commit. Empty: every release builds.
     inputs: [str] = []
+    # Coverage per Go binary the image builds, keyed by package path like
+    # `pgo`: True or False whatever the env's `tests.coverage` says. A binary
+    # not named follows the env (see Tests).
+    coverage: {str: bool} = {}
 
     check:
         type == "docker", "DockerBuild.type must be 'docker'"
@@ -3348,6 +3395,8 @@ schema DockerBuild(Build):
             "DockerBuild.inputs entries are relative to the project root (or the GitSource context), never absolute"
         all k in pgo {_pgo_binary_key(k)}, \
             "DockerBuild.pgo is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
+        all k in coverage {_pgo_binary_key(k)}, \
+            "DockerBuild.coverage is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in coverage if not _pgo_binary_key(k)]}"
 
 schema ShellBuild(Build):
     """Build the service by running `cmd` verbatim via `sh -c`. The ONE
@@ -8788,8 +8837,16 @@ schema Bundle:
     # the store, because they cannot live in what they bootstrap. UNSET =
     # forge.OutOfBand {} - provisioned by hand, and only checked.
     bootstrap_source?: GCPSecretManager | OutOfBand
+    # Test coverage of this env's Go builds (see Tests): instrumented by
+    # default for local, ephemeral and preview envs of a project that opts in.
+    tests: Tests = Tests {}
 
     check:
+        # A PERSISTENT env (no lifecycle, not a preview) is production as far
+        # as forge knows, and an instrumented build there is a decision, not
+        # a default.
+        not tests.coverage or lifecycle or preview or tests.coverage_in_persistent_env, \
+            "Bundle.tests.coverage = True on a persistent env (no lifecycle, not a preview): instrumented builds are for local, ephemeral and preview envs. If this env really runs e2e against cover builds, say why: tests = forge.Tests {coverage = True, coverage_in_persistent_env = \"<why>\"}"
         # The key grammar, checked at load so a typo'd key is a KCL error
         # pointing at the declaration rather than a "target not found" from
         # the Go apply — which would read as "forge rendered no such object"

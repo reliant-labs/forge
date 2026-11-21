@@ -3900,7 +3900,11 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		if rel == nil {
 			return nil, "", fmt.Errorf("release %q is not in %s, so there are no pins to render its bundle from", named, releases.Location())
 		}
-		binding = release.Promotion{Release: named, Resolved: releasePinsByRepository(*rel)}
+		pins, perr := releasePinsForEnv(projectDir, envName, *rel)
+		if perr != nil {
+			return nil, "", perr
+		}
+		binding = release.Promotion{Release: named, Resolved: pins}
 		bound = true
 	}
 	if !bound {
@@ -3964,13 +3968,6 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 // reproduced from its own commit and forge (2026-10-19, control-plane prod's
 // otel gateway).
 func releaseVersionTag(version string) string { return version }
-
-// releasePinsByRepository is a release's shared digests keyed the way a
-// promotion records them (the artifact's repository, registry host included),
-// so a named release layers over the build state exactly like a bound one.
-func releasePinsByRepository(rel release.Release) map[string]string {
-	return rel.SharedDigests()
-}
 
 // shortDigest trims a canonical `sha256:<64 hex>` to a human-comparable head.
 // Two digests differ in their first few bytes in practice, and a full-length

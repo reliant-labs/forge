@@ -121,6 +121,29 @@ jobs:
           echo "name=$(jq -r .name preview.json)" >> "$GITHUB_OUTPUT"
       - run: forge env deploy ${{ steps.preview.outputs.name }} --yes --json > deploy.json
       - run: forge obs check ${{ steps.preview.outputs.name }} --wait --json || true
+      # e2e against the preview, with the servers' coverage. A preview runs
+      # the release's instrumented (cover) variant, so `task test:e2e` zeroes
+      # its counters, runs the suite and collects what it reached into the
+      # run's e2e lane (`forge test collect`; on a cluster you operate — a
+      # hosted preview's pods are not reachable, so it records results only).
+      # The report step uploads it. Skipped when the project has no e2e
+      # suite. Report-only: the suite's step carries the verdict.
+      - if: hashFiles('e2e/**/*_test.go') != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - if: hashFiles('e2e/**/*_test.go') != ''
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+      - name: e2e
+        if: hashFiles('e2e/**/*_test.go') != ''
+        run: task test:e2e ENV=${{ steps.preview.outputs.name }}
+      - name: Report tests
+        if: ${{ !cancelled() && hashFiles('e2e/**/*_test.go') != '' }}
+        continue-on-error: true
+        run: forge test report --upload
       - name: Comment the URL
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,6 +178,13 @@ run only for branches in the repository (`head.repo.full_name ==
 github.repository`): never run a fork's code with your deploy token. The
 runner installs the standalone `forge` from npm, so the recipe calls `forge`,
 not `reliant forge`, whichever CLI printed this skill.
+
+The e2e steps run the project's own `task test:e2e` lane (Taskfile.yml), so
+the suite runs exactly as it does locally. A preview is the one env that
+deploys the release's `cover` variant (Go workloads built with `-cover`):
+only a preview instance resolves a release's cover digest, so staging and
+prod always run the digests a release recorded for them. `forge test report --upload` warns, never fails, when the
+upload cannot happen.
 
 The instance directory (`deploy/kcl/preview-pr-<N>/`) writes its own `.gitignore`, so creating a preview leaves the checkout clean and the release it cuts is not a dirty-tree release.
 

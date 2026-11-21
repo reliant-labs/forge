@@ -379,6 +379,11 @@ type Release struct {
 	// release cut before it existed (until backfilled), or a project with no
 	// migrations. Evidence like Commits: [Release.SameContent] ignores it.
 	Migrations *MigrationManifest `json:"migrations,omitempty"`
+	// Tests is the test report of the release's commit ([TestsRef]). Nil
+	// on a release cut before forge recorded it, or cut by a ledger that
+	// does not fill it at the cut. Evidence like Migrations, backfilled and
+	// never replaced ([BackfillTests]): [Release.SameContent] ignores it.
+	Tests *TestsRef `json:"tests,omitempty"`
 	// CreatedAt is when the release was cut.
 	CreatedAt time.Time `json:"created_at"`
 	// CreatedBy is who cut it, when the backend knows (a hosted ledger
@@ -447,6 +452,12 @@ func (r Release) Validate() error {
 			return fmt.Errorf("release %q: %w", r.Version, err)
 		}
 	}
+	if err := r.Tests.validate(); err != nil {
+		return fmt.Errorf("%w: release %q: %v", ErrInvalid, r.Version, err)
+	}
+	if r.Tests != nil && r.Tests.Commit != "" && r.Git.Commit != "" && r.Tests.Commit != r.Git.Commit {
+		return fmt.Errorf("%w: release %q is of commit %s and its test evidence of commit %s", ErrInvalid, r.Version, r.Git.Commit, r.Tests.Commit)
+	}
 	if err := r.Run.Validate(); err != nil {
 		return fmt.Errorf("release %q: %w", r.Version, err)
 	}
@@ -492,6 +503,9 @@ func (r Release) Validate() error {
 	}
 	for _, name := range r.ArtifactNames() {
 		if err := r.Artifacts[name].Validate(name); err != nil {
+			return fmt.Errorf("release %q: %w", r.Version, err)
+		}
+		if err := validateVariantArtifact(name, r.Artifacts[name]); err != nil {
 			return fmt.Errorf("release %q: %w", r.Version, err)
 		}
 	}

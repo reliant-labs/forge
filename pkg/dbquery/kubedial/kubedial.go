@@ -185,6 +185,34 @@ func (c *Client) Dial(ctx context.Context, t Target) (net.Conn, error) {
 	return newConn(rwc, fmt.Sprintf("%s/%s:%d", t.Namespace, pod, port)), nil
 }
 
+// DialPod opens one connection to port inside the named pod, with no Service
+// in between: for a port no Service publishes, such as a server's loopback
+// debug listener (`forge test collect` pulls coverage from it). It is the
+// same tunnel as [Client.Dial], and like it, ctx bounds only the dial.
+func (c *Client) DialPod(ctx context.Context, namespace, pod string, port int) (net.Conn, error) {
+	if namespace == "" || pod == "" || port <= 0 {
+		return nil, errors.New("kubedial: a pod dial needs a namespace, a pod and a port")
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, dialTimeout)
+		defer cancel()
+	}
+	rwc, err := c.pods.DialPod(ctx, namespace, pod, port)
+	if err != nil {
+		return nil, fmt.Errorf("kubedial: port-forward to %s/%s:%d: %w%s", namespace, pod, port, err, podForbiddenHint(err, namespace))
+	}
+	return newConn(rwc, fmt.Sprintf("%s/%s:%d", namespace, pod, port)), nil
+}
+
+// podForbiddenHint names the one rule a pod dial needs, when RBAC refused it.
+func podForbiddenHint(err error, namespace string) string {
+	if apierrors.IsForbidden(err) || strings.Contains(strings.ToLower(err.Error()), "forbidden") {
+		return fmt.Sprintf("\nfix: the identity needs pods/portforward (get, create) in namespace %s", namespace)
+	}
+	return ""
+}
+
 // DialFunc is [Client.Dial] for t as a pgx DialFunc (pgconn.Config.DialFunc).
 // The address pgx passes is ignored: the target decides where the connection
 // goes, the DSN's host only names the certificate to verify.

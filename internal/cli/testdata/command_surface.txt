@@ -437,8 +437,17 @@ forge test	group	allow-version-skew:bool project-dir/C:string
 forge test begin	cmd	base:string project-dir/C:string
 forge test capture	cmd	format:string lane:string project-dir/C:string render:string results:string run:string
 forge test coverage	cmd	allow-version-skew:bool by:string commit:string diff:string json:bool lane:string project-dir/C:string run:string
+forge test flakes	group	all:bool allow-version-skew:bool dry-run:bool issues:bool json:bool project-dir/C:string repo:string state:stringSlice
+forge test flakes confirm	cmd	allow-version-skew:bool from:string json:bool list:bool logs:string max:int project-dir/C:string repo:string run-url:string run:string sha:string
+forge test flakes gate	cmd	allow-version-skew:bool base:string cpu:string full:bool graded:bool project-dir/C:string
 forge test ingest	cmd	allow-version-skew:bool format:string lane:string project-dir/C:string run:string
+forge test quarantine	group	allow-version-skew:bool project-dir/C:string
+forge test quarantine add	cmd	allow-version-skew:bool commit:string expires:duration force:bool issue:string project-dir/C:string reason:string run:string signature:string
+forge test quarantine list	cmd	allow-version-skew:bool json:bool overdue:bool project-dir/C:string
+forge test quarantine remove	cmd	allow-version-skew:bool project-dir/C:string
+forge test quarantine skip-regex	cmd	allow-version-skew:bool project-dir/C:string
 forge test report	cmd	allow-version-skew:bool base:string commit:string format:string gate-json:string json:bool project-dir/C:string upload:bool
+forge test run	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge test runs	cmd	allow-version-skew:bool branch:string commit:string json:bool limit:int project-dir/C:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string

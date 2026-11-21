@@ -228,6 +228,11 @@ type ProjectConfig struct {
 	// by `forge vuln patch` (internal/cli/vuln_patch.go) for
 	// vuln.patch.verify.
 	Vuln VulnConfig `yaml:"vuln,omitempty"`
+	// Tests is how the project's test runs are captured, what coverage they
+	// measure and what forge does about flaky tests. See [TestsConfig];
+	// `coverage` is read by the env render (instrumented builds, through
+	// ReadTestsCoverage), the rest by the `forge test` verbs.
+	Tests TestsConfig `yaml:"tests,omitempty"`
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the
 	// brownfield seam (monitoring.go).

@@ -502,6 +502,12 @@ type buildResult struct {
 	// release compares them, and the release whose image it reused ("" when
 	// it built). persistImageBuildStates records them for the cut.
 	releaseInputsDigest, carriedFrom string
+	// variant is the build variant this image IS ("cover": built from the
+	// Dockerfile's cover stage), empty for the shared build; coverDigest the
+	// digest of a cover build pushed BESIDE the shared one by a release
+	// build. Both are persisted to the build state and recorded by the cut.
+	variant     string
+	coverDigest string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1719,6 +1725,8 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			// compare, and the release whose image it reused.
 			ReleaseInputsDigest: r.releaseInputsDigest,
 			CarriedFrom:         r.carriedFrom,
+			Variant:             r.variant,
+			CoverDigest:         r.coverDigest,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -1992,6 +2000,10 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
 		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// The commit's test report, on a ledger forge fills it on (the machine
+	// ledger; a control plane binds its own). Never fails the cut
+	// (release_tests_evidence.go).
+	rel.Tests = captureReleaseTests(ctx, projectDir, rel, ledger.Releases, os.Stderr)
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
@@ -2243,6 +2255,13 @@ type goBuildTarget struct {
 	// pgoOff builds with -pgo=off: the env declares the binary's PGO
 	// disabled (kcl/schema.k PGO). A -pgo of the user's own wins.
 	pgoOff bool
+	// cover builds with -cover -covermode=atomic: the env instruments the
+	// binary (kcl/schema.k Tests, WorkloadEntity.CoverBuild). coverPackages
+	// are the env's explicit -coverpkg patterns (empty is "main"), and
+	// coverFlags the resolved flags buildGoTarget fills in before the build.
+	cover         bool
+	coverPackages []string
+	coverFlags    []string
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2294,6 +2313,8 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	if t.pgoOff && !userSetsPGO(t.flags, t.env) {
 		args = append(args, pgoOffFlag)
 	}
+	// A cover build (kcl/schema.k Tests), resolved by buildGoTarget.
+	args = append(args, t.coverFlags...)
 	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
@@ -2338,6 +2359,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		if i, ok := seen[key]; ok {
 			// A binary shared with a delve-run workload is built for it.
 			out[i].debug = out[i].debug || debug
+			// The env refuses workloads that disagree on a binary's
+			// coverage (ResolveCoverBinaries), so either answers for both.
+			out[i].cover = out[i].cover || w.CoverBuild()
 			continue
 		}
 		seen[key] = len(out)
@@ -2352,6 +2376,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			flags:      g.Flags,
 			env:        g.Env,
 			pgoOff:     pgoOff[normalizePGOPackage(g.Cmd)],
+			cover:      w.CoverBuild(),
+			// The env's -coverpkg patterns; empty is "main".
+			coverPackages: w.coverPackages(),
 		})
 	}
 	return out
@@ -2425,6 +2452,18 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
+	// A cover build: -cover -covermode=atomic -coverpkg=<the env's
+	// packages>. An explicit -cover in the build's own flags or GOFLAGS is
+	// the user's choice and wins; a -covermode or -coverpkg of theirs is
+	// kept in place of forge's (mergeCoverFlags).
+	if owns, _, _ := userCoverFlags(t.flags, t.env); t.cover && !owns {
+		flags, err := coverBuildFlags(ctx, projectDirForKCL(), t.coverPackages)
+		if err != nil {
+			return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
+		}
+		t.coverFlags = mergeCoverFlags(flags, t.flags, t.env)
+		fmt.Printf("[build] %s: instrumented for coverage (-cover -covermode=%s)\n", t.outputName, coverMode)
+	}
 	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {
@@ -3683,6 +3722,13 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	// An env that instruments the image's binary builds the Dockerfile's
+	// cover stage (kcl/schema.k Tests, coverImageArgs).
+	coverArgs, coverErr := coverImageArgs(ctx, svcName, dockerfile, d)
+	if coverErr != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: coverErr}
+	}
+	dockerArgs = append(dockerArgs[:1:1], append(coverArgs, dockerArgs[1:]...)...)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
 	epoch := ""
@@ -3730,12 +3776,24 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", ref, derr)
 		}
 	}
+	// A release build of an image whose project opts in to coverage also
+	// builds and pushes its cover stage, BESIDE the shared image: a preview
+	// of the release runs it (release.CoverVariant).
+	coverDigest, cerr := buildReleaseCoverVariant(ctx, svcName, dockerfile, d, dockerArgs, pushTags, len(coverArgs) > 0)
+	if cerr != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: cerr}
+	}
+	variant := ""
+	if len(coverArgs) > 0 {
+		variant = release.CoverVariant
+	}
 	return buildResult{
 		name: svcName + " (docker)", kind: "docker", duration: time.Since(start),
 		// The state file is keyed by the SERVICE name (a path segment), while
 		// what it records is the repository. Keying it by the repository would
 		// put slashes in the filename.
 		image: svcName, repository: repository, tag: resolvedTag, digest: digest, platforms: platforms,
+		variant: variant, coverDigest: coverDigest,
 		// The other repository's checkout, when the context is a GitSource:
 		// the build state and the release ledger (built_from) record it.
 		source: d.sourceForRecord(),

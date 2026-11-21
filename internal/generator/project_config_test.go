@@ -96,6 +96,40 @@ func TestWriteProjectConfig_ScaffoldsTypedAccessError(t *testing.T) {
 	}
 }
 
+// TestWriteProjectConfig_ScaffoldsTestsCoverage: a new project opts into
+// coverage (`tests.coverage: true`), which turns on the Taskfile lanes'
+// coverage flags and instrumented builds for dev and previews; the knobs it
+// has not set are there as comments. A project without the block stays off
+// (config.TestsConfig), so only a new scaffold gets it.
+func TestWriteProjectConfig_ScaffoldsTestsCoverage(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	tmp := t.TempDir()
+	g := NewProjectGenerator("tests-scaffold", tmp, "example.com/tests-scaffold")
+	g.ServiceName = "api"
+	if err := g.writeProjectConfig(); err != nil {
+		t.Fatalf("writeProjectConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("read forge.yaml: %v", err)
+	}
+	for _, want := range []string{"\ntests:\n", "    coverage: true\n", "# upload: ci", "#     issues: false", "packages: package"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("scaffolded forge.yaml lacks %q:\n%s", want, data)
+		}
+	}
+	cfg, err := ReadProjectConfig(filepath.Join(tmp, "forge.yaml"))
+	if err != nil {
+		t.Fatalf("ReadProjectConfig: %v", err)
+	}
+	if !cfg.TestsCoverage() {
+		t.Error("scaffolded config must measure coverage (TestsCoverage() = false)")
+	}
+	if !config.ReadTestsCoverage(tmp) {
+		t.Error("the env render's reader (config.ReadTestsCoverage) must see the scaffolded tests.coverage")
+	}
+}
+
 // TestWriteProjectConfig_AdoptingScaffoldsTypedAccessWarn: a project adopted
 // in place already reads the environment directly, so a gating guardrail
 // would fail its first `forge lint` on every one of those reads. It starts

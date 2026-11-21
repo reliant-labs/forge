@@ -207,6 +207,9 @@ func runTestReport(cmd *cobra.Command, o testReportOptions) error {
 		}
 	}
 	rep.Suggested = reportSuggestions(rep, a, o)
+	// A release on this machine's ledger cut at this commit gets the test
+	// evidence it lacks (release_tests_evidence.go). Report-only.
+	backfillReleaseTests(ctx, root, rep.Commit, rep.Dirty, errOut)
 
 	if o.gateJSON != "" {
 		if err := writeTestRunGate(o.gateJSON, an, started); err != nil {

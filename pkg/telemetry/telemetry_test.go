@@ -295,10 +295,11 @@ func TestNetworkPolicyIsTriState(t *testing.T) {
 		np     *bool
 		want   bool
 	}{
-		{AttachWorkload, nil, true},       // auto: joins the policy forge already renders
-		{AttachHostInfra, nil, true},      // auto: forge owns it
-		{AttachManifests, nil, false},     // auto: forge cannot know the pods' policies
-		{AttachObservability, nil, false}, // auto: same
+		{AttachWorkload, nil, true},         // auto: joins the policy forge already renders
+		{AttachHostInfra, nil, true},        // auto: forge owns it
+		{AttachManifests, nil, false},       // auto: forge cannot know the pods' policies
+		{AttachObservability, nil, false},   // auto: same
+		{AttachManagedDatabase, nil, false}, // auto: a policy on the instances would deny Postgres
 		{AttachManifests, &yes, true},
 		{AttachWorkload, &no, false},
 	} {
@@ -320,6 +321,27 @@ func TestNetworkPolicyIsTriState(t *testing.T) {
 	*out[0].NetworkPolicy = false
 	if !*in[0].NetworkPolicy {
 		t.Error("Normalize aliases NetworkPolicy with its input")
+	}
+}
+
+// A ManagedDatabase target is a valid attachment and pulls by its selector,
+// on every runtime it renders on; it gets no network_policy note (the default
+// is rendered for every database, and the note is about raw systems).
+func TestManagedDatabaseAttachment(t *testing.T) {
+	db := Target{ServiceName: "orders-postgres", Source: "manageddatabase:orders", Attachment: AttachManagedDatabase,
+		Selector: map[string]string{"cnpg.io/cluster": "orders"}, Ports: map[string]int{"metrics": 9187, "postgres": 5432},
+		Metrics: []MetricsScrape{{PortName: "metrics", Allow: "cnpg_collector_up"}}, Checks: []HealthCheck{{PortName: "postgres"}}}
+	cluster := db
+	cluster.Runtime, cluster.Cluster, cluster.Namespaces = RuntimeCluster, "k3d-shop", []string{"shop"}
+	hosted := db
+	hosted.Runtime = RuntimeHosted
+	for _, tg := range []Target{cluster, hosted} {
+		if err := Validate(Normalize([]Target{tg}), Options{Env: "prod", Clusters: []string{"k3d-shop"}}); err != nil {
+			t.Errorf("%s: %v", tg.Runtime, err)
+		}
+	}
+	if w := Warnings(Normalize([]Target{cluster})); len(w) != 0 {
+		t.Errorf("warnings = %+v", w)
 	}
 }
 

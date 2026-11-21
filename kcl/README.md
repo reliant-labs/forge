@@ -376,6 +376,7 @@ kcl/
   workload.k           # fw.Workload, env references, the runtimes
   schema.k             # the Bundle and every env-level declaration
   telemetry.k          # forge.Telemetry: declared telemetry for systems forge did not build
+  database_telemetry.k # the default Telemetry of a ManagedDatabase and its CloudNativePG operator
   render.k             # the lowering: Bundle -> output (forge.render)
   core.k               # env-map helpers for [EnvVar] lists (frontends)
   base.k               # -D option accessors, env groups, helpers

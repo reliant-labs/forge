@@ -143,9 +143,9 @@ func (v *validator) target() {
 		v.add("scope", fmt.Sprintf("%q must be project or platform", t.Scope))
 	}
 	switch t.Attachment {
-	case AttachWorkload, AttachHostInfra, AttachManifests, AttachObservability:
+	case AttachWorkload, AttachHostInfra, AttachManifests, AttachObservability, AttachManagedDatabase:
 	default:
-		v.add("attachment", fmt.Sprintf("%q is not one of workload, hostinfra, manifests, observability", t.Attachment))
+		v.add("attachment", fmt.Sprintf("%q is not one of workload, hostinfra, manifests, observability, manageddatabase", t.Attachment))
 	}
 	v.runtime()
 	if len(t.Selector) > 0 && t.Address != "" {

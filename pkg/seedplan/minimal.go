@@ -116,7 +116,9 @@ func minimalCellWrites(col schemadef.Column, base bool, cell unionCell) bool {
 	case cell.lit != "":
 		// A pin the DEFAULT already supplies costs nothing.
 		return base || !defaultIs(col, cell.raw)
-	case cell.hasBound, cell.requireEdge:
+	case cell.hasBound, cell.requireEdge, cell.nonBlank:
+		// A non-blank requirement is written even over a DEFAULT: the
+		// DEFAULT of such a column is almost always ''.
 		return true
 	case cell.present:
 		// NOT NULL and defaulted columns are never NULL; only a nullable

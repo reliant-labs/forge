@@ -306,7 +306,7 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.telemetry, "telemetry", "", "Where this stack's telemetry is stored: auto (hosted when the env declares a control_plane and you are signed in to Reliant, else local), hosted (fail instead of falling back) or local (the local ClickStack). Overrides "+devTelemetryEnvVar+" and observability.dev_telemetry; local anywhere wins.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 
 	return cmd
 }
@@ -958,16 +958,10 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// what the env's KCL declares so a typo'd name fails here rather than
 	// silently rendering the default (an option nothing reads is not an error
 	// in KCL — it is simply unread). Validation degrades permissively if the
-	// project's options can't be discovered; the render still runs.
-	// Parse FIRST: it rejects malformed values and forge-reserved names, which
-	// deserve their own message ("image_tag is set by forge") rather than the
-	// declared-name check's "no such option" — image_tag is a real option, just
-	// not yours.
-	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	// project's options can't be discovered; the render still runs. See
+	// resolveRenderOptions for the order and the bool normalization.
+	renderDArgs, err := resolveRenderOptions(projectDir, opts.env, opts.renderOptions)
 	if err != nil {
-		return err
-	}
-	if err := validateRenderOptions(projectDir, opts.env, opts.renderOptions); err != nil {
 		return err
 	}
 	setRenderOptions(renderDArgs)
@@ -3113,8 +3107,9 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
-	if err := prepareLocalCollector(projectDir, entities); err != nil {
-		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config): %w", err)
+	collectorChanged, err := prepareLocalCollector(projectDir, entities)
+	if err != nil {
+		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config, declared log parsing): %w", err)
 	}
 	// The local Alertmanager's configuration is rendered before compose
 	// mounts it, from the env's alerts and its secret store's receiver keys.
@@ -3150,10 +3145,23 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 	// nothing in the dev loop dials it, and prewarming it would publish a
 	// production workload during `forge env up`, before the deploy the
 	// user asked for. The omission is a DECISION.
-	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
+	infraErr := deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
 		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
 		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
 	})
+	// Declared telemetry (forge.Telemetry) for what runs on this machine:
+	// a collector that was already running re-reads the log parsing it
+	// includes, and the local telemetry agent pulls the scrapes. Both after
+	// the infrastructure, so the engines and the collector are serving.
+	if collectorChanged {
+		reloadLocalCollector(ctx, projectDir, env, localCollectorService(entities))
+	}
+	var store map[string]string
+	if prov, perr := secretProviderFromEntities(entities, projectDir); perr == nil {
+		store = prov.All()
+	}
+	upLocalTelemetry(ctx, os.Stdout, projectDir, env, entities, store)
+	return infraErr
 }
 
 // deployInfraGroups runs each INFRASTRUCTURE group through its provider and
@@ -3287,6 +3295,9 @@ func reportEnvConflicts(service string, conflicts []envutil.EnvConflict) {
 // workload declares.
 func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
 	spec := hostRunnerSpec(w)
+	if err := withHostCover(ctx, &spec, w, env); err != nil {
+		return nil, "", err
+	}
 	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
 	if err != nil {
 		return nil, "", err
@@ -3313,7 +3324,11 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
+	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
+	// A bare `forge` the process runs (the scaffolded .air.toml's `forge
+	// storage check`) is the forge running this env.
+	cmd.Env = withForgeShimOnPath(cmd.Env, w.Name)
 
 	return cmd, w.Name, nil
 }
@@ -4263,7 +4278,13 @@ func runUpStop(env string) error {
 			if err != nil {
 				err = fmt.Errorf("host infrastructure: %w", err)
 			}
-			return infraStopped, errors.Join(err, composeErr)
+			agentStopped, agentErr := stopLocalTelemetryAgent(projectDir, env)
+			if agentErr != nil {
+				agentErr = fmt.Errorf("telemetry agent: %w", agentErr)
+			} else if agentStopped {
+				infraStopped++
+			}
+			return infraStopped, errors.Join(err, agentErr, composeErr)
 		},
 	})
 }
@@ -4412,8 +4433,9 @@ func stopHostInfra(env string) (int, error) {
 // stream. The `<name>` is sanitised ("/" and ":" → "_") so frontend
 // labels like "frontend:web" map to a flat filename.
 func upLogPath(env, name string) (string, error) {
-	safe := strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), ":", "_")
-	return filepath.Join(projectDirForKCL(), ".forge", "logs", env, safe+".log"), nil
+	// hostinfra.LogPath is the one definition, so a host-infra engine's log
+	// and a host process's land in the same directory under the same rule.
+	return hostinfra.LogPath(projectDirForKCL(), env, name), nil
 }
 
 // upLogDir returns the directory upLogPath writes into, for the summary's

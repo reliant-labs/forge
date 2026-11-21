@@ -347,8 +347,8 @@ func TestWritePGOProvenanceRoundTripsAnyNameAndCountsDrops(t *testing.T) {
 	}
 }
 
-// Profiles written before the versioned comment still read; a newer
-// version says so instead of passing as foreign or corrupt.
+// A newer provenance version says so instead of passing as foreign or
+// corrupt, and a malformed v1 comment is corrupt, not foreign.
 func TestReadPGOCommentVersions(t *testing.T) {
 	write := func(comments ...string) *bytes.Buffer {
 		pp, err := pgoPprof(samplePGO())
@@ -361,13 +361,6 @@ func TestReadPGOCommentVersions(t *testing.T) {
 			t.Fatal(err)
 		}
 		return &buf
-	}
-	legacy, err := ReadPGO(write(
-		"forge pgo: env=prod services=api,worker from=2026-11-01T10:15:00Z to=2026-11-08T10:15:00Z edges=4",
-		"forge pgo data: oldest=2026-11-01T10:00:00Z newest=2026-11-08T09:00:00Z total_weight=9876"))
-	if err != nil || legacy.Env != "prod" || strings.Join(legacy.Services, ",") != "api,worker" || !legacy.From.Equal(pgoFrom) ||
-		!legacy.Newest.Equal(time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)) || len(legacy.Edges) != 4 {
-		t.Errorf("legacy comment: %+v, %v", legacy, err)
 	}
 	if _, err := ReadPGO(write(`forge pgo v2 {"env":"prod"}`)); err == nil || errors.Is(err, ErrNotForgePGO) || !strings.Contains(err.Error(), "newer forge") {
 		t.Errorf("v2 comment: %v, want a newer-forge error", err)

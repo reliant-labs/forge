@@ -18,6 +18,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/reliant-labs/forge/pkg/auth"
+	"github.com/reliant-labs/forge/pkg/mountkit"
 	"github.com/reliant-labs/forge/pkg/observe"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 	"github.com/reliant-labs/forge/pkg/validate"
@@ -66,9 +67,13 @@ func ValidateRequestsV2() connectv2.ServerInterceptor {
 //
 // The server's chain is interceptors (e.g. ServerPrincipalV2), then the
 // request-validation warning (validate.go), then svcerr.InterceptorV2,
-// innermost — NewConnectClient's chain. Server and client both read messages
-// of any size, as v1's do (v2's default is 4 MiB). The client's HTTP client is
-// traced, so a test's own span is the parent of the server's.
+// innermost — NewConnectClient's chain. It is mounted with mountkit.MountV2, so
+// an unknown method of the service is a plain 404, as in production and in
+// v1. Server and client both read messages of any size, as v1's do (v2's
+// default is 4 MiB). The client's HTTP client is
+// traced, so a test's own span is the parent of the server's. The client runs
+// svcerr.ClientInterceptorV2, so a test reads the reason a call failed with
+// as svcerr.MetaOf(err).Get(svcerr.ReasonHeader) — v1's ce.Meta().
 func NewConnectClientV2[C any](
 	t *testing.T,
 	register func(server *connectv2.Server),
@@ -88,11 +93,11 @@ func NewConnectClientV2[C any](
 	server := connectv2.NewServer(svcerr.WithInterceptorV2(ints)...)
 	register(server)
 	srv := NewTestServer(t, func(mux *http.ServeMux) {
-		connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+		mountkit.MountV2(mux, server, connecthttp.WithReadMaxBytes(0))
 	})
 	transport := connecthttp.NewTransport(observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: -1}), srv.URL,
 		connecthttp.WithReadMaxBytes(0))
-	return srv, newClient(connectv2.NewClient(transport))
+	return srv, newClient(connectv2.NewClient(transport, svcerr.ClientInterceptorV2()))
 }
 
 // newWarnInvalidRequestsV2 is newWarnInvalidRequests' v2 interceptor: it

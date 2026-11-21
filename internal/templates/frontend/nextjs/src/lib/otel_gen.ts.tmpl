@@ -85,13 +85,14 @@
 // analytics tier: ANALYTICS_MODE = "full" and grantAnalyticsConsent() before
 // this module starts telemetry.
 //
-// The NEXT_PUBLIC_OTEL_ENDPOINT / NEXT_PUBLIC_ENVIRONMENT /
-// NEXT_PUBLIC_OTEL_REPLAY build variables are DEPRECATED. A frontend's KCL
-// that declares one (in `config` or `env_vars`) already gets the same value
-// in its runtime config, which wins. One that is only exported in the shell
-// at `next build` is still read when config.js does not set the key, and the
-// page warns once (in the console) naming the variable and the KCL field to
-// move it to. That fallback is removed in the next major version of forge.
+// The NEXT_PUBLIC_OTEL_ENDPOINT / NEXT_PUBLIC_ENVIRONMENT build variables are
+// DEPRECATED. A frontend's KCL that declares one (in `config` or `env_vars`)
+// already gets the same value in its runtime config, which wins. One that is
+// only exported in the shell at `next build` is still read when config.js
+// does not set the key, and the page warns once (in the console) naming the
+// variable and the KCL field to move it to. That fallback is removed in the
+// next major version of forge. Session replay has no build variable: it is
+// read from the runtime config alone.
 //
 // Distributed tracing itself — the traceparent attached to every RPC, which
 // is what makes browser spans join the backend's trace — is always on, needs
@@ -253,13 +254,7 @@ export function initTelemetry(): void {
     process.env.NEXT_PUBLIC_OTEL_ENDPOINT,
     "config.otel_endpoint",
   );
-  const replay = runtimeOrBuild(
-    used,
-    cfg.OTEL_REPLAY,
-    "NEXT_PUBLIC_OTEL_REPLAY",
-    process.env.NEXT_PUBLIC_OTEL_REPLAY,
-    "telemetry.replay = True",
-  );
+  const replay = text(cfg.OTEL_REPLAY);
   warnBuildFallback(used);
 
   // Built apart from the call, not as a literal argument: a literal is checked

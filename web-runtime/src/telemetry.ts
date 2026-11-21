@@ -563,15 +563,6 @@ export interface BrowserTelemetryConfig {
    */
   visitorIdStorageKey?: string;
   /**
-   * @deprecated Use `analytics` and grantAnalyticsConsent(). Kept working:
-   * with `analytics` unset, passing `attribution` at all sets the mode to
-   * "full" (it was always a choice about a persistent visitor id); `true`
-   * also grants consent at start, as `attribution: true` started attribution
-   * before; `false` waits for enableAttribution() / grantAnalyticsConsent().
-   * Unset, there is no visitor id below the `full` tier.
-   */
-  attribution?: boolean;
-  /**
    * `last` (default): a visit carrying `rid`/`utm_*` replaces the stored
    * record. `first`: the first stored record is kept for good — a marketing
    * site attributing acquisition to the campaign that first brought a visitor.
@@ -689,9 +680,8 @@ export function enableAttribution(options?: { search?: string }): void {
   grantAnalyticsConsent();
 }
 
-// The mode a config asks for: `analytics`, else the legacy `attribution`
-// (any explicit value meant a persistent visitor id: "full"), else the
-// cookieless default, "identified".
+// The mode a config asks for: `analytics`, else the cookieless default,
+// "identified".
 function configuredMode(config: BrowserTelemetryConfig): AnalyticsMode {
   const mode = config.analytics;
   if (
@@ -702,7 +692,7 @@ function configuredMode(config: BrowserTelemetryConfig): AnalyticsMode {
   ) {
     return mode;
   }
-  return config.attribution === undefined ? "identified" : "full";
+  return "identified";
 }
 
 // Start or stop the full tier's device state on a running SDK as the tier
@@ -771,9 +761,6 @@ export function initBrowserTelemetry(
       ? "full"
       : configured,
   );
-  if (config.analytics === undefined && config.attribution === true) {
-    grantAnalyticsConsent();
-  }
   if (currentAnalyticsMode() !== "full") {
     // Ids an earlier page load stored (before analytics were cookieless by
     // default, or under a mode since lowered) are not kept by a mode that

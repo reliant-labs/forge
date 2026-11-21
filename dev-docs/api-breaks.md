@@ -4,11 +4,12 @@ forge is semver at major 1 (owner, 2026-11-05). Within v1 a change to `pkg/`
 never removes or reshapes an exported API: **deprecate it instead** — keep the
 old identifier working beside the new one, mark it `// Deprecated: use <new>.`,
 and leave its removal to a future major, which only the owner cuts. The API
-gate fails every incompatible change unless the **owner** applied the
-`breaking:approved` label (its `labeled` event must name the owner's account,
-`APIGATE_OWNERS`, default `reliant-01`; locally, `-owner-approved`). An accepted
-break still may not leave the cost to the next person who pins forge: **the
-breaking PR ships its migration**, as below. Two checks hold that line.
+gate fails every incompatible change unless the **owner** accepted it with the
+`breaking:approved` label (its `labeled` event must name the owner's account, or
+the Reliant bot applying it on the owner's instruction: `APIGATE_OWNERS`,
+default `reliant-01,reliant-labs[bot]`, owner decision 2026-11-19; locally,
+`-owner-approved`). An accepted break still may not leave the cost to the next
+person who pins forge: **the breaking PR ships its migration**, as below. Two checks hold that line.
 
 |                     | what it checks                                                         | where                                                                           | when                                                             |
 | ------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
@@ -32,9 +33,9 @@ An incompatible change passes only if both of these hold.
 - a line in the PR body (or a commit body) starts with `API-BREAK:`:
 
   ```
-  API-BREAK: codemod=tx-isolation
+  API-BREAK: codemod=connect-errors
   API-BREAK: playbook=migrations/v1.0.0
-  API-BREAK: codemod=tx-isolation playbook=migrations/v1.0.0
+  API-BREAK: codemod=connect-errors playbook=migrations/v1.0.0
   ```
 
 The marker must start the line (prose that mentions it mid-sentence declares
@@ -53,7 +54,7 @@ re-running the failed job is enough.
   `TestEveryRegisteredCodemodIsReachableFromUpgrade` fails otherwise, so a
   registered codemod is never one a consumer's `forge project upgrade` skips.
   See `internal/codemod/codemod.go` for what a codemod is and the existing ones
-  (`txisolation.go`, `connecterrors.go`) for the shape.
+  (`operatorkit.go`, `connecterrors.go`) for the shape.
 - **a migration playbook entry**: a file under
   `internal/templates/project/skills/forge/migrations/<vX.Y.Z>/`, for a break no
   tool can rewrite (a decision a person has to make). Add a section to that

@@ -2231,18 +2231,25 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
 	runCmd(t, dir, forgeBin, "project", "new", "crudlife",
 		"--mod", "example.com/crudlife",
 		"--service", "item",
+		"--connect", "v1",
 	)
 	projectDir := filepath.Join(dir, "crudlife")
 	addCorpusForgePkgReplace(t, projectDir)
 
 	// ── 0. the schema starts EMPTY: no boilerplate migration, and a
-	// pristine generate emits no entities (honest scaffold). ──────────
+	// pristine generate emits no entities (honest scaffold). The one
+	// exception is auth_sessions, forge/pkg/session's table: it is born
+	// with the Sessions provider in providers.go that reads it (native
+	// sign-in's server-side sessions), and it is no entity — the ORM
+	// leaves a library's table alone. ──────────────────────────────────
 	if entries, err := os.ReadDir(filepath.Join(projectDir, "db", "migrations")); err == nil {
 		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".sql") {
+			if strings.HasSuffix(e.Name(), ".sql") && !strings.HasSuffix(e.Name(), "_create_auth_sessions.up.sql") {
 				t.Errorf("pristine scaffold ships migration %s — tables must be born via `forge scaffold entity`", e.Name())
 			}
 		}

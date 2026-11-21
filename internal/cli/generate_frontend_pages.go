@@ -273,11 +273,16 @@ func generateFrontendPages(cfg *config.ProjectConfig, services []codegen.Service
 	return nil
 }
 
-// staticRoutesMigrationSkill is the playbook that converts a frontend's
-// dynamic `[id]` CRUD routes into the static view/edit pair. `forge generate`
-// points users at it by this name, and
-// TestStaticRoutesMigration_DetectsDynamicIDRoutes fails if it is not shipped.
-const staticRoutesMigrationSkill = "migrations/v0.1.44"
+// staticRoutesSkill documents the static view/edit pair a frontend's dynamic
+// `[id]` CRUD routes convert to. `forge generate` points users at it by this
+// name.
+const staticRoutesSkill = "frontend/serving"
+
+// staticRoutesFix is how a frontend's `[id]` detail/edit pages become the
+// static pair, stated where `forge generate` reports them.
+const staticRoutesFix = "move <slug>/[id]/page.tsx to <slug>/view/page.tsx and <slug>/[id]/edit/page.tsx to <slug>/edit/page.tsx, " +
+	"reading the id with useEntityIdParam() (src/lib/entity-routes.ts) inside a <Suspense> boundary; " +
+	"or delete an unedited [id]/ directory and re-run forge generate, which then scaffolds view/ and edit/"
 
 // dynamicIDSegment is the App Router directory an older forge put an
 // entity's detail and edit pages under: src/app/<slug>/[id]/{,edit/}page.tsx.
@@ -338,11 +343,11 @@ func reportDynamicIDRoutes(fe config.FrontendConfig, feDir string, slugs []strin
 		for _, d := range dirs {
 			fmt.Fprintf(os.Stderr, "  - %s/\n", d)
 		}
-		fmt.Fprintf(os.Stderr, "  forge adds no static view/edit pages beside them. Convert them: `%s skill load %s`.\n", Name(), staticRoutesMigrationSkill)
+		fmt.Fprintf(os.Stderr, "  forge adds no static view/edit pages beside them. Convert them: %s (`%s skill load %s`).\n", staticRoutesFix, Name(), staticRoutesSkill)
 		return
 	}
-	routinef("  ℹ️  frontend %s: %d %s keep dynamic [id] detail/edit routes (%s); static view/edit pages are scaffolded once those are removed — `%s skill load %s`\n",
-		fe.Name, len(slugs), entities, strings.Join(dirs, ", "), Name(), staticRoutesMigrationSkill)
+	routinef("  ℹ️  frontend %s: %d %s keep dynamic [id] detail/edit routes (%s); static view/edit pages are scaffolded once those are removed — %s (`%s skill load %s`)\n",
+		fe.Name, len(slugs), entities, strings.Join(dirs, ", "), staticRoutesFix, Name(), staticRoutesSkill)
 }
 
 // entityRoutesModules are the Next.js frontend files that build and read the

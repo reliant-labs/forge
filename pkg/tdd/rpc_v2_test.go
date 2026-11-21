@@ -182,3 +182,112 @@ func TestAssertScaffoldStubV2_InProcess(t *testing.T) {
 		{Name: "stub satisfies the scaffold row", Req: &fakeReq{Name: "ada"}, WantScaffoldStub: true},
 	}, func(context.Context, *fakeReq) (*fakeResp, error) { return nil, svcerr.ScaffoldStub("Hello") })
 }
+
+// tenantHandlerV2 reads and writes call metadata the way
+// connect-go-v2-migrate rewrites a handler to: through the server CallInfo,
+// with no nil check. Called directly it would panic; through the v2 helpers
+// it must not.
+func tenantHandlerV2(ctx context.Context, req *fakeReq) (*fakeResp, error) {
+	info, _ := connectv2.CallInfoForServerContext(ctx)
+	tenant := info.RequestHeader().Get("X-Tenant")
+	if tenant == "" {
+		return nil, connectv2.NewError(connectv2.CodeUnauthenticated, "tenant header required")
+	}
+	info.ResponseHeader().Set("X-Served-Tenant", tenant)
+	info.ResponseTrailer().Set("X-Procedure", info.Spec.Procedure)
+	return &fakeResp{Greeting: "hi " + req.Name + " of " + tenant}, nil
+}
+
+func TestTableRPCV2_HandlerSeesCallInfoAndRowHeader(t *testing.T) {
+	var checkedInfo bool
+	tdd.TableRPCV2(t, []tdd.CaseV2[fakeReq, fakeResp]{
+		{
+			Name:   "row header reaches the handler",
+			Req:    &fakeReq{Name: "ada"},
+			Header: http.Header{"x-tenant": {"acme"}}, // canonicalized on the way in
+			Check: func(t *testing.T, resp *fakeResp) {
+				if resp.Greeting != "hi ada of acme" {
+					t.Fatalf("got %q, want %q", resp.Greeting, "hi ada of acme")
+				}
+			},
+			CheckCallInfo: func(t *testing.T, info *connectv2.CallInfo) {
+				checkedInfo = true
+				if got := info.ResponseHeader().Get("X-Served-Tenant"); got != "acme" {
+					t.Fatalf("response header X-Served-Tenant = %q, want acme", got)
+				}
+				if got := info.ResponseTrailer().Get("X-Procedure"); got == "" {
+					t.Fatal("the handler saw no procedure on its CallInfo")
+				}
+			},
+		},
+		{Name: "no header", Req: &fakeReq{Name: "ada"}, WantErr: connectv2.CodeUnauthenticated},
+	}, tenantHandlerV2)
+	if !checkedInfo {
+		t.Fatal("CheckCallInfo did not run on the successful row")
+	}
+}
+
+func TestCallV2(t *testing.T) {
+	t.Run("handler gets a server CallInfo and the caller's request", func(t *testing.T) {
+		req := &fakeReq{Name: "ada"}
+		var sawInfo, sameReq bool
+		resp, err := tdd.CallV2(context.Background(), func(ctx context.Context, got *fakeReq) (*fakeResp, error) {
+			_, sawInfo = connectv2.CallInfoForServerContext(ctx)
+			sameReq = got == req
+			return &fakeResp{Greeting: "ok"}, nil
+		}, req, nil)
+		if err != nil || resp == nil || resp.Greeting != "ok" {
+			t.Fatalf("CallV2 = %v, %v; want the handler's response", resp, err)
+		}
+		if !sawInfo || !sameReq {
+			t.Fatalf("handler saw CallInfo = %v, the caller's request = %v; want both", sawInfo, sameReq)
+		}
+	})
+
+	t.Run("info carries headers both ways and names the procedure", func(t *testing.T) {
+		info := &connectv2.CallInfo{}
+		info.Spec.Procedure = "/acme.v1.Svc/Hello"
+		info.RequestHeader().Set("X-Tenant", "acme")
+		if _, err := tdd.CallV2(context.Background(), tenantHandlerV2, &fakeReq{Name: "ada"}, info); err != nil {
+			t.Fatalf("CallV2: %v", err)
+		}
+		if got := info.ResponseHeader().Get("X-Served-Tenant"); got != "acme" {
+			t.Fatalf("response header = %q, want acme", got)
+		}
+		if got := info.ResponseTrailer().Get("X-Procedure"); got != "/acme.v1.Svc/Hello" {
+			t.Fatalf("handler saw procedure %q, want the one info named", got)
+		}
+	})
+
+	t.Run("the handler's error comes back unconverted", func(t *testing.T) {
+		for name, handlerErr := range map[string]error{
+			"scaffold stub":    svcerr.ScaffoldStub("Hello"),
+			"bare svcerr kind": svcerr.NotFound("person"),
+			"plain error":      errors.New("driver"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				resp, err := tdd.CallV2(context.Background(), func(context.Context, *fakeReq) (*fakeResp, error) {
+					return &fakeResp{}, handlerErr
+				}, &fakeReq{}, nil)
+				if resp != nil {
+					t.Fatalf("response on error = %v, want nil", resp)
+				}
+				if !errors.Is(err, handlerErr) {
+					t.Fatalf("err = %v, want the handler's own error", err)
+				}
+			})
+		}
+	})
+
+	t.Run("nil request and nil response pass through", func(t *testing.T) {
+		resp, err := tdd.CallV2(context.Background(), func(_ context.Context, got *fakeReq) (*fakeResp, error) {
+			if got != nil {
+				t.Errorf("request = %v, want nil", got)
+			}
+			return nil, nil
+		}, nil, nil)
+		if resp != nil || err != nil {
+			t.Fatalf("CallV2 = %v, %v; want nil, nil", resp, err)
+		}
+	})
+}

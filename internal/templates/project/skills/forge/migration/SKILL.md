@@ -137,8 +137,8 @@ already authoritative — and in forge, that IS the entity model. SQL is
 the schema language: `forge generate` applies the migrations to an
 in-memory shadow database, introspects the tables, and projects entity
 structs, ORM, and CRUD wiring from them. There is no proto-side schema
-declaration to keep in sync (the legacy `(forge.v1.entity)` annotations
-are retired and ignored).
+declaration to keep in sync (forge.proto has no entity annotation; delete
+any a source project's protos carry).
 
 Copy the migrations over as-is, then decide per table:
 

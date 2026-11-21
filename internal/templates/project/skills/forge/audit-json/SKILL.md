@@ -103,7 +103,9 @@ Iterate `.categories | keys[]` rather than hard-coding the list.
 | Category | What's in `details` (when relevant) |
 |----------|-------------------------------------|
 | `version` | `pinned_version`, `binary_version`, `ci_pin`, `state_pin`, `intentional`, `hint` (when mismatch) |
-| `shape` | `services[]`, `frontends[]` (each `{name, type}`), `packages[]`, `proto_integrity` (only when proto parsing failed). Workers and operators are owned code with no proto contract — forge does **not** inventory them. |
+| `shape` | `services[]`, `frontends[]` (each `{name, type}`), `packages[]`, `roots[]`, `workloads[]`, `proto_integrity` (only when proto parsing failed). Processes are inventoried whatever code they run: `roots` and `workloads` are always lists (`[]` when none). |
+| `shape.roots[]` | one per `//forge:root` struct in `internal/app`: `name`, `type`, `command[]`, `migrate?` (absent = default), `adopt?`, `short?`, `fields[]`, `root_only[]?` (`{provider, file, line}` — providers marked `//forge:root-only` that name it), `file`, `line`. Unreadable directives add `roots_integrity` and make the category `warn`. |
+| `shape.workloads[]` | one per declared workload, from every env's render: `name`, `kind` (free string), `build` (`go`/`docker`/`shell`/`remote`/`none`), `image?`, `runtimes{}` (env → `host`/`compose`/`cluster`/`hosted`/`build-only`/`external`; `{}` when no env renders it), `file?`/`line?` (its literal). An env that does not render adds `workloads_integrity.errors{env: error}` and makes the category `warn` — never an error. |
 | `shape.services[]` | `name`, `type`, `rpc_count`, `rpcs[]` — each rpc is `{name, streaming?, custom?}`. `streaming` is omitted for unary RPCs, else `"client"`/`"server"`/`"bidi"`; `custom: true` marks an rpc declared `// forge:custom` (stubbed, never CRUD-wired, whatever its name). |
 | `features` | `resolved{}` (every feature → bool), `enabled[]`, `disabled[]`. Features are derived from the repo, never configured. Informational — always `ok`. |
 | `ingress` | `gateways`, `http_routes`, `grpc_routes`, `services_without_route`, `findings[]` |
@@ -112,17 +114,18 @@ Iterate `.categories | keys[]` rather than hard-coding the list.
 | `external_builds` | `enabled`, `services[]` |
 | `prerequisites` | `external_secrets`, `dns_records`, `byte_match_groups`, `undeclared_secret_mounts`, `findings[]` |
 | `conventions` | `counts{}` (per-rule violation counts), `hint` |
-| `codegen` | `tracked_files` / `certified_files` (same count), `last_generate`, `legacy_manifest`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `disowned_files[]` (`{path, since, reason}`) + `disowned_hint`, and `forked_files[]` (**legacy**: always empty, kept only so a consumer reading the key does not break — see `forked_files_note`) |
+| `codegen` | `tracked_files` / `certified_files` (same count), `last_generate`, `legacy_manifest`, `user_edited_gen_files[]`, `orphan_gen_files[]`, `disowned_files[]` (`{path, since, reason}`) + `disowned_hint` |
 | `migration_safety` | `migration_count`, `migrations_dir`, `latest_migration`, `latest_migration_mtime`, `allow_destructive_files[]` (migrations carrying `-- forge:allow-destructive`), `destructive_change_severity`, `hint`. `warn` when any migration carries the directive. |
 | `optional_deps_guard` | `finding_count`, `affected_packages[]`, `by_package{}`, `hint` (unguarded derefs of `// forge:optional-dep` Deps fields — warn-level; run `forge lint --optional-deps-guard` for per-line detail) |
 | `config_deps` | same rollup shape as `optional_deps_guard` — scalar Deps fields, which wire can never resolve; declare a component config block in `proto/<project>/config/v1` instead |
 | `scaffold_markers` | `total_markers`, `files[]` (paths still carrying `FORGE_SCAFFOLD:` lines) |
-| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (`{file, method, reason}`), `marker`, `legacy_marker` — `forge:custom-read-shape` stubs in the user-owned `internal/handlers/<svc>/handlers_crud.go` (the pre-rename `FORGE_CRUD_SHAPE_MISMATCH` marker stays recognized for one release). A stub marks a deliberate non-AIP-158 read shape the user must implement; each stubbed RPC returns `CodeUnimplemented`, so the category is `warn` whenever `total_stubs > 0`. |
-| `unscoped_auth` | `authenticated_rpcs`, `scoped_rpcs`, `unscoped_rpcs[]` (`{service, method, file, delegating, entity, table}`), `owner_scoped_unscoped_rpcs[]` (the GATING subset — same shape, always carrying `entity`/`table`), `owner_scoped_tables[]`, `owner_marker`, `acknowledged_rpcs[]` (`{service, method, file, reason}`), `auth_seam`, `caller_resolvers[]` (`<import path>.<Func>` for each function the project marked `//forge:resolves-caller`), `caller_resolver_marker`, `caller_resolver_markers_ignored[]` (`{file, line, reason}`, present only when a marker sits on a method), `acknowledge_marker`, `hint` — RPCs whose proto declares `auth_required: true` but whose handler body never resolves the caller, so every signed-in user reaches every row. The authenticated set is read from `gen/forge_descriptor/` (the same `auth_required` projection that drives `pkg/middleware/procedures_gen.go`); the reads-the-caller set is the handler AST, matched against the scaffolded auth seam and any `//forge:resolves-caller` function the project declared; the owned-table set is read from the migrations' `COMMENT ON COLUMN ... IS 'forge:owner'` declarations. **Status is `warn` when `unscoped_rpcs` is non-empty, and `error` when `owner_scoped_unscoped_rpcs` is** — a project that declares no owner column stays advisory (a fresh scaffold is unscoped by construction), while one that declared where its rows' owner lives fails the gate for the RPCs crossing that boundary. The RPC→table join is the CRUD-name derivation, so a custom (non-CRUD) RPC cannot arm the gate however many owned tables it touches; it still reports as a warning. An intentionally global RPC is declared IN CODE above the handler with `// forge:auth-unscoped-ok: <reason>` — this suppresses the error as well as the warning; the reason is required and is echoed back in `acknowledged_rpcs` for review. If the project declares authenticated RPCs and NO handler matched any of them, the category reports `warn` saying it inspected nothing rather than a vacuous `ok`. |
+| `crud_stubs` | `files[]`, `total_stubs`, `stubs[]` (`{file, method, reason}`), `marker` — `forge:custom-read-shape` stubs in the user-owned `internal/handlers/<svc>/handlers_crud.go`. A stub marks a deliberate non-AIP-158 read shape the user must implement; each stubbed RPC returns `CodeUnimplemented`, so the category is `warn` whenever `total_stubs > 0`. |
+| `unscoped_auth` | `authenticated_rpcs`, `scoped_rpcs`, `unscoped_rpcs[]` (`{service, method, file, delegating, entity, table}`), `owner_scoped_unscoped_rpcs[]` (the GATING subset — same shape, always carrying `entity`/`table`), `owner_scoped_tables[]`, `owner_marker`, `acknowledged_rpcs[]` (`{service, method, file, reason}`), `auth_seam`, `caller_resolvers[]` (`<import path>.<Func>` for each function the project marked `//forge:resolves-caller`), `caller_resolver_marker`, `caller_resolver_markers_ignored[]` (`{file, line, reason}`, present only when a marker sits on a method), `acknowledge_marker`, `hint` — RPCs whose proto declares `auth_required: true` but whose handler body never resolves the caller, so every signed-in user reaches every row. The authenticated set is read from `gen/forge_descriptor/` (the same `auth_required` projection that drives `pkg/middleware/procedures_gen.go`); the reads-the-caller set is the handler AST, matched against the scaffolded auth seam and any `//forge:resolves-caller` function the project declared; the owned-table set is read from the migrations' `COMMENT ON COLUMN ... IS 'forge:owner'` declarations. **Status is `warn` when `unscoped_rpcs` is non-empty, and `error` when `owner_scoped_unscoped_rpcs` is** — a project that declares no owner column stays advisory (a fresh scaffold is unscoped by construction), while one that declared where its rows' owner lives fails the gate for the RPCs crossing that boundary. The RPC→table join is the CRUD-name derivation, so a custom (non-CRUD) RPC cannot arm the gate however many owned tables it touches; it still reports as a warning. An intentionally global RPC is declared IN CODE above the handler with `// forge:auth-unscoped-ok: <reason>` — this suppresses the error as well as the warning; the reason is required and is echoed back in `acknowledged_rpcs` for review. A marker that acknowledges nothing — `// forge:auth-unscoped-ok` with no reason, an empty one, or an em-dash where the colon goes — is listed in `malformed_acknowledgements[]` (`{service, method, file, line, written, expected}`, present only when there is one), named in the summary, and turns an otherwise `ok` category `warn`; the RPC is graded as if the marker were absent. `forge lint` reports the reasonless spellings too, as the advisory `forge-go-markers-reason-missing`. If the project declares authenticated RPCs and NO handler matched any of them, the category reports `warn` saying it inspected nothing rather than a vacuous `ok`. |
 | `file_sizes` | `line_threshold`, `method_threshold`, `oversized_files[]` (`{path, lines}`), `god_object_types[]` (`{path, type, methods}`), `advisory: true`. **Status is always `ok` — it never gates `overall_status`.** |
 | `orphan_stubs` | `orphan_services[]` (`{service, dir, stub_methods[]}` — every handler method still carries `// forge:gen unwired-stub`, so the service serves 501s), `hint`. Fix by implementing the handlers or `forge project delete service <name>`. |
 | `unhandled_rpcs` | `unhandled_rpcs[]` (`{service, rpc, dir}`), `unresolved_services[]` (only when some `Service` struct embeds a type whose promoted methods the scan cannot see), `hint` — rpcs of MANAGED services whose handler package declares no `*Service` method. The embedded `Unimplemented<Svc>Handler` makes each one compile and serve `CodeUnimplemented` with no stub saying so, invisible to `orphan_stubs` and `shapes`. Every forge path gives an rpc a method (a stub for a custom rpc, a shim for a CRUD one), so a hit means generate has not run since the proto changed or a hand edit dropped the method. `warn` whenever the list is non-empty. |
 | `deps` | `go_mod`, `go_sum`, `gen_go_mod` presence flags |
+| `lockfiles` | `managers[]`, `lockfiles{}` (manager → lockfile paths: npm `package-lock.json`/`npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`, bun `bun.lock`/`bun.lockb`; `node_modules`, build output and `testdata` skipped), `primary_manager` (the root lock's, else the most used), and when mixed `stragglers[]`, `mixed_dirs[]` (`{dir, lockfiles[]}` — one directory, two managers' locks) and `hint`. `warn` when more than one manager locks the project; advisory, it never fails the audit. |
 
 ### Status semantics
 
@@ -162,7 +165,7 @@ Each `MapNode` carries:
 | `name` | string | Display name (trailing `/` for directories) |
 | `is_dir` | bool | Directory vs file |
 | `ownership` | string (optional) | One of the ownership classes below |
-| `flags` | string[] (optional) | Health flags — `drift`, `FORGE_SCAFFOLD`, `diverged-from-migrations` |
+| `flags` | string[] (optional) | Health flags — `drift`, `FORGE_SCAFFOLD` |
 | `children` | []MapNode (optional) | Subdirectory contents |
 
 The output is the annotated tree and nothing else — the four keys above are the
@@ -178,9 +181,8 @@ whole document.
 | `scaffold, FORGE_SCAFFOLD markers present` | Tier-2 scaffold with at least one `FORGE_SCAFFOLD:` line still present — not yet customised. |
 
 `flags` adds machine-greppable health hints orthogonal to ownership: `drift`
-(Tier-1 file with hand-edits), `FORGE_SCAFFOLD` (placeholder markers still
-present), and `diverged-from-migrations` (a `proto/db/` entity whose shape
-disagrees with the migrations that own the schema).
+(Tier-1 file with hand-edits) and `FORGE_SCAFFOLD` (placeholder markers still
+present).
 
 ## Common queries
 
@@ -213,6 +215,10 @@ forge project map --json | jq -r '.. | select(.flags? // [] | index("FORGE_SCAFF
 forge project audit --json | jq '.categories.shape.details |
   {services: (.services | length // 0),
    frontends:(.frontends | length // 0)}'
+
+# Where does each workload run, per env?
+forge project audit --json | jq -r '.categories.shape.details.workloads[]?
+  | "\(.name) (\(.kind), \(.build)): \(.runtimes | to_entries | map("\(.key)=\(.value)") | join(" "))"'
 
 # Which RPCs are streaming, and which are unary?
 forge project audit --json | jq -r '.categories.shape.details.services[]?

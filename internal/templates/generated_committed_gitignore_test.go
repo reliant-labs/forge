@@ -20,10 +20,9 @@ import (
 //     tracked code imported them and no CI job regenerates. Ignored
 //     generated files are also invisible to `forge ci verify-generated`,
 //     which diffs with `git status --porcelain`.
-//   - machine-local materializations are NEVER committed: .forge-kcl/ (the
-//     KCL module embedded in whichever forge binary is running) and a web
-//     frontend's dev runtime document public/config.js (which bakes in
-//     machine-local ports). A committed copy of either drifts per machine.
+//   - machine-local materializations are NEVER committed: a web frontend's
+//     dev runtime document public/config.js bakes in machine-local ports,
+//     so a committed copy drifts per machine.
 //
 // `git check-ignore` is the oracle because gitignore semantics (`**`,
 // anchoring, negation reachability) are exactly what a string match gets
@@ -75,21 +74,6 @@ func TestProjectGitignore_IgnoresToolDerivedDescriptor(t *testing.T) {
 	for _, p := range paths {
 		if _, ok := ignored[p]; !ok {
 			t.Errorf("%s must be ignored: forge derives the descriptor on demand and never commits it", p)
-		}
-	}
-}
-
-func TestProjectGitignore_IgnoresVendoredForgeKCL(t *testing.T) {
-	testkit.Slow(t, "execs git")
-	body, err := templates.ProjectTemplates().Get(".gitignore")
-	if err != nil {
-		t.Fatalf("read project .gitignore template: %v", err)
-	}
-	paths := []string{".forge-kcl/kcl.mod", ".forge-kcl/schema.k", ".forge-kcl/.forge-version"}
-	ignored := checkIgnored(t, map[string]string{".gitignore": string(body)}, paths)
-	for _, p := range paths {
-		if _, ok := ignored[p]; !ok {
-			t.Errorf("%s must be ignored: .forge-kcl/ is a machine-local materialization of the running forge's KCL module", p)
 		}
 	}
 }

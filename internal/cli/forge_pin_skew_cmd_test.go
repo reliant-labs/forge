@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -42,6 +44,9 @@ const (
 
 func skewedProject(t *testing.T) {
 	t.Helper()
+	// A skewed run marks the process for its children (forgeChildOfEnv);
+	// restore it after the test so no later test inherits the marker.
+	t.Setenv(forgeChildOfEnv, "")
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, "name: demo\nmodule_path: github.com/example/demo\nforge_version: "+skewTestPin+"\n")
 	t.Chdir(dir)
@@ -264,5 +269,144 @@ func TestAllowVersionSkewBeforeTheCommandIsRefusedWithTheFix(t *testing.T) {
 	}
 	if inv := parseInvocation([]string{"skill", "load", "x", "--allow-version-skew"}); inv.rel != "skill load" || !inv.allow {
 		t.Errorf("the flag after the command: %+v", inv)
+	}
+}
+
+// Upgrade-report defect 2: `project upgrade` run by the forge it upgrades to
+// — the documented way — told the agent to run the OLD pinned forge. And
+// under an explicit override, the caller already chose this forge: one line,
+// no install recipe (inventory-backend "Forge issues" #3).
+func TestPinSkewNoticeForUpgradeAndOverride(t *testing.T) {
+	const pin = "v1.7.1-0.20261118104051-4e92ea2af8ca"
+	const target = "v1.8.1-0.20261119173027-ff5a370de464"
+	const older = "v1.6.1-0.20261110000000-aaaaaaaaaaaa"
+	root := newTestRootCmd(t)
+	find := func(args ...string) *cobra.Command {
+		t.Helper()
+		cmd, rest, err := root.Find(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.ParseFlags(rest); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		binary     string
+		overridden bool
+		want       []string
+		notWant    []string
+		oneLine    bool
+	}{
+		{name: "upgrade by the target, no --to", args: []string{"project", "upgrade", "--check"}, binary: target,
+			want: []string{"forge " + target + " is the upgrade target", "pins " + pin}, notWant: []string{"go run", "go install"}, oneLine: true},
+		{name: "upgrade by the target named by --to", args: []string{"project", "upgrade", "--to", target}, binary: target,
+			want: []string{"is the upgrade target"}, notWant: []string{"forge@" + pin}, oneLine: true},
+		{name: "upgrade list by a newer forge", args: []string{"project", "upgrade", "list"}, binary: target,
+			want: []string{"lists its own playbooks", pin}, notWant: []string{"go run"}, oneLine: true},
+		{name: "upgrade --to another forge names the target, not the pin", args: []string{"project", "upgrade", "--to", "v1.9.0"}, binary: target,
+			want: []string{"--to is v1.9.0", "forge@v1.9.0"}, notWant: []string{"forge@" + pin}},
+		{name: "upgrade by a forge older than the pin keeps the warning", args: []string{"project", "upgrade"}, binary: older,
+			want: []string{"go run github.com/reliant-labs/forge/cmd/forge@" + pin}},
+		{name: "override: one line", args: []string{"project", "audit"}, binary: target, overridden: true,
+			want: []string{target, pin, "--allow-version-skew"}, notWant: []string{"go run", "go install"}, oneLine: true},
+		{name: "no override: the full warning", args: []string{"project", "audit"}, binary: target,
+			want: []string{"go run github.com/reliant-labs/forge/cmd/forge@" + pin}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := find(tc.args...)
+			got := pinSkewNotice(cmd, commandRel(cmd, root), ".", pin, tc.binary, tc.overridden)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("notice lacks %q:\n%s", w, got)
+				}
+			}
+			for _, w := range tc.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("notice says %q:\n%s", w, got)
+				}
+			}
+			if tc.oneLine && strings.Count(strings.TrimRight(got, "\n"), "\n") != 0 {
+				t.Errorf("want one line:\n%s", got)
+			}
+		})
+	}
+}
+
+// Upgrade-report defect 3: `project upgrade --check`, run by the target forge
+// while forge.yaml still pins the old one, handed its descriptor step (a child
+// `forge protoc-gen-forge`) to the cached build of the OLD forge. A forge this
+// one starts runs as this one; any other forge ignores the marker.
+func TestChildOfThisForgeRunsHere(t *testing.T) {
+	skewedProject(t)
+	t.Setenv(forgeChildOfEnv, "")
+	if childOfThisForge() {
+		t.Fatal("no marker: not a child")
+	}
+	if err := guardVerdict(t, "project", "upgrade", "--check"); err != nil {
+		t.Fatal(err)
+	}
+	if childOfThisForge() {
+		t.Fatal("the skew check must not mark the parent as a child")
+	}
+	restore := markChildrenRunThisForge()
+	defer restore()
+	if !childOfThisForge() {
+		t.Error("a child of this forge must run here")
+	}
+	if _, ok, _ := pinTarget("protoc-gen-forge", false, "."); ok {
+		t.Error("a child of this forge was handed to the pin")
+	}
+	if err := guardVerdict(t, "generate"); err == nil {
+		t.Error("the marker must not lift a pin-gated refusal")
+	}
+	t.Setenv(forgeChildOfEnv, "0123456789ab")
+	if childOfThisForge() {
+		t.Error("another forge's marker must be ignored")
+	}
+}
+
+func TestProjectUpgradeListAcceptsAllowVersionSkew(t *testing.T) {
+	root := newTestRootCmd(t)
+	cmd, _, err := root.Find([]string{"project", "upgrade", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Flags().Lookup(allowVersionSkewFlag) == nil {
+		t.Errorf("forge project upgrade list does not accept --%s", allowVersionSkewFlag)
+	}
+}
+
+func TestUpgradeChildMarkerRestoresEnvironment(t *testing.T) {
+	for _, initial := range []string{"", "another-forge"} {
+		t.Run(initial, func(t *testing.T) {
+			skewedProject(t)
+			t.Setenv(forgeChildOfEnv, initial)
+			if initial == "" {
+				if err := os.Unsetenv(forgeChildOfEnv); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, present := os.LookupEnv(forgeChildOfEnv)
+			func() {
+				restore := markChildrenRunThisForge()
+				defer restore()
+				if !childOfThisForge() {
+					t.Fatal("upgrade children must inherit this forge's identity")
+				}
+			}()
+			if err := runUpgradeCommand(nil, upgradeOptions{skip: map[string]bool{"invalid-phase": true}}, false); err == nil {
+				t.Fatal("expected invalid-phase upgrade to fail")
+			}
+			if got, exists := os.LookupEnv(forgeChildOfEnv); got != before || exists != present {
+				t.Fatalf("marker not restored after failed upgrade: got (%q, %v), want (%q, %v)", got, exists, before, present)
+			}
+			if childOfThisForge() {
+				t.Fatal("later commands must not be treated as upgrade children")
+			}
+		})
 	}
 }

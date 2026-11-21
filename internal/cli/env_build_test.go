@@ -56,59 +56,8 @@ func TestEnvBuildReleaseImpliesPush(t *testing.T) {
 	}
 }
 
-// TestBuildRefusesPushAndRelease is the compile-only half. Both flags must
-// fail, and the message must carry the replacement command — a user with
-// the old `build prod --push` in their shell history needs the new spelling,
-// not an explanation of command taxonomy.
-func TestBuildRefusesPushAndRelease(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-		want string
-	}{
-		{"push with env", []string{"prod", "--push"}, "forge env build prod --push"},
-		{"push without env", []string{"--push"}, "forge env build <env> --push"},
-		{"release with env", []string{"prod", "--release", "v1.4.0"}, "forge env build prod --release"},
-		{"release without env", []string{"--release", "v1.4.0"}, "forge env build <env> --release"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			cmd := newBuildCmd()
-			cmd.SetArgs(c.args)
-			cmd.SetOut(nopWriter{})
-			cmd.SetErr(nopWriter{})
-			err := cmd.Execute()
-			if err == nil {
-				t.Fatal("`forge build` must refuse this flag — it is compile-only")
-			}
-			if !strings.Contains(err.Error(), c.want) {
-				t.Errorf("refusal must name the replacement %q, got:\n%s", c.want, err.Error())
-			}
-			if !strings.Contains(err.Error(), "compile-only") {
-				t.Errorf("refusal should say `forge build` is compile-only, got:\n%s", err.Error())
-			}
-		})
-	}
-}
-
-// TestBuildRefusalFiresBeforeAnyWork: the refusal must not depend on a
-// project, a render, or a feature gate. It is a usage decision, and reaching
-// it should cost nothing — a user who typed the old command in the wrong
-// directory should still be told the new one.
-func TestBuildRefusalFiresBeforeAnyWork(t *testing.T) {
-	t.Chdir(t.TempDir()) // no forge.yaml, no deploy/kcl
-	cmd := newBuildCmd()
-	cmd.SetArgs([]string{"prod", "--push"})
-	cmd.SetOut(nopWriter{})
-	cmd.SetErr(nopWriter{})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "forge env build prod --push") {
-		t.Fatalf("the refusal must fire outside a project too, got: %v", err)
-	}
-}
-
-// TestBuildHelpSaysCompileOnly: the help is where someone lands after the
-// refusal, so it has to carry the replacement too.
+// TestBuildHelpSaysCompileOnly: `forge build` compiles; publishing is
+// `forge env build <env>`, and the help has to say so.
 func TestBuildHelpSaysCompileOnly(t *testing.T) {
 	cmd := newBuildCmd()
 	help := cmd.Short + "\n" + cmd.Long
@@ -127,16 +76,10 @@ func TestBuildHelpSaysCompileOnly(t *testing.T) {
 	if strings.Contains(help, "--push without an env asks for one") {
 		t.Error("`forge build` help still explains the old push/env coupling, which no longer exists")
 	}
-	// The two publishing flags stay REGISTERED (so the refusal can name the
-	// replacement instead of cobra saying "unknown flag") but must not
-	// advertise themselves as things this command does.
+	// The publishing flags are `forge env build <env>`'s alone.
 	for _, name := range []string{"push", "release"} {
-		f := cmd.Flags().Lookup(name)
-		if f == nil {
-			t.Fatalf("--%s must stay registered so the refusal can be specific", name)
-		}
-		if !f.Hidden {
-			t.Errorf("--%s should be hidden on the compile-only command", name)
+		if cmd.Flags().Lookup(name) != nil {
+			t.Errorf("--%s is registered on the compile-only command", name)
 		}
 	}
 }

@@ -50,6 +50,20 @@ import forge.lib.capabilities as caps
 Workload = forge.Workload
 # Its continuous-profiling override (Workload.profiling).
 Profiling = forge.Profiling
+# Its declared telemetry (Workload.telemetry, kcl/telemetry.k), with the
+# pieces a declaration is built from.
+Telemetry = forge.Telemetry
+MetricsScrape = forge.MetricsScrape
+ScrapeTLS = forge.ScrapeTLS
+OtlpPush = forge.OtlpPush
+OtlpRef = forge.OtlpRef
+LogParse = forge.LogParse
+LogTimestamp = forge.LogTimestamp
+LogSeverity = forge.LogSeverity
+LogSeverityRule = forge.LogSeverityRule
+PprofScrape = forge.PprofScrape
+HealthCheck = forge.HealthCheck
+SystemDashboard = forge.SystemDashboard
 
 # The kind x capability matrix (kcl/lib/capabilities.k), re-exported so
 # `fw.supports(kind, fw.CAP_...)` reads the table the schema checks read.

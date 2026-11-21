@@ -10,10 +10,13 @@
 //	infra.Users = usersv1connect.NewUsersServiceClient(stack.NewClient(cfg.UsersBaseURL))
 //
 // It bundles what NewClientStack bundles — the otelconnect client interceptor,
-// request-id forwarding, a default timeout — plus one v2 difference: connect-go
+// request-id forwarding, a default timeout — plus two v2 differences. connect-go
 // v2 caps a client's response messages at 4 MiB by default, where v1 read any
 // size, so the stack lifts the cap (connecthttp.WithReadMaxBytes(0)) unless the
-// caller sets one.
+// caller sets one. And a v2 error carries no metadata, where v1's Meta() held
+// the response headers and trailers, so the stack installs
+// svcerr.ClientInterceptorV2 first: svcerr.MetaOf(err) then reads the reason
+// (svcerr.ReasonHeader) and metadata a server sent with a failed call.
 
 package observe
 
@@ -26,6 +29,8 @@ import (
 	connectv2 "connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/otelconnect"
+
+	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
 // ClientStackDepsV2 configures NewClientStackV2. The zero value is the
@@ -41,7 +46,8 @@ type ClientStackDepsV2 struct {
 	Transport http.RoundTripper
 
 	// Extras are appended after the canonical client interceptors
-	// (otelconnect, request-id forwarding), in the order supplied — e.g.
+	// (svcerr error metadata, otelconnect, request-id forwarding), in the
+	// order supplied — e.g.
 	// auth-token injection. nil entries are dropped.
 	Extras []connectv2.ClientInterceptor
 
@@ -58,7 +64,9 @@ type ClientStackV2 struct {
 	// stack, so a caller may tweak it without affecting other stacks.
 	HTTPClient *http.Client
 
-	// Interceptors is the client interceptor chain, for connectv2.NewClient.
+	// Interceptors is the client interceptor chain, for connectv2.NewClient:
+	// svcerr.ClientInterceptorV2, otelconnect, request-id forwarding, then
+	// ClientStackDepsV2.Extras.
 	Interceptors []connectv2.ClientInterceptor
 
 	// HTTPOptions are the transport options, for connecthttp.NewTransport.
@@ -87,8 +95,8 @@ func NewClientStackV2(deps ClientStackDepsV2) (ClientStackV2, error) {
 		return ClientStackV2{}, fmt.Errorf("otelconnect client interceptor: %w", err)
 	}
 
-	chain := make([]connectv2.ClientInterceptor, 0, 2+len(deps.Extras))
-	chain = append(chain, otelInt, ClientRequestIDInterceptorV2())
+	chain := make([]connectv2.ClientInterceptor, 0, 3+len(deps.Extras))
+	chain = append(chain, svcerr.ClientInterceptorV2(), otelInt, ClientRequestIDInterceptorV2())
 	for _, ic := range deps.Extras {
 		if ic != nil {
 			chain = append(chain, ic)

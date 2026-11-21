@@ -181,6 +181,13 @@ func ConnectServiceNameConst(protoService string) string {
 	return protoService + "Name"
 }
 
+// ConnectServiceNameConstV2 is ConnectServiceNameConst for connect-go v2's
+// protoc-gen-connect-go, which spells the constant from the GoName like
+// every other identifier: "Alphav1connectService" → Alphav1ConnectServiceName.
+func ConnectServiceNameConstV2(protoService string) string {
+	return ConnectServiceGoName(protoService) + "Name"
+}
+
 // ConnectProcedureConst is the `<Service><Method>Procedure` constant
 // protoc-gen-connect-go declares for one RPC — both halves GoNames.
 func ConnectProcedureConst(protoService, protoMethod string) string {

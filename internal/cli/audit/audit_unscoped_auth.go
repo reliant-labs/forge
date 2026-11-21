@@ -218,6 +218,19 @@ type acknowledgedRPC struct {
 	Reason  string `json:"reason"`
 }
 
+// malformedAck is a `forge:auth-unscoped-ok` the audit read and did NOT
+// accept: no reason, an empty one, or a lookalike separator where the colon
+// goes. Such a marker acknowledges nothing, so the RPC stays where it was
+// classified; this says why the author's acknowledgement did not count.
+type malformedAck struct {
+	Service  string `json:"service"`
+	Method   string `json:"method"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Written  string `json:"written"`
+	Expected string `json:"expected"`
+}
+
 // auditUnscopedAuth reports authenticated RPCs whose handlers never
 // resolve the caller, and FAILS on the subset of them that cross a
 // ownership boundary the project declared with `forge:owner`.
@@ -235,7 +248,13 @@ type acknowledgedRPC struct {
 // anything a reader has to follow.
 //
 //nolint:funlen // One pass over the AST collecting one finding shape. The
-func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.Category {
+func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat audittype.Category) {
+	// A malformed acknowledgement is reported whichever branch returns:
+	// it is a defect in its own right (a marker that does nothing), and
+	// the branch that classified its RPC says nothing about the marker.
+	var malformed []malformedAck
+	defer func() { cat = withMalformedAcks(cat, malformed) }()
+
 	services, err := codegen.ParseServicesFromProtos("", projectDir)
 	if err != nil {
 		return audittype.Category{
@@ -344,6 +363,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 			}
 			authTotal++
 			rel := relPath(projectDir, h.File)
+			if h.AckMalformed != "" {
+				malformed = append(malformed, malformedAck{
+					Service: svc.Name, Method: name, File: rel, Line: h.AckLine,
+					Written: h.AckMalformed, Expected: "// " + AuthUnscopedOKDirective + " <reason>",
+				})
+			}
 			switch {
 			case h.AckReason != "":
 				acknowledged = append(acknowledged, acknowledgedRPC{
@@ -777,6 +802,10 @@ type handlerAuthUse struct {
 	ReadsCaller bool
 	Delegating  bool
 	AckReason   string
+	// AckMalformed is a `forge:auth-unscoped-ok` comment on the handler
+	// that ackReason did not accept, as written; AckLine is its line.
+	AckMalformed string
+	AckLine      int
 	// SQL and HasSQL describe the hand-written queries this handler can
 	// reach. They are carried separately from ReadsCaller because they
 	// answer a different question: ReadsCaller says the caller was
@@ -880,6 +909,12 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 				File:       pf.path,
 				Delegating: bodyIsCRUDDelegation(fn.Body),
 				AckReason:  ackReason(fn.Doc),
+			}
+			if use.AckReason == "" {
+				if c := malformedAckComment(fn.Doc); c != nil {
+					use.AckMalformed = strings.TrimSpace(c.Text)
+					use.AckLine = fset.Position(c.Pos()).Line
+				}
 			}
 			use.ReadsCaller = bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
@@ -1002,6 +1037,73 @@ func ackReason(doc *ast.CommentGroup) string {
 		}
 	}
 	return ""
+}
+
+// malformedAckComment returns the first comment in doc that starts the
+// `forge:auth-unscoped-ok` marker — `//` or `// `, then the name and nothing
+// that continues it — but is not an acknowledgement ackReason accepts:
+// `// forge:auth-unscoped-ok` alone, `// forge:auth-unscoped-ok:` with no
+// reason, or `// forge:auth-unscoped-ok — reason`. nil when there is none.
+// The caller checks ackReason first, so a doc that ALSO carries a valid
+// acknowledgement is not reported.
+//
+// A bare marker used to be silently ignored: the RPC stayed in
+// unscoped_rpcs and nothing said the line above it had been read and
+// refused (FG-32).
+func malformedAckComment(doc *ast.CommentGroup) *ast.Comment {
+	if doc == nil {
+		return nil
+	}
+	name := strings.TrimSuffix(AuthUnscopedOKDirective, ":")
+	for _, c := range doc.List {
+		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(c.Text), "//"))
+		rest, ok := strings.CutPrefix(text, name)
+		if !ok {
+			continue
+		}
+		if rest != "" && isMarkerNameByte(rest[0]) {
+			continue // a different marker whose name starts with this one
+		}
+		if ackReason(&ast.CommentGroup{List: []*ast.Comment{c}}) == "" {
+			return c
+		}
+	}
+	return nil
+}
+
+func isMarkerNameByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_'
+}
+
+// withMalformedAcks adds the malformed acknowledgements to a finished
+// category: listed under details.malformed_acknowledgements, named in the
+// summary, and an ok category becomes warn. It never raises warn to error —
+// the RPC behind a malformed marker is graded by what its handler does, as
+// if the marker were absent, which is exactly what forge did with it.
+func withMalformedAcks(cat audittype.Category, malformed []malformedAck) audittype.Category {
+	if len(malformed) == 0 {
+		return cat
+	}
+	sort.SliceStable(malformed, func(i, j int) bool {
+		if malformed[i].Service != malformed[j].Service {
+			return malformed[i].Service < malformed[j].Service
+		}
+		return malformed[i].Method < malformed[j].Method
+	})
+	if cat.Details == nil {
+		cat.Details = map[string]any{}
+	}
+	cat.Details["malformed_acknowledgements"] = malformed
+	parts := make([]string, 0, len(malformed))
+	for _, m := range malformed {
+		parts = append(parts, fmt.Sprintf("%s.%s (%s:%d)", m.Service, m.Method, m.File, m.Line))
+	}
+	cat.Summary += fmt.Sprintf("; %d %s marker(s) acknowledge nothing — no reason after the colon, so forge ignored them: %s. Write `// %s <reason>`",
+		len(malformed), strings.TrimSuffix(AuthUnscopedOKDirective, ":"), strings.Join(parts, ", "), AuthUnscopedOKDirective)
+	if cat.Status == audittype.StatusOK {
+		cat.Status = audittype.StatusWarn
+	}
+	return cat
 }
 
 // bodyReachesAuthSeam reports whether a function body names the auth seam,

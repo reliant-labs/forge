@@ -47,7 +47,7 @@ func scaffoldAdapterCapturingSummary(t *testing.T, name string) (summary string,
 		t.Fatal(err)
 	}
 	if err := os.WriteFile("forge.yaml", []byte(
-		"name: testproject\nmodule_path: example.com/testproject\nversion: \"0.1.0\"\n"), 0o644); err != nil {
+		"name: testproject\nmodule_path: example.com/testproject\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	markServiceProject(t, dir)
@@ -146,7 +146,7 @@ func TestPackageScaffoldSummary_StillSaysInternalPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile("forge.yaml", []byte(
-		"name: testproject\nmodule_path: example.com/testproject\nversion: \"0.1.0\"\n"), 0o644); err != nil {
+		"name: testproject\nmodule_path: example.com/testproject\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	markServiceProject(t, dir)

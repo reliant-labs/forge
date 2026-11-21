@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -100,6 +101,7 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		HandlerName:         connectService,
 		Methods:             []string{},
 		HasConfig:           codegen.ProjectHasTypedConfig(root),
+		ConnectV2:           connectmajor.DetectOrDefault(root).IsV2(),
 	}
 
 	svcPath := filepath.Join(svcDir, "service.go")
@@ -220,6 +222,13 @@ type serviceGoData struct {
 	HandlerName         string
 	Methods             []string
 	HasConfig           bool
+	// ConnectV2 renders service.go for connect-go v2 (RegisterV2 on a
+	// *connect.Server) — the project's go.mod requires connect/v2 directly.
+	ConnectV2 bool
+	// MountMethod names the v2 mount helper: empty (RegisterV2) here, since a
+	// freshly scaffolded service declares no RPC yet. codegen's
+	// ServiceTemplateData carries the resolved name once it does.
+	MountMethod string
 }
 
 // renderAndWriteWithMode renders a service template then delegates the

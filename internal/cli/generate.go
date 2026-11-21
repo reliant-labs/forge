@@ -107,6 +107,9 @@ What it writes, in order:
   - deploy/: KCL config, observability dashboards and alert defaults, CI
     workflows, seed data
 then go mod tidy, goimports, and a validating go build of the whole tree.
+A failed build rolls back every file the run wrote; --keep-on-build-failure
+keeps them past a failed build or post generate hook, for a migration that
+ports hand-written code after generating.
 
 Hand-written code is never overwritten. Files that are yours from birth
 (handlers' rpc_<name>.go, internal/app/providers.go, compose.go) are written
@@ -123,8 +126,7 @@ Hooks:
   still passes. A run narrowed with --steps or --templates-only does not run
   them, and says so.
   FORGE_NO_GIT_HOOKS=1 is about GIT hooks, not these: it stops forge setting
-  core.hooksPath=.githooks in your clone. FORGE_NO_HOOKS=1 is its older name
-  and means the same. Neither is about the clone's merge driver for
+  core.hooksPath=.githooks in your clone. It is not about the clone's merge driver for
   generated files: generate leaves git config alone and says once when the
   clone has no usable driver ('forge merge-driver install' wires it), unless
   forge.yaml says git: {merge_driver: auto}, or says nothing in a clone that
@@ -152,6 +154,7 @@ Examples:
   forge generate --no-cache # Run every step even if nothing changed since the last verified run
   forge generate --explain  # Print per-file provenance log after generate
   forge generate --verbose  # Also print routine lines (skipped steps, pinned-tool resolution)
+  forge generate --keep-on-build-failure  # Mid-migration: keep the output although the project does not compile yet
 
 Additional maintainer/debug flags exist (pipeline narrowing, drift
 forensics, parallel-lane and migration escape hatches); run
@@ -174,6 +177,7 @@ func newGenerateCmd() *cobra.Command {
 		planOnly        bool
 		heal            bool
 		noRevert        bool
+		keepOnFailure   bool
 		timings         bool
 		noCache         bool
 		steps           string
@@ -204,21 +208,22 @@ func newGenerateCmd() *cobra.Command {
 				})
 			}
 			flags := pipelineFlags{
-				Force:           force,
-				ExplainDrift:    explainDrift,
-				SkipValidate:    skipValidate,
-				SkipPreChecks:   skipPreChecks,
-				SkipConfigCheck: skipConfigCheck,
-				ForceCleanup:    forceCleanup,
-				TemplatesOnly:   templatesOnly,
-				Strict:          strict,
-				Verbose:         verbose,
-				Heal:            heal,
-				NoRevert:        noRevert,
-				Timings:         timings,
-				Cache:           true,
-				NoCache:         noCache,
-				Steps:           steps,
+				Force:              force,
+				ExplainDrift:       explainDrift,
+				SkipValidate:       skipValidate,
+				SkipPreChecks:      skipPreChecks,
+				SkipConfigCheck:    skipConfigCheck,
+				ForceCleanup:       forceCleanup,
+				TemplatesOnly:      templatesOnly,
+				Strict:             strict,
+				Verbose:            verbose,
+				Heal:               heal,
+				NoRevert:           noRevert,
+				KeepOnBuildFailure: keepOnFailure,
+				Timings:            timings,
+				Cache:              true,
+				NoCache:            noCache,
+				Steps:              steps,
 			}
 			// A run with nothing to do must not queue for a heavy slot
 			// behind real work first: the cache check is a second of
@@ -292,7 +297,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "Run generate into a tmpdir and diff against the current tree; exit 1 on drift (for CI guards)")
 	cmd.Flags().BoolVar(&forceCleanup, "force-cleanup", false, "Also delete stale generated files that carry hand-edits. Generate always deletes the stale files nobody edited; without this flag it lists the edited ones and keeps them.")
 	cmd.Flags().BoolVar(&templatesOnly, "templates-only", false, "Re-render template-driven files only. Skips cleanup sweep, drift-guard, and validation. Use when a template change needs to propagate to a project that has uncommitted WIP and can't tolerate a full regen.")
-	cmd.Flags().StringVar(&steps, "steps", "", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"harness\" (regen only each component's helpers_gen_test.go — NewTest<Svc>, With<Svc>Deps, the doubles it installs — and the contract mock_gen.go files it installs them from, after a Deps edit; a proto or migration change needs the full run), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
+	cmd.Flags().Var((*stepPresetValue)(&steps), "steps", "Narrow the pipeline to a named step preset. Valid values: \"bootstrap-only\" (used internally by 'forge scaffold worker'), \"mocks\" (regen both kinds of mock_gen.go — contract-derived and service-derived — after a contract.go or proto change; skips the Tier-1 drift guard since mocks cannot stomp Tier-1 files), \"harness\" (regen only each component's helpers_gen_test.go — NewTest<Svc>, With<Svc>Deps, the doubles it installs — and the contract mock_gen.go files it installs them from, after a Deps edit; a proto or migration change needs the full run), \"env-config\" (write only the config modules every env's KCL imports — config_gen.k, frontend_config_gen.k, each env's config.k — so the envs render; used internally by 'forge project rescaffold').")
 	// Loud-by-default architecture flags. See the per-flag fields on
 	// pipelineFlags for the rationale; runGeneratePlan + warnOrFail consume them.
 	cmd.Flags().BoolVar(&strict, "strict", false, "Stop at the first failed step and roll the tree back, instead of running the steps that do not depend on it. Either way a failed step makes generate exit non-zero.")
@@ -302,7 +307,7 @@ func newGenerateCmd() *cobra.Command {
 	// precisely to dodge that collision. The root flag is gone; the
 	// shorthand belongs to the command that actually consumes it.
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Also print routine lines: one per gate-off skipped step ('⏩ skipped: <step name> (<reason>)') and which pinned build each codegen tool resolved to ('📌 <tool> resolved to <version>'). Default prints progress and what needs action only.")
-	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only.")
+	cmd.Flags().BoolVar(&planOnly, "plan", false, "Print the pipeline plan ([RUN]/[SKIP] annotation per step + gate reason) and exit 0 without running any step. Honors --steps and --templates-only. A missing gen/forge_descriptor/ (derived, git-ignored) is extracted first, because the gates read it.")
 	// --dry-run is the spelling every other forge verb uses for "show me,
 	// don't do it" (`forge scaffold`, `disown`, `secrets`, `project upgrade`).
 	// Without it, the one command people most want to preview answers
@@ -312,12 +317,18 @@ func newGenerateCmd() *cobra.Command {
 	// The description deliberately does NOT name the flag it shares a
 	// variable with: that one is hidden from --help (see help_dev.go), and
 	// naming it here would leak it back into the visible surface.
-	cmd.Flags().BoolVar(&planOnly, "dry-run", false, "Print the pipeline plan ([RUN]/[SKIP] per step + gate reason) and exit without running any step.")
+	cmd.Flags().BoolVar(&planOnly, "dry-run", false, "Print the pipeline plan ([RUN]/[SKIP] per step + gate reason) and exit without running any step. The gates read the proto descriptor, so a missing gen/forge_descriptor/ (derived, git-ignored) is extracted first, as any reader of it does; nothing tracked is written.")
 	cmd.Flags().BoolVar(&skipConfigCheck, "skip-config-check", false, "Bypass the forge.yaml ↔ filesystem cross-check (declared services/frontends/packages must have on-disk backing). Use for parallel-lane / mid-migration scenarios.")
 	cmd.Flags().BoolVar(&heal, "heal", false, "Overwrite on-disk content that matches a PRIOR forge render (an older vintage) with the current template. OFF by default: such content is byte-indistinguishable from a deliberate edit, so forge leaves it untouched and tells you how to proceed rather than silently reverting your work. Pass --heal to advance every such file to the current templates.")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "Run every step even when nothing changed since a full run verified this tree (a no-op generate otherwise skips in about a second; see the 'Skipping' section above). FORGE_GENERATE_NO_CACHE=1 does the same.")
 	cmd.Flags().BoolVar(&timings, "timings", false, "Print each pipeline step's wall time when the run ends, slowest first (FORGE_GENERATE_TIMINGS=1 does the same for runs you do not type, such as verify-generated's)")
 	cmd.Flags().BoolVar(&noRevert, "no-revert", false, "Diagnostic mode: on a post-write step failure (most often the final 'go build' validate), leave the generated files ON DISK instead of rewinding the tree, so you can inspect the codegen output that failed to build. Default (off) reverts to the clean pre-run tree.")
+	// The public spelling for "the project is not expected to compile yet".
+	// --skip-validate and --no-revert stay as they were (hidden, unchanged):
+	// the first hides the compile errors a migration is steered by, the
+	// second keeps a tree half-written by ANY failed step, mid-pipeline.
+	cmd.Flags().BoolVar(&keepOnFailure, "keep-on-build-failure", false, "Keep the generated files when the project does not compile yet, instead of rolling the tree back. For a migration whose hand-written code is ported after generating (connect-go v2, say): a failed compile check or post generate hook (forge.yaml generate.hooks) no longer rolls back, every step and hook still runs, each failure's output is printed, and the run exits non-zero and is not recorded as verified, so the next plain 'forge generate' checks the tree again. A failed input hook still rolls back: later steps project from its output.")
+	cmd.MarkFlagsMutuallyExclusive("keep-on-build-failure", "strict")
 
 	// User-vs-maintainer surface split: the flags below are fully
 	// functional but hidden from --help (visible via --help-dev). The
@@ -482,6 +493,21 @@ type pipelineFlags struct {
 	// non-zero with the underlying error. Off by default (the safe,
 	// clean-tree behavior).
 	NoRevert bool
+
+	// KeepOnBuildFailure (--keep-on-build-failure) is for a tree that is not
+	// expected to compile yet: a migration whose hand-written code is ported
+	// after generating (connect-go v2's section 5 is the case that asked).
+	// The compile check still runs, but its failure is a failed step the run
+	// goes on past (warnOrFail) rather than one that rolls the tree back: the
+	// writes stand, the compile errors are reported, and the run exits
+	// non-zero and is never recorded as a verified fixed point. A post
+	// generate hook that ran and failed is kept the same way (every later
+	// hook still runs; stepGenerateHooks says why that is safe), an input
+	// hook never is. Unlike NoRevert it covers only failures after every
+	// forge emitter has run, so the tree it keeps is complete forge output,
+	// never a half-written one. Unlike SkipValidate the errors the migration is steered by are
+	// still printed. --strict contradicts it, and the command refuses both.
+	KeepOnBuildFailure bool
 
 	// Heal (--heal) opts IN to overwriting on-disk content that matches a
 	// PRIOR forge render (an older vintage, but not the latest) with the
@@ -732,7 +758,51 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 	// unless a step failed soft, in which case its outputs were not
 	// produced, let alone checked.
 	cache.record(os.Stdout, ctx, ran, summary)
-	return softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
+	outcome := softFailureOutcome(os.Stdout, ctx.SoftFailures, ctx.softFailureCauses)
+	reportKeptBuildFailure(os.Stderr, append(slices.Clone(ctx.keptHookFailures), ctx.keptBuildFailure)...)
+	return outcome
+}
+
+// reportKeptBuildFailure ends a --keep-on-build-failure run that kept its
+// writes past a failure — post generate hooks that failed, then the compile
+// check — saying the files were kept and what to do next, and repeating
+// each failure's output (a hook's tail, the compiler's errors) so it is the
+// last thing on screen. nil entries are skipped; no-op when nothing failed.
+func reportKeptBuildFailure(w io.Writer, failures ...error) {
+	failures = slices.DeleteFunc(slices.Clone(failures), func(err error) bool { return err == nil })
+	if len(failures) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n📝 --keep-on-build-failure: the project does not build yet (%d failure(s) below), and this run's generated files "+
+		"were KEPT on disk (the tree was not rolled back). Port or fix the code the errors point at, then run `%s generate` "+
+		"without the flag: it runs every hook and checks the tree again, and only a run that passes is recorded as verified.\n",
+		len(failures), Name())
+	for _, err := range failures {
+		reprintCompilerOutput(err, "")
+	}
+}
+
+// hintKeepOnBuildFailure follows the rollback of a run whose compile check
+// failed with the flag that keeps the output instead. A migration that
+// ports hand-written code after generating (connect-go v2) fails exactly
+// here, and the rollback undoes the output it needs; the flag is how to
+// keep it. Only the failures the flag keeps get the hint — a compile
+// failure and a post generate hook that ran and failed (a hook that
+// compiles part of the tree fails first): no other failure leaves complete
+// output worth keeping.
+func hintKeepOnBuildFailure(w io.Writer, stepErr error) {
+	var interrupted *generateInterruptedError
+	if errors.As(stepErr, &interrupted) {
+		return
+	}
+	var ve *validateBuildError
+	var he *hookFailureError
+	if !errors.As(stepErr, &ve) && !(errors.As(stepErr, &he) && he.Phase == "post") {
+		return
+	}
+	fmt.Fprintf(w, "   Not expected to compile yet (a migration that ports hand-written code after generating, "+
+		"such as connect-go v2)? `%s generate --keep-on-build-failure` keeps the generated files and reports "+
+		"these errors instead of rolling back.\n", Name())
 }
 
 // runPipelineSteps runs, in order, every step whose gate passes and returns
@@ -829,7 +899,9 @@ func cleanUpFailedStep(ctx *pipelineContext, flags pipelineFlags, err error, onl
 	// the journal instead of restoring it) and say so; the run still
 	// fails with the underlying error.
 	if !flags.NoRevert {
-		return rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
+		rolledBack := rollbackGeneratedTreeVerified(ctx.AbsPath, err, onlyReadOnlyRan, preRun)
+		hintKeepOnBuildFailure(os.Stderr, err)
+		return rolledBack
 	}
 	checksums.CommitRollback()
 	fmt.Fprintln(os.Stderr, "\n🔎 --no-revert: leaving this run's generated files on disk for inspection (the tree was NOT rewound). Re-run without --no-revert to restore the clean pre-run tree.")
@@ -1759,7 +1831,7 @@ func aggregateStoreHint(pkg string) string {
 		"is declared in that entity's <entity>_store_gen.go, so entities born on different branches merge as files, and an " +
 		"interface's method set cannot span files. It is no longer an interface and has no generated MockStore. To fake " +
 		"persistence in a test, depend on the per-entity stores (" + pkg + ".<Entity>Store, which forge mocks); to use the " +
-		"aggregate, build it with " + pkg + ".NewStore(handle). See `forge skill load migrations/v1.0.12`"
+		"aggregate, build it with " + pkg + ".NewStore(handle)."
 }
 
 // preCodegenContractCheck runs the internal-package contract shape rule

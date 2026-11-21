@@ -43,6 +43,42 @@ const pkg = JSON.parse(
 const distFiles = readdirSync(join(pkgDir, "dist"));
 const declarations = distFiles.filter((f) => f.endsWith(".d.ts"));
 
+// importClosure walks dist/ from entry through every relative import and
+// returns the modules it reached and the packages (bare specifiers, "node:"
+// builtins excluded, subpaths folded into the package name) they import.
+function importClosure(entry: string): {
+  bare: Set<string>;
+  seen: Set<string>;
+} {
+  const bare = new Set<string>();
+  const seen = new Set<string>();
+  const walk = (file: string): void => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    const body = readFileSync(join(pkgDir, "dist", file), "utf8");
+    const specs = body.matchAll(
+      /(?:^|\n)\s*(?:import|export)\b[^"']*?from\s*["']([^"']+)["']|(?:^|\n)\s*import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|require\(\s*["']([^"']+)["']\s*\)/g,
+    );
+    for (const m of specs) {
+      const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
+      if (spec === undefined) continue;
+      if (spec.startsWith(".")) {
+        walk(join(dirname(file), spec));
+      } else if (!spec.startsWith("node:")) {
+        // The package name: "@scope/name" or "name", without a subpath.
+        bare.add(
+          spec
+            .split("/")
+            .slice(0, spec.startsWith("@") ? 2 : 1)
+            .join("/"),
+        );
+      }
+    }
+  };
+  walk(entry);
+  return { bare, seen };
+}
+
 describe("the published surface", () => {
   it("resolves to dist/, and offers no route back into src/", () => {
     // Nothing a resolver can follow may name src/. `exports` fences modern
@@ -80,6 +116,7 @@ describe("the published surface", () => {
       "./auth/clerk",
       "./auth/firebase",
       "./auth/supabase",
+      "./devlog",
       "./interceptors",
       "./mock-transport",
       "./node",
@@ -252,32 +289,7 @@ describe("the published surface", () => {
     // nothing. So a peer the ./node import closure does not reach must be
     // optional; the browser entries' consumers declare those packages
     // themselves (every forge frontend scaffold lists them as direct deps).
-    const bare = new Set<string>();
-    const seen = new Set<string>();
-    const walk = (file: string): void => {
-      if (seen.has(file)) return;
-      seen.add(file);
-      const body = readFileSync(join(pkgDir, "dist", file), "utf8");
-      const specs = body.matchAll(
-        /(?:^|\n)\s*(?:import|export)\b[^"']*?from\s*["']([^"']+)["']|(?:^|\n)\s*import\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|require\(\s*["']([^"']+)["']\s*\)/g,
-      );
-      for (const m of specs) {
-        const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
-        if (spec === undefined) continue;
-        if (spec.startsWith(".")) {
-          walk(join(dirname(file), spec));
-        } else if (!spec.startsWith("node:")) {
-          // The package name: "@scope/name" or "name", without a subpath.
-          bare.add(
-            spec
-              .split("/")
-              .slice(0, spec.startsWith("@") ? 2 : 1)
-              .join("/"),
-          );
-        }
-      }
-    };
-    walk("node.js");
+    const { bare, seen } = importClosure("node.js");
     expect(
       seen.size,
       "the ./node closure walk found no modules",
@@ -324,6 +336,54 @@ describe("the published surface", () => {
         true,
       );
     }
+  });
+
+  it("publishes installDevLogging from ./devlog, which imports no package", () => {
+    // An adopted site that only wants browser dev logging installs the runtime
+    // and nothing else. The barrel imports @connectrpc/connect and
+    // @bufbuild/protobuf (optional peers such a site never declares), so
+    // installDevLogging from the barrel failed to resolve there (obs
+    // 34137b6e). ./devlog is the same module with no package in its closure.
+    const devlog = readFileSync(join(pkgDir, "dist", "devlog.d.ts"), "utf8");
+    for (const symbol of ["installDevLogging", "uninstallDevLogging"]) {
+      expect(
+        new RegExp(`export declare function ${symbol}\\b`).test(devlog),
+        `./devlog must export ${symbol}`,
+      ).toBe(true);
+    }
+    const { bare, seen } = importClosure("devlog.js");
+    expect(
+      seen.size,
+      "the ./devlog closure walk found no modules",
+    ).toBeGreaterThan(1);
+    expect([...bare].sort(), "./devlog must import no package at all").toEqual(
+      [],
+    );
+    // The barrel still re-exports it, so every existing import keeps working.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    expect(barrel.includes("installDevLogging")).toBe(true);
+  });
+
+  it("publishes the dev-server plugins from ./vite, and keeps it off the browser half", () => {
+    // vite.config.ts imports these by name: forgeDevLog replaces the
+    // src/lib/devlog-plugin.ts forge used to scaffold, so dropping it breaks
+    // every config that moved to it. vite.js runs in Node, inside Vite: it
+    // must not pull in devlog.js, the browser half, which keeps module state.
+    const vite = readFileSync(join(pkgDir, "dist", "vite.d.ts"), "utf8");
+    for (const symbol of [
+      "forgeRuntimeConfig",
+      "forgeOtelProxy",
+      "forgeDevLog",
+    ]) {
+      expect(
+        new RegExp(`export declare function ${symbol}\\b`).test(vite),
+        `./vite must export ${symbol}`,
+      ).toBe(true);
+    }
+    const js = readFileSync(join(pkgDir, "dist", "vite.js"), "utf8");
+    expect(js.includes("./devlog.js"), "vite.js imports the browser half").toBe(
+      false,
+    );
   });
 
   it("keeps track, setTelemetryUser and disableTelemetry IN the barrel, free of imports", () => {
@@ -429,6 +489,63 @@ describe("the published surface", () => {
     }
     const money = readFileSync(join(pkgDir, "dist", "money.js"), "utf8");
     expect(money).not.toMatch(/^\s*import\s/m);
+  });
+
+  it("keeps the Changes evaluator IN the barrel, free of imports", () => {
+    // Every frontend imports the barrel, so the evaluator must be pure:
+    // hashing and parsing, no SDK, no network, nothing on import.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "evaluateChange",
+      "parseChangesSnapshot",
+      "changePreviewHash",
+      "ChangeResult",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const changes = readFileSync(join(pkgDir, "dist", "changes.js"), "utf8");
+    expect(changes).not.toMatch(/^\s*import\s/m);
+  });
+
+  it("keeps the Changes store and OpenFeature provider IN the barrel, off the SDK", () => {
+    // loadChanges and forgeChangesProvider sit in the barrel's import
+    // closure, so they may reach only the evaluator and exposure.ts (which
+    // reaches the import-free track.ts): no SDK, no OpenFeature, nothing
+    // fetched on import.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "loadChanges",
+      "CHANGES_SNAPSHOT_URL",
+      "ChangesStore",
+      "changeBool",
+      "changeString",
+      "changeNumber",
+      "changeJson",
+      "forgeChangesProvider",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    for (const name of ["changes-store.js", "changes-provider.js"]) {
+      const js = readFileSync(join(pkgDir, "dist", name), "utf8");
+      const imports = [
+        ...js.matchAll(
+          /^\s*(?:import|export)\b[^;]*?from\s*["']([^"']+)["']/gm,
+        ),
+      ].map((m) => m[1]);
+      expect(
+        imports.filter(
+          (i) =>
+            i !== "./changes.js" &&
+            i !== "./changes-store.js" &&
+            i !== "./exposure.js",
+        ),
+        `dist/${name} imports more than changes.js, changes-store.js and exposure.js`,
+      ).toEqual([]);
+    }
   });
 
   it("declares a React type surface that is identical on React 18 and 19", () => {

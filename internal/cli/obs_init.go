@@ -181,7 +181,7 @@ forge.yaml ` + "`envs:`" + ` declares (the legacy shorthand) stays in forge.yaml
   forge obs init prod --json   # the same, as a document
 
 Rotate or revoke a token with ` + "`forge obs tokens`" + `; route alerts with ` + "`forge obs receivers`" + `.
-Language-by-language setup: forge skill load observability (section "Monitoring only, any language").`,
+Language-by-language setup: ` + Name() + ` skill load observability/monitoring-only.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runObsInit(cmd.Context(), defaultObsInitDeps(cmd), args, o)
 		},
@@ -887,7 +887,7 @@ func writeObsInit(d obsInitDeps, doc obsInitDoc, o obsInitOpts, selfHosted strin
 		env := doc.Envs[0].Env
 		fmt.Fprintf(w, "\nnext: forge obs status %s · forge obs issues %s · forge obs receivers create … (alerts to Slack, PagerDuty, a webhook)\n", env, env)
 	}
-	fmt.Fprintln(w, "per language: forge skill load observability (\"Monitoring only, any language\")")
+	fmt.Fprintln(w, "per language: "+Name()+" skill load observability/monitoring-only")
 	return nil
 }
 
@@ -980,6 +980,13 @@ func ingestTokenErr(err error) error {
 		switch {
 		case ce.Code == cloud.CodeUnimplemented || ce.HTTPStatus == 404:
 			return obsbackend.Undetermined("this control plane has no telemetry ingest tokens yet (TelemetryTokenService): it needs a newer control plane").Cause(err)
+		case ce.Code == cloud.CodePermissionDenied && strings.Contains(ce.Message, "machine credential"):
+			// The control plane refuses every machine credential, whatever
+			// it holds: no scope or token fixes it, only a person running it.
+			return obsbackend.Wrong("ingest tokens are minted by a person, never by a machine credential, and this run used one " +
+				"(FORGE_CONTROL_PLANE_TOKEN, a CI token, or an agent's). Run it as yourself: unset FORGE_CONTROL_PLANE_TOKEN, " +
+				"`forge login`, then `forge obs init` again — or ask an owner of the organization to run it").
+				With(obsbackend.Cmd("forge", "login"))
 		case ce.Code == cloud.CodePermissionDenied:
 			return obsbackend.Wrong("minting an ingest token needs a person who is a member of the organization holding the obs:write permission "+
 				"(owners and admins hold it); ask an owner to grant it: %v", err)

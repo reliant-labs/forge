@@ -366,8 +366,8 @@ func TestPinDecision_InternalKCLChildIsSilent(t *testing.T) {
 		t.Errorf("internal child: err %v, handed to %q, output %q", err, h.path, out)
 	}
 	out, err = runCheck(t, "kcl", "eval", "x.k", "--allow-version-skew")
-	if err != nil || !strings.Contains(out, "a different forge than the project's") {
-		t.Errorf("a user's kcl eval under skew: err %v, output %q; want the warning", err, out)
+	if err != nil || !strings.Contains(out, skewTestPin) || !strings.Contains(out, "running it anyway (--allow-version-skew / FORGE_ALLOW_VERSION_SKEW)") {
+		t.Errorf("a user's kcl eval under skew: err %v, output %q; want the override warning", err, out)
 	}
 }
 

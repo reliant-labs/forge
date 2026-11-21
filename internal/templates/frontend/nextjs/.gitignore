@@ -25,12 +25,9 @@ build/
 # materialize it; a deploy writes each environment's own copy beside the
 # bundle.
 public/config.js
-# Pre-`_gen` per-service React Query hooks, from a tree generated before
-# forge renamed the emitter's output. Nothing writes these names anymore;
-# the rule stays so an un-upgraded checkout still ignores its leftovers.
-#
-# The CURRENT output — src/hooks/<svc>-hooks_gen.ts — and the src/hooks/
-# index.ts barrel that re-exports it are deliberately NOT ignored. They
+# The per-service React Query hooks — src/hooks/<svc>-hooks_gen.ts — and
+# the src/hooks/index.ts barrel that re-exports them are deliberately NOT
+# ignored. They
 # are Tier-1 files exactly like src/lib/apiurl_gen.ts and src/mocks/
 # *_gen.ts, which this project commits, and `forge ci verify-generated`
 # compares a fresh `forge generate` against the checkout with `git status
@@ -42,7 +39,6 @@ public/config.js
 # Do NOT collapse this into `src/hooks/*_gen.ts` or `src/lib/*_gen.ts`:
 # apiurl_gen.ts, basepath_gen.ts and config_gen.ts are forge-emitted and
 # ARE committed, so a blanket glob silently untracks them.
-src/hooks/*-hooks.ts
 
 # test coverage
 coverage/

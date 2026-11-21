@@ -50,14 +50,14 @@ func (p HostInfraProvider) Observe(ctx context.Context, group ServiceGroup) (Obs
 		Items:      make([]ObservedItem, 0, len(group.Services)),
 	}
 	for _, svc := range group.Services {
-		out.Items = append(out.Items, p.observeOne(ctx, svc))
+		out.Items = append(out.Items, p.observeOne(ctx, group.Env, svc))
 	}
 	return out, nil
 }
 
 // observeOne reads one instance. Every failure path yields an item, so
 // one unreadable instance does not erase its siblings' observations.
-func (p HostInfraProvider) observeOne(ctx context.Context, svc ResolvedService) ObservedItem {
+func (p HostInfraProvider) observeOne(ctx context.Context, env string, svc ResolvedService) ObservedItem {
 	if svc.HostInfra == nil {
 		return ObservedItem{
 			Name:   svc.Name,
@@ -65,7 +65,7 @@ func (p HostInfraProvider) observeOne(ctx context.Context, svc ResolvedService) 
 			Detail: "HostInfra spec is nil (group misrouted?)",
 		}
 	}
-	spec := specOf(svc.Name, svc.HostInfra)
+	spec := specOf(env, svc.Name, svc.HostInfra)
 	st, err := hostinfra.StatusOf(ctx, p.projectDir(), spec)
 	if err != nil {
 		return ObservedItem{

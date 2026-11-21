@@ -207,6 +207,24 @@ const (
 	// it the whole shape. So it is sent the policy without them, and judges
 	// them as the default does: warn.
 	BundleFeatureReleaseHealthChangedOps = "shape-release-health-changed-ops"
+	// BundleFeatureChanges is Shape.Changes: the Forge Changes the release
+	// declares (changes.yaml). A control plane that predates it serves no
+	// change for the env, so the app evaluates every key as unknown and
+	// keeps its code defaults: a shape carrying them is written only to one
+	// that names the feature. A project that declares none carries no key,
+	// so it needs nothing of the reader.
+	BundleFeatureChanges = "shape-changes"
+	// BundleFeatureTelemetry is Shape.Telemetry: the declared telemetry
+	// targets (forge.Telemetry) of a hosted env, which the platform collects
+	// because forge runs no collector there. Like every feature here it means
+	// only that the reader DECODES them: a control plane advertises
+	// [BundleDocFeatures] verbatim on every forge pin bump. Collecting them is
+	// [CapabilityCollectsTelemetry], and forge sends the targets only to a
+	// reader that names both ([BundleReader.CollectsTelemetry]); to any other
+	// it leaves them out and warns, naming the targets
+	// ([BundleReader.TelemetryWarning]). A shape that declares no hosted
+	// target carries no key, so it needs nothing of the reader.
+	BundleFeatureTelemetry = "shape-telemetry"
 )
 
 // CapabilityEnforcesPromotionChecks is advertised beside the bundle features
@@ -235,12 +253,27 @@ const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 // a bundle built for no control plane (the machine ledger) carries none.
 const CapabilityServesDashboardFilterParams = "serves-dashboard-filter-params"
 
+// CapabilityCollectsTelemetry is advertised beside the bundle features by a
+// control plane that COLLECTS a hosted env's declared telemetry
+// (Shape.Telemetry): its platform agent scrapes, receives and tails the
+// targets the shape names. Decoding them is [BundleFeatureTelemetry], which
+// a control plane advertises verbatim on every forge pin bump, so a pin bump
+// alone would otherwise claim collection, and forge would send the targets
+// without a warning while nothing collected them.
+//
+// Like [CapabilityEnforcesPromotionChecks] it is deliberately not in
+// [BundleDocFeatures]. A control plane adds this by hand, in the change that
+// makes it collect hosted telemetry. Until a control plane names both, forge
+// withholds the targets from what it records there and warns the person
+// deploying ([BundleReader.TelemetryWarning]).
+const CapabilityCollectsTelemetry = "collects-telemetry"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -248,6 +281,10 @@ func BundleDocFeatures() []string {
 // own decoder — every feature — which is what a machine ledger reads with.
 type BundleReader struct {
 	Features []string
+	// Telemetry is the caps the control plane holds a hosted env's declared
+	// telemetry to (GetCapabilities.telemetry_limits), nil when it advertises
+	// none: then the defaults apply ([BundleReader.TelemetryCaps]).
+	Telemetry *TelemetryLimits
 }
 
 // Supports reports whether the reader decodes feature. A nil reader decodes
@@ -382,6 +419,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil
 	}
+	if !r.CollectsTelemetry() {
+		s.Telemetry = nil
+	}
 	if !r.Supports(BundleFeatureExternalDatabases) {
 		s.ExternalDatabases = nil
 	} else if !r.Supports(BundleFeatureExternalDatabaseTLS) {
@@ -421,6 +461,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeaturePreview) {
 		s.Preview = nil
+	}
+	if !r.Supports(BundleFeatureChanges) {
+		s.Changes = nil
 	}
 	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
 		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {

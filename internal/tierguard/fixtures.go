@@ -83,8 +83,16 @@ type fixture struct {
 	// Entities maps a service name to the entity messages declared in
 	// its proto. Each becomes a migration + table + CRUD quintet.
 	Entities map[string][]entityMessage
+	// NoMigrations deletes every migration `project new` wrote (the
+	// auth_sessions table of server-side sign-in sessions), so the
+	// fixture renders the "no migrations yet" branch of the files that
+	// project db/migrations/.
+	NoMigrations bool
 	// Frontends are `--frontend` names (forge.yaml shape + features).
 	Frontends []string
+	// MakeTestGate replaces the scaffolded Taskfile with a project-owned
+	// Makefile. AGENTS.md's guide must reflect the project's actual gate.
+	MakeTestGate bool
 	// GatewayHTTPPort, when non-zero, moves the scaffolded `public` Gateway's
 	// http listener off its default (18080) in deploy/kcl/ingress.k.
 	//
@@ -264,16 +272,20 @@ func projectB() fixture {
 // it produces is still attributable to something the user wrote.
 func projectD() fixture {
 	return fixture{
-		Label:  "D(no entities → no migrations, built-in-colliding service name)",
-		Name:   FixedProjectName,
-		Module: FixedModulePath,
+		Label:        "D(no entities → no migrations, built-in-colliding service name, Makefile gate)",
+		Name:         FixedProjectName,
+		Module:       FixedModulePath,
+		MakeTestGate: true,
 		// `version` collides with the built-in version subcommand. It is a
 		// legal service name (ReservedServiceNames covers only the
 		// worker/scheduler family), and the cmd-group generator skips its
 		// subcommand and records the collision in the anchor.
 		Services: []string{"alpha", "version"},
 		// No Entities: nothing is marked `// forge:entity`, so `forge
-		// scaffold` births no table and db/migrations/ stays empty.
+		// scaffold` births no table. `project new` still writes the
+		// auth_sessions migration server-side sign-in sessions read, so D
+		// deletes it (NoMigrations) to keep db/migrations/ empty.
+		NoMigrations: true,
 	}
 }
 
@@ -398,9 +410,32 @@ func render(parent string, fx fixture) (*renderResult, error) {
 		}
 	}
 
+	if fx.NoMigrations {
+		migs, err := filepath.Glob(filepath.Join(root, "db", "migrations", "*.sql"))
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range migs {
+			if err := os.Remove(m); err != nil {
+				return nil, fmt.Errorf("remove %s: %w", m, err)
+			}
+		}
+	}
+
 	for _, pkg := range fx.InternalPackages {
 		if err := forgeIn(root, "package", "new", pkg.Name); err != nil {
 			return nil, fmt.Errorf("package new %s: %w", pkg.Name, err)
+		}
+	}
+
+	// Exercise a real gate input immediately before the measured generate;
+	// leaving every scaffold's Taskfile in place gives every Go guide the same gate.
+	if fx.MakeTestGate {
+		if err := os.Remove(filepath.Join(root, "Taskfile.yml")); err != nil {
+			return nil, fmt.Errorf("replace scaffolded Taskfile: %w", err)
+		}
+		if err := atomicfile.WriteFile(filepath.Join(root, "Makefile"), []byte("test:\n\tgo test ./...\n"), 0o644); err != nil {
+			return nil, fmt.Errorf("write project Makefile: %w", err)
 		}
 	}
 

@@ -31,3 +31,27 @@ func TestOf(t *testing.T) {
 		})
 	}
 }
+
+type verdict struct{ coded }
+
+func (verdict) IsVerdict() bool { return true }
+
+func TestLine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"a failure is an Error", errors.New("boom"), "Error: boom"},
+		{"a coded failure is an Error", coded(2), "Error: coded"},
+		{"a verdict is said plainly", verdict{coded(9)}, "coded"},
+		{"a wrapped verdict too", fmt.Errorf("upgrade: %w", verdict{coded(9)}), "upgrade: coded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Line(tc.err); got != tc.want {
+				t.Fatalf("Line = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

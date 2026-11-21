@@ -106,19 +106,7 @@ var readmeTag = map[Availability]string{
 // rendered table. found is false when the markers are absent (or out of
 // order), in which case readme is returned unchanged.
 func SpliceReadme(readme []byte, r *Registry) (out []byte, found bool) {
-	s := string(readme)
-	i := strings.Index(s, ReadmeStart)
-	j := strings.Index(s, ReadmeEnd)
-	if i < 0 || j < i {
-		return readme, false
-	}
-	var buf bytes.Buffer
-	buf.WriteString(s[:i+len(ReadmeStart)])
-	buf.WriteString("\n\n")
-	buf.Write(RenderReadmeTable(r))
-	buf.WriteString("\n")
-	buf.WriteString(s[j:])
-	return buf.Bytes(), true
+	return spliceBlock(readme, ReadmeStart, ReadmeEnd, RenderReadmeTable(r))
 }
 
 // RenderMarkdown renders the whole of docs/benefits.md.
@@ -149,8 +137,9 @@ func RenderMarkdown(r *Registry) []byte {
 		"resolves every piece of evidence against the forge binary and this\n" +
 		"repository, so an entry whose backing code is removed fails the build\n" +
 		"instead of going stale. It is not a tutorial:\n" +
-		"[getting-started](getting-started.md) walks the first project and\n" +
-		"[concepts](concepts.md) explains why Forge is shaped the way it is.\n\n")
+		"[getting-started](getting-started.md) walks the first project,\n" +
+		"[concepts](concepts.md) explains why Forge is shaped the way it is, and\n" +
+		"[why-forge](why-forge.md) is the argument these entries back.\n\n")
 	p("This page is generated from `internal/benefits/benefits.yaml`: to change\n" +
 		"it, edit the YAML and run `task docs:benefits`.\n\n")
 	p("**Status words.** \"Enforced\" means something refuses the action.\n" +

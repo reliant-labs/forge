@@ -47,7 +47,9 @@ diff -u proto/b/v1/b.proto.orig proto/b/v1/b.proto
 // period sees a warning and a passing lane, lint.rules can turn the whole
 // report off, and past GatesFrom it gates.
 func TestProtoFormatDiffIsGradedWithItsFinding(t *testing.T) {
-	ro := lintRollouts[ruleProtoFormat]
+	// Graded through a synthetic row: the rule's own grace window closed.
+	ro := ruleRollout{IntroducedIn: "v1.0.0", GatesFrom: "v1.0.1"}
+	withRollouts(t, map[string]ruleRollout{ruleProtoFormat: ro})
 	findings := func() []lintJSONFinding {
 		return []lintJSONFinding{
 			{File: "proto/a.proto", Severity: lintSevError, Rule: ruleProtoFormat, Message: "would reformat"},

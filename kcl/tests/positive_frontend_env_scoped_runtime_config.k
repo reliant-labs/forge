@@ -1,13 +1,15 @@
 """
 Positive test — the per-environment values a web frontend's otel_gen.ts reads
-(OTEL_ENDPOINT, ENVIRONMENT, OTEL_REPLAY) reach the runtime config document
+(OTEL_ENDPOINT, ENVIRONMENT) reach the runtime config document
 however the frontend declares them, because otel_gen.ts no longer falls back to
 the build variables:
 
   * `config.otel_endpoint` / `config.environment` render as OTEL_ENDPOINT /
     ENVIRONMENT, and still render their build variables;
-  * a literal {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT / ENVIRONMENT / OTEL_REPLAY in
-    `env_vars` is carried too, and outranks `config`;
+  * a literal {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT / ENVIRONMENT in `env_vars`
+    is carried too, and outranks `config`;
+  * a {NEXT_PUBLIC_,VITE_}OTEL_REPLAY build variable is NOT carried: session
+    replay is switched on with telemetry.replay;
   * an author's own runtime_config entry outranks both;
   * a secret-backed build variable is never carried (config.js is public);
   * React Native, which has no runtime config document, gets nothing;
@@ -80,7 +82,7 @@ assert_config_environment_carried = _rc("cfg").ENVIRONMENT == "staging"
 assert_config_build_variable_kept = "VITE_OTEL_ENDPOINT" not in _ev("cfg") or _ev("cfg").VITE_OTEL_ENDPOINT == "/_otel"
 assert_env_var_outranks_config = _rc("vars").OTEL_ENDPOINT == "/from-env-var"
 assert_env_var_environment_carried = _rc("vars").ENVIRONMENT == "qa"
-assert_env_var_replay_carried = _rc("vars").OTEL_REPLAY == "true"
+assert_env_var_replay_not_carried = "OTEL_REPLAY" not in _rc("vars")
 assert_author_outranks_derived = _rc("own").ENVIRONMENT == "mine" and _rc("own").OTEL_REPLAY == "false"
 assert_secret_never_carried = "ENVIRONMENT" not in _rc("secret")
 assert_react_native_gets_nothing = "OTEL_ENDPOINT" not in _rc("mobile") and "ENVIRONMENT" not in _rc("mobile")

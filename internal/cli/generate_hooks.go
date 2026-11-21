@@ -30,10 +30,10 @@ import (
 // multi-minute generate, so a skip would buy nothing worth that risk. A hook
 // whose tool is missing fails with the tool's name and the fix.
 //
-// FORGE_NO_GIT_HOOKS (formerly FORGE_NO_HOOKS) is a different thing: it stops
-// forge configuring GIT hooks in the clone (githooks.go). Agents set the old
-// name expecting it to skip these, so when either is set the step says, at
-// the point they would look, that it does not.
+// FORGE_NO_GIT_HOOKS is a different thing: it stops forge configuring GIT
+// hooks in the clone (githooks.go). Agents set it expecting it to skip these,
+// so when it is set the step says, at the point they would look, that it does
+// not.
 
 // generateHooksStep names the step in the plan, in presets and in output.
 const generateHooksStep = "generate hooks (forge.yaml)"
@@ -102,12 +102,40 @@ func hasGeneratePostHooks(ctx *pipelineContext) bool {
 	return len(generateHooksForPhase(ctx, "post")) > 0
 }
 
+// stepGenerateInputHooks runs the input hooks. A failed one always fails
+// the run, --keep-on-build-failure or not: every later step projects from
+// what an input hook writes (the frontend hooks and mocks read its
+// descriptors), so going on past one would emit — and keep — output derived
+// from stale or half-written inputs, and the stale-artifact sweep would
+// delete what those inputs no longer name. That is not output worth keeping.
 func stepGenerateInputHooks(ctx *pipelineContext) error {
 	return runGenerateHooks(ctx.ProjectDir, generateHooksForPhase(ctx, "input"), os.Stdout, os.Stderr)
 }
 
+// stepGenerateHooks runs the post hooks. With --keep-on-build-failure a hook
+// that ran and failed is a failed step the run goes on past (warnOrFail),
+// as a failed compile check is: every later hook still runs, the run keeps
+// its writes, reports each hook's output at the end, exits non-zero and is
+// never recorded as a verified fixed point.
+//
+// That is safe for a post hook because nothing forge emits reads its
+// output: post hooks run after every forge emitter, so the files a failed
+// one leaves are its own, and the next generate runs it again. forge cannot
+// tell why an arbitrary command failed, so it does not try to: the flag's
+// contract is "the tree does not build yet", and a post hook that compiles
+// part of the project (`go generate`, `go run ./tools/...`) is where such a
+// tree fails first. A hook forge could not start at all — its command is not
+// on PATH, the pinned tools could not be resolved — is a configuration
+// error porting code does not fix, so it still fails the run.
 func stepGenerateHooks(ctx *pipelineContext) error {
-	return runGenerateHooks(ctx.ProjectDir, generateHooksForPhase(ctx, "post"), os.Stdout, os.Stderr)
+	var keep func(*hookFailureError) error
+	if ctx.KeepOnBuildFailure {
+		keep = func(he *hookFailureError) error {
+			ctx.keptHookFailures = append(ctx.keptHookFailures, he)
+			return ctx.warnOrFail(generateHooksStep, he)
+		}
+	}
+	return runGenerateHooksWith(ctx.ProjectDir, generateHooksForPhase(ctx, "post"), "post", os.Stdout, os.Stderr, keep)
 }
 
 // generateHooksLogDir holds each hook's full combined output from the most
@@ -131,6 +159,9 @@ const hookOutputTailLines = 200
 type hookFailureError struct {
 	Hook    string
 	Command string
+	// Phase is the hook's phase ("post" or "input"); "" when the caller
+	// did not say.
+	Phase string
 	// Tail is the last hookOutputTailLines lines the hook printed.
 	Tail []string
 	// Omitted counts the lines before Tail that are only in the log.
@@ -165,6 +196,21 @@ func (e *hookFailureError) Unwrap() error { return e.err }
 // in full to generateHooksLogDir/<name>.log, and its last
 // hookOutputTailLines lines into the *hookFailureError a failure returns.
 func runGenerateHooks(projectDir string, hooks []config.GenerateHook, stdout, stderr io.Writer) error {
+	phase := ""
+	if len(hooks) > 0 {
+		phase = hooks[0].Phase
+		if phase == "" {
+			phase = "post"
+		}
+	}
+	return runGenerateHooksWith(projectDir, hooks, phase, stdout, stderr, nil)
+}
+
+// runGenerateHooksWith is runGenerateHooks with a say in what a failed hook
+// does. keep, when non-nil, is handed each hook that ran and exited
+// non-zero: a nil return lets the remaining hooks run, an error stops them
+// and is returned. A hook that could not be started always stops them.
+func runGenerateHooksWith(projectDir string, hooks []config.GenerateHook, phase string, stdout, stderr io.Writer, keep func(*hookFailureError) error) error {
 	fmt.Fprintf(stdout, "🪝 Running %d generate hook(s) from forge.yaml generate.hooks: %s\n", len(hooks), hookNames(hooks))
 	if v := gitHooksOptOut(); v != "" {
 		fmt.Fprintf(stdout, "   %s is set: it stops forge configuring git hooks in this clone and does not skip these — generate hooks always run.\n", v)
@@ -198,7 +244,14 @@ func runGenerateHooks(projectDir string, hooks []config.GenerateHook, stdout, st
 				return fmt.Errorf("generate hook %q: %q was not found on PATH — install it, or remove the hook from forge.yaml generate.hooks", h.Name, h.Command[0])
 			}
 			tail, omitted := capture.tail()
-			return &hookFailureError{Hook: h.Name, Command: argv, Tail: tail, Omitted: omitted, LogPath: logRel, err: runErr}
+			he := &hookFailureError{Hook: h.Name, Command: argv, Phase: phase, Tail: tail, Omitted: omitted, LogPath: logRel, err: runErr}
+			if keep == nil {
+				return he
+			}
+			if err := keep(he); err != nil {
+				return err
+			}
+			continue
 		}
 		fmt.Fprintf(stdout, "   ✓ generate hook %q ran (%.1fs)\n", h.Name, time.Since(start).Seconds())
 	}

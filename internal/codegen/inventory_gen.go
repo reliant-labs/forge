@@ -51,14 +51,16 @@ type InventoryServiceData struct {
 	// "Register" normally, "Mount" when the service declares an RPC of its
 	// own called Register. One type cannot carry both a Register(mux,
 	// opts...) helper and a Register(ctx, req) RPC, and the RPC wins.
+	// connect-go v2: the first of RegisterV2, MountV2, Mount2V2, … no RPC
+	// uses (mountMethodFor).
 	MountMethod string
 	// Package is the Go package clause.
 	Package string
 	// ConnectPkg / ProtoServiceName drive the ConnectPath descriptor and,
 	// when REST is on, the connect import. Mirrors the bootstrap fields.
-	// ProtoServiceName is the RAW proto service name: protoc-gen-connect-go
-	// spells the `<Service>Name` constant from it rather than from the
-	// GoName (naming.ConnectServiceNameConst).
+	// ProtoServiceName is the RAW proto service name: v1's
+	// protoc-gen-connect-go spells the `<Service>Name` constant from it
+	// rather than from the GoName, v2's from the GoName (ServiceNameConst).
 	ConnectPkg       string
 	ProtoServiceName string
 	// BaseService and Version carry the proto identity SPLIT into its
@@ -89,6 +91,17 @@ type InventoryServiceData struct {
 	Audience string
 }
 
+// ServiceNameConst is the `<…>Name` constant protoc-gen-connect-go declares
+// for the service in ConnectPkg: spelled from the raw proto name by the v1
+// plugin (naming.ConnectServiceNameConst), from the GoName by the v2 one
+// (naming.ConnectServiceNameConstV2).
+func (d InventoryServiceData) ServiceNameConst(connectV2 bool) string {
+	if connectV2 {
+		return naming.ConnectServiceNameConstV2(d.ProtoServiceName)
+	}
+	return naming.ConnectServiceNameConst(d.ProtoServiceName)
+}
+
 // serviceAudienceOrUser is a service's audience, defaulting to "user" the way
 // serverkit.ServiceAudience does at boot.
 func serviceAudienceOrUser(a string) string {
@@ -106,6 +119,10 @@ type InventoryGenData struct {
 	// ConnectImports are the *v1connect import lines needed for the
 	// ConnectPath descriptor constants (and REST). Deduped + sorted.
 	ConnectImports []string
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // GenerateInventory emits internal/app/mounts_services.go: the typed
@@ -133,6 +150,7 @@ func GenerateInventory(in InventoryGenInput) error {
 		RESTEnabled:    restEnabled,
 		Services:       rows,
 		ConnectImports: imports,
+		ConnectV2:      in.connectV2(),
 	}
 
 	content, err := templates.ProjectTemplates().Render("mounts_services_gen.go.tmpl", data)
@@ -219,12 +237,15 @@ func inventoryRows(in InventoryGenInput) ([]InventoryServiceData, []string, erro
 		// a sign-up endpoint — which collides with the scaffolded mount
 		// helper. The handler renames its helper to Mount in that case, so
 		// this call site has to follow.
-		mountMethod := mountMethodFor(svc)
+		mount, err := resolveMountHelper(svc, in.connectV2(), in.ProjectDir, res.Dir, in.Checksums)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve %s mount helper: %w", svc.Name, err)
+		}
 
 		rows = append(rows, InventoryServiceData{
 			Name:             runtimeName,
 			FieldName:        fieldName,
-			MountMethod:      mountMethod,
+			MountMethod:      mount.name,
 			Package:          pkg,
 			ConnectPkg:       connectPkg,
 			ProtoServiceName: protoServiceName,

@@ -128,16 +128,19 @@ func (p *Plan) cellLiteral(tp tablePlan, cp columnPlan, i, depth int) string {
 // the OTHER members of the composite key carry the row's distinctness (with
 // ON CONFLICT DO NOTHING as the backstop the statement already carries).
 //
-// A SOLE key column never takes this path: a one-column key with a CHECK
-// vocabulary can hold as many rows as the vocabulary has members, and quietly
-// collapsing a table's ids into four strings is not a trade the key function
-// gets to make on its own. Its id stays the documented, stable UUID.
+// A SOLE key column with a CHECK vocabulary can hold only as many rows as the
+// vocabulary has members, so finalize caps the table at that count and deals
+// each row a distinct member (capPinnedKey); this reads that assignment. The
+// singleton table — `id int PRIMARY KEY CHECK (id = 1)` — is the one-member
+// case. A sole key with no vocabulary keeps the documented, stable UUID.
 func (p *Plan) keyLiteral(table string, col schemadef.Column, i int) string {
 	composite := len(p.byName[table].PKCols) > 1
 	if composite {
 		if _, pooled := p.closedPool(table, col); pooled {
 			return p.valueLiteral(table, col, i)
 		}
+	} else if lits, ok := p.uniques[table][col.Name]; ok && i < len(lits) {
+		return lits[i]
 	}
 	return pkLiteral(p.cfg, table, col, i, composite)
 }
@@ -157,6 +160,14 @@ func (p *Plan) valueLiteral(table string, col schemadef.Column, i int) string {
 	if vals := p.vocab[table][col.Name]; len(vals) > 0 {
 		return poolLiteral(col, vals[pick(salt, table, col.Name, i, len(vals))])
 	}
+	return p.schemaValueLiteral(table, col, i)
+}
+
+// schemaValueLiteral is valueLiteral without the vocabulary overlay: what the
+// schema alone gives the cell. A union cell that requires a value falls back
+// to it when every overlay value it could draw is NULL (see presentLiteral).
+func (p *Plan) schemaValueLiteral(table string, col schemadef.Column, i int) string {
+	salt := p.cfg.EffectiveSalt()
 
 	// Enum / CHECK-constrained pool: draw from the allowed set, preferring
 	// real values over the proto zero-value sentinel (…_UNSPECIFIED). Seeding
@@ -258,6 +269,14 @@ func (p *Plan) fkParentRow(tp tablePlan, cp columnPlan, i int) (int, bool) {
 }
 
 func (p *Plan) fkParentRowAt(tp tablePlan, cp columnPlan, i, depth int) (int, bool) {
+	// A union branch that requires this edge ABSENT on row i outranks every
+	// way of picking a parent below: the CHECK is not negotiable, and
+	// declining an optional edge is something the reference path already
+	// does for variety. Only a nullable single-column reference is ever
+	// given such a cell (see nullableSoleFK).
+	if p.unionForbidsEdge(tp.table.Name, cp.col.Name, i) {
+		return 0, false
+	}
 	// A composite FOREIGN KEY places its columns from one parent row (see
 	// composite_fk.go); that is the schema's own statement of which values
 	// go together, so nothing below may re-pick one of them.
@@ -501,7 +520,11 @@ func (p *Plan) statement(tp tablePlan) string {
 	for i, cp := range written {
 		cols[i] = quoteIdent(cp.col.Name)
 	}
-	fmt.Fprintf(&b, "INSERT INTO %s (%s) VALUES\n", QualifiedTable(tp.table), strings.Join(cols, ", "))
+	overriding := ""
+	if writesIdentity(tp) {
+		overriding = " OVERRIDING SYSTEM VALUE" // see writesIdentity
+	}
+	fmt.Fprintf(&b, "INSERT INTO %s (%s)%s VALUES\n", QualifiedTable(tp.table), strings.Join(cols, ", "), overriding)
 	for i := 0; i < tp.n; i++ {
 		vals := make([]string, len(written))
 		for j, cp := range written {
@@ -539,8 +562,9 @@ func (p *Plan) Statements() []string {
 }
 
 // Render returns the full deterministic SQL: a stable header (no timestamps)
-// plus every INSERT in topological order. Byte-identical for identical
-// (schema, pools, config).
+// plus every INSERT in topological order, each followed by the statement
+// that advances the sequences its explicit keys bypassed (see sequence.go).
+// Byte-identical for identical (schema, pools, config).
 func (p *Plan) Render() string {
 	var b strings.Builder
 	b.WriteString("-- Deterministic seed data materialized by `forge db seed`.\n")
@@ -554,6 +578,7 @@ func (p *Plan) Render() string {
 			}
 			fmt.Fprintf(&b, "-- %s\n", tp.table.Name)
 			b.WriteString(s)
+			b.WriteString(p.sequenceSync(tp))
 		}
 	}
 	return b.String()

@@ -25,8 +25,7 @@ go.mod's forge requirement is the forge the code compiles against and the
 one that generated it, so **bumping forge in go.mod is the whole upgrade** — the
 workflows follow on their own. A version stamped into a workflow at scaffold
 time froze there while go.mod moved on: that is how a project ended up
-verifying its generated code with an older forge than the one that wrote it
-("refusing to overwrite .forge-kcl/ with an OLDER forge's KCL module").
+verifying its generated code with an older forge than the one that wrote it.
 
 - WHETHER go.mod requires forge is read from the file, never inferred from a
   lookup failing. Only a module that does not require forge at all (a

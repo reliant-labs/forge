@@ -406,6 +406,17 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	if err != nil {
 		return envLedger{}, err
 	}
+	base, err := offlineLedgerShape(env, entities, ep.URL)
+	if err != nil {
+		return envLedger{}, err
+	}
+	return openOfflineLedger(projectDir, env, ep.URL, base)
+}
+
+// offlineLedgerShape is the part of --offline-ledger's selection that reads
+// only the declaration: the env's unit split, and the refusal when the control
+// plane (not this machine) applies some of it.
+func offlineLedgerShape(env string, entities *KCLEntities, endpoint string) (envLedger, error) {
 	units, err := unitSplitOf(entities)
 	if err != nil {
 		return envLedger{}, err
@@ -413,9 +424,9 @@ func offlineLedgerForEntities(env string, entities *KCLEntities, projectDir stri
 	base := envLedger{Units: units, HostedTiers: hostedTiersOf(entities)}
 	base.Mixed = forgeAppliesLocally(entities, units)
 	if !base.ledgerOnly() {
-		return envLedger{}, offlineShapeError(env, ep.URL, base.Units, base.HostedTiers)
+		return envLedger{}, offlineShapeError(env, endpoint, base.Units, base.HostedTiers)
 	}
-	return openOfflineLedger(projectDir, env, ep.URL, base)
+	return base, nil
 }
 
 // ledgerForEntities is the render-free half of ledgerFor, split out so the

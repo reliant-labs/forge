@@ -189,10 +189,12 @@ func TestKeyMember_HonorsItsOwnCheckVocabulary(t *testing.T) {
 	}
 }
 
-// A SOLE key column keeps the documented, stable UUID even when it carries a
-// vocabulary: collapsing a table's ids into four strings is not a trade the
-// key function gets to make on its own.
-func TestKeyMember_SoleKeyKeepsItsStableID(t *testing.T) {
+// A SOLE key column with a CHECK vocabulary stays distinct per row AND inside
+// the vocabulary. It used to keep the stable UUID, which the CHECK rejects on
+// every row; the table holds at most one row per admitted key, so the plan is
+// capped at the vocabulary's size instead (see capPinnedKey). A sole key with
+// no vocabulary keeps its stable UUID.
+func TestKeyMember_SoleKeyStaysDistinctInsideItsVocabulary(t *testing.T) {
 	tbl := schemadef.Table{
 		Name:   "plans",
 		PKCols: []string{"id"},
@@ -205,9 +207,15 @@ func TestKeyMember_SoleKeyKeepsItsStableID(t *testing.T) {
 		},
 	}
 	p := planFor(t, tbl, 5)
+	if n := p.rowsOf["plans"]; n != 2 {
+		t.Fatalf("plans seeds %d rows, want 2: its key admits two values", n)
+	}
 	seen := map[string]bool{}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 2; i++ {
 		v, _ := p.SeedValue("plans", "id", i)
+		if v != "free" && v != "pro" {
+			t.Fatalf("row %d: sole key %q is outside its CHECK vocabulary", i, v)
+		}
 		if seen[v] {
 			t.Fatalf("row %d repeats the sole key %q — a one-column key must stay distinct per row", i, v)
 		}

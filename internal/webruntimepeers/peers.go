@@ -336,11 +336,6 @@ func TypePinPath(name string, hoisted bool, entry string) string {
 // declaration entry, so a reconcile can change one without disturbing the
 // other. ok is false for a value forge did not write (another prefix, another
 // package).
-//
-// The implementation directory of a package typed under @types/ (react's
-// "./node_modules/react", which an older forge emitted and which fails every
-// .tsx with TS7016) is recognised too, with an empty entry: it is forge's own
-// stale value, and naming it lets the reconcile heal it to the @types/ target.
 func SplitPinPath(name, value string) (hoisted bool, entry string, ok bool) {
 	for _, candidate := range []struct {
 		prefix  string
@@ -352,8 +347,6 @@ func SplitPinPath(name, value string) (hoisted bool, entry string, ok bool) {
 			return candidate.hoisted, "", true
 		case strings.HasPrefix(value, dir+"/"):
 			return candidate.hoisted, strings.TrimPrefix(value, dir+"/"), true
-		case value == candidate.prefix+name:
-			return candidate.hoisted, "", true
 		}
 	}
 	return false, "", false

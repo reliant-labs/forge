@@ -180,9 +180,15 @@ type verifyOptions struct {
 type exitCodeError struct {
 	code int
 	msg  string
+	// verdict marks an outcome the exit code reports, not a failure:
+	// printed without the "Error:" prefix (exitcode.Line).
+	verdict bool
 }
 
 func (e exitCodeError) Error() string { return e.msg }
+
+// IsVerdict reports whether the error is a verdict rather than a failure.
+func (e exitCodeError) IsVerdict() bool { return e.verdict }
 
 // ExitCode reports the process exit status this error should produce. main()
 // checks for this interface; any other error keeps the default 1.

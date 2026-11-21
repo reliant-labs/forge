@@ -245,7 +245,7 @@ type annotationSite struct {
 // Two annotation shapes exist and only one carries field names:
 //
 //	option (forge.v1.method) = { auth_required: true };   ← a body
-//	[(forge.v1.field).pk = true]                          ← a field PATH
+//	[(forge.v1.config).sensitive = true]                  ← a field PATH
 //
 // The path form names its field with a `.` selector directly after the
 // closing paren; it is captured as a single-field body so the same
@@ -370,7 +370,7 @@ func checkFieldsIn(file, s string, start, end int, extension string, md protoref
 			vstart = skipSpace(s, vstart+1)
 		}
 		if s[vstart] == '.' {
-			// Path form: `(forge.v1.field).pk` — a sub-selector on a
+			// Path form: `(forge.v1.config).sensitive` — a sub-selector on a
 			// message-typed field.
 			if sub := fd.Message(); sub != nil {
 				m := vstart + 1

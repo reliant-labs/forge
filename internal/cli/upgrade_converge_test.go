@@ -12,6 +12,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codemod"
+	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -238,7 +239,7 @@ func TestUpgradeConverge_LintFindingsAreWhatIsLeftForAHuman(t *testing.T) {
 // how many of their findings now gate, so a red gate is never the first sign.
 func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	rep := newUpgradeReport(upgradeOptions{})
-	rep.To = "v1.6.0"
+	rep.From, rep.To = "v1.5.0", "v1.6.0"
 	rep.StartsGating = append(rep.StartsGating,
 		upgradeStartsGating{Rule: "testwait-fixed-sleep", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1", Fix: "forge fix waits"},
 		upgradeStartsGating{Rule: "forgeconv-product-event-pii", IntroducedIn: "v1.5.0", GatesFrom: "v1.5.1"},
@@ -259,8 +260,8 @@ func TestUpgradeReportsRulesThatStartGating(t *testing.T) {
 	printUpgradeSummary(&out, rep)
 	for _, want := range []string{
 		"Starts gating at v1.6.0",
-		"testwait-fixed-sleep (new in v1.5.0, gates from v1.5.1): 2 findings now gate; fix with `forge fix waits`",
-		"forgeconv-product-event-pii (new in v1.5.0, gates from v1.5.1): 0 findings now gate",
+		"testwait-fixed-sleep (new in v1.5.0; warned under v1.5.0, gates under v1.6.0): 2 findings now gate; fix with `forge fix waits`",
+		"forgeconv-product-event-pii (new in v1.5.0; warned under v1.5.0, gates under v1.6.0): 0 findings now gate",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("summary lacks %q:\n%s", want, out.String())
@@ -837,5 +838,60 @@ func TestUpgradeConverge_AddsOnlyScaffoldsNewAcrossTheRangeAndOffersTheRest(t *t
 	}
 	if !rep.Converged {
 		t.Errorf("an offer is not work for a person: %+v", rep.NeedsHuman)
+	}
+}
+
+// Upgrade-report defect 1: the proto-format lane reports each file as a
+// finding with its diff as a raw sub-tool line under it, both graced. upcoming
+// listed a phantom rule "external" ×30 with examples ["","",""] beside
+// forge-proto-format ×30. The raw lines are the findings' output: one rule,
+// counted once per file, examples that name files. A jumped rule says when it
+// gates in lint's own words.
+func TestUpgradeUpcomingIgnoresRawToolLines(t *testing.T) {
+	rec := &recordedSteps{lint: `{"findings":[
+	  {"severity":"warning","rule":"forge-proto-format","file":"proto/a.proto","message":"would reformat","lane":"proto-format","grace":{"introduced_in":"v1.8.0","gates_from":"v1.8.1","fix":"forge lint --proto-format --fix"}},
+	  {"severity":"warning","rule":"external","message":"--- proto/a.proto","lane":"proto-format","grace":{"introduced_in":"v1.8.0","gates_from":"v1.8.1","fix":"forge lint --proto-format --fix"}},
+	  {"severity":"warning","rule":"forge-proto-format","file":"proto/b.proto","message":"would reformat","lane":"proto-format","grace":{"introduced_in":"v1.8.0","gates_from":"v1.8.1","fix":"forge lint --proto-format --fix"}},
+	  {"severity":"warning","rule":"external","message":"--- proto/b.proto","lane":"proto-format","grace":{"introduced_in":"v1.8.0","gates_from":"v1.8.1","fix":"forge lint --proto-format --fix"}},
+	  {"severity":"warning","rule":"db-analyze-table-rewrite","file":"db/migrations/1.sql","line":3,"message":"rewrite","grace":{"introduced_in":"v1.7.0","gates_from":"v1.7.1","gates_after":"v1.8.1-0.20261119173027-ff5a370de464"}}
+	],"summary":{"errors":0,"warnings":5,"infos":0,"total":5},"ok":true}`}
+	r := &upgradeRun{rep: newUpgradeReport(upgradeOptions{}), steps: rec.steps()}
+	if err := r.phaseLint(); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.rep.Upcoming) != 2 {
+		t.Fatalf("upcoming = %+v, want forge-proto-format and db-analyze-table-rewrite only", r.rep.Upcoming)
+	}
+	pf := r.rep.Upcoming[0]
+	if pf.Rule != "forge-proto-format" || pf.Count != 2 || strings.Join(pf.Examples, ",") != "proto/a.proto,proto/b.proto" {
+		t.Errorf("forge-proto-format = %+v, want ×2 with file examples", pf)
+	}
+	var out bytes.Buffer
+	printUpgradeSummary(&out, r.rep)
+	for _, want := range []string{
+		"forge-proto-format ×2, gates from v1.8.1",
+		"db-analyze-table-rewrite ×1, gates from the next forge pin after v1.8.1-0.20261119173027-ff5a370de464",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("summary lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "external") {
+		t.Errorf("summary names the phantom rule:\n%s", out.String())
+	}
+}
+
+// Upgrade-report defect 8: exit 9 is the contract's "needs a person", not a
+// failure — no "Error:" — and under --json the list is on stdout, not "above".
+func TestUpgradeNeedsPersonIsAVerdict(t *testing.T) {
+	err := error(&exitCodeError{code: exitNeedsHuman, verdict: true, msg: needsPersonMessage(4, true)})
+	if got := exitcode.Line(err); strings.HasPrefix(got, "Error:") || !strings.Contains(got, "needs_human in the JSON document on stdout") {
+		t.Errorf("exit 9 line = %q", got)
+	}
+	if got := exitCodeForError(err); got != exitNeedsHuman {
+		t.Errorf("exit code = %d, want %d", got, exitNeedsHuman)
+	}
+	if got := needsPersonMessage(1, false); !strings.Contains(got, `"Still needs a person"`) || strings.Contains(got, "JSON") {
+		t.Errorf("text-mode message = %q", got)
 	}
 }

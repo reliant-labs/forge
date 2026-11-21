@@ -1,6 +1,6 @@
 ---
 name: auth
-description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, shared-issuer, external-provider, api-keys, chain.
+description: Authentication — managed identity as the default (forge.ManagedIdentity fills the validator's issuer, audience and the login broker's credentials; bring-your-own issuer is the escape hatch), the owned SetupAuth validator (JWT default with OIDC discovery, Clerk/Firebase variants), the fail-closed interceptor, mixed public/authenticated APIs via auth_required, and how to tell from source whether a server authenticates. Sub-skills: authorization, dev-loop, frontend, sessions, shared-issuer, external-provider, api-keys, chain.
 ---
 
 # Authentication
@@ -11,7 +11,7 @@ Authentication is a **middleware, nothing more**: an interceptor validates the r
 
 Everything downstream reads the context: `middleware.GetUser(ctx)` answers **who the caller is**. What that caller may DO, and which rows they may see, is application policy no annotation can express.
 
-Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
+Sub-skills: **`auth/authorization`** (`Enrich`, provisioning), **`auth/shared-issuer`** (Zitadel roles, the JWKS snapshot, a rotating broker token), **`auth/dev-loop`** (a token locally, the dev IdP `forge env up` converges), **`auth/frontend`** (native sign-in, the login broker), **`auth/sessions`** (server-side sessions: refresh, sign-out, lifetimes), **`auth/external-provider`** (Supabase, Auth0, Clerk, Firebase: the validator, the provider name, the caller), **`auth/api-keys`**, **`auth/chain`** (audiences, public rpcs), **`auth/public-pages`** (pages a signed-out visitor can open).
 
 ## The default: managed identity
 
@@ -165,7 +165,7 @@ Load `auth/dev-loop` before debugging a local 401: it covers the traps that are 
 
 ## Frontend wiring
 
-**Sign-in is NATIVE, and the browser never contacts the identity provider.** The browser POSTs credentials to this app's own API (`POST /auth/login`) and receives an HttpOnly session cookie; the server runs the whole OIDC flow against the issuer (`internal/app/login_broker.go`, over `forge/pkg/devidp`). So there is no token in JavaScript, no redirect, and no PKCE in the bundle — the issuer values (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are read SERVER-side. React Native cannot use the cookie model and keeps the `AuthProvider` seam (`src/lib/auth/provider.ts`) instead. All of it is in `auth/frontend`.
+**Sign-in is NATIVE, and the browser never contacts the identity provider.** The browser POSTs credentials to this app's own API (`POST /auth/login`) and receives an HttpOnly session cookie; the server runs the whole OIDC flow against the issuer (`internal/app/login_broker.go`, over `forge/pkg/devidp`). So there is no token in JavaScript, no redirect, and no PKCE in the bundle — the issuer values (`oidc_client_id`, `oidc_redirect_uri`, `oidc_scopes`) are read SERVER-side. With a database, the session itself is server-side too (`forge/pkg/session`): the cookie holds an opaque id, the tokens are renewed before they expire, and sign-out deletes the session (`auth/frontend`, "Staying signed in"). React Native cannot use the cookie model and keeps the `AuthProvider` seam (`src/lib/auth/provider.ts`) instead. All of it is in `auth/frontend`.
 
 ## Testing auth
 

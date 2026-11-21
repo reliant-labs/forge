@@ -13,17 +13,24 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-
+{{if not (connectV2 .)}}
 	"connectrpc.com/connect"
-{{if .NoProjectAuthInterceptor}}
+{{end}}
+{{- if .NoProjectAuthInterceptor}}
 	"github.com/reliant-labs/forge/pkg/authn"
 {{- end}}
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
+{{- if connectV2 .}}
+	"github.com/reliant-labs/forge/pkg/mountkit"
+{{- end}}
 	"github.com/reliant-labs/forge/pkg/observe"
 {{- if .HasDatabase}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/serverkit"
+{{- if .Sessions}}
+	"github.com/reliant-labs/forge/pkg/session"
+{{- end}}
 
 	"{{.Module}}/pkg/config"
 	"{{.Module}}/pkg/middleware"
@@ -121,10 +128,63 @@ func NewHTTPClient(HTTPClientDeps) (*http.Client, error) {
 	return observe.NewHTTPClient(observe.HTTPClientOptions{}), nil
 }
 
+{{if .Sessions}}// Sessions keeps native sign-in sessions SERVER-SIDE (forge/pkg/session): the
+// browser's cookie holds an opaque id, the issuer's tokens stay in the
+// auth_sessions table sealed under a key derived from that id, and the access
+// token is renewed before it expires, so nobody is signed out mid-task.
+// Signing out deletes the session. The login broker creates sessions
+// (WithSessions in login_broker.go) and UserAuth resolves them
+// (Authenticator.UseSessions), so the cookie authenticates every rpc.
+//
+// The lifetimes are session.Config's: Lifetime (default 30 days), IdleTimeout
+// (14 days unused), CacheTTL (15 seconds: how long a sign-out on another
+// replica takes to reach this one). With no database, or no broker
+// configured, the Manager is nil and the cookie holds the access token, which
+// ends the session when that token expires.
+type Sessions struct{ *session.Manager }
+
+// SessionsDeps is the pool the sessions live in and the config the broker
+// reads.
+type SessionsDeps struct {
+	DB     *DB
+{{- if .BrokerConfigType}}
+	Broker *config.{{.BrokerConfigType}}
+{{- else}}
+	Config *config.Config
+{{- end}}
+	Logger *slog.Logger
+}
+
+// NewSessions builds the session Manager over the serving pool.
+func NewSessions(d SessionsDeps) (*Sessions, error) {
+	if d.DB.DB == nil || LoginBrokerConfigured(d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}) != nil {
+		return &Sessions{}, nil
+	}
+	m, err := session.NewManager(session.Config{
+		Store:     session.NewPostgresStore(d.DB.DB),
+		Refresher: SessionRefresher(d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}),
+		Logger:    d.Logger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sessions: %w", err)
+	}
+	return &Sessions{m}, nil
+}
+
+// Run deletes ended sessions hourly until shutdown.
+func (s *Sessions) Run(ctx context.Context) error {
+	if s.Manager == nil {
+		<-ctx.Done()
+		return nil
+	}
+	return s.Manager.Run(ctx)
+}
+
+{{end -}}
 // UserAuth authenticates the user audience — your product's signed-in users:
 // SetupAuth's bearer-token validator (auth.go){{if .HasDatabase}}, API keys checked by
 // APIKeyValidator on the serving pool,{{end}} behind the fail-closed interceptor.
-type UserAuth struct{ serverkit.Authenticator }
+type UserAuth struct{ serverkit.Authenticator{{if connectV2 .}}V2{{end}} }
 
 // UserAuthDeps is what the authenticator reads.
 type UserAuthDeps struct {
@@ -141,12 +201,16 @@ type UserAuthDeps struct {
 	// forge:optional-dep
 	Enrich middleware.ClaimsEnricher
 {{- end}}
+{{- if .Sessions}}
+	// Sessions resolves the session ids native sign-in puts in its cookie.
+	Sessions *Sessions
+{{- end}}
 }
 
 // NewUserAuth builds the user audience's authenticator. AnonymousOK: false is
 // FAIL-CLOSED: a request must present a valid token unless the rpc it names
 // declared `auth_required: false` in its proto. A server with no validator is
-// a boot error (NewAuthInterceptor refuses), never a running process.
+// a boot error (NewAuthInterceptor{{if connectV2 .}}V2{{end}} refuses), never a running process.
 //
 // The audience directive names the trust domain it authenticates, so
 // `forge lint --graph` can prove every service a listener serves through a
@@ -182,7 +246,33 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 {{- else}}
 		authenticator.UseKeyValidator(APIKeyValidator())
 {{- end}}
+{{- if .Sessions}}
+		if d.Sessions != nil && d.Sessions.Manager != nil {
+			// A session id in the cookie resolves to its access token,
+			// which SetupAuth's validator then checks like any bearer token.
+			authenticator.UseSessions(d.Sessions.Manager)
+		}
+{{- end}}
 	}
+{{- if connectV2 .}}
+{{- if .NoProjectAuthInterceptor}}
+	// AuthPolicyV2 reads the caller back the way the policy stashes it,
+	// for the chain's audit and activity slots.
+	a, err := serverkit.AuthPolicyV2(serverkit.AudienceUser, policy)
+	if err != nil {
+		return nil, fmt.Errorf("auth configuration: %w", err)
+	}
+	return &UserAuth{a}, nil
+{{- else}}
+	interceptor, err := middleware.NewAuthInterceptorV2(authDeps)
+	if err != nil {
+		return nil, fmt.Errorf("auth configuration: %w", err)
+	}
+	// The interceptor stashes the claims the forge way, so the chain's audit
+	// and activity slots read the caller back with middleware.ClaimsFromContext.
+	return &UserAuth{serverkit.AuthWithCallerV2(serverkit.AudienceUser, interceptor, middleware.ClaimsFromContext)}, nil
+{{- end}}
+{{- else}}
 {{- if .NoProjectAuthInterceptor}}
 	interceptor, err := authn.NewInterceptor(policy)
 {{- else}}
@@ -192,8 +282,18 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 		return nil, fmt.Errorf("auth configuration: %w", err)
 	}
 	return &UserAuth{serverkit.AuthFor(serverkit.AudienceUser, interceptor)}, nil
+{{- end}}
 }
 
+{{if connectV2 . -}}
+// UserChain is the interceptor chain the API listener builds every user
+// route with (serverkit.NewChainV2): trace → recovery → request-id → logging →
+// metrics → deadline → auth → audit → rate-limit → activity → stream-drain →
+// protovalidate, plus the payload caps. Every slot has forge's default except
+// Auth; a field you set replaces that slot, and the NoAudit, NoTrace,
+// NoDeadline, NoActivity, NoStreamDrain and NoValidate fields drop one.
+type UserChain struct{ *serverkit.ChainV2 }
+{{- else -}}
 // UserChain is the interceptor chain the API listener builds every user
 // route with (serverkit.NewChain): trace → recovery → request-id → logging →
 // metrics → deadline → auth → audit → rate-limit → activity → stream-drain →
@@ -201,6 +301,7 @@ func NewUserAuth(d UserAuthDeps) (*UserAuth, error) {
 // Auth; a field you set replaces that slot, and serverkit.NoAudit, NoTrace,
 // NoDeadline, NoActivity, NoStreamDrain and NoValidate drop one.
 type UserChain struct{ *serverkit.Chain }
+{{- end}}
 
 // UserChainDeps is the chain's authenticator and settings.
 type UserChainDeps struct {
@@ -212,7 +313,7 @@ type UserChainDeps struct {
 
 // NewUserChain builds the user audience's chain.
 func NewUserChain(d UserChainDeps) (*UserChain, error) {
-	chain, err := serverkit.NewChain(serverkit.ChainDeps{
+	chain, err := serverkit.NewChain{{if connectV2 .}}V2{{end}}(serverkit.ChainDeps{{if connectV2 .}}V2{{end}}{
 		Auth:   d.Auth,
 		Logger: d.Logger,
 		// Each rpc's `(forge.v1.method).timeout`; the rest get the slot's
@@ -220,7 +321,7 @@ func NewUserChain(d UserChainDeps) (*UserChain, error) {
 		// the budget bounds the credential lookup too.
 		Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines},
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
-		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(d.Config.RateLimitRps), Burst: int(d.Config.RateLimitBurst)}, {{if .NoProjectAuthInterceptor}}authn{{else}}middleware{{end}}.ClaimsFromContext),
+		RateLimit: fmw.RateLimitInterceptor{{if connectV2 .}}V2{{end}}(fmw.RateLimitOptions{Rps: int(d.Config.RateLimitRps), Burst: int(d.Config.RateLimitBurst)}, {{if .NoProjectAuthInterceptor}}authn{{else}}middleware{{end}}.ClaimsFromContext),
 {{- end}}
 {{- if index .ConfigFields "LogSuccessSampleWindow"}}
 		// Success-log sampling (0s, the default, logs every successful rpc).
@@ -256,6 +357,10 @@ type APIListenerDeps struct {
 	// Broker is the config login_broker.go reads its idp_* / oidc_*
 	// settings from.
 	Broker *config.{{.BrokerConfigType}}
+{{- end}}
+{{- if .Sessions}}
+	// Sessions is where the login broker keeps the sessions it creates.
+	Sessions *Sessions
 {{- end}}
 }
 
@@ -306,14 +411,28 @@ func NewAPIListener(d APIListenerDeps) (*APIListener, error) {
 	}
 	l, err := serverkit.NewListener(serverkit.ListenerDeps{
 		Config: d.ServerCfg.Listener(),
+{{- if connectV2 .}}
+		ChainV2: d.Chain.ChainV2,
+		RoutesV2: serverkit.RoutesFuncV2(func(m *mountkit.MuxV2) []string {
+			mounted := d.Routes.RegisterV2(m)
+{{- else}}
 		Chain:  d.Chain.Chain,
 		Routes: serverkit.RoutesFunc(func(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
 			mounted := d.Routes.Register(mux, opts...)
+{{- end}}
 {{- if not .NoBrokerConfig}}
 			// NATIVE SIGN-IN: /auth/login, /auth/register, /auth/session and
 			// /auth/logout, gated on configuration (login_broker.go, yours).
 			if err := LoginBrokerConfigured(d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}); err == nil {
-				RegisterLoginBroker(mux, d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}, d.Logger)
+{{- if .Sessions}}
+				var sessions *session.Manager
+				if d.Sessions != nil {
+					sessions = d.Sessions.Manager
+				}
+				RegisterLoginBroker({{if connectV2 .}}m.Mux(){{else}}mux{{end}}, d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}, d.Logger, WithSessions(sessions))
+{{- else}}
+				RegisterLoginBroker({{if connectV2 .}}m.Mux(){{else}}mux{{end}}, d.{{if .BrokerConfigType}}Broker{{else}}Config{{end}}, d.Logger)
+{{- end}}
 				d.Logger.Info("native sign-in enabled", "routes", "/auth/login /auth/register /auth/session /auth/logout")
 			} else {
 				d.Logger.Debug("native sign-in not configured", "reason", err)

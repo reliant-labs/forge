@@ -330,20 +330,21 @@ func (p *Plan) Warnings() []string {
 	return out
 }
 
-// Validate reports the conditions under which forge refuses to write this
-// plan's rows: a db/seeds/vocab.yaml null declared for a NOT NULL column, and
-// a foreign-key reference reachable by two paths whose authority nobody
-// declared (see diamond.go). Both are checked at APPLY time rather than at
-// BuildPlan, so `forge generate` — which builds one-row plans for entity
-// factories and fixtures — is never blocked by a decision that only affects a
-// real dataset.
+// Validate reports why forge cannot write this plan, including invalid
+// vocabulary, unresolved foreign-key authority (diamond.go), or array
+// CHECKs from which the plan cannot prove a valid value. These are checked
+// at APPLY time, so BuildPlan can still be used for fixtures and previews.
 func (p *Plan) Validate() error {
+	diamondErr, arrayErr := p.diamondRefusal(), p.arrayShapeRefusal()
 	if len(p.vocabErrs) == 0 {
-		return p.diamondRefusal()
+		if arrayErr == nil {
+			return diamondErr
+		}
+		return errors.Join(diamondErr, arrayErr)
 	}
 	vocabErr := fmt.Errorf("refusing to seed: db/seeds/vocab.yaml declares a value the schema cannot hold:\n  %s",
 		strings.Join(p.vocabErrs, "\n  "))
-	return errors.Join(vocabErr, p.diamondRefusal())
+	return errors.Join(vocabErr, diamondErr, arrayErr)
 }
 
 // Tables returns the planned table names in insert (topological) order.

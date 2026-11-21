@@ -12,7 +12,10 @@ would need it — load it then, not before.
 
 A frontend-only site's list: `deploy/static-site`.
 
-pnpm: `migrations/v1.0.0/pnpm`.
+Why forge at all, in about a dozen reasons with the benefits that back them:
+`forge why` (quote it rather than paraphrase).
+
+pnpm: `frontend/pnpm`.
 
 ## Three ways in, all first-class
 
@@ -54,8 +57,7 @@ A Next.js frontend builds as a **static export** (`output: static`, into
 `out/`), the only shape hosted static hosting serves. So every route is
 static: detail and edit are `/<entity>/view?id=…` and `/<entity>/edit?id=…`
 (`src/lib/entity-routes.ts`). A hand-written `[id]` segment fails
-`npm run build`. Depth: `frontend/serving`. If the project's pages predate
-v0.1.44 and still use `[id]`, load `migrations/v0.1.44`.
+`npm run build`. Depth: `frontend/serving`, which also converts pages that still use `[id]`.
 
 ## Where to go next
 
@@ -152,4 +154,4 @@ forge skill search migration  # find one by keyword
 - Uncertain proto/migration/annotation syntax: draft it, run `forge generate`, read the error, fix. Never reverse-engineer forge's `internal/**` source.
 - One service per proto package; its owned and generated files co-locate in one `internal/handlers/<svc>/`.
 - Use `task test` (what CI runs), not raw `go test`; iterate on `task test:short -- ./internal/<pkg>/...`.
-- Gate with `forge lint`, and never pipe it through `head`: the verdict is the LAST line. `forge lint --quiet` prints only what failed plus the verdict. `forge lint --scope internal/handlers/<svc> --scope proto/services/<svc>` lints only your slice of a shared checkout — the whole-project lanes (frontend lint, graph, component-drift, config-reach) are skipped and named, so run it unscoped before merging. Run one lane with its flag (`--read-only-fields`, `--computed-fields`, `--static-export`, `--conventions`, `--migration-safety`; `forge lint --help` lists them all), or name several (`--conventions --contract`) to run each under one verdict. An unwritten `forge:read-only` or `forge:computed` field fails lint, except while the service still holds forge's own unwired rpc stubs — then it warns `pending: implement <Rpc>`. A Next.js frontend that must be a static export (`output: static`, or bound to `forge.OnHosted`/`OnBucket`/`OnFirebase` in any env) fails `--static-export` on anything the export refuses — a `[id]` route, a server action, `cookies()`, next/image without `unoptimized` — each with its file:line and fix.
+- Gate with `forge lint`, and never pipe it through `head`: the verdict is the LAST line. `forge lint --quiet` prints only what failed plus the verdict. `forge lint --scope internal/handlers/<svc> --scope proto/services/<svc>` lints only your slice of a shared checkout — the whole-project lanes (frontend lint, graph, component-drift, config-reach) are skipped and named, so run it unscoped before merging. Run one lane with its flag (`--read-only-fields`, `--computed-fields`, `--static-export`, `--conventions`, `--migration-safety`; `forge lint --help` lists them all), or name several (`--conventions --contract`) to run each under one verdict. An unwritten `forge:read-only` or `forge:computed` field fails lint, except while the service still holds forge's own unwired rpc stubs — then it warns `pending: implement <Rpc>`. A Next.js frontend that must be a static export (`output: static`, or bound to `forge.OnHosted`/`OnBucket`/`OnFirebase` in any env) fails `--static-export` on anything the export refuses — a `[id]` route, a server action, `cookies()`, next/image without `unoptimized` — each with its file:line and fix. A Vite frontend on a static runtime fails it when `build.outDir` is not the env's `public_dir` or `base` misses its `base_path`; any other frontend gets a "not applicable" line.

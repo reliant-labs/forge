@@ -5,11 +5,12 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-var update = flag.Bool("update", false, "rewrite docs/benefits.md and the README.md benefits block from benefits.yaml")
+var update = flag.Bool("update", false, "rewrite docs/benefits.md, docs/why-forge.md and the README.md benefits and reasons blocks from benefits.yaml")
 
 // repoRoot is the forge checkout, relative to this package's directory (the
 // working directory of `go test`).
@@ -461,6 +462,10 @@ func TestRenderedFilesAreCurrent(t *testing.T) {
 		if !found {
 			t.Fatalf("%s has no %s … %s block; the README benefits table renders there", ReadmePath, ReadmeStart, ReadmeEnd)
 		}
+		want, found = SpliceReadmeReasons(want, r)
+		if !found {
+			t.Fatalf("%s has no %s … %s block; the README's reasons render there", ReadmePath, ReasonsStart, ReasonsEnd)
+		}
 		if bytes.Equal(readme, want) {
 			return
 		}
@@ -470,7 +475,26 @@ func TestRenderedFilesAreCurrent(t *testing.T) {
 			}
 			return
 		}
-		t.Errorf("the benefits block of %s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", ReadmePath)
+		t.Errorf("the benefits or reasons block of %s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", ReadmePath)
+	})
+
+	t.Run("docs/why-forge.md", func(t *testing.T) {
+		path := filepath.Join(repoRoot, WhyPath)
+		want := RenderWhy(r)
+		got, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if bytes.Equal(got, want) {
+			return
+		}
+		if *update {
+			if err := os.WriteFile(path, want, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		t.Errorf("%s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", WhyPath)
 	})
 
 	t.Run("docs/benefits.md", func(t *testing.T) {
@@ -491,6 +515,40 @@ func TestRenderedFilesAreCurrent(t *testing.T) {
 		}
 		t.Errorf("%s is stale against internal/benefits/benefits.yaml; run `task docs:benefits`", DocsPath)
 	})
+}
+
+// The renders are marked generated in the repo's .gitattributes, so a pull
+// request's diff collapses them and a merge regenerates them rather than
+// resolving them by hand. benefits.yaml itself must never be merge=union:
+// git's union keeps both versions of a prose line edited on two branches, and
+// interleaves two entries added at one spot, and neither is caught by Validate.
+// The test reads .gitattributes itself, so Go's test cache sees an edit to it.
+func TestGitattributesMarksBenefitRenders(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot, ".gitattributes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attrs := map[string][]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		attrs[fields[0]] = append(attrs[fields[0]], fields[1:]...)
+	}
+	for _, path := range []string{DocsPath, WhyPath} {
+		if !slices.Contains(attrs[path], "linguist-generated=true") {
+			t.Errorf(".gitattributes does not mark %s linguist-generated=true; it is rendered from internal/benefits/benefits.yaml", path)
+		}
+	}
+	for pattern, list := range attrs {
+		if !strings.Contains(pattern, "benefits.yaml") && pattern != "*.yaml" {
+			continue
+		}
+		if slices.Contains(list, "merge=union") {
+			t.Errorf(".gitattributes routes %s to merge=union; a union merge of benefits.yaml can silently garble prose and interleave entries", pattern)
+		}
+	}
 }
 
 // The page anchors every entry at its id, so the README's links and any

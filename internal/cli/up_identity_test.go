@@ -284,3 +284,17 @@ func TestMissingIDPPATMessage(t *testing.T) {
 		t.Errorf("a declared path is the only location, so the fix names it:\n%s", custom)
 	}
 }
+
+// The IdP's log is the file hostinfra writes for the zitadel WORKLOAD, under
+// the env's log directory — not a fixed .forge/hostinfra/idp/zitadel.log,
+// which named the wrong file for any IdP not called "idp".
+func TestIDPLogPath_IsTheWorkloadsEnvLog(t *testing.T) {
+	for _, tc := range []struct{ env, name, want string }{
+		{"dev", "idp", ".forge/logs/dev/idp.log"},
+		{"e2e", "auth", ".forge/logs/e2e/auth.log"},
+	} {
+		if got := idpLogPath(tc.env, &HostInfraEntity{Name: tc.name, Engine: hostinfra.EngineZitadel}); got != tc.want {
+			t.Errorf("idpLogPath(%q, %q) = %q, want %q", tc.env, tc.name, got, tc.want)
+		}
+	}
+}

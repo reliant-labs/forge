@@ -23,8 +23,8 @@ func TestNewClientStackV2_Defaults(t *testing.T) {
 	if stack.HTTPClient == nil || stack.HTTPClient.Timeout != defaultClientTimeout || stack.HTTPClient.Transport != nil {
 		t.Fatalf("HTTPClient = %+v, want the 30s default over http.DefaultTransport", stack.HTTPClient)
 	}
-	if len(stack.Interceptors) != 2 {
-		t.Errorf("Interceptors = %d, want 2 (otelconnect, request-id)", len(stack.Interceptors))
+	if len(stack.Interceptors) != 3 {
+		t.Errorf("Interceptors = %d, want 3 (svcerr error metadata, otelconnect, request-id)", len(stack.Interceptors))
 	}
 	if len(stack.HTTPOptions) != 1 {
 		t.Errorf("HTTPOptions = %d, want 1 (the unbounded read limit)", len(stack.HTTPOptions))
@@ -46,8 +46,8 @@ func TestNewClientStackV2_Defaults(t *testing.T) {
 	if err != nil || stack.HTTPClient.Transport != http.RoundTripper(rt) {
 		t.Fatal("Transport not passed through")
 	}
-	if len(stack.Interceptors) != 3 {
-		t.Errorf("Interceptors = %d, want 3: a nil Extra is dropped", len(stack.Interceptors))
+	if len(stack.Interceptors) != 4 {
+		t.Errorf("Interceptors = %d, want 4: a nil Extra is dropped", len(stack.Interceptors))
 	}
 }
 

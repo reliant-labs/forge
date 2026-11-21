@@ -165,33 +165,16 @@ func frontendScaffoldedByForge(projectDir, feRel, absFeDir string) bool {
 // frontend scaffold writes (generator.GenerateFrontendFilesWithOptions).
 const frontendGoModBoundaryMarker = "// Nested module boundary so `go test ./...`"
 
-// scaffoldLedgerDir and legacyScaffoldLedgerFile are the birth ledger's
-// project-relative locations: one entry file per path, and the one-file
-// ledger it replaced. The format's owner is internal/checksums
+// scaffoldLedgerDir is the birth ledger's project-relative location: one
+// entry file per path. The format's owner is internal/checksums
 // (scaffoldledger.go); this package is a pure schema package with no
 // internal imports, so it reads the one fact it needs — whether a key is
 // recorded — with a local view of the layout.
-const (
-	scaffoldLedgerDir        = ".forge/scaffolded"
-	legacyScaffoldLedgerFile = ".forge/scaffolded.json"
-)
+const scaffoldLedgerDir = ".forge/scaffolded"
 
 func ledgerRecords(projectDir, key string) bool {
-	if _, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(scaffoldLedgerDir+"/"+key+".json"))); err == nil {
-		return true
-	}
-	data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(legacyScaffoldLedgerFile)))
-	if err != nil {
-		return false
-	}
-	var ledger struct {
-		Files map[string]json.RawMessage `json:"files"`
-	}
-	if json.Unmarshal(data, &ledger) != nil {
-		return false
-	}
-	_, ok := ledger.Files[key]
-	return ok
+	_, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(scaffoldLedgerDir+"/"+key+".json")))
+	return err == nil
 }
 
 // ComponentsDirRel is where forge's component library lives in this

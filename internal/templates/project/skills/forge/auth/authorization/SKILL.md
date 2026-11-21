@@ -207,6 +207,14 @@ fails on the line you must decide rather than shipping a guessed principal.
 `forge lint` (`forgeconv-crud-owner-resolver`) flags any wrapper whose owner
 source disagrees with its siblings'.
 
+**Keeping `claims.UserID` is a decision too.** If a user id IS the column's
+owner, leave the expression and delete the FORGE_SCAFFOLD comment above it.
+`owner := claims.UserID` under the comment is forge's placeholder; without it,
+it is your policy, judged and copied like any resolver. forge never tells you to
+converge on an email address: an address can change or be reassigned to someone
+else, so it is not an owner key, and a wrapper scoped by one is flagged when its
+siblings use a stable id.
+
 One gap worth knowing: a **custom** RPC (`TransferOrder`, `ArchiveWorkspace`)
 delegates to no generated op, so there is no `Fetch`/`Filters`/`Persist` seam to
 wrap and forge offers no wrapper for it. Such an RPC is reported as a warning and
@@ -264,7 +272,10 @@ func (s *Service) ListAllCrews(...)
 
 This suppresses the **error**, not just the warning. The reason after the colon
 is mandatory — a bare directive is the unfalsifiable comment the whole check
-exists to replace, and it will not silence anything. It lives next to the code so
+exists to replace, and it will not silence anything. `forge project audit` lists
+such a marker under `unscoped_auth`'s `malformed_acknowledgements`, and `forge
+lint` warns on it (`forge-go-markers-reason-missing`), so a marker that does
+nothing never looks like one that worked. It lives next to the code so
 it shows up in the diff that introduces it, where a reviewer can disagree.
 
 ### When your project resolves the caller through its own package

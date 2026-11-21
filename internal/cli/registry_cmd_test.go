@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/dockercred"
 )
 
 // The registry a CI job logs in to and scans/signs is the one the env's KCL
@@ -248,5 +250,26 @@ func TestRegistryRef_NamedImage(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "registry.example/prod/web@"+refDigest {
 		t.Errorf("ref = %q, want registry.example/prod/web@%s", strings.TrimSpace(out), refDigest)
+	}
+}
+
+// With no docker CLI on PATH the platform login is still made, in-process,
+// into the docker credential store the oras pushes read (bug report
+// 1671618d: a static-only `env deploy` failed at `exec: "docker": executable
+// file not found` although it pushes nothing with docker).
+func TestRegistryLoginWithoutDockerStoresTheCredential(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	cfgDir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", cfgDir)
+	if err := runDockerLogin(context.Background(), "registry.example.com", "forge", "rlat_no_docker"); err != nil {
+		t.Fatalf("login without docker: %v", err)
+	}
+	credential, err := dockercred.Credential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := credential(context.Background(), "registry.example.com")
+	if err != nil || cred.Username != "forge" || cred.Password != "rlat_no_docker" {
+		t.Fatalf("got %+v, %v; want the login in $DOCKER_CONFIG", cred, err)
 	}
 }

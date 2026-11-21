@@ -60,7 +60,7 @@ func TestIdentityMethods_LegacyBrokerIgnoresEveryDeclaration(t *testing.T) {
 		if f.Rule != ruleIdentityMethods || f.Severity != "error" || f.File != "deploy/kcl/identity.k" || f.Line == 0 {
 			t.Errorf("finding %+v", f)
 		}
-		if !strings.Contains(f.Message, "idp_login_policy") || !strings.Contains(f.FixHint, "migrations/v1.1.0/identity-v2") {
+		if !strings.Contains(f.Message, "idp_login_policy") || !strings.Contains(f.FixHint, "mountSignInMethods") {
 			t.Errorf("finding does not name the cause and the fix: %+v", f)
 		}
 	}

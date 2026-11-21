@@ -44,8 +44,8 @@ func TestLoginBrokerCookieMismatch(t *testing.T) {
 			if (got != "") != tc.warn {
 				t.Fatalf("warning = %q, want warn=%v", got, tc.warn)
 			}
-			if tc.warn && !strings.Contains(got, "SecureSessionCookieName") || tc.warn && !strings.Contains(got, "migrations/v1.1.0/identity-v2") {
-				t.Errorf("the warning must name the constant and the playbook: %s", got)
+			if tc.warn && !strings.Contains(got, "SecureSessionCookieName") || tc.warn && !strings.Contains(got, "__Host-") {
+				t.Errorf("the warning must name the constant and the fix: %s", got)
 			}
 		})
 	}

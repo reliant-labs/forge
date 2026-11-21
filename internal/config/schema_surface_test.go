@@ -37,14 +37,31 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// envs / monitoring: read by the env-declaration seam
 			// (internal/cli/env_declaration.go) every `forge obs` verb
 			// resolves through, and by `forge obs init`.
+			// tests: coverage read by the env render (ReadTestsCoverage →
+			// resolveCoverBinaries); the rest by the `forge test` verbs.
 			// scaffold: read by checksums.ExcludeGlobs at every write
 			// chokepoint (scaffold.exclude).
+			// vuln: read where the release cut attaches an OCI artifact's
+			// SBOM as a referrer (VulnConfig.AttachSBOMEnabled).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
 				"forge_version", "generate", "git", "harness", "k8s",
-				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
+				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "tests", "upgrade",
+				"vuln",
 			},
+		},
+		{
+			// vuln.attach_sbom: read by the release cut (internal/sbomoci);
+			// vuln.patch.verify: read by `forge vuln patch`.
+			name: "VulnConfig",
+			typ:  reflect.TypeFor[VulnConfig](),
+			want: []string{"attach_sbom", "patch"},
+		},
+		{
+			name: "VulnPatchConfig",
+			typ:  reflect.TypeFor[VulnPatchConfig](),
+			want: []string{"verify"},
 		},
 		{
 			// Every feature; orm also has //forge:no-orm.
@@ -244,22 +261,20 @@ func TestSchemaSurface_KindIsNotAuthored(t *testing.T) {
 	}
 }
 
-// TestConfigWarnings_DedupAcrossLabelSpellings pins that the same retired key
-// in the same file warns ONCE per process even when callers spell the path
+// TestConfigWarnings_DedupAcrossLabelSpellings pins that the same warning
+// in the same file prints ONCE per process even when callers spell the path
 // differently. A single command loads forge.yaml through several call sites,
 // some passing an absolute path and some the bare filename; keying the dedup
 // set on the raw label made those look like two files and printed every
-// retired-key notice twice.
+// notice twice.
 func TestConfigWarnings_DedupAcrossLabelSpellings(t *testing.T) {
 	var sink strings.Builder
 	prev := SetConfigWarningSink(&sink)
 	defer SetConfigWarningSink(prev)
 
-	const in = "name: demo\nmodule_path: github.com/example/demo\nversion: 1.0.0\n"
+	warn := []validationIssue{{line: 3, column: 1, msg: `"version" is no longer run`, warning: true}}
 	for _, label := range []string{"forge.yaml", "/abs/path/to/forge.yaml", "./forge.yaml"} {
-		if _, err := LoadProject([]byte(in), label); err != nil {
-			t.Fatalf("retired key must not gate the load (%s): %v", label, err)
-		}
+		flushConfigWarnings(label, warn)
 	}
 
 	if got := strings.Count(sink.String(), `"version" is no longer`); got != 1 {

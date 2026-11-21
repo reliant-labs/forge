@@ -647,6 +647,12 @@ schema Workload:
     # live heap every two hours. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
     # every runtime that runs a process; the workload's own `env` wins.
     profiling?: Profiling
+    # How what this workload runs is observed when forge did not build it (a
+    # third-party image): scrapes, log parsing, OTLP env remaps, profiles,
+    # checks and alerts (see forge.Telemetry). The target IS this workload:
+    # its service name, pods and ports come from it. Authoring-only: it
+    # renders into output.telemetry, never into the spec.
+    telemetry?: Telemetry
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"
@@ -736,6 +742,10 @@ schema Workload:
         kind in caps.WORKLOAD_KINDS, \
             "Workload.kind must be one of ${caps.WORKLOAD_KINDS} — got '${kind}'. A kind says HOW this runs, not what code is inside it."
         replicas > 0, "Workload '${name}': replicas must be positive"
+        not telemetry or _tel_targets_self(telemetry), \
+            "Workload '${name}': telemetry targets this workload itself, so selector, namespaces, cluster and address are refused (they come from its runtime)"
+        not telemetry or kind != "tool", \
+            "Workload '${name}': telemetry is not supported for kind='tool' — a tool is never scheduled, so there is nothing to observe"
         go_memory_limit_percent == Undefined or go_memory_limit_percent == None or (go_memory_limit_percent >= 0 and go_memory_limit_percent <= 95), \
             "Workload '${name}': go_memory_limit_percent must be 0 (off) or 1..95 — got ${go_memory_limit_percent}. GOMEMLIMIT is a fraction of the container limit, and the limit also has to hold memory the Go runtime does not count."
 

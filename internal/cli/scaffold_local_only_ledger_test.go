@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -100,16 +99,12 @@ func TestScaffoldLedger_LegacyLocalOnlyEntryConverges(t *testing.T) {
 	dir := scaffoldWorkloadModelProject(t)
 	clean := readLedgerBytes(t, dir)
 
-	// An older forge's one-file ledger carrying the entry, beside the
-	// current entry files.
-	legacy, err := json.MarshalIndent(map[string]any{
-		"files":           map[string]any{localOnlyStore: map[string]any{"scaffolded_at": "2026-09-04T15:19:42Z"}},
-		"absent_reported": []any{localOnlyStore},
-	}, "", "  ")
-	if err != nil {
+	// An older forge's entry file for it, beside the current ones.
+	entry := filepath.Join(dir, filepath.FromSlash(checksums.ScaffoldEntryPath(localOnlyStore)))
+	if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, checksums.LegacyScaffoldedFile), append(legacy, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(entry, []byte(`{"absent_reported":true}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// The legacy shape that bit control-plane: entry committed, file absent.

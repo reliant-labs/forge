@@ -53,7 +53,7 @@ The provider's complexity policy is **per instance**, so the app asks rather tha
 
 The broker serves `POST /auth/register` in development, and in a deployed environment **only when its config sets `auth_self_signup: true`** (`AUTH_SELF_SIGNUP`). The sign-in screen reads `GET /auth/options` and shows the "Create an account" toggle only when sign-up is served; it fails closed, so an older server or an outage hides it.
 
-**Before opting in, read this.** A self-registered account's email is **unverified**: the person typed it and is signed in before proving it is theirs. Anything the app binds to a user *by email* (an invitation, a tenant membership, a pre-created record) must require `devidp.User.EmailVerified` first, or registering someone else's address claims what was waiting for them (`auth/authorization` has the check). `forge lint` warns (`forgeconv-open-signup`) about a broker that mounts the route with no condition, as brokers scaffolded before v1.0.16 do; `migrations/v1.0.16` has the edit.
+**Before opting in, read this.** A self-registered account's email is **unverified**: the person typed it and is signed in before proving it is theirs. Anything the app binds to a user *by email* (an invitation, a tenant membership, a pre-created record) must require `devidp.User.EmailVerified` first, or registering someone else's address claims what was waiting for them (`auth/authorization` has the check). `forge lint` warns (`forgeconv-open-signup`) about a broker that mounts the route with no condition, as brokers scaffolded before v1.0.16 do; its fix hint has the edit.
 
 Under a delivered LOGIN_POLICY (below) the declaration decides instead, and `auth_self_signup` is ignored.
 
@@ -69,7 +69,7 @@ Under a delivered LOGIN_POLICY (below) the declaration decides instead, and `aut
 - **Credentials nobody proved do not survive a proof.** A sign-up's password and an unverified provider's link wait sealed in the registering browser until it proves the address. Whatever an unverified account already holds when its owner proves the inbox (link, verification, invitation) is revoked — a random password, no links, no passkeys — the account is locked if that fails, and `/auth/verify` answers `credentialsReset: true`.
 - Every route refuses cross-site requests, same-site siblings included (`devidp.GuardMux`: exact origin), and non-JSON bodies; every broker cookie is host-only and `__Host-` prefixed when Secure, the session cookie included; binding cookies are padded to one length; rate limits key on the client via `trusted_proxy_hops`.
 
-Pages: `/auth/{magic,invite,verify,social/callback}`, public in the route guard. Copy never says whether an address has an account. `forge lint` (`forgeconv-identity-methods`) flags a declaration the broker does not serve; `migrations/v1.1.0/identity-v2` upgrades a broker scaffolded earlier.
+Pages: `/auth/{magic,invite,verify,social/callback}`, public in the route guard. Copy never says whether an address has an account. `forge lint` (`forgeconv-identity-methods`) flags a declaration the broker does not serve; its fix hint says how to adopt the current broker.
 
 ## Why the token is not in JavaScript, and what you get instead
 
@@ -95,7 +95,7 @@ Four reasons, each of which was a real limit of the old design:
 - **No third-party cookies.** The silent-restore iframe a browser flow depends on is already unreliable and is being switched off by browsers. This design has no equivalent to lose.
 - **One origin.** No CORS with the issuer, and no redirect-URI allowlist to keep in step with every deployment.
 
-Staying signed in is likewise a server concern now: the refresh token lives with the broker, so there is no browser-side refresh timer, no single-flight coalescing to get right, and no rotated-token bookkeeping in the bundle.
+Staying signed in is a server concern too. With a database, the session is server-side (`forge/pkg/session`): the cookie holds an opaque id, the broker renews the tokens before they expire, and sign-out deletes the session. The bundle has no refresh timer. Load `auth/sessions` for the details.
 
 ## Config: the issuer values are SERVER-side now
 

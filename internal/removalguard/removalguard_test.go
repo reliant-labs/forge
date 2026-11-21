@@ -560,6 +560,8 @@ var removals = []removal{
 					"pkg/serverkit/operator_gate_test.go",
 					"pkg/appkit/operatorkit/operatorkit_test.go",
 					"internal/templates/project/middleware_test.go",
+					// Its connect-go v2 twin carries the same assertion.
+					"internal/templates/project/middleware_test_v2.go",
 				},
 			},
 		},
@@ -1002,6 +1004,19 @@ var removals = []removal{
 				Name:   "the removed-key registry",
 				Reason: "This table is the MECHANISM that tells a user a forge.yaml key is gone: it must name `packs`, `pack_overrides` and `features.packs` to match them and print the migration message. Deleting these names would silently accept a retired key instead of rejecting it. File-wide because the registry's prose and its keys are inseparable.",
 				Paths:  []string{"internal/config/validate.go"},
+			},
+			{
+				Name:    "the v1.9.0 migration's removed-key detector",
+				Reason:  "The detector must name the old key to offer the removal playbook to projects that still set it.",
+				Token:   regexp.MustCompile(`grep -qsE '\^\(environments\|auth\|version\|hot_reload\|packs\|pack_overrides\|kind\|components\|services\|packages\|binaries\|test\|docs\):' forge\.yaml && exit 0;`),
+				Context: regexp.MustCompile(`^detection: `),
+				Paths:   []string{"internal/templates/project/skills/forge/migrations/v1.9.0/SKILL.md"},
+			},
+			{
+				Name:   "the v1.9.0 migration's removed-key list",
+				Reason: "This exact list entry tells users which forge.yaml keys to remove, not which keys to use.",
+				Token:  regexp.MustCompile("^`pack_overrides`, `deploy\\.provider`, `kind`, `components`, `services`,$"),
+				Paths:  []string{"internal/templates/project/skills/forge/migrations/v1.9.0/SKILL.md"},
 			},
 		},
 	},
@@ -1482,6 +1497,12 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
+				Name:   "the v1.9.0 migration's obsolete Taskfile fixture",
+				Reason: "The detector must still recognize the obsolete command in an old project. This exact test case writes an old Taskfile to a temporary directory; it does not invoke the command.",
+				Token:  regexp.MustCompile(`^\s*"forge build --push in a Taskfile":\s+\{\[\]file\{\{"Taskfile\.yml", "  build:\\n    cmds:\\n      - forge build --push\\n"\}\}, true\},$`),
+				Paths:  []string{"internal/cli/upgrade_migration_v1_9_0_test.go"},
+			},
+			{
 				Name: "the text that documents where `release cut` went",
 				Reason: "Three places name the deleted command in order to say it is deleted and where it " +
 					"went: env_build.go's doc comment (the command that absorbed it, explaining that " +
@@ -1720,8 +1741,17 @@ var removals = []removal{
 					"web-runtime/src/replay-recorder.test.ts",
 					"web-runtime/scripts/browser-telemetry-smoke.mjs",
 					"pkg/deploy/observability_line_resource_test.go",
+					// The telemetry translator's collector tests decode the
+					// file exporter's OTLP/JSON the same way.
+					"pkg/telemetry/collector/otelcol_test.go",
+					// So does the local telemetry agent's end-to-end test.
+					"internal/cli/up_telemetry_slow_test.go",
 					// forge's own CLI events (pkg/observe/cliev) post the same OTLP/JSON.
 					"pkg/observe/cliev/otlp.go",
+					// The telemetry translator's tests read the pinned collector's
+					// file exporter, which writes OTLP/JSON.
+					"pkg/telemetry/collector/otelcol_test.go",
+					"pkg/telemetry/collector/pods_test.go",
 				},
 			},
 			{
@@ -2970,6 +3000,10 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"the generated per-API MCP manifest and its bridge", "npm/smithery.yaml", "Smithery listing for `forge mcp`", false},
 		{"the generated per-API MCP manifest and its bridge", "internal/cli/forge_pin_marker_test.go", "forge mcp serves every tool call", false},
 		{"the generated per-API MCP manifest and its bridge", "internal/templates/ci/github/ci.yml.tmpl", "forge mcp serve", true},
+		{"packs", "internal/templates/project/skills/forge/migrations/v1.9.0/SKILL.md", "`pack_overrides`, `deploy.provider`, `kind`, `components`, `services`,", false},
+		{"packs", "internal/templates/project/skills/forge/migrations/v1.9.0/SKILL.md", "Set `pack_overrides` to install a pack.", true},
+		{"packs", "internal/templates/project/skills/forge/deploy/SKILL.md", "`pack_overrides`, `deploy.provider`, `kind`, `components`, `services`,", true},
+		{"`forge release cut` and the publishing flags on top-level `forge build`", "internal/cli/upgrade_migration_v1_9_0_test.go", `cmd := exec.Command("bash", "-c", "forge build --push")`, true},
 	}
 	for _, tc := range cases {
 		rm := removalNamed(t, tc.removal)

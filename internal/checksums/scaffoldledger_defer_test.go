@@ -9,14 +9,10 @@ import (
 )
 
 // ledgerFileBytes is the whole on-disk ledger — every entry file under
-// ScaffoldedDir, by path, plus a legacy one-file ledger — as one byte
-// string: nil when there is none.
+// ScaffoldedDir, by path — as one byte string: nil when there is none.
 func ledgerFileBytes(t *testing.T, root string) []byte {
 	t.Helper()
 	var out []byte
-	if b, err := os.ReadFile(filepath.Join(root, LegacyScaffoldedFile)); err == nil {
-		out = append(append(out, LegacyScaffoldedFile+"\n"...), b...)
-	}
 	_ = filepath.WalkDir(filepath.Join(root, ScaffoldedDir), func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil

@@ -26,16 +26,23 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+{{- if or (not (connectV2 .)) (index .ConfigFields "CorsOrigins") (index .ConfigFields "Environment") (index .ConfigFields "SecurityHeadersEnabled")}}
 	"net/http"
+{{- end}}
 {{- if index .ConfigFields "CorsOrigins"}}
 	"strings"
 {{- end}}
+{{- if not (connectV2 .)}}
 
 	"connectrpc.com/connect"
+{{- end}}
 
 	fmw "github.com/reliant-labs/forge/pkg/middleware"
 {{- if index .ConfigFields "AutoMigrate"}}
 	"github.com/reliant-labs/forge/pkg/migratekit"
+{{- end}}
+{{- if connectV2 .}}
+	"github.com/reliant-labs/forge/pkg/mountkit"
 {{- end}}
 {{- if index .ConfigFields "LogSuccessSampleWindow"}}
 	"github.com/reliant-labs/forge/pkg/observe"
@@ -66,10 +73,17 @@ type MountFunc = app.MountFunc
 // constructs everything (cross-component reads stay nil-safe), but no
 // Connect routes are mounted — the process is a pure supervisor for its
 // named component.
+{{- if connectV2 .}}
+func MountNone(c *app.Components, m *mountkit.MuxV2, cfg *config.Config, logger *slog.Logger) []string {
+	_, _, _, _ = c, m, cfg, logger
+	return nil
+}
+{{- else}}
 func MountNone(c *app.Components, mux *http.ServeMux, cfg *config.Config, logger *slog.Logger, opts ...connect.HandlerOption) []string {
 	_, _, _, _, _ = c, mux, cfg, logger, opts
 	return nil
 }
+{{- end}}
 
 // ServeSpec is how a command composes ITSELF onto the shared Serve pipeline:
 // it names, by TYPED accessor, exactly the mount + workers + operators this
@@ -139,7 +153,7 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// NewAuthInterceptor errors when Validate is nil and AuthDeps.ExternalAuth
 	// — the code-level opt-out — is not set. An unauthenticated server is
 	// therefore a boot failure, never a running process.
-	authInterceptor, err := middleware.NewAuthInterceptor(authDeps)
+	authInterceptor, err := middleware.NewAuthInterceptor{{if connectV2 .}}V2{{end}}(authDeps)
 	if err != nil {
 		return fmt.Errorf("auth configuration: %w", err)
 	}
@@ -179,7 +193,7 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	}
 {{- end}}
 
-	// INTERCEPTOR CHAIN — serverkit.NewChain, the order requests pass
+	// INTERCEPTOR CHAIN — serverkit.NewChain{{if connectV2 .}}V2{{end}}, the order requests pass
 	// through, outermost first: trace → recovery → request-id → logging →
 	// metrics → deadline → auth → audit → rate-limit → activity →
 	// stream-drain → protovalidate. The trace span is outermost, so a request auth rejects
@@ -190,11 +204,19 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// called; activity sits next to the handler, so it records only an rpc
 	// that succeeded; protovalidate is innermost, right before the handler.
 	//
+{{- if connectV2 .}}
+	// Every slot has forge's default except Auth, which NewChainV2 REQUIRES —
+	// a chain with no authenticator is a boot error, never a running server.
+	// A field you set replaces that slot's default; the NoAudit, NoTrace,
+	// NoDeadline, NoActivity, NoStreamDrain and NoValidate fields drop one.
+	// The defaults:
+{{- else}}
 	// Every slot has forge's default except Auth, which NewChain REQUIRES —
 	// a chain with no authenticator is a boot error, never a running server.
 	// A field you set replaces that slot's default; serverkit.NoAudit,
 	// NoTrace, NoDeadline, NoActivity, NoStreamDrain and NoValidate drop
 	// one. The defaults:
+{{- end}}
 	//
 	//   - Trace: otelconnect with WithTrustRemote, so the browser's
 	//     traceparent is the PARENT of this span and a click's spans and the
@@ -209,7 +231,7 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	//     {timeout: {seconds: 120}}`), projected into
 	//     middleware.ProcedureDeadlines. serverkit.Deadline's fields move the
 	//     default, the watchdog threshold, and where a slow call is reported.
-	//   - Audit: fmw.AuditInterceptor over the claims auth stashed.
+	//   - Audit: fmw.AuditInterceptor{{if connectV2 .}}V2{{end}} over the claims auth stashed.
 	//   - StreamDrain: binds every server-streaming and bidi RPC to the
 	//     listener's drain, so a rollout ends it OK with the x-forge-drained
 	//     trailer after the pre-stop pause and the client reopens it against a
@@ -228,12 +250,20 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// interceptor — auth, rate limit, protovalidate — can reject it, so an
 	// uncapped handler turns one anonymous request into an OOMKill. These
 	// come from the typed config; zero is 4 MiB.
+{{- if connectV2 .}}
+	//
+	// The interceptor stashes the claims the forge way, so the chain reads
+	// the caller back with middleware.ClaimsFromContext (audit, activity).
+	chain, err := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		Auth:     serverkit.AuthWithCallerV2(serverkit.AudienceUser, authInterceptor, middleware.ClaimsFromContext),
+{{- else}}
 	chain, err := serverkit.NewChain(serverkit.ChainDeps{
 		Auth:     serverkit.AuthFor(serverkit.AudienceUser, authInterceptor),
+{{- end}}
 		Logger:   logger,
 		Deadline: serverkit.Deadline{Procedures: middleware.ProcedureDeadlines},
 {{- if and (index .ConfigFields "RateLimitRps") (index .ConfigFields "RateLimitBurst")}}
-		RateLimit: fmw.RateLimitInterceptor(fmw.RateLimitOptions{Rps: int(cfg.RateLimitRps), Burst: int(cfg.RateLimitBurst)}, middleware.ClaimsFromContext),
+		RateLimit: fmw.RateLimitInterceptor{{if connectV2 .}}V2{{end}}(fmw.RateLimitOptions{Rps: int(cfg.RateLimitRps), Burst: int(cfg.RateLimitBurst)}, middleware.ClaimsFromContext),
 {{- end}}
 {{- if index .ConfigFields "LogSuccessSampleWindow"}}
 		// Success-log sampling, from the typed config (0s, the default, logs
@@ -247,7 +277,9 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	if err != nil {
 		return fmt.Errorf("interceptor chain: %w", err)
 	}
+{{- if not (connectV2 .)}}
 	opts := chain.HandlerOptions()
+{{- end}}
 
 	// EXPLICIT COMPOSITION: open owned infra (internal/app/providers.go,
 	// yours), then construct the component graph — no by-type injector.
@@ -274,9 +306,15 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	}
 
 	srv := serverkit.Server{
+{{- if connectV2 .}}
+		Mux:     mux,
+		ChainV2: chain,
+		Logger:  logger,
+{{- else}}
 		Mux:    mux,
 		Chain:  chain,
 		Logger: logger,
+{{- end}}
 {{- if or (index .ConfigFields "CorsOrigins") (index .ConfigFields "Environment")}}
 		CORSMiddleware: func(origins []string, allowCredentials bool) func(http.Handler) http.Handler {
 			// The project's own request/response headers, on top of
@@ -342,7 +380,12 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// TYPED MOUNT. spec.Mount is a method value over *app.Components — no
 	// string selection, no inventory lookup. Each Mount<Svc> returns its
 	// Connect path(s), recorded for the completeness gate.
+{{- if connectV2 .}} The services are
+	// served behind the chain's interceptors (chain.NewMux).
+	mounted := spec.Mount(components, chain.NewMux(srv.Mux), cfg, logger)
+{{- else}}
 	mounted := spec.Mount(components, srv.Mux, cfg, logger, opts...)
+{{- end}}
 	srv.RecordMounted(mounted)
 
 	// NATIVE SIGN-IN. Mounts /auth/login, /auth/register, /auth/session and

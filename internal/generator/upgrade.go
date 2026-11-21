@@ -68,6 +68,11 @@ type UpgradeResult struct {
 	Offered bool
 	// Since is the release whose templates first shipped an Offered file.
 	Since string
+	// Template is the embedded template file this row renders from, as a
+	// templates.SourcePath ("project/Taskfile.yml.tmpl"). The upgrade
+	// report compares it with the same file in the forge the project pinned
+	// to learn whether the template changed across the range.
+	Template string
 }
 
 // ForceSelection names which user-modified files an upgrade run is allowed to
@@ -170,6 +175,10 @@ type managedFile struct {
 	// (it depends on which frontends the project declares), so the entries
 	// are generated per frontend with their render attached.
 	render func() ([]byte, error)
+	// source is the templates.SourcePath render reads, set beside render
+	// (templateName names it otherwise). Empty when no single template
+	// file renders the entry.
+	source string
 	// since is the forge release whose upgrade first ships this file. A
 	// Tier-2 file absent from a project is written only when since is new
 	// across the upgrade's range; an older one is offered instead, because
@@ -449,6 +458,15 @@ func managedFilesForKindBinary(kind, binary, binName string) []managedFile {
 		// expected to edit (add a log pipeline, tune the collector), not a
 		// function of anything they declare. Gated on service-kind AND
 		// observability being enabled.
+		//
+		// otel-collector.yaml is also how an existing project gets the
+		// include that loads declared log parsing (forge.Telemetry `logs`,
+		// written by `forge env up` under .forge/logs/.telemetry/): a pristine
+		// copy is updated here, an edited one is reported with the include
+		// among its missing lines, and `forge env up` names the lines to add
+		// when a declared parse finds the include absent. Its include rides
+		// on the .forge/logs mount the file already needs, so a project whose
+		// docker-compose.yml is edited (not upgraded) loads it unchanged.
 		{templateName: "otel-collector.yaml.tmpl", destPath: "deploy/observability/otel-collector.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.44"},
 		{templateName: "dashboards-README.md.tmpl", destPath: "deploy/observability/dashboards/README.md", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.44"},
 		{templateName: "otel-profiles.yaml.tmpl", destPath: "deploy/observability/otel-profiles.yaml", templated: true, tier: Tier2, enabledFor: enabledForObservability, since: "v0.1.45"},
@@ -667,6 +685,27 @@ func buildTemplateData(cfg *config.ProjectConfig, projectDir string) projectTemp
 	return forUpgrade(cfg, projectDir)
 }
 
+// connectV2Twins maps a project file's template to its connect-go v2 twin.
+// The auth-policy pair is two files per major rather than one template that
+// branches: both are the user's from birth, so the copy a project gets is
+// read as plain Go — and a template whose Go is split by actions does not
+// parse as Go (forge's own checks read these sources). middleware.go
+// declares NewAuthInterceptor on v1 and NewAuthInterceptorV2 on v2;
+// middleware_test.go drives whichever it is.
+var connectV2Twins = map[string]string{
+	"middleware.go.tmpl": "middleware_v2.go.tmpl",
+	"middleware_test.go": "middleware_test_v2.go",
+}
+
+// connectMajorTemplate is the template name a project of the given major
+// renders for name: its v2 twin for a v2 project, else name.
+func connectMajorTemplate(name string, v2 bool) string {
+	if twin, ok := connectV2Twins[name]; ok && v2 {
+		return twin
+	}
+	return name
+}
+
 // renderManagedFile renders a managed file's template content.
 func renderManagedFile(f managedFile, data projectTemplateData) ([]byte, error) {
 	var content []byte
@@ -675,9 +714,9 @@ func renderManagedFile(f managedFile, data projectTemplateData) ([]byte, error) 
 	case f.render != nil:
 		content, err = f.render()
 	case f.templated:
-		content, err = templates.ProjectTemplates().Render(f.templateName, data)
+		content, err = templates.ProjectTemplates().Render(connectMajorTemplate(f.templateName, data.ConnectV2), data)
 	default:
-		content, err = templates.ProjectTemplates().Get(f.templateName)
+		content, err = templates.ProjectTemplates().Get(connectMajorTemplate(f.templateName, data.ConnectV2))
 	}
 	if err != nil {
 		return nil, err
@@ -1175,7 +1214,23 @@ func UpgradeWith(projectDir string, cfg *config.ProjectConfig, opts UpgradeOptio
 		}
 	}
 
+	source := make(map[string]string, len(files))
+	for _, f := range files {
+		source[f.destPath] = f.templateSource()
+	}
+	for i := range results {
+		results[i].Template = source[results[i].Path]
+	}
 	return results, nil
+}
+
+// templateSource is the embedded template file the entry renders from, or
+// "" when a render func names none.
+func (f managedFile) templateSource() string {
+	if f.render != nil {
+		return f.source
+	}
+	return templates.ProjectTemplates().SourcePath(f.templateName)
 }
 
 // writeManagedFile writes a managed file through the certification

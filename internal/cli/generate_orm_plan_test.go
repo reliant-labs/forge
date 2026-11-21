@@ -118,12 +118,15 @@ func TestPlanORMEntities_LeavesALibraryTableOffAndRefusesACollision(t *testing.T
 		}
 	})
 
-	// Generated code is public within major 1: a project that already
-	// generates audit_log's store keeps it, with a deprecation warning.
-	t.Run("existing store kept", func(t *testing.T) {
-		dir := writeORMPlanFixture(t, strings.Replace(libraryTableFixture,
+	// forge#2410 removed the compat path that kept a library table's store
+	// because an older forge already generated one: an existing
+	// <entity>_orm_gen.go no longer counts. The table is left off like any
+	// other library table, and `forge:entity` is the way to keep its store.
+	existingStore := func(t *testing.T, fixture string) (existing, stdout, stderr string) {
+		t.Helper()
+		dir := writeORMPlanFixture(t, strings.Replace(fixture,
 			"CREATE TABLE app.audit_logs (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, action TEXT NOT NULL);\n", "", 1))
-		existing := filepath.Join(dir, "internal/db/audit_log_orm_gen.go")
+		existing = filepath.Join(dir, "internal/db/audit_log_orm_gen.go")
 		if err := os.MkdirAll(filepath.Dir(existing), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -133,25 +136,35 @@ func TestPlanORMEntities_LeavesALibraryTableOffAndRefusesACollision(t *testing.T
 		}
 		ctx := &pipelineContext{ProjectDir: dir, ModulePath: "example.com/app"}
 		var planErr, ormErr error
-		stdout, stderr := captureStdoutAndStderr(t, func() {
+		stdout, stderr = captureStdoutAndStderr(t, func() {
 			planErr = stepPlanORMEntities(ctx)
 			ormErr = stepInternalDBORM(ctx)
 		})
 		if planErr != nil || ormErr != nil || ctx.ORMFailure != nil {
 			t.Fatalf("plan: %v / ORM: %v / %v\n%s%s", planErr, ormErr, ctx.ORMFailure, stdout, stderr)
 		}
+		return existing, stdout, stderr
+	}
+
+	t.Run("existing store not kept", func(t *testing.T) {
+		existing, stdout, stderr := existingStore(t, libraryTableFixture)
+		if body, err := os.ReadFile(existing); err == nil && strings.Contains(string(body), "type AuditLog struct") {
+			t.Errorf("an older forge's store over a library table must not be regenerated:\n%s", body)
+		}
+		if !strings.Contains(stdout, "audit_log is forge/pkg/audit's table") {
+			t.Errorf("the run should say why audit_log has no store:\n%s", stdout)
+		}
+		if strings.Contains(stdout+stderr, "deprecated:") {
+			t.Errorf("the removed deprecation must not be printed:\n%s%s", stdout, stderr)
+		}
+	})
+
+	t.Run("forge:entity keeps the store", func(t *testing.T) {
+		existing, stdout, stderr := existingStore(t,
+			libraryTableFixture+"COMMENT ON TABLE app.audit_log IS 'forge:entity';\n")
 		body, err := os.ReadFile(existing)
 		if err != nil || !strings.Contains(string(body), "type AuditLog struct") {
-			t.Fatalf("the existing AuditLog store must still be generated (err %v):\n%s", err, body)
-		}
-		for _, want := range []string{
-			"deprecated: audit_log is forge/pkg/audit's table",
-			"stops being generated in the next major version",
-			"COMMENT ON TABLE app.audit_log IS 'forge:no-entity'",
-		} {
-			if !strings.Contains(stderr, want) {
-				t.Errorf("the run should warn %q:\n%s", want, stderr)
-			}
+			t.Fatalf("forge:entity must keep audit_log's store (err %v):\n%s\n%s%s", err, body, stdout, stderr)
 		}
 	})
 

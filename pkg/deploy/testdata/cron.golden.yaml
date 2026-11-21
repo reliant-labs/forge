@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: nightly
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: cron
   name: nightly
   namespace: demo-prod
 spec:
@@ -19,6 +20,7 @@ spec:
             app.kubernetes.io/name: nightly
             app.kubernetes.io/part-of: demo
             forge.dev/env: prod
+            forge.dev/kind: cron
         spec:
           automountServiceAccountToken: false
           containers:
@@ -70,5 +72,6 @@ metadata:
     app.kubernetes.io/name: nightly
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: cron
   name: nightly
   namespace: demo-prod

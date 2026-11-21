@@ -142,10 +142,10 @@ func releaseTestsRef(ctx context.Context, in releaseTestsInput) (ref release.Tes
 // proves it tested that commit, so a run with no commit, or another commit
 // sharing the prefix, never joins it.
 func exactCommitRuns(all []*testlocal.Run, commit string) []*testlocal.Run {
-	commit = strings.ToLower(strings.TrimSpace(commit))
+	commit = strings.TrimSpace(commit)
 	var out []*testlocal.Run
 	for _, r := range testlocal.CommitRuns(all, commit) {
-		if r.Commit != "" && strings.ToLower(r.Commit) == commit {
+		if r.Commit != "" && strings.EqualFold(r.Commit, commit) {
 			out = append(out, r)
 		}
 	}

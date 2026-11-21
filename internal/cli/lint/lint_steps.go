@@ -910,7 +910,10 @@ func lintPipeline() []linterStep {
 		// a server action, cookies(), next/image's server loader, a rewrite.
 		// `next dev` serves all of them, so nothing else notices before the
 		// export fails in CI — or, for the constructs the export accepts,
-		// before production quietly lacks what dev had.
+		// before production quietly lacks what dev had. A Vite frontend on a
+		// static runtime is checked for the seam with the deploy (build.outDir
+		// vs public_dir, base vs base_path); every other frontend gets a
+		// not-applicable note.
 		//
 		// GATES on error findings: each is a build `next build` refuses, or
 		// a build that is not an export at all (nothing to publish). The
@@ -924,7 +927,7 @@ func lintPipeline() []linterStep {
 				if rc.skipFrontends {
 					return false, "--skip-frontends — skipping static-export lint"
 				}
-				return rc.cwd != "" && hasNextJSFrontend(rc.cfg), ""
+				return rc.cwd != "" && hasFrontend(rc.cfg), ""
 			},
 			collect: collectStaticExportJSON,
 		},

@@ -111,10 +111,7 @@ func FindChangedTests(ctx context.Context, o ChangedOptions) (ChangedTests, erro
 	}
 	inModule := map[string]bool{}
 	for _, d := range dirs {
-		if real, err := filepath.EvalSymlinks(d); err == nil {
-			d = real
-		}
-		inModule[filepath.Clean(d)] = true
+		inModule[canonicalDir(d)] = true
 	}
 	files, err := o.Git(ctx, root, "diff", "--name-only", "--diff-filter=AM", o.Base, "HEAD", "--", "*_test.go")
 	if err != nil {
@@ -131,7 +128,9 @@ func FindChangedTests(ctx context.Context, o ChangedOptions) (ChangedTests, erro
 		if err != nil {
 			continue // deleted since, or not a regular file: nothing to run
 		}
-		dir := filepath.Dir(abs)
+		// Canonical, as root and the package dirs are: the package's Rel is
+		// computed against root below.
+		dir := canonicalDir(filepath.Dir(abs))
 		if !inModule[dir] {
 			out.Skipped = append(out.Skipped, fmt.Sprintf("skip (not a package of this module): %s", f))
 			continue
@@ -171,4 +170,15 @@ func FindChangedTests(ctx context.Context, o ChangedOptions) (ChangedTests, erro
 	}
 	sort.Slice(out.Packages, func(i, j int) bool { return out.Packages[i].Rel < out.Packages[j].Rel })
 	return out, nil
+}
+
+// canonicalDir is d with symlinks resolved and cleaned, so a package
+// directory from `go list` and a changed file's directory compare equal
+// however each was spelled: a symlinked temp dir on macOS, or a Windows
+// 8.3 short name (RUNNER~1) that EvalSymlinks expands to the long one.
+func canonicalDir(d string) string {
+	if real, err := filepath.EvalSymlinks(d); err == nil {
+		d = real
+	}
+	return filepath.Clean(d)
 }

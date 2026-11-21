@@ -95,8 +95,8 @@ func gradeRuleWith(table map[string]ruleRollout, cfg *config.ProjectConfig, rule
 	return g
 }
 
-// Note says why a rule that does not gate does not: "new in v1.9.0; gates
-// from v1.10.0", or the lint.rules dial that lowered it. "" when it gates.
+// Note says why a rule that does not gate does not: "new in v1.10.0; gates
+// from v1.11.0", or the lint.rules dial that lowered it. "" when it gates.
 func (g RuleGrade) Note() string {
 	switch {
 	case g.Gates:

@@ -103,6 +103,47 @@ func TestSignInScreensOfferThePolicysMethods(t *testing.T) {
 	}
 }
 
+// methods = ["passkey"] puts "Continue with passkey" on the sign-in screen,
+// which is useless until a signed-in person can enrol one. The passkeys panel
+// is that enrolment, so a browser tree must mount it on a page the user menu
+// links to, or the panel is dead code and the sign-in button a dead end.
+func TestBrowserTreesMountThePasskeysPanel(t *testing.T) {
+	for _, kind := range browserKinds {
+		t.Run(kind, func(t *testing.T) {
+			tree := authTreeFor(t, kind)
+			settings := renderFrontend(t, tree["src/components/account-settings.tsx"], kind)
+			if !strings.Contains(settings, "<PasskeysPanel") {
+				t.Error("account-settings.tsx does not mount <PasskeysPanel />")
+			}
+			nav := renderFrontend(t, tree["src/components/session_nav.tsx"], kind)
+			if !strings.Contains(nav, `href: "/account"`) {
+				t.Error("the user menu (session_nav.tsx) does not link to /account")
+			}
+			guard := renderFrontend(t, tree["src/lib/auth/route-guard.tsx"], kind)
+			if strings.Contains(guard, `"/account"`) {
+				t.Error("the route guard lists /account as public: it is the signed-in person's page")
+			}
+			switch kind {
+			case "nextjs":
+				page, ok := tree["src/app/account/page.tsx"]
+				if !ok {
+					t.Fatal("no Next.js page for /account")
+				}
+				if src := renderFrontend(t, page, kind); !strings.Contains(src, "<AccountSettings") {
+					t.Error("src/app/account/page.tsx does not render <AccountSettings />")
+				}
+			case "vite-spa":
+				routes := renderFrontend(t, tree["src/routes.tsx"], kind)
+				for _, want := range []string{`path: "/account"`, "component: AccountSettings", "accountRoute,"} {
+					if !strings.Contains(routes, want) {
+						t.Errorf("routes.tsx lacks %q", want)
+					}
+				}
+			}
+		})
+	}
+}
+
 // The issuer sends a failed social sign-in back to devidp.SocialFailurePath
 // with its OWN error replacing the URL's (error=access_denied when the person
 // cancels at the provider), so the sign-in page must read the social=failed

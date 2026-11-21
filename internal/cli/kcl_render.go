@@ -1147,6 +1147,9 @@ type DockerBuild struct {
 	// they let a --release build reuse an earlier release's image whose
 	// fingerprint is unchanged — see build_docker_release_reuse.go.
 	Inputs []string `json:"inputs,omitempty"`
+	// cover is set when the env builds this image instrumented: the binary
+	// its workload runs is a cover build (applyCover). Never decoded.
+	cover *workloadCover
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1205,6 +1208,22 @@ type ShellBuild struct {
 	// the command reads. Declared, they let a build whose fingerprint and
 	// pushed image are unchanged be skipped — see build_external_inputs.go.
 	Inputs []string `json:"inputs,omitempty"`
+	// PGO is the profile-guided optimization of each Go binary the command
+	// builds, keyed by package path relative to the cwd ("./cmd/app"). Only
+	// the binaries it names are pulled (kcl/schema.k ShellPGO).
+	PGO map[string]ShellPGOConfig `json:"pgo,omitempty"`
+}
+
+// ShellPGOConfig is a ShellBuild binary's PGO (kcl/schema.k ShellPGO): a PGO
+// plus where `forge pgo pull` writes the profile and whose namespace it reads.
+type ShellPGOConfig struct {
+	PGOConfig
+	// Out is the profile's path relative to the project root; empty is
+	// <cwd>/<package>/default.pgo.
+	Out string `json:"out,omitempty"`
+	// Namespace is the OTEL service.namespace the profiles carry; empty is
+	// the env's project.
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // RemoteBuildSource mirrors the kcl/schema.k GitSource as it appears

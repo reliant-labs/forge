@@ -281,8 +281,10 @@ func releaseInputsFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, pr
 		Unit             string                   `json:"unit"`
 		OutputName       string                   `json:"output_name"`
 		InputsFileDigest string                   `json:"inputs_file_digest"`
+		PGOProfiles      map[string]string        `json:"pgo_profiles,omitempty"`
 	}{releaseInputsScheme, releaseTagSentinel, identity, externalPushedRepository(svc, opts.pushPlan.pushBase),
-		templatedEnv(tpl.Env, spec.BuildEnv, spec.Tag), svc.Build.Unit, shellBuildOutputName(svc), inputsFileDigest})
+		templatedEnv(tpl.Env, spec.BuildEnv, spec.Tag), svc.Build.Unit, shellBuildOutputName(svc), inputsFileDigest,
+		shellBuildPGODigests(svc, projectDir)})
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}

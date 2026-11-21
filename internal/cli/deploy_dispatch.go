@@ -106,6 +106,9 @@ func buildDeployGroups(envName string, entities *KCLEntities, fallbackNamespace 
 			cm := w.Runtime.Compose
 			spec := composeSpecFor(projectDirForKCL(), envName, cm)
 			withComposeFileEnv(spec, cm, entities)
+			// The local telemetry stack is soft: the app runs without it
+			// (NS FG-13).
+			spec.BestEffort = clickstack.IsTelemetryService(composeServiceName(w))
 			svcSecrets := secretEnv
 			if composeServiceName(w) == clickstack.ForwarderService {
 				// The forwarder reads its destination headers from one fixed

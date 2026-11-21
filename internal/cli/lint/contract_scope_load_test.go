@@ -166,6 +166,9 @@ func TestContractLane_ScopedRunToleratesBrokenPackageOutsideScope(t *testing.T) 
 	dir := writeScopedGateFixture(t)
 	writeFiles(t, dir, map[string]string{
 		"internal/wip/wip.go": "// Package wip is half-written.\npackage wip\n\nfunc F() int { return \"not an int\" }\n",
+		// Compiles on its own, but imports wip: its errors are on wip's node,
+		// yet it was type-checked against a half-checked import.
+		"internal/wipuser/user.go": "// Package wipuser uses wip.\npackage wipuser\n\nimport \"example.com/m/internal/wip\"\n\nfunc G() int { return wip.F() }\n",
 	})
 	t.Chdir(dir)
 	ctx := context.Background()
@@ -181,7 +184,8 @@ func TestContractLane_ScopedRunToleratesBrokenPackageOutsideScope(t *testing.T) 
 		case "forge-exclude-contract-multi-impl":
 			judged = !d.Warning
 		case "forge-exclude-contract-search-incomplete":
-			warned = d.Warning && strings.Contains(d.Message, "example.com/m/internal/wip")
+			warned = d.Warning && strings.Contains(d.Message, "example.com/m/internal/wip") &&
+				strings.Contains(d.Message, "example.com/m/internal/wipuser")
 		}
 	}
 	if !judged {

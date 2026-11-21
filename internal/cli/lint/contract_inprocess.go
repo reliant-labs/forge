@@ -343,7 +343,7 @@ func (l *excludeGateLoad) check(ctx context.Context, gate contract.ExcludeGateOp
 			roots = append(roots, p)
 			continue
 		}
-		if len(p.Errors) > 0 {
+		if importGraphHasErrors(p) {
 			broken = append(broken, p.PkgPath)
 		}
 	}
@@ -355,6 +355,25 @@ func (l *excludeGateLoad) check(ctx context.Context, gate contract.ExcludeGateOp
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// importGraphHasErrors reports whether p, or any package it imports
+// (transitively), failed to load or type-check. Under allowBroken an error in
+// a dependency is recorded on the dependency's node, not on p, but p was still
+// type-checked against a half-checked import, so its search is incomplete too.
+func importGraphHasErrors(p *packages.Package) bool {
+	found := false
+	packages.Visit([]*packages.Package{p}, func(q *packages.Package) bool {
+		if found {
+			return false
+		}
+		if len(q.Errors) > 0 || len(q.TypeErrors) > 0 {
+			found = true
+			return false
+		}
+		return true
+	}, nil)
+	return found
 }
 
 // searchIncompleteFinding is the non-gating note that broken (the import

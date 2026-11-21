@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -53,6 +54,10 @@ monolith serving as server, worker and cron) gets the CPU of all of them,
 merged. The workloads come from the rendered env; ` + "`pgo.services`" + ` overrides them.
 
 Config is read from --env's KCL (default prod): ` + "`pgo = forge.PGO {from_env, since,\nmin_weight, services, enabled}`" + ` on a GoBuild, or DockerBuild.pgo keyed by binary.
+A ShellBuild's binaries are pulled only when its ` + "`pgo`" + ` names them (forge.ShellPGO,
+keyed by package relative to its cwd), which also says where the profile goes
+(` + "`out`" + `, e.g. a sibling checkout's ../reliant/cmd/reliant/default.pgo) and whose
+service.namespace to read.
 --since and --from-env override it for this run. Profiles come from the local
 ClickStack when the source env's telemetry is local, else from its control
 plane (needs sign-in and obs:read); both produce the same bytes.
@@ -123,10 +128,12 @@ type pgoPullResult struct {
 	Path    string `json:"path"`
 	Action  string `json:"action"`
 	// Reason says why a binary was skipped or failed, and the fix.
-	Reason   string   `json:"reason,omitempty"`
-	FromEnv  string   `json:"from_env,omitempty"`
-	Source   string   `json:"source,omitempty"`
-	Services []string `json:"services"`
+	Reason  string `json:"reason,omitempty"`
+	FromEnv string `json:"from_env,omitempty"`
+	// Namespace is the OTEL service.namespace the profiles were read from.
+	Namespace string   `json:"namespace,omitempty"`
+	Source    string   `json:"source,omitempty"`
+	Services  []string `json:"services"`
 	// From and To are the window queried.
 	From  *time.Time `json:"from,omitempty"`
 	To    *time.Time `json:"to,omitempty"`
@@ -237,11 +244,20 @@ func (p *pgoPuller) pull(ctx context.Context, b PGOBinary) pgoPullResult {
 	if !b.PGO.Enabled {
 		return skip("PGO is off for %s in env %s (pgo.enabled = False): its builds pass -pgo=off", b.Package, p.env)
 	}
-	if !strings.HasPrefix(b.Package, "./") {
+	if b.PGO.Out == "" && !strings.HasPrefix(b.Package, "./") {
 		return skip("%s is not a package of this project, so forge has nowhere to write its profile", b.Package)
 	}
-	target := filepath.Join(p.d.ProjectDir, filepath.FromSlash(r.Path))
-	if info, err := os.Stat(filepath.Dir(target)); err != nil || !info.IsDir() {
+	target := resolveProjectPath(p.d.ProjectDir, filepath.FromSlash(r.Path))
+	if b.PGO.Out != "" {
+		// A ShellBuild's profile may live in a sibling checkout, but no
+		// further: the same reach its inputs have (shellBuildInputScope).
+		if !pgoWithinWorkspace(p.d.ProjectDir, target) {
+			return skip("%s is outside the directory holding this project, so pull will not write it; name a path in this project or a sibling checkout with ShellPGO.out", r.Path)
+		}
+		if info, err := os.Stat(filepath.Dir(target)); err != nil || !info.IsDir() {
+			return skip("%s has no directory on disk (is the checkout it belongs to cloned beside this project?), so there is nowhere to write its profile", path.Dir(r.Path))
+		}
+	} else if info, err := os.Stat(filepath.Dir(target)); err != nil || !info.IsDir() {
 		return skip("%s has no directory in this checkout, so there is no main package to profile", b.Package)
 	}
 	if note, ok := pgoForeignFile(target); !ok {
@@ -276,6 +292,10 @@ func (p *pgoPuller) pull(ctx context.Context, b PGOBinary) pgoPullResult {
 			namespace = rd.project
 		}
 	}
+	if b.PGO.Namespace != "" {
+		namespace = b.PGO.Namespace
+	}
+	r.Namespace = namespace
 	if len(services) == 0 {
 		return skip("no workload of env %s runs %s, so it has no profiles; name the OTEL services to merge with pgo.services", r.FromEnv, b.Package)
 	}
@@ -325,6 +345,59 @@ func (p *pgoPuller) pull(ctx context.Context, b PGOBinary) pgoPullResult {
 	}
 	r.Action = pgoWritten
 	return r
+}
+
+// pgoWithinWorkspace reports whether target lies under the directory holding
+// the project: the project itself and its sibling checkouts. Both sides are
+// compared after resolving symlinks, so a symlinked directory (or a symlink
+// at target itself) that points outside the workspace is refused: a write
+// through it would land wherever the link points.
+func pgoWithinWorkspace(projectDir, target string) bool {
+	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return false
+	}
+	root, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return false
+	}
+	t, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	t, err = resolveExisting(t)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, t)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// resolveExisting resolves symlinks in p's deepest existing ancestor (p
+// itself when it exists) and appends the parts that do not exist yet, which
+// a later write creates as plain directories and files.
+func resolveExisting(p string) (string, error) {
+	var rest []string
+	for cur := p; ; {
+		if _, err := os.Lstat(cur); err == nil {
+			real, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				return "", err
+			}
+			for i := len(rest) - 1; i >= 0; i-- {
+				real = filepath.Join(real, rest[i])
+			}
+			return real, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p, nil
+		}
+		rest = append(rest, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // pgoForeignFile reports whether the file at target may be replaced: absent,
@@ -528,8 +601,22 @@ func printPGOPull(w io.Writer, doc pgoPullDoc) {
 			fmt.Fprintf(w, "  FAILED %s: %s\n", r.Package, r.Reason)
 		}
 	}
-	if len(written) > 0 {
+	// A profile outside the project (a ShellBuild's sibling checkout) is
+	// committed in its own repository, not with this project's git add.
+	var here, elsewhere []string
+	for _, p := range written {
+		if p == ".." || strings.HasPrefix(p, "../") || path.IsAbs(p) {
+			elsewhere = append(elsewhere, p)
+		} else {
+			here = append(here, p)
+		}
+	}
+	if len(here) > 0 {
 		fmt.Fprintf(w, "\nCommit the profile%s so every build uses %s (Go's -pgo=auto reads it):\n  git add %s && git commit -m \"pgo: refresh profiles\"\n",
-			plural(len(written), "", "s"), plural(len(written), "it", "them"), strings.Join(written, " "))
+			plural(len(here), "", "s"), plural(len(here), "it", "them"), strings.Join(here, " "))
+	}
+	for _, p := range elsewhere {
+		fmt.Fprintf(w, "\nCommit %s in the checkout it belongs to:\n  git -C %s add %s && git -C %s commit -m \"pgo: refresh profiles\"\n",
+			p, path.Dir(p), path.Base(p), path.Dir(p))
 	}
 }

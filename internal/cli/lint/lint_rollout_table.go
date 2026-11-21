@@ -273,6 +273,13 @@ var shippedRules = []rolloutGroup{
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.
 var newRules = []rolloutGroup{
+	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
+	// what it collects. Only the uncollected dashboard series is an error;
+	// the other three are advisory at any pin, and the row is what lets
+	// lint.rules raise them.
+	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
+		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
+	}},
 	{
 		IntroducedIn: "v1.9.0",
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},

@@ -2011,6 +2011,26 @@ _Enforced · Forge, on any infrastructure_
 | `secrets-escrow-in-cluster`            | An OpenBao whose seal key and init output are escrowed in the cluster they protect, so losing the cluster loses every backup of the store                                        | `--secrets`       |
 | `secrets-env-not-rendered`             | An env whose render fails, so its secrets could not be judged (a warning; `forge env render` reports the render error itself)                                                    | `--secrets`       |
 
+<a id="lint-rules-telemetry"></a>
+
+### Declared telemetry rules
+
+A dashboard panel over a series no scrape keeps, an unbounded scrape and a rate over a gauge are caught from each env's real render.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- source [`internal/cli/lint/telemetry_rules.go`](../internal/cli/lint/telemetry_rules.go)
+- command `forge lint --telemetry`
+
+| Rule                                     | Bug class it prevents                                                                                                                                                      | Lane          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `telemetry-dashboard-metric-uncollected` | A declared dashboard series whose metric no scrape of its system keeps (allow minus deny), so the panel is empty in every env it ships to with no other symptom            | `--telemetry` |
+| `telemetry-scrape-unbounded`             | A metrics scrape with no `allow`, which stores every series the endpoint exposes until it passes `sample_limit` and fails whole                                            | `--telemetry` |
+| `telemetry-rate-on-gauge`                | A rate or increase over a metric nothing marks as a counter (no `counters` match, no `_total`/`_count`/`_sum`), which reads nothing when the metric is a gauge (a warning) | `--telemetry` |
+| `telemetry-high-cardinality-risk`        | A scrape that raises `sample_limit` or keeps every name while dropping no labels, so a per-user or per-id label explodes its series (a warning)                            | `--telemetry` |
+
 <a id="lint-rules-scaffold-ownership"></a>
 
 ### Generated-code tampering checks
@@ -2148,7 +2168,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Signed images, SBOM and provenance
 
-The generated `build-images.yml` signs every image it pushes with a keyless cosign signature bound to its digest, generates an SPDX SBOM for it, and attests its build provenance.
+The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign signature and a build-provenance attestation to every image, bound to its digest and stored in the registry beside it (`cosign verify-attestation`), private repositories included.
 
 _Enforced · Forge, on any infrastructure_
 
@@ -3816,11 +3836,12 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `forge obs issue <id>`; `forge obs issues --since-release|--since-deploy` lists what a release introduced.
 
-**Why:** Issues are fingerprinted with one algorithm, at query time locally and at ingest on the control plane; issues that share a cause and first fired together collapse into one incident without being merged, and triage (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+**Why:** Issues are fingerprinted with one algorithm, at query time locally and at ingest on the control plane; issues that share a cause and first fired together collapse into one incident without being merged, and triage (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log record an authenticated request writes carries `user.id`, so an issue counts the people it reached.
 
 **Evidence:**
 
 - command `forge obs issue`
+- source [`pkg/authn/telemetry.go`](../pkg/authn/telemetry.go)
 - command `forge obs issues`
 - command `forge obs issue resolve`
 - command `forge obs issue ignore`

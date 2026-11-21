@@ -35,7 +35,8 @@ import (
 // to inherit:
 //
 //   - [Serializable] — SERIALIZABLE, retried on serialization failure and
-//     deadlock (SQLSTATE 40001 / 40P01) up to DefaultTxMaxAttempts. The
+//     deadlock (SQLSTATE 40001 / 40P01; WithRetryOn adds more) up to
+//     DefaultTxMaxAttempts. The
 //     database proves the transaction equivalent to some serial order, so
 //     read-check-write is correct WITHOUT locks. A lock taken inside it is
 //     the trap: the writer that waited on it wakes into a stale snapshot and
@@ -334,6 +335,8 @@ func innermostTx(ctx context.Context) *txState {
 //     with ErrInvalidTxOptions: a serialization failure is returned to the
 //     caller, who decides whether to run the unit again, and a call site
 //     that asked for retries would be promising something nobody performs.
+//     A WithRetryOn classifier is accepted and inert: it decides between
+//     attempts, and the caller owns the only one.
 //
 // Statements run through the returned *Tx (its Exec/Query/QueryRow and
 // Bun()); tx.Join(ctx, fn) hands fn a ctx that carries it, so generated
@@ -368,7 +371,8 @@ func (t *Tx) BeginDetached(ctx context.Context, policy TxPolicy) (*Tx, error) {
 
 // RunTx runs fn in a transaction at opts' isolation, carried by the ctx fn
 // receives, running it up to opts.MaxAttempts times: a 40001 / 40P01 failure
-// rolls the attempt back and re-runs fn from the top. With orm.Serializable
+// — or one a TxOptions.WithRetryOn classifier reports retryable — rolls the
+// attempt back and re-runs fn from the top. With orm.Serializable
 // fn MAY RUN MORE THAN ONCE; see the package documentation in tx.go and
 // AfterCommit. opts has no default — see TxOptions — and an unset level is
 // rejected with ErrInvalidTxOptions before anything begins.
@@ -411,14 +415,22 @@ func (c *Client) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context)
 }
 
 // runAttempts runs attempt up to opts.MaxAttempts times, sleeping between
-// tries, for as long as it fails retryably (40001 / 40P01).
+// tries, for as long as it fails retryably (opts.Retryable: 40001 / 40P01,
+// plus what WithRetryOn added).
 func runAttempts(ctx context.Context, opts TxOptions, attempt func() error) error {
 	for n := 1; ; n++ {
 		err := attempt()
 		if err == nil {
 			return nil
 		}
-		if !isRetryableTxError(err) {
+		// With no extra attempt to schedule, do not let a custom classifier
+		// change the one-attempt error contract. Built-in conflicts still
+		// map to Aborted, exactly as they did before WithRetryOn.
+		retryable := isRetryableTxError
+		if opts.MaxAttempts > 1 {
+			retryable = opts.Retryable
+		}
+		if !retryable(err) {
 			return err
 		}
 		if n >= opts.MaxAttempts {
@@ -513,8 +525,10 @@ func (t *Tx) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) err
 
 // ─── retry policy ──────────────────────────────────────────────────────────
 
-// isRetryableTxError reports whether err — anywhere in its %w chain — is a
-// postgres failure that re-running the whole transaction can cure:
+// isRetryableTxError is the default classification every TxOptions starts
+// from (TxOptions.Retryable ORs WithRetryOn's classifiers onto it). It
+// reports whether err — anywhere in its %w chain — is a postgres failure that
+// re-running the whole transaction can cure:
 //
 //   - 40001 serialization_failure: SERIALIZABLE / REPEATABLE READ found the
 //     transaction could not be ordered against a concurrent one.
@@ -523,7 +537,10 @@ func (t *Tx) RunTxReadOnly(ctx context.Context, fn func(ctx context.Context) err
 //
 // Deliberately NOT retried: 23505 unique_violation, which is a real answer
 // (pkg/crud maps it to AlreadyExists) — and postgres already reports a
-// read-then-insert race under SERIALIZABLE as 40001 rather than 23505.
+// read-then-insert race under SERIALIZABLE as 40001 rather than 23505. A
+// project whose body really does race to an insert can opt in with
+// WithRetryOn(RetryOnSQLState("23505")). Nor, by default, a COMMIT that
+// rolled back or a 25P02: see RetryOnCommitRollback for why.
 func isRetryableTxError(err error) bool {
 	state, _, ok := pgDiagnostic(err)
 	return ok && (state == "40001" || state == "40P01")

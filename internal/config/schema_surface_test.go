@@ -52,9 +52,16 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			},
 		},
 		{
+			// vuln.attach_sbom: read by the release cut (internal/sbomoci);
+			// vuln.patch.verify: read by `forge vuln patch`.
 			name: "VulnConfig",
 			typ:  reflect.TypeFor[VulnConfig](),
-			want: []string{"attach_sbom"},
+			want: []string{"attach_sbom", "patch"},
+		},
+		{
+			name: "VulnPatchConfig",
+			typ:  reflect.TypeFor[VulnPatchConfig](),
+			want: []string{"verify"},
 		},
 		{
 			// Every feature; orm also has //forge:no-orm.

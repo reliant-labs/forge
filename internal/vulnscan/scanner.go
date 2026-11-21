@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // Scanner runs grype against the machine's shared database.
@@ -59,7 +61,7 @@ func (s *Scanner) ScanSBOM(ctx context.Context, sbom []byte) (*Scan, error) {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "sbom.json")
-	if err := os.WriteFile(path, sbom, 0o600); err != nil {
+	if err := atomicfile.WriteFile(path, sbom, 0o600); err != nil {
 		return nil, err
 	}
 	return s.Scan(ctx, "sbom:"+path)

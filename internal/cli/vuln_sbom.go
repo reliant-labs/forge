@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
@@ -123,7 +124,7 @@ func convertSBOMToSPDX(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	in := filepath.Join(dir, "sbom.cdx.json")
-	if err := os.WriteFile(in, cdx, 0o600); err != nil {
+	if err := atomicfile.WriteFile(in, cdx, 0o600); err != nil {
 		return err
 	}
 	run := deps.run

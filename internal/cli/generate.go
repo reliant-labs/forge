@@ -126,7 +126,8 @@ Hooks:
   still passes. A run narrowed with --steps or --templates-only does not run
   them, and says so.
   FORGE_NO_GIT_HOOKS=1 is about GIT hooks, not these: it stops forge setting
-  core.hooksPath=.githooks in your clone. It is not about the clone's merge driver for
+  core.hooksPath=.githooks in your clone. FORGE_NO_HOOKS=1 is its deprecated older
+  name and means the same. Neither is about the clone's merge driver for
   generated files: generate leaves git config alone and says once when the
   clone has no usable driver ('forge merge-driver install' wires it), unless
   forge.yaml says git: {merge_driver: auto}, or says nothing in a clone that

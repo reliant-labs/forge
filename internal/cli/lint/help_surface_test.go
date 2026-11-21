@@ -110,7 +110,8 @@ func TestLintHelpSurface(t *testing.T) {
 		// Visible because it is the only place a scaffold-once seed block's
 		// drift is legible: a fixture a later migration rejects fails in
 		// test setup, with an error naming neither the fixture nor the
-		// migration, in a file forge never rewrites.
+		// migration, in a file forge never rewrites. (--crud-fixtures is
+		// its deprecated, hidden alias.)
 		"fixture-drift",
 		"frontend-stores",
 		// Visible: a CI author has to be able to DISCOVER that lint's
@@ -237,6 +238,9 @@ func TestLintHelpSurface(t *testing.T) {
 	assertStringSlicesEqual(t, "lint hidden flags", hiddenFlagNames(cmd), []string{
 		"banners",
 		"check-workarounds",
+		// Deprecated alias of --fixture-drift, which now executes the
+		// fixtures and so reports the foreign-key class this flag checked.
+		"crud-fixtures",
 		"exported-vars",
 		"scaffolds",
 		"suggest-buf-excepts",

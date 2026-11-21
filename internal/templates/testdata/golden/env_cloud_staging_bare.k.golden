@@ -129,6 +129,12 @@ _on_bucket = lambda f: forge.Frontend -> forge.Frontend {
 
 _bundle = forge.Bundle {
     project = "shop"
+    # Continuous profiles ON: the platform stores them, and `forge pgo pull
+    # --env staging` turns their CPU into each Go binary's committed
+    # cmd/<bin>/default.pgo, which every build then uses. They count toward
+    # the env's telemetry allowance like logs and traces; `profiles = False`
+    # opts out (forge skill load observability/profiles).
+    observability = forge.Observability {signals = forge.ObservabilitySignals {profiles = True}}
     # Where hosted workloads, the database are published:
     # Reliant cloud (set `endpoint` for another control plane).
     control_plane = forge.ControlPlane {}

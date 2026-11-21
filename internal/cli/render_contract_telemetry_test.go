@@ -25,6 +25,9 @@ func TestRenderContract_TelemetryDecodesNormalizesAndValidates(t *testing.T) {
 	by := map[string]telemetry.Target{}
 	for _, tg := range e.Telemetry {
 		by[tg.ServiceName] = tg
+		if tg.Origin != telemetry.OriginDeclared {
+			t.Errorf("%s: origin %q on a declared target", tg.ServiceName, tg.Origin)
+		}
 	}
 
 	tmp := by["temporal"]
@@ -155,5 +158,17 @@ func TestCheckEnvTelemetryPrintsNotes(t *testing.T) {
 	}
 	if got := errOut.String(); !strings.Contains(got, "telemetry note: observability (service cert-manager): network_policy") {
 		t.Errorf("notes on stderr = %q", got)
+	}
+}
+
+// env render still holds a declared dashboard to dashspec.ParseDashboard:
+// pkg/telemetry takes the validator as telemetry.Options.ValidateDashboard
+// (so it stays a dependency leaf), and validateEnvTelemetry passes it.
+func TestValidateEnvTelemetryParsesDashboards(t *testing.T) {
+	e, _ := loadContract(t, "telemetry")
+	e.Telemetry[0].Dashboards = []json.RawMessage{json.RawMessage(`{"id": "temporal-extra", "title": "Extra", "panels": [{"id": "p", "kind": "no-such-kind"}]}`)}
+	err := validateEnvTelemetry("dev", e)
+	if err == nil || !strings.Contains(err.Error(), "dashboards[0]") || !strings.Contains(err.Error(), "no-such-kind") {
+		t.Fatalf("validateEnvTelemetry = %v, want dashspec's refusal of the panel kind", err)
 	}
 }

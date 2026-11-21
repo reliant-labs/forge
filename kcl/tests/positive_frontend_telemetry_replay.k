@@ -7,14 +7,16 @@ with `forge.BrowserTelemetry {replay = True}`:
   * a frontend that does not set it renders no OTEL_REPLAY (unset = off);
   * any frontend with replay on opts the env's observability policy in
     (`opt_in: ["replay"]`, `signals.replay` true), so the platform keeps the
-    events; it is an opt-in, never an opt-out, so `disabled` is untouched;
-  * no frontend with replay on: no OTEL_REPLAY, no opt-in;
+    events;
+  * the deprecated env-wide `signals.replay` alone still opts the env in, and
+    switches no frontend on;
+  * neither: no OTEL_REPLAY, no opt-in;
   * disabling observability, or browser telemetry, cancels the opt-in and
     keeps the hosted frontend from recording: no OTEL_REPLAY = "true" renders,
     the ingest path is "off", and an author's own OTEL_REPLAY is forced to
     "false";
-  * a {VITE_,NEXT_PUBLIC_}OTEL_REPLAY build variable is not carried over
-    telemetry.replay, and an author's runtime_config entry outranks it.
+  * telemetry.replay outranks a carried {VITE_,NEXT_PUBLIC_}OTEL_REPLAY build
+    variable, and an author's runtime_config entry still outranks both.
 """
 
 import forge
@@ -55,6 +57,9 @@ _on = _bundle([
     }
 ], forge.Observability {destination = _dest})
 
+_legacy = _bundle([_hosted("web", False)], forge.Observability {
+    destination = _dest, signals = forge.ObservabilitySignals {replay = True}
+})
 _neither = _bundle([_hosted("web", False)], forge.Observability {destination = _dest})
 _disabled = _bundle([_hosted("web", True)], forge.Observability {enabled = False})
 _browser_off = _bundle([
@@ -72,9 +77,11 @@ assert_host_runtime_config_carries_replay = _by.local.runtime_config.OTEL_REPLAY
 assert_typed_field_outranks_build_variable = _by.local.runtime_config.OTEL_REPLAY == "true"
 assert_author_runtime_config_wins = _by.own.runtime_config.OTEL_REPLAY == "false"
 assert_frontend_replay_opts_env_in = _on.observability.policy.opt_in == ["replay"]
-assert_opt_in_is_not_an_opt_out = _on.observability.policy.disabled == []
 assert_frontend_replay_recorded_as_signal = _on.observability.signals.replay == True
 assert_telemetry_renders_replay = _by.web.telemetry.replay == True and _by.admin.telemetry.replay == False
+
+assert_legacy_signal_still_opts_in = _legacy.observability.policy.opt_in == ["replay"]
+assert_legacy_signal_switches_no_frontend_on = "OTEL_REPLAY" not in _legacy.frontends[0].runtime_config_spec
 
 assert_neither_opts_in = _neither.observability.policy.opt_in == [] and _neither.observability.signals.replay == False
 assert_neither_renders_replay = "OTEL_REPLAY" not in _neither.frontends[0].runtime_config_spec

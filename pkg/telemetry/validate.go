@@ -1,14 +1,13 @@
 package telemetry
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/reliant-labs/forge/pkg/dashspec"
 )
 
 // Options is what Validate needs to know about the env beyond its targets.
@@ -19,6 +18,19 @@ type Options struct {
 	// target must name one of them. Nil skips that check (a caller with no
 	// cluster inventory, such as a unit test).
 	Clusters []string
+	// ValidateDashboard judges one declared dashboard (a Target.Dashboards
+	// entry), naming it name in its messages. forge passes pkg/dashspec's
+	// validator, the one a release cut runs:
+	//
+	//	func(name string, raw []byte) error { _, err := dashspec.ParseDashboard(name, raw); return err }
+	//
+	// It is passed in rather than imported because dashspec reaches
+	// pkg/alerting, pkg/observe and OpenTelemetry, and pkg/telemetry is a
+	// dependency leaf: every collector, pkg/release and a project's own
+	// tooling import it (deps_test.go holds the line). Nil checks only that
+	// each dashboard is a JSON object with an id; ids are unique in the env
+	// either way.
+	ValidateDashboard func(name string, raw []byte) error
 }
 
 // Problem is one thing wrong with one target.
@@ -77,7 +89,7 @@ func (e *ValidationError) Error() string {
 // an address; a selector needs a cluster), a cluster the env does not
 // declare, and the hosted rules (every scrape sets `allow`; no address, no
 // bearer token, no profiles; only declared ports), and every declared
-// dashboard against dashspec.ParseDashboard, its id unique in the env. It returns a
+// dashboard against Options.ValidateDashboard, its id unique in the env. It returns a
 // *ValidationError naming every problem, or nil.
 //
 // The KCL checks are repeated where they are cheap, so a Target built
@@ -146,6 +158,9 @@ func (v *validator) target() {
 	case AttachWorkload, AttachHostInfra, AttachManifests, AttachObservability, AttachManagedDatabase:
 	default:
 		v.add("attachment", fmt.Sprintf("%q is not one of workload, hostinfra, manifests, observability, manageddatabase", t.Attachment))
+	}
+	if t.Origin != OriginDeclared && t.Origin != OriginDefault {
+		v.add("origin", fmt.Sprintf("%q must be empty (declared) or default", t.Origin))
 	}
 	v.runtime()
 	if len(t.Selector) > 0 && t.Address != "" {
@@ -230,15 +245,27 @@ func (v *validator) target() {
 	v.dashboards()
 }
 
-// dashboards runs each declared dashboard through dashspec.ParseDashboard and
-// refuses an id another target of the env already declares: every dashboard
-// becomes one file named for its id.
+// dashboards runs each declared dashboard through Options.ValidateDashboard
+// and refuses an id another target of the env already declares: every
+// dashboard becomes one file named for its id.
 func (v *validator) dashboards() {
 	for i, raw := range v.t.Dashboards {
 		f := fmt.Sprintf("dashboards[%d]", i)
-		d, err := dashspec.ParseDashboard(f, raw)
-		if err != nil {
-			v.add(f, err.Error())
+		if v.opts.ValidateDashboard != nil {
+			if err := v.opts.ValidateDashboard(f, raw); err != nil {
+				v.add(f, err.Error())
+				continue
+			}
+		}
+		var d struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &d); err != nil {
+			v.add(f, fmt.Sprintf("is not a dashboard object: %v", err))
+			continue
+		}
+		if d.ID == "" {
+			v.add(f+".id", "is required")
 			continue
 		}
 		if prev, dup := v.dashboardIDs[d.ID]; dup {

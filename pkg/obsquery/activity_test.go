@@ -136,6 +136,19 @@ func TestActiveEvidenceForRefusesATableThatIsNotAnIdentifier(t *testing.T) {
 	}
 }
 
+// ActiveEvidence is a published constant: its value is frozen at what it was
+// before UserActivityEvidence (semver at major 1), and the new predicate
+// extends it rather than replacing it.
+func TestDeprecatedActiveEvidenceKeepsItsValue(t *testing.T) {
+	const was = "UserId != '' AND EventName NOT IN ('auth_signed_out', 'auth_accounts')"
+	if ActiveEvidence != was {
+		t.Errorf("ActiveEvidence = %q, want its published value %q", ActiveEvidence, was)
+	}
+	if !strings.HasPrefix(UserActivityEvidence, ActiveEvidence+" AND ") {
+		t.Errorf("UserActivityEvidence %q does not extend ActiveEvidence", UserActivityEvidence)
+	}
+}
+
 // A user excluded by id leaves every row of theirs, in every environment, and
 // the id reaches the SQL only as an escaped string literal.
 func TestActiveEvidenceForExcludesUsersByID(t *testing.T) {

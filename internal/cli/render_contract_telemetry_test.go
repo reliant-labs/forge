@@ -70,10 +70,12 @@ func TestRenderContract_TelemetryDecodesNormalizesAndValidates(t *testing.T) {
 	}
 }
 
-// An env that declares no Telemetry decodes to none, from every golden that
+// An env that declares no Telemetry, and no forge.ManagedDatabase (whose
+// default telemetry is pinned by render_contract_database_telemetry_test.go,
+// from the cluster and hosted goldens), decodes to none from every golden that
 // predates it: the render is unchanged, and nothing downstream sees a target.
 func TestRenderContract_NoTelemetryWithoutDeclaration(t *testing.T) {
-	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "mixed", "unit-split", "flux-delivery", "secrets-components"} {
+	for _, name := range []string{"host", "compose", "build-only", "mixed", "unit-split", "flux-delivery", "secrets-components"} {
 		e, raw := loadContract(t, name)
 		if e.Telemetry != nil {
 			t.Errorf("%s: decoded telemetry %+v from an env that declares none", name, e.Telemetry)

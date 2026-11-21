@@ -1293,8 +1293,25 @@ schema ManagedDatabase(Database):
     # Live dashboard panels over this database's data (DatabaseDashboards).
     # Absent means disabled.
     dashboards?: DatabaseDashboards
+    # How the database itself is watched. Unset, it gets
+    # forge.managed_database_telemetry(name) (kcl/database_telemetry.k): its
+    # instances' metrics with a bounded allow list, its Postgres logs, a
+    # Postgres check and a database dashboard, as service `<name>-postgres`,
+    # collected like any forge.Telemetry (forge's agent on a cluster, the
+    # platform on forge.OnHosted). Set, it REPLACES that default; extend the
+    # default with `forge.managed_database_telemetry("<name>") | {...}`. The
+    # target is the database's instances (pods `cnpg.io/cluster: <name>`,
+    # ports `metrics` 9187 and `postgres` 5432), so selector, namespaces,
+    # cluster and address are refused.
+    telemetry?: Telemetry
+    # False turns the default telemetry off: the database's and its share of
+    # the CloudNativePG operator's (a cluster's operator is watched while any
+    # database on it keeps the default). A declared `telemetry` still renders.
+    default_telemetry: bool = True
 
     check:
+        not telemetry or _tel_targets_self(telemetry), \
+            "ManagedDatabase '${name}': telemetry targets this database's instances itself, so selector, namespaces, cluster and address are refused"
         not (dashboards and spec.dashboards), \
             "ManagedDatabase '${name}' declares dashboards twice: set `dashboards = forge.DatabaseDashboards {...}` on the ManagedDatabase, not on `spec`"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
@@ -16,6 +17,10 @@ var (
 	kubectlReadAttempts   = 3
 	kubectlReadRetryDelay = 2 * time.Second
 )
+
+// runKubectlRead runs one attempt of a read. A var so tests can stand in
+// for kubectl in-process, on every OS, without a fake binary on PATH.
+var runKubectlRead = func(cmd *exec.Cmd) error { return cmd.Run() }
 
 // kubeTransportFailureSignatures name kubectl failures that come from the
 // connection to the API server, never from the request: the server was not
@@ -53,7 +58,7 @@ func kubectlRead(ctx context.Context, kctx string, args ...string) (stdout, stde
 		cmd := kubectlCmd(ctx, kctx, args...)
 		var out, errb bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errb
-		err = cmd.Run()
+		err = runKubectlRead(cmd)
 		if err == nil || attempt >= kubectlReadAttempts || ctx.Err() != nil ||
 			!transientKubeTransportFailure(errb.String()) {
 			return out.Bytes(), errb.Bytes(), err

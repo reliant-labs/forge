@@ -2,35 +2,35 @@ package cluster
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"strconv"
+	"errors"
+	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fakeFlakyKubectl puts a kubectl on PATH that fails its first `fails` runs
-// with stderr `failure`, then prints `ok` to stdout. It returns a func that
-// counts the runs so far.
+// fakeFlakyKubectl stands in for kubectl in-process (runKubectlRead): its
+// first `fails` runs write `failure` to stderr and fail, later runs print
+// the keys tls.crt and tls.key to stdout. Nothing is exec'd, so the result
+// is the same on every OS: a fake binary on PATH is not found on Windows,
+// where the runner's real kubectl then dials a context that does not exist.
+// It returns a func that counts the runs so far.
 func fakeFlakyKubectl(t *testing.T, fails int, failure string) func() int {
 	t.Helper()
-	dir := t.TempDir()
-	count := filepath.Join(dir, "count")
-	script := "#!/bin/sh\n" +
-		"n=$(cat " + count + " 2>/dev/null || echo 0)\n" +
-		"n=$((n+1)); echo $n > " + count + "\n" +
-		"if [ $n -le " + strconv.Itoa(fails) + " ]; then echo '" + failure + "' >&2; exit 1; fi\n" +
-		"printf '%s\\n' tls.crt tls.key\n"
-	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	var runs int
+	prev := runKubectlRead
+	runKubectlRead = func(cmd *exec.Cmd) error {
+		runs++
+		if runs <= fails {
+			_, _ = io.WriteString(cmd.Stderr, failure+"\n")
+			return errors.New("exit status 1")
+		}
+		_, _ = io.WriteString(cmd.Stdout, "tls.crt\ntls.key\n")
+		return nil
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return func() int {
-		b, _ := os.ReadFile(count)
-		n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-		return n
-	}
+	t.Cleanup(func() { runKubectlRead = prev })
+	return func() int { return runs }
 }
 
 func shortKubectlReadRetry(t *testing.T) {

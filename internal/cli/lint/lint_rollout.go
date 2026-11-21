@@ -18,9 +18,8 @@
 // Every rule lint.rules can grade declares a ruleRollout (lint_rollout_table.go):
 //
 //	IntroducedIn  the forge release that shipped the rule, or tightened it
-//	GatesFrom     the release it starts to gate in. Empty for a rule that has
-//	              always gated; required for any rule introduced after
-//	              rolloutBaseline.
+//	GatesFrom     the release it starts to gate in, projected from an explicit
+//	              Grace declaration. Empty for rules with no warning window.
 //	Fix           the `forge fix <codemod>` that clears it, when one exists.
 //
 // The project's pinned forge_version decides. A finding that would fail the
@@ -72,7 +71,7 @@
 //     NEXT_VERSION predicted, so a commit that ships as v1.6.0 where the row
 //     said v1.5.1 grades by the row.
 //   - Only findings that would have failed the gate are softened. A warning
-//     stays a warning and carries no note; a rule at or before the baseline
+//     stays a warning and carries no note; a rule with no rollout deadline
 //     never softens.
 //
 // ── Passes with no rule ID of their own ───────────────────────────────────
@@ -88,10 +87,9 @@
 //
 // A new rule goes in gradableRules (TestEveryEmittedRuleIsGradable) and in
 // lint_rollout_table.go (TestEveryGradableRuleDeclaresItsRollout). Declare
-// IntroducedIn as the release it will ship in (the one NEXT_VERSION names) and
-// GatesFrom as the release after that. Both tests fail otherwise, and
-// TestRolloutRowsNameTheNextRelease fails a row for a release that is neither
-// shipped nor NEXT_VERSION.
+// IntroducedIn as the release it ships in. The owner-approved v1.9.0 grace
+// window requires an explicit Grace marker; the table guard rejects other
+// grace declarations.
 
 package lint
 
@@ -111,12 +109,6 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
-
-// rolloutBaseline is the last release before warn-first existed. A rule
-// introduced at or before it has gated since it shipped and declares no
-// GatesFrom; one introduced after it must. It is a fixed point, not a moving
-// "current version": it does not change when a release is cut.
-const rolloutBaseline = "v0.1.46"
 
 // rolloutGolangciBuildTags is the pseudo-rule key of the golangci-lint
 // build-tag passes (golangci_build_tags.go): the key lint.rules names to

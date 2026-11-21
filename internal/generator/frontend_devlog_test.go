@@ -37,7 +37,7 @@ func TestViteDevLogFromRuntimeFollowsTheFloor(t *testing.T) {
 func TestForgeDevLogIsExportedFromTheRuntime(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "web-runtime", "src", "vite.ts"))
 	if err != nil {
-		t.Skipf("web-runtime/src/vite.ts not readable: %v", err)
+		t.Fatalf("web-runtime/src/vite.ts not readable: %v", err)
 	}
 	if !regexp.MustCompile(`(?m)^export function forgeDevLog\(`).Match(src) {
 		t.Fatal("web-runtime/src/vite.ts no longer exports forgeDevLog, which the floor-gated Vite scaffolds import")

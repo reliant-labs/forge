@@ -204,6 +204,67 @@ func TestMergeDriver_GoneBinaryStillConflictsOnStateFiles(t *testing.T) {
 	}
 }
 
+// The forge a driver names can be a build of a checkout or of a dirty tree —
+// forgedelegate's pinned/checkout-* entries, evicted as newer builds arrive —
+// which names no version to reinstall. The driver then resolves forge at
+// merge time: the entry point on PATH runs the merge (and, outside a test,
+// hands it to the forge the project pins). Forge reports 8020c931, 3bd41c08,
+// a64b1b81: every merge after the eviction failed instead.
+func TestMergeDriver_GoneUninstallableBinaryMergesWithTheForgeOnPath(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	prevVer, prevLaunchers := mergeDriverVersion, driverLaunchers
+	t.Cleanup(func() { mergeDriverVersion, driverLaunchers = prevVer, prevLaunchers })
+	mergeDriverVersion = func() string { return "v1.8.1-0.20261120064152-ccaa932a1c8d+dirty" }
+	driverLaunchers = func(string) [][]string {
+		return [][]string{{"forge-test-absent-launcher"}, {"forge-test-launcher", "forge"}}
+	}
+	launcherDir := t.TempDir()
+	writeTreeFileT(t, filepath.Join(launcherDir, "forge-test-launcher"),
+		"#!/bin/sh\n[ \"$1\" = forge ] || exit 3\nwhile [ \"$1\" != merge-generated ]; do shift; done\nprintf 'from-launcher\\n' > \"$3\"\n")
+	if err := os.Chmod(filepath.Join(launcherDir, "forge-test-launcher"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo, exe := missingBinaryRepo(t)
+	if command := gitOut(t, repo, "config", "--get", "merge.forge-generated.driver"); strings.Contains(command, "go install") {
+		t.Fatalf("a dirty build's driver reinstalls it, which cannot work: %s", command)
+	}
+	t.Setenv("PATH", launcherDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	conflictingBranches(t, repo, "api_gen.go")
+	if err := os.Remove(exe); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := gitMerge(t, repo)
+	if err != nil {
+		t.Fatalf("the driver did not merge with the forge on PATH: %v\n%s", err, out)
+	}
+	if got, _ := os.ReadFile(filepath.Join(repo, "api_gen.go")); string(got) != "from-launcher\n" {
+		t.Errorf("api_gen.go = %q, want the PATH forge's merge", got)
+	}
+	if !strings.Contains(out, "`forge-test-launcher forge` from PATH") {
+		t.Errorf("the merge does not say which forge merged:\n%s", out)
+	}
+}
+
+func TestDefaultDriverLaunchers(t *testing.T) {
+	for name, want := range map[string]string{
+		"forge":          "forge|reliant forge",
+		"reliant forge":  "reliant forge|forge",
+		"cli.test forge": "cli.test forge|forge|reliant forge",
+		"it's forge":     "forge|reliant forge", // a name the shell would misread is skipped
+	} {
+		var got []string
+		for _, l := range defaultDriverLaunchers(name) {
+			got = append(got, strings.Join(l, " "))
+		}
+		if strings.Join(got, "|") != want {
+			t.Errorf("defaultDriverLaunchers(%q) = %q, want %q", name, strings.Join(got, "|"), want)
+		}
+	}
+}
+
 func TestMergeDriver_PresentBinaryStillRunsFirst(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds real git repositories; runs in task test")

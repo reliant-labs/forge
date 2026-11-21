@@ -62,7 +62,6 @@ import (
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/config"
-	"github.com/reliant-labs/forge/internal/frontenddeps"
 )
 
 // Rule ids contributed by this lane. New rules on the existing finding
@@ -124,6 +123,12 @@ type typecheckResult struct {
 	output string
 	// command is the resolved command line, for the failure message.
 	command string
+	// note is an info line for a typecheck that ran anyway (a stale
+	// node_modules; lint_frontend_deps.go).
+	note string
+	// warning is the rollout's finding for an implicit install
+	// (ruleFrontendNoInstall, lint_frontend_deps.go).
+	warning *lintJSONFinding
 }
 
 // frontendTypecheckTargets resolves the frontends this lane walks.
@@ -257,9 +262,19 @@ func resolveLocalTSC(feDir, projectRoot string) string {
 // probe and the "where is the compiler?" probe cannot disagree about what a
 // workspace layout means.
 func anyAncestorHasNodeModules(feDir, projectRoot string) bool {
+	_, ok := nearestNodeModulesDir(feDir, projectRoot)
+	return ok
+}
+
+// nearestNodeModulesDir is the directory whose node_modules the frontend at
+// feDir resolves from: feDir itself, else the nearest ancestor up to and
+// including projectRoot that has one (a workspace root that hoists). It is
+// returned in feDir's form — relative stays relative — so messages naming it
+// read like the frontend's own path.
+func nearestNodeModulesDir(feDir, projectRoot string) (string, bool) {
 	dir, err := filepath.Abs(feDir)
 	if err != nil {
-		return false
+		return "", false
 	}
 	root := projectRoot
 	if abs, absErr := filepath.Abs(projectRoot); absErr == nil {
@@ -267,11 +282,18 @@ func anyAncestorHasNodeModules(feDir, projectRoot string) bool {
 	}
 	for {
 		if dirExists(filepath.Join(dir, "node_modules")) {
-			return true
+			if !filepath.IsAbs(feDir) {
+				if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+					if rel, relErr := filepath.Rel(cwd, dir); relErr == nil {
+						return rel, true
+					}
+				}
+			}
+			return dir, true
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir || dir == root {
-			return false
+			return "", false
 		}
 		dir = parent
 	}
@@ -281,7 +303,7 @@ func anyAncestorHasNodeModules(feDir, projectRoot string) bool {
 // the outcome. It never returns an error: every failure mode is a
 // classified result, because "the check errored" and "the check found
 // errors" must stay distinguishable all the way out to the JSON report.
-func typecheckFrontend(ctx context.Context, t frontendTarget, projectRoot string) typecheckResult {
+func typecheckFrontend(ctx context.Context, deps frontendDepsPolicy, t frontendTarget, projectRoot string) typecheckResult {
 	res := typecheckResult{target: t}
 
 	if !dirExists(t.dir) {
@@ -316,23 +338,19 @@ func typecheckFrontend(ctx context.Context, t frontendTarget, projectRoot string
 	// to "1 gating linter could NOT run" — a lane that silently stopped
 	// checking, which is the outcome this file's own comments call worse than
 	// a failure.
-	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
-		if err := frontenddeps.Ensure(ctx, "[lint]", t.name, t.dir, "", true); err != nil {
-			// The compiler never ran, so this is a typecheck that could NOT
-			// run — which fails a gating lane (lint_skip.go) and, unlike a
-			// type error, is what --allow-skip can accept.
-			res.status = typecheckUnavailable
-			res.reason = fmt.Sprintf("dependencies are not installed and installing them failed — typecheck did NOT run: %v", err)
-			res.fixHint = npmInstallFix(t.dir)
-			return res
-		}
-	}
-	if !anyAncestorHasNodeModules(t.dir, projectRoot) {
+	//
+	// lint installs nothing unless the run passed --install
+	// (lint_frontend_deps.go): with no dependencies the compiler never runs,
+	// so this is a typecheck that could NOT run — which fails a gating lane
+	// (lint_skip.go) and, unlike a type error, is what --allow-skip accepts.
+	state := deps.check(ctx, t.name, t.dir, projectRoot, "typecheck")
+	if state.missing {
 		res.status = typecheckUnavailable
-		res.reason = "node_modules not installed — typecheck did NOT run"
-		res.fixHint = npmInstallFix(t.dir)
+		res.reason = state.reason
+		res.fixHint = state.fix
 		return res
 	}
+	res.note, res.warning = state.note, state.warning
 
 	var cmd *exec.Cmd
 	switch {
@@ -460,7 +478,7 @@ func tscOutputToFindings(output, feDir, severity string) []lintJSONFinding {
 // results drive both the text output and the JSON findings, and a report
 // whose line order changes run to run is unusable as a diffable artifact
 // (and untestable).
-func runFrontendTypechecks(ctx context.Context, targets []frontendTarget, projectRoot string) []typecheckResult {
+func runFrontendTypechecks(ctx context.Context, deps frontendDepsPolicy, targets []frontendTarget, projectRoot string) []typecheckResult {
 	results := make([]typecheckResult, len(targets))
 	limit := frontendTypecheckConcurrency
 	if n := runtime.NumCPU(); n < limit {
@@ -478,7 +496,7 @@ func runFrontendTypechecks(ctx context.Context, targets []frontendTarget, projec
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = typecheckFrontend(ctx, t, projectRoot)
+			results[i] = typecheckFrontend(ctx, deps, t, projectRoot)
 		}(i, t)
 	}
 	wg.Wait()
@@ -501,13 +519,21 @@ func typecheckGates(cfg *config.ProjectConfig) bool {
 // lines become file-scoped findings.
 func collectFrontendTypecheckJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 	targets := frontendTypecheckTargetsForRun(rc)
-	results := runFrontendTypechecks(rc.ctx, targets, rc.cwd)
+	results := runFrontendTypechecks(rc.ctx, rc.frontendDeps(), targets, rc.cwd)
 
 	gates := typecheckGates(rc.cfg)
 
 	var out []lintJSONFinding
 	gated := false
 	for _, r := range results {
+		if r.note != "" && r.status != typecheckNotApplicable {
+			out = append(out, ranNote(r.note))
+		}
+		if r.warning != nil {
+			w := *r.warning
+			w.File = frontendTypecheckScopeFile(rc.scope, r.target.dir)
+			out = append(out, w)
+		}
 		switch r.status {
 		case typecheckNotApplicable:
 			continue

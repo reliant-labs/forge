@@ -28,7 +28,7 @@ forge db query prod "select count(*) from jobs where crew_id is null" --confirm-
 forge obs issue resolve ISS-7f3a prod --in next
 ```
 
-No deploy to judge, just "something is wrong"? Start with `forge obs status prod`: the services, the new and regressed issues, the alerts, whether telemetry is arriving and the release in force, in one document.
+No deploy to judge, just "something is wrong"? Start with `forge obs status prod`: the services, the new and regressed issues, the alerts, the suspended or unhealthy workloads, whether telemetry is arriving and the release in force, in one document.
 
 ## Backends
 
@@ -52,7 +52,7 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 
 | Verb | Answers |
 |---|---|
-| `forge obs status [env]` | What is wrong right now: per-service rate, errors and p95; new and regressed issues; alerts firing or pending (cloud); when the newest log and span arrived, and whether the telemetry token reached the cluster (cloud); the release in force and the last 5 changes |
+| `forge obs status [env]` | What is wrong right now: per-service rate, errors and p95; new and regressed issues; alerts firing or pending (cloud); the workloads suspended or needing a look, and how many there are (cloud: a suspended env serves no traffic and emits no telemetry, so this is what tells it from a quiet one; suggests `forge env start`); when the newest log and span arrived, and whether the telemetry token reached the cluster (cloud); the release in force and the last 5 changes |
 | `forge obs workloads [env]` | Restarts, crash loops, last termination reason (OOMKilled, Error, ...), ready/desired replicas and the latest Kubernetes warning per workload, plus failed Job runs — the cluster state a hosted user has no kubeconfig for (cloud; `--all`, `--jobs failed\|all\|none`, default 24h, max 7d). Suggests the `obs logs` command narrowed to the worst workload |
 | `forge obs check [env]` | Did the deploy work? Before/after the promotion: error rate, p95 (server spans, else platform ingress), browser errors and page loads, new and regressed issues, alerts, restarts |
 | `forge obs changes [env]` | What changed: promotions, rollbacks, failed deploys and activity, newest first (locally: this machine's ledger and `forge env up` starts) |
@@ -88,7 +88,7 @@ Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service
 
 ## What is wrong now: `forge obs status`
 
-Each section is read on its own and concurrently. A section the backend cannot answer is **absent**, named in `unread`, with the reason in `warnings`; a section the backend does not have (alerts, locally) is named in `not_evaluated`. A section that was read and is empty is `[]`: "none", not "unknown". The exit status is **2** (`ok: false`) when any evidence could not be read, including partial sections reported in `warnings`; readable sections and the release are preserved. A complete read exits **0**: status reports, it does not judge health. Gate a release with `check`, not `status`.
+Each section is read on its own and concurrently. A section the backend cannot answer is **absent**, named in `unread`, with the reason in `warnings`; a section the backend does not have (alerts and workloads, locally) is named in `not_evaluated`. A section that was read and is empty is `[]`: "none", not "unknown". The exit status is **2** (`ok: false`) when any evidence could not be read, including partial sections reported in `warnings`; readable sections and the release are preserved. A complete read exits **0**: status reports, it does not judge health. Gate a release with `check`, not `status`.
 
 ## Release health: `forge obs check`
 

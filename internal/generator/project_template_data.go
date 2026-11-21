@@ -304,9 +304,11 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// version, or the published release its source descends from; an
 		// in-place scaffold adopting a module keeps that module's pin.
 		ForgeVersion: g.requiredForgeVersion(),
-		// REST is off at scaffold time; users opt-in post-scaffold by
-		// editing forge.yaml's `api.rest:` and re-running `forge generate`
-		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
+		// REST is off at scaffold time. Opting in post-scaffold
+		// (forge.yaml `api.rest: true`) is a hand edit of owned files —
+		// providers.go, buf.yaml, the protos — which `forge generate` names
+		// in its post-generation warnings (restWiringWarnings) rather than
+		// rewriting.
 		RESTEnabled: false,
 		GenModule:   g.genModule(),
 		VersionVar:  g.BuildVersionVar,

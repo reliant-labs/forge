@@ -26,33 +26,63 @@ api:
   # openapi: true  # sibling toggle — adds OpenAPI spec generation
 ```
 
-Then re-run `forge generate`. Three things happen:
+REST needs three pieces of wiring, and each lives in a file the project
+owns:
 
-1. **The server serves `serverkit.RESTHandler(mux, mounted, logger)`**
-   in place of the bare mux. A request the mux has a route for — every
-   Connect / gRPC / gRPC-Web procedure, and any other route on it, such
-   as the login broker's `/auth/*` — goes to the mux unchanged. Any
-   other request is matched against the REST routes; a match is relayed
-   to the same handler as a Connect call, in process, so its interceptor
-   chain (auth included) runs exactly as for a Connect request, and it
-   sees the REST caller's address, TLS state and Host. If the REST
-   routes cannot be built, the error is logged and the bare mux serves:
-   REST is lost, Connect is not.
-2. **`buf.yaml`** gains the `buf.build/googleapis/googleapis` BSR dep
-   so `google/api/annotations.proto` resolves.
-3. **CRUD-prefixed RPCs** in `.proto` files (`Get<Entity>`,
-   `List<Entity>`, `Create<Entity>`, `Update<Entity>`,
-   `Delete<Entity>`) gain default `google.api.http` annotations on
-   their next plan-mode emission.
+1. **The server serves REST.** In a composition-graph project,
+   `internal/app/providers.go` passes `REST: true` in
+   `serverkit.ListenerDeps`; a project that predates the graph calls
+   `serverkit.RESTHandler(srv.Mux, mounted, logger)` in
+   `cmd/<bin>/cmd/serve.go` and serves its result. Either way, a request
+   the mux has a route for — every Connect / gRPC / gRPC-Web procedure,
+   and any other route on it, such as the login broker's `/auth/*` — goes
+   to the mux unchanged. Any other request is matched against the REST
+   routes; a match is relayed to the same handler as a Connect call, in
+   process, so its interceptor chain (auth included) runs exactly as for a
+   Connect request, and it sees the REST caller's address, TLS state and
+   Host. If the REST routes cannot be built, the error is logged and the
+   bare mux serves: REST is lost, Connect is not.
+2. **`buf.yaml`** declares the `buf.build/googleapis/googleapis` BSR dep,
+   and `buf.lock` pins it, so `google/api/annotations.proto` resolves.
+3. **RPCs carry `google.api.http` annotations.** Vanguard routes only an
+   annotated rpc; with none, REST serves no routes.
 
-`api.rest: false` (or absent) is the default — existing projects
-regenerate byte-identically. The REST handler, the
-googleapis dep, and the annotations all disappear.
+### On an existing project
+
+Flipping `api.rest: true` and running `forge generate` does **not** write
+any of these: `providers.go` and `serve.go` are scaffolded once with the
+`api.rest` value of their birth, `buf.yaml` is Tier-2 (hand edits are
+respected), and the protos are yours. forge never rewrites owned files, so
+instead `forge generate` prints a post-generation warning for each piece
+that is missing, naming the edit. Make them by hand:
+
+```go
+// internal/app/providers.go, in serverkit.ListenerDeps
+REST: true,
+```
+
+```yaml
+# buf.yaml
+deps:
+  - buf.build/googleapis/googleapis
+```
+
+```bash
+buf dep update        # writes buf.lock
+```
+
+Then add the annotations (the CRUD defaults are below) and run
+`forge generate`; the warnings stop once the wiring is complete.
+
+`api.rest: false` (or absent) is the default. Turning it off again is the
+reverse edit: `REST: false`, and drop the dep and annotations if nothing
+else uses them.
 
 ## CRUD Defaults
 
 When `api.rest: true`, the plan-proto scaffolder emits these
-annotations on CRUD-prefixed RPCs:
+annotations on CRUD-prefixed RPCs of a proto it writes; on protos that
+already exist, add them by hand:
 
 | Method                | Annotation                                                         |
 | --------------------- | ------------------------------------------------------------------ |
@@ -123,9 +153,8 @@ spec" workflow.
 ## Troubleshooting
 
 - **`google/api/annotations.proto: file does not exist`** — buf.yaml
-  is missing the googleapis dep. `forge generate` should add it
-  automatically when `api.rest: true`; if not, run `forge project upgrade` or
-  add the dep by hand:
+  is missing the googleapis dep (or buf.lock is missing). Add the dep by
+  hand, then run `buf dep update`:
   ```yaml
   deps:
     - buf.build/googleapis/googleapis

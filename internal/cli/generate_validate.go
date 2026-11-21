@@ -49,6 +49,10 @@ func validateGeneratedProject(projectDir string, cfg *config.ProjectConfig, serv
 	// reuses stepFrontendNav's result.
 	warnings = append(warnings, unlinkedRouteWarnings(cfg, projectDir, services, entities)...)
 
+	// Check: api.rest: true on a project whose owned files were born with it
+	// off. See restWiringWarnings.
+	warnings = append(warnings, restWiringWarnings(projectDir, cfg, len(services) > 0)...)
+
 	return warnings
 }
 

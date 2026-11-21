@@ -252,18 +252,21 @@ func seedNow() time.Time {
 // on two different calendar days.
 var seedClock = time.Now
 
-// errNonDevSeedTarget is the structural CLI gate: apply/reset refuse any
+// requireDevSeedTarget is the structural CLI gate: apply/reset refuse any
 // environment forge cannot confirm is dev, and there is deliberately no
 // override flag (an override is exactly the conventional hole this gate
-// exists to close).
+// exists to close). The refusal names what forge read, so a dev env refused
+// for an unreadable mode says so instead of claiming it "is not dev".
 func requireDevSeedTarget(env string) error {
-	dev, err := seedTargetIsDev(env)
+	reading, err := seedTargetReading(env)
 	if err != nil {
 		return err
 	}
-	if !dev {
-		return fmt.Errorf("refusing to seed: environment %q is not dev — seed data is a dev-only feature and there is no override flag.\n"+
-			"Seeds never run against staging/production; for a deliberate non-dev demo dataset use psql directly", env)
+	if !reading.Dev {
+		return fmt.Errorf("refusing to seed: forge cannot confirm environment %q is development.\n"+
+			"  It read: %s.\n"+
+			"  Only \"development\" or \"dev\" in the config field carrying the runtime MODE marks an env as dev.\n"+
+			"Seed data is a dev-only feature and there is no override flag; seeds never run against staging/production — for a deliberate non-dev demo dataset use psql directly", env, reading.Source)
 	}
 	return nil
 }
@@ -273,25 +276,27 @@ func requireDevSeedTarget(env string) error {
 // FAIL-CLOSED: any environment it cannot positively confirm as development is
 // treated as non-dev.
 func seedTargetIsDev(env string) (bool, error) {
-	cfgPath, err := findProjectConfigFile()
-	if err != nil {
-		return false, err
-	}
-	return seedEnvIsDevIn(filepath.Dir(cfgPath), env), nil
+	reading, err := seedTargetReading(env)
+	return reading.Dev, err
 }
 
-// seedEnvIsDevIn is the pure, testable core of the dev classifier. It reads the
-// runtime MODE from the per-env KCL config (deploy/kcl/<env>/config.k, where the
-// dev env is scaffolded with `environment = "development"`) and returns true
-// only for "development"/"dev". FAIL-CLOSED — any environment it cannot
-// positively confirm as development (no config source, unset mode,
-// production/test/staging) is treated as non-dev.
-func seedEnvIsDevIn(projectDir, env string) bool {
-	mode, ok := envModeFromKCLConfig(projectDir, env)
-	if !ok {
-		return false
+// seedTargetReading is seedTargetIsDev with what it read, for a refusal.
+func seedTargetReading(env string) (envModeReading, error) {
+	cfgPath, err := findProjectConfigFile()
+	if err != nil {
+		return envModeReading{}, err
 	}
-	return isDevMode(mode)
+	return classifySeedEnv(filepath.Dir(cfgPath), env), nil
+}
+
+// seedEnvIsDevIn is the testable core of the dev classifier: the runtime MODE
+// of env's EVALUATED config (deploy/kcl/<env>/config.k through its typed
+// schema — see classifySeedEnv), true only for "development"/"dev".
+// FAIL-CLOSED — any environment it cannot positively confirm as development
+// (no config source, unset mode, production/test/staging, configs that
+// disagree) is treated as non-dev.
+func seedEnvIsDevIn(projectDir, env string) bool {
+	return classifySeedEnv(projectDir, env).Dev
 }
 
 // isDevMode reports whether a runtime MODE string names the development
@@ -311,11 +316,11 @@ func isDevMode(mode string) bool {
 var kclConfigModeRE = regexp.MustCompile(`(?m)^\s*environment\s*[:=]\s*"([^"]*)"`)
 
 // envModeFromKCLConfig reads the runtime `environment` MODE value from the
-// per-env config source, deploy/kcl/<env>/config.k. Returns (value, true) when
-// the file exists and sets `environment`; ("", false) otherwise (absent file,
-// or the field unset, inheriting the schema default). Best-effort text read:
-// the value is a plain string literal in a forge-scaffolded instance, so a full
-// KCL evaluation would be disproportionate for a fail-closed gate.
+// per-env config source, deploy/kcl/<env>/config.k, as TEXT. Returns (value,
+// true) when the file exists and has a line starting `environment = "..."`;
+// ("", false) otherwise. It is only the FALLBACK of classifySeedEnv, for an
+// env whose config cannot be evaluated: a line match cannot see a nested
+// `runtime = {environment = "dev"}`.
 func envModeFromKCLConfig(projectDir, env string) (string, bool) {
 	path := filepath.Join(projectDir, "deploy", "kcl", env, "config.k")
 	data, err := os.ReadFile(path)

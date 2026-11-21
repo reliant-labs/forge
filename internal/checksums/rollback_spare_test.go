@@ -376,6 +376,50 @@ func TestRestore_NeverWalksATreeReplacedByAnotherDirectory(t *testing.T) {
 	}
 }
 
+// A tool that regenerates its declared directory atomically — into scratch,
+// then renamed over the live one, as reliant's sdk-go-gen hook does — swaps
+// in a new directory during its own step. That directory is the tool's
+// output, not another writer's: a failed run rewinds it like files written
+// in place (forge bug 9ceafeb4: sdk/go/gen stayed modified after a failed
+// validate).
+func TestRestore_RewindsATreeTheToolSwappedInDuringItsStep(t *testing.T) {
+	root := t.TempDir()
+	seedFile(t, root, "gen/old.go", "package gen // pre-run\n")
+	seedFile(t, root, "gen/gone.go", "package gen // pre-run, not regenerated\n")
+	BeginRollbackJournal(root)
+	t.Cleanup(CommitRollback)
+	CaptureExternalWrites(root, "gen")
+
+	// The tool's step: generate into scratch, move the live tree aside,
+	// rename the scratch tree into place, drop the old one.
+	seedFile(t, root, "tmp/stage/gen/old.go", "package gen // tool\n")
+	seedFile(t, root, "tmp/stage/gen/new.go", "package gen // tool\n")
+	if err := os.Rename(filepath.Join(root, "gen"), filepath.Join(root, "tmp/stage/previous")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(root, "tmp/stage/gen"), filepath.Join(root, "gen")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "tmp")); err != nil {
+		t.Fatal(err)
+	}
+	SettleJournal(root)
+
+	res := RestoreRollbackDetailed(root)
+	if len(res.Spared) != 0 || len(res.Unverified) != 0 {
+		t.Errorf("spared = %v, unverified = %v; want the tool's own swap rewound", res.Spared, res.Unverified)
+	}
+	if got := readFileT(t, root, "gen/old.go"); got != "package gen // pre-run\n" {
+		t.Errorf("gen/old.go = %q, want its pre-run bytes", got)
+	}
+	if got := readFileT(t, root, "gen/gone.go"); got != "package gen // pre-run, not regenerated\n" {
+		t.Errorf("gen/gone.go = %q, want it recreated", got)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "gen/new.go")); !os.IsNotExist(err) {
+		t.Errorf("gen/new.go, created by the failed run, survived the rewind: %v", err)
+	}
+}
+
 // An external path absent before the run that another writer made a
 // symlink to a directory is not settled: it is spared, not followed.
 func TestRestore_AnAbsentExternalPathMadeASymlinkIsSpared(t *testing.T) {

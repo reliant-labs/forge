@@ -223,8 +223,10 @@ type ProjectConfig struct {
 	// driver. See [GitConfig]; read by internal/cli/merge_generated.go.
 	Git GitConfig `yaml:"git,omitempty"`
 	// Vuln steers the SBOMs and vulnerability findings forge records for
-	// each release. See [VulnConfig]; read where the release cut stores an
-	// OCI artifact's SBOM (internal/sbomoci).
+	// each release, and how it patches them. See [VulnConfig]; read where
+	// the release cut stores an OCI artifact's SBOM (internal/sbomoci), and
+	// by `forge vuln patch` (internal/cli/vuln_patch.go) for
+	// vuln.patch.verify.
 	Vuln VulnConfig `yaml:"vuln,omitempty"`
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the

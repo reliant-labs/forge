@@ -170,13 +170,17 @@ func saveHashCerts(root string, certs map[string]string) error {
 	}
 	// The .gitignore line moves before the legacy manifest goes: until
 	// both the certificates and the line that commits them are written,
-	// the manifest is the only committed copy of these hashes.
-	if len(certs) > 0 {
+	// the manifest is the only committed copy of these hashes. It moves
+	// whenever the manifest is about to go, even with no certificate to
+	// write now: a manifest deleted under the old line would leave every
+	// later certificate ignored by git.
+	_, legacyErr := os.Stat(filepath.Join(root, filepath.FromSlash(LegacyHashesFile)))
+	if len(certs) > 0 || legacyErr == nil {
 		if err := migrateHashesNegation(root); err != nil {
 			return err
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(LegacyHashesFile))); err == nil {
+	if legacyErr == nil {
 		recordPreWrite(root, LegacyHashesFile)
 		if err := os.Remove(filepath.Join(root, filepath.FromSlash(LegacyHashesFile))); err != nil && !os.IsNotExist(err) {
 			return err

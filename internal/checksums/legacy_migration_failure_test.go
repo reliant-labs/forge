@@ -130,3 +130,34 @@ func TestHashCerts_FailedGitignoreWriteKeepsTheLegacyManifest(t *testing.T) {
 		t.Errorf("the legacy manifest must stay intact: present=%v", ok)
 	}
 }
+
+// A legacy manifest whose hashes are all dropped from the current set (each
+// output now uncertified) is deleted only with its .gitignore line moved to
+// the certificate directory, so certificates written later are committed.
+func TestHashCerts_EmptySetStillMovesTheGitignoreLine(t *testing.T) {
+	root := t.TempDir()
+	writeT(t, root, LegacyHashesFile, `{"files": {"web/schema_gen.json": "`+Hash([]byte("x"))+`"}}`+"\n")
+	writeT(t, root, ".gitignore", legacyGitignore)
+	if err := saveHashCerts(root, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	gi, _ := readT(t, root, ".gitignore")
+	if strings.Contains(gi, "!.forge/hashes.json") || !strings.Contains(gi, "!.forge/hashes/\n") {
+		t.Errorf("the legacy manifest went but .gitignore still commits only it:\n%s", gi)
+	}
+	if _, ok := readT(t, root, LegacyHashesFile); ok {
+		t.Error("the legacy manifest must go once its line is moved")
+	}
+
+	// The same with a failed .gitignore write: the manifest stays.
+	root = t.TempDir()
+	writeT(t, root, LegacyHashesFile, `{"files": {}}`)
+	writeT(t, root, ".gitignore", legacyGitignore)
+	failWritesTo(t, ".gitignore")
+	if err := saveHashCerts(root, map[string]string{}); err == nil {
+		t.Fatal("saveHashCerts must fail when the .gitignore line cannot move")
+	}
+	if _, ok := readT(t, root, LegacyHashesFile); !ok {
+		t.Error("the legacy manifest must stay while .gitignore still commits it")
+	}
+}

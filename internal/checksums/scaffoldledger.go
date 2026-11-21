@@ -452,7 +452,9 @@ func saveScaffoldLedgerLocked(root string) {
 	scaffoldOnDisk[abs] = onDisk
 	legacy := filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))
 	if _, serr := os.Stat(legacy); serr == nil && persisted {
-		if len(want) > 0 && migrateGitignoreLine(abs, "!"+LegacyScaffoldedFile, "!"+ScaffoldedDir+"/") != nil {
+		// The line moves even for an empty ledger: the directory it
+		// commits is where every later entry goes.
+		if migrateGitignoreLine(abs, "!"+LegacyScaffoldedFile, "!"+ScaffoldedDir+"/") != nil {
 			return // the entries are written but not yet committed: keep the legacy ledger
 		}
 		RecordPreWriteAbs(legacy)

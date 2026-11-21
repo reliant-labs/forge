@@ -97,6 +97,14 @@ type RunnerSpec struct {
 	// `pgo = forge.PGO {enabled = False}`). The runners that compile on
 	// launch (go-run, air) then build with -pgo=off: see WithPGO.
 	PGOOff bool
+	// GoBuildFlags are extra `go build` flags for the runners that compile
+	// on launch: go-run puts them on its `go run`, and air's scaffolded
+	// config expands $FORGE_GO_BUILD_FLAGS (see WithCoverage). Today they
+	// are a cover build's -cover -covermode=atomic -coverpkg=….
+	GoBuildFlags []string
+	// CoverDir is the GOCOVERDIR an instrumented binary writes its coverage
+	// to; empty when the binary is not instrumented. See WithCoverage.
+	CoverDir string
 
 	// Command, when non-empty, is the workload's spec.command: an explicit
 	// entrypoint run verbatim with Args, for any runner but air. It is how
@@ -148,6 +156,30 @@ func (s RunnerSpec) AirRunsArgs() bool {
 		return false
 	}
 	return slices.Equal(doc.Build.Entrypoint[1:], s.Args)
+}
+
+// AirExpandsBuildFlags reports whether the air config this spec launches
+// with expands $FORGE_GO_BUILD_FLAGS (GoBuildFlagsEnv) in a build command,
+// so flags forge passes reach its `go build`. false when the config cannot
+// be read: nothing proves they do.
+func (s RunnerSpec) AirExpandsBuildFlags() bool {
+	cfg, _ := s.airPaths()
+	var doc struct {
+		Build struct {
+			Cmd     string `toml:"cmd"`
+			Windows struct {
+				Cmd string `toml:"cmd"`
+			} `toml:"windows"`
+		} `toml:"build"`
+	}
+	if _, err := toml.DecodeFile(cfg, &doc); err != nil {
+		return false
+	}
+	cmd := doc.Build.Cmd
+	if runtime.GOOS == "windows" && doc.Build.Windows.Cmd != "" {
+		cmd = doc.Build.Windows.Cmd
+	}
+	return strings.Contains(cmd, GoBuildFlagsEnv)
 }
 
 // airPaths resolves the air config this spec launches with, and the
@@ -357,7 +389,7 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 				argv = append(append(argv, "--"), spec.Args...)
 			}
 		default: // "" | "go-run"
-			argv = append([]string{"go", "run", strings.TrimSpace(spec.GoPkg)}, spec.Args...)
+			argv = append(append(append([]string{"go", "run"}, spec.GoBuildFlags...), strings.TrimSpace(spec.GoPkg)), spec.Args...)
 		}
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- argv is derived from the project's own KCL
@@ -401,6 +433,40 @@ func WithPGO(spec RunnerSpec, env []string) []string {
 		}
 	}
 	return append(out, key+strings.TrimSpace(flags+" -pgo=off"))
+}
+
+// GoBuildFlagsEnv is the variable the scaffolded .air.toml's `go build`
+// expands, so `forge env up` can pass build flags through air: air hands its
+// environment to its build command. An air config that does not expand it
+// builds as it always did.
+const GoBuildFlagsEnv = "FORGE_GO_BUILD_FLAGS"
+
+// WithCoverage returns env with what an instrumented (`-cover`) binary
+// needs: GOCOVERDIR=spec.CoverDir, where Go writes its counters at exit, and
+// for air, FORGE_GO_BUILD_FLAGS=spec.GoBuildFlags so its build is the cover
+// build. go-run carries the flags on its argv (BuildCmd), and binary/delve
+// run what `forge build` compiled with them. A spec.command runs verbatim and
+// gets nothing. A GOCOVERDIR or FORGE_GO_BUILD_FLAGS env already carries is
+// the user's and wins. env is not modified.
+func WithCoverage(spec RunnerSpec, env []string) []string {
+	if spec.CoverDir == "" {
+		return env
+	}
+	runner := strings.TrimSpace(spec.Runner)
+	if runner != "air" && len(spec.Command) > 0 {
+		return env
+	}
+	out := slices.Clone(env)
+	has := func(key string) bool {
+		return slices.ContainsFunc(out, func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
+	}
+	if !has("GOCOVERDIR") {
+		out = append(out, "GOCOVERDIR="+spec.CoverDir)
+	}
+	if runner == "air" && len(spec.GoBuildFlags) > 0 && !has(GoBuildFlagsEnv) {
+		out = append(out, GoBuildFlagsEnv+"="+strings.Join(spec.GoBuildFlags, " "))
+	}
+	return out
 }
 
 func runnerOrDefault(r string) string {

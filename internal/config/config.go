@@ -222,6 +222,11 @@ type ProjectConfig struct {
 	// own: today, whether writing commands wire the generated-file merge
 	// driver. See [GitConfig]; read by internal/cli/merge_generated.go.
 	Git GitConfig `yaml:"git,omitempty"`
+	// Tests is how the project's test runs are captured, what coverage they
+	// measure and what forge does about flaky tests. See [TestsConfig];
+	// `coverage` is read by the env render (instrumented builds, through
+	// ReadTestsCoverage), the rest by the `forge test` verbs.
+	Tests TestsConfig `yaml:"tests,omitempty"`
 	// Vuln steers the SBOMs and vulnerability findings forge records for
 	// each release, and how it patches them. See [VulnConfig]; read where
 	// the release cut stores an OCI artifact's SBOM (internal/sbomoci), and

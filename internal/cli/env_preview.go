@@ -59,6 +59,9 @@ const (
 	defaultPreviewFrom    = "preview"
 	defaultPreviewTTL     = "72h"
 	previewHeaderFileName = "README.preview"
+	// previewGitignoreFileName makes an instance directory invisible to git.
+	previewGitignoreFileName = ".gitignore"
+	previewGitignore         = "# A preview instance (forge env preview create) is never committed: ignore all of it.\n*\n"
 )
 
 // Seams, so the commands are testable without a render, a cluster or a
@@ -82,7 +85,10 @@ var (
 	previewDeleteHosted = func(ctx context.Context, name string, out io.Writer) error {
 		t, err := resolveLifecycleTarget(ctx, name, "delete", "", "")
 		if errors.Is(err, deploytarget.ErrHostedEnvironmentNotFound) {
-			fmt.Fprintf(out, "[preview] %s was never deployed to its control plane; nothing hosted to delete\n", name)
+			// Not found covers both an instance that never deployed and one
+			// the platform already deleted when it expired, which is the
+			// common case for gc; neither leaves anything hosted.
+			fmt.Fprintf(out, "[preview] %s is not on its control plane (already deleted, as the platform does when a preview expires, or never deployed); nothing hosted to delete\n", name)
 			return nil
 		}
 		if err != nil {
@@ -273,6 +279,14 @@ func createPreview(ctx context.Context, projectDir string, f previewKeyFlags, tt
 		"Edit the template, not this copy: the next create overwrites it. It expires %s;\n"+
 		"`%s env preview delete` or `%s env gc` removes it. Do not commit it.\n", f.from, Name(), marker.ExpiresAt, Name(), Name())
 	if err := atomicfile.WriteFile(filepath.Join(stage, previewHeaderFileName), []byte(header), 0o644); err != nil {
+		return previewCreateDoc{}, err
+	}
+	// The instance ignores itself (NS FG-21). Untracked, it left every
+	// checkout that created it dirty, so each `env deploy <instance>` cut a
+	// DIRTY-TREE release whose commit range meant nothing. A `*` .gitignore
+	// inside the directory hides it from git without touching the project's
+	// own .gitignore.
+	if err := atomicfile.WriteFile(filepath.Join(stage, previewGitignoreFileName), []byte(previewGitignore), 0o644); err != nil {
 		return previewCreateDoc{}, err
 	}
 	// The instance renders only under its own name, so the new copy goes in

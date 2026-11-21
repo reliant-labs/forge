@@ -306,15 +306,17 @@ func TestObsCheckOtherFailuresKeepTheirExit(t *testing.T) {
 		name string
 		err  error
 		exit int
+		code string // the document's reason_code; "" for none
 	}{
-		{"a ResourceExhausted that says neither reason nor retry", &cloud.Error{Code: cloud.CodeResourceExhausted}, exitUndetermined},
-		{"too much data", &cloud.Error{Code: cloud.CodeResourceExhausted, Message: "the query would read too much data", Header: http.Header{"Retry-After": {"60"}}}, exitUndetermined},
-		{"permission denied", &cloud.Error{Code: cloud.CodePermissionDenied}, exitUndetermined},
-		{"unimplemented", &cloud.Error{Code: cloud.CodeUnimplemented}, exitUndetermined},
-		{"failed precondition", &cloud.Error{Code: cloud.CodeFailedPrecondition}, exitUndetermined},
-		{"invalid argument", &cloud.Error{Code: cloud.CodeInvalidArgument}, exitWrong},
-		{"not found", &cloud.Error{Code: cloud.CodeNotFound}, exitWrong},
-		{"a failure forge made itself", obsbackend.Undetermined("encode GetReleaseHealth request"), exitUndetermined},
+		{"a ResourceExhausted that says neither reason nor retry", &cloud.Error{Code: cloud.CodeResourceExhausted}, exitUndetermined, ""},
+		{"too much data", &cloud.Error{Code: cloud.CodeResourceExhausted, Message: "the query would read too much data", Header: http.Header{"Retry-After": {"60"}}}, exitUndetermined, ""},
+		{"permission denied", &cloud.Error{Code: cloud.CodePermissionDenied}, exitUndetermined, checkReasonPermissionDenied},
+		{"unauthenticated", &cloud.Error{Code: cloud.CodeUnauthenticated}, exitUndetermined, checkReasonUnauthenticated},
+		{"unimplemented", &cloud.Error{Code: cloud.CodeUnimplemented}, exitUndetermined, ""},
+		{"failed precondition", &cloud.Error{Code: cloud.CodeFailedPrecondition}, exitUndetermined, ""},
+		{"invalid argument", &cloud.Error{Code: cloud.CodeInvalidArgument}, exitWrong, ""},
+		{"not found", &cloud.Error{Code: cloud.CodeNotFound}, exitWrong, ""},
+		{"a failure forge made itself", obsbackend.Undetermined("encode GetReleaseHealth request"), exitUndetermined, ""},
 	} {
 		for _, wait := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/wait=%t", tc.name, wait), func(t *testing.T) {
@@ -328,7 +330,8 @@ func TestObsCheckOtherFailuresKeepTheirExit(t *testing.T) {
 				if got := exitCodeForError(err); got != tc.exit || env.sleeps != 0 || caller.refused != 1 {
 					t.Fatalf("exit = %d sleeps = %d reads = %d (%v), want %d with one read", got, env.sleeps, caller.refused, err, tc.exit)
 				}
-				if doc := decode(t, out); doc["reason_code"] != nil || doc["retry_at"] != nil {
+				doc := decode(t, out)
+				if code, _ := doc["reason_code"].(string); code != tc.code || doc["retry_at"] != nil {
 					t.Errorf("doc = %v", doc)
 				}
 			})

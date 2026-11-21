@@ -267,6 +267,7 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 	}
 	findings = append(findings, lintAdoptionPlacement(files, adopting)...)
 	findings = append(findings, lintCompatDeclarations(contents, adopting, cfg.RequireCompatDeclaration)...)
+	findings = dropCheckProvenSetNotNull(contents, findings)
 	return Result{Findings: findings, Dir: dir, Scanned: files}, nil
 }
 
@@ -274,9 +275,7 @@ func LintMigrationsDir(dir string, cfg RuleConfig) (Result, error) {
 // transaction timestamps: PostgreSQL 11+ avoids rewriting the table for
 // non-volatile ADD COLUMN defaults.
 var (
-	statementSplitRe  = regexp.MustCompile(`;`)
 	addColumnRe       = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\badd\s+column\s+(?:if\s+not\s+exists\s+)?(?:"[^"]+"|[a-zA-Z_][\w$]*)\s+[^;]*`)
-	setNotNullRe      = regexp.MustCompile(`(?is)\balter\s+table\b[^;]*\balter\s+column\s+(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s+set\s+not\s+null\b`)
 	updateRe          = regexp.MustCompile(`(?is)^\s*update\s+(?:"[^"]+"|[a-zA-Z_][\w$.]*)\s+set\s+([^;]+)\bwhere\b[^;]+`)
 	columnSetRe       = regexp.MustCompile(`(?is)(?:"([^"]+)"|([a-zA-Z_][\w$]*))\s*=`)
 	destructiveRe     = regexp.MustCompile(`(?is)\b(drop\s+table|drop\s+schema|drop\s+column|truncate\s+table|alter\s+column\s+[^;]+\s+type\b|rename\s+column|rename\s+to)\b`)
@@ -305,8 +304,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// allow-destructive a silent exemption from the NOT NULL checks too.
 	allowUnsafeNotNull := hasAllowUnsafeNotNullPragma(content)
 
-	clean := stripSQLComments(content)
-	statements := splitStatements(clean)
+	statements := migrationStatements(content)
 	backfilledColumns := map[string]bool{}
 	// generatedColumns records every column this migration adds as
 	// GENERATED ALWAYS AS (...) STORED, so a later SET NOT NULL on one is
@@ -315,12 +313,25 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// see without a live schema, and guessing beyond it would be worse than
 	// the finding.
 	generatedColumns := map[string]bool{}
+	// emptyTables are the tables this migration created empty and that no
+	// statement since could have written a row to (blocking_index.go): an
+	// index built on one is not a blocking build.
+	emptyTables := map[indexRelation]bool{}
 	var findings []Finding
 
 	for _, stmt := range statements {
 		text := strings.TrimSpace(stmt.Text)
 		if text == "" {
 			continue
+		}
+
+		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, emptyTables); ok {
+			findings = append(findings, f)
+		}
+		if table, ok := createdTable(text); ok {
+			emptyTables[table] = true
+		} else if !preservesEmptyTables(text, emptyTables) {
+			clear(emptyTables)
 		}
 
 		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive {
@@ -334,10 +345,10 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 		}
 
 		for _, column := range updatedColumns(text) {
-			backfilledColumns[strings.ToLower(column)] = true
+			backfilledColumns[column] = true
 		}
 		for _, column := range addedGeneratedStoredColumns(text) {
-			generatedColumns[strings.ToLower(column)] = true
+			generatedColumns[column] = true
 		}
 
 		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull &&
@@ -363,14 +374,13 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 
 		if severity := severityFor(cfg.UnsafeAddColumn); severity != "" && !allowUnsafeNotNull {
 			for _, column := range setNotNullColumns(text) {
-				key := strings.ToLower(column)
-				if !backfilledColumns[key] && !generatedColumns[key] {
+				if !backfilledColumns[column] && !generatedColumns[column] {
 					findings = append(findings, Finding{
 						File:     file,
 						Line:     stmt.Line,
 						Rule:     RuleSetNotNullWithoutBackfill,
 						Severity: severity,
-						Message:  fmt.Sprintf("SET NOT NULL on column %q without an earlier UPDATE backfill in this migration can fail on populated tables", column),
+						Message:  fmt.Sprintf("SET NOT NULL on column %q without an earlier UPDATE backfill in this migration, or a validated CHECK (%s IS NOT NULL) in an earlier one, can fail on populated tables", column, column),
 					})
 				}
 			}
@@ -382,26 +392,6 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 type statement struct {
 	Text string
 	Line int
-}
-
-// splitStatements splits content on `;` and records the line each
-// statement's TEXT starts on — the line a finding should point at.
-//
-// A part begins right after the previous `;`, so it usually opens with that
-// line's newline and any blank or comment lines (comments are already blanked
-// to newlines). Counting from the part's first byte put every finding on the
-// line of the PREVIOUS statement's semicolon — and a migration's first
-// statement, under the header `forge db migration new` writes, on line 1.
-func splitStatements(content string) []statement {
-	parts := statementSplitRe.Split(content, -1)
-	statements := make([]statement, 0, len(parts))
-	line := 1
-	for _, part := range parts {
-		lead := part[:len(part)-len(strings.TrimLeft(part, " \t\r\n"))]
-		statements = append(statements, statement{Text: part, Line: line + strings.Count(lead, "\n")})
-		line += strings.Count(part, "\n")
-	}
-	return statements
 }
 
 func stripSQLComments(content string) string {
@@ -460,9 +450,16 @@ func addedGeneratedStoredColumns(statement string) []string {
 	matches := addGeneratedStoredRe.FindAllStringSubmatch(statement, -1)
 	columns := make([]string, 0, len(matches))
 	for _, match := range matches {
-		columns = append(columns, firstNonEmpty(match[1], match[2]))
+		columns = append(columns, normalizedColumnCapture(match[1], match[2]))
 	}
 	return columns
+}
+
+func normalizedColumnCapture(quoted, unquoted string) string {
+	if quoted != "" {
+		return quoted // the regex captured inside the SQL quotes
+	}
+	return strings.ToLower(unquoted)
 }
 
 func hasDefault(statement string) bool {
@@ -470,10 +467,15 @@ func hasDefault(statement string) bool {
 }
 
 func setNotNullColumns(statement string) []string {
-	matches := setNotNullRe.FindAllStringSubmatch(statement, -1)
-	columns := make([]string, 0, len(matches))
-	for _, match := range matches {
-		columns = append(columns, firstNonEmpty(match[1], match[2]))
+	table := alterTableNameRe.FindStringSubmatch(statement)
+	if table == nil {
+		return nil
+	}
+	var columns []string
+	for _, clause := range splitAlterClauses(statement[len(table[0]):]) {
+		if m := setNotNullClauseRe.FindStringSubmatch(clause); len(m) >= 2 {
+			columns = append(columns, normalizeSQLIdentifier(m[1]))
+		}
 	}
 	return columns
 }
@@ -487,7 +489,7 @@ func updatedColumns(statement string) []string {
 	matches := columnSetRe.FindAllStringSubmatch(setClause, -1)
 	columns := make([]string, 0, len(matches))
 	for _, m := range matches {
-		columns = append(columns, firstNonEmpty(m[1], m[2]))
+		columns = append(columns, normalizedColumnCapture(m[1], m[2]))
 	}
 	return columns
 }
@@ -562,7 +564,7 @@ const UnsafeAddNotNullRemediation = `give the column a constant DEFAULT (ADD COL
 // (and, before UnsafeAddNotNullRemediation existed, for the add rule too). The
 // backfill leads because a SET NOT NULL on an existing column has no DEFAULT
 // shortcut: every existing row needs a value first.
-const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL — and if the previous release inserts rows without this column, SET NOT NULL breaks its inserts, so give the column a constant DEFAULT first or put SET NOT NULL in a later (contract) migration once no running release does; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
+const UnsafeNotNullRemediation = `add the column nullable, backfill it with an UPDATE, then SET NOT NULL (on a large table, prove it instead with ADD CONSTRAINT <name> CHECK (<column> IS NOT NULL) NOT VALID, VALIDATE CONSTRAINT <name> in a later migration, and SET NOT NULL in a third, which this rule accepts) — and if the previous release inserts rows without this column, SET NOT NULL breaks its inserts, so give the column a constant DEFAULT first or put SET NOT NULL in a later (contract) migration once no running release does; for a derived column prefer making the database compute it (ADD COLUMN ... GENERATED ALWAYS AS (<expr>) STORED NOT NULL, which this rule accepts); or — if you know the table is empty — mark the migration file with a "-- forge:allow-unsafe-not-null" comment`
 
 // allowUnsafeNotNullPragmaRe matches the in-file opt-out for
 // unsafe-add-not-null-column and set-not-null-without-backfill, in the same
@@ -652,6 +654,8 @@ func RemediationFor(rule string) string {
 		return NonTransactionalStatementRemediation
 	case RuleEnumValueUsedBeforeCommit:
 		return EnumValueUsedBeforeCommitRemediation
+	case RuleBlockingIndexBuild:
+		return BlockingIndexBuildRemediation
 	case RuleCompatUndeclared:
 		return CompatUndeclaredRemediation
 	case RuleCompatReason:

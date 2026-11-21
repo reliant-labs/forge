@@ -169,6 +169,33 @@ func TestValidatePortNames(t *testing.T) {
 	requireProblem(t, Validate(Normalize([]Target{tg}), Options{}), `metrics[0].port: "prom" is not a port of workload:temporal (it declares: grpc, metrics)`)
 }
 
+// An unnamed scrape or check is identified by its index, so a name that is
+// all digits could take the same job or receiver name: an unnamed first
+// entry followed by one named "0" is refused, as is a repeated name.
+func TestValidateScrapeAndCheckNames(t *testing.T) {
+	tg := workloadTarget()
+	tg.Metrics = append(tg.Metrics, MetricsScrape{Name: "0", PortName: "metrics", Allow: "x"})
+	tg.Checks = append(tg.Checks, HealthCheck{Name: "0", PortName: "grpc"})
+	requireProblem(t, Validate(Normalize([]Target{tg}), Options{}),
+		`metrics[1].name: "0" is all digits, which are reserved for an unnamed scrape's index`,
+		`checks[1].name: "0" is all digits, which are reserved for an unnamed check's index`)
+
+	tg = workloadTarget()
+	tg.Metrics = []MetricsScrape{{Name: "a", PortName: "metrics"}, {Name: "a", PortName: "metrics"}, {Name: "Bad_Name", PortName: "metrics"}}
+	tg.Checks = []HealthCheck{{Name: "up", PortName: "grpc"}, {Name: "up", PortName: "grpc"}}
+	requireProblem(t, Validate(Normalize([]Target{tg}), Options{}),
+		`metrics[1].name: "a" is also the name of scrape 0`,
+		`metrics[2].name: "Bad_Name" must be an RFC-1123 label`,
+		`checks[1].name: "up" is also the name of check 0`)
+
+	tg = workloadTarget()
+	tg.Metrics = append(tg.Metrics, MetricsScrape{Name: "0a", PortName: "metrics"})
+	tg.Checks = append(tg.Checks, HealthCheck{Name: "9-x", PortName: "grpc"})
+	if err := Validate(Normalize([]Target{tg}), Options{}); err != nil {
+		t.Fatalf("a name with a digit and a letter is not an index: %v", err)
+	}
+}
+
 func TestValidateRE2AndDurations(t *testing.T) {
 	tg := workloadTarget()
 	tg.Metrics[0].Allow = "service_(requests"
@@ -186,12 +213,15 @@ func TestValidateAttachmentRules(t *testing.T) {
 	unknownCluster := Target{ServiceName: "z", Source: "observability", Attachment: AttachObservability, Runtime: RuntimeCluster, Cluster: "elsewhere", Selector: map[string]string{"a": "b"}, Checks: []HealthCheck{{Port: 80}}}
 	hostSelector := Target{ServiceName: "w", Source: "observability", Attachment: AttachObservability, Runtime: RuntimeHost, Selector: map[string]string{"a": "b"}, Checks: []HealthCheck{{Port: 80}}}
 	external := Target{ServiceName: "v", Source: "workload:v", Attachment: AttachWorkload, Runtime: RuntimeExternal, Address: "x", Checks: []HealthCheck{{Port: 80}}}
-	requireProblem(t, Validate(Normalize([]Target{noTarget, noCluster, unknownCluster, hostSelector, external}), Options{Clusters: []string{"c"}}),
+	unscoped := workloadTarget()
+	unscoped.ServiceName, unscoped.Source, unscoped.Cluster, unscoped.Namespaces = "u", "workload:u", "c", nil
+	requireProblem(t, Validate(Normalize([]Target{noTarget, noCluster, unknownCluster, hostSelector, external, unscoped}), Options{Clusters: []string{"c"}}),
 		"a manifests target needs a selector (or an address)",
 		"telemetry observability (service y): cluster: a cluster target needs the cluster",
 		`"elsewhere" is not a cluster this env declares (it declares: c)`,
 		"service w): selector: selects pods, which only a cluster has",
-		"forge.OnExternal")
+		"forge.OnExternal",
+		"service u): namespaces: a workload target on a cluster needs its namespace")
 }
 
 func TestValidateHostedRules(t *testing.T) {
@@ -268,10 +298,11 @@ func TestNetworkPolicyIsTriState(t *testing.T) {
 		np     *bool
 		want   bool
 	}{
-		{AttachWorkload, nil, true},       // auto: joins the policy forge already renders
-		{AttachHostInfra, nil, true},      // auto: forge owns it
-		{AttachManifests, nil, false},     // auto: forge cannot know the pods' policies
-		{AttachObservability, nil, false}, // auto: same
+		{AttachWorkload, nil, true},         // auto: joins the policy forge already renders
+		{AttachHostInfra, nil, true},        // auto: forge owns it
+		{AttachManifests, nil, false},       // auto: forge cannot know the pods' policies
+		{AttachObservability, nil, false},   // auto: same
+		{AttachManagedDatabase, nil, false}, // auto: a policy on the instances would deny Postgres
 		{AttachManifests, &yes, true},
 		{AttachWorkload, &no, false},
 	} {
@@ -293,6 +324,27 @@ func TestNetworkPolicyIsTriState(t *testing.T) {
 	*out[0].NetworkPolicy = false
 	if !*in[0].NetworkPolicy {
 		t.Error("Normalize aliases NetworkPolicy with its input")
+	}
+}
+
+// A ManagedDatabase target is a valid attachment and pulls by its selector,
+// on every runtime it renders on; it gets no network_policy note (the default
+// is rendered for every database, and the note is about raw systems).
+func TestManagedDatabaseAttachment(t *testing.T) {
+	db := Target{ServiceName: "orders-postgres", Source: "manageddatabase:orders", Attachment: AttachManagedDatabase,
+		Selector: map[string]string{"cnpg.io/cluster": "orders"}, Ports: map[string]int{"metrics": 9187, "postgres": 5432},
+		Metrics: []MetricsScrape{{PortName: "metrics", Allow: "cnpg_collector_up"}}, Checks: []HealthCheck{{PortName: "postgres"}}}
+	cluster := db
+	cluster.Runtime, cluster.Cluster, cluster.Namespaces = RuntimeCluster, "k3d-shop", []string{"shop"}
+	hosted := db
+	hosted.Runtime = RuntimeHosted
+	for _, tg := range []Target{cluster, hosted} {
+		if err := Validate(Normalize([]Target{tg}), Options{Env: "prod", Clusters: []string{"k3d-shop"}}); err != nil {
+			t.Errorf("%s: %v", tg.Runtime, err)
+		}
+	}
+	if w := Warnings(Normalize([]Target{cluster})); len(w) != 0 {
+		t.Errorf("warnings = %+v", w)
 	}
 }
 

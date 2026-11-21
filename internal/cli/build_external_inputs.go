@@ -20,7 +20,7 @@ import (
 )
 
 // rebuildFlagHelp is --rebuild's help on every command that builds an env.
-const rebuildFlagHelp = "Run every ShellBuild's command, even one whose declared inputs are unchanged since its last successful build (or, with --release, since the previous release) and whose image is still in the registry"
+const rebuildFlagHelp = "Run every ShellBuild's command, even one whose declared inputs are unchanged since its last successful build (or, with --release, since the previous release) and whose image is still in the registry; with --release, also build every DockerBuild that would reuse an earlier release's image"
 
 // shellInputsVerdict is what a ShellBuild's declared inputs say about running
 // its command.
@@ -89,8 +89,9 @@ func shellBuildFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, proje
 		Unit             string                   `json:"unit"`
 		OutputName       string                   `json:"output_name"`
 		InputsFileDigest string                   `json:"inputs_file_digest"`
+		PGOProfiles      map[string]string        `json:"pgo_profiles,omitempty"`
 	}{externalBuildIdentity(svc, canonical, opts), externalPushedRef(svc, spec.Tag, opts.pushPlan.pushBase), env,
-		svc.Build.Unit, outputName, inputsFileDigest})
+		svc.Build.Unit, outputName, inputsFileDigest, shellBuildPGODigests(svc, projectDir)})
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}
@@ -111,6 +112,35 @@ func shellBuildInputsFileDigest(svc WorkloadEntity, projectDir string) (string, 
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// shellBuildPGODigests is the content address of each profile the
+// ShellBuild's pgo names ("absent" for one not written yet), keyed by its
+// path: a refreshed default.pgo changes what the command's `go build`
+// compiles, and a typical inputs glob (`**/*.go`) does not select it. nil for
+// a build whose pgo names nothing, so its fingerprint is what it always was.
+// A binary whose PGO is off still counts: forge does not edit the command, so
+// its `go build` reads the file regardless.
+func shellBuildPGODigests(svc WorkloadEntity, projectDir string) map[string]string {
+	sh := svc.shell()
+	if sh == nil || len(sh.PGO) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, k := range sortedKeys(sh.PGO) {
+		pkg, s, err := shellPGOBinary(sh, k, "")
+		if err != nil {
+			continue // refused at render (ResolvePGOBinaries)
+		}
+		p := PGOBinary{Package: pkg, PGO: s}.ProfilePath()
+		digest := "absent"
+		if data, err := os.ReadFile(resolveProjectPath(projectDir, filepath.FromSlash(p))); err == nil {
+			sum := sha256.Sum256(data)
+			digest = "sha256:" + hex.EncodeToString(sum[:])
+		}
+		out[p] = digest
+	}
+	return out
 }
 
 // shellBuildOutputName is the ShellBuild's declared output_name, "" for any

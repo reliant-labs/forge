@@ -50,7 +50,7 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 {{- end}}
 
-	rows, err := db.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+	rows, err := {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
 	if err != nil {
 		return nil, svcerr.Wrap(err)
 	}
@@ -163,7 +163,7 @@ func (s *Service) {{.MethodName}}(
 	// as an unknown id does. A distinguishable "exists but is not yours"
 	// tells an attacker which ids are real.
 	fetch := op.Fetch
-	op.Fetch = func(ctx context.Context, id string, opts ...orm.QueryOption) (*db.{{.EntityName}}, error) {
+	op.Fetch = func(ctx context.Context, id string, opts ...orm.QueryOption) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
 		return fetch(ctx, id, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
 	}
 {{- end}}
@@ -190,7 +190,7 @@ func (s *Service) {{.MethodName}}(
 	// written row on the same owner, since a maskless update writes every
 	// column of the submitted entity.
 	build := op.Entity
-	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
 		e, err := build(ctx, r)
 		if err != nil {
 			return nil, err
@@ -200,19 +200,19 @@ func (s *Service) {{.MethodName}}(
 	}
 {{- end}}
 	persist := op.Persist
-	op.Persist = func(ctx context.Context, e *db.{{.EntityName}}, opts ...orm.QueryOption) error {
+	op.Persist = func(ctx context.Context, e *{{$.ORMQualifier}}.{{.EntityName}}, opts ...orm.QueryOption) error {
 		return persist(ctx, e, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
 	}
 {{- if .UpdateMaskField}}
 	persistMasked := op.PersistMasked
-	op.PersistMasked = func(ctx context.Context, e *db.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
+	op.PersistMasked = func(ctx context.Context, e *{{$.ORMQualifier}}.{{.EntityName}}, fields []string, opts ...orm.QueryOption) error {
 		return persistMasked(ctx, e, fields, append(opts, orm.WhereEq("{{.OwnerColumn}}", owner))...)
 	}
 {{- end}}
 {{- end}}
 {{- else if eq .Operation "create"}}
 	build := op.Entity
-	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*db.{{.EntityName}}, error) {
+	op.Entity = func(ctx context.Context, r *pb.{{.InputType}}) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
 		e, err := build(ctx, r)
 		if err != nil {
 			return nil, err

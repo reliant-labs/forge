@@ -41,7 +41,9 @@ func TestE2EV1ScaffoldIgnoresV2ConnectPluginOnPath(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runCmd(t, dir, forgeBin, "project", "new", "majorapp", "--mod", "example.com/majorapp")
+	// --connect v1 explicitly: fresh projects default to v2, and this test is
+	// about a v1 project.
+	runCmd(t, dir, forgeBin, "project", "new", "majorapp", "--mod", "example.com/majorapp", "--connect", "v1")
 	projectDir := filepath.Join(dir, "majorapp")
 	addCorpusForgePkgReplace(t, projectDir)
 	if m, err := connectmajor.Detect(projectDir); err != nil || m != connectmajor.V1 {

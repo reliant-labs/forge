@@ -256,6 +256,11 @@ var dbQueryWrongPreconditions = map[string]bool{"confirmation_required": true, "
 // read-only role not provisioned yet, a control plane that does not serve the
 // call).
 func dbQueryCloudError(err error) error {
+	if errors.Is(err, cloud.ErrHostedProjectUnavailable) {
+		// The project this checkout is bound to is not the caller's to see,
+		// whichever answer the control plane gave: the request's fault.
+		return dbQueryCloudFailure{code: exitWrong, msg: err.Error(), err: err}
+	}
 	var ce *cloud.Error
 	if !errors.As(err, &ce) {
 		return dbQueryCloudFailure{code: exitUndetermined, msg: fmt.Sprintf("the control plane could not be reached: %v", err), err: err}
@@ -289,6 +294,9 @@ func dbQueryErrorReason(err error) string {
 	var de *dbquery.Error
 	if errors.As(err, &de) {
 		return de.Reason
+	}
+	if errors.Is(err, cloud.ErrHostedProjectUnavailable) {
+		return cloud.ReasonHostedProjectNotFound
 	}
 	var ce *cloud.Error
 	if errors.As(err, &ce) {

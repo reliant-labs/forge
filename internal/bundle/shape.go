@@ -85,9 +85,12 @@ type ShapeInput struct {
 	UptimeChecks []release.ShapeUptimeCheck
 	// ReleaseProbes are the env's release probes, or nil when it has none.
 	ReleaseProbes []release.ShapeReleaseProbe
-	// Identity is the env's managed identity declaration, or nil when it
-	// declares none.
+	// Identity is the env's managed identity declaration when it declares
+	// exactly one, else nil.
 	Identity *release.ShapeIdentity
+	// Identities are the env's managed identities when it declares several
+	// (release.Shape.Identities), else nil.
+	Identities []release.ShapeIdentity
 	// Databases is what the env declares about its managed databases beyond
 	// their workload entries (live dashboards), or nil when it declares none.
 	Databases []release.ShapeDatabase
@@ -95,6 +98,9 @@ type ShapeInput struct {
 	// (forge.ExternalDatabase), as routes: names, never a password. Nil when
 	// it declares none.
 	ExternalDatabases []release.ShapeExternalDatabase
+	// Telemetry is the env's hosted telemetry targets (release.ShapeTelemetryOf),
+	// or nil when it declares none.
+	Telemetry []release.ShapeTelemetry
 
 	// Applier is the env's declared applier (release.ApplierForge or
 	// release.ApplierFlux), or "".
@@ -108,6 +114,9 @@ type ShapeInput struct {
 	Buckets []release.ShapeBucket
 	// Preview marks the env a preview instance (forge.Preview).
 	Preview *release.ShapePreview
+	// Changes are the Forge Changes the project declares (changes.yaml),
+	// keyed by change key, or nil when it declares none.
+	Changes map[string]release.ShapeChange
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -161,13 +170,16 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		UptimeChecks:        in.UptimeChecks,
 		ReleaseProbes:       in.ReleaseProbes,
 		Identity:            in.Identity,
+		Identities:          in.Identities,
 		Databases:           in.Databases,
 		ExternalDatabases:   in.ExternalDatabases,
+		Telemetry:           in.Telemetry,
 		Applier:             in.Applier,
 		Units:               in.Units,
 		HostInfra:           in.HostInfra,
 		Buckets:             in.Buckets,
 		Preview:             in.Preview,
+		Changes:             in.Changes,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

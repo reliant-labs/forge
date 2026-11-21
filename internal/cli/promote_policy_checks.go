@@ -44,6 +44,10 @@ type promotionCheckInput struct {
 	Ask bool
 	// Dir is where an argv hook runs: the project root.
 	Dir string
+	// OverrideVulnGate is --override-vuln-gate's reason: promote past the
+	// env's vuln_gate and provenance_sbom refusals, recorded
+	// (vuln_gate_promote.go).
+	OverrideVulnGate string
 }
 
 // approvalAsker asks one hook and returns its answer. An error is a hook that
@@ -126,10 +130,12 @@ func lastLine(s, fallback string) string {
 }
 
 // checkPromotionPolicy renders the env's delivery policy and, for an env
-// whose ledger is not a control plane, judges the promotion against it. It
+// whose ledger is not a control plane, judges the promotion against it; for a
+// ledger-only env (a control plane that converges nothing forge applies), it
+// judges vuln_gate and provenance_sbom from the control plane's findings. It
 // returns the gates the checks record on the promotion.
 func checkPromotionPolicy(ctx context.Context, out io.Writer, projectDir string, ledger envLedger, in promotionCheckInput) ([]release.Gate, error) {
-	if ledger.Hosted {
+	if ledger.Hosted && !ledger.ledgerOnly() {
 		// The control plane judges it, in the promotion's transaction.
 		return nil, nil
 	}
@@ -139,7 +145,27 @@ func checkPromotionPolicy(ctx context.Context, out io.Writer, projectDir string,
 		// policy that cannot be read here is one the plan cannot show either.
 		return nil, nil //nolint:nilerr // the plan reports a render failure on its own terms
 	}
-	return judgePromotionPolicy(ctx, out, entities.DeliveryPolicy, in, askApprovalHook)
+	if ledger.Hosted {
+		// A ledger-only env (forge applies, the control plane converges
+		// nothing): vuln_gate and provenance_sbom from the control plane's
+		// findings (vuln_gate_promote.go's header). Its required gates and
+		// approval hook stay the control plane's, as for every hosted env.
+		return checkPromotionVulnGates(ctx, out, projectDir, ledger, entities.DeliveryPolicy, in)
+	}
+	// The vulnerability checks first: a release they refuse is refused
+	// before the approval hook asks anyone about it, and the hook sees
+	// their verdict among the gates it is sent.
+	vulnGates, err := checkPromotionVulnGates(ctx, out, projectDir, ledger, entities.DeliveryPolicy, in)
+	if err != nil {
+		return nil, err
+	}
+	withVuln := in
+	withVuln.Gates = append(append([]release.Gate{}, in.Gates...), vulnGates...)
+	gates, err := judgePromotionPolicy(ctx, out, entities.DeliveryPolicy, withVuln, askApprovalHook)
+	if err != nil {
+		return nil, err
+	}
+	return append(vulnGates, gates...), nil
 }
 
 // judgePromotionPolicy is the checks themselves: required gates first (they

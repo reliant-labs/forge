@@ -388,8 +388,9 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 {{- end}}
 	srv.RecordMounted(mounted)
 
-	// NATIVE SIGN-IN. Mounts /auth/login, /auth/register, /auth/session and
-	// /auth/logout — the app's own auth API, which runs the whole OIDC flow
+	// NATIVE SIGN-IN. Mounts the /auth/* routes login_broker.go declares —
+	// sign-in, session and sign-out, plus the sign-in methods and sign-up its
+	// policy serves: the app's own auth API, which runs the whole OIDC flow
 	// server-side so the browser never contacts the identity provider.
 	//
 	// Gated on configuration rather than a build flag: an app that has no
@@ -398,7 +399,7 @@ func Serve(ctx context.Context, deps Deps, spec ServeSpec) error {
 	// which is yours to edit or delete.
 	if err := app.LoginBrokerConfigured(cfg); err == nil {
 		app.RegisterLoginBroker(srv.Mux, cfg, logger)
-		logger.Info("native sign-in enabled", "routes", "/auth/login /auth/register /auth/session /auth/logout")
+		logger.Info("native sign-in enabled", "routes", "/auth/* as internal/app/login_broker.go mounts them (GET /auth/options lists the sign-in methods and whether sign-up is open)")
 	} else {
 		logger.Debug("native sign-in not configured", "reason", err)
 	}

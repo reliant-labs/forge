@@ -16,7 +16,7 @@ without forge ever touching your additions.
 
 - `.github/workflows/ci.yml` (yours (scaffold-once)): A thin wrapper around the local gate: jobs `changes`, `checks` (`task ci:checks`), `test`, `integration-test`, plus `docker-build` / `e2e` where the project has them; `timeout-minutes` on every job. See `ci/gate`
 - `.github/workflows/proto-breaking.yml` (Tier-1): `buf breaking` (and nothing else — no lint, format, push or PR comment) against the PR's base branch on PRs that touch `proto/**`, `buf.yaml`, or `buf.gen.yaml`. Passes with a notice when the base has no protos yet (the PR introducing the first ones). See the `proto-breaking` skill for the full deprecation flow.
-- `.github/workflows/build-images.yml` (Tier-1): The project image: build + push, cosign signature, SBOM, and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud). Frontend images are per-env and built by `deploy.yml`
+- `.github/workflows/build-images.yml` (Tier-1): The project image: build + push, cosign signature and SLSA provenance (skipped on private repositories, which GitHub's attestation store refuses outside Enterprise Cloud), then a `vuln-scan` job over the pushed digest. With `forge_version` at v1.10.0 or later it runs `forge vuln scan --image` with the grype database cached per UTC day, and writes no SBOM (forge records one at every release cut, `vuln`); with an older pin, whose forge has neither, it keeps the anchore SPDX SBOM action and a Trivy scan, and regenerating after the pin passes v1.10.0 switches it. Frontend images are per-env and built by `deploy.yml`
 - `.github/workflows/deploy.yml` (Tier-1): Per-environment `forge env build <env> --push` + `forge env deploy <env> --yes`, one matrix entry per declared `deploy/kcl/<env>/main.k` (dev excluded)
 - `.github/workflows/e2e.yml` (Tier-1): E2E suite, label-gated on PRs (`run-e2e`) — emitted when there is a suite to run: the generated `e2e/` harness exists, or `ci.e2e.enabled: true`. docker-compose or k3d runtime
 - `.github/workflows/pre-commit.yml` (Tier-2): Runs the `.pre-commit-config.yaml` hook set so contributors who skipped the local install are still gated (written once at scaffold; yours to edit after)
@@ -64,6 +64,8 @@ before verifying generated files. Missing plugins or a pre-dirtied tree must
 fail, not certify skipped output. Installation details and troubleshooting:
 `forge skill load ci/toolchain`.
 
+To retry only unchanged Go test failures once in the merge tier, load `ci/retry-failed`.
+
 ### No workflow names a registry
 
 An image registry is part of a WORKLOAD's `image` in `deploy/kcl/workloads.k`
@@ -83,7 +85,7 @@ forge registry ref <env> --github-output    # ref= image= digest= for later step
 workloads push to two registries needs no extra step.
 
 `build-images.yml` builds once per commit on main for the first deploy env
-(the one `deploy.yml` auto-deploys), then signs, SBOMs, attests and scans the
+(the one `deploy.yml` auto-deploys), then signs, attests and scans (`forge vuln scan` from forge v1.10.0, Trivy before; `vuln`) the
 digest-pinned ref `forge registry ref` read back — never a tag and never a
 YAML literal. The login credential is `GITHUB_TOKEN` (GitHub's container
 registry); for another registry, pipe its credential from a secret (a GAR
@@ -100,7 +102,7 @@ first push. So the scaffolded workflows differ by env, not by project:
 | Workflow | Login step | Credential |
 |---|---|---|
 | `release.yml` (hosted by construction) | none | `FORGE_CONTROL_PLANE_TOKEN` |
-| `build-images.yml`, hosted build env   | none for the build; the trivy job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
+| `build-images.yml`, hosted build env   | none for the build; the `vuln-scan` job runs `forge registry login <env>` with no flags, because it PULLS rather than pushing | `FORGE_CONTROL_PLANE_TOKEN` |
 | `build-images.yml`, cluster build env | `forge registry login <env> --username … --password-stdin` | `GITHUB_TOKEN` or your own |
 | `deploy.yml` (non-hosted envs only) | same as above | `GITHUB_TOKEN` or your own |
 
@@ -272,6 +274,27 @@ evidence, so a pipeline needs no flag to get the strict behaviour. To fix
 what the gate reported, run `forge lint --fix` and commit the result.
 `--json` is always detect-only, and so are the targeted lanes (`--contract`,
 `--db`, …).
+
+It never installs anything either. A frontend whose `node_modules` is missing
+is a lane that could NOT run: the verdict names the lane (`frontend lint`,
+`frontend typecheck`) and the exact install command (`pnpm install
+--frozen-lockfile` in `frontends/web`, …), and the run fails, as any gating
+lane that did not run does. Prepare the tree first — the scaffolded ci.yml
+installs every frontend in its setup steps, and `task ci`'s `deps-<fe>` rows run
+before its lint rows — or opt in with `forge lint --install`, which installs
+with the frontend's own package manager, frozen to its lockfile (its output
+goes to stderr, and nowhere under `--quiet` unless it fails). A backend-only
+job says so with `--skip-frontends`, or accepts the gap by name with
+`--allow-skip 'frontend-lint,frontend-typecheck=<why>'`. A `node_modules`
+older than its lockfile is linted as it stands, with a note naming the
+command that refreshes it.
+
+The refusal rolls out warn-first (`ci/lint-rollout`) as rule
+`forge-frontend-no-install`: while your pin is below its gates-from release,
+lint still installs a missing `node_modules` (output on stderr, none under
+`--quiet`) and warns that it will stop. Add `--install` or an install step
+before `forge lint` then (a scaffolded `release.yml` is the usual place);
+`lint.rules: {forge-frontend-no-install: error}` refuses now.
 
 New or tightened lint rules warn for one release first: `ci/lint-rollout`.
 

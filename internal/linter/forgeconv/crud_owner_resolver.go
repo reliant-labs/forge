@@ -40,6 +40,14 @@
 // projection; an entity it names no key for is taken to be keyed by `id`,
 // forge's default key.
 //
+// The placeholder is `claims.UserID` in a wrapper whose FORGE_SCAFFOLD
+// reminder still stands. The same expression with the reminder removed is
+// the author's decision and is judged like any other source — the
+// scope-rows-to-owner run kept claims.UserID on purpose and was told its
+// four wrappers were "not a decision" because one sibling used email.
+// Nor does the remediation ever name an email-based source as the policy
+// to converge on: an address can change hands, so it is no owner key.
+//
 // An owner forge cannot trace (read off the request, computed) is not
 // judged either way. A deliberate exception takes
 // `// forge:lint-disable-next-line forgeconv-crud-owner-resolver: <why>`
@@ -199,21 +207,59 @@ func lintCRUDOwnerResolverFile(relPath string, fset *token.FileSet, file *ast.Fi
 			}
 			if m.src.IsPlaceholder() {
 				msg += " — forge's FORGE_SCAFFOLD placeholder, not a decision: the query matches rows by the wrong principal"
+			} else if emailSpelling(m.src.String()) {
+				msg += " — an email address is not a stable owner key: it can change or be reassigned to another person"
 			}
-			remediation := fmt.Sprintf("resolve the owner as its siblings do (%s) unless this RPC really needs a different principal; "+
-				"then say so with `// forge:lint-disable-next-line %s: <why>` above the method. See skill: auth/authorization.",
-				others[0], crudOwnerResolverRule)
 			findings = append(findings, Finding{
 				Rule:        crudOwnerResolverRule,
 				Severity:    SeverityError,
 				File:        relPath,
 				Line:        m.line,
 				Message:     msg,
-				Remediation: remediation,
+				Remediation: ownerResolverRemediation(m.src, others),
 			})
 		}
 	}
 	return findings
+}
+
+// ownerResolverRemediation is what a flagged wrapper is told to do.
+//
+// It names the siblings' source as the one to converge on — except a
+// source that resolves the owner from an email address, which forge never
+// recommends: an address can change or be handed to someone else, so rows
+// keyed by it can move between principals. The scope-rows-to-owner run
+// changed one wrapper to claims.Email and was told to move its four
+// claims.UserID siblings onto it.
+func ownerResolverRemediation(src codegen.CRUDOwnerSource, others []string) string {
+	var stable []string
+	for _, o := range others {
+		if !emailSpelling(o) {
+			stable = append(stable, o)
+		}
+	}
+	keep := ""
+	if src.IsPlaceholder() {
+		keep = " If claims.UserID IS this column's owner, remove the FORGE_SCAFFOLD comment above it: that records the decision, and the wrapper is then judged as one."
+	}
+	if len(stable) == 0 {
+		return fmt.Sprintf("do not converge on %s: an email address can change or be reassigned, so it is not a stable owner key. "+
+			"Scope every wrapper on this column by a stable principal id (a user or tenant id), the sibling included.%s See skill: auth/authorization.",
+			strings.Join(others, " / "), keep)
+	}
+	return fmt.Sprintf("resolve the owner as its siblings do (%s) unless this RPC really needs a different principal; "+
+		"then say so with `// forge:lint-disable-next-line %s: <why>` above the method.%s See skill: auth/authorization.",
+		stable[0], crudOwnerResolverRule, keep)
+}
+
+// emailSpelling reports a rendered owner source (CRUDOwnerSource.String)
+// that reads an email address.
+func emailSpelling(rendered string) bool {
+	name := strings.TrimSuffix(rendered, "(ctx)")
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	return strings.Contains(strings.ToLower(name), "email")
 }
 
 func sortedKeys(m map[string]int) []string {

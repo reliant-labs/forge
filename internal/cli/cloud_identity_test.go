@@ -17,19 +17,19 @@ import (
 
 // Run real Cobra parsing, credential resolution and Connect HTTP calls. Only
 // KCL rendering is replaced: no native runtime or subprocess in the short tier.
-func identityTestTarget(t *testing.T, endpoint string) {
+func identityTestTarget(t *testing.T, endpoint string, identities ...string) {
 	t.Helper()
 	previous := resolveIdentityCloudTarget
-	resolveIdentityCloudTarget = func(_ context.Context, env, token string) (cloud.Endpoint, cloud.Credential, error) {
+	resolveIdentityCloudTarget = func(_ context.Context, env, token string) (cloud.Endpoint, cloud.Credential, []string, error) {
 		if env != "prod" {
-			return cloud.Endpoint{}, cloud.Credential{}, fmt.Errorf("unexpected env %q", env)
+			return cloud.Endpoint{}, cloud.Credential{}, nil, fmt.Errorf("unexpected env %q", env)
 		}
 		ep, err := projectEndpoint(env, &cloud.Declaration{Endpoint: endpoint, TokenEnv: "IDENTITY_TEST_TOKEN"})
 		if err != nil {
-			return ep, cloud.Credential{}, err
+			return ep, cloud.Credential{}, nil, err
 		}
 		cred, err := cloud.ResolveCredential(token, ep)
-		return ep, cred, err
+		return ep, cred, identities, err
 	}
 	t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 	withProjectName(t, "shop")
@@ -230,9 +230,9 @@ func TestCloudIdentityParsing(t *testing.T) {
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			previous := resolveIdentityCloudTarget
-			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, error) {
+			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, []string, error) {
 				t.Fatal("invalid command reached credential resolution")
-				return cloud.Endpoint{}, cloud.Credential{}, nil
+				return cloud.Endpoint{}, cloud.Credential{}, nil, nil
 			}
 			t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 			if _, err := executeIdentity(args...); err == nil {

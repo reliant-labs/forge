@@ -63,6 +63,8 @@ var findingCounters = map[string]findingCounter{
 	"file_sizes":          lenOf("oversized_files", "god_object_types"),
 	"orphan_stubs":        lenOf("orphan_services"),
 	"unhandled_rpcs":      lenOf("unhandled_rpcs"),
+	// Count non-primary locks once, not again for mixed directories.
+	"lockfiles": lenOf("stragglers"),
 }
 
 // statusOnlyCategories report a state, not a list of findings.

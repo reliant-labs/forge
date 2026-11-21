@@ -43,7 +43,13 @@ The design:
 
 2. **One normalized contract, `telemetry.Target`.** It is a Go type in `pkg/telemetry`. Render
    resolves every declaration into it, writes it into `forge env render --json` output, and
-   (for hosted workloads) into `Shape.Telemetry` behind `BundleFeatureTelemetry`.
+   (for hosted workloads) into `Shape.Telemetry` behind `BundleFeatureTelemetry`
+   (`shape-telemetry`, the control plane DECODES it) and `CapabilityCollectsTelemetry`
+   (`collects-telemetry`, it COLLECTS it). A control plane advertises `BundleDocFeatures()`
+   verbatim on every forge pin bump, so the decode feature alone would claim collection;
+   `collects-telemetry` is not in that list, and a control plane adds it by hand, in the change
+   that makes it collect. Forge sends the targets only to a control plane that names both, and
+   otherwise strips them and warns, naming the targets and the missing capability.
 3. **One translator, `pkg/telemetry/collector`:** `Target` → OpenTelemetry Collector config
    fragments. It has four consumers:
 
@@ -578,8 +584,12 @@ string, IsolatedExporter string, IdentityProcessors []string, PipelinePrefix str
 - One `prometheus` receiver per non-isolated set, using `kubernetes_sd_configs` role pod.
 - SD is limited to `namespaces`, plus a `spec.nodeName=${env:K8S_NODE_NAME}` field selector
   when NodeLocal (DaemonSet: each pod scraped once).
-- relabel `keep` on each selector label and the container port; `job` → service_name, plus a
-  `pod` label.
+- relabel `keep` on running, non-init containers, and rewrite `__address__` to the pod IP on
+  the declared port (bracketed for IPv6), whether or not the pod spec declares that port: a
+  manifest may serve on an undeclared port. Nothing per-container survives relabeling (the
+  final labels are `instance`, `pod` and `namespace`), so a pod's per-container targets are
+  identical and the scrape pool keeps one: one scrape and one `up` per pod. `job` →
+  service_name.
 - `metric_relabel_configs`: keep `up|allow`, drop `deny`, `labeldrop` the `drop_labels`.
 - `sample_limit`, `label_limit` and `label_value_length_limit` are passed through.
 - TLS and `authorization.credentials_file` are set from the mount descriptor.
@@ -589,9 +599,10 @@ string, IsolatedExporter string, IdentityProcessors []string, PipelinePrefix str
 
 **Profiles:**
 
-- `receiver_creator` + `k8s_observer` (node-local `observe_pods`), with one rule per target:
-  `type == "port" && pod.namespace in [...] && pod.labels[...] == ... && port == N`.
-- The rule instantiates `pprof` with `remote.endpoint = http://`endpoint`<prefix>/profile?seconds=N`
+- `receiver_creator` + `k8s_observer` (node-local `observe_pods`), with one rule per target on
+  the observer's pod endpoints (one per pod, so an undeclared port still works):
+  `type == "pod" && namespace in [...] && labels[...] == ...`. Checks use the same rule.
+- The rule instantiates `pprof` with `remote.endpoint = http://<pod IP>:N<prefix>/profile?seconds=N`
   (for cpu) or `<prefix>/<type>`, with `collection_interval` and `resource_attributes`
   `service.name`.
 - An `address` target uses `pprof` directly.
@@ -731,19 +742,19 @@ Each PR owns disjoint files. "→" means blocks.
 
 ### forge (one release; every field additive)
 
-| PR                                                                                                                                                                                  | Owns (files)                                                                                                                                                                                                                                                                                                                                                                                                        | Depends                                          |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| **F0** host-infra logs into `.forge/logs/<env>/<name>.log`; the old path becomes a symlink, `up_identity.go` message updated                                                        | `internal/hostinfra/{supervised,zitadel,hostinfra}.go`, `internal/cli/up_identity.go`                                                                                                                                                                                                                                                                                                                               | —                                                |
-| **F1** schema + normalize + render output                                                                                                                                           | `kcl/telemetry.k` (new), the field lines in `kcl/workload.k` and `kcl/schema.k` (incl. `HostInfra.temporal_metrics_port`, `Observability.telemetry_collector`), the `kcl/render.k` `_render_telemetry` and `otlp_value` and `_obs_env` remap section, `pkg/telemetry/{target,normalize,validate}.go`, `internal/cli/kcl_render.go` decode, the `env_render.go` validate + `--json` field, `kcl/tests/telemetry_*.k` | — (its `dashboards` field lands in F5)           |
-| **F2** dashspec KCL mirror                                                                                                                                                          | `internal/codegen/dashspec_kcl*.go`, `kcl/dashspec/dashspec_gen.k`, `kcl/dashspec/helpers.k`                                                                                                                                                                                                                                                                                                                        | —                                                |
-| **F3** translator                                                                                                                                                                   | `pkg/telemetry/collector/*` (fragments, netpols, golden and slow validate tests)                                                                                                                                                                                                                                                                                                                                    | F1                                               |
-| **F4** cluster agent                                                                                                                                                                | `pkg/deploy/observability.go` (spec field, merge, k8sattributes label extraction), `pkg/deploy/workload_render.go` ingress rule, Manifests sibling netpol emission in `pkg/deploy/render.go`, `kcl/render.k` `ObservabilityAgent` record (adds targets; coordinate with F1 by appending a separate block)                                                                                                           | F3                                               |
-| **F5** obsdash: declared dashboards, system dashboard, default alerts, `forge obs telemetry`; adds `Telemetry.dashboards` / `dashboard`                                             | `internal/obsdash/telemetry.go` (new), `internal/obsdash/spec.go` Input field, `internal/cli/generate_pipeline.go` (one Input line), `internal/cli/obs_telemetry.go` (new), `kcl/telemetry.k` (2 fields)                                                                                                                                                                                                            | F1, F2                                           |
-| **F6** local: telemetry agent + ClickStack log include + upgrade row; temporal `--metrics-port`                                                                                     | `internal/cli/up_telemetry.go` (new), `internal/hostinfra/telemetryagent.go` (new), `internal/hostinfra/temporal.go`, `internal/templates/project/{otel-collector.yaml.tmpl,docker-compose.yml.tmpl}`, `internal/generator/upgrade.go` row, `internal/templates/clickstack_compose_test.go`                                                                                                                         | F3, F0                                           |
-| **F7** hosted: `Shape.Telemetry` + `BundleFeatureTelemetry = "shape-telemetry"`, strip, and a deploy warning when not advertised                                                    | `pkg/release/telemetry.go` (new), `pkg/release/bundle.go` (field), `pkg/release/bundle_features.go`, `internal/cli/env_shape.go`                                                                                                                                                                                                                                                                                    | F1                                               |
-| **F8** lint lane `--telemetry` + rollout rows                                                                                                                                       | `internal/cli/lint/telemetry*.go`, `lint_rollout_table.go` rows                                                                                                                                                                                                                                                                                                                                                     | F1, F5                                           |
-| **F9** KCL bridge `kcl_plugin.forge.telemetry_collector` + `telemetry_targets` lambda                                                                                               | `internal/kclrender/telemetry_plugin.go` (new), registration line in `kclrender.go`, `kcl/telemetry.k` lambda block                                                                                                                                                                                                                                                                                                 | F3                                               |
-| **F10** docs + skill `observability/third-party` (worked examples: image Workload, Manifests, HostInfra, own collector); this proposal as `docs/proposals/third-party-telemetry.md` | `internal/skills/observability/third-party/*`, `docs/proposals/*`                                                                                                                                                                                                                                                                                                                                                   | content from F1-F9 (the proposal can land first) |
+| PR                                                                                                                                                                                                                                   | Owns (files)                                                                                                                                                                                                                                                                                                                                                                                                        | Depends                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| **F0** host-infra logs into `.forge/logs/<env>/<name>.log`; the old path becomes a symlink, `up_identity.go` message updated                                                                                                         | `internal/hostinfra/{supervised,zitadel,hostinfra}.go`, `internal/cli/up_identity.go`                                                                                                                                                                                                                                                                                                                               | —                                                |
+| **F1** schema + normalize + render output                                                                                                                                                                                            | `kcl/telemetry.k` (new), the field lines in `kcl/workload.k` and `kcl/schema.k` (incl. `HostInfra.temporal_metrics_port`, `Observability.telemetry_collector`), the `kcl/render.k` `_render_telemetry` and `otlp_value` and `_obs_env` remap section, `pkg/telemetry/{target,normalize,validate}.go`, `internal/cli/kcl_render.go` decode, the `env_render.go` validate + `--json` field, `kcl/tests/telemetry_*.k` | — (its `dashboards` field lands in F5)           |
+| **F2** dashspec KCL mirror                                                                                                                                                                                                           | `internal/codegen/dashspec_kcl*.go`, `kcl/dashspec/dashspec_gen.k`, `kcl/dashspec/helpers.k`                                                                                                                                                                                                                                                                                                                        | —                                                |
+| **F3** translator                                                                                                                                                                                                                    | `pkg/telemetry/collector/*` (fragments, netpols, golden and slow validate tests)                                                                                                                                                                                                                                                                                                                                    | F1                                               |
+| **F4** cluster agent                                                                                                                                                                                                                 | `pkg/deploy/observability.go` (spec field, merge, k8sattributes label extraction), `pkg/deploy/workload_render.go` ingress rule, Manifests sibling netpol emission in `pkg/deploy/render.go`, `kcl/render.k` `ObservabilityAgent` record (adds targets; coordinate with F1 by appending a separate block)                                                                                                           | F3                                               |
+| **F5** obsdash: declared dashboards, system dashboard, default alerts, `forge obs telemetry`; adds `Telemetry.dashboards` / `dashboard`                                                                                              | `internal/obsdash/telemetry.go` (new), `internal/obsdash/spec.go` Input field, `internal/cli/generate_pipeline.go` (one Input line), `internal/cli/obs_telemetry.go` (new), `kcl/telemetry.k` (2 fields)                                                                                                                                                                                                            | F1, F2                                           |
+| **F6** local: telemetry agent + ClickStack log include + upgrade row; temporal `--metrics-port`                                                                                                                                      | `internal/cli/up_telemetry.go` (new), `internal/hostinfra/telemetryagent.go` (new), `internal/hostinfra/temporal.go`, `internal/templates/project/{otel-collector.yaml.tmpl,docker-compose.yml.tmpl}`, `internal/generator/upgrade.go` row, `internal/templates/clickstack_compose_test.go`                                                                                                                         | F3, F0                                           |
+| **F7** hosted: `Shape.Telemetry` + `BundleFeatureTelemetry = "shape-telemetry"` (decodes) + `CapabilityCollectsTelemetry = "collects-telemetry"` (collects, hand-advertised), strip, and a deploy warning unless both are advertised | `pkg/release/telemetry.go` (new), `pkg/release/bundle.go` (field), `pkg/release/bundle_features.go`, `internal/cli/env_shape.go`                                                                                                                                                                                                                                                                                    | F1                                               |
+| **F8** lint lane `--telemetry` + rollout rows                                                                                                                                                                                        | `internal/cli/lint/telemetry*.go`, `lint_rollout_table.go` rows                                                                                                                                                                                                                                                                                                                                                     | F1, F5                                           |
+| **F9** KCL bridge `kcl_plugin.forge.telemetry_collector` + `telemetry_targets` lambda                                                                                                                                                | `internal/kclrender/telemetry_plugin.go` (new), registration line in `kclrender.go`, `kcl/telemetry.k` lambda block                                                                                                                                                                                                                                                                                                 | F3                                               |
+| **F10** docs + skill `observability/third-party` (worked examples: image Workload, Manifests, HostInfra, own collector); this proposal as `docs/proposals/third-party-telemetry.md`                                                  | `internal/skills/observability/third-party/*`, `docs/proposals/*`                                                                                                                                                                                                                                                                                                                                                   | content from F1-F9 (the proposal can land first) |
 
 **Waves:**
 
@@ -765,7 +776,7 @@ F9 in separate blocks.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
 | **C0** pin: reliant bumps forge first (`dev-docs/forge-upgrade.md`), then `task pin:forge REF=… RELIANT=…`                                                                                                         | `go.mod`, `forge.yaml`, the pin files                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | forge release                                |
 | **C1** bridge + index; selfmon parity                                                                                                                                                                              | `lib/telemetry/index.k` (new; aggregates the per-system files, one stub per system carrying today's ScrapeJob semantics), `lib/otel_agent.k` (consumes `plugin.telemetry_collector` for the platform and selfmon pipelines; deletes `ScrapeJob`, `self_jobs`, `platform_scrape_jobs`, `Probe`, `platform_scrape_policies` and `store_scrape_policies`, replaced by the forge-rendered netpols with `telemetry_collector = {namespace = agent ns, pod_labels}`), `lib/selfmon.k` (reduced to constants), `lib/obs_prod.k` wiring, `internal/dashtemplates/dashtemplates.go` (derive Platform from `scope: platform`, not a hand map). A render-parity test proves the scrape configs are semantically equal before deletion. | C0                                           |
-| **C2** hosted tenant scrape                                                                                                                                                                                        | `internal/reconcilestore/` reader, `internal/operators/workload/telemetry.go` (new), the customer scrape pipeline in the agent (a separate block in `lib/otel_agent.k`, coordinated with C1), feature advertise in `internal/handlers/deploy/rpc_get_*`, plan caps                                                                                                                                                                                                                                                                                                                                                                                                                                                          | C0                                           |
+| **C2** hosted tenant scrape                                                                                                                                                                                        | `internal/reconcilestore/` reader, `internal/operators/workload/telemetry.go` (new), the customer scrape pipeline in the agent (a separate block in `lib/otel_agent.k`, coordinated with C1), advertise `collects-telemetry` by hand beside the bundle features in `internal/handlers/deploy/rpc_get_*` (in this PR, the one that makes it collect; `shape-telemetry` arrives with the C0 pin), plan caps                                                                                                                                                                                                                                                                                                                   | C0                                           |
 | **C3.<sys>** one per system: fill `lib/telemetry/<sys>.k` (scrape, logs, traces, profiles, dashboards, alerts), add `observability/selfmon-alerts/<Name>.sql`, delete the migrated `dashboards/selfmon-<sys>.json` | own files only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | C1                                           |
 | **C4.<sys>** enable endpoints (paired with its C3)                                                                                                                                                                 | LiteLLM: `deploy/litellm/config.yaml` + the litellm lambda in `infra.k`. PgBouncer exporter sidecar: `lib/pgbouncer.k`. CNPG operator + instance ports: `lib/cnpg_vendored.k`. cert-manager metrics/profiling values: `lib/platform.k`. Temporal OTLP + `PPROF_PORT` + JSON logs: the temporal lambda in `infra.k`. Zitadel JSON + OTLP: the zitadel lambda. Envoy `EnvoyProxy.telemetry`: the ingress lib. Alertmanager `--log.format=json`: `observability/alertmanager.k`. OpenBao `log_format=json`: openbao config                                                                                                                                                                                                     | C1 (`infra.k` hunks sit in distinct lambdas) |
 | **C5** hosted profiles + checks, tenant log parse                                                                                                                                                                  | operator + agent                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | C2                                           |
@@ -910,3 +921,131 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
 - Validate's hosted rules: every scrape sets `allow`; no `address`, no bearer token, no
   profiles; a numeric port must be one the workload declares. A target on `forge.OnExternal` or
   `forge.BuildOnly` is refused (nothing forge reaches runs it).
+
+**F5 (dashboards, default alerts, `forge obs telemetry`):**
+
+- `Telemetry.dashboards: [dashspec.Dashboard] = []` (`kcl/telemetry.k` imports `.dashspec`;
+  projects write `import forge.dashspec as ds`). Each renders through `dashspec.dashboard_json`
+  into `Target.Dashboards []json.RawMessage`, kept raw so `dashspec.ParseDashboard` (in
+  `telemetry.Validate` and again in obsdash) is the one judge, with line and column. Ids are
+  unique within a Telemetry (KCL) and within an env (Validate). The `dash_*` re-exports of §2
+  were not added: the F2 helpers (`ds.rate`, `ds.quantile`, `ds.gauge`, `ds.ratio`) are the one
+  spelling.
+- `obsdash.TelemetrySystemsOf([]EnvTelemetry)` merges every env's targets into one
+  `TelemetrySystem` per service (signals union; scope, system-dashboard title and a declared
+  dashboard's content must agree across envs, else an error naming both envs). `Input.Telemetry`
+  carries them. Each system's dashboards are their own spec part,
+  `deploy/observability/spec/telemetry-<service>_gen.json` (`TelemetryPart`), not
+  `project_gen.json`, so two branches that declare different systems touch different files;
+  `ReadSpec` appends them after the project's dashboards.
+- The system dashboard `telemetry-<service>` (`BuildSystemDashboard`) draws: collection health
+  from the Prometheus receiver's `up`, `scrape_samples_scraped`,
+  `scrape_samples_post_metric_relabeling` and `scrape_duration_seconds` (per
+  `service.instance.id`); CPU, memory and restarts from the node agent (only on a cluster or
+  hosted runtime; keyed by `k8s.workload.name` for a Workload attachment, by `service.name`
+  otherwise); log volume by severity, error lines and recent lines; span rate, error ratio, p95
+  and a RED table by span name (only with OTLP traces); tcpcheck / httpcheck status and latency
+  (only with checks); and a text panel naming `forge obs profile --service <svc>` (only with
+  profiles). Scope `platform` makes it dashspec scope platform with no env filter; group
+  `platform`. A declared dashboard with no scope takes the system's.
+- Locally, a declared dashboard's HyperDX file keeps only what HyperDX can draw
+  (`localDrawable`: a summary quantile or a sql panel is the console's); the bundle ships it
+  whole. A declared id that collides with a generated dashboard's is a generate error.
+- The release bundle of an env carries the telemetry dashboards of the systems THAT env declares
+  (`dashboardSpecForEntities`), after the process-less cut.
+- Default alerts are two catalog defaults, tuned by id in `forge.Alerts.defaults`:
+  `telemetry-target-down` (`<Service>TargetDown`, newest `up` of an endpoint is 0, `for` 5m) and
+  `telemetry-check-failing` (`<Service>CheckFailing`, no successful tcpcheck / 2xx httpcheck probe
+  in the window, `for` 5m), severity warning, labelled `service`. Each expands to one rule per
+  system with `default_alerts` (`TelemetryAlertName`: UpperCamelCase of the service). They are
+  env-scoped like the uptime defaults (`AlertInput.TelemetryTargets`, never written to the
+  generated file), so a project with no telemetry writes a byte-identical catalog, and a static
+  site still records them. A rule of the env's own that takes one's name is refused at shape
+  time, naming `default_alerts = False` as the way to replace it.
+- `forge obs telemetry [env]` (`forge.obs.telemetry/v1`) lists the env's targets and, from the
+  local ClickStack, per signal the newest row and row count (`obsquery.TelemetryArrival`) and
+  per scraped endpoint its newest `up` and samples (`obsquery.TelemetryScrapes`). Platform
+  systems are read without the env predicate. A table the store lacks costs only its signal;
+  an unreachable store or the cloud backend lists the targets with arrival `unknown`.
+
+**F4 (forge's cluster node agent):**
+
+- The agent record of a cluster carries that cluster's targets (`ObservabilityAgentSpec.Telemetry`,
+  appended by `_tel_agent_spec` in `kcl/render.k`; absent when there are none, so the record and
+  the agent render byte-identically). `RenderObservabilityAgent` builds them through
+  `collector.Build` (`DiscoverNodePods`, `MountRoot = deploy.TelemetryMountRoot`, env identity
+  from the record's env and part-of) and splices the pieces: `Logs.Preserve` after the
+  `container` operator, `Logs.Processors` and `NodeMetricsProcessors` after k8sattributes, and
+  `K8sAttributesLabels` into its extract. `exporterName()+"_telemetry_isolated"` is the isolated
+  exporter (the destination, with Build's bounded in-memory queue).
+- The identity processor also runs in every pushed (OTLP) pipeline, traces included, because they
+  share k8sattributes and only it deletes the extracted selector labels. `IdentityProcessor` gained
+  `trace_statements` for that.
+- Declaring `Observability.telemetry_collector` moves every target off the agent: it is "the
+  collector that scrapes this env's Telemetry, when it is not forge's agent". The render projects
+  it as `output.telemetry_collector` for the NetworkPolicy rules.
+- No singleton, so the agent REFUSES (render error) a cluster target it would pull at an
+  `address`. It also refuses a target whose signal the env's observability does not ship. With a
+  destination, profiles need `signals.profiles = True`; the agent already sends profiles there,
+  and the feature gate follows that signal. It refuses an `optional` credential too, because the
+  collector reads every credentials file at config load.
+- Every referenced Secret is mounted from the agent's namespace, not optionally. The render refuses
+  one that no `required_secrets`, `rendered_secrets` or `control_plane_secrets` entry supplies
+  there (`_check_agent_telemetry`).
+- The agent's ClusterRole is unchanged: it already lists and watches pods, namespaces and nodes, which is all
+  pod discovery and `k8s_observer` need.
+- NetworkPolicy (`internal/cluster/telemetry.go`): the collector for a cluster is the env's own
+  collector, else the agent (`deploy.AgentCollectorRef`). A Workload target's rule joins its own
+  policy (`deploy.Context.Telemetry`). A Manifests or Observability target with
+  `network_policy = True` gets `collector.NetworkPolicies`, inserted after its Manifests group's
+  last object with the group's owner and delivery unit (an Observability target: at the end of the
+  stream). The agent namespace carries no NetworkPolicy, so its egress to the pulled ports is open.
+
+**F11 (a ManagedDatabase is watched by default):**
+
+Owner decision 2026-11-20: the CloudNativePG operator and every user's managed database are
+monitored by default. This is the generic primitive with a working default, not a pack: forge
+renders the database itself (a CloudNativePG `Cluster`, `pkg/deploy` `RenderManagedDatabase`; on
+hosting the control plane renders the same object), so the exporter port, pod labels and log
+shape are facts of forge's own output. The default is an ordinary `forge.Telemetry`, built in
+`kcl/database_telemetry.k`, and rides every existing path: the targets, the collectors, the
+system dashboard, the default alerts, declared dashboards and, on hosting, the release shape.
+
+- `ManagedDatabase.telemetry?: Telemetry` replaces the default; `default_telemetry: bool = True`
+  turns it off. An explicit empty Telemetry was rejected as the off switch: `Telemetry`
+  refuses a declaration that collects nothing, and loosening that check would weaken it for
+  every attachment. `forge.managed_database_telemetry(name)` returns the default, so a project
+  extends it with `|` rather than copying it.
+- The default target (`attachment: manageddatabase`, source `manageddatabase:<name>`, service
+  `<name>-postgres`) is the database's instances: selector `cnpg.io/cluster: <name>`, container
+  `postgres`, ports `metrics` 9187 and `postgres` 5432. On a cluster it carries the database's
+  cluster and namespace; on hosting neither (the platform places them). It declares one scrape
+  of `metrics` with `MANAGED_DATABASE_METRICS_ALLOW` (the instance collector, the default
+  monitoring queries' backends, size, xid age, replication, archiver and per-database
+  transactions, and the Barman Cloud plugin's backup timestamps) at `sample_limit` 2000; a
+  JSON log parse (severity `record.error_severity` with Postgres's levels mapped, body
+  `record.message`, timestamp `ts`, and rules mapping the instance manager's own `level`); a
+  tcp check on `postgres`; and the dashboard `<name>-postgres`.
+- The CloudNativePG operator: one default target per cluster that holds a database keeping its
+  default (`manageddatabase-operator:<cluster>`, service `cloudnative-pg`, suffixed with the
+  cluster when the databases span several), selecting `app.kubernetes.io/name: cloudnative-pg`
+  in every namespace, scraping :8080 with `CNPG_OPERATOR_METRICS_ALLOW`, with its JSON logs and a
+  dashboard. forge does not install the operator, so the selector is the label the upstream chart
+  and manifest put on it. A Telemetry of the same service name anywhere in the env replaces it
+  (`forge.cnpg_operator_telemetry(cluster)` is that Telemetry, to narrow or extend). On hosting
+  the operator is the platform's, so there is no tenant target for it.
+- A default is rendered only for a database that is placed (hosted, or on a known cluster), so
+  no previously valid env gains an invalid target. A declared `telemetry` renders anyway.
+- `network_policy` stays unset ("auto"), which renders no policy for a `manageddatabase` target
+  (`AdmitCollector` is false, as for Manifests): a policy selecting the instances would deny
+  every other Postgres caller. No `telemetry.Warnings` note either, since every database would
+  carry one. Where the namespace already denies ingress, admitting the collector on 9187 and 5432
+  is the project's (or, on hosting, the control plane's).
+- No default alert rules beyond the two catalog defaults (TargetDown on the scrape,
+  CheckFailing on the check): a `Telemetry.alerts` entry needs the env's observability on, and a
+  default must not fail an env that has it off. Lag, archiving, backup age and xid age alerts
+  are a follow-up, as catalog defaults.
+- A project without a ManagedDatabase renders byte-identically
+  (`TestRenderContract_NoTelemetryWithoutDeclaration`). A project with one gains telemetry,
+  dashboards and the two default alerts on its next render and `forge generate`, which is the
+  intent.

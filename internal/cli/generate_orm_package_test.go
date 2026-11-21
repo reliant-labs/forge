@@ -95,8 +95,10 @@ type Service struct{ deps Deps }
 	if err != nil {
 		t.Fatalf("CRUD ops: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(ops), `db "example.com/app/internal/store"`) {
-		t.Errorf("the CRUD ops must import the relocated ORM:\n%s", ops)
+	// Imported and qualified by its own name, never under a db alias that
+	// the project's internal/db would collide with in a handler file.
+	if !strings.Contains(string(ops), "\t\"example.com/app/internal/store\"\n") || !strings.Contains(string(ops), "*store.Task") {
+		t.Errorf("the CRUD ops must import the relocated ORM as store:\n%s", ops)
 	}
 	if strings.Contains(string(ops), `"example.com/app/internal/db"`) {
 		t.Errorf("the CRUD ops import the project's own internal/db:\n%s", ops)

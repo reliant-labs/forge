@@ -48,6 +48,10 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `social` | `forge.IdentityGoogle` / `forge.IdentityGitHub` with your own OAuth client |
 | `email` | `forge.IdentityEmail {delivery, from_name, from_local, reply_to}`: how the instance's mail is addressed |
 
+## Several identities in one env
+
+`Bundle.identities = [...]`, keyed by `name`: load `deploy/managed-identity/several`.
+
 ## Sign-in: owners, signup, methods, social, mail
 
 ```python
@@ -69,7 +73,7 @@ IDENTITY = forge.ManagedIdentity {
 - **Owners** are created email-verified, granted `owner_role` and invited once while they have no credential. Removing one revokes nothing, so `owner_role` (default `owner`) must be a declared role with `members_from = "console"`.
 - **Leaving `methods`, `signup` and `social` at their defaults leaves the instance's login policy alone** and delivers no `login_policy`: the broker keeps its legacy behaviour (password, sign-up only in development or with `auth_self_signup`). Owners and `email` alone change neither.
 - **Mail is required** for `magic_link` and for `open`/`domain` signup: `smtp`, a hosted instance whose `email.delivery` is not `"none"` (platform delivery is the default; the sending domain is assigned, so `from_local` is only the local part), or a `forge.HostInfra {engine = "mailpit"}` in dev (`IdentityOnHost.mail` names it; empty = the env's only one).
-- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. Set it with `reliant forge secret set --env <env> GOOGLE_CLIENT_SECRET`; a rotation takes effect on the next reconcile pass. Use a separate dev OAuth client with the dev secret store.
+- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. A rotation takes effect on the next pass. Setup, per env: `deploy/managed-identity/social`.
 - **`passkey_rp_id`** (needs `passkey` in `methods`) pins the WebAuthn relying party. Default: the host of the app's sign-in origin (`localhost` in dev). Passkeys are bound to it forever.
 
 | | hosted | dev (`IdentityOnHost`) |
@@ -86,6 +90,7 @@ After deploying the environment, use the public control-plane management API (`c
 
 ```bash
 forge cloud identity status prod                  # state, issuer, apps, deliveries, Mail: none|smtp|platform|sandbox, social callback, owners pending
+forge cloud identity status prod --check-social   # per social provider: redirect_uri == the callback?
 forge cloud identity users prod --query person@example.com --page-size 20 --json
 forge cloud identity invite prod --email person@example.com --role member [--role operator] [--return-code]
 forge cloud identity set-roles prod --user person@example.com --role member   # --none removes every console role

@@ -3438,6 +3438,7 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				fmt.Printf("[build] %s: skipping docker (bound to forge.OnHost: it runs on the host, not from an image)\n", w.Name)
 				continue
 			}
+			checkDockerCredHelpers(os.Stdout)
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
 			result := timedBuild(ctx, func() buildResult {
 				if opts.composition != nil {

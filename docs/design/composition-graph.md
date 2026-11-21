@@ -226,7 +226,7 @@ one component at a time. Each step below ships alone, with three roles, one imag
 | 3   | Graph codegen: provider funcs replace `Infra`/`OpenInfra`, the per-component constructor-method compose.go and its reconciler, `graph_gen.go` (memo, seal, `Build`/`Run<Root>`, plan, cycles), `//forge:root` discovery, per-audience `routes_gen.go`                       | `internal/codegen/{inject_gen,build_topo,compose_membership,deps_parser}.go`, `compose.go.tmpl`, `providers.go.tmpl`, `mounts_services_gen.go.tmpl` | L    |
 | 4   | Commands: `roots_gen.go` replaces `Serve`/`ServeSpec`/`MountFunc`/`MountNone`, and `cmd-svc-group`/`cmd-worker-group` are retired (Q5)                                                                                                                                      | `cmd-tree-serve.go.tmpl` (deleted), `cmd-tree-server.go.tmpl`, `lifecycle.go.tmpl` (deleted)                                                        | M    |
 | 5   | Lint: `deps-surface`, `no-container-deps`, `deps-no-downcast`, root-config/getenv, `--graph` (reachability, audience, imports), plus `forge fix narrow-deps`, and `mock_gen` for Deps interfaces                                                                            | `internal/linter/forgeconv/`, `internal/contractcheck/`                                                                                             | M    |
-| 6   | KCL: `Workload.root`, `ROOTS` in `config_gen.k`, per-root env/secret projection, unknown-root render error. This retires `binary_config.command` (Q4)                                                                                                                       | `kcl/workload.k`, `internal/codegen/config_gen.go`                                                                                                  | M    |
+| 6   | KCL: `Workload.root`, `ROOTS` in `config_gen.k`, per-root env/secret projection, unknown-root render error. `binary_config.command` stays (Q4, as shipped)                                                                                                                  | `kcl/workload.k`, `internal/codegen/config_gen.go`                                                                                                  | M    |
 | 7   | Upgrade playbook and codemod: `c.X = pkg.New(pkg.Deps{…})` → `newX` methods (mechanical, `infra.Y` → `g.Y()`), `OpenInfra` body → provider funcs (codemod plus playbook), custom `ServeSpec` fields → roots/components (control-plane's three flags are the worked example) | `migrations/vX-composition-graph`, `internal/cli/upgrade`                                                                                           | S–M  |
 
 PRs 1–2 ship value alone, since every forge app with a server stream inherits #773 today. PR 3 is the
@@ -263,6 +263,10 @@ keystone. PR 5's new rules land as warnings and become errors one release later.
 1. **Instance identity:** a distinct Go type per instance (`type DaemonListener struct{ *serverkit.Listener }`). No name qualifiers.
 2. **Deps-surface severity:** error for a foreign interface with more than 10 methods and unused ones; warning otherwise. Tighten once reliant has narrowed its Deps.
 3. **Privilege enforcement:** types and lint in v1. Runtime capabilities (a read-only DB role, subject-scoped NATS credentials) are opt-in per component, the DB role first.
-4. **Per-root config:** derived from each root's reach. `binary_config.command` is retired.
+4. **Per-root config:** derived from each root's reach. As shipped, `binary_config.command` and `subtrees`
+   (#957) were **not** retired: they remain a supported surface, and reach composes with them. A root's process
+   loads the binary's root config, every subtree config over its command path and the command config bound to
+   that exact path; reach then decides which leaves of those configs the root demands
+   (`internal/codegen/composition_graph_config.go`). The earlier "retired" wording here was never implemented.
 5. **Per-service and per-worker subcommands:** retired.
 6. **Audience:** a proto service option, `option (forge.v1.service) = {audience: "daemon"}`, default `user`.

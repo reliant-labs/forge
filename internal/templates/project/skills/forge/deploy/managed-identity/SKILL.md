@@ -73,7 +73,7 @@ IDENTITY = forge.ManagedIdentity {
 - **Owners** are created email-verified, granted `owner_role` and invited once while they have no credential. Removing one revokes nothing, so `owner_role` (default `owner`) must be a declared role with `members_from = "console"`.
 - **Leaving `methods`, `signup` and `social` at their defaults leaves the instance's login policy alone** and delivers no `login_policy`: the broker keeps its legacy behaviour (password, sign-up only in development or with `auth_self_signup`). Owners and `email` alone change neither.
 - **Mail is required** for `magic_link` and for `open`/`domain` signup: `smtp`, a hosted instance whose `email.delivery` is not `"none"` (platform delivery is the default; the sending domain is assigned, so `from_local` is only the local part), or a `forge.HostInfra {engine = "mailpit"}` in dev (`IdentityOnHost.mail` names it; empty = the env's only one).
-- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. A rotation takes effect on the next pass. Setup, per env: `deploy/managed-identity/social`.
+- **Social client secrets never reach a pod**: the shape records the NAME, only the reconciler reads it, and a workload whose env reads it is refused. Rotation applies on the next pass. Setup: `deploy/managed-identity/social`; `pass_tokens` (dev-only): `deploy/managed-identity/upstream-tokens`.
 - **`passkey_rp_id`** (needs `passkey` in `methods`) pins the WebAuthn relying party. Default: the host of the app's sign-in origin (`localhost` in dev). Passkeys are bound to it forever.
 
 | | hosted | dev (`IdentityOnHost`) |

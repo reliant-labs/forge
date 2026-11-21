@@ -197,17 +197,38 @@ func TestGoBuildArgs_Cover(t *testing.T) {
 	if i := slices.Index(args, "-cover"); i < 0 || !slices.Equal(args[i:i+3], flags) || args[len(args)-1] != "./cmd/shop" {
 		t.Errorf("args = %v, want the cover flags before the package", args)
 	}
+	// An explicit -cover is the user's: forge adds nothing.
 	for _, tt := range []goBuildTarget{
 		{flags: []string{"-cover"}},
-		{flags: []string{"-covermode=count"}},
-		{env: map[string]string{"GOFLAGS": "-mod=mod -coverpkg=./..."}},
+		{flags: []string{"-cover=false"}},
+		{env: map[string]string{"GOFLAGS": "-mod=mod -cover"}},
 	} {
-		if !userSetsCover(tt.flags, tt.env) {
-			t.Errorf("userSetsCover(%v, %v) = false: the user's own cover flags must win", tt.flags, tt.env)
+		if got := mergeCoverFlags(flags, tt.flags, tt.env); got != nil {
+			t.Errorf("flags %v env %v: forge added %v over the user's own -cover", tt.flags, tt.env, got)
 		}
 	}
-	if userSetsCover([]string{"-race", "-tags=e2e"}, map[string]string{"GOFLAGS": "-mod=mod"}) {
-		t.Error("userSetsCover matched flags that are not cover flags")
+	// A -covermode or -coverpkg alone does not own instrumentation: forge
+	// still adds -cover, and keeps the user's value in place of its own.
+	for _, tc := range []struct {
+		flags []string
+		env   map[string]string
+		want  []string
+	}{
+		{flags: []string{"-coverpkg=./pkg/..."}, want: []string{"-cover", "-covermode=atomic"}},
+		{flags: []string{"-covermode=count"}, want: []string{"-cover", "-coverpkg=example.com/shop/internal/..."}},
+		{env: map[string]string{"GOFLAGS": "-covermode=atomic -coverpkg=./..."}, want: []string{"-cover"}},
+		{flags: []string{"-race", "-tags=e2e"}, env: map[string]string{"GOFLAGS": "-mod=mod"}, want: flags},
+	} {
+		if got := mergeCoverFlags(flags, tc.flags, tc.env); !slices.Equal(got, tc.want) {
+			t.Errorf("flags %v env %v: forge adds %v, want %v", tc.flags, tc.env, got, tc.want)
+		}
+	}
+	// And the build carries both: forge's -cover, then the user's own value.
+	tt := goBuildTarget{cmd: "./cmd/shop", outputName: "shop", cover: true, flags: []string{"-coverpkg=./pkg/..."},
+		coverFlags: mergeCoverFlags(flags, []string{"-coverpkg=./pkg/..."}, nil)}
+	args = goBuildArgs(tt, "bin/shop", false, versionInfo{})
+	if !slices.Contains(args, "-cover") || !slices.Contains(args, "-coverpkg=./pkg/...") || slices.Contains(args, "-coverpkg=example.com/shop/internal/...") {
+		t.Errorf("args = %v, want -cover with the user's -coverpkg only", args)
 	}
 }
 

@@ -2431,14 +2431,15 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	}
 
 	// A cover build: -cover -covermode=atomic -coverpkg=<the env's
-	// packages>. -cover in the build's own flags or GOFLAGS is the user's
-	// choice and wins.
-	if t.cover && !userSetsCover(t.flags, t.env) {
+	// packages>. An explicit -cover in the build's own flags or GOFLAGS is
+	// the user's choice and wins; a -covermode or -coverpkg of theirs is
+	// kept in place of forge's (mergeCoverFlags).
+	if owns, _, _ := userCoverFlags(t.flags, t.env); t.cover && !owns {
 		flags, err := coverBuildFlags(ctx, projectDirForKCL(), t.coverPackages)
 		if err != nil {
 			return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
 		}
-		t.coverFlags = flags
+		t.coverFlags = mergeCoverFlags(flags, t.flags, t.env)
 		fmt.Printf("[build] %s: instrumented for coverage (-cover -covermode=%s)\n", t.outputName, coverMode)
 	}
 	args := goBuildArgs(t, binaryPath, debug, versionInfo)

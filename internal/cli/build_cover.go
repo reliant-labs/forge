@@ -306,12 +306,12 @@ func withHostCover(ctx context.Context, spec *hostlaunch.RunnerSpec, w WorkloadE
 		if g := w.GoBuild(); g != nil {
 			userFlags, userEnv = g.Flags, g.Env
 		}
-		if !userSetsCover(userFlags, userEnv) {
+		if owns, _, _ := userCoverFlags(userFlags, userEnv); !owns {
 			flags, err := coverBuildFlags(ctx, projectDir, w.coverPackages())
 			if err != nil {
 				return fmt.Errorf("host workload %s: %w", w.Name, err)
 			}
-			spec.GoBuildFlags = flags
+			spec.GoBuildFlags = mergeCoverFlags(flags, userFlags, userEnv)
 		}
 		if r == "air" && !spec.AirExpandsBuildFlags() {
 			fmt.Printf("[up] host %s: not instrumented for coverage — its air config does not build with $%s (add it to its `go build`; a new scaffold's .air.toml does)\n",
@@ -326,14 +326,37 @@ func withHostCover(ctx context.Context, spec *hostlaunch.RunnerSpec, w WorkloadE
 	return nil
 }
 
-// userSetsCover reports whether the build already says -cover: GoBuild.flags
-// or GOFLAGS in GoBuild.env. The user's own flags win over the KCL Tests.
-func userSetsCover(flags []string, env map[string]string) bool {
+// userCoverFlags reads the cover flags the build already carries in
+// GoBuild.flags or GOFLAGS of GoBuild.env. owns is an explicit -cover (or
+// -cover=false): the user decides instrumentation and forge adds nothing.
+// Otherwise forge adds -cover, and its own -covermode / -coverpkg only where
+// the user set none (setsMode / setsPkg), so a value of theirs is kept.
+func userCoverFlags(flags []string, env map[string]string) (owns, setsMode, setsPkg bool) {
 	for _, f := range slices.Concat(flags, strings.Fields(env["GOFLAGS"])) {
-		name, _, _ := strings.Cut(strings.TrimLeft(f, "-"), "=")
-		if strings.HasPrefix(f, "-") && (name == "cover" || name == "covermode" || name == "coverpkg") {
-			return true
+		if !strings.HasPrefix(f, "-") {
+			continue
+		}
+		switch name, _, _ := strings.Cut(strings.TrimLeft(f, "-"), "="); name {
+		case "cover":
+			owns = true
+		case "covermode":
+			setsMode = true
+		case "coverpkg":
+			setsPkg = true
 		}
 	}
-	return false
+	return owns, setsMode, setsPkg
+}
+
+// mergeCoverFlags is forge's cover flags for a build that carries flags and
+// env of its own (userCoverFlags): nil when the user owns -cover, else forge's
+// flags minus the -covermode / -coverpkg the user already set.
+func mergeCoverFlags(forge, flags []string, env map[string]string) []string {
+	owns, setsMode, setsPkg := userCoverFlags(flags, env)
+	if owns {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(forge), func(f string) bool {
+		return (setsMode && strings.HasPrefix(f, "-covermode=")) || (setsPkg && strings.HasPrefix(f, "-coverpkg="))
+	})
 }

@@ -279,7 +279,7 @@
           ]
         },
         "artifacts": {
-          "description": "Artifacts are the release artifacts the package is in.",
+          "description": "Artifacts are the release artifacts the package is in. Empty (never absent) for a finding its source attributes to the release as a whole and to no artifact; text output says \"release\" for it. Such a finding is judged, counted and listed like any other.",
           "type": "array",
           "items": {
             "type": "string"

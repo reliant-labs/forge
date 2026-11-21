@@ -294,7 +294,11 @@ func writeVulnDocument(w io.Writer, doc vulnscan.Document, now time.Time, label 
 				action = "EXEMPT"
 			}
 			where := ""
-			if doc.Coverage.Artifacts > 1 {
+			switch {
+			case len(f.Artifacts) == 0:
+				// Attributed to the release as a whole, to no artifact.
+				where = "release"
+			case doc.Coverage.Artifacts > 1:
 				where = strings.Join(f.Artifacts, ", ")
 			}
 			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", action, f.ID, severityLabel(f.Finding), f.Package.Name+" "+f.Package.Version, fixLabel(f.Finding), where)

@@ -118,7 +118,7 @@ func runVulnListHosted(ctx context.Context, out, errOut io.Writer, deps vulnDeps
 	// verdict is determined is the control plane's scan state too
 	// (FreshnessFromSource; the mapping is hostedArtifactScans').
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, Filter: filter, Now: now, Notes: f.Notes,
+		Env: env.Name, Release: version, Gate: env.Gate, Artifacts: f.Scans, ReleaseFindings: f.Release, Filter: filter, Now: now, Notes: f.Notes,
 		Stale: f.Stale, FreshnessFromSource: true, Judged: f.Judged, JudgedBy: f.JudgedBy,
 	})
 	if asJSON {

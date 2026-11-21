@@ -64,11 +64,13 @@ func (s Severity) AtLeast(min string) bool {
 
 // Fix states, as grype reports them. Only FixStateFixed counts as fixable:
 // "not-fixed" means the vendor has not shipped one, "wont-fix" that they
-// decided not to.
+// decided not to. FixStateUnknown (the empty string, omitted from JSON) is a
+// finding whose source does not know: not fixable.
 const (
 	FixStateFixed    = "fixed"
 	FixStateNotFixed = "not-fixed"
 	FixStateWontFix  = "wont-fix"
+	FixStateUnknown  = ""
 )
 
 // Match confidence. A CPE match (a name guessed into a vendor/product pair)

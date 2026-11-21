@@ -488,6 +488,9 @@ const (
 	wireScanScanned = "VULNERABILITY_SCAN_STATE_SCANNED"
 	wireScanFailed  = "VULNERABILITY_SCAN_STATE_FAILED"
 	wireScanStale   = "VULNERABILITY_SCAN_STATE_STALE"
+	// wireScanUnspecified is the zero value; proto3 JSON omits it, so it
+	// arrives as "" too.
+	wireScanUnspecified = "VULNERABILITY_SCAN_STATE_UNSPECIFIED"
 )
 
 // hostedVulnReader reads one project's findings from a control plane.
@@ -585,7 +588,11 @@ func (h hostedVulnReader) vulnerability(ctx context.Context, id string) (wireVul
 // An unscanned artifact makes the verdict "unscanned" (undetermined) unless a
 // finding blocks, which the precedence of vulnscan.Evaluate puts first; a
 // stale one makes it "stale" whatever blocks.
-func hostedArtifactScans(rv wireReleaseVulns) (scans []vulnscan.ArtifactScan, stale bool, notes []string) {
+//
+// A finding with no artifact_names is the release's (returned in release): it
+// is kept at release level, attributed to no artifact, and judged like the
+// rest.
+func hostedArtifactScans(rv wireReleaseVulns) (scans []vulnscan.ArtifactScan, release []vulnscan.ReleaseFinding, stale bool, notes []string) {
 	db := wireVulnDatabase{Scanner: vulnscan.ScannerGrype}
 	if rv.Database != nil {
 		db = *rv.Database
@@ -621,29 +628,41 @@ func hostedArtifactScans(rv wireReleaseVulns) (scans []vulnscan.ArtifactScan, st
 			s.Reason = "SBOM recorded; the control plane has not finished scanning it"
 		case wireScanNoSBOM:
 			s.Reason = "no SBOM recorded on the control plane"
+		case wireScanUnspecified, "":
+			s.Reason = "not scanned (the control plane gave no scan state)"
 		default:
-			s.Reason = "not scanned"
+			// A state this forge does not know: never read as scanned.
+			s.Reason = fmt.Sprintf("not scanned (unknown scan state %s)", a.ScanState)
 		}
 		byName[a.ArtifactName] = len(scans)
 		scans = append(scans, s)
 	}
 	for _, w := range rv.Findings {
 		f := hostedFinding(w)
-		targets := w.ArtifactNames
-		if len(targets) == 0 {
-			// A finding the server attributed to no artifact belongs to
-			// the release: every scanned artifact carries it.
-			for _, s := range scans {
-				if s.Latest != nil {
-					targets = append(targets, s.Artifact)
-				}
+		// The artifacts the finding is in, as the control plane names
+		// them, that carry a scan here.
+		var carried, missing []string
+		for _, name := range w.ArtifactNames {
+			if i, ok := byName[name]; ok && scans[i].Latest != nil {
+				carried = append(carried, name)
+			} else {
+				missing = append(missing, name)
 			}
 		}
-		for _, name := range targets {
-			i, ok := byName[name]
-			if !ok || scans[i].Latest == nil {
-				continue
+		if len(carried) == 0 {
+			// No artifact names (the control plane holds it at release
+			// scope), or only artifacts it lists no scan of: the finding is
+			// the release's, attributed to no artifact. Spreading it onto
+			// every artifact would claim each contains the package;
+			// dropping it would hide a finding from the gate.
+			if len(missing) > 0 {
+				notes = append(notes, fmt.Sprintf("the control plane attributes %s in %s to %s, which it lists no scan of; it is listed at release level", f.ID, f.Package.Name, strings.Join(missing, ", ")))
 			}
+			release = append(release, vulnscan.ReleaseFinding{Finding: f, FirstSeen: w.FirstSeenAt})
+			continue
+		}
+		for _, name := range carried {
+			i := byName[name]
 			scans[i].Latest.Findings = append(scans[i].Latest.Findings, f)
 			if !w.FirstSeenAt.IsZero() {
 				if scans[i].FirstSeen == nil {
@@ -653,7 +672,7 @@ func hostedArtifactScans(rv wireReleaseVulns) (scans []vulnscan.ArtifactScan, st
 			}
 		}
 	}
-	return scans, stale, notes
+	return scans, release, stale, notes
 }
 
 // hostedFinding is one VulnerabilityFinding as a vulnscan.Finding.
@@ -661,20 +680,13 @@ func hostedFinding(w wireVulnFinding) vulnscan.Finding {
 	f := vulnscan.Finding{
 		ID:       w.Advisory.ID,
 		Aliases:  w.Advisory.Aliases,
-		Severity: vulnscan.ParseSeverity(strings.TrimPrefix(w.Advisory.Severity, "VULNERABILITY_SEVERITY_")),
+		Severity: hostedSeverity(w.Advisory.Severity),
 		CVSS:     w.Advisory.CVSSScore,
 		KEV:      w.Advisory.KEV,
 		EPSS:     w.Advisory.EPSS,
 		Package:  vulnscan.Package{Name: w.Package.Name, Version: w.Package.Version, PURL: w.Package.PURL, Type: w.Package.Type},
 		FixedIn:  w.FixedVersions,
-	}
-	switch w.FixState {
-	case "VULNERABILITY_FIX_STATE_FIXED":
-		f.FixState = vulnscan.FixStateFixed
-	case "VULNERABILITY_FIX_STATE_NOT_FIXED":
-		f.FixState = vulnscan.FixStateNotFixed
-	case "VULNERABILITY_FIX_STATE_WONT_FIX":
-		f.FixState = vulnscan.FixStateWontFix
+		FixState: hostedFixState(w.FixState),
 	}
 	if w.Package.Location != "" {
 		f.Locations = []string{w.Package.Location}
@@ -685,6 +697,47 @@ func hostedFinding(w wireVulnFinding) vulnscan.Finding {
 	return f
 }
 
+// hostedSeverity maps a VulnerabilitySeverity. UNKNOWN, UNSPECIFIED (which
+// proto3 JSON omits, so it arrives as ""), and any value this forge does not
+// know are vulnscan.SeverityUnknown, which the gate counts as critical (the
+// design's fail-closed rule): a missing severity never reads as low.
+func hostedSeverity(wire string) vulnscan.Severity {
+	switch wire {
+	case "VULNERABILITY_SEVERITY_CRITICAL":
+		return vulnscan.SeverityCritical
+	case "VULNERABILITY_SEVERITY_HIGH":
+		return vulnscan.SeverityHigh
+	case "VULNERABILITY_SEVERITY_MEDIUM":
+		return vulnscan.SeverityMedium
+	case "VULNERABILITY_SEVERITY_LOW":
+		return vulnscan.SeverityLow
+	case "VULNERABILITY_SEVERITY_NEGLIGIBLE":
+		return vulnscan.SeverityNegligible
+	case "VULNERABILITY_SEVERITY_UNKNOWN", "VULNERABILITY_SEVERITY_UNSPECIFIED", "":
+		return vulnscan.SeverityUnknown
+	default:
+		return vulnscan.SeverityUnknown
+	}
+}
+
+// hostedFixState maps a VulnerabilityFixState. UNKNOWN, UNSPECIFIED (omitted
+// by proto3 JSON, so ""), and any value this forge does not know are
+// vulnscan.FixStateUnknown: not fixable, never mistaken for a known state.
+func hostedFixState(wire string) string {
+	switch wire {
+	case "VULNERABILITY_FIX_STATE_FIXED":
+		return vulnscan.FixStateFixed
+	case "VULNERABILITY_FIX_STATE_NOT_FIXED":
+		return vulnscan.FixStateNotFixed
+	case "VULNERABILITY_FIX_STATE_WONT_FIX":
+		return vulnscan.FixStateWontFix
+	case "VULNERABILITY_FIX_STATE_UNKNOWN", "VULNERABILITY_FIX_STATE_UNSPECIFIED", "":
+		return vulnscan.FixStateUnknown
+	default:
+		return vulnscan.FixStateUnknown
+	}
+}
+
 // hostedReleaseFindings is one release's findings as the control plane holds
 // them, mapped for vulnscan.BuildDocument.
 type hostedReleaseFindings struct {
@@ -692,6 +745,9 @@ type hostedReleaseFindings struct {
 	Version string
 	// Scans is one entry per artifact of the release (DocumentInput.Artifacts).
 	Scans []vulnscan.ArtifactScan
+	// Release are the findings attributed to the release and to no
+	// artifact (DocumentInput.ReleaseFindings).
+	Release []vulnscan.ReleaseFinding
 	// Stale is the control plane judging the findings stale
 	// (DocumentInput.Stale).
 	Stale bool
@@ -740,8 +796,8 @@ func (h hostedVulnSource) releaseFindings(ctx context.Context, version string) (
 	if err != nil {
 		return hostedReleaseFindings{}, err
 	}
-	scans, stale, notes := hostedArtifactScans(rv)
-	out := hostedReleaseFindings{Version: version, Scans: scans, Stale: stale, Notes: notes, Artifacts: rv.Artifacts, JudgedBy: vulnscan.JudgedByLocal}
+	scans, rel, stale, notes := hostedArtifactScans(rv)
+	out := hostedReleaseFindings{Version: version, Scans: scans, Release: rel, Stale: stale, Notes: notes, Artifacts: rv.Artifacts, JudgedBy: vulnscan.JudgedByLocal}
 	if sum.EnvironmentID == "" {
 		out.Notes = append(out.Notes, fmt.Sprintf("judged locally: the control plane returned no verdict (it has no environment %q, so it applied no vuln_gate); this checkout's vuln_gate judged the findings", h.env))
 		return out, nil
@@ -775,6 +831,9 @@ func (h hostedVulnSource) releaseScans(ctx context.Context, rel *release.Release
 	}
 	if f.Judged != nil {
 		f.Notes = append(f.Notes, "the control plane's verdict on each finding is not carried by this seam: re-judged with this checkout's vuln_gate")
+	}
+	if n := len(f.Release); n > 0 {
+		f.Notes = append(f.Notes, fmt.Sprintf("%d finding(s) the control plane attributes to the release and to no artifact are not carried by this seam; read releaseFindings for them", n))
 	}
 	return f.Scans, f.Notes, nil
 }

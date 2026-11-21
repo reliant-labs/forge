@@ -682,6 +682,120 @@ func TestVulnListIsDeterminedByTheControlPlanesScanState(t *testing.T) {
 	}
 }
 
+// A finding the control plane holds at release scope (no artifact_names) is
+// the release's: listed with no artifact, never spread onto every scanned
+// artifact, and judged, counted and exited on exactly as an attributed one.
+func TestVulnListKeepsAReleaseLevelFindingAtReleaseLevel(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, names []string) (vulnscan.Document, int, string) {
+		fake := hostedFindings("sha256:" + strings.Repeat("a", 64))
+		rv := fake.releaseVulns["v1.0.0"]
+		// Two scanned artifacts, so spreading would be visible.
+		rv["artifacts"] = []map[string]any{
+			{"artifactName": "api", "sbomDigest": "sha256:" + strings.Repeat("a", 64), "scanState": "VULNERABILITY_SCAN_STATE_SCANNED", "lastScannedAt": vulnTestNow.Add(-time.Hour)},
+			{"artifactName": "worker", "sbomDigest": "sha256:" + strings.Repeat("b", 64), "scanState": "VULNERABILITY_SCAN_STATE_SCANNED", "lastScannedAt": vulnTestNow.Add(-time.Hour)},
+		}
+		findings := rv["findings"].([]map[string]any)
+		if names == nil {
+			delete(findings[0], "artifactNames")
+		} else {
+			findings[0]["artifactNames"] = names
+		}
+		h := hostedVulnHarness(t, fake)
+		out, _, code := h.exec("list", "prod", "--json")
+		text, _, _ := h.exec("list", "prod")
+		return decodeVulnDoc(t, out), code, text
+	}
+	doc, code, text := run(t, nil)
+	var crit *vulnscan.DocumentFinding
+	for i := range doc.Findings {
+		if doc.Findings[i].ID == "CVE-2026-1111" {
+			crit = &doc.Findings[i]
+		}
+	}
+	if crit == nil {
+		t.Fatalf("the release-level finding was dropped: %+v", doc.Findings)
+	}
+	if crit.Artifacts == nil || len(crit.Artifacts) != 0 {
+		t.Errorf("artifacts = %#v, want an empty list: the control plane attributed it to no artifact", crit.Artifacts)
+	}
+	if crit.Action != vulnscan.ActionBlock || !crit.FirstSeen.Equal(vulnTestNow.Add(-10*24*time.Hour)) {
+		t.Errorf("release-level finding = action %s first seen %s", crit.Action, crit.FirstSeen)
+	}
+	if !strings.Contains(text, "release") || strings.Contains(text, "api, worker") {
+		t.Errorf("text does not render the finding at release level:\n%s", text)
+	}
+	// The same finding attributed to an artifact: the same verdict, counts
+	// and exit code.
+	attributed, attributedCode, _ := run(t, []string{"api"})
+	if code != attributedCode || code != exitWrong {
+		t.Errorf("exit %d (release level) vs %d (attributed), want both 1", code, attributedCode)
+	}
+	if doc.Counts != attributed.Counts || doc.Gate.Verdict != attributed.Gate.Verdict || strings.Join(doc.Gate.Blocking, ",") != strings.Join(attributed.Gate.Blocking, ",") {
+		t.Errorf("release level: counts %+v gate %+v; attributed: counts %+v gate %+v", doc.Counts, doc.Gate, attributed.Counts, attributed.Gate)
+	}
+	// Attributed only to an artifact the control plane lists no scan of:
+	// kept at release level, with a note, never dropped.
+	doc, code, _ = run(t, []string{"ghost"})
+	if code != exitWrong || doc.Counts.Critical != 1 || !strings.Contains(strings.Join(doc.Notes, "\n"), "ghost, which it lists no scan of") {
+		t.Errorf("finding on an unlisted artifact: exit %d counts %+v notes %q", code, doc.Counts, doc.Notes)
+	}
+}
+
+// Every VulnerabilityFixState and VulnerabilitySeverity value maps to a
+// vulnscan value explicitly; UNKNOWN, UNSPECIFIED (absent on the wire) and a
+// value this forge does not know are the unknown state, and an unknown
+// severity is judged as critical.
+func TestHostedEnumMappings(t *testing.T) {
+	t.Parallel()
+	for wire, want := range map[string]string{
+		"VULNERABILITY_FIX_STATE_FIXED":           vulnscan.FixStateFixed,
+		"VULNERABILITY_FIX_STATE_NOT_FIXED":       vulnscan.FixStateNotFixed,
+		"VULNERABILITY_FIX_STATE_WONT_FIX":        vulnscan.FixStateWontFix,
+		"VULNERABILITY_FIX_STATE_UNKNOWN":         vulnscan.FixStateUnknown,
+		"VULNERABILITY_FIX_STATE_UNSPECIFIED":     vulnscan.FixStateUnknown,
+		"":                                        vulnscan.FixStateUnknown,
+		"VULNERABILITY_FIX_STATE_FROM_THE_FUTURE": vulnscan.FixStateUnknown,
+	} {
+		f := hostedFinding(wireVulnFinding{FixState: wire, FixedVersions: []string{"v2"}})
+		if f.FixState != want || f.Fixable() != (want == vulnscan.FixStateFixed) {
+			t.Errorf("fix state %q = %q (fixable %v), want %q", wire, f.FixState, f.Fixable(), want)
+		}
+	}
+	for wire, want := range map[string]vulnscan.Severity{
+		"VULNERABILITY_SEVERITY_CRITICAL":    vulnscan.SeverityCritical,
+		"VULNERABILITY_SEVERITY_HIGH":        vulnscan.SeverityHigh,
+		"VULNERABILITY_SEVERITY_MEDIUM":      vulnscan.SeverityMedium,
+		"VULNERABILITY_SEVERITY_LOW":         vulnscan.SeverityLow,
+		"VULNERABILITY_SEVERITY_NEGLIGIBLE":  vulnscan.SeverityNegligible,
+		"VULNERABILITY_SEVERITY_UNKNOWN":     vulnscan.SeverityUnknown,
+		"VULNERABILITY_SEVERITY_UNSPECIFIED": vulnscan.SeverityUnknown,
+		"":                                   vulnscan.SeverityUnknown,
+		"VULNERABILITY_SEVERITY_SEVERE":      vulnscan.SeverityUnknown,
+	} {
+		got := hostedFinding(wireVulnFinding{Advisory: wireVulnAdvisory{ID: "CVE-1", Severity: wire}}).Severity
+		if got != want {
+			t.Errorf("severity %q = %q, want %q", wire, got, want)
+		}
+		if want == vulnscan.SeverityUnknown && !got.AtLeast(string(vulnscan.SeverityCritical)) {
+			t.Errorf("severity %q is not judged as critical", wire)
+		}
+	}
+	// A missing severity on a fixable finding blocks under the default
+	// gate, as a critical would.
+	gate := release.DefaultDeliveryPolicy().VulnGate
+	f := hostedFinding(wireVulnFinding{Advisory: wireVulnAdvisory{ID: "CVE-1"}, FixState: "VULNERABILITY_FIX_STATE_FIXED"})
+	if a, _ := vulnscan.Judge(gate, f, vulnTestNow); a != vulnscan.ActionBlock {
+		t.Errorf("a fixable finding with no severity: %s, want block", a)
+	}
+	for _, state := range []string{"VULNERABILITY_SCAN_STATE_UNSPECIFIED", "", "VULNERABILITY_SCAN_STATE_FROM_THE_FUTURE"} {
+		scans, _, _, _ := hostedArtifactScans(wireReleaseVulns{Artifacts: []wireReleaseArtifactSBOM{{ArtifactName: "api", SBOMDigest: "sha256:aa", ScanState: state, LastScannedAt: vulnTestNow}}})
+		if len(scans) != 1 || scans[0].Latest != nil || !strings.HasPrefix(scans[0].Reason, "not scanned") {
+			t.Errorf("scan state %q = %+v, want unscanned", state, scans)
+		}
+	}
+}
+
 // The findings seam the promote check reads (design §1.5): one env's findings
 // of one release, as the document's artifacts.
 func TestHostedVulnSourceReleaseScans(t *testing.T) {

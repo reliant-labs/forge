@@ -241,3 +241,38 @@ func TestBuildDocumentTakesFreshnessFromASourceThatJudgesIt(t *testing.T) {
 		t.Errorf("notes = %q, want the source's judgement, not a database age", doc.Notes)
 	}
 }
+
+// A release-level finding joins the document attributed to no artifact, and
+// the gate judges and counts it like any other. One an artifact also carries
+// is that artifact's.
+func TestBuildDocumentKeepsReleaseFindingsAtReleaseLevel(t *testing.T) {
+	t.Parallel()
+	crit := Finding{ID: "CVE-2026-1", Severity: SeverityCritical, FixState: FixStateFixed, Package: Package{Name: "a", Version: "1"}}
+	low := Finding{ID: "CVE-2026-2", Severity: SeverityLow, Package: Package{Name: "b", Version: "1"}}
+	scan := &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-time.Hour), ScannedAt: testNow, Findings: []Finding{low}}
+	early := testNow.Add(-48 * time.Hour)
+	doc := BuildDocument(DocumentInput{
+		Env: "prod", Release: "v1", Gate: release.DefaultDeliveryPolicy().VulnGate, Now: testNow,
+		Artifacts:       []ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:aa", Latest: scan}, {Artifact: "web", SBOMDigest: "sha256:bb", Latest: &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-time.Hour), ScannedAt: testNow}}},
+		ReleaseFindings: []ReleaseFinding{{Finding: crit, FirstSeen: early}, {Finding: low, FirstSeen: early}},
+	})
+	if doc.Gate.Verdict != VerdictBlock || len(doc.Gate.Blocking) != 1 || doc.Counts.Critical != 1 || doc.Counts.Low != 1 || len(doc.Findings) != 2 {
+		t.Fatalf("gate %+v counts %+v findings %d", doc.Gate, doc.Counts, len(doc.Findings))
+	}
+	for _, f := range doc.Findings {
+		switch f.ID {
+		case crit.ID:
+			if f.Artifacts == nil || len(f.Artifacts) != 0 || f.Action != ActionBlock || !f.FirstSeen.Equal(early) {
+				t.Errorf("release-level finding = %+v", f)
+			}
+		case low.ID:
+			if strings.Join(f.Artifacts, ",") != "api" || !f.FirstSeen.Equal(early) {
+				t.Errorf("artifact finding = %+v, want api's, first seen at the release-level time", f)
+			}
+		}
+	}
+	data, err := json.Marshal(doc.Findings[0])
+	if err != nil || !strings.Contains(string(data), `"artifacts":[]`) {
+		t.Errorf("JSON = %s (%v), want an empty artifacts list", data, err)
+	}
+}

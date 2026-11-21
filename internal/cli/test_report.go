@@ -22,6 +22,34 @@ const (
 	uploadRequired = "required"
 )
 
+// uploadFlag is --upload[=required]: a switch that also takes one word. It
+// reads as a bool to pflag (a bare --upload needs no value, and usage names
+// none), and accepts true/false and "required".
+type uploadFlag struct{ v *string }
+
+func (f uploadFlag) String() string {
+	if f.v == nil {
+		return ""
+	}
+	return *f.v
+}
+
+func (f uploadFlag) Set(s string) error {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "true", "on", "1", "yes":
+		*f.v = uploadOn
+	case "false", "off", "0", "no":
+		*f.v = uploadOff
+	case uploadRequired:
+		*f.v = uploadRequired
+	default:
+		return fmt.Errorf("use --upload or --upload=required, not --upload=%s", s)
+	}
+	return nil
+}
+
+func (f uploadFlag) Type() string { return "bool" }
+
 // testReportOptions are `forge test report`'s flags.
 type testReportOptions struct {
 	sel      runSelection
@@ -85,8 +113,8 @@ keeps its meaning.`,
 	cmd.Flags().StringVar(&o.gateJSON, "gate-json", "", "Also write the verdict to `FILE` as a gate document (verify-test-run's shape), for `forge gate record` or `forge env deploy --gate`")
 	cmd.Flags().StringVar(&o.format, "format", "text", "Output: text, json (forge.test.report/v1), lcov, cobertura or html")
 	cmd.Flags().BoolVar(&o.asJSON, "json", false, "Same as --format json")
-	cmd.Flags().StringVar(&o.upload, "upload", uploadOff, "Upload the report to the control plane; =required exits 4 when it cannot be uploaded")
-	cmd.Flags().Lookup("upload").NoOptDefVal = uploadOn
+	cmd.Flags().Var(uploadFlag{&o.upload}, "upload", "Upload the report to the control plane (--upload=required: exit 4 when it cannot be uploaded)")
+	cmd.Flags().Lookup("upload").NoOptDefVal = "true"
 	return cmd
 }
 
@@ -104,15 +132,6 @@ func runTestReport(cmd *cobra.Command, o testReportOptions) error {
 	case "text", "json", "lcov", "cobertura", "html":
 	default:
 		return fmt.Errorf("--format %q: use text, json, lcov, cobertura or html", format)
-	}
-	switch o.upload {
-	case uploadOff, uploadOn, uploadRequired:
-	case "true":
-		o.upload = uploadOn
-	case "false":
-		o.upload = uploadOff
-	default:
-		return fmt.Errorf("--upload=%s: use --upload or --upload=required", o.upload)
 	}
 	if o.sel.commit != "" && len(o.sel.refs) > 0 {
 		return errors.New("name runs or --commit, not both")

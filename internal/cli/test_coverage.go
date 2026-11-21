@@ -13,20 +13,30 @@ import (
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
-// testCoverageDoc is `forge test coverage --json`: the forge.test.coverage/v1
-// document of the runs (narrowed to the path and lane asked for), with the
-// views computed from it beside the blocks.
+// schemaTestCoverageView names `forge test coverage --json`.
+const schemaTestCoverageView = "forge.test.coverage-view/v1"
+
+// testCoverageDoc is `forge test coverage --json`: the views the flags asked
+// for, and the forge.test.coverage/v1 document they were computed from
+// (narrowed to the path and lane asked for), unchanged, under coverage. The
+// stored document stays exactly its own schema; what a command adds to it is
+// this one's.
 type testCoverageDoc struct {
-	*testreport.Coverage
-	// Path is the path filter, when one was given.
+	testreport.Head
+	// Path and Lane are the filters, when given.
 	Path    string                     `json:"path,omitempty"`
+	Lane    string                     `json:"lane,omitempty"`
 	Summary testreport.CoverageSummary `json:"summary"`
-	By      string                     `json:"by"`
-	Rollup  []testreport.Rollup        `json:"rollup"`
-	// BaseSHA and Diff are present with --diff (or a recorded base).
-	BaseSHA   string                  `json:"base_sha,omitempty"`
-	Diff      *testreport.DiffSummary `json:"diff,omitempty"`
-	Suggested []string                `json:"suggested,omitempty"`
+	// By is "package" or "file": what Rollup groups by.
+	By     string              `json:"by"`
+	Rollup []testreport.Rollup `json:"rollup"`
+	// BaseSHA and Diff are present with --diff.
+	BaseSHA string                  `json:"base_sha,omitempty"`
+	Diff    *testreport.DiffSummary `json:"diff,omitempty"`
+	// Coverage is the forge.test.coverage/v1 document; absent when there
+	// is none.
+	Coverage  *testreport.Coverage `json:"coverage,omitempty"`
+	Suggested []string             `json:"suggested,omitempty"`
 }
 
 type testCoverageOptions struct {
@@ -105,7 +115,8 @@ func runTestCoverage(cmd *cobra.Command, o testCoverageOptions, filter string) e
 	}
 	fail := func(msg string, suggested ...string) error {
 		if o.asJSON {
-			doc := testCoverageDoc{Coverage: &testreport.Coverage{Head: testreport.Head{Schema: testreport.SchemaCoverage, ExitCode: exitUndetermined, Error: msg}, Lanes: []testreport.LaneInfo{}, Inputs: []testreport.InputRef{}, Files: []testreport.CoverageFile{}}, By: o.by, Rollup: []testreport.Rollup{}, Suggested: suggested}
+			doc := testCoverageDoc{Head: testreport.Head{Schema: schemaTestCoverageView, ExitCode: exitUndetermined, Error: msg},
+				Path: filter, Lane: o.lane, By: o.by, Rollup: []testreport.Rollup{}, Suggested: suggested}
 			if err := writeJSONDocument(out, doc); err != nil {
 				return err
 			}
@@ -132,13 +143,14 @@ func runTestCoverage(cmd *cobra.Command, o testCoverageOptions, filter string) e
 	if filter != "" && len(cov.Files) == 0 {
 		return fail(fmt.Sprintf("no covered file under %s", filter), "reliant forge test coverage")
 	}
-	doc := testCoverageDoc{Coverage: cov, Path: filter, Summary: cov.Summary(), By: o.by, Rollup: cov.Rollup(by), BaseSHA: a.BaseSHA}
+	doc := testCoverageDoc{Head: testreport.Head{Schema: schemaTestCoverageView, OK: true},
+		Coverage: cov, Path: filter, Lane: o.lane, Summary: cov.Summary(), By: o.by, Rollup: cov.Rollup(by)}
 	if doc.Rollup == nil {
 		doc.Rollup = []testreport.Rollup{}
 	}
 	if o.diff != "" && a.Changed != nil {
 		d := cov.Diff(a.Changed)
-		doc.Diff = &d
+		doc.Diff, doc.BaseSHA = &d, a.BaseSHA
 	}
 	if worst := worstRollup(doc.Rollup); worst != "" && by == testreport.ByPackage {
 		doc.Suggested = append(doc.Suggested, "reliant forge test coverage "+worst+" --by file")

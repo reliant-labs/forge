@@ -61,10 +61,10 @@ func fxShop(t *testing.T) (string, *fakeGit) {
 	root := fxProject(t, map[string]string{"billing/refund.go": refundSrc, "billing/enum.go": enumSrc, "billing/mock_gen.go": "package billing\n"})
 	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	fxWriteRun(t, root, fxRun{id: "01AAAA", created: t0, commit: fxCommit, tree: fxTree, branch: "feat", lanes: []fxLane{
-		{name: "unit", results: goJSON(fxModule+"/billing:TestRefund:pass"), cover: unitCover()},
+		{name: "unit", results: goJSON(fxModule + "/billing:TestRefund:pass"), cover: unitCover()},
 	}})
 	fxWriteRun(t, root, fxRun{id: "01BBBB", created: t0.Add(time.Minute), commit: fxCommit, tree: fxTree, branch: "feat", lanes: []fxLane{
-		{name: "integration", results: goJSON(fxModule+"/billing:TestRefundIT:pass"), cover: integrationCover()},
+		{name: "integration", results: goJSON(fxModule + "/billing:TestRefundIT:pass"), cover: integrationCover()},
 	}})
 	g := &fakeGit{top: root, head: fxCommit, diff: refundDiff,
 		blobs: blobsOf(t, root, "billing/refund.go", "billing/enum.go", "billing/mock_gen.go", "go.mod")}
@@ -145,7 +145,7 @@ func TestAssembleMergesLanesWithRepoPathsAndBlobs(t *testing.T) {
 func TestAssembleDeltaAgainstTheBaseCommitsRuns(t *testing.T) {
 	root, g := fxShop(t)
 	fxWriteRun(t, root, fxRun{id: "00BASE", created: time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC), commit: fxBase, tree: fxTree,
-		lanes: []fxLane{{name: "unit", results: goJSON(fxModule+"/billing:TestRefund:pass"), cover: unitCover()}}})
+		lanes: []fxLane{{name: "unit", results: goJSON(fxModule + "/billing:TestRefund:pass"), cover: unitCover()}}})
 	all, _, _ := List(root)
 	a, err := Assemble(context.Background(), Options{ProjectRoot: root, Runs: CommitRuns(all, fxCommit), AllRuns: all, Git: g.run})
 	if err != nil {

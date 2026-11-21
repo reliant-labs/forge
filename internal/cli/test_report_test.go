@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/exitcode"
+	"github.com/reliant-labs/forge/internal/schemagen"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -188,6 +189,9 @@ func TestTestReportExports(t *testing.T) {
 	if _, code := trRun(t, newTestReportCmd(), "--format", "lcov", "--json"); code == 0 {
 		t.Fatal("--format lcov --json accepted")
 	}
+	if _, code := trRun(t, newTestReportCmd(), "--upload=sometimes"); code == 0 {
+		t.Fatal("--upload=sometimes accepted")
+	}
 }
 
 func TestTestCoverageAndRuns(t *testing.T) {
@@ -196,15 +200,12 @@ func TestTestCoverageAndRuns(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, out)
 	}
-	var doc struct {
-		Schema string                   `json:"schema"`
-		Files  []testreport.CoverageFile `json:"files"`
-		Rollup []testreport.Rollup       `json:"rollup"`
-	}
+	var doc testCoverageDoc
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc.Schema != testreport.SchemaCoverage || len(doc.Files) != 1 || doc.Files[0].BlobID == "" || doc.Rollup[0].Path != "a/a.go" {
+	if doc.Schema != schemaTestCoverageView || doc.Coverage == nil || doc.Coverage.Schema != testreport.SchemaCoverage ||
+		len(doc.Coverage.Files) != 1 || doc.Coverage.Files[0].BlobID == "" || doc.Rollup[0].Path != "a/a.go" {
 		t.Fatalf("coverage doc: %s", out)
 	}
 	if _, code := trRun(t, newTestCoverageCmd(), "nowhere"); code != exitUndetermined {
@@ -222,6 +223,39 @@ func TestTestCoverageAndRuns(t *testing.T) {
 	out, _ = trRun(t, newTestRunsCmd(), "--branch", "main")
 	if !strings.Contains(out, "No test runs") {
 		t.Fatalf("branch filter: %s", out)
+	}
+}
+
+// What the verbs print validates against the schema `forge project schema`
+// publishes for it.
+func TestTestRecordVerbsMatchTheirPublishedSchemas(t *testing.T) {
+	trProject(t, trStream("fail"), 1)
+	for _, tc := range []struct {
+		schema string
+		cmd    *cobra.Command
+		args   []string
+	}{
+		{"test-report", newTestReportCmd(), []string{"--json"}},
+		{"test-coverage-view", newTestCoverageCmd(), []string{"--json", "--by", "file"}},
+		{"test-coverage-view", newTestCoverageCmd(), []string{"--json", "nowhere"}},
+		{"test-runs", newTestRunsCmd(), []string{"--json"}},
+	} {
+		out, _ := trRun(t, tc.cmd, tc.args...)
+		var schema bytes.Buffer
+		if err := runProjectSchema(&schema, tc.schema); err != nil {
+			t.Fatal(err)
+		}
+		compiled, err := schemagen.Compile(schema.Bytes())
+		if err != nil {
+			t.Fatalf("%s: %v", tc.schema, err)
+		}
+		v, err := schemagen.DecodeJSON([]byte(out))
+		if err != nil {
+			t.Fatalf("%s %v: not JSON: %v\n%s", tc.schema, tc.args, err, out)
+		}
+		if errs := compiled.Validate(v); len(errs) > 0 {
+			t.Errorf("%s %v: does not validate: %v", tc.schema, tc.args, errs)
+		}
 	}
 }
 

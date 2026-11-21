@@ -128,7 +128,7 @@ func TestBuildRPCProtoSnippet_StreamKeywordPlacement(t *testing.T) {
 		mode rpcStreamMode
 		want string
 	}{
-		{"unary", rpcUnary, "rpc Foo(FooRequest) returns (FooResponse);"},
+		{"unary", rpcUnary, "rpc Foo(FooRequest) returns (FooResponse) {"},
 		{"server", rpcServerStream, "rpc Foo(FooRequest) returns (stream FooResponse);"},
 		{"client", rpcClientStream, "rpc Foo(stream FooRequest) returns (FooResponse);"},
 		{"bidi", rpcBidiStream, "rpc Foo(stream FooRequest) returns (stream FooResponse);"},
@@ -458,5 +458,16 @@ func TestBuildRPCHandlerStub_ExportedMethodIsDocumented(t *testing.T) {
 		if first := fn.Doc.List[0].Text; !strings.HasPrefix(first, "// Foo ") {
 			t.Errorf("mode %v: doc comment must start with the method name (revive `exported`), got %q", mode, first)
 		}
+	}
+}
+
+// A mutating unary rpc's snippet carries its activity declaration, which
+// forge lint requires; a read-named one stays a one-line rpc.
+func TestBuildRPCProtoSnippet_DeclaresActivityForMutations(t *testing.T) {
+	if got := buildRPCProtoSnippet("ArchiveProduct", rpcUnary); !strings.Contains(got, "option (forge.v1.method) = { activity:") {
+		t.Errorf("mutating snippet lacks the activity option:\n%s", got)
+	}
+	if got := buildRPCProtoSnippet("GetProductStats", rpcUnary); strings.Contains(got, "activity") || !strings.Contains(got, "returns (GetProductStatsResponse);") {
+		t.Errorf("a read rpc needs no activity:\n%s", got)
 	}
 }

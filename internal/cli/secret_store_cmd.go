@@ -92,8 +92,29 @@ service references does nothing — config belongs in deploy/kcl/<env>/config.k.
 		newSecretAccessCmd(),
 		newSecretEnsureCmd(),
 		newSecretMigrateCmd(),
+		newSecretGetCmd(),
 	)
 	return cmdutil.StrictGroup(cmd)
+}
+
+// newSecretGetCmd is the verb forge deliberately does not have. Secrets are
+// write-only: no forge command prints a value. Without it, `forge secret get
+// NAME --env prod` failed on "unknown flag: --env", which reads as a typo
+// rather than as the design; this says what to run instead. Hidden, and it
+// accepts any arguments and flags so the explanation is what always prints.
+func newSecretGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "get",
+		Hidden:             true,
+		DisableFlagParsing: true,
+		SilenceUsage:       true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return exitCodeError{code: exitWrong, msg: "forge never prints a secret's value (hosted secrets are write-only; a FileSecrets store is a file of your own).\n" +
+				"  which secrets have a value, and their versions:  " + Name() + " secret list --env <env>\n" +
+				"  whether a cluster Secret matches its store copy: " + Name() + " env secrets verify <env>\n" +
+				"  set or rotate one (value on stdin):              " + Name() + " secret set --env <env> NAME"}
+		},
+	}
 }
 
 // addSecretEnvFlag registers the REQUIRED --env flag every secret command
@@ -841,7 +862,12 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	return writeSecretList(out, report)
+}
 
+// writeSecretList prints the text form of report.
+func writeSecretList(out io.Writer, report secretListReport) error {
+	envName := report.Env
 	switch {
 	case report.StorePath != "":
 		fmt.Fprintf(out, "secret store (%s): %s\n\n", report.Provider, report.StorePath)
@@ -877,11 +903,21 @@ func runSecretList(ctx context.Context, envName string, out io.Writer) error {
 	}
 
 	if len(report.Inert) > 0 {
-		fmt.Fprintf(out, "\n%d key(s) in the store that no service declares (inert — nothing injects them):\n", len(report.Inert))
+		who := "no service declares"
+		if report.Provider == "hosted" {
+			who = "no service declares and no workflow is allowed"
+		}
+		fmt.Fprintf(out, "\n%d key(s) in the store that %s (inert — nothing reads them yet):\n", len(report.Inert), who)
 		for _, o := range report.Inert {
 			fmt.Fprintf(out, "  %s\n", o)
 		}
 		fmt.Fprintf(out, "fix: declare it with `forge.EnvVar {name = \"%s\", secret_ref = \"...\"}`,\n", report.Inert[0])
+		if report.Provider == "hosted" {
+			// A secret meant for a Reliant workflow is read through an
+			// access entry, never a declaration: it is inert only until
+			// that entry exists.
+			fmt.Fprintf(out, "     or, for a Reliant workflow, allow it: `forge secret allow %s --env %s --project <id> --workflow <name>`,\n", report.Inert[0], report.Env)
+		}
 		fmt.Fprintln(out, "     move it to deploy/kcl/<env>/config.k if it is not a credential, or remove it.")
 	}
 	if len(report.AccessOnly) > 0 {

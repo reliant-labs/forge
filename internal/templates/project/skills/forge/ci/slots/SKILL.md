@@ -85,6 +85,9 @@ mark a process as inside a slot:
 - `FORGE_SLOT_HELD` in its environment — the holder passes it to its children.
   It names the slot and a nonce; a token whose slot was since released or
   reassigned is ignored, so a copied or stale value grants nothing.
+  `forge generate` and `forge lint` put it in their own environment while they
+  hold a slot, so everything they start — buf, the forge plugins buf runs, a
+  forge build the pin hand-off needs — runs inside that slot.
 - an ANCESTOR holding a slot as a wrapper (`forge slot run`, the gate), read
   from the kernel's parent links — this covers a child whose environment was
   scrubbed on the way down.

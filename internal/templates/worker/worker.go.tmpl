@@ -35,7 +35,7 @@ func New(deps Deps) *Worker {
 }
 
 // Name returns the worker's identifier.
-func (w *Worker) Name() string { return "{{.Name | kebabCase}}" }
+func (w *Worker) Name() string { return "{{.Package}}" }
 
 // Start runs the worker's cycle loop until ctx is cancelled. Keep the
 // ctx.Done() arm — it is the graceful-shutdown seam. See the forge

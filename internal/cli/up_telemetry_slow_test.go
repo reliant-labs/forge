@@ -2,23 +2,18 @@ package cli
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"sigs.k8s.io/yaml"
 
 	"github.com/reliant-labs/forge/internal/hostinfra"
@@ -196,70 +191,6 @@ func logRecords(t *testing.T, path string) []map[string]any {
 				out = append(out, sl.LogRecords...)
 			}
 		}
-	}
-	return out
-}
-
-// otlpSink is a fake local collector: it records the service names and metric
-// names of every OTLP/HTTP metrics export.
-type otlpSink struct {
-	mu      sync.Mutex
-	metrics map[string]map[string]bool // service.name -> metric names
-}
-
-func (s *otlpSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/v1/metrics" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	var body io.Reader = r.Body
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		gz, err := gzip.NewReader(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		body = gz
-	}
-	raw, err := io.ReadAll(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	req := pmetricotlp.NewExportRequest()
-	if err := req.UnmarshalProto(raw); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	s.mu.Lock()
-	rms := req.Metrics().ResourceMetrics()
-	for i := 0; i < rms.Len(); i++ {
-		svc, _ := rms.At(i).Resource().Attributes().Get("service.name")
-		names := s.metrics[svc.AsString()]
-		if names == nil {
-			names = map[string]bool{}
-			s.metrics[svc.AsString()] = names
-		}
-		sms := rms.At(i).ScopeMetrics()
-		for j := 0; j < sms.Len(); j++ {
-			ms := sms.At(j).Metrics()
-			for k := 0; k < ms.Len(); k++ {
-				names[ms.At(k).Name()] = true
-			}
-		}
-	}
-	s.mu.Unlock()
-	w.Header().Set("Content-Type", "application/x-protobuf")
-	b, _ := pmetricotlp.NewExportResponse().MarshalProto()
-	_, _ = w.Write(b)
-}
-
-func (s *otlpSink) names(svc string) []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []string
-	for n := range s.metrics[svc] {
-		out = append(out, n)
 	}
 	return out
 }

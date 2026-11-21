@@ -366,3 +366,16 @@ func TestDBQueryHostedPolicyRefusalIsNotACredentialProblem(t *testing.T) {
 		t.Errorf("error = %q", doc.Error)
 	}
 }
+
+// A bound hosted project the caller cannot see is the request's fault with
+// the project's own message, never "the control plane could not be reached".
+func TestDBQueryCloudErrorOfAProjectTheCallerCannotSee(t *testing.T) {
+	err := dbQueryCloudError(&cloud.ProjectUnavailableError{ProjectID: "hp-1", Wire: &cloud.Error{Code: cloud.CodePermissionDenied}})
+	var f dbQueryCloudFailure
+	if !errors.As(err, &f) || f.code != exitWrong || strings.Contains(f.msg, "could not be reached") || !strings.Contains(f.msg, "hosted project hp-1") {
+		t.Fatalf("got %#v", err)
+	}
+	if r := dbQueryErrorReason(err); r != cloud.ReasonHostedProjectNotFound {
+		t.Fatalf("reason = %q", r)
+	}
+}

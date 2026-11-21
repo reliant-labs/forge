@@ -37,7 +37,7 @@ func ResolveOrganization(ctx context.Context, c Caller) (string, error) {
 			OrgID     string `json:"orgId"`
 		}
 		if err := c.Call(ctx, "controlplane.v1.DeployService/ResolveHostedProject", map[string]any{"projectId": client.Endpoint.ProjectID, "name": client.Endpoint.ProjectName}, &project); err != nil {
-			return "", err
+			return "", asProjectUnavailable(err, client.Endpoint.ProjectID, true)
 		}
 		if project.ProjectID == "" || project.OrgID == "" {
 			return "", fmt.Errorf("control plane returned incomplete project identity")

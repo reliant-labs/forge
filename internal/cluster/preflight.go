@@ -2471,6 +2471,7 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("      local cluster alone — it would diverge dev from the cloud.\n")
 	}
 	writeVolumeResizeFix(&b, r)
+	writeUndeclaredSecretFix(&b, r)
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("  - provision the DECLARED external Secret(s) above out-of-band in their\n")
 		b.WriteString("      namespace (e.g. the cert-manager `cloudflare-api-token`); forge does\n")
@@ -2896,4 +2897,19 @@ func writeVolumeResizeFix(b *strings.Builder, r PreflightResult) {
 	b.WriteString("      class and access modes alone. A volume cannot shrink; to move data to a smaller or different\n")
 	b.WriteString("      volume, restore into a new StatefulSet. A claim whose StorageClass lacks allowVolumeExpansion\n")
 	b.WriteString("      must have expansion enabled on the class first.\n")
+}
+
+// writeUndeclaredSecretFix is the fix line for Secrets a workload mounts but
+// nothing provides: it names the Bundle field an out-of-band Secret is
+// declared in, required_secrets, with the declaration to paste.
+func writeUndeclaredSecretFix(b *strings.Builder, r PreflightResult) {
+	if len(r.UndeclaredSecretMounts) == 0 {
+		return
+	}
+	b.WriteString("  - declare each Secret a workload mounts but nothing provides: if you provision it\n")
+	b.WriteString("      yourself, list it in the env's Bundle under required_secrets, e.g.\n")
+	fmt.Fprintf(b, "        required_secrets = [forge.ExternalSecret {name = %q, namespace = \"<ns>\", keys = [\"<key>\"]}]\n", r.UndeclaredSecretMounts[0].Secret)
+	b.WriteString("      (the keys are the ones the workload reads, as written — a config secret's are\n")
+	b.WriteString("      lowercase, e.g. database_url); the preflight then checks them. Or let a\n")
+	b.WriteString("      secret_provider render it.\n")
 }

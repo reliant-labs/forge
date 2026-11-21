@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -190,11 +192,16 @@ func TestEnvDelete_ResolvesByID(t *testing.T) {
 			t.Fatalf("err = %v; want nothing to delete", err)
 		}
 	})
-	t.Run("no control plane to ask", func(t *testing.T) {
+	t.Run("no binding: Reliant cloud is asked", func(t *testing.T) {
+		// TL-51: a delegated credential's deploys record no binding.
+		cloudCP := controlPlaneServer(t, map[string]string{
+			"GetEnvironment": `{"environment":{"id":"env_9","name":"prod-web","project":"shop"}}`,
+		})
+		useUnboundControlPlane(t, cloudCP.URL)
 		undeclaredDeleteProject(t)
-		_, err := resolveLifecycleTargetFromID(t.Context(), "env_9", "", "tok", "")
-		if err == nil || !strings.Contains(err.Error(), "forge env delete --id env_9 --endpoint "+cloud.DefaultEndpoint) {
-			t.Fatalf("err = %v; want an --endpoint fix", err)
+		got, err := resolveLifecycleTargetFromID(t.Context(), "env_9", "", "tok", "")
+		if err != nil || got.EnvironmentID != "env_9" || got.Endpoint != cloudCP.URL {
+			t.Fatalf("target = %+v, %v; want env_9 on Reliant cloud (%s)", got, err, cloudCP.URL)
 		}
 	})
 }
@@ -274,11 +281,17 @@ func TestEnvListOrphaned(t *testing.T) {
 			t.Errorf("out = %s", out.String())
 		}
 	})
-	t.Run("no control plane to ask", func(t *testing.T) {
+	t.Run("no binding: Reliant cloud is asked", func(t *testing.T) {
+		// TL-51: after deploys under a delegated credential only the
+		// binding's lock file exists; the orphans are still listed.
+		useUnboundControlPlane(t, srv.URL)
 		undeclaredDeleteProject(t)
-		err := runEnvListOrphaned(t.Context(), projectDirForKCL(), "tok", "", io.Discard)
-		if err == nil || !strings.Contains(err.Error(), "--endpoint "+cloud.DefaultEndpoint) {
-			t.Fatalf("err = %v; want an --endpoint fix", err)
+		var out bytes.Buffer
+		if err := runEnvListOrphaned(t.Context(), projectDirForKCL(), "tok", "", &out); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), "prod-web") {
+			t.Errorf("want prod-web listed from Reliant cloud:\n%s", out.String())
 		}
 	})
 	t.Run("an --endpoint the project never used", func(t *testing.T) {
@@ -286,6 +299,64 @@ func TestEnvListOrphaned(t *testing.T) {
 		err := runEnvListOrphaned(t.Context(), projectDirForKCL(), "tok", "https://elsewhere.example", io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "not a control plane this project has used") {
 			t.Fatalf("err = %v; want it refused before the credential is sent", err)
+		}
+	})
+}
+
+// useUnboundControlPlane points the unbound-project fallback (Reliant cloud)
+// at url for one test.
+func useUnboundControlPlane(t *testing.T, url string) {
+	t.Helper()
+	old := unboundControlPlane
+	unboundControlPlane = url
+	t.Cleanup(func() { unboundControlPlane = old })
+}
+
+// Two env documents for one env (prod-web.yaml and prod-web.json) are an
+// ambiguous declaration, never an undeclared env: delete by name refuses it
+// before asking any control plane, and delete --id refuses an env this
+// project still declares, however ambiguously.
+func TestEnvDelete_AmbiguousEnvDocumentsCountAsDeclared(t *testing.T) {
+	twoDocs := func(t *testing.T) {
+		t.Helper()
+		dir := filepath.Join(".", "deploy", "envs")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"prod-web.yaml", "prod-web.json"} {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("by name", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		undeclaredDeleteProject(t, srv.URL)
+		twoDocs(t)
+		if !envDeclared(".", "prod-web") {
+			t.Fatal("two env documents read as undeclared")
+		}
+		if _, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok", ""); err == nil {
+			t.Fatal("an ambiguously declared env resolved for delete")
+		}
+		if called {
+			t.Fatal("the control plane was asked to resolve an env this project still declares")
+		}
+	})
+	t.Run("by id", func(t *testing.T) {
+		srv := controlPlaneServer(t, map[string]string{
+			"GetEnvironment": `{"environment":{"id":"env_9","name":"prod-web","project":"shop"}}`,
+		})
+		undeclaredDeleteProject(t, srv.URL)
+		twoDocs(t)
+		_, err := resolveLifecycleTargetFromID(t.Context(), "env_9", "", "tok", "")
+		if err == nil || !strings.Contains(err.Error(), "still declares") {
+			t.Fatalf("err = %v; want an env this project still declares refused", err)
 		}
 	})
 }

@@ -78,6 +78,53 @@ describe("trackExposure", () => {
     expect(events.map(([, p]) => p.variant)).toEqual(["true", "3"]);
   });
 
+  it("records run, unit, reason and revision, and a new run is a new exposure", () => {
+    const opts = {
+      provider: "forge",
+      run: "r_1",
+      unit: "user",
+      reason: "experiment",
+      revision: 42,
+    };
+    trackExposure("new-checkout", "treatment", opts);
+    trackExposure("new-checkout", "treatment", opts);
+    trackExposure("new-checkout", "treatment", { ...opts, run: "r_2" });
+    trackExposure("new-checkout", "treatment", {
+      run: "",
+      unit: 7 as unknown as string,
+      revision: -1,
+    });
+
+    expect(events).toEqual([
+      [
+        FLAG_EVALUATED_EVENT,
+        {
+          flag: "new-checkout",
+          variant: "treatment",
+          provider: "forge",
+          run: "r_1",
+          unit: "user",
+          reason: "experiment",
+          revision: "42",
+        },
+      ],
+      [
+        FLAG_EVALUATED_EVENT,
+        {
+          flag: "new-checkout",
+          variant: "treatment",
+          provider: "forge",
+          run: "r_2",
+          unit: "user",
+          reason: "experiment",
+          revision: "42",
+        },
+      ],
+      // No run: the plain exposure, with nothing malformed carried.
+      [FLAG_EVALUATED_EVENT, { flag: "new-checkout", variant: "treatment" }],
+    ]);
+  });
+
   it("records nothing after optOutOfAnalytics", () => {
     optOutOfAnalytics();
     trackExposure("new-checkout", "treatment");
@@ -112,6 +159,14 @@ describe("forgeExposureHook", () => {
     forgeExposureHook.after(
       { flagKey: "a" },
       { flagKey: "a", value: false, errorCode: "FLAG_NOT_FOUND" },
+    );
+    expect(events).toEqual([]);
+  });
+
+  it("leaves Forge Changes' provider alone: its store records itself", () => {
+    forgeExposureHook.after(
+      { flagKey: "a", providerMetadata: { name: "forge" } },
+      { flagKey: "a", value: true, variant: "treatment" },
     );
     expect(events).toEqual([]);
   });

@@ -277,18 +277,6 @@ func TestVulnListStaleIsUndetermined(t *testing.T) {
 	}
 }
 
-func TestVulnListOnAControlPlaneEnvSaysSoAndExits2(t *testing.T) {
-	t.Parallel()
-	h := newVulnHarness(t)
-	h.env.Endpoint = "https://api.reliantlabs.io"
-	for _, args := range [][]string{{"list", "prod"}, {"show", "prod", "CVE-1"}, {"sbom", "prod"}, {"scan", "--deployed", "prod"}} {
-		_, stderr, code := h.exec(args...)
-		if code != exitUndetermined || !strings.Contains(stderr, "lands in a later forge release") {
-			t.Errorf("%v: exit %d\n%s", args, code, stderr)
-		}
-	}
-}
-
 func TestVulnListWithoutScannerReadsWhatIsStored(t *testing.T) {
 	t.Parallel()
 	h := newVulnHarness(t)

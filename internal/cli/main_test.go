@@ -16,6 +16,7 @@ import (
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/forgedelegate"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/pkg/cloudcred"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
@@ -109,6 +110,19 @@ func TestMain(m *testing.M) {
 	// Nor does any cut push an SBOM referrer to a registry: a test of the
 	// attach points it at an in-process one (build_sbom_referrer_test.go).
 	sbomReferrerAttach = nil
+	// Nor does a cut or a promote scan with this machine's vulnerability
+	// database or grype: the clean-CI answer is "no database", which prints
+	// "not scanned" at the cut and reads only stored findings at promote. A
+	// test of either states its deps (vuln_gate_test.go).
+	noVulnDB := func() vulnDeps {
+		d := defaultVulnDeps()
+		d.dbDir = func() (string, error) { return filepath.Join(os.TempDir(), "forge-unit-tests-have-no-vulndb"), nil }
+		d.tool = func(context.Context, toolfetch.Tool, bool) (string, string, error) {
+			return "", "", errors.New("unit tests do not install grype or syft")
+		}
+		return d
+	}
+	cutVulnDeps, promoteVulnDeps, vulnSBOMDeps = noVulnDB, noVulnDB, noVulnDB
 	// Nor does any build ask a registry's token realm about push access: the
 	// clean-CI answer is "not verified", which proceeds. A test of the
 	// preflight states the realm's answer (registry_push_preflight_test.go).

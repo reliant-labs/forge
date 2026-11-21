@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,5 +187,92 @@ func TestBuildDocumentGolden(t *testing.T) {
 	in.Filter = Filter{Match: "CVE-2026-48779", IncludeExempt: true}
 	if shown := BuildDocument(in); len(shown.Findings) != 1 || shown.Findings[0].Exemption == nil {
 		t.Errorf("match by alias = %+v", shown.Findings)
+	}
+}
+
+// A ledger that keeps first-seen times itself (a control plane) states them
+// per finding, and they win over the scan history; a source that judged its
+// findings stale makes the document stale whatever the build time says.
+func TestBuildDocumentTakesFirstSeenAndStaleFromTheSource(t *testing.T) {
+	t.Parallel()
+	f := Finding{ID: "CVE-2026-1", Severity: SeverityLow, Package: Package{Name: "a", Version: "1", PURL: "pkg:golang/a@1"}}
+	scan := &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-time.Hour), ScannedAt: testNow, Findings: []Finding{f}}
+	seen := testNow.Add(-30 * 24 * time.Hour)
+	in := DocumentInput{
+		Env: "prod", Release: "v1", Gate: release.DefaultDeliveryPolicy().VulnGate, Now: testNow,
+		Artifacts: []ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:aa", Latest: scan, FirstSeen: map[string]time.Time{f.Key(): seen}}},
+	}
+	doc := BuildDocument(in)
+	if len(doc.Findings) != 1 || !doc.Findings[0].FirstSeen.Equal(seen) {
+		t.Fatalf("first seen = %+v, want %s", doc.Findings, seen)
+	}
+	if doc.DB.Stale || doc.Gate.Verdict != VerdictPass {
+		t.Fatalf("fresh document: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+	in.Stale = true
+	if doc := BuildDocument(in); !doc.DB.Stale || doc.Gate.Verdict != VerdictStale {
+		t.Fatalf("source-stale document: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+}
+
+// A source that judges freshness itself is the only judge of it: a database
+// build time older than StaleAfter does not make its scans stale here, and
+// its Stale does.
+func TestBuildDocumentTakesFreshnessFromASourceThatJudgesIt(t *testing.T) {
+	t.Parallel()
+	old := &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-2 * StaleAfter), ScannedAt: testNow}
+	in := DocumentInput{
+		Env: "prod", Release: "v1", Gate: release.DefaultDeliveryPolicy().VulnGate, Now: testNow,
+		Artifacts: []ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:aa", Latest: old}},
+	}
+	if doc := BuildDocument(in); !doc.DB.Stale || doc.Gate.Determined {
+		t.Fatalf("this machine's rule: db %+v gate %+v, want stale", doc.DB, doc.Gate)
+	}
+	in.FreshnessFromSource = true
+	if doc := BuildDocument(in); doc.DB.Stale || doc.Gate.Verdict != VerdictPass || !doc.Gate.Determined || len(doc.Notes) != 0 {
+		t.Fatalf("source-judged fresh: db %+v gate %+v notes %q", doc.DB, doc.Gate, doc.Notes)
+	}
+	in.Stale = true
+	doc := BuildDocument(in)
+	if !doc.DB.Stale || doc.Gate.Verdict != VerdictStale || doc.Gate.Determined {
+		t.Fatalf("source-judged stale: db %+v gate %+v", doc.DB, doc.Gate)
+	}
+	if len(doc.Notes) != 1 || !strings.Contains(doc.Notes[0], "judges them stale") {
+		t.Errorf("notes = %q, want the source's judgement, not a database age", doc.Notes)
+	}
+}
+
+// A release-level finding joins the document attributed to no artifact, and
+// the gate judges and counts it like any other. One an artifact also carries
+// is that artifact's.
+func TestBuildDocumentKeepsReleaseFindingsAtReleaseLevel(t *testing.T) {
+	t.Parallel()
+	crit := Finding{ID: "CVE-2026-1", Severity: SeverityCritical, FixState: FixStateFixed, Package: Package{Name: "a", Version: "1"}}
+	low := Finding{ID: "CVE-2026-2", Severity: SeverityLow, Package: Package{Name: "b", Version: "1"}}
+	scan := &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-time.Hour), ScannedAt: testNow, Findings: []Finding{low}}
+	early := testNow.Add(-48 * time.Hour)
+	doc := BuildDocument(DocumentInput{
+		Env: "prod", Release: "v1", Gate: release.DefaultDeliveryPolicy().VulnGate, Now: testNow,
+		Artifacts:       []ArtifactScan{{Artifact: "api", SBOMDigest: "sha256:aa", Latest: scan}, {Artifact: "web", SBOMDigest: "sha256:bb", Latest: &Scan{Scanner: ScannerGrype, DBBuiltAt: testNow.Add(-time.Hour), ScannedAt: testNow}}},
+		ReleaseFindings: []ReleaseFinding{{Finding: crit, FirstSeen: early}, {Finding: low, FirstSeen: early}},
+	})
+	if doc.Gate.Verdict != VerdictBlock || len(doc.Gate.Blocking) != 1 || doc.Counts.Critical != 1 || doc.Counts.Low != 1 || len(doc.Findings) != 2 {
+		t.Fatalf("gate %+v counts %+v findings %d", doc.Gate, doc.Counts, len(doc.Findings))
+	}
+	for _, f := range doc.Findings {
+		switch f.ID {
+		case crit.ID:
+			if f.Artifacts == nil || len(f.Artifacts) != 0 || f.Action != ActionBlock || !f.FirstSeen.Equal(early) {
+				t.Errorf("release-level finding = %+v", f)
+			}
+		case low.ID:
+			if strings.Join(f.Artifacts, ",") != "api" || !f.FirstSeen.Equal(early) {
+				t.Errorf("artifact finding = %+v, want api's, first seen at the release-level time", f)
+			}
+		}
+	}
+	data, err := json.Marshal(doc.Findings[0])
+	if err != nil || !strings.Contains(string(data), `"artifacts":[]`) {
+		t.Errorf("JSON = %s (%v), want an empty artifacts list", data, err)
 	}
 }

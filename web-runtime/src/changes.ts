@@ -616,3 +616,29 @@ export function evaluate(
   // Unreachable: parseSnapshot holds a split's weights to 10000.
   return callerDefault("invalid");
 }
+
+/**
+ * The unit the change `key` keeps together — "user", "account" or "visitor" —
+ * or "" when the snapshot has no valid change of that key or it names none.
+ *
+ * @internal For changes-store.ts, which names the unit on the event it
+ * records; the barrel does not re-export it.
+ */
+export function changeUnit(
+  snapshot: Snapshot | null | undefined,
+  key: string,
+): string {
+  if (!(snapshot instanceof ParsedSnapshot)) {
+    return "";
+  }
+  const c = snapshot.changes.get(key);
+  if (c === undefined || c === INVALID || !c.hasUnit) {
+    return "";
+  }
+  for (const [name, attr] of UNITS) {
+    if (attr === c.unitAttr) {
+      return name;
+    }
+  }
+  return "";
+}

@@ -453,6 +453,10 @@ type promoteCmdFlags struct {
 	// healthGateAckCode with the reason as the note; see
 	// withHealthGateOverride.
 	overrideHealthGate string
+	// overrideVulnGate is the recorded reason to promote past the env's
+	// vuln_gate and provenance_sbom refusals, for an env forge judges
+	// (vuln_gate_promote.go).
+	overrideVulnGate string
 	// rerecordBundle replaces a release's bundle of record when this
 	// checkout renders different objects than the one recorded (see
 	// release_bundle_of_record.go). Off, such a render is refused.
@@ -519,6 +523,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.overrideHealthGate, "override-health-gate", "",
 		"Promote even though the env's health gate (delivery_policy.health_gate) refuses: an env it follows has not proved this release good. Give the reason; it is recorded on the promotion with who overrode it. For incidents — the gate's refusal says what is missing")
+	flags.StringVar(&f.overrideVulnGate, "override-vuln-gate", "",
+		"Promote even though the env's vuln_gate (a blocking advisory, or an artifact nobody scanned) or provenance_sbom (an artifact with no SBOM) refuses. Give the reason; it is recorded on the promotion with who overrode it and which findings. For one promotion: the durable answer is an exemption (forge vuln exempt)")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 	flags.BoolVar(&f.skipHubCheck, "skip-hub-check", false,
 		"Record a hub-converged env's promotion even when its control plane's hub reports the reconciler failing. Without it, such a deploy is refused before anything is recorded")
@@ -870,6 +876,7 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
 		RaiseFloorReason:      p.floorReason,
+		OverrideVulnGate:      p.overrideVulnGate,
 		Gates:                 p.gates,
 		From:                  p.fromSource(),
 		resolvedFrom:          from,
@@ -952,6 +959,9 @@ func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
 	}
 	if f.overrideHealthGate != "" {
 		set = append(set, "--override-health-gate")
+	}
+	if f.overrideVulnGate != "" {
+		set = append(set, "--override-vuln-gate")
 	}
 	if len(set) == 0 {
 		return nil

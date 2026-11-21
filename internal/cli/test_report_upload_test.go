@@ -17,6 +17,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/exitcode"
+	"github.com/reliant-labs/forge/internal/testlocal"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
@@ -325,6 +327,63 @@ func TestTestReportUploadSendsTheDiff(t *testing.T) {
 	}
 	if bytes.Contains(doc, []byte("return 1")) {
 		t.Fatal("the diff part carries source")
+	}
+}
+
+// B1: a lane whose coverage could not be assembled is still recorded with
+// its results, but the upload says so: status partial, the coverage named as
+// omitted with its reason, one warning naming the lane, and exit 4 when the
+// upload was required. A failed test still exits 1.
+func TestTestReportUploadWithoutCoverageIsPartial(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, stream string
+		laneExit, want     int
+	}{
+		{"plain upload keeps the run's code", "--upload", trStream("pass"), 0, exitOK},
+		{"required upload exits 4", "--upload=required", trStream("pass"), 0, exitRefused},
+		{"a failed test outranks it", "--upload=required", trStream("fail"), 1, exitWrong},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeTestsService{features: []string{hostedTestFeatureResults}}
+			trUploadProject(t, tc.stream, tc.laneExit, fake, nil)
+			prev := testUploadAssemble
+			testUploadAssemble = func(context.Context, testlocal.Options) (*testlocal.Assembly, error) {
+				return nil, &testreport.SourceMismatchError{}
+			}
+			t.Cleanup(func() { testUploadAssemble = prev })
+
+			cmd := newTestReportCmd()
+			var out, errOut bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&errOut)
+			cmd.SetArgs([]string{"--json", tc.flag})
+			code := exitcode.Of(cmd.Execute())
+			var rep testreport.Report
+			if err := json.Unmarshal(out.Bytes(), &rep); err != nil {
+				t.Fatalf("not one JSON document: %v\n%s", err, out.String())
+			}
+			if code != tc.want || rep.ExitCode != tc.want {
+				t.Fatalf("exit %d (document %d), want %d: %+v", code, rep.ExitCode, tc.want, rep.Upload)
+			}
+			up := rep.Upload
+			if up == nil || up.Status != testUploadPartial || up.Omitted == nil || len(*up.Omitted) != 1 {
+				t.Fatalf("upload: %+v", up)
+			}
+			o := (*up.Omitted)[0]
+			if o.Run != "01RUN" || o.Lane != "unit" || o.Part != "coverage" || !strings.Contains(o.Reason, "could not be assembled") {
+				t.Fatalf("omission: %+v", o)
+			}
+			if up.URL == "" || !strings.Contains(up.Error, "coverage") {
+				t.Fatalf("a partial upload names no run or no reason: %+v", up)
+			}
+			recs := fake.recorded()
+			if len(recs) != 1 || recs[0]["results"] == nil || recs[0]["coverage"] != nil {
+				t.Fatalf("want the results sent without coverage: %v", recs)
+			}
+			if n := strings.Count(errOut.String(), "warning: lane unit of run 01RUN was uploaded without its coverage"); n != 1 {
+				t.Fatalf("%d warnings naming the lane, want 1:\n%s", n, errOut.String())
+			}
+		})
 	}
 }
 

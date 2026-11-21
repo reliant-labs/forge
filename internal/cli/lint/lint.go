@@ -24,6 +24,7 @@ import (
 	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // lintFlags holds the flag values for the lint command.
@@ -1189,24 +1190,48 @@ const typedAccessGuardUnavailableHint = "read the golangci-lint output above —
 // bufMissingReason completes "buf lint did NOT run: …".
 const bufMissingReason = "buf is not on PATH, so the buf lint lane cannot run"
 
-// lintBufBinary is the buf the buf lint lane runs: the one on PATH, else the
-// project's pin built into forge's tool cache (the build `forge generate`
-// already made on a machine with no buf), so a fresh machine's lint runs the
-// lane instead of failing it. ok is false only when neither is available.
+// lintBufBinary is the buf the buf lint and proto-format lanes run: the buf
+// the project pins, resolved as `forge generate` and `forge ci gate` resolve it
+// (pinBuf, cigate.BufTool). A project whose go.mod declares buf runs that
+// release — PATH's buf when it is that version, else a build in forge's tool
+// cache — so a local lint and CI format and lint the protos with the same
+// buf (two buf releases format multi-line option literals differently, each
+// rewriting the other's output). A project that declares none runs PATH's buf,
+// else forge's pin built into the tool cache, so a fresh machine's lint runs
+// the lanes instead of failing them. ok is false only when no buf is
+// available at all.
 func lintBufBinary(ctx context.Context) (string, bool) {
-	if p, err := exec.LookPath("buf"); err == nil {
-		return p, true
+	pathBuf, pathErr := lintBufLookPath("buf")
+	if pathErr == nil && !lintBufDeclared(".") {
+		return pathBuf, true
 	}
-	dir, err := cigate.NewResolver(".", os.Stderr).Ensure(ctx, cigate.BufTool("."))
-	if err != nil || dir == "" {
-		return "", false
+	dir, err := lintBufEnsure(ctx, ".")
+	switch {
+	case err == nil && dir == "" && pathErr == nil:
+		return pathBuf, true // the buf on PATH is the pin
+	case err == nil && dir != "":
+		bin := filepath.Join(dir, "buf")
+		if runtime.GOOS == "windows" {
+			bin += ".exe"
+		}
+		return bin, true
+	case pathErr == nil:
+		// The pin could not be built (offline, say): PATH's buf still runs
+		// the lanes, and the note says its verdict may differ from CI's.
+		fmt.Fprintf(os.Stderr, "⚠️  buf lint/format: the buf go.mod pins could not be installed (%v); running %s instead, whose formatting may differ from CI's\n", err, pathBuf)
+		return pathBuf, true
 	}
-	bin := filepath.Join(dir, "buf")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
-	return bin, true
+	return "", false
 }
+
+// The seams lintBufBinary resolves buf through, replaced by its tests.
+var (
+	lintBufLookPath = exec.LookPath
+	lintBufDeclared = func(root string) bool { return toolpin.BufFor(root).Declared() }
+	lintBufEnsure   = func(ctx context.Context, root string) (string, error) {
+		return cigate.NewResolver(root, os.Stderr).Ensure(ctx, cigate.BufTool(root))
+	}
+)
 
 // bufMissingFix is the command that installs the buf forge pins.
 func bufMissingFix() string {

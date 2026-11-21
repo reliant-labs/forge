@@ -44,9 +44,12 @@ import (
 //   - the source is in a dependency's namespace (google/, buf/, forge/: the
 //     well-known types, BSR deps pulled in by include_imports, and the
 //     vendored annotation protos) → never touched;
-//   - the source's top-level directory is not a local proto namespace → it
-//     came from somewhere this project does not hold, so absence proves
+//   - the source's top-level directory is not a local proto namespace held by
+//     exactly one proto root → it came from somewhere this project does not
+//     hold, or from a root that cannot be told apart, so absence proves
 //     nothing;
+//   - the root buf.gen.yaml generates from a non-directory input (a BSR
+//     module, a git repository) → nothing is swept;
 //   - forge-certified files (forge:hash) belong to the marker sweep;
 //   - disowned paths and scaffold.exclude are the user's.
 //
@@ -88,6 +91,9 @@ func pruneStaleBufOutput(ctx *pipelineContext, outDirs []string) []string {
 // project-relative.
 func staleBufOutputs(ctx *pipelineContext, outDirs []string) []string {
 	if ctx == nil || len(outDirs) == 0 {
+		return nil
+	}
+	if bufGenHasRemoteInputs(ctx.ProjectDir) {
 		return nil
 	}
 	roots := protoSourceRoots(ctx.ProjectDir)
@@ -260,10 +266,14 @@ func protoSourceRoots(projectDir string) []string {
 	return dedupeSorted(roots)
 }
 
-// localProtoNamespaces are the top-level directories under the proto roots
-// (other than the project root itself) that hold at least one .proto file.
+// localProtoNamespaces are the top-level directories that exactly ONE proto
+// root (other than the project root itself) holds .proto files under: the
+// namespaces whose output can be traced to the root it was generated from.
+// A namespace two roots share (proto/services and api/services) is left out,
+// so its output is never swept: a source path is relative to whichever root
+// produced it, and its absence from one root proves nothing about another.
 func localProtoNamespaces(projectDir string, roots []string) map[string]bool {
-	out := map[string]bool{}
+	holders := map[string]int{}
 	for _, root := range roots {
 		if root == "." {
 			continue
@@ -274,15 +284,44 @@ func localProtoNamespaces(projectDir string, roots []string) map[string]bool {
 			continue
 		}
 		for _, e := range entries {
-			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") || out[e.Name()] {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 				continue
 			}
 			if dirHoldsProto(filepath.Join(absRoot, e.Name())) {
-				out[e.Name()] = true
+				holders[e.Name()]++
 			}
 		}
 	}
+	out := map[string]bool{}
+	for ns, n := range holders {
+		if n == 1 {
+			out[ns] = true
+		}
+	}
 	return out
+}
+
+// bufGenHasRemoteInputs reports whether the root buf.gen.yaml generates from
+// any input that is not a local directory (a BSR module, a git repository, a
+// tarball, a proto_file…). Output from such an input names a source this
+// project does not hold, so nothing is swept for it.
+func bufGenHasRemoteInputs(projectDir string) bool {
+	data, err := os.ReadFile(filepath.Join(projectDir, "buf.gen.yaml"))
+	if err != nil {
+		return false
+	}
+	var tmpl struct {
+		Inputs []map[string]any `yaml:"inputs"`
+	}
+	if yaml.Unmarshal(data, &tmpl) != nil {
+		return true // unreadable: assume the worst
+	}
+	for _, in := range tmpl.Inputs {
+		if _, local := in["directory"]; !local {
+			return true
+		}
+	}
+	return false
 }
 
 func dirHoldsProto(dir string) bool {

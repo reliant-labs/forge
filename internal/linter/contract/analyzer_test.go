@@ -183,6 +183,19 @@ func TestRequireContract_GeneratedMethodsOnly(t *testing.T) {
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requiregenerated")
 }
 
+// Regression (forge report 63a34d66): the ORM projection's package holds
+// forge's generated stores plus the user-owned <entity>_repo_ext.go, the
+// documented seam for custom queries, whose exported methods are queries, not
+// a missing contract. The fixture has a generated lead_orm_gen.go and a
+// repo_ext.go exporting a type with methods, NO contract.go and NO `want`:
+// zero findings. requirenotorm, the same methods beside a hand-written file
+// merely named store_gen.go, is still reported.
+func TestRequireContract_ORMProjectionPackageSkipped(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, contract.RequireContractAnalyzer, "internal/requireorm", "internal/requirenotorm")
+}
+
 // Regression: proto-service handler packages (internal/handlers/<svc>) are thin
 // Connect handlers whose exported methods are the proto RPC surface. Their
 // contract is the proto service, not a Go contract.go, so the require-contract

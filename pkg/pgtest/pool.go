@@ -42,13 +42,18 @@ package pgtest
 // where the very last user also crashed (age-based, 30 min). The data
 // directory of a postmaster that still runs is never removed (serverRunning).
 //
-// The deliberate trade-off: SEQUENTIAL invocations do not reuse across each
-// other (the first tears the server down when it exits, the next boots
-// fresh). That is correct for the goal — it is the CONCURRENT peak, not the
-// total number of boots, that exhausts the IPC tables — and it is what
-// guarantees ZERO leftover instances once a fan-out completes. Cross-
-// sequential reuse would require leaving an idle server (and its dir)
-// lingering, which an idle-timeout reaper only cleans much later.
+// Who detaches decides what is left behind. A process that calls Shutdown
+// (the forge CLI defers it; a package's TestMain may) tears the server down
+// when it is the last user, so the next invocation boots fresh. A `go test`
+// binary that never calls it — every package without such a TestMain, which
+// is every scaffolded one — loses its lease when it exits and stops nothing:
+// after the last of them the server stays up, idle, with its data directory
+// and SysV IPC. The next process to attach finds it alive and REUSES it
+// (probeShared); otherwise it waits for reapStaleInstances, which a later
+// boot runs and which takes only an instance older than staleInstanceAge.
+// So a fan-out's CONCURRENT peak stays one server — the goal: it is the
+// peak, not the total number of boots, that exhausts the IPC tables — but
+// "zero leftovers" holds only when the last user called Shutdown.
 
 import (
 	"encoding/json"

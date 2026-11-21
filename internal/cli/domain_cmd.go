@@ -133,15 +133,36 @@ func domainSourceName(wire string) string {
 }
 
 // bindingSummary is a binding as one line: where it points.
-func bindingSummary(b *domainWireBinding) string {
+func bindingSummary(b *domainWireBinding, envNames ...map[string]string) string {
 	switch {
 	case b == nil:
 		return "(unbound)"
 	case b.RedirectTo != "":
 		return "→ " + b.RedirectTo + " (redirect)"
 	default:
+		// The binding carries the control plane's environment id. Name it
+		// when this command knows which env that is (the --env it was run
+		// with); otherwise the id is the only true answer.
+		for _, names := range envNames {
+			if name := names[b.EnvironmentID]; name != "" {
+				return b.Target + " in env " + name
+			}
+		}
 		return b.Target + " in " + b.EnvironmentID
 	}
+}
+
+// domainEnvNames maps --env's environment id to its name, for
+// bindingSummary. Best-effort: a lookup that fails leaves the id printed.
+func domainEnvNames(ctx context.Context, c cloudCaller, envName string) map[string]string {
+	if envName == "" {
+		return nil
+	}
+	id, err := domainEnvironmentID(ctx, c, envName)
+	if err != nil || id == "" {
+		return nil
+	}
+	return map[string]string{id: envName}
 }
 
 // hstsCell is a binding's HSTS policy for the ls table and show: whether
@@ -289,11 +310,11 @@ func recordStatus(r domainWireRecord) string {
 
 // writeDomainDetail is the human form of one domain: what it is doing, what
 // it serves, and what DNS it still needs.
-func writeDomainDetail(out io.Writer, d domainWire) {
+func writeDomainDetail(out io.Writer, d domainWire, envNames ...map[string]string) {
 	fmt.Fprintf(out, "%s\n", d.Hostname)
 	fmt.Fprintf(out, "  state:   %s\n", deploytarget.DomainStateName(d.State))
 	fmt.Fprintf(out, "  source:  %s\n", domainSourceName(d.Source))
-	fmt.Fprintf(out, "  serving: %s\n", bindingSummary(d.Binding))
+	fmt.Fprintf(out, "  serving: %s\n", bindingSummary(d.Binding, envNames...))
 	if d.Binding != nil {
 		fmt.Fprintf(out, "  hsts:    %s\n", hstsCell(d.Binding))
 	}
@@ -336,7 +357,7 @@ merely types a domain deny it to its real owner.`,
 			if err != nil {
 				return err
 			}
-			return runDomainAdd(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout())
+			return runDomainAdd(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout(), env)
 		},
 	}
 	addDomainFlags(cmd, &env, &token)
@@ -344,7 +365,7 @@ merely types a domain deny it to its real owner.`,
 	return cmd
 }
 
-func runDomainAdd(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer) error {
+func runDomainAdd(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer, envName ...string) error {
 	var resp struct {
 		Domain domainWire `json:"domain"`
 	}
@@ -357,9 +378,13 @@ func runDomainAdd(ctx context.Context, c cloudCaller, hostname string, jsonOutpu
 	d := resp.Domain
 	fmt.Fprintf(out, "Added %s (%s)\n", d.Hostname, deploytarget.DomainStateName(d.State))
 	writeDNSTable(out, d.RequiredRecords)
-	fmt.Fprintf(out, "\nOwnership is checked automatically. To check now:\n  forge domain verify %s --env <env>\n", d.Hostname)
+	env := "<env>"
+	if len(envName) > 0 && envName[0] != "" {
+		env = envName[0] // the --env this ran with: the hint pastes as printed
+	}
+	fmt.Fprintf(out, "\nOwnership is checked automatically. To check now:\n  %s domain verify %s --env %s\n", Name(), d.Hostname, env)
 	if d.Binding == nil {
-		fmt.Fprintf(out, "\nIt serves nothing until you bind it:\n  forge domain bind %s --env <env> --target <workload|frontend>\n", d.Hostname)
+		fmt.Fprintf(out, "\nIt serves nothing until you bind it:\n  %s domain bind %s --env %s --target <workload|frontend>\n", Name(), d.Hostname, env)
 	}
 	return nil
 }
@@ -435,7 +460,7 @@ func newDomainShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runDomainShow(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout())
+			return runDomainShow(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout(), env)
 		},
 	}
 	addDomainFlags(cmd, &env, &token)
@@ -443,7 +468,7 @@ func newDomainShowCmd() *cobra.Command {
 	return cmd
 }
 
-func runDomainShow(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer) error {
+func runDomainShow(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer, envName ...string) error {
 	d, err := lookupDomain(ctx, c, hostname)
 	if err != nil {
 		return err
@@ -451,15 +476,24 @@ func runDomainShow(ctx context.Context, c cloudCaller, hostname string, jsonOutp
 	if jsonOutput {
 		return writeDomainJSON(out, map[string]any{"domain": d})
 	}
-	writeDomainDetail(out, d)
+	writeDomainDetail(out, d, domainEnvNamesFor(ctx, c, d, envName))
 	return nil
+}
+
+// domainEnvNamesFor names d's bound environment when it is the --env this ran
+// with; nil (the id is printed) otherwise, without a lookup when unbound.
+func domainEnvNamesFor(ctx context.Context, c cloudCaller, d domainWire, envName []string) map[string]string {
+	if d.Binding == nil || d.Binding.EnvironmentID == "" || len(envName) == 0 {
+		return nil
+	}
+	return domainEnvNames(ctx, c, envName[0])
 }
 
 // ─── verify ──────────────────────────────────────────────────────────────────
 
 func newDomainVerifyCmd() *cobra.Command {
 	var env, token string
-	var jsonOutput bool
+	var jsonOutput, requireVerified bool
 	cmd := &cobra.Command{
 		Use:   "verify <hostname>",
 		Short: "Check a domain's DNS now, instead of waiting for the poller",
@@ -470,37 +504,70 @@ changes only latency — it exists because someone who has just saved a record
 wants an answer in a second rather than an hour.
 
 Not yet verified is not a failure: DNS takes time to propagate, and the
-records stay printed so you can confirm what you published.`,
+records stay printed so you can confirm what you published. So it exits 0
+whatever the state; a script that must branch on it passes --require-verified.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := domainClient(cmd.Context(), env, token)
 			if err != nil {
 				return err
 			}
-			return runDomainVerify(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout())
+			d, err := verifyDomain(cmd.Context(), c, args[0], jsonOutput, cmd.OutOrStdout(), env)
+			if err != nil {
+				return err
+			}
+			if requireVerified {
+				// The state the check just left, not a later read: a
+				// poller may move it between the two.
+				return domainStateExit(d)
+			}
+			return nil
 		},
 	}
 	addDomainFlags(cmd, &env, &token)
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit the domain as JSON")
+	cmd.Flags().BoolVar(&requireVerified, "require-verified", false,
+		"Exit by the verdict, for a script: 0 once ownership is verified (issuing or live), 8 while DNS is still pending or verifying (check again later), 1 when it failed or another organization holds the name")
 	return cmd
 }
 
-func runDomainVerify(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer) error {
+func runDomainVerify(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer, envName ...string) error {
+	_, err := verifyDomain(ctx, c, hostname, jsonOutput, out, envName...)
+	return err
+}
+
+// verifyDomain runs VerifyDomain, prints the result, and returns the domain as
+// that check left it.
+func verifyDomain(ctx context.Context, c cloudCaller, hostname string, jsonOutput bool, out io.Writer, envName ...string) (domainWire, error) {
 	found, err := lookupDomain(ctx, c, hostname)
 	if err != nil {
-		return err
+		return domainWire{}, err
 	}
 	var resp struct {
 		Domain domainWire `json:"domain"`
 	}
 	if err := c.Call(ctx, procVerifyDomain, map[string]any{"domainId": found.ID}, &resp); err != nil {
-		return fmt.Errorf("verify domain %q: %w", hostname, err)
+		return domainWire{}, fmt.Errorf("verify domain %q: %w", hostname, err)
 	}
 	if jsonOutput {
-		return writeDomainJSON(out, resp)
+		return resp.Domain, writeDomainJSON(out, resp)
 	}
-	writeDomainDetail(out, resp.Domain)
-	return nil
+	writeDomainDetail(out, resp.Domain, domainEnvNamesFor(ctx, c, resp.Domain, envName))
+	return resp.Domain, nil
+}
+
+// domainStateExit maps a domain's state onto the shared exit codes.
+func domainStateExit(d domainWire) error {
+	switch state := deploytarget.DomainStateName(d.State); state {
+	case deploytarget.DomainStateIssuing, deploytarget.DomainStateLive:
+		return nil
+	case deploytarget.DomainStatePendingDNS, deploytarget.DomainStateVerifying:
+		return exitCodeError{code: exitTimedOut, msg: fmt.Sprintf("%s is %s: its DNS is not verified yet; check again later", d.Hostname, state)}
+	case deploytarget.DomainStateFailed, deploytarget.DomainStateConflict:
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s is %s: %s", d.Hostname, state, emptyOr(d.LastError, "see `forge domain show`"))}
+	default:
+		return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("%s is in a state forge does not know (%s)", d.Hostname, d.State)}
+	}
 }
 
 // ─── rm ──────────────────────────────────────────────────────────────────────

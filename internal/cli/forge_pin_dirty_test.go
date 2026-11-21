@@ -64,7 +64,7 @@ func TestDelegation_DirtyPinNeverRunsACachedCleanBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("with %s=1: %v", allowVersionSkewEnv, err)
 	}
-	if h.path != "" || strings.Contains(out, "go run ") || !strings.Contains(out, "modified working tree") {
+	if h.path != "" || strings.Contains(out, "go run ") || !strings.Contains(out, dirtySkewPin) || !strings.Contains(out, "running it anyway (--allow-version-skew / FORGE_ALLOW_VERSION_SKEW)") {
 		t.Errorf("warning under the override:\n%s", out)
 	}
 }

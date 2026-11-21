@@ -231,6 +231,14 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 // byte-identical to GenerateFrontendFiles so existing callers and
 // snapshot tests are unaffected.
 func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions) error {
+	return generateFrontendFiles(root, modulePath, projectName, frontendName, apiPort, kind, opts, webRuntimePublishedRange)
+}
+
+// generateFrontendFiles renders against runtimeFloor, the web-runtime floor
+// the floor-gated choices (viteDevLogFromRuntime) read: production passes
+// webRuntimePublishedRange, and a test passes another floor to exercise
+// those choices offline (as writeSiteStarter takes its range).
+func generateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions, runtimeFloor string) error {
 	frontendDir := filepath.Join(root, "frontends", frontendName)
 	if err := os.MkdirAll(frontendDir, 0755); err != nil {
 		return fmt.Errorf("create frontend directory: %w", err)
@@ -285,6 +293,8 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// otel_gen.ts that reads these, so the scaffold renders what the
 		// first `forge generate` re-derives from disk.
 		IdentifySession: webTree,
+
+		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(runtimeFloor),
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage
@@ -312,6 +322,10 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// member's own file would make it a second workspace root, splitting
 		// it from packages/* and its `workspace:*` dependencies.
 		if opts.Workspaces && file.Rel == "pnpm-workspace.yaml.tmpl" {
+			continue
+		}
+		// The runtime ships the dev-log receiver once the floor admits it.
+		if data.DevLogFromRuntime && file.Rel == inlinedDevLogPlugin {
 			continue
 		}
 		// nav.tsx and dashboard.tsx ARE emitted here, empty of routes, even
@@ -605,17 +619,33 @@ func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 // componentNeedsBirth reports whether a core component at dest is still to
 // be scaffolded: by the ledger inside a project, by absence outside one.
 //
-// Presence is checked first and backfills nothing: a frontend scaffolded
-// before the ledger existed would otherwise gain a ledger line per installed
-// component on its next generate, for no decision anyone made.
+// A present component with no birth record is BACKFILLED, as
+// checksums.ScaffoldOnceDecision does for every other scaffold-once file: a
+// frontend scaffolded before the ledger existed has its components on disk
+// and no records, and without one the user's first deletion of a component
+// reads as "never scaffolded", so the next generate wrote it again with a
+// fresh record (and `forge generate --check` reported that rebirth as drift).
+// Fresh frontends record every component at birth, so the backfill only
+// brings an older frontend's ledger to the same state, once. Adopted
+// frontends never reach here (ensureFrontendComponents skips them), so a
+// present file under a core component's name is forge's starter copy.
 func componentNeedsBirth(root, dest string) bool {
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		return false // present (or unreadable): the user's bytes
-	}
+	rel := ""
 	if root != "" {
-		if rel, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(rel, "..") {
-			return !checksums.ScaffoldRecorded(root, filepath.ToSlash(rel))
+		if r, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(r, "..") {
+			rel = filepath.ToSlash(r)
 		}
+	}
+	if _, err := os.Stat(dest); err == nil {
+		if rel != "" {
+			checksums.RecordScaffold(root, rel) // no-op when already recorded
+		}
+		return false // present: the user's bytes
+	} else if !os.IsNotExist(err) {
+		return false // unreadable: not a birth forge can vouch for
+	}
+	if rel != "" {
+		return !checksums.ScaffoldRecorded(root, rel)
 	}
 	return true
 }

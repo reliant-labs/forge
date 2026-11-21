@@ -139,8 +139,9 @@ func TestSplitPinPath(t *testing.T) {
 		{pkg: "@tanstack/react-query", value: "../../node_modules/@tanstack/react-query/build/modern/index.d.ts",
 			hoisted: true, entry: "build/modern/index.d.ts", ok: true},
 		{pkg: "react", value: "./node_modules/@types/react/index.d.ts", entry: "index.d.ts", ok: true},
-		// forge's own stale TS7016 value — recognised so it can be healed.
-		{pkg: "react", value: "./node_modules/react", ok: true},
+		// The implementation directory of a package typed under @types/ is
+		// not a value forge writes.
+		{pkg: "react", value: "./node_modules/react", ok: false},
 		// A shape a human wrote: left alone.
 		{pkg: "@connectrpc/connect", value: "./vendor/connect", ok: false},
 		// A prefix match on a DIFFERENT package must not be claimed.

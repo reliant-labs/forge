@@ -398,15 +398,20 @@ func TestAgentStripsClientIdentityBeforeEnrichment(t *testing.T) {
 			t.Errorf("pipeline %s is node-derived; stripping would delete the trustworthy k8s.* attributes: %v", name, p.Processors)
 		}
 	}
-	for _, key := range []string{"k8s.namespace.name", "k8s.pod.uid", "reliant.org.id"} {
-		if !regexp.MustCompile(ClientIdentityKeyPattern).MatchString(key) {
+	for _, key := range []string{"k8s.namespace.name", "k8s.pod.uid", "reliant.org.id", "forge.telemetry.label.app", "forge.telemetry.label.app.kubernetes.io/name"} {
+		if !regexp.MustCompile(StrippedClientKeyPattern).MatchString(key) {
 			t.Errorf("%s is not stripped", key)
 		}
 	}
 	for _, key := range []string{"service.name", "service.version", "deployment.environment.name"} {
-		if regexp.MustCompile(ClientIdentityKeyPattern).MatchString(key) {
+		if regexp.MustCompile(StrippedClientKeyPattern).MatchString(key) {
 			t.Errorf("%s belongs to the app and must be kept", key)
 		}
+	}
+	// The deprecated pattern keeps its old meaning: identity only.
+	deprecated := regexp.MustCompile(ClientIdentityKeyPattern) //nolint:staticcheck // pins the deprecated constant's meaning
+	if !deprecated.MatchString("k8s.pod.uid") || !deprecated.MatchString("reliant.org.id") || deprecated.MatchString("forge.telemetry.label.app") {
+		t.Errorf("ClientIdentityKeyPattern %q changed meaning", ClientIdentityKeyPattern) //nolint:staticcheck // as above
 	}
 }
 

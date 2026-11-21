@@ -587,6 +587,31 @@ _Enforced · Forge, on any infrastructure_
 | `db-analyze-blocking-index-build`  | An index built without CONCURRENTLY on a populated table, blocking writes until the build finishes                        | `forge db analyze` |
 | `db-analyze-statement-timeout`     | A statement that does not finish within statement_timeout on production-shaped data                                       | `forge db analyze` |
 
+<a id="query-index-analysis"></a>
+
+### Index check of tested queries
+
+`forge db analyze queries` plans every query shape a test run recorded on a disposable database at the head schema, with sequential scans disabled, and reports each filter, join and ORDER BY … LIMIT no index serves, with the caller's file and line.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then `forge db analyze queries --capture /tmp/qc` (the shapes whose callers changed since the merge-base; `--all` for every one), or add `--capture` to `forge db analyze` to run it after the migrations.
+
+**Why:** A new filter or join without an index passes every test on a small table and becomes a full scan in production; whether an index can serve it depends on the schema at head, which only the planner knows.
+
+**Evidence:**
+
+- command `forge db analyze queries`
+- source [`pkg/dbanalyze/queries.go`](../pkg/dbanalyze/queries.go)
+- source [`pkg/querycapture`](../pkg/querycapture)
+- source [`internal/cli/db_analyze_queries.go`](../internal/cli/db_analyze_queries.go)
+- skill `db/analyze` (`forge skill load db/analyze`)
+
+| Rule                               | Bug class it prevents                                                                                                        | Lane                       |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `db-analyze-query-no-usable-index` | A filter, join or ORDER BY … LIMIT that no index can serve, which reads every row of the table once it holds production data | `forge db analyze queries` |
+| `db-analyze-query-large-seqscan`   | A query whose plan on an anonymized production snapshot sequentially scans a large table                                     | `forge db analyze queries` |
+
 <a id="keep-your-migration-tool"></a>
 
 ### Keep your migration tool
@@ -1943,6 +1968,7 @@ _Enforced · Forge, on any infrastructure_
 | `static-export-next-image`                 | `next/image` with its default server-side optimizer, which the export refuses unless `images.unoptimized` is set                                                                                                                                        | `--static-export`   |
 | `static-export-config-routes`              | `rewrites`, `redirects` or `headers` in `next.config` not gated to development: they work under `next dev` and 404 or vanish on a static host                                                                                                           | `--static-export`   |
 | `static-export-trailing-slash`             | A frontend on a bucket with `trailingSlash` off: the export writes `<route>.html` and a bucket serves objects by exact name, so every route but `/` 404s                                                                                                | `--static-export`   |
+| `static-export-partial-prerender`          | `cacheComponents: true` (create-next-app's Next.js 16 default) or `experimental.ppr` in `next.config`, which turns on partial prerendering and makes `next build` refuse the export                                                                     | `--static-export`   |
 | `static-export-vite-out-dir`               | A Vite frontend on a static runtime whose `build.outDir` is not the env's `public_dir`, so the deploy publishes a directory the build never wrote: missing, or stale from an older build                                                                | `--static-export`   |
 | `static-export-vite-base`                  | A Vite `base` that misses where the env mounts the frontend (`base_path`, or the site root), so every script and stylesheet 404s and the page loads blank; or a relative base with a path-based client router, which breaks deep links to nested routes | `--static-export`   |
 | `forgeconv-frontend-process-env`           | Reading `process.env` or `import.meta.env` in frontend source freezes the bundle to the environment it was built for, defeating build-once promotion, and bypasses the typed schema and the secret refusal                                              | `--conventions`     |
@@ -1983,6 +2009,26 @@ _Enforced · Forge, on any infrastructure_
 | `openbao-wildcard-read`                | An OpenBao policy that reads a path glob with no stated reason                                                                                                                   | `--secrets`       |
 | `secrets-escrow-in-cluster`            | An OpenBao whose seal key and init output are escrowed in the cluster they protect, so losing the cluster loses every backup of the store                                        | `--secrets`       |
 | `secrets-env-not-rendered`             | An env whose render fails, so its secrets could not be judged (a warning; `forge env render` reports the render error itself)                                                    | `--secrets`       |
+
+<a id="lint-rules-telemetry"></a>
+
+### Declared telemetry rules
+
+A dashboard panel over a series no scrape keeps, an unbounded scrape and a rate over a gauge are caught from each env's real render.
+
+_Enforced · Forge, on any infrastructure_
+
+**Evidence:**
+
+- source [`internal/cli/lint/telemetry_rules.go`](../internal/cli/lint/telemetry_rules.go)
+- command `forge lint --telemetry`
+
+| Rule                                     | Bug class it prevents                                                                                                                                                      | Lane          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `telemetry-dashboard-metric-uncollected` | A declared dashboard series whose metric no scrape of its system keeps (allow minus deny), so the panel is empty in every env it ships to with no other symptom            | `--telemetry` |
+| `telemetry-scrape-unbounded`             | A metrics scrape with no `allow`, which stores every series the endpoint exposes until it passes `sample_limit` and fails whole                                            | `--telemetry` |
+| `telemetry-rate-on-gauge`                | A rate or increase over a metric nothing marks as a counter (no `counters` match, no `_total`/`_count`/`_sum`), which reads nothing when the metric is a gauge (a warning) | `--telemetry` |
+| `telemetry-high-cardinality-risk`        | A scrape that raises `sample_limit` or keeps every name while dropping no labels, so a per-user or per-id label explodes its series (a warning)                            | `--telemetry` |
 
 <a id="lint-rules-scaffold-ownership"></a>
 
@@ -3113,6 +3159,29 @@ _Enforced · Forge, on any infrastructure_
 - source [`pkg/releasehealth/releasehealth.go`](../pkg/releasehealth/releasehealth.go)
 - command `forge obs check`
 
+<a id="vuln-gate-self-hosted"></a>
+
+### Vulnerability gate, warn first
+
+Every release cut prints what its SBOMs are known to be vulnerable to and what each env's `vuln_gate` would do, and an env with no control plane has `vuln_gate = enforce` and `provenance_sbom` judged before forge writes its promotion, warning for one release before it refuses.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `delivery_policy = forge.DeliveryPolicy { vuln_gate = forge.VulnPolicy { mode = "enforce" } }`; accept one advisory with `forge vuln exempt <env> <id> --reason "..." --expires YYYY-MM-DD`
+
+**Why:** Graded through the lint rollout rows `vuln-gate` and `sbom-required`: below their `gates_from` release an enforce is judged as audit and says "would block". From it, a self-hosted promotion is refused `vuln_gate_blocked`, `vuln_gate_unscanned` (no SBOM or scan, or a stale database: could not determine is never a pass) or `sbom_missing`, each exit 4; `--override-vuln-gate "<why>"` records who overrode it, why, and which findings. `lint.rules: {vuln-gate: error}` gates now.
+
+**Evidence:**
+
+- command `forge vuln exempt`
+- command `forge ci vuln-sbom`
+- source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
+
+| Rule            | Bug class it prevents                                                                                                                | Lane               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `vuln-gate`     | An env that declares `vuln_gate = enforce` promoting a release with a fixable critical or KEV-listed advisory, or one nobody scanned | `forge env deploy` |
+| `sbom-required` | A release promoted with no SBOM for an artifact it ships, so nothing can say what it contains or what it is vulnerable to            | `forge env deploy` |
+
 <a id="delivery-policy-recorded"></a>
 
 ### Per-env delivery policy controls
@@ -3935,6 +4004,32 @@ _Enforced · Reliant hosting_
 
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
+- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
+<a id="controlled-rollouts-and-experiments"></a>
+
+### Controlled rollouts and A/B tests
+
+Planned: one change ships new app behavior to everyone, as a gradual rollout, or as a comparison of versions, with stable cohorts by user, account, or visitor.
+
+_In progress · Reliant hosting_
+
+**Use:** Create a change with its default and new behavior, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The planned project-level Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
+
+**Why:** The evaluation SDK ships: a Go store and OpenFeature provider, a browser loader and OpenFeature provider, and assignment events recorded as product events, and changes are declared in the project (changes.yaml) and shipped in the release. Platform delivery of each environment's policy and the Experiments screen are not shipped yet. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
+
+**Evidence:**
+
+- library [`pkg/changes`](../pkg/changes)
+- library [`pkg/changes/openfeature`](../pkg/changes/openfeature)
+- library [`pkg/observe`](../pkg/observe)
+- source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
+- source [`web-runtime/src/changes-store.ts`](../web-runtime/src/changes-store.ts)
+- source [`web-runtime/src/changes-provider.ts`](../web-runtime/src/changes-provider.ts)
+- source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
+- source [`internal/changesdecl/changesdecl.go`](../internal/changesdecl/changesdecl.go)
+- source [`docs/changes.md`](../docs/changes.md)
+- skill `observability/changes` (`forge skill load observability/changes`)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>

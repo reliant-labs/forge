@@ -500,7 +500,7 @@ func markerSpecs() []MarkerSpec {
 			AppliesTo: "deps-field",
 			Effect:    "Suppresses `forge lint --optional-deps-guard` on one dereference of a `forge:optional-dep` field that is provably safe by reasoning the analyzer cannot follow.",
 			Placement: "on the dereferencing line, or the line above it",
-			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked",
+			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked: New refuses a nil Stripe in prod",
 		},
 		{
 			Name:      "forge:constructor",
@@ -561,7 +561,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      codegen.ResolvesCallerDirective,
 			AppliesTo: "function",
-			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, or through a helper in the handler's own package — as resolving the caller, and names it in its hint. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
+			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, through a helper in the handler's own package, or through a wrapper in another package of the same module (followed up to four packages deep) — as resolving the caller, and names it in its hint. A function the marker cannot reach (a dependency, a sibling module) is declared in forge.yaml under lint.auth.caller_resolvers instead. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
 			Placement: "on the function's doc comment, spaced or unspaced, as the whole comment line",
 			Example:   "// GetUserIDFromContext returns the signed-in user's id.\n//\n//forge:resolves-caller\nfunc GetUserIDFromContext(ctx context.Context) (string, bool)",
 		},

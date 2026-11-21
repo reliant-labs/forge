@@ -272,6 +272,14 @@ type ComposeSpec struct {
 	// unless someone opts OUT on purpose.
 	Wait *bool
 
+	// BestEffort marks a service nothing the application needs in order to
+	// run — forge's local telemetry stack (ClickStack, the profiles and
+	// forwarder sidecars, Alertmanager). Its failure to come up is reported
+	// as a warning and the rest of the group still deploys: an unhealthy
+	// telemetry container on a loaded machine used to fail the whole
+	// `forge env up dev` (NS FG-13).
+	BestEffort bool
+
 	// WaitTimeoutSeconds is a CEILING on the wait, not the mechanism:
 	// readiness is decided by the healthcheck, and this only bounds how
 	// long forge tolerates a container that never gets there, so a
@@ -322,8 +330,9 @@ type HostInfraSpec struct {
 	// engine = "nats" only.
 	NATSMonitorPort int
 	// engine = "temporal" only.
-	TemporalNamespaces []string
-	TemporalUIPort     int
+	TemporalNamespaces  []string
+	TemporalUIPort      int
+	TemporalMetricsPort int
 }
 
 // ErrProviderNotImplemented is the sentinel future providers (Lambda,

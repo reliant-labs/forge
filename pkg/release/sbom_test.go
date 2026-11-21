@@ -282,3 +282,86 @@ func TestSnapshotReleaseNeverCarriesSBOM(t *testing.T) {
 		t.Fatalf("WithoutSBOMs left an sbom: %s", raw)
 	}
 }
+
+// A release's source SBOM is evidence like an artifact's: it never changes
+// the release's identity, a re-cut fills it but never replaces it, and a
+// snapshot release refuses it (and WithoutSBOMs strips it).
+func TestSourceSBOMIsEvidenceNotIdentity(t *testing.T) {
+	t.Parallel()
+	recorded := Release{Version: "v1.4.0", RecordOnly: true, Git: Git{Commit: "0123456789abcdef0123456789abcdef01234567"}}
+	withSource := recorded
+	withSource.SourceSBOM = &SBOMRef{Digest: sbomTestDigest("c"), Format: SBOMFormatCycloneDXJSON, Source: SBOMSourceLockfile, Status: SBOMStatusOK}
+	if err := withSource.Validate(); err != nil {
+		t.Fatalf("a version-only record with a source SBOM: %v", err)
+	}
+	for _, pair := range [][2]Release{{recorded, withSource}, {withSource, recorded}} {
+		if err := CheckRecut(pair[0], pair[1]); err != nil {
+			t.Fatalf("CheckRecut refused a source-SBOM-only difference: %v", err)
+		}
+	}
+
+	filled, changed := BackfillSBOMs(recorded, withSource)
+	if !changed || filled.SourceSBOM == nil || filled.SourceSBOM.Digest != sbomTestDigest("c") || recorded.SourceSBOM != nil {
+		t.Fatalf("backfill: %+v changed=%v (existing %+v)", filled.SourceSBOM, changed, recorded.SourceSBOM)
+	}
+	other := withSource
+	other.SourceSBOM = &SBOMRef{Digest: sbomTestDigest("d"), Status: SBOMStatusOK}
+	if kept, changed := BackfillSBOMs(withSource, other); changed || kept.SourceSBOM.Digest != sbomTestDigest("c") {
+		t.Fatalf("backfill replaced a recorded source SBOM: %+v", kept.SourceSBOM)
+	}
+	none := recorded
+	none.SourceSBOM = &SBOMRef{Status: SBOMStatusUnavailable, Reason: "skipped"}
+	if got, changed := BackfillSBOMs(none, withSource); !changed || !got.SourceSBOM.HasSBOM() {
+		t.Fatalf("an unavailable source SBOM was not filled: %+v", got.SourceSBOM)
+	}
+	if _, changed := BackfillSBOMs(none, Release{SourceSBOM: &SBOMRef{Status: SBOMStatusUnavailable, Reason: "other"}}); changed {
+		t.Fatal("a second 'none' replaced the first reason")
+	}
+
+	bad := withSource
+	bad.SourceSBOM = &SBOMRef{Status: SBOMStatusOK}
+	if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate accepted an ok source SBOM with no digest: %v", err)
+	}
+
+	snap := snapshotTestRelease(t)
+	snap.SourceSBOM = withSource.SourceSBOM
+	if err := snap.Validate(); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "source SBOM") {
+		t.Fatalf("Validate accepted a snapshot release with a source SBOM: %v", err)
+	}
+	stripped := snap.WithoutSBOMs()
+	if stripped.SourceSBOM != nil || snap.SourceSBOM == nil {
+		t.Fatalf("WithoutSBOMs: stripped %+v, receiver %+v", stripped.SourceSBOM, snap.SourceSBOM)
+	}
+	if raw, _ := json.Marshal(stripped); bytes.Contains(raw, []byte("sbom")) {
+		t.Fatalf("WithoutSBOMs left an sbom: %s", raw)
+	}
+}
+
+// Where an SBOM was attached beside its artifact is filled in for the SAME
+// SBOM, never replaced, and never taken from another SBOM.
+func TestBackfillSBOMsFillsTheReferrerOfTheSameSBOM(t *testing.T) {
+	t.Parallel()
+	plain := okSBOM("c", "syft@v1.57.2")
+	attached := okSBOM("c", "syft@v1.57.2")
+	attached.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("f")
+	existing := sbomTestRelease(map[string]*SBOMRef{"api": plain})
+
+	got, changed := BackfillSBOMs(existing, sbomTestRelease(map[string]*SBOMRef{"api": attached}))
+	if !changed || got.Artifacts["api"].SBOM.Referrer != attached.Referrer || got.Artifacts["api"].SBOM.Digest != plain.Digest {
+		t.Fatalf("referrer not filled: %+v changed=%v", got.Artifacts["api"].SBOM, changed)
+	}
+	if existing.Artifacts["api"].SBOM.Referrer != "" {
+		t.Fatal("BackfillSBOMs modified the existing record")
+	}
+	other := okSBOM("c", "syft@v1.57.2")
+	other.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("e")
+	if _, changed := BackfillSBOMs(got, sbomTestRelease(map[string]*SBOMRef{"api": other})); changed {
+		t.Fatal("a recorded referrer was replaced")
+	}
+	newer := okSBOM("d", "syft@v1.60.0")
+	newer.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("e")
+	if _, changed := BackfillSBOMs(existing, sbomTestRelease(map[string]*SBOMRef{"api": newer})); changed {
+		t.Fatal("the referrer of another SBOM was taken")
+	}
+}

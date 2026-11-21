@@ -166,6 +166,10 @@ type Spec struct {
 	TemporalNamespaces []string
 	// TemporalUIPort is the Web UI's port. Zero means headless.
 	TemporalUIPort int
+	// TemporalMetricsPort is the port the server serves its Prometheus
+	// /metrics on (`--metrics-port`). Zero means a free port the server
+	// picks itself, which nothing can be pointed at.
+	TemporalMetricsPort int
 }
 
 // unsupportedEngine is Start/StatusOf's answer for an engine forge has no

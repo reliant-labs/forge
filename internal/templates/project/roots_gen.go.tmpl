@@ -79,6 +79,11 @@ func rootCommands(deps Deps) []*cobra.Command {
 {{- if .Root}}
 		Long:  {{printf "%q" .Long}},
 		Args:  cobra.NoArgs,
+		// A root that fails to boot is a runtime error, not a mistyped
+		// command line: printing every flag first would bury it in the log.
+		// root.go's newRootCmd sets the same on the tree, but a root.go
+		// written before it did is the project's own and keeps its shape.
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			deps.Cmd = cmd
 {{- range .Root.Loads}}

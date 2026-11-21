@@ -246,7 +246,7 @@ var shippedRules = []rolloutGroup{
 	// forge db analyze: what a migration measurably does on a real
 	// postgres — rewrites, ACCESS EXCLUSIVE across a scan, validation scans
 	// under write-blocking locks, blocking index builds, timeouts.
-	{IntroducedIn: "v1.7.0", Rules: dbanalyze.RuleIDs()},
+	{IntroducedIn: "v1.7.0", Rules: dbanalyze.MigrationRuleIDs()},
 	// forge lint --proto-format: a .proto `buf format` would rewrite — the
 	// scaffolded pre-commit hook's own check, which lint used to pass while
 	// the hook refused the commit.
@@ -267,6 +267,13 @@ var shippedRules = []rolloutGroup{
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.
 var newRules = []rolloutGroup{
+	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
+	// what it collects. Only the uncollected dashboard series is an error;
+	// the other three are advisory at any pin, and the row is what lets
+	// lint.rules raise them.
+	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
+		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
+	}},
 	{
 		IntroducedIn: "v1.9.0",
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
@@ -277,6 +284,27 @@ var newRules = []rolloutGroup{
 		IntroducedIn: "v1.9.0",
 		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
 		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
+	},
+	// The vulnerability gate made real (rollout_grade.go): an env's declared
+	// `vuln_gate = enforce` is judged as audit until it gates — at the cut,
+	// at a self-hosted promote and in the vuln-sbom gate step — and a
+	// declared `provenance_sbom = enforce` refuses a promotion whose
+	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
+	// rollout (forge#2468 §1.8).
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
+		Rules:        []string{staticexport.RulePartialPrerender},
+	},
+	{
+		IntroducedIn: "v1.9.0",
+		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
+		Rules:        dbanalyze.QueryRuleIDs(),
 	},
 }
 

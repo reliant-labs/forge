@@ -103,7 +103,7 @@ var goMarkers = []GoMarker{
 	{Name: directiveNoObserve, Grammar: GoMarkerBare, Form: "// forge:no-observe"},
 	{Name: "forge:no-orm", Grammar: GoMarkerWordArgs, Form: "//forge:no-orm: <why>"},
 	{Name: directiveNotAComponent, Grammar: GoMarkerReasoned, Form: "//forge:not-a-component: <reason>"},
-	{Name: "forge:optional-checked", Grammar: GoMarkerBare, Form: "// forge:optional-checked"},
+	{Name: "forge:optional-checked", Grammar: GoMarkerReasoned, Form: "// forge:optional-checked: <reason>"},
 	{Name: "forge:optional-dep", Grammar: GoMarkerBare, Form: "// forge:optional-dep"},
 	{Name: "forge:outbound-io", Grammar: GoMarkerBare, Form: "// forge:outbound-io"},
 	{Name: "forge:placeholder", Grammar: GoMarkerReasonRequired, Form: "// forge:placeholder: <pkg>.<Type>"},

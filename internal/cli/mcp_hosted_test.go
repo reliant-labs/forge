@@ -175,6 +175,34 @@ func TestHostedSharedToolSchemasMatchLocal(t *testing.T) {
 	}
 }
 
+// The obs read tools both servers serve (NS FG-23) take one input schema: the
+// hosted one names the project, the local one the repo (dir), and the rest —
+// env and every option — is the same.
+func TestHostedObsToolSchemasMatchLocal(t *testing.T) {
+	local := connectMCP(t, t.TempDir())
+	hosted := connectHosted(t, AccountToolsOptions{ControlPlaneURL: "http://cp.invalid", Token: staticToken("t")})
+	schemas := func(cs *mcp.ClientSession) map[string]map[string]any {
+		res, err := cs.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for _, tool := range res.Tools {
+			props := schemaProps(t, tool.InputSchema)
+			delete(props, "dir")
+			delete(props, "project")
+			out[tool.Name] = props
+		}
+		return out
+	}
+	l, h := schemas(local), schemas(hosted)
+	for _, name := range []string{"obs_status", "obs_issues", "obs_issue", "obs_logs", "obs_check"} {
+		if l[name] == nil || !reflect.DeepEqual(l[name], h[name]) {
+			t.Errorf("%s: local input schema %v differs from hosted %v", name, l[name], h[name])
+		}
+	}
+}
+
 // skill_load serves the body `forge skill load` prints outside a project:
 // the renderer the local skill_load (and `skill load`) runs, with commands
 // written for `forge`.

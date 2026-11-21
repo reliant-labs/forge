@@ -230,6 +230,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": {
@@ -351,6 +352,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": null,
@@ -407,6 +409,28 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [
+          {
+            "id": "clickhouse-parts",
+            "panels": [
+              {
+                "id": "parts",
+                "kind": "line",
+                "series": [
+                  {
+                    "agg": "last",
+                    "field": "ClickHouseMetrics_PartsActive",
+                    "label": "parts",
+                    "metricType": "gauge"
+                  }
+                ],
+                "signal": "metrics",
+                "title": "Active parts"
+              }
+            ],
+            "title": "ClickHouse parts"
+          }
+        ],
         "default_alerts": true,
         "isolated": true,
         "logs": null,
@@ -465,6 +489,7 @@
           "enabled": true,
           "title": ""
         },
+        "dashboards": [],
         "default_alerts": true,
         "isolated": false,
         "logs": {
@@ -527,6 +552,12 @@
         "source": "observability"
       }
     ],
+    "telemetry_collector": {
+      "namespace": "platform-otel",
+      "pod_labels": {
+        "app.kubernetes.io/name": "otel-agent"
+      }
+    },
     "workloads": [
       {
         "build": null,

@@ -64,6 +64,8 @@ before verifying generated files. Missing plugins or a pre-dirtied tree must
 fail, not certify skipped output. Installation details and troubleshooting:
 `forge skill load ci/toolchain`.
 
+To retry only unchanged Go test failures once in the merge tier, load `ci/retry-failed`.
+
 ### No workflow names a registry
 
 An image registry is part of a WORKLOAD's `image` in `deploy/kcl/workloads.k`
@@ -272,6 +274,27 @@ evidence, so a pipeline needs no flag to get the strict behaviour. To fix
 what the gate reported, run `forge lint --fix` and commit the result.
 `--json` is always detect-only, and so are the targeted lanes (`--contract`,
 `--db`, …).
+
+It never installs anything either. A frontend whose `node_modules` is missing
+is a lane that could NOT run: the verdict names the lane (`frontend lint`,
+`frontend typecheck`) and the exact install command (`pnpm install
+--frozen-lockfile` in `frontends/web`, …), and the run fails, as any gating
+lane that did not run does. Prepare the tree first — the scaffolded ci.yml
+installs every frontend in its setup steps, and `task ci`'s `deps-<fe>` rows run
+before its lint rows — or opt in with `forge lint --install`, which installs
+with the frontend's own package manager, frozen to its lockfile (its output
+goes to stderr, and nowhere under `--quiet` unless it fails). A backend-only
+job says so with `--skip-frontends`, or accepts the gap by name with
+`--allow-skip 'frontend-lint,frontend-typecheck=<why>'`. A `node_modules`
+older than its lockfile is linted as it stands, with a note naming the
+command that refreshes it.
+
+The refusal rolls out warn-first (`ci/lint-rollout`) as rule
+`forge-frontend-no-install`: while your pin is below its gates-from release,
+lint still installs a missing `node_modules` (output on stderr, none under
+`--quiet`) and warns that it will stop. Add `--install` or an install step
+before `forge lint` then (a scaffolded `release.yml` is the usual place);
+`lint.rules: {forge-frontend-no-install: error}` refuses now.
 
 New or tightened lint rules warn for one release first: `ci/lint-rollout`.
 

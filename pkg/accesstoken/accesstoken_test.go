@@ -264,7 +264,7 @@ func TestFeedbackLoopScopes_AreTheirOwnAuthority(t *testing.T) {
 // an org automation token carries it without acting as a person; a Reliant
 // agent's daemon-bound session credential can carry all three.
 func TestFeedbackLoopScopes_NeedNoActingUserAndRideADaemon(t *testing.T) {
-	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead} {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead, ScopeVulnRead, ScopeTestsRead} {
 		if RequiresActingUser(s) {
 			t.Errorf("%s must not require an acting user", s)
 		}
@@ -391,6 +391,185 @@ func TestDeployConfigRead_IsItsOwnAuthority(t *testing.T) {
 	p := &Principal{Scopes: SetOf(ScopeDeployConfigRead), Resource: env}
 	if !p.MayReadEnvironment("env-prod") || p.MayReadEnvironment("env-staging") {
 		t.Error("an env-bound deploy:config:read token escaped its environment")
+	}
+}
+
+// TestVulnRead_IsItsOwnAuthority pins vuln:read: it parses, it is appended to
+// AllScopes (a store's CHECK lists the set in order, so appending moves no
+// existing member), neither deploy:read nor deploy:write implies it
+// (a findings list is an attack map, and the CI token that records releases
+// must not read it by default), it implies nothing, it needs no acting user,
+// and it binds to one environment and to nothing else but the acting user's
+// daemon.
+func TestVulnRead_IsItsOwnAuthority(t *testing.T) {
+	got, ok := ParseScope("vuln:read")
+	if !ok || got != ScopeVulnRead {
+		t.Fatalf("ParseScope(vuln:read) = %q, %v", got, ok)
+	}
+	pos := map[Scope]int{}
+	for i, s := range AllScopes {
+		pos[s] = i
+	}
+	if pos[ScopeVulnRead] < pos[ScopeChangesLaunch] {
+		t.Error("vuln:read must be appended after changes:launch, the member before it, so no store's CHECK order shifts")
+	}
+	if _, err := NewSet([]string{"vuln:read"}); err != nil {
+		t.Errorf("NewSet(vuln:read): %v", err)
+	}
+	if !SetOf(ScopeVulnRead).Permits(ScopeVulnRead) {
+		t.Error("vuln:read must permit itself")
+	}
+	for _, other := range AllScopes {
+		if other == ScopeVulnRead {
+			continue
+		}
+		if SetOf(other).Permits(ScopeVulnRead) {
+			t.Errorf("%s permitted vuln:read", other)
+		}
+		if SetOf(ScopeVulnRead).Permits(other) {
+			t.Errorf("vuln:read permitted %s", other)
+		}
+	}
+	if SetOf(ScopeDeployWrite, ScopeDeployRead).Permits(ScopeVulnRead) {
+		t.Error("deploy:write and deploy:read together must not permit reading findings")
+	}
+	if SetOf(ScopeDeployWrite, ScopeDeployRead).Covers(SetOf(ScopeVulnRead)) || SetOf(ScopeVulnRead).Covers(SetOf(ScopeDeployRead)) {
+		t.Error("deploy scopes and vuln:read must not let a holder mint the other")
+	}
+	if !SetOf(ScopeTokenWrite, ScopeVulnRead).Covers(SetOf(ScopeVulnRead)) {
+		t.Error("a holder of vuln:read cannot grant it")
+	}
+	if RequiresActingUser(ScopeVulnRead) {
+		t.Error("vuln:read must not require an acting user: an org token minted with it may read findings")
+	}
+	if RegistryOnly(ScopeVulnRead) {
+		t.Error("vuln:read is a control-plane read, not a registry-only credential")
+	}
+	now := time.Now()
+	org := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(ScopeVulnRead)}
+	if err := org.Validate(now); err != nil {
+		t.Errorf("an org token carrying vuln:read: %v", err)
+	}
+	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
+	bound := Grant{OrgID: "org", Name: "security", Scopes: SetOf(ScopeVulnRead), Resource: env}
+	if err := bound.Validate(now); err != nil {
+		t.Errorf("vuln:read bound to an environment was refused: %v", err)
+	}
+	onDaemon := Grant{OrgID: "org", Name: "managed", Scopes: SetOf(ScopeDaemonConnect, ScopeVulnRead), ActingUserID: "u",
+		Resource: &Resource{Kind: ResourceDaemon, ID: "d"}}
+	if err := onDaemon.Validate(now); err != nil {
+		t.Errorf("vuln:read on a daemon-bound token: %v", err)
+	}
+	for _, kind := range []ResourceKind{ResourcePort, ResourceConnector} {
+		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(ScopeVulnRead), ActingUserID: "u", Resource: &Resource{Kind: kind, ID: "r"}}
+		if err := g.Validate(now); err == nil {
+			t.Errorf("vuln:read accepted a %s binding", kind)
+		}
+	}
+	p := &Principal{Scopes: SetOf(ScopeVulnRead), Resource: env}
+	if !p.MayReadEnvironment("env-prod") || p.MayReadEnvironment("env-staging") {
+		t.Error("an env-bound vuln:read token escaped its environment")
+	}
+}
+
+// TestTestsScopes_AreTheirOwnAuthority pins tests:read and tests:write: both
+// parse and are appended after vuln:read (a store's CHECK lists the set in
+// order, so appending moves no existing member); neither implies, or is
+// implied by, any other scope — deploy:write and deploy:read above all
+// (failure output can quote config, and a PR's CI token uploads without
+// deploy authority), and tests:write does not imply tests:read (an upload
+// reads nothing back); neither needs an acting user; tests:read binds to one
+// environment and tests:write to nothing but the acting user's daemon.
+func TestTestsScopes_AreTheirOwnAuthority(t *testing.T) {
+	for wire, want := range map[string]Scope{"tests:read": ScopeTestsRead, "tests:write": ScopeTestsWrite} {
+		got, ok := ParseScope(wire)
+		if !ok || got != want {
+			t.Fatalf("ParseScope(%s) = %q, %v", wire, got, ok)
+		}
+		if _, err := NewSet([]string{wire}); err != nil {
+			t.Errorf("NewSet(%s): %v", wire, err)
+		}
+	}
+	pos := map[Scope]int{}
+	for i, s := range AllScopes {
+		pos[s] = i
+	}
+	if pos[ScopeTestsRead] != pos[ScopeVulnRead]+1 || pos[ScopeTestsWrite] != pos[ScopeTestsRead]+1 {
+		t.Error("tests:read then tests:write must be appended after vuln:read, the member before them, so no store's CHECK order shifts")
+	}
+
+	tests := []Scope{ScopeTestsRead, ScopeTestsWrite}
+	for _, s := range tests {
+		if !SetOf(s).Permits(s) {
+			t.Errorf("%s must permit itself", s)
+		}
+		for _, other := range AllScopes {
+			if other == s {
+				continue
+			}
+			if SetOf(other).Permits(s) {
+				t.Errorf("%s permitted %s", other, s)
+			}
+			if SetOf(s).Permits(other) {
+				t.Errorf("%s permitted %s", s, other)
+			}
+		}
+		if SetOf(ScopeDeployWrite, ScopeDeployRead).Permits(s) {
+			t.Errorf("deploy:write and deploy:read together must not permit %s", s)
+		}
+		if SetOf(ScopeDeployWrite, ScopeDeployRead).Covers(SetOf(s)) || SetOf(s).Covers(SetOf(ScopeDeployRead)) {
+			t.Errorf("deploy scopes and %s must not let a holder mint the other", s)
+		}
+		if !SetOf(ScopeTokenWrite, s).Covers(SetOf(s)) {
+			t.Errorf("a holder of %s cannot grant it", s)
+		}
+		if RequiresActingUser(s) {
+			t.Errorf("%s must not require an acting user: an org CI token minted with it records and reads tests", s)
+		}
+		if RegistryOnly(s) {
+			t.Errorf("%s is a control-plane rpc scope, not a registry-only credential", s)
+		}
+	}
+	if SetOf(ScopeTestsWrite).Permits(ScopeTestsRead) || SetOf(ScopeTestsWrite).Covers(SetOf(ScopeTestsRead)) {
+		t.Error("tests:write must not read or mint tests:read: a PR's upload token must not read every run's failure output")
+	}
+
+	// A fixed instant, not the wall clock: no grant here expires, so the
+	// verdicts must not depend on when the test runs.
+	now := time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC)
+	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
+	for _, s := range tests {
+		org := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s)}
+		if err := org.Validate(now); err != nil {
+			t.Errorf("an org token carrying %s: %v", s, err)
+		}
+		onDaemon := Grant{OrgID: "org", Name: "managed", Scopes: SetOf(ScopeDaemonConnect, s), ActingUserID: "u",
+			Resource: &Resource{Kind: ResourceDaemon, ID: "d"}}
+		if err := onDaemon.Validate(now); err != nil {
+			t.Errorf("%s on a daemon-bound token: %v", s, err)
+		}
+		for _, kind := range []ResourceKind{ResourcePort, ResourceConnector} {
+			g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(s), ActingUserID: "u", Resource: &Resource{Kind: kind, ID: "r"}}
+			if err := g.Validate(now); err == nil {
+				t.Errorf("%s accepted a %s binding", s, kind)
+			}
+		}
+	}
+	bound := Grant{OrgID: "org", Name: "preview", Scopes: SetOf(ScopeTestsRead), Resource: env}
+	if err := bound.Validate(now); err != nil {
+		t.Errorf("tests:read bound to an environment was refused: %v", err)
+	}
+	if err := (Grant{OrgID: "org", Name: "ci", Scopes: SetOf(ScopeTestsWrite), Resource: env}).Validate(now); err == nil {
+		t.Error("tests:write accepted an environment binding, a confinement the upload path does not enforce")
+	}
+	p := &Principal{Scopes: SetOf(ScopeTestsRead), Resource: env}
+	if !p.MayReadEnvironment("env-prod") || p.MayReadEnvironment("env-staging") {
+		t.Error("an env-bound tests:read token escaped its environment")
+	}
+	// An org automation wildcard resolves to both: neither acts as a person
+	// or is registry-only.
+	if got := (Grant{}).Admissible(); !got.Has(ScopeTestsRead) || !got.Has(ScopeTestsWrite) {
+		t.Errorf("an org automation wildcard does not hold the tests scopes: %s", got)
 	}
 }
 
@@ -712,7 +891,7 @@ func TestDaemonResume_IsOneDaemonActingAsOnePerson(t *testing.T) {
 func TestEnvironmentBinding(t *testing.T) {
 	now := time.Now()
 	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
-	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead} {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead, ScopeVulnRead, ScopeTestsRead} {
 		bound := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s), Resource: env}
 		if err := bound.Validate(now); err != nil {
 			t.Errorf("%s bound to an environment was refused: %v", s, err)
@@ -727,7 +906,7 @@ func TestEnvironmentBinding(t *testing.T) {
 	for _, s := range AllScopes {
 		switch s {
 		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead,
-			ScopeChangesWrite, ScopeChangesLaunch:
+			ScopeChangesWrite, ScopeChangesLaunch, ScopeVulnRead, ScopeTestsRead:
 			continue
 		}
 		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(s), ActingUserID: "user", Resource: env}

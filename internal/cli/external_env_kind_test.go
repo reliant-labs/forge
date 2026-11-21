@@ -108,7 +108,7 @@ func TestExternalEnvSecretsAreWriteOnly(t *testing.T) {
 	}
 	disarmPulledSecrets()
 
-	_, _, err := localWorkloadConfig(context.Background(), t.TempDir(), "prod", e, e.Workloads[0], secretsRequired)
+	_, _, _, err := localWorkloadConfig(context.Background(), t.TempDir(), "prod", e, e.Workloads[0], secretsRequired)
 	if err == nil || !strings.Contains(err.Error(), "only LOCAL environments' secrets can be pulled; this environment's secrets are write-only") ||
 		!strings.Contains(err.Error(), "SELF_MANAGED") {
 		t.Fatalf("err = %v, want the write-only refusal naming SELF_MANAGED", err)

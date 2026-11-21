@@ -229,9 +229,6 @@ func canonicalJSON(v any) ([]byte, error) {
 // the same directory, then rename). Used by sessions.jsonl (compacted) and
 // the hosted-ledger mirror (hostedcache.go, a cache); every ledger file is append-only.
 func rewriteLines(path string, records []any) error {
-	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
-	}
 	var buf bytes.Buffer
 	for _, r := range records {
 		line, err := canonicalJSON(r)
@@ -241,19 +238,34 @@ func rewriteLines(path string, records []any) error {
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
+	return writeFileAtomic(path, buf.Bytes())
+}
+
+// writeFileAtomic replaces a file's contents atomically: a temp file in the
+// same directory (so the rename never crosses a filesystem), synced, then
+// renamed over the target. A reader sees the old file or the new one, never
+// a torn one, and a crash leaves at most a dot-named temp file behind.
+func writeFileAtomic(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temp beside %s: %w", path, err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("write %s: %w", tmpName, err)
 	}
 	if err := tmp.Chmod(fileMode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("chmod %s: %w", tmpName, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync %s: %w", tmpName, err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", tmpName, err)

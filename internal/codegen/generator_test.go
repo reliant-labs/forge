@@ -972,12 +972,11 @@ func TestGenerateBootstrapTesting_ExternalComponentPackageExcluded(t *testing.T)
 	}
 }
 
-// TestGenerateBootstrapTesting_MigratedDBOptIn pins the DB harness
-// contract for projects with embedded migrations: the DEFAULT test DB is
-// a bare (schema-less) real-postgres database, and a NewMigratedTestDB
-// helper is emitted so tests opt in to the real schema via
-// WithDB(NewMigratedTestDB(t)).
-func TestGenerateBootstrapTesting_MigratedDBOptIn(t *testing.T) {
+// TestGenerateBootstrapTesting_MigratedDBDefault pins the DB harness
+// contract for projects with embedded migrations: a NewMigratedTestDB helper
+// is emitted, and it is the DEFAULT test DB, so NewTest<X>(t) meets the
+// schema its handlers query.
+func TestGenerateBootstrapTesting_MigratedDBDefault(t *testing.T) {
 	testkit.Slow(t, "execs go")
 	projectDir := t.TempDir()
 
@@ -1035,11 +1034,14 @@ func New(deps Deps) (*Service, error) { return &Service{deps: deps}, nil }
 
 	// Alignment-insensitive: the write chokepoint canonical-formats Go
 	// output, so the composite-literal key padding is gofmt's call.
-	if !regexp.MustCompile(`db:\s+testkit\.NewPostgresDB\(t\)`).MatchString(content) {
-		t.Error("default test DB must be the BARE real-postgres DB (migrations are opt-in)")
+	// The default is the MIGRATED database once migrations exist: a bare one
+	// made every handler call through NewTest<X>(t) fail with an opaque
+	// internal error.
+	if !regexp.MustCompile(`newDB:\s+func\(\) orm\.Context \{ return NewMigratedTestDB\(t\) \}`).MatchString(content) {
+		t.Errorf("default test DB must be NewMigratedTestDB(t) when migrations exist\n----\n%s", content)
 	}
 	if !strings.Contains(content, `func NewMigratedTestDB(t *testing.T) orm.Context`) {
-		t.Error("testing.go should emit the NewMigratedTestDB opt-in helper when migrations exist")
+		t.Error("testing.go should emit the NewMigratedTestDB helper when migrations exist")
 	}
 	if !strings.Contains(content, `testkit.NewMigratedPostgresDB(t, forgedb.MigrationsFS)`) {
 		t.Error("NewMigratedTestDB should delegate to testkit.NewMigratedPostgresDB over forgedb.MigrationsFS")

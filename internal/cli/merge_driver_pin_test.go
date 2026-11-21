@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +105,60 @@ func TestEnsureGeneratedMergeDriver_PinnedForgeRepairsAStaleDriver(t *testing.T)
 	}
 	if reg := gitConfig(t, repo, pinnedDriverSection+".6f9811cb0000.command"); reg != "" {
 		t.Errorf("a forge that is not the pin registered itself: %q", reg)
+	}
+}
+
+// A clone wired before the driver could resolve forge at merge time keeps a
+// command that fails once its binary is evicted. The pinned forge's next
+// writing command rewrites it, and its own registration, into the current
+// shape; after that a second copy of the same pin leaves both alone.
+func TestEnsureGeneratedMergeDriver_PinnedForgeUpgradesAnOlderShape(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	repo := pinTestRepo(t)
+	// The binaries live under the test's temp dir; move TMPDIR so the wiring
+	// does not refuse them as ephemeral.
+	t.Setenv("TMPDIR", t.TempDir())
+	cached := filepath.Join(t.TempDir(), "forge")
+	writeTreeFileT(t, cached, "#!/bin/sh\n")
+	if err := os.Chmod(cached, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	q := shellQuote(cached)
+	older := driverGuardPrefix + q + " ] && exec " + q + " merge-generated %O %A %B %L %P; " +
+		"git merge-file --marker-size=%L -L ours -L base -L theirs %A %O %B; exit 1"
+	if driverCommandCurrent(older) || !driverCommandUsable(older) {
+		t.Fatalf("precondition: %q must be usable but not current", older)
+	}
+	gitT(t, repo, "config", "merge.forge-generated.driver", older)
+	gitT(t, repo, "config", pinnedDriverSection+".7410e351b23b.command", older)
+
+	prevExe, prevID := mergeDriverExecutable, mergeDriverIdentity
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverIdentity = prevExe, prevID })
+	mergeDriverExecutable = func() (string, error) { return cached, nil }
+	mergeDriverIdentity = func() string { return "7410e351b23b" }
+	setPinCheck(t, false)
+	wireGeneratedMergeDriver(io.Discard, filepath.Join(repo, "svc"), true)
+
+	got := gitConfig(t, repo, "merge.forge-generated.driver")
+	if !driverCommandCurrent(got) || !strings.Contains(got, q) {
+		t.Errorf("the pinned forge left the older shape in place: %q", got)
+	}
+	if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); reg != got {
+		t.Errorf("the registration was not upgraded with it: %q, want %q", reg, got)
+	}
+
+	// Another copy of the same pin keeps the upgraded registration.
+	other := filepath.Join(t.TempDir(), "forge")
+	writeTreeFileT(t, other, "#!/bin/sh\n")
+	if err := os.Chmod(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mergeDriverExecutable = func() (string, error) { return other, nil }
+	wireGeneratedMergeDriver(io.Discard, filepath.Join(repo, "svc"), true)
+	if again := gitConfig(t, repo, "merge.forge-generated.driver"); again != got {
+		t.Errorf("a second copy of the pin rewrote a current driver: %q", again)
 	}
 }
 
@@ -303,18 +359,30 @@ func TestEnsureGeneratedMergeDriver_GoRunCopyIsOncePerPinnedIdentity(t *testing.
 	}
 }
 
-// Copies are kept for the keptDriverCopies most recently used identities.
+// Copies are kept for the keptDriverCopies most recently used identities, and
+// beyond that for every identity used within driverCopyGrace: a merge
+// installs a copy and runs it moments later, and a concurrent prune must not
+// remove it in between.
 func TestDurableDriverCopy_KeepsTheMostRecentIdentities(t *testing.T) {
 	exe, cache := fakeGoRunForge(t, "newest000000")
-	old := time.Now().Add(-48 * time.Hour)
-	for i, id := range []string{"aaaa00000000", "bbbb00000000", "cccc00000000", "dddd00000000"} {
+	at := func(id string, when time.Time) {
 		dir := filepath.Join(cache, id)
 		writeTreeFileT(t, filepath.Join(dir, "forge"), "old\n")
-		at := old.Add(time.Duration(i) * time.Hour) // dddd most recent
-		if err := os.Chtimes(dir, at, at); err != nil {
+		if err := os.Chtimes(dir, when, when); err != nil {
 			t.Fatal(err)
 		}
 	}
+	old := time.Now().Add(-48 * time.Hour)
+	at("aaaa00000000", old)
+	at("bbbb00000000", old.Add(time.Hour))
+	// One more recent identity than the count keeps, all in the grace.
+	var want []string
+	for i := 0; i < keptDriverCopies; i++ {
+		id := fmt.Sprintf("recent%06d", i)
+		at(id, time.Now().Add(-time.Duration(i+1)*time.Minute))
+		want = append(want, id)
+	}
+	want = append(want, "newest000000")
 	if _, err := durableDriverCopy(exe); err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +391,8 @@ func TestDurableDriverCopy_KeepsTheMostRecentIdentities(t *testing.T) {
 	for _, e := range entries {
 		kept = append(kept, e.Name())
 	}
-	if want := []string{"cccc00000000", "dddd00000000", "newest000000"}; strings.Join(kept, ",") != strings.Join(want, ",") {
+	sort.Strings(want)
+	if strings.Join(kept, ",") != strings.Join(want, ",") {
 		t.Errorf("kept %v, want %v", kept, want)
 	}
 }

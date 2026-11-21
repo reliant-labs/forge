@@ -3,7 +3,8 @@ Forge KCL — declared telemetry for systems forge did not build
 (docs/proposals/third-party-telemetry.md).
 
     forge.Telemetry    how one system's metrics, logs, traces and profiles
-                       are collected, and the alerts drawn over them
+                       are collected, and the dashboards and alerts drawn
+                       over them
 
 It attaches in four places, and where it attaches decides what forge can
 infer about the target:
@@ -23,6 +24,7 @@ is the project's own.
 """
 
 import regex
+import .dashspec
 
 _TEL_NAME_RE: str = r"^[a-z0-9]([-a-z0-9_.]*[a-z0-9])?$"
 # Collector durations: what Go's time.ParseDuration reads, restricted to ms/s/m/h.
@@ -30,6 +32,8 @@ _TEL_DURATION_RE: str = r"^([0-9]+(ms|s|m|h))+$"
 _TEL_PROM_LABEL_RE: str = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
 _TEL_PORT_NAME_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _TEL_RFC1123_RE: str = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+# An unnamed scrape or check is identified by its index, so a name may not be all digits.
+_TEL_DIGITS_RE: str = r"^[0-9]+$"
 _TEL_ENV_KEY_RE: str = r"^[A-Za-z_][A-Za-z0-9_]*$"
 # A field path into a parsed log record: dotted segments; a segment that holds a
 # dot (or any character outside [A-Za-z0-9_$@-]) is written ["quoted"].
@@ -85,9 +89,9 @@ _tel_targets_self = lambda t: Telemetry -> bool {
 
 schema Telemetry:
     """Telemetry for a system forge did not build: how its metrics, logs,
-    traces and profiles are collected, and the alerts drawn over them. Every
-    vendor fact (metric names, env keys, log formats) is yours; forge knows
-    none of them and ships no presets.
+    traces and profiles are collected, and the dashboards and alerts drawn
+    over them. Every vendor fact (metric names, env keys, log formats,
+    panels) is yours; forge knows none of them and ships no presets.
 
         forge.Workload {
             name = "temporal", image = "temporalio/server:1.26.2"
@@ -95,9 +99,14 @@ schema Telemetry:
             telemetry = forge.Telemetry {
                 metrics = [forge.MetricsScrape {port = "metrics", allow = _TEMPORAL_ALLOW}]
                 logs = forge.LogParse {format = "json", timestamp = forge.LogTimestamp {field = "ts", layout = "epoch_s"}}
+                dashboards = [_temporal_dashboard]   # ds.Dashboard {...}
                 alerts = [_temporal_errors]
             }
         }
+
+    Every Telemetry also gets a signal-generic system dashboard
+    (`dashboard`) and, with `default_alerts`, <Service>TargetDown and
+    <Service>CheckFailing.
 
     Where it attaches decides what forge can infer:
       * `Workload.telemetry` and `HostInfra.telemetry`: the target IS that
@@ -120,7 +129,7 @@ schema Telemetry:
     Identity: every signal collected from a matching pod or address (scraped
     metrics, its container logs, pulled profiles) is stamped
     `service.name = service_name`, plus the env's resource attributes when
-    `scope = "project"`. Alerts filter on that.
+    `scope = "project"`. Dashboards and alerts filter on that.
 
     Collection follows the env's runtime: forge's node agent on clusters it
     renders an agent for, the local telemetry agent and ClickStack under
@@ -174,6 +183,14 @@ schema Telemetry:
     network_policy?: bool
     # The signal-generic system dashboard forge draws for every Telemetry.
     dashboard: SystemDashboard = SystemDashboard {}
+    # Your dashboards for this system (forge.dashboards/v1, typed: `import
+    # forge.dashspec as ds`). Each is written as
+    # deploy/observability/dashboards/<project>-<id>_gen.json and ships in
+    # the release like every generated dashboard; a hand file
+    # <project>-<id>.json replaces it. An `id` is unique within the project,
+    # and a dashboard declared in several envs must be the same in each. An
+    # unset `scope` takes this Telemetry's.
+    dashboards: [dashspec.Dashboard] = []
     # Your alert rules. They join Observability.alerts with labels.service =
     # service_name unless they set it, so the env needs observability on.
     alerts: [AlertRule] = []
@@ -188,8 +205,10 @@ schema Telemetry:
         not selector or all k, v in selector { k and v }, "Telemetry.selector keys and values must be non-empty"
         not namespaces or all n in namespaces { regex.match(n, _TEL_RFC1123_RE) }, "Telemetry.namespaces must be RFC-1123 labels"
         not container or regex.match(container, _TEL_RFC1123_RE), "Telemetry.container must be an RFC-1123 label"
-        metrics or otlp or logs or profiles or checks or alerts, \
-            "Telemetry declares nothing to collect or alert on: set metrics, otlp, logs, profiles, checks or alerts"
+        metrics or otlp or logs or profiles or checks or dashboards or alerts, \
+            "Telemetry declares nothing to collect, draw or alert on: set metrics, otlp, logs, profiles, checks, dashboards or alerts"
+        len([d.id for d in dashboards]) == len({d.id: 1 for d in dashboards}), \
+            "Telemetry.dashboards ids must be unique"
         len([m.name for m in metrics if m.name]) == len({m.name: 1 for m in metrics if m.name}), \
             "Telemetry.metrics names must be unique"
         len([m for m in metrics if not m.name]) <= 1, \
@@ -242,6 +261,8 @@ schema MetricsScrape:
 
     check:
         not name or regex.match(name, _TEL_RFC1123_RE), "MetricsScrape.name '${name}' must be an RFC-1123 label"
+        not name or not regex.match(name, _TEL_DIGITS_RE), \
+            "MetricsScrape.name '${name}' needs a letter: an unnamed scrape's job name ends in its index, so all-digit names are reserved"
         _tel_port_ok(port), "MetricsScrape.port must be 1-65535 or an IANA port name"
         path.startswith("/"), "MetricsScrape.path must start with /"
         regex.match(interval, _TEL_DURATION_RE) and regex.match(timeout, _TEL_DURATION_RE), \
@@ -443,6 +464,8 @@ schema HealthCheck:
 
     check:
         not name or regex.match(name, _TEL_RFC1123_RE), "HealthCheck.name '${name}' must be an RFC-1123 label"
+        not name or not regex.match(name, _TEL_DIGITS_RE), \
+            "HealthCheck.name '${name}' needs a letter: an unnamed check's receiver name ends in its index, so all-digit names are reserved"
         _tel_port_ok(port), "HealthCheck.port must be 1-65535 or an IANA port name"
         kind == "http" or (path == "/" and scheme == "http"), "HealthCheck.path and scheme are http-only"
         path.startswith("/"), "HealthCheck.path must start with /"
@@ -452,8 +475,9 @@ schema SystemDashboard:
     """The signal-generic dashboard forge draws for every Telemetry: one
     section per signal declared (collection health, resources, log volume
     and errors, span rate/error/latency, check status, a profile link). It
-    knows no vendor metric. A hand file `<project>-telemetry-<service>.json`
-    replaces it."""
+    knows no vendor metric; your `dashboards` go beside it. It is written as
+    deploy/observability/dashboards/<project>-telemetry-<service>_gen.json,
+    and a hand file `<project>-telemetry-<service>.json` replaces it."""
     enabled: bool = True
     title?: str
 

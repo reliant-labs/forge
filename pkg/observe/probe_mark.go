@@ -26,7 +26,11 @@ func MarkProbeSpans(ctx context.Context) {
 	mark := attribute.Bool(attrForgeProbe, true)
 	server := serverSpanOf(ctx)
 	server.SetAttributes(mark)
-	if inner := trace.SpanFromContext(ctx); inner != server {
+	// Compare by SpanContext, never `inner != server`: a span is an
+	// interface, and otel's non-recording spans (what every span is with no
+	// tracer provider installed) hold a TraceState with a slice in it, so
+	// comparing two of them panics.
+	if inner := trace.SpanFromContext(ctx); !inner.SpanContext().Equal(server.SpanContext()) {
 		inner.SetAttributes(mark)
 	}
 }

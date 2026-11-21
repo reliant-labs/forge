@@ -230,6 +230,26 @@ func resolvePromoteFrom(ctx context.Context, version, toEnv, projectDir string, 
 	return out, nil
 }
 
+// resolveDeployFrom is the version `forge env deploy <env> [<v>] --from <src>`
+// plans against: the positional version, or — when --from supplies it — the
+// release the source runs. The resolved source is returned for runPromote,
+// nil when no --from was given.
+//
+// The deploy's bundle step and §8.6 plan need a version BEFORE runPromote
+// resolves the source: planned against "" they record no bundle and compute no
+// digest, so a converger env's plan offered a --yes the control plane then
+// refused plan_required.
+func resolveDeployFrom(ctx context.Context, env, projectDir string, p promoteCmdFlags) (string, *promoteSource, error) {
+	if !p.fromSource().requested() {
+		return p.version, nil, nil
+	}
+	source, err := resolvePromoteFrom(ctx, p.version, env, projectDir, p.fromSource())
+	if err != nil {
+		return "", nil, err
+	}
+	return source.Version, &source, nil
+}
+
 // sameControlPlane refuses a --from across two ledgers.
 //
 // A RELEASE LABEL DOES NOT IDENTIFY THE SAME BYTES ACROSS TWO LEDGERS. "v1.4.0"

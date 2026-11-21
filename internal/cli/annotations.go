@@ -500,7 +500,7 @@ func markerSpecs() []MarkerSpec {
 			AppliesTo: "deps-field",
 			Effect:    "Suppresses `forge lint --optional-deps-guard` on one dereference of a `forge:optional-dep` field that is provably safe by reasoning the analyzer cannot follow.",
 			Placement: "on the dereferencing line, or the line above it",
-			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked",
+			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked: New refuses a nil Stripe in prod",
 		},
 		{
 			Name:      "forge:constructor",
@@ -638,7 +638,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:auth-unscoped-ok",
 			AppliesTo: "function",
-			Effect:    "Acknowledges that an authenticated rpc is intentionally global, so the unscoped_auth audit lists it as acknowledged rather than unscoped. The reason is required: the marker alone is the unfalsifiable comment the audit exists to replace.",
+			Effect:    "Acknowledges that an authenticated rpc is intentionally global, so the unscoped_auth audit lists it as acknowledged rather than unscoped. The reason is required: the marker alone is the unfalsifiable comment the audit exists to replace. A marker with no reason, an empty one, or a lookalike separator acknowledges nothing; the audit lists it under malformed_acknowledgements and `forge lint` warns on it (forge-go-markers-reason-missing).",
 			Placement: "on the handler method's doc comment; the reason follows a colon",
 			Example:   "// forge:auth-unscoped-ok: the plan catalog is the same for every caller\nfunc (s *Service) ListPlans(...)",
 		},

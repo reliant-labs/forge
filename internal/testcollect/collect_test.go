@@ -268,6 +268,40 @@ func TestCollectRefusesAWorkloadNameThatIsNotOnePathElement(t *testing.T) {
 	}
 }
 
+// A reset the process refused zeroed nothing, so it fences nothing off: no
+// marker is written, and the next collect still keeps the counters flushed
+// before it.
+func TestFailedResetKeepsEarlierCounters(t *testing.T) {
+	f := newFixture(t)
+	srv := &coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.300.9000", "LIVE"), status: http.StatusConflict}
+	addr := srv.start(t)
+	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
+	writeFiles(t, cover, "covmeta.aa", "covcounters.aa.200.5000")
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: addr, CoverDir: cover}}
+
+	opts := f.options(target)
+	opts.Reset = true
+	opts.Now = func() time.Time { return time.Unix(0, 6000) }
+	doc := Collect(context.Background(), opts)
+	if wl := doc.Workloads[0]; wl.State != StateFailed {
+		t.Fatalf("a refused reset: state %s, want failed", wl.State)
+	}
+	if _, err := os.Stat(ResetMarker(f.root, "dev", "api")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a refused reset wrote the fence: %v", err)
+	}
+
+	// The process accepts pulls again (a fresh server: the refusing one's
+	// status is read unlocked by its handler).
+	target.Host.PullAddr = (&coverageServer{tar: srv.tar}).start(t)
+	doc, err := collectErr(context.Background(), f.options(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 2 {
+		t.Fatalf("after a refused reset: build %+v, want the live and the earlier flushed counters", b)
+	}
+}
+
 // --reset pulls with ?reset=1 and discards what it got, and fences off the
 // counters flushed before it: the next collect leaves them out. No run is
 // created for a reset.

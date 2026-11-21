@@ -53,6 +53,10 @@ type PackageResult struct {
 	NoTestFiles bool `json:"no_test_files,omitempty"`
 	// BuildFailed is a package that never produced a test binary.
 	BuildFailed bool `json:"build_failed,omitempty"`
+	// BuildID is the name cmd/go reported the package's test build under,
+	// "p [p.test]", when it used one. Its build events are folded into this
+	// package.
+	BuildID string `json:"build_id,omitempty"`
 	// Incomplete is a package with no terminal event: the stream was
 	// truncated. Its tallies are partial.
 	Incomplete bool `json:"incomplete,omitempty"`

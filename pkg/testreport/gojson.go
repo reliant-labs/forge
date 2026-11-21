@@ -172,11 +172,20 @@ func (p *goParser) consume(line string) error {
 	if pkg == "" {
 		pkg = ev.ImportPath
 	}
+	// cmd/go reports a test build under its variant's name, "p [p.test]".
+	// It is package p's build: fold it into p, and remember the name.
+	variant := ""
+	if i := strings.Index(pkg, " ["); i > 0 {
+		variant, pkg = pkg, pkg[:i]
+	}
 	var gp *goPackage
 	if pkg != "" {
 		var err error
 		if gp, err = p.pkg(pkg); err != nil {
 			return err
+		}
+		if variant != "" && gp.res.BuildID == "" {
+			gp.res.BuildID = variant
 		}
 	}
 	switch ev.Action {

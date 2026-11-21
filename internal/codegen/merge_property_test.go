@@ -147,3 +147,38 @@ func TestMergeProperty_ReadOnlyGrants(t *testing.T) {
 		})
 	}
 }
+
+// config_gen.k's ROOTS: one branch reaches a new field from one config block,
+// the other from another. Each root's env and secrets list one entry per
+// line, so the two merge as the render; a one-line list put both on one line
+// and conflicted on every pair of config PRs (reliant#3163, #3125).
+func TestMergeProperty_ConfigRoots(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	leaf := func(env string, sensitive bool) ConfigLeaf {
+		path := strings.ToLower(env)
+		if block, _, ok := strings.Cut(path, "_"); ok && block != "port" && block != "log" {
+			path = block + "." + path
+		}
+		return ConfigLeaf{Path: path, EnvVar: env, Sensitive: sensitive}
+	}
+	roots := func(extraEmail, extraStripe bool) []GraphRoot {
+		cfg := []ConfigLeaf{leaf("PORT", false), leaf("LOG_LEVEL", false), leaf("EMAIL_FROM", false)}
+		if extraEmail {
+			cfg = append(cfg, leaf("EMAIL_REPLY_TO", false), leaf("EMAIL_DKIM_KEY", true))
+		}
+		cfg = append(cfg, leaf("NATS_URL", false), leaf("NATS_SUBJECT", false), leaf("NATS_PASSWORD", true),
+			leaf("RESEND_KEY", true), leaf("TEMPORAL_HOST", false), leaf("STRIPE_API_BASE", false))
+		if extraStripe {
+			cfg = append(cfg, leaf("STRIPE_WEBHOOK_URL", false), leaf("STRIPE_WEBHOOK_SECRET", true))
+		}
+		cfg = append(cfg, leaf("STRIPE_KEY", true))
+		return []GraphRoot{{Name: "server", Args: []string{"server"}, Config: cfg}}
+	}
+	variants := map[string][]GraphRoot{
+		"base": roots(false, false), "ours": roots(true, false),
+		"theirs": roots(false, true), "merged": roots(true, true),
+	}
+	mergeproperty.AssertPlainMergeIsRender(t, "deploy/kcl/config_gen.k", func(v string) []byte {
+		return []byte(RootsKCL(variants[v]))
+	})
+}

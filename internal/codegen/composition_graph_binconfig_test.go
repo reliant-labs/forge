@@ -290,16 +290,25 @@ func TestRootsKCLFor_ProcessSelector(t *testing.T) {
 	for _, want := range []string{
 		`"api" = Root {`,
 		`args = ["server", "api"]`,
-		`env = ["PORT", "LOG_LEVEL", "AUDIT_SINK", "API_GREETING"]`,
-		`secrets = ["DATABASE_URL", "API_SIGNING_KEY"]`,
-		`required_secrets = ["DATABASE_URL", "API_SIGNING_KEY"]`,
-		`env = ["PORT", "LOG_LEVEL", "REGION", "TICK_EVERY"]`,
 		"rootEnvMap = lambda c: RbcProcess, w: any",
 		"_all = rbcProcessEnvMap(c, _r.args, _r.required_secrets + [",
 		"rbcProcessEnvMap(c, (w.command or []) + (w.args or []), w.config_secrets or [])",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("ROOTS lacks %q:\n%s", want, src)
+		}
+	}
+	for _, c := range []struct {
+		root, member string
+		want         []string
+	}{
+		{"api", "env", []string{"PORT", "LOG_LEVEL", "AUDIT_SINK", "API_GREETING"}},
+		{"api", "secrets", []string{"DATABASE_URL", "API_SIGNING_KEY"}},
+		{"api", "required_secrets", []string{"DATABASE_URL", "API_SIGNING_KEY"}},
+		{"worker", "env", []string{"PORT", "LOG_LEVEL", "REGION", "TICK_EVERY"}},
+	} {
+		if got := rootListEntries(t, src, c.root, c.member); !slices.Equal(got, c.want) {
+			t.Errorf("ROOTS[%s].%s = %v, want %v:\n%s", c.root, c.member, got, c.want, src)
 		}
 	}
 }

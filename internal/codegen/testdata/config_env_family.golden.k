@@ -128,8 +128,18 @@ schema RootFamily:
 ROOTS: {str: Root} = {
     "server" = Root {
         args = ["server"]
-        env = ["PORT"]
-        secrets = ["RELIANT_GITHUB_WEBHOOK_SECRET"]
+        env = [
+            # forge:section root server env (root)
+            "PORT",
+
+            # forge:section root server env (end)
+        ]
+        secrets = [
+            # forge:section root server secrets integrations
+            "RELIANT_GITHUB_WEBHOOK_SECRET",
+
+            # forge:section root server secrets (end)
+        ]
         required_secrets = []
         families = [RootFamily {prefix = "RELIANT_OAUTH_", suffix = "_CLIENT_ID"}, RootFamily {prefix = "RELIANT_OAUTH_", suffix = "_CLIENT_SECRET", sensitive = True}, RootFamily {prefix = "RELIANT_FEATURE_", suffix = ""}]
     }

@@ -144,7 +144,8 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 	}
 	for _, r := range sorted {
 		v := rootKCLView{Name: strconv.Quote(r.Name), Args: kclStringList(r.Args)}
-		var env, secrets, required, families []string
+		var env, secrets, required []rootEntry
+		var families []string
 		for _, l := range r.Leaves() {
 			if l.EnvPrefix != "" {
 				// An env family: its expanded variables pass the reach
@@ -158,17 +159,20 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 			if l.EnvVar == "" {
 				continue
 			}
+			e := rootEntry{name: l.EnvVar, block: leafBlock(l.Path)}
 			switch {
 			case l.Sensitive && l.Required:
-				required = append(required, l.EnvVar)
-				secrets = append(secrets, l.EnvVar)
+				required = append(required, e)
+				secrets = append(secrets, e)
 			case l.Sensitive:
-				secrets = append(secrets, l.EnvVar)
+				secrets = append(secrets, e)
 			default:
-				env = append(env, l.EnvVar)
+				env = append(env, e)
 			}
 		}
-		v.Env, v.Secrets, v.Required = kclStringList(env), kclStringList(secrets), kclStringList(required)
+		v.Env = rootList(r.Name, "env", env)
+		v.Secrets = rootList(r.Name, "secrets", secrets)
+		v.Required = rootList(r.Name, "required_secrets", required)
 		if len(families) > 0 {
 			v.Families = "[" + strings.Join(families, ", ") + "]"
 		}
@@ -179,6 +183,58 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 		panic("render config-roots.k.tmpl (a forge bug): " + err.Error())
 	}
 	return string(out)
+}
+
+// rootEntry is one variable a Root member lists, with the config block
+// (the leaf path's first element, "" for a top-level field) it comes from.
+type rootEntry struct{ name, block string }
+
+// leafBlock is the config block a leaf path belongs to: "stripe" for
+// "stripe.secret_key", "" for "database_url".
+func leafBlock(path string) string {
+	if block, _, ok := strings.Cut(path, "."); ok {
+		return block
+	}
+	return ""
+}
+
+// rootList renders one Root member's list (env, secrets, required_secrets)
+// of root, one entry per line, each config block's run of entries in its own
+// forge:section ("root <root> <member> <block>") closed by a blank line, then
+// a "(end)" section holding the closing bracket. Every config PR adds or
+// removes an entry here. On one line, with the whole ROOTS block under one
+// section hash, two PRs whose fields are unrelated conflicted on that line and
+// on that hash (reliant#3163, #3125); now two PRs that reach fields of
+// different blocks change different sections and merge with plain git, as
+// the env maps' sections above already do (writeGrouped).
+func rootList(root, member string, entries []rootEntry) string {
+	if len(entries) == 0 {
+		return "[]"
+	}
+	const indent = "            "
+	group := "root " + root + " " + member
+	var b strings.Builder
+	b.WriteString("[\n")
+	runs := map[string]int{}
+	for i, e := range entries {
+		if i == 0 || e.block != entries[i-1].block {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			block := e.block
+			if block == "" {
+				block = "(root)"
+			}
+			if runs[block]++; runs[block] > 1 {
+				block += fmt.Sprintf(" #%d", runs[block])
+			}
+			b.WriteString(indent + kclSection(group+" "+block))
+		}
+		b.WriteString(indent + strconv.Quote(e.name) + ",\n")
+	}
+	b.WriteString("\n" + indent + kclSection(group+" (end)"))
+	b.WriteString("        ]")
+	return b.String()
 }
 
 // rootFamilyFlags is the RootFamily members past prefix/suffix that differ

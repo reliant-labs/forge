@@ -430,16 +430,49 @@ other is a starting point.
 covered by the same gates as everything else, and it is what stops the
 incidents above from recurring.
 
-**The scanning is generated into your CI, and it is yours to verify.** A new
-project gets a `ci.yml` that runs `govulncheck` and `npm audit` through
-`forge ci vuln-scan` — a gate built to refuse a pass it didn't actually verify,
-so a missing scanner fails the job instead of exiting green over an empty scan.
-Container images get Trivy scans that block on HIGH/CRITICAL, and pushed images
-get an SPDX SBOM, a keyless cosign signature, and a build-provenance
-attestation, all bound to the immutable digest rather than a mutable tag.
-Dependabot ships too. A generated project's `forge ci gate` also runs
-`go-licenses` over its Go dependencies and fails on one whose license type is
-forbidden or restricted; there is no license check for npm dependencies.
+**The scanning has two halves, and they are different things.** The first is
+generated into your CI, and it is yours to verify. A new project gets a `ci.yml`
+that runs `govulncheck` and `npm audit` through `forge ci vuln-scan` — a gate
+built to refuse a pass it didn't actually verify, so a missing scanner fails the
+job instead of exiting green over an empty scan. Its `docker-build` job also
+runs Trivy over the images CI builds, blocking on HIGH/CRITICAL. Dependabot
+ships too. A generated project's `forge ci gate` also runs `go-licenses` over its
+Go dependencies and fails on one whose license type is forbidden or restricted;
+there is no license check for npm dependencies.
+
+The second half is forge itself, and it runs wherever a release is cut — your
+laptop, your CI, `forge env deploy` — with nothing to set up. Every artifact in a
+release gets a CycloneDX SBOM of the bytes that ship, written by forge's pinned
+`syft` (a release binary whose sha256 is compiled into forge, so a swapped
+download is refused). The release records the SBOM's digest as evidence beside
+the artifact's own digest; the bytes live in the machine ledger, and for an
+image or a hosted static site also beside the artifact in its registry as an OCI
+referrer (the `sha256-<hex>` tag fallback where a registry has no referrers API).
+forge then scans each SBOM with `grype` against one vulnerability database shared
+by every project on the machine, and the cut prints what it found (on a machine
+that has the database; the cut never downloads its first 200 MB, so `forge vuln
+db pull` once, and until then the cut says "not scanned"). `forge vuln list`,
+`show`, `scan` and `sbom` read it back. A static site's SBOM comes from its
+lockfile, not from the bundle, so it can overstate what was bundled; an artifact
+forge could not describe is recorded as `unavailable` and reads "not scanned",
+never "clean".
+
+Whether any of that can stop a deploy is the env's `vuln_gate` (and
+`provenance_sbom`). They default to `audit`: findings are recorded and never
+block. One line (`vuln_gate = forge.VulnPolicy { mode = "enforce" }`) makes a
+self-hosted env refuse a promotion that carries a KEV-listed or fixable critical
+advisory, or a release nobody scanned; a control-plane env is judged by its
+control plane instead. A new gate warns for one forge release before it blocks
+(the `vuln-gate` and `sbom-required` lint rollout rows), so a bump never turns a
+pipeline red by surprise. `forge vuln patch <env> --verify` bumps each vulnerable Go
+or npm/pnpm/yarn dependency to the lowest version that fixes it and runs your gate
+over the result. See the `vuln` skill for every verb.
+
+What is generated into the scaffolded `build-images.yml` is the part forge does
+not do itself: a keyless cosign signature and a build-provenance attestation on
+the pushed image, bound to its immutable digest rather than a mutable tag. forge's
+own release path signs nothing; only a control-plane env gets its bundles signed,
+by the platform.
 
 What is **not** there today: secret scanning, SAST, IaC/manifest scanning, and
 an npm license check. The generated workflows are among the less-exercised

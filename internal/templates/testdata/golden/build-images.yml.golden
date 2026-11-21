@@ -119,10 +119,17 @@ jobs:
         # <registry>/<image>@<digest>, from what the build just recorded.
         run: forge registry ref "$FORGE_ENV" --github-output
 
-      # ── Supply chain: SBOM + signing + provenance (M-12) ────────────
+      # ── Supply chain: signing + provenance (M-12) ───────────────────
       # These steps run AFTER the image is pushed and act on the immutable
       # digest forge recorded. Using the digest (not a mutable tag) binds the
-      # SBOM/signature/attestation to the exact bytes pushed.
+      # signature/attestation to the exact bytes pushed.
+      #
+      # No SBOM step lives here: this workflow pushes an image and cuts no
+      # release. forge writes an SBOM per artifact at every release cut
+      # (`forge env build <env> --release`, or the cut inside `forge env
+      # deploy`), records its digest in the release, and attaches it beside
+      # the image as an OCI referrer. The scan job below judges the pushed
+      # image itself with `forge vuln scan`.
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -135,28 +142,13 @@ jobs:
           IMAGE_REF: ${{ steps.ref.outputs.ref }}
         run: cosign sign --yes "$IMAGE_REF"
 
-      - name: Generate SBOM (SPDX JSON)
-        uses: anchore/sbom-action@v0
-        with:
-          image: ${{ steps.ref.outputs.ref }}
-          format: spdx-json
-          artifact-name: sbom-demo.spdx.json
-          output-file: sbom-demo.spdx.json
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-demo
-          path: sbom-demo.spdx.json
-          if-no-files-found: error
-
       - name: Attest build provenance
         # GitHub's attestation store only accepts public repositories (or
         # private ones on GitHub Enterprise Cloud). Elsewhere the step fails
         # with "Feature not available for user-owned private repositories"
         # AFTER the image is pushed, turning every push to main red. The image
-        # is still cosign-signed and ships an SBOM above; this condition only
-        # skips the SLSA provenance upload. On Enterprise Cloud, drop it.
+        # is still cosign-signed above; this condition only skips the SLSA
+        # provenance upload. On Enterprise Cloud, drop it.
         if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v1
         with:
@@ -164,7 +156,7 @@ jobs:
           subject-digest: ${{ steps.ref.outputs.digest }}
           push-to-registry: true
 
-  trivy-scan:
+  vuln-scan:
     name: Vulnerability Scan
     needs: build-push
     runs-on: ubuntu-latest
@@ -204,25 +196,73 @@ jobs:
           go install "$forge/cmd/forge@${v}"
 
       - name: Log in to the declared registry
-        # The scanner pulls the image, so it needs the same read access.
+        # `forge vuln scan --image` reads the image from its registry with the
+        # docker credential this step writes.
         env:
           LOGIN_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: printf '%s' "$LOGIN_TOKEN" | forge registry login "staging" --username "${{ github.actor }}" --password-stdin
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@v0.35.0
+      # The grype vulnerability database is 205 MB to download and 3.3 GiB
+      # unpacked. It is cached per UTC day: the primary key is today's date,
+      # the fallback the newest earlier day. The database's own key
+      # (`forge vuln db status --json`'s cache_key, its build date) cannot be
+      # the restore key: it is only known once the database is on disk. So:
+      #   - a later run today hits today's key exactly: no download, no save;
+      #   - the first run of a day restores the newest earlier cache, `forge
+      #     vuln db pull` downloads only when the listing names a newer build,
+      #     and the result is saved under today's key;
+      #   - a cold cache downloads once.
+      # Drop the cache steps to download on every run instead.
+      - name: Name today's vulnerability database cache
+        id: vulndb-key
+        # FORGE_VULN_DB_DIR is where forge keeps the database; set here so it
+        # is the directory the cache steps restore and save.
+        run: |
+          echo "FORGE_VULN_DB_DIR=$HOME/.cache/forge/vulndb" >> "$GITHUB_ENV"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the vulnerability database
+        id: vulndb
+        uses: actions/cache/restore@v4
         with:
-          # The digest-pinned ref the build pushed — the exact bytes scanned.
-          image-ref: ${{ needs.build-push.outputs.ref }}
-          format: table
-          exit-code: "1"
-          severity: CRITICAL,HIGH
+          path: ${{ env.FORGE_VULN_DB_DIR }}
+          key: forge-vulndb-v6-${{ steps.vulndb-key.outputs.day }}
+          restore-keys: forge-vulndb-v6-
+
+      - name: Refresh the vulnerability database
+        id: vulndb-pull
+        # Skipped on an exact hit: today's cache was saved after a pull.
+        # Otherwise it downloads only when the listing has a newer build than
+        # the one restored (or none was).
+        if: steps.vulndb.outputs.cache-hit != 'true'
+        run: forge vuln db pull
+
+      - name: Scan the pushed image
+        # The digest-pinned ref the build pushed — the exact bytes scanned.
+        # forge's pinned grype, judged by the default vuln_gate: a KEV-listed
+        # advisory, or a critical that has a fix, fails the job (exit 1). A
+        # scan that could not run, or a database older than 5 days, fails it
+        # too (exit 2): an unscanned image is never a pass. This judges by
+        # the default rule and applies no exemptions; the env's own vuln_gate
+        # (and its `forge vuln exempt`) judges the release at its promotion.
+        env:
+          IMAGE_REF: ${{ needs.build-push.outputs.ref }}
+        run: forge vuln scan --image "$IMAGE_REF"
+
+      - name: Save the vulnerability database
+        # Under today's key, whatever the scan found, once the refresh left a
+        # current database in place; never after an exact hit.
+        if: always() && steps.vulndb-pull.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.FORGE_VULN_DB_DIR }}
+          key: forge-vulndb-v6-${{ steps.vulndb-key.outputs.day }}
 
   summary:
     name: Build Summary
     needs:
       - build-push
-      - trivy-scan
+      - vuln-scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: always()
@@ -235,7 +275,7 @@ jobs:
             echo "| Image | Status |"
             echo "|-------|--------|"
             echo "| demo | ${{ needs.build-push.result }} |"
-            echo "| trivy scan | ${{ needs.trivy-scan.result }} |"
+            echo "| vulnerability scan | ${{ needs.vuln-scan.result }} |"
             echo ""
             echo "**Commit:** \`$GITHUB_SHA\`"
             echo "**Tag:** \`sha-${GITHUB_SHA::7}\`"

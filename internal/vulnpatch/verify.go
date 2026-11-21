@@ -26,8 +26,10 @@ const (
 // DefaultVerify is the project's own gate for a patched tree at dir: `task
 // test:short` when its Taskfile has that task; else, for a Go module, `go
 // build ./... && go test -short ./...`; else the package manager's `test`
-// when package.json has a test script. ("", VerifySourceNone) when the tree
-// has none of them; the rescan still runs.
+// when package.json has a test script; else, for a uv or poetry project
+// that uses pytest, `uv run pytest -q` or `poetry run pytest -q`.
+// ("", VerifySourceNone) when the tree has none of them (a project pinned
+// only by requirements files among them); the rescan still runs.
 func DefaultVerify(dir string) (command, source string) {
 	for _, name := range []string{"Taskfile.yml", "Taskfile.yaml", "taskfile.yml", "taskfile.yaml", "Taskfile.dist.yml", "Taskfile.dist.yaml"} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -59,6 +61,9 @@ func DefaultVerify(dir string) (command, source string) {
 			pm = string(EcosystemYarn)
 		}
 		return pm + " test", pm
+	}
+	if c, src := pythonVerify(dir); c != "" {
+		return c, src
 	}
 	return "", VerifySourceNone
 }
@@ -217,7 +222,7 @@ func (p *Plan) resultDirs(i int) (dirs []string, minTo string) {
 				continue
 			}
 			dirs = appendUnique(dirs, b.dir)
-			if minTo == "" || compareVersions(b.to, minTo) < 0 {
+			if minTo == "" || compareIn(b.eco, b.to, minTo) < 0 {
 				minTo = b.to
 			}
 		}
@@ -235,10 +240,21 @@ func samePackage(a, b vulnscan.Package) bool {
 	}
 	ka, ea := classify(a)
 	kb, eb := classify(b)
-	return ka == kb && ea == eb && ka != kindOther && a.Name == b.Name
+	return ka == kb && ea == eb && ka != kindOther && packageName(ka, a.Name) == packageName(kb, b.Name)
 }
 
-// purlBase is a purl's type, namespace and name: pkg:npm/%40s/x@1.0?a=b → pkg:npm/%40s/x.
+// packageName is a package's identity within its kind: a PyPI name as PEP
+// 503 normalizes it ("PyYAML" from an image is "pyyaml" from a requirements
+// file), any other as it is.
+func packageName(k packageKind, name string) string {
+	if k == kindPython {
+		return pyName(name)
+	}
+	return name
+}
+
+// purlBase is a purl's type, namespace and name: pkg:npm/%40s/x@1.0?a=b →
+// pkg:npm/%40s/x; a PyPI name normalized (pkg:pypi/PyYAML@6.0 → pkg:pypi/pyyaml).
 func purlBase(purl string) string {
 	if i := strings.IndexAny(purl, "?#"); i >= 0 {
 		purl = purl[:i]
@@ -248,18 +264,28 @@ func purlBase(purl string) string {
 			purl = purl[:slash+at]
 		}
 	}
-	return strings.ToLower(purl)
+	purl = strings.ToLower(purl)
+	if name, ok := strings.CutPrefix(purl, "pkg:pypi/"); ok {
+		return "pkg:pypi/" + pyName(name) // PEP 503, as the purl spec says
+	}
+	return purl
 }
 
 // bumpedCopy reports whether a rescan that reports r's advisory on r's
 // package at version got is reporting the copy r bumped: still at the
 // installed version (the bump did not take), or at minTo or later (the fix
 // did not fix it). Any other version is another copy of the package. A Go
-// standard library version is compared without its "go" prefix.
+// standard library version is compared without its "go" prefix; a PyPI
+// version as PEP 440 orders it ("2.31" is "2.31.0").
 func bumpedCopy(r *Result, got, minTo string) bool {
 	installed := r.Installed
-	if kind, _ := classify(r.Package); kind == kindGoStdlib {
+	switch kind, _ := classify(r.Package); kind {
+	case kindGoStdlib:
 		got, installed, minTo = goBare(got), goBare(installed), goBare(minTo)
+	case kindPython:
+		_, okGot := parsePyVersion(got)
+		_, okMin := parsePyVersion(minTo)
+		return pyEqual(got, installed) || okGot && okMin && comparePyVersions(got, minTo) >= 0
 	}
 	return sameVersion(got, installed) || atLeast(got, minTo)
 }

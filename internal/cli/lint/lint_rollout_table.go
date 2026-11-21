@@ -8,14 +8,20 @@
 //
 // ── Adding a rule ────────────────────────────────────────────────────────
 //
-// For a new rule introduced in NEXT_VERSION v1.9.0 that needs a warning
+// For a new rule introduced in NEXT_VERSION v1.10.0 that needs a warning
 // window, add an explicit, reasoned opt-in to `newRules`:
 //
-//	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
 //
 // Until is exclusive: it becomes the effective GatesFrom used by lint and
-// upgrade reports. This exception is for v1.9.0 introductions only; it does
+// upgrade reports. This exception is for v1.10.0 introductions only; it does
 // not reopen any window closed in #2410 or move with NEXT_VERSION.
+//
+// The cohort was approved as v1.9.0 introductions gating from v1.10.0. Tag
+// v1.9.0 was cut at a commit before every one of them merged, so none shipped
+// in v1.9.0, and as declared they would have gated on arrival in v1.10.0. The
+// owner moved the whole cohort one release (2026-11-21, "Move whole cohort"):
+// they ship in v1.10.0, warn through it, and gate from v1.11.0.
 
 package lint
 
@@ -263,26 +269,32 @@ var shippedRules = []rolloutGroup{
 	// no reason, which its recognizer silently ignored (FG-32). Advisory at
 	// any pin; the row lets lint.rules raise it.
 	{IntroducedIn: "v1.9.0", Rules: []string{ruleGoMarkersReasonMissing}},
+	// `forge ci gate`'s flake-check step: a test the change adds or edits
+	// failed one of its three runs (`forge test flakes gate`). Advisory at
+	// any pin — for customers it reports and never fails; the row lets
+	// lint.rules raise it (`flake-check: error`), as forge, control-plane
+	// and reliant do.
+	{IntroducedIn: "v1.9.0", Rules: []string{RuleFlakeCheck}},
 }
 
-// newRules holds new v1.9.0 rules with explicit, owner-approved grace.
+// newRules holds new v1.10.0 rules with explicit, owner-approved grace.
 var newRules = []rolloutGroup{
 	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
 	// what it collects. Only the uncollected dashboard series is an error;
 	// the other three are advisory at any pin, and the row is what lets
 	// lint.rules raise them.
-	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
+	{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
 		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
 	}},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
 		Fix:          "forge lint --install",
 		Rules:        []string{ruleFrontendNoInstall},
 	},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
 		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
 	},
 	// The vulnerability gate made real (rollout_grade.go): an env's declared
@@ -292,18 +304,18 @@ var newRules = []rolloutGroup{
 	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
 	// rollout (forge#2468 §1.8).
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
 		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
 	},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
 		Rules:        []string{staticexport.RulePartialPrerender},
 	},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
 		Rules:        dbanalyze.QueryRuleIDs(),
 	},
 }

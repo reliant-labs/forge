@@ -77,6 +77,8 @@ type plannedBump struct {
 	direct   bool
 	results  []int
 	done     *Bump
+	py       *pyBump // a Python bump's manifest and plan
+	rank     int     // Apply runs a manifest after those of lower rank
 	// line is a Dockerfile bump's FROM line (1-based); toolchain marks a
 	// go.mod or go.work toolchain directive bump.
 	line      int
@@ -89,11 +91,13 @@ type index struct {
 	lockfiles   []*jsLockfile
 	dockerfiles []*dockerfile
 	goWork      bool
+	python      []*pyManifest
+	pyOther     []string // Python lockfiles with no patcher (Pipfile.lock, pdm.lock)
 }
 
 // skipDirs are never searched for manifests: vendored and installed
 // dependencies, fixtures, and tool state.
-var skipDirs = map[string]bool{"node_modules": true, "vendor": true, "testdata": true}
+var skipDirs = map[string]bool{"node_modules": true, "vendor": true, "testdata": true, "site-packages": true, "__pycache__": true}
 
 func scan(dir string) (*index, []string, error) {
 	idx := &index{}
@@ -134,10 +138,15 @@ func scan(dir string) (*index, []string, error) {
 					return nil
 				}
 				idx.dockerfiles = append(idx.dockerfiles, df)
+				return nil
+			}
+			if note := idx.addPython(dir, path); note != "" {
+				notes = append(notes, note)
 			}
 		}
 		return nil
 	})
+	idx.rankPython()
 	return idx, notes, err
 }
 
@@ -185,12 +194,10 @@ func (p *Plan) add(ctx context.Context, f vulnscan.Finding, idx *index, opts Opt
 		Installed: f.Package.Version, Status: StatusSkipped,
 	}
 	kind, eco := classify(f.Package)
-	if kind == kindJS && !wantsAnyJS(opts) || kind != kindJS && eco != "" && !opts.wants(eco) {
+	if kind == kindJS && !wantsAnyJS(opts) || kind == kindPython && !wantsAnyPython(opts) || kind != kindJS && eco != "" && !opts.wants(eco) {
 		return
 	}
 	switch kind {
-	case kindPython:
-		r.Reason = "a Python package: no patcher yet"
 	case kindOther:
 		r.Reason = fmt.Sprintf("no patcher for %s packages", orUnknown(f.Package.Type))
 	}
@@ -211,8 +218,11 @@ func (p *Plan) add(ctx context.Context, f vulnscan.Finding, idx *index, opts Opt
 		return
 	}
 	choose := ChooseTarget
-	if kind == kindGoStdlib {
+	switch kind {
+	case kindGoStdlib:
 		choose = chooseGoTarget
+	case kindPython:
+		choose = choosePythonTarget // PEP 440, not semver
 	}
 	target, err := choose(f.Package.Version, f.FixedIn, opts.AllowMajor)
 	if err != nil {
@@ -234,6 +244,10 @@ func (p *Plan) add(ctx context.Context, f vulnscan.Finding, idx *index, opts Opt
 		p.resolveGoStdlib(ctx, &r, idx, at)
 	case kindJS:
 		if !p.resolveJS(&r, f, idx, opts, at) {
+			return
+		}
+	case kindPython:
+		if !p.resolvePython(&r, f, idx, opts, at) {
 			return
 		}
 	}
@@ -424,7 +438,7 @@ var overridePath = map[Ecosystem][]string{
 func (p *Plan) plan(b *plannedBump, result int) {
 	for _, have := range p.bumps {
 		if have.manifest == b.manifest && have.pkg == b.pkg {
-			if compareVersions(b.to, have.to) > 0 {
+			if compareIn(b.eco, b.to, have.to) > 0 {
 				have.to = b.to
 			}
 			have.results = appendInt(have.results, result)

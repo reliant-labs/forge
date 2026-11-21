@@ -607,11 +607,13 @@ _obs_browser_off = lambda b: Bundle -> bool {
 }
 
 # The env is opted in to session replay, so the platform keeps replay events:
-# observability is on and a frontend switched replay on with telemetry.replay.
-# A frontend's switch counts only while browser telemetry is on: with it off,
-# nothing records (see _runtime_config_declared), so nothing is opted in for it.
+# observability is on and either the deprecated env-wide signals.replay is
+# set or a frontend switched replay on with telemetry.replay. A frontend's
+# switch counts only while browser telemetry is on: with it off, nothing
+# records (see _runtime_config_declared), so nothing is opted in for it.
 _obs_replay_opted_in = lambda b: Bundle -> bool {
-    _obs_on(b) and not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }
+    _obs_on(b) and (b.observability.signals.replay \
+        or (not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }))
 }
 
 # The frontend switched session replay on (BrowserTelemetry.replay).
@@ -2367,7 +2369,8 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
-            # Derived, as policy.opt_in is: any frontend's telemetry.replay.
+            # Derived, as policy.opt_in is: the deprecated env-wide switch
+            # or any frontend's telemetry.replay.
             "replay": _obs_replay_opted_in(b)
         }
         # The opt-out (and the one opt-in), resolved: recorded in the release shape.
@@ -3320,33 +3323,38 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #
 #   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
+#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY (deprecated: a frontend
+#                   that sets telemetry.replay gets OTEL_REPLAY from
+#                   _telemetry_runtime_config, and the build variable is not
+#                   carried over it)
 #
-# (Session replay is not one of them: it is switched on per frontend with
-# telemetry.replay, which _telemetry_runtime_config renders as OTEL_REPLAY. A
-# {NEXT_PUBLIC_,VITE_}OTEL_REPLAY build variable is not carried.)
-#
-# otel_gen.ts reads these from the runtime config: a build variable is baked
-# into the bundle and follows that build into every environment it is
-# promoted to. So each declaration is carried into the runtime config (the
-# build variable still renders, for code that reads it). An env_vars literal
-# outranks `config`, as it does for the build variable; a secret or
-# config-map entry is never carried, because config.js is public. React
-# Native has no runtime config document, so it gets nothing.
+# otel_gen.ts reads these from the runtime config first (a build variable is
+# only its deprecated fallback): a build variable is baked into the bundle and
+# follows that build into every environment it is promoted to. So each
+# declaration is carried into the runtime config too (the build variable still
+# renders, for code that reads it). An env_vars literal outranks `config`, as
+# it does for the build variable; a secret or config-map entry is never
+# carried, because config.js is public. React Native has no runtime config
+# document, so it gets nothing.
 #
 # A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
 # control plane, which sets ENVIRONMENT to the environment it actually serves;
-# a literal published in the StaticSite spec would override that, so it stays
-# out of the spec. The ingest path is the author's explicit choice for that
-# environment, and the spec already carries an author's runtime_config the
-# same way.
+# a literal published in the StaticSite spec would override that (and a fixed
+# OTEL_REPLAY carried from a build variable would apply that build's replay
+# choice wherever the spec lands), so those stay out of the spec. A hosted
+# frontend switches replay on per env with telemetry.replay instead. The
+# ingest path is the author's explicit choice for that environment, and the
+# spec already carries an author's runtime_config the same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
     _environment = _build_var_literal(f, "ENVIRONMENT", _c.environment if _c and _c.environment else None)
+    _replay = _build_var_literal(f, "OTEL_REPLAY", None)
     _hosted = _frontend_hosted(f)
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
-        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {})
+        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted and not _frontend_replay_on(f) else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable

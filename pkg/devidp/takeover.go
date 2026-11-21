@@ -67,7 +67,24 @@ var ErrUnverifiedAccount = errors.New("the account's address is not verified: no
 //
 // Nothing can add a credential between that read and the proof: every call
 // that adds one refuses an unverified account.
+//
+// A supplied (deprecated) ProofLocker is taken around the proof of an
+// unverified account, as it always was; one that cannot be taken refuses it.
 func (r *SignInRoutes) proveAddress(ctx context.Context, before User, proof func() error) error {
+	if before.EmailVerified {
+		return proof()
+	}
+	release, err := r.lockAccount(ctx, before.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return r.proveAddressHeld(ctx, before, proof)
+}
+
+// proveAddressHeld is proveAddress for a caller that already holds the
+// account's proof lock (HandleVerify, whose hold covers the installs too).
+func (r *SignInRoutes) proveAddressHeld(ctx context.Context, before User, proof func() error) error {
 	if before.EmailVerified {
 		return proof()
 	}

@@ -9,8 +9,7 @@ import (
 
 // astutil.go — the source-rewriting helpers several codemods share.
 
-// txEdit replaces src[start:end] with text. (The name predates the
-// tx-isolation codemod's removal; connect-errors still spells it so.)
+// txEdit replaces src[start:end] with text.
 type txEdit struct {
 	start, end int
 	text       string

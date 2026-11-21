@@ -15,6 +15,14 @@ type ShapeDiff struct {
 	// reader must say "no recorded config" rather than present the diff as
 	// a real comparison — empty and unknown must never render alike.
 	LiveUnknown bool `json:"live_unknown,omitempty"`
+	// KindChanged is never set.
+	//
+	// Deprecated: an env has no placement kind any more — placement is per
+	// workload (docs/design/per-workload-placement.md), and a part that moves
+	// between placements is reported in RuntimeChanges. Kept only so a reader
+	// built against an older forge still decodes the document; removed with
+	// Shape.Kind.
+	KindChanged *KindChange `json:"kind_changed,omitempty"`
 
 	Added   []ShapeObject  `json:"added,omitempty"`
 	Removed []ShapeObject  `json:"removed,omitempty"`
@@ -42,6 +50,14 @@ type ObjectMove struct {
 	Key  ObjectKey `json:"key"`
 	From string    `json:"from"`
 	To   string    `json:"to"`
+}
+
+// KindChange is a disagreement about an env's kind.
+//
+// Deprecated: see ShapeDiff.KindChanged.
+type KindChange struct {
+	Live      EnvKind `json:"live"`
+	Candidate EnvKind `json:"candidate"`
 }
 
 // ObjectChange is one object present on both sides whose hash differs.

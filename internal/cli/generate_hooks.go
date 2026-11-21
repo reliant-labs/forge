@@ -30,10 +30,10 @@ import (
 // multi-minute generate, so a skip would buy nothing worth that risk. A hook
 // whose tool is missing fails with the tool's name and the fix.
 //
-// FORGE_NO_GIT_HOOKS is a different thing: it stops forge configuring GIT
-// hooks in the clone (githooks.go). Agents set it expecting it to skip these,
-// so when it is set the step says, at the point they would look, that it does
-// not.
+// FORGE_NO_GIT_HOOKS (formerly FORGE_NO_HOOKS) is a different thing: it stops
+// forge configuring GIT hooks in the clone (githooks.go). Agents set the old
+// name expecting it to skip these, so when either is set the step says, at
+// the point they would look, that it does not.
 
 // generateHooksStep names the step in the plan, in presets and in output.
 const generateHooksStep = "generate hooks (forge.yaml)"

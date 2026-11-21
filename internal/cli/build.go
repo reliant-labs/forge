@@ -306,9 +306,17 @@ mirror config inside k3d resolves that reference at pull time).`,
 				}
 				opts.env = args[0]
 			}
-			// COMPILE-ONLY. Publishing is `forge env build <env>`, where
-			// the environment is the subject rather than an optional
-			// modifier.
+			// COMPILE-ONLY. Publishing moved to `forge env build <env>`,
+			// where the environment is the subject rather than an optional
+			// modifier. Refused here before any work, naming the
+			// replacement command. See refuseBuildPublishFlag in
+			// env_build.go.
+			if cmd.Flags().Changed("push") {
+				return refuseBuildPublishFlag("push", opts.env)
+			}
+			if cmd.Flags().Changed("release") {
+				return refuseBuildPublishFlag("release", opts.env)
+			}
 			if _, err := requireFeature(config.FeatureBuild); err != nil {
 				return err
 			}
@@ -326,14 +334,25 @@ mirror config inside k3d resolves that reference at pull time).`,
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, rebuildFlagHelp)
+	// --push and --release are REGISTERED but REFUSED here, on purpose.
+	// They moved to `forge env build <env>`, and the two surfaces fail very
+	// differently: an unregistered flag gets cobra's bare "unknown flag:
+	// --push", which tells a user with a working command in their shell
+	// history nothing about where it went. Registered, the RunE answers with
+	// the exact replacement. Hidden so they do not advertise themselves in
+	// --help as things this command can do.
+	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to 'forge env build <env> --push' — a push destination is declared per workload in an env's render, so publishing is an environment act")
+	_ = cmd.Flags().MarkHidden("push")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: the env's declared platform, then forge.yaml deploy.target_arch, then the host arch)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
 	// as the flag's argument-name placeholder, so a quoted command rendered
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
+	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
+	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to 'forge env build <env> --release <version>' — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
+	_ = cmd.Flags().MarkHidden("release")
 	cmd.AddCommand(newBuildReceiptCmd())
 
 	return cmd

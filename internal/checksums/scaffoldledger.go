@@ -77,8 +77,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // ScaffoldedDir holds the birth ledger, ONE FILE PER PATH: the record of
@@ -374,9 +372,12 @@ func readScaffoldLedger(abs string) (led map[string]ScaffoldEntry, reported []st
 // saveScaffoldLedger persists root's ledger: it makes ScaffoldedDir hold
 // exactly one entry file per recorded path, rewriting only the entries that
 // changed, removing those of paths no longer recorded (and the directories
-// that empties), and deleting the legacy one-file ledger. An empty ledger
-// leaves no files at all (the same no-bookkeeping-churn rule Save applies
-// to the other state). Best-effort by the same discipline as the load: a
+// that empties), and deleting the legacy one-file ledger once — and only
+// once — every entry and every reported absence is persisted and the
+// .gitignore line moved: until then the legacy file is the only complete
+// copy of the project's scaffold history, so any failure keeps it. An
+// empty ledger leaves no files at all (the same no-bookkeeping-churn rule
+// Save applies to the other state). Best-effort by the same discipline as the load: a
 // ledger we cannot write must not abort a write that already succeeded.
 func saveScaffoldLedgerLocked(root string) {
 	abs, err := filepath.Abs(root)
@@ -397,10 +398,14 @@ func saveScaffoldLedgerLocked(root string) {
 		_, _, onDisk = readScaffoldLedger(abs)
 	}
 	want := make(map[string][]byte, len(led))
+	// persisted stays true only while every write and removal this save
+	// makes succeeds; the legacy ledger is deleted only then.
+	persisted := true
 	for p, e := range led {
 		e.AbsentReported = reported[p]
 		data, merr := json.Marshal(e)
 		if merr != nil {
+			persisted = false
 			continue
 		}
 		want[ScaffoldEntryPath(p)] = append(data, '\n')
@@ -421,11 +426,14 @@ func saveScaffoldLedgerLocked(root string) {
 		full := filepath.Join(abs, filepath.FromSlash(rel))
 		RecordPreWriteAbs(full)
 		if os.MkdirAll(filepath.Dir(full), 0o755) != nil {
+			persisted = false
 			continue
 		}
-		if atomicfile.WriteFile(full, want[rel], 0o644) == nil {
-			onDisk[rel] = want[rel]
+		if writeStateFile(full, want[rel], 0o644) != nil {
+			persisted = false
+			continue
 		}
+		onDisk[rel] = want[rel]
 	}
 	dirRoot := filepath.Join(abs, filepath.FromSlash(ScaffoldedDir))
 	for rel := range onDisk {
@@ -434,19 +442,21 @@ func saveScaffoldLedgerLocked(root string) {
 		}
 		full := filepath.Join(abs, filepath.FromSlash(rel))
 		RecordPreWriteAbs(full)
-		if err := os.Remove(full); err == nil || os.IsNotExist(err) {
-			delete(onDisk, rel)
-			pruneEmptyDirs(filepath.Dir(full), dirRoot)
+		if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+			persisted = false
+			continue
 		}
+		delete(onDisk, rel)
+		pruneEmptyDirs(filepath.Dir(full), dirRoot)
 	}
 	scaffoldOnDisk[abs] = onDisk
 	legacy := filepath.Join(abs, filepath.FromSlash(LegacyScaffoldedFile))
-	if _, serr := os.Stat(legacy); serr == nil {
-		RecordPreWriteAbs(legacy)
-		_ = os.Remove(legacy)
-		if len(want) > 0 {
-			migrateGitignoreLine(abs, "!"+LegacyScaffoldedFile, "!"+ScaffoldedDir+"/")
+	if _, serr := os.Stat(legacy); serr == nil && persisted {
+		if len(want) > 0 && migrateGitignoreLine(abs, "!"+LegacyScaffoldedFile, "!"+ScaffoldedDir+"/") != nil {
+			return // the entries are written but not yet committed: keep the legacy ledger
 		}
+		RecordPreWriteAbs(legacy)
+		_ = os.Remove(legacy) // a failed removal leaves the legacy file, which the entries override on load
 	}
 }
 

@@ -149,7 +149,7 @@ func saveHashCerts(root string, certs map[string]string) error {
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
-		if err := atomicfile.WriteFile(full, want, 0o644); err != nil {
+		if err := writeStateFile(full, want, 0o644); err != nil {
 			return err
 		}
 	}
@@ -168,17 +168,28 @@ func saveHashCerts(root string, certs map[string]string) error {
 		}
 		pruneEmptyDirs(filepath.Dir(full), filepath.Join(root, filepath.FromSlash(HashesDir)))
 	}
+	// The .gitignore line moves before the legacy manifest goes: until
+	// both the certificates and the line that commits them are written,
+	// the manifest is the only committed copy of these hashes.
+	if len(certs) > 0 {
+		if err := migrateHashesNegation(root); err != nil {
+			return err
+		}
+	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(LegacyHashesFile))); err == nil {
 		recordPreWrite(root, LegacyHashesFile)
 		if err := os.Remove(filepath.Join(root, filepath.FromSlash(LegacyHashesFile))); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
-	if len(certs) > 0 {
-		migrateHashesNegation(root)
-	}
 	return nil
 }
+
+// writeStateFile writes one of forge's state files (a certificate, a
+// scaffold-ledger entry, the .gitignore line that commits them). A
+// variable so a test can fail one write without permission bits, which
+// Windows does not have.
+var writeStateFile = atomicfile.WriteFile
 
 // legacyHashesNegation is the .gitignore line that committed the legacy
 // manifest; hashesNegation commits the certificate directory instead.
@@ -194,19 +205,24 @@ const (
 // certificates would be ignored and every clone would see its JSON outputs
 // as uncertified. Only that exact line is touched: .gitignore is the
 // user's, and journaled like any other write so a failed run restores it.
-func migrateHashesNegation(root string) {
-	migrateGitignoreLine(root, legacyHashesNegation, hashesNegation)
+func migrateHashesNegation(root string) error {
+	return migrateGitignoreLine(root, legacyHashesNegation, hashesNegation)
 }
 
 // migrateGitignoreLine rewrites the project .gitignore's line from to to,
 // touching only that exact line (.gitignore is the user's). A file that
 // already holds to keeps one copy. Journaled like any other write, so a
-// failed run restores it.
-func migrateGitignoreLine(root, from, to string) {
+// failed run restores it. A project with no .gitignore has nothing to
+// migrate; any other read or write failure is returned, so the caller keeps
+// the legacy file the line committed.
+func migrateGitignoreLine(root, from, to string) error {
 	full := filepath.Join(root, ".gitignore")
 	data, err := os.ReadFile(full)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("migrate .gitignore: %w", err)
 	}
 	lines := strings.SplitAfter(string(data), "\n")
 	changed, present := false, false
@@ -220,7 +236,7 @@ func migrateGitignoreLine(root, from, to string) {
 		}
 	}
 	if !changed {
-		return
+		return nil
 	}
 	out := strings.Join(lines, "")
 	if present {
@@ -228,7 +244,10 @@ func migrateGitignoreLine(root, from, to string) {
 		out = strings.Replace(out, to+"\n", "", 1)
 	}
 	recordPreWrite(root, ".gitignore")
-	_ = atomicfile.WriteFile(full, []byte(out), 0o644)
+	if err := writeStateFile(full, []byte(out), 0o644); err != nil {
+		return fmt.Errorf("migrate .gitignore: %w", err)
+	}
+	return nil
 }
 
 // loadHashCertFiles maps each certificate file under root's HashesDir

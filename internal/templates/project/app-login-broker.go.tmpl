@@ -149,6 +149,20 @@ func RequireUpstreamTokens() BrokerOption {
 func WithSessions(m *session.Manager) BrokerOption {
 	return func(b *loginBroker) { b.sessions = m }
 }
+{{- if .NoEnvironmentField}}
+
+// WithDevelopment tells the broker this process is local development, which
+// your config does not say beside the broker's settings: pass the same
+// decision the rest of the process makes (your tier helper, or
+// config.ModeOf on the config that carries the mode). true marks a new
+// account's address verified without mail, serves sign-up, and sets the
+// session cookie without Secure (plain http) by its plain name — which the
+// auth interceptor must then read too. Unset or false is a deployed
+// environment, the safe default. NEVER pass true outside local development.
+func WithDevelopment(dev bool) BrokerOption {
+	return func(b *loginBroker) { b.devMode = dev }
+}
+{{- end}}
 
 // RegisterLoginBroker mounts the native sign-in API.
 func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger, opts ...BrokerOption) {
@@ -204,6 +218,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 		// proxy saw (trusted_proxy_hops; 0 is the connection's peer).
 		proxyHops: int(cfg.TrustedProxyHops),
 {{- end}}
+{{- if not .NoEnvironmentField}}
 		// Marks a new account's address verified without a mail round trip.
 		// A dev stack has no mail server, so an unverified address strands
 		// the account behind a step nothing can deliver.
@@ -223,6 +238,16 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 		// Secure cookies everywhere except local development, where the
 		// dev server is plain http and a Secure cookie would be dropped.
 		secureCookie: cfg.Environment != "development",
+{{- else}}
+		// Your config declares no environment field beside these settings
+		// (the process's tier lives elsewhere: another config, or your own
+		// code), so this broker cannot tell local development from a
+		// deployed environment by itself. It runs as DEPLOYED — a Secure
+		// __Host- cookie, no development shortcuts, sign-up only as the
+		// policy or auth_self_signup allows — unless the caller passes
+		// WithDevelopment(true). The three settings below follow from it,
+		// after the options.
+{{- end}}
 		appBase:      appBaseFrom(cfg.IdpLoginUri),
 
 		forgotByAddress: newAttemptLimiter(3, time.Hour),
@@ -232,6 +257,15 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 	for _, opt := range opts {
 		opt(broker)
 	}
+{{- if .NoEnvironmentField}}
+	// Public sign-up: on in local development, OFF in every deployed
+	// environment unless its config opts in. See the RegisterPath mount
+	// below before turning it on.
+	broker.legacySelfSignup = broker.devMode{{if .SelfSignupField}} || cfg.AuthSelfSignup{{end}}
+	// Secure cookies everywhere except local development, where the dev
+	// server is plain http and a Secure cookie would be dropped.
+	broker.secureCookie = !broker.devMode
+{{- end}}
 	if broker.sessions != nil {
 		// A session can outlive its access token only with a refresh
 		// token, which the issuer grants for offline_access.

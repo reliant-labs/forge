@@ -52,6 +52,14 @@ type LoginBrokerTemplateData struct {
 	// broker keeping sessions server-side asks the issuer for (with
 	// offline_access added). Without it the standard OIDC set is asked for.
 	ScopesField bool
+	// NoEnvironmentField reports that config declares no environment, which
+	// the broker otherwise reads to tell local development (exactly
+	// "development") from a deployed environment. A process that loads the
+	// broker's settings from its own command config keeps its tier on
+	// another config, and may not declare the same field twice; it gets a
+	// broker that runs as deployed unless the caller passes WithDevelopment.
+	// Negative so the zero value renders the broker every scaffold has had.
+	NoEnvironmentField bool
 }
 
 // Go names of the optional broker fields.
@@ -61,6 +69,7 @@ const (
 	audienceConfigField    = "JwtAudience"
 	proxyHopsConfigField   = "TrustedProxyHops"
 	scopesConfigField      = "OidcScopes"
+	environmentConfigField = "Environment"
 )
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
@@ -158,6 +167,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) (bool, erro
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
 		ScopesField:                           declares(scopesConfigField),
+		NoEnvironmentField:                    !declares(environmentConfigField),
 	})
 	if err != nil {
 		return false, fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

@@ -348,9 +348,16 @@ func (p *pgoPuller) pull(ctx context.Context, b PGOBinary) pgoPullResult {
 }
 
 // pgoWithinWorkspace reports whether target lies under the directory holding
-// the project: the project itself and its sibling checkouts.
+// the project: the project itself and its sibling checkouts. Both sides are
+// compared after resolving symlinks, so a symlinked directory (or a symlink
+// at target itself) that points outside the workspace is refused: a write
+// through it would land wherever the link points.
 func pgoWithinWorkspace(projectDir, target string) bool {
 	abs, err := filepath.Abs(projectDir)
+	if err != nil {
+		return false
+	}
+	root, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
 		return false
 	}
@@ -358,8 +365,39 @@ func pgoWithinWorkspace(projectDir, target string) bool {
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(filepath.Dir(abs), t)
+	t, err = resolveExisting(t)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, t)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+// resolveExisting resolves symlinks in p's deepest existing ancestor (p
+// itself when it exists) and appends the parts that do not exist yet, which
+// a later write creates as plain directories and files.
+func resolveExisting(p string) (string, error) {
+	var rest []string
+	for cur := p; ; {
+		if _, err := os.Lstat(cur); err == nil {
+			real, err := filepath.EvalSymlinks(cur)
+			if err != nil {
+				return "", err
+			}
+			for i := len(rest) - 1; i >= 0; i-- {
+				real = filepath.Join(real, rest[i])
+			}
+			return real, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p, nil
+		}
+		rest = append(rest, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 // pgoForeignFile reports whether the file at target may be replaced: absent,

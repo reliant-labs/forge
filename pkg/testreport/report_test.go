@@ -15,8 +15,8 @@ import (
 
 func TestNewReport(t *testing.T) {
 	res := parseResults(t, "testdata/results/go-test.json", testreport.ResultsOptions{Lane: testreport.LaneUnit})
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
-	server := parseCov(t, "server.out", testreport.LaneE2E)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
+	server := parseCov(t, "server.profile", testreport.LaneE2E)
 	cov := merge(t, testreport.MergeOptions{ModulePath: "example.com/demo"}, unit, server)
 	rep := testreport.NewReport(testreport.ReportInput{
 		Project: "demo", Commit: "c1", Tree: "tree1",
@@ -75,7 +75,7 @@ func TestNewReport(t *testing.T) {
 }
 
 func TestDocumentsRoundTrip(t *testing.T) {
-	cov := merge(t, testreport.MergeOptions{}, parseCov(t, "unit.out", testreport.LaneUnit))
+	cov := merge(t, testreport.MergeOptions{}, parseCov(t, "unit.profile", testreport.LaneUnit))
 	b, err := json.Marshal(cov)
 	if err != nil {
 		t.Fatal(err)
@@ -100,12 +100,12 @@ func TestConvertCovdata(t *testing.T) {
 	testkit.Slow(t, "execs `go tool covdata textfmt`")
 	dir := t.TempDir()
 	for _, sub := range []string{"cov1", "cov2"} {
-		entries, err := os.ReadDir(filepath.Join("testdata/coverage", sub))
+		entries, err := os.ReadDir(filepath.Join("testdata/cover", sub))
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, e := range entries {
-			b, err := os.ReadFile(filepath.Join("testdata/coverage", sub, e.Name()))
+			b, err := os.ReadFile(filepath.Join("testdata/cover", sub, e.Name()))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +121,7 @@ func TestConvertCovdata(t *testing.T) {
 	if len(builds) != 2 {
 		t.Fatalf("%d builds, want 2", len(builds))
 	}
-	want, err := os.ReadFile("testdata/coverage/server.out")
+	want, err := os.ReadFile("testdata/cover/server.profile")
 	if err != nil {
 		t.Fatal(err)
 	}

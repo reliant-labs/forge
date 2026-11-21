@@ -187,11 +187,10 @@ func recoverMove(f swapFS, dir, exe string) (string, error) {
 // symlinks and directories as well, before performing any mutation.
 func (j moveJournal) validate(exe string) error {
 	if !filepath.IsAbs(exe) || !filepath.IsAbs(j.Path) || filepath.Clean(j.Path) != j.Path ||
-		filepath.Dir(j.Path) != filepath.Dir(exe) ||
-		(j.Path != exe && !isAsideOf(filepath.Base(j.Path), filepath.Base(exe))) {
+		j.Path != originalInstall(exe) || originalInstall(j.Path) != j.Path {
 		return errors.New("install path does not match the running binary")
 	}
-	if filepath.Dir(j.Aside) != filepath.Dir(j.Path) || filepath.Clean(j.Aside) != j.Aside ||
+	if j.Aside == j.Path || filepath.Dir(j.Aside) != filepath.Dir(j.Path) || filepath.Clean(j.Aside) != j.Aside ||
 		!isAsideOf(filepath.Base(j.Path), filepath.Base(j.Aside)) {
 		return errors.New("unexpected aside path")
 	}
@@ -226,6 +225,25 @@ func asideName(path string, ns int64) string {
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
 	return filepath.Join(filepath.Dir(path), fmt.Sprintf("%s.old-%d%s", strings.TrimSuffix(base, ext), ns, ext))
+}
+
+// originalInstall removes exactly one generated aside suffix, if present.
+// Extensionless installs need special care: filepath.Ext treats .old-<ns>
+// itself as their extension.
+func originalInstall(exe string) string {
+	base := filepath.Base(exe)
+	ext := filepath.Ext(base)
+	if strings.HasPrefix(ext, ".old-") {
+		ext = ""
+	}
+	stem := strings.TrimSuffix(base, ext)
+	if i := strings.LastIndex(stem, ".old-"); i > 0 {
+		install := stem[:i] + ext
+		if isAsideOf(install, base) {
+			return filepath.Join(filepath.Dir(exe), install)
+		}
+	}
+	return exe
 }
 
 // isAsideOf reports whether name is an [asideName] of the binary named base.

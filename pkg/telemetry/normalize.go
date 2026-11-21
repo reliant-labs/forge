@@ -143,6 +143,12 @@ func normalizeTarget(t Target) Target {
 	}
 	t.Checks = checks
 
+	dashboards := make([]json.RawMessage, len(t.Dashboards))
+	for i, d := range t.Dashboards {
+		dashboards[i] = append(json.RawMessage{}, d...)
+	}
+	t.Dashboards = dashboards
+
 	if t.OTLP != nil {
 		o := *t.OTLP
 		if len(o.Signals) == 0 {

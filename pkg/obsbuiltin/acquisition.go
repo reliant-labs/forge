@@ -43,11 +43,10 @@ func Acquisition(in Input) dashspec.Dashboard {
 			"credited to the channel of its first visit that day; a sign-up is credited to the first touch of its own day, so a visitor who came on Monday " +
 			"and signed up on Wednesday counts Wednesday's source, and a sign-up with no visit that day is Unattributed. " +
 			"Hosted environments only: a local forge env up has no product_events table.",
-		Group:          dashspec.GroupProduct,
-		Filters:        envFilter(),
-		Sections:       acquisitionSections,
-		DefaultRange:   "30d",
-		DefaultCompare: dashspec.ComparePeriod,
+		Group:        dashspec.GroupProduct,
+		Filters:      envFilter(),
+		Sections:     acquisitionSections,
+		DefaultRange: "30d",
 	}
 	rules := in.channelRules()
 	traffic := with(webCTE(inRange), visitsCTE, firstCTE(rules))

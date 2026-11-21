@@ -26,6 +26,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -308,11 +309,11 @@ message Order { string id = 1; string name = 2; }
 	// ── A connect-go v2 client built from the project's generated code ──
 	wire := exec.Command("go", "test", "-count=1", "-v", "-run", "^TestWire", "./internal/wirecheck/")
 	wire.Dir = projectDir
-	wire.Env = append(os.Environ(),
+	wire.Env = goexec.WithTrimpath(append(os.Environ(),
 		"WIRE_BASE_URL="+base,
 		"WIRE_TOKEN="+bearer,
 		"GOFLAGS=",
-	)
+	))
 	if out, err := wire.CombinedOutput(); err != nil {
 		fail("v2 client wire test failed: %v\n%s", err, out)
 	} else if !strings.Contains(string(out), "--- PASS: TestWire_V2Client") {

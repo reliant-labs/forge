@@ -123,6 +123,11 @@ back on (orm has no key; --disable orm only leaves db/migrations out):
   forge project new my-project --mod ... --disable ci,deploy
   forge project new my-project --mod ... --disable orm --disable migrations
 
+An API with NO DATABASE (an LLM-only service, a proxy) needs both orm and
+migrations off: while either is on, and in any project born with both a
+service and a frontend, every env declares a managed database, which hosting
+provisions and bills. --disable migrations alone keeps it.
+
 Valid feature names: orm, codegen, migrations, ci, build, deploy,
 contracts, docs, frontend, observability, hot_reload.
 
@@ -542,6 +547,11 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 		if err := checkInPlaceFrontendCollisions(existingApps, frontendNames); err != nil {
 			return err
 		}
+		// An app at the root itself (a Next.js or Vite app the Go project
+		// is being added around) is reported too: once go.mod exists,
+		// nothing discovers it, and it would otherwise be dropped without a
+		// word (forge bug aee44198).
+		existingApps = append(existingApps, detectRootFrontendApp(targetPath, frontendNames)...)
 	}
 
 	announceNewProject(projectName, targetPath, serviceNames, frontendNames)

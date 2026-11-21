@@ -234,6 +234,35 @@ type wireObserved struct {
 	// advertise the capability, so forge refused the declaration before
 	// ever publishing it.
 	Domains []wireCustomDomainStatus `json:"domains,omitempty"`
+	// Backup is a managed database's DeployBackupStatus (tag 9).
+	Backup *wireBackupStatus `json:"backup,omitempty"`
+}
+
+type wireBackupStatus struct {
+	LastSuccessfulBackup   *time.Time `json:"lastSuccessfulBackup,omitempty"`
+	WALArchivingHealthy    bool       `json:"walArchivingHealthy,omitempty"`
+	EarliestRestorableTime *time.Time `json:"earliestRestorableTime,omitempty"`
+	LastError              string     `json:"lastError,omitempty"`
+}
+
+// backupOf is the topology view of a deployment's backup state (NS HO-19).
+func backupOf(obs *wireObserved) *topology.Backup {
+	if obs == nil || obs.Backup == nil {
+		return nil
+	}
+	b := obs.Backup
+	stamp := func(t *time.Time) string {
+		if t == nil || t.IsZero() {
+			return ""
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	return &topology.Backup{
+		LastSuccessfulBackup:   stamp(b.LastSuccessfulBackup),
+		WALArchivingHealthy:    b.WALArchivingHealthy,
+		EarliestRestorableTime: stamp(b.EarliestRestorableTime),
+		LastError:              b.LastError,
+	}
 }
 
 type wireDeployment struct {
@@ -2018,6 +2047,7 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 				ws.Hostname = u.Hostname()
 			}
 			ws.Domains = customDomainsOf(obs)
+			ws.Backup = backupOf(obs)
 		}
 		out.Workloads = append(out.Workloads, ws)
 	}

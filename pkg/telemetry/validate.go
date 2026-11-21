@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/dashspec"
 )
 
 // Options is what Validate needs to know about the env beyond its targets.
@@ -74,13 +76,14 @@ func (e *ValidationError) Error() string {
 // attachment rules (a Manifests or Observability target names a selector or
 // an address; a selector needs a cluster), a cluster the env does not
 // declare, and the hosted rules (every scrape sets `allow`; no address, no
-// bearer token, no profiles; only declared ports). It returns a
+// bearer token, no profiles; only declared ports), and every declared
+// dashboard against dashspec.ParseDashboard, its id unique in the env. It returns a
 // *ValidationError naming every problem, or nil.
 //
 // The KCL checks are repeated where they are cheap, so a Target built
 // outside the render (a KCL plugin caller, a test) is held to the same rules.
 func Validate(targets []Target, opts Options) error {
-	v := &validator{opts: opts}
+	v := &validator{opts: opts, dashboardIDs: map[string]string{}}
 	seen := map[string]string{}
 	for _, t := range targets {
 		v.t = t
@@ -123,6 +126,9 @@ type validator struct {
 	opts     Options
 	t        Target
 	problems []Problem
+	// dashboardIDs is every declared dashboard id seen so far in the env,
+	// with the target that declared it.
+	dashboardIDs map[string]string
 }
 
 func (v *validator) add(field, msg string) {
@@ -153,6 +159,9 @@ func (v *validator) target() {
 			v.add("selector", "keys and values must be non-empty")
 			break
 		}
+	}
+	if t.Attachment == AttachWorkload && t.Runtime == RuntimeCluster && len(t.Namespaces) == 0 {
+		v.add("namespaces", "a workload target on a cluster needs its namespace: without one its selector matches same-named pods in every namespace, and their signals would be stamped as this service")
 	}
 	if t.Pulled() && t.Runtime != RuntimeHosted && len(t.Selector) == 0 && t.Address == "" {
 		v.add("selector", "a scrape, pull or check needs pods (a selector) or an address to reach")
@@ -218,6 +227,26 @@ func (v *validator) target() {
 	}
 	v.otlp()
 	v.logs()
+	v.dashboards()
+}
+
+// dashboards runs each declared dashboard through dashspec.ParseDashboard and
+// refuses an id another target of the env already declares: every dashboard
+// becomes one file named for its id.
+func (v *validator) dashboards() {
+	for i, raw := range v.t.Dashboards {
+		f := fmt.Sprintf("dashboards[%d]", i)
+		d, err := dashspec.ParseDashboard(f, raw)
+		if err != nil {
+			v.add(f, err.Error())
+			continue
+		}
+		if prev, dup := v.dashboardIDs[d.ID]; dup {
+			v.add(f+".id", fmt.Sprintf("%q is also a dashboard of %s: a dashboard id is unique within the project", d.ID, prev))
+			continue
+		}
+		v.dashboardIDs[d.ID] = v.t.Source
+	}
 }
 
 func (v *validator) runtime() {

@@ -1560,21 +1560,23 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
 #
-# Except where no image exists to name: a forge.BuildOnly workload whose
-# ShellBuild declares neither `image` nor `output_name` (a desktop bundle, a
-# tree of static files a frontend's `bundle` copies in). The command owns
-# everything it writes and forge composes no image reference into it, so a
-# name derived from the workload would be a placeholder: it was recorded as
-# the workload's image, overwrote the env's deploy-side build state, and was
-# demanded of every release cut. It renders no artifact name instead.
+# A build-only ShellBuild with neither an image nor an output_name never
+# invents a placeholder image, even with no declared file outputs. A build-only
+# GoBuild/ShellBuild can instead declare file outputs; those are recorded by
+# hash and need no image when the workload declares none.
 _artifact = lambda w: any -> str {
-    "" if _shell_builds_no_image(w) else \
+    "" if _shell_builds_no_image(w) or _files_only(w) else \
     ((img_lib.repository(w.image) if w.image \
         else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
 }
 
 _shell_builds_no_image = lambda w: any -> bool {
     bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
+}
+
+_files_only = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.outputs and w.build.type in ["go", "shell"] \
         and _bound_runtime(w).type == "build-only")
 }
 
@@ -3543,12 +3545,21 @@ _pgo_is_default = lambda p: PGO -> bool {
     p.enabled and not p.from_env and p.since == "168h" and p.min_weight == "10s" and not p.services
 }
 
+# A build's declared outputs (kcl/schema.k BuildOutput). A build that
+# declares none renders no `outputs` key, so every existing render is
+# byte-identical; an output's platform is emitted only when set.
+_render_build_outputs = lambda outputs: [BuildOutput] -> any {
+    [{"path": o.path} | ({"platform": o.platform} if o.platform else {}) for o in outputs]
+}
+
 _render_go_build = lambda b: GoBuild -> any {
     {
         "type": "go"
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         "cmd": b.cmd
         "goos": b.goos if b.goos else None
         "goarch": b.goarch if b.goarch else None
@@ -3571,6 +3582,8 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         # A path string, or a GitSource pin projected in its stable dict form.
         "dockerfile": _render_git_source_member(b.dockerfile) if typeof(b.dockerfile) == "GitSource" else b.dockerfile
         # The MAIN build context (a project-root-relative dir, or a GitSource
@@ -3603,6 +3616,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         "cmd": b.cmd
         "cwd": b.cwd if b.cwd else None
         if b.source:

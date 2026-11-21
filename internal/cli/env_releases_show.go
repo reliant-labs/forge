@@ -44,8 +44,28 @@ type releasesShowDoc struct {
 	// Migrations are the migration files the commit range added, changed or
 	// removed (db/migrations). Present only when git could read the range.
 	Migrations []releasetimeline.PathChange `json:"migrations,omitempty"`
-	Warnings   []string                     `json:"warnings,omitempty"`
-	Suggested  []string                     `json:"suggested,omitempty"`
+	// Files are the release's file artifacts — the files its builds declared
+	// as outputs and the build-only binaries it shipped — by artifact name.
+	// Absent when the release records none or its artifacts could not be read.
+	Files     []showFile `json:"files,omitempty"`
+	Warnings  []string   `json:"warnings,omitempty"`
+	Suggested []string   `json:"suggested,omitempty"`
+}
+
+// showFile is one file artifact of the shown release.
+type showFile struct {
+	// Name is the artifact's ledger key: `<workload>/<path>` for a declared
+	// build output, the binary's name for a build-only variant.
+	Name string `json:"name"`
+	// Path is the file's path relative to the build's working directory
+	// (a declared output), else the artifact name.
+	Path string `json:"path"`
+	// SHA256 is the hex sha256 of the file's bytes.
+	SHA256 string `json:"sha256,omitempty"`
+	// Size is the file's length in bytes; 0 when the ledger did not keep it.
+	Size int64 `json:"size,omitempty"`
+	// Platforms is the OS/arch the file is for, when the build declared one.
+	Platforms []string `json:"platforms,omitempty"`
 }
 
 type showCommit struct {
@@ -97,6 +117,7 @@ var releasesShowSchema = obsout.Schema{
 		"changes.objects.workload", "changes.objects.summary", "changes.unchanged_objects",
 		"changes.summaries_missing", "changes_note",
 		"migrations", "migrations.status", "migrations.path",
+		"files", "files.name", "files.path", "files.sha256", "files.size", "files.platforms",
 		"warnings", "suggested",
 	}, prefixed("entry.", entryFields)...),
 }
@@ -118,6 +139,8 @@ release version (the newest promotion of it).
                (control plane: DeployService.CompareReleases; local: the two
                recorded bundles).
   migrations   migration files the range touched (db/migrations).
+  files        the release's file artifacts (declared build outputs, build-only
+               binaries): path, sha256, size, platform.
   gates        the checks recorded before and after the environment moved.
 
 Exit 0 shown, 1 no such release in this environment, 2 the ledger could not be read.
@@ -182,6 +205,7 @@ func runReleasesShow(ctx context.Context, deps releasesDeps, env, ref string, li
 	doc.FailedDeploys = tl.FailuresOf(entry.PromotionID)
 	showCommits(ctx, deps, &doc, entry, limit)
 	showChangesOf(ctx, b, &doc, entry, data.Releases)
+	showFilesOf(ctx, b, &doc, entry.Version, data.Releases)
 	doc.Suggested = suggestFromShow(env, doc)
 	doc.Stamp(schemaReleasesShow, nil)
 	return doc, nil
@@ -241,6 +265,52 @@ func showChangesOf(ctx context.Context, b releasesBackend, doc *releasesShowDoc,
 		return
 	}
 	doc.Changes, doc.ChangesNote = localChanges(b, e, releases)
+}
+
+// showFilesOf lists the file artifacts of the release the promotion moved
+// to. A local ledger's timeline already holds every release whole; a control
+// plane's timeline carries no artifacts, so its release is read on its own
+// (b.Release). Not being able to read it is a warning, never a failure: the
+// rest of the promotion is still worth showing.
+func showFilesOf(ctx context.Context, b releasesBackend, doc *releasesShowDoc, version string, releases []release.Release) {
+	var rel *release.Release
+	for i := range releases {
+		if releases[i].Version == version && len(releases[i].Artifacts) > 0 {
+			rel = &releases[i]
+			break
+		}
+	}
+	if rel == nil && b.Release != nil {
+		got, err := b.Release(ctx, version)
+		if err != nil {
+			doc.Warnings = append(doc.Warnings, fmt.Sprintf("files of %s not listed: %v", version, err))
+			return
+		}
+		rel = got
+	}
+	if rel == nil {
+		return
+	}
+	doc.Files = releaseFiles(*rel)
+}
+
+// releaseFiles is r's file artifacts in name order.
+func releaseFiles(r release.Release) []showFile {
+	var out []showFile
+	for _, name := range r.ArtifactNames() {
+		a := r.Artifacts[name]
+		if a.Kind != release.KindFile {
+			continue
+		}
+		f := showFile{Name: name, Path: name, SHA256: strings.TrimPrefix(a.Integrity, "sha256:"), Size: a.Size, Platforms: a.Platforms}
+		// A declared output is keyed `<workload>/<path>` and versioned by
+		// its path (harvestDeclaredOutputs).
+		if a.Version != "" && strings.HasSuffix(name, "/"+a.Version) {
+			f.Path = a.Version
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // cloudChanges asks DeployService.CompareReleases. The wire shape is declared
@@ -412,10 +482,19 @@ func renderReleasesShow(w io.Writer, doc releasesShowDoc) {
 		}
 	}
 
+	if len(doc.Files) > 0 {
+		fmt.Fprintf(w, "\nfiles\n")
+		rows := make([][]string, 0, len(doc.Files))
+		for _, f := range doc.Files {
+			rows = append(rows, []string{f.Name, humanFileSize(f.Size), emptyDash(strings.Join(f.Platforms, ",")), emptyDash(shortHex(f.SHA256))})
+		}
+		obsout.Table(w, []string{"FILE", "SIZE", "PLATFORM", "SHA256"}, rows, 80)
+	}
+
 	if doc.Changes != nil {
 		fmt.Fprintf(w, "\nchanged vs %s\n", e.PreviousVersion)
 		for _, a := range doc.Changes.Artifacts {
-			fmt.Fprintf(w, "  artifact  %-9s %s  %s -> %s\n", a.Change, a.Name, emptyDash(shortDigest(a.From)), emptyDash(shortDigest(a.To)))
+			fmt.Fprintf(w, "  artifact  %-9s %s  %s -> %s\n", a.Change, a.Name, emptyDash(shortArtifactID(a.From)), emptyDash(shortArtifactID(a.To)))
 		}
 		for _, o := range doc.Changes.Objects {
 			fmt.Fprintf(w, "  object    %-9s %s  %s\n", o.Change, o.Object, o.Summary)
@@ -433,4 +512,38 @@ func renderReleasesShow(w io.Writer, doc releasesShowDoc) {
 			fmt.Fprintf(w, "  %s\n", s)
 		}
 	}
+}
+
+// humanFileSize renders a byte count for a person: "-" when unknown.
+func humanFileSize(n int64) string {
+	const unit = 1024
+	if n <= 0 {
+		return "-"
+	}
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// shortHex is the head of a hex digest, enough to tell two apart.
+func shortHex(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}
+
+// shortArtifactID shortens the digest in an artifact identity: an image's
+// `sha256:…`, or a file's `<version> sha256:…`, whose version is kept whole.
+func shortArtifactID(id string) string {
+	if i := strings.LastIndex(id, " "); i >= 0 {
+		return id[:i+1] + shortDigest(id[i+1:])
+	}
+	return shortDigest(id)
 }

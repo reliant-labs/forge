@@ -128,15 +128,33 @@ func TestRefuses(t *testing.T) {
 		{
 			name: "an extra file the release did not sign",
 			mutate: func(t *testing.T, _ *Config, _ *selfupdate.Release, files map[string]string) {
-				// Sorted after checksums.txt, so the bundle verifies the first
-				// subject and this one must be caught by the subject check.
+				// Sorted after checksums.txt: every file's digest, not only
+				// the first, must be a subject of the signed statement, so
+				// sigstore-go itself refuses it (review B1 of #2504).
 				p := filepath.Join(filepath.Dir(files["checksums.txt"]), "forge_linux_amd64.tar.gz")
 				if err := os.WriteFile(p, []byte("not the signed archive"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				files["forge_linux_amd64.tar.gz"] = p
 			},
-			wantErr: "is not the file v1.8.0 signed under that name",
+			wantErr: "provided artifact digest does not match any digest in statement",
+		},
+		{
+			name: "a signed file's bytes under another signed file's name",
+			mutate: func(t *testing.T, _ *Config, _ *selfupdate.Release, files map[string]string) {
+				// Its digest IS a subject, so sigstore-go passes it; the name
+				// binding below sigstore-go is what refuses it.
+				raw, err := os.ReadFile(files["checksums.txt"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				p := filepath.Join(filepath.Dir(files["checksums.txt"]), "forge_linux_amd64.tar.gz")
+				if err := os.WriteFile(p, raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				files["forge_linux_amd64.tar.gz"] = p
+			},
+			wantErr: "forge_linux_amd64.tar.gz is not",
 		},
 		{
 			name: "a release with no bundle",

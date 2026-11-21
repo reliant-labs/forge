@@ -183,14 +183,21 @@ func (v *Verifier) Verify(ctx context.Context, rel selfupdate.Release, files map
 	if err != nil {
 		return fmt.Errorf("sigstore: verifier: %w", err)
 	}
-	// The cryptographic check, the identity and the first subject. The rest
-	// of the subjects are checked below against the verified statement.
+	// The cryptographic check, the identity and EVERY downloaded file's
+	// digest, in one sigstore-go verification: the DSSE signature covers the
+	// whole in-toto statement, and sigstore-go refuses unless each digest is
+	// one of that signed statement's subjects. The names are bound below,
+	// which sigstore-go does not check.
+	want := make([]verify.ArtifactDigest, 0, len(names))
+	for _, name := range names {
+		want = append(want, verify.ArtifactDigest{Algorithm: "sha256", Digest: digests[name]})
+	}
 	res, err := sev.Verify(&b, verify.NewPolicy(
-		verify.WithArtifactDigest("sha256", digests[names[0]]),
+		verify.WithArtifactDigests(want),
 		verify.WithCertificateIdentity(v.identity),
 	))
 	if err != nil {
-		return fmt.Errorf("sigstore: %s does not verify %s: %w", rel.Bundle.Name, names[0], err)
+		return fmt.Errorf("sigstore: %s does not verify %s: %w", rel.Bundle.Name, strings.Join(names, ", "), err)
 	}
 	st := res.Statement
 	if st == nil {

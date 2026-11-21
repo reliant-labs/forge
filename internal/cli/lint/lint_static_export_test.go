@@ -59,7 +59,8 @@ func loadStaticExportConfig(t *testing.T) *config.ProjectConfig {
 // TestStaticExportTargets: the lane judges a Next.js frontend when it is
 // detected as a static export OR any env binds it to a static runtime — and nothing
 // else. A server build nobody ships statically is none of its business, and
-// a Vite app has no server features to find.
+// a Vite app has no server features to find (it gets the Vite check instead:
+// TestStaticExportPlan).
 func TestStaticExportTargets(t *testing.T) {
 	cfg := loadStaticExportConfig(t)
 	bindings := func(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding {
@@ -94,12 +95,13 @@ func TestStaticExportFindings_EndToEnd(t *testing.T) {
 	})
 	cfg := loadStaticExportConfig(t)
 	none := func(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding { return nil }
-	fs, judged, err := staticExportFindings(context.Background(), root, cfg, none)
+	res, err := staticExportFindings(context.Background(), root, cfg, none)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if judged != 1 {
-		t.Errorf("judged %d frontends, want 1 (admin)", judged)
+	fs := res.findings
+	if res.judgedNext != 1 {
+		t.Errorf("judged %d frontends, want 1 (admin)", res.judgedNext)
 	}
 	if len(fs) != 1 {
 		t.Fatalf("findings = %+v, want exactly the dynamic route", fs)
@@ -160,18 +162,174 @@ output = forge.render(forge.Bundle {
 	})
 	cfg := loadStaticExportConfig(t)
 	got := renderStaticBindings(context.Background(), root, cfg)
-	if len(got) != 1 || len(got["web"]) != 1 || got["web"][0] != (staticexport.Binding{Env: "prod", Runtime: "hosted"}) {
+	if len(got) != 1 || len(got["web"]) != 1 || got["web"][0] != (staticexport.Binding{Env: "prod", Runtime: "hosted", PublicDir: "out"}) {
 		t.Errorf("bindings = %+v, want web on hosted in prod only", got)
 	}
 }
 
 func TestRenderedFrontendRuntimes(t *testing.T) {
-	raw := []byte(`{"output":{"frontends":[{"name":"web","runtime":{"type":"hosted"}},{"name":"dev","runtime":{"type":"host"}}]}}`)
+	raw := []byte(`{"output":{"frontends":[{"name":"web","runtime":{"type":"hosted"},"public_dir":"dist","base_path":"/admin"},{"name":"dev","runtime":{"type":"host"}}]}}`)
 	got := renderedFrontendRuntimes(raw)
-	if len(got) != 2 || got[0] != (renderedFrontend{"web", "hosted"}) || got[1] != (renderedFrontend{"dev", "host"}) {
+	if len(got) != 2 || got[0] != (renderedFrontend{"web", "hosted", "dist", "/admin"}) || got[1] != (renderedFrontend{name: "dev", runtime: "host"}) {
 		t.Errorf("parsed %+v", got)
 	}
 	if renderedFrontendRuntimes([]byte("not json")) != nil {
 		t.Error("unparseable render must yield nothing")
+	}
+}
+
+// TestStaticExportPlan: every frontend in the inventory lands in exactly one
+// place — judged as a Next.js export, checked as a Vite build, or named with
+// the reason it is not applicable.
+func TestStaticExportPlan(t *testing.T) {
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = []config.FrontendConfig{
+		config.FrontendConfig{Name: "web", Type: "nextjs", Output: "standalone"}.WithDir("frontends/web"),
+		config.FrontendConfig{Name: "spa", Type: "vite-spa"}.WithDir("frontends/spa"),
+		config.FrontendConfig{Name: "lab", Type: "vite-spa"}.WithDir("frontends/lab"),
+		config.FrontendConfig{Name: "mobile", Type: "react-native"}.WithDir("frontends/mobile"),
+	}
+	bindings := func(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding {
+		return map[string][]staticexport.Binding{"spa": {{Env: "prod", Runtime: "hosted", PublicDir: "dist"}}}
+	}
+	plan := planStaticExport(context.Background(), "/p", cfg, bindings)
+	if len(plan.next) != 0 {
+		t.Errorf("next = %+v, want none (web is an unbound server build)", plan.next)
+	}
+	if len(plan.vite) != 1 || plan.vite[0].Name != "spa" || plan.vite[0].Bindings[0].PublicDir != "dist" {
+		t.Errorf("vite = %+v, want spa with its binding", plan.vite)
+	}
+	want := []string{
+		"web (nextjs): not applicable — its production build is a Next.js standalone server and no env binds it to a static runtime",
+		"lab (vite-spa): not applicable — no env binds it to a static runtime",
+		"mobile (react-native): not applicable — the lane checks Next.js and Vite builds",
+	}
+	if len(plan.skipped) != len(want) {
+		t.Fatalf("skipped = %q", plan.skipped)
+	}
+	for i, w := range want {
+		if !strings.HasPrefix(plan.skipped[i], w) {
+			t.Errorf("skipped[%d] = %q, want prefix %q", i, plan.skipped[i], w)
+		}
+	}
+}
+
+// TestStaticExportPlan_NoRenderWithoutACheckableFrontend: an Expo-only
+// project does not pay for a KCL render of every env.
+func TestStaticExportPlan_NoRenderWithoutACheckableFrontend(t *testing.T) {
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = []config.FrontendConfig{config.FrontendConfig{Name: "mobile", Type: "react-native"}.WithDir("frontends/mobile")}
+	rendered := false
+	plan := planStaticExport(context.Background(), "/p", cfg, func(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding {
+		rendered = true
+		return nil
+	})
+	if rendered {
+		t.Error("rendered bindings for a project with nothing they could decide")
+	}
+	if len(plan.skipped) != 1 {
+		t.Errorf("skipped = %q", plan.skipped)
+	}
+}
+
+// viteLaneFixture is a project with one Vite frontend whose vite.config.ts
+// builds into outDir.
+func viteLaneFixture(t *testing.T, outDir string) (string, *config.ProjectConfig) {
+	t.Helper()
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"frontends/spa/package.json":   `{"scripts": {"build": "tsc -b && vite build"}}`,
+		"frontends/spa/vite.config.ts": "export default defineConfig({\n  build: { outDir: \"" + outDir + "\" },\n});\n",
+	})
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	cfg.Frontends = []config.FrontendConfig{config.FrontendConfig{Name: "spa", Type: "vite-spa"}.WithDir("frontends/spa")}
+	return root, cfg
+}
+
+func hostedSPA(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding {
+	return map[string][]staticexport.Binding{"spa": {{Env: "prod", Runtime: "hosted", PublicDir: "dist"}}}
+}
+
+func noBindings(context.Context, string, *config.ProjectConfig) map[string][]staticexport.Binding {
+	return nil
+}
+
+func staticExportReportFor(t *testing.T, root string, cfg *config.ProjectConfig, bindings staticBindingsFunc) []lintJSONFinding {
+	t.Helper()
+	res, err := staticExportFindings(context.Background(), root, cfg, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := staticExportReport(res)
+	for _, f := range out {
+		if strings.Contains(f.Message, "nothing to check") {
+			t.Errorf("a project with a frontend reported %q", f.Message)
+		}
+	}
+	return out
+}
+
+// TestStaticExportLane_ViteOutDirMismatch: a Vite frontend on hosted whose
+// build lands elsewhere than public_dir fails the lane, with file:line.
+func TestStaticExportLane_ViteOutDirMismatch(t *testing.T) {
+	root, cfg := viteLaneFixture(t, "out")
+	out := staticExportReportFor(t, root, cfg, hostedSPA)
+	var got []lintJSONFinding
+	for _, f := range out {
+		if f.Rule == staticexport.RuleViteOutDir {
+			got = append(got, f)
+		}
+	}
+	if len(got) != 1 || got[0].File != "frontends/spa/vite.config.ts" || got[0].Line != 2 || got[0].Severity != lintSevError {
+		t.Fatalf("findings = %+v, want one error at frontends/spa/vite.config.ts:2", out)
+	}
+	if !anyErrorFinding(out) {
+		t.Error("an outDir the deploy does not publish must gate (the rollout softens it for older pins)")
+	}
+}
+
+// TestStaticExportLane_ViteMatches: the lane says what it proved.
+func TestStaticExportLane_ViteMatches(t *testing.T) {
+	root, cfg := viteLaneFixture(t, "dist")
+	out := staticExportReportFor(t, root, cfg, hostedSPA)
+	if anyErrorFinding(out) {
+		t.Fatalf("a matching outDir must pass: %+v", out)
+	}
+	var notes []string
+	for _, f := range out {
+		if f.Rule != ruleRanNote {
+			t.Errorf("unexpected finding %+v", f)
+		}
+		notes = append(notes, f.Message)
+	}
+	joined := strings.Join(notes, "\n")
+	for _, want := range []string{`spa (vite-spa): build.outDir "dist"`, "matches the public_dir published in env prod", `spa (vite-spa): base "/"`} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("notes do not say %q:\n%s", want, joined)
+		}
+	}
+}
+
+// TestStaticExportLane_ViteUnbound: a Vite frontend nothing publishes is
+// named as not applicable — never a vacuous "nothing to check".
+func TestStaticExportLane_ViteUnbound(t *testing.T) {
+	root, cfg := viteLaneFixture(t, "out")
+	out := staticExportReportFor(t, root, cfg, noBindings)
+	if len(out) != 1 || out[0].Rule != ruleRanNote || !strings.HasPrefix(out[0].Message, "spa (vite-spa): not applicable — no env binds it to a static runtime") {
+		t.Fatalf("report = %+v, want the one not-applicable line", out)
+	}
+}
+
+// TestStaticExportLane_NoFrontend: only a project with no frontend at all has
+// nothing to check.
+func TestStaticExportLane_NoFrontend(t *testing.T) {
+	cfg := loadTestConfig(t, staticExportForgeYAML)
+	res, err := staticExportFindings(context.Background(), t.TempDir(), cfg, noBindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := staticExportReport(res)
+	if len(out) != 1 || !strings.Contains(out[0].Message, "no frontend") {
+		t.Errorf("report = %+v", out)
 	}
 }

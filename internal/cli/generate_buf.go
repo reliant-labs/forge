@@ -160,8 +160,8 @@ func writeDefaultBufGenYaml(projectDir string) error {
 #
 # OpenAPI specs: set ` + "`api.openapi: true`" + ` in forge.yaml. Forge invokes
 # protoc-gen-connect-openapi via a synthesized template; you do NOT
-# need to add it here. Install with:
-#   ` + openAPIPluginInstallCmd + `
+# need to add it here, nor install it: forge installs the version it
+# pins into its tool cache on first use (` + openAPIPluginInstallCmd + `).
 ` + bufGenGoInputs + `plugins:
   - local: protoc-gen-go
     out: gen

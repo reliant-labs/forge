@@ -72,6 +72,8 @@
       "value": 900
     }
   ],
+  "workloads": [],
+  "workloads_total": 2,
   "telemetry": {
     "last_log_at": "2026-10-22T11:59:00Z",
     "last_span_at": "2026-10-22T11:59:30Z",

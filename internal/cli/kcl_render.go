@@ -1113,6 +1113,11 @@ type DockerBuild struct {
 	// builds, keyed by package path ("./cmd/app"). A binary it does not name
 	// gets the defaults (kcl/schema.k DockerBuild.pgo).
 	PGO map[string]PGOConfig `json:"pgo,omitempty"`
+	// Inputs are the globs (relative to the project root, or to the resolved
+	// GitSource context) naming the files the image is built from. Declared,
+	// they let a --release build reuse an earlier release's image whose
+	// fingerprint is unchanged — see build_docker_release_reuse.go.
+	Inputs []string `json:"inputs,omitempty"`
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):

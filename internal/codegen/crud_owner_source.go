@@ -81,6 +81,13 @@ type CRUDOwnerSource struct {
 	Field string
 	// Expr is the binding's source text, for CRUDOwnerUnknown.
 	Expr string
+	// Scaffolded reports that the handler still carries a FORGE_SCAFFOLD
+	// comment. The birth placeholder is written under one that says
+	// "replace the expression, then remove this comment", so a handler
+	// that reads claims.UserID with the comment gone has DECIDED on it;
+	// only the one that still carries it is forge's guess. It is not part
+	// of the source's spelling or identity.
+	Scaffolded bool
 }
 
 // String renders the source as a reader would recognise it in code.
@@ -119,10 +126,14 @@ func (s CRUDOwnerSource) identity(dir string) string {
 }
 
 // isPlaceholder reports the birth scaffold's own owner expression: the
-// auth seam's claims, read at UserID. It is forge's guess, not the app's
-// decision, so it is never evidence of what the policy is.
+// auth seam's claims, read at UserID, in a handler whose FORGE_SCAFFOLD
+// reminder still stands. It is forge's guess, not the app's decision, so
+// it is never evidence of what the policy is. The same expression with the
+// reminder removed is the author keeping claims.UserID on purpose — the
+// scope-rows-to-owner run did exactly that, and was told to switch four
+// deliberate wrappers to the one sibling that scoped by email.
 func (s CRUDOwnerSource) isPlaceholder() bool {
-	return s.Kind == CRUDOwnerFromClaims && s.Func == crudAuthSeam && s.Field == "UserID"
+	return s.Kind == CRUDOwnerFromClaims && s.Func == crudAuthSeam && s.Field == "UserID" && s.Scaffolded
 }
 
 // IsPlaceholder is isPlaceholder for the linter.
@@ -167,6 +178,10 @@ func (u CRUDOwnerUse) matches(column, field string) bool {
 // major is the project's connect-go major (connectmajor.Detect on the
 // project root; the zero value is v1). It decides whether the file's
 // bare-message methods are handlers at all — see handlerShapesOf.
+//
+// file must be parsed with parser.ParseComments: whether a claims.UserID
+// owner is forge's placeholder or the author's decision is read off the
+// FORGE_SCAFFOLD comment beside it (CRUDOwnerSource.Scaffolded).
 func ScanCRUDOwnerSources(fset *token.FileSet, file *ast.File, major connectmajor.Major) []CRUDOwnerUse {
 	imports := fileImportSpecs(file)
 	shapes := handlerShapesOf(file, major)
@@ -182,9 +197,13 @@ func ScanCRUDOwnerSources(fset *token.FileSet, file *ast.File, major connectmajo
 			continue
 		}
 		binds := bindingsOf(fn.Body)
+		scaffolded := bodyHasScaffoldMarker(file, fn.Body)
 		seen := map[string]bool{}
 		add := func(column, field string, ident *ast.Ident) {
 			src := traceOwnerSource(ident, binds, ctxName, imports)
+			if src.Kind == CRUDOwnerFromClaims {
+				src.Scaffolded = scaffolded
+			}
 			key := column + "\x00" + field + "\x00" + src.String()
 			if seen[key] {
 				return
@@ -228,6 +247,21 @@ func ScanCRUDOwnerSources(fset *token.FileSet, file *ast.File, major connectmajo
 		})
 	}
 	return uses
+}
+
+// bodyHasScaffoldMarker reports a FORGE_SCAFFOLD comment inside body.
+func bodyHasScaffoldMarker(file *ast.File, body *ast.BlockStmt) bool {
+	for _, cg := range file.Comments {
+		if cg.Pos() < body.Lbrace || cg.End() > body.Rbrace {
+			continue
+		}
+		for _, c := range cg.List {
+			if strings.Contains(c.Text, "FORGE_SCAFFOLD") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ScanCRUDOpKeyColumns maps each RPC whose op a parsed
@@ -582,7 +616,7 @@ func fileImportSpecs(file *ast.File) map[string]string {
 func resolveAppendedOwners(projectDir, shimRel string, existing []byte, missing []CRUDMethodTemplateData, major connectmajor.Major) []CRUDMethodTemplateData {
 	var fileUses []CRUDOwnerUse
 	fset := token.NewFileSet()
-	if f, err := parser.ParseFile(fset, shimRel, existing, parser.SkipObjectResolution); err == nil {
+	if f, err := parser.ParseFile(fset, shimRel, existing, parser.ParseComments|parser.SkipObjectResolution); err == nil {
 		fileUses = ScanCRUDOwnerSources(fset, f, major)
 	}
 	var projectUses []CRUDOwnerUse
@@ -651,7 +685,7 @@ func projectCRUDOwnerUses(projectDir, skip string, major connectmajor.Major) []C
 			return nil
 		}
 		fset := token.NewFileSet()
-		f, perr := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
+		f, perr := parser.ParseFile(fset, p, nil, parser.ParseComments|parser.SkipObjectResolution)
 		if perr != nil {
 			return nil //nolint:nilerr // a file that does not parse is no evidence
 		}

@@ -228,6 +228,7 @@ func addForgeTools(srv *mcp.Server, r *mcpRunner) {
 	})
 
 	addBlastRadiusTool(srv, r)
+	addAccountReadTools(srv, r)
 
 	addCmdTool(srv, r, &mcp.Tool{
 		Name:        "skill_list",

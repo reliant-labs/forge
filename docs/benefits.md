@@ -3835,11 +3835,12 @@ _Enforced · Forge, on any infrastructure_
 
 **Use:** `forge obs issue <id>`; `forge obs issues --since-release|--since-deploy` lists what a release introduced.
 
-**Why:** Issues are fingerprinted with one algorithm, at query time locally and at ingest on the control plane; issues that share a cause and first fired together collapse into one incident without being merged, and triage (`resolve`, `ignore`, `assign`, `comment`) is a verb.
+**Why:** Issues are fingerprinted with one algorithm, at query time locally and at ingest on the control plane; issues that share a cause and first fired together collapse into one incident without being merged, and triage (`resolve`, `ignore`, `assign`, `comment`) is a verb. Every span and log record an authenticated request writes carries `user.id`, so an issue counts the people it reached.
 
 **Evidence:**
 
 - command `forge obs issue`
+- source [`pkg/authn/telemetry.go`](../pkg/authn/telemetry.go)
 - command `forge obs issues`
 - command `forge obs issue resolve`
 - command `forge obs issue ignore`

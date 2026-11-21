@@ -37,6 +37,7 @@ func writeProject(t *testing.T, service string, methods map[string]bool, handler
 		Name      string
 		Package   string
 		GoPackage string
+		PkgName   string
 		ProtoFile string
 		Methods   []method
 	}
@@ -53,6 +54,7 @@ func writeProject(t *testing.T, service string, methods map[string]bool, handler
 		Name:      service,
 		Package:   "services.shop.v1",
 		GoPackage: "example.com/app/gen/services/shop/v1",
+		PkgName:   "shopv1",
 		ProtoFile: "proto/services/shop/v1/shop.proto",
 		Methods:   ms,
 	}}}

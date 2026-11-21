@@ -161,6 +161,17 @@ func TestRunLifecycle_WaitReadsASuspendReasonAsSuspended(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("pending with no suspend reason must keep waiting: %v", err)
 	}
+	// A stale suspend reason beside any state but PENDING is a workload still
+	// running or failing, not a confirmed stop: keep waiting.
+	for _, state := range []string{"READY", "PROGRESSING", "DEGRADED", "FAILED"} {
+		stale := `{"deployments":[{"deployment":{"name":"api","observed":{"state":"DEPLOY_OBSERVED_STATE_` + state + `","suspendReason":"DEPLOY_SUSPEND_REASON_OWNER"}}}]}`
+		f = &fakeLifecycleCaller{replies: map[string]string{"SetEnvironmentRunState": twoDeployments}, statuses: []string{stale}}
+		err = runLifecycleRunState(context.Background(), f, "env_1", runStateSuspended,
+			lifecycleOptions{Env: "prod", Wait: true, Timeout: 20 * time.Millisecond, Interval: 5 * time.Millisecond}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "timed out") {
+			t.Errorf("%s with a stale suspend reason must keep waiting: %v", state, err)
+		}
+	}
 }
 
 func TestRunLifecycle_WaitTimesOutNonZero(t *testing.T) {

@@ -123,6 +123,20 @@ func (d CRUDTemplateData) ORMQualifier() string { return ormQualOrDefault(d.DBQu
 // with: DBQual, or db when unset (RenderScopedCRUDShim's paste-in snippet).
 func (m CRUDMethodTemplateData) ORMQualifier() string { return ormQualOrDefault(m.DBQual) }
 
+// ORMCall is the opening of an op's call to the persistence function fn
+// (CreatePatient, GetPatientByID, ...), through the handle-taking argument:
+// `<qual>.<fn>(ctx, s.deps.DB` over the ORM's free functions, or
+// `s.deps.<StoreField>.<fn>(ctx` when the handler declares the entity's
+// store. The template closes it with the remaining arguments, so both forms
+// take the same ones — the store's methods are the delegates minus the
+// handle.
+func (m CRUDMethodTemplateData) ORMCall(qual, fn string) string {
+	if m.StoreField != "" {
+		return "s.deps." + m.StoreField + "." + fn + "(ctx"
+	}
+	return qual + "." + fn + "(ctx, s.deps.DB"
+}
+
 func ormQualOrDefault(q string) string {
 	if q == "" {
 		return "db"
@@ -220,6 +234,11 @@ type CRUDMethodTemplateData struct {
 	// an appended shim reuses whatever name its file already gives the
 	// ORM import.
 	DBQual string
+	// StoreField is the Deps field typed as this entity's generated
+	// <Entity>Store, when the handler declares one (crudStoreFields). The
+	// op then persists through s.deps.<StoreField> instead of the ORM's
+	// free functions over s.deps.DB — see ORMCall.
+	StoreField string
 	// EntityPbType is the entity's generated pb message type. It equals
 	// EntityName unless the proto name is not already in protoc-gen-go's
 	// casing ("Oauth2token" → pb.Oauth2Token, db.Oauth2token).
@@ -785,13 +804,6 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 			") is implemented by hand and nothing calls a CRUD op"}, nil
 	}
 
-	// Ensure the Deps struct in service.go has a DB field for CRUD
-	// operations. Conversion helpers alone never touch s.deps.DB.
-	if len(opMethods) > 0 {
-		if err := ensureDepsDBField(targetDir); err != nil {
-			return CRUDResult{}, fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
-		}
-	}
 	for _, cm := range opMethods {
 		if len(cm.Entity.Ownership) > 0 {
 			if err := ensureDepsOwnersField(targetDir); err != nil {
@@ -823,6 +835,32 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 		data.CRUDMethods[i].ConnectV2 = data.ConnectV2
 		if f := data.CRUDMethods[i].ownerStampFor; f != nil {
 			data.CRUDMethods[i].OwnerStamp = f(data.DBQual)
+		}
+	}
+
+	// An entity whose generated store the Deps struct declares persists
+	// through it (crud_store_deps.go); every other entity keeps the ORM's
+	// free functions over s.deps.DB.
+	stores := crudStoreFields(targetDir, ormImportPathFor(modulePath, data.orm))
+	needsDB := false
+	for i := range data.CRUDMethods {
+		m := &data.CRUDMethods[i]
+		m.StoreField = stores[m.EntityName]
+		// An owned op (crud.Owned*) still takes s.deps.DB as its
+		// transactor: its row reads and writes go through the store, which
+		// joins the RunTx transaction through ctx.
+		if m.StoreField == "" || m.Owned {
+			needsDB = true
+		}
+	}
+
+	// Ensure the Deps struct in service.go has a DB field for the ops that
+	// persist through it. Conversion helpers alone never touch s.deps.DB,
+	// and neither does an op routed through a declared store — a handler
+	// whose every CRUD entity has one needs no DB field at all.
+	if len(opMethods) > 0 && needsDB {
+		if err := ensureDepsDBField(targetDir); err != nil {
+			return CRUDResult{}, fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
 		}
 	}
 
@@ -1061,6 +1099,7 @@ func crudShimImports(data CRUDTemplateData) []string {
 		imports = []string{"context"}
 	}
 	hasMismatch := false
+	mismatchORM := false
 	hasReal := false
 	needsDB := false
 	scoped := false
@@ -1073,6 +1112,11 @@ func crudShimImports(data CRUDTemplateData) []string {
 		}
 		if m.ShapeMismatch {
 			hasMismatch = true
+			// Its List call names the ORM package unless it goes
+			// through a declared store (ORMCall).
+			if m.StoreField == "" {
+				mismatchORM = true
+			}
 		} else {
 			hasReal = true
 		}
@@ -1124,9 +1168,10 @@ func crudShimImports(data CRUDTemplateData) []string {
 		// The WIRED custom-read-shape body runs a real query: it builds
 		// orm.QueryOption filters and calls db.List<Entity>, projecting
 		// rows via the generated <entity>ToProto helper.
-		imports = append(imports,
-			"github.com/reliant-labs/forge/pkg/svcerr",
-			data.DBImport)
+		imports = append(imports, "github.com/reliant-labs/forge/pkg/svcerr")
+		if mismatchORM || needsDB {
+			imports = append(imports, data.DBImport)
+		}
 	} else if needsDB {
 		// The forge:fill=handler scaffold's op.Entity wrapper and the
 		// scoping scaffold's op wrappers both name the *db.<Entity> type.

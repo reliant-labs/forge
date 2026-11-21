@@ -50,7 +50,7 @@ func (s *Service) {{.MethodName}}(
 {{- end}}
 {{- end}}
 
-	rows, err := {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+	rows, err := {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 	if err != nil {
 		return nil, svcerr.Wrap(err)
 	}

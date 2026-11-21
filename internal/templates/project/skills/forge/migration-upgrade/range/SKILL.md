@@ -25,7 +25,7 @@ what they want you to do about it.
    "breaking": [], "added": [], "changed": [], "fixed": [], "agent_instructions": []}
 ],
 "generated_changes": [
-  {"generator": "middleware_gen.go", "files": ["internal/handlers/a/middleware_gen.go"],
+  {"generator": "middleware_gen.go", "files": ["internal/billing/middleware_gen.go"],
    "notes": [{"text": "…", "pr": 2349, "version": "v1.0.0"}]}
 ],
 "generated_hint": "tests that pin generated output … may need updating …"
@@ -60,7 +60,7 @@ and say in your PR that you did. They never change the exit code.
 The forge-generated files (those carrying a `forge:hash` marker) the
 upgrade's `forge generate` changed, added or removed, grouped by generator: a
 file name shared by several changed files (`middleware_gen.go`, one per
-handler package), or a per-entity pattern (`*_orm_gen.go`). `notes` are the
+contract package under `internal/`), or a per-entity pattern (`*_orm_gen.go`). `notes` are the
 range's `Generated-Change` notes naming it. Under `--check` generate does not
 run, so each entry is a note with `planned: true`.
 

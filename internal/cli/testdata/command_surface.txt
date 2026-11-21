@@ -452,6 +452,7 @@ forge test quarantine list	cmd	allow-version-skew:bool json:bool overdue:bool pr
 forge test quarantine remove	cmd	allow-version-skew:bool project-dir/C:string
 forge test quarantine skip-regex	cmd	allow-version-skew:bool project-dir/C:string
 forge test report	cmd	allow-version-skew:bool base:string commit:string format:string gate-json:string json:bool project-dir/C:string upload:bool
+forge test run	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge test runs	cmd	allow-version-skew:bool branch:string commit:string json:bool limit:int project-dir/C:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string

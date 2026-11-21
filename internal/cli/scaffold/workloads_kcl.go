@@ -50,7 +50,7 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 	if codegen.RunByGraphRoot(root, comp) {
 		fmt.Printf("   - %s (%s '%s' runs in the binary's `server` root — it has no subcommand of its own; nothing to declare)\n",
 			codegen.WorkloadsKCLRelPath, codegen.WorkloadKindFor(comp.EffectiveKind()), comp.Name)
-		bindWorkloadInEnvs(root, cfg.Name, comp)
+		reportFrontendOnlyEnvs(root, cfg, comp, bindWorkloadInEnvs(root, cfg.Name, comp))
 		return
 	}
 
@@ -108,7 +108,7 @@ func declareWorkloadInKCL(root string, cfg *config.ProjectConfig, spec component
 	// binding a workload whose declaration was printed rather than written
 	// would leave every env's main.k referencing a name that does not exist.
 	if declared {
-		bindWorkloadInEnvs(root, cfg.Name, comp)
+		reportFrontendOnlyEnvs(root, cfg, comp, bindWorkloadInEnvs(root, cfg.Name, comp))
 	}
 }
 
@@ -139,10 +139,13 @@ func readWorkloadsKCL(root string) (string, bool) {
 // An env that serves its API as one `server` workload (a hosted env's
 // `_api`) runs a new service or worker there already: it gets no line of its
 // own, and that API workload is bound if it was not yet.
-func bindWorkloadInEnvs(root, projectName string, comp config.ComponentConfig) {
+//
+// It returns the envs still in the frontend-only shape (no `_workloads`
+// list), which it cannot bind into: reportFrontendOnlyEnvs says what to do.
+func bindWorkloadInEnvs(root, projectName string, comp config.ComponentConfig) (frontendOnly []string) {
 	envs, err := os.ReadDir(filepath.Join(root, "deploy", "kcl"))
 	if err != nil {
-		return
+		return nil
 	}
 	kind := codegen.WorkloadKindFor(comp.EffectiveKind())
 	var needCluster []string
@@ -157,6 +160,8 @@ func bindWorkloadInEnvs(root, projectName string, comp config.ComponentConfig) {
 		switch {
 		case err != nil:
 			fmt.Printf("\n⚠️  could not update deploy/kcl/%s/main.k: %v\n\n%s\n", e.Name(), err, codegen.EnvBindingHint(e.Name(), kind, comp.Name))
+		case res.NoWorkloadsList:
+			frontendOnly = append(frontendOnly, e.Name())
 		case res.NoServer:
 			fmt.Printf("\n📝 deploy/kcl/%s/main.k binds no workload running the binary's `server`, which is what runs %s '%s'.\n"+
 				"   Bind one to run it in %s — `_api`, a fw.Workload of the project binary with `config_gen.root_of(\"server\")`.\n",
@@ -180,6 +185,7 @@ func bindWorkloadInEnvs(root, projectName string, comp config.ComponentConfig) {
 	if len(needCluster) > 0 {
 		fmt.Print(clusterNeededNotice(comp.Name, kind, needCluster))
 	}
+	return frontendOnly
 }
 
 // clusterNeededNotice tells the author that a workload is bound to a cluster

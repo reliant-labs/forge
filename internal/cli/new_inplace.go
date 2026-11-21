@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/cliutil"
+	"github.com/reliant-labs/forge/internal/config"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -560,6 +562,28 @@ func detectExistingFrontendAppsIn(root string, candidates []string) []existingFr
 	return apps
 }
 
+// detectRootFrontendApp finds a Next.js / Vite app at the project root, named
+// config.RootFrontendName ("web") — or "site" when a --frontend of that name
+// is being scaffolded beside it, so the two declarations never share a name.
+func detectRootFrontendApp(root string, frontendNames []string) []existingFrontendApp {
+	apps := detectExistingFrontendAppsIn(root, []string{"."})
+	for i := range apps {
+		apps[i].name = config.RootFrontendName
+		if slices.Contains(frontendNames, apps[i].name) {
+			apps[i].name = "site"
+		}
+	}
+	return apps
+}
+
+// location is where the note says the app was found.
+func (a existingFrontendApp) location() string {
+	if a.dir == "." {
+		return "the project root"
+	}
+	return a.dir + "/"
+}
+
 // adoptFrontendSnippet is the KCL declaration that points forge at an
 // existing app instead of scaffolding a new one. Frontends are declared in
 // each env's deploy/kcl/<env>/main.k (forge.yaml has no `frontends:` key);
@@ -599,7 +623,7 @@ func existingFrontendNote(apps []existingFrontendApp) []string {
 	var out []string
 	for _, a := range apps {
 		out = append(out, "",
-			fmt.Sprintf("ℹ️  Found an existing %s app at %s/ — forge left it alone. To have forge manage it,", a.framework(), a.dir),
+			fmt.Sprintf("ℹ️  Found an existing %s app at %s — forge left it alone. To have forge manage it,", a.framework(), a.location()),
 			"    declare it in each env's deploy/kcl/<env>/main.k frontends list (path points forge at it):",
 			indent(adoptFrontendSnippet(a), "      "))
 	}

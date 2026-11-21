@@ -222,6 +222,11 @@ var migrateBinder = regexp.MustCompile(`(?m)^\s*(_[a-z_]+)\(wl\.` + MigrateWorkl
 //nolint:gocritic // badRegexp misreads the second `^`: under (?m) it anchors the closing `]` at a line start.
 var envWorkloadsList = regexp.MustCompile(`(?ms)^_workloads = \[\n(.*?)^\]$`)
 
+// envDeclaresWorkloads matches any `_workloads` declaration, however it is
+// spelled: an env restructured past the scaffolded list still has one, and
+// is not the frontend-only shape.
+var envDeclaresWorkloads = regexp.MustCompile(`(?m)^\s*_workloads\s*[:=]`)
+
 // EnvBindingResult is what AppendEnvBinding did to one env.
 type EnvBindingResult struct {
 	// Applied is true when a line was written.
@@ -239,6 +244,11 @@ type EnvBindingResult struct {
 	// workload running `server`: there is nothing to bind, so nothing was
 	// written.
 	NoServer bool
+	// NoWorkloadsList is set when the env's main.k declares no `_workloads`
+	// list at all: the frontend-only shape (kcl/frontend-only/main.k.tmpl),
+	// which runs no backend. There is nowhere to bind, so nothing was
+	// written; the caller says how to give the env the backend shape.
+	NoWorkloadsList bool
 }
 
 // AppendEnvBinding adds the binding for a new workload to one env's main.k,
@@ -266,6 +276,9 @@ func AppendEnvBinding(projectDir, projectName, env, kind, workloadName string) (
 	}
 	content := string(raw)
 	locs := envWorkloadsList.FindAllStringSubmatchIndex(content, -1)
+	if len(locs) == 0 && !envDeclaresWorkloads.MatchString(StripKCLProse(content)) {
+		return EnvBindingResult{NoWorkloadsList: true}, nil
+	}
 	if len(locs) != 1 {
 		return EnvBindingResult{}, nil
 	}

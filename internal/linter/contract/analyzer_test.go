@@ -155,7 +155,10 @@ func TestRequireContract_InterfaceMethodsOnPrivateTypes(t *testing.T) {
 	testkit.Slow(t, "execs go")
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, contract.RequireContractAnalyzer,
-		"internal/requireprivateiface", "internal/requireprivatelocal", "internal/requireprivateescape")
+		"internal/requireprivateiface", "internal/requireprivatelocal", "internal/requireprivateescape",
+		// Two imported interfaces with a same-named method: a method is
+		// exempt only on a type that implements the interface requiring it.
+		"internal/requireprivatesamename", "internal/requireprivatesamenameok")
 }
 
 // Regression: external test packages (`package <name>_test`) host black-box

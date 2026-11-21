@@ -198,7 +198,11 @@ func (s *Store) CutRelease(r release.Release) (created bool, err error) {
 			// the record is appended again with them filled in — never
 			// replaced — exactly as RecordReleaseMigrations backfills a
 			// manifest.
-			if filled, changed := release.BackfillSBOMs(existing, r); changed {
+			// Test evidence is backfilled by the same rule
+			// (release.BackfillTests).
+			filled, sboms := release.BackfillSBOMs(existing, r)
+			filled, tests := release.BackfillTests(filled, r)
+			if sboms || tests {
 				return appendRecord(s.path(releasesFile), filled)
 			}
 			return nil

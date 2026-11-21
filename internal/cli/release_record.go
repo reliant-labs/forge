@@ -243,9 +243,20 @@ func defaultRecordLedger(ctx context.Context, projectDir, project, env, token st
 			ep.URL, cerr, Name(), ep.TokenEnv, cloud.TokenSettingsWhere(ep.URL), Name())}, err
 	}
 	return recordLedger{
-		ledger:   attachCodeSource(hostedLedger(cloud.NewClient(ep, cred), ep.URL, project, kind), projectDir, os.Getenv),
+		ledger:   recordHostedLedger(cloud.NewClient(ep, cred), ep.URL, projectDir, project, kind),
 		endpoint: ep.URL,
 	}, nil
+}
+
+// recordHostedLedger is the control-plane ledger a record cuts on: the code
+// source of the checkout, and the SBOM store the record's SBOMs are put in
+// (openRecordSBOMStore, keyed by the record's project, which needs no
+// forge.yaml), so the cut uploads each workload's SBOM to the control plane
+// the way a forge cut does (hostedStore.recordReleaseSBOMs). The SBOMs are
+// stored before the cut (recordReleaseIn), so the upload finds their bytes.
+func recordHostedLedger(client cloudCaller, endpoint, projectDir, project string, kind deploytarget.HostedEnvKind) envLedger {
+	l := attachCodeSource(hostedLedger(client, endpoint, project, kind), projectDir, os.Getenv)
+	return attachSBOMStore(l, func() (sbomBytesReader, error) { return openRecordSBOMStore(projectDir, project) })
 }
 
 // reasonRecordOnlyRelease is the control plane's refusal of a record-only

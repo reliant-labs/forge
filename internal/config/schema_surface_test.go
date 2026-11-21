@@ -172,7 +172,18 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[LintConfig](),
 			// allow_skip: read by the lint command (internal/cli/lint/lint_skip.go).
 			// lanes: read by the lint command (internal/cli/lint/lint_lanes.go).
-			want: []string{"allow_skip", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
+			// auth: read by the unscoped_auth audit (internal/cli/audit/audit_unscoped_auth_module.go).
+			want: []string{"allow_skip", "auth", "frontend", "handler_file_max_loc", "lanes", "rules", "tracing"},
+		},
+		{
+			name: "AuthLintConfig",
+			typ:  reflect.TypeFor[AuthLintConfig](),
+			want: []string{"caller_resolvers"},
+		},
+		{
+			name: "CallerResolverConfig",
+			typ:  reflect.TypeFor[CallerResolverConfig](),
+			want: []string{"call"},
 		},
 		{
 			name: "LintSkipAllowance",

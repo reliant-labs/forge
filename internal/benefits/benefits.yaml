@@ -711,6 +711,44 @@ benefits:
           A statement that does not finish within statement_timeout on
           production-shaped data
 
+  - id: query-index-analysis
+    category: data
+    title: Index check of tested queries
+    claim: >-
+      `forge db analyze queries` plans every query shape a test run recorded
+      on a disposable database at the head schema, with sequential scans
+      disabled, and reports each
+      filter, join and ORDER BY … LIMIT no index serves, with the caller's
+      file and line.
+    availability: forge
+    headline: false
+    use: >-
+      Run the tests with `FORGE_QUERY_CAPTURE_DIR=/tmp/qc`, then
+      `forge db analyze queries --capture /tmp/qc` (the shapes whose callers
+      changed since the merge-base; `--all` for every one), or add
+      `--capture` to `forge db analyze` to run it after the migrations.
+    why: >-
+      A new filter or join without an index passes every test on a small
+      table and becomes a full scan in production; whether an index can serve
+      it depends on the schema at head, which only the planner knows.
+    evidence:
+      - command: db analyze queries
+      - path: pkg/dbanalyze/queries.go
+      - path: pkg/querycapture
+      - path: internal/cli/db_analyze_queries.go
+      - skill: db/analyze
+    rules:
+      - id: db-analyze-query-no-usable-index
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A filter, join or ORDER BY … LIMIT that no index can serve, which
+          reads every row of the table once it holds production data
+      - id: db-analyze-query-large-seqscan
+        lane: "forge db analyze queries"
+        bug_class: >-
+          A query whose plan on an anonymized production snapshot
+          sequentially scans a large table
+
   - id: keep-your-migration-tool
     category: data
     title: Keep your migration tool
@@ -2501,6 +2539,41 @@ benefits:
         bug_class: >-
           An env whose render fails, so its secrets could not be judged (a
           warning; `forge env render` reports the render error itself)
+
+  - id: lint-rules-telemetry
+    category: guardrails
+    title: Declared telemetry rules
+    claim: >-
+      A dashboard panel over a series no scrape keeps, an unbounded scrape and
+      a rate over a gauge are caught from each env's real render.
+    availability: forge
+    evidence:
+      - path: internal/cli/lint/telemetry_rules.go
+      - command: lint --telemetry
+    rules:
+      - id: telemetry-dashboard-metric-uncollected
+        lane: --telemetry
+        bug_class: >-
+          A declared dashboard series whose metric no scrape of its system
+          keeps (allow minus deny), so the panel is empty in every env it ships
+          to with no other symptom
+      - id: telemetry-scrape-unbounded
+        lane: --telemetry
+        bug_class: >-
+          A metrics scrape with no `allow`, which stores every series the
+          endpoint exposes until it passes `sample_limit` and fails whole
+      - id: telemetry-rate-on-gauge
+        lane: --telemetry
+        bug_class: >-
+          A rate or increase over a metric nothing marks as a counter (no
+          `counters` match, no `_total`/`_count`/`_sum`), which reads nothing
+          when the metric is a gauge (a warning)
+      - id: telemetry-high-cardinality-risk
+        lane: --telemetry
+        bug_class: >-
+          A scrape that raises `sample_limit` or keeps every name while
+          dropping no labels, so a per-user or per-id label explodes its
+          series (a warning)
 
   - id: lint-rules-scaffold-ownership
     category: guardrails
@@ -4700,9 +4773,10 @@ benefits:
     why: >-
       The evaluation SDK ships: a Go store and OpenFeature provider, a browser
       loader and OpenFeature provider, and assignment events recorded as
-      product events. Declaring changes in the project, platform delivery of
-      each environment's policy, and the Experiments screen are not shipped
-      yet. Evaluation is local in the app, from a versioned policy, without a
+      product events, and changes are declared in the project (changes.yaml)
+      and shipped in the release. Platform delivery of each environment's
+      policy and the Experiments screen are not shipped yet. Evaluation is
+      local in the app, from a versioned policy, without a
       network call on each request or changes to load balancers.
     evidence:
       - library: pkg/changes
@@ -4712,6 +4786,8 @@ benefits:
       - path: web-runtime/src/changes-store.ts
       - path: web-runtime/src/changes-provider.ts
       - path: web-runtime/src/exposure.ts
+      - path: internal/changesdecl/changesdecl.go
+      - path: docs/changes.md
       - skill: observability/changes
       - skill: observability/product-analytics
 

@@ -279,7 +279,7 @@
           ]
         },
         "artifacts": {
-          "description": "Artifacts are the release artifacts the package is in.",
+          "description": "Artifacts are the release artifacts the package is in. Empty (never absent) for a finding its source attributes to the release as a whole and to no artifact; text output says \"release\" for it. Such a finding is judged, counted and listed like any other.",
           "type": "array",
           "items": {
             "type": "string"
@@ -370,6 +370,13 @@
         "determined": {
           "description": "Determined is false when the verdict is \"could not determine\" (stale, unscanned): the exit code is 2, and the document's notes say why.",
           "type": "boolean"
+        },
+        "judged_by": {
+          "description": "JudgedBy says whose judgement of each finding the verdict is: \"control-plane\" when the env's control plane judged them (it is authoritative for an env whose ledger it keeps). Absent for an env whose ledger is this machine's, which forge judges by definition. \"local\" is reserved for a verdict forge gave in a control plane's stead; this forge never gives one (a control plane that cannot judge the env is \"could not determine\").",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

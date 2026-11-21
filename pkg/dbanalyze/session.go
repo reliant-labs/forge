@@ -3,6 +3,7 @@ package dbanalyze
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
@@ -53,24 +54,54 @@ type Session struct {
 	// tx is the open file's transaction, nil between files.
 	tx *sql.Tx
 	sp int
+	// pg is conn's pgx connection, for the EXPLAIN that must bypass
+	// database/sql (explainJSON). conn is traced, so its driver connection
+	// is the tracer's wrapper, not a *stdlib.Conn.
+	pg *pgconn.PgConn
+}
+
+// capturingConnector is stdlib's connector that remembers the last pgx
+// connection it opened. A session pins one connection (MaxOpenConns 1, held
+// by its *sql.Conn), so that connection is the session's.
+type capturingConnector struct {
+	driver.Connector
+	last *pgconn.PgConn
+}
+
+func (c *capturingConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sc, ok := conn.(*stdlib.Conn); ok {
+		c.last = sc.Conn().PgConn()
+	}
+	return conn, nil
 }
 
 // Open connects to dsn and sets the session's timeouts. dsn must name a
 // disposable database: what a session runs is committed.
 func Open(ctx context.Context, dsn string, opts SessionOptions) (*Session, error) {
-	// dbtrace.Open parses dsn where sql.Open would leave it to the first
-	// connection, so its error is that connection's.
-	db, err := dbtrace.Open("pgx", dsn)
+	// Parsing dsn here, where sql.Open would leave it to the first
+	// connection, makes its error that connection's.
+	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("connect to target: %w", parseCause(err))
 	}
+	connector := &capturingConnector{Connector: stdlib.GetConnector(*cfg)}
+	db := dbtrace.OpenDB(connector)
 	db.SetMaxOpenConns(1)
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("connect to target: %w", parseCause(err))
 	}
-	s := &Session{db: db, conn: conn}
+	if connector.last == nil {
+		_ = conn.Close()
+		_ = db.Close()
+		return nil, errors.New("connect to target: no pgx connection opened")
+	}
+	s := &Session{db: db, conn: conn, pg: connector.last}
 	settings := []string{
 		"SET statement_timeout = " + timeoutSetting(opts.StatementTimeout, DefaultStatementTimeout),
 		"SET lock_timeout = " + timeoutSetting(opts.LockTimeout, DefaultLockTimeout),
@@ -168,6 +199,50 @@ func (s *Session) Exec(ctx context.Context, query string) error {
 		return fmt.Errorf("release savepoint: %w", err)
 	}
 	return nil
+}
+
+// explainJSON runs `EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) query` on
+// the session's database, between files, and returns the plan document.
+// GENERIC_PLAN (postgres 16+) plans a statement whose $n parameters have no
+// values; it never executes it. noSeqScan plans it with enable_seqscan off.
+//
+// The EXPLAIN runs in a READ ONLY transaction that is always rolled back, so
+// whatever a captured statement is, it can change nothing the next shape
+// plans against: postgres refuses a write in it, and the rollback discards
+// the transaction's settings (SET LOCAL enable_seqscan) with it. The caller
+// admits only query statements (planShape); this is the guard beneath it.
+//
+// It is sent over the simple query protocol: the extended protocol would make
+// the driver demand a value for every $n, which a generic plan exists to do
+// without. A statement that fails to plan fails alone.
+func (s *Session) explainJSON(ctx context.Context, query string, noSeqScan bool) ([]byte, error) {
+	if s.tx != nil {
+		return nil, errors.New("explain inside a migration file's transaction")
+	}
+	var plan []byte
+	// Raw holds conn exclusively while the plan is read off its pgx
+	// connection, and the connection leaves it idle, outside a transaction.
+	err := s.conn.Raw(func(any) error {
+		if _, err := s.pg.Exec(ctx, "BEGIN TRANSACTION READ ONLY").ReadAll(); err != nil {
+			return fmt.Errorf("begin read-only transaction: %w", err)
+		}
+		defer func() { _, _ = s.pg.Exec(context.WithoutCancel(ctx), "ROLLBACK").ReadAll() }()
+		if noSeqScan {
+			if _, err := s.pg.Exec(ctx, "SET LOCAL enable_seqscan = off").ReadAll(); err != nil {
+				return fmt.Errorf("set enable_seqscan: %w", err)
+			}
+		}
+		results, err := s.pg.Exec(ctx, "EXPLAIN (GENERIC_PLAN, VERBOSE, FORMAT JSON) "+query).ReadAll()
+		if err != nil {
+			return err
+		}
+		if len(results) != 1 || len(results[0].Rows) != 1 || len(results[0].Rows[0]) != 1 {
+			return fmt.Errorf("EXPLAIN returned %d result(s), not one plan", len(results))
+		}
+		plan = append([]byte(nil), results[0].Rows[0][0]...)
+		return nil
+	})
+	return plan, err
 }
 
 // Close abandons an open file's transaction and disconnects. It is safe to

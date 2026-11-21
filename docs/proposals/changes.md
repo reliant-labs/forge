@@ -166,7 +166,7 @@ lookup consulted before step 7 of the spec, with the hash as the fallback.
                       enrolled evaluation --> flag_evaluated product event --> product_events
 ```
 
-**Declaration (proposed).** A change's key, value type, default, variant names
+**Declaration (implemented: `changes.yaml`, see [../changes.md](../changes.md)).** A change's key, value type, default, variant names
 and values, unit and surface (`web`, `server`) live in the repo and ship in the
 release shape. The platform refuses to launch a variant the deployed release
 does not know, and codegen can later give typed accessors. The shape precedent is

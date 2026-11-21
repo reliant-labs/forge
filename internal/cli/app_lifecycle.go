@@ -74,7 +74,7 @@ func resolveBoundAppTarget(retry, flagToken, endpoint string) (appTarget, error)
 	if project != "" {
 		lead = fmt.Sprintf("app %q is looked up on the control plane this project is bound to", project)
 	}
-	url, err := undeclaredControlPlane(projectDirForKCL(), endpoint, lead, retry, "")
+	url, err := undeclaredControlPlane(projectDirForKCL(), endpoint, lead, retry)
 	if err != nil {
 		return appTarget{}, err
 	}

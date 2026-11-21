@@ -361,9 +361,8 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	// unreachable registry) records no digest and deploy falls back to the
 	// tag exactly as before. NEVER fails the build.
 	//
-	// A workload with no image (a build-only ShellBuild that declares none,
-	// kcl/render.k _artifact) pushed nothing, so there is no reference to
-	// ask about.
+	// An image-less build-only ShellBuild pushed nothing. Its declared
+	// outputs, if any, are recorded separately as file artifacts.
 	digest, platforms := "", []string(nil)
 	if svc.Image != "" {
 		pushedRef := externalPushedRef(svc, svcTag, opts.pushPlan.pushBase)

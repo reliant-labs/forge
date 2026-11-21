@@ -1560,21 +1560,23 @@ _require_hosted_url_target = lambda name: str, where: str, bundle: Bundle -> str
 # while the deploy pulled `<registry>/reliant:e2e` — ErrImagePull. Only an
 # UNSET image derives the name from the build.
 #
-# Except where no image exists to name: a forge.BuildOnly workload whose
-# ShellBuild declares neither `image` nor `output_name` (a desktop bundle, a
-# tree of static files a frontend's `bundle` copies in). The command owns
-# everything it writes and forge composes no image reference into it, so a
-# name derived from the workload would be a placeholder: it was recorded as
-# the workload's image, overwrote the env's deploy-side build state, and was
-# demanded of every release cut. It renders no artifact name instead.
+# A build-only ShellBuild with neither an image nor an output_name never
+# invents a placeholder image, even with no declared file outputs. A build-only
+# GoBuild/ShellBuild can instead declare file outputs; those are recorded by
+# hash and need no image when the workload declares none.
 _artifact = lambda w: any -> str {
-    "" if _shell_builds_no_image(w) else \
+    "" if _shell_builds_no_image(w) or _files_only(w) else \
     ((img_lib.repository(w.image) if w.image \
         else (w.build.output_name if w.build.output_name else w.name)) if w.build else "")
 }
 
 _shell_builds_no_image = lambda w: any -> bool {
     bool(w.build and not w.image and w.build.type == "shell" and not w.build.output_name \
+        and _bound_runtime(w).type == "build-only")
+}
+
+_files_only = lambda w: any -> bool {
+    bool(w.build and not w.image and w.build.outputs and w.build.type in ["go", "shell"] \
         and _bound_runtime(w).type == "build-only")
 }
 
@@ -2595,12 +2597,15 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
     }
 }
 
+# A cluster workload's target is always scoped to its namespace (ClusterTarget
+# requires one): an empty list would let the app.kubernetes.io/name selector
+# match same-named pods of every namespace and stamp them as this service.
 _tel_workload = lambda w: any, b: Bundle -> any {
     _rt = w.runtime
     _c = _rt.type == "cluster"
     _tel_target(w.telemetry, _tel_service_name(w), "workload:${w.name}", "workload", _rt.type, \
         _rt.target.cluster if _c else "", \
-        [_rt.target.namespace] if _c and _rt.target.namespace else [], \
+        [_rt.target.namespace] if _c else [], \
         {"app.kubernetes.io/name": w.name} if _rt.type in ["cluster", "hosted"] else {}, \
         "127.0.0.1" if _rt.type in ["host", "compose"] else "", \
         {p.name: p.port for p in w.ports} if w.ports else {}, b)
@@ -3521,6 +3526,8 @@ _render_build_variant = lambda bv: BuildVariant -> any {
         "tags": bv.tags
         "goos": bv.goos if bv.goos else None
         "goarch": bv.goarch if bv.goarch else None
+        "env_at_build": bv.env if bv.env else None
+        "output_name": bv.output_name if bv.output_name else None
     }
 }
 
@@ -3543,12 +3550,21 @@ _pgo_is_default = lambda p: PGO -> bool {
     p.enabled and not p.from_env and p.since == "168h" and p.min_weight == "10s" and not p.services
 }
 
+# A build's declared outputs (kcl/schema.k BuildOutput). A build that
+# declares none renders no `outputs` key, so every existing render is
+# byte-identical; an output's platform is emitted only when set.
+_render_build_outputs = lambda outputs: [BuildOutput] -> any {
+    [{"path": o.path} | ({"platform": o.platform} if o.platform else {}) for o in outputs]
+}
+
 _render_go_build = lambda b: GoBuild -> any {
     {
         "type": "go"
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         "cmd": b.cmd
         "goos": b.goos if b.goos else None
         "goarch": b.goarch if b.goarch else None
@@ -3571,6 +3587,8 @@ _render_docker_build = lambda b: DockerBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         # A path string, or a GitSource pin projected in its stable dict form.
         "dockerfile": _render_git_source_member(b.dockerfile) if typeof(b.dockerfile) == "GitSource" else b.dockerfile
         # The MAIN build context (a project-root-relative dir, or a GitSource
@@ -3603,6 +3621,8 @@ _render_shell_build = lambda b: ShellBuild -> any {
         "output_name": b.output_name if b.output_name else None
         "unit": b.unit if b.unit else None
         "inputs_file": b.inputs_file if b.inputs_file else None
+        if b.outputs:
+            "outputs": _render_build_outputs(b.outputs)
         "cmd": b.cmd
         "cwd": b.cwd if b.cwd else None
         if b.source:
@@ -3612,6 +3632,10 @@ _render_shell_build = lambda b: ShellBuild -> any {
             "built_images": b.built_images
         if b.inputs:
             "inputs": b.inputs
+        # Per-binary PGO (ShellPGO), keyed by cwd-relative package path;
+        # absent when none is named.
+        if b.pgo:
+            "pgo": {k: _render_pgo(v) | {"out": v.out, "namespace": v.namespace} for k, v in b.pgo}
     }
 }
 

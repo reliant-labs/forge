@@ -519,6 +519,27 @@ func concatStrings(parts ...[]string) []string {
 // on 4317/4318, the files `forge env up` writes under /var/log/forge in, and
 // the destination out. There is no Kubernetes here to enrich from.
 func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
+	return s.ForwarderConfigWith(ForwarderLogs{})
+}
+
+// ForwarderLogs is what declared telemetry (forge.Telemetry) splices into the
+// local forwarder's logs path: pkg/telemetry/collector's Fragment.Logs and the
+// processors it names. The zero value splices nothing.
+type ForwarderLogs struct {
+	// Preserve is one filelog operator, inserted right after the file's
+	// path has named the service (Fragment.Logs.Preserve). Nil inserts none.
+	Preserve map[string]any
+	// Processors are the definitions of Pipeline's processors.
+	Processors map[string]any
+	// Pipeline is the processors' order in the logs pipeline, after
+	// memory_limiter and before batch (Fragment.Logs.Processors).
+	Pipeline []string
+}
+
+// ForwarderConfigWith is ForwarderConfig with logs spliced into its logs
+// path. The ClickStack collector's file (otel-collector.yaml.tmpl) includes
+// the same pieces at the same places, so the two parse a line alike.
+func (s ObservabilityAgentSpec) ForwarderConfigWith(logs ForwarderLogs) (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
 	}
@@ -529,12 +550,26 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 	processors := map[string]any{}
 	s.common(receivers, processors)
 	processors["memory_limiter"] = map[string]any{"check_interval": "1s", "limit_mib": 200, "spike_limit_mib": 50}
-	logOps := append([]any{
+	for _, name := range logs.Pipeline {
+		def, ok := logs.Processors[name]
+		if !ok {
+			return "", fmt.Errorf("forwarder logs: processor %q is in the pipeline but not defined", name)
+		}
+		if _, dup := processors[name]; dup {
+			return "", fmt.Errorf("forwarder logs: processor %q is already defined", name)
+		}
+		processors[name] = def
+	}
+	logOps := []any{
 		map[string]any{"type": "regex_parser", "regex": `^/var/log/forge/(?P<env>[^/]+)/(?P<service>[^/]+)\.log$`, "parse_from": `attributes["log.file.path"]`},
 		map[string]any{"type": "move", "from": "attributes.service", "to": `resource["service.name"]`},
 		map[string]any{"type": "move", "from": "attributes.env", "to": `resource["deployment.environment.name"]`},
 		map[string]any{"type": "remove", "field": `attributes["log.file.path"]`},
-	}, logLines(atResource)...)
+	}
+	if logs.Preserve != nil {
+		logOps = append(logOps, logs.Preserve)
+	}
+	logOps = append(logOps, logLines(atResource)...)
 	receivers["filelog"] = map[string]any{
 		"include": strs("/var/log/forge/*/*.log"),
 		"exclude": strs(
@@ -550,6 +585,12 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 	exp := s.exporter()
 	// No persistent queue locally: there is no host directory to keep it in.
 	delete(exp["sending_queue"].(map[string]any), "storage")
+	pipelines := s.pipelines(
+		[]string{"otlp"}, []string{"otlp"}, []string{"filelog"}, []string{"otlp"},
+		[]string{"memory_limiter"}, true)
+	if lp, ok := pipelines["logs"].(map[string]any); ok && len(logs.Pipeline) > 0 {
+		lp["processors"] = strs(append(append([]string{"memory_limiter"}, logs.Pipeline...), "batch")...)
+	}
 	cfg := map[string]any{
 		"extensions": map[string]any{"health_check": map[string]any{"endpoint": "0.0.0.0:13133"}},
 		"receivers":  receivers,
@@ -557,9 +598,7 @@ func (s ObservabilityAgentSpec) ForwarderConfig() (string, error) {
 		"exporters":  map[string]any{s.exporterName(): exp},
 		"service": map[string]any{
 			"extensions": strs("health_check"),
-			"pipelines": s.pipelines(
-				[]string{"otlp"}, []string{"otlp"}, []string{"filelog"}, []string{"otlp"},
-				[]string{"memory_limiter"}, true),
+			"pipelines":  pipelines,
 		},
 	}
 	return marshalConfig(cfg)

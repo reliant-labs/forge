@@ -54,7 +54,10 @@ forge db seed reset    # wipe seeded tables and re-seed (dev only)
 
 `forge env up` auto-seed a fresh dev database on first boot
 (every in-scope table empty): the synthesized rows, then `db/seeds/custom/`. `apply`/`reset` refuse any non-dev environment,
-and the applier is never compiled into your server binary.
+and the applier is never compiled into your server binary. An env is dev when its
+evaluated `deploy/kcl/<env>/config.k` sets the runtime MODE field (the one annotated
+`role: CONFIG_FIELD_ROLE_MODE`, else a field named `environment`, nested in a block
+or not) to `development` or `dev`; a refusal names the file and value it read.
 
 **What auto-seed writes to.** Only the tables behind your CRUD entities (a service
 with `Create<X>`/`List<Xs>`/… RPCs over a matching table), plus any table those

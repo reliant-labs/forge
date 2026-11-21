@@ -205,6 +205,11 @@ const (
 	LabelVersion = "app.kubernetes.io/version"
 	// LabelEnv is the env-ownership stamp (kcl/lib/labels.k:84).
 	LabelEnv = "forge.dev/env"
+	// LabelKind is the forge role of the workload an object belongs to
+	// (service, worker, operator, job, cron): what the Kubernetes kind
+	// cannot say, since a service, a worker and an operator are all a
+	// Deployment. See stampKind for where it is written.
+	LabelKind = "forge.dev/kind"
 	// LabelJobName is a Job's STABLE handle, since its metadata.name carries
 	// a spec hash (kcl/workloads/expand.k:706-709).
 	LabelJobName = "forge.dev/job-name"
@@ -872,6 +877,64 @@ func stampEnv(objs []*unstructured.Unstructured, env string) {
 		spec, _ := o.Object["spec"].(map[string]any)
 		switch o.GetKind() {
 		case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job":
+			if spec != nil {
+				templateMeta(spec)
+			}
+		case "CronJob":
+			if jt, ok := spec["jobTemplate"].(map[string]any); ok {
+				if js, ok := jt["spec"].(map[string]any); ok {
+					templateMeta(js)
+				}
+			}
+		}
+	}
+}
+
+// stampKind writes forge.dev/kind (the workload's forge role) on every object
+// one workload renders, and on the pod template of its Deployment or CronJob,
+// so a node agent reading pod labels can tell a service from a worker. Never a
+// selector: selectors are immutable on a Deployment, and the kind is not part
+// of a pod's identity. Never a standalone Job's pod template either: it is
+// immutable, and a Job created by an earlier forge would refuse the new label
+// on re-apply. The Job object carries it, and its pods are a Job's, which
+// already says job. A label the author already set is left as written.
+func stampKind(objs []*unstructured.Unstructured, kind v1alpha1.WorkloadKind) {
+	v := labelValue(string(kind))
+	if v == "" {
+		return
+	}
+	add := func(meta map[string]any) {
+		labels, _ := meta["labels"].(map[string]any)
+		if labels == nil {
+			labels = map[string]any{}
+			meta["labels"] = labels
+		}
+		if _, ok := labels[LabelKind]; !ok {
+			labels[LabelKind] = v
+		}
+	}
+	templateMeta := func(parent map[string]any) {
+		tmpl, ok := parent["template"].(map[string]any)
+		if !ok {
+			return
+		}
+		md, _ := tmpl["metadata"].(map[string]any)
+		if md == nil {
+			md = map[string]any{}
+			tmpl["metadata"] = md
+		}
+		add(md)
+	}
+	for _, o := range objs {
+		md, _ := o.Object["metadata"].(map[string]any)
+		if md == nil {
+			md = map[string]any{}
+			o.Object["metadata"] = md
+		}
+		add(md)
+		spec, _ := o.Object["spec"].(map[string]any)
+		switch o.GetKind() {
+		case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet":
 			if spec != nil {
 				templateMeta(spec)
 			}

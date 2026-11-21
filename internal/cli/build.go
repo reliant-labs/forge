@@ -1745,6 +1745,11 @@ func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KC
 	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
 	}
+	if opts.release == "" && !opts.plan {
+		// A --release build refuses a declared output that matched nothing
+		// (at the cut); a plain build says so and carries on.
+		warnMissingDeclaredOutputs(ctx, os.Stdout, projectDirForKCL(), entities)
+	}
 	if opts.release != "" {
 		// Before the cut: a dashboard that does not validate must not leave a
 		// release behind that has no bundle to carry it.
@@ -1825,7 +1830,8 @@ func buildBundlePins(projectDir, env string) release.BundlePins {
 //   - OCI images, from the build-state digests (harvestReleaseArtifacts);
 //   - npm packages, from what `npm pack` would publish;
 //   - Go modules, from the repo's own go.mod/go.sum pair;
-//   - files, from the build-only binaries this build emitted.
+//   - files, from the build-only binaries this build emitted and the
+//     outputs each build declares (harvestDeclaredOutputs).
 //
 // Images are merged FIRST and never overwritten (see mergeReleaseArtifacts), so
 // adding the other kinds cannot perturb the digests an env deploys.
@@ -1899,6 +1905,16 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
+	// The files each build's `outputs` declare. A declared output that
+	// matched nothing refuses the cut: the author said the release ships it.
+	declared, missing, err := harvestDeclaredOutputs(ctx, projectDir, entities)
+	if err != nil {
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
+	}
+	if len(missing) > 0 {
+		return releaseCutOutcome{}, errMissingDeclaredOutputs(version, missing)
+	}
+	files += mergeReleaseArtifacts(artifacts, declared)
 	// A hosted env's backends name images the build state may not hold (CI
 	// pushed them). Record each declared image so the release covers what
 	// the hosted deploy ships — keyed by the address under the platform's
@@ -3298,8 +3314,32 @@ func requireDeclaredImageArch(e *KCLEntities, declared, flagArch string, pushes 
 // captured in the returned buildResult slice rather than short-circuited
 // so users see the full list of failures from one run.
 func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir string) []buildResult {
+	workloads := e.WorkloadsOn(RuntimeBuildOnly)
+	// The schema can check explicit names and targets. Defaults depend on
+	// workload names and the build host; validate the actual destinations
+	// before starting any variant so no artifact can be overwritten.
+	seen := make(map[string]string)
 	var out []buildResult
-	for _, w := range e.WorkloadsOn(RuntimeBuildOnly) {
+	for _, w := range workloads {
+		for _, v := range w.Runtime.BuildOnly.BuildVariants {
+			id := w.Name + ":" + v.Name
+			filename := variantBinaryFilename(w.Name, v, runtime.GOOS)
+			key := filename
+			if runtime.GOOS == "windows" {
+				key = strings.ToLower(key)
+			}
+			if prior, exists := seen[key]; exists {
+				out = append(out, buildResult{name: id, kind: "variant", err: fmt.Errorf(
+					"build variants %s and %s write the same binary filename %q; choose distinct output_name values", prior, id, filename)})
+			} else {
+				seen[key] = id
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, w := range workloads {
 		// The variant's go-build TARGET is the workload's GoBuild cmd: each
 		// variant layers its own ldflags/tags/arch on that one package. A
 		// build-only workload with variants and no GoBuild has nothing to
@@ -3317,6 +3357,16 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 	return out
 }
 
+// variantBinaryFilename matches the destination used by both build and
+// release harvesting. An unspecified GOOS uses the build host's OS.
+func variantBinaryFilename(workload string, v BuildVariant, hostOS string) string {
+	goos := v.GOOS
+	if goos == "" {
+		goos = hostOS
+	}
+	return hostlaunch.ExeName(goos, variantOutputName(workload, v))
+}
+
 // buildVariant builds one binary for a build-only service variant.
 // buildCmd is the service's resolved go-build target package (from the
 // Build union — NOT a ./cmd hardcode). The output name is
@@ -3325,15 +3375,7 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 // on the subprocess env.
 func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant, outputDir string) buildResult {
 	start := time.Now()
-	outName := v.OutputName
-	if outName == "" {
-		outName = svcName + "-" + v.Name
-	}
-	variantOS := v.GOOS
-	if variantOS == "" {
-		variantOS = runtime.GOOS
-	}
-	binPath := filepath.Join(outputDir, hostlaunch.ExeName(variantOS, outName))
+	binPath := filepath.Join(outputDir, variantBinaryFilename(svcName, v, runtime.GOOS))
 	fmt.Printf("[build] %s (variant %s): go build %s -> %s\n", svcName, v.Name, buildCmd, binPath)
 
 	args := []string{"build", "-o", binPath}
@@ -3349,17 +3391,7 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	env := goexec.Env("CGO_ENABLED=0")
-	if v.GOOS != "" {
-		env = append(env, "GOOS="+v.GOOS)
-	}
-	if v.GOARCH != "" {
-		env = append(env, "GOARCH="+v.GOARCH)
-	}
-	for k, val := range v.EnvAtBuild {
-		env = append(env, k+"="+val)
-	}
-	cmd.Env = env
+	cmd.Env = variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v)
 	var endStep func(error)
 	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(svcName + ":" + v.Name + " build")
 
@@ -3371,6 +3403,30 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		duration: time.Since(start),
 		err:      err,
 	}
+}
+
+// variantBuildEnv layers a variant's GOOS/GOARCH and its declared env
+// (KCL BuildVariant.env) onto base. Later entries win (os/exec keeps the last
+// value of a duplicated key), so a declared CGO_ENABLED=1 overrides forge's
+// CGO_ENABLED=0 default. Declared keys are appended sorted, so the command's
+// environment is the same on every run.
+func variantBuildEnv(base []string, v BuildVariant) []string {
+	env := append([]string(nil), base...)
+	if v.GOOS != "" {
+		env = append(env, "GOOS="+v.GOOS)
+	}
+	if v.GOARCH != "" {
+		env = append(env, "GOARCH="+v.GOARCH)
+	}
+	keys := make([]string, 0, len(v.EnvAtBuild))
+	for k := range v.EnvAtBuild {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, k+"="+v.EnvAtBuild[k])
+	}
+	return env
 }
 
 // buildKCLDockerShell dispatches the per-service DockerBuild type — the
@@ -3422,6 +3478,7 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				fmt.Printf("[build] %s: skipping docker (bound to forge.OnHost: it runs on the host, not from an image)\n", w.Name)
 				continue
 			}
+			checkDockerCredHelpers(os.Stdout)
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
 			result := timedBuild(ctx, func() buildResult {
 				if opts.composition != nil {
@@ -3708,6 +3765,13 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	// An env that instruments the image's binary builds the Dockerfile's
+	// cover stage (kcl/schema.k Tests, coverImageArgs).
+	coverArgs, coverErr := coverImageArgs(ctx, svcName, d)
+	if coverErr != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: coverErr}
+	}
+	dockerArgs = append(dockerArgs[:1:1], append(coverArgs, dockerArgs[1:]...)...)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
 	epoch := ""

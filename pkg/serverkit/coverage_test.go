@@ -25,10 +25,13 @@ func TestCoverageHandler_RealCoverBuild(t *testing.T) {
 	dir := t.TempDir()
 
 	cover := startCovServer(t, filepath.Join(dir, "cover"), "-cover", "-covermode=atomic")
-	for _, target := range []string{serverkit.CoveragePath, serverkit.CoveragePath + "?reset=1"} {
-		code, body := getOnce(t, "http://"+cover+target)
+	if code, _ := requestOnce(t, http.MethodGet, "http://"+cover+serverkit.CoveragePath+"?reset=1"); code != http.StatusMethodNotAllowed {
+		t.Errorf("GET ?reset=1 answered %d, want 405: a reset is POST with %s", code, serverkit.CoverageResetHeader)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		code, body := requestOnce(t, method, "http://"+cover+serverkit.CoveragePath, serverkit.CoverageResetHeader, "1")
 		if code != http.StatusOK {
-			t.Fatalf("%s answered %d: %s", target, code, body)
+			t.Fatalf("%s answered %d: %s", method, code, body)
 		}
 		var meta, counters bool
 		tr := tar.NewReader(bytes.NewReader(body))
@@ -38,13 +41,13 @@ func TestCoverageHandler_RealCoverBuild(t *testing.T) {
 				break
 			}
 			if err != nil {
-				t.Fatalf("%s: not a tar: %v", target, err)
+				t.Fatalf("%s: not a tar: %v", method, err)
 			}
 			meta = meta || strings.HasPrefix(hdr.Name, "covmeta.")
 			counters = counters || strings.HasPrefix(hdr.Name, "covcounters.")
 		}
 		if !meta || !counters {
-			t.Errorf("%s: tar has meta=%v counters=%v, want both", target, meta, counters)
+			t.Errorf("%s: tar has meta=%v counters=%v, want both", method, meta, counters)
 		}
 	}
 
@@ -59,7 +62,20 @@ func TestCoverageHandler_RealCoverBuild(t *testing.T) {
 // the test waits on is that line, not a duration.
 func getOnce(t *testing.T, url string) (int, []byte) {
 	t.Helper()
-	resp, err := http.Get(url)
+	return requestOnce(t, http.MethodGet, url)
+}
+
+// requestOnce sends one request with the header name, value pairs.
+func requestOnce(t *testing.T, method, url string, header ...string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

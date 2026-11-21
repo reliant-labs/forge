@@ -586,7 +586,7 @@ design is unchanged; these are the API details building it settled.
 ## 11. F2 implementation notes (verification half)
 
 - **`pkg/selfupdate/sigstore`**: `New(Config{Repo, Identity, Issuer,
-  PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
+PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
   built on `github.com/sigstore/sigstore-go` (in process; no cosign or gh on the
   machine). It requires a Fulcio certificate chaining to the trusted root, one
   transparency-log entry, one certificate timestamp and one observer timestamp,

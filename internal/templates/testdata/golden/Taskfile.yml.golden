@@ -123,8 +123,9 @@ vars:
   # (ci/quarantine/go/, written by `forge test quarantine add`), or nothing.
   # forge is asked only when something is quarantined.
   TEST_SKIP: '{ [ ! -d ci/quarantine/go ] && [ -z "$CI_QUARANTINE_EXTRA" ]; } || {{.FORGE}} test quarantine skip-regex go || true'
-  # COVERAGE is forge.yaml's `tests.coverage` ("true" or "false"; the legacy
-  # `ci.test.coverage` when the tests block does not say). "false" keeps the
+  # COVERAGE is forge.yaml's `tests.coverage` (`true`/`false`, or a map
+  # whose `enabled` defaults to true; the legacy `ci.test.coverage` when the
+  # tests block does not say), always rendered as exactly "true" or "false". "false" keeps the
   # coverage flags out of every lane, which then record results only.
   # COVERPKG is ` -coverpkg=./...` under `tests.coverage.packages: module`:
   # each test binary then counts the whole module, not just its own package.
@@ -133,8 +134,8 @@ vars:
     {{- $tests := index $cfg "tests" -}}
     {{- $cov := "" -}}
     {{- if kindIs "map" $tests}}{{$cov = index $tests "coverage"}}{{end -}}
-    {{- if kindIs "bool" $cov}}{{$cov}}
-    {{- else if kindIs "map" $cov}}{{if hasKey $cov "enabled"}}{{index $cov "enabled"}}{{else}}true{{end}}
+    {{- if kindIs "bool" $cov}}{{if $cov}}true{{else}}false{{end}}
+    {{- else if kindIs "map" $cov}}{{if hasKey $cov "enabled"}}{{eq (toString (index $cov "enabled")) "true"}}{{else}}true{{end}}
     {{- else}}{{$ci := index $cfg "ci"}}{{$t := ""}}{{if kindIs "map" $ci}}{{$t = index $ci "test"}}{{end}}{{if kindIs "map" $t}}{{eq (toString (index $t "coverage")) "true"}}{{else}}false{{end}}
     {{- end -}}
   COVERPKG: >-

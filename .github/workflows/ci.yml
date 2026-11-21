@@ -1194,8 +1194,15 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # The public REST API provides live PR metadata; do not expose the
-    # workflow token to the candidate's compatibility checks.
+    # The public REST API provides live PR metadata. The candidate's code sees
+    # no credential but one: the two compatibility steps hand their
+    # scripts/ci-public-gh.sh reads the workflow token, which is read-only
+    # (contents: read, above) on a public repository, so it reads nothing an
+    # anonymous caller cannot; on a fork's pull request GitHub caps it at read
+    # too. It buys the token's rate limit: anonymous reads share 60 an hour per
+    # runner IP, and a shared runner's exhaustion failed forge#2459's gate
+    # (HTTP 403) on a PR with no break. ciguard's credential guard admits that
+    # one exposure and no other (TestCandidateCIHasNoExposedGitHubCredentials).
     steps:
       # Full history: HEAD is the merge commit, HEAD^1 the base branch's tip,
       # so HEAD^1..HEAD is exactly what the pull request changes. The binary
@@ -1246,6 +1253,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           APIGATE_GH: ./scripts/ci-public-gh.sh
+          GITHUB_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: go run ./internal/apigate -base HEAD^1 -pr "$PR"
       # forge's proto (the forge.v1 options every project's protos import) is
@@ -1261,6 +1269,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         env:
           COMPAT_GH: ./scripts/ci-public-gh.sh
+          GITHUB_TOKEN: ${{ github.token }}
           CI_PR: ${{ github.event.pull_request.number }}
           CI_BASE: HEAD^1
           COMPAT_REPO: ${{ github.repository }}

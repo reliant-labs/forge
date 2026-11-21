@@ -408,11 +408,19 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 	add("Update"+entity+"Response",
 		fmt.Sprintf("message Update%sResponse {\n  %s %s = 1;\n}\n", entity, entity, naming.EntityFieldName(entity)))
 
-	// Delete
+	// Delete (AIP-135) — the id and nothing else, answered by an empty
+	// response: exactly what the generated DeleteOp reads and writes. Births
+	// used to add `bool hard_delete` to the request and `id` + `deleted_at`
+	// to the response, and the generated handler honored none of them: a
+	// client asking for a hard delete of a soft-deleting entity got a soft
+	// one, and read an empty id and no stamp back. Whether a caller may
+	// bypass soft delete is the product's policy, so a service that wants
+	// it adds the field and handles it in its own Delete rpc. Messages
+	// already born keep their fields: removing a wire field is a break.
 	add("Delete"+entity+"Request",
-		fmt.Sprintf("message Delete%sRequest {\n  string id = 1;\n  bool hard_delete = 2;\n}\n", entity))
+		fmt.Sprintf("message Delete%sRequest {\n  string id = 1;\n}\n", entity))
 	add("Delete"+entity+"Response",
-		fmt.Sprintf("message Delete%sResponse {\n  string id = 1;\n  google.protobuf.Timestamp deleted_at = 2;\n}\n", entity))
+		fmt.Sprintf("message Delete%sResponse {}\n", entity))
 
 	// List — the other request that flattens, but it flattens FILTERS, not
 	// values, so it deliberately carries NO entity field rules: `search` is

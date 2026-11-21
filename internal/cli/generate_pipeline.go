@@ -898,6 +898,26 @@ var templatesOnlyStepAllow = map[string]bool{
 	"frontend mocks + transport":                      true,
 }
 
+// stepPresetValue is generate's --steps flag: a step preset name, checked
+// when the flag is parsed. The check used to wait for the pipeline, so
+// `generate --steps <typo>` first ran the root's clone setup — which can
+// rewrite the merge driver in the git config every worktree of the clone
+// shares — and only then failed. Parsing precedes every PersistentPreRun.
+type stepPresetValue string
+
+func (v *stepPresetValue) Set(s string) error {
+	if _, ok := stepPresetAllowlist[s]; s != "" && !ok {
+		return fmt.Errorf("unknown pipeline step preset %q (valid: %s)", s, knownStepPresetNames())
+	}
+	*v = stepPresetValue(s)
+	return nil
+}
+
+func (v *stepPresetValue) String() string { return string(*v) }
+
+// Type is "string", as the StringVar it replaced, so --help reads the same.
+func (v *stepPresetValue) Type() string { return "string" }
+
 // knownStepPresetNames returns a comma-joined string of every
 // registered step preset for error messages. Kept as a helper so the
 // error in runGeneratePipelineFlags doesn't have to inline a sort +
@@ -1693,11 +1713,9 @@ func stepDescriptorGenerate(ctx *pipelineContext) error {
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs
 // protoc-gen-connect-openapi over each proto/services/<svc>/ to emit
-// `openapi/<service>.yaml`. Best-effort: a missing plugin or a single
-// failing service surfaces as a warning so the rest of the pipeline
-// still completes. The hard "plugin not on PATH" case bubbles up as an
-// error because that's an actionable misconfiguration (the user opted
-// in via forge.yaml but didn't install the binary).
+// `openapi/<service>.yaml`. The project opted in via forge.yaml, so a
+// plugin forge cannot provision, or a service whose spec is not written,
+// fails the step rather than warning past it.
 func stepOpenAPIGenerate(ctx *pipelineContext) error {
 	if err := runOpenAPIGenerate(ctx.ProjectDir, ctx.Cfg); err != nil {
 		return fmt.Errorf("openapi generation: %w", err)

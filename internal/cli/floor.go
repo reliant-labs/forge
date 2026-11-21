@@ -600,7 +600,7 @@ func checkDeployFloors(ctx context.Context, out io.Writer, projectDir, env, vers
 	if raises := release.PromoteRaises(floors, env, *target, raiseReason, release.Actor{}, time.Now().UTC(), ""); len(raises) > 0 {
 		v.Verdict, v.Raises = "raises", raises
 	}
-	if target.Migrations == nil || !target.Migrations.DeclarationsRecorded {
+	if (target.Migrations == nil || !target.Migrations.DeclarationsRecorded) && projectHasMigrations(projectDir) {
 		v.Note = fmt.Sprintf("%s records no rollback-floor declarations (cut by a forge that predates them): it raises no automatic floor; set one by hand if it breaks rollback", version)
 	}
 	return v, target, nil

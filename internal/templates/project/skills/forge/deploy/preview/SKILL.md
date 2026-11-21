@@ -107,7 +107,8 @@ permissions:
   pull-requests: write
 jobs:
   up:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    # never a fork's code with your deploy token (a fork's PR gets no secrets anyway)
+    if: github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
@@ -129,7 +130,7 @@ jobs:
             --body "Preview \`${{ steps.preview.outputs.name }}\` (expires $(jq -r .expires_at preview.json)):
           ${urls}"
   down:
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
@@ -149,9 +150,13 @@ jobs:
       - run: forge env gc --yes
 ```
 
-A pull request from a fork gets no secrets. Keep previews to branches in the
-repository (`if: github.event.pull_request.head.repo.full_name ==
-github.repository`), and never run a fork's code with your deploy token.
+A pull request from a fork gets no secrets, so the `up` and `down` jobs above
+run only for branches in the repository (`head.repo.full_name ==
+github.repository`): never run a fork's code with your deploy token. The
+runner installs the standalone `forge` from npm, so the recipe calls `forge`,
+not `reliant forge`, whichever CLI printed this skill.
+
+The instance directory (`deploy/kcl/preview-pr-<N>/`) writes its own `.gitignore`, so creating a preview leaves the checkout clean and the release it cuts is not a dirty-tree release.
 
 ## Not yet
 

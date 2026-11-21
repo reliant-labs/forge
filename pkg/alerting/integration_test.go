@@ -28,6 +28,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/reliant-labs/forge/internal/testdocker"
+	"github.com/reliant-labs/forge/internal/testhost"
 	"github.com/reliant-labs/forge/pkg/lease"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 
@@ -39,6 +40,19 @@ import (
 // chImage is pinned by digest (the multi-arch index), so a re-pushed tag
 // cannot change the server these tests judge; pkg/obsquery pins the same one.
 const chImage = "clickhouse/clickhouse-server:26.8.24-alpine@sha256:b200d774984e092bf35bec8dbe41aebf2cd875bdc6a0cbb093cebc543730012d"
+
+// scratchPostgresURL provisions a scratch Postgres database. When pgtest cannot
+// download the embedded postgres binary (a Maven Central or mirror outage) the
+// host lacks the registry, not the code under test: the test skips.
+func scratchPostgresURL(t *testing.T) (dsn string, drop func()) {
+	t.Helper()
+	dsn, drop, err := pgtest.NewURL()
+	if err != nil {
+		testhost.SkipIfPostgresDownloadFailed(t, err)
+		t.Fatalf("provision a scratch Postgres database: %v", err)
+	}
+	return dsn, drop
+}
 
 func startClickHouse(t *testing.T) (addr string) {
 	t.Helper()
@@ -142,10 +156,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 	// A scratch database of this test's own on pgtest's shared server, dropped
 	// when the test ends. pgtest decides which server: the one
 	// FORGE_TEST_POSTGRES_URL names, or embedded postgres.
-	dsn, dropDB, err := pgtest.NewURL()
-	if err != nil {
-		t.Fatalf("provision a scratch Postgres database: %v", err)
-	}
+	dsn, dropDB := scratchPostgresURL(t)
 	t.Cleanup(dropDB)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -324,10 +335,7 @@ func TestClickHousePostgresEndToEnd(t *testing.T) {
 // Alertmanager with that env's identity, and the envs under the cap are untouched.
 func TestPerEnvRuleCapEndToEndIsLoud(t *testing.T) {
 	addr := startClickHouse(t)
-	dsn, dropDB, err := pgtest.NewURL()
-	if err != nil {
-		t.Fatalf("provision a scratch Postgres database: %v", err)
-	}
+	dsn, dropDB := scratchPostgresURL(t)
 	t.Cleanup(dropDB)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

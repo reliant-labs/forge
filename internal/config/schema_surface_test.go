@@ -39,12 +39,27 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			// resolves through, and by `forge obs init`.
 			// scaffold: read by checksums.ExcludeGlobs at every write
 			// chokepoint (scaffold.exclude).
+			// vuln: read where the release cut attaches an OCI artifact's
+			// SBOM as a referrer (VulnConfig.AttachSBOMEnabled).
 			want: []string{
 				"api", "binary", "ci", "config", "contracts", "database",
 				"deploy", "dev_stack", "docker", "envs", "features",
 				"forge_version", "generate", "git", "harness", "k8s",
 				"lint", "module_path", "monitoring", "name", "observability", "scaffold", "upgrade",
+				"vuln",
 			},
+		},
+		{
+			// vuln.attach_sbom: read by the release cut (internal/sbomoci);
+			// vuln.patch.verify: read by `forge vuln patch`.
+			name: "VulnConfig",
+			typ:  reflect.TypeFor[VulnConfig](),
+			want: []string{"attach_sbom", "patch"},
+		},
+		{
+			name: "VulnPatchConfig",
+			typ:  reflect.TypeFor[VulnPatchConfig](),
+			want: []string{"verify"},
 		},
 		{
 			// Every feature; orm also has //forge:no-orm.

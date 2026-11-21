@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/schemagen"
+	"github.com/reliant-labs/forge/internal/vulnpatch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -65,6 +66,14 @@ func publishedSchemas() map[string]struct {
 		"test-coverage-view": testDocumentSchema("test-coverage-view", schemaTestCoverageView, reflect.TypeOf(testCoverageDoc{}), "recorded coverage as `forge test coverage --json` shows it: a path or lane filter, the per-package or per-file rollup, diff coverage, and the forge.test.coverage/v1 document they come from"),
 		"test-runs":          testDocumentSchema("test-runs", schemaTestRuns, reflect.TypeOf(testRunsDoc{}), "the local test runs, newest first, with each lane's exit code; `forge test runs --json`"),
 		"test-run-result":    testDocumentSchema("test-run-result", schemaTestRunResult, reflect.TypeOf(testRunResultDoc{}), "the Taskfile lanes `forge test run` ran as one run, each with its own exit code, and the lanes they recorded; `forge test run --json`"),
+		"vuln-patch": {
+			spec: SchemaSpec{
+				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
+				Command:   "forge project schema vuln-patch",
+				Describes: "`forge vuln patch --json`: what the patcher bumped per finding, the verification, and the exit code",
+			},
+			body: vulnPatchSchemaJSON,
+		},
 	}
 }
 
@@ -148,6 +157,10 @@ func newProjectSchemaCmd() *cobra.Command {
 
   test-run-result
         forge.test.run-result/v1: what ` + "`forge test run --json`" + ` prints.
+
+  vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
+        what was bumped per finding, the verification, and the exit code the
+        vuln-patch workflow branches on.
 
 With no name, lists the schemas. The schema printed is the one embedded in
 this binary, so it is exactly what this forge validates against. Point an

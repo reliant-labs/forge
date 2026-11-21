@@ -305,6 +305,12 @@ type pipelineContext struct {
 	rendered     renderedEnvironments
 	renderedRead bool
 
+	// The disk inventory and last usable declarations used to derive frontend
+	// codegen. A failed re-render cannot erase an env's known declarations.
+	diskFrontends       []config.FrontendConfig
+	inventoryFrontends  []renderedEnvFrontend
+	inventoryMissedEnvs []string
+
 	// registry is the memoized parse of the user-owned
 	// pkg/app/services.go registration file (what this binary serves —
 	// see generate_serve.go). Lazily populated via
@@ -2036,6 +2042,7 @@ func stepFrontendConfig(ctx *pipelineContext) error {
 	if err := codegen.ValidateConfigEnvAliases(messages); err != nil {
 		return err
 	}
+	ctx.rederiveFrontendInventory()
 	return generateFrontendConfigModules(ctx.Cfg, messages, ctx.ProjectDir, ctx.Checksums, func() []envRenderFailure { return ctx.renderedEnvs().failed })
 }
 
@@ -2737,6 +2744,7 @@ func stepObservabilityDashboards(ctx *pipelineContext) error {
 		}
 		in.Services = append(in.Services, svc)
 	}
+	ctx.rederiveFrontendInventory()
 	in.Frontends = observedFrontends(ctx.Cfg)
 	announceDerivedObservability(os.Stdout, ctx)
 	// An env that did not render would drop its frontends and processes from

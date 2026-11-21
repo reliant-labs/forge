@@ -31,6 +31,22 @@ type wireHealthStats struct {
 	P99Ms     float64 `json:"p99Ms"`
 }
 
+// wireBrowserStats is control-plane's BrowserWindowStats: one frontend's
+// browser figures over one window.
+type wireBrowserStats struct {
+	PageViews      jsonInt `json:"pageViews"`
+	PageLoads      jsonInt `json:"pageLoads"`
+	JSErrors       jsonInt `json:"jsErrors"`
+	Requests       jsonInt `json:"requests"`
+	FailedRequests jsonInt `json:"failedRequests"`
+	PageLoadP95Ms  float64 `json:"pageLoadP95Ms"`
+}
+
+func (s wireBrowserStats) stats() releasehealth.BrowserStats {
+	return releasehealth.BrowserStats{PageViews: int64(s.PageViews), PageLoads: int64(s.PageLoads), JSErrors: int64(s.JSErrors),
+		Requests: int64(s.Requests), FailedRequests: int64(s.FailedRequests), PageLoadP95Ms: s.PageLoadP95Ms}
+}
+
 type wireHealthIssue struct {
 	ID           string    `json:"id"`
 	Service      string    `json:"service"`
@@ -40,6 +56,19 @@ type wireHealthIssue struct {
 	FirstSeenAt  time.Time `json:"firstSeenAt"`
 	FirstVersion string    `json:"firstVersion"`
 	RegressedAt  time.Time `json:"regressedAt"`
+}
+
+// wireAlertRef is ReleaseAlertRef.
+type wireAlertRef struct {
+	Rule            string            `json:"rule"`
+	Fingerprint     string            `json:"fingerprint"`
+	FiringAt        time.Time         `json:"firingAt"`
+	Labels          map[string]string `json:"labels"`
+	BaselineFirings int               `json:"baselineFirings"`
+}
+
+func (a wireAlertRef) alert() releasehealth.Alert {
+	return releasehealth.Alert{Rule: a.Rule, Fingerprint: a.Fingerprint, FiringAt: a.FiringAt.UTC(), Labels: a.Labels, BaselineFirings: a.BaselineFirings}
 }
 
 type wireReleaseHealth struct {
@@ -69,15 +98,30 @@ type wireReleaseHealth struct {
 		Before       wireHealthStats `json:"before"`
 		After        wireHealthStats `json:"after"`
 		VersionShare *float64        `json:"versionShare"`
+		// Signal and Browser: a control plane that reads browser telemetry
+		// (control-plane#2752, shipped by control-plane#2955 at 08eb56fa:
+		// ServiceHealthDelta.signal = 5 and .browser = 6, a
+		// BrowserHealthDelta of two BrowserWindowStats, in
+		// proto/services/observability/v1/observability.proto, filled by
+		// rpc_get_release_health.go from this module's releasehealth, so
+		// the Signal values are releasehealth's own) says what each service
+		// was judged on and sends a frontend's browser figures, so the folds
+		// below (the baseline rule, --fail-on) see a frontend-only env's
+		// page views rather than a service that sent nothing. An older one
+		// sends neither, and decodes as before: spans, no browser figures.
+		Signal  string `json:"signal"`
+		Browser *struct {
+			Before wireBrowserStats `json:"before"`
+			After  wireBrowserStats `json:"after"`
+		} `json:"browser"`
 	} `json:"services"`
 	NewIssues       []wireHealthIssue `json:"newIssues"`
 	RegressedIssues []wireHealthIssue `json:"regressedIssues"`
-	FiringAlerts    []struct {
-		Rule        string            `json:"rule"`
-		Fingerprint string            `json:"fingerprint"`
-		FiringAt    time.Time         `json:"firingAt"`
-		Labels      map[string]string `json:"labels"`
-	} `json:"firingAlerts"`
+	FiringAlerts    []wireAlertRef    `json:"firingAlerts"`
+	// BaselineAlerts: alerts that were flapping before the promotion, so
+	// their alert_firing findings are warn and say why in unattributed.
+	// Empty from an older control plane, which counted every alert.
+	BaselineAlerts   []wireAlertRef `json:"baselineAlerts"`
 	WorkloadFindings []struct {
 		Workload             string  `json:"workload"`
 		Restarts             jsonInt `json:"restarts"`
@@ -91,6 +135,9 @@ type wireReleaseHealth struct {
 		Threshold float64 `json:"threshold"`
 		Policy    string  `json:"policy"`
 		Message   string  `json:"message"`
+		// Unattributed says why the finding is not the release's (an
+		// alert already flapping before it): Rejudge never fails on one.
+		Unattributed string `json:"unattributed"`
 	} `json:"findings"`
 	Thresholds []struct {
 		Name   string `json:"name"`
@@ -189,7 +236,11 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		return releasehealth.WindowStats{Requests: int64(s.Requests), ErrorRate: s.ErrorRate, P50Ms: s.P50Ms, P95Ms: s.P95Ms, P99Ms: s.P99Ms}
 	}
 	for _, s := range w.Services {
-		r.Services = append(r.Services, releasehealth.ServiceHealth{Service: s.Service, Before: stats(s.Before), After: stats(s.After), VersionShare: s.VersionShare})
+		h := releasehealth.ServiceHealth{Service: s.Service, Before: stats(s.Before), After: stats(s.After), VersionShare: s.VersionShare, Signal: s.Signal}
+		if s.Browser != nil {
+			h.Browser = &releasehealth.BrowserHealth{Before: s.Browser.Before.stats(), After: s.Browser.After.stats()}
+		}
+		r.Services = append(r.Services, h)
 	}
 	issue := func(i wireHealthIssue) releasehealth.Issue {
 		return releasehealth.Issue{ID: i.ID, Service: i.Service, Title: i.Title, Culprit: i.Culprit, Events: int64(i.Events),
@@ -202,7 +253,10 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		r.RegressedIssues = append(r.RegressedIssues, issue(i))
 	}
 	for _, a := range w.FiringAlerts {
-		r.FiringAlerts = append(r.FiringAlerts, releasehealth.Alert{Rule: a.Rule, Fingerprint: a.Fingerprint, FiringAt: a.FiringAt.UTC(), Labels: a.Labels})
+		r.FiringAlerts = append(r.FiringAlerts, a.alert())
+	}
+	for _, a := range w.BaselineAlerts {
+		r.BaselineAlerts = append(r.BaselineAlerts, a.alert())
 	}
 	for _, f := range w.WorkloadFindings {
 		r.Workloads = append(r.Workloads, releasehealth.Workload{Workload: f.Workload, Restarts: int64(f.Restarts), LastTerminatedReason: f.LastTerminatedReason})
@@ -212,7 +266,7 @@ func reportFromWire(w wireReleaseHealth) (releasehealth.Report, error) {
 		if code == "" || code == "unspecified" {
 			continue
 		}
-		r.Findings = append(r.Findings, releasehealth.Finding{Code: code, Service: f.Service, Value: f.Value, Threshold: f.Threshold, Policy: f.Policy, Message: f.Message})
+		r.Findings = append(r.Findings, releasehealth.Finding{Code: code, Service: f.Service, Value: f.Value, Threshold: f.Threshold, Policy: f.Policy, Message: f.Message, Unattributed: f.Unattributed})
 	}
 	for _, t := range w.Thresholds {
 		r.Thresholds = append(r.Thresholds, releasehealth.Threshold{Name: t.Name, Value: t.Value, Source: t.Source})
@@ -274,6 +328,10 @@ type wireActivityEvent struct {
 // ChangesRequest.Limit after the merge.
 const changesPageSize = 200
 
+// changesMaxPages bounds how many activity pages one read follows. Past it
+// the feed is reported truncated, never silently short.
+const changesMaxPages = 25
+
 // Changes implements ChangesReader: the env's promotions and failed deploys
 // (internal/releasetimeline over the control plane's deploy ledger) merged
 // with its activity feed. A source that cannot be read costs its rows, not the
@@ -302,18 +360,18 @@ func (c Cloud) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 	if req.Project != "" {
 		scope["projectId"] = req.Project
 	}
-	body := map[string]any{"scope": scope, "pageSize": changesPageSize}
-	var act struct {
-		Events []wireActivityEvent `json:"events"`
-	}
-	if err := c.callEnvWide(ctx, procListActivity, body, &act); err != nil {
+	events, more, err := c.activityPages(ctx, scope, req.Limit)
+	if err != nil {
 		note := fmt.Sprintf("activity unreadable, only the deploy ledger is shown: %v", err)
 		if unimplemented(err) {
 			note = "the control plane does not serve activity yet; only the deploy ledger is shown"
 		}
+		if len(events) > 0 {
+			note = fmt.Sprintf("activity only partly read (%d events), the rest is missing: %v", len(events), err)
+		}
 		res.Warnings = append(res.Warnings, note)
 	}
-	for _, ev := range act.Events {
+	for _, ev := range events {
 		// A promotion is already a ledger row; its activity event only adds
 		// who and how, which the timeline merged.
 		if ev.Verb == "promote" {
@@ -330,7 +388,46 @@ func (c Cloud) Changes(ctx context.Context, req ChangesRequest) (ChangesResult, 
 		})
 	}
 	sortChanges(&res, req.Limit)
+	if more && res.Omitted == 0 {
+		// Activity older than the pages read exists in the range: the feed
+		// is short by an unknown count, and must not read as complete
+		// (forge report 0108cca3: ~200 items with truncated:false).
+		res.Omitted = 1
+		res.Warnings = append(res.Warnings, fmt.Sprintf("activity has more events in the range than the %d read; raise --limit, or narrow --from/--to", len(events)))
+	}
 	return res, nil
+}
+
+// activityPages reads the activity feed newest first, following
+// next_page_token until it holds limit events (every event when limit is 0)
+// or the feed ends. more reports a page left unread. Only the newest limit
+// changes survive the merge, so events past limit are never needed.
+func (c Cloud) activityPages(ctx context.Context, scope map[string]any, limit int) (events []wireActivityEvent, more bool, err error) {
+	token := ""
+	for page := 0; ; page++ {
+		if page == changesMaxPages {
+			return events, true, nil
+		}
+		body := map[string]any{"scope": scope, "pageSize": changesPageSize}
+		if token != "" {
+			body["pageToken"] = token
+		}
+		var act struct {
+			Events        []wireActivityEvent `json:"events"`
+			NextPageToken string              `json:"nextPageToken"`
+		}
+		if err := c.callEnvWide(ctx, procListActivity, body, &act); err != nil {
+			return events, false, err
+		}
+		events = append(events, act.Events...)
+		token = act.NextPageToken
+		if token == "" {
+			return events, false, nil
+		}
+		if limit > 0 && len(events) >= limit {
+			return events, true, nil
+		}
+	}
 }
 
 func firstNonEmpty(ss ...string) string {

@@ -14,9 +14,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -235,8 +237,10 @@ func TestHarvestGoModuleArtifacts_SkipsRootModule(t *testing.T) {
 // emitted into outputDir.
 func TestHarvestFileArtifacts_HashesDeclaredBinaries(t *testing.T) {
 	dir := t.TempDir()
-	writeArtifactFixture(t, filepath.Join(dir, "bin", "reliant-daemon-prod"), "prod-binary-bytes")
-	writeArtifactFixture(t, filepath.Join(dir, "bin", "custom-name"), "dev-binary-bytes")
+	// A variant with no GOOS builds for the host, so on Windows the build
+	// writes <name>.exe: the fixture is the file the build would write.
+	writeArtifactFixture(t, filepath.Join(dir, "bin", hostlaunch.ExeName(runtime.GOOS, "reliant-daemon-prod")), "prod-binary-bytes")
+	writeArtifactFixture(t, filepath.Join(dir, "bin", hostlaunch.ExeName(runtime.GOOS, "custom-name")), "dev-binary-bytes")
 
 	entities := &KCLEntities{Workloads: []WorkloadEntity{{
 		Name: "reliant-daemon", Kind: "tool",
@@ -271,6 +275,28 @@ func TestHarvestFileArtifacts_HashesDeclaredBinaries(t *testing.T) {
 	}
 }
 
+// TestHarvestFileArtifacts_WindowsVariantFindsExe pins that a windows
+// variant is hashed from the .exe the build wrote (hostlaunch.ExeName), while
+// the ledger keys it by its declared name.
+func TestHarvestFileArtifacts_WindowsVariantFindsExe(t *testing.T) {
+	dir := t.TempDir()
+	writeArtifactFixture(t, filepath.Join(dir, "bin", "cli-windows.exe"), "exe-bytes")
+	entities := &KCLEntities{Workloads: []WorkloadEntity{{
+		Name: "cli", Kind: "tool",
+		Runtime: RuntimeEntity{Type: RuntimeBuildOnly, BuildOnly: &BuildOnlyDeploy{BuildVariants: []BuildVariant{
+			{Name: "windows", GOOS: "windows", GOARCH: "amd64"},
+		}}},
+	}}}
+
+	art, ok := harvestFileArtifacts(dir, "bin", entities)["cli-windows"]
+	if !ok {
+		t.Fatalf("windows variant not harvested from cli-windows.exe")
+	}
+	if want := sha256Hex(t, "exe-bytes"); art.Integrity != want {
+		t.Errorf("integrity = %q, want %q", art.Integrity, want)
+	}
+}
+
 // sha256Hex returns the canonical "sha256:<hex>" digest of a string, computed
 // independently of the production helper so the assertion is a real check
 // rather than a restatement of the implementation.
@@ -292,7 +318,7 @@ func TestHarvestFileArtifacts_IntegrityTracksContent(t *testing.T) {
 	hashOf := func(t *testing.T, body string) string {
 		t.Helper()
 		dir := t.TempDir()
-		writeArtifactFixture(t, filepath.Join(dir, "bin", "daemon-prod"), body)
+		writeArtifactFixture(t, filepath.Join(dir, "bin", hostlaunch.ExeName(runtime.GOOS, "daemon-prod")), body)
 		art, ok := harvestFileArtifacts(dir, "bin", entities)["daemon-prod"]
 		if !ok {
 			t.Fatal("no artifact harvested")
@@ -327,7 +353,7 @@ func TestHarvestFileArtifacts_SkipsUnbuiltVariant(t *testing.T) {
 // bytes under two kinds.
 func TestHarvestFileArtifacts_IgnoresNonBuildOnlyServices(t *testing.T) {
 	dir := t.TempDir()
-	writeArtifactFixture(t, filepath.Join(dir, "bin", "api-server"), "binary")
+	writeArtifactFixture(t, filepath.Join(dir, "bin", hostlaunch.ExeName(runtime.GOOS, "api-server")), "binary")
 	entities := &KCLEntities{Workloads: []WorkloadEntity{{Name: "api-server", Runtime: RuntimeEntity{Type: RuntimeCluster, Cluster: &ClusterRuntime{}}}}}
 
 	if got := harvestFileArtifacts(dir, "bin", entities); len(got) != 0 {

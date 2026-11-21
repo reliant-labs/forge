@@ -112,6 +112,18 @@ func TestDetectConstructorName(t *testing.T) {
 			want: "Connect",
 		},
 		{
+			// forge report 5d62e49e: two marked constructors, the second for
+			// another component of the package. The package's is the one
+			// taking Deps and returning its contract, whatever the file order.
+			name: "of two marked constructors, the contract's wins",
+			files: map[string]string{
+				"contract.go":  "package p\n\ntype Service interface{ Do() }\ntype Deps struct{}\n",
+				"a_maint.go":   "package p\n\ntype Maintenance interface{ Run() }\ntype MaintenanceDeps struct{}\n// forge:constructor\nfunc NewMaintenance(d MaintenanceDeps) (Maintenance, error) { return nil, nil }\n",
+				"z_service.go": "package p\n\n// forge:constructor\nfunc New(d Deps) (Service, error) { return nil, nil }\n",
+			},
+			want: "New",
+		},
+		{
 			name:  "a method is never the constructor",
 			files: map[string]string{"contract.go": "package p\n\ntype Deps struct{}\n// forge:constructor\nfunc (s *svc) Open(d Deps) (Service, error) { return nil, nil }\n"},
 			want:  "New",

@@ -73,6 +73,10 @@ func TestCheckSecretSupply_UndeclaredMountFails(t *testing.T) {
 		!strings.Contains(report, "KubeconfigSecret") {
 		t.Fatalf("report not actionable:\n%s", report)
 	}
+	// TL-75: the out-of-band fix names the Bundle field it goes in.
+	if !strings.Contains(report, `required_secrets = [forge.ExternalSecret {name = "cp-daemon-kubeconfig"`) {
+		t.Errorf("report does not name required_secrets:\n%s", report)
+	}
 }
 
 // certManagerBundle is the shape the vendored cloudnative-pg barman-cloud

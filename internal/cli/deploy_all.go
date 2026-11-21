@@ -146,6 +146,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
 		RaiseFloorReason:      p.floorReason,
+		OverrideVulnGate:      p.overrideVulnGate,
 		Gates:                 p.gates,
 		Run:                   p.run,
 		Claim:                 f.claim,
@@ -256,6 +257,7 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		targetArch:              f.targetArch,
 		targets:                 f.targets,
 		run:                     f.promote.run,
+		noSBOM:                  f.noSBOM,
 	}
 	if err := runDeployBuild(ctx, opts); err != nil {
 		return deployCutResult{}, fmt.Errorf("build env %s for deploy: %w", envName, err)

@@ -156,7 +156,7 @@ func collectSuppressions(root string) ([]declaredSuppression, error) {
 			return nil
 		}
 		rel := relSlash(root, path)
-		for _, d := range suppress.Declarations(content) {
+		for _, d := range suppress.DeclarationsIn(path, content) {
 			out = append(out, declaredSuppression{
 				File: rel, Line: d.Line, Rule: d.Rule, Mechanism: d.Directive, Covers: d.Covers, Reason: d.Reason,
 			})
@@ -202,7 +202,7 @@ func collectSuppressions(root string) ([]declaredSuppression, error) {
 
 // optionalCheckedSuppressions lists the `// forge:optional-checked` comments
 // in one Go file, recognised exactly as the optional-deps guard recognises
-// them (commentDirectiveText). The guard silences the comment's own line and
+// them (isOptionalCheckedDirective). The guard silences the comment's own line and
 // the line below it.
 func optionalCheckedSuppressions(rel, path, content string) []declaredSuppression {
 	if !strings.Contains(content, optionalCheckedDirective) {
@@ -218,7 +218,7 @@ func optionalCheckedSuppressions(rel, path, content string) []declaredSuppressio
 	var out []declaredSuppression
 	for _, cg := range f.Comments {
 		for _, c := range cg.List {
-			if commentDirectiveText(c.Text) != optionalCheckedDirective {
+			if !isOptionalCheckedDirective(commentDirectiveText(c.Text)) {
 				continue
 			}
 			line := fset.Position(c.Pos()).Line

@@ -1,17 +1,20 @@
 ---
 name: integration
-description: "Integration tests — real database, build tags, transaction isolation."
+description: "Integration tests — which tests take the build tag (infrastructure beyond Postgres) and which stay in the fast tier (pgtest), per-test database clones."
 ---
 
 # Integration Tests
 
 ## Overview
 
-Integration tests run against a **real database** and verify that queries, migrations, and data access layers work correctly. They are invisible to plain `go test` because they require a build tag.
+Two lanes test against real infrastructure, and the database is not what decides between them.
+
+- **A real Postgres is fast-tier.** `forge/pkg/pgtest` (behind `testkit.NewPostgresDB` and the generated `NewMigratedTestDB`) boots one embedded server per machine and hands each test a clone of a migrated template, so a DB-backed test is untagged and runs in `task test:short` and `task test`. The scaffolded CRUD lifecycle test (`internal/handlers/<svc>/handlers_crud_test.go`) is one: untagged, real Postgres, fast tier. No docker and no running stack are needed. The `testing` skill has the details.
+- **The integration lane is for infrastructure pgtest cannot give you**: a container the test starts (a broker, MinIO, a second database engine), a real external API, or the running dev stack. Those tests sit behind `//go:build integration` and run in `task test:integration`.
 
 ## Build Tag
 
-Every integration test file must include the build constraint at the top:
+An integration test file starts with the build constraint:
 
 ```go
 //go:build integration
@@ -19,18 +22,18 @@ Every integration test file must include the build constraint at the top:
 package handlers_test
 ```
 
-This keeps them out of `go test ./...` and ensures they only run when explicitly requested.
+This keeps it out of `go test ./...`, so it runs only when the lane asks for it.
 
 ## Convention: build tag, never `testing.Short()`
 
-Forge integration tests use the **`//go:build integration`** build tag — *not* `testing.Short()` with `t.Skip(...)`. The two mechanisms answer different questions:
+For tests that need infrastructure the test process cannot start for itself, use the **`//go:build integration`** build tag, *not* `testing.Short()` with `t.Skip(...)`. The two mechanisms answer different questions:
 
 | Mechanism | What it does | Use when |
 | --- | --- | --- |
-| `//go:build integration` | The Go toolchain physically excludes the file from `go build` / `go test` unless `-tags integration` is passed. No compile, no link, no skip-at-runtime. | The test needs infra that may not be present (DB, broker, network). The default test run must not even attempt it. |
+| `//go:build integration` | The Go toolchain physically excludes the file from `go build` / `go test` unless `-tags integration` is passed. No compile, no link, no skip-at-runtime. | The test needs infrastructure that may not be present (a broker, a container, the network). The default test run must not even attempt it. |
 | `if testing.Short() { t.Skip(...) }` | The test is always compiled and runs by default. `go test -short` skips it at runtime. | The test is hermetic but optionally slow — e.g. a fast unit test that has an extra long-running scenario behind `-short`. |
 
-**Rule for forge projects:** all DB-backed / RPC-roundtrip / infra-dependent tests use the build tag. Reserve `testing.Short()` for the rare case of a hermetic test with a fast/slow toggle. Spell that toggle `testkit.Slow(t, "<why>")` (see `testing`): it also skips in the integration lane, so never call it from an integration-tagged test — that test would run nowhere. If your test would `t.Skip` because it can't reach a database, it belongs behind `//go:build integration` instead.
+**Rule for forge projects:** a test against Postgres uses pgtest and stays untagged. A test against any other infrastructure uses the build tag. Reserve `testing.Short()` for a hermetic test with a fast/slow toggle, and spell it `testkit.Slow(t, "<why>")` (see `testing`): it also skips in the integration lane, so never call it from an integration-tagged test, which would then run nowhere. If your test would `t.Skip` because it cannot reach a service, it belongs behind `//go:build integration` instead.
 
 The matching convention for end-to-end tests is `//go:build e2e`.
 
@@ -51,10 +54,10 @@ build tag, which means they are never compiled there, not skipped at runtime.
 
 ## Prerequisites
 
-Integration tests require a running Postgres instance via docker-compose. If you're already running the stack, you're set:
+A DB-backed test needs nothing running: pgtest boots its own embedded Postgres (or uses `FORGE_TEST_POSTGRES_URL` when you point it at a server of your own). An integration test needs whatever infrastructure it talks to; a test that drives the dev stack needs it up:
 
 ```bash
-forge env up dev    # starts the full stack including postgres
+forge env up dev    # starts the full stack
 ```
 
 ## Harness primitives: don't hand-roll the DB setup
@@ -63,16 +66,14 @@ forge env up dev    # starts the full stack including postgres
 
 Mock discipline at this tier: the subject and its real internal collaborators (including the DB) stay real — that's the whole point of integration. Mock only third-party boundaries you don't own.
 
-## Transaction-Per-Test Isolation
+## Per-test isolation
 
-Each test runs inside a database transaction that is rolled back in cleanup. This guarantees complete state isolation between tests:
+Each test gets its own database: pgtest clones the migrated template for every call, so tests never see each other's rows and need no rollback or cleanup of their own:
 
 ```go
 func TestCreateUser(t *testing.T) {
-    tx := testdb.Begin(t)       // starts transaction
-    t.Cleanup(func() { tx.Rollback() })
-    queries := db.New(tx)
-    // ... test with real queries
+    db := app.NewMigratedTestDB(t) // a fresh clone of the migrated schema, dropped at cleanup
+    // ... drive the handler or the store against db
 }
 ```
 
@@ -83,7 +84,7 @@ Integration tests are the right place to verify the SQL in `internal/db/<entity>
 ## Seed Data
 
 - Create test data in the test function or a helper called from the test
-- Always clean up with `t.Cleanup()` (transaction rollback handles this automatically)
+- Each test's database is its own clone, dropped when the test ends, so no manual cleanup is needed
 - **Never rely on test ordering** — each test must set up its own state
 
 ## Rules

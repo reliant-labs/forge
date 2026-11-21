@@ -2,7 +2,10 @@
 
 package obsquery
 
-import "strconv"
+import (
+	"strconv"
+	"time"
+)
 
 // CompileOnePass is the page statement as Compile built it before it selected
 // the page first: one aggregate computing every page column for every
@@ -13,7 +16,7 @@ func (q TraceQuery) CompileOnePass() (Stmt, error) {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
-	p, err := q.traceParts(b, true, false)
+	p, err := q.traceParts(b, true, false, time.Time{})
 	if err != nil {
 		return Stmt{}, err
 	}
@@ -23,3 +26,11 @@ func (q TraceQuery) CompileOnePass() (Stmt, error) {
 		"ORDER BY " + q.pageOrder() + "\n" +
 		"LIMIT " + strconv.Itoa(q.Limit+1)), nil
 }
+
+// SpanThresholdSQL is the span's sampling threshold as the weight reads it,
+// and SpanThresholdRegexSQL its definition; the integration test holds the
+// two to the same value.
+const (
+	SpanThresholdSQL      = spanThreshold
+	SpanThresholdRegexSQL = spanThresholdRegex
+)

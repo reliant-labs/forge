@@ -16,6 +16,38 @@ import (
 // composite env, or passed as a differently named input, is still a token.
 var candidateCredential = regexp.MustCompile(`(?i)\b(?:GH_TOKEN|GITHUB_TOKEN)\b|github\s*(?:\.\s*token|\[\s*['"]token['"]\s*\])|\bsecrets\s*[.\[]`)
 
+// publicMetadataStep is where the one admitted exposure may sit: a step of
+// pr-checks, the pull-request-only job of the compatibility checks.
+var publicMetadataStep = regexp.MustCompile(`^ci\.jobs\.pr-checks\.steps\[\d+\]$`)
+
+// withoutPublicMetadataToken returns step minus the one credential the guard
+// admits, when step is a `run` step of pr-checks that reads PR metadata through
+// scripts/ci-public-gh.sh and is handed exactly the workflow token as
+// GITHUB_TOKEN. That token is read-only (the workflow's contents: read, which
+// no job may widen) on a public repository, so it reads nothing an anonymous
+// caller cannot; it buys the rate limit a shared runner's anonymous reads
+// exhaust (forge#2459). Anything else in the step is still judged.
+func withoutPublicMetadataToken(where string, step map[string]any) map[string]any {
+	env, _ := step["env"].(map[string]any)
+	_, isRun := step["run"].(string)
+	if !publicMetadataStep.MatchString(where) || !isRun || step["uses"] != nil || env["GITHUB_TOKEN"] != "${{ github.token }}" ||
+		(env["APIGATE_GH"] != "./scripts/ci-public-gh.sh" && env["COMPAT_GH"] != "./scripts/ci-public-gh.sh") {
+		return step
+	}
+	trimmed := make(map[string]any, len(env))
+	for k, v := range env {
+		if k != "GITHUB_TOKEN" {
+			trimmed[k] = v
+		}
+	}
+	out := make(map[string]any, len(step))
+	for k, v := range step {
+		out[k] = v
+	}
+	out["env"] = trimmed
+	return out
+}
+
 func candidateWorkflowFindings(data []byte, readAction func(string) ([]byte, error)) []string {
 	var root map[string]any
 	if err := yaml.Unmarshal(data, &root); err != nil {
@@ -57,6 +89,7 @@ func candidateWorkflowFindings(data []byte, readAction func(string) ([]byte, err
 	walk = func(v any, where string) {
 		switch v := v.(type) {
 		case map[string]any:
+			v = withoutPublicMetadataToken(where, v)
 			visitAction(v, where)
 			for k, value := range v {
 				if candidateCredential.MatchString(k) {
@@ -170,9 +203,21 @@ func TestCandidateCICredentialGuardCatchesRegressions(t *testing.T) {
 		{"read token exposure", `env: {UNUSUAL_NAME: "${{ github['token'] }}"}`, "", "credential"},
 		{"transitive credential", "steps: [{uses: './.github/actions/child'}]", `runs: {steps: [{env: {GH_TOKEN: '${{ github.token }}'}}]}`, "credential"},
 		{"required gate checkout", "", "", "gate must not check out"},
+		// The one admitted exposure, and its near misses.
+		{"pr-checks metadata read", "pr-checks:" + metadataStep(`APIGATE_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: "${{ github.token }}"`), "", ""},
+		{"pr-checks compat metadata read", "pr-checks:" + metadataStep(`COMPAT_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: "${{ github.token }}"`), "", ""},
+		{"metadata token in another job", "candidate:" + metadataStep(`APIGATE_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: "${{ github.token }}"`), "", "credential"},
+		{"token without the public adapter", "pr-checks:" + metadataStep(`APIGATE_GH: gh, GITHUB_TOKEN: "${{ github.token }}"`), "", "credential"},
+		{"a secret in place of the workflow token", "pr-checks:" + metadataStep(`APIGATE_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: "${{ secrets.PAT }}"`), "", "credential"},
+		{"a second token beside it", "pr-checks:" + metadataStep(`APIGATE_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: "${{ github.token }}", GH_TOKEN: "${{ github.token }}"`), "", "credential"},
+		{"handed to an action", "pr-checks:\n    steps: [{uses: 'some/action@v1', run: x, env: {APIGATE_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: '${{ github.token }}'}}]", "", "credential"},
+		{"pr-checks widens permissions", "pr-checks:\n    permissions: {contents: read, pull-requests: write}" + metadataStep(`APIGATE_GH: ./scripts/ci-public-gh.sh, GITHUB_TOKEN: "${{ github.token }}"`), "", "cannot expand"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := "permissions: {contents: read}\njobs:\n  candidate:\n    " + tc.job + "\n"
+			if strings.HasPrefix(tc.job, "pr-checks:") || strings.HasPrefix(tc.job, "candidate:") {
+				raw = "permissions: {contents: read}\njobs:\n  " + tc.job + "\n"
+			}
 			if tc.job == "" {
 				raw = "permissions: {contents: read}\njobs:\n  gate:\n    steps: [{uses: 'actions/checkout@v7', with: {persist-credentials: false}}]\n"
 			}
@@ -182,4 +227,9 @@ func TestCandidateCICredentialGuardCatchesRegressions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// metadataStep is a job body with one compatibility step whose env is env.
+func metadataStep(env string) string {
+	return "\n    steps: [{run: 'go run ./internal/apigate -pr 7', env: {" + env + "}}]"
 }

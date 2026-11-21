@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -170,12 +171,25 @@ func TestCheckDeployMigrations(t *testing.T) {
 	if err := checkDeployMigrations(context.Background(), &bytes.Buffer{}, t.TempDir(), "prod", "v1.7.54", l.ledger(), false); err == nil {
 		t.Fatal("deploying v1.7.54 again was admitted, but prod's schema has passed its 024221")
 	}
+	withMigrations := t.TempDir()
+	if err := os.MkdirAll(config.MigrationsPathIn(withMigrations), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	if err := checkDeployMigrations(context.Background(), &out, t.TempDir(), "prod", "v1.7.40", l.ledger(), false); err != nil {
+	if err := checkDeployMigrations(context.Background(), &out, withMigrations, "prod", "v1.7.40", l.ledger(), false); err != nil {
 		t.Fatalf("a release with no manifest was refused: %v", err)
 	}
 	if !strings.Contains(out.String(), "records no migrations") {
 		t.Errorf("no note for a release with no manifest; got:\n%s", out.String())
+	}
+	// A project with no migrations (a static site) has none to record, so
+	// "cut before forge recorded them" would be untrue: no note.
+	out.Reset()
+	if err := checkDeployMigrations(context.Background(), &out, t.TempDir(), "prod", "v1.7.40", l.ledger(), false); err != nil {
+		t.Fatalf("a release with no manifest was refused: %v", err)
+	}
+	if strings.Contains(out.String(), "records no migrations") {
+		t.Errorf("a project with no migrations got the cut-before note:\n%s", out.String())
 	}
 }
 

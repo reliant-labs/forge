@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,7 +40,8 @@ func SetupTelemetry(ctx context.Context, cfg Config) (func(context.Context) erro
 //
 // A bind failure is logged and the endpoint skipped, never a component
 // failure: a debug surface that can take the service down is worse than
-// none. The declared-metrics schema rides the same listener.
+// none. The declared-metrics schema and a -cover build's coverage
+// (CoveragePath) ride the same listener.
 type Pprof struct {
 	addr   string
 	logger *slog.Logger
@@ -61,6 +63,17 @@ func NewPprof(cfg Config, logger *slog.Logger) *Pprof {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// Coverage of a -cover build (404 for any other), pulled while the
+	// process runs: see CoverageHandler. It reads AND resets process-wide
+	// counters with no auth, so it is served only where loopback is the
+	// auth: a debug listener bound to a reachable address does without it.
+	if loopbackAddr(cfg.PprofAddr) {
+		mux.Handle(CoveragePath, CoverageHandler())
+	} else if cfg.PprofAddr != "" {
+		logger.Info("coverage endpoint withheld: the debug listener is not bound to loopback",
+			"addr", cfg.PprofAddr, "path", CoveragePath,
+			"hint", "bind PprofAddr to 127.0.0.1, ::1 or localhost to serve it; a -cover build still writes its counters to GOCOVERDIR at exit")
+	}
 	mux.Handle(metrics.SchemaPath, metrics.SchemaHandler(metrics.Default(), cfg.ServiceName, schemaVersion(cfg.ServiceVersion)))
 	return &Pprof{
 		addr:   cfg.PprofAddr,
@@ -102,6 +115,21 @@ func (p *Pprof) Run(ctx context.Context) error {
 		<-errCh
 		return nil
 	}
+}
+
+// loopbackAddr reports whether addr (host:port) binds only loopback:
+// 127.0.0.0/8, ::1 or localhost. An empty host (":6060") binds every
+// interface and is not.
+func loopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Close shuts the endpoint down within ctx.

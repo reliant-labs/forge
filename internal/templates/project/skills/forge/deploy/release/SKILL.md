@@ -72,6 +72,16 @@ starts stays off the declared control plane, and `forge ledger where <env>
 `$FORGE_LEDGER_HOME` alone only relocates the machine ledger — a declared env
 still reads and writes its control plane. Control plane down: `deploy/offline-ledger`.
 
+## What a release records
+
+Every image by digest, every npm package and Go module the project
+publishes, and every FILE a build declares in `outputs` (sha256 + size +
+platform, keyed `<workload>/<path>`; `deploy/build`). A files-only
+`forge.BuildOnly` workload (no `image`) ships no image, so nothing about it
+is deployed: the release names its bytes, and a cut whose declared output
+matched no file is refused. `forge env releases show <env> <v>` lists a
+release's files; publishing them is your build's or CI's job.
+
 ## How each workload ships, and the preflight
 
 Each workload deploys through its runtime: cluster workloads are applied to
@@ -125,3 +135,6 @@ A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes ready
 leaves the previous ReplicaSet serving. Binding an env to an OLDER release is
 an ordinary promote labelled `direction BEHIND`; see `db/deploy-migrations`.
+
+Every cut also records an SBOM per artifact and, when the machine has the vulnerability
+database, scans it and prints the verdict; `--no-sbom` skips it. `vuln` has the rest.

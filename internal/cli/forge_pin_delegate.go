@@ -91,6 +91,8 @@ import (
 //     request run under that forge, past its own pin check (a delegate does
 //     not check). Each request is checked against its own project instead
 //     (serveRequestsUnderTheirOwnPins).
+//   - test begin, test capture: pin-independent plumbing in front of every
+//     test lane (pinIndependentCommands says why).
 //   - env ps, env devstack: they list, and allocate ports for, the stacks on
 //     this machine across projects, from ownership markers and the block
 //     registry, never from one project's KCL.
@@ -105,7 +107,7 @@ import (
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
 	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
-	"env ps", "env devstack",
+	"env ps", "env devstack", "test begin", "test capture",
 }
 
 // handOffMode is how a command meets the forge its project pins.

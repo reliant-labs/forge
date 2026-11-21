@@ -28,6 +28,15 @@
 # browser path, in dev and in production alike, so the frontend_*.log files are
 # excluded here. They stay on disk, and stay what `forge skill load debug`
 # points at; they are only not shipped.
+#
+# DECLARED LOG PARSING. A system forge did not build (a host-run engine, an
+# image-only workload) logs in its own format. Its `forge.Telemetry` `logs`
+# declaration says how to parse it, and `forge env up` writes that parse, on
+# every run, into .forge/logs/.telemetry/ (mounted here as
+# /var/log/forge/.telemetry/): the operator that keeps such a line's raw text,
+# and the two processors that stamp its service and parse it. Each is a no-op
+# when nothing is declared. Keep the three ${file:...} lines below where they
+# are; `forge env up` warns when they are missing.
 receivers:
   filelog/forge:
     include:
@@ -56,6 +65,8 @@ receivers:
         to: resource["deployment.environment.name"]
       - type: remove
         field: attributes["log.file.path"]
+      # Declared log parsing: keeps a declared target's raw line (see above).
+      - ${file:/var/log/forge/.telemetry/logs-preserve.yaml}
       - type: json_parser
         if: 'body matches "^\\s*\\{"'
         parse_from: body
@@ -116,9 +127,14 @@ receivers:
         if: 'type(attributes.resource) == "map"'
         field: attributes.resource
 
+processors:
+  # Declared log parsing (see above): service identity, then the parse.
+  transform/telemetry_identity: ${file:/var/log/forge/.telemetry/logs-identity.yaml}
+  transform/telemetry_logs: ${file:/var/log/forge/.telemetry/logs-parse.yaml}
+
 service:
   pipelines:
     logs/forge:
       receivers: [filelog/forge]
-      processors: [memory_limiter, transform, batch]
+      processors: [memory_limiter, transform, transform/telemetry_identity, transform/telemetry_logs, batch]
       exporters: [clickhouse]

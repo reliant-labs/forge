@@ -199,6 +199,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// production quietly lacking what dev had.
 		"static-export",
 		"strict",
+		// Visible: declared telemetry (forge.Telemetry) is the user's KCL,
+		// and a dashboard series no scrape keeps is an empty panel with no
+		// other symptom. The lane runs in every forge lint; the flag runs
+		// it alone while a project adopts telemetry.
+		"telemetry",
 		// Gating, and about the user's own tests: a fixed sleep or a
 		// one-second deadline is how a suite that passes on a laptop
 		// flakes on a loaded CI machine. The lane runs in every forge

@@ -31,8 +31,13 @@ var (
 
 type identity struct{ pkg, name string }
 
+// event is one line of `go test -json` (cmd/test2json) output; json.Unmarshal
+// in scan fills it, and the tags name test2json's own field names.
 type event struct {
-	Action, Package, Test, Output string
+	Action  string `json:"Action"`
+	Package string `json:"Package"`
+	Test    string `json:"Test"`
+	Output  string `json:"Output"`
 }
 
 type execution struct {

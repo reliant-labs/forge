@@ -343,10 +343,13 @@ func TestStatementTimeoutAndItsOverride(t *testing.T) {
 		t.Error("a statement timeout was reported as a lock timeout")
 	}
 
-	// The failed migration left the schema dirty at 2, as any failed
-	// migration does (it is not a lock timeout, so nothing was rolled back
-	// to a clean version). Start from a fresh database for the override.
-	dsn = baseSchema(t)
+	// The file is one implicit transaction, which the cancel rolled back, so
+	// the schema is back at 1, clean, not wedged dirty at 2 (forge report
+	// 75f39771): the next run retries it. That run, with the file's own
+	// statement-timeout directive, applies it.
+	if st := stateAt(t, dsn); st.Dirty || st.Version != 1 {
+		t.Fatalf("schema is %+v, want clean at version 1: a statement-timed-out file rolled back whole", st)
+	}
 	file := "-- forge:statement-timeout 30s — a backfill\n" + slow
 	if _, err := upWith(release(merged(lockBase, map[string]string{"2_slow.up.sql": file})), dsn, RunOptions{Limits: limits}); err != nil {
 		t.Fatalf("the file's statement-timeout should allow its statement: %v", err)

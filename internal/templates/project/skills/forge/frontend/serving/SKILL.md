@@ -175,6 +175,8 @@ being exportable without anything noticing. Two checks catch it:
     - `next/headers`
     - `dynamic = "force-dynamic"` or `revalidate = 0`
     - next/image without `images.unoptimized`
+    - `cacheComponents: true` (create-next-app's Next.js 16 default) or
+      `experimental.ppr`: partial prerendering
     - a next.config that does not export, or that disagrees with forge.yaml
   - Warnings are what the export drops silently:
     - `middleware.ts` / `proxy.ts`

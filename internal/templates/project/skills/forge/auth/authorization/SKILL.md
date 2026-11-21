@@ -297,3 +297,25 @@ package in that file or through a helper in its own package, resolves the
 caller. Mark package-level functions only, because a call site does not name a
 method's receiver type. The audit reports a marker on a method as ignored, and
 lists what it found under `caller_resolvers`.
+
+Wrappers need no marker of their own. The audit follows an import-qualified
+call into any other package of the same module, up to four packages deep, so a
+handler that calls a wrapper in your auth package resolves the caller when the
+wrapper calls a marked function or `middleware.GetUser`. Inside a followed package forge's seam
+counts only as `middleware.GetUser`/`middleware.ClaimsFromContext`, so a
+`store.GetUser(ctx, id)` row fetch does not count. Calls through a method or a
+function value are not followed.
+
+When you cannot mark the function, because it lives in a dependency, a sibling
+module or a package you would rather not annotate, declare it in forge.yaml:
+
+```yaml
+lint:
+  auth:
+    caller_resolvers:
+      - call: github.com/acme/authlib/v2.UserID   # "<import path>.<Func>"
+```
+
+The audit treats each entry like a marked function. It lists the entries under
+`caller_resolvers` beside the marked ones, and reports a malformed entry under
+`caller_resolvers_config_invalid`.

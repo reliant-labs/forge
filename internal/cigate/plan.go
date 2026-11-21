@@ -527,7 +527,43 @@ func (p planner) testLane() []Check {
 		// Taskfile.yml.
 		Requires: []string{"task"},
 		Argv:     p.task("test"),
-	})
+	}, p.flakeCheck())
+}
+
+// FlakeCheck is the name of the flake gate's row: every test the branch adds
+// or edits, run three times (`forge test flakes gate`). It reports and never
+// fails unless lint.rules grades flake-check error: --graded makes the
+// command exit as that grade says, and 0 when the branch changed no test.
+const FlakeCheck = "flake-check"
+
+func (p planner) flakeCheck() Check {
+	c := Check{
+		Name:     FlakeCheck,
+		Lane:     LaneTest,
+		Group:    GroupTest,
+		Heavy:    true,
+		Requires: []string{"go"},
+		Argv:     p.forge("test", "flakes", "gate", "--graded"),
+	}
+	if _, err := os.Stat(p.path("go.mod")); err != nil {
+		c.NotApplicable = "no go.mod"
+	}
+	return c
+}
+
+// WithFlakeBase points the flake-check row at base, the ref the gate measures
+// a branch from (--base / CI_BASE), so the flake gate and affected mode read
+// the same change.
+func WithFlakeBase(checks []Check, base string) []Check {
+	if base == "" {
+		return checks
+	}
+	for i := range checks {
+		if checks[i].Name == FlakeCheck {
+			checks[i].Env = append(append([]string(nil), checks[i].Env...), BaseEnv+"="+base)
+		}
+	}
+	return checks
 }
 
 func (p planner) integrationLane() []Check {

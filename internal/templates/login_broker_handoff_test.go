@@ -114,7 +114,9 @@ func TestHandoffMounts(t *testing.T) {
 			OidcClientId: "c", OidcRedirectUri: "https://app.test/cb", IdpLoginUri: "https://app.test/auth/sign-in",
 			HandoffRedirects: list}
 	}
-	m, err := session.NewManager(session.Config{Store: session.NewMemoryStore(), Logger: logger})
+	// A fixed clock: the bearer session below must not depend on the wall.
+	epoch := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	m, err := session.NewManager(session.Config{Store: session.NewMemoryStore(), Logger: logger, Now: func() time.Time { return epoch }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +145,7 @@ func TestHandoffMounts(t *testing.T) {
 	}
 
 	// A native client signs out with its bearer credential.
-	issued, err := m.Create(context.Background(), session.Tokens{AccessToken: "at", Expiry: time.Now().Add(time.Hour)}, session.Meta{Subject: "u1"})
+	issued, err := m.Create(context.Background(), session.Tokens{AccessToken: "at", Expiry: epoch.Add(time.Hour)}, session.Meta{Subject: "u1"})
 	if err != nil {
 		t.Fatal(err)
 	}

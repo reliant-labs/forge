@@ -52,7 +52,9 @@ func newHandoffEnv(t *testing.T, redirects ...string) *handoffEnv {
 	if len(redirects) == 0 {
 		redirects = []string{handoffLoopback, handoffWeb, handoffApp}
 	}
-	e := &handoffEnv{t: t, z: newFakeZitadel(t), now: time.Now()}
+	// A fixed start (the fake issuer's epoch), moved only by advance: every
+	// TTL and ProvedAt assertion is against this clock, never the wall's.
+	e := &handoffEnv{t: t, z: newFakeZitadel(t), now: fakeEpoch}
 	e.user = e.z.addUser("ada@acme.com", true, "a-long-password")
 	e.store = session.NewMemoryStore()
 	mgr, err := session.NewManager(session.Config{Store: e.store, Now: e.clock, CacheTTL: -1})

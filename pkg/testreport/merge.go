@@ -32,7 +32,10 @@ func (e *SourceMismatchError) Error() string {
 }
 
 // BuildMismatchError is returned when two inputs carry different build
-// fingerprints for one package: two builds of it never merge.
+// fingerprints for one package ([Coverage.Builds]). It is opt-in: only a
+// caller that records a true per-package source fingerprint sees it. A
+// binary's covmeta hash is not one (two binaries from one tree differ), so
+// it must not be passed as a fingerprint.
 type BuildMismatchError struct {
 	Package      string
 	Fingerprints [2]string
@@ -121,11 +124,18 @@ type MergeOptions struct {
 // twice changes nothing.
 //
 // It refuses, with a typed error and never a partial result, inputs that
-// cannot describe the same source: different trees ([*TreeMismatchError]),
-// two build fingerprints for one package ([*BuildMismatchError]), a block
-// whose statement count disagrees or a Go file whose block set differs
-// ([*SourceMismatchError]), or one file at two granularities
-// ([*GranularityMismatchError]).
+// cannot describe the same source. Two checks carry that rule: the tree
+// check ([*TreeMismatchError]: every input names the same tree hash) and
+// per-file block-set identity ([*SourceMismatchError]: a Go file has the
+// same blocks in every input, and a block the same statement count, because
+// instrumenting one source file always yields one block set, so a shifted
+// line is caught even without a tree hash). Neither depends on which binary
+// counted the blocks, so two binaries built from one tree (an api and a
+// worker sharing a package) merge. It also refuses one file at two
+// granularities ([*GranularityMismatchError]), a document that repeats some
+// inputs already merged ([*OverlapError]), and, for callers that supply a
+// true per-package fingerprint in Builds, two fingerprints for one package
+// ([*BuildMismatchError]).
 //
 // The result's files are marked excluded per opts; the inputs are not
 // modified.

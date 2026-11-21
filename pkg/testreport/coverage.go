@@ -34,9 +34,11 @@ type Coverage struct {
 	// Inputs are the raw inputs merged in, by digest. Merging an input
 	// whose digest is already here changes nothing.
 	Inputs []InputRef `json:"inputs"`
-	// Builds maps a Go package's import path to the fingerprint of the build
-	// that instrumented it (for covdata, the covmeta hash). Two different
-	// fingerprints for one package never merge.
+	// Builds maps a Go package's import path to a fingerprint of the source
+	// it was instrumented from, for callers that have a true per-package
+	// fingerprint (opt-in). Two different fingerprints for one package never
+	// merge ([BuildMismatchError]). A binary's covmeta hash is NOT such a
+	// fingerprint: two binaries built from one tree have different ones.
 	Builds map[string]string `json:"builds,omitempty"`
 	// Files are the covered files, sorted by language then path.
 	Files []CoverageFile `json:"files"`
@@ -198,7 +200,9 @@ type CoverageOptions struct {
 	Commit string
 	Dirty  bool
 	// BuildFingerprint, when set, is recorded in Builds for every Go package
-	// in the input ([ConvertCovdata] returns one per build).
+	// in the input: an opt-in per-package source fingerprint. Do not pass a
+	// covmeta hash ([CovdataBuild.MetaHash]); it fingerprints a binary, and
+	// the tree and block-set checks already refuse different source.
 	BuildFingerprint string
 	// Limits bounds the parse.
 	Limits Limits

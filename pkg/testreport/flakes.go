@@ -12,8 +12,9 @@ import (
 // Verdict classifies one failure.
 type Verdict string
 
-// The verdicts. Only VerdictConfirmed is a flake; host and correlated
-// (infra) failures are reported as host health and never score.
+// The verdicts: confirmed|real|raced|inconclusive|unattributed|host|correlated.
+// Only VerdictConfirmed scores; host and correlated failures never do, and
+// are reported as host health and infra events.
 const (
 	// VerdictConfirmed: the test failed, then passed on the same tree (a
 	// retry within the run, a rerun, or another run of the same tree).
@@ -34,19 +35,28 @@ const (
 	// rate limit, disk, port, docker, timeout under load). Matched before
 	// anything is scored.
 	VerdictHost Verdict = "host"
+	// VerdictCorrelated: the failure is one of a correlated group, three or
+	// more failures in one run sharing a package, a harness or a signature
+	// ([GroupCorrelated]). The group is one infra event, named by its
+	// infra_group; its tests are not scored for it. It takes a whole run to
+	// see, so [DetectFlakeEvents] assigns it, never [Classify].
+	VerdictCorrelated Verdict = "correlated"
 )
 
 // Signal is what showed a test to be flaky.
 type Signal string
 
-// The confirmed-flake signals.
+// The confirmed-flake signals: an event's kind.
 const (
 	// SignalRetryPass: the test failed, then passed on retry within one run
 	// (`go test -count=N`, a rerunning runner).
 	SignalRetryPass Signal = "retry_pass"
 	// SignalSameTreeSplit: the test passed in one run and failed in another
-	// on the same tree hash (sharded jobs, re-runs, a confirm rerun).
-	SignalSameTreeSplit Signal = "same_tree_split"
+	// on the same tree hash (sharded jobs, re-runs, a local run and CI).
+	SignalSameTreeSplit Signal = "same_tree"
+	// SignalConfirm: the test failed, and a `forge test flakes confirm`
+	// rerun (a run in [LaneConfirm]) on the same tree passed it.
+	SignalConfirm Signal = "confirm"
 )
 
 // HostRule is one host-failure signature: a failure whose output matches
@@ -159,9 +169,10 @@ type CorrelateOptions struct {
 // CorrelatedGroup is failures of one run that share a package, a harness or
 // a signature: one infra event, not several flakes.
 type CorrelatedGroup struct {
-	// Key identifies the co-failing set: the same set of tests failing
-	// together on a later commit has the same Key, so it is the same event.
-	Key string `json:"key"`
+	// Key is the group's infra_group: it identifies the co-failing set, so
+	// the same set of tests failing together on a later commit has the same
+	// Key and is the same event.
+	Key string `json:"infra_group"`
 	// Reason is what the members share: "package:<path>",
 	// "harness:<name>" or "signature:<hash>".
 	Reason string `json:"reason"`
@@ -272,6 +283,9 @@ type FlakeEvent struct {
 	Signal    Signal  `json:"kind,omitempty"`
 	Verdict   Verdict `json:"verdict"`
 	Signature string  `json:"signature,omitempty"`
+	// InfraGroup is set for a VerdictCorrelated event: the
+	// [CorrelatedGroup.Key] of the group it belongs to.
+	InfraGroup string `json:"infra_group,omitempty"`
 }
 
 // HostEvent is one failure attributed to the host.
@@ -300,7 +314,9 @@ type EventRef struct {
 // Detection is what [DetectFlakeEvents] found.
 type Detection struct {
 	// Events are the per-test events, one per (top-level test, run), in run
-	// then test order. Only VerdictConfirmed events feed [FlakeState].
+	// order. A correlated group's members are VerdictCorrelated events
+	// carrying its infra_group. Only VerdictConfirmed events feed
+	// [FlakeState].
 	Events []FlakeEvent `json:"events"`
 	Host   []HostEvent  `json:"host,omitempty"`
 	Infra  []InfraEvent `json:"infra,omitempty"`
@@ -316,9 +332,9 @@ type DetectOptions struct {
 // DetectFlakeEvents classifies every failure across runs. Per run, in order:
 // races and host signatures are set aside (host events never score); the
 // rest are grouped ([GroupCorrelated]) and each group becomes one infra
-// event; what remains is per test: a retry pass, or a failure on a tree some
-// other run passed, is confirmed; a failure with no test is unattributed;
-// anything else is real.
+// event, its members VerdictCorrelated events naming it; what remains is per
+// test: a retry pass, or a failure on a tree some other run passed, is
+// confirmed; a failure with no test is unattributed; anything else is real.
 func DetectFlakeEvents(runs []RunRecord, opts DetectOptions) Detection {
 	passed := passedOnTree(runs)
 	var det Detection
@@ -331,18 +347,18 @@ func DetectFlakeEvents(runs []RunRecord, opts DetectOptions) Detection {
 		lane := run.Results.Lane
 		var pending []Case
 		seen := map[TestID]bool{}
-		emit := func(f Case, v Verdict, sig Signal) {
+		emit := func(f Case, v Verdict, sig Signal, group string) {
 			top := f.ID.TopLevel()
 			if seen[top] {
 				return
 			}
 			seen[top] = true
-			det.Events = append(det.Events, FlakeEvent{Test: top, Lane: lane, Commit: run.Commit, Run: run.ID, At: run.At, Signal: sig, Verdict: v, Signature: f.Signature})
+			det.Events = append(det.Events, FlakeEvent{Test: top, Lane: lane, Commit: run.Commit, Run: run.ID, At: run.At, Signal: sig, Verdict: v, Signature: f.Signature, InfraGroup: group})
 		}
 		for _, f := range failures(run.Results) {
 			switch {
 			case IsRace(f.Output):
-				emit(f, VerdictRaced, "")
+				emit(f, VerdictRaced, "", "")
 			default:
 				if rule, ok := MatchHost(f.Output, opts.HostRules); ok {
 					det.Host = append(det.Host, HostEvent{Rule: rule, Test: f.ID.TopLevel(), Lane: lane, Commit: run.Commit, Run: run.ID, At: run.At})
@@ -360,17 +376,29 @@ func DetectFlakeEvents(runs []RunRecord, opts DetectOptions) Detection {
 				infraOrder = append(infraOrder, g.Key)
 			}
 			ev.Occurrences = append(ev.Occurrences, EventRef{Commit: run.Commit, Run: run.ID, At: run.At})
+			members := map[TestID]bool{}
+			for _, m := range g.Members {
+				members[m] = true
+			}
+			for _, f := range pending {
+				if members[f.ID.TopLevel()] {
+					emit(f, VerdictCorrelated, "", g.Key)
+				}
+			}
 		}
 		for _, f := range rest {
+			p := passed[treeTest{run.Tree, f.ID.TopLevel()}]
 			switch {
 			case f.ID.Name == "":
-				emit(f, VerdictUnattributed, "")
+				emit(f, VerdictUnattributed, "", "")
 			case f.RetryPassed:
-				emit(f, VerdictConfirmed, SignalRetryPass)
-			case run.Tree != "" && passed[treeTest{run.Tree, f.ID.TopLevel()}]:
-				emit(f, VerdictConfirmed, SignalSameTreeSplit)
+				emit(f, VerdictConfirmed, SignalRetryPass, "")
+			case run.Tree != "" && p.confirm && lane != LaneConfirm:
+				emit(f, VerdictConfirmed, SignalConfirm, "")
+			case run.Tree != "" && p.any:
+				emit(f, VerdictConfirmed, SignalSameTreeSplit, "")
 			default:
-				emit(f, VerdictReal, "")
+				emit(f, VerdictReal, "", "")
 			}
 		}
 	}
@@ -385,11 +413,15 @@ type treeTest struct {
 	test TestID
 }
 
+// passes says whether some run passed a test on a tree, and whether a
+// confirm-lane run did.
+type passes struct{ any, confirm bool }
+
 // passedOnTree marks each (tree, top-level test) that some run passed: every
 // leaf of the test it ran passed on its last attempt with no failed attempt,
 // and at least one did.
-func passedOnTree(runs []RunRecord) map[treeTest]bool {
-	out := map[treeTest]bool{}
+func passedOnTree(runs []RunRecord) map[treeTest]passes {
+	out := map[treeTest]passes{}
 	for _, run := range runs {
 		if run.Results == nil || run.Tree == "" {
 			continue
@@ -406,7 +438,11 @@ func passedOnTree(runs []RunRecord) map[treeTest]bool {
 		}
 		for id, s := range state {
 			if s == 1 {
-				out[treeTest{run.Tree, id}] = true
+				k := treeTest{run.Tree, id}
+				p := out[k]
+				p.any = true
+				p.confirm = p.confirm || run.Results.Lane == LaneConfirm
+				out[k] = p
 			}
 		}
 	}
@@ -432,15 +468,59 @@ func failures(r *Results) []Case {
 }
 
 // Flakes is the forge.test.flakes/v1 document: the flake state of each test
-// that has one, and the host and infra failures that were kept out of the
-// scores.
+// that has one, host health, and the correlated (infra) events that were
+// kept out of the scores.
 type Flakes struct {
 	Head
-	Tests []FlakyTest  `json:"tests"`
-	Host  []HostEvent  `json:"host,omitempty"`
+	Tests []FlakyTest `json:"tests"`
+	// Host is host health: the host failures per signature ([HostHealthOf]).
+	Host  []HostHealth `json:"host"`
 	Infra []InfraEvent `json:"infra,omitempty"`
 	// Suggested are commands worth running next.
 	Suggested []string `json:"suggested,omitempty"`
+}
+
+// HostHealth is one host signature's failures: how many, and in which runs.
+type HostHealth struct {
+	// Signature is the host rule's name ("network", "disk", …).
+	Signature string `json:"signature"`
+	Events    int    `json:"events"`
+	// Runs are the run ids, in first-seen order.
+	Runs []string `json:"runs"`
+	// Tests are the top-level tests that failed this way, sorted.
+	Tests []TestID `json:"tests,omitempty"`
+}
+
+// HostHealthOf rolls host events up per signature, sorted by signature.
+func HostHealthOf(events []HostEvent) []HostHealth {
+	by := map[string]*HostHealth{}
+	runs := map[string]map[string]bool{}
+	tests := map[string]map[TestID]bool{}
+	for _, e := range events {
+		h := by[e.Rule]
+		if h == nil {
+			h = &HostHealth{Signature: e.Rule, Runs: []string{}}
+			by[e.Rule] = h
+			runs[e.Rule] = map[string]bool{}
+			tests[e.Rule] = map[TestID]bool{}
+		}
+		h.Events++
+		if !runs[e.Rule][e.Run] {
+			runs[e.Rule][e.Run] = true
+			h.Runs = append(h.Runs, e.Run)
+		}
+		if !tests[e.Rule][e.Test] {
+			tests[e.Rule][e.Test] = true
+			h.Tests = append(h.Tests, e.Test)
+		}
+	}
+	out := make([]HostHealth, 0, len(by))
+	for _, h := range by {
+		sort.Slice(h.Tests, func(i, j int) bool { return lessID(h.Tests[i], h.Tests[j]) })
+		out = append(out, *h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Signature < out[j].Signature })
+	return out
 }
 
 // FlakyTest is one test's flake record.

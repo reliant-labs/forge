@@ -98,6 +98,7 @@ func FlakeState(h History, now time.Time) FlakeStatus {
 
 	st := FlakeStatus{State: StateHealthy}
 	var epoch time.Time // events at or before it no longer count (last fix)
+	var counted []FlakeEvent
 	decay := func(t time.Time) {
 		switch st.State {
 		case StateSuspected:
@@ -111,13 +112,12 @@ func FlakeState(h History, now time.Time) FlakeStatus {
 				}
 				if fixed := fc.Add(QuietPeriod); !t.Before(fixed) {
 					st.State, st.Since = StateFixed, fixed
-					epoch = fixed
+					epoch, counted = fixed, nil
 				}
 				break
 			}
 		}
 	}
-	var counted []FlakeEvent
 	for _, e := range evs {
 		decay(e.At)
 		if !e.At.After(epoch) && !epoch.IsZero() {
@@ -134,14 +134,7 @@ func FlakeState(h History, now time.Time) FlakeStatus {
 		}
 	}
 	decay(now)
-	st.Events30d = 0
-	for _, e := range counted {
-		if e.At.After(epoch) || epoch.IsZero() {
-			if now.Sub(e.At) < FlakeWindow {
-				st.Events30d++
-			}
-		}
-	}
+	st.Events30d = distinctCommits(counted, now)
 	switch {
 	case h.Quarantined:
 		st.State, st.Since = StateQuarantined, time.Time{}

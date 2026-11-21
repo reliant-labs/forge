@@ -15,8 +15,10 @@ import (
 // CovdataBuild is one build's coverage from a GOCOVERDIR, converted to a Go
 // text profile.
 type CovdataBuild struct {
-	// MetaHash is the hash in the build's covmeta.<hash> file name: the
-	// build's fingerprint. Pass it as CoverageOptions.BuildFingerprint.
+	// MetaHash is the hash in the build's covmeta.<hash> file name. It
+	// groups one binary's counter files together; it is not a per-package
+	// fingerprint (two binaries from one tree differ), so it is not passed
+	// as CoverageOptions.BuildFingerprint.
 	MetaHash string
 	// Profile is `go tool covdata textfmt` output for the build: a Go text
 	// profile ([FormatGoCover]).
@@ -24,11 +26,11 @@ type CovdataBuild struct {
 }
 
 // ConvertCovdata converts the covdata in dir (what binaries built with -cover
-// write to GOCOVERDIR) to Go text profiles, one per build. Builds are told
-// apart by their covmeta hash and converted separately, because `go tool
-// covdata` merges two builds of one package silently into wrong numbers; the
-// caller keeps them apart, and [Merge] refuses to join two fingerprints for
-// one package.
+// write to GOCOVERDIR) to Go text profiles, one per binary build. Builds are
+// told apart by their covmeta hash and converted separately, because `go
+// tool covdata` merges two builds of one package silently into wrong
+// numbers. [Merge] then joins the profiles, and refuses them when they come
+// from different source (tree hash, per-file block sets).
 //
 // It is the one function in this package that runs a program: goBin (""
 // means "go" on PATH) with `tool covdata textfmt`. Everything else is pure,

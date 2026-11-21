@@ -51,11 +51,7 @@ func writesGenGoMod(*pipelineContext) []string { return []string{"gen/go.mod"} }
 // protos, and every plugin `out` directory the template names.
 func writesBufGo(ctx *pipelineContext) []string {
 	out := append([]string{"buf.gen.yaml"}, vendoredProtoDirs()...)
-	outs := bufTemplateOutDirs(filepath.Join(ctx.ProjectDir, "buf.gen.yaml"))
-	if len(outs) == 0 {
-		outs = []string{"gen"} // writeDefaultBufGenYaml's template
-	}
-	return append(out, outs...)
+	return append(out, goBufOutDirs(ctx)...)
 }
 
 func writesDescriptor(*pipelineContext) []string {
@@ -72,10 +68,9 @@ func writesFrontendTS(ctx *pipelineContext) []string {
 	if ctx.Cfg == nil {
 		return nil
 	}
-	var out []string
+	out := frontendBufOutDirs(ctx)
 	if ctx.Cfg.IsFrontendWorkspacesEnabled() {
-		out = append(out, "packages/api/buf.gen.yaml", "packages/api/src/gen")
-		out = append(out, bufTemplateOutDirs(filepath.Join(ctx.ProjectDir, "packages", "api", "buf.gen.yaml"))...)
+		out = append(out, "packages/api/buf.gen.yaml")
 	}
 	for _, fe := range ctx.Cfg.Frontends {
 		if !generatesTypeScript(fe.Type) {
@@ -87,13 +82,46 @@ func writesFrontendTS(ctx *pipelineContext) []string {
 		}
 		feSlash := filepath.ToSlash(feDir)
 		out = append(out, feSlash+"/package-lock.json")
-		if ctx.Cfg.IsFrontendWorkspacesEnabled() {
+		if !ctx.Cfg.IsFrontendWorkspacesEnabled() {
+			out = append(out, feSlash+"/buf.gen.yaml")
+		}
+	}
+	return dedupeSorted(out)
+}
+
+// frontendBufOutDirs: the directories the TypeScript buf step writes stubs
+// into — each TypeScript frontend's src/gen and its template's `out`
+// directories, or packages/api's in workspace mode.
+func frontendBufOutDirs(ctx *pipelineContext) []string {
+	if ctx.Cfg == nil {
+		return nil
+	}
+	if ctx.Cfg.IsFrontendWorkspacesEnabled() {
+		out := append([]string{"packages/api/src/gen"}, bufTemplateOutDirs(filepath.Join(ctx.ProjectDir, "packages", "api", "buf.gen.yaml"))...)
+		return dedupeSorted(out)
+	}
+	var out []string
+	for _, fe := range ctx.Cfg.Frontends {
+		if !generatesTypeScript(fe.Type) {
 			continue
 		}
-		out = append(out, feSlash+"/buf.gen.yaml", feSlash+"/src/gen")
+		feDir, ok := fe.Dir(ctx.ProjectDir)
+		if !ok {
+			continue
+		}
+		out = append(out, filepath.ToSlash(feDir)+"/src/gen")
 		out = append(out, bufTemplateOutDirs(filepath.Join(ctx.ProjectDir, feDir, "buf.gen.yaml"))...)
 	}
 	return dedupeSorted(out)
+}
+
+// goBufOutDirs: the plugin `out` directories of the root buf.gen.yaml.
+func goBufOutDirs(ctx *pipelineContext) []string {
+	outs := bufTemplateOutDirs(filepath.Join(ctx.ProjectDir, "buf.gen.yaml"))
+	if len(outs) == 0 {
+		outs = []string{"gen"} // writeDefaultBufGenYaml's template
+	}
+	return outs
 }
 
 // writesKCLMigration: the image-registry migration (internal/kclmigrate)

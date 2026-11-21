@@ -33,7 +33,8 @@ func TestEnvEntrypointIsTheProjectsUnderARelativeProjectDir(t *testing.T) {
 		t.Errorf("entrypoint = %q, want %q (the project's, readable from here)", got, want)
 	}
 	_, err = envRenderMainK("", "../watches", "staging")
-	if err == nil || !strings.Contains(err.Error(), "neither deploy/kcl/staging/main.k") {
+	// filepath.Join: the display path is OS-native (deploy\kcl\... on Windows).
+	if err == nil || !strings.Contains(err.Error(), "neither "+filepath.Join("deploy", "kcl", "staging", "main.k")) {
 		t.Errorf("an undeclared env names its entrypoint as declared, kclDir-relative: %v", err)
 	}
 }

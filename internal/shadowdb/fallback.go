@@ -45,10 +45,15 @@ func wentAway(server string, err error) bool {
 	return serverGone(err)
 }
 
+// goneErrnos are the socket errors of a server that is not there (refused) or
+// went away (reset, broken pipe). Windows reports Winsock codes instead of
+// the POSIX ones, so it adds its own (fallback_windows.go).
+var goneErrnos = append([]syscall.Errno{syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE}, platformGoneErrnos...)
+
 // serverGone reports whether err is the server being unreachable or shutting
 // down, as opposed to a migration it rejected or credentials it refused.
 func serverGone(err error) bool {
-	for _, errno := range []syscall.Errno{syscall.ECONNREFUSED, syscall.ECONNRESET, syscall.EPIPE} {
+	for _, errno := range goneErrnos {
 		if errors.Is(err, errno) {
 			return true
 		}

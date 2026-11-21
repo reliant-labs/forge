@@ -47,6 +47,7 @@ type lintFlags struct {
 	columnMarkers     bool
 	closedSets        bool
 	dbGrants          bool
+	crudOwnership     bool
 	crudFixtures      bool
 	fixtureDrift      bool
 	timeBucketing     bool
@@ -377,6 +378,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.columnMarkers, "column-markers", false, "Fail on a COMMENT ON TABLE/VIEW/COLUMN/CONSTRAINT carrying a forge: marker that object does not read")
 	cmd.Flags().BoolVar(&flags.closedSets, "closed-sets", false, "Fail when a CHECK declared forge:closed-set <set> does not list exactly that Go set, and print the migration that fixes it")
 	cmd.Flags().BoolVar(&flags.dbGrants, "db-grants", false, "Fail on a credential-shaped column (token, password, key, ciphertext, hash…) that carries neither forge:secret nor forge:readable <reason>: the read-only forge_ro role is refused it until someone decides")
+	cmd.Flags().BoolVar(&flags.crudOwnership, "crud-ownership", false, "Flag a table served by forge-generated CRUD on an authenticated rpc that declares no owner — no COMMENT ON TABLE forge:owner=<column>, no forge:owner column, no forge:public or forge:unscoped with a reason — so every signed-in caller can read and write every row (warns first; gates from the release after the one that ships it)")
 	cmd.Flags().BoolVar(&flags.fixtureDrift, "fixture-drift", false, "Execute every literal fixture statement in a scaffolded handlers_crud_test.go against the current schema — migrations applied to a shadow postgres, each statement run in a rolled-back transaction — and report postgres's own error for each one it rejects: a GENERATED column, a UNIQUE collision, a dangling foreign key, a CHECK a later migration added (warnings only)")
 	// --crud-fixtures checked one failure class (a dangling foreign key) by
 	// reading migration text; --fixture-drift now executes the statements, so

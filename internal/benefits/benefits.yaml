@@ -1927,6 +1927,12 @@ benefits:
         bug_class: >-
           A List filter without `optional` has no presence, so "no filter"
           collapses into "filter by zero" and generated filters no-op
+      - id: crud-table-unowned
+        lane: --crud-ownership
+        bug_class: >-
+          A table served by generated CRUD on an authenticated rpc that never
+          says whose rows it holds: every signed-in caller reads, updates and
+          deletes every other caller's rows
       - id: forgeconv-crud-owner-resolver
         lane: --conventions
         bug_class: >-

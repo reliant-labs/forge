@@ -183,6 +183,10 @@ type CRUDTemplateData struct {
 	// pairs (no crud/middleware imports — see the template gating).
 	NeedsOpsFile bool
 	CRUDMethods  []CRUDMethodTemplateData
+	// Ownerships are the crud.Ownership declarations of the owned
+	// entities the ops route through pkg/crud's Owned* helpers; empty for
+	// a service with no `forge:owner=` table.
+	Ownerships []OwnershipTemplateData
 	// Entities carries the per-entity proto<->struct conversion pairs
 	// (<entity>ToProto / <entity>FromProto) emitted alongside the ops.
 	Entities []EntityConvTemplateData
@@ -343,6 +347,23 @@ type CRUDMethodTemplateData struct {
 	// FORGE_SCAFFOLD reminder to stamp each one, instead of the bare
 	// crud.HandleCreate(...) delegation.
 	FillHandlerColumns []string
+	// Owned reports an entity whose table declares `forge:owner=`
+	// (EntityDef.Ownership): the op itself scopes every read and write to
+	// the caller through the crud.Ownership named OwnershipVar and the
+	// service's `Owners` dep, so the shim needs no scoping wrapper.
+	Owned bool
+	// OwnershipVar is the package-level crud.Ownership of the entity
+	// ("planOwnership"); set only when Owned.
+	OwnershipVar string
+	// OwnerStamp is the stamp closure an owned Create hands
+	// crud.OwnedCreate ("nil" for none); OwnedEntityID reads a created
+	// row's key as a string.
+	OwnerStamp    string
+	OwnedEntityID string
+	// ownerStampFor re-renders OwnerStamp for the ORM qualifier the ops
+	// file binds (known only once the file's imports are chosen); nil when
+	// the op stamps nothing.
+	ownerStampFor func(qual string) string
 	// OwnerColumn names the entity's `forge:owner` column — the column
 	// that says which principal a row belongs to — or "" when the table
 	// declares none.
@@ -771,6 +792,14 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 			return CRUDResult{}, fmt.Errorf("ensure Deps DB field for %s: %w", pkg, err)
 		}
 	}
+	for _, cm := range opMethods {
+		if len(cm.Entity.Ownership) > 0 {
+			if err := ensureDepsOwnersField(targetDir); err != nil {
+				return CRUDResult{}, fmt.Errorf("ensure Deps Owners field for %s: %w", pkg, err)
+			}
+			break
+		}
+	}
 
 	// Build template data. Package is overridden with the disk-resolved
 	// clause so the emitted file always matches the directory it lands in
@@ -792,6 +821,9 @@ func GenerateCRUDHandlers(svc ServiceDef, crudMethods []CRUDMethod, modulePath s
 	data.ConnectV2 = connectV2For(svc, projectDir)
 	for i := range data.CRUDMethods {
 		data.CRUDMethods[i].ConnectV2 = data.ConnectV2
+		if f := data.CRUDMethods[i].ownerStampFor; f != nil {
+			data.CRUDMethods[i].OwnerStamp = f(data.DBQual)
+		}
 	}
 
 	// Tier-1 projection: the per-entity wiring ops + conversion helpers.
@@ -888,9 +920,11 @@ func crudShimHeader(data CRUDTemplateData) string {
 		"yours: scaffolded once, never touched again — forge will not overwrite this file",
 		"Each method delegates to " + crudLibImport + " (" + strings.Join(labels, ", ") + "); the " +
 			"per-entity wiring is regenerated in handlers_crud_ops_gen.go.",
-		"pkg/crud never reads the caller. The interceptor already turned away anyone without a valid " +
-			"token (unless the rpc declares auth_required: false; pkg/" + crudAuthSeamPkg + "/procedures_gen.go), " +
-			"but WHO MAY DO WHAT and WHICH ROWS THEY MAY SEE are yours: import \"" + middlewarePkg +
+		"pkg/crud never reads the caller on its own. The interceptor already turned away anyone without a valid " +
+			"token (unless the rpc declares auth_required: false; pkg/" + crudAuthSeamPkg + "/procedures_gen.go). " +
+			"For a table whose migration declares `forge:owner=`, the generated op asks your crud.OwnerResolver " +
+			"(Deps.Owners) who the caller is and scopes every read and write to their rows. For every other table, " +
+			"WHO MAY DO WHAT and WHICH ROWS THEY MAY SEE are yours: import \"" + middlewarePkg +
 			"\", resolve the caller with " + crudAuthSeam + "(ctx), and wrap the op's Filters in a WHERE on " +
 			"those claims. See `forge skill load auth`.",
 	}
@@ -942,11 +976,13 @@ func crudShimHeader(data CRUDTemplateData) string {
 // contain (crud_owner_scaffold_test.go). A method appended later carries a
 // tag line that reads on its own.
 func crudShimAuthLegend(methods []CRUDMethodTemplateData) []string {
-	var unscoped, public, scoped bool
+	var unscoped, public, scoped, owned bool
 	for _, m := range methods {
 		switch {
 		case m.ShapeMismatch:
 			// Its own comment covers it: the body is a wired query, not a delegation.
+		case m.Owned:
+			owned = true
 		case m.Scoped:
 			scoped = true
 		case m.AuthRequired:
@@ -955,12 +991,19 @@ func crudShimAuthLegend(methods []CRUDMethodTemplateData) []string {
 			public = true
 		}
 	}
-	if !unscoped && !public && !scoped {
+	if !unscoped && !public && !scoped && !owned {
 		return nil
 	}
 	out := []string{
 		"EACH METHOD'S `Auth:` LINE says which case it is, read from its rpc's auth_required and " +
-			"its table's forge:owner column:",
+			"its table's forge:owner declaration:",
+	}
+	if owned {
+		out = append(out,
+			"SCOPED by the table's forge:owner= declaration — the generated op asks Deps.Owners who "+
+				"the caller is and scopes every read and write to their rows: no caller is "+
+				"Unauthenticated, another tenant's row is NotFound, and a write they would not own "+
+				"is PermissionDenied. Wrap the op here only to narrow it further.")
 	}
 	if unscoped {
 		out = append(out,
@@ -1674,7 +1717,13 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// The owner column the scoped Create wrapper stamps from the caller
 	// (Scoped below: an owner column and an authenticated rpc).
 	stampedOwner := ""
-	if cm.Method.AuthRequired {
+	owned := shapeOK && len(cm.Entity.Ownership) > 0
+	switch {
+	case owned:
+		// The op stamps a direct owner column from the caller
+		// (ownerStampFunc), whatever the rpc's auth declaration.
+		stampedOwner = ownerStampColumn(cm.Entity)
+	case cm.Method.AuthRequired:
 		stampedOwner = OwnerColumn(cm.Entity)
 	}
 	if shapeOK && cm.Operation == "create" {
@@ -1712,7 +1761,10 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 	// shape the shim actually delegates: a custom-read-shape method has
 	// no op to wrap, and its body already carries its own UNSCOPED note.
 	ownerColumn, ownerField := "", ""
-	if shapeOK {
+	// A table-level declaration supersedes the column marker's scaffolded
+	// wrapper: the op enforces it, and a second, hand-finished scope in the
+	// shim would only be a place for the two to disagree.
+	if shapeOK && !owned {
 		if ownerColumn = OwnerColumn(cm.Entity); ownerColumn != "" {
 			ownerField = naming.ColumnGoName(ownerColumn)
 		}
@@ -1769,6 +1821,11 @@ func crudMethodFacts(svc ServiceDef, cm CRUDMethod, strictFilters bool) (CRUDMet
 		OwnerField:         ownerField,
 		OwnerIsPK:          ownerColumn != "" && ownerColumn == cm.Entity.PkField,
 		Scoped:             ownerColumn != "" && cm.Method.AuthRequired,
+		Owned:              owned,
+		OwnershipVar:       ownedString(owned, ownershipVar(cm.Entity)),
+		OwnerStamp:         ownedString(owned && cm.Operation == "create", ownerStampFunc(cm.Entity, "")),
+		OwnedEntityID:      ownedString(owned && cm.Operation == "create", ownedEntityID(cm.Entity)),
+		ownerStampFor:      ownerStampRenderer(owned && cm.Operation == "create", cm.Entity),
 	}, nil
 }
 
@@ -1919,6 +1976,25 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		return CRUDTemplateData{}, fmt.Errorf("%s: %w", svc.Name, err)
 	}
 
+	// One crud.Ownership per owned entity a real op routes through.
+	var ownerships []OwnershipTemplateData
+	seenOwned := map[string]bool{}
+	ownedNeedsFmt := false
+	for i, m := range methods {
+		if !m.Owned || seenOwned[m.OwnershipVar] {
+			continue
+		}
+		seenOwned[m.OwnershipVar] = true
+		if od, ok := ownershipTemplateData(crudMethods[i].Entity); ok {
+			ownerships = append(ownerships, od)
+		}
+	}
+	for _, m := range methods {
+		if strings.HasPrefix(m.OwnedEntityID, "fmt.") {
+			ownedNeedsFmt = true
+		}
+	}
+
 	// The ops file is emitted when there's at least one real op to wire
 	// OR at least one conversion pair a wired custom body depends on.
 	needsOpsFile := needsCRUDLib || len(convs) > 0
@@ -1937,8 +2013,9 @@ func buildCRUDTemplateData(svc ServiceDef, crudMethods []CRUDMethod, helperEntit
 		NeedsOpsFile:     needsOpsFile,
 		CRUDMethods:      methods,
 		Entities:         convs,
+		Ownerships:       ownerships,
 		NeedsTimestamppb: ConvNeedsTimestamppb(convs),
-		NeedsFmt:         ConvNeedsFmt(convs) || createNeedsFmt,
+		NeedsFmt:         ConvNeedsFmt(convs) || createNeedsFmt || ownedNeedsFmt,
 		NeedsTime:        ConvNeedsTime(convs) || createNeedsTime,
 	}, nil
 }
@@ -3072,4 +3149,13 @@ func describeFields(fields []MessageFieldDef) string {
 		parts = append(parts, f.Name+" "+t)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// ownedString is v when cond holds, "" otherwise — keeps an unowned
+// method's template data free of ownership spellings.
+func ownedString(cond bool, v string) string {
+	if cond {
+		return v
+	}
+	return ""
 }

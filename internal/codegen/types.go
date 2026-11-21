@@ -6,6 +6,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
+	"github.com/reliant-labs/forge/pkg/schemadef"
 )
 
 // ServiceDef represents a parsed Connect RPC service definition.
@@ -433,6 +434,14 @@ type EntityDef struct {
 	// notably the store interface, whose UpdateX/DeleteX otherwise
 	// type-check against a table postgres will refuse at runtime.
 	AppendOnly bool `json:",omitempty"`
+	// Ownership is the table's `forge:owner=` declaration
+	// (schemadef.TableMarkerOwner), resolved against the applied schema:
+	// the alternative owners a row may have, each a column of this table
+	// or a foreign-key path to one. Non-empty, it makes the generated CRUD
+	// ops scope every read and write to the caller's rows themselves
+	// (forge/pkg/crud's Owned* helpers). Nil for a table that declares
+	// none, which keeps today's unscoped ops byte for byte.
+	Ownership []schemadef.ResolvedOwnerTerm `json:",omitempty"`
 	// ReadOnly marks a VIEW opted into the data layer (`COMMENT ON VIEW v
 	// IS 'forge:entity'`): its store reads — List, Count, and Get by its key
 	// column when it has one — and writes nothing.

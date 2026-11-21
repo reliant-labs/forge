@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/reliant-labs/forge/pkg/authn"
 	"github.com/reliant-labs/forge/pkg/svcerr"
 )
 
@@ -20,7 +21,8 @@ const (
 )
 
 // NewTraceHandler wraps next so every record logged with a context holding a
-// valid span carries trace_id and span_id. Records without a span, and records
+// valid span carries trace_id and span_id, and every record logged inside an
+// authenticated request carries user.id (authn.UserIDFromContext). Records without a span, and records
 // that already carry a trace_id attribute, pass through unchanged. The ids are
 // only available to the *Context logging methods (InfoContext, LogAttrs, ...):
 // slog.Info and friends have no context to read.
@@ -65,7 +67,30 @@ func NewLogHandler(next slog.Handler, cfg Config) slog.Handler {
 	if !exportEnabled(signalLogs, cfg) {
 		return errorInputsHandler{next: h}
 	}
-	return errorInputsHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}
+	// The user is added above the split, so the OTLP bridge's record names
+	// them too, not only the stdout line traceHandler writes.
+	return errorInputsHandler{next: userHandler{next: slog.NewMultiHandler(h, otelslog.NewHandler(logScopeName(cfg)))}}
+}
+
+// userHandler adds the authenticated user (authn.UserIDFromContext) to a
+// record that names none, before the record reaches next.
+type userHandler struct{ next slog.Handler }
+
+func (h userHandler) Enabled(ctx context.Context, l slog.Level) bool { return h.next.Enabled(ctx, l) }
+
+func (h userHandler) Handle(ctx context.Context, r slog.Record) error {
+	if id := authn.UserIDFromContext(ctx); id != "" && !hasAttr(r, authn.AttrUserID) {
+		r.AddAttrs(slog.String(authn.AttrUserID, id))
+	}
+	return h.next.Handle(ctx, r)
+}
+
+func (h userHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	return userHandler{next: h.next.WithAttrs(as)}
+}
+
+func (h userHandler) WithGroup(name string) slog.Handler {
+	return userHandler{next: h.next.WithGroup(name)}
 }
 
 func logScopeName(cfg Config) string {
@@ -87,6 +112,12 @@ func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {
 			slog.String(LogKeyTraceID, sc.TraceID().String()),
 			slog.String(LogKeySpanID, sc.SpanID().String()),
 		)
+	}
+	// The authenticated user, so an issue built from these records can say
+	// how many people it reached (obsquery's affected-users count reads
+	// user.id). A record that names a user itself keeps its own.
+	if id := authn.UserIDFromContext(ctx); id != "" && !hasAttr(r, authn.AttrUserID) {
+		r.AddAttrs(slog.String(authn.AttrUserID, id))
 	}
 	if r.Level >= slog.LevelWarn {
 		addLogEvent(trace.SpanFromContext(ctx), r)

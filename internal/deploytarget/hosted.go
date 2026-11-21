@@ -592,6 +592,11 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 			"Set its mode to \"audit\" until the control plane is upgraded, or remove it",
 			env, strings.Join(missing, " and delivery_policy."), release.CapabilityEnforcesPromotionChecks)
 	}
+	// Several identities sent to a control plane that converges one would be
+	// recorded and never converged: refused, never stripped.
+	if err := reader.CheckIdentities(declared); err != nil {
+		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
+	}
 	return reader.LimitShape(declared), nil
 }
 

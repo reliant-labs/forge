@@ -383,6 +383,17 @@ type State struct {
 	// CarriedFrom is the release whose image this state reuses (its declared
 	// inputs were unchanged); empty when the command ran.
 	CarriedFrom string `json:"carried_from,omitempty"`
+	// Variant names the build variant this image IS, when it is not the
+	// shared build: "cover" for a coverage-instrumented image (the
+	// Dockerfile's cover stage, built for a local, ephemeral or preview env).
+	// A release cut from this state records it as the image's variant
+	// artifact, never as its shared digest. Empty for the shared build.
+	Variant string `json:"variant,omitempty"`
+	// CoverDigest is the digest of the image's cover build, pushed BESIDE
+	// the shared one by a release build of a project that opts in to test
+	// coverage. The release records it as the image's cover variant. Empty
+	// otherwise.
+	CoverDigest string `json:"cover_digest,omitempty"`
 }
 
 // statePath returns the absolute path to the per-service build-state

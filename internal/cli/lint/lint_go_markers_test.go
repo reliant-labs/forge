@@ -73,3 +73,29 @@ func TestGoMarkersLint_CleanTree(t *testing.T) {
 		t.Fatalf("clean tree reported %v", findings)
 	}
 }
+
+// A reason-required marker written with no reason is ignored by its
+// recognizer; the lint says so as an advisory finding under its own rule
+// (FG-32), so it never fails a gate that passed before.
+func TestGoMarkersLint_ReasonMissingWarns(t *testing.T) {
+	root := t.TempDir()
+	writeGoMarkerFixture(t, root, map[string]string{
+		"internal/handlers/shop/h.go": "package shop\n\n// forge:auth-unscoped-ok\nfunc (s *Service) GetOrder() {}\n\n// forge:auth-unscoped-ok:\nfunc (s *Service) ListOrders() {}\n\n// forge:auth-unscoped-ok: operators only\nfunc (s *Service) ListAll() {}\n",
+	})
+	findings, err := collectGoMarkerFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("want the two reasonless markers, got %+v", findings)
+	}
+	for i, line := range []int{3, 6} {
+		f := findings[i]
+		if f.Rule != ruleGoMarkersReasonMissing || f.Severity != "warning" || f.Line != line {
+			t.Errorf("finding %d = %s/%s at line %d, want %s/warning at %d", i, f.Rule, f.Severity, f.Line, ruleGoMarkersReasonMissing, line)
+		}
+		if !strings.Contains(f.Message, "has no reason") || !strings.Contains(f.Remediation, "// forge:auth-unscoped-ok: <reason>") {
+			t.Errorf("finding %d must name the missing reason and the form: %s | %s", i, f.Message, f.Remediation)
+		}
+	}
+}

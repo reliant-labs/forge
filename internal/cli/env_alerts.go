@@ -105,6 +105,7 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 		disabled = e.Observability.Policy.Disabled
 	}
 	uptimeChecks := uptimeCheckNames(e)
+	telemetryTargets := obsdash.AlertTelemetryTargetsOf(e.Telemetry)
 	var defaults []obsdash.AlertRule
 	if have {
 		sources, notes, err := composedAlertSources(ctx, projectDir, e)
@@ -122,13 +123,14 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 		}
 		in.Services = obsdash.ComposeAlertServices(in.Services, composed...)
 		in.UptimeChecks = uptimeChecks
+		in.TelemetryTargets = telemetryTargets
 		if defaults, _, err = obsdash.ResolveAlertDefaultsFor(in, envName, tuning, disabled); err != nil {
 			return nil, nil, err
 		}
-	} else if len(uptimeChecks) > 0 {
+	} else if len(uptimeChecks) > 0 || len(telemetryTargets) > 0 {
 		// No generated defaults (a static site writes none), but the uptime
-		// defaults read only the env's own uptime checks.
-		if defaults, _, err = obsdash.ResolveEnvAlertDefaultsFor(obsdash.AlertInput{UptimeChecks: uptimeChecks}, envName, tuning, disabled); err != nil {
+		// and declared-telemetry defaults read only the env's own render.
+		if defaults, _, err = obsdash.ResolveEnvAlertDefaultsFor(obsdash.AlertInput{UptimeChecks: uptimeChecks, TelemetryTargets: telemetryTargets}, envName, tuning, disabled); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -154,6 +156,11 @@ func resolveShapeAlerts(ctx context.Context, warn io.Writer, projectDir, envName
 		}
 	}
 	for _, d := range defaults {
+		// A telemetry default is named for its system (<Service>TargetDown):
+		// a rule of the env's own may have taken that name.
+		if taken[d.Alert] {
+			return nil, nil, fmt.Errorf("observability.alerts: rule %q reuses the name of the generated default %s; rename it, or set default_alerts = False on that system's forge.Telemetry", d.Alert, d.ID)
+		}
 		out = append(out, release.ShapeAlert{
 			Alert: d.Alert, Expr: d.Expr, For: d.For, Interval: d.Interval,
 			Labels: d.Labels, Annotations: d.Annotations, Source: release.AlertSourceDefault, DefaultID: d.ID,

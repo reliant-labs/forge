@@ -126,6 +126,12 @@ type Input struct {
 	// ProcessPart). Without it a generate-time overview filtered on the
 	// no-deployed-process sentinel and drew nothing.
 	Deployed Identities
+	// Telemetry are the systems the project declares forge.Telemetry for
+	// (TelemetrySystemsOf): each gets its system dashboard and its declared
+	// dashboards (BuildTelemetryParts), and arms the telemetry default
+	// alerts. Empty for a project that declares none, which then generates
+	// exactly what it did before.
+	Telemetry []TelemetrySystem
 }
 
 // Identities are the telemetry and workload names deployed processes run
@@ -219,7 +225,8 @@ func IsCardDashboard(id string) bool { return obsbuiltin.IsCardDashboard(id) }
 
 // Build derives the project's Spec.
 func Build(in Input) Spec {
-	return Assemble(BuildParts(in))
+	project, parts := BuildParts(in)
+	return Assemble(withTelemetryParts(project, BuildTelemetryParts(in)), parts)
 }
 
 // ProjectPart is the part of the Spec that belongs to the project as a

@@ -76,7 +76,8 @@ type Context interface {
 	RunTransaction(ctx context.Context, policy TxPolicy, fn func(Context) error) error
 
 	// RunTx runs fn in a transaction at opts' isolation, CARRIED BY the ctx
-	// fn receives, re-running fn on 40001 / 40P01 up to opts.MaxAttempts.
+	// fn receives, re-running fn on 40001 / 40P01 (plus what
+	// TxOptions.WithRetryOn adds) up to opts.MaxAttempts.
 	// Every query made with that ctx against this database — generated
 	// delegates, stores, pkg/crud, raw SQL — joins the transaction, with no
 	// handle to thread. A ctx that already carries a transaction on this

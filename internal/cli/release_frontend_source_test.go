@@ -284,3 +284,38 @@ func releaseArtifactKeys(m map[string]release.Artifact) []string {
 func imageWL(name, image string) WorkloadEntity {
 	return clusterWL(name, "k3d-dev", "dev", func(w *WorkloadEntity) { w.Image = image })
 }
+
+// A renamed project (forge.yaml `name: shop` -> `shop2`) builds the project
+// image as `shop2` while every forge.GoBuild workload still declares
+// `.../shop`. "Build the full set" cannot fix that, so the refusal names the
+// rename and the files to edit (bug report c1aa963f).
+func TestCheckReleaseCoversEnv_NamesARenamedProjectImage(t *testing.T) {
+	goWL := func(name string) WorkloadEntity {
+		return clusterWL(name, "k3d-dev", "dev", func(w *WorkloadEntity) {
+			w.Image = "ghcr.io/acme/shop"
+			w.Build = BuildConfigEntity{Type: "go", Go: &GoBuild{Cmd: "./cmd/shop"}}
+		})
+	}
+	entities := &KCLEntities{Workloads: []WorkloadEntity{goWL("migrate"), goWL("api")}}
+	artifacts := map[string]release.Artifact{
+		"ghcr.io/acme/shop2": {Kind: release.KindOCI, Mode: release.ModeShared, Digests: map[string]string{release.SharedVariant: sha("a")}},
+	}
+	err := checkReleaseCoversEnv(entities, artifacts, buildOptions{release: "v0.1.0", env: "prod"})
+	if err == nil {
+		t.Fatal("a release missing the declared image must fail")
+	}
+	for _, want := range []string{`project image "shop2", which no workload declares`, `api, migrate (forge.GoBuild`, `declare "shop"`, "deploy/kcl/workloads.k", `set forge.yaml's ` + "`name`" + ` back to "shop"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "drop --target") {
+		t.Errorf("the rename refusal must not suggest building the full set:\n%v", err)
+	}
+
+	// Any other gap keeps the generic advice.
+	plain := checkReleaseCoversEnv(&KCLEntities{Workloads: []WorkloadEntity{goWL("api"), imageWL("web", "ghcr.io/acme/shop2")}}, artifacts, buildOptions{release: "v0.1.0", env: "prod"})
+	if plain == nil || strings.Contains(plain.Error(), "project image") {
+		t.Errorf("a declared, built image is no rename: %v", plain)
+	}
+}

@@ -65,6 +65,10 @@ type promoteOptions struct {
 	// RaiseFloorReason is `--floor "<why>"`: also set a roll-forward-only
 	// rollback floor at the promoted release, in the same write (floor.go).
 	RaiseFloorReason string
+	// OverrideVulnGate is `--override-vuln-gate "<why>"`: promote past the
+	// env's vuln_gate and provenance_sbom refusals, recorded on the
+	// promotion with who and which findings (vuln_gate_promote.go).
+	OverrideVulnGate string
 
 	// Follow is the apply-and-gate stage that runs after the ledger write
 	// (deploy_promote_follow.go). NIL MEANS LEDGER-WRITE ONLY: nothing is
@@ -87,6 +91,9 @@ type promoteOptions struct {
 	// (promote_policy_checks.go), frozen onto the promotion beside Gates.
 	policyGates []release.Gate
 	From        promoteFromOptions
+	// resolvedFrom is From already resolved by the caller (resolveDeployFrom),
+	// so the source is read once; nil means runPromote resolves it.
+	resolvedFrom *promoteSource
 	// Targets is the deploy's scope (deployScopeTargets), recorded on the
 	// promotion as release.Promotion.Targets. Nil for an unscoped deploy.
 	Targets []string
@@ -194,8 +201,10 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	if err != nil {
 		return err
 	}
-	source, err := resolvePromoteFrom(ctx, version, env, opts.ProjectDir, opts.From)
-	if err != nil {
+	var source promoteSource
+	if opts.resolvedFrom != nil {
+		source = *opts.resolvedFrom
+	} else if source, err = resolvePromoteFrom(ctx, version, env, opts.ProjectDir, opts.From); err != nil {
 		return err
 	}
 	version = source.Version
@@ -240,6 +249,8 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 		Env: env, Version: version, FromEnv: source.FromEnv, Note: opts.Note, Gates: gates, Dir: projectDir,
 		Promoter: promoterName(promoteActor(opts.Actor)),
 		Ask:      !opts.DryRun && (opts.Confirm == nil || !opts.Confirm.PlanOnly),
+
+		OverrideVulnGate: opts.OverrideVulnGate,
 	}
 	if floorTarget != nil {
 		checkIn.Project, checkIn.Commit = floorTarget.Project, floorTarget.Git.Commit

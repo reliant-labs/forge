@@ -319,7 +319,9 @@ func TestWholeRepoGuardsRunOnlyInFullTier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "run: go test -p 1 -count=1 -timeout 30m $(scripts/ci-test-packages.sh guards)") {
+	guardRun := packageListStep(t, "test-short-warm", "Go tests (guards)")
+	if !strings.Contains(guardRun, "packages=$(scripts/ci-test-packages.sh guards)") ||
+		!strings.Contains(guardRun, `go test -p 1 -count=1 -timeout 30m "${pkgs[@]}"`) {
 		t.Fatalf("all %d declared full guards must still run through their authoritative package set", len(declared))
 	}
 	if !slices.Contains(declared, "removalguard") {

@@ -137,22 +137,45 @@ func TestDBAnalyzeDSNTargetAnalyzesWhatTheTargetLacks(t *testing.T) {
 	}
 }
 
-// A project pinned before the rules gate sees their findings as warnings.
-func TestDBAnalyzeFindingsWarnFirst(t *testing.T) {
+// db analyze grades its findings as forge lint grades its own
+// (lint.GradeFinding). Its rules have shipped, so they gate at any pin — even
+// one from before the release that introduced them (v1.7.0) — and carry no
+// warn-first note; lint.rules is what turns one down.
+func TestDBAnalyzeFindingsGateAtAnyPinUnlessLintRulesSaysOtherwise(t *testing.T) {
 	t.Parallel()
 	projectDir, migDir := analyzeProject(t, map[string]string{
 		"20260101000000_orders.up.sql": analyzeBaseSQL,
 		"20260102000000_widen.up.sql":  analyzeNewSQL,
 	})
 	dsn := analyzeTarget(t, dbanalyze.MigrationFile{File: "20260101000000_orders.up.sql", Version: 20260101000000, SQL: analyzeBaseSQL})
-	cfg := &config.ProjectConfig{ModulePath: "example.com/app", ForgeVersion: "v1.5.0"}
-	doc := runDBAnalyze(context.Background(), projectDir, cfg, dbAnalyzeOptions{target: "dsn", migDir: migDir}, dsnDeps(dsn, nil))
-	if doc.ExitCode != dbanalyze.ExitOK || len(doc.Findings) != 2 {
-		t.Fatalf("exit %d findings %+v", doc.ExitCode, doc.Findings)
+	analyze := func(cfg *config.ProjectConfig) *dbanalyze.Document {
+		t.Helper()
+		doc := runDBAnalyze(context.Background(), projectDir, cfg, dbAnalyzeOptions{target: "dsn", migDir: migDir}, dsnDeps(dsn, nil))
+		if len(doc.Findings) != 2 {
+			t.Fatalf("exit %d findings %+v error %q", doc.ExitCode, doc.Findings, doc.Error)
+		}
+		return doc
+	}
+
+	doc := analyze(&config.ProjectConfig{ModulePath: "example.com/app", ForgeVersion: "v1.5.0"})
+	if doc.ExitCode != dbanalyze.ExitFindings {
+		t.Errorf("pinned before the rules shipped: exit %d, want %d (they gate)", doc.ExitCode, dbanalyze.ExitFindings)
 	}
 	for _, f := range doc.Findings {
-		if f.Severity != dbanalyze.SeverityWarning || !strings.Contains(f.Note, "gates from") {
-			t.Errorf("%s: severity %s note %q", f.Rule, f.Severity, f.Note)
+		if f.Severity != dbanalyze.SeverityError || f.Note != "" {
+			t.Errorf("%s: severity %s note %q, want an error with no grace note", f.Rule, f.Severity, f.Note)
+		}
+	}
+
+	doc = analyze(&config.ProjectConfig{ModulePath: "example.com/app", ForgeVersion: "v1.5.0", Lint: config.LintConfig{Rules: map[string]string{
+		dbanalyze.RuleTableRewrite: "warn", dbanalyze.RuleAccessExclusiveLock: "warn",
+	}}})
+	if doc.ExitCode != dbanalyze.ExitOK {
+		t.Errorf("lint.rules warn: exit %d, want %d", doc.ExitCode, dbanalyze.ExitOK)
+	}
+	for _, f := range doc.Findings {
+		if f.Severity != dbanalyze.SeverityWarning {
+			t.Errorf("lint.rules warn: %s severity %s, want a warning", f.Rule, f.Severity)
 		}
 	}
 }

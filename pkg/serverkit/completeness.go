@@ -5,6 +5,8 @@ import (
 	"sort"
 
 	"connectrpc.com/connect"
+	connectv2 "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
@@ -34,11 +36,39 @@ import (
 // Mount panics if Server.Mux is nil: a composition root calling Mount has
 // opted into the Mux ergonomics, so a nil Mux is a wiring bug to surface
 // loudly at boot, not mount silently nowhere.
+//
+// A connect-go v2 service (mountkit.RegistrarV2) is mounted with
+// mountkit.RegisterServiceV2 through the Server's v2 chain
+// (ServerInterceptors and HTTPOptions, else ChainV2's), with the v2 mount
+// options (mountkit.WithInterceptorsV2, WithHTTPOptionsV2). A value
+// implementing both registrations mounts on the major the Server is
+// configured for (v1 when it is configured for both, or neither). A service
+// of one major on a Server configured only for the other panics: mounting it
+// with no chain would serve it unauthenticated.
 func (s *Server) Mount(connectPath string, svc any, mountOpts ...mountkit.Option) {
 	if s.Mux == nil {
 		panic("serverkit: Server.Mount called with nil Server.Mux — set srv.Mux = http.NewServeMux() before mounting")
 	}
-	mountkit.RegisterService(s.Mux, svc, s.handlerOptions(), mountOpts...)
+	_, isV1 := svc.(mountkit.Registrar)
+	_, isV2 := svc.(mountkit.RegistrarV2)
+	v1, v2 := s.servesV1(), s.servesV2()
+	switch {
+	case isV2 && v2 && !(isV1 && v1):
+		mountkit.RegisterServiceV2(s.mountV2(), svc, mountOpts...)
+	case isV1 && v1:
+		mountkit.RegisterService(s.Mux, svc, s.handlerOptions(), mountOpts...)
+	case isV2 && v1:
+		panic(fmt.Sprintf("serverkit: Server.Mount(%q): %T is a connect-go v2 service (RegisterV2), but this Server is "+
+			"configured only for v1 (HandlerOpts / Chain); set ChainV2 or ServerInterceptors to mount it", connectPath, svc))
+	case isV1 && v2:
+		panic(fmt.Sprintf("serverkit: Server.Mount(%q): %T is a connect-go v1 service (Register), but this Server is "+
+			"configured only for v2 (ChainV2 / ServerInterceptors); set Chain or HandlerOpts to mount it", connectPath, svc))
+	case isV2 && !isV1:
+		mountkit.RegisterServiceV2(s.mountV2(), svc, mountOpts...)
+	default:
+		// v1, or neither registration — RegisterService panics on the latter.
+		mountkit.RegisterService(s.Mux, svc, s.handlerOptions(), mountOpts...)
+	}
 	s.Mounted(connectPath)
 }
 
@@ -49,6 +79,35 @@ func (s *Server) handlerOptions() []connect.HandlerOption {
 		return s.Chain.HandlerOptions()
 	}
 	return s.HandlerOpts
+}
+
+// servesV1 and servesV2 report whether the Server is configured to mount
+// services of that connect-go major.
+func (s *Server) servesV1() bool { return s.HandlerOpts != nil || s.Chain != nil }
+func (s *Server) servesV2() bool { return s.ServerInterceptors != nil || s.ChainV2 != nil }
+
+// serverInterceptorsV2 and httpOptionsV2 are what a v2 service is built
+// with: the fields, or ChainV2's when they are unset.
+func (s *Server) serverInterceptorsV2() []connectv2.ServerInterceptor {
+	if s.ServerInterceptors == nil && s.ChainV2 != nil {
+		return s.ChainV2.ServerInterceptors()
+	}
+	return s.ServerInterceptors
+}
+
+func (s *Server) httpOptionsV2() []connecthttp.Option {
+	if s.HTTPOptions == nil && s.ChainV2 != nil {
+		return s.ChainV2.HTTPOptions()
+	}
+	return s.HTTPOptions
+}
+
+// mountV2 is the MuxV2 v2 services mount through, built once per Mux.
+func (s *Server) mountV2() *mountkit.MuxV2 {
+	if s.muxV2 == nil || s.muxV2.Mux() != s.Mux {
+		s.muxV2 = mountkit.NewMuxV2(s.Mux, s.serverInterceptorsV2(), s.httpOptionsV2()...)
+	}
+	return s.muxV2
 }
 
 // RequireMounted is the boot-time completeness guardrail: it verifies that

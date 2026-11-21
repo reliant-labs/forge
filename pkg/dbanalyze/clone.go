@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 )
 
 // A DSN TARGET IS READ, CLONED, AND NEVER WRITTEN.
@@ -40,7 +42,11 @@ type Source struct {
 // OpenSource connects to the target. Close it before CloneDatabase: postgres
 // copies a database only while no session is connected to it.
 func OpenSource(ctx context.Context, dsn string) (*Source, error) {
-	conn, err := pgx.Connect(ctx, dsn)
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect to the target: %w", parseCause(err))
+	}
+	conn, err := connect(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect to the target: %w", parseCause(err))
 	}
@@ -196,7 +202,7 @@ func (c *Clone) Close() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	conn, err := pgx.ConnectConfig(ctx, c.admin)
+	conn, err := connect(ctx, c.admin)
 	if err != nil {
 		return fmt.Errorf("drop the analysis copy %s: %w", c.info.Database, err)
 	}
@@ -211,6 +217,15 @@ func (c *Clone) Close() error {
 	return nil
 }
 
+// connect opens a connection with cfg, traced: each statement is a span under
+// the caller's (no span when the caller has none). cfg itself is left as it
+// is.
+func connect(ctx context.Context, cfg *pgx.ConnConfig) (*pgx.Conn, error) {
+	cfg = cfg.Copy()
+	cfg.Tracer = dbtrace.NewPgxTracer()
+	return pgx.ConnectConfig(ctx, cfg)
+}
+
 // connectMaintenance connects to the target's server through a database
 // other than the target: postgres, else template1.
 func connectMaintenance(ctx context.Context, target *pgx.ConnConfig) (*pgx.ConnConfig, *pgx.Conn, error) {
@@ -221,7 +236,7 @@ func connectMaintenance(ctx context.Context, target *pgx.ConnConfig) (*pgx.ConnC
 		}
 		cfg := target.Copy()
 		cfg.Database = db
-		conn, err := pgx.ConnectConfig(ctx, cfg)
+		conn, err := connect(ctx, cfg)
 		if err == nil {
 			return cfg, conn, nil
 		}

@@ -19,7 +19,7 @@ import (
 //   - Tier 2 (one-shot scaffolds the user owns after first emit) MUST
 //     carry the canonical "yours: scaffolded once, never touched again —
 //     forge will not overwrite this file" line. Examples:
-//     `internal-package/contract.go.tmpl`, `frontend/pages/*.tsx.tmpl`.
+//     `internal-package/service.go.tmpl`, `frontend/pages/*.tsx.tmpl`.
 //   - Tier 3 (user-owned skeletons like `providers.go.tmpl`, `forge.yaml`,
 //     starter `cmd/*.go` files) is intentionally banner-less — `//forge:allow`
 //     is the existing user-owned marker and is enforced by other linters.
@@ -362,7 +362,7 @@ func isKnownTier2(rel, noTmpl string) bool {
 	// internal-package scaffolds (pkg new flow + adapter/eventbus/client flavors).
 	if strings.Contains(rel, "internal/templates/internal-package/") {
 		switch noTmpl {
-		case "service.go", "contract.go", "contract_test.go",
+		case "service.go", "deps.go", "contract.go", "contract_test.go",
 			"client.go", "client_test.go",
 			"service_test.go",
 			"adapter.go", "adapter_test.go", "cache.go":

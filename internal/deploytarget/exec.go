@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/envutil"
 )
 
@@ -63,12 +65,14 @@ func (execRunner) RunWithEnv(ctx context.Context, env map[string]string, name st
 func (execRunner) RunInDir(ctx context.Context, dir string, env map[string]string, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(stepLabel(dir, name, args))
 	if len(env) > 0 {
 		cmd.Env = envutil.MergeExtraWins(os.Environ(), env)
 	}
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return nil
@@ -90,6 +94,19 @@ func (execRunner) OutputWithEnv(ctx context.Context, env map[string]string, name
 		return buf.Bytes(), fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
 	return buf.Bytes(), nil
+}
+
+// stepLabel names a subprocess for its one line in a quiet build session
+// (buildlog): the directory it runs in, when it has one, and the command.
+func stepLabel(dir, name string, args []string) string {
+	label := strings.TrimSpace(name + " " + strings.Join(args, " "))
+	if r := []rune(label); len(r) > 60 {
+		label = string(r[:59]) + "…"
+	}
+	if dir != "" {
+		label = filepath.Base(dir) + ": " + label
+	}
+	return label
 }
 
 // defaultRunner is the package-level commandRunner used by the

@@ -121,15 +121,22 @@ describe("the ./interceptors entry point", () => {
     // interceptor parents calls on; it imports @opentelemetry/api alone.
     // rpc-failure-log.ts is the dependency-free registry failed RPCs are
     // reported to (the dev log installs its sink); it imports nothing.
+    // rpc-span.ts is the per-RPC client span stage, and rpc-forensics.ts the
+    // request classifier it calls on failure, which reflects over the
+    // request with @bufbuild/protobuf (already a peer of this entry point).
     expect(files.sort()).toEqual([
       "src/errors.ts",
       "src/interaction-context.ts",
       "src/interceptors.ts",
       "src/rpc-failure-log.ts",
+      "src/rpc-forensics.ts",
+      "src/rpc-span.ts",
       "src/telemetry-gate.ts",
       "src/trace.ts",
     ]);
     expect(bare).toEqual([
+      "@bufbuild/protobuf",
+      "@bufbuild/protobuf/reflect",
       "@bufbuild/protobuf/wkt",
       "@connectrpc/connect",
       "@opentelemetry/api",

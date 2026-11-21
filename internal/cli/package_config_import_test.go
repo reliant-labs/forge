@@ -63,6 +63,18 @@ func TestRunPackageNew_WithoutTypedConfig(t *testing.T) {
 			t.Errorf("%s names a config the project does not have:\n%s", rel, src)
 		}
 	}
+	// The default scaffold is the marker form: its Service interface is
+	// derived into contract_gen.go and mocked at birth, with no contract.go.
+	// The compile check below is what proves that shape builds on its own,
+	// before any `forge generate` run.
+	for _, rel := range []string{"internal/cache/contract_gen.go", "internal/cache/mock_gen.go", "internal/cache/deps.go"} {
+		if _, ok := files[filepath.FromSlash(rel)]; !ok {
+			t.Errorf("the default package scaffold did not write %s", rel)
+		}
+	}
+	if _, ok := files[filepath.FromSlash("internal/cache/contract.go")]; ok {
+		t.Errorf("the default package scaffold wrote a contract.go; its contract is service.go's //forge:contract type")
+	}
 
 	if testing.Short() {
 		return // the compile check below builds a module

@@ -51,7 +51,7 @@ func TestGenerate_ParamsNamedLikeBodyIdentifiers(t *testing.T) {
 	}
 	writeSandboxGoSum(t, dir)
 
-	cmd := exec.Command("go", "test", "./...")
+	cmd := exec.Command("go", "test", "-tags", "identcollision", "./...")
 	cmd.Dir = dir
 	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod"))
 	if out, err := cmd.CombinedOutput(); err != nil {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jinzhu/inflection"
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/factory"
@@ -110,13 +109,6 @@ Example:
 		// and a bare `scaffold entity` stays an ARGS error, which keeps
 		// usage-printing intact (TestRootCmd_ArgErrorStillShowsUsage).
 		Args: func(cmd *cobra.Command, args []string) error {
-			// The removed-flag refusal has to win here, not in RunE: cobra
-			// validates args first, so `--from-schema invoices` with no
-			// entity name would otherwise die on arity and print usage —
-			// the one output that says nothing about why the flag is gone.
-			if err := removedFromSchemaRefusal(cmd); err != nil {
-				return err
-			}
 			if fromProto != "" {
 				return nil // the affordance validates its own positional shape in RunE
 			}
@@ -145,47 +137,7 @@ Example:
 	cmd.Flags().BoolVar(&noTimestamps, "no-timestamps", false, "skip the managed created_at/updated_at columns")
 	cmd.Flags().StringVar(&fromProto, "from-proto", "", "derive the create-table migration from an already-authored proto message: <svc> or <svc>.<Message> (one-time; the migration is yours at birth)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the --from-proto birth plan (migrations + quintet completion) and write nothing")
-	registerRemovedFromSchemaFlag(cmd)
 	return cmd
-}
-
-// registerRemovedFromSchemaFlag keeps `--from-schema` PARSEABLE so it can be
-// refused with an explanation. Dropping the flag outright would answer it with
-// cobra's `unknown flag: --from-schema` — accurate and useless, since the
-// caller's real question is what replaced it, and the answer ("nothing; forge
-// does not adopt a pre-existing database") is not one they can guess.
-//
-// Hidden, so it is absent from --help: the flag exists to be refused, not to
-// be discovered. Delete it once the spelling stops showing up in the wild.
-func registerRemovedFromSchemaFlag(cmd *cobra.Command) {
-	var fromSchema string
-	cmd.Flags().StringVar(&fromSchema, "from-schema", "", "removed")
-	_ = cmd.Flags().MarkHidden("from-schema")
-}
-
-// removedFromSchemaRefusal returns the refusal when `--from-schema` was
-// passed, or nil. It reads the flag off the command rather than closing over
-// the variable so the Args validator — which runs before RunE — can call it.
-func removedFromSchemaRefusal(cmd *cobra.Command) error {
-	table, err := cmd.Flags().GetString("from-schema")
-	if err != nil || table == "" {
-		return nil
-	}
-	// An Args error normally keeps the usage block, which is right for a
-	// wrong arg count. This is not that: the flag list says nothing about
-	// why --from-schema is gone, and 15 lines of it between the user and
-	// the explanation is the dump this refusal exists to replace.
-	cmd.SilenceUsage = true
-	entity := naming.ToPascalCase(naming.ToSnakeCase(inflection.Singular(table)))
-	return cliutil.UserErr("forge scaffold entity --from-schema",
-		"--from-schema was removed — it existed to adopt a database forge did not create, "+
-			"and forge births entities rather than importing them", "",
-		"declare the entity in the service proto and run `forge scaffold`:\n"+
-			"    // forge:entity\n"+
-			"    message "+entity+" { ... }\n"+
-			"  the birth writes its own migration, so an ALREADY-APPLIED table will collide —\n"+
-			"  keep the table by hand-writing the matching proto message and running\n"+
-			"  `forge generate`, which projects the ORM and CRUD wiring from the applied schema")
 }
 
 // entityWithoutProtoRefusal answers `forge scaffold entity <name> ...` with
@@ -270,36 +222,50 @@ type entityOpts struct {
 	DryRun bool
 }
 
-// ensureProtoImport adds `import "<path>";` after the last existing
-// import (or after the package line) when missing.
+// ensureProtoImport adds `import "<path>";` when missing, where `buf
+// format` puts it: in sorted order among the existing imports (before the
+// first one that sorts after it, else after the last), or — in a file with
+// none — after the package line, set off by a blank line.
 func ensureProtoImport(content, path string) string {
 	if strings.Contains(content, `import "`+path+`"`) {
 		return content
 	}
+	line := `import "` + path + `";`
 	lines := strings.Split(content, "\n")
-	insertAt := -1
+	before, last := -1, -1
 	for i, l := range lines {
 		t := strings.TrimSpace(l)
-		if strings.HasPrefix(t, "import ") {
-			insertAt = i
+		if !strings.HasPrefix(t, "import ") {
+			continue
+		}
+		last = i
+		if before == -1 && strings.HasPrefix(t, `import "`) && t > line {
+			before = i
 		}
 	}
-	if insertAt == -1 {
-		for i, l := range lines {
-			if strings.HasPrefix(strings.TrimSpace(l), "package ") {
-				insertAt = i
-				break
+	insert := func(at int, add ...string) string {
+		out := make([]string, 0, len(lines)+len(add))
+		out = append(out, lines[:at]...)
+		out = append(out, add...)
+		out = append(out, lines[at:]...)
+		return strings.Join(out, "\n")
+	}
+	switch {
+	case before >= 0:
+		return insert(before, line)
+	case last >= 0:
+		return insert(last+1, line)
+	}
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "package ") {
+			add := []string{"", line}
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) != "" {
+				add = append(add, "")
 			}
+			return insert(i+1, add...)
 		}
 	}
-	if insertAt == -1 {
-		return content
-	}
-	out := make([]string, 0, len(lines)+1)
-	out = append(out, lines[:insertAt+1]...)
-	out = append(out, `import "`+path+`";`)
-	out = append(out, lines[insertAt+1:]...)
-	return strings.Join(out, "\n")
+	return content
 }
 
 // insertIntoServiceBlock inserts text before the closing brace of the
@@ -357,12 +323,16 @@ func buildEntityCRUDRPCPieces(entity string) []crudProtoPiece {
 	} {
 		var b strings.Builder
 		fmt.Fprintf(&b, "  rpc %s(%sRequest) returns (%sResponse) {\n", op.name, op.name, op.name)
-		b.WriteString("    option (forge.v1.method) = {\n")
-		b.WriteString("      auth_required: true\n")
-		if op.opts != "" {
+		// `buf format`'s shapes: a one-field literal stays on one line, a
+		// longer one takes a line per field.
+		if op.opts == "" {
+			b.WriteString("    option (forge.v1.method) = {auth_required: true};\n")
+		} else {
+			b.WriteString("    option (forge.v1.method) = {\n")
+			b.WriteString("      auth_required: true\n")
 			fmt.Fprintf(&b, "      %s\n", op.opts)
+			b.WriteString("    };\n")
 		}
-		b.WriteString("    };\n")
 		b.WriteString("  }\n")
 		pieces = append(pieces, crudProtoPiece{name: op.name, text: b.String()})
 	}
@@ -438,11 +408,19 @@ func buildEntityCRUDMessagePieces(entity string, fields []entityField) []crudPro
 	add("Update"+entity+"Response",
 		fmt.Sprintf("message Update%sResponse {\n  %s %s = 1;\n}\n", entity, entity, naming.EntityFieldName(entity)))
 
-	// Delete
+	// Delete (AIP-135) — the id and nothing else, answered by an empty
+	// response: exactly what the generated DeleteOp reads and writes. Births
+	// used to add `bool hard_delete` to the request and `id` + `deleted_at`
+	// to the response, and the generated handler honored none of them: a
+	// client asking for a hard delete of a soft-deleting entity got a soft
+	// one, and read an empty id and no stamp back. Whether a caller may
+	// bypass soft delete is the product's policy, so a service that wants
+	// it adds the field and handles it in its own Delete rpc. Messages
+	// already born keep their fields: removing a wire field is a break.
 	add("Delete"+entity+"Request",
-		fmt.Sprintf("message Delete%sRequest {\n  string id = 1;\n  bool hard_delete = 2;\n}\n", entity))
+		fmt.Sprintf("message Delete%sRequest {\n  string id = 1;\n}\n", entity))
 	add("Delete"+entity+"Response",
-		fmt.Sprintf("message Delete%sResponse {\n  string id = 1;\n  google.protobuf.Timestamp deleted_at = 2;\n}\n", entity))
+		fmt.Sprintf("message Delete%sResponse {}\n", entity))
 
 	// List — the other request that flattens, but it flattens FILTERS, not
 	// values, so it deliberately carries NO entity field rules: `search` is

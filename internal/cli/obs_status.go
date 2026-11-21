@@ -2,10 +2,11 @@ package cli
 
 // `forge obs status [env]` — what is wrong right now? (DESIGN §8.1)
 //
-// One document over six independent reads: the per-service overview, the new
-// and regressed issues, the active alerts, whether telemetry is arriving (and,
-// hosted, whether the control plane's telemetry token reached the cluster),
-// and the release in force with the last few changes. The reads run
+// One document over seven independent reads: the per-service overview, the new
+// and regressed issues, the active alerts, the workloads that are suspended or
+// need a look (hosted), whether telemetry is arriving (and, hosted, whether the
+// control plane's telemetry token reached the cluster), and the release in
+// force with the last few changes. The reads run
 // concurrently and each degrades on its own: a section that cannot be read is
 // left out, named in `unread`, and explained in `warnings`. Readable evidence
 // survives a partial read. A section the backend does not have (alerts locally)
@@ -45,6 +46,9 @@ var obsStatusSchema = obsout.Schema{
 		"issues.regressed_at", "issues.ignored_until", "issues_truncated",
 		"alerts", "alerts.rule", "alerts.state", "alerts.fingerprint", "alerts.labels.*", "alerts.summary",
 		"alerts.active_at", "alerts.firing_at", "alerts.value",
+		"workloads", "workloads.workload", "workloads.namespace", "workloads.kind", "workloads.health", "workloads.cause",
+		"workloads.reason", "workloads.detail", "workloads.since", "workloads.ready", "workloads.desired", "workloads.restarts",
+		"workloads.last_exit_reason", "workloads.last_exit_at", "workloads.release", "workloads_total", "workloads_truncated",
 		"telemetry", "telemetry.last_log_at", "telemetry.last_span_at", "telemetry.lookback",
 		"telemetry.deliveries_enabled", "telemetry.deliveries", "telemetry.deliveries.cluster", "telemetry.deliveries.namespace",
 		"telemetry.deliveries.name", "telemetry.deliveries.state", "telemetry.deliveries.expires_at",
@@ -62,6 +66,7 @@ const (
 	statusOverview   = "services"
 	statusIssues     = "issues"
 	statusAlerts     = "alerts"
+	statusWorkloads  = "workloads"
 	statusTelemetry  = "telemetry"
 	statusDeliveries = "telemetry.deliveries"
 	statusChanges    = "changes"
@@ -83,6 +88,9 @@ const (
 	statusChangesLookback = 7 * 24 * time.Hour
 	// statusChangesLimit is how many changes the document carries.
 	statusChangesLimit = 5
+	// statusWorkloadsMaxRange is the longest range the workload read takes
+	// (ListWorkloads refuses more); a longer --since reads its last 7 days.
+	statusWorkloadsMaxRange = 7 * 24 * time.Hour
 )
 
 // obsStatusTelemetry says whether telemetry is arriving.
@@ -121,13 +129,20 @@ type obsStatusDoc struct {
 	Issues          []obsIssueRowDoc             `json:"issues,omitzero"`
 	IssuesTruncated bool                         `json:"issues_truncated,omitempty"`
 	Alerts          []obsbackend.Alert           `json:"alerts,omitzero"`
-	Telemetry       *obsStatusTelemetry          `json:"telemetry,omitempty"`
-	CurrentRelease  *obsStatusRelease            `json:"current_release,omitempty"`
-	Changes         []obsbackend.Change          `json:"changes,omitzero"`
-	Unread          []string                     `json:"unread,omitempty"`
-	NotEvaluated    []string                     `json:"not_evaluated,omitempty"`
-	Warnings        []string                     `json:"warnings,omitempty"`
-	Suggested       []string                     `json:"suggested,omitempty"`
+	// Workloads are the env's workloads that are suspended or need a look
+	// (obsbackend.Workload.Unhealthy), worst first. WorkloadsTotal counts
+	// returned rows before filtering; it is not an environment total if
+	// WorkloadsTruncated is true.
+	Workloads          []obsbackend.Workload `json:"workloads,omitzero"`
+	WorkloadsTotal     int                   `json:"workloads_total,omitempty"`
+	WorkloadsTruncated bool                  `json:"workloads_truncated,omitempty"`
+	Telemetry          *obsStatusTelemetry   `json:"telemetry,omitempty"`
+	CurrentRelease     *obsStatusRelease     `json:"current_release,omitempty"`
+	Changes            []obsbackend.Change   `json:"changes,omitzero"`
+	Unread             []string              `json:"unread,omitempty"`
+	NotEvaluated       []string              `json:"not_evaluated,omitempty"`
+	Warnings           []string              `json:"warnings,omitempty"`
+	Suggested          []string              `json:"suggested,omitempty"`
 }
 
 type obsStatusOpts struct {
@@ -153,6 +168,8 @@ func newObsStatusCmdWith(deps obsDepsFunc) *cobra.Command {
   services         requests, error rate and latency per service, busiest first
   issues           the new and regressed issues (locally: every error group)
   alerts           the alerts firing or pending (hosted envs)
+  workloads        the workloads suspended or needing a look, and how many
+                   there are (hosted envs): a suspended env serves no traffic
   telemetry        when the newest log and span arrived; hosted, whether the
                    control plane's telemetry token reached the cluster
   current_release  the promotion in force, and the last few changes
@@ -315,6 +332,28 @@ func statusSections(b obsbackend.Backend, env, project string, n obsbackend.Narr
 	} else {
 		notEvaluated = append(notEvaluated, statusAlerts)
 	}
+	if r, ok := b.(obsbackend.WorkloadReader); ok && !narrowed {
+		secs = append(secs, statusSection{statusWorkloads, func(ctx context.Context, doc *obsStatusDoc) error {
+			wn := n
+			if wn.Range.To.Sub(wn.Range.From) > statusWorkloadsMaxRange {
+				wn.Range.From = wn.Range.To.Add(-statusWorkloadsMaxRange)
+			}
+			res, err := r.Workloads(ctx, wn)
+			if err != nil {
+				return err
+			}
+			doc.Workloads, doc.WorkloadsTotal = []obsbackend.Workload{}, len(res.Workloads)
+			doc.WorkloadsTruncated = res.Truncated
+			for _, w := range res.Workloads {
+				if w.Unhealthy() || w.Health == obsbackend.WorkloadSuspended {
+					doc.Workloads = append(doc.Workloads, w)
+				}
+			}
+			return nil
+		}})
+	} else {
+		notEvaluated = append(notEvaluated, statusWorkloads)
+	}
 	secs = append(secs, statusSection{statusTelemetry, func(ctx context.Context, doc *obsStatusDoc) error {
 		t, warnings, err := statusFreshness(ctx, b, n)
 		if err != nil {
@@ -426,6 +465,9 @@ func mergeStatusPart(doc *obsStatusDoc, p obsStatusDoc) {
 	if p.Alerts != nil {
 		doc.Alerts = p.Alerts
 	}
+	if p.Workloads != nil {
+		doc.Workloads, doc.WorkloadsTotal, doc.WorkloadsTruncated = p.Workloads, p.WorkloadsTotal, p.WorkloadsTruncated
+	}
 	if t := p.Telemetry; t != nil {
 		if doc.Telemetry == nil {
 			doc.Telemetry = &obsStatusTelemetry{}
@@ -446,10 +488,18 @@ func mergeStatusPart(doc *obsStatusDoc, p obsStatusDoc) {
 	doc.Warnings = append(doc.Warnings, p.Warnings...)
 }
 
-// statusSuggestions are the next commands: the newest issue, the failing
-// endpoints when a service is erroring, and the release in force's check.
+// statusSuggestions are the next commands: resuming a suspended env, the
+// workloads view when one needs a look, the newest issue, the failing endpoints when a service is erroring, and the
+// release in force's check.
 func statusSuggestions(env string, doc obsStatusDoc) []string {
 	var cmds []string
+	suspended, unhealthy := statusWorkloadCounts(doc.Workloads)
+	if suspended > 0 {
+		cmds = append(cmds, obsout.Command("forge", "env", "start", env))
+	}
+	if unhealthy > 0 || doc.WorkloadsTruncated {
+		cmds = append(cmds, obsout.Command("forge", "obs", "workloads", env))
+	}
 	if len(doc.Issues) > 0 {
 		cmds = append(cmds, obsout.Command("forge", "obs", "issue", doc.Issues[0].ID, env))
 	}
@@ -476,6 +526,20 @@ func statusSuggestions(env string, doc obsStatusDoc) []string {
 	return obsout.Suggest(cmds...)
 }
 
+// statusWorkloadCounts counts the suspended workloads and those that need a
+// look.
+func statusWorkloadCounts(ws []obsbackend.Workload) (suspended, unhealthy int) {
+	for _, w := range ws {
+		if w.Health == obsbackend.WorkloadSuspended {
+			suspended++
+		}
+		if w.Unhealthy() {
+			unhealthy++
+		}
+	}
+	return suspended, unhealthy
+}
+
 // ── text ────────────────────────────────────────────────────────────────
 
 func writeStatusText(w io.Writer, now time.Time, doc obsStatusDoc) {
@@ -499,6 +563,9 @@ func writeStatusText(w io.Writer, now time.Time, doc obsStatusDoc) {
 	}
 	if t := doc.Telemetry; t != nil {
 		writeStatusTelemetry(w, now, t)
+	}
+	if doc.Workloads != nil {
+		writeStatusWorkloads(w, now, doc)
 	}
 
 	if doc.Services != nil {
@@ -561,6 +628,46 @@ func writeStatusText(w io.Writer, now time.Time, doc obsStatusDoc) {
 		}
 		fmt.Fprintf(w, "\nnot evaluated %s: %s\n", where, strings.Join(doc.NotEvaluated, ", "))
 	}
+}
+
+// writeStatusWorkloads says first whether the env is suspended: a suspended
+// env serves nothing, so its quiet services, issues and alerts mean nothing.
+func writeStatusWorkloads(w io.Writer, now time.Time, doc obsStatusDoc) {
+	suspended, _ := statusWorkloadCounts(doc.Workloads)
+	switch {
+	case suspended > 0 && doc.WorkloadsTruncated:
+		fmt.Fprintf(w, "SUSPENDED: %d of %d returned workloads of %s are suspended; `%s env start %s` resumes them\n",
+			suspended, doc.WorkloadsTotal, doc.Scope.Env, Name(), doc.Scope.Env)
+	case doc.WorkloadsTotal > 0 && suspended == doc.WorkloadsTotal:
+		fmt.Fprintf(w, "SUSPENDED: every workload of %s (%d) is suspended and serves no traffic; `%s env start %s` resumes it\n",
+			doc.Scope.Env, suspended, Name(), doc.Scope.Env)
+	case suspended > 0:
+		fmt.Fprintf(w, "SUSPENDED: %d of %d workloads of %s are suspended and serve no traffic; `%s env start %s` resumes them\n",
+			suspended, doc.WorkloadsTotal, doc.Scope.Env, Name(), doc.Scope.Env)
+	}
+	if doc.WorkloadsTruncated {
+		fmt.Fprintf(w, "workloads: %d read; result truncated (narrow with --service to inspect others)\n", doc.WorkloadsTotal)
+	}
+	if len(doc.Workloads) == 0 {
+		if !doc.WorkloadsTruncated {
+			fmt.Fprintf(w, "workloads: %d, every one healthy with no restarts in the range\n", doc.WorkloadsTotal)
+		}
+		return
+	}
+	rows := make([][]string, len(doc.Workloads))
+	for i, wl := range doc.Workloads {
+		why := firstNonEmptyString(wl.Reason, wl.Detail)
+		if wl.LatestWarning != nil && why == "" {
+			why = firstNonEmptyString(wl.LatestWarning.Plain, wl.LatestWarning.Reason)
+		}
+		since := ""
+		if !wl.Since.IsZero() {
+			since = ago(now, wl.Since) + " ago"
+		}
+		rows[i] = []string{wl.Workload, strings.ToUpper(wl.Health), since, fmt.Sprint(wl.Restarts), why}
+	}
+	fmt.Fprintln(w)
+	obsout.Table(w, []string{"WORKLOAD", "HEALTH", "SINCE", "RESTARTS", "WHY"}, rows, 60)
 }
 
 func writeStatusTelemetry(w io.Writer, now time.Time, t *obsStatusTelemetry) {

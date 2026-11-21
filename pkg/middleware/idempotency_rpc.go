@@ -38,6 +38,7 @@ type idempotencyInterceptor struct {
 	mu    sync.Mutex
 	cache *lruCache[*cachedRPCResponse]
 	ttl   time.Duration
+	scope *callerScope // nil: keyed by procedure and client key alone
 }
 
 // IdempotencyInterceptor returns a Connect interceptor that deduplicates
@@ -49,7 +50,16 @@ type idempotencyInterceptor struct {
 // treated as distinct. For the HTTP-layer equivalent (REST/webhook
 // routes) see [IdempotencyMiddleware].
 //
+// The cache is NOT scoped to the caller: any caller presenting the same
+// key on the same procedure within the TTL gets the first caller's answer,
+// without the handler — or its permission checks — running. Where callers
+// are authenticated, use [IdempotencyInterceptorWithCaller], which
+// partitions the cache by the caller and every authority they presented.
+//
 // When opts.CacheSize <= 0 the interceptor is disabled and nil is returned.
+//
+// connect-go v2 projects use [IdempotencyInterceptorV2], which is always
+// caller-scoped.
 func IdempotencyInterceptor(opts IdempotencyOptions) connect.Interceptor {
 	if opts.CacheSize <= 0 {
 		return nil
@@ -66,7 +76,12 @@ func (i *idempotencyInterceptor) WrapUnary(next connect.UnaryFunc) connect.Unary
 		if key == "" {
 			return next(ctx, req)
 		}
-		cacheKey := idempotencyCacheKey(req.Spec().Procedure, key)
+		var cacheKey string
+		if i.scope == nil {
+			cacheKey = idempotencyCacheKey(req.Spec().Procedure, key)
+		} else if cacheKey = i.scope.cacheKey(ctx, req.Spec().Procedure, key); cacheKey == "" {
+			return next(ctx, req) // no partition to scope the answer to
+		}
 
 		i.mu.Lock()
 		if cached, ok := i.cache.get(cacheKey); ok && time.Now().Before(cached.expiresAt) {

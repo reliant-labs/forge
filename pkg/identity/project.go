@@ -406,6 +406,62 @@ func (p *run) ensureOTPEmailGenerator(ctx context.Context) error {
 	return nil
 }
 
+// Zitadel's default password-reset code generator, for an instance that
+// answers with none: the shape every other field is kept at when only the
+// expiry is declared.
+var defaultPasswordCodeGenerator = map[string]any{
+	"length": 6, "includeLowerLetters": false, "includeUpperLetters": true, "includeDigits": true, "includeSymbols": false,
+}
+
+// ensurePasswordCodeGenerator converges the expiry of the instance's
+// password-reset code generator — the code a reset link carries and the one
+// return_code hands back — to Spec.CodeLifetime, keeping its length and
+// alphabet as they are. Zero declares nothing. A failure withholds this
+// pass's password-set codes (run.codeLifetimeErr); every other step goes on.
+func (p *run) ensurePasswordCodeGenerator(ctx context.Context) (err error) {
+	defer func() { p.codeLifetimeErr = err }()
+	if p.spec.CodeLifetime == 0 {
+		return nil
+	}
+	const path = "/admin/v1/secretgenerators/SECRET_GENERATOR_TYPE_PASSWORD_RESET_CODE"
+	var cur struct {
+		SecretGenerator map[string]any `json:"secretGenerator"`
+	}
+	if err := p.c.call(ctx, http.MethodGet, path, nil, &cur, noOrg); err != nil && !isNotFound(err) {
+		return objErr("secret generator", "password reset code", err)
+	}
+	g := cur.SecretGenerator
+	expiry := strconv.FormatInt(int64(p.spec.CodeLifetime/time.Second), 10) + "s"
+	if g != nil && durationSeconds(fmt.Sprint(g["expiry"])) == durationSeconds(expiry) {
+		return nil
+	}
+	// Keep the generator's length and alphabet as read. An answer that
+	// carries no length read nothing to keep: start from Zitadel's default.
+	read := g != nil && g["length"] != nil
+	body := map[string]any{"expiry": expiry}
+	for k, v := range defaultPasswordCodeGenerator {
+		body[k] = v
+		if read {
+			if have, ok := g[k]; ok {
+				body[k] = have
+			} else if _, isBool := v.(bool); isBool {
+				body[k] = false // the gateway omits a false flag
+			}
+		}
+	}
+	if n := num(body["length"]); n > 0 {
+		body["length"] = n
+	}
+	p.rep.change(Updated, "secret generator", "password reset code", "expiry "+p.spec.CodeLifetime.String())
+	if p.dry() {
+		return nil
+	}
+	if err := p.c.call(ctx, http.MethodPut, path, body, nil, idem); err != nil && !isNoChange(err) {
+		return objErr("secret generator", "password reset code", err)
+	}
+	return nil
+}
+
 // policyFieldEqual compares a policy field as read (absent means the zero
 // value, since the gateway omits defaults) against its declared value.
 func policyFieldEqual(key string, have, want any) bool {

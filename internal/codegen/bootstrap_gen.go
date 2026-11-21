@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/checksums"
@@ -511,7 +512,9 @@ type BootstrapTestServiceData struct {
 	ProtoConnectPkg        string // e.g. "apiv1connect" (Go identifier used at call sites)
 	// MountMethod is the handler method that mounts the service — "Register"
 	// normally, "Mount" when the service declares an RPC of its own called
-	// Register (one type cannot carry both, and the RPC wins).
+	// Register (one type cannot carry both, and the RPC wins); for connect-go
+	// v2 the first of RegisterV2, MountV2, Mount2V2, … no RPC uses
+	// (mountMethodFor).
 	MountMethod string
 	Fallible    bool // true if the constructor returns (T, error)
 	HasDB       bool // true if Deps struct has a DB orm.Context field
@@ -773,6 +776,10 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			connectImport = modulePath + "/gen/services/" + synth + "/v1/" + synth + "v1connect"
 			connectPkg = synth + "v1connect"
 		}
+		mount, err := resolveMountHelper(svc, in.connectV2(), in.ProjectDir, handlerDir, in.Checksums)
+		if err != nil {
+			return fmt.Errorf("resolve %s test mount helper: %w", svc.Name, err)
+		}
 		testSvcs = append(testSvcs, BootstrapTestServiceData{
 			Name:                   pkg,
 			Package:                pkg,
@@ -781,7 +788,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			ConnectServiceGoName:   svc.GoName(),
 			ProtoConnectImportPath: connectImport,
 			ProtoConnectPkg:        connectPkg,
-			MountMethod:            mountMethodFor(svc),
+			MountMethod:            mount.name,
 			Fallible:               fallible,
 			Constructor:            DetectConstructorName(handlerDir),
 			HasDB:                  hasDB,
@@ -935,6 +942,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 
 	data := bootstrapTestingTemplateData{
 		Module:              modulePath,
+		ConnectV2:           in.connectV2(),
 		Services:            testSvcs,
 		ConnectImports:      connectImports,
 		Packages:            packages,
@@ -1047,6 +1055,7 @@ type bootstrapTestingTemplateData struct {
 	AnyServiceNeedsULID bool
 	HasMigrationsFS     bool
 	ExtraImports        []ExtraImport
+	ConnectV2           bool
 }
 
 // componentTestHelperData is the per-component view the
@@ -1120,6 +1129,11 @@ type componentTestHelperData struct {
 	FuncTodos       []UnresolvedAutoStub
 	UnfilledDeps    []UnresolvedAutoStub
 	ExtraImports    []ExtraImport
+
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // componentTestHelperFile is the file name emitted into each component dir.
@@ -1144,6 +1158,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			Name:                   svc.Name,
 			FieldName:              svc.FieldName,
 			IsService:              true,
+			ConnectV2:              data.ConnectV2,
 			ConstructorName:        svc.ConstructorName(),
 			Fallible:               svc.Fallible,
 			HasDB:                  svc.HasDB,
@@ -1965,17 +1980,79 @@ func ComponentTestHelperRelPath(handlerLeaf string) string {
 	return filepath.Join("internal", "handlers", handlerLeaf, componentTestHelperFile)
 }
 
-// mountMethodFor names the handler method that mounts svc.
+// mountMethodFor names the handler method that mounts svc, for the
+// connect-go major the project targets.
 //
 // A service may declare an RPC called Register — the obvious name for a
 // sign-up endpoint — which collides with the scaffolded Register(mux,
-// opts...) mount helper. The handler renames its helper to Mount in that
-// case, so every generated call site has to follow.
-func mountMethodFor(svc ServiceDef) string {
-	for _, m := range svc.Methods {
-		if m.GoName() == "Register" {
-			return "Mount"
+// opts...) mount helper, and one type cannot carry both: the RPC wins, and
+// the v1 helper becomes Mount. A connect-go v2 helper is RegisterV2(server)
+// (mountkit.RegistrarV2); it takes the first of RegisterV2, MountV2,
+// Mount2V2, Mount3V2, … (mountMethodCandidateV2) that no RPC of the service
+// uses.
+//
+// For an existing v2 handler use resolveMountHelper instead: owned methods
+// that no longer appear in the proto can still occupy a candidate.
+func mountMethodFor(svc ServiceDef, connectV2 bool) string {
+	if !connectV2 {
+		for _, method := range svc.Methods {
+			if method.GoName() == "Register" {
+				return "Mount"
+			}
 		}
+		return "Register"
+	}
+	return availableMountMethodV2(svc, nil)
+}
+
+func availableMountMethodV2(svc ServiceDef, occupied map[string]bool) string {
+	rpcs := make(map[string]bool, len(svc.Methods))
+	for _, m := range svc.Methods {
+		rpcs[m.GoName()] = true
+	}
+	for i := 0; ; i++ {
+		if name := mountMethodCandidateV2(i); !rpcs[name] && !occupied[name] {
+			return name
+		}
+	}
+}
+
+// mountMethodCandidateV2 is the i-th (0-based) name a connect-go v2 mount
+// helper may take: RegisterV2, MountV2, Mount2V2, Mount3V2, ….
+func mountMethodCandidateV2(i int) string {
+	switch i {
+	case 0:
+		return "RegisterV2"
+	case 1:
+		return "MountV2"
+	default:
+		return "Mount" + strconv.Itoa(i) + "V2"
+	}
+}
+
+// isMountMethodCandidateV2 reports whether name is one of
+// mountMethodCandidateV2's names.
+func isMountMethodCandidateV2(name string) bool {
+	base, ok := strings.CutSuffix(name, "V2")
+	if !ok {
+		return false
+	}
+	if base == "Register" || base == "Mount" {
+		return true
+	}
+	n, ok := strings.CutPrefix(base, "Mount")
+	if !ok {
+		return false
+	}
+	i, err := strconv.Atoi(n)
+	return err == nil && i >= 2 && strconv.Itoa(i) == n
+}
+
+// defaultMountMethod is the mount helper's name when no RPC collides with
+// it: Register (v1) or RegisterV2 (v2).
+func defaultMountMethod(connectV2 bool) string {
+	if connectV2 {
+		return mountMethodCandidateV2(0)
 	}
 	return "Register"
 }

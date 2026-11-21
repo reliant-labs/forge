@@ -375,11 +375,16 @@ kcl/
   README.md            # you are here
   workload.k           # fw.Workload, env references, the runtimes
   schema.k             # the Bundle and every env-level declaration
+  telemetry.k          # forge.Telemetry: declared telemetry for systems forge did not build
+  database_telemetry.k # the default Telemetry of a ManagedDatabase and its CloudNativePG operator
   render.k             # the lowering: Bundle -> output (forge.render)
   core.k               # env-map helpers for [EnvVar] lists (frontends)
   base.k               # -D option accessors, env groups, helpers
   workloads/schema.k   # `forge.workloads` (fw): re-exports for authors
   tiers/tiers_gen.k    # GENERATED from pkg/deploy/v1alpha1 (+ the hosted mask)
+  dashspec/
+    dashspec_gen.k     # GENERATED from pkg/dashspec: forge.dashboards/v1 as closed schemas
+    helpers.k          # rate / quantile / gauge / ratio shorthand over them
   lib/
     capabilities.k     # kind x capability matrix
     images.k           # cluster image reference resolution

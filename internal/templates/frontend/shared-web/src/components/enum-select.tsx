@@ -21,7 +21,7 @@ import { enumOptions } from "@/lib/format-utils";
  * It forwards its ref and spreads every native <select> prop through to the
  * underlying control, so it drops into a react-hook-form `register(...)` spread
  * unchanged. Register the field with
- * `z.coerce.number().pipe(z.nativeEnum(OrderStatus))` so the numeric option
+ * `z.coerce.number().pipe(z.enum(OrderStatus))` so the numeric option
  * value round-trips to the wire enum.
  */
 export interface EnumSelectProps extends Omit<SelectProps, "options"> {

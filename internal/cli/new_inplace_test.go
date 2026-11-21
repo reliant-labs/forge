@@ -143,6 +143,35 @@ func TestDetectExistingFrontendApps(t *testing.T) {
 	}
 }
 
+// A Next.js app at the root of a directory a Go service is scaffolded into
+// (`project new --in-place --kind service`) is reported, with a declaration
+// whose path points at the root — not dropped without a word (forge bug
+// aee44198). It is named "web", or "site" beside a --frontend web.
+func TestDetectRootFrontendApp_ReportedInTheNote(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "package.json"), `{"dependencies":{"next":"16.0.0"}}`)
+
+	if apps := detectExistingFrontendApps(root); len(apps) != 0 {
+		t.Fatalf("the conventional-location scan (and so the collision check) must not change: %+v", apps)
+	}
+	apps := detectRootFrontendApp(root, nil)
+	if want := []existingFrontendApp{{name: "web", dir: ".", typ: "nextjs"}}; !reflect.DeepEqual(apps, want) {
+		t.Fatalf("detected %+v, want %+v", apps, want)
+	}
+	note := strings.Join(existingFrontendNote(apps), "\n")
+	for _, s := range []string{"Found an existing Next.js app at the project root — forge left it alone", `name = "web"`, `path = "."`, `public_dir = "out"`} {
+		if !strings.Contains(note, s) {
+			t.Errorf("note lacks %q:\n%s", s, note)
+		}
+	}
+	if got := detectRootFrontendApp(root, []string{"web"}); len(got) != 1 || got[0].name != "site" {
+		t.Errorf("beside --frontend web the root app must take another name: %+v", got)
+	}
+	if got := detectRootFrontendApp(t.TempDir(), nil); len(got) != 0 {
+		t.Errorf("an empty root reported an app: %+v", got)
+	}
+}
+
 func TestDropTrackedIgnores(t *testing.T) {
 	const body = "# Go\nbin/\ngo.work\ngo.work.sum\n\n/package.json\n!gen/go.mod\n/package.json\n"
 	match := func(patterns []string) map[string][]string {

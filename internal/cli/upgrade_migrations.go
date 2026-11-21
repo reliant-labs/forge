@@ -501,8 +501,10 @@ func semverKey(v string) string {
 
 // runDetection runs the migration's detection script in the project root
 // in-process (internal/shellrun) so it needs no `sh` on PATH; grep and rg
-// resolve to portable built-ins, since stock Windows has neither. Returns true if the project exhibits the old shape (the
-// script exits 0).
+// resolve to portable built-ins, since stock Windows has neither, and
+// `forge-detect <name>` asks forge's own Go reading of a shape
+// (migrationDetectionCommands). Returns true if the project exhibits the
+// old shape (the script exits 0).
 //
 // An empty script reports false, not true: "this migration named no way
 // to tell whether it applies" is not evidence that it does.
@@ -516,7 +518,7 @@ func runDetection(projectRoot, script string) bool {
 	}
 	return shellrun.Run(context.Background(), script, shellrun.Options{
 		Dir:      projectRoot,
-		Commands: shellrun.PortableCommands(),
+		Commands: migrationDetectionCommands(),
 	}) == nil
 }
 
@@ -660,7 +662,11 @@ func writePendingMigrationsHuman(out io.Writer, pending []pendingMigration, ship
 				Name(), buildinfo.Version())
 			return err
 		}
-		_, err := fmt.Fprintln(out, "Project is up to date.")
+		// Not "Project is up to date.": a pin older than this forge is
+		// not up to date, and this list only says no playbook applies.
+		_, err := fmt.Fprintf(out,
+			"No migration playbooks pending for this project (%s %s ships %d; none applies at forge_version %s).\n",
+			Name(), buildinfo.Version(), shipped, describeVersion(projectBaselineVersion()))
 		return err
 	}
 	cliName := Name()

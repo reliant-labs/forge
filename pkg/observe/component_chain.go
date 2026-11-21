@@ -9,13 +9,18 @@
 // without the method's body knowing anything about it.
 //
 // A forge-generated decorator (middleware_gen.go) routes each interface
-// method through the chain with a single line:
+// method through the chain with a single line, passing the method's generated
+// *Op and its forensics capture value (component_op.go):
 //
-//	func (o *forgeMiddlewareService) Do(ctx context.Context, in DoInput) (DoResult, error) {
-//	    return o.chain.Around(ctx, "checkout.Do", func(ctx context.Context) (DoResult, error) {
-//	        return o.inner.Do(ctx, in)
+//	func (o *forgeMiddlewareService) Do(ctx context.Context, orderID string) (DoResult, error) {
+//	    return observe.AroundOp(o.chain, ctx, forgeMiddlewareServiceOps.Do, forgeMiddlewareServiceDoArgs{orderID}, func(ctx context.Context) (DoResult, error) {
+//	        return o.inner.Do(ctx, orderID)
 //	    })
 //	}
+//
+// Hand-written callers use Run / Around with a bare operation name, which
+// instrument the call the same way minus the code location, slow marking and
+// forensics.
 //
 // Every contract package whose constructor returns its Service interface gets
 // the decorator unless it opts out with `// forge:no-observe`. Its chain is
@@ -185,22 +190,76 @@ func (m recoverMiddleware) WrapComponent(ctx context.Context, method string, nex
 // span's context into the inner call, and records the returned error onto the
 // span. nil tracer disables tracing (pass-through) — same degradation as
 // TraceCall.
+//
+// A call that carries a generated Op (RunOp / AroundOp) also gets its code
+// location on the span, slow marking and forensics, with the defaults that
+// TraceMiddlewareWith documents.
 func TraceMiddleware(tracer trace.Tracer) ComponentMiddleware {
-	return traceMiddleware{tracer: tracer}
+	return TraceMiddlewareWith(tracer)
 }
 
-type traceMiddleware struct{ tracer trace.Tracer }
+// TraceMiddlewareWith is TraceMiddleware with its slow-marking and forensics
+// policy tuned by opts (WithSlowFactor, WithSlowFloor, WithSlowWarmup,
+// WithForensics, WithForensicsRate). For a call that carries a generated Op
+// the span additionally gets:
+//
+//   - forge.op, code.function.name and code.file.path, precomputed by NewOp;
+//   - forge.slow=true when the call took more than DefaultSlowFactor (5) times
+//     its op's rolling normal and more than DefaultSlowFloor (100ms), once the
+//     op has DefaultSlowWarmup (32) samples;
+//   - on a server-fault error or a slow call, one forge.forensics event with
+//     forensics.reason (error | slow) and the call's arguments as the
+//     generator classified them (forensics.arg.<name>), at most
+//     DefaultForensicsBurst (5) per op per process, refilled one per
+//     DefaultForensicsEvery (1m). A canceled call, an expected close and a
+//     user-class error (svcerr) record none: nobody debugs them from
+//     arguments.
+//
+// All three apply to a span that is being recorded; an unsampled call pays
+// for none of them.
+func TraceMiddlewareWith(tracer trace.Tracer, opts ...ComponentSpanOption) ComponentMiddleware {
+	return traceMiddleware{tracer: tracer, policy: newSpanPolicy(opts)}
+}
+
+type traceMiddleware struct {
+	tracer trace.Tracer
+	policy *spanPolicy
+}
 
 func (m traceMiddleware) WrapComponent(ctx context.Context, method string, next ComponentOp) error {
 	if m.tracer == nil {
 		return next(ctx)
 	}
 	ctx, span := m.tracer.Start(ctx, method)
-	if id, _ := ctx.Value(componentMethodIDKey{}).(string); id != "" {
-		span.SetAttributes(attribute.String("forge.method.id", id))
-	}
 	defer span.End()
+	f := frameOf(ctx)
+	if f == nil {
+		return m.finish(span, next(ctx))
+	}
+	cf := f.frame()
+	if cf.id != "" {
+		span.SetAttributes(attribute.String("forge.method.id", cf.id))
+	}
+	// An unrecorded span keeps nothing, so it pays for nothing: no timing,
+	// and the op's normal is learned from recorded calls alone (an unbiased
+	// sample of them under head sampling; every call under tail sampling).
+	if cf.op == nil || !span.IsRecording() {
+		return m.finish(span, next(ctx))
+	}
+	span.SetAttributes(cf.op.attrs...)
+	start := m.policy.now()
 	err := next(ctx)
+	slow := cf.op.stats.observe(m.policy.now().Sub(start), m.policy)
+	if slow {
+		span.SetAttributes(attribute.Bool(AttrForgeSlow, true))
+	}
+	if reason := forensicsReason(err, slow); reason != "" {
+		m.policy.recordForensics(span, cf.op, f, reason)
+	}
+	return m.finish(span, err)
+}
+
+func (m traceMiddleware) finish(span trace.Span, err error) error {
 	RecordSpanError(span, err)
 	return err
 }

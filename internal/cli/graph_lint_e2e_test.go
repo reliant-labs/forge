@@ -97,8 +97,12 @@ message PingResponse {}
 	}
 
 	// ── 3. The user listener over the daemon routes: audience ───────────
-	mustReplaceInFile(t, filepath.Join(projectDir, "internal", "app", "providers.go"),
-		"\tRoutes    *UserRoutes\n", "\tRoutes    serverkit.Routes\n")
+	providersPath := filepath.Join(projectDir, "internal", "app", "providers.go")
+	routesIface := "serverkit.Routes"
+	if strings.Contains(readFileE2E(t, providersPath), "d.Routes.RegisterV2(") {
+		routesIface = "serverkit.RoutesV2" // a connect-go v2 project, project new's default
+	}
+	mustReplaceInFile(t, providersPath, "\tRoutes    *UserRoutes\n", "\tRoutes    "+routesIface+"\n")
 	composePath := filepath.Join(projectDir, "internal", "app", "compose.go")
 	compose := readFileE2E(t, composePath)
 	routesKey := regexp.MustCompile(`Routes: +g\.UserRoutes\(\),`)

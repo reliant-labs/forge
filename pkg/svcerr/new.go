@@ -11,6 +11,8 @@ import "connectrpc.com/connect"
 //
 // detail must be application-chosen copy, never an arbitrary diagnostic's
 // Error() text. Attach private diagnostics separately with WithCause.
+//
+// connect-go v2 projects use [NewV2].
 func New(code connect.Code, detail string) error {
 	var sentinel error
 	switch code {

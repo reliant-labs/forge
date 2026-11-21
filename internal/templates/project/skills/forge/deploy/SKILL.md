@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Ship anything — static sites, SPAs, services, workers: declare each workload once, bind it to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. A frontend-only site: deploy/static-site.
+description: Ship anything with Reliant Forge — static sites, SPAs, services, workers: declare each workload once, bind it to a runtime per env (host, cluster, hosted), build, deploy, verify, roll forward. A frontend-only site: deploy/static-site.
 ---
 
 # Ship It
@@ -9,6 +9,8 @@ description: Ship anything — static sites, SPAs, services, workers: declare ea
 everything to it, and `forge env deploy prod` is the whole procedure. What it
 provides, what it refuses, and the gates (billing, unset secrets):
 `deploy/hosting`. A cluster you operate is the secondary path, below.
+
+<!-- @benefits glance app -->
 
 **No Reliant account yet?** `forge env deploy <env> --claimable` publishes
 anyway and prints a live URL plus a claim link for your user (see
@@ -32,6 +34,24 @@ env may mix runtimes, and a workload with no runtime is a render error.
 host; `staging` and `prod` are hosted on Reliant, and hosting elsewhere is a
 one-line rebind. Runtimes, binders, `forge env new --from`, what forge writes
 into every spec, the restricted profile, per-env config: load `deploy/model`.
+
+## Code forge has no kind for: the escape hatches
+
+Forge has no per-framework workload type, and does not need one. Anything that
+is not a forge service or frontend — a job runner, a desktop app, a CLI you
+publish, an image built by another tool — is declared with the same generic
+primitives every project uses:
+
+| What you have | Declare it with |
+|---|---|
+| a process of your Go binary that is not the API server (a queue consumer, a scheduler) | a `//forge:root <name> command=…` struct in `internal/app` (`architecture`), run by a workload whose `args` name that command |
+| a workload no built-in kind describes | `fw.Workload.kind` is a free string (`"service"`, `"worker"`, `"job"`, `"tool"`, or your own); the runtime binding decides how it runs |
+| a build forge cannot express | `forge.ShellBuild {cmd, cwd, env, inputs, built_images}` — any command, in any checkout; or `forge.DockerBuild` for any Dockerfile, its `context` a path or a pinned `forge.GitSource` (`deploy/build-contexts`, `deploy/polyrepo`) |
+| something built and shipped but never run (a CLI download, an installer, an image others pull) | `runtime = forge.BuildOnly {}`; one Go binary per OS/arch with `build_variants` (`binaries`) |
+
+Reach for a hatch before hand-rolling a script beside forge: what
+forge builds is recorded in the release and promoted by digest; a script
+beside it is invisible to both.
 
 ## The commands
 

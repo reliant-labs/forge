@@ -58,7 +58,7 @@ When to use: validating a single handler's request/response/error contract. This
 
 ## Pattern 2: Contract test (use `tdd.TableContract`)
 
-One-line: exercise an `internal/<pkg>/contract.go`-defined Service interface implementation. Each row's `Call` closure invokes one method and the helper handles equality / error / custom-check assertions.
+One-line: exercise an `internal/<pkg>` contract's Service interface implementation (a `contract.go` interface or one derived from a `//forge:contract` struct). Each row's `Call` closure invokes one method and the helper handles equality / error / custom-check assertions.
 
 ```go
 package cache_test
@@ -93,7 +93,7 @@ func TestContract(t *testing.T) {
 }
 ```
 
-When to use: testing a `contract.go`-defined Service interface implementation. Forge's `forge package new` and `forge generate` scaffold a starter `contract_test.go` once; user owns it after.
+When to use: testing a contract's Service interface implementation (`contract.go`-defined or derived from a `//forge:contract` struct). Forge's `forge package new` and `forge generate` scaffold a starter `contract_test.go` once; user owns it after.
 
 ## Pattern 3: Cobra runner test (validator extraction)
 
@@ -207,13 +207,13 @@ The `pkg/tdd` library exports:
 | Helper | Use for |
 |--------|---------|
 | `tdd.Case[Req, Resp]` + `tdd.TableRPC` | unit / integration / E2E tests of unary Connect RPCs |
-| `tdd.ContractCase` + `tdd.TableContract` | tests of `internal/<pkg>/contract.go` Service implementations |
+| `tdd.ContractCase` + `tdd.TableContract` | tests of `internal/<pkg>` contract Service implementations |
 | `tdd.E2EClient(t, srv, factory)` | wrap an httptest.Server in a typed Connect client (cleanup registered) |
 | `tdd.NewMock(opts...)` + `tdd.MockOption[T]` | terse construction of Forge `MockService` (Func-field) mocks |
 | `tdd.AssertConnectError(t, err, code)` | one-line Connect error code assertion |
 | `tdd.WithTimeout(d)` | deadlined `context.Context` for `Case.Ctx` |
 | `app.AuthedContext(t, opts...)` | claims-bearing `Case.Ctx` (generated re-export of `testkit.AuthedContext`) |
-| `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — opt in via `app.WithDB(app.NewMigratedTestDB(t))` when a test needs the real schema (migrations apply verbatim; a migration postgres rejects fails loudly) |
+| `app.NewMigratedTestDB(t)` / `testkit.NewMigratedPostgresDB(t, fs)` | real postgres with embedded `db/migrations` applied — `NewTest<X>`'s default database once the project has a migration; call it yourself and pass `app.WithDB(db)` when the test seeds rows on the same database (migrations apply verbatim; a migration postgres rejects fails loudly) |
 | `<pkg>.WithConfig(cfg)` | the config `NewTest<X>` hands the component, typed as its `Deps.Config`: the root `*config.Config` (default `config.Defaults()`) or its own block or per-process config `*config.<Block>` (default `config.Defaults<Block>()`), each the config Load yields with nothing set |
 | `tdd.SetupMockDB(t)` | real-postgres `*sql.DB` (pkg/pgtest; no driver import needed) |
 | `seedplan.SeedGraph(t, db, "<table>")` | populate a migrated DB: seeds the table + its FK ancestors as one connected spine, every value already satisfying the schema's CHECK/enum/length constraints (`testing/flow`) |

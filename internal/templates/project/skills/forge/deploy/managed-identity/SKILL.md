@@ -48,6 +48,10 @@ identity = forge.ManagedIdentity {share_with = "staging"}
 | `social` | `forge.IdentityGoogle` / `forge.IdentityGitHub` with your own OAuth client |
 | `email` | `forge.IdentityEmail {delivery, from_name, from_local, reply_to}`: how the instance's mail is addressed |
 
+## Several identities in one env
+
+`Bundle.identities = [...]`, keyed by `name`: load `deploy/managed-identity/several`.
+
 ## Sign-in: owners, signup, methods, social, mail
 
 ```python
@@ -69,7 +73,7 @@ IDENTITY = forge.ManagedIdentity {
 - **Owners** are created email-verified, granted `owner_role` and invited once while they have no credential. Removing one revokes nothing, so `owner_role` (default `owner`) must be a declared role with `members_from = "console"`.
 - **Leaving `methods`, `signup` and `social` at their defaults leaves the instance's login policy alone** and delivers no `login_policy`: the broker keeps its legacy behaviour (password, sign-up only in development or with `auth_self_signup`). Owners and `email` alone change neither.
 - **Mail is required** for `magic_link` and for `open`/`domain` signup: `smtp`, a hosted instance whose `email.delivery` is not `"none"` (platform delivery is the default; the sending domain is assigned, so `from_local` is only the local part), or a `forge.HostInfra {engine = "mailpit"}` in dev (`IdentityOnHost.mail` names it; empty = the env's only one).
-- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. Set it with `reliant forge secret set --env <env> GOOGLE_CLIENT_SECRET`; a rotation takes effect on the next reconcile pass. Use a separate dev OAuth client with the dev secret store.
+- **Social client secrets never reach a pod**: the shape records the secret's NAME, only the reconciler reads it, and a workload whose env reads that name is refused. A rotation takes effect on the next pass. Setup, per env: `deploy/managed-identity/social`.
 - **`passkey_rp_id`** (needs `passkey` in `methods`) pins the WebAuthn relying party. Default: the host of the app's sign-in origin (`localhost` in dev). Passkeys are bound to it forever.
 
 | | hosted | dev (`IdentityOnHost`) |
@@ -86,6 +90,7 @@ After deploying the environment, use the public control-plane management API (`c
 
 ```bash
 forge cloud identity status prod                  # state, issuer, apps, deliveries, Mail: none|smtp|platform|sandbox, social callback, owners pending
+forge cloud identity status prod --check-social   # per social provider: redirect_uri == the callback?
 forge cloud identity users prod --query person@example.com --page-size 20 --json
 forge cloud identity invite prod --email person@example.com --role member [--role operator] [--return-code]
 forge cloud identity set-roles prod --user person@example.com --role member   # --none removes every console role
@@ -124,7 +129,7 @@ A person's session is checked against their org role and their identity grants (
 
 ### Getting a credential to a person
 
-`invite` creates the account (or grants roles to an existing one, `created=false`). An account with no credential yet is issued a one-time **password-set code**, which the scaffolded `/auth/reset` page redeems (it sets the password and signs the person in). `reset` issues one for any account; their current password keeps working until it is redeemed. Codes are single use and expire within the hour: the lifetime is the identity provider's, per env, and no flag extends it, so a `--return-code` link is delivered right away, not left in a chat to be opened tomorrow. The command prints when the code lapses and the `reset --return-code` that issues a fresh one; reissuing is the remedy for `Code is expired (CODE-QvUQ4P)`.
+`invite` creates the account (or grants roles to an existing one, `created=false`). An account with no credential yet is issued a one-time **password-set code**, which the scaffolded `/auth/reset` page redeems (it sets the password and signs the person in). `reset` issues one for any account; their current password keeps working until it is redeemed. Codes are single use and expire within the hour unless the env declares otherwise: `ManagedIdentity.code_lifetime` (`"30m"`, `"24h"`, up to `"7d"`) sets how long that env's password-set codes live, and no per-invite flag changes it. The code works like a password, so lengthen it only where codes travel by hand (an env with no mail), and still deliver a `--return-code` link right away. The command prints when the code lapses and the `reset --return-code` that issues a fresh one; reissuing is the remedy for `Code is expired (CODE-QvUQ4P)`.
 
 **Without mail** (no `smtp`, and the control plane's platform delivery is not on for the env, or `email.delivery = "none"`), `GetIdentityStatus` reports `mail_delivery: IDENTITY_MAIL_DELIVERY_NONE` and `status` shows `Mail: none`; with platform delivery it shows `Mail: platform` (or `sandbox` for an unclaimed org, whose mail is captured, not sent). Then the control plane **refuses** `invite` (for an account that needs a code) and `reset` with FailedPrecondition naming `smtp`, rather than succeed and send nothing. An `identity:manage` caller passes `--return-code` (`return_code` on the rpc): the code comes back, with the env's reset link already filled in (`<app>/auth/reset?userID=…&code=…&orgID=…`, built from the application's `login_uri`), and you deliver it over a channel you control (your own mailer, a message, an admin screen). With mail, the code is emailed instead.
 

@@ -25,3 +25,22 @@ func Of(err error) int {
 	}
 	return 1
 }
+
+// Line is the one line a CLI prints on stderr when a command returns err:
+// "Error: <err>", or the message alone when err is a verdict rather than a
+// failure (an error with an `IsVerdict() bool` method that returns true).
+//
+// A verdict is the command having done its job and reached an answer the
+// exit code carries — `forge project upgrade` exiting 9 because what is left
+// needs a person. Prefixing that with "Error:" told an agent the run had
+// failed when, by the exit-code contract, it had not.
+func Line(err error) string {
+	if err == nil {
+		return ""
+	}
+	var v interface{ IsVerdict() bool }
+	if errors.As(err, &v) && v.IsVerdict() {
+		return err.Error()
+	}
+	return "Error: " + err.Error()
+}

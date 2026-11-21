@@ -16,7 +16,7 @@ The tiers map onto forge machinery, and which one you are in decides what is
 already available:
 
 1. **Unit** — the real subject plus the **generated contract mocks** for its
-   collaborators (`mock_gen.go`, one per interface in `contract.go` — never
+   collaborators (`mock_gen.go`, one per interface in the contract — never
    hand-roll a fake for something declared there).
 2. **Integration** — `testkit.NewPostgresDB(t)` gives a real ephemeral postgres
    with your own `db/migrations/*.up.sql` applied, no Docker required. The ORM
@@ -70,7 +70,10 @@ stays real at every tier.
     returns a request the schema accepts; variants 0 and 1 are distinct rows.
     The scaffold-once `handlers_crud_test.go` builds its rows from these, so a
     migration you edit later (a GENERATED column, a new CHECK) flows into the
-    test through `forge generate` instead of breaking it.
+    test through `forge generate` instead of breaking it. An entity the
+    service gains later gets its own scaffold-once
+    `handlers_crud_<entity>_test.go` (unless you deleted `handlers_crud_test.go`,
+    which opts the service out).
   A factory forge cannot derive a valid row for still compiles; calling it fails
   the test with postgres's reason, and `forge generate` prints the same warning.
 - **Older lifecycle tests embed literal fixture SQL.** `forge lint
@@ -79,7 +82,7 @@ stays real at every tier.
   yours; the durable fix is to replace the seed block and literal create
   requests with the factory calls (see `testing/patterns`).
 - **Mock at the typed client interface, not at HTTP.** Forge generates the
-  former for every interface in a `contract.go`; mocking HTTP instead forces
+  former for every interface in a contract; mocking HTTP instead forces
   each test to know your serialization shape.
 - **Live external dependencies** belong behind an explicit opt-in env var and a
   skip-with-reason, so `task test` stays hermetic in CI.
@@ -96,6 +99,9 @@ stays real at every tier.
   test that ran it (`forge/pkg/querycapture`; `querycapture.Read` merges a
   directory). Unset, nothing is installed. SQL run on a bare `*sql.DB` is not
   captured, and a query no test runs is never captured, so never analyzed.
+  `forge db analyze queries --capture /tmp/qc` then plans the shapes whose
+  callers changed and reports filters, joins and sorts no index serves
+  (`db/analyze`).
 
 <!-- @forge-only:start -->
 ## Library entry point: `pkg/tdd`
@@ -105,7 +111,7 @@ The canonical entry point for table-driven tests in a forge project is the `gith
 | Helper | Use |
 |--------|-----|
 | `tdd.Case[Req, Resp]` + `tdd.TableRPC` | unary Connect RPC tests (unit/integration/E2E) |
-| `tdd.ContractCase` + `tdd.TableContract` | `internal/<pkg>/contract.go` Service tests |
+| `tdd.ContractCase` + `tdd.TableContract` | tests of an `internal/<pkg>` contract's Service implementation (`contract.go` or `//forge:contract`) |
 | `tdd.E2EClient(t, srv, factory)` | `httptest.Server` → typed Connect client |
 | `tdd.NewMock(opts...)` | terse Forge MockService construction |
 | `tdd.AssertConnectError`, `tdd.WithTimeout`, `tdd.SetupMockDB` | standalone helpers |
@@ -115,9 +121,9 @@ See `testing/patterns` for copy-paste-ready templates.
 ## Test commands
 
 The suite is defined in the project's `Taskfile.yml`, not in the forge CLI —
-so these are the same commands the generated CI workflow runs. (There is no
-`forge test`; it was removed precisely because a second definition could
-disagree with this one.)
+so these are the same commands the generated CI workflow runs. (forge has no
+test command of its own: a second definition of the suite could disagree with
+this one.)
 
 ```bash
 task test:short -- ./internal/<pkg>/...    # inner loop: -short, cached, no race

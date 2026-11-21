@@ -104,6 +104,9 @@ func (c *Client) MintPasskeyRegistrationCode(ctx context.Context, userID string)
 	if userID == "" {
 		return PasskeyRegistrationCode{}, fmt.Errorf("a user id is required")
 	}
+	if err := c.requireVerified(ctx, userID); err != nil {
+		return PasskeyRegistrationCode{}, err
+	}
 	body, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/passkeys/registration_link", map[string]any{"returnCode": map[string]any{}})
 	if err != nil {
 		return PasskeyRegistrationCode{}, fmt.Errorf("mint a passkey registration code: %w", err)
@@ -136,6 +139,9 @@ func (c *Client) RegisterPasskey(ctx context.Context, userID, domain string, cod
 	if userID == "" || domain == "" {
 		return PasskeyRegistration{}, fmt.Errorf("a user id and a relying-party id are required")
 	}
+	if err := c.requireVerified(ctx, userID); err != nil {
+		return PasskeyRegistration{}, err
+	}
 	req := map[string]any{"domain": domain, "authenticator": "PASSKEY_AUTHENTICATOR_UNSPECIFIED"}
 	if code != nil {
 		req["code"] = map[string]any{"id": code.ID, "code": code.Code}
@@ -162,6 +168,9 @@ func (c *Client) RegisterPasskey(ctx context.Context, userID, domain string, cod
 func (c *Client) VerifyPasskeyRegistration(ctx context.Context, userID, passkeyID string, credential json.RawMessage, name string) error {
 	if strings.TrimSpace(userID) == "" || strings.TrimSpace(passkeyID) == "" || len(credential) == 0 {
 		return fmt.Errorf("a user id, a passkey id and a credential are required")
+	}
+	if err := c.requireVerified(ctx, userID); err != nil {
+		return err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {

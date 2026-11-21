@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -170,12 +171,25 @@ func TestCheckDeployMigrations(t *testing.T) {
 	if err := checkDeployMigrations(context.Background(), &bytes.Buffer{}, t.TempDir(), "prod", "v1.7.54", l.ledger(), false); err == nil {
 		t.Fatal("deploying v1.7.54 again was admitted, but prod's schema has passed its 024221")
 	}
+	withMigrations := t.TempDir()
+	if err := os.MkdirAll(config.MigrationsPathIn(withMigrations), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var out bytes.Buffer
-	if err := checkDeployMigrations(context.Background(), &out, t.TempDir(), "prod", "v1.7.40", l.ledger(), false); err != nil {
+	if err := checkDeployMigrations(context.Background(), &out, withMigrations, "prod", "v1.7.40", l.ledger(), false); err != nil {
 		t.Fatalf("a release with no manifest was refused: %v", err)
 	}
 	if !strings.Contains(out.String(), "records no migrations") {
 		t.Errorf("no note for a release with no manifest; got:\n%s", out.String())
+	}
+	// A project with no migrations (a static site) has none to record, so
+	// "cut before forge recorded them" would be untrue: no note.
+	out.Reset()
+	if err := checkDeployMigrations(context.Background(), &out, t.TempDir(), "prod", "v1.7.40", l.ledger(), false); err != nil {
+		t.Fatalf("a release with no manifest was refused: %v", err)
+	}
+	if strings.Contains(out.String(), "records no migrations") {
+		t.Errorf("a project with no migrations got the cut-before note:\n%s", out.String())
 	}
 }
 
@@ -372,6 +386,56 @@ func TestEnvKeepsHostedLedger(t *testing.T) {
 	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
 	if envKeepsHostedLedger(hosted) {
 		t.Errorf("%s=%s sends the ledger to this machine", ledgerSelectionEnv, ledgerSelectMachine)
+	}
+}
+
+// A build preflight whose ledger cannot be resolved (here: --offline-ledger
+// with no cached ledger, deterministic and offline) still judges the
+// unmerged-migration half from the render alone: a hosted env's uncommitted
+// migration is refused before the build, with the commit that fixes it,
+// rather than waiting for the cut after the build.
+func TestPreflightReleaseMigrations_LedgerUnresolvedStillRefusesUnmerged(t *testing.T) {
+	testkit.Slow(t, "execs git over a temp repository")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	migGit(t, dir, "init", "-q", "-b", "main")
+	mainK := filepath.Join(dir, "deploy", "kcl", "prod", "main.k")
+	if err := os.MkdirAll(filepath.Dir(mainK), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainK, []byte("# declares prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "project")
+	writeMigFile(t, dir, "20260101000000_counters.up.sql")
+
+	ctx := withOfflineLedger(context.Background())
+	hosted := &KCLEntities{ControlPlane: &ControlPlaneEntity{Endpoint: "https://cp.invalid"}}
+	if _, err := ledgerForRendered(ctx, dir, "prod", hosted); err == nil {
+		t.Fatal("precondition: the ledger resolved; this test needs the unresolved-ledger fallback")
+	}
+	opts := buildOptions{env: "prod", release: "v1"}
+
+	err := preflightReleaseMigrations(ctx, dir, hosted, opts)
+	var coded exitCodeError
+	if !errors.As(err, &coded) || coded.code != exitRefused || !strings.Contains(err.Error(), "20260101000000_counters.up.sql") {
+		t.Fatalf("err = %v; want a refusal naming the uncommitted migration", err)
+	}
+	if !strings.Contains(err.Error(), "git switch main && git add db/migrations && git commit") {
+		t.Errorf("the refusal does not name the commit that fixes it:\n%v", err)
+	}
+
+	// An env whose ledger is this machine's is not judged by this rule.
+	if err := preflightReleaseMigrations(ctx, dir, &KCLEntities{}, opts); err != nil {
+		t.Errorf("an env with no control plane: err = %v, want nil (the cut owns the ledger failure)", err)
+	}
+
+	migGit(t, dir, "add", "-A")
+	migGit(t, dir, "commit", "-q", "-m", "migration")
+	if err := preflightReleaseMigrations(ctx, dir, hosted, opts); err != nil {
+		t.Errorf("once the migration is on main: err = %v, want nil", err)
 	}
 }
 

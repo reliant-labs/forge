@@ -19,16 +19,18 @@ forge app	group	allow-version-skew:bool project-dir/C:string
 forge app delete	cmd	allow-version-skew:bool cancel:bool endpoint:string project-dir/C:string status:bool token:string yes:bool
 forge app stop	cmd	allow-version-skew:bool endpoint:string project-dir/C:string token:string yes:bool
 forge app teardown	cmd	allow-version-skew:bool endpoint:string keep-data:bool project-dir/C:string token:string yes:bool
-forge build	group	allow-version-skew:bool debug:bool docker:bool gate-json:string no-generate:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string push:bool rebuild:bool release:string tag:string target-arch:string target/t:string
+forge build	group	allow-version-skew:bool debug:bool docker:bool gate-json:string no-generate:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string rebuild:bool tag:string target-arch:string target/t:string
 forge build receipt	cmd	allow-version-skew:bool inputs:string output:stringArray project-dir/C:string
 forge ci	group	allow-version-skew:bool project-dir/C:string
 forge ci gate	cmd	allow-version-skew:bool base:string full:bool groups:bool jobs:int list:bool no-cache:bool only:stringSlice project-dir/C:string report:string skip:stringSlice
 forge ci migration-safety	cmd	allow-version-skew:bool project-dir/C:string
+forge ci retry-failed	cmd	allow-version-skew:bool base:string echo:bool head:string json:string no-build-vcs:bool parallel:int pr:int project-dir/C:string repo:string report:string run:string timeout:duration
 forge ci run	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string token:string
 forge ci summarize	cmd	allow-version-skew:bool project-dir/C:string
 forge ci test-budget	cmd	allow-version-skew:bool budget:duration from:string project-dir/C:string warn-only:bool
 forge ci validate-kcl	cmd	allow-version-skew:bool project-dir/C:string
 forge ci verify-generated	cmd	allow-version-skew:bool no-cache:bool project-dir/C:string
+forge ci verify-test-retry	cmd	allow-version-skew:bool base:string head:string json:string module:string pr:int project-dir/C:string repo:string report:string run:string tree:string
 forge ci verify-test-run	cmd	allow-version-skew:bool from:string gate-json:string max-skip-ratio:float64 min-tests:int project-dir/C:string warn-only:bool
 forge ci vuln-scan	cmd	all:bool allow-version-skew:bool go:bool npm:bool project-dir/C:string root-module:bool
 forge cloud	group	allow-version-skew:bool project-dir/C:string
@@ -86,7 +88,8 @@ forge component install	cmd	allow-version-skew:bool dir/d:string project-dir/C:s
 forge component list	cmd	allow-version-skew:bool category/c:string project-dir/C:string
 forge component search	cmd	allow-version-skew:bool project-dir/C:string
 forge db	group	allow-version-skew:bool project-dir/C:string
-forge db analyze	cmd	allow-version-skew:bool base:string dir:string dsn-env:string json:bool project-dir/C:string target:string
+forge db analyze	cmd	all:bool allow-version-skew:bool base:string capture:string dir:string dsn-env:string json:bool project-dir/C:string target:string
+forge db analyze queries	cmd	all:bool allow-version-skew:bool base:string capture:string dir:string dsn-env:string json:bool project-dir/C:string target:string
 forge db introspect	cmd	allow-version-skew:bool dsn:string format:string project-dir/C:string table:string
 forge db migrate	group	allow-version-skew:bool project-dir/C:string
 forge db migrate force	cmd	allow-version-skew:bool dir:string dsn:string project-dir/C:string
@@ -160,7 +163,7 @@ forge domain unbind	cmd	allow-version-skew:bool env:string project-dir/C:string 
 forge domain verify	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string token:string
 forge env	group	allow-version-skew:bool project-dir/C:string
 forge env build	cmd	allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool base-promotion:string bundle-envs:string config-check:string debug:bool docker:bool gate-json:string json:bool no-build:bool no-generate:bool no-run:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string push:bool rebuild:bool release:string run-id:string run-url:string snapshot-bootstrap:bool tag:string target-arch:string target/t:stringArray
-forge env config	cmd	allow-version-skew:bool json:bool project-dir/C:string strict:bool workload:string
+forge env config	cmd	allow-version-skew:bool json:bool project-dir/C:string show-secrets:bool strict:bool workload:string
 forge env delete	cmd	allow-version-skew:bool endpoint:string id:string keep-data:bool project-dir/C:string token:string yes:bool
 forge env deploy	cmd	acknowledge-destructive:stringSlice actor:string allow-passed-migrations:bool allow-unmerged-migrations:bool allow-version-skew:bool approve:string claimable:bool dry-run:bool expect-current:string expect-unbound:bool explain:bool fail-fast:bool floor:string from-promotion:string from:string frontends-only:bool gate:stringArray json:bool live-diff:bool namespace:string no-digest:bool no-run:bool no-wait:bool note:string offline-ledger:bool option/D:stringArray org:string override-health-gate:string plan-only:bool plan:bool project-dir/C:string prune:bool rerecord-bundle:bool rollout-fail-fast:bool rollout-order:stringArray rollout-timeout:duration rollout:string run-id:string run-url:string skip-frontend:bool skip-hub-check:bool skip-preflight:bool supersede:bool tag:string target-arch:string target:stringArray timeout:duration to:string wait:bool yes:bool
 forge env devstack	group	project-dir/C:string
@@ -197,7 +200,7 @@ forge env releases backfill-migrations	cmd	allow-version-skew:bool dry-run:bool 
 forge env releases interrupted	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge env releases list	cmd	allow-version-skew:bool fields:string json:bool limit:int project-dir/C:string since:string
 forge env releases show	cmd	allow-version-skew:bool fields:string json:bool limit:int project-dir/C:string
-forge env render	cmd	allow-version-skew:bool cluster:string count:bool fail-on-write:bool kind:stringSlice list:bool name:string namespace:string no-charts:bool no-digest:bool no-write-check:bool option/D:stringArray project-dir/C:string tag:string target:stringArray
+forge env render	cmd	allow-version-skew:bool cluster:string count:bool fail-on-write:bool json:bool kind:stringSlice list:bool name:string namespace:string no-charts:bool no-digest:bool no-write-check:bool option/D:stringArray project-dir/C:string tag:string target:stringArray
 forge env retained	group	allow-version-skew:bool project-dir/C:string
 forge env retained list	cmd	all:bool allow-version-skew:bool endpoint:string project-dir/C:string token:string
 forge env retained purge	cmd	all:bool allow-version-skew:bool endpoint:string project-dir/C:string token:string yes:bool
@@ -226,17 +229,17 @@ forge fix	group	allow-version-skew:bool project-dir/C:string
 forge fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
-forge fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge fix derive-contract	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
-forge fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge frontend	group	allow-version-skew:bool project-dir/C:string
 forge frontend sourcemaps	group	allow-version-skew:bool project-dir/C:string
 forge frontend sourcemaps push	cmd	allow-version-skew:bool base-path:string build-id:string dry-run:bool env:string frontend:string org:string project-dir/C:string project:string
 forge gate	group	allow-version-skew:bool project-dir/C:string
 forge gate list	cmd	allow-version-skew:bool json:bool project-dir/C:string promotion:string
 forge gate record	cmd	allow-version-skew:bool from:string json:bool name:string no-run:bool project-dir/C:string promotion:string release:string run-id:string run-url:string status:string summary:string url:string
-forge generate	cmd	allow-version-skew:bool check:bool dry-run:bool explain-drift:bool explain:bool force-cleanup:bool force/f:bool heal:bool help-dev:bool no-cache:bool no-revert:bool plan:bool project-dir/C:string skip-config-check:bool skip-pre-checks:bool skip-validate:bool steps:string strict:bool templates-only:bool timings:bool verbose/v:bool watch/w:bool
+forge generate	cmd	allow-version-skew:bool check:bool dry-run:bool explain-drift:bool explain:bool force-cleanup:bool force/f:bool heal:bool help-dev:bool keep-on-build-failure:bool no-cache:bool no-revert:bool plan:bool project-dir/C:string skip-config-check:bool skip-pre-checks:bool skip-validate:bool steps:string strict:bool templates-only:bool timings:bool verbose/v:bool watch/w:bool
 forge kcl	group	allow-version-skew:bool project-dir/C:string
 forge kcl eval	cmd	allow-version-skew:bool format:string materialize:bool option/D:stringArray process-rooted:bool project-dir/C:string render-active:bool render-context:string render-env:string select/S:stringArray
 forge kcl imports	cmd	allow-version-skew:bool json:bool project-dir/C:string refresh:bool
@@ -245,15 +248,14 @@ forge ledger export	cmd	allow-version-skew:bool dir:string env:string project-di
 forge ledger import	cmd	allow-version-skew:bool apply:bool from-file-ledger:string from-git:bool project-dir/C:string rev:string
 forge ledger show	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge ledger where	cmd	allow-version-skew:bool json:bool project-dir/C:string
-forge lint	cmd	allow-skip:stringArray allow-version-skew:bool banners:bool check-workarounds:bool check:bool closed-sets:bool column-markers:bool computed-fields:bool config-deps:bool config-reach:bool contract:bool conventions:bool create-nullability:bool crud-fixtures:bool db-grants:bool exported-vars:bool fix:bool fixture-drift:bool frontend-stores:bool gate-json:string generated-drift:bool go-markers:bool graph:bool guarded-fields:bool help-dev:bool json:bool migration-safety:bool no-fix:bool optional-deps-guard:bool project-dir/C:string proto-markers:bool proto-options:bool quiet/q:bool read-only-fields:bool scaffolds:bool scope:stringSlice secrets:bool show-suppressed:bool skip-frontends:bool slow-tests:bool static-export:bool strict:bool suggest-buf-excepts:bool suggest-excludes:bool test-waits:bool tests:bool time-bucketing:bool tracing:bool vendored-protos:bool
+forge lint	cmd	allow-skip:stringArray allow-version-skew:bool banners:bool check-workarounds:bool check:bool closed-sets:bool column-markers:bool computed-fields:bool config-deps:bool config-reach:bool contract:bool conventions:bool create-nullability:bool db-grants:bool exported-vars:bool fix:bool fixture-drift:bool frontend-stores:bool gate-json:string generated-drift:bool go-markers:bool graph:bool guarded-fields:bool help-dev:bool install:bool json:bool migration-safety:bool no-fix:bool optional-deps-guard:bool project-dir/C:string proto-format:bool proto-markers:bool proto-options:bool quiet/q:bool read-only-fields:bool scaffolds:bool scope:stringSlice secrets:bool show-suppressed:bool skip-frontends:bool slow-tests:bool static-export:bool strict:bool suggest-buf-excepts:bool suggest-excludes:bool telemetry:bool test-waits:bool tests:bool time-bucketing:bool tracing:bool vendored-protos:bool
 forge lint fix	group	allow-version-skew:bool project-dir/C:string
 forge lint fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge lint fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge lint fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
-forge lint fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge lint fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
-forge lint fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge lint fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge login	cmd	allow-version-skew:bool endpoint:string no-verify:bool project-dir/C:string token:string
 forge logout	cmd	allow-version-skew:bool endpoint:string project-dir/C:string
 forge machine	group	project-dir/C:string
@@ -270,15 +272,16 @@ forge machine storage install	cmd	policy:string project-dir/C:string
 forge machine storage policy	cmd	policy:string project-dir/C:string
 forge machine storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice
 forge machine storage status	cmd	policy:string project-dir/C:string
-forge machine storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string reliant-managed:bool repo:string
+forge machine storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string repo:string
 forge machine tools	group	allow-version-skew:bool project-dir/C:string
 forge machine tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
-forge machine tools pins	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge machine tools pins	cmd	allow-version-skew:bool archives:bool json:bool project-dir/C:string
 forge mcp	cmd	project-dir/C:string
 forge obs	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs alerts	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs alerts check	cmd	allow-version-skew:bool control-plane:string env:string json:bool max-rows:int project-dir/C:string project:string rule:string sql:bool timeout:duration
 forge obs alerts run	cmd	alertmanager:string allow-version-skew:bool control-plane:string env:string listen:string max-rows:int project-dir/C:string project:string timeout:duration
+forge obs blast-radius	cmd	all-instances:bool allow-version-skew:bool backend:string base:string control-plane:string explain:bool fields:string filter:stringArray from:string head:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs changes	cmd	allow-version-skew:bool backend:string control-plane:string fields:string from:string json:bool limit:int project-dir/C:string project:string since:duration to:string
 forge obs check	cmd	allow-inconclusive:bool allow-version-skew:bool backend:string control-plane:string early-pass:duration explain:bool fail-on:string fields:string gate-json:string json:bool limit:int project-dir/C:string project:string promotion:string release:string since:string threshold:stringArray timeout:duration wait:bool window:duration
 forge obs dashboards	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
@@ -301,6 +304,7 @@ forge obs metrics describe	cmd	all-instances:bool allow-version-skew:bool backen
 forge obs metrics exemplars	cmd	all-instances:bool allow-version-skew:bool around:duration at:string backend:string control-plane:string explain:bool fields:string filter:stringArray from:string group:stringArray instance:string json:bool limit:int min-value:float64 print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string where:stringArray
 forge obs metrics list	cmd	all-instances:bool allow-version-skew:bool backend:string contains:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs metrics query	cmd	agg:string all-instances:bool allow-version-skew:bool backend:string compare:string control-plane:string explain:bool fields:string filter:stringArray formula:string from:string group-by:stringArray instance:string json:bool kind:string limit:int panel-out:string print-sql:bool project-dir/C:string project:string quantile:float64 query:stringArray service:stringArray since:duration step:duration to:string top:int user:string where:stringArray
+forge obs ops	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool kind:stringSlice limit:int name:stringSlice print-sql:bool project-dir/C:string project:string service:stringArray since:duration sort:string to:string top:int user:string
 forge obs profile	cmd	allow-version-skew:bool control-plane:string env:string format:string from:string list:bool output/o:string project-dir/C:string project:string service:string since:duration span:string sql:bool to:string trace:string type:string
 forge obs query	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int panel:string param:stringArray print-sql:bool project-dir/C:string project:string service:stringArray since:duration sql-file:string sql:string step:duration to:string user:string
 forge obs receivers	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
@@ -311,6 +315,7 @@ forge obs receivers test	cmd	allow-version-skew:bool control-plane:string projec
 forge obs session	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int page-token:string print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs sessions	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string has-error:bool has-replay:bool instance-user:string instance:string json:bool limit:int page-token:string path:string print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs status	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string fields:string from:string instance:string json:bool limit:int project-dir/C:string project:string service:stringArray since:duration to:string user:string
+forge obs telemetry	cmd	all-instances:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge obs tokens	group	allow-version-skew:bool control-plane:string project-dir/C:string project:string
 forge obs tokens create	cmd	allow-version-skew:bool control-plane:string json:bool name:string project-dir/C:string project:string ttl:duration
 forge obs tokens list	cmd	all:bool allow-version-skew:bool control-plane:string json:bool project-dir/C:string project:string
@@ -322,6 +327,9 @@ forge obs users	cmd	all-instances:bool allow-version-skew:bool backend:string co
 forge obs workloads	cmd	all-instances:bool all:bool allow-version-skew:bool backend:string control-plane:string explain:bool fields:string filter:stringArray from:string instance:string jobs:string json:bool limit:int print-sql:bool project-dir/C:string project:string service:stringArray since:duration to:string user:string
 forge package	group	allow-version-skew:bool project-dir/C:string
 forge package new	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
+forge pgo	group	allow-version-skew:bool project-dir/C:string
+forge pgo pull	cmd	allow-version-skew:bool binary:stringArray dry-run:bool env:string from-env:string json:bool project-dir/C:string since:duration
+forge pgo status	cmd	allow-version-skew:bool env:string json:bool project-dir/C:string
 forge project	group	allow-version-skew:bool project-dir/C:string
 forge project annotations	cmd	allow-version-skew:bool json:bool kind:string project-dir/C:string
 forge project audit	cmd	allow-version-skew:bool json:bool project-dir/C:string
@@ -381,7 +389,7 @@ forge scaffold	group	allow-version-skew:bool dry-run:bool project-dir/C:string s
 forge scaffold adapter	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
 forge scaffold binary	cmd	allow-version-skew:bool project-dir/C:string
 forge scaffold crd	cmd	allow-version-skew:bool group:string operator:string project-dir/C:string shape:string
-forge scaffold entity	cmd	allow-version-skew:bool dry-run:bool from-proto:string from-schema:string no-timestamps:bool project-dir/C:string soft-delete:bool table:string
+forge scaffold entity	cmd	allow-version-skew:bool dry-run:bool from-proto:string no-timestamps:bool project-dir/C:string soft-delete:bool table:string
 forge scaffold frontend	cmd	allow-version-skew:bool auth-mode:string base-path:string kind:string no-generate:bool output:string port:int project-dir/C:string routes:stringSlice
 forge scaffold handler-file	cmd	allow-version-skew:bool project-dir/C:string
 forge scaffold library	cmd	allow-version-skew:bool force:bool no-exclude:bool path:string project-dir/C:string
@@ -421,14 +429,17 @@ forge storage install	cmd	policy:string project-dir/C:string
 forge storage policy	cmd	policy:string project-dir/C:string
 forge storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice
 forge storage status	cmd	policy:string project-dir/C:string
-forge storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string reliant-managed:bool repo:string
+forge storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string repo:string
 forge telemetry	group	project-dir/C:string
 forge telemetry off	cmd	project-dir/C:string
 forge telemetry on	cmd	project-dir/C:string
 forge telemetry status	cmd	project-dir/C:string
+forge test	group	allow-version-skew:bool project-dir/C:string
+forge test begin	cmd	base:string project-dir/C:string
+forge test capture	cmd	format:string lane:string project-dir/C:string render:string results:string run:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
-forge tools pins	cmd	allow-version-skew:bool json:bool project-dir/C:string
+forge tools pins	cmd	allow-version-skew:bool archives:bool json:bool project-dir/C:string
 forge ui	group	project-dir/C:string
 forge ui component	group	allow-version-skew:bool project-dir/C:string
 forge ui component install	cmd	allow-version-skew:bool dir/d:string project-dir/C:string

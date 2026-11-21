@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
@@ -96,7 +97,7 @@ func appendNamedBuildContexts(dockerArgs []string, contexts map[string]config.Bu
 			value = c.SourceDir
 		}
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
-		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
+		fmt.Printf("[build] docker build-context %s\n", withholdFlagValue("--build-context", name+"="+value))
 	}
 	return dockerArgs
 }
@@ -125,6 +126,9 @@ type buildOptions struct {
 	// pull from. Unlike push, having none is not a failure. Resolved by
 	// resolvePushPlan like push; never set by a flag.
 	pushIfDeclared bool
+	// noSBOM is --no-sbom: cut the release without generating SBOMs
+	// (build_sbom.go). Each artifact records why it has none.
+	noSBOM bool
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
@@ -302,17 +306,9 @@ mirror config inside k3d resolves that reference at pull time).`,
 				}
 				opts.env = args[0]
 			}
-			// COMPILE-ONLY. Publishing moved to `forge env build <env>`,
-			// where the environment is the subject rather than an optional
-			// modifier. Refused here before any work, naming the
-			// replacement command. See refuseBuildPublishFlag in
-			// env_build.go.
-			if cmd.Flags().Changed("push") {
-				return refuseBuildPublishFlag("push", opts.env)
-			}
-			if cmd.Flags().Changed("release") {
-				return refuseBuildPublishFlag("release", opts.env)
-			}
+			// COMPILE-ONLY. Publishing is `forge env build <env>`, where
+			// the environment is the subject rather than an optional
+			// modifier.
 			if _, err := requireFeature(config.FeatureBuild); err != nil {
 				return err
 			}
@@ -325,30 +321,19 @@ mirror config inside k3d resolves that reference at pull time).`,
 
 	cmd.Flags().StringVarP(&opts.outputDir, "output", "o", "bin", "Output directory for binaries")
 	cmd.Flags().StringVarP(&opts.buildTarget, "target", "t", "all", "Build target (all | external | a specific service/frontend name). `external` builds only the KCL services declaring build_cmd; requires the environment argument.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. Requires the environment argument. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). Requires the environment argument. List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
 	cmd.Flags().BoolVar(&opts.rebuild, "rebuild", false, rebuildFlagHelp)
-	// --push and --release are REGISTERED but REFUSED here, on purpose.
-	// They moved to `forge env build <env>`, and the two surfaces fail very
-	// differently: an unregistered flag gets cobra's bare "unknown flag:
-	// --push", which tells a user with a working command in their shell
-	// history nothing about where it went. Registered, the RunE answers with
-	// the exact replacement. Hidden so they do not advertise themselves in
-	// --help as things this command can do.
-	cmd.Flags().BoolVar(&opts.push, "push", false, "Moved to 'forge env build <env> --push' — a push destination is declared per workload in an env's render, so publishing is an environment act")
-	_ = cmd.Flags().MarkHidden("push")
 	cmd.Flags().StringVar(&opts.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: the env's declared platform, then forge.yaml deploy.target_arch, then the host arch)")
 	cmd.Flags().StringVar(&opts.tag, "tag", "", "Override the image tag of every image this build writes (default: the tag a workload's image pins, else the env's image_tag, else git describe --tags --always --dirty). Refused when it differs from the tag a selected workload's image pins — the deploy pulls the pin. Recorded in .forge/state so forge env deploy uses the same value.")
 	// No backticks in a usage string: cobra reads the first backticked span
 	// as the flag's argument-name placeholder, so a quoted command rendered
 	// as `--no-generate forge build` in --help.
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default forge build runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
-	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
+	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release cut's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Moved to 'forge env build <env> --release <version>' — a release's artifact set is discovered from the env's render, so cutting one is an environment act")
-	_ = cmd.Flags().MarkHidden("release")
 	cmd.AddCommand(newBuildReceiptCmd())
 
 	return cmd
@@ -509,8 +494,14 @@ type buildResult struct {
 	// goTargets are the exact recipes compiled into this invocation's project image.
 	goTargets []goBuildTarget
 	// upToDate marks a ShellBuild whose declared inputs were unchanged and
-	// whose last pushed image still stands, so its command did not run.
+	// whose last pushed image still stands, so its command did not run — or
+	// a DockerBuild whose --release build reused an earlier release's image.
 	upToDate bool
+	// releaseInputsDigest and carriedFrom are a DockerBuild's release
+	// evidence (build_docker_release_reuse.go): its declared inputs as a
+	// release compares them, and the release whose image it reused ("" when
+	// it built). persistImageBuildStates records them for the cut.
+	releaseInputsDigest, carriedFrom string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1062,6 +1053,7 @@ func printBuildHeader(projectName string, opts buildOptions, resolvedTag, tagSou
 	}
 	push.printHeader()
 	summarizeKCLBuildPlan(entities)
+	printPGOPlan(os.Stdout, projectDirForKCL(), entities, time.Now())
 	fmt.Println()
 }
 
@@ -1250,6 +1242,7 @@ func rerenderWithBuildFacts(ctx context.Context, cfg *config.ProjectConfig, opts
 		return nil, fmt.Errorf("re-render env %q with the build's resolved tag/arch (%s): %w",
 			opts.env, strings.Join(extra, " "), err)
 	}
+	renderReleaseTemplates(ctx, opts, extra, ents)
 	return ents, nil
 }
 
@@ -1363,11 +1356,8 @@ func bindBuildRenderOptions(opts buildOptions) error {
 	if opts.env == "" {
 		return fmt.Errorf("-D requires the environment argument (e.g. `forge build prod -D name=value`): options are declared per-env in deploy/kcl/<env>/")
 	}
-	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	renderDArgs, err := resolveRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions)
 	if err != nil {
-		return err
-	}
-	if err := validateRenderOptions(projectDirForKCL(), opts.env, opts.renderOptions); err != nil {
 		return err
 	}
 	setRenderOptions(renderDArgs)
@@ -1552,8 +1542,12 @@ func resolveBuildTargetSet(cfg *config.ProjectConfig, entities *KCLEntities, opt
 	// from `frontends` (the input to buildFrontend → `npm run build`)
 	// while keeping their entry in cfg.Frontends so other commands
 	// (forge generate, forge env up's frontend phase) see them unchanged.
+	//
+	// The same filter drops a frontend the env does not declare at all,
+	// unless --target named it: see filterFrontendsForBuild.
 	if entities != nil {
-		frontends = filterFrontendsForBuild(frontends, entities)
+		named := opts.buildTarget != "" && opts.buildTarget != "all" && opts.buildTarget != "external"
+		frontends = filterFrontendsForBuild(frontends, entities, opts.env, named)
 	}
 
 	// KCL-driven docker skip: with --env set, no frontend builds an image
@@ -1721,6 +1715,10 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			Digest:    r.digest,
 			Platforms: r.platforms,
 			Source:    r.source,
+			// A DockerBuild's declared inputs, for the next release to
+			// compare, and the release whose image it reused.
+			ReleaseInputsDigest: r.releaseInputsDigest,
+			CarriedFrom:         r.carriedFrom,
 		}
 		if werr := buildtarget.WriteState(projDir, opts.env, state); werr != nil {
 			fmt.Printf("[build]   Warning: failed to write build-state file for %s: %v\n", r.image, werr)
@@ -1746,6 +1744,11 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities, pushed []string) error {
 	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
+	}
+	if opts.release == "" && !opts.plan {
+		// A --release build refuses a declared output that matched nothing
+		// (at the cut); a plain build says so and carries on.
+		warnMissingDeclaredOutputs(ctx, os.Stdout, projectDirForKCL(), entities)
 	}
 	if opts.release != "" {
 		// Before the cut: a dashboard that does not validate must not leave a
@@ -1827,7 +1830,8 @@ func buildBundlePins(projectDir, env string) release.BundlePins {
 //   - OCI images, from the build-state digests (harvestReleaseArtifacts);
 //   - npm packages, from what `npm pack` would publish;
 //   - Go modules, from the repo's own go.mod/go.sum pair;
-//   - files, from the build-only binaries this build emitted.
+//   - files, from the build-only binaries this build emitted and the
+//     outputs each build declares (harvestDeclaredOutputs).
 //
 // Images are merged FIRST and never overwritten (see mergeReleaseArtifacts), so
 // adding the other kinds cannot perturb the digests an env deploys.
@@ -1863,6 +1867,10 @@ type releaseCutOutcome struct {
 	Ledger string
 	// Images, Packages and Files count the artifacts by kind.
 	Images, Packages, Files int
+	// Vulns is the advisory scan of the cut's SBOMs (vuln_gate.go); nil
+	// when nothing was judged (no SBOMs by policy, vuln_gate off, a
+	// claimable deploy).
+	Vulns *cutVulnVerdict
 }
 
 // printReleaseCut is the text rendering of a cut.
@@ -1877,6 +1885,7 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
 		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
 	}
+	printCutVulnVerdict(out, cut.Vulns)
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
@@ -1887,9 +1896,25 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 // were built and pushed by an earlier step.
 func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, outputDir string, entities *KCLEntities, opts buildOptions) (releaseCutOutcome, error) {
 	artifacts := harvestReleaseArtifacts(projectDir, env)
+	// What the build state recorded is what this pipeline built: the SBOM
+	// step reads those images from the docker daemon before the registry.
+	built := make(map[string]bool, len(artifacts))
+	for name := range artifacts {
+		built[name] = true
+	}
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
+	// The files each build's `outputs` declare. A declared output that
+	// matched nothing refuses the cut: the author said the release ships it.
+	declared, missing, err := harvestDeclaredOutputs(ctx, projectDir, entities)
+	if err != nil {
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
+	}
+	if len(missing) > 0 {
+		return releaseCutOutcome{}, errMissingDeclaredOutputs(version, missing)
+	}
+	files += mergeReleaseArtifacts(artifacts, declared)
 	// A hosted env's backends name images the build state may not hold (CI
 	// pushed them). Record each declared image so the release covers what
 	// the hosted deploy ships — keyed by the address under the platform's
@@ -1981,13 +2006,25 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// The source history this release adds, while the checkout is at its
 	// commit — see release_commits.go.
 	rel.Commits = captureReleaseCommits(ctx, projectDir, rel, ledger.Releases, os.Stderr)
+	// LAST before the record, after every check that can refuse the cut:
+	// an SBOM costs seconds per artifact, and a refused cut should not pay
+	// for them. Never fails the cut (build_sbom.go).
+	generateReleaseSBOMs(ctx, sbomCut{
+		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
+		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
+	}, rel.Artifacts, os.Stderr)
+	// The advisory verdict on those SBOMs, printed under the release line.
+	// Never fails the cut (vuln_gate.go).
+	vulns := scanReleaseAtCut(ctx, cutVulnInput{
+		ProjectDir: projectDir, Env: env, Entities: entities, Release: &rel, Hosted: ledger.Hosted, Log: os.Stderr,
+	})
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
 	}
 	return releaseCutOutcome{
 		Release: rel, Created: created, Ledger: ledger.Releases.Location(),
-		Images: images, Packages: packages, Files: files,
+		Images: images, Packages: packages, Files: files, Vulns: vulns,
 	}, nil
 }
 
@@ -2102,7 +2139,7 @@ func buildParallel(ctx context.Context, plan buildPlan) []buildResult {
 			go func() {
 				defer wg.Done()
 				r := timedBuild(ctx, func() buildResult {
-					return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+					return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, projectImagePGOOff(goTargets), guard)
 				})
 				r.goTargets = goTargets
 				mu.Lock()
@@ -2172,7 +2209,7 @@ func buildSequential(ctx context.Context, plan buildPlan) []buildResult {
 			projectImageArch := resolveBuildArchForImage(cfgArchForDocker, opts.targetArch)
 			guard := projectImageGuard{outputDir: opts.outputDir, binaryNames: projectImageBinaryNames(goTargets), envLabel: opts.env, configCheck: plan.configCheck}
 			r := timedBuild(ctx, func() buildResult {
-				return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, guard)
+				return dockerBuildProject(ctx, cfg, opts.imageTags(cfg.Name, plan.projectTag), projectImageArch, resolvedVersion, projectImagePGOOff(goTargets), guard)
 			})
 			r.goTargets = goTargets
 			results = append(results, r)
@@ -2229,6 +2266,16 @@ type goBuildTarget struct {
 	// kept, no -trimpath) whatever the run's --debug: a host workload run
 	// under the delve runner needs DWARF and source paths dlv can resolve.
 	debug bool
+	// pgoOff builds with -pgo=off: the env declares the binary's PGO
+	// disabled (kcl/schema.k PGO). A -pgo of the user's own wins.
+	pgoOff bool
+	// cover builds with -cover -covermode=atomic: the env instruments the
+	// binary (kcl/schema.k Tests, WorkloadEntity.CoverBuild). coverPackages
+	// are the env's explicit -coverpkg patterns (empty is "main"), and
+	// coverFlags the resolved flags buildGoTarget fills in before the build.
+	cover         bool
+	coverPackages []string
+	coverFlags    []string
 }
 
 // resolveGoTargets returns the KCL-driven go-build target set for this
@@ -2275,6 +2322,13 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	if len(t.tags) > 0 {
 		args = append(args, "-tags", strings.Join(t.tags, ","))
 	}
+	// PGO disabled for this binary: without the flag, Go's default
+	// -pgo=auto reads a committed cmd/<bin>/default.pgo.
+	if t.pgoOff && !userSetsPGO(t.flags, t.env) {
+		args = append(args, pgoOffFlag)
+	}
+	// A cover build (kcl/schema.k Tests), resolved by buildGoTarget.
+	args = append(args, t.coverFlags...)
 	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
 	args = append(args, t.flags...)
 	args = append(args, t.cmd)
@@ -2291,7 +2345,9 @@ func runsUnderDelve(w WorkloadEntity) bool {
 // goBuildTargetsFromKCL resolves the unique set of go-build targets from
 // the env's workloads — of every runtime, since a host go-run still needs
 // its module to build. Only a declared GoBuild contributes (docker / shell
-// dispatch elsewhere); a workload with no build is not built by forge. Dedup is by (cmd, outputName) so the shared
+// dispatch elsewhere); a workload with no build is not built by forge, and a
+// build-only workload with build_variants builds only those variants
+// (buildsOnlyVariants). Dedup is by (cmd, outputName) so the shared
 // project binary — which many server/worker/cron services map onto —
 // builds exactly once. The first service to claim a (cmd, output) wins
 // its flags; a divergent second declaration for the same target is a
@@ -2301,10 +2357,11 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		return nil
 	}
 	seen := map[string]int{}
+	pgoOff := pgoDisabledPackages(entities)
 	var out []goBuildTarget
 	for _, w := range entities.Workloads {
 		g := w.GoBuild()
-		if g == nil {
+		if g == nil || buildsOnlyVariants(w) {
 			continue
 		}
 		outName := g.OutputName
@@ -2316,6 +2373,9 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 		if i, ok := seen[key]; ok {
 			// A binary shared with a delve-run workload is built for it.
 			out[i].debug = out[i].debug || debug
+			// The env refuses workloads that disagree on a binary's
+			// coverage (ResolveCoverBinaries), so either answers for both.
+			out[i].cover = out[i].cover || w.CoverBuild()
 			continue
 		}
 		seen[key] = len(out)
@@ -2329,9 +2389,37 @@ func goBuildTargetsFromKCL(entities *KCLEntities) []goBuildTarget {
 			tags:       g.Tags,
 			flags:      g.Flags,
 			env:        g.Env,
+			pgoOff:     pgoOff[normalizePGOPackage(g.Cmd)],
+			cover:      w.CoverBuild(),
+			// The env's -coverpkg patterns; empty is "main".
+			coverPackages: w.coverPackages(),
 		})
 	}
 	return out
+}
+
+// buildsOnlyVariants reports whether w is a build-only workload whose binaries
+// are its declared build_variants. Its GoBuild names the package each variant
+// builds (buildKCLBuildOnlyVariants), not a binary of its own: building it as a
+// go target too produced an unrequested host binary bin/<name> with forge's
+// default stamps, which no release records and no runtime launches.
+func buildsOnlyVariants(w WorkloadEntity) bool {
+	return w.OnRuntime(RuntimeBuildOnly) && w.Runtime.BuildOnly != nil && len(w.Runtime.BuildOnly.BuildVariants) > 0
+}
+
+// projectImagePGOOff is the set of go targets the env builds with PGO
+// disabled: the project image passes `--build-arg FORGE_PGO_<BIN>=off` for
+// each. The scaffolded Dockerfile builds each cmd/<bin> with
+// `-pgo=${FORGE_PGO_<BIN>}` (default auto); an older one has no such ARG and
+// ignores the arg.
+func projectImagePGOOff(goTargets []goBuildTarget) map[string]bool {
+	off := map[string]bool{}
+	for _, t := range goTargets {
+		if t.pgoOff {
+			off[normalizePGOPackage(t.cmd)] = true
+		}
+	}
+	return off
 }
 
 // buildGoTarget runs ONE `go build` for a KCL-resolved goBuildTarget. It
@@ -2378,6 +2466,18 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 			targetOS, arch, runtime.GOOS, runtime.GOARCH)
 	}
 
+	// A cover build: -cover -covermode=atomic -coverpkg=<the env's
+	// packages>. An explicit -cover in the build's own flags or GOFLAGS is
+	// the user's choice and wins; a -covermode or -coverpkg of theirs is
+	// kept in place of forge's (mergeCoverFlags).
+	if owns, _, _ := userCoverFlags(t.flags, t.env); t.cover && !owns {
+		flags, err := coverBuildFlags(ctx, projectDirForKCL(), t.coverPackages)
+		if err != nil {
+			return buildResult{name: t.outputName, kind: "service", duration: time.Since(start), err: err}
+		}
+		t.coverFlags = mergeCoverFlags(flags, t.flags, t.env)
+		fmt.Printf("[build] %s: instrumented for coverage (-cover -covermode=%s)\n", t.outputName, coverMode)
+	}
 	args := goBuildArgs(t, binaryPath, debug, versionInfo)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {
@@ -2398,10 +2498,11 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	// Constrained-budget caps last so they bound the compiler even over an
 	// inherited GOMEMLIMIT/GOMAXPROCS. Skipped when empty (unconstrained).
 	cmd.Env = applyGoMemoryCaps(cmd.Env, memCaps)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("go build " + t.outputName)
 
 	err := cmd.Run()
+	endStep(err)
 	return buildResult{
 		name:     t.outputName,
 		kind:     "service",
@@ -2530,10 +2631,11 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	if memCaps.nodeOptions != "" {
 		cmd.Env = withMergedNodeOptions(cmd.Env, memCaps.nodeOptions)
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(fe.Name + ": " + runner + " run build")
 
 	err := cmd.Run()
+	endStep(err)
 	return buildResult{
 		name:     fe.Name,
 		kind:     "frontend",
@@ -2627,7 +2729,7 @@ func projectImageBinaryNames(goTargets []goBuildTarget) []string {
 //
 // A `--release` build's tags carry the release version ONLY — no `:latest` —
 // so a cut never moves a shared tag. See imageTagSet.
-func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags dockerImageTags, crossArch string, resolvedVersion versionInfo, guard projectImageGuard) buildResult {
+func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags dockerImageTags, crossArch string, resolvedVersion versionInfo, pgoOff map[string]bool, guard projectImageGuard) buildResult {
 	start := time.Now()
 	dockerfile := "Dockerfile"
 
@@ -2660,6 +2762,9 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		}
 	}
 
+	if err := projectImagePGOCollision(projectDirForKCL(), pgoOff); err != nil {
+		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
+	}
 	if err := requireImageDaemon(ctx, "the project image ("+dockerfile+")"); err != nil {
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
@@ -2677,6 +2782,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 		"--build-arg", "FORGE_COMMIT="+resolvedVersion.commit,
 		"--build-arg", "FORGE_DATE="+resolvedVersion.date,
 	)
+	// The binaries this env builds with PGO disabled (projectImagePGOOff).
+	dockerArgs = append(dockerArgs, pgoOffBuildArgs(pgoOff, nil)...)
 	if crossArch != "" {
 		dockerArgs = append(dockerArgs, "--platform=linux/"+crossArch)
 		fmt.Printf("[build] cross-compiling for linux/%s (host: %s/%s)\n",
@@ -2694,17 +2801,19 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	// `docker-image://`, …). cwd is the project root by construction
 	// (forge build runs alongside forge.yaml).
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	fmt.Printf("[build] %s: %s\n", cfg.Name, dockerCommandLine(dockerArgs))
 
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + cfg.Name)
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return buildResult{
 			name:     cfg.Name + " (docker)",
 			kind:     "docker",
@@ -2849,18 +2958,6 @@ func k3dMirrorRepositories(repository string) []string {
 	return []string{"registry.localhost:" + port + "/" + path}
 }
 
-// countTags counts the `-t` flags in a docker build arg list for the
-// progress line. Cheap; only used for human-readable output.
-func countTags(args []string) int {
-	n := 0
-	for _, a := range args {
-		if a == "-t" {
-			n++
-		}
-	}
-	return n
-}
-
 // dockerBuild builds a Docker image for a frontend from its own
 // Dockerfile, tagged with tags.local, and pushes tags.push after a
 // successful build.
@@ -2898,8 +2995,8 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
+	fmt.Printf("[build] %s: %s\n", name, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "frontend image "+name+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: name + " (docker)", kind: "docker", image: name, duration: time.Since(start), err: err}
@@ -2908,10 +3005,12 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 		return buildResult{name: name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + name)
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return buildResult{
 			name:     name + " (docker)",
 			kind:     "docker",
@@ -3016,13 +3115,24 @@ func kclFrontendAsBuildTarget(e *KCLEntities, target string) *config.FrontendCon
 //   - forge.OnHosted — built by buildHostedStaticSites, environment-agnostic
 //     and pushed as a release artifact; a plain build here would repeat it.
 //
-// Every other runtime (bucket, firebase, build-only) is kept. A frontend in
-// cfg.Frontends that the env does not declare is kept too: with no runtime
-// to read there is nothing to skip on.
+// Every other runtime (bucket, firebase, build-only) is kept.
 //
-// Prints a one-line note per skipped dev server so users can see at a
-// glance why their build finished early.
-func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities) []config.FrontendConfig {
+// A frontend in the project inventory (cfg.Frontends: every frontends/<name>
+// on disk) that the env does not declare is dropped too, because nothing in
+// the env consumes its `npm run build`: deploy already warns that such a
+// frontend "will NOT be deployed" (warnUndeployedFrontends), and a frontend
+// served from a container builds inside its own Dockerfile. Keeping it ran a
+// full prod build of frontends/web on `forge env build release` for an env
+// that declares no frontend at all (bug 194a8475), so the env had to pass
+// --target to avoid it. The rendered env is the build set, as it already is
+// for every workload.
+//
+// keepUndeclared is set when --target named the frontend: an explicit
+// request builds it whether or not this env declares it, as it always has.
+//
+// Prints a one-line note per skipped frontend so users can see at a glance
+// why their build finished early.
+func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEntities, env string, keepUndeclared bool) []config.FrontendConfig {
 	if entities == nil {
 		return frontends
 	}
@@ -3030,6 +3140,9 @@ func filterFrontendsForBuild(frontends []config.FrontendConfig, entities *KCLEnt
 	for _, fe := range frontends {
 		entity, ok := findFrontendEntity(entities, fe.Name)
 		switch {
+		case !ok && !keepUndeclared:
+			fmt.Printf("[build] skipping prod build for %s (env %q declares no such frontend; --target %s builds it anyway)\n", fe.Name, env, fe.Name)
+			continue
 		case ok && entity.Runtime.Type == FrontendRuntimeHost:
 			fmt.Printf("[build] skipping prod build for %s (forge.OnHost: the dev server)\n", fe.Name)
 			continue
@@ -3201,8 +3314,32 @@ func requireDeclaredImageArch(e *KCLEntities, declared, flagArch string, pushes 
 // captured in the returned buildResult slice rather than short-circuited
 // so users see the full list of failures from one run.
 func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir string) []buildResult {
+	workloads := e.WorkloadsOn(RuntimeBuildOnly)
+	// The schema can check explicit names and targets. Defaults depend on
+	// workload names and the build host; validate the actual destinations
+	// before starting any variant so no artifact can be overwritten.
+	seen := make(map[string]string)
 	var out []buildResult
-	for _, w := range e.WorkloadsOn(RuntimeBuildOnly) {
+	for _, w := range workloads {
+		for _, v := range w.Runtime.BuildOnly.BuildVariants {
+			id := w.Name + ":" + v.Name
+			filename := variantBinaryFilename(w.Name, v, runtime.GOOS)
+			key := filename
+			if runtime.GOOS == "windows" {
+				key = strings.ToLower(key)
+			}
+			if prior, exists := seen[key]; exists {
+				out = append(out, buildResult{name: id, kind: "variant", err: fmt.Errorf(
+					"build variants %s and %s write the same binary filename %q; choose distinct output_name values", prior, id, filename)})
+			} else {
+				seen[key] = id
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	for _, w := range workloads {
 		// The variant's go-build TARGET is the workload's GoBuild cmd: each
 		// variant layers its own ldflags/tags/arch on that one package. A
 		// build-only workload with variants and no GoBuild has nothing to
@@ -3220,6 +3357,16 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 	return out
 }
 
+// variantBinaryFilename matches the destination used by both build and
+// release harvesting. An unspecified GOOS uses the build host's OS.
+func variantBinaryFilename(workload string, v BuildVariant, hostOS string) string {
+	goos := v.GOOS
+	if goos == "" {
+		goos = hostOS
+	}
+	return hostlaunch.ExeName(goos, variantOutputName(workload, v))
+}
+
 // buildVariant builds one binary for a build-only service variant.
 // buildCmd is the service's resolved go-build target package (from the
 // Build union — NOT a ./cmd hardcode). The output name is
@@ -3228,15 +3375,7 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 // on the subprocess env.
 func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant, outputDir string) buildResult {
 	start := time.Now()
-	outName := v.OutputName
-	if outName == "" {
-		outName = svcName + "-" + v.Name
-	}
-	variantOS := v.GOOS
-	if variantOS == "" {
-		variantOS = runtime.GOOS
-	}
-	binPath := filepath.Join(outputDir, hostlaunch.ExeName(variantOS, outName))
+	binPath := filepath.Join(outputDir, variantBinaryFilename(svcName, v, runtime.GOOS))
 	fmt.Printf("[build] %s (variant %s): go build %s -> %s\n", svcName, v.Name, buildCmd, binPath)
 
 	args := []string{"build", "-o", binPath}
@@ -3252,27 +3391,42 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	env := goexec.Env("CGO_ENABLED=0")
-	if v.GOOS != "" {
-		env = append(env, "GOOS="+v.GOOS)
-	}
-	if v.GOARCH != "" {
-		env = append(env, "GOARCH="+v.GOARCH)
-	}
-	for k, val := range v.EnvAtBuild {
-		env = append(env, k+"="+val)
-	}
-	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Env = variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v)
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(svcName + ":" + v.Name + " build")
 
 	err := cmd.Run()
+	endStep(err)
 	return buildResult{
 		name:     svcName + ":" + v.Name,
 		kind:     "variant",
 		duration: time.Since(start),
 		err:      err,
 	}
+}
+
+// variantBuildEnv layers a variant's GOOS/GOARCH and its declared env
+// (KCL BuildVariant.env) onto base. Later entries win (os/exec keeps the last
+// value of a duplicated key), so a declared CGO_ENABLED=1 overrides forge's
+// CGO_ENABLED=0 default. Declared keys are appended sorted, so the command's
+// environment is the same on every run.
+func variantBuildEnv(base []string, v BuildVariant) []string {
+	env := append([]string(nil), base...)
+	if v.GOOS != "" {
+		env = append(env, "GOOS="+v.GOOS)
+	}
+	if v.GOARCH != "" {
+		env = append(env, "GOARCH="+v.GOARCH)
+	}
+	keys := make([]string, 0, len(v.EnvAtBuild))
+	for k := range v.EnvAtBuild {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, k+"="+v.EnvAtBuild[k])
+	}
+	return env
 }
 
 // buildKCLDockerShell dispatches the per-service DockerBuild type — the
@@ -3296,6 +3450,11 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	var out []buildResult
 	workloads := e.Workloads
 	aliases := map[string][]WorkloadEntity{}
+	// A --release build compares DockerBuilds that declare inputs against
+	// earlier releases (build_docker_release_reuse.go); the ledger is read
+	// once, and only if one needs it.
+	projectDir := projectDirForKCL()
+	reuseBase := newReleaseReuseBase(ctx, projectDir, opts)
 	if opts.composition != nil {
 		units, err := compositionBuildUnits(e)
 		if err != nil {
@@ -3319,13 +3478,14 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				fmt.Printf("[build] %s: skipping docker (bound to forge.OnHost: it runs on the host, not from an image)\n", w.Name)
 				continue
 			}
+			checkDockerCredHelpers(os.Stdout)
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			builder := buildServiceDocker
-			if opts.composition != nil {
-				builder = compositionDockerBuilder
-			}
 			result := timedBuild(ctx, func() buildResult {
-				return builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				if opts.composition != nil {
+					return compositionDockerBuilder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				}
+				target := releaseDockerTarget{repository: repository, tag: imageTag}
+				return buildServiceDockerReusing(ctx, cfg, w, target, opts, cfgArchForDocker, projectDir, reuseBase)
 			})
 			result.workload = w.Name
 			out = append(out, result)
@@ -3403,18 +3563,11 @@ func buildServiceRemote(svcName string) buildResult {
 // forge is base-image-AGNOSTIC: NO base-image discovery, mirror, pin, or
 // `--build-arg BASE_*` injection happens — the Dockerfile's `FROM` lines are
 // the whole story. The only `--build-arg`s are the service's explicit
-// DockerBuild.build_args.
+// DockerBuild.build_args, and `FORGE_PGO_<BIN>=off` for each binary its
+// DockerBuild.pgo disables.
 func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
-	// platform: the DockerBuild's explicit platform wins; otherwise the
-	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
-	platform := ""
-	if d != nil && d.Platform != "" {
-		platform = d.Platform
-	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
-		platform = "linux/" + a
-	}
-	if platform != "" {
+	if platform := serviceDockerPlatform(d, opts, cfgArchForDocker); platform != "" {
 		dockerArgs = append(dockerArgs, "--platform="+platform)
 	}
 	if d != nil && d.Target != "" {
@@ -3424,6 +3577,9 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 		for _, k := range sortedKeys(d.BuildArgs) {
 			dockerArgs = append(dockerArgs, "--build-arg", k+"="+d.BuildArgs[k])
 		}
+		// The image's binaries whose DockerBuild.pgo is disabled. A
+		// declared build_args entry of the same name wins.
+		dockerArgs = append(dockerArgs, pgoOffBuildArgs(dockerPGODisabled(d), d.BuildArgs)...)
 	}
 	// `repository` is already the declared destination (serviceDockerImage), so
 	// it is used as-is rather than resolved again through the push plan — a
@@ -3445,6 +3601,19 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 	}
 	dockerArgs = append(dockerArgs, "-f", dockerfile, serviceDockerContext(d))
 	return dockerArgs, pushTags
+}
+
+// serviceDockerPlatform is the platform a DockerBuild builds for: its explicit
+// platform wins; otherwise the env-wide cluster arch (cfgArchForDocker),
+// cross-compiled to linux. "" builds for the daemon's own platform.
+func serviceDockerPlatform(d *DockerBuild, opts buildOptions, cfgArchForDocker string) string {
+	if d != nil && d.Platform != "" {
+		return d.Platform
+	}
+	if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		return "linux/" + a
+	}
+	return ""
 }
 
 // serviceDockerContext is the MAIN `docker build` context directory for a
@@ -3589,8 +3758,20 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	if err := checkServiceDockerContext(".", svcName, d); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
+	// A binary its pgo disables must not share its FORGE_PGO_<BIN> arg
+	// with another binary this image builds.
+	if err := serviceImagePGOCollision(projectDirForKCL(), d); err != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: fmt.Errorf("service %q: %w", svcName, err)}
+	}
 
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	// An env that instruments the image's binary builds the Dockerfile's
+	// cover stage (kcl/schema.k Tests, coverImageArgs).
+	coverArgs, coverErr := coverImageArgs(ctx, svcName, d)
+	if coverErr != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: coverErr}
+	}
+	dockerArgs = append(dockerArgs[:1:1], append(coverArgs, dockerArgs[1:]...)...)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
 	epoch := ""
@@ -3601,7 +3782,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
 	}
 	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
-	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
+	fmt.Printf("[build] %s: %s\n", svcName, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
@@ -3610,9 +3791,11 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	cmd := exec.CommandContext(ctx, "docker", dockerArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + svcName)
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
 	}
 	for _, t := range pushTags {

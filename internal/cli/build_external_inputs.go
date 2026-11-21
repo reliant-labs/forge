@@ -20,7 +20,7 @@ import (
 )
 
 // rebuildFlagHelp is --rebuild's help on every command that builds an env.
-const rebuildFlagHelp = "Run every ShellBuild's command, even one whose declared inputs are unchanged since its last successful build and whose image is still in the registry"
+const rebuildFlagHelp = "Run every ShellBuild's command, even one whose declared inputs are unchanged since its last successful build (or, with --release, since the previous release) and whose image is still in the registry; with --release, also build every DockerBuild that would reuse an earlier release's image"
 
 // shellInputsVerdict is what a ShellBuild's declared inputs say about running
 // its command.
@@ -32,6 +32,14 @@ type shellInputsVerdict struct {
 	// reuse is the state of the last successful build when this one is up
 	// to date; nil means run the command.
 	reuse *buildtarget.State
+	// releaseFP is the inputs fingerprinted the way a release compares them
+	// (tag and checkout location masked); set on a --release build so its
+	// state, and so the release, records it. See
+	// build_external_release_reuse.go.
+	releaseFP *buildtarget.Fingerprint
+	// carry is the earlier release's image a --release build reuses because
+	// the declared inputs are unchanged; nil means run the command.
+	carry *releaseCarry
 	// reason says why the command runs despite declared inputs.
 	reason string
 	// hashed is the time spent fingerprinting; took adds the state read and
@@ -69,19 +77,11 @@ func shellBuildFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, proje
 	if env == nil {
 		env = map[string]string{}
 	}
-	inputsFileDigest := ""
-	if f := svc.Build.InputsFile; f != "" {
-		data, err := os.ReadFile(resolveProjectPath(projectDir, f))
-		if err != nil {
-			return buildtarget.Fingerprint{}, fmt.Errorf("inputs_file: %w", err)
-		}
-		sum := sha256.Sum256(data)
-		inputsFileDigest = "sha256:" + hex.EncodeToString(sum[:])
+	inputsFileDigest, err := shellBuildInputsFileDigest(svc, projectDir)
+	if err != nil {
+		return buildtarget.Fingerprint{}, err
 	}
-	outputName := ""
-	if sh := svc.shell(); sh != nil {
-		outputName = sh.OutputName
-	}
+	outputName := shellBuildOutputName(svc)
 	recipe, err := json.Marshal(struct {
 		Identity         externalArtifactIdentity `json:"identity"`
 		Ref              string                   `json:"ref"`
@@ -89,12 +89,67 @@ func shellBuildFingerprint(svc WorkloadEntity, spec buildtarget.Spec, cwd, proje
 		Unit             string                   `json:"unit"`
 		OutputName       string                   `json:"output_name"`
 		InputsFileDigest string                   `json:"inputs_file_digest"`
+		PGOProfiles      map[string]string        `json:"pgo_profiles,omitempty"`
 	}{externalBuildIdentity(svc, canonical, opts), externalPushedRef(svc, spec.Tag, opts.pushPlan.pushBase), env,
-		svc.Build.Unit, outputName, inputsFileDigest})
+		svc.Build.Unit, outputName, inputsFileDigest, shellBuildPGODigests(svc, projectDir)})
 	if err != nil {
 		return buildtarget.Fingerprint{}, err
 	}
 	return buildtarget.FingerprintInputs(shellBuildInputScope(canonical, projectDir), externalBuildInputs(svc), recipe)
+}
+
+// shellBuildInputsFileDigest is the content address of a declared
+// inputs_file, "" when none is declared. An unreadable one is an error, which
+// refuses reuse and runs the command.
+func shellBuildInputsFileDigest(svc WorkloadEntity, projectDir string) (string, error) {
+	f := svc.Build.InputsFile
+	if f == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(resolveProjectPath(projectDir, f))
+	if err != nil {
+		return "", fmt.Errorf("inputs_file: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// shellBuildPGODigests is the content address of each profile the
+// ShellBuild's pgo names ("absent" for one not written yet), keyed by its
+// path: a refreshed default.pgo changes what the command's `go build`
+// compiles, and a typical inputs glob (`**/*.go`) does not select it. nil for
+// a build whose pgo names nothing, so its fingerprint is what it always was.
+// A binary whose PGO is off still counts: forge does not edit the command, so
+// its `go build` reads the file regardless.
+func shellBuildPGODigests(svc WorkloadEntity, projectDir string) map[string]string {
+	sh := svc.shell()
+	if sh == nil || len(sh.PGO) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, k := range sortedKeys(sh.PGO) {
+		pkg, s, err := shellPGOBinary(sh, k, "")
+		if err != nil {
+			continue // refused at render (ResolvePGOBinaries)
+		}
+		p := PGOBinary{Package: pkg, PGO: s}.ProfilePath()
+		digest := "absent"
+		if data, err := os.ReadFile(resolveProjectPath(projectDir, filepath.FromSlash(p))); err == nil {
+			sum := sha256.Sum256(data)
+			digest = "sha256:" + hex.EncodeToString(sum[:])
+		}
+		out[p] = digest
+	}
+	return out
+}
+
+// shellBuildOutputName is the ShellBuild's declared output_name, "" for any
+// other build.
+func shellBuildOutputName(svc WorkloadEntity) string {
+	if sh := svc.shell(); sh != nil {
+		return sh.OutputName
+	}
+	return ""
 }
 
 // shellBuildInputScope is where a ShellBuild's inputs may come from: its cwd,
@@ -110,15 +165,21 @@ func shellBuildInputScope(cwd, projectDir string) buildtarget.InputScope {
 }
 
 // checkShellBuildInputs fingerprints a ShellBuild's declared inputs and
-// decides whether its last successful build can stand in for running it.
-func checkShellBuildInputs(ctx context.Context, svc WorkloadEntity, spec buildtarget.Spec, cwd string, opts buildOptions, projectDir string) shellInputsVerdict {
+// decides whether its last successful build — or, for a --release build, an
+// earlier release's image (base) — can stand in for running it. base is
+// consulted only by a --release build and may be nil otherwise.
+func checkShellBuildInputs(ctx context.Context, svc WorkloadEntity, spec buildtarget.Spec, cwd string, opts buildOptions, projectDir string, base *releaseReuseBase) shellInputsVerdict {
 	if externalBuildInputs(svc) == nil {
+		if releaseBuildCanCarry(opts) && svc.Image != "" {
+			return shellInputsVerdict{reason: "it declares no inputs, so nothing proves an earlier release's image is what it would build"}
+		}
 		return shellInputsVerdict{}
 	}
 	if opts.composition != nil {
-		// A release records the builder's receipt, which only a run produces,
-		// and its tag is new by construction.
-		return shellInputsVerdict{reason: "a release build always runs its command"}
+		// A snapshot-composition release records the builder's receipt,
+		// which only a run produces. An unchanged workload is carried from
+		// the base promotion by leaving it unselected instead.
+		return shellInputsVerdict{reason: "a selected build in a snapshot-composition release always runs its command (leave an unchanged workload unselected to carry it from the base)"}
 	}
 	start := time.Now()
 	v := shellInputsVerdict{}
@@ -130,6 +191,9 @@ func checkShellBuildInputs(ctx context.Context, svc WorkloadEntity, spec buildta
 	}
 	v.fp = &fp
 	v.hashed = time.Since(start)
+	if releaseBuildCanCarry(opts) {
+		return checkReleaseCarry(ctx, svc, spec, cwd, opts, projectDir, base, v)
+	}
 	if opts.rebuild {
 		v.reason = "forced by --rebuild"
 		v.took = time.Since(start)

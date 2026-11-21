@@ -1,7 +1,10 @@
 // Package frontenddeps ensures a frontend's node_modules is installed and
 // current against its lockfile. It is the single install step behind
-// `forge env up`, `forge build` and `forge lint`, so a fresh checkout (every
-// release worktree) never reaches a toolchain with missing dependencies.
+// `forge env up`, `forge build` and `forge lint --install`, so a fresh
+// checkout (every release worktree) never reaches a toolchain with missing
+// dependencies.
+//
+//forge:exclude-contract: package-level operations over a frontend directory (lockfile reads, and exec of the project's own npm/pnpm/yarn); its only exported method is the Lock record's Path accessor, and callers call the functions directly, so there is no component to substitute
 package frontenddeps
 
 import (
@@ -13,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/envutil"
@@ -21,8 +25,9 @@ import (
 )
 
 // Ensure is the install step shared by `forge env up`, `forge build` and
-// `forge lint`: install dir's dependencies when node_modules is missing or
-// older than the lockfile, no-op otherwise.
+// `forge lint --install`: install dir's dependencies when node_modules is
+// missing or older than the lockfile, no-op otherwise. (`forge lint` without
+// --install never installs: a linter does not mutate the checkout.)
 //
 // frozen selects reproducible installs (`npm ci`, `pnpm/yarn --frozen-lockfile`)
 // for builds, where a drifted lockfile must fail loudly rather than ship a
@@ -34,6 +39,20 @@ import (
 // project. With several lockfiles, runner's own wins. FORGE_SKIP_NPM_INSTALL
 // short-circuits it.
 func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen bool) error {
+	return ensure(ctx, output{}, logPrefix, name, dir, runner, frozen)
+}
+
+// EnsureTo is Ensure reporting to w instead of the terminal: forge's progress
+// lines and the package manager's output both go there (io.Discard silences
+// them). A failed install's error still carries the package manager's output.
+func EnsureTo(ctx context.Context, w io.Writer, logPrefix, name, dir, runner string, frozen bool) error {
+	if w == nil {
+		w = io.Discard
+	}
+	return ensure(ctx, output{w: w}, logPrefix, name, dir, runner, frozen)
+}
+
+func ensure(ctx context.Context, out output, logPrefix, name, dir, runner string, frozen bool) error {
 	if dir == "" || os.Getenv("FORGE_SKIP_NPM_INSTALL") != "" {
 		return nil
 	}
@@ -44,19 +63,19 @@ func Ensure(ctx context.Context, logPrefix, name, dir, runner string, frozen boo
 		return nil
 	}
 	runner = PackageManager(dir, runner)
-	if err := VerifyPinnedRunner(ctx, dir, runner); err != nil {
+	if err := verifyPinnedRunner(ctx, out, dir, runner); err != nil {
 		return fmt.Errorf("install deps in %s: %w", dir, err)
 	}
 	args := installArgs(runner, dir, frozen)
-	fmt.Printf("%s %s: node_modules missing/stale — running `%s %s`\n", logPrefix, name, runner, strings.Join(args, " "))
-	err := runInstall(ctx, runner, dir, args)
+	out.printf("%s %s: node_modules missing/stale — running `%s %s`\n", logPrefix, name, runner, strings.Join(args, " "))
+	err := runInstall(ctx, out, runner, dir, args)
 	if err != nil && !errors.Is(err, ErrRunnerUnusable) && transientFailure(err.Error()) {
 		// The package manager reported ITS OWN internal failure, not a problem
 		// with the tree — retrying converges where failing the whole run does
 		// not. Without this a known npm bug ends a run that had already spent
 		// minutes building images, and re-running hits the same coin flip.
-		fmt.Printf("%s %s: `%s install` hit a package-manager internal error — retrying once\n", logPrefix, name, runner)
-		err = runInstall(ctx, runner, dir, args)
+		out.printf("%s %s: `%s install` hit a package-manager internal error — retrying once\n", logPrefix, name, runner)
+		err = runInstall(ctx, out, runner, dir, args)
 	}
 	if err != nil {
 		return fmt.Errorf("install deps in %s: %w", dir, err)
@@ -171,17 +190,20 @@ func concurrencyFlags(runner string, env []string) []string {
 	}
 }
 
-// runInstall runs one install attempt, teeing output to the terminal
-// while retaining it so the caller can classify the failure.
-func runInstall(ctx context.Context, runner, dir string, args []string) error {
+// runInstall runs one install attempt, teeing output to out (the terminal
+// by default) while retaining it so the caller can classify the failure.
+func runInstall(ctx context.Context, out output, runner, dir string, args []string) error {
 	if root, bridged := installDir(runner, dir); bridged {
 		// A fresh scaffold needs its own tracked registry lockfile as well as
 		// the overlay's machine-local one. Never let the bridge's link spec
 		// enter the frontend lockfile that CI and Docker will install from.
 		if !fileExists(filepath.Join(dir, "pnpm-lock.yaml")) {
 			cmd := command(ctx, dir, runner, "install", "--lockfile-only", "--ignore-scripts", "--ignore-workspace", "--no-frozen-lockfile")
-			cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-			if err := cmd.Run(); err != nil {
+			var endStep func(error)
+			cmd.Stdout, cmd.Stderr, endStep = out.step(filepath.Base(dir) + ": " + runner + " install --lockfile-only")
+			err := cmd.Run()
+			endStep(err)
+			if err != nil {
 				return fmt.Errorf("create frontend registry lockfile: %w", err)
 			}
 		}
@@ -189,19 +211,23 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 		// is what links the local web-runtime. Its lockfile is the bridge's
 		// own, gitignored and machine-local, so there is nothing to freeze
 		// against — the frontend's tracked lockfile is not read there.
-		fmt.Printf("  (dev web-runtime bridge: installing at %s)\n", root)
+		out.printf("  (dev web-runtime bridge: installing at %s)\n", root)
 		dir, args = root, []string{"install", "--no-frozen-lockfile"}
 	}
 	var buf bytes.Buffer
 	if flags := concurrencyFlags(runner, os.Environ()); len(flags) > 0 {
 		args = append(args, flags...)
-		fmt.Printf("[up] proxy detected — capping %s network concurrency at %d (an inspection proxy stalls at the default)\n",
+		out.printf("[up] proxy detected — capping %s network concurrency at %d (an inspection proxy stalls at the default)\n",
 			runner, proxiedInstallSockets)
 	}
 	cmd := command(ctx, dir, runner, args...)
-	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-	if err := cmd.Run(); err != nil {
+	stdout, stderr, endStep := out.step(filepath.Base(dir) + ": " + runner + " " + strings.Join(args, " "))
+	var mu sync.Mutex
+	cmd.Stdout = &lockedWriter{mu: &mu, w: io.MultiWriter(stdout, &buf)}
+	cmd.Stderr = &lockedWriter{mu: &mu, w: io.MultiWriter(stderr, &buf)}
+	err := cmd.Run()
+	endStep(err)
+	if err != nil {
 		if unstartableExecutable(buf.String(), err) != "" {
 			// The executable itself will not start: every retry runs it again.
 			return fmt.Errorf("%w: %w: %s", ErrRunnerUnusable, err, strings.TrimSpace(buf.String()))
@@ -209,7 +235,7 @@ func runInstall(ctx context.Context, runner, dir string, args []string) error {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(buf.String()))
 	}
 	if warning := copiedFromStoreWarning(buf.String()); warning != "" {
-		fmt.Fprintln(os.Stderr, warning)
+		out.warn(warning)
 	}
 	return nil
 }

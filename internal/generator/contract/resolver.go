@@ -92,8 +92,10 @@ func NewResolver(contractPaths ...string) *Resolver {
 			// the package (a deps.go role embedding a role from roles.go)
 			// has a method set this file's syntax cannot give: the package
 			// is type-checked, like a foreign package an embed names.
-			if embedsSiblingInterface(fset, contractPath) {
-				w.foreign[selfPath] = true
+			for _, f := range contractFiles(contractPath) {
+				if embedsSiblingInterface(fset, f) {
+					w.foreign[selfPath] = true
+				}
 			}
 		}
 	}
@@ -149,8 +151,10 @@ func NewResolver(contractPaths ...string) *Resolver {
 		// after loadNames, so an unaliased import resolves by its
 		// declared name. One load keeps go/types identity across all.
 		for _, contractPath := range w.contracts {
-			for _, path := range embeddedImportPaths(fset, contractPath, r) {
-				w.foreign[path] = true
+			for _, f := range contractFiles(contractPath) {
+				for _, path := range embeddedImportPaths(fset, f, r) {
+					w.foreign[path] = true
+				}
 			}
 		}
 		r.loadTypes(root, sortedKeys(w.foreign))

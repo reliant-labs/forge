@@ -45,7 +45,7 @@ import (
 // suppressed=<n>. Any call over 1s is always written, with slow=true.
 //
 // To opt the package OUT, put `// forge:no-observe` on the package clause (or
-// on a single Service method to skip just that one).
+// on a single Service method — its doc comment — to skip just that one).
 //
 // This file is OPTIONAL. Without it the decorator builds
 // observe.DefaultComponentChain, which is what this body assembles; delete it

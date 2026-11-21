@@ -117,6 +117,13 @@ type Scope struct {
 	// dashspec.Dashboard.ToggleValues so every declared toggle is bound.
 	// Structured panels ignore it.
 	Toggles map[string]bool
+	// FilterParams are the dashboard's filter params (dashspec.FilterParam)
+	// the viewer set, by id, each bound to a sql panel as the String
+	// parameter {<id>:String}. One a statement reads that is absent here is
+	// bound to '' (no filter), so nil runs every panel unfiltered. Build it
+	// with dashspec.Dashboard.FilterParamValues to drop ids the dashboard does
+	// not declare. Structured panels ignore it.
+	FilterParams map[string]string
 	// Declared are the attribute keys the queried metric's own data points
 	// carry; the one extension to the key allowlist, for metrics.
 	Declared map[string]bool
@@ -442,11 +449,22 @@ const (
 // otel_traces row, safe to splice into a statement forge writes; none takes a
 // parameter.
 const (
-	// SpanWeightSQL is how many real spans a stored span stands for (see
-	// weight.go): sum(SpanWeightSQL) is a request count.
-	SpanWeightSQL = spanWeightExpr
+	// SpanSampleWeightSQL is how many real spans a stored span stands for
+	// (see weight.go): sum(SpanSampleWeightSQL) is a request count.
+	SpanSampleWeightSQL = spanWeightExpr
+	// SpanSampleWeightIntSQL is SpanSampleWeightSQL as the UInt64 a weighted
+	// quantile takes.
+	SpanSampleWeightIntSQL = spanWeightInt
+	// SpanWeightSQL is the same value as SpanSampleWeightSQL, read through
+	// the threshold's regex for every span.
+	//
+	// Deprecated: use SpanSampleWeightSQL, which reads the sampler's own
+	// tracestate without the regex.
+	SpanWeightSQL = spanWeightRegexExpr
 	// SpanWeightIntSQL is SpanWeightSQL as the UInt64 a weighted quantile takes.
-	SpanWeightIntSQL = spanWeightInt
+	//
+	// Deprecated: use SpanSampleWeightIntSQL.
+	SpanWeightIntSQL = spanWeightIntRegex
 	// SpanServerSQL keeps server spans: a request the service answered.
 	SpanServerSQL = spanServerExpr
 	// SpanErrorSQL is an error span that is not a cancellation.

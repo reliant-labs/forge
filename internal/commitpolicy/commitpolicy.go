@@ -11,9 +11,9 @@
 //     two branches whose inputs differ. The proto descriptor,
 //     gen/forge_descriptor/, is one: committed as one aggregate file, it
 //     conflicted between any two pull requests that touched any proto.
-//   - Machine-local materializations are NEVER committed: the legacy
-//     .forge-kcl/ module copy, and a web frontend's dev runtime document
-//     public/config.js, whose values resolve per machine.
+//   - Machine-local materializations are NEVER committed: a web frontend's
+//     dev runtime document public/config.js, whose values resolve per
+//     machine.
 //
 // # Why this is a check and not just a template
 //
@@ -43,6 +43,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -60,19 +61,14 @@ const (
 	RuleToolDerivedTracked = "tool-derived-file-tracked"
 )
 
-// toolDerivedDirs and toolDerivedFiles name, project-relative, the generated
-// outputs no compiler reads: forge derives them on demand wherever a command
+// toolDerivedDirs names, project-relative, the generated outputs no compiler
+// reads: forge derives them on demand wherever a command
 // needs them, so they are never committed (see the package doc). A new
 // tool-only output joins this list, its reader learns to derive it when it is
 // missing, and the scaffold's .gitignore ignores it.
-var (
-	toolDerivedDirs = []string{
-		"gen/forge_descriptor/", // codegen.DescriptorDir: services and rpcs extracted from proto/
-	}
-	toolDerivedFiles = []string{
-		"gen/forge_descriptor.json", // codegen.LegacyDescriptorFile: the pre-split aggregate
-	}
-)
+var toolDerivedDirs = []string{
+	"gen/forge_descriptor/", // codegen.DescriptorDir: services and rpcs extracted from proto/
+}
 
 // IsToolDerived reports whether rel (project-relative, slash-separated) is a
 // generated output only forge or tooling reads, which this policy keeps out
@@ -83,11 +79,6 @@ func IsToolDerived(rel string) bool {
 			return true
 		}
 	}
-	for _, f := range toolDerivedFiles {
-		if rel == f {
-			return true
-		}
-	}
 	return false
 }
 
@@ -95,18 +86,13 @@ func IsToolDerived(rel string) bool {
 type Violation struct {
 	Rule string
 	// Path is project-relative, slash-separated. For an ignored generated
-	// file it is the file; for tracked local state it is the tracked path
-	// (a directory for .forge-kcl/).
+	// file it is the file; for tracked local state it is the tracked path.
 	Path string
 	// Why says what the path is and why the policy applies to it.
 	Why string
 	// Fix is the literal command (or edit) that resolves it.
 	Fix string
 }
-
-// legacyKCLDir is the project-local KCL module copy older forge versions
-// materialized (and committed).
-const legacyKCLDir = ".forge-kcl"
 
 // devRuntimeConfig is a web frontend's dev runtime document, relative to the
 // frontend directory.
@@ -164,7 +150,6 @@ const (
 var skipDirs = map[string]bool{
 	".git":           true,
 	".forge":         true,
-	legacyKCLDir:     true,
 	"node_modules":   true,
 	"vendor":         true,
 	".next":          true,
@@ -338,8 +323,8 @@ func modulePath(dir string) string {
 //
 // A delivered skill is NOT project-generated code: it is a render of the
 // skill catalog embedded in the forge binary, stamped with the rendering
-// forge's version, with no input from the project. Like .forge-kcl/ it is
-// binary-derived state — `forge skill load` prints the authoritative copy
+// forge's version, with no input from the project. It is binary-derived
+// state — `forge skill load` prints the authoritative copy
 // straight from the binary — so every forge build would rewrite a committed
 // copy, and whether to track the directory is the project's call (forge's
 // own repo ignores .claude/; a harness: reliant project has none). The
@@ -415,9 +400,13 @@ func isHex(b []byte) bool {
 }
 
 // isDevRuntimeConfig reports whether rel is a frontend's dev runtime document
-// (frontends/<name>/public/config.js).
+// (frontends/<name>/public/config.js) or a build's copy of it. A Vite or
+// Next.js build copies public/ into its output directory, so the same
+// machine-local document also lands at frontends/<name>/<outDir>/config.js —
+// dist/, out/, or a project's own outDir such as dist-demo/ — and that copy
+// is gitignored build output, never source to commit.
 func isDevRuntimeConfig(rel string) bool {
-	return strings.HasPrefix(rel, "frontends/") && strings.HasSuffix(rel, "/"+devRuntimeConfig) &&
+	return strings.HasPrefix(rel, "frontends/") && path.Base(rel) == path.Base(devRuntimeConfig) &&
 		strings.Count(rel, "/") == 3
 }
 
@@ -472,17 +461,14 @@ func checkIgnoreMatches(dir string, paths []string) (map[string]ignoreMatch, err
 // trackedLocalState reports machine-local materializations that are in git.
 func trackedLocalState(projectDir string) ([]Violation, error) {
 	out, err := exec.Command("git", "-C", projectDir, "ls-files", "-z", "--",
-		legacyKCLDir, "frontends/*/"+devRuntimeConfig).Output()
+		"frontends/*/"+devRuntimeConfig).Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
 	var vs []Violation
-	kclTracked := false
 	for _, p := range strings.Split(string(out), "\x00") {
 		switch {
 		case p == "":
-		case strings.HasPrefix(p, legacyKCLDir+"/"):
-			kclTracked = true
 		case isDevRuntimeConfig(p):
 			vs = append(vs, Violation{
 				Rule: RuleLocalStateTracked,
@@ -494,26 +480,16 @@ func trackedLocalState(projectDir string) ([]Violation, error) {
 			})
 		}
 	}
-	if kclTracked {
-		vs = append(vs, Violation{
-			Rule: RuleLocalStateTracked,
-			Path: legacyKCLDir + "/",
-			Why: "a copy of the forge KCL module, which forge now supplies from the binary that renders — a committed copy pins one " +
-				"forge build's schemas into every clone and CI checkout, and fights every other build",
-			Fix: fmt.Sprintf("forge generate && git rm -r --cached %s && echo %s/ >> .gitignore", legacyKCLDir, legacyKCLDir),
-		})
-	}
 	return vs, nil
 }
 
 // trackedToolDerived reports tool-derived outputs (IsToolDerived) that are in
 // git and still in the work tree. A tracked file `forge generate` already
-// deleted (the legacy aggregate descriptor) is a pending deletion that `git
-// status` shows; it needs no finding of its own.
+// deleted is a pending deletion that `git status` shows; it needs no finding
+// of its own.
 func trackedToolDerived(projectDir string) ([]Violation, error) {
 	args := []string{"-C", projectDir, "ls-files", "-z", "--"}
 	args = append(args, toolDerivedDirs...)
-	args = append(args, toolDerivedFiles...)
 	out, err := exec.Command("git", args...).Output()
 	if err != nil {
 		return nil, fmt.Errorf("git ls-files: %w", err)

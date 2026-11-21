@@ -82,7 +82,7 @@ func bindEnvContent(projectDir, env, content string, binds []string) (string, er
 	if cfg, err := loadProjectConfigFrom(filepath.Join(projectDir, defaultProjectConfigFile)); err == nil {
 		projectName = cfg.Name
 	}
-	hosted := false
+	hosted, cluster := false, false
 	for _, b := range binds {
 		name, target, ok := strings.Cut(b, "=")
 		if !ok || name == "" || !bindTargetKnown(target) {
@@ -94,6 +94,10 @@ func bindEnvContent(projectDir, env, content string, binds []string) (string, er
 		}
 		content = rebound
 		hosted = hosted || target == "hosted"
+		cluster = cluster || target == "cluster"
+	}
+	if cluster {
+		content = declareClusterPlaceholder(content)
 	}
 	if hosted && !controlPlaneField.MatchString(content) {
 		loc := bundleProjectLine.FindStringSubmatchIndex(content)
@@ -177,3 +181,85 @@ func checkHostedAdmissible(name string, raw []byte) error {
 	}
 	return nil
 }
+
+// unsetClusterLine is the scaffolded hosted env's unused cluster binder
+// target, `_cluster = None`, which `_on_cluster` passes to envbase.on_cluster.
+var unsetClusterLine = regexp.MustCompile(`(?m)^_cluster = None[ \t]*$`)
+
+// declareClusterPlaceholder replaces `_cluster = None` with a ClusterTarget
+// whose every per-env fact is a REPLACE_ME_* placeholder, once something is
+// rebound onto the cluster: left as None the env renders nothing useful, and
+// `forge env new --check` — which looks for placeholders — has nothing to
+// find. A template that declares its own target is left alone.
+func declareClusterPlaceholder(content string) string {
+	loc := unsetClusterLine.FindStringIndex(content)
+	if loc == nil {
+		return content
+	}
+	var b strings.Builder
+	b.WriteString("_cluster = forge.ClusterTarget {\n")
+	for _, l := range knobLines("    ", "cluster", `"REPLACE_ME_CLUSTER_CONTEXT"`,
+		"the kubectl context of the cluster this env's cluster-bound workloads run on",
+		"a sibling env's context deploys to the WRONG cluster",
+		"kubectl config get-contexts — the value must name THIS env's cluster") {
+		b.WriteString(l + "\n")
+	}
+	for _, l := range knobLines("    ", "namespace", `"REPLACE_ME_NAMESPACE"`,
+		"the k8s namespace every cluster-bound workload in this env deploys into",
+		"inheriting a sibling's namespace deploys INTO that sibling environment",
+		"kubectl get ns — the namespace must be unique to this env") {
+		b.WriteString(l + "\n")
+	}
+	for _, l := range knobLines("    ", "platform", `"REPLACE_ME_PLATFORM"`,
+		"the node arch (amd64/arm64). forge derives forge.target_arch() + GOARCH from it",
+		"a wrong value builds images that CrashLoopBackOff 'exec format error' on the nodes",
+		"kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}'") {
+		b.WriteString(l + "\n")
+	}
+	if controlPlaneField.MatchString(content) {
+		// A control-plane env deploys to the cluster through the control
+		// plane, which reaches only a cluster `forge cluster connect`
+		// registered; the render refuses an unconnected target.
+		for _, l := range knobLines("    ", "connected_cluster", `"REPLACE_ME_CONNECTED_CLUSTER"`,
+			"the name `forge cluster connect` registered this cluster under, so the control plane can deploy to it",
+			"another env's connected cluster deploys to THAT cluster",
+			"forge cluster connect <name> --context <kubectl context> --env <this env> — then the <name> here") {
+			b.WriteString(l + "\n")
+		}
+	}
+	b.WriteString("}")
+	return content[:loc[0]] + b.String() + content[loc[1]:]
+}
+
+// hostedLeftovers names the hosted declarations an env derived with --bind
+// still carries when it binds no workload hosted any more: the template's
+// managed database, its hosted secret store, its hosted frontends. Removing
+// them is the author's call (a database may be kept on purpose), but they are
+// published and billed on the control plane while no cluster workload reads
+// them, so `forge env new` names them.
+func hostedLeftovers(content string) []string {
+	if hostedBindingRe.MatchString(content) {
+		return nil
+	}
+	var out []string
+	for _, l := range []struct {
+		re   *regexp.Regexp
+		what string
+	}{
+		{managedDBHostedRe, "a forge.ManagedDatabase on forge.OnHosted"},
+		{hostedSecretsRe, "secret_provider = forge.HostedSecrets"},
+		{hostedFrontendBindingRe, "a frontend bound _hosted_frontend"},
+	} {
+		if l.re.MatchString(content) {
+			out = append(out, l.what)
+		}
+	}
+	return out
+}
+
+var (
+	hostedBindingRe         = regexp.MustCompile(`(?m)^\s*_hosted\(`)
+	managedDBHostedRe       = regexp.MustCompile(`(?s)forge\.ManagedDatabase\s*\{[^}]*forge\.OnHosted`)
+	hostedSecretsRe         = regexp.MustCompile(`(?m)^\s*secret_provider\s*=\s*forge\.HostedSecrets`)
+	hostedFrontendBindingRe = regexp.MustCompile(`(?m)^\s*_hosted_frontend\(_`)
+)

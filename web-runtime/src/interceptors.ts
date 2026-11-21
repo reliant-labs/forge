@@ -4,11 +4,11 @@
 // "@reliantlabs/forge-web-runtime/interceptors". It is the DOM-free, React-free
 // half of the runtime: the transport layer and nothing else. Importing it
 // pulls in exactly ./errors, ./trace, ./telemetry-gate,
-// ./interaction-context and ./rpc-failure-log — no React, no @types/react, no
-// window/document. That matters for React Native, where Expo pins React 18
-// while the package's components are typed against React 19: a mobile app
-// importing the full barrel would typecheck the components it never renders
-// and fail. Everything re-exported at the bottom of this file is part of
+// ./interaction-context, ./rpc-failure-log, ./rpc-span and ./rpc-forensics —
+// no React, no @types/react, no window/document. That matters for React
+// Native, where Expo pins React 18 while the package's components are typed
+// against React 19: a mobile app importing the full barrel would typecheck
+// the components it never renders and fail. Everything re-exported at the bottom of this file is part of
 // this entry point's surface; keep it React-free (guarded by
 // interceptors-entry.test.ts).
 //
@@ -17,10 +17,13 @@
 // createConnectTransport by the app's own connect module. Order (outermost
 // first):
 //
-//   error-normalize → auth → brand headers → traceparent
+//   error-normalize → auth → brand headers → rpc span → traceparent
 //
 // error-normalize is outermost so every caller sees a typed
-// ConnectClientError instead of a raw ConnectError.
+// ConnectClientError instead of a raw ConnectError. The rpc span stage
+// (rpc-span.ts) sits directly outside traceparent: the span it opens is the
+// context the traceparent is written from, so the server's span is its
+// descendant in the same trace.
 //
 // RETRY OWNERSHIP — read before adding a retry layer.
 // The single retry owner is the app's React Query client: it
@@ -40,6 +43,7 @@ import { context } from "@opentelemetry/api";
 import { ConnectClientError, normalizeError } from "./errors.js";
 import { stampCallEntry } from "./interaction-context.js";
 import { logRpcFailure } from "./rpc-failure-log.js";
+import { rpcSpanInterceptor } from "./rpc-span.js";
 import { telemetryReady } from "./telemetry-gate.js";
 import { injectTraceContext, traceIdFrom } from "./trace.js";
 
@@ -65,6 +69,17 @@ export interface RuntimeInterceptorConfig {
   maxRetries?: number;
   /** Base backoff in ms; grows exponentially with jitter. Default 200. */
   retryBaseMs?: number;
+  /**
+   * Record one client span per RPC (rpc-span.ts). Default true; it records
+   * only while a tracer provider is registered. false leaves the stage out.
+   */
+  rpcSpans?: boolean;
+  /**
+   * Attach a redacted `forge.forensics` event to a failed RPC's span
+   * (rpc-forensics.ts). Default true. initBrowserTelemetry's
+   * `rpcForensics: false` turns it off page-wide as well.
+   */
+  rpcForensics?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -252,6 +267,9 @@ export function buildRuntimeInterceptors(
     errorNormalizeInterceptor(cfg),
     authInterceptor(cfg),
     headerInterceptor(cfg),
+    ...(cfg.rpcSpans === false
+      ? []
+      : [rpcSpanInterceptor({ forensics: cfg.rpcForensics })]),
     traceInterceptor(),
   ];
 }
@@ -279,6 +297,12 @@ export {
   type RpcFailure,
   type RpcFailureSink,
 } from "./rpc-failure-log.js";
+
+export {
+  RPC_TRACER_NAME,
+  rpcSpanInterceptor,
+  type RpcSpanOptions,
+} from "./rpc-span.js";
 
 export {
   freshTraceparent,

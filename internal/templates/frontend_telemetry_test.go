@@ -82,11 +82,11 @@ func TestTelemetryConfigIsSameOriginAndSecretFree(t *testing.T) {
 
 // TestTelemetryPerEnvValuesPreferRuntimeConfig pins the promotion contract
 // in the source: a value that differs per environment (the ingest endpoint,
-// the environment name, session replay) is read from the runtime config
-// document first, through runtimeOrBuild, and its build variable is only the
-// DEPRECATED fallback — written out verbatim, since the bundler inlines
-// nothing else, and announced by one console.warn. The behaviour of each path
-// is TestTelemetryBuildVariableFallbackBehaviour.
+// the environment name) is read from the runtime config document first,
+// through runtimeOrBuild, and its build variable is only the DEPRECATED
+// fallback — written out verbatim, since the bundler inlines nothing else, and
+// announced by one console.warn. Session replay has no build variable at all.
+// The behaviour of each path is TestTelemetryBuildVariableFallbackBehaviour.
 func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 	for name, tc := range map[string]struct {
 		tmpl, prefix, read string
@@ -101,7 +101,6 @@ func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 			for key, field := range map[string]string{
 				"OTEL_ENDPOINT": `"config.otel_endpoint"`,
 				"ENVIRONMENT":   `"config.environment"`,
-				"OTEL_REPLAY":   `"telemetry.replay = True"`,
 			} {
 				build := tc.prefix + key
 				re := regexp.MustCompile(`runtimeOrBuild\(\s*used,\s*cfg\.` + key + `,\s*"` + build +
@@ -114,7 +113,11 @@ func TestTelemetryPerEnvValuesPreferRuntimeConfig(t *testing.T) {
 					t.Errorf("%s%s is read %d times; only the deprecated fallback may read it", tc.read, build, n)
 				}
 			}
+			if strings.Contains(s, tc.prefix+"OTEL_REPLAY") {
+				t.Errorf("%sOTEL_REPLAY is read: session replay comes from the runtime config alone", tc.prefix)
+			}
 			for _, want := range []string{
+				"const replay = text(cfg.OTEL_REPLAY);",
 				"warnBuildFallback(used);",
 				"console.warn(",
 				"next major version of forge",
@@ -354,7 +357,13 @@ func TestTelemetryPageViewsAndIdentity(t *testing.T) {
 				t.Errorf("a typed frontend's mock mode must come from loadConfig():\n%s", s)
 			}
 
-			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER"} {
+			// Forensics on failed RPCs stay on unless the runtime config
+			// explicitly says RPC_FORENSICS = "false".
+			if !strings.Contains(s, `rpcForensics: text(cfg.RPC_FORENSICS) !== "false",`) {
+				t.Errorf("rpc forensics must be on unless RPC_FORENSICS is \"false\":\n%s", s)
+			}
+
+			for _, buildVar := range []string{"PAGE_VIEWS", "IDENTIFY_USER", "RPC_FORENSICS"} {
 				if regexp.MustCompile(`(process\.env|import\.meta\.env)\.[A-Z_]*` + buildVar).MatchString(s) {
 					t.Errorf("%s is read from a build variable; it must come from config.js", buildVar)
 				}

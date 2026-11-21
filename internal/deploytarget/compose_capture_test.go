@@ -34,7 +34,7 @@ func TestComposeCapturesDependenciesButNeverAdoptsPreexistingContainers(t *testi
 		b, _ := json.Marshal([]map[string]any{{"Config": map[string]any{"Labels": map[string]string{"com.docker.compose.project": "forge-dev", "com.docker.compose.project.working_dir": dir, "com.docker.compose.service": service}}}})
 		return string(b)
 	}
-	r := &inventoryRunner{inventory: "new-ui new-dependency foreign", fakeRunner: fakeRunner{outputs: map[string]string{"docker inspect new-ui": labels("clickstack"), "docker inspect new-dependency": labels("profiles-schema")}}}
+	r := &inventoryRunner{inventory: "new-ui\nnew-dependency\nforeign\n", fakeRunner: fakeRunner{outputs: map[string]string{"docker inspect new-ui": labels("clickstack"), "docker inspect new-dependency": labels("profiles-schema")}}}
 	p := ComposeProvider{ProjectDir: dir, Runner: r}
 	spec := &ComposeSpec{ProjectDirectory: dir}
 	if err := p.recordOwned(context.Background(), r, nil, spec, "dev", "clickstack", []string{"foreign"}); err != nil {

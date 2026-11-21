@@ -28,15 +28,27 @@ type fakeZitadel struct {
 	users    map[string]*fakeUser
 	sessions map[string]*fakeSession
 	intents  map[string]*fakeIntent
-	mails    []fakeMail // what the issuer "sent"
-	calls    []string   // "METHOD /path", every call
-	grants   []string   // "userID:role"
+	// intentURLs is the urls object of the last intent started.
+	intentURLs map[string]any
+	mails      []fakeMail // what the issuer "sent"
+	calls      []string   // "METHOD /path", every call
+	grants     []string   // "userID:role"
 
 	// refusedPassword is a password the issuer's policy refuses although it
 	// meets every rule the broker can see (DOMAIN-ZDLwA, "no symbol").
 	refusedPassword string
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
+	// clk is the issuer's clock: passwordChanged is dated by it, and every
+	// client() shares it, so the broker's dates and the issuer's never
+	// disagree with the wall clock in between.
+	clk *fakeClock
+	// passwordSetAnswerLost makes the next password set succeed at the
+	// issuer and then answer 504, as a lost response does.
+	passwordSetAnswerLost bool
+	// failEmailResends makes that many verification-code mints
+	// (POST /v2/users/{id}/email/resend) fail (500).
+	failEmailResends int
 	// failLinks makes the link listing fail (a revocation that cannot
 	// complete).
 	failLinks bool
@@ -54,6 +66,17 @@ type fakeZitadel struct {
 	failUnlock bool
 	// failMetadataDeletes makes that many metadata deletes fail (500).
 	failMetadataDeletes int
+	// failMetadataWrites makes that many metadata writes fail (500).
+	failMetadataWrites int
+	// failUserReads makes that many account reads (GET /v2/users/{id})
+	// fail (500); failMethodReads, that many sign-in-method reads.
+	failUserReads, failMethodReads int
+	// failUsernameChanges makes that many username changes fail (500): a
+	// broker that stops part-way through a takeover.
+	failUsernameChanges int
+	// failUsernameChangeOf makes the next username change of that one
+	// account fail (500).
+	failUsernameChangeOf string
 	// beforeRequest, when set, runs before every request is served, with
 	// mu released: a test pauses one request there to force an interleaving.
 	beforeRequest func(*http.Request)
@@ -67,20 +90,36 @@ type fakeUser struct {
 	id, email, loginName string
 	verified             bool
 	password             string
-	otpEmail             bool
-	passkeys             []Passkey
-	pendingPasskey       string
-	inviteCode           string
-	emailCode            string
-	pkRegCode            PasskeyRegistrationCode
-	resetCode            string
-	links                []IDPLink
-	metadata             map[string]string
-	locked               bool
-	totp                 bool
+	// passwordChanged is when password was last set (zero: never, or
+	// seeded without a date).
+	passwordChanged time.Time
+	otpEmail        bool
+	passkeys        []Passkey
+	pendingPasskey  string
+	inviteCode      string
+	emailCode       string
+	pkRegCode       PasskeyRegistrationCode
+	resetCode       string
+	links           []IDPLink
+	metadata        map[string]string
+	locked          bool
+	totp            bool
+	otpSMS          bool
 	// unprojected counts the session creations still to be refused for
 	// this user (projectionLag); negative refuses them all.
 	unprojected int
+	// username is what loginName derives from (a username change moves
+	// both); "" reads as loginName. Only usernames are unique; a test may
+	// give loginName a value of its own (an org-domain-suffixed one).
+	username string
+}
+
+// name is the account's username.
+func (u *fakeUser) name() string {
+	if u.username != "" {
+		return u.username
+	}
+	return u.loginName
 }
 
 type fakeSession struct {
@@ -103,7 +142,7 @@ type fakeMail struct {
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
 	t.Helper()
-	f := &fakeZitadel{t: t, users: map[string]*fakeUser{}, sessions: map[string]*fakeSession{}, intents: map[string]*fakeIntent{}}
+	f := &fakeZitadel{t: t, users: map[string]*fakeUser{}, sessions: map[string]*fakeSession{}, intents: map[string]*fakeIntent{}, clk: &fakeClock{t: fakeEpoch}}
 	mux := http.NewServeMux()
 	f.routes(mux)
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +169,9 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	return f
 }
 
-func (f *fakeZitadel) client() *Client { return &Client{Base: f.srv.URL, Token: "broker-token"} }
+func (f *fakeZitadel) client() *Client {
+	return &Client{Base: f.srv.URL, Token: "broker-token", clk: f.clk}
+}
 
 // statusRecorder notes the status a handler answered with.
 type statusRecorder struct {
@@ -165,7 +206,10 @@ func (f *fakeZitadel) id(prefix string) string {
 func (f *fakeZitadel) addUser(email string, verified bool, password string) *fakeUser {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	u := &fakeUser{id: f.userID(), email: email, loginName: email, verified: verified, password: password}
+	u := &fakeUser{id: f.userID(), email: email, loginName: email, username: email, verified: verified, password: password}
+	if password != "" {
+		u.passwordChanged = f.clock()
+	}
 	f.users[u.id] = u
 	return u
 }
@@ -174,6 +218,15 @@ func (f *fakeZitadel) user(id string) *fakeUser {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.users[id]
+}
+
+// passwordState reports whether the account's address is verified and the
+// password it holds, read under the lock.
+func (f *fakeZitadel) passwordState(id string) (verified bool, password string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.users[id]
+	return u.verified, u.password
 }
 
 func (f *fakeZitadel) userByEmail(email string) *fakeUser {
@@ -299,8 +352,16 @@ func humanJSON(u *fakeUser) map[string]any {
 	if u.locked {
 		state = "USER_STATE_LOCKED"
 	}
-	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName, "state": state,
-		"human": map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}}
+	return map[string]any{"userId": u.id, "preferredLoginName": u.loginName, "username": u.name(), "state": state,
+		"human": humanPart(u)}
+}
+
+func humanPart(u *fakeUser) map[string]any {
+	h := map[string]any{"email": map[string]any{"email": u.email, "isVerified": u.verified}}
+	if !u.passwordChanged.IsZero() {
+		h["passwordChanged"] = u.passwordChanged.UTC().Format(time.RFC3339Nano)
+	}
+	return h
 }
 
 func (f *fakeZitadel) routes(mux *http.ServeMux) {
@@ -476,16 +537,31 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		ids := make([]string, 0, len(f.users))
+		for id := range f.users {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
 		res := []any{}
-		for _, u := range f.users {
+		for _, id := range ids {
 			// The search reads the same projection: an unprojected user is not found.
-			if email != "" && strings.EqualFold(u.email, email) && u.unprojected == 0 {
+			if u := f.users[id]; (email == "" || strings.EqualFold(u.email, email)) && u.unprojected == 0 {
 				res = append(res, humanJSON(u))
 			}
 		}
-		ok(w, map[string]any{"result": res})
+		ok(w, f.page(b, "result", res))
 	})
 	mux.HandleFunc("GET /v2/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		fail := f.failUserReads > 0
+		if fail {
+			f.failUserReads--
+		}
+		f.mu.Unlock()
+		if fail {
+			zerr(w, 500, "INTERNAL-fake", "the account could not be read")
+			return
+		}
 		u := f.user(r.PathValue("id"))
 		if u == nil {
 			zerr(w, 404, "QUERY-nf", "not found")
@@ -505,7 +581,20 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: str(em, "email"), password: pw, unprojected: f.projectionLag}
+		username := str(b, "username")
+		if username == "" {
+			username = str(em, "email")
+		}
+		for _, o := range f.users {
+			if strings.EqualFold(o.name(), username) {
+				zerr(w, 409, "COMMAND-CtWB9", "Errors.User.AlreadyExists")
+				return
+			}
+		}
+		u := &fakeUser{id: f.userID(), email: str(em, "email"), loginName: username, username: username, password: pw, unprojected: f.projectionLag}
+		if pw != "" {
+			u.passwordChanged = f.clock()
+		}
 		u.verified, _ = em["isVerified"].(bool)
 		if sc := sub(em, "sendCode"); sc != nil {
 			u.emailCode = f.id("ev")
@@ -551,6 +640,37 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		u.otpEmail = true
 		ok(w, map[string]any{})
 	}))
+	mux.HandleFunc("PUT /v2/users/human/{id}", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failUsernameChangeOf == u.id {
+			f.failUsernameChangeOf = ""
+			zerr(w, 500, "COMMAND-fake", "username change failed")
+			return
+		}
+		if f.failUsernameChanges > 0 {
+			f.failUsernameChanges--
+			zerr(w, 500, "COMMAND-fake", "username change failed")
+			return
+		}
+		if name := str(b, "username"); name != "" {
+			for _, o := range f.users {
+				if o != u && strings.EqualFold(o.name(), name) {
+					zerr(w, 409, "COMMAND-CtWB9", "Errors.User.AlreadyExists")
+					return
+				}
+			}
+			u.username, u.loginName = name, name
+		}
+		ok(w, map[string]any{})
+	}))
+	mux.HandleFunc("POST /v2/users/{id}/email", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		u.email, u.verified, u.emailCode = str(b, "email"), false, f.id("ev")
+		if sub(b, "returnCode") != nil {
+			ok(w, map[string]any{"verificationCode": u.emailCode})
+			return
+		}
+		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode})
+		ok(w, map[string]any{})
+	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/verify", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
 		if u.emailCode == "" || str(b, "verificationCode") != u.emailCode {
 			zerr(w, 400, "CODE-woT0xc", "Code is invalid")
@@ -560,7 +680,16 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/resend", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failEmailResends > 0 {
+			f.failEmailResends--
+			zerr(w, 500, "INTERNAL-fake", "the verification code could not be minted")
+			return
+		}
 		u.emailCode = f.id("ev")
+		if sub(b, "returnCode") != nil {
+			ok(w, map[string]any{"verificationCode": u.emailCode})
+			return
+		}
 		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode, link: f.render(str(sub(b, "sendCode"), "urlTemplate"), u, u.emailCode, "")})
 		ok(w, map[string]any{})
 	}))
@@ -594,14 +723,41 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 			zerr(w, 500, "INTERNAL", "the issuer is down")
 			return
 		}
-		u.password, u.resetCode = pw, ""
+		u.password, u.resetCode, u.passwordChanged = pw, "", f.clock()
+		if f.passwordSetAnswerLost {
+			// The issuer installed the password and consumed the code, and
+			// its answer never arrived.
+			f.passwordSetAnswerLost = false
+			zerr(w, 504, "UNAVAILABLE-fake", "the answer was lost")
+			return
+		}
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("GET /v2/users/{id}/authentication_methods", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		fail := f.failMethodReads > 0
+		if fail {
+			f.failMethodReads--
+		}
+		f.mu.Unlock()
+		if fail {
+			zerr(w, 500, "INTERNAL-fake", "the sign-in methods could not be read")
+			return
+		}
 		u := f.user(r.PathValue("id"))
 		types := []string{}
-		if u != nil && u.password != "" {
-			types = append(types, "AUTHENTICATION_METHOD_TYPE_PASSWORD")
+		if u != nil {
+			f.mu.Lock()
+			for _, m := range []struct {
+				has  bool
+				kind string
+			}{{u.password != "", "PASSWORD"}, {len(u.passkeys) > 0, "PASSKEY"}, {len(u.links) > 0, "IDP"},
+				{u.totp, "TOTP"}, {u.otpSMS, "OTP_SMS"}, {u.otpEmail, "OTP_EMAIL"}} {
+				if m.has {
+					types = append(types, "AUTHENTICATION_METHOD_TYPE_"+m.kind)
+				}
+			}
+			f.mu.Unlock()
 		}
 		ok(w, map[string]any{"authMethodTypes": types})
 	})
@@ -753,6 +909,11 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/metadata", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failMetadataWrites > 0 {
+			f.failMetadataWrites--
+			zerr(w, 500, "COMMAND-fake", "metadata write failed")
+			return
+		}
 		if u.metadata == nil {
 			u.metadata = map[string]string{}
 		}
@@ -777,6 +938,7 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		b := readBody(r)
 		f.mu.Lock()
 		id := f.id("intent")
+		f.intentURLs = sub(b, "urls")
 		f.mu.Unlock()
 		ok(w, map[string]any{"authUrl": "https://accounts.example/authorize?client_id=x&state=" + id + "&idp=" + str(b, "idpId")})
 	})
@@ -804,4 +966,53 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		}
 		ok(w, res)
 	})
+}
+
+// snapshot is everything the issuer holds about an account — its fields,
+// credentials, codes, metadata and sessions — as one comparable string.
+func (f *fakeZitadel) snapshot(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.users[id]
+	if u == nil {
+		return "<none>"
+	}
+	keys := make([]string, 0, len(u.metadata))
+	for k := range u.metadata {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	md := make([]string, 0, len(keys))
+	for _, k := range keys {
+		md = append(md, k+"="+u.metadata[k])
+	}
+	var sessions []string
+	for sid, sess := range f.sessions {
+		if sess.userID == id {
+			sessions = append(sessions, fmt.Sprintf("%s:%v", sid, sess.deleted))
+		}
+	}
+	sort.Strings(sessions)
+	return fmt.Sprintf("email=%s name=%s verified=%v locked=%v password=%q otpEmail=%v otpSMS=%v totp=%v passkeys=%v pending=%q links=%v invite=%q emailCode=%q reset=%q md=%v sessions=%v",
+		u.email, u.name(), u.verified, u.locked, u.password, u.otpEmail, u.otpSMS, u.totp, u.passkeys, u.pendingPasskey, u.links,
+		u.inviteCode, u.emailCode, u.resetCode, md, sessions)
+}
+
+func (f *fakeZitadel) clock() time.Time { return f.clk.now() }
+
+// fakeEpoch is where every fake issuer's clock starts: fixed, so no
+// first-password date depends on the wall clock.
+var fakeEpoch = time.Date(2026, time.March, 2, 9, 0, 0, 0, time.UTC)
+
+// fakeClock is a settable clock shared by the fake issuer and a client.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
 }

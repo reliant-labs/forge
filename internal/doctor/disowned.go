@@ -7,10 +7,7 @@ package doctor
 // Unlike the old fork limbo this is a legitimate END STATE, so the
 // check is informational — it reports the count and the paths (PASS,
 // never a warning) purely so the routine health view keeps the
-// project's ownership map visible. Legacy `forked: true` entries (left
-// by pre-disown forge versions, converted on the next `forge generate`)
-// are converted to disowned.json by the legacy-manifest migration on
-// the next `forge generate`, so this check reads one source of truth.
+// project's ownership map visible.
 
 import (
 	"context"

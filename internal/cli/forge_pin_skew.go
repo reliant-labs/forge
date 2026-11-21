@@ -14,8 +14,9 @@ package cli
 // its 12-hex commit. Two pseudo-versions of one commit are the same forge;
 // two commits are not, whatever their timestamps say.
 //
-// Every project command warns. The commands that BUILD, RELEASE or DEPLOY
-// refuse, because what they produce is a function of the binary (a bundle
+// Every project command warns, except the few whose behaviour no forge
+// version changes (pinIndependentCommands). The commands that BUILD, RELEASE
+// or DEPLOY refuse, because what they produce is a function of the binary (a bundle
 // records the forge that rendered it), and an artifact made by an unpinned
 // forge is one the project cannot reproduce. So do the commands that
 // REWRITE the project's files from the binary's templates (generate,
@@ -35,6 +36,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v3"
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
@@ -99,6 +101,42 @@ func pinGateFor(rel string) (readOnlyFlags []string, gated bool) {
 	return nil, false
 }
 
+// pinIndependentCommands are command groups that run as whichever forge is at
+// hand and say nothing about the project's pin: what they do is the same under
+// every forge, so the skew warning is noise. Each is also in handOffExempt
+// (never handed to the pinned forge) and never pin-gated
+// (TestPinIndependentCommandsRunHere holds both).
+//
+//   - slot: machine-level coordination. Every forge shares one slot directory
+//     (FORGE_SLOTS_DIR, else <user cache dir>/forge/slots/<class>), takes a
+//     slot by flock on slot-<i>.lock, and queues by locked ticket files, so a
+//     slot taken by one forge is held against every other. Nothing it does
+//     reads forge.yaml. reliant's `task test` runs through `slot run`, and
+//     printed the warning on every run (forge bug report afa50061).
+//
+//   - test begin, test capture: plumbing in front of every test lane, like
+//     slot. What they write is the versioned forge.test.run/v1 and
+//     forge.test.lane/v1 layout (pkg/testreport), the same under every forge
+//     that has them, and capture's one promise is the command's own exit
+//     status: a hand-off that failed (the pinned forge cannot be built
+//     offline) would fail a lane the tests passed.
+//
+// `storage` is deliberately absent: it runs THIS forge's cache-trimming rules
+// (handOffExempt says why), and those differ between forges, so which forge
+// trimmed the cache is worth saying.
+var pinIndependentCommands = []string{"slot", "test begin", "test capture"}
+
+// pinIndependent reports whether rel (relative to forge's root) is, or is
+// under, a pinIndependentCommands group.
+func pinIndependent(rel string) bool {
+	for _, group := range pinIndependentCommands {
+		if rel == group || strings.HasPrefix(rel, group+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 // readOnlyRun reports whether cmd was invoked with one of the gate's
 // read-only flags.
 func readOnlyRun(cmd *cobra.Command, readOnlyFlags []string) bool {
@@ -129,7 +167,7 @@ func registerVersionSkewFlags(root *cobra.Command) {
 	walk = func(c *cobra.Command) {
 		rel := commandRel(c, root)
 		_, gated := pinGateFor(rel)
-		if (gated || handOffWanted(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
+		if (gated || handOffWanted(rel) || skewFlagAccepted(rel)) && c.Flags().Lookup(allowVersionSkewFlag) == nil {
 			c.Flags().Bool(allowVersionSkewFlag, false,
 				"Run even though this forge is not the forge_version forge.yaml pins (also "+allowVersionSkewEnv+"=1)")
 		}
@@ -138,6 +176,25 @@ func registerVersionSkewFlags(root *cobra.Command) {
 		}
 	}
 	walk(root)
+}
+
+// skewFlagAcceptedGroups are command groups that run as this forge whatever
+// the pin says (handOffExempt), yet print the skew notice: they accept
+// --allow-version-skew so the advice an agent carries from one forge command
+// to the next is never "unknown flag" (`forge project upgrade list
+// --allow-version-skew` was refused). The flag changes nothing there but the
+// notice: they already run this forge.
+var skewFlagAcceptedGroups = []string{"project upgrade"}
+
+// skewFlagAccepted reports whether rel is, or is under, a
+// skewFlagAcceptedGroups group.
+func skewFlagAccepted(rel string) bool {
+	for _, g := range skewFlagAcceptedGroups {
+		if rel == g || strings.HasPrefix(rel, g+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 // pseudoCommitRE captures a Go pseudo-version's 12-hex commit.
@@ -319,7 +376,12 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 			return err
 		}
 	}
-	if projectRoot == "" {
+	if projectRoot == "" || pinIndependent(rel) || versionPinnedRun(cmd, rel) {
+		// `version --pinned` is not pin-independent — it is ABOUT the pin —
+		// but it reports the skew as its answer: the warning would only
+		// restate it, and probe the forge it is about to find. It is a flag
+		// of `version`, not a group, so pinIndependentCommands (whole
+		// groups) cannot name it; plain `version` keeps its warning.
 		return nil
 	}
 	readOnlyFlags, gated := pinGateFor(rel)
@@ -333,8 +395,113 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 	if gated && !readOnly && !(devAgainstTag && !pinBuildCommands[rel]) && !overridden {
 		return pinSkewRefusal(projectRoot, pin, binary, "forge "+rel)
 	}
-	_, _ = fmt.Fprint(w, pinSkewWarning(projectRoot, pin, binary, buildinfo.Current()))
+	if childOfThisForge() {
+		// The parent upgrade made the pin decision and said so.
+		return nil
+	}
+	_, _ = fmt.Fprint(w, pinSkewNotice(cmd, rel, projectRoot, pin, binary, overridden))
 	return nil
+}
+
+// upgradeRuns reports whether rel is `project upgrade` or one of its
+// subcommands.
+func upgradeRuns(rel string) bool {
+	return rel == "project upgrade" || strings.HasPrefix(rel, "project upgrade ")
+}
+
+// forgeChildOfEnv carries, to every process `forge project upgrade` starts,
+// the identity (forgeIdentity) of the forge running the upgrade — which, by
+// design, is not the forge the project still pins (handOffExempt). A forge
+// started with it set to its OWN identity is a child the upgrade started for
+// its own use — `forge protoc-gen-forge` under buf for the descriptor — and it
+// is not handed to the pin and prints no skew warning: the parent made the pin
+// decision and said so. It does not lift a refusal: a pin-gated command still
+// needs the pin or an explicit override.
+//
+// Without it the child made the decision again from forge.yaml and reached a
+// different answer: `project upgrade --check` (run, as documented, by the
+// target forge while forge.yaml still pins the old one) handed its
+// descriptor step to the cached build of the OLD forge ("running the cached
+// build of v1.7.1-… instead"), so the dry run analysed the project with the
+// codegen it is upgrading away from. A forge with another identity — the pin's
+// delegate, an unrelated forge on PATH — ignores the variable.
+const forgeChildOfEnv = "FORGE_CHILD_OF"
+
+// markChildrenRunThisForge scopes the child marker to the upgrade execution.
+// The caller must defer the returned restore function, including on errors.
+func markChildrenRunThisForge() func() {
+	previous, present := os.LookupEnv(forgeChildOfEnv)
+	if id := forgeIdentity(buildinfo.Version()); id != "" {
+		_ = os.Setenv(forgeChildOfEnv, id)
+	}
+	return func() {
+		if present {
+			_ = os.Setenv(forgeChildOfEnv, previous)
+		} else {
+			_ = os.Unsetenv(forgeChildOfEnv)
+		}
+	}
+}
+
+// childOfThisForge reports whether this process was started, for its own use,
+// by a forge of this binary's identity that runs under pin skew
+// (forgeChildOfEnv).
+func childOfThisForge() bool {
+	v := strings.TrimSpace(os.Getenv(forgeChildOfEnv))
+	return v != "" && v == forgeIdentity(buildinfo.Version())
+}
+
+// pinSkewNotice is what a command that runs under pin skew prints.
+//
+//   - `project upgrade` run by the forge it upgrades TO is the documented way
+//     to upgrade, not a skew: one line says so. The full warning told the
+//     agent to run the OLD pinned forge (upgrade-report defect 2).
+//   - Under an explicit override (--allow-version-skew, or
+//     FORGE_ALLOW_VERSION_SKEW=1) the caller already chose this forge: one
+//     line names both, without the install recipe it declined.
+//   - Otherwise the full warning, with the remedy.
+func pinSkewNotice(cmd *cobra.Command, rel, projectRoot, pin, binary string, overridden bool) string {
+	if line, ok := upgradeSkewNotice(cmd, rel, pin, binary); ok && upgradeRuns(rel) {
+		return line
+	}
+	if overridden {
+		return fmt.Sprintf("⚠️  forge %s is not the forge_version forge.yaml pins (%s); running it anyway (--%s / %s)\n",
+			binary, pin, allowVersionSkewFlag, allowVersionSkewEnv)
+	}
+	return pinSkewWarning(projectRoot, pin, binary, buildinfo.Current())
+}
+
+// upgradeSkewNotice is pinSkewNotice's answer for `project upgrade` and its
+// subcommands, which run as THIS forge by design (handOffExempt): ok is false
+// when the generic notice applies — a forge older than the pin.
+func upgradeSkewNotice(cmd *cobra.Command, rel, pin, binary string) (string, bool) {
+	if !upgradeRuns(rel) {
+		return "", false
+	}
+	pk, bk := semverKey(pin), semverKey(binary)
+	if pk == "" || bk == "" || semver.Compare(bk, pk) <= 0 {
+		return "", false
+	}
+	if rel != "project upgrade" {
+		return fmt.Sprintf("forge %s lists its own playbooks for this project's pin %s (forge.yaml; `%s project upgrade` moves it)\n",
+			binary, pin, Name()), true
+	}
+	to := ""
+	if cmd != nil {
+		if f := cmd.Flags().Lookup("to"); f != nil {
+			to = strings.TrimSpace(f.Value.String())
+		}
+	}
+	if to == "" || forgeIdentity(to) == forgeIdentity(binary) {
+		return fmt.Sprintf("forge %s is the upgrade target; forge.yaml pins %s, and this upgrade moves the pin\n", binary, pin), true
+	}
+	// --to names another forge than this one: the codemods and templates this
+	// run applies are this forge's, and the pin it writes is --to's.
+	var b strings.Builder
+	fmt.Fprintf(&b, "⚠️  this forge is %s, but --to is %s: the codemods and templates applied are this forge's.\n", binary, to)
+	fmt.Fprintf(&b, "   Run the upgrade with the target forge:\n")
+	fmt.Fprintf(&b, "       go run github.com/reliant-labs/forge/cmd/forge@%s %s\n", to, strings.Join(forgeInvocationArgs(), " "))
+	return b.String(), true
 }
 
 // internalReentry reports whether cmd is a child forge started by this binary

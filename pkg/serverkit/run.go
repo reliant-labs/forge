@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -128,7 +129,20 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// every registered dependency reachable. It is what a rolling deploy
 	// believes, so it runs the checks live on each request rather than
 	// reporting a value latched at boot. See readiness.go.
-	front := cfg.Probes.routes(drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger))
+	ready := drainer.ReadinessHandler(srv.ReadyChecks, cfg.ReadinessTimeout, logger)
+	front := cfg.Probes.routes(ready)
+	// The health rpc on the Mux the services were mounted on, built with the
+	// same handler options and answering from the same readiness (health.go).
+	// When Handler is not the Mux itself (a REST swap, or a wrapper around
+	// it), the rpc is routed to the Mux ahead of Handler, as the Listener does
+	// for its own REST swap: a transcoder serves only the project's services,
+	// so the rpc mounted beneath it would otherwise answer 404.
+	// A Server configured only for connect-go v2 builds it with its v2 chain.
+	if srv.Mux != nil && srv.mountHealthOn(ready) {
+		if srv.Handler != http.Handler(srv.Mux) {
+			srv.Handler = withHealthRoute(srv.Mux, srv.Handler)
+		}
+	}
 	// /flow-health: the APP-FLOW assertion endpoint. Mounted only when the
 	// caller registered FlowChecks. Like /healthz + /readyz it sits IN FRONT
 	// of the edge (no CORS/auth) and is STATUS-ONLY — 200 when every check
@@ -152,12 +166,13 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Server.Chain the listener also checks every mounted service's declared
 	// audience against the chain's, and refuses to serve a mismatch.
 	listener, err := newListener(ListenerDeps{
-		Config: cfg.Listener(),
-		Chain:  srv.Chain,
-		Routes: &handlerRoutes{handler: srv.Handler, services: srv.MountedNames()},
-		Logger: logger,
-		Edge:   edge,
-		Front:  front,
+		Config:  cfg.Listener(),
+		Chain:   srv.Chain,
+		ChainV2: srv.ChainV2,
+		Routes:  &handlerRoutes{handler: srv.Handler, services: srv.MountedNames()},
+		Logger:  logger,
+		Edge:    edge,
+		Front:   front,
 	})
 	if err != nil {
 		return err

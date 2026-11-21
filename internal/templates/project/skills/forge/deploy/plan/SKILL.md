@@ -151,6 +151,14 @@ deploy, whose release is resolved after the attempt opens). It is
 best-effort: a missing remote sends the rest, and it never fails a cut or a
 deploy.
 
+When one app (one forge.yaml `name` in an org) has been cut or deployed from
+two repositories, the control plane answers with a warning, and forge prints it
+once as `warning: …`: right after a cut, or after a deploy's own output.
+`forge env status` of a hosted env prints it too, and `--json` carries it as
+`code_sources.warning`. It never changes an exit code; if both repositories are
+not meant to deploy to the same environments, rename one app in its
+forge.yaml.
+
 ## Owned-object prune (direct apply)
 
 `kubectl apply` adds and updates; nothing reconciles the set. A release that

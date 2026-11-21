@@ -298,7 +298,11 @@ func (p *procRegistry) sweep(managed map[int]bool) (runSweep, *stopTable, error)
 	if p.runID == "" || p.projectID == "" {
 		return runSweep{}, nil, errors.New("this run has no ownership marker to sweep for")
 	}
-	sw := sweepRun(p.projectID, p.env, p.runID, p.startedAt, table, procguard.Self())
+	self := p.selfLineage
+	if self == nil {
+		self = procguard.Self
+	}
+	sw := sweepRun(p.projectID, p.env, p.runID, p.startedAt, table, self())
 	roots := sw.roots[:0]
 	for _, pid := range sw.roots {
 		if !managed[pid] && table.alive(pid) {

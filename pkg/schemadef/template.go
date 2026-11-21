@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/reliant-labs/forge/pkg/observe/dbtrace"
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
 
@@ -142,7 +143,7 @@ func (m *MigrationSet) openApplied(baseURL string) (*sql.DB, func(), error) {
 		cleanup()
 		return nil, nil, fmt.Errorf("apply migrations to shadow schema: %w", err)
 	}
-	db, err := sql.Open(pgtest.DriverName, dsn)
+	db, err := dbtrace.Open(pgtest.DriverName, dsn)
 	if err == nil {
 		err = db.Ping()
 	}

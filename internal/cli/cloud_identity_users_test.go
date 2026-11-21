@@ -99,7 +99,7 @@ func TestCloudIdentityUserVerbsWire(t *testing.T) {
 		{"reset --return-code", procIdentityResetPassword,
 			`{"code":{"code":"c0de","expiresAt":"2026-10-21T18:00:00Z","resetUrl":"https://app.example/auth/reset?userID=u1&code=c0de&orgID=o"}}`,
 			[]string{"reset", "prod", "--user", "u1", "--return-code"}, map[string]any{"returnCode": true},
-			[]string{"Password-set code issued for u1", "a credential", "expires at 2026-10-21T18:00:00Z", "cannot be extended", "https://app.example/auth/reset?userID=u1&code=c0de&orgID=o",
+			[]string{"Password-set code issued for u1", "a credential", "expires at 2026-10-21T18:00:00Z", "ManagedIdentity.code_lifetime sets how long codes live", "https://app.example/auth/reset?userID=u1&code=c0de&orgID=o",
 				"cloud identity reset prod --user u1 --return-code"}},
 		{"reset --return-code, no reset page", procIdentityResetPassword, `{"code":{"code":"c0de"}}`,
 			[]string{"reset", "prod", "--user", "u1", "--return-code"}, map[string]any{"returnCode": true},
@@ -227,9 +227,9 @@ func TestCloudIdentityUserVerbParsing(t *testing.T) {
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			previous := resolveIdentityCloudTarget
-			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, error) {
+			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, []string, error) {
 				t.Fatal("invalid command reached credential resolution")
-				return cloud.Endpoint{}, cloud.Credential{}, nil
+				return cloud.Endpoint{}, cloud.Credential{}, nil, nil
 			}
 			t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 			if _, err := executeIdentity(args...); err == nil {
@@ -299,9 +299,9 @@ func TestCloudIdentityElevatesSessionCredentialPerVerb(t *testing.T) {
 	defer srv.Close()
 
 	previous := resolveIdentityCloudTarget
-	resolveIdentityCloudTarget = func(_ context.Context, env, _ string) (cloud.Endpoint, cloud.Credential, error) {
+	resolveIdentityCloudTarget = func(_ context.Context, env, _ string) (cloud.Endpoint, cloud.Credential, []string, error) {
 		ep, err := cloud.ResolveEndpoint(env, &cloud.Declaration{Endpoint: srv.URL})
-		return ep, cloud.Credential{Token: "reliant-session", Source: cloud.SourceHelper, From: "Reliant session"}, err
+		return ep, cloud.Credential{Token: "reliant-session", Source: cloud.SourceHelper, From: "Reliant session"}, nil, err
 	}
 	t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 	withProjectName(t, "shop")

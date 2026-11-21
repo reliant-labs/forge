@@ -4,7 +4,6 @@ package cli
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,9 +19,7 @@ import (
 	"testing"
 	"time"
 
-	collectortrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/reliant-labs/forge/pkg/pgtest"
 )
@@ -57,7 +54,9 @@ func TestE2ETraceDepth(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "traceapp", "--mod", "example.com/traceapp", "--service", "widgets")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "traceapp", "--mod", "example.com/traceapp", "--service", "widgets", "--connect", "v1")
 	projectDir := filepath.Join(dir, "traceapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
@@ -112,16 +111,16 @@ func writeTraceDepthCode(t *testing.T, projectDir string) {
 		writeFileE2E(t, p, strings.Replace(s, old, new, 1))
 	}
 
-	edit("internal/pricing/contract.go", "type Service interface {\n\t// Define your interface methods here.\n}",
-		"type Service interface {\n\tQuote(ctx context.Context, id string) (int64, error)\n}")
-	edit("internal/pricing/contract.go", "package pricing\n", "package pricing\n\nimport \"context\"\n")
 	edit("internal/pricing/service.go", "\t// Add your dependencies here.\n}", "\tWidgets db.WidgetStore\n\tRates   rates.Service\n}")
 	edit("internal/pricing/service.go", "import (\n",
 		"import (\n\t\"context\"\n\n\t\"example.com/traceapp/internal/db\"\n\t\"example.com/traceapp/internal/rates\"\n")
 	// Instrumented by DEFAULT: drop the scaffold's opt-in marker.
 	edit("internal/pricing/service.go", "// forge:constructor\n//\n", "")
 	svc := readFileE2E(t, filepath.Join(projectDir, "internal", "pricing", "service.go"))
+	// The contract is the //forge:contract service type's method set:
+	// generate derives Service (with Quote) into contract_gen.go.
 	writeFileE2E(t, filepath.Join(projectDir, "internal", "pricing", "service.go"), svc+`
+// Quote prices the widget stored under id.
 func (s *service) Quote(ctx context.Context, id string) (int64, error) {
 	s.deps.Logger.InfoContext(ctx, "trace-depth: quoting", "widget", id)
 	w, err := s.deps.Widgets.GetWidgetByID(ctx, id)
@@ -165,48 +164,6 @@ func (s *Service) QuoteWidget(
 `)
 	// The scaffolded row test asserts the stub's Unimplemented answer.
 	_ = os.Remove(filepath.Join(projectDir, "internal", "handlers", "widgets", "handlers_scaffold_quote_widget_test.go"))
-}
-
-// otlpSink is an OTLP/HTTP trace receiver: it keeps every span it is sent.
-type otlpSink struct {
-	mu    sync.Mutex
-	spans []*tracepb.Span
-}
-
-func (s *otlpSink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/v1/traces" {
-		w.WriteHeader(http.StatusOK) // metrics, logs, profiles: accepted, ignored
-		return
-	}
-	var body io.Reader = r.Body
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		zr, err := gzip.NewReader(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		body = zr
-	}
-	raw, err := io.ReadAll(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	var req collectortrace.ExportTraceServiceRequest
-	if err := proto.Unmarshal(raw, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	s.mu.Lock()
-	for _, rs := range req.GetResourceSpans() {
-		for _, ss := range rs.GetScopeSpans() {
-			s.spans = append(s.spans, ss.GetSpans()...)
-		}
-	}
-	s.mu.Unlock()
-	out, _ := proto.Marshal(&collectortrace.ExportTraceServiceResponse{})
-	w.Header().Set("Content-Type", "application/x-protobuf")
-	_, _ = w.Write(out)
 }
 
 // trace returns the spans of one trace, keyed by hex span id.

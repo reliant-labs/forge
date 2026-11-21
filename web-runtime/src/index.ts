@@ -26,7 +26,9 @@ export {
   headerInterceptor,
   interactionContextInterceptor,
   retryInterceptor,
+  rpcSpanInterceptor,
   traceInterceptor,
+  type RpcSpanOptions,
   type RuntimeInterceptorConfig,
 } from "./interceptors.js";
 
@@ -231,6 +233,54 @@ export {
   type ExposureHookContext,
   type ExposureOptions,
 } from "./exposure.js";
+
+/**
+ * Forge Changes evaluated in the browser: remote config, gradual rollouts and
+ * A/B tests as one model, decided locally from a versioned snapshot with
+ * sticky, hash-based cohorts. The twin of forge/pkg/changes (same results,
+ * one shared set of golden vectors); renamed here because the barrel is flat
+ * (`evaluateChange` is changes.ts's `evaluate`). Imports nothing.
+ */
+export {
+  evaluate as evaluateChange,
+  parseSnapshot as parseChangesSnapshot,
+  previewHash as changePreviewHash,
+  type EvalContext as ChangeEvalContext,
+  type Reason as ChangeReason,
+  type Result as ChangeResult,
+  type Snapshot as ChangesSnapshot,
+} from "./changes.js";
+
+/**
+ * Forge Changes for an app: `loadChanges()` fetches the environment's
+ * snapshot (`/_forge/changes.json`) once per page and never rejects;
+ * `store.evaluate(key, ctx)` decides a change and records `flag_evaluated`
+ * (provider forge, with run, unit, reason and revision) for enrolled,
+ * preview and everyone results. `changeBool` / `changeString` /
+ * `changeNumber` / `changeJson` read a result with the default in code.
+ */
+export {
+  CHANGES_SNAPSHOT_URL,
+  changeBool,
+  changeJson,
+  changeNumber,
+  changeString,
+  loadChanges,
+  type ChangesStore,
+  type LoadChangesOptions,
+} from "./changes-store.js";
+
+/**
+ * The OpenFeature web provider for Forge Changes, typed structurally (no
+ * OpenFeature dependency):
+ * `OpenFeature.setProvider(forgeChangesProvider(await loadChanges()))`.
+ */
+export {
+  forgeChangesProvider,
+  type ChangesProvider,
+  type ChangesProviderContext,
+  type ChangesResolution,
+} from "./changes-provider.js";
 
 /**
  * The standard auth events (`auth_signed_up`, `auth_signed_in`,

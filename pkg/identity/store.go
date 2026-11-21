@@ -173,7 +173,11 @@ type Output struct {
 	// the audience and the roles claim.
 	Scopes []string `json:"scopes"`
 	// JWKS is a snapshot of the instance's public signing keys, for a validator
-	// that must start while the issuer is unreachable.
+	// that must start while the issuer is unreachable. It is forge/pkg/auth's
+	// snapshot document: the JWKS plus `issuer` and `delivered_at`, the time
+	// of this pass. delivered_at therefore moves on every pass; a publisher
+	// that writes only on change compares the key set (and rewrites once the
+	// delivered stamp grows old), not the bytes.
 	JWKS json.RawMessage `json:"jwks,omitempty"`
 	// Apps are the registered applications by name.
 	Apps map[string]AppOutput `json:"apps,omitempty"`

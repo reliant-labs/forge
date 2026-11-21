@@ -511,15 +511,6 @@ func ServiceHookFile(name string) string {
 	return ToKebabCase(name) + "-hooks_gen.ts"
 }
 
-// ServiceHookFileLegacy returns the PRE-`_gen` hook filename for a service.
-//
-// It exists for exactly one caller: the retirement sweep that deletes the
-// old copy out of a project generated before the rename. Nothing emits this
-// name anymore.
-func ServiceHookFileLegacy(name string) string {
-	return ToKebabCase(name) + "-hooks.ts"
-}
-
 // ProtoPackageVersion extracts the proto API version from a fully-qualified
 // proto package name — the LAST dotted segment when it has the protobuf
 // version shape `v<major>` optionally suffixed with a stability channel

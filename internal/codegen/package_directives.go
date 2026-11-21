@@ -56,6 +56,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/pkgdirective"
 )
@@ -77,8 +78,12 @@ const (
 	// skill itself encourages) no longer hits a hard lint + a multi-file
 	// rename. Both spellings mean the same thing; `contract` reads better on
 	// a non-adapter package, `service` on a service-shaped one.
+	//
+	// `//forge:contract` (only) also goes on a type that is NOT an
+	// interface: the implementation. Its exported method set is then the
+	// contract, derived into contract_gen.go as `Service` (contractsrc).
 	directiveServiceMarker  = "forge:service"
-	directiveContractMarker = "forge:contract"
+	directiveContractMarker = contractsrc.Marker
 
 	// directiveConstructorMarker sits on the package constructor's (`func New`)
 	// doc comment. It is the Phase-2 opt-in signal for the generated
@@ -161,8 +166,11 @@ func observePackageDecision(dir string) (hasConstructorMarker, hasNoObserve bool
 						continue
 					}
 					// Only the INTERFACE type-decl doc slots — never a method
-					// field's doc, so a method-level opt-out is not seen here.
-					if _, isIface := ts.Type.(*ast.InterfaceType); !isIface {
+					// field's doc, so a method-level opt-out is not seen here —
+					// and the doc of a `//forge:contract` type, which stands in
+					// for the interface derived from it.
+					if _, isIface := ts.Type.(*ast.InterfaceType); !isIface &&
+						!anyCommentGroupHasDirective(directiveContractMarker, d.Doc, ts.Doc, ts.Comment) {
 						continue
 					}
 					if anyCommentGroupHasDirective(directiveNoObserve, d.Doc, ts.Doc, ts.Comment) {
@@ -237,7 +245,9 @@ func HasServiceContractMarker(groups ...*ast.CommentGroup) bool {
 // contract interface — the type key a consumer's by-type Deps field is
 // matched against, and the interface the contract-name lint accepts:
 //
-//   - "Service"  — a type named `Service` exists (interface OR struct):
+//   - "Service"  — a type named `Service` exists (interface OR struct), or
+//     a non-interface type carries `//forge:contract` and the contract is
+//     derived from it into contract_gen.go as `Service` (contractsrc):
 //     the zero-annotation canonical path, unchanged and always preferred.
 //   - <name>     — no `Service` type, but an interface carries the
 //     `//forge:service` / `//forge:contract` marker: the marker frees the
@@ -251,6 +261,12 @@ func HasServiceContractMarker(groups ...*ast.CommentGroup) bool {
 // error the lint can surface separately. Non-test, non-generated files
 // only. Unreadable/unparseable dirs return "".
 func DetectServiceInterfaceName(dir string) string {
+	// A `//forge:contract` type's contract is derived into contract_gen.go
+	// under the canonical name (contractsrc), which this scan — over
+	// hand-written files only — never sees.
+	if contractsrc.HasMarkedType(dir) {
+		return contractsrc.InterfaceName
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""

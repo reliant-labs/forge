@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/buildtarget"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
@@ -164,7 +165,9 @@ environment.
 
 WHERE THE LEDGER LIVES is declared by the environment, not chosen by a flag:
 an env whose KCL declares forge.ControlPlane records promotions on that control
-plane; every other env records them in .forge/promotions/<env>.jsonl.
+plane; every other env records them in this machine's ledger under
+$FORGE_LEDGER_HOME (default ~/.forge/ledger), shared by every worktree of the
+project. ` + "`forge ledger where <env>`" + ` says which, and why.
 
 EVERY DEPLOY IS A NEW ENTRY, NOT AN EDIT. Re-deploying the release an env
 already runs appends nothing and still applies and waits; a CI retry is safe.
@@ -233,6 +236,17 @@ because it is the one outcome that must be impossible to misread as success:
 a pipeline that upgrades without adding --yes exits 5, and even a handler
 that still reads 5 as "the wait timed out" fails the job rather than passing
 it. Pre-1.0, so this is a clean renumber with no alias.
+
+THE LAST LINE SAYS HOW IT ENDED. A deploy that can write ends its text output
+with one RESULT line: the exit code as a word (ok, failed, queued, pending,
+undetermined, unconfirmed), the env, the URL, the release, a claimable deploy's
+claim link, a failure's stage and reason, and the next command:
+
+  RESULT: ok env=prod url=https://shop.example release=v1.4.0 next: forge obs check prod --wait
+  RESULT: failed stage=build env=prod reason="frontend web: build: exit status 1" next: …
+
+A successful hosted deploy prints, just above it, what the release has with no
+setup (from ` + "`forge project benefits`" + `) and where its dashboards are.
 
 --json carries the same outcome: ` + "`applied`" + `, ` + "`confirmed`" + ` (whether the gate let
 the write happen), and a ` + "`refusal`" + ` object naming what was expected and what is
@@ -354,7 +368,12 @@ func newDeployCmd() *cobra.Command {
 				return err
 			}
 			apply.promote = promote
-			return dispatchDeployCmd(cmd.Context(), args[0], apply)
+			// The deploy's last line says how it ended (deploy_outcome.go).
+			ctx, outcome := withDeployOutcome(cmd.Context(), args[0])
+			err = dispatchDeployCmd(ctx, args[0], apply)
+			// os.Stdout as it is now, not at init: a caller (a test, the MCP
+			// server) may have redirected it for this run.
+			return finishDeployOutcome(ctx, outcome, apply, err, os.Stdout)
 		},
 	}
 
@@ -379,11 +398,13 @@ func registerDeployApplyFlags(cmd *cobra.Command, f *deployCmdFlags) {
 	flags.StringVar(&f.namespace, "namespace", "", "Override namespace from environment config")
 	flags.BoolVar(&f.explain, "explain", false, "Print the declared-cluster guard decision (declared/current/verdict) and exit")
 	flags.StringVar(&f.targetArch, "target-arch", "", "Override target GOARCH for cross-compilation (default: forge.yaml deploy.target_arch, then amd64)")
+	flags.BoolVar(&f.noSBOM, "no-sbom", false, "When this deploy cuts a release (no version named): cut it without generating an SBOM for each artifact. Warns, and each artifact records why it has none. No effect when the deploy promotes an existing release")
 	flags.BoolVar(&f.prune, "prune", false, "Delete forge-managed Deployments in the namespace that the current KCL render no longer produces (opt-in)")
 	flags.StringArrayVar(&f.targets, "target", nil, "Deploy ONLY the named application(s) (service/operator/frontend name; repeatable). Scopes K8sCluster apply to the app's workload + shared resources, and External/Compose dispatch to the named apps. Empty = deploy the whole env bundle (default).")
 	flags.BoolVar(&f.skipFrontend, "skip-frontend", false, "Deploy every backend workload but skip the static frontend build+ship (hosted static hosting, a bucket or Firebase). The backend-only path without enumerating every --target.")
 	flags.BoolVar(&f.frontendsOnly, "frontends-only", false, "Deploy ONLY the env's shippable frontend(s) — build + ship to hosted static hosting, a bucket or Firebase Hosting, skipping every backend workload (Services, Operators, CronJobs, gateways). The inverse of --skip-frontend; the native 'ship just the frontend' path that doesn't touch kubectl. Mutually exclusive with --skip-frontend and --target.")
 	flags.BoolVar(&f.skipPreflight, "skip-preflight", false, "Skip the deploy preflight (verify referenced Secret keys + container images exist on the live target BEFORE applying). Default-on for remote/cloud clusters; bypass at your own risk.")
+	flags.BoolVar(&f.verbose, "verbose", false, "Stream every build step's output (docker builds, dependency installs, framework builds) as it runs. By default each step prints one line with its duration, the full output goes to .forge/logs/<env>/deploy.log, and a failing step prints its last lines and that path")
 	flags.BoolVar(&f.noDigest, "no-digest", false, "Deploy by the mutable :tag even when the build state captured an immutable image digest. By default forge pins the manifest to <image>@sha256:... so a re-tagged/cached layer can't ship; this escape hatch restores tag-based references.")
 	flags.BoolVar(&f.offlineLedger, "offline-ledger", false, "Break-glass for a control plane that is down: deploy the env's cached CURRENT release by its recorded digests (nothing is built, the ledger is not contacted) and queue the promotion record, replayed idempotently on the next successful ledger contact. Refuses a hosted tier and a hub-converged env, and a move to any other release. Prints the cache's age; the cache is refreshed by every successful ledger read or write")
 	flags.StringVar(&f.offlineTo, "to", "", "With --offline-ledger: deploy this CACHED release instead of the current one — a release version, a cached promotion id, or `previous` (the release before the current one). The rollback for a bad release that took the control plane down. Refused if the release is not in this machine's offline copy (`forge env status <env>` lists what is)")
@@ -432,6 +453,10 @@ type promoteCmdFlags struct {
 	// healthGateAckCode with the reason as the note; see
 	// withHealthGateOverride.
 	overrideHealthGate string
+	// overrideVulnGate is the recorded reason to promote past the env's
+	// vuln_gate and provenance_sbom refusals, for an env forge judges
+	// (vuln_gate_promote.go).
+	overrideVulnGate string
 	// rerecordBundle replaces a release's bundle of record when this
 	// checkout renders different objects than the one recorded (see
 	// release_bundle_of_record.go). Off, such a render is refused.
@@ -498,6 +523,8 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 		"Accept the named stop-class finding codes (comma-separated), e.g. stateful_deletion. REQUIRED for every destructive change the plan reports, and --yes does not cover them: --yes is the flag that ends up hard-coded in CI, and one that covered destructive changes would silently pre-approve every future one. The codes are not knowable in advance — run --plan-only to see them")
 	flags.StringVar(&f.overrideHealthGate, "override-health-gate", "",
 		"Promote even though the env's health gate (delivery_policy.health_gate) refuses: an env it follows has not proved this release good. Give the reason; it is recorded on the promotion with who overrode it. For incidents — the gate's refusal says what is missing")
+	flags.StringVar(&f.overrideVulnGate, "override-vuln-gate", "",
+		"Promote even though the env's vuln_gate (a blocking advisory, or an artifact nobody scanned) or provenance_sbom (an artifact with no SBOM) refuses. Give the reason; it is recorded on the promotion with who overrode it and which findings. For one promotion: the durable answer is an exemption (forge vuln exempt)")
 	flags.StringVar(&f.actor, "actor", "", "Name the automation recording this (e.g. ci); default is the local user")
 	flags.BoolVar(&f.skipHubCheck, "skip-hub-check", false,
 		"Record a hub-converged env's promotion even when its control plane's hub reports the reconciler failing. Without it, such a deploy is refused before anything is recorded")
@@ -548,6 +575,9 @@ func registerPromoteFlags(cmd *cobra.Command, f *promoteCmdFlags) {
 // exclusions, the rollout-policy assembly) live in a function that can be read
 // and tested on its own.
 type deployCmdFlags struct {
+	// verbose streams every build step's output instead of one line per
+	// step (buildlog).
+	verbose       bool
 	organization  string
 	tag           string
 	dryRun        bool
@@ -587,6 +617,9 @@ type deployCmdFlags struct {
 	rolloutOrder    []string
 
 	promote promoteCmdFlags
+	// noSBOM is --no-sbom: the release this deploy cuts gets no SBOMs
+	// (build_sbom.go).
+	noSBOM bool
 }
 
 // dispatchDeployCmd validates the flag combination and routes to the release
@@ -614,6 +647,10 @@ func dispatchDeployCmd(ctx context.Context, envName string, f deployCmdFlags) (e
 	// a phase or a subprocess prints on the way to it.
 	if f.jsonOut {
 		defer reserveStdoutForJSON()()
+	}
+	// One line per build step, the full output in a file (buildlog).
+	if session := beginDeployBuildLog(envName, f); session != nil {
+		defer func() { _ = session.End() }()
 	}
 	if err := refuseDeployRenderOptions(envName, f.renderOptions); err != nil {
 		return err
@@ -777,9 +814,20 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 			"cannot be scoped (--target / --frontends-only). Deploy the release whole: forge env deploy %s %s",
 			envName, envName, emptyAs(p.version, "<version>"))
 	}
+	// --from with no version: the source env's release, resolved BEFORE the
+	// bundle step, which records the bundle and computes the §8.6 plan digest
+	// for a named version only. Resolved here and handed to runPromote, so a
+	// converger env's plan carries the digest its --yes / --approve needs
+	// (and a --from the control plane would refuse is refused before the
+	// bundle is recorded). The wire still omits the version: see
+	// promoteSource.VersionFromSource.
+	planVersion, from, err := resolveDeployFrom(ctx, envName, projectDir, p)
+	if err != nil {
+		return err
+	}
 	isSnapshot := false
-	if p.version != "" {
-		r, err := ledger.Releases.Get(ctx, p.version)
+	if planVersion != "" {
+		r, err := ledger.Releases.Get(ctx, planVersion)
 		if err != nil {
 			return err
 		}
@@ -788,10 +836,10 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	if isSnapshot && (len(f.targets) > 0 || f.frontendsOnly) {
 		return fmt.Errorf("sealed snapshot is a complete desired decision; --target repair cannot promote it")
 	}
-	if p.version != "" && !isSnapshot {
+	if planVersion != "" && !isSnapshot {
 		// Before the bundle is recorded: a release that cannot run on the
 		// platform's nodes must not cause any registry write, --plan-only included.
-		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger.Releases); err != nil {
+		if err := checkReleaseHostedPlatforms(ctx, progressWriter(f.jsonOut), projectDir, envName, planVersion, ledger.Releases); err != nil {
 			return err
 		}
 	}
@@ -806,14 +854,14 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	// The bundle step, sized to what the scope applies, and the §8.6 plan
 	// computed from the bundle it records.
 	deployPlan, err := releaseBundleAndPlan(ctx, releaseBundleStep{
-		ProjectDir: projectDir, Env: envName, Version: p.version, Targets: f.targets,
+		ProjectDir: projectDir, Env: envName, Version: planVersion, Targets: f.targets,
 		Ledger: ledger, Rerecord: p.rerecordBundle, ErrOut: progressWriter(f.jsonOut),
 	}, scope)
 	if err != nil {
 		return err
 	}
-	if p.liveDiff && p.version != "" && scope.AppliesBundle {
-		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, p.version, ledger)
+	if p.liveDiff && planVersion != "" && scope.AppliesBundle {
+		printPlanLiveDiff(ctx, progressWriter(f.jsonOut), projectDir, envName, planVersion, ledger)
 	}
 	return runPromote(ctx, p.version, envName, promoteOptions{
 		Targets:               scope.Targets,
@@ -828,8 +876,10 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 		Supersede:             p.supersede,
 		AllowPassedMigrations: p.allowPassedMigrations,
 		RaiseFloorReason:      p.floorReason,
+		OverrideVulnGate:      p.overrideVulnGate,
 		Gates:                 p.gates,
 		From:                  p.fromSource(),
+		resolvedFrom:          from,
 		Run:                   p.run,
 		// The O-13 gate. Always stated by the command, so the verb always
 		// shows the plan and asks before writing a promotion.
@@ -909,6 +959,9 @@ func refusePromoteFlagsWithoutRelease(f promoteCmdFlags) error {
 	}
 	if f.overrideHealthGate != "" {
 		set = append(set, "--override-health-gate")
+	}
+	if f.overrideVulnGate != "" {
+		set = append(set, "--override-vuln-gate")
 	}
 	if len(set) == 0 {
 		return nil
@@ -1320,9 +1373,9 @@ func resolveEnvMainK(store *projectstore.Store, envName string) (string, error) 
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDirForKCL(), kclDir, envName)
 	if !envHasDeclaration(projectDirForKCL(), envName, mainK) {
-		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists\nAvailable environments can be found under %s/ and deploy/envs/", envName, mainK, envName, kclDir)
+		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists\nAvailable environments can be found under %s/ and deploy/envs/", envName, shown, envName, kclDir)
 	}
 	return mainK, nil
 }
@@ -3863,6 +3916,16 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 	if !bound {
 		return base, "", nil
 	}
+	// The build state is whatever the LAST `forge env build` for this env
+	// recorded, however long ago. A release cut after it already carries
+	// (or deliberately replaced) that build, so a differing digest is news
+	// only when the build is newer than the release.
+	var releaseCut time.Time
+	if rel, rerr := releases.Get(ctx, binding.Release); rerr == nil && rel != nil {
+		releaseCut = rel.CreatedAt
+	}
+	buildAt := latestBuildStateTime(projectDir, envName)
+	buildIsNews := releaseCut.IsZero() || buildAt.IsZero() || buildAt.After(releaseCut)
 	// Layer the release's resolved digests over the per-env build state. A
 	// per-image override (not a wholesale replace) keeps any image present in
 	// the build state but absent from the release still resolvable — though in
@@ -3877,8 +3940,8 @@ func resolveDeployDigests(ctx context.Context, projectDir, envName string, noDig
 		// successful `forge env build --push` becomes a deploy that ships the old
 		// image and still reports a clean rollout. The operator sees a green
 		// deploy and an unchanged app, with nothing connecting the two.
-		if built, ok := base[image]; ok && built != digest {
-			fmt.Printf("  Note: %s was just built as %s, but release %s pins %s — deploying the RELEASE.\n"+
+		if built, ok := base[image]; ok && built != digest && buildIsNews {
+			fmt.Printf("  Note: the last `forge env build` of %s recorded %s, but release %s pins %s — deploying the RELEASE.\n"+
 				"        To ship the build instead: forge env build %s --release <version> --push && forge env deploy %s <version>\n"+
 				"        Or deploy the built image directly: forge env deploy %s --no-digest --tag <tag>\n",
 				image, shortDigest(built), binding.Release, shortDigest(digest), envName, envName, envName)
@@ -4432,9 +4495,11 @@ func buildAndPushLocal(ctx context.Context, cfg *config.ProjectConfig, tag, targ
 		return err
 	}
 	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-	if err := buildCmd.Run(); err != nil {
+	var endStep func(error)
+	buildCmd.Stdout, buildCmd.Stderr, endStep = buildlog.Step("docker build " + cfg.Name)
+	err := buildCmd.Run()
+	endStep(err)
+	if err != nil {
 		return fmt.Errorf("docker build for %s failed: %w", cfg.Name, err)
 	}
 
@@ -5697,4 +5762,29 @@ func declaredDeliveryUnits(e *KCLEntities) []release.DeliveryUnit {
 		return nil
 	}
 	return e.DeliveryUnits
+}
+
+// latestBuildStateTime is when the newest build state recorded for env was
+// pushed (its pushed_at), or zero when none records a time.
+func latestBuildStateTime(projectDir, envName string) time.Time {
+	var latest time.Time
+	note := func(at string) {
+		if t, err := time.Parse(time.RFC3339, at); err == nil && t.After(latest) {
+			latest = t
+		}
+	}
+	for _, key := range buildStateLookupEnvs(envName) {
+		if st, err := ReadBuildState(projectDir, key); err == nil && st != nil {
+			note(st.PushedAt)
+		}
+	}
+	matches, _ := filepath.Glob(filepath.Join(projectDir, statefile.DirRel, "build-"+statefile.SafeSegment(envName)+"-*.json"))
+	prefix := "build-" + statefile.SafeSegment(envName) + "-"
+	for _, path := range matches {
+		service := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), prefix), ".json")
+		if st, err := buildtarget.ReadState(projectDir, envName, service); err == nil && st != nil && buildtarget.StateBelongsTo(st, envName, service) {
+			note(st.PushedAt)
+		}
+	}
+	return latest
 }

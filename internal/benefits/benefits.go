@@ -10,17 +10,21 @@
 //
 //   - docs/benefits.md          RenderMarkdown, the whole page
 //   - README.md                 RenderReadmeTable, spliced between the
-//     `<!-- benefits:start -->` / `<!-- benefits:end -->` markers
+//     `<!-- benefits:start -->` / `<!-- benefits:end -->` markers, and
+//     RenderReadmeReasons between `<!-- reasons:start -->` / `<!-- reasons:end -->`
+//   - docs/why-forge.md         RenderWhy, the reasons with their evidence
 //
 // Other sites (the landing page) read benefits.yaml itself.
 //
-// `task docs:benefits` rewrites the two files; TestRenderedFilesAreCurrent
-// fails when either is stale.
+// `task docs:benefits` rewrites the files; TestRenderedFilesAreCurrent
+// fails when any is stale.
 //
 // This package checks only what it can check alone: the schema (Validate).
 // Whether each evidence item still EXISTS — a command in the cobra tree, a
 // lint flag, a marker, a skill, a file — needs the CLI, so that half lives in
 // internal/cli (TestBenefitsEvidenceExists, TestEveryGradableRuleIsABenefit).
+//
+//forge:exclude-contract: a data registry parsed from embedded YAML plus pure renderers over it; the *Registry methods are lookups over that data, it does no I/O, and nothing substitutes it
 package benefits
 
 import (
@@ -87,6 +91,60 @@ type Registry struct {
 	// Categories are ordered; every rendering follows this order.
 	Categories []Category `yaml:"categories" json:"categories"`
 	Benefits   []Benefit  `yaml:"benefits" json:"benefits"`
+	// Glance is the short "what this project gets with no setup" block the
+	// entry skills and `forge start app` open with, one list per audience
+	// (GlanceApp, GlanceSite). Every line names the benefits that back it and
+	// the command that shows it, so it is a digest of the registry, never a
+	// second set of claims.
+	Glance map[string][]GlanceFact `yaml:"glance,omitempty" json:"glance,omitempty"`
+	// Limits are what forge and Reliant hosting do NOT do, stated with the
+	// same evidence discipline as a benefit. The comparison an agent quotes
+	// (the `compare` skill) renders them, so the trade-offs are as checked as
+	// the wins.
+	Limits []Limit `yaml:"limits,omitempty" json:"limits,omitempty"`
+	// Reasons are why forge: the cross-layer argument the benefits back,
+	// each citing the entries that prove it (reasons.go). They render as
+	// docs/why-forge.md, the README's "Why Forge" block and `forge why`.
+	Reasons []Reason `yaml:"reasons,omitempty" json:"reasons,omitempty"`
+}
+
+// Glance audiences: an app with an API, and a frontend-only static site.
+const (
+	GlanceApp  = "app"
+	GlanceSite = "site"
+)
+
+// maxGlanceFacts keeps a glance block short: it opens skills an agent reads
+// in full, and every line costs the reader tokens.
+const maxGlanceFacts = 6
+
+// maxGlanceFactLen bounds one fact, before its command.
+const maxGlanceFactLen = 120
+
+// GlanceFact is one line of a glance block: a concrete, checkable fact, the
+// command that shows it, and the registry entries that back it.
+type GlanceFact struct {
+	// Fact is what the project gets, in one line, true today.
+	Fact string `yaml:"fact" json:"fact"`
+	// Show is the command that shows it, as a path under the `forge` root
+	// with its arguments ("obs endpoints dev"). internal/cli's
+	// TestGlanceCommandsParse runs it through the real command tree.
+	Show string `yaml:"show" json:"show"`
+	// Benefits are the ids of the shipped entries the fact digests.
+	Benefits []string `yaml:"benefits" json:"benefits"`
+}
+
+// Limit is one thing forge or Reliant hosting does not do.
+type Limit struct {
+	ID string `yaml:"id" json:"id"`
+	// Title is at most six words.
+	Title string `yaml:"title" json:"title"`
+	// Claim is the limit, stated plainly and true today.
+	Claim string `yaml:"claim" json:"claim"`
+	// Instead is what to do when the limit rules forge out for a part of the
+	// app (optional).
+	Instead  string     `yaml:"instead,omitempty" json:"instead,omitempty"`
+	Evidence []Evidence `yaml:"evidence" json:"evidence"`
 }
 
 // Category groups benefits under one heading.
@@ -335,7 +393,102 @@ func (r *Registry) Validate() error {
 			}
 		}
 	}
+	r.validateGlance(ids, fail)
+	r.validateLimits(ids, cats, fail)
+	r.validateReasons(fail)
 	return errors.Join(errs...)
+}
+
+// validateGlance checks every glance block: a known audience, one to
+// maxGlanceFacts one-line facts, each with a command and backed by shipped
+// benefits. An in-progress entry cannot back a fact: a glance states only
+// what is true today.
+func (r *Registry) validateGlance(ids map[string]bool, fail func(format string, args ...any)) {
+	status := map[string]Status{}
+	for _, b := range r.Benefits {
+		status[b.ID] = b.Status
+	}
+	for audience, facts := range r.Glance {
+		where := fmt.Sprintf("glance.%s", audience)
+		if audience != GlanceApp && audience != GlanceSite {
+			fail("%s: audience %q is not one of %s, %s", where, audience, GlanceApp, GlanceSite)
+		}
+		if len(facts) == 0 || len(facts) > maxGlanceFacts {
+			fail("%s: %d facts; a glance holds 1 to %d (it opens skills an agent reads in full)", where, len(facts), maxGlanceFacts)
+		}
+		for i, f := range facts {
+			fwhere := fmt.Sprintf("%s[%d]", where, i)
+			switch fact := strings.TrimSpace(f.Fact); {
+			case fact == "":
+				fail("%s: fact is empty", fwhere)
+			case strings.Contains(f.Fact, "\n"):
+				fail("%s: fact must be one line", fwhere)
+			case len(fact) > maxGlanceFactLen:
+				fail("%s: fact is %d bytes; at most %d", fwhere, len(fact), maxGlanceFactLen)
+			}
+			if f.Show == "" {
+				fail("%s: show is empty; name the command that shows the fact", fwhere)
+			} else if msg := validateEvidence(Evidence{Command: f.Show}); msg != "" {
+				fail("%s: show: %s", fwhere, msg)
+			}
+			if len(f.Benefits) == 0 {
+				fail("%s: benefits is empty; name the entries the fact digests", fwhere)
+			}
+			for _, id := range f.Benefits {
+				switch {
+				case !ids[id]:
+					fail("%s: benefit %q is not a benefits[].id", fwhere, id)
+				case status[id] == StatusInProgress:
+					fail("%s: benefit %q is in-progress; a glance states only what ships", fwhere, id)
+				}
+			}
+		}
+	}
+}
+
+// validateLimits checks the limits like benefits: unique kebab-case ids that
+// share no anchor with a benefit or category, a short title, a claim, and
+// well-formed evidence.
+func (r *Registry) validateLimits(benefitIDs, cats map[string]bool, fail func(format string, args ...any)) {
+	seen := map[string]bool{}
+	for i, l := range r.Limits {
+		where := fmt.Sprintf("limits[%d] %q", i, l.ID)
+		switch {
+		case !kebabID.MatchString(l.ID):
+			fail("%s: id must be kebab-case", where)
+		case seen[l.ID]:
+			fail("%s: duplicate limit id", where)
+		case benefitIDs[l.ID] || cats[l.ID] || reservedAnchors[l.ID]:
+			fail("%s: id collides with a benefit, category or heading anchor", where)
+		}
+		seen[l.ID] = true
+		if strings.TrimSpace(l.Title) == "" {
+			fail("%s: title is empty", where)
+		} else if n := len(strings.Fields(l.Title)); n > 6 {
+			fail("%s: title has %d words; at most 6", where, n)
+		}
+		if strings.TrimSpace(l.Claim) == "" {
+			fail("%s: claim is empty", where)
+		}
+		if len(l.Evidence) == 0 {
+			fail("%s: no evidence; every limit names at least one thing that shows it", where)
+		}
+		for j, e := range l.Evidence {
+			if msg := validateEvidence(e); msg != "" {
+				fail("%s: evidence[%d]: %s", where, j, msg)
+			}
+		}
+	}
+}
+
+// Benefit returns the entry with id.
+func (r *Registry) Benefit(id string) (Benefit, bool) {
+	for _, b := range r.Benefits {
+		if b.ID == id {
+			return b, true
+		}
+	}
+	return Benefit{}, false
 }
 
 // estimateShape is "~" then a number then a unit: "~5 min", "~1 hour",

@@ -40,7 +40,11 @@ type PageTemplateData struct {
 	// `undefined`, breaking the list page, the dashboard count tile, and
 	// the mock transport's response shape all at once. Falls back to the
 	// camelCased plural for older descriptors that don't carry the field.
-	ItemsField   string
+	ItemsField string
+	// FormDialect is the zod and resolver API the frontend's create/edit
+	// forms are written for — the zero value is zod 4, the API a frontend
+	// scaffolded today declares. Set per frontend by ApplyFormDialect.
+	FormDialect  FormDialect
 	CreateFields []PageField // Fields for the create form
 	UpdateFields []PageField // Fields for the edit form
 	// GuardedFields are the columns a custom RPC owns
@@ -111,15 +115,6 @@ type PageTemplateData struct {
 	// minus the identity/audit fields — see listColumnExcluded for why a
 	// table and a detail view want different sets.
 	ListColumns []EntityPageField
-	// SearchFields are the camelCase string-typed fields client-side
-	// search filters over. Empty → the list page omits the search box.
-	//
-	// DEPRECATED for the list page: the born list page now filters
-	// SERVER-SIDE via the List RPC's own filter fields (SearchFilterField /
-	// ExactFilterFields below), so it no longer client-side-filters a single
-	// fetched page. SearchFields is retained because DisplayField derivation
-	// shares this pass and older tooling still reads it.
-	SearchFields []string
 	// DisplayField is the camelCase string field used as the human title.
 	// See deriveDisplayField for the ranking and for what is deliberately
 	// left out; empty when the entity carries no whole-label column, and
@@ -360,7 +355,7 @@ type PageField struct {
 	// IsEnum marks fields that render as a typed <select> over the
 	// enum's declared values (Type "select"). The zod schema validates
 	// the coerced option value as an enum member
-	// (z.coerce.number().pipe(z.nativeEnum(X))) so the submitted form
+	// (z.coerce.number().pipe(z.enum(X))) so the submitted form
 	// value IS the protobuf-es TS enum — spreading it into
 	// mutation.mutate() satisfies MessageInit without casts. Enum fields
 	// that can't be resolved to a typed select (cross-package enums, old
@@ -383,7 +378,7 @@ type PageField struct {
 	EnumImportPath string
 	// ZodChain is the trailing zod validator chain projected from the
 	// field's protovalidate rules (e.g. ".gte(0).lte(100)" or
-	// ".min(2).max(64).email()"). Empty when the field carries no
+	// ".min(2).max(64).pipe(z.email())"). Empty when the field carries no
 	// projected rules. The form template appends it to the base builder
 	// (z.coerce.number() / z.string()) — see the create/edit page
 	// templates. The SAME rules are enforced on the wire by the
@@ -402,6 +397,14 @@ type PageField struct {
 	// from the same rule that made it Required), so attachZodExpr does not
 	// stack a second `.min(1, "Required")` in front of it.
 	chainRequiresValue bool
+
+	// chainRules and chainForm are what ZodChain was projected from, kept
+	// so ApplyFormDialect can project it again in the frontend's zod
+	// dialect. chainRules is nil when the field carries no chain.
+	chainRules *FieldConstraints
+	chainForm  string
+	// zod3 writes ZodExpr and ZodChain in zod 3's spellings (FormDialect).
+	zod3 bool
 }
 
 // EnumDefaultRef is the option a CREATE form's NOT NULL enum select starts
@@ -1289,13 +1292,12 @@ func applyZodChain(pf *PageField, constraints map[string]*FieldConstraints) {
 		return
 	}
 	switch pf.Type {
-	case "number":
-		pf.ZodChain = c.ZodChain("number")
-	case "text", "date":
-		pf.ZodChain = c.ZodChain(pf.Type)
+	case "number", "text", "date":
+		pf.chainRules, pf.chainForm = c, pf.Type
+		pf.ZodChain = c.zodChain(pf.Type, pf.zod3)
 		// The string chain opens with `.min(N)` exactly when the rule that
 		// makes the field Required is present.
-		pf.chainRequiresValue = requiredByRule(c)
+		pf.chainRequiresValue = pf.Type != "number" && requiredByRule(c)
 	}
 }
 
@@ -1463,7 +1465,14 @@ func attachZodExpr(pf *PageField) {
 		// infers the arrow as a type PREDICATE, zod's refine overload
 		// narrows the field to the non-zero members, and the edit form's
 		// prefill — the entity's plain enum type — no longer type-checks.
-		expr = fmt.Sprintf("z.coerce.number().pipe(z.nativeEnum(%s))", pf.EnumType)
+		//
+		// z.enum takes a TypeScript enum in zod 4, which deprecates
+		// z.nativeEnum for it; zod 3's z.enum takes string tuples only.
+		enumCtor := "z.enum"
+		if pf.zod3 {
+			enumCtor = "z.nativeEnum"
+		}
+		expr = fmt.Sprintf("z.coerce.number().pipe(%s(%s))", enumCtor, pf.EnumType)
 		if pf.EnumZeroRef != "" {
 			expr += fmt.Sprintf(`.refine((v): boolean => v !== %s, "Choose a value")`, pf.EnumZeroRef)
 		}
@@ -1834,10 +1843,6 @@ func AttachEntityMeta(page *PageTemplateData, entity EntityDef, svc ServiceDef) 
 		// list is the record's only view, so they stay.
 		if !page.EmitsDetailPage() || !listColumnExcluded(f.Name) {
 			page.ListColumns = append(page.ListColumns, col)
-		}
-
-		if f.ProtoType == "string" {
-			page.SearchFields = append(page.SearchFields, camel)
 		}
 	}
 

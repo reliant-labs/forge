@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -63,6 +64,24 @@ func newSink(t *testing.T) (*sink, *httptest.Server) {
 	return s, srv
 }
 
+// direct is an HTTP client that hands each request to srv's handler in this
+// process, and delivers it however long that takes. A test that counts what
+// was delivered uses it: over a real socket, a post that outlasts
+// FlushTimeout on a slow host (Windows CI's first loopback dial) is dropped
+// by design, and the count then measures the host, not the code. Tests of
+// the timeout itself keep the real server.
+func direct(srv *httptest.Server) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		srv.Config.Handler.ServeHTTP(rec, r.WithContext(context.WithoutCancel(r.Context())))
+		return rec.Result(), nil
+	})}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func (s *sink) records() []map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,6 +114,7 @@ func TestFirstRunSendsOneBatchWithInstallID(t *testing.T) {
 	s, srv := newSink(t)
 	var stderr bytes.Buffer
 	cfg := testConfig(t, srv.URL, nil, &stderr)
+	cfg.HTTPClient = direct(srv)
 	c := New(cfg)
 	if !c.Enabled() || !c.FirstRun() {
 		t.Fatalf("a fresh install must be enabled and on its first run: %+v", c.Status())
@@ -197,6 +217,7 @@ func TestQuietRunSendsNothingUntilTheNoticeWasShown(t *testing.T) {
 	s, srv := newSink(t)
 	var stderr bytes.Buffer
 	cfg := testConfig(t, srv.URL, nil, &stderr)
+	cfg.HTTPClient = direct(srv)
 	cfg.Quiet = true
 	c := New(cfg)
 	c.Track(context.Background(), "forge_cli_command")
@@ -238,14 +259,20 @@ func TestFlushIsBoundedAndDropsFailures(t *testing.T) {
 func TestDailyCap(t *testing.T) {
 	s, srv := newSink(t)
 	cfg := testConfig(t, srv.URL, nil, &bytes.Buffer{})
+	cfg.HTTPClient = direct(srv)
 	now := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	cfg.Now = func() time.Time { return now }
+	// Each run tracks 26 distinct names (a repeat within a run is ignored):
+	// 26 + 24 + 0 fill the day's allowance.
 	for run := 0; run < 3; run++ {
 		c := New(cfg)
 		for i := 0; i < 30; i++ {
 			c.Track(context.Background(), "ev_"+string(rune('a'+i%26))+string(rune('a'+run)))
 		}
 		c.Flush(context.Background())
+	}
+	if got := newState(filepath.Join(cfg.ConfigDir, StateFile)).load().SentToday; got != MaxEventsPerDay {
+		t.Errorf("reserved %d events in a day, want the cap %d", got, MaxEventsPerDay)
 	}
 	if n := len(s.records()); n != MaxEventsPerDay {
 		t.Errorf("sent %d events in a day, want the cap %d", n, MaxEventsPerDay)
@@ -298,9 +325,13 @@ func TestInstallAttribution(t *testing.T) {
 	if got.Get("rid") != "v_landing_1234" || got.Get("utm_source") != "docs" || got.Get("utm_medium") != "copy button" || got.Has("email") || got.Has("utm_campaign") {
 		t.Errorf("InstallAttribution = %v", got)
 	}
+	cfg.HTTPClient = direct(srv)
 	c = New(cfg)
 	c.Track(context.Background(), FirstRunEvent("forge"), c.FirstRunAttrs("")...)
 	c.Flush(context.Background())
+	if len(s.records()) != 1 {
+		t.Fatalf("want the first-run record, got %v", s.records())
+	}
 	rec := s.records()[0]
 	if rec["product.source"] != "docs" || rec["product.medium"] != "copy button" || rec["product.visitor_id"] != "v_landing_1234" {
 		t.Errorf("first run carries the install attribution: %v", rec)

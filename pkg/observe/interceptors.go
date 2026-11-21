@@ -68,6 +68,8 @@ func RequestIDFromContext(ctx context.Context) string {
 // WithSuccessLevel for one procedure, WithExpectedErrors — and the failure
 // levels: WithUserErrorLevel, WithErrorClassifier. Through Chain /
 // DefaultMiddlewares they are passed as Deps.LogOptions.
+//
+// connect-go v2 projects use LoggingInterceptorV2.
 func LoggingInterceptor(logger *slog.Logger, opts ...LogOption) connect.Interceptor {
 	if logger == nil {
 		logger = slog.Default()
@@ -216,6 +218,8 @@ var defaultPolicy = newLogPolicy(slog.LevelInfo, nil)
 // A nil tracer disables tracing (interceptor is a pass-through). This
 // keeps DefaultMiddlewares safe to wire in test harnesses that don't
 // configure OTel.
+//
+// connect-go v2 projects use TracingInterceptorV2.
 func TracingInterceptor(tracer trace.Tracer) connect.Interceptor {
 	return newTracingInterceptor(tracer, serverSpanPolicy{})
 }
@@ -274,6 +278,8 @@ func (i *tracingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 // Streaming handlers record one duration sample per stream end. A nil
 // meter disables metrics (interceptor is a pass-through), matching
 // TracingInterceptor's behaviour for tracer == nil.
+//
+// connect-go v2 projects use MetricsInterceptorV2.
 func MetricsInterceptor(meter metric.Meter) connect.Interceptor {
 	if meter == nil {
 		return &noopInterceptor{}
@@ -298,6 +304,9 @@ type metricsInterceptor struct {
 
 func (i *metricsInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return connect.UnaryFunc(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if IsHealthProbe(req.Spec().Procedure, req.Header()) {
+			return next(ctx, req)
+		}
 		start := time.Now()
 		attr := metric.WithAttributes(attribute.String("procedure", req.Spec().Procedure))
 		if i.calls != nil {
@@ -365,6 +374,8 @@ func (i *metricsInterceptor) WrapStreamingHandler(next connect.StreamingHandlerF
 //
 // Place this FIRST in the chain so it observes panics from every
 // subsequent interceptor and the handler itself.
+//
+// connect-go v2 projects use RecoveryInterceptorV2.
 func RecoveryInterceptor(logger *slog.Logger) connect.Interceptor {
 	if logger == nil {
 		logger = slog.Default()
@@ -456,6 +467,8 @@ func panicError(r any) error {
 // Place this AFTER RecoveryInterceptor (so panics still get the ID in
 // their log line) and BEFORE LoggingInterceptor (so log records inherit
 // the ID).
+//
+// connect-go v2 projects use RequestIDInterceptorV2.
 func RequestIDInterceptor() connect.Interceptor {
 	return &requestIDInterceptor{}
 }

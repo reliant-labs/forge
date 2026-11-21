@@ -117,6 +117,15 @@ export function stampCallEntry(headers: Headers): Context {
   return ctx;
 }
 
+/**
+ * Replace the context a call joins, for every later stage and the fetch shim:
+ * the RPC span stage (rpc-span.ts) puts its own span here, so the traceparent
+ * the trace stage writes, and the SDK's fetch span, are that span's children.
+ */
+export function restampCallEntry(headers: Headers, ctx: Context): void {
+  callContexts.set(headers, ctx);
+}
+
 function contextOfHeaders(headers: unknown): Context | undefined {
   return typeof headers === "object" && headers !== null
     ? callContexts.get(headers)

@@ -53,4 +53,22 @@
 //
 // opts is the shared []connect.HandlerOption (observe interceptors,
 // read/send limits) already composed once for the whole process.
+//
+// # connect-go v2
+//
+// A connect-go v2 service registers on a *connect.Server, and interceptors
+// belong to the server, not to a handler. So the v2 mount target is a MuxV2 —
+// the mux, the shared server interceptors and the shared connecthttp options —
+// and RegisterServiceV2 mounts a RegistrarV2 (RegisterV2(*connect.Server))
+// through it. Every mount that adds nothing of its own shares one server; a
+// mount given WithInterceptorsV2 or WithHTTPOptionsV2 gets a server of its own
+// with the shared chain followed by its own, which is what WithHandlerOptions
+// gives a v1 mount. All of them go on the same mux:
+//
+//	m := mountkit.NewMuxV2(mux, chain.ServerInterceptors(), chain.HTTPOptions()...)
+//	names := mountkit.RegisterServiceV2(m, svc, mountkit.WithHTTPStack(stack))
+//
+// A mount option of one major on a mount of the other panics at boot rather
+// than being dropped. v2 mounts read requests of any size unless a read limit
+// is passed, as v1 handlers do.
 package mountkit

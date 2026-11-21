@@ -94,3 +94,22 @@ func TestTrimmedModuleFile(t *testing.T) {
 		t.Error("a path that only shares a prefix with a module: want ok=false")
 	}
 }
+
+// TestInDatabaseStack_BothConnectMajors pins that connect-go is skipped as
+// a caller whichever major serves the request: v2's packages live under the
+// v1 module path ("connectrpc.com/connect/v2/..."), so the one entry covers
+// both, and a project moving to v2 keeps naming its handler as the caller.
+func TestInDatabaseStack_BothConnectMajors(t *testing.T) {
+	for _, fn := range []string{
+		"connectrpc.com/connect.(*Handler).ServeHTTP",
+		"connectrpc.com/connect/v2.(*Server).Call",
+		"connectrpc.com/connect/v2/connecthttp.(*handler).ServeHTTP.func1",
+	} {
+		if !inDatabaseStack(fn) {
+			t.Errorf("inDatabaseStack(%q) = false, want true", fn)
+		}
+	}
+	if inDatabaseStack("connectrpc.com/connectx.Foo") {
+		t.Error("a sibling module that merely shares the prefix must not match")
+	}
+}

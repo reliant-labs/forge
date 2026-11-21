@@ -112,6 +112,10 @@ type AdvisoryFile struct {
 	Path string
 	// Render produces the current template's bytes for this path.
 	Render func() ([]byte, error)
+	// Template is the embedded template file Render reads, as a
+	// templates.SourcePath; empty when the bytes come from no single
+	// template file. The upgrade report compares it across the range.
+	Template string
 }
 
 // AdvisoryResult is the outcome for one advisory row.
@@ -136,6 +140,8 @@ type AdvisoryResult struct {
 	// Adopted is true when this run actually wrote the template over the
 	// file (Selected, and not a dry run).
 	Adopted bool
+	// Template is the row's AdvisoryFile.Template.
+	Template string
 }
 
 // Behind reports whether the row has anything to say — i.e. anything but
@@ -214,8 +220,9 @@ func CIWorkflowAdvisoryFiles(projectDir string, cfg *config.ProjectConfig, in CI
 			continue
 		}
 		rows = append(rows, AdvisoryFile{
-			Path:   rel,
-			Render: f.Render,
+			Path:     rel,
+			Render:   f.Render,
+			Template: f.SourcePath(),
 		})
 	}
 	return rows
@@ -248,6 +255,7 @@ func githubStarterAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) []
 		Render: func() ([]byte, error) {
 			return templates.CITemplates(provider).Get("pull_request_template.md")
 		},
+		Template: templates.CITemplates(provider).SourcePath("pull_request_template.md"),
 	}}
 	// CODEOWNERS is emitted only when a GitHub owner can be inferred;
 	// forge ships no review-free stub, so there is nothing to report when
@@ -259,6 +267,7 @@ func githubStarterAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) []
 				return templates.CITemplates(provider).Render("CODEOWNERS.tmpl",
 					struct{ GitHubOwner string }{owner})
 			},
+			Template: templates.CITemplates(provider).SourcePath("CODEOWNERS.tmpl"),
 		})
 	}
 	// Only `forge project new` writes pre-commit.yml, with a plain write
@@ -368,6 +377,7 @@ func frontendAdvisoryFiles(projectDir string, cfg *config.ProjectConfig) ([]Advi
 				Render: func() ([]byte, error) {
 					return templates.FrontendTemplates().Render(tmplPath, data)
 				},
+				Template: templates.FrontendTemplates().SourcePath(tmplPath),
 			})
 		}
 	}
@@ -534,6 +544,13 @@ func InspectAdvisories(projectDir string, cs *FileChecksums, files []AdvisoryFil
 			res.Adopted = true
 		}
 		out = append(out, res)
+	}
+	source := make(map[string]string, len(files))
+	for _, f := range files {
+		source[f.Path] = f.Template
+	}
+	for i := range out {
+		out[i].Template = source[out[i].Path]
 	}
 	return out, nil
 }

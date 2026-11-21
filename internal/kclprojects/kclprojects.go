@@ -98,6 +98,8 @@
 // package's kpm [dependencies] are not resolved (forge evaluates the package in
 // place), so a non-empty one is refused rather than left to fail as an
 // unresolvable import.
+//
+//forge:exclude-contract: resolution of kcl.mod imports to directories from go.mod/go.work and the go command; the one outbound seam, git fetches, is already injected as Options.Sources (gitsource.SourceResolver), and the only exported methods are the Import record's IsGit/Pin accessors
 package kclprojects
 
 import (

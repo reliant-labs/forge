@@ -31,6 +31,8 @@ func FuncMap() template.FuncMap {
 		"browserReplayPrivacyGuard": func() string { return browserReplayPrivacyGuard },
 		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
 		"pnpmVersion": func() string { return PnpmVersion },
+		// pgoBuildArg names a binary's PGO ARG in the Dockerfile (PGOBuildArg).
+		"pgoBuildArg": PGOBuildArg,
 		"humanize": func(s string) string {
 			words := strings.Fields(naming.Humanize(s))
 			for i, w := range words {
@@ -86,7 +88,41 @@ func FuncMap() template.FuncMap {
 		// installForgeRun renders the one forge-install script every
 		// scaffolded workflow shares — see installForgeScript.
 		"installForgeRun": installForgeRun,
+		// connectV2 reports whether the data a template renders asks for
+		// connect-go v2 wiring: its ConnectV2 field (or map key) is true.
+		// Data with no such field is v1 — forge's default, and every render
+		// that predates v2 support — so a template branches on
+		// `{{if connectV2 .}}` rather than `.ConnectV2`, which would fail
+		// on the many callers whose data never grew the field.
+		"connectV2": connectV2,
 	}
+}
+
+// connectV2 is the connectV2 template func: data's ConnectV2 bool, through
+// any pointers, from a struct field or a map key; false when there is none.
+func connectV2(data any) bool {
+	v := reflect.ValueOf(data)
+	for v.IsValid() && (v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface) {
+		if v.IsNil() {
+			return false
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		f := v.FieldByName("ConnectV2")
+		return f.IsValid() && f.Kind() == reflect.Bool && f.Bool()
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return false
+		}
+		e := v.MapIndex(reflect.ValueOf("ConnectV2").Convert(v.Type().Key()))
+		for e.IsValid() && e.Kind() == reflect.Interface && !e.IsNil() {
+			e = e.Elem()
+		}
+		return e.IsValid() && e.Kind() == reflect.Bool && e.Bool()
+	}
+	return false
 }
 
 // stripBuildIgnore removes a leading //go:build ignore directive and the
@@ -117,6 +153,25 @@ func (c TemplateCategory) Get(name string) ([]byte, error) {
 		return nil, err
 	}
 	return stripBuildIgnore(data), nil
+}
+
+// SourceRoot is where the embedded template tree lives in forge's module
+// source: a SourcePath joined under it names the same file in any forge
+// release's module directory.
+const SourceRoot = "internal/templates"
+
+// SourcePath names the template file Get and Render read for name, as a
+// slash path in the embedded tree (e.g. "project/Taskfile.yml.tmpl").
+func (c TemplateCategory) SourcePath(name string) string {
+	return path.Join(c.basePath, filepath.ToSlash(name))
+}
+
+// Source returns a template file's bytes exactly as this forge embeds them,
+// by its SourcePath — raw, before any //go:build ignore strip or render. It
+// is what `forge project upgrade` compares with the same file in an older
+// forge's module source to learn whether a template changed between them.
+func Source(sourcePath string) ([]byte, error) {
+	return templateFS.ReadFile(sourcePath)
 }
 
 // selfDefaulting is a payload that can fill its own optional fields before
@@ -366,7 +421,7 @@ type CIWorkflowData struct {
 	// Environments (for KCL validation)
 	Environments []string
 
-	// Legacy fields used by other CI templates (build-images, deploy, dependabot)
+	// Fields the other CI templates read (build-images, deploy, dependabot).
 	Module       string
 	FrontendName string // first frontend name for dependabot
 
@@ -690,6 +745,13 @@ type FrontendTemplateData struct {
 	// module, or one scaffolded before api-base.ts existed: its own auth
 	// decides who the user is (identifyUser / setTelemetryUser).
 	IdentifySession bool
+	// DevLogFromRuntime selects the Vite dev server's browser-log receiver:
+	// true imports forgeDevLog() from @reliantlabs/forge-web-runtime/vite
+	// (and the scaffold writes no src/lib/devlog-plugin.ts), false wires the
+	// inlined src/lib/devlog-plugin.ts. The generator sets it from the
+	// runtime floor it scaffolds (viteDevLogFromRuntime), so a new project
+	// never imports what the runtime it installs lacks.
+	DevLogFromRuntime bool
 	// NavHookImports is the per-module aggregation of the list hooks the
 	// dashboard tiles consume. Derived from Pages by the nav generator.
 	NavHookImports []NavHookImport

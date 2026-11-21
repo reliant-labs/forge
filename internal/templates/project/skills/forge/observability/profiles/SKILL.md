@@ -1,6 +1,6 @@
 ---
 name: observability/profiles
-description: Continuous profiles — what pkg/observe captures and pushes over OTLP, when profiling is on (local ClickStack by default, signals.profiles elsewhere), the otel-profiles collector and its ClickHouse tables, and exporting flamegraphs with forge obs profile.
+description: Continuous profiles — what pkg/observe captures and pushes over OTLP, when profiling is on (local ClickStack by default, signals.profiles elsewhere), the otel-profiles collector and its ClickHouse tables, exporting flamegraphs with forge obs profile, and profile-guided builds (forge pgo pull writes cmd/<bin>/default.pgo from production CPU profiles).
 ---
 
 # Continuous profiles
@@ -51,6 +51,7 @@ Locally, the `otel-profiles` compose service (stock contrib collector **v0.162.0
 | `default.otel_profiles` | raw: one row per sample, with `TraceId`, `SpanId`, `ProfileId`, `StackHash` | 24h |
 | `default.profile_stacks` | distinct stacks per service (`FunctionNames` leaf first) | 30d |
 | `default.profile_samples_1m` | per-minute totals per `(service, env, type, stack)` | 30d |
+| `default.profile_pgo_edges` | per-hour CPU call-site edge weights (caller, callee, call-site offset), the input to `forge pgo pull` | 30d |
 
 **A heap is a snapshot, not a sum.** CPU time (and alloc, contentions, delay) accumulates, so a flamegraph over a range adds up its samples. The live heap (`inuse_*`) and `goroutine` are gauges: `forge obs profile`, the console's Profiles page and `GetFlamegraph` read each instance's (environment and `service.instance.id`) **newest snapshot in the range**, from the raw tier. Only when the range holds no snapshot at all do they fall back to the newest before it, looking back up to 24h (`profilequery.SnapshotLookback`); an instance with no snapshot in a range that has others is left out rather than shown stale. So the default 1h window still shows the heap when the 2h cadence put no snapshot inside it, and two snapshots of one heap are never counted twice. A heap older than 24h is not shown; shorten `heap_interval` if you need more frequent snapshots.
 
@@ -77,3 +78,45 @@ GROUP BY stack ORDER BY value DESC
 ```
 
 Stacks carry function names only (no line numbers): the dedup key is a hash of function and file. `pkg/profilequery` holds the SQL and the pprof/speedscope/folded writers for reuse by other tools.
+
+## Profile-guided builds (PGO)
+
+The CPU profiles above also feed Go's profile-guided optimization: the compiler inlines hot calls and devirtualizes hot interface calls it can see in a profile, typically a few percent of CPU for free. Forge turns the profiles your envs already collect into the file Go reads, with no profiling setup.
+
+```bash
+forge pgo pull --env prod        # merge prod's recent CPU profiles into cmd/<bin>/default.pgo, per Go binary
+git add cmd/*/default.pgo && git commit -m "pgo: refresh profiles"
+forge env build prod --release v1.4.0   # every build now uses it; no flag changes
+forge pgo status                 # per binary: file, provenance (env, services, window), age, effective config
+```
+
+**You commit the file.** Go's default `-pgo=auto` reads `default.pgo` from the main package's directory, so the Dockerfile build, host builds and air all pick it up, and a build stays reproducible: it depends on the committed file, never on a live ClickStack or control plane. `forge env build` prints one line per Go binary (`pgo: cmd/app/default.pgo (prod, 6d old)`, `pgo: none (run forge pgo pull)` or `pgo: off`).
+
+**One binary, one profile.** Go applies PGO per main package, so each `cmd/<bin>` gets its own file. A modular-monolith binary that runs as server, worker and cron gets one profile merging the CPU of every workload that runs it, weighted by CPU time, which is what the compiler should optimize. The workloads of a binary are read from the rendered env, not from naming; `services = [...]` overrides the list of OTEL service names.
+
+**Flags.** `--env` is whose KCL to read (default prod when it exists); `--binary ./cmd/x` (repeatable) limits the binaries; `--since` and `--from-env` override the window and the source env; `--dry-run` shows what would be written; `--json` prints the result as a document. Profiles from a hosted env are fetched through the control plane (`ExportPGOProfile`, needs sign-in and `obs:read`) and are byte-for-byte what a local pull would write.
+
+**Config, per build in KCL.** `GoBuild.pgo` (and, for an image holding several binaries, `DockerBuild.pgo` keyed by binary path) takes a `forge.PGO`:
+
+```kcl
+build = forge.GoBuild {cmd = "./cmd/app", pgo = forge.PGO {from_env = "prod", since = "168h", min_weight = "10s"}}
+build = forge.DockerBuild {pgo = {"./cmd/proxy" = forge.PGO {enabled = False}}}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `True` | `False`: this env's builds pass `-pgo=off` for the binary (host build, Dockerfile, dev launches) and `pull` skips it |
+| `from_env` | `""` | the env whose profiles `pull` merges; `""` is the env declaring the build |
+| `since` | `"168h"` | the window, at most 30 days (the edge table's TTL) |
+| `min_weight` | `"10s"` | minimum edge weight in the window (sampled CPU summed over call edges, Go's PGO total; not unique CPU time, since one sample counts once per distinct call edge among its leaf frames); below it `pull` leaves the file alone |
+| `services` | `[]` | OTEL service names to merge; `[]` is every workload of `from_env` running this binary |
+
+Two declarations for one binary in one env that disagree are a render error. A `-pgo=` in `GoBuild.flags` always wins over forge's.
+
+**A ShellBuild's binaries.** forge cannot see what a shell command builds, so `pull` reads only the binaries `ShellBuild.pgo` names, keyed by package path relative to the build's `cwd`, each a `forge.ShellPGO`: the fields above plus `out` (where the profile goes, relative to the project root; default `<cwd>/<binary>/default.pgo`, which may be a sibling checkout's) and `namespace` (the `service.namespace` to read; default this project's). A deploy repo whose `cwd = "../reliant"` build runs three workloads gets one `../reliant/cmd/reliant/default.pgo` merging all three; commit it in that checkout. `enabled = False` only skips the binary, since forge does not edit the command. Load `deploy/build`.
+
+**Opting out.** `enabled = False` turns PGO off for that binary. It also renders `FORGE_PROFILES_PGO=off` for its workloads, so `pkg/observe` stops attaching the PGO attributes to CPU samples (about +24% gzipped OTLP on a CPU profile, ~2% of stored row bytes; `pkg/observe/PROFILES.md`, "PGO start lines"). Deleting `default.pgo` alone does not stop the collection.
+
+**Failing gracefully.** `pull` never breaks a build and never damages a file: no data yet, below `min_weight`, a ClickStack that is not running, not signed in, or a control plane older than the RPC each give a per-binary note naming the reason and the fix, and the existing `default.pgo` is left untouched. It exits 2 only when a requested source could not be read at all.
+
+**Staleness.** Go tolerates a stale profile: edges naming functions that no longer exist are ignored, and shifted call sites just stop matching. Re-pull at each release, or weekly, and commit the result. Edges come from the `profile_pgo_edges` table, which fills only from CPU samples carrying `forge.profile.start_lines`, so a project that predates that (its local `profiles-schema.sql`) needs the `migrations/v1.8.0/profile-guided-builds` playbook once, and the table has no history from before the view existed.

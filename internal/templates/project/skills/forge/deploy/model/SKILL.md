@@ -19,6 +19,8 @@ item = fw.Workload {
 }
 ```
 
+A Go `build` (`GoBuild`, or `DockerBuild` per binary) also takes `pgo = forge.PGO {...}`, and a `ShellBuild` takes `pgo = {"./cmd/<bin>" = forge.ShellPGO {...}}` for the binaries its command builds (`deploy/build`): profile-guided optimization from a committed `cmd/<bin>/default.pgo` (`forge pgo pull`; `observability/profiles`).
+
 Each env's `deploy/kcl/<env>/main.k` BINDS every workload to a runtime —
 one binding per workload — and states only its own values. It never
 re-describes a workload, and there is no env-level runtime: an env is a list

@@ -204,6 +204,9 @@ function unregisterSdk(): void {
 }
 
 const spanNamed = (name: string) => recorded.filter((r) => r.name === name);
+// The RPC span rpc-span.ts records for a call of the test service.
+const rpcSpan = (method: string) =>
+  spanNamed(`interaction.v1.ChatService/${method}`)[0];
 const parentOf = (tp: string | null | undefined) => tp?.split("-")[2];
 
 // ── The page: visibility and animation frames, driven by hand ────────────
@@ -669,7 +672,11 @@ describe("the browser fetch spans of RPCs made while an interaction is open", ()
         })(),
       ]),
     );
-    expect(seen.map((s) => s.parentSpanId)).toEqual([actionId, actionId]);
+    // Each call's RPC span (rpc-span.ts) is the action's child, and the
+    // fetch span the RPC span's.
+    const rpcs = [rpcSpan("GetChat"), rpcSpan("StreamChat")];
+    expect(rpcs.map((r) => r?.parentSpanId)).toEqual([actionId, actionId]);
+    expect(seen.map((s) => s.parentSpanId)).toEqual(rpcs.map((r) => r?.spanId));
   });
 
   it("are its children, unary and server stream alike", async () => {
@@ -680,11 +687,72 @@ describe("the browser fetch spans of RPCs made while an interaction is open", ()
       "http://api.test/interaction.v1.ChatService/StreamChat",
     ]);
     for (const s of seen) {
+      const rpc = rpcSpan(s.url.split("/").pop()!);
       expect(s.traceId, s.url).toBe(op.traceId);
-      expect(s.parentSpanId, s.url).toBe(root.spanId);
+      // interaction → RPC span → fetch span...
+      expect(rpc?.parentSpanId, s.url).toBe(root.spanId);
+      expect(s.parentSpanId, s.url).toBe(rpc?.spanId);
       // ...and the server is handed the fetch span, which it parents under.
       expect(traceIdFrom(s.sentTraceparent), s.url).toBe(op.traceId);
     }
+    op.end();
+  });
+
+  it("record one client span per RPC, named and attributed as the server's", async () => {
+    const { op } = await openChat(true);
+    op.end();
+    for (const method of ["GetChat", "StreamChat"]) {
+      const rpc = rpcSpan(method);
+      expect(rpc, method).toMatchObject({
+        name: `interaction.v1.ChatService/${method}`,
+        kind: SpanKind.CLIENT,
+        attributes: {
+          "rpc.system": "connect_rpc",
+          "rpc.service": "interaction.v1.ChatService",
+          "rpc.method": method,
+          "forge.rpc.client": true,
+        },
+        status: undefined,
+        events: [],
+        // A stream's span ends when the caller has read it to the end.
+        ended: true,
+      });
+    }
+  });
+
+  it("name the RPC span in the traceparent when nothing instruments fetch", async () => {
+    // React Native, or a page whose SDK does not patch fetch: the server's
+    // span is the RPC span's child directly.
+    const sent: Array<string | null> = [];
+    vi.stubGlobal("fetch", ((input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(new Headers(init?.headers).get("traceparent"));
+      return Promise.resolve(respond(String(input)));
+    }) as typeof fetch);
+    const client = createClient(
+      testService(),
+      createConnectTransport({
+        baseUrl: "http://api.test",
+        interceptors: buildRuntimeInterceptors({ getToken: async () => "t" }),
+      }),
+    ) as unknown as { getChat(req: object): Promise<unknown> };
+    await client.getChat({});
+    const rpc = rpcSpan("GetChat");
+    expect(parentOf(sent[0])).toBe(rpc?.spanId);
+    expect(traceIdFrom(sent[0])).toBe(rpc?.traceId);
+  });
+
+  it("are left out with rpcSpans: false", async () => {
+    const seen: FetchSpan[] = [];
+    const client = chatClient(
+      true,
+      seen,
+      buildRuntimeInterceptors({ getToken: async () => "t", rpcSpans: false }),
+    );
+    const op = interaction("chat.open");
+    await callBoth(client);
+    expect(rpcSpan("GetChat")).toBeUndefined();
+    const root = spanNamed("chat.open")[0]!;
+    expect(seen.map((s) => s.parentSpanId)).toEqual([root.spanId, root.spanId]);
     op.end();
   });
 
@@ -693,7 +761,8 @@ describe("the browser fetch spans of RPCs made while an interaction is open", ()
     const root = spanNamed("chat.open")[0]!;
     const [unary, stream] = seen;
     // connect-web calls fetch() synchronously for a unary call...
-    expect(unary?.parentSpanId).toBe(root.spanId);
+    expect(rpcSpan("GetChat")?.parentSpanId).toBe(root.spanId);
+    expect(unary?.parentSpanId).toBe(rpcSpan("GetChat")?.spanId);
     // ...but awaits the request body of a stream first, by which time a
     // stack context manager has dropped the interaction.
     expect(stream?.parentSpanId).toBeUndefined();

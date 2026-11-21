@@ -48,11 +48,14 @@ import (
 // rather than the sentinel. A project that assembles a chain by hand adds it
 // last; passing it to a builder as well is harmless, since the builders
 // replace a copy they find with their own innermost one (see [IsInterceptor]).
+//
+// connect-go v2 projects use [InterceptorV2], which has the same semantics.
 func Interceptor() connect.Interceptor { return interceptor{} }
 
 // IsInterceptor reports whether i is the interceptor [Interceptor] returns.
 // Chain builders use it to install exactly one, innermost, however many the
-// caller passed.
+// caller passed. There is no v2 twin: a v2 interceptor is a func, which
+// cannot be compared, and [InterceptorV2] is installed by slot instead.
 func IsInterceptor(i connect.Interceptor) bool {
 	_, ok := i.(interceptor)
 	return ok
@@ -60,7 +63,7 @@ func IsInterceptor(i connect.Interceptor) bool {
 
 // WithInterceptor returns extras with every [Interceptor] removed and one
 // appended last — the position innermost to the handler. The input slice is
-// not modified.
+// not modified. connect-go v2 projects use [WithInterceptorV2].
 func WithInterceptor(extras []connect.Interceptor) []connect.Interceptor {
 	out := make([]connect.Interceptor, 0, len(extras)+1)
 	for _, i := range extras {

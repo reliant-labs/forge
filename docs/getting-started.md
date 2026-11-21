@@ -192,7 +192,8 @@ to an unauthenticated caller.
 
 If a handler grows past those five steps, move the extra logic into a
 package (`forge scaffold package <name>`, which writes
-`internal/<name>/contract.go`) and give the handler its interface as a
+`internal/<name>/service.go` with a `//forge:contract`-marked struct; forge
+derives the `Service` interface from it) and give the handler its interface as a
 dependency. `forge lint` will tell you when a handler file grows too large.
 
 ## 5. Run it
@@ -313,11 +314,11 @@ This is the thing to internalize.
 
 There are really three categories, not two.
 
-| Category                     | Examples                                                                                                                                                     | Behavior                                  |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
-| **Regenerated every run**    | `gen/**`, `*_gen.go` (including `internal/db/<entity>_orm_gen.go`), `deploy/kcl/config_gen.k`                                                                | Overwritten. Never edit.                  |
-| **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k`                    | Forge writes if absent, then leaves alone |
-| **Purely yours**             | handler bodies (`internal/handlers/<svc>/rpc_<name>.go`), a domain package's `internal/<name>/contract.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these                  |
+| Category                     | Examples                                                                                                                                                    | Behavior                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Regenerated every run**    | `gen/**`, `*_gen.go` (including `internal/db/<entity>_orm_gen.go`), `deploy/kcl/config_gen.k`                                                               | Overwritten. Never edit.                  |
+| **Written once, then yours** | `internal/app/compose.go`, `internal/app/auth.go`, `db/migrations/*.sql`, `internal/db/<entity>_repo_ext.go`, `deploy/kcl/<env>/config.k`                   | Forge writes if absent, then leaves alone |
+| **Purely yours**             | handler bodies (`internal/handlers/<svc>/rpc_<name>.go`), a domain package's `internal/<name>/service.go`, `internal/app/providers.go`, `cmd/<bin>/main.go` | Forge never writes these                  |
 
 You do not have to memorize it. Files in the first category say so in their
 own header:
@@ -366,3 +367,7 @@ forge skill load testing        # the test pyramid and the harness patterns
 
 If you are migrating an existing codebase rather than starting fresh, start
 with `forge skill load migration`.
+
+Why forge is shaped this way, as reasons with the checked benefits behind
+each: `forge why`, or [why-forge.md](why-forge.md). Every benefit, one layer
+at a time: [benefits.md](benefits.md).

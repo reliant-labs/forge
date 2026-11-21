@@ -457,7 +457,7 @@ export function enumLabel(value: string | number | null | undefined, enumType?: 
 
 /** One option for a proto-enum-backed select / picker control. */
 export interface EnumOption {
-  /** Numeric enum value — the shape the wire message / zod nativeEnum expects. */
+  /** Numeric enum value — the shape the wire message / a zod enum schema expects. */
   value: number;
   /** Humanized member name, e.g. "Pending Review". */
   label: string;

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/pkgdirective"
 )
@@ -23,8 +24,9 @@ func ExcludedByDirective(dir string) bool {
 }
 
 // Targets lists every file the contracts step generates from under
-// internalDir — each contract.go, and the marked deps.go of a package without
-// one — pruning testdata/ subtrees and every directory excluded reports true
+// internalDir — each contract.go, the contract_gen.go of a package whose
+// contract is derived from a `//forge:contract` type (contractsrc.Path), and
+// the marked deps.go of a package with neither — pruning testdata/ subtrees and every directory excluded reports true
 // for (its module-relative, slash-separated path, matched against forge.yaml
 // `contracts.exclude`). A nil excluded excludes nothing.
 //
@@ -52,10 +54,9 @@ func Targets(internalDir, projectDir string, excluded func(rel string) bool) []s
 		if rel, relErr := filepath.Rel(projectDir, path); relErr == nil && excluded != nil && excluded(filepath.ToSlash(rel)) {
 			return filepath.SkipDir
 		}
-		contractPath := filepath.Join(path, "contract.go")
-		if _, statErr := os.Stat(contractPath); statErr == nil {
+		if contractPath := contractsrc.Path(path); contractPath != "" {
 			paths = append(paths, contractPath)
-		} else if os.IsNotExist(statErr) && depsurface.HasDepsMarker(path) {
+		} else if depsurface.HasDepsMarker(path) {
 			paths = append(paths, filepath.Join(path, depsurface.DepsFileName))
 		}
 		return nil

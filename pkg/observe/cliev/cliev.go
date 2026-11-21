@@ -142,7 +142,7 @@ func New(cfg Config) *Client {
 		cfg.Now = time.Now
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{}
+		cfg.HTTPClient = defaultHTTPClient()
 	}
 	if truthy(cfg.Getenv(strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(strings.TrimSpace(cfg.App)))) + "_TELEMETRY_QUIET")) {
 		cfg.Quiet = true

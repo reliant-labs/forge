@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // connectMCP serves a forge MCP server on an in-memory pipe and returns a
@@ -106,8 +109,8 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	for _, tool := range list.Tools {
 		got[tool.Name] = tool
 	}
-	readOnly := []string{"benefits", "capabilities", "schema", "annotations", "libraries", "audit", "shapes", "skill_list", "skill_search", "skill_load",
-		"deploy_status", "explain_error"}
+	readOnly := []string{"benefits", "why", "capabilities", "schema", "annotations", "libraries", "audit", "shapes", "blast_radius", "skill_list", "skill_search", "skill_load",
+		"deploy_status", "explain_error", "db_query", "obs_status", "obs_issues", "obs_issue", "obs_logs", "obs_check"}
 	mutating := []string{"lint", "generate", "report_bug", "deploy_claimable"}
 	if len(got) != len(readOnly)+len(mutating) {
 		t.Errorf("got %d tools, want %d: %v", len(got), len(readOnly)+len(mutating), got)
@@ -135,7 +138,8 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	// report_bug is the one tool that sends anything off the machine, and
 	// says so.
 	// So do the deploy tools, which talk to the control plane.
-	for _, name := range []string{"report_bug", "deploy_claimable", "deploy_status"} {
+	// blast_radius may ask an env's control plane for traffic.
+	for _, name := range []string{"report_bug", "deploy_claimable", "deploy_status", "blast_radius", "db_query", "obs_status", "obs_issues", "obs_issue", "obs_logs", "obs_check"} {
 		if rb := got[name]; rb != nil && (rb.Annotations == nil || rb.Annotations.OpenWorldHint == nil || !*rb.Annotations.OpenWorldHint) {
 			t.Errorf("%s must be annotated open-world", name)
 		}
@@ -190,6 +194,49 @@ func TestMCP_ReadOnlyToolsAnswerAgainstAProject(t *testing.T) {
 		t.Errorf("annotations = %.200q (isError %v)", out, isErr)
 	}
 
+}
+
+func TestMCP_BlastRadiusArgs(t *testing.T) {
+	for _, c := range []struct {
+		in   blastRadiusInput
+		want string
+	}{
+		{blastRadiusInput{}, "[obs blast-radius --json]"},
+		{blastRadiusInput{Env: "prod", Base: "-weird", Head: "HEAD", Since: "24h"}, "[obs blast-radius prod --json --base=-weird --head=HEAD --since=24h]"},
+	} {
+		if got := fmt.Sprint(blastRadiusArgs(c.in)); got != c.want {
+			t.Errorf("%+v: %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+// blast_radius answers with the --json document alone, also when it fails.
+func TestMCP_BlastRadiusIsTheDocument(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	repo, _ := brGitRepo(t)
+	plain := t.TempDir()
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(plain))
+	cs := connectMCP(t, t.TempDir())
+
+	out, isErr := callMCP(t, cs, "blast_radius", map[string]any{"dir": repo})
+	if isErr {
+		t.Fatalf("blast_radius failed: %s", out)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("not one JSON document: %v\n%s", err, out)
+	}
+	if doc["schema"] != schemaObsBlastRadius || !strings.Contains(fmt.Sprint(doc["ops"]), "billing.Refund") {
+		t.Errorf("doc = %v", doc)
+	}
+
+	out, isErr = callMCP(t, cs, "blast_radius", map[string]any{"dir": plain})
+	if !isErr {
+		t.Fatalf("a directory outside git is a tool error: %s", out)
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || doc["exit_code"] != float64(2) {
+		t.Errorf("the failure is the document (%v): %s", err, out)
+	}
 }
 
 func TestMCP_LibrariesResolvesFromTheForgeModule(t *testing.T) {
@@ -313,8 +360,8 @@ func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 16 {
-		t.Fatalf("tools/list response = %s (err %v), want 16 tools", got[2], err)
+	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 24 {
+		t.Fatalf("tools/list response = %s (err %v), want 24 tools", got[2], err)
 	}
 }
 

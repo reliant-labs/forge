@@ -104,8 +104,9 @@ forge login && forge obs init prod staging               # hosted monitoring (`o
                                                          #   document (deploy/envs/<env>.yaml; commit it), registers the env,
                                                          #   mints a token per env, prints its OTEL_* variables: endpoint,
                                                          #   headers (the token, shown once), attributes
-forge cloud token create --name ci --scopes deploy:write # record deploys: the CI secret FORGE_CONTROL_PLANE_TOKEN; add the deployed workloads
-                                                         #   to deploy/envs/prod.yaml (`runtime: {type: external}`), then after the deploy job:
+# record deploys: mint the CI secret FORGE_CONTROL_PLANE_TOKEN (scope deploy:write) in the web app, Settings → API tokens
+#   (https://forge.reliantlabs.io/settings/tokens; Reliant cloud refuses `forge cloud token create` under `forge login`),
+#   add the deployed workloads to deploy/envs/prod.yaml (`runtime: {type: external}`), then after the deploy job:
 forge release record --env prod --version "$TAG" --workload api --image "ghcr.io/acme/api@$DIGEST"
 forge obs check prod --release "$TAG" --wait             #   …and its verdict: exit 0 good, 1 regressed, 2 not proven, 8 too early
 forge project new --in-place --kind app --dry-run        # deploys by forge: what it would write from the Dockerfile; writes nothing
@@ -257,7 +258,8 @@ Trust is part of the pitch. Say these, with the commands:
   it elsewhere by changing `OTEL_EXPORTER_OTLP_ENDPOINT`. `forge obs tokens
   revoke` cuts an ingest token off within minutes.
 - **Recorded deploys**: delete the `forge release record` step; their
-  pipeline never depended on it. `forge cloud token revoke` retires the CI token.
+  pipeline never depended on it. Revoking the CI token in the web app
+  (Settings → API tokens) retires it.
 - **External hooks**: `forge.OnExternal` runs their own tool; dropping the
   binding leaves that tool exactly as it was.
 - **Kubernetes YAML**: `forge env render <env>` prints every object as plain

@@ -53,6 +53,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // excludeSuggestion describes a package the heuristic flagged as a
@@ -148,7 +149,7 @@ func scanForExcludeCandidates(rootDir string, existing map[string]bool) ([]exclu
 			// Treat per-package failures as best-effort — don't blank the report.
 			return nil
 		}
-		if hasContract {
+		if hasContract || contractsrc.HasMarkedType(path) {
 			return nil
 		}
 		if !hasExportedMethods {
@@ -193,7 +194,7 @@ type pkgEntries struct {
 
 // scanPackageFiles inspects a single directory's .go files. It returns:
 //   - ent: aggregated entry counts/flags used by classifyExcludeCandidate
-//   - hasContract: whether contract.go is present
+//   - hasContract: whether contract.go (or a derived contract_gen.go) is present
 //   - hasExportedMethods: whether any struct has an exported method (the
 //     same trigger used by the require-contract analyzer)
 //
@@ -229,7 +230,7 @@ func scanPackageFiles(pkgDir string) (pkgEntries, bool, bool, error) {
 			continue
 		}
 		hasAnyGoFile = true
-		if name == "contract.go" {
+		if contractsrc.IsContractFile(name) {
 			hasContract = true
 		}
 		if strings.HasSuffix(name, "_test.go") {

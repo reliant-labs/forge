@@ -84,15 +84,15 @@ func TestSmoke_RaftAutoJoinThreeNodes(t *testing.T) {
 	key := hex.EncodeToString(kb)
 	sfx := fmt.Sprintf("%d", time.Now().UnixNano()%1e9)
 	network := "bao-raft-" + sfx
-	if out, err := exec.Command("docker", "network", "create", network).CombinedOutput(); err != nil {
-		t.Fatalf("docker network: %v\n%s", err, out)
+	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerMaxRun)
+	if err := testdocker.Network(t, smokeDockerOwner, network); err != nil {
+		t.Fatal(err)
 	}
 	var containers []string
 	t.Cleanup(func() {
 		for _, c := range containers {
 			_ = exec.Command("docker", "rm", "-fv", c).Run()
 		}
-		_ = exec.Command("docker", "network", "rm", network).Run()
 	})
 
 	ports := make([]int, spec.Replicas)
@@ -101,7 +101,8 @@ func TestSmoke_RaftAutoJoinThreeNodes(t *testing.T) {
 		fqdn := fmt.Sprintf("%s.%s.%s.svc", pod, spec.internalName(), spec.Namespace)
 		name := fmt.Sprintf("%s-%s", pod, sfx)
 		containers = append(containers, name)
-		out, err := exec.Command("docker", append(append([]string{"run", "-d", "--name", name, "--network", network, "--network-alias", fqdn}, testdocker.Publish(8200)...),
+		out, err := exec.Command("docker", append(append(append([]string{"run", "-d", "--name", name, "--network", network, "--network-alias", fqdn},
+			testdocker.Labels(smokeDockerOwner)...), testdocker.Publish(8200)...),
 			"--tmpfs", "/openbao/data:uid=100,gid=1000", "--tmpfs", "/openbao/audit:uid=100,gid=1000",
 			"-v", tlsDir+":/openbao/tls:ro", "-v", filepath.Join(dir, "config.hcl")+":/etc/bao/config.hcl:ro",
 			"-e", "BAO_STATIC_KEY="+key, "-e", "BAO_RAFT_NODE_ID="+pod,

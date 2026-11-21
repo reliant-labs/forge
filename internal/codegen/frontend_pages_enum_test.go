@@ -354,7 +354,7 @@ func TestCreatePage_EnumFieldTypedSelect(t *testing.T) {
 			for _, want := range []string{
 				`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
 				// Enum zod refuses the zero — the mirror of the born CHECK.
-				`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+				`status: z.coerce.number().pipe(z.enum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
 				// The installed library primitive, not a hand-styled <select>.
 				`<Select`,
 				// A NOT NULL enum starts on its column DEFAULT, the first
@@ -399,7 +399,7 @@ func TestEditPage_EnumFieldAndEntityFields(t *testing.T) {
 
 			for _, want := range []string{
 				`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
-				`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+				`status: z.coerce.number().pipe(z.enum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
 				// Prefill from the fetched entity — the field is the TS
 				// enum (a number), never String()-coerced, and never
 				// defaulted to the zero.

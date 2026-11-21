@@ -97,7 +97,7 @@ func ParseDashboard(name string, raw []byte) (Dashboard, error) {
 	if err := json.Unmarshal(raw, &tree); err != nil {
 		return Dashboard{}, &problemsError{file: name, problems: []Problem{ix.syntaxProblem(err)}}
 	}
-	v := &validator{ix: ix, filterIDs: map[string]bool{}}
+	v := &validator{ix: ix, filterIDs: map[string]bool{}, filterParamIDs: map[string]bool{}}
 	root, ok := tree.(map[string]any)
 	if !ok {
 		v.add("", "a dashboard file is one JSON object ({\"id\", \"title\", \"panels\", ...})")
@@ -139,6 +139,9 @@ func LooksLikeHyperDXDashboard(raw []byte) bool {
 type validator struct {
 	ix       *jsonIndex
 	problems []Problem
+	// filterParams are the ids of the dashboard's filter params, which a sql
+	// panel's statement may read and a panel's select may set.
+	filterParamIDs map[string]bool
 	// filterIDs are the ids of the dashboard's filters, which a browse
 	// filter's value may reference.
 	filterIDs map[string]bool
@@ -249,7 +252,7 @@ func (v *validator) oneOf(path string, obj map[string]any, key string, required 
 }
 
 func (v *validator) dashboard(d map[string]any) {
-	v.known("", d, "version", "id", "title", "description", "scope", "group", "tags", "replaces", "filters", "annotations", "panels", "sections", "defaultRange", "defaultCompare")
+	v.known("", d, "version", "id", "title", "description", "scope", "group", "tags", "replaces", "filters", "filterParams", "annotations", "panels", "sections", "defaultRange", "defaultCompare")
 	if ver := v.str("", d, "version", false); ver != "" && ver != SpecVersion {
 		v.add("version", "%q is not the spec version this forge reads (%s)", ver, SpecVersion)
 	}
@@ -275,6 +278,9 @@ func (v *validator) dashboard(d map[string]any) {
 
 	if fs, ok := v.list("", d, "filters"); ok {
 		v.filters(fs)
+	}
+	if fps, ok := v.list("", d, "filterParams"); ok {
+		v.filterParams(fps)
 	}
 
 	if as, ok := v.list("", d, "annotations"); ok {
@@ -376,7 +382,74 @@ func (v *validator) toggle(path string, f map[string]any, id string) {
 	}
 }
 
-var toggleID = regexp.MustCompile(ToggleIDPattern)
+var (
+	toggleID      = regexp.MustCompile(ToggleIDPattern)
+	filterParamID = regexp.MustCompile(FilterParamIDPattern)
+)
+
+// filterParams checks the dashboard's filter params: each id a parameter name
+// of the "f_" form, declared once and not also a toggle's, and a label.
+func (v *validator) filterParams(fps []any) {
+	if len(fps) > MaxFilterParams {
+		v.add("filterParams", "declares %d filter params, over the %d a dashboard may", len(fps), MaxFilterParams)
+	}
+	for i, raw := range fps {
+		p := indexPath("filterParams", i)
+		f, ok := v.object(p, raw)
+		if !ok {
+			continue
+		}
+		v.known(p, f, "id", "label", "description")
+		id := v.str(p, f, "id", true)
+		v.str(p, f, "label", true)
+		v.str(p, f, "description", false)
+		if id == "" {
+			continue
+		}
+		switch {
+		case !filterParamID.MatchString(id):
+			v.add(childPath(p, "id"), "a filter param's id is its sql parameter name: it must match %s", FilterParamIDPattern)
+		case v.filterParamIDs[id]:
+			v.add(childPath(p, "id"), "duplicate filter param id %q", id)
+		case v.filterIDs[id]:
+			v.add(childPath(p, "id"), "%q is also a filter's id; a sql parameter has one meaning", id)
+		}
+		v.filterParamIDs[id] = true
+	}
+}
+
+// readsFilterParams checks the filter params a statement reads: each is
+// declared by the dashboard and read as a String. A statement that reads one
+// the dashboard does not declare would be bound to the empty string by every
+// reader and never filter, which is a typo, not a choice. A toggle whose id
+// happens to look like one (toggles predate filter params) is the toggle's.
+func (v *validator) readsFilterParams(path, sql string) {
+	for _, u := range UsedSQLParams(sql) {
+		if !filterParamID.MatchString(u.Name) || v.filterIDs[u.Name] {
+			continue
+		}
+		if !v.filterParamIDs[u.Name] {
+			v.add(path, "reads {%s:%s}, which the dashboard declares in no filterParams", u.Name, u.Type)
+		}
+		if u.Type != "String" {
+			v.add(path, "reads the filter param {%s:%s}; a filter param is a String: {%s:String}", u.Name, u.Type, u.Name)
+		}
+	}
+}
+
+// rowSelect checks a sql panel's select: a declared filter param and a
+// result column.
+func (v *validator) rowSelect(path string, raw any) {
+	o, ok := v.object(path, raw)
+	if !ok {
+		return
+	}
+	v.known(path, o, "param", "column")
+	if param := v.str(path, o, "param", true); param != "" && !v.filterParamIDs[param] {
+		v.add(childPath(path, "param"), "%q is not one of the dashboard's filterParams", param)
+	}
+	v.str(path, o, "column", true)
+}
 
 // builtinSQLParams are the parameters a reader binds from the scope, which a
 // toggle may not shadow.
@@ -418,7 +491,7 @@ func (v *validator) stringList(path string, obj map[string]any, key string, sig 
 }
 
 func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
-	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link", "drill", "attention")
+	v.known(path, o, "id", "title", "description", "kind", "signal", "series", "ratio", "formula", "limit", "where", "groupBy", "columns", "unit", "width", "height", "funnel", "hasError", "sql", "trendSql", "subtitleSql", "postgres", "section", "minStep", "markdown", "display", "browse", "link", "drill", "attention", "select")
 	if id := v.str(path, o, "id", true); id != "" {
 		if !idPattern.MatchString(id) {
 			v.add(childPath(path, "id"), "%q is not a valid id (letters, digits, '-', '_' and '.', starting with a letter or digit)", id)
@@ -437,6 +510,13 @@ func (v *validator) panel(path string, o map[string]any, ids map[string]bool) {
 	}
 	if _, has := o["drill"]; has {
 		v.drill(path, o)
+	}
+	if raw, has := o["select"]; has {
+		if kind != string(KindSQL) {
+			v.add(childPath(path, "select"), "only a sql panel takes \"select\"")
+		} else {
+			v.rowSelect(childPath(path, "select"), raw)
+		}
 	}
 	if kind == string(KindAttention) {
 		v.attentionPanel(path, o, ids)
@@ -614,6 +694,8 @@ func (v *validator) sqlPanel(path string, o map[string]any) {
 	}
 	if err := CheckSQL(s); err != nil {
 		v.add(childPath(path, "sql"), "%v", err)
+	} else {
+		v.readsFilterParams(childPath(path, "sql"), s)
 	}
 	if m := v.str(path, o, "minStep", false); m != "" {
 		if _, err := ParseSpan(m); err != nil {
@@ -643,6 +725,8 @@ func (v *validator) subtitleSQL(path string, o map[string]any) {
 	}
 	if err := CheckSQL(s); err != nil {
 		v.add(sp, "%v", err)
+	} else {
+		v.readsFilterParams(sp, s)
 	}
 }
 
@@ -661,6 +745,8 @@ func (v *validator) trendSQL(path string, o map[string]any) {
 	}
 	if err := CheckSQL(s); err != nil {
 		v.add(tp, "%v", err)
+	} else {
+		v.readsFilterParams(tp, s)
 	}
 	if d, ok := o["display"].(map[string]any); ok {
 		if style, _ := d["style"].(string); style == string(StyleFunnel) || style == string(StyleHeatmap) {
@@ -1053,7 +1139,7 @@ func (v *validator) searchPanel(path string, o map[string]any, sig Signal) {
 // hasObservations reports whether a metric kind records observations (a count
 // and a distribution) rather than a single value.
 func hasObservations(metricType string) bool {
-	return metricType == "histogram" || metricType == "exp_histogram" || metricType == "summary"
+	return metricType == MetricTypeHistogram || metricType == MetricTypeExpHistogram || metricType == MetricTypeSummary
 }
 
 func (v *validator) series(path string, s map[string]any, sig Signal, labels map[string]bool) {
@@ -1066,7 +1152,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 	}
 	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast), string(AggRate), string(AggIncrease), string(AggMin))
 	field := v.str(path, s, "field", false)
-	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram", "exp_histogram", "summary")
+	metricType := v.oneOf(path, s, "metricType", false, MetricTypeSum, MetricTypeGauge, MetricTypeHistogram, MetricTypeExpHistogram, MetricTypeSummary)
 	q, hasQ := v.number(path, s, "quantile")
 	if agg == string(AggQuantile) {
 		if !hasQ || q <= 0 || q > 1 {
@@ -1095,7 +1181,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		if agg == string(AggCount) && !hasObservations(metricType) {
 			v.add(childPath(path, "agg"), "count over a metric needs a histogram, exp_histogram or summary metricType (its observations); a sum's growth is rate or increase (agg sum on a monotonic sum is its increase)")
 		}
-		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == "gauge" {
+		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == MetricTypeGauge {
 			v.add(childPath(path, "agg"), "%s needs metricType \"sum\" (a monotonic counter) or a histogram or summary, not a gauge", agg)
 		}
 	case Traces, Logs:

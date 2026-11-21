@@ -174,7 +174,7 @@ The server writes JSON lines to stdout, each with the process `resource` (`obser
 
 ## Continuous profiles
 
-Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. Depth (defaults, cost, tables, trace links, SQL): `forge skill load observability/profiles`.
+Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU profile every 5 minutes and a live-heap snapshot every two hours (allocation, goroutine, mutex and block profiles are opt-in per workload), **pushed** over OTLP to the `otel-profiles` collector, which writes them into ClickStack's ClickHouse. On by default with the local ClickStack; elsewhere `signals.profiles` on the env's `forge.Observability` governs it. HyperDX draws no flamegraphs: `forge obs profile --service api -o api.pb.gz`, then `go tool pprof -http=: api.pb.gz`. The same CPU profiles drive profile-guided builds: `forge pgo pull --env prod` writes `cmd/<bin>/default.pgo`, which you commit. Depth (defaults, cost, tables, trace links, SQL, PGO): `forge skill load observability/profiles`.
 
 ## Resource identity
 
@@ -184,7 +184,7 @@ Every process with an OTLP endpoint profiles itself (`pkg/observe`): a 5s CPU pr
 
 In HyperDX → Search → Metrics (or a chart tile), pick the metric by name. The RPC edge is measured by the otelconnect server interceptor: `rpc.server.call.duration` (histogram, attributes `rpc.method` — the full `pkg.Service/Method` — and `rpc.response.status_code`, `OK` or the upper-case Connect code such as `NOT_FOUND`). Other series the app exports: `db.sql.*` / `go.sql.*` for the DB pool and queries, and `<pkg>_calls` / `<pkg>_errors` / `<pkg>_duration` for the per-package in-process method metrics (component chain). Every series carries `ServiceName`.
 
-**Declare your own metrics** in `internal/metrics/metrics.go`: each instrument is declared (name, type, UCUM unit, description, attribute keys, stability, `since`) and the registry returns the standard OTel instrument. An attribute you did not declare panics under `ENVIRONMENT=development` and is dropped (counted on `forge.metrics.rejected_attributes`) elsewhere. The declared set prints with `<bin> metrics schema --json`, `GET /debug/metrics/schema` (the pprof listener) and `forge obs metrics declared [--binary|--url]`; `forge build` writes `bin/observability/metrics-schema.json`, which a release carries as `observability/metrics-schema.json`; `forge obs metrics declared --dashboard` draws the Custom metrics dashboard from it. Adopting it in an older project: `migrations/v0.1.45/metrics-schema`.
+**Declare your own metrics** in `internal/metrics/metrics.go`: each instrument is declared (name, type, UCUM unit, description, attribute keys, stability, `since`) and the registry returns the standard OTel instrument. An attribute you did not declare panics under `ENVIRONMENT=development` and is dropped (counted on `forge.metrics.rejected_attributes`) elsewhere. The declared set prints with `<bin> metrics schema --json`, `GET /debug/metrics/schema` (the pprof listener) and `forge obs metrics declared [--binary|--url]`; `forge build` writes `bin/observability/metrics-schema.json`, which a release carries as `observability/metrics-schema.json`; `forge obs metrics declared --dashboard` draws the Custom metrics dashboard from it. Adopting it in an older project: `forge generate` births `cmd/<bin>/cmd/metrics.go` and `internal/metrics/metrics.go` when they are absent, and never touches an existing one.
 
 ## In-process component observability (the middleware chain)
 
@@ -195,6 +195,9 @@ generated `middleware_gen.go` decorator routed through the owned
 `observe_chain.go` seam), and the ORM (`pkg/orm` registers the `bunotel` hook,
 so each query is a child span). Every contract package is decorated by default.
 Success-log sampling and opting a component out: `observability/component-chain`.
+A component span is named `<pkg>.<Method>` (newer decorators add `forge.op`,
+`code.function.name`, `code.file.path`): `forge obs ops` ranks them with the
+RPCs, and `forge obs blast-radius` maps a diff to them (`observability/query/ops`).
 
 ## Audit log
 
@@ -249,8 +252,8 @@ observability = forge.Observability {                        # per category
 `telemetry = forge.BrowserTelemetry {replay = True}` renders its
 `OTEL_REPLAY = "true"` and opts the env in, so the platform keeps the events
 (browser logs of scope `rum.rr-web`); the shape records
-`observability_policy.opt_in = ["replay"]`. `signals.replay` is a
-**deprecated** env-wide opt-in that switches no frontend on.
+`observability_policy.opt_in = ["replay"]` (and the rendered
+`signals.replay`). There is no env-wide replay switch to declare.
 
 `enabled = False` renders `OTEL_SDK_DISABLED=true` on every workload plus the
 browser switch. Author-set `OTEL_*` values still win.

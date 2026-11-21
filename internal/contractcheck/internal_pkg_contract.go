@@ -52,6 +52,8 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/contractsrc"
+	"github.com/reliant-labs/forge/internal/generator/contract"
 	"github.com/reliant-labs/forge/internal/linter/forgeconv"
 )
 
@@ -144,18 +146,15 @@ func internalPackageDirs(rootDir string, excludes []string) (withContract, witho
 		// would still fail the pre-codegen shape check.
 		notExcludedByDirective := func() bool { return !codegen.HasExcludeContractDirective(path) }
 
-		_, statErr := os.Stat(filepath.Join(path, "contract.go"))
+		// A contract.go, or a `//forge:contract` type the contract is
+		// derived from (contractsrc): the same package either way.
 		switch {
-		case statErr == nil:
+		case contractsrc.HasContract(path):
 			if notExcludedByDirective() {
 				withContract = append(withContract, path)
 			}
-		case os.IsNotExist(statErr):
-			if filepath.Dir(path) == internalDir && hasContractScannableSource(path) && notExcludedByDirective() {
-				withoutContract = append(withoutContract, path)
-			}
-		default:
-			return statErr
+		case filepath.Dir(path) == internalDir && hasContractScannableSource(path) && notExcludedByDirective():
+			withoutContract = append(withoutContract, path)
 		}
 		return nil
 	})
@@ -333,6 +332,16 @@ func missingContractFinding(rootDir, pkgDir string, facts contractShapeFacts) fo
 	}
 }
 
+// contractAnchor is the file a package-level contract finding points at:
+// contract.go, or — for a contract derived from a `//forge:contract` type —
+// the file declaring that type, which is what the author edits.
+func contractAnchor(dir string) string {
+	if marked := contractsrc.MarkedTypes(dir); len(marked) > 0 {
+		return filepath.Join(dir, marked[0].File)
+	}
+	return filepath.Join(dir, contractsrc.FileName)
+}
+
 // lintInternalContracts asserts the canonical Service/Deps/New(Deps)
 // Service shape on every internal package that declares a contract.go.
 // The package set (and the opt-outs applied to it) comes from
@@ -347,7 +356,7 @@ func lintInternalContracts(rootDir string, excludes []string) (forgeconv.Result,
 
 	var result forgeconv.Result
 	for _, dir := range pkgDirs {
-		contractPath := filepath.Join(dir, "contract.go")
+		contractPath := contractAnchor(dir)
 		relContract, relErr := filepath.Rel(rootDir, contractPath)
 		if relErr != nil {
 			relContract = contractPath
@@ -404,6 +413,24 @@ func lintInternalContractPackage(relContractPath, pkgDir string) ([]forgeconv.Fi
 	// to three findings demanding Service/Deps/New.
 	if codegen.HasNotAComponentDirective(pkgDir) {
 		return nil, nil
+	}
+
+	// A package that marks a type `//forge:contract` gets its Service
+	// derived; it must not ALSO declare one, and the marked type must be
+	// one forge can derive from. These are generate errors too
+	// (contract.CheckMarkedContract), reported here first.
+	if contractsrc.HasMarkedType(pkgDir) {
+		if _, cerr := contract.CheckMarkedContract(pkgDir); cerr != nil {
+			return []forgeconv.Finding{{
+				Rule:     string(RuleInternalPackageContractNames),
+				Severity: forgeconv.SeverityError,
+				File:     relContractPath,
+				Line:     markedTypeLine(pkgDir),
+				Message:  cerr.Error(),
+				Remediation: "a package declares ONE Service contract: either a hand-written interface in contract.go, " +
+					"or `//forge:contract` on the non-generic type New returns, from which forge generate derives contract_gen.go",
+			}}, nil
+		}
 	}
 
 	facts, err := scanPackageContractShape(pkgDir)
@@ -618,7 +645,24 @@ func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
 		}
 	}
 
+	// A `//forge:contract` type IS the contract: forge derives `Service`
+	// from it into contract_gen.go, which the scan above skips with every
+	// generated file. It is never a seam — it is the type New returns.
+	if marked := contractsrc.MarkedTypes(pkgDir); len(marked) > 0 && !facts.hasServiceInterface {
+		facts.hasServiceInterface = true
+		facts.serviceIfacePos = token.Position{Filename: filepath.Join(pkgDir, marked[0].File), Line: marked[0].Line}
+	}
+
 	return facts, nil
+}
+
+// markedTypeLine is the line of dir's first `//forge:contract` type (0 when
+// it has none).
+func markedTypeLine(dir string) int {
+	if marked := contractsrc.MarkedTypes(dir); len(marked) > 0 {
+		return marked[0].Line
+	}
+	return 0
 }
 
 // scanContractDecl folds a single top-level declaration into facts:

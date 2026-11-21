@@ -18,7 +18,9 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
@@ -43,26 +45,50 @@ const frontendTSPluginRange = "^2.5.0"
 //   - scripts/bootstrap.sh (devcontainer bootstrap)
 //   - internal/cli/generate_toolpins.go (generate pins each tool to the
 //     version resolveToolVersion reports, installing into a forge cache)
-var requiredProtoTools = []protoTool{
-	{
-		Binary:        "protoc-gen-go",
-		Module:        "google.golang.org/protobuf/cmd/protoc-gen-go",
-		VersionModule: "google.golang.org/protobuf",
-	},
-	{
-		Binary:        "protoc-gen-connect-go",
-		Module:        "connectrpc.com/connect/cmd/protoc-gen-connect-go",
-		VersionModule: "connectrpc.com/connect",
-	},
-	// goimports formats every Go file forge generates. It is not a buf
-	// plugin, but it shapes committed output the same way: `forge generate`
-	// without it skips the pass, so a regenerate on a machine that lacks it
-	// (a CI runner) produces different bytes than one that has it.
-	{
-		Binary:        "goimports",
-		Module:        "golang.org/x/tools/cmd/goimports",
-		VersionModule: "golang.org/x/tools",
-	},
+//
+// This is the connect-go v1 set, forge's default. A project's own set is
+// projectProtoTools: a connect-go v2 project (internal/connectmajor) builds
+// protoc-gen-connect-go from connect's v2 module instead.
+var requiredProtoTools = requiredProtoToolsFor(connectmajor.V1)
+
+// requiredProtoToolsFor is the codegen tool set for a project on connect-go
+// major m. Only protoc-gen-connect-go differs: both majors ship a binary of
+// that name, from connectrpc.com/connect/cmd/protoc-gen-connect-go (v1) and
+// connectrpc.com/connect/v2/cmd/protoc-gen-connect-go (v2), each installed at
+// the version go.mod resolves for its own runtime module. Each one's
+// generated code imports only its own runtime, so running the other major's
+// binary produces stubs the project cannot compile against.
+func requiredProtoToolsFor(m connectmajor.Major) []protoTool {
+	m = m.OrDefault()
+	return []protoTool{
+		{
+			Binary:        "protoc-gen-go",
+			Module:        "google.golang.org/protobuf/cmd/protoc-gen-go",
+			VersionModule: "google.golang.org/protobuf",
+		},
+		{
+			Binary:        "protoc-gen-connect-go",
+			Module:        m.PluginModule(),
+			VersionModule: m.VersionModule(),
+		},
+		// goimports formats every Go file forge generates. It is not a buf
+		// plugin, but it shapes committed output the same way: `forge generate`
+		// without it skips the pass, so a regenerate on a machine that lacks it
+		// (a CI runner) produces different bytes than one that has it.
+		{
+			Binary:        "goimports",
+			Module:        "golang.org/x/tools/cmd/goimports",
+			VersionModule: "golang.org/x/tools",
+		},
+	}
+}
+
+// projectProtoTools is the codegen tool set of the project rooted at
+// projectDir: requiredProtoToolsFor the connect-go major its go.mod selects.
+// An unreadable go.mod resolves to the v1 default, exactly as it did before
+// v2 existed.
+func projectProtoTools(projectDir string) []protoTool {
+	return requiredProtoToolsFor(connectmajor.DetectOrDefault(projectDir))
 }
 
 type protoTool struct {
@@ -83,17 +109,23 @@ func resolveToolVersion(ctx context.Context, projectDir string, t protoTool, ove
 	if override != "" {
 		return override
 	}
-	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", t.VersionModule)
+	if v, err := goListModuleVersion(ctx, projectDir, t.VersionModule); err == nil && v != "" {
+		return v
+	}
+	return "latest"
+}
+
+// goListModuleVersion is the version projectDir's module graph selects for
+// module (`go list -m`). A seam for tests.
+var goListModuleVersion = func(ctx context.Context, projectDir, module string) (string, error) {
+	cmd := exec.CommandContext(ctx, "go", "list", "-m", "-f", "{{.Version}}", module)
 	cmd.Dir = projectDir
 	// The module graph CI sees: a developer's go.work may bridge a local
 	// checkout, which is not what the committed stubs were built against.
 	// Under a caller's -mod=mod this `go list -m` would also write go.sum.
 	cmd.Env = goexec.Env("GOWORK=off")
 	out, err := cmd.Output()
-	if v := strings.TrimSpace(string(out)); err == nil && v != "" {
-		return v
-	}
-	return "latest"
+	return strings.TrimSpace(string(out)), err
 }
 
 func newToolsCmd() *cobra.Command {
@@ -108,7 +140,8 @@ Subcommands:
             versions this project's go.mod resolves, and check that every
             frontend declares its TypeScript plugin. Name a tool to install
             just it — including the lint tools 'forge lint' gates with
-            (golangci-lint, buf), at forge's pins.
+            (golangci-lint, buf), at forge's pins, and syft and grype,
+            from sha256-verified release binaries.
   pins      Print the tool versions this forge pins, for CI to read.
 
 Forge scaffolds buf.gen.yaml with 'local:' plugins by default so that
@@ -130,7 +163,7 @@ func newToolsInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install [tool...]",
-		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports), or the named tools (golangci-lint, buf)",
+		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports), or the named tools (golangci-lint, buf, syft, grype)",
 		Long: `Install the codegen tools forge needs on PATH for the default
 local:-plugin buf.gen.yaml workflow, plus goimports, which formats every Go
 file forge generates. Name tools to install just those, including the lint
@@ -139,7 +172,10 @@ tools 'forge lint' gates with: golangci-lint and buf.
 Each codegen tool is installed at the version this project's go.mod resolves
 for it (google.golang.org/protobuf, connectrpc.com/connect,
 golang.org/x/tools) — the version the committed generated code was produced
-with — falling back to @latest when go.mod does not contain the module.
+with — falling back to @latest when go.mod does not contain the module. A
+project whose go.mod directly requires connectrpc.com/connect/v2 gets the v2
+protoc-gen-connect-go (connectrpc.com/connect/v2/cmd/protoc-gen-connect-go),
+at the version go.mod resolves for connectrpc.com/connect/v2.
 --version overrides that for every codegen tool.
 
 The lint tools install at forge's pins ('forge tools pins'), never at
@@ -147,6 +183,15 @@ The lint tools install at forge's pins ('forge tools pins'), never at
 with: one built with an older Go cannot analyze it. 'forge lint' builds that
 same golangci-lint into its own cache when PATH has none, so installing it
 only saves that one-time build — a CI job needs no install step for it.
+
+syft and grype, the SBOM generator and vulnerability scanner, install from
+their upstream release archives into forge's tool cache
+($FORGE_TOOLS_CACHE/release), each archive verified against a sha256
+compiled into this forge before it is extracted; they need no Go toolchain.
+forge fetches them on first use anyway, so naming them here is for a machine
+about to go offline or an image that bakes them in. FORGE_TOOLS_MIRROR
+downloads them from a mirror of github.com (the checksum is still checked).
+A platform with no published binary builds them with 'go install'.
 
 By default, tools already present on PATH are skipped — golangci-lint only
 when it is forge's pin built with a new-enough Go. Use --force to re-install
@@ -165,7 +210,8 @@ Examples:
   forge tools install --version v1.34.2
   forge tools install --force
   forge tools install golangci-lint
-  forge tools install golangci-lint buf`,
+  forge tools install golangci-lint buf
+  forge tools install syft grype`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			goErr := runToolsInstall(cmd.Context(), version, force, args...)
 			if len(args) > 0 {
@@ -280,11 +326,49 @@ func declaresTSPlugin(path string) (bool, error) {
 // installing it is an optimisation, never a prerequisite.
 var lintTools = []string{"buf", "golangci-lint"}
 
+// fetchedTools are the tools `forge tools install <name>` installs from
+// sha256-verified upstream release archives (internal/toolfetch), by name
+// only. They need no Go toolchain, and forge fetches them on first use
+// anyway, so installing them ahead is for a machine about to go offline or a
+// CI image that wants them baked in.
+func fetchedTools() map[string]toolfetch.Tool {
+	m := map[string]toolfetch.Tool{}
+	for _, t := range toolfetch.Tools() {
+		m[t.Name] = t
+	}
+	return m
+}
+
+// installFetchedTool installs t into forge's tool cache. --force does not
+// apply: an entry is verified against the pinned sha256 before it is
+// published, so there is nothing a reinstall could repair.
+func installFetchedTool(ctx context.Context, t toolfetch.Tool) error {
+	if in, ok := toolfetch.Find(t); ok {
+		fmt.Printf("✅ %-26s %s already installed at %s\n", t.Name, t.Version, in.Path)
+		return nil
+	}
+	fmt.Printf("📦 Installing %-26s %s (%s)\n", t.Name, t.Version, toolfetch.MethodFor(t))
+	path, _, err := toolfetch.Ensure(ctx, t)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ❌ %v\n", err)
+		return fmt.Errorf("install %s: %w", t.Name, err)
+	}
+	fmt.Printf("  ✅ %s %s installed at %s\n", t.Name, t.Version, path)
+	return nil
+}
+
 // runToolsInstall installs the named tools — the required codegen tools when
 // none are named. Returns the first install error (if any) but always tries
 // every tool so users see the full picture.
 func runToolsInstall(ctx context.Context, version string, force bool, names ...string) error {
-	if _, err := exec.LookPath("go"); err != nil {
+	fetched := fetchedTools()
+	needsGo := len(names) == 0
+	for _, n := range names {
+		if _, ok := fetched[n]; !ok {
+			needsGo = true
+		}
+	}
+	if _, err := exec.LookPath("go"); err != nil && needsGo {
 		return fmt.Errorf("'go' not found on PATH — install Go before running '%s tools install'", Name())
 	}
 	known := map[string]func() error{
@@ -297,11 +381,28 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 		"golangci-lint": func() error { return installPinnedGolangciLint(ctx, force) },
 	}
 	var order []string
-	for _, t := range requiredProtoTools {
+	// The project's own set: a connect-go v2 project installs the v2
+	// protoc-gen-connect-go. Outside a project (no forge.yaml above), the
+	// module in the working directory decides, else the v1 default.
+	majorDir := "."
+	if root, err := projectRoot(); err == nil {
+		majorDir = root
+	}
+	for _, t := range projectProtoTools(majorDir) {
 		known[t.Binary] = func() error {
-			return goInstallTool(ctx, t.Binary, t.Module+"@"+resolveToolVersion(ctx, ".", t, version), force)
+			reinstall := force
+			if other, ok := otherConnectMajorOnPath(ctx, t); ok && !force {
+				fmt.Printf("🔁 %-26s on PATH is connect-go %s's; this project uses %s — reinstalling\n", t.Binary, other, t.VersionModule)
+				reinstall = true
+			}
+			return goInstallTool(ctx, t.Binary, t.Module+"@"+resolveToolVersion(ctx, ".", t, version), reinstall)
 		}
 		order = append(order, t.Binary)
+	}
+	var fetchedNames []string
+	for _, t := range toolfetch.Tools() {
+		known[t.Name] = func() error { return installFetchedTool(ctx, t) }
+		fetchedNames = append(fetchedNames, t.Name)
 	}
 	if len(names) == 0 {
 		names = order
@@ -309,7 +410,7 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 	for _, n := range names {
 		if known[n] == nil {
 			return cliutil.UserErr("forge tools install", fmt.Sprintf("no installable tool named %q", n), "",
-				"one of: "+strings.Join(append(order, lintTools...), ", "))
+				"one of: "+strings.Join(append(append(order, lintTools...), fetchedNames...), ", "))
 		}
 	}
 
@@ -325,6 +426,46 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 	fmt.Println()
 	fmt.Println("✅ All requested tools installed.")
 	return nil
+}
+
+// otherConnectMajorOnPath reports whether the binary PATH resolves for t is a
+// protoc-gen-connect-go built from the OTHER connect-go major than t's — the
+// one case where "already on PATH" must not mean installed: the binary has
+// the right name and generates stubs the project cannot compile. Any other
+// tool, a binary whose build info cannot be read, or one of the right major
+// reports false, so every other skip behaves as before.
+func otherConnectMajorOnPath(ctx context.Context, t protoTool) (connectmajor.Major, bool) {
+	if t.Binary != "protoc-gen-connect-go" {
+		return 0, false
+	}
+	path, err := exec.LookPath(t.Binary)
+	if err != nil {
+		return 0, false
+	}
+	cmd := exec.CommandContext(ctx, "go", "version", "-m", path)
+	cmd.Env = goexec.Env()
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, false
+	}
+	return otherConnectMajorIn(string(out), t)
+}
+
+// otherConnectMajorIn is otherConnectMajorOnPath's decision over `go version
+// -m` output.
+func otherConnectMajorIn(buildInfo string, t protoTool) (connectmajor.Major, bool) {
+	if _, ok := parseBuildInfoVersion(buildInfo, t.VersionModule); ok {
+		return 0, false
+	}
+	for _, m := range []connectmajor.Major{connectmajor.V1, connectmajor.V2} {
+		if m.VersionModule() == t.VersionModule {
+			continue
+		}
+		if _, ok := parseBuildInfoVersion(buildInfo, m.VersionModule()); ok {
+			return m, true
+		}
+	}
+	return 0, false
 }
 
 // bufModulePath is the package `go install` builds buf from.

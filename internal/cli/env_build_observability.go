@@ -19,10 +19,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/internal/obsdash"
+	"github.com/reliant-labs/forge/pkg/dashspec"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/servicecatalog"
 )
@@ -88,6 +91,68 @@ func withholdServiceCatalog(files []bundle.ObservabilityFile, reader *release.Bu
 	}
 	return dropServiceCatalog(files)
 }
+
+// withholdUnservedDashboards drops, unless reader is a control plane that
+// POSITIVELY names [release.CapabilityServesDashboardFilterParams], every
+// dashboard such a control plane is needed for: the Overview page's card
+// dashboards (obsdash.CardDashboards) and any dashboard whose sql panels read
+// filter params ({f_<name>:String}), which an older control plane cannot run.
+// It returns the dropped dashboards' ids. Default deny, as for the service
+// catalog: a nil reader (the machine ledger, or a claimable deploy before it
+// records) withholds them too, so a bundle never reaches a control plane that
+// cannot serve what it carries, by any path.
+func withholdUnservedDashboards(files []bundle.ObservabilityFile, reader *release.BundleReader) ([]bundle.ObservabilityFile, []string) {
+	if reader != nil && reader.Supports(release.CapabilityServesDashboardFilterParams) {
+		return files, nil
+	}
+	out := make([]bundle.ObservabilityFile, 0, len(files))
+	var dropped []string
+	for _, f := range files {
+		if id, unserved := needsFilterParamServer(f); unserved {
+			dropped = append(dropped, id)
+			continue
+		}
+		out = append(out, f)
+	}
+	return out, dropped
+}
+
+// needsFilterParamServer reports whether f is a dashboard only a control plane
+// that names release.CapabilityServesDashboardFilterParams serves, and its id.
+func needsFilterParamServer(f bundle.ObservabilityFile) (string, bool) {
+	if !strings.HasPrefix(f.Path, release.BundleDashboardsPath+"/") || !strings.HasSuffix(f.Path, ".json") {
+		return "", false
+	}
+	var d obsdash.Dashboard
+	if json.Unmarshal(f.Data, &d) != nil {
+		return "", false
+	}
+	if obsdash.IsCardDashboard(d.ID) || len(d.FilterParams) > 0 {
+		return d.ID, true
+	}
+	reads := func(sql string) bool {
+		for _, u := range dashspec.UsedSQLParams(sql) {
+			if filterParamID.MatchString(u.Name) {
+				return true
+			}
+		}
+		return false
+	}
+	panels := append([]obsdash.Panel(nil), d.Panels...)
+	for _, p := range d.Panels {
+		if p.Attention != nil {
+			panels = append(panels, p.Attention.Figures...)
+		}
+	}
+	for _, p := range panels {
+		if reads(p.SQL) || reads(p.TrendSQL) || reads(p.SubtitleSQL) {
+			return d.ID, true
+		}
+	}
+	return "", false
+}
+
+var filterParamID = regexp.MustCompile(dashspec.FilterParamIDPattern)
 
 // dropServiceCatalog returns files without the service catalog, and whether
 // it was there.

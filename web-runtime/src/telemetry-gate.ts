@@ -115,9 +115,41 @@ export function rumSessionId(): string | undefined {
   }
 }
 
+// ── What the RPC span stage records ────────────────────────────────────────
+//
+// The RPC span interceptor (rpc-span.ts) records whenever a tracer provider is
+// registered, so a React Native app with its own OpenTelemetry SDK gets RPC
+// spans without the browser telemetry module. initBrowserTelemetry narrows it
+// here: `rpcForensics: false` (the runtime config's RPC_FORENSICS = "false")
+// turns the failure forensics off, and disableTelemetry() turns both off,
+// since the SDK's provider stays registered after it.
+
+/** What the RPC span stage may record, page-wide. */
+export interface RpcTelemetry {
+  /** One client span per RPC. */
+  spans: boolean;
+  /** A redacted `forge.forensics` event on a failed RPC's span. */
+  forensics: boolean;
+}
+
+const RPC_TELEMETRY_DEFAULT: RpcTelemetry = { spans: true, forensics: true };
+
+let rpcTelemetry: RpcTelemetry = RPC_TELEMETRY_DEFAULT;
+
+/** Narrow (or restore) what the RPC span stage records. Called by telemetry.ts. */
+export function setRpcTelemetry(next: Partial<RpcTelemetry>): void {
+  rpcTelemetry = { ...rpcTelemetry, ...next };
+}
+
+/** What the RPC span stage may record right now. */
+export function currentRpcTelemetry(): RpcTelemetry {
+  return rpcTelemetry;
+}
+
 /** Test seam. */
 export function resetTelemetryGate(): void {
   startup = null;
   hurry = null;
   sessionSource = null;
+  rpcTelemetry = RPC_TELEMETRY_DEFAULT;
 }

@@ -156,10 +156,10 @@ func TestStoreInterfaces_AggregateHasAnAccessorPerEntityInThatEntitysFile(t *tes
 	}
 }
 
-// The generated surface must NOT try to enumerate hand-written queries. Those
-// live in the scaffold-once <entity>_repo_ext.go seam, which forge never
-// regenerates — so a generated interface naming them would either clobber the
-// user's work or go stale against it.
+// <Entity>Store must NOT enumerate hand-written queries: it is regenerated from
+// the schema, and the queries live in the scaffold-once <entity>_repo_ext.go
+// seam. The store file points there, and at <Entity>ExtStore, the interface
+// regenerated from the seam itself (plan_orm_ext_store_gen.go).
 func TestStoreInterfaces_PointAtTheRepoExtSeamForRawSQL(t *testing.T) {
 	src := storeGenSource(t)
 

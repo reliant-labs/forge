@@ -1,6 +1,6 @@
 ---
 name: observability/query
-description: The feedback loop from the CLI — forge obs status for what is wrong now, forge obs check after a deploy, then issues, traces, logs, endpoints and metrics; forge env releases for what was live when; forge db query for the rows. Backends (local ClickStack, the control plane), the JSON contract, suggested next commands, and the exit codes a CI gate branches on.
+description: The feedback loop from the CLI — forge obs status for what is wrong now, forge obs check after a deploy, then issues, traces, logs, endpoints, ops, blast radius and metrics; forge env releases for what was live when; forge db query for the rows. Backends (local ClickStack, the control plane), the JSON contract, suggested next commands, and the exit codes a CI gate branches on.
 ---
 
 # Querying the running system: `forge obs`
@@ -28,7 +28,7 @@ forge db query prod "select count(*) from jobs where crew_id is null" --confirm-
 forge obs issue resolve ISS-7f3a prod --in next
 ```
 
-No deploy to judge, just "something is wrong"? Start with `forge obs status prod`: the services, the new and regressed issues, the alerts, whether telemetry is arriving and the release in force, in one document.
+No deploy to judge, just "something is wrong"? Start with `forge obs status prod`: the services, the new and regressed issues, the alerts, the suspended or unhealthy workloads, whether telemetry is arriving and the release in force, in one document.
 
 ## Backends
 
@@ -52,7 +52,7 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 
 | Verb | Answers |
 |---|---|
-| `forge obs status [env]` | What is wrong right now: per-service rate, errors and p95; new and regressed issues; alerts firing or pending (cloud); when the newest log and span arrived, and whether the telemetry token reached the cluster (cloud); the release in force and the last 5 changes |
+| `forge obs status [env]` | What is wrong right now: per-service rate, errors and p95; new and regressed issues; alerts firing or pending (cloud); the workloads suspended or needing a look, and how many there are (cloud: a suspended env serves no traffic and emits no telemetry, so this is what tells it from a quiet one; suggests `forge env start`); when the newest log and span arrived, and whether the telemetry token reached the cluster (cloud); the release in force and the last 5 changes |
 | `forge obs workloads [env]` | Restarts, crash loops, last termination reason (OOMKilled, Error, ...), ready/desired replicas and the latest Kubernetes warning per workload, plus failed Job runs — the cluster state a hosted user has no kubeconfig for (cloud; `--all`, `--jobs failed\|all\|none`, default 24h, max 7d). Suggests the `obs logs` command narrowed to the worst workload |
 | `forge obs check [env]` | Did the deploy work? Before/after the promotion: error rate, p95 (server spans, else platform ingress), browser errors and page loads, new and regressed issues, alerts, restarts |
 | `forge obs changes [env]` | What changed: promotions, rollbacks, failed deploys and activity, newest first (locally: this machine's ledger and `forge env up` starts) |
@@ -67,7 +67,9 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs logs [env] [query]` | Search and tail (`--trace`, over the trace's own time range; `--severity`, `--oldest`, `--page-token`; `--follow` polls, every `--interval`, default 2s) |
 | `forge obs traces [env]` | Find traces (`--slow`, `--min-duration`, `--errors`, `--route`, `--page-token`) |
 | `forge obs trace <trace-id> [env]` | One trace as a capped tree; error spans and the critical path are always expanded (`--full` lifts the caps; `--logs N` linked log lines); carries the release live when it started. Each span line shows how it ended (`rpc=CANCELED`, `http=403`, `error.type`, a statement's summary, ClickHouse `read_rows` and `query_id`) and a failed span's exception; a log that warns, fails or carries an `error` is printed under its span with its error and cause; a span whose children cover little of it gets `⋯ uninstrumented 9.99s of 10.00s`: the time went to code that emitted no span, so look there. Past 10,000 spans the read stops and says so (`158,864 spans (10,000 read)`): time past it is `⋯ not read`, runs carry the whole trace's count, and its spans by name follow |
-| `forge obs endpoints [env]` | Busiest, slowest or most failing endpoints (`--sort requests\|p95\|errors\|rate`, `--top`, default 10) |
+| `forge obs endpoints [env]` | Busiest, slowest or most failing endpoints (`--sort requests\|p95\|errors\|rate`, `--top`, default 10); CLIENT P95 (`client_p95_ms`, `client_calls`) is the browser's view of the rpc, from `forge.rpc.client` spans, `client_note` when unreadable |
+| `forge obs ops [env]` | Component ops (`<pkg>.<Method>`) and RPCs by traffic, with each op's code location (`--sort calls\|p95\|errors\|rate`, `--top`, default 20, `--kind rpc,endpoint,component`, `--name <op>` for named ops only) |
+| `forge obs blast-radius [env]` | The diff (`--base`, default the merge-base with origin/main; `--head`, default the working tree) mapped to the ops it changes, with their traffic (`--since`, default 7d); no env: the mapping alone. Which to run when: `observability/query/ops` |
 | `forge obs metrics list [env]` | The metric catalog (`--contains`): kind, monotonic, temporality, services, last seen, series estimate; locally, merged with the declared schema (`declared`, `seen`) |
 | `forge obs metrics describe [env] <metric>` | One metric: interval, attribute keys with value counts, suggested breakdowns, the declared spec |
 | `forge obs metrics query [env] <metric>` | A metrics panel, as the console explorer runs it: `--agg`/`--quantile`, `--query NAME=metric[:agg[:q]]`, `--where NAME:key=value`, `--filter`, `--group-by` (repeatable), `--formula`, `--kind line\|number\|table\|bar`, `--top`, `--compare 24h\|prev-release`, `--step`, `--panel-out FILE` |
@@ -78,58 +80,19 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 
 Common flags of the telemetry verbs: `--since 2h` (or `--from/--to`), `--service` (repeatable), `--filter k=v` / `k!=v` (repeatable; `k` is an allowlisted key such as `http.route`, or any attribute named by its map: `span.attr.<k>` on traces, `log.attr.<k>` on logs, `resource.attr.<k>` anywhere, so `forge obs traces prod --filter span.attr.chat.id=<id>` finds every trace one of whose spans carries that chat), `--backend local|cloud`, `--limit` (list verbs), `--json`, `--fields a,b.c`, and `--explain` (alias `--print-sql`), which adds the compiled `statements[]{purpose,sql,params}` to the document instead of running them. Copy a statement into `forge obs query --sql` when the structured verbs can't express what you need. `FORGE_OBS_DEBUG=1` logs each raw query's literal-free shape to stderr. `status` and `changes` take the time, backend and output flags but not `--filter` or `--explain`; `check` has its own (below).
 
+**Which ops, when** (`observability/query/ops`): before editing a component or handler, `forge obs ops <env>` or `forge obs blast-radius <env>` says how hot and fragile the code is; reviewing a PR, `forge obs blast-radius <env> --json`; after a deploy, `forge obs check` (its `changed_op_*` findings).
+
 ## Issue assignment filters
 
 `forge obs issues <env> --assignee me|none|<user-id>` and `forge obs issue assign <id> me|none|<user-id> <env>`. `me` is the verified credential's person (an organization automation token is refused, exit 2); how each value reaches the API and the local behaviour: `observability/query/issues`.
 
 ## What is wrong now: `forge obs status`
 
-Each section is read on its own and concurrently. A section the backend cannot answer is **absent**, named in `unread`, with the reason in `warnings`; a section the backend does not have (alerts, locally) is named in `not_evaluated`. A section that was read and is empty is `[]`: "none", not "unknown". The exit status is **2** (`ok: false`) when any evidence could not be read, including partial sections reported in `warnings`; readable sections and the release are preserved. A complete read exits **0**: status reports, it does not judge health. Gate a release with `check`, not `status`.
+Each section is read on its own and concurrently. A section the backend cannot answer is **absent**, named in `unread`, with the reason in `warnings`; a section the backend does not have (alerts and workloads, locally) is named in `not_evaluated`. A section that was read and is empty is `[]`: "none", not "unknown". The exit status is **2** (`ok: false`) when any evidence could not be read, including partial sections reported in `warnings`; readable sections and the release are preserved. A complete read exits **0**: status reports, it does not judge health. Gate a release with `check`, not `status`.
 
 ## Release health: `forge obs check`
 
-The subject is a promotion: the env's current one, or `--release v` / `--promotion id`. Two equal windows are compared, before and after it. Each window stops at the neighbouring promotion and at now. Error rate is weighted for tail sampling, so it is not inflated by dropped OK spans. A request the client walked away from is not a server error: a span with `error_class=canceled`, Connect code `canceled` or HTTP 499 counts as a request and never as an error, here or in any error count `obs` reports. Latency and error rate are judged per endpoint where the backend supplies endpoint figures, and `error_rate` needs `error_rate_min_errors` errors in the after window. A finding the after window cannot pin on the release (a retried promotion's window from before it went live, a rollout under 50%, an issue whose events are another version's) never fails it. How latency, error rate and attribution are judged: `observability/release-health`. A local env has no promotions: `--since 20m` (or the start of the last `forge env up`) names the instant to judge from, and regressed issues, alerts and restarts are listed under `not_evaluated`.
-
-The env's KCL declares the thresholds and which findings fail (`forge.ReleaseHealth` on the Bundle; the defaults are below). They are recorded in the release shape, so the console, the CLI and alerting judge alike. `--threshold k=v` overrides one for one call, `--fail-on` the failing set, `--window` the width, and the document says where each threshold came from.
-
-```
-release_health = forge.ReleaseHealth {
-    window = "15m"                      # 1m to 6h
-    min_requests = 50                   # below this, in either window, a service is not compared
-    max_error_rate_increase = 0.01      # a fraction: one percentage point
-    error_rate_min_errors = 10          # error_rate needs this many after-window errors; 1 is the old rule
-    baseline_window = "24h"             # an endpoint with a thin before window is compared against this much history
-    max_p95_ratio = 1.5
-    new_issue_min_events = 3
-    regressed_issue_min_events = 3      # unset: follows new_issue_min_events; 1 counts every regression
-    alert_baseline_min_firings = 1
-    fail_on = ["new_issue", "regressed_issue", "error_rate", "alert_firing"]   # latency, workload_restarts warn
-    require_baseline = "any"            # or "every", "none" (observability/release-health)
-}
-```
-
-| Exit | Verdict |
-|---|---|
-| 0 | PASS (also INCONCLUSIVE with `--allow-inconclusive`) |
-| 1 | FAIL: a `fail_on` finding fired |
-| 2 | INCONCLUSIVE (the after window has not finished, or no service reached `min_requests` in both windows), or forge could not look |
-| 8 | check again later: `--wait` timed out (`--timeout`, default 30m) before the after window finished, or the control plane refused the read because a query allowance is spent (`reason_code` `quota_exhausted` or `rate_limited`) |
-
-**A refused read is exit 8, not 2:** nothing was judged. `--wait` waits it out until `--timeout`; the document has no `verdict`, and has `reason_code` and `retry_at` (rerun after it). Details, and how an unreachable control plane is retried: `observability/release-health`, A refused read.
-
-**Low traffic is exit 2, not 8.** 8 means `--wait` ran out with the after window still open (or a refused read, above): check again later. `low_traffic` and `thin_baseline` mean the window CLOSED with too few requests: final for that promotion, so report "not proven good" and do not loop on it (`observability/release-health`, Low traffic).
-
-An INCONCLUSIVE document carries `reason` (a sentence) and `reason_code`, one of `window_not_live`, `rollout_incomplete` (`observability/release-health`), `window_open`, `low_traffic`, `thin_baseline`, `no_request_telemetry`, `standing_critical_alert` or `alert_state_unread`. Branch on the code, not the sentence.
-
-**Signals: spans, then ingress, plus the browser** (`observability/release-health`): a service with no server spans is judged on the platform ingress's figures; a frontend also on its browser telemetry (`browser_*` findings, warn by default). Each service says which (`signal`).
-
-**`no_request_telemetry`: no request data at all.** No server span, ingress figure or browser telemetry in either window: a service that exports no traces has no request data however much traffic it serves. forge instruments what it builds; an app built from its own Dockerfile or command, or a third-party image, exports traces only if it is instrumented, and the reason names those services (`uninstrumented_services`). Add an OpenTelemetry SDK that exports OTLP to `$OTEL_EXPORTER_OTLP_ENDPOINT` (hosting sets it and `OTEL_SERVICE_NAME` on every workload), then check again. Until then the verdict stays INCONCLUSIVE — not proven good — and what forge sees without telemetry still counts: a restart, a firing alert or a new issue is a finding, and `forge obs workloads <env>` and `forge obs logs <env>` show the app's health and output.
-
-`--gate-json FILE` writes the evidence `forge gate record --from` attaches to the promotion.
-
-`--wait --early-pass 8m` ends the wait with a PASS before the after window finishes. It passes only once at least 8m of the window has been observed and all of these hold: every judged service has a measured version share of ≥99% for the judged version (the rollout is over) and has reached `min_requests` on its own (a quiet or unmeasured service waits for the window), and there is no finding of any policy, no new or regressed issue, no firing alert, no restart and no critical alert. Anything found, or a rollout still in progress, keeps the wait going to the end of the window. The document's `early_pass` says why it passed. The control plane's own stored verdict still comes after the full window.
-
-**The control plane records its own verdict** of every promotion, and that stored verdict, not the CLI's exit code, is what the promotion health gate reads (`observability/release-health`, The stored verdict).
+`forge obs check <env> --wait --json` after every deploy proves the release good (exit 0), regressed (1), not proven (2) or not yet judgeable (8). Its flags, the `release_health` policy (`fail_on`, `warn_on`), the exit codes and the INCONCLUSIVE `reason_code`s are in **`observability/check`**; how each finding is judged is in `observability/release-health`.
 
 ## Investigate a user session
 
@@ -152,7 +115,7 @@ forge env releases at prod 2h                # …two hours ago (or `now`)
 
 ## The JSON contract
 
-- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `sessions`, `session`, `logs`, `traces`, `trace`, `endpoints`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
+- **One document on stdout.** It has `ok`, `exit_code` and `error`, computed from the same error the process exits with, plus `schema`: `forge.obs.<verb>/v1` (`status`, `check`, `changes`, `issues`, `issue`, `sessions`, `session`, `logs`, `traces`, `trace`, `endpoints`, `ops`, `blast_radius`, `metrics_list`, `metrics_query` (v2), `metric` (describe), `metric_exemplars`, `query`). A failure is `{schema, ok: false, exit_code, error, suggested[]}`. Progress and warnings go to stderr. `logs --follow --json` is NDJSON and ends with an envelope line.
 - **`query_mode`** is `structured` or `raw` on every document: which path answered.
 - **`scope`** echoes env, backend, env id, time range and services.
 - **Bounded by default.** Lists carry `truncated`, `next_page_token`, and `omitted` where a cap cut items.
@@ -168,8 +131,4 @@ CI tokens read telemetry with `obs:read`; a person mints the CI token in the web
 
 ## One cause, many issues
 
-Two things keep an outage from burying the inbox.
-
-**The cause is part of the fingerprint.** A log line that puts its failure in the `error` attribute with no `exception.type` (a logger that formats the error to a string, or a library outside `forge/pkg/observe`) used to group by its message template alone, so one `Transaction failed` was UTF-8 corruption, serialization failures, prepared-statement clashes and timeouts at once. The fingerprint (sfp2) folds a normalized error class into exactly those records: the `(SQLSTATE nnnnn)` the text carries, else a leading Go type name (`*pgconn.PgError`), else the message with numbers, ids and quoted values masked. The class refines the call site, never replaces it: an error that carries a stack still groups by the frame it began at. A record with an `exception.type` or an `error.group` keeps the fingerprint it always had, so nothing already filed is re-keyed.
-
-**An incident is not a merge.** A dead database fails every caller, and each caller is its own call site and so its own issue. `forge obs issues` marks issues that share a *cause* (the SQLSTATE, the refused dial target, or the error class) and first fired within `--incident-window` of each other, in any service, with an `incident_key` and a `related_count`, and collapses each incident to its first issue. The hidden issues still exist with their own counts and state; `--expand-incidents` lists them, and `forge obs issue <id>` lists the rest of its incident. The window is anchored on the incident's first issue, so a slow drip of one cause is several incidents, not one that never ends.
+The fingerprint (sfp2) folds a normalized error class into records with no `exception.type`, and issues that share a cause and first fired together collapse into one incident without being merged: `observability/query/incidents`.

@@ -111,7 +111,9 @@ func BuildLivePlanFromTables(ctx context.Context, db *sql.DB, tables []schemadef
 
 // Apply executes the plan's INSERTs in a single transaction, in topological
 // order, and reports rows inserted per table. Idempotent (ON CONFLICT DO
-// NOTHING).
+// NOTHING). After each INSERT it advances the sequences feeding the keys it
+// wrote past the table's largest value, so the app's own next INSERT does
+// not collide with a seeded row.
 //
 // It REFUSES a plan that would write rows contradicting an invariant the
 // schema implies but does not state — an undeclared diamond (see diamond.go).
@@ -141,6 +143,14 @@ func Apply(ctx context.Context, db *sql.DB, plan *Plan) (*Result, error) {
 		}
 		n, _ := r.RowsAffected()
 		res.Tables = append(res.Tables, TableResult{Table: tp.table.Name, Inserted: n})
+		// The explicit keys bypassed the sequences that feed them; move
+		// those past the seeded rows so the app's next INSERT does not
+		// draw a key a seeded row holds (sequence.go).
+		if sync := plan.sequenceSync(tp); sync != "" {
+			if _, err := tx.ExecContext(ctx, sync); err != nil {
+				return nil, fmt.Errorf("advance %s's sequences past the seeded keys: %w", tp.table.Name, err)
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -218,6 +228,23 @@ var (
 	// member. Anchored on both ends so a conjunction or a function call
 	// around the comparison is not mistaken for a pool.
 	checkEqLiteralRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*"?[A-Za-z_][A-Za-z0-9_]*"?\s*=\s*'((?:[^']|'')*)'(?:::[a-z][a-z0-9_ ]*)?\s*\)+\s*$`)
+	// checkEqBareRE is checkEqLiteralRE for an UNQUOTED literal: a number
+	// or a boolean keyword. It is what a column pinned to one value
+	// normalizes to on a numeric or boolean column —
+	//
+	//	CHECK (id = 1)           → CHECK ((id = 1))
+	//	CHECK (id IN (1))        → CHECK ((id = 1))
+	//	CHECK (rate = 1)         → CHECK ((rate = (1)::numeric))
+	//	CHECK (singleton = true) → CHECK ((singleton = true))
+	//
+	// — the singleton-table idiom (`id int PRIMARY KEY CHECK (id = 1)`),
+	// whose one admitted value is the whole of the table's capacity.
+	checkEqBareRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*"?[A-Za-z_][A-Za-z0-9_]*"?\s*=\s*\(?(-?\d+(?:\.\d+)?|true|false)\)?(?:::[a-z][a-z0-9_ ]*)?\s*\)+\s*$`)
+	// checkBareBoolRE matches a CHECK that is a boolean column by itself, or
+	// its negation: `CHECK (singleton)` / `CHECK (NOT archived)`. A CHECK
+	// expression must be boolean, so a bare column in one IS a boolean
+	// column, pinned to true (or, negated, to false).
+	checkBareBoolRE = regexp.MustCompile(`^\s*CHECK\s*\(+\s*(NOT\s+)?"?[A-Za-z_][A-Za-z0-9_]*"?\s*\)+\s*$`)
 	// checkArrayBodyRE isolates the member list of the canonical
 	// `= ANY (ARRAY[...])` form so members are read from the array itself
 	// and never from the rest of the expression.
@@ -249,9 +276,23 @@ var (
 // A numeric member is returned in its DECIMAL spelling; callers render it for
 // the column's own type (poolLiteral emits it bare for a numeric column, so
 // the value reaches SQL as a number rather than a quoted string).
+//
+// A column pinned to ONE value is a one-member vocabulary in any spelling:
+// `col = 'x'`, `col = 1`, `col = true`, and the bare boolean `CHECK (col)`
+// (or `CHECK (NOT col)`). On a sole primary key that pin is the table's whole
+// capacity — see the key cap in finalize.
 func poolFromCheckDef(def string) []string {
 	if m := checkEqLiteralRE.FindStringSubmatch(def); m != nil {
 		return []string{strings.ReplaceAll(m[1], "''", "'")}
+	}
+	if m := checkEqBareRE.FindStringSubmatch(def); m != nil {
+		return []string{m[1]}
+	}
+	if m := checkBareBoolRE.FindStringSubmatch(def); m != nil {
+		if m[1] != "" {
+			return []string{"false"}
+		}
+		return []string{"true"}
 	}
 	if !checkAnyRE.MatchString(def) {
 		return nil

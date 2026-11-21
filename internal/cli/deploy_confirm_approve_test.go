@@ -261,3 +261,25 @@ func TestPlanOnly_DocumentCarriesAutoVersionAndApproveNextStep(t *testing.T) {
 			doc.Confirmed, doc.Applied)
 	}
 }
+
+// A --from deploy's approve command keeps --from (and --from-promotion): the
+// version alone would ship the same release without the control plane's
+// source_moved / must-agree check the plan was computed under.
+func TestPlanOnly_ApproveCommandKeepsTheSource(t *testing.T) {
+	plan := promotePlan{Env: "prod", Target: promotePlanTarget{Release: "v2"}, DeployPlan: &release.Plan{Digest: "sha256:abc123"}}
+	for name, tc := range map[string]struct {
+		from promoteFromOptions
+		want string
+	}{
+		"from":           {promoteFromOptions{Env: "staging"}, "forge env deploy prod v2 --from staging --approve sha256:abc123"},
+		"from-promotion": {promoteFromOptions{Env: "staging", PromotionID: "p-1"}, "forge env deploy prod v2 --from staging --from-promotion p-1 --approve sha256:abc123"},
+		"no source":      {promoteFromOptions{}, "forge env deploy prod v2 --approve sha256:abc123"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, outcome := planOnlyOutput(t, "prod", plan, deployConfirm{From: tc.from})
+			if outcome.NextStep != tc.want {
+				t.Fatalf("next step = %q, want %q", outcome.NextStep, tc.want)
+			}
+		})
+	}
+}

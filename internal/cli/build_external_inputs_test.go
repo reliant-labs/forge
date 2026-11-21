@@ -252,9 +252,9 @@ func TestBuildExternalServices_InputsCannotProveTheOutput(t *testing.T) {
 			t.Fatalf("state = %+v, want a build recorded without a fingerprint", st)
 		}
 	})
-	t.Run("a release always runs", func(t *testing.T) {
+	t.Run("a snapshot-composition release always runs", func(t *testing.T) {
 		v := checkShellBuildInputs(context.Background(), inputsSvc("api", "**"), buildtarget.Spec{}, filepath.Join(projDir, "src"),
-			buildOptions{composition: &compositionRun{}}, projDir)
+			buildOptions{composition: &compositionRun{}}, projDir, nil)
 		if v.reuse != nil || v.fp != nil || !strings.Contains(v.reason, "release") {
 			t.Fatalf("release verdict = %+v, want a run without fingerprinting", v)
 		}
@@ -420,7 +420,7 @@ func TestShellBuildInputs_EscapingPatternRefusesReuse(t *testing.T) {
 
 	far := inputsSvc("far", "**", "../../../**")
 	v := checkShellBuildInputs(context.Background(), far, externalBuildSpec(far, buildOptions{env: "dev"}, "dev", projDir),
-		filepath.Join(projDir, "src"), buildOptions{env: "dev"}, projDir)
+		filepath.Join(projDir, "src"), buildOptions{env: "dev"}, projDir, nil)
 	if v.reuse != nil || v.fp != nil || !strings.Contains(v.reason, "outside the allowed roots") {
 		t.Fatalf("verdict = %+v, want reuse refused naming the roots", v)
 	}

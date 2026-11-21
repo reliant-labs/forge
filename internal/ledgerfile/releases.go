@@ -118,6 +118,55 @@ func (s *Store) RecordReleaseMigrations(version string, m release.MigrationManif
 	return recorded, nil
 }
 
+// ErrArtifactNotFound is RecordReleaseSBOM naming an artifact the release
+// does not have.
+var ErrArtifactNotFound = errors.New("artifact not found in release")
+
+// RecordReleaseSBOM records ref as the SBOM of one artifact of a release
+// already cut — the backfill for a release cut before forge recorded SBOMs,
+// or one whose SBOM could not be produced at the cut. recorded is false when
+// the artifact already names an SBOM: the first one recorded stands, because
+// it is what every scan since was computed against (release.BackfillSBOMs
+// has the rule; it does fill the referrer of the SAME SBOM when the record
+// lacks one). Not a conflict either way: an SBOM is evidence, not identity.
+//
+// Like RecordReleaseMigrations it APPENDS the release again, and the newest
+// line for a version is the one releasesLocked keeps.
+func (s *Store) RecordReleaseSBOM(version, artifact string, ref release.SBOMRef) (recorded bool, err error) {
+	err = s.withLock(func() error {
+		all, err := s.releasesLocked()
+		if err != nil {
+			return err
+		}
+		for _, existing := range all {
+			if existing.Version != version {
+				continue
+			}
+			a, ok := existing.Artifacts[artifact]
+			if !ok {
+				return fmt.Errorf("release %q artifact %q: %w", version, artifact, ErrArtifactNotFound)
+			}
+			a.SBOM = &ref
+			requested := existing
+			requested.Artifacts = map[string]release.Artifact{artifact: a}
+			filled, changed := release.BackfillSBOMs(existing, requested)
+			if !changed {
+				return nil
+			}
+			if err := filled.Validate(); err != nil {
+				return err
+			}
+			recorded = true
+			return appendRecord(s.path(releasesFile), filled)
+		}
+		return fmt.Errorf("release %q: %w", version, ErrReleaseNotFound)
+	})
+	if err != nil {
+		return false, err
+	}
+	return recorded, nil
+}
+
 // CutRelease records r. created is false when an identical release already
 // held the version (an idempotent retry); a DIFFERENT artifact set under the
 // same version is release.ErrReleaseConflict.
@@ -141,7 +190,18 @@ func (s *Store) CutRelease(r release.Release) (created bool, err error) {
 			}
 			// Same content is a no-op retry: nothing is appended, so
 			// the log does not grow on every CI re-run.
-			return release.CheckRecut(existing, r)
+			if err := release.CheckRecut(existing, r); err != nil {
+				return err
+			}
+			// ...unless the retry knows an SBOM the record lacks. SBOMs
+			// are evidence, not identity (SameContent ignores them), so
+			// the record is appended again with them filled in — never
+			// replaced — exactly as RecordReleaseMigrations backfills a
+			// manifest.
+			if filled, changed := release.BackfillSBOMs(existing, r); changed {
+				return appendRecord(s.path(releasesFile), filled)
+			}
+			return nil
 		}
 		created = true
 		return appendRecord(s.path(releasesFile), r)

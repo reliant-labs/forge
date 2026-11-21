@@ -19,6 +19,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 )
 
 // DepsFileName is where Narrow declares the interfaces of a package that has
@@ -79,7 +80,12 @@ func Narrow(projectDir, dir string) (*NarrowResult, error) {
 	}
 	p := pkgs[0]
 	res := &NarrowResult{Dir: p.Dir}
-	target := filepath.Join(projectDir, filepath.FromSlash(p.Dir), "contract.go")
+	// A hand-written contract.go holds the package's declared interfaces;
+	// without one — a component, or a package whose Service is derived from
+	// a //forge:contract type into contract_gen.go (forge-owned, never a
+	// target) — they go to deps.go, which the derived contract's mock reads
+	// too.
+	target := filepath.Join(projectDir, filepath.FromSlash(p.Dir), contractsrc.FileName)
 	if _, err := os.Stat(target); err != nil {
 		target = filepath.Join(projectDir, filepath.FromSlash(p.Dir), DepsFileName)
 	}

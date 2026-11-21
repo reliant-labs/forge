@@ -34,6 +34,12 @@ func runExportedVars(pass *analysis.Pass) (interface{}, error) {
 		return nil, nil
 	}
 
+	// A command's exported vars are no surface: nothing can import a main
+	// package to read or write them (see isMainPackage).
+	if isMainPackage(pass) {
+		return nil, nil
+	}
+
 	// Build a set of vars that are //go:embed targets. The inspector strips
 	// directive-only comments from genDecl.Doc, so we walk file-level decls
 	// directly to check for the //go:embed directive that must immediately
@@ -270,8 +276,9 @@ func isKubebuilderAPIVar(name string, spec *ast.ValueSpec, idx int) bool {
 // isConstShapedData reports whether the variable at spec.Names[idx] is
 // immutable data that Go simply cannot spell as a const: a slice or map
 // LITERAL of basic values (a fixed vocabulary / lookup table), a
-// package-level compiled `regexp.MustCompile(...)`, or a string built by
-// a call such as fmt.Sprintf over consts.
+// package-level compiled `regexp.MustCompile(...)`, or a string built from
+// the package's own constants (fmt.Sprintf, concatenation, or a helper of
+// the package's own).
 //
 // Why these are not what the rule is about. The rule's premise is that a
 // mutable exported global is state a caller can reach behind the API's
@@ -285,11 +292,21 @@ func isKubebuilderAPIVar(name string, spec *ast.ValueSpec, idx int) bool {
 //   - `regexp.MustCompile` cannot be a const, and moving it into a getter
 //     either recompiles the pattern per call or needs a package-level
 //     cache var — the very thing being flagged.
+//   - A string the package assembles from its own constants — by
+//     concatenation, or through a helper of its own that splices them
+//     into a larger expression — is const-shaped exactly as a
+//     fmt.Sprintf over consts is: Go will not fold the call, so it cannot
+//     be spelled `const`, and a getter would only wrap the same value.
 //
-// Deliberately narrow: only LITERAL composites of basic element types
-// qualify, so a slice of mutable structs, or a map whose values are
-// pointers/interfaces/funcs, is still reported. A var assigned from
-// another variable is not matched either.
+// Deliberately narrow: only LITERAL composites qualify, of basic elements
+// or (for a slice or array) of structs whose fields are all basic — such a
+// struct is a value just like a string element, no more mutable through
+// the slice than a string is. A slice of structs holding pointers,
+// interfaces or funcs, or a map whose values are, is still reported. A
+// built basic value qualifies only when every input is this package's
+// own (see isPureExpr): one read from the environment, from another
+// package's function, or from an exported var is reported. And one that
+// IS a constant expression is reported too: it should be a const.
 func isConstShapedData(pass *analysis.Pass, spec *ast.ValueSpec, idx int) bool {
 	if idx >= len(spec.Values) {
 		return false // `var X []string` with no initializer: mutable, report it
@@ -304,16 +321,73 @@ func isConstShapedData(pass *analysis.Pass, spec *ast.ValueSpec, idx int) bool {
 		}
 		// A string assembled from constants (fmt.Sprintf and friends):
 		// const-shaped in every way except that Go will not fold it.
-		return isBasicType(pass.TypesInfo.TypeOf(spec.Values[idx])) &&
-			(isCallTo(v, "fmt", "Sprintf") || isCallTo(v, "strings", "Join"))
+		if isBasicType(pass.TypesInfo.TypeOf(v)) &&
+			(isCallTo(v, "fmt", "Sprintf") || isCallTo(v, "strings", "Join")) {
+			return true
+		}
+	}
+	return isBuiltBasicValue(pass, spec.Values[idx])
+}
+
+// isBuiltBasicValue reports whether e is a basic-typed value Go cannot
+// fold into a constant, built only from pure inputs (isPureExpr). A
+// constant expression is not one: `var X = "a" + "b"` should be a const.
+func isBuiltBasicValue(pass *analysis.Pass, e ast.Expr) bool {
+	tv, ok := pass.TypesInfo.Types[e]
+	if !ok || !isBasicType(tv.Type) || tv.Value != nil {
+		return false
+	}
+	return isPureExpr(pass, e)
+}
+
+// isPureExpr reports whether e is built only from what the package itself
+// fixes: constants and literals, parenthesized or combined by binary
+// operators; unexported package-level vars of this package; and calls to
+// functions (not methods) declared in this package with pure arguments.
+// Anything else — a call into another package (os.Getenv), a method call,
+// an exported var another package could reassign — is not.
+func isPureExpr(pass *analysis.Pass, e ast.Expr) bool {
+	if tv, ok := pass.TypesInfo.Types[e]; ok && tv.Value != nil {
+		return true
+	}
+	switch v := e.(type) {
+	case *ast.ParenExpr:
+		return isPureExpr(pass, v.X)
+	case *ast.BinaryExpr:
+		return isPureExpr(pass, v.X) && isPureExpr(pass, v.Y)
+	case *ast.Ident:
+		switch obj := pass.TypesInfo.Uses[v].(type) {
+		case *types.Const:
+			return true
+		case *types.Var:
+			return obj.Pkg() == pass.Pkg && !obj.Exported() &&
+				obj.Parent() == pass.Pkg.Scope()
+		}
+		return false
+	case *ast.CallExpr:
+		id, ok := ast.Unparen(v.Fun).(*ast.Ident)
+		if !ok {
+			return false
+		}
+		fn, ok := pass.TypesInfo.Uses[id].(*types.Func)
+		if !ok || fn.Pkg() != pass.Pkg || fn.Type().(*types.Signature).Recv() != nil {
+			return false
+		}
+		for _, arg := range v.Args {
+			if !isPureExpr(pass, arg) {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
 
 // isBasicElemComposite reports whether lit is a slice/array/map literal
 // whose element (and key, for maps) types are basic — string, numeric,
-// bool. That is the "fixed vocabulary" shape; anything holding pointers,
-// interfaces, funcs or mutable structs falls through to the rule.
+// bool — or, for a slice or array, a struct of basic fields. That is the
+// "fixed vocabulary" shape; anything holding pointers, interfaces or funcs
+// falls through to the rule.
 func isBasicElemComposite(pass *analysis.Pass, lit *ast.CompositeLit) bool {
 	t := pass.TypesInfo.TypeOf(lit)
 	if t == nil {
@@ -321,13 +395,28 @@ func isBasicElemComposite(pass *analysis.Pass, lit *ast.CompositeLit) bool {
 	}
 	switch u := t.Underlying().(type) {
 	case *types.Slice:
-		return isBasicType(u.Elem())
+		return isBasicType(u.Elem()) || isBasicStruct(u.Elem())
 	case *types.Array:
-		return isBasicType(u.Elem())
+		return isBasicType(u.Elem()) || isBasicStruct(u.Elem())
 	case *types.Map:
 		return isBasicType(u.Key()) && isBasicType(u.Elem())
 	}
 	return false
+}
+
+// isBasicStruct reports whether t is a struct (looking through named
+// types) whose every field is basic: a value, copied whole like a string.
+func isBasicStruct(t types.Type) bool {
+	st, ok := t.Underlying().(*types.Struct)
+	if !ok || st.NumFields() == 0 {
+		return false
+	}
+	for i := 0; i < st.NumFields(); i++ {
+		if !isBasicType(st.Field(i).Type()) {
+			return false
+		}
+	}
+	return true
 }
 
 // isBasicType reports whether t is a basic (string/numeric/bool) type,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -188,6 +189,11 @@ type projectTemplateData struct {
 	// lane re-reads disk, so the first `forge db migration new` + `forge
 	// generate` flips it on.
 	HasMigrations bool
+	// ConnectV2 reports that the project's Go code targets connect-go v2
+	// (connectrpc.com/connect/v2) rather than v1 — the major its go.mod
+	// selects (internal/connectmajor). Templates that name a connect-go
+	// module branch on it; false, the zero value, keeps every v1 render.
+	ConnectV2 bool
 }
 
 // BinaryBuild is one buildable entrypoint: the cmd/<Dir>/ leaf, which is
@@ -298,9 +304,11 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// version, or the published release its source descends from; an
 		// in-place scaffold adopting a module keeps that module's pin.
 		ForgeVersion: g.requiredForgeVersion(),
-		// REST is off at scaffold time; users opt-in post-scaffold by
-		// editing forge.yaml's `api.rest:` and re-running `forge generate`
-		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
+		// REST is off at scaffold time. Opting in post-scaffold
+		// (forge.yaml `api.rest: true`) is a hand edit of owned files —
+		// providers.go, buf.yaml, the protos — which `forge generate` names
+		// in its post-generation warnings (restWiringWarnings) rather than
+		// rewriting.
 		RESTEnabled: false,
 		GenModule:   g.genModule(),
 		VersionVar:  g.BuildVersionVar,
@@ -317,6 +325,7 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// A fresh scaffold ships no .sql yet — db/embed.go is not written,
 		// so the db command tree must not reference forgedb.
 		HasMigrations: codegen.ProjectHasSQLMigrations(g.treeDir()),
+		ConnectV2:     g.connectMajor().IsV2(),
 	}
 
 	// Strip migration-related config fields when migrations are disabled.
@@ -421,5 +430,8 @@ func forUpgrade(cfg *config.ProjectConfig, projectDir string) projectTemplateDat
 		// Re-read disk: the first migration a project writes flips this on,
 		// and db.go + db/embed.go are regenerated together on the same run.
 		HasMigrations: codegen.ProjectHasSQLMigrations(projectDir),
+		// The major the project's go.mod selects; with no tree to read
+		// (projectDir ""), forge's v1 default.
+		ConnectV2: projectDir != "" && connectmajor.DetectOrDefault(projectDir).IsV2(),
 	}
 }

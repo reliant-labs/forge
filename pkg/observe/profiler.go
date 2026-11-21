@@ -310,7 +310,7 @@ func (p *profiler) deliver(ctx context.Context, c capture) error {
 	if c.raw.Len() == 0 {
 		return nil
 	}
-	pd, err := pprofToOTLP(c.raw, p.res, c.drop...)
+	pd, err := pprofToOTLPWith(c.raw, p.res, !p.settings.pgoOff, c.drop...)
 	if err != nil {
 		return err
 	}

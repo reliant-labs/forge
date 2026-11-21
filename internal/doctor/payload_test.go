@@ -160,12 +160,48 @@ func Serve() {
 }
 `
 
+	// connect-go v2 projects build the chain with serverkit.NewChainV2, which
+	// applies the same caps by the same rule.
+	chainV2Capped := `package cmd
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		Auth:         auth,
+		ReadMaxBytes: skCfg.ReadMaxBytes,
+	})
+	_ = chain
+}
+`
+	chainV2Uncapped := `package cmd
+
+import sk "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := sk.NewChainV2(sk.ChainDepsV2{Auth: auth, SendMaxBytes: -1})
+	_ = chain
+}
+`
+
 	tests := []struct {
 		name     string
 		serve    string
 		want     Status
 		evidence string
 	}{
+		{
+			name:     "a serverkit v2 chain is capped",
+			serve:    chainV2Capped,
+			want:     StatusPass,
+			evidence: "NewChainV2.SendMaxBytes(default 4 MiB)",
+		},
+		{
+			name:     "a v2 chain with a negative cap is unlimited",
+			serve:    chainV2Uncapped,
+			want:     StatusFail,
+			evidence: "serverkit.ChainDepsV2{SendMaxBytes: -1}",
+		},
 		{
 			name:     "a serverkit chain is capped",
 			serve:    chainCapped,
@@ -458,6 +494,8 @@ func TestConnectHandlerEvidence(t *testing.T) {
 		name string
 		src  string
 		want string // "" → no evidence at all
+		// projectV2 is the project's go.mod selecting connect-go v2.
+		projectV2 bool
 	}{
 		{
 			name: "aliased runtime import still resolves",
@@ -513,6 +551,74 @@ func TestConnectHandlerEvidence(t *testing.T) {
 				"func f(opts ...connect.ClientOption) {}\n",
 			want: "",
 		},
+		// connect-go v2: no HandlerOption and no New…Handler. A service is
+		// registered on a *connect.Server and mounted with connecthttp.
+		{
+			name: "v2 server reference counts",
+			src: "package cmd\n\nimport \"connectrpc.com/connect/v2\"\n\n" +
+				"func f() *connect.Server { return connect.NewServer() }\n",
+			want: "connect.Server",
+		},
+		{
+			name: "aliased v2 runtime import still resolves",
+			src: "package cmd\n\nimport cv2 \"connectrpc.com/connect/v2\"\n\n" +
+				"func f() { _ = cv2.NewServer() }\n",
+			want: "cv2.NewServer",
+		},
+		{
+			name: "generated v2 handler registration counts in a v2 project",
+			src: "package cmd\n\nimport \"github.com/acme/app/gen/acme/v1/acmev1connect\"\n\n" +
+				"func f() { acmev1connect.RegisterAcmeServiceHandler(server, svc) }\n",
+			want:      "RegisterAcmeServiceHandler",
+			projectV2: true,
+		},
+		{
+			name: "generated v2 handler registration counts in a file importing v2",
+			src: "package cmd\n\nimport (\n\t\"connectrpc.com/connect/v2\"\n\t\"github.com/acme/app/gen/acme/v1/acmev1connect\"\n)\n\n" +
+				"func f(server *connect.Server) { acmev1connect.RegisterAcmeServiceHandler(server, svc) }\n",
+			want: "RegisterAcmeServiceHandler",
+		},
+		{
+			// v1 code: a Register…Handler on a package whose path ends in
+			// `connect` is not connect-go's mount, and was never evidence.
+			name: "a Register…Handler call in a v1 project is not a mount",
+			src: "package cmd\n\nimport \"github.com/acme/app/internal/natsconnect\"\n\n" +
+				"func f() { natsconnect.RegisterPoolHandler(pool, h) }\n",
+			want: "",
+		},
+		{
+			name: "v2 connecthttp.Mount counts",
+			src: "package cmd\n\nimport \"connectrpc.com/connect/v2/connecthttp\"\n\n" +
+				"func f() { connecthttp.Mount(mux, server) }\n",
+			want: "connecthttp.Mount",
+		},
+		{
+			// v2's HandlerOption does not exist; v1's proof must not be
+			// read off a v2 import (nor v2's off a v1 one).
+			name: "v1 proof on a v2 import is not evidence",
+			src: "package cmd\n\nimport \"connectrpc.com/connect/v2\"\n\n" +
+				"func f(opts ...connect.HandlerOption) {}\n",
+			want: "",
+		},
+		{
+			name: "v2 proof on a v1 import is not evidence",
+			src: "package cmd\n\nimport \"connectrpc.com/connect\"\n\n" +
+				"func f(s *connect.Server) {}\n",
+			want: "",
+		},
+		{
+			name: "a v2 client-only file is not a mount",
+			src: "package cmd\n\nimport (\n\t\"connectrpc.com/connect/v2\"\n\t\"connectrpc.com/connect/v2/connecthttp\"\n)\n\n" +
+				"func f() *connect.Client { return connect.NewClient(connecthttp.NewTransport(nil, \"\")) }\n",
+			want: "",
+		},
+		{
+			// The generated v2 CLIENT constructor is not a registration.
+			name: "a generated v2 client constructor is not a mount",
+			src: "package cmd\n\nimport \"github.com/acme/app/gen/acme/v1/acmev1connect\"\n\n" +
+				"func f() { _ = acmev1connect.NewAcmeServiceClient(client) }\n",
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -522,7 +628,7 @@ func TestConnectHandlerEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := connectHandlerEvidence(file, fset, "cmd/app/cmd/serve.go")
+			got := connectHandlerEvidence(file, fset, "cmd/app/cmd/serve.go", tt.projectV2)
 			joined := strings.Join(got, "\n")
 			if tt.want == "" {
 				if len(got) != 0 {
@@ -534,5 +640,34 @@ func TestConnectHandlerEvidence(t *testing.T) {
 				t.Fatalf("evidence %q does not mention %q", joined, tt.want)
 			}
 		})
+	}
+}
+
+// TestCheckPayloadLimitsReadsTheGraphProvider pins NS FG-25: a graph-composed
+// project builds its serverkit chain, caps and all, in a provider under
+// internal/app/, and cmd/ only projects the config. A fresh service scaffold
+// is that shape, and the check, reading cmd/ alone, failed the scaffold's own
+// `task ci` with "payloads are unbounded".
+func TestCheckPayloadLimitsReadsTheGraphProvider(t *testing.T) {
+	dir := payloadProject(t, map[string]string{
+		"cmd/app/cmd/serve.go": "package cmd\n\nfunc serverkitConfig() {}\n",
+		"internal/app/providers.go": `package app
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func provideChain(d deps) {
+	chain, err := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		ReadMaxBytes: d.ServerCfg.ReadMaxBytes,
+		SendMaxBytes: d.ServerCfg.SendMaxBytes,
+	})
+	_, _ = chain, err
+}
+`,
+		"forge.yaml":                        payloadForgeYAML,
+		"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
+	})
+	got := CheckPayloadLimits(context.Background(), &Environment{ProjectDir: dir})
+	if got.Status != StatusPass || !strings.Contains(got.Evidence, filepath.FromSlash("internal/app/providers.go")) {
+		t.Fatalf("status = %q (%s), evidence %q; want a pass sourced from internal/app/providers.go", got.Status, got.Message, got.Evidence)
 	}
 }

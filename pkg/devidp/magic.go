@@ -30,6 +30,9 @@ func (c *Client) EnsureOTPEmail(ctx context.Context, userID string) error {
 	if strings.TrimSpace(userID) == "" {
 		return fmt.Errorf("a user id is required")
 	}
+	if err := c.requireVerified(ctx, userID); err != nil {
+		return err
+	}
 	_, err := c.postJSON(ctx, "/v2/users/"+url.PathEscape(userID)+"/otp_email", map[string]any{})
 	if err != nil && !strings.Contains(err.Error(), otpEmailExistsID) && !isNoChangesErr(err) {
 		var apiErr *apiError
@@ -105,14 +108,47 @@ type NewUser struct {
 	// SelfSignup marks the account as created by public sign-up
 	// (MetaSelfSignup), which is what entitles it to signup_role.
 	SelfSignup bool
+	// ContactOnly creates an account whose address nobody will prove — a
+	// sign-up where no mail can be delivered — WITH its Password
+	// (MetaContactOnly). Its email is a contact field: no later proof ever
+	// claims the account (see SignInRoutes.proveAddress). Without it, an
+	// unverified account is created with no credential at all.
+	ContactOnly bool
+
+	// username overrides the address as the username (a fresh account
+	// taking an address over); supersedes is the account it takes it over
+	// from (MetaSupersedes).
+	username, supersedes string
 }
 
 // CreateUser creates a human account and returns its id. A rejected
 // password is a *PasswordPolicyError.
+//
+// On a ProvenCredentialsOnly client an unverified account is created WITHOUT
+// credentials: a Password or IDPLinks with EmailVerified false is refused
+// (ErrUnverifiedAccount) before anything is sent, unless ContactOnly (a
+// Password only).
 func (c *Client) CreateUser(ctx context.Context, u NewUser) (string, error) {
 	email := strings.TrimSpace(u.Email)
 	if email == "" {
 		return "", fmt.Errorf("an email address is required")
+	}
+	if c.ProvenCredentialsOnly && !u.EmailVerified && (len(u.IDPLinks) > 0 || (u.Password != "" && !u.ContactOnly)) {
+		return "", ErrUnverifiedAccount
+	}
+	username := email
+	if u.username != "" {
+		username = u.username
+	}
+	var metadata []any
+	if u.SelfSignup {
+		metadata = append(metadata, metadataEntry(MetaSelfSignup, "1"))
+	}
+	if u.ContactOnly && !u.EmailVerified {
+		metadata = append(metadata, metadataEntry(MetaContactOnly, "1"))
+	}
+	if u.supersedes != "" {
+		metadata = append(metadata, metadataEntry(MetaSupersedes, u.supersedes))
 	}
 	emailBody := map[string]any{"email": email}
 	if u.EmailVerified {
@@ -125,15 +161,15 @@ func (c *Client) CreateUser(ctx context.Context, u NewUser) (string, error) {
 		emailBody["sendCode"] = send
 	}
 	req := map[string]any{
-		"username": email,
+		"username": username,
 		"profile":  profileFor(Registration{GivenName: u.GivenName, FamilyName: u.FamilyName}, email),
 		"email":    emailBody,
 	}
 	if u.Password != "" {
 		req["password"] = map[string]any{"password": u.Password, "changeRequired": false}
 	}
-	if u.SelfSignup {
-		req["metadata"] = []any{metadataEntry(MetaSelfSignup, "1")}
+	if len(metadata) > 0 {
+		req["metadata"] = metadata
 	}
 	if len(u.IDPLinks) > 0 {
 		links := make([]any, 0, len(u.IDPLinks))

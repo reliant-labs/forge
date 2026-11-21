@@ -34,6 +34,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
 // oneWordArgRE is GoMarkerOneWord's grammar — the tail of the composition
@@ -97,16 +99,17 @@ var goMarkers = []GoMarker{
 	{Name: "forge:lint-disable-file", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-file <rule>: <reason>"},
 	{Name: "forge:lint-disable-next-line", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-disable-next-line <rule>: <reason>"},
 	{Name: "forge:lint-enable", Grammar: GoMarkerOwnGrammar, Form: "// forge:lint-enable <rule>"},
+	{Name: contract.NoCaptureMarker, Grammar: GoMarkerWordArgs, Form: "// forge:no-capture <param> [<param>…]"},
 	{Name: directiveNoObserve, Grammar: GoMarkerBare, Form: "// forge:no-observe"},
 	{Name: "forge:no-orm", Grammar: GoMarkerWordArgs, Form: "//forge:no-orm: <why>"},
 	{Name: directiveNotAComponent, Grammar: GoMarkerReasoned, Form: "//forge:not-a-component: <reason>"},
-	{Name: "forge:optional-checked", Grammar: GoMarkerBare, Form: "// forge:optional-checked"},
+	{Name: "forge:optional-checked", Grammar: GoMarkerReasoned, Form: "// forge:optional-checked: <reason>"},
 	{Name: "forge:optional-dep", Grammar: GoMarkerBare, Form: "// forge:optional-dep"},
 	{Name: "forge:outbound-io", Grammar: GoMarkerBare, Form: "// forge:outbound-io"},
 	{Name: "forge:placeholder", Grammar: GoMarkerReasonRequired, Form: "// forge:placeholder: <pkg>.<Type>"},
 	{Name: directiveExternalComponent2, Grammar: GoMarkerBare, Form: "// forge:provided"},
 	{Name: ResolvesCallerDirective, Grammar: GoMarkerWordArgs, Form: "//forge:resolves-caller"},
-	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none"},
+	{Name: "forge:root", Grammar: GoMarkerOwnGrammar, Form: "//forge:root <name> command=<word> migrate=apply|wait|none adopt"},
 	{Name: "forge:root-only", Grammar: GoMarkerOwnGrammar, Form: "//forge:root-only <root>[,<root>...]"},
 	{Name: directiveServiceMarker, Grammar: GoMarkerBare, Form: "// forge:service"},
 	{Name: "forge:standby", Grammar: GoMarkerOwnGrammar, Form: "//forge:standby"},
@@ -172,6 +175,14 @@ const (
 	// Go-source recognizer reads — a typo, or a marker from another
 	// vocabulary (a proto or column marker) that does nothing in a .go file.
 	GoMarkerUnknown
+	// GoMarkerReasonMissing — a marker whose reason is mandatory
+	// (GoMarkerReasonRequired), written with none: `// forge:auth-unscoped-ok`
+	// alone, or with nothing after its colon. Its recognizer ignores it, the
+	// same silent no-op as GoMarkerMalformed, but the spaced bare form is
+	// also how a sentence could start, so the lint reports it as a warning
+	// under its own rule rather than failing on it. (The unspaced directive
+	// with no colon stays GoMarkerMalformed, as it always was.)
+	GoMarkerReasonMissing
 )
 
 // GoMarkerUse is one classified comment.
@@ -243,6 +254,10 @@ func ClassifyGoMarkerComment(raw string) GoMarkerUse {
 		return use
 	}
 	use.Marker = m
+	if m.Grammar == GoMarkerReasonRequired && reasonMissing(rest) && !(directive && rest == "") {
+		use.Status = GoMarkerReasonMissing
+		return use
+	}
 	if m.Accepts(rest) {
 		use.Status = GoMarkerOK
 		return use
@@ -251,6 +266,13 @@ func ClassifyGoMarkerComment(raw string) GoMarkerUse {
 		use.Status = GoMarkerMalformed
 	}
 	return use
+}
+
+// reasonMissing reports a marker tail that carries no reason: nothing at
+// all, or a colon with nothing after it.
+func reasonMissing(rest string) bool {
+	t := strings.TrimSpace(rest)
+	return t == "" || t == ":"
 }
 
 // startsWithLookalike reports whether rest opens (after optional spaces) with

@@ -21,6 +21,16 @@ func TestPoolFromCheckDef_SingleLiteralEquality(t *testing.T) {
 		{"conjunction is not a pool", `CHECK (((a = 'x'::text) AND (b > 1)))`, nil},
 		{"function call is not a pool", `CHECK ((lower(a) = 'x'::text))`, nil},
 		{"numeric comparison", `CHECK ((n >= 100))`, nil},
+		// The singleton-table idiom and its spellings.
+		{"integer pin", `CHECK ((id = 1))`, []string{"1"}},
+		{"cast numeric pin", `CHECK ((rate = (1)::numeric))`, []string{"1"}},
+		{"negative pin", `CHECK ((id = '-1'::integer))`, []string{"-1"}},
+		{"boolean pin", `CHECK ((singleton = true))`, []string{"true"}},
+		{"bare boolean", `CHECK (singleton)`, []string{"true"}},
+		{"negated boolean", `CHECK ((NOT archived))`, []string{"false"}},
+		{"integer conjunction is not a pin", `CHECK (((id = 1) AND (n > 0)))`, nil},
+		{"integer disjunction is not a pin", `CHECK (((id = 1) OR (id = 2)))`, nil},
+		{"column comparison is not a pin", `CHECK ((a = b))`, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,6 +1,6 @@
 ---
 name: constraints
-description: Which constraints forge db seed can satisfy — CHECKs over one or several columns, UNIQUE, ranked bounds, and status-lifecycle rules written as one-way implications rather than biconditionals, with what the seeder does with a guard it cannot place.
+description: Which constraints forge db seed can satisfy — CHECKs over one or several columns, UNIQUE, ranked bounds, and status-lifecycle rules as one-way implications or two-way biconditionals, with what the seeder does with a guard it cannot place.
 ---
 
 # Constraints
@@ -27,8 +27,26 @@ CREATE TABLE accounts (
 
 The email CHECK is the one pattern seeded by its meaning rather than its
 shape: the shape alone gives `1@1.1`, which satisfies the CHECK and fails the
-form's `.email()` validator, so a seeded row could not be saved from its own
+form's email validator, so a seeded row could not be saved from its own
 edit page. `example.com` is reserved for exactly this.
+
+An **array** column whose CHECK confines its elements to a set — the shape a
+closed-set array takes — draws its elements from that set, one per row unless a
+`cardinality(col)` or `array_length(col, 1)` bound asks for more (or fewer):
+
+```sql
+CREATE TABLE access_tokens (
+    scopes TEXT[] NOT NULL,
+    CONSTRAINT access_tokens_scopes CHECK (
+        cardinality(scopes) > 0 AND scopes <@ ARRAY['deploy:read', 'token:read'])
+);
+-- seeds  scopes = ARRAY['token:read'], ARRAY['deploy:read'], …
+```
+
+The set may be `ARRAY[…]` of strings, numbers or booleans, or a `'{a,b}'`
+literal, on any element type. An array with no such set gets two invented
+elements, fitted to any cardinality bound. `db/seeds/vocab.yaml` does not
+describe array columns.
 
 Anything genuinely unsatisfiable is resolved at **plan** time, before a single
 INSERT: a UNIQUE column backed by a 5-value CHECK vocabulary can never carry 20
@@ -57,27 +75,27 @@ CHECK (
 Branches are taken **round-robin by row**, so every arm of the union appears in
 the dataset — a table with only `wallet_credit` rows cannot exercise the other
 redemption path at all. The matcher is narrow on purpose: the terms it reads are
-`col = <literal>`, `col IS [NOT] NULL` and `col <op> <number>`. A nested `OR`, a
-`NOT`, a function call, or a comparison between two columns is refused by name,
+`col = <literal>`, `col IS [NOT] NULL`, `col <op> <number>` and a non-blank
+requirement, `length(col) > 0` (also `char_length`, `length(trim(col))`, `>= 1`).
+A nested `OR`, a `NOT`, any other function call, or a comparison between two
+columns is refused by name,
 as is a union whose columns another mechanism owns (a key, a foreign key, a
 UNIQUE column) or that a second multi-column constraint also spans.
 
-## Write a status-lifecycle rule as an implication, never a biconditional
+## Status-lifecycle rules: one-way or two-way, both seed
 
 "An approved estimate has an approval timestamp" has two spellings in SQL, and
-only one of them seeds. This is the single highest-cost authoring choice in this
-document, so it is worth the paragraph.
+forge seeds both. Write the one that states your rule; never weaken a
+constraint to suit the seeder.
 
 ```sql
--- YES: a one-way implication. Any number of these over the same column seed.
+-- One-way implications: "this status requires the column".
 CONSTRAINT estimates_sent_has_stamp
     CHECK (status <> 'ESTIMATE_STATUS_SENT'     OR sent_at     IS NOT NULL),
-CONSTRAINT estimates_approved_has_stamp
-    CHECK (status <> 'ESTIMATE_STATUS_APPROVED' OR approved_at IS NOT NULL),
 CONSTRAINT estimates_rejected_has_stamp
-    CHECK (status <> 'ESTIMATE_STATUS_REJECTED' OR rejected_at IS NOT NULL)
+    CHECK (status <> 'ESTIMATE_STATUS_REJECTED' OR rejected_at IS NOT NULL),
 
--- NO: a biconditional. Not placeable — not even one of them.
+-- A biconditional: "this status, and only this status, sets the column".
 CONSTRAINT estimates_approved_iff
     CHECK ((status = 'ESTIMATE_STATUS_APPROVED') = (approved_at IS NOT NULL))
 ```
@@ -92,43 +110,35 @@ merged rather than placed one at a time, they are not rivals to each other and
 the count does not matter — three over one column seed exactly as cleanly as
 one.
 
-A biconditional has no top-level `OR`, so it is neither a guard nor a
-discriminated union; no pass can read it, and `status` and `approved_at` are
-then drawn independently. Measured across six salts, a single biconditional had
-its INSERT rejected on **all six** — `apply` is one transaction, so that is the
-whole dev dataset, every time, not an occasional unlucky run.
+A **biconditional** `(P) = (Q)` is the union `(P AND Q) OR (NOT P AND NOT Q)`,
+and its xor `(P) <> (Q)` is `(P AND NOT Q) OR (NOT P AND Q)`. Each side may be
+`col = <literal>`, `col <> <literal>`, `col [NOT] IN (…)` or `col IS [NOT] NULL`.
+When one side tests a column with a vocabulary and the other a presence, the
+biconditional is a PAIR of guards over that column ("these values require Q",
+"the rest require NOT Q") and merges with its one-way guards above: the
+`estimates` table seeds DRAFT rows with no stamps, APPROVED rows with only
+`approved_at`, and so on — every status, so both truth values appear. Other
+shapes (two presence tests, two value tests) are placed as their own union.
 
-The mixing rule is the part that surprises people: **one biconditional also
-takes the well-formed guards down with it.** It still spans `status`, so the
-merged guard union refuses for a constraint it cannot prove itself jointly
-satisfiable with, and two perfectly good implications go unplaced alongside it:
+A presence side on a nullable foreign key works too — reliant's
 
-> seed plan: estimates constraints `"estimates_rejected_has_stamp"`,
-> `"estimates_sent_has_stamp"` over status are well-formed and would seed, but
-> `"estimates_approved_iff"` also spans status and states a status rule as a
-> biconditional — fix that ONE constraint and they get placed too. Until then
-> seeded rows satisfy them only by chance
+```sql
+CHECK ((kind = 'workspace') = (daemon_id IS NOT NULL))
+```
 
-Forge names the blocker and the two innocents separately on purpose: repairing
-the well-formed pair while leaving the biconditional in place produces an
-identical refusal, which is what makes this failure read as "the rewrite does
-not work."
+seeds workspace grants that reference a daemon and forge grants whose
+`daemon_id` is NULL: the reference path declines the edge on exactly those rows.
 
 The guarded column must carry a readable vocabulary — a single-column
-`CHECK (status IN (…))` — or there is no value set to draw the un-guarded branch
-from and forge refuses by name rather than inventing domain facts. Entities born
-from proto enums get this automatically (`TEXT` + `CHECK (col IN (...))`); a
-hand-written migration with a bare `TEXT status` is refused even with perfect
-implications.
+`CHECK (status IN (…))` — for forge to write the rows where a value test is
+*false* ("some other status"). Entities born from proto enums get this
+automatically (`TEXT` + `CHECK (col IN (...))`). Without one, a one-way guard is
+refused by name, and a biconditional is seeded on the side it can write (every
+row `status = 'APPROVED'` with a stamp) with a warning naming the CHECK to add.
 
-**You are not giving up the other half of the rule — you are moving it to the
-writer that owns it.** An implication states "approved ⇒ stamped"; the mirror
-("not approved ⇒ NULL stamp") is a single-writer lifecycle invariant, so enforce
-it in the RPC that owns the status transition, which is where it belongs anyway.
-Do the reverse — weakening or deleting constraints round after round until the
-seeder stops complaining — and a dev-tooling limit has permanently weakened a
-production schema. That is the failure this section exists to prevent: it has
-happened, over four rounds, ending with a constraint deleted outright.
+A biconditional whose side forge cannot read (`(char_length(code) > 3) = …`, a
+function call, a comparison of two columns) keeps the refusal it always had, and
+its rows satisfy it only by chance.
 
 **A `BYTEA` column varies per row** (`sample_<column>_<row>`, hex-encoded), so a
 `key_hash BYTEA NOT NULL UNIQUE` carries the full row target instead of capping
@@ -160,6 +170,6 @@ dataset fills every column and rotates through every union branch; the
 regenerated `New<Entity>` / `New<CreateRequest>` factories (see `testing`) write
 only what the schema requires — keys, NOT NULL columns without a usable
 DEFAULT, NOT NULL references — leave the rest to DEFAULT or NULL, and take the
-guard branch that keeps the status at its DEFAULT. So the implications above,
-and a column made `GENERATED`, are safe to add to the birth migration right
+guard branch that keeps the status at its DEFAULT. So the implications and
+biconditionals above, and a column made `GENERATED`, are safe to add to the birth migration right
 after scaffolding: the next `forge generate` re-derives every test row.

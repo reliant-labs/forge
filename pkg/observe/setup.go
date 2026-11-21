@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	goruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
@@ -71,6 +72,18 @@ type Config struct {
 	// InstanceID is reported as semconv service.instance.id when non-empty.
 	// Callers typically pass os.Hostname().
 	InstanceID string
+
+	// ResourceMetrics selects the process and host resource metrics
+	// (pkg/resmetrics) Setup registers on the meter provider, with export on
+	// or off. The zero value is ResourceMetricsAuto. The
+	// FORGE_OBSERVE_RESOURCE_METRICS variable wins over it. See
+	// resource_metrics.go.
+	ResourceMetrics ResourceMetricsMode
+
+	// ResourceMetricsInterval is how old a resource sample may be before a
+	// collection takes a new one. Zero means 15s; the shortest is 1s.
+	// FORGE_OBSERVE_RESOURCE_INTERVAL wins over it.
+	ResourceMetricsInterval time.Duration
 }
 
 // Setup initializes OpenTelemetry from Config plus the standard OTEL_*
@@ -78,7 +91,9 @@ type Config struct {
 //
 // Always, even with export off: the W3C TraceContext+Baggage propagator is
 // installed (so an incoming traceparent is honoured and forwarded by every
-// observe client), and a Prometheus reader backs the returned /metrics handler.
+// observe client), a Prometheus reader backs the returned /metrics handler, and
+// the process and host resource metrics are registered on the meter provider
+// unless Config.ResourceMetrics or FORGE_OBSERVE_RESOURCE_METRICS says off.
 //
 // When an OTLP endpoint is configured and OTEL_SDK_DISABLED is not "true":
 // traces and metrics are exported over OTLP, http/protobuf by default or grpc
@@ -126,6 +141,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	if !wantTraces && !wantMetrics && !wantLogs && !wantProfiles {
 		mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(promReader), sdkmetric.WithView(unitViews()...))
 		otel.SetMeterProvider(mp)
+		startResourceMetrics(ctx, cfg, mp)
 		return func(ctx context.Context) error { return mp.Shutdown(ctx) }, metricsHandler, nil
 	}
 
@@ -159,6 +175,7 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, http.H
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
 	otel.SetMeterProvider(mp)
 	shutdowns = append(shutdowns, mp.Shutdown)
+	startResourceMetrics(ctx, cfg, mp)
 	if wantMetrics {
 		if err := goruntime.Start(goruntime.WithMeterProvider(mp)); err != nil {
 			return fail(fmt.Errorf("starting go runtime metrics: %w", err))

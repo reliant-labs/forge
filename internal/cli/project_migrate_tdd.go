@@ -38,6 +38,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 )
 
 // migrateTDDFlags holds the flag values for `forge project migrate tdd`.
@@ -82,6 +83,41 @@ Examples:
 	return cmd
 }
 
+// refuseMigrateTDDOnConnectV2 refuses the codemod in a module that builds
+// against connect-go v2. Both shapes it recognises are connect-go v1 code —
+// rows that call the handler with connect.NewRequest(&pb.X{}) — and it
+// emits v1 tdd.RunRPCCases rows. A v2 module has neither: its handlers
+// take bare messages, and its tests are tdd.RunRPCCasesV2 rows written
+// directly. Rewriting v1-shaped leftovers into v1 rows there would only
+// produce tests that do not compile, so the command says so instead of
+// reporting every file "skipped".
+//
+// The module is the nearest go.mod at or above root (--path may name a
+// subtree).
+func refuseMigrateTDDOnConnectV2(root string) error {
+	dir, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil // no module: nothing says v2
+		}
+		dir = parent
+	}
+	if !connectmajor.DetectOrDefault(dir).IsV2() {
+		return nil
+	}
+	return fmt.Errorf("forge project migrate tdd rewrites connect-go v1 handler tests (connect.NewRequest calls) into tdd.RunRPCCases rows, "+
+		"but %s requires %s, so there is nothing for it to migrate: write connect-go v2 tests as tdd.RunRPCCasesV2 rows "+
+		"(Req: &pb.XRequest{}, WantErr: connect.CodeX) — `forge skill load testing/patterns`",
+		filepath.Join(dir, "go.mod"), connectmajor.ModuleV2)
+}
+
 func runMigrateTDD(flags migrateTDDFlags) error {
 	root := flags.path
 	if root == "" {
@@ -90,6 +126,10 @@ func runMigrateTDD(flags migrateTDDFlags) error {
 		if err != nil {
 			return fmt.Errorf("getwd: %w", err)
 		}
+	}
+
+	if err := refuseMigrateTDDOnConnectV2(root); err != nil {
+		return err
 	}
 
 	handlersDir := filepath.Join(root, "internal", "handlers")

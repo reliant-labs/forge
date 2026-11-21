@@ -64,7 +64,7 @@ pre-registered in forge.yaml's contracts.exclude so the contract-
 required linter won't fire on it.
 
 This is distinct from 'forge scaffold package <name>', which scaffolds a
-contract.go and wires the package into bootstrap. Use 'scaffold library'
+contract package (a //forge:contract service) and wires it into bootstrap. Use 'scaffold library'
 when the code is genuinely library-shaped; use 'scaffold package' when it
 belongs in the Deps graph.
 

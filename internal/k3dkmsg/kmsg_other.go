@@ -8,7 +8,7 @@ import (
 	"os"
 )
 
-// statDevice: the workaround only applies on Linux (Host.needed), so off Linux
+// statDevice: the workaround only applies on Linux (host.needed), so off Linux
 // this only has to tell present from absent.
 func statDevice(path string) (State, error) {
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {

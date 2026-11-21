@@ -42,6 +42,8 @@ const AudienceUser = "user"
 // how to read the caller it admitted. Audience is what a Listener compares
 // with each mounted service's declared `(forge.v1.service).audience`; Caller
 // is what the chain's caller-recording slots (Audit, Activity) read.
+//
+// A connect-go v2 chain takes AuthenticatorV2.
 type Authenticator interface {
 	connect.Interceptor
 	// Audience names the trust domain this authenticator admits: AudienceUser
@@ -72,6 +74,8 @@ type CallerLookup = func(ctx context.Context) (*authn.Claims, bool)
 // Policy.ContextWithClaims — leaves Caller nil; build that one with
 // [AuthWithCaller] instead. A nil interceptor or an empty audience is
 // rejected by NewChain.
+//
+// connect-go v2 projects use AuthForV2 or AuthPolicyV2.
 func AuthFor(audience string, interceptor connect.Interceptor) Authenticator {
 	var caller CallerLookup
 	if c, ok := interceptor.(interface {
@@ -88,6 +92,8 @@ func AuthFor(audience string, interceptor connect.Interceptor) Authenticator {
 // rejected by NewChain.
 //
 //	serverkit.AuthWithCaller(serverkit.AudienceUser, appAuth, appauth.Claims)
+//
+// connect-go v2 projects use AuthWithCallerV2.
 func AuthWithCaller(audience string, interceptor connect.Interceptor, caller CallerLookup) Authenticator {
 	return &audienceAuth{Interceptor: interceptor, audience: audience, caller: caller, callerNamed: true}
 }
@@ -111,6 +117,8 @@ func (a *audienceAuth) Caller() CallerLookup { return a.caller }
 //
 // It satisfies connect.Interceptor only so it fits the slot's type; NewChain
 // never installs it.
+//
+// ChainDepsV2 drops a slot with its No field (NoAudit: true) instead.
 type Omit string
 
 // The slots a Chain can drop. Auth has none: a chain always authenticates.
@@ -158,6 +166,7 @@ const DefaultMaxBytes = 4 << 20
 
 // ChainDeps configures a Chain. Auth is required; every other slot left nil is
 // forge's default, and a defaulted slot is dropped only by its Omit constant.
+// connect-go v2 projects use ChainDepsV2.
 type ChainDeps struct {
 	// Auth authenticates every request and names the audience the chain
 	// admits. Required: a nil Auth is a NewChain error, so a server with no
@@ -272,6 +281,7 @@ type ChainDeps struct {
 // Chain is a built interceptor chain: the ordered interceptors and payload
 // caps every Connect handler mounted with it receives, and the audience its
 // Authenticator admits. Build it with NewChain.
+// connect-go v2 projects use ChainV2.
 type Chain struct {
 	audience     string
 	interceptors []connect.Interceptor
@@ -286,6 +296,8 @@ type Chain struct {
 // missing or names no audience, when an Omit is given for the wrong slot, and
 // when a default cannot be built — a chain missing a layer it was meant to
 // have is a boot failure, not a log line.
+//
+// connect-go v2 projects use NewChainV2.
 func NewChain(deps ChainDeps) (*Chain, error) {
 	if err := validateChainDeps(deps); err != nil {
 		return nil, err

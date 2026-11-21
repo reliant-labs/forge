@@ -185,17 +185,30 @@ func (c *FieldConstraints) SuppressesZeroDefault(kind string) bool {
 }
 
 // ZodChain returns the zod validator suffix (e.g. `.gte(0, "Must be 0 or
-// more")` or `.min(1, "Required").max(64, "…").email("…")`) for a form field
-// of the given form type ("number" takes numeric bounds; everything else is
-// treated as a string input). The base builder (z.coerce.number() /
-// z.string()) is emitted by the template; this is only the trailing
-// refinement chain.
+// more")` or `.min(1, "Required").max(64, "…").pipe(z.email("…"))`) for a
+// form field of the given form type ("number" takes numeric bounds;
+// everything else is treated as a string input), in the zod 4 API. The base
+// builder (z.coerce.number() / z.string()) is emitted by the template; this
+// is only the trailing refinement chain.
 //
 // Every refinement carries a message written for the person filling in the
 // form. zod's defaults are written for a developer — a required name left
 // blank reads "String must contain at least 1 character(s)" — and they sat
 // beside the scaffold's own "Required", so one form spoke in two voices.
 func (c *FieldConstraints) ZodChain(formType string) string {
+	return c.zodChain(formType, false)
+}
+
+// zodChain is ZodChain in either zod dialect. zod3 spells the email check
+// as zod 3's `.email(msg)` method, for a frontend whose package.json still
+// declares zod 3 (FormDialect).
+//
+// zod 4 deprecates that method for the top-level z.email(), a schema of its
+// own, so the zod 4 chain PIPES the length-checked string into it. The pipe
+// keeps the order the zod 3 chain reports in: an empty required field says
+// "Required", not "Enter a valid email address", and a pattern rule is
+// checked on the address, after the format.
+func (c *FieldConstraints) zodChain(formType string, zod3 bool) string {
 	if !c.HasAny() {
 		return ""
 	}
@@ -235,13 +248,21 @@ func (c *FieldConstraints) ZodChain(formType string) string {
 		}
 		fmt.Fprintf(&b, ".max(%d, %s)", *c.MaxLen, jsStringLiteral(msg))
 	}
-	if c.Email {
-		b.WriteString(`.email("Enter a valid email address")`)
+	const emailMsg = `"Enter a valid email address"`
+	pipeEmail := c.Email && !zod3
+	switch {
+	case pipeEmail:
+		b.WriteString(".pipe(z.email(" + emailMsg + ")")
+	case c.Email:
+		b.WriteString(".email(" + emailMsg + ")")
 	}
 	if c.Pattern != "" {
 		// new RegExp("...") sidesteps the / delimiter-escaping the /re/
 		// literal would need; the pattern is JS-string-escaped.
 		fmt.Fprintf(&b, `.regex(new RegExp(%s), "Not in the expected format")`, jsStringLiteral(c.Pattern))
+	}
+	if pipeEmail {
+		b.WriteString(")")
 	}
 	return b.String()
 }

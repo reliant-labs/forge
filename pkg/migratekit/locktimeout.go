@@ -490,6 +490,9 @@ func (g *lockGuard) runWithRetry(body []byte) error {
 			return nil
 		}
 		if !isLockTimeout(err) {
+			if retryable && isStatementTimeout(err) {
+				return g.cancelledByStatementTimeout(name, err)
+			}
 			return err
 		}
 		if attempt >= attempts {
@@ -532,6 +535,39 @@ func (g *lockGuard) exhausted(ctx context.Context, name string, attempts int, ca
 		return errors.Join(lerr, fmt.Errorf("put the schema back at version %d: %w", g.prev, err))
 	}
 	return lerr
+}
+
+// cancelledByStatementTimeout is the end of a proven all-or-nothing file
+// postgres cancelled for running past its statement_timeout (SQLSTATE 57014).
+// The server aborted the transaction, so nothing of the file is applied, and
+// the dirty version golang-migrate recorded before Run is put back to the
+// version before, clean, as exhausted does for a lock timeout. Left dirty, the
+// statement timeout forge documents as the backstop for a slow migration
+// (-- forge:statement-timeout) wedged every later boot until a person ran
+// `forge db migrate force` (forge report 75f39771). The error is returned
+// as is: the run still fails, and the next one retries the file.
+func (g *lockGuard) cancelledByStatementTimeout(name string, cause error) error {
+	if err := g.Driver.SetVersion(g.prev, false); err != nil {
+		return errors.Join(cause, fmt.Errorf("put the schema back at version %d after %s's statement timeout: %w", g.prev, name, err))
+	}
+	g.log.Warn("migration cancelled by its statement timeout; nothing of it is applied, and the schema is back at the version before it",
+		"migration", name, "version", g.prev, "error", cause.Error())
+	return cause
+}
+
+// isStatementTimeout reports whether err is postgres cancelling a statement
+// for its statement_timeout (57014, query_canceled).
+func isStatementTimeout(err error) bool {
+	var dbErr database.Error
+	var dbErrPtr *database.Error
+	switch {
+	case errors.As(err, &dbErr):
+		err = dbErr.OrigErr
+	case errors.As(err, &dbErrPtr):
+		err = dbErrPtr.OrigErr
+	}
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "57014"
 }
 
 // jitter spreads d by up to ±25%, so replicas that timed out together do not
@@ -578,7 +614,7 @@ func guardedStatement(ctx context.Context, conn *sql.Conn, run RunOptions, name 
 			return &LockTimeoutError{Name: name, Grants: true, Attempts: attempt, Timeout: limits.LockTimeout, Err: lockTimeoutCause(err)}
 		}
 		wait := jitter(backoff)
-		log.Warn("lock wait timed out; retrying",
+		log.WarnContext(ctx, "lock wait timed out; retrying",
 			"statement", name, "attempt", attempt, "attempts", limits.LockAttempts,
 			"lock_timeout", timeoutSetting(limits.LockTimeout), "retry_in", wait.String(), "error", err.Error())
 		retrySleep(wait)

@@ -251,6 +251,11 @@ func (g *ProjectGenerator) generateDevcontainer() error {
 // is guarded by `command -v`, so rerunning it is cheap. Docs inline the
 // install methods the script doesn't cover (Task, Buf, KCL) because
 // those vary by platform.
+//
+// protoc-gen-connect-go installs from the connect-go major the project
+// targets (ProjectGenerator.connectMajor): v1's and v2's plugins share the
+// binary name but live in different modules, and each generates code that
+// imports only its own runtime.
 func (g *ProjectGenerator) generateBootstrapScript() error {
 	content := `#!/usr/bin/env bash
 # scripts/bootstrap.sh — install the tools this repo expects.
@@ -312,7 +317,7 @@ main() {
   install_buf
 
   install_go_tool protoc-gen-go            google.golang.org/protobuf/cmd/protoc-gen-go@latest
-  install_go_tool protoc-gen-connect-go    connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
+  install_go_tool protoc-gen-connect-go    ` + g.connectMajor().PluginModule() + `@latest
   # v2 module path, pinned to the version this project's CI lint job uses.
   install_go_tool golangci-lint            github.com/golangci/golangci-lint/v2/cmd/golangci-lint@` + templates.GolangciLintVersion + `
   install_go_tool goimports                golang.org/x/tools/cmd/goimports@latest

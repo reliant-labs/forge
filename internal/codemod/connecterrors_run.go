@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
 	"golang.org/x/tools/go/packages"
 
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
@@ -24,7 +28,26 @@ var connectErrorTokens = [][]byte{[]byte("NewError"), []byte("CodeOf"), []byte("
 
 func runConnectErrors(dir string, opts Options) (Report, error) {
 	candidates := map[string]bool{}
+	var v2Files []string
 	err := ownedGoFiles(dir, func(rel string, src []byte) error {
+		// connect-go v2 is not this codemod's: its NewError takes a
+		// message string, and the wire identity every rewrite is proven
+		// against is v1's (svcerr.Interceptor over a v1 handler). The
+		// v1 path is a prefix of v2's, so the file is told apart by its
+		// imports, before the byte filter below would admit it.
+		if importsConnectV2(src) {
+			for _, tok := range connectErrorTokens {
+				if bytes.Contains(src, tok) {
+					// A test's connect error is a fixture, which
+					// the codemod never rewrites in v1 code either.
+					if opts.Scope.Contains(rel) && !strings.HasSuffix(rel, "_test.go") {
+						v2Files = append(v2Files, rel)
+					}
+					break
+				}
+			}
+			return nil
+		}
 		// A wrapper an earlier run left (svcerr.ToConnect) is in a file that
 		// may no longer import connect at all.
 		if bytes.Contains(src, []byte(svcerrPath)) && bytes.Contains(src, []byte("ToConnect(")) {
@@ -45,9 +68,10 @@ func runConnectErrors(dir string, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	sort.Strings(v2Files)
 	modPath := goModulePath(dir)
 	if modPath == "" || len(candidates) == 0 {
-		return Report{}, nil
+		return withConnectV2Files(Report{}, v2Files), nil
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -96,7 +120,43 @@ func runConnectErrors(dir string, opts Options) (Report, error) {
 			ce.lines[ce.relOf(path)] = lineMapper(ce.src[path], ce.out[path])
 		}
 	}
-	return ce.report(), nil
+	return withConnectV2Files(ce.report(), v2Files), nil
+}
+
+// connectV2Legend says why a connect-go v2 file is left alone, and what to
+// do with it instead.
+const connectV2Legend = "connect-go v2 code is not rewritten: `forge fix connect-errors` proves each rewrite wire-identical for connect-go v1 only. " +
+	"Edit its connect.NewError / connect.Errorf sites by hand — `forge lint` (forgeconv-handler-connect-error) names each one and its svcerr replacement"
+
+// withConnectV2Files appends the skipped connect-go v2 files to rep's
+// worklist.
+func withConnectV2Files(rep Report, files []string) Report {
+	for _, rel := range files {
+		rep.Next = append(rep.Next, "left as written: "+rel+" — imports connectrpc.com/connect/v2")
+	}
+	if len(files) > 0 {
+		rep.Next = append(rep.Next, connectV2Legend)
+	}
+	return rep
+}
+
+// importsConnectV2 reports whether a Go source file imports the connect-go
+// v2 runtime (connectrpc.com/connect/v2), read from its import block. A file
+// that does not parse is not claimed: the type-checked run reports it.
+func importsConnectV2(src []byte) bool {
+	if !bytes.Contains(src, []byte(connectmajor.ModuleV2)) {
+		return false
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.ImportsOnly)
+	if err != nil {
+		return false
+	}
+	for _, imp := range f.Imports {
+		if path, err := strconv.Unquote(imp.Path.Value); err == nil && path == connectmajor.ModuleV2 {
+			return true
+		}
+	}
+	return false
 }
 
 // ceFile is one candidate file and the package variant it was read from.

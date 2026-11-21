@@ -1,38 +1,24 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
-	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-func newUpgradeCmd() *cobra.Command {
-	var (
-		check      bool
-		force      bool
-		toVersion  string
-		dryRun     bool
-		all        bool
-		jsonOut    bool
-		allowDirty bool
-		skip       []string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "upgrade [--force <path>...]",
-		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
-		Long: `Take the project from the forge it pins to a newer one, and do every mechanical
+// upgradeCmdLong is the help text of `forge project upgrade`.
+const upgradeCmdLong = `Take the project from the forge it pins to a newer one, and do every mechanical
 step on the way, so the gate is green without hand edits. In order:
 
   modules             go get / go mod tidy the forge requirement of each module
@@ -74,9 +60,17 @@ EXIT CODES (the contract a pin bot branches on)
 --json prints exactly one document on stdout (schema forge-project-upgrade/v1:
 ok, exit_code, error, mode, from, to, converged, phases, codemods, locks,
 playbooks, vendored_contracts, needs_human, upcoming, starts_gating,
-template_drift); progress
+template_drift, offers, crossed, generated_changes); progress
 goes to stderr. ok and exit_code are the process's own. It is also printed for
 a failing run, so a bot can read what was applied before the failure.
+
+What the range brings is printed first (--json: crossed): each release tag the
+bump crosses and the commits after the last one, with their changelog entries,
+and the steps their PRs address to the agent running the upgrade
+(agent_instructions; forge's PRs declare them with an Agent-Instructions:
+commit trailer). generated_changes names the generated files generate changed,
+by generator, with what the range says about each: a test that pins generated
+output may need updating.
 
 Template drift: detect on frozen files (files written at 'forge project new' time but
 not updated by 'forge generate') and apply updates from newer Forge templates.
@@ -116,6 +110,15 @@ is bumped to the current binary version (or to --to when provided). Migrations
 whose declared version range AND detection script both match this project are
 surfaced first, so the LLM running upgrade can follow them step-by-step.
 
+Across a pin bump, the template report lists only the files whose forge
+template changed between the pinned forge and this one (compared with the
+pinned forge's source in the module cache), and counts the rest in one line
+per section: they are the same rows the last bump listed. --all lists every
+file. When the pinned forge's source is not in the module cache, every file is
+listed and the report says why. --json carries every row either way, as
+template_drift_rows with changed_in_range (null when it could not be told),
+and template_drift_hidden counts the rows the text left out.
+
 --check SUMMARIZES; --check <path> DETAILS. The report names each file that
 differs and sizes the difference in lines — it does NOT print diffs inline,
 because on a real project that is thousands of lines nobody reads. Files are
@@ -133,8 +136,25 @@ Examples:
   forge project upgrade --check --all          # Every reported file (still no inline diffs)
   forge project upgrade --force                # Apply all updates, even for user-modified files
   forge project upgrade --force buf.yaml       # Overwrite ONLY buf.yaml; leave other edits alone
-  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`,
-		Args: cobra.ArbitraryArgs,
+  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`
+
+func newUpgradeCmd() *cobra.Command {
+	var (
+		check      bool
+		force      bool
+		toVersion  string
+		dryRun     bool
+		all        bool
+		jsonOut    bool
+		allowDirty bool
+		skip       []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "upgrade [--force <path>...]",
+		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
+		Long:  upgradeCmdLong,
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --dry-run is an alias for --check; either toggles dry-run.
 			return runUpgradeCommand(cmd, upgradeOptions{
@@ -206,45 +226,30 @@ func runUpgradeWithGo(check, force, showAll bool, forcePaths []string, toVersion
 	return err
 }
 
-// printApplicableMigrations surfaces the migrations this project actually
-// needs BEFORE the destructive work, so the user (or LLM) can decide whether
-// to halt and load them first.
+// printMigrationWorklist surfaces the playbooks this project actually needs
+// BEFORE the destructive work, so the user (or LLM) can decide whether to halt
+// and load them first.
 //
-// "Actually needs" is migrationApplies (upgrade_migrations.go) — the same
-// decision `forge project upgrade list` makes: version range AND detection
-// script, minus anything already recorded in .forge/migrations.json. Silence
-// means nothing applies, which is a real answer; a project that exhibits none
-// of the old shapes should be told so rather than handed the catalogue.
-func printApplicableMigrations(projectRoot, baseline string) {
-	metas, err := loadMigrationMetas()
-	if err != nil {
-		return
-	}
-	state, err := readMigrationsState(projectRoot)
-	if err != nil {
-		return
-	}
-	var rows []pendingMigration
-	for _, row := range applicableMigrations(metas, baseline, projectRoot) {
-		if _, done := state.Applied[row.Meta.ID]; done {
-			continue
-		}
-		rows = append(rows, row)
-	}
+// "Actually needs" is the run's evaluation (evaluatePlaybooks): version range
+// AND detection script, minus anything already recorded in
+// .forge/migrations.json — the decision `forge project upgrade list` makes. The
+// verdict on every other playbook of the range is printed just above
+// (printPlaybookVerdicts).
+func printMigrationWorklist(w io.Writer, rows []pendingMigration) {
 	if len(rows) == 0 {
 		return
 	}
-	fmt.Println("📚 Migrations this project still needs:")
+	fmt.Fprintln(w, "📚 Migrations this project still needs:")
 	for _, row := range rows {
-		fmt.Printf("    - %s\n      %s\n      Load with: %s skill load %s\n",
+		fmt.Fprintf(w, "    - %s\n      %s\n      Load with: %s skill load %s\n",
 			row.Meta.SkillPath, row.Meta.Description, Name(), row.Meta.SkillPath)
 	}
-	fmt.Println()
-	fmt.Println("    The deterministic steps (regen, build) run automatically below.")
-	fmt.Println("    Load each skill above IN THE ORDER LISTED (oldest release first) and")
-	fmt.Println("    follow its 'Migration (manual part)' section — each one assumes the")
-	fmt.Println("    release above it has already been migrated.")
-	fmt.Println()
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "    The deterministic steps (regen, build) run automatically below.")
+	fmt.Fprintln(w, "    Load each skill above IN THE ORDER LISTED (oldest release first) and")
+	fmt.Fprintln(w, "    follow its 'Migration (manual part)' section — each one assumes the")
+	fmt.Fprintln(w, "    release above it has already been migrated.")
+	fmt.Fprintln(w)
 }
 
 // describeVersion renders a forge version for human output, labelling
@@ -331,35 +336,6 @@ func resolveForceSelection(projectDir string, cfg *config.ProjectConfig, force b
 	return generator.ForcePaths(selected...), nil
 }
 
-// migrateLegacyChecksums performs the one-time legacy .forge/checksums.json
-// migration (the same conversion `forge generate` performs). Unlike the
-// pipeline, upgrade has no emitters to side-render against, so unverifiable
-// entries get the unverified-legacy sentinel directly — the next generate's
-// guard names them with the standard remedies. A missing/unreadable manifest is
-// a no-op (nothing to migrate).
-func migrateLegacyChecksums(projectDir string) error {
-	mcs, lerr := generator.LoadChecksums(projectDir)
-	if lerr != nil {
-		return nil
-	}
-	outcome, merr := checksums.MigrateLegacyManifest(projectDir, mcs, legacyMigrationStampable)
-	if merr != nil {
-		return fmt.Errorf("legacy checksums migration: %w", merr)
-	}
-	if outcome == nil {
-		return nil
-	}
-	fmt.Printf("\U0001F4DC Migrated off the legacy .forge/checksums.json (%d entries) — generated files are self-certifying now.\n", outcome.Total())
-	for _, p := range outcome.Unverified {
-		checksums.StampUnverified(projectDir, p)
-		fmt.Fprintf(os.Stderr, "   ? %s — matches nothing the legacy manifest recorded; the next `forge generate` will name it (resolve with --force or `forge project disown`)\n", p)
-	}
-	if serr := generator.SaveChecksums(projectDir, mcs); serr != nil {
-		return fmt.Errorf("save .forge ownership state: %w", serr)
-	}
-	return nil
-}
-
 // upgradeCounts tallies the per-file outcomes of a template-upgrade pass.
 type upgradeCounts struct {
 	updated      int
@@ -392,6 +368,13 @@ type upgradeCounts struct {
 	// modifiedRows are the user-modified rows, sized, for the remedy
 	// block to rank the same way the listing above it did.
 	modifiedRows []driftRow
+	// shownRows are the modifiedRows the listing printed: all of them
+	// under --all, otherwise those whose template the range changed (or
+	// could not tell). The remedy block offers commands for these only.
+	shownRows []driftRow
+	// hiddenByRange is how many modifiedRows the listing left out because
+	// their template did not change in the range.
+	hiddenByRange int
 }
 
 // tallyAndPrintUpgradeResults reports the managed (Tier-2) lane and returns
@@ -406,7 +389,12 @@ type upgradeCounts struct {
 // Files that are up to date are counted, not listed. "up to date" is the
 // answer to a question nobody asked while looking for what changed; the
 // headline count carries it.
-func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showAll bool) upgradeCounts {
+//
+// A user-modified row whose template the upgrade's range did not change is
+// counted in one line instead of listed (driftView): it is the same row the
+// last bump printed, and nothing this bump did is in it.
+func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check bool, view driftView) upgradeCounts {
+	showAll := view.showAll
 	var c upgradeCounts
 	var updatedRows, modifiedRows []driftRow
 	for _, r := range results {
@@ -424,6 +412,7 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		case generator.UpgradeUserModified:
 			c.userModified++
 			c.userModifiedPaths = append(c.userModifiedPaths, r.Path)
+			row.Changed = view.rng.changed(r.Template)
 			modifiedRows = append(modifiedRows, row)
 		case generator.UpgradeSkipped:
 			switch {
@@ -478,7 +467,8 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		printDriftGroup(updatedTitle(check), refreshes, showAll)
 	}
 	if len(modifiedRows) > 0 {
-		cheap, merge, absent := groupDriftRows(modifiedRows)
+		c.shownRows, c.hiddenByRange = view.split(modifiedRows)
+		cheap, merge, absent := groupDriftRows(c.shownRows)
 		// Cheap first: these are the rows where `--force <path>` is a
 		// complete answer, and burying them under the merges is the
 		// defect this report exists to fix.
@@ -492,6 +482,8 @@ func tallyAndPrintUpgradeResults(results []generator.UpgradeResult, check, showA
 		printDriftGroup("Cheap adopts (nothing here the template lacks):", cheap, showAll)
 		printDriftGroup("Your lines and the template's (merge by hand):", merge, showAll)
 		printDriftGroup("Shipped by the template, absent here:", absent, showAll)
+		view.noteUnknown(c.shownRows)
+		view.printCollapse(c.hiddenByRange, len(c.shownRows))
 	}
 	return c
 }
@@ -555,15 +547,19 @@ func forcedNote(check bool) string {
 //
 // The cheap rows lead, because those are the ones where running the
 // printed command is the whole job.
+//
+// Only the rows the listing showed get a command: a remedy for a row the
+// reader was not shown is a command they cannot judge. The hidden ones are
+// one --all away, remedies included.
 func printUserModifiedRemedies(c upgradeCounts, showAll bool) {
-	paths := c.userModifiedPaths
-	if len(paths) == 0 {
+	rows := c.shownRows
+	if len(rows) == 0 {
 		return
 	}
-	cheap, merge, absent := groupDriftRows(c.modifiedRows)
+	cheap, merge, absent := groupDriftRows(rows)
 
 	fmt.Println()
-	fmt.Printf("  Two ways to resolve the %d file(s) with local edits:\n", len(paths))
+	fmt.Printf("  Two ways to resolve the %d file(s) with local edits:\n", len(rows))
 	if len(cheap) > 0 || len(absent) > 0 {
 		fmt.Println("  Adopt the current template for one file (its contents are replaced):")
 		printAdoptCommands(append(append([]driftRow{}, cheap...), absent...), showAll)
@@ -574,7 +570,7 @@ func printUserModifiedRemedies(c upgradeCounts, showAll bool) {
 		printAdoptCommands(merge, showAll)
 	}
 	fmt.Println("  Or claim a file as yours — upgrade never touches it again, even with --force:")
-	fmt.Printf("    %s project disown %s --reason \"<what the template can't express>\"\n", Name(), paths[0])
+	fmt.Printf("    %s project disown %s --reason \"<what the template can't express>\"\n", Name(), rows[0].Path)
 	printDetailPointer()
 }
 
@@ -654,31 +650,6 @@ func bumpForgeVersion(cfg *config.ProjectConfig, configPath, target string, chec
 	return nil
 }
 
-// isPreV01Baseline reports whether v sits below v0.1.0 — the line forge has
-// not crossed yet, and therefore the line before which no backwards-
-// compatibility promise exists. Purely an ordering question, answered by
-// SemVer precedence, so every shape a real pin takes lands correctly:
-//
-//	""                                    unpinned          → pre-v0.1
-//	"0.0.0"                               unpinned sentinel → pre-v0.1
-//	"v0.0.3"                              released patch    → pre-v0.1
-//	"v0.0.4-0.20260724212501-dfb…+dirty"  dev build         → pre-v0.1
-//	"dev"                                 unorderable       → pre-v0.1
-//	"v0.1.0"                              first compat tag  → NOT pre-v0.1
-//
-// A dev build's pseudo-version is a PRE-RELEASE of the next patch, so it
-// orders below that patch and far below v0.1.0 without any special casing:
-// nothing here has to know a version came from a local checkout.
-func isPreV01Baseline(v string) bool {
-	key := semverKey(v)
-	if key == "" {
-		// Unorderable (the "dev" sentinel, a malformed pin). Forge has
-		// never released v0.1.0, so anything we cannot place is below it.
-		return true
-	}
-	return semver.Compare(key, "v0.1.0") < 0
-}
-
 // minorPlus returns the version n minor releases after v (e.g.
 // minorPlus("0.1", 2) → "0.3", minorPlus("v1.4.3", 2) → "1.6"). When v
 // can't be parsed cleanly we fall back to the input string — the
@@ -733,6 +704,10 @@ func skipSet(names []string) map[string]bool {
 // stdout, or under --json the one document to stdout with the human text on
 // stderr. --check <path> is the detail view and short-circuits both.
 func runUpgradeCommand(cmd *cobra.Command, opts upgradeOptions, jsonOut bool) error {
+	// Children inspecting the project must use the upgrade's forge, but the
+	// parent must regain its original environment even when the upgrade fails.
+	restore := markChildrenRunThisForge()
+	defer restore()
 	if opts.check && !opts.force && len(opts.forcePaths) > 0 {
 		return runUpgradeWithGo(true, false, opts.showAll, opts.forcePaths, opts.to, opts.goRun)
 	}
@@ -748,6 +723,10 @@ func runUpgradeCommand(cmd *cobra.Command, opts upgradeOptions, jsonOut bool) er
 	printUpgradeSummary(os.Stderr, rep)
 	if werr := emitJSONDocument(rep); werr != nil {
 		return werr
+	}
+	var ec *exitCodeError
+	if errors.As(err, &ec) && ec.code == exitNeedsHuman {
+		ec.msg = needsPersonMessage(len(rep.NeedsHuman), true)
 	}
 	return err
 }

@@ -16,7 +16,7 @@ func TestServerIssuesGroupsByTheSfp1FingerprintOverServerErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{ServerFingerprintSQL + " AS fingerprint", ServerFailureFilterSQL, ServerTitleSQL, ServerCulpritSQL,
+	for _, want := range []string{ServerFingerprintSQL + " AS fingerprint", ServerFailureFilterSQL, ServerTitleSQL, ServerIssueCulpritSQL,
 		"GROUP BY fingerprint, service", "FROM default.otel_logs", "LIMIT 26", "ResourceAttributes['service.version']", "argMax(TraceId, Timestamp)"} {
 		if !strings.Contains(st.SQL, want) {
 			t.Errorf("statement lacks %q:\n%s", want, st.SQL)

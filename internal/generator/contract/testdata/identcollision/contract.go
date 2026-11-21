@@ -16,6 +16,10 @@ import (
 // Result is a local struct type: the mock's zero value for it is Result{}.
 type Result struct{ N int }
 
+// Status is a local named primitive: the forensics capture records it as
+// the int it is.
+type Status int
+
 // Service is wrapped by the decorator and mocked; every method is a
 // collision the generators must survive.
 type Service interface {
@@ -49,4 +53,8 @@ type Service interface {
 	Fire(m int, o int)
 	// Non-error results only: the decorator's capture-without-error form.
 	Pair(e int, r0 string) (r1 int, s string)
+	// Every forensics classification at once. a and r are the generated
+	// capture method's receiver and recorder; the capture type must compile
+	// and record the caller's values.
+	Capture(ctx context.Context, orderID string, note string, n uint, f float64, ok bool, at time.Time, d time.Duration, tags []string, attrs map[string]int, res *Result, s Status, a int, r string, rest ...string) error
 }

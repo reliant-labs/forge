@@ -17,19 +17,19 @@ import (
 
 // Run real Cobra parsing, credential resolution and Connect HTTP calls. Only
 // KCL rendering is replaced: no native runtime or subprocess in the short tier.
-func identityTestTarget(t *testing.T, endpoint string) {
+func identityTestTarget(t *testing.T, endpoint string, identities ...string) {
 	t.Helper()
 	previous := resolveIdentityCloudTarget
-	resolveIdentityCloudTarget = func(_ context.Context, env, token string) (cloud.Endpoint, cloud.Credential, error) {
+	resolveIdentityCloudTarget = func(_ context.Context, env, token string) (cloud.Endpoint, cloud.Credential, []string, error) {
 		if env != "prod" {
-			return cloud.Endpoint{}, cloud.Credential{}, fmt.Errorf("unexpected env %q", env)
+			return cloud.Endpoint{}, cloud.Credential{}, nil, fmt.Errorf("unexpected env %q", env)
 		}
 		ep, err := projectEndpoint(env, &cloud.Declaration{Endpoint: endpoint, TokenEnv: "IDENTITY_TEST_TOKEN"})
 		if err != nil {
-			return ep, cloud.Credential{}, err
+			return ep, cloud.Credential{}, nil, err
 		}
 		cred, err := cloud.ResolveCredential(token, ep)
-		return ep, cred, err
+		return ep, cred, identities, err
 	}
 	t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 	withProjectName(t, "shop")
@@ -69,7 +69,7 @@ func TestCloudIdentityWire(t *testing.T) {
 		{"invite --return-code", procIdentityInvite, `{"userId":"new-user","created":true,"code":{"code":"c0de","resetUrl":"https://app.example/auth/reset?code=c0de"}}`,
 			[]string{"invite", "prod", "--email", "recipient@example.com", "--role", "member", "--return-code"},
 			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}, "returnCode": true}, []string{"created=true", "a credential", "https://app.example/auth/reset?code=c0de",
-				"It expires within the hour, and its lifetime cannot be extended", "If it lapses", "cloud identity reset prod --user recipient@example.com --return-code"}},
+				"It expires within the hour, and no flag extends it (the env's ManagedIdentity.code_lifetime", "If it lapses", "cloud identity reset prod --user recipient@example.com --return-code"}},
 		{"invite --return-code, account has a credential", procIdentityInvite, `{"userId":"existing","created":false}`,
 			[]string{"invite", "prod", "--email", "recipient@example.com", "--role", "member", "--return-code"},
 			map[string]any{"email": "recipient@example.com", "roles": []any{"member"}, "returnCode": true}, []string{"already has a credential", "reset --return-code"}},
@@ -230,9 +230,9 @@ func TestCloudIdentityParsing(t *testing.T) {
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			previous := resolveIdentityCloudTarget
-			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, error) {
+			resolveIdentityCloudTarget = func(context.Context, string, string) (cloud.Endpoint, cloud.Credential, []string, error) {
 				t.Fatal("invalid command reached credential resolution")
-				return cloud.Endpoint{}, cloud.Credential{}, nil
+				return cloud.Endpoint{}, cloud.Credential{}, nil, nil
 			}
 			t.Cleanup(func() { resolveIdentityCloudTarget = previous })
 			if _, err := executeIdentity(args...); err == nil {
@@ -297,7 +297,7 @@ func TestWritePasswordCode_SaysWhenItLapsesAndHowToReissue(t *testing.T) {
 	var b strings.Builder
 	now := time.Date(2026, 11, 16, 17, 0, 0, 0, time.UTC)
 	writePasswordCode(&b, &identityPasswordCodeWire{Code: "c0de", ExpiresAt: "2026-11-16T18:00:00Z"}, "forge cloud identity reset prod --user a@b.c --return-code", now)
-	for _, want := range []string{"expires at 2026-11-16T18:00:00Z (in 1h0m0s)", "cannot be extended", "code: c0de", "forge cloud identity reset prod --user a@b.c --return-code"} {
+	for _, want := range []string{"expires at 2026-11-16T18:00:00Z (in 1h0m0s)", "ManagedIdentity.code_lifetime sets how long codes live", "code: c0de", "forge cloud identity reset prod --user a@b.c --return-code"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, b.String())
 		}

@@ -22,6 +22,9 @@ func slotEnv(t *testing.T, n string) string {
 	t.Setenv(hostslot.EnvDir, dir)
 	t.Setenv(hostslot.SlotsEnv(hostslot.Heavy), n)
 	t.Setenv(hostslot.EnvHeld, "")
+	// The harness running these tests may itself wait in the express lane.
+	t.Setenv(hostslot.EnvLane, "")
+	t.Setenv(hostslot.ExpressSlotsEnv(hostslot.Heavy), "")
 	return dir
 }
 
@@ -99,5 +102,58 @@ func TestSlotStatus_Renders(t *testing.T) {
 	out.Reset()
 	if err := writeSlotStatusJSON(&out, rep); err != nil || !strings.Contains(out.String(), `"command": "go test ./..."`) {
 		t.Fatalf("json status: %v\n%s", err, out.String())
+	}
+}
+
+func TestSlotRun_LaneFlag(t *testing.T) {
+	slotEnv(t, "2") // one bulk slot, one reserved for express
+	held, err := hostslot.Acquire(context.Background(), hostslot.Heavy, hostslot.Options{Label: "a long bulk job", Env: os.Environ()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	var errb bytes.Buffer
+	if err := runInSlotLane(ctx, hostslot.Heavy, 0, "bulk", []string{"forge-no-such-command-xyz"}, nil, &bytes.Buffer{}, &errb); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bulk lane with the one bulk slot held = %v, want it to wait: the other slot is reserved", err)
+	}
+	// Express takes the reserved slot at once; the missing command proves it ran.
+	err = runInSlotLane(context.Background(), hostslot.Heavy, 0, "express", []string{"forge-no-such-command-xyz"}, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	var coded interface{ ExitCode() int }
+	if !errors.As(err, &coded) || coded.ExitCode() != 127 {
+		t.Fatalf("express lane = %v, want it to run the command in the reserved slot (exit 127)", err)
+	}
+	if err := runInSlotLane(context.Background(), hostslot.Heavy, 0, "speedy", []string{"true"}, nil, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "speedy") {
+		t.Fatalf("--lane speedy = %v, want an error naming the bad lane", err)
+	}
+}
+
+func TestSlotStatus_ShowsLanes(t *testing.T) {
+	slotEnv(t, "4")
+	held, err := hostslot.Acquire(context.Background(), hostslot.Heavy, hostslot.Options{Label: "go test -short ./pkg/x/", Lane: hostslot.LaneExpress, Env: os.Environ()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Release() }()
+	rep, err := hostslot.Status(hostslot.Heavy, hostslot.Options{Env: os.Environ()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	writeSlotStatus(&out, rep)
+	for _, want := range []string{"heavy slots: 4 (FORGE_HEAVY_SLOTS=4), 1 reserved for express", "FORGE_HEAVY_EXPRESS_SLOTS", "slot 4  express"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status output lacks %q:\n%s", want, out.String())
+		}
+	}
+	out.Reset()
+	if err := writeSlotStatusJSON(&out, rep); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"lane": "express"`, `"express_slots": 1`} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("json status lacks %s:\n%s", want, out.String())
+		}
 	}
 }

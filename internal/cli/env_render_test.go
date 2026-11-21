@@ -632,6 +632,9 @@ func TestEnvRenderCommandSurface(t *testing.T) {
 		// Per-cluster (and per-kind) object counts on stdout.
 		"count",
 		"fail-on-write",
+		// One forge.env-render/v1 document: the --list objects and the
+		// env's normalized telemetry (pkg/telemetry.Target).
+		"json",
 		"kind",
 		"list",
 		"name",

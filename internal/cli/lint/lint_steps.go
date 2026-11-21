@@ -64,9 +64,16 @@ type lintRunCtx struct {
 	// `forge lint --skip-frontends`, for callers that want a backend-only
 	// gate without paying for the Node toolchain.
 	skipFrontends bool
-	paths         []string
-	cfg           *config.ProjectConfig
-	cwd           string
+	// install is `forge lint --install`: the frontend lanes install missing
+	// dependencies before they run. Off, lint never installs, and a frontend
+	// with no node_modules is a lane that could not run
+	// (lint_frontend_deps.go). installOut receives that install's output;
+	// nil discards it.
+	install    bool
+	installOut io.Writer
+	paths      []string
+	cfg        *config.ProjectConfig
+	cwd        string
 	// scope is `forge lint --scope`; nil is the whole project. Only the
 	// structured drivers (collectLintOutcomes) read it — see
 	// lint_structured.go.
@@ -131,7 +138,7 @@ type linterStep struct {
 // they tracked removed linters and are preserved for diffability against
 // git history).
 //
-//nolint:funlen // declarative 14-entry linter registry, not branching complexity
+//nolint:funlen,gocognit // declarative linter registry: each entry's small shouldRun/collect closures add to the count, not branching in this function
 func lintPipeline() []linterStep {
 	return []linterStep{
 		// 1. Standard Go linters (golangci-lint).
@@ -243,6 +250,22 @@ func lintPipeline() []linterStep {
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, g := collectBufLintJSON(rc.ctx)
 				return fs, g, nil
+			},
+		},
+
+		// 4b. Proto format — `buf format -d` over the workspace, the
+		// scaffolded pre-commit hook's own check, so "all gating linters
+		// passed" and the commit hook cannot disagree
+		// (lint_proto_format.go). Gates through the warn-first rollout.
+		{
+			name:  "proto-format lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && fileExists(filepath.Join(rc.cwd, "buf.yaml")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectProtoFormatJSON(rc.ctx, rc.cwd, formatKeep(rc.scope, rc.paths), rc.fix)
 			},
 		},
 
@@ -582,6 +605,21 @@ func lintPipeline() []linterStep {
 			collect: collectSecretsJSON,
 		},
 
+		// 13d-ter-quinquies. Telemetry — declared telemetry judged per env
+		// for what it collects (see telemetry.go). Gates on an error (a
+		// dashboard series nothing collects), through the warn-first
+		// rollout; a project that declares no forge.Telemetry is not
+		// rendered and passes.
+		{
+			name:  "telemetry lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, deployKCLDirFor(rc.cfg))), ""
+			},
+			collect: collectTelemetryJSON,
+		},
+
 		// 13d-quater. identity-share-with: a forge.ManagedIdentity share_with
 		// whose owner env is missing, declares no identity, is itself a sharer
 		// or is not hosted. One env's render cannot see another's, so this
@@ -887,7 +925,10 @@ func lintPipeline() []linterStep {
 		// a server action, cookies(), next/image's server loader, a rewrite.
 		// `next dev` serves all of them, so nothing else notices before the
 		// export fails in CI — or, for the constructs the export accepts,
-		// before production quietly lacks what dev had.
+		// before production quietly lacks what dev had. A Vite frontend on a
+		// static runtime is checked for the seam with the deploy (build.outDir
+		// vs public_dir, base vs base_path); every other frontend gets a
+		// not-applicable note.
 		//
 		// GATES on error findings: each is a build `next build` refuses, or
 		// a build that is not an export at all (nothing to publish). The
@@ -901,7 +942,7 @@ func lintPipeline() []linterStep {
 				if rc.skipFrontends {
 					return false, "--skip-frontends — skipping static-export lint"
 				}
-				return rc.cwd != "" && hasNextJSFrontend(rc.cfg), ""
+				return rc.cwd != "" && hasFrontend(rc.cfg), ""
 			},
 			collect: collectStaticExportJSON,
 		},
@@ -976,6 +1017,23 @@ func lintPipeline() []linterStep {
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				fs, err := collectIdentityMethodsJSON(rc.cwd)
+				return fs, len(fs) > 0, err
+			},
+		},
+
+		// 14a-quater. Unproven sign-up — a deployed sign-up that creates
+		// accounts whose address nobody proves (email delivery "none", or
+		// auth_self_signup outside development; see
+		// lint_unproven_signup.go). Errors, graded by the rollout table.
+		{
+			name:  unprovenSignupLane,
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(filepath.Join(rc.cwd, "deploy", "kcl")), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectUnprovenSignupJSON(rc.cwd)
 				return fs, len(fs) > 0, err
 			},
 		},
@@ -1083,8 +1141,9 @@ func shouldRunFrontendTypecheck(rc *lintRunCtx) (bool, string) {
 	// A --scope that names no path inside any frontend cannot
 	// report a single typecheck finding (the lane is by file),
 	// so running it — a dependency install and a whole-frontend
-	// tsc — is work the scoped run was asked not to do.
-	if !rc.scope.reachesAnyDir(frontendTargetDirs(targets)) {
+	// tsc — is work the scoped run was asked not to do. The same
+	// selection narrows which frontends collect installs and checks.
+	if len(frontendTypecheckTargetsForRun(rc)) == 0 {
 		return false, "--scope reaches no frontend — skipping frontend typecheck"
 	}
 	return true, ""

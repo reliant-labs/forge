@@ -14,7 +14,16 @@ import (
 func TestShape_ReleaseHealthDefaultIsAbsent(t *testing.T) {
 	def := DefaultReleaseHealth()
 	shuffled := def
-	shuffled.FailOn = []string{HealthRegressedIssue, HealthProbeFailed, HealthNewIssue, HealthErrorRate, HealthAlertFiring, HealthErrorRate}
+	shuffled.FailOn = []string{HealthRegressedIssue, HealthBrowserPageLoad, HealthProbeFailed, HealthNewIssue, HealthBrowserErrors,
+		HealthErrorRate, HealthAlertFiring, HealthBrowserFailedRequests, HealthErrorRate}
+
+	// The default before the browser findings failed, spelled out, is a
+	// policy of its own now: recorded, so the env keeps judging by it.
+	preBrowser := def
+	preBrowser.FailOn = []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue}
+	if c := (Shape{Kind: EnvLocal, ReleaseHealth: &preBrowser}).Canonical(); c.ReleaseHealth == nil || !reflect.DeepEqual(c.ReleaseHealth.FailOn, preBrowser.FailOn) {
+		t.Errorf("the pre-browser default spelled out was not recorded as itself: %+v", c.ReleaseHealth)
+	}
 	for name, s := range map[string]Shape{
 		"absent":           {Kind: EnvLocal},
 		"default":          {Kind: EnvLocal, ReleaseHealth: &def},

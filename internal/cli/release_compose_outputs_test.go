@@ -98,7 +98,7 @@ func TestNativeDockerWritersRetainPushedInvocationIdentity(t *testing.T) {
 		tags := imageTagSet(repo, "v1.2.3", true, true)
 		var result buildResult
 		if project {
-			result = dockerBuildProject(t.Context(), cfg, tags, "", versionInfo{}, projectImageGuard{})
+			result = dockerBuildProject(t.Context(), cfg, tags, "", versionInfo{}, nil, projectImageGuard{})
 		} else {
 			result = dockerBuild(t.Context(), cfg, name, dir, tags, "")
 		}

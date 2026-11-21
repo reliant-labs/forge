@@ -82,6 +82,30 @@ func TestCheckHostedCapacityRefusalRendersRunbook(t *testing.T) {
 	}
 }
 
+// A billed org past its static-site limit is told the limit that refused it
+// and how to ask for more, not its compute ceiling (which it fits).
+func TestCheckHostedCapacityStaticSiteLimitNamesTheLimit(t *testing.T) {
+	c := &capacityCaller{resp: map[string]any{
+		"allowed": false, "code": "DEPLOY_CAPACITY_CODE_STATIC_SITE_LIMIT_REACHED", "hasComputePlan": true,
+		"ceilingCpuMillicores": "4000", "ceilingMemoryBytes": "8589934592", "ceilingStorageGib": "50",
+		"reason": "this would make 101 live static sites and your organization's limit is 100 (each environment's site counts as one)",
+		"fix":    "delete a static site or environment you no longer need, or ask for a higher limit: email support@reliantlabs.io with your organization id",
+	}}
+	v, err := CheckHostedCapacity(context.Background(), c, "env-1", CapacityDemand{StaticSites: 1})
+	if err != nil || v.Allowed || v.Code != CapacityCodeStaticSiteLimit || v.Queued() {
+		t.Fatalf("verdict = %+v, %v", v, err)
+	}
+	msg := (&CapacityRefusedError{Env: "prod", Verdict: v, Demand: CapacityDemand{StaticSites: 1}}).Error()
+	for _, s := range []string{"STATIC_SITE_LIMIT_REACHED", "limit is 100", "static-site limit", "support@reliantlabs.io"} {
+		if !strings.Contains(msg, s) {
+			t.Errorf("refusal missing %q:\n%s", s, msg)
+		}
+	}
+	if strings.Contains(msg, "ceiling of 4000m CPU") {
+		t.Errorf("a static-site limit refusal points at the compute ceiling:\n%s", msg)
+	}
+}
+
 func TestCheckHostedCapacityUnimplementedIsUnchecked(t *testing.T) {
 	v, err := CheckHostedCapacity(context.Background(), &capacityCaller{err: codedErr{"unimplemented"}}, "", CapacityDemand{})
 	if err != nil || !v.Unchecked {

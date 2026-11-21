@@ -234,6 +234,35 @@ type wireObserved struct {
 	// advertise the capability, so forge refused the declaration before
 	// ever publishing it.
 	Domains []wireCustomDomainStatus `json:"domains,omitempty"`
+	// Backup is a managed database's DeployBackupStatus (tag 9).
+	Backup *wireBackupStatus `json:"backup,omitempty"`
+}
+
+type wireBackupStatus struct {
+	LastSuccessfulBackup   *time.Time `json:"lastSuccessfulBackup,omitempty"`
+	WALArchivingHealthy    bool       `json:"walArchivingHealthy,omitempty"`
+	EarliestRestorableTime *time.Time `json:"earliestRestorableTime,omitempty"`
+	LastError              string     `json:"lastError,omitempty"`
+}
+
+// backupOf is the topology view of a deployment's backup state (NS HO-19).
+func backupOf(obs *wireObserved) *topology.Backup {
+	if obs == nil || obs.Backup == nil {
+		return nil
+	}
+	b := obs.Backup
+	stamp := func(t *time.Time) string {
+		if t == nil || t.IsZero() {
+			return ""
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	return &topology.Backup{
+		LastSuccessfulBackup:   stamp(b.LastSuccessfulBackup),
+		WALArchivingHealthy:    b.WALArchivingHealthy,
+		EarliestRestorableTime: stamp(b.EarliestRestorableTime),
+		LastError:              b.LastError,
+	}
 }
 
 type wireDeployment struct {
@@ -408,7 +437,7 @@ func (r HostedEnvRef) DeclaresShape() bool { return r.Shape != nil }
 // violation and is refused rather than guessed at — a guess would write into
 // the wrong env.
 func LookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (string, error) {
-	env, err := lookupHostedEnvironment(ctx, c, project, envName)
+	env, _, err := lookupHostedEnvironment(ctx, c, project, envName)
 	return env.ID, err
 }
 
@@ -418,13 +447,19 @@ type HostedEnvironment struct {
 	ID      string
 	Name    string
 	Project string
+	// CodeSourceWarning is the control plane's two-repositories warning for
+	// the environment's app (DeployAppCodeSources.warning, control-plane
+	// docs/design/unified-shell-and-projects.md D5): set when the app has
+	// been cut or deployed from more than one repository. Only
+	// FindHostedEnvironment reads it; "" from a server that predates it.
+	CodeSourceWarning string
 }
 
 // FindHostedEnvironment is LookupHostedEnvironment with the environment's
-// identity, not only its id.
+// identity, not only its id, and its app's code-source warning.
 func FindHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (HostedEnvironment, error) {
-	env, err := lookupHostedEnvironment(ctx, c, project, envName)
-	return HostedEnvironment{ID: env.ID, Name: env.Name, Project: env.Project}, err
+	env, warning, err := lookupHostedEnvironment(ctx, c, project, envName)
+	return HostedEnvironment{ID: env.ID, Name: env.Name, Project: env.Project, CodeSourceWarning: warning}, err
 }
 
 // GetHostedEnvironment reads one environment by the control plane's id. An
@@ -466,16 +501,28 @@ func ListHostedEnvironments(ctx context.Context, c HostedCaller, project string)
 	return out, nil
 }
 
-func lookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (wireEnvironment, error) {
+// wireAppCodeSources is DeployAppCodeSources as the lookup reads it: whose
+// app, and its two-repositories warning.
+type wireAppCodeSources struct {
+	Project string `json:"project"`
+	Warning string `json:"warning"`
+}
+
+// lookupHostedEnvironment also returns the matched environment's app's
+// code-source warning, "" when there is none.
+func lookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envName string) (wireEnvironment, string, error) {
 	var resp struct {
 		Environments []wireEnvironment `json:"environments"`
+		// One entry per listed app with any recorded source. Absent from
+		// a control plane that predates it.
+		AppCodeSources []wireAppCodeSources `json:"appCodeSources"`
 	}
 	req := map[string]any{"search": envName}
 	if project != "" {
 		req["project"] = project
 	}
 	if err := c.Call(ctx, procListEnvironments, req, &resp); err != nil {
-		return wireEnvironment{}, fmt.Errorf("resolve hosted environment %q: %w", envName, err)
+		return wireEnvironment{}, "", fmt.Errorf("resolve hosted environment %q: %w", envName, err)
 	}
 	var matches []wireEnvironment
 	for _, e := range resp.Environments {
@@ -488,16 +535,31 @@ func lookupHostedEnvironment(ctx context.Context, c HostedCaller, project, envNa
 	}
 	switch len(matches) {
 	case 0:
-		return wireEnvironment{}, fmt.Errorf("%w named %q\nfix: `forge env deploy %s` creates it on first deploy",
+		return wireEnvironment{}, "", fmt.Errorf("%w named %q\nfix: `forge env deploy %s` creates it on first deploy",
 			ErrHostedEnvironmentNotFound, envName, envName)
 	case 1:
 		if strings.TrimSpace(matches[0].ID) == "" {
-			return wireEnvironment{}, fmt.Errorf("the control plane returned environment %q with no id", envName)
+			return wireEnvironment{}, "", fmt.Errorf("the control plane returned environment %q with no id", envName)
 		}
-		return matches[0], nil
+		return matches[0], appCodeSourceWarning(resp.AppCodeSources, matches[0].Project), nil
 	default:
-		return wireEnvironment{}, fmt.Errorf("the control plane returned %d environments named %q; refusing to guess", len(matches), envName)
+		return wireEnvironment{}, "", fmt.Errorf("the control plane returned %d environments named %q; refusing to guess", len(matches), envName)
 	}
+}
+
+// appCodeSourceWarning is the warning of project's entry, "" when it has
+// none. An environment that names no project (it predates the dimension)
+// belongs to no app, so it has none either.
+func appCodeSourceWarning(apps []wireAppCodeSources, project string) string {
+	if project == "" {
+		return ""
+	}
+	for _, a := range apps {
+		if a.Project == project {
+			return strings.TrimSpace(a.Warning)
+		}
+	}
+	return ""
 }
 
 // EnsureHostedEnvironment makes the environment ref names exist in the
@@ -529,6 +591,11 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 			"does not enforce it yet (it does not advertise %q), so it would admit every promotion the policy refuses. "+
 			"Set its mode to \"audit\" until the control plane is upgraded, or remove it",
 			env, strings.Join(missing, " and delivery_policy."), release.CapabilityEnforcesPromotionChecks)
+	}
+	// Several identities sent to a control plane that converges one would be
+	// recorded and never converged: refused, never stripped.
+	if err := reader.CheckIdentities(declared); err != nil {
+		return release.Shape{}, fmt.Errorf("ensure environment %q: %w", env, err)
 	}
 	return reader.LimitShape(declared), nil
 }
@@ -1985,6 +2052,7 @@ func ReadHostedStatus(ctx context.Context, c HostedCaller, project, envName stri
 				ws.Hostname = u.Hostname()
 			}
 			ws.Domains = customDomainsOf(obs)
+			ws.Backup = backupOf(obs)
 		}
 		out.Workloads = append(out.Workloads, ws)
 	}

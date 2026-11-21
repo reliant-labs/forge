@@ -30,7 +30,6 @@ func writeGraphProjectYAML(t *testing.T, dir string) {
 	t.Helper()
 	body := `name: demo
 module_path: github.com/demo/demo
-version: 0.0.1
 forge_version: dev
 database: {}
 ci: {}
@@ -38,7 +37,6 @@ docker: {}
 k8s: {}
 lint: {}
 contracts: {}
-auth: {}
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(body), 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)

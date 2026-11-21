@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	connectv2 "connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
+	"github.com/reliant-labs/forge/pkg/mountkit"
 	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
 )
 
@@ -65,6 +68,27 @@ type Server struct {
 	// refuses to serve a mismatch. nil — a Server mounted with hand-built
 	// HandlerOpts — skips the audience check.
 	Chain *Chain
+
+	// ServerInterceptors and HTTPOptions are HandlerOpts for connect-go v2
+	// services (mountkit.RegistrarV2): the shared server interceptor chain,
+	// outermost first, and the connecthttp options (payload caps) every v2
+	// service mounted through Mount is built with. Unset, Mount uses ChainV2's.
+	// A Server with neither these nor ChainV2 mounts a v2 service with no
+	// interceptors, as one with neither HandlerOpts nor Chain does a v1 one.
+	ServerInterceptors []connectv2.ServerInterceptor
+	HTTPOptions        []connecthttp.Option
+
+	// ChainV2 is Chain for connect-go v2 services (NewChainV2): Mount builds
+	// v2 services with it when ServerInterceptors is unset, Run mounts the
+	// health rpc through it, and the Listener checks every recorded
+	// service's audience against it. Chain and ChainV2 may both be set
+	// while a project migrates; each major's services mount with their own,
+	// and both must admit the same audience.
+	ChainV2 *ChainV2
+
+	// muxV2 is the mountkit.MuxV2 Mount registers v2 services through, built
+	// on first use over Mux with the v2 chain.
+	muxV2 *mountkit.MuxV2
 
 	// Logger is the root logger the caller already built (the same one
 	// it passed into bootstrap so mount-time logs and run-time logs

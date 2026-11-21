@@ -63,8 +63,8 @@ layout.
         use-api-mutation.ts
         index.ts
         generated/             # per-service hooks (forge-generated)
-          users-hooks.ts
-          orders-hooks.ts
+          users-hooks_gen.ts
+          orders-hooks_gen.ts
           index.ts
     ui-web/                    # @<project>/ui-web — shared web components
       package.json
@@ -289,6 +289,9 @@ lands.
   of `react-native` cost the disk space of one copy.
 - forge doesn't generate a `package-lock.json` or `yarn.lock`; only
   `pnpm-lock.yaml` is supported in workspace mode.
+- A JS package outside the workspace that keeps its own `package-lock.json`
+  or `yarn.lock` is reported by `forge project audit` (`lockfiles`, a
+  warning): make it a workspace member, or convert its lock to pnpm.
 
 ## See also
 

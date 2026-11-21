@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/devidp"
 )
 
 // noSleep skips backoff delays but, like the real sleep, ends when ctx does:
@@ -527,5 +529,97 @@ func TestReadinessNeedsTheManagementGatewayToo(t *testing.T) {
 	}
 	if healthz < 3 {
 		t.Errorf("the pass started after %d gateway probes; it must wait for the gateway", healthz)
+	}
+}
+
+// forge#2121: a declared member's address that someone registered first —
+// an UNVERIFIED account holding a password nobody proved — is never adopted.
+// Granting it the declared role would hand the role to whoever registered.
+// It is renamed out of the address's way with its credentials intact, and
+// the declared account is created beside it, verified; an unverified account
+// holding nothing is adopted as before.
+func TestDeclaredMembersNeverAdoptAnAccountHoldingUnprovenCredentials(t *testing.T) {
+	f := newFake(t)
+	r, _ := newRec(t, f, nil)
+	spec := Spec{Project: ProjectSpec{Name: "p"}, Roles: []Role{{Key: "admin", Declared: true,
+		Members: []string{"owner@example.com", "pending@example.com"}}}}
+	f.mu.Lock()
+	f.users["700"] = &fUser{ID: "700", UserName: "owner@example.com", Email: "owner@example.com", Unverified: true,
+		AuthMethods: []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}, PasswordSetBy: "squatter-password"}
+	f.users["701"] = &fUser{ID: "701", UserName: "pending@example.com", Email: "pending@example.com", Unverified: true}
+	f.mu.Unlock()
+	if _, err := r.Reconcile(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	squatter := f.users["700"]
+	if squatter.UserName != "forge-superseded-700" || squatter.Email != "superseded-700@forge.invalid" ||
+		squatter.Metadata["forge.superseded_email"] != "owner@example.com" || squatter.PasswordSetBy != "squatter-password" {
+		t.Fatalf("the squatted account was not moved aside intact: %+v", squatter)
+	}
+	granted := map[string]bool{}
+	for _, g := range f.grants {
+		granted[g.UserID] = true
+	}
+	if granted["700"] {
+		t.Fatal("TAKEOVER: the declared role was granted to the account holding unproven credentials")
+	}
+	if !granted["701"] {
+		t.Fatal("an unverified account holding nothing was not adopted")
+	}
+	var declared *fUser
+	for _, u := range f.users {
+		if u.Email == "owner@example.com" {
+			declared = u
+		}
+	}
+	if declared == nil || declared.Unverified || declared.UserName != "owner@example.com" || !granted[declared.ID] {
+		t.Fatalf("the declared owner account: %+v", declared)
+	}
+}
+
+// forge#2179 RC-10: a declared member whose account already exists,
+// unverified and credential-less (a sign-up still waiting for its proof), is
+// adopted — and its first sign-in code must work end to end through the login
+// broker, whose client is ProvenCredentialsOnly. A declared address is the
+// admin's assertion, exactly as for a member converge creates (verified at
+// creation), so adoption verifies it; the code then sets a password. A
+// squatter's account holding credentials is still renamed aside and never
+// verified.
+func TestAnAdoptedPendingMembersSignInCodeSetsAPasswordThroughTheBroker(t *testing.T) {
+	f := newFake(t)
+	r, _ := newRec(t, f, func(o *Options) { o.SignInCodes = true })
+	spec := Spec{Project: ProjectSpec{Name: "p"}, Roles: []Role{{Key: "admin", Declared: true,
+		Members: []string{"pending@example.com", "owner@example.com"}}}}
+	f.mu.Lock()
+	f.users["801"] = &fUser{ID: "801", UserName: "pending@example.com", Email: "pending@example.com", Unverified: true}
+	f.users["802"] = &fUser{ID: "802", UserName: "owner@example.com", Email: "owner@example.com", Unverified: true,
+		AuthMethods: []string{"AUTHENTICATION_METHOD_TYPE_PASSWORD"}, PasswordSetBy: "squatter-password"}
+	f.mu.Unlock()
+	ctx := context.Background()
+	rep, err := r.Reconcile(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := map[string]string{}
+	for _, c := range rep.SignInCodes {
+		codes[c.Email] = c.Code
+	}
+	if codes["pending@example.com"] == "" {
+		t.Fatalf("no sign-in code for the adopted pending member: %+v", rep.SignInCodes)
+	}
+
+	broker := &devidp.Client{Base: f.srv.URL, Token: f.pat, ProvenCredentialsOnly: true}
+	if err := broker.ResetPassword(ctx, devidp.PasswordReset{UserID: "801", Code: codes["pending@example.com"], NewPassword: "Member-Passw0rd!"}); err != nil {
+		t.Fatalf("the adopted member's sign-in code does not set a password through the broker: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if got := f.users["801"]; got.Unverified || got.PasswordSetBy != "Member-Passw0rd!" {
+		t.Fatalf("the adopted member: %+v, want verified with the password it chose", got)
+	}
+	if sq := f.users["802"]; !sq.Unverified || sq.UserName != "forge-superseded-802" || sq.PasswordSetBy != "squatter-password" {
+		t.Fatalf("the squatter's account was verified or not moved aside: %+v", sq)
 	}
 }

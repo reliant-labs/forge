@@ -1,17 +1,17 @@
 ---
 name: observability/release-health
-description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, alert_baseline_min_firings with baseline_alerts, which keep an alert that was already flapping before the promotion from failing it, and the control plane's stored verdict the promotion health gate reads.
+description: How `forge obs check` judges a release in depth — when the after window starts (the live time a promotion's apply and cluster-rollout gates record, which a retried promotion reaches after its first promoted_at), per-endpoint latency, per-endpoint error rate with its error_rate_min_errors floor and baseline_window, attribution — version_share, window_not_live, rollout_incomplete and findings[].unattributed, which keep another version's findings from failing a release — the issue thresholds (new_issue_min_events, regressed_issue_min_events) with issue_alerts, which keep the NewIssue/IssueRegressed alerts from failing a release twice, alert_baseline_min_firings with baseline_alerts, which keep an alert that was already flapping before the promotion from failing it, pre_existing_alerts, which keep an alert on an issue older than the release and firing no faster under it from failing it, the per-op changed_op_errors / changed_op_latency findings on the ops the release's commits changed, and the control plane's stored verdict the promotion health gate reads.
 ---
 
 # Release health: what a release answers for
 
-`forge obs check` (`observability/query`) compares the window after a
+`forge obs check` (`observability/check`) compares the window after a
 promotion with the window before it. This is the detail behind two of its
 rules: how latency and error rate are compared, and which findings are the release's.
 
-## Signals: spans, then ingress, plus the browser
+## Signals: spans, plus the browser
 
-Each service's requests, error rate and p95 come from its own OpenTelemetry server spans. A service that sent none in either window is judged instead on what the hosting platform's ingress measured for it (per-workload request counts, 5xx share and time to headers; Reliant hosting writes them into the env's tenant, unbilled), so a static site or an app without OpenTelemetry on Reliant hosting is still judged. A frontend that sends forge's browser telemetry is judged on it too, beside either or alone: `browser_errors` (JavaScript errors per page view), `browser_failed_requests` (its fetch/XHR requests that got a 5xx or no answer) and `browser_page_load` (p95 page load), against `max_error_rate_increase` and `max_p95_ratio`, and judged once it has `min_requests` page views in both windows (a thinner before window is no baseline; `require_baseline`, `observability/query`). Page views can prove a release good only when no service saw a request in the after window (a frontend alone): beside a backend or site with requests too few to judge, the verdict stays INCONCLUSIVE (`low_traffic`). They warn unless `fail_on` lists them. Each service in the document says which it was judged on (`signal`: `spans`, `ingress` or `browser`; its browser figures are under `browser`). CDN cache hits never reach the ingress, so a cache-heavy site's ingress counts are low; its error rate is unaffected.
+Each service's requests, error rate and p95 come from its own OpenTelemetry server spans. A service that sent none in either window is not judged on its requests today: the ingress figures Reliant hosting records (per-workload request counts, 5xx share and time to headers) are not yet passed to the judgement, so a static site or an app without OpenTelemetry gets `no_request_telemetry` unless its pages send browser telemetry. Load the pages in a real browser (curl and uptime probes send none) for a static site to be judged. A frontend that sends forge's browser telemetry is judged on it too, beside either or alone: `browser_errors` (JavaScript errors per page view), `browser_failed_requests` (its fetch/XHR requests that got a 5xx or no answer) and `browser_page_load` (p95 page load), against `max_error_rate_increase` and `max_p95_ratio`, and judged once it has `min_requests` page views in both windows (a thinner before window is no baseline; `require_baseline`, `observability/check`). Page views can prove a release good only when no service saw a request in the after window (a frontend alone): beside a backend or site with requests too few to judge, the verdict stays INCONCLUSIVE (`low_traffic`). They fail a release by default, as `error_rate` does; `warn_on = ["browser_page_load"]` in `release_health` demotes one to a warning without restating `fail_on` (an explicit `fail_on` that leaves them out also keeps them warnings). Each service in the document says which it was judged on (`signal`: `spans` or `browser`; `ingress` is reserved for when ingress figures are judged; its browser figures are under `browser`).
 
 ## Latency, per endpoint
 
@@ -54,6 +54,40 @@ The local backend reads endpoint figures for both windows and the baseline
 window. A control plane that does not supply them is judged service-wide, and
 `obs check` holds its answer to the floor even when the control plane
 predates it, listing `error_rate_min_errors` in `thresholds`.
+
+## Changed ops: `changed_op_errors`, `changed_op_latency`
+
+A service-wide rate hides a regression in one op on a busy service. So the
+check also judges each op (`observability/query/ops`) the release's commits
+changed, before vs after, on that op's own spans. Which ops changed:
+
+- on hosting: the commits the release recorded, mapped in this checkout;
+- locally: the commits since `--since`, plus uncommitted changes.
+
+| Finding | Fires when |
+|---|---|
+| `changed_op_errors` | the op's error rate rose by more than `changed_op_max_error_rate_increase` (default 0.05) with at least `changed_op_min_errors` (5) errors after |
+| `changed_op_latency` | the op's p95 after is more than `changed_op_max_p95_ratio` (2.0) times its p95 before |
+
+An op is compared only with `changed_op_min_calls` (50) calls in both
+windows; the thinner ones are named in one `not_evaluated` entry,
+`changed_op: N op(s) below changed_op_min_calls …`.
+On a hosted env an op's after-window figures count only the judged release's
+`service.version` (`changed_ops[].after_version`) and its before-window
+figures only one baseline version's (`changed_ops[].before_version`: the
+previous release, else the version that served most of the op's before window,
+never the judged release itself), so an old version still in rotation on
+either side never makes it a finding, and an op without per-version figures
+for either window is listed under `not_evaluated` instead of judged.
+`--threshold k=v` overrides each, and `thresholds` lists each with its source.
+Both warn by default; add them to `fail_on` (KCL `release_health`, or
+`--fail-on`) to gate. Each finding carries `op`, `commit` and `pr` (from a
+trailing `(#123)` in the commit subject), and the document's `changed_ops[]`
+lists every changed op with both windows and its commits.
+
+When the mapping cannot run (no checkout, the release's commits not in it, a
+backend that cannot rank ops), `not_evaluated` says why and the check goes
+on: changed ops never fail a check by being unreadable.
 
 ## The stored verdict
 
@@ -108,7 +142,7 @@ forge obs check prod --wait --json | jq '{verdict, live: .subject.live_at, versi
 
 An issue fails a release only with enough after-window events: `new_issue` needs `new_issue_min_events` (default 3) and an issue first seen in the release, `regressed_issue` needs `regressed_issue_min_events` (unset, the same as `new_issue_min_events`) and a regression at or after the promotion. One event of an old, transient signature is not a release regressing. Per call: `--threshold regressed_issue_min_events=1` counts every regression, the rule before the threshold existed.
 
-The platform's `NewIssue` and `IssueRegressed` alerts fire on those same issues with no threshold and no version, so they are judged as their issue: each is listed in `issue_alerts`, not counted again as an `alert_firing` finding. Three exceptions keep a real failure failing: an issue alert whose rule the env made critical (`severity=critical`) fails the release like any critical alert; when the backend could not read issues (`not_evaluated` names `new_issue` or `regressed_issue`) the alert is the only evidence and counts; and every other rule (`IssueSpike`, your own) counts as before. The check holds a control plane's answer to both rules even when that control plane predates them.
+The platform's `NewIssue` and `IssueRegressed` alerts fire on those same issues with no threshold and no version, so they are judged as their issue: each is listed in `issue_alerts`, not counted again as an `alert_firing` finding. Three exceptions keep a real failure failing: an issue alert whose rule the env made critical (`severity=critical`) fails the release like any critical alert; when the backend could not read issues (`not_evaluated` names `new_issue` or `regressed_issue`) the alert is the only evidence and counts; and every other rule (`IssueSpike`, your own) counts as before, unless its issue predates the release (below). The check holds a control plane's answer to both rules even when that control plane predates them.
 
 ## Alerts that were already flapping: `alert_baseline_min_firings`
 
@@ -127,6 +161,20 @@ Per env: `alert_baseline_min_firings = 3` in `release_health` asks for a flap ra
 ```bash
 forge obs check prod --json | jq '{verdict, baseline_alerts: [.baseline_alerts[]? | {rule, baseline_firings, labels}], discounted: [.findings[] | select(.code == "alert_firing" and .unattributed) | .unattributed]}'
 ```
+
+## Alerts on an issue older than the release: `pre_existing_alerts`
+
+An alert that names an issue (label `issue_id`) and is not `NewIssue` or `IssueRegressed` — `IssueSpike`, or a rule of your own over an issue — is about that issue's condition, which can be older than the alert instance. The case it was built for (control-plane v1.23.0-rc.9): `IssueSpike` for an issue first seen 3.5h before the promotion in the previous build, firing ~27 times an hour before and after it. The spike detector compares the last one to two hours with the day before, so that instance first fired after the promotion and had never fired before: there was nothing for `alert_baseline_min_firings` to discount.
+
+So the check reads the issue (`GetIssue`) twice, its events by version in each window on its own: the after window, from the promotion to its end, and the `baseline_window` before the promotion in whole hours (the control plane counts an issue's events by the hour, so the hour holding the promotion, which the rollout shares, is left out). The alert is pre-existing when the issue was first seen before the promotion in another version (`first_build`), and in the after window the release's own version fired it at least once (no event of it there is no evidence, and the alert counts), and either fewer than `new_issue_min_events` times, or at most twice as fast (events per hour between its first and last event there) as the other versions did in the baseline window, or by fewer than `new_issue_min_events` events above that rate. A window whose counted events reach outside it (an hour the after window's end cuts, read after it closed) cannot tell the release's events from later ones, so the alert counts. Each alert is matched to its own finding (`findings[].alert`); a finding that names no alert (a control plane that predates the field) is matched only when it is its rule's one counted finding and the answer lists exactly one alert of that rule, and otherwise counts. A pre-existing alert is listed in `pre_existing_alerts` (each with `issue`: its first seen time and version, and both rates), and its `alert_firing` finding stays in `findings` with policy `warn`, `pre_existing: true` and a `findings[].unattributed` reason starting `pre-existing alert (first seen <build>, rate unchanged)`, so it never returns exit 1. A baseline alert's finding carries `pre_existing: true` too.
+
+What still fails: an alert whose issue was first seen after the promotion or in the release; an issue the issue rule already judged (a new or regressed issue); one that fires faster under the release beyond those bars; a dormant issue (no event of another version in the baseline window) the release fired `new_issue_min_events` times; an issue the check could not read (it says so on stderr); evidence a window cannot separate; a finding no exact alert matches; and every critical alert.
+
+```bash
+forge obs check prod --json | jq '{verdict, pre_existing_alerts: [.pre_existing_alerts[]? | {rule, issue}]}'
+```
+
+Like the baseline rule, the stored verdict applies this only once the control plane's judge passes the issues to forge's rule (`Input.AlertIssues`).
 
 ## The baseline: `require_baseline`
 

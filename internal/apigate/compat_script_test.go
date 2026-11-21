@@ -11,7 +11,8 @@ import (
 // TestCheckCompatScript runs scripts/test-check-compat.sh, the hermetic self-test of
 // the pull-request gate's other compatibility checks (the same file in reliant and
 // control-plane): buf breaking against the base, and a forge:breaks-rollback
-// migration, each passing only on a label the owner's account applied.
+// migration, each passing only on a label the owner's account, or the Reliant bot
+// on the owner's instruction, applied.
 func TestCheckCompatScript(t *testing.T) {
 	testkit.Slow(t, "runs git (and buf, when on PATH) against a throwaway repository",
 		testkit.Inputs("scripts/check-compat.sh", "scripts/test-check-compat.sh"))

@@ -87,11 +87,16 @@ func gibString(b int64) string { return fmt.Sprintf("%.1f GiB", float64(b)/(1<<3
 
 // The DeployCapacityCode wire names this client acts on.
 const (
-	CapacityCodeOK                = "DEPLOY_CAPACITY_CODE_OK"
-	CapacityCodeNoComputePlan     = "DEPLOY_CAPACITY_CODE_NO_COMPUTE_PLAN"
-	CapacityCodeExceedsCeiling    = "DEPLOY_CAPACITY_CODE_EXCEEDS_CEILING"
-	CapacityCodeSpendCapReached   = "DEPLOY_CAPACITY_CODE_SPEND_CAP_REACHED"
-	CapacityCodePlanUnknown       = "DEPLOY_CAPACITY_CODE_PLAN_UNKNOWN"
+	CapacityCodeOK              = "DEPLOY_CAPACITY_CODE_OK"
+	CapacityCodeNoComputePlan   = "DEPLOY_CAPACITY_CODE_NO_COMPUTE_PLAN"
+	CapacityCodeExceedsCeiling  = "DEPLOY_CAPACITY_CODE_EXCEEDS_CEILING"
+	CapacityCodeSpendCapReached = "DEPLOY_CAPACITY_CODE_SPEND_CAP_REACHED"
+	CapacityCodePlanUnknown     = "DEPLOY_CAPACITY_CODE_PLAN_UNKNOWN"
+	// CapacityCodeStaticSiteLimit: the org has billing and the deploy would
+	// take it past its live static-site limit (each environment's site counts).
+	// A soft cap the platform raises on request, so the refusal says how to ask,
+	// not how to upgrade. Compared after the prefix is trimmed.
+	CapacityCodeStaticSiteLimit   = "STATIC_SITE_LIMIT_REACHED"
 	capacityWireCodeUnimplemented = "unimplemented"
 	capacityCodePrefix            = "DEPLOY_CAPACITY_CODE_"
 )
@@ -181,10 +186,15 @@ func (e *CapacityRefusedError) Error() string {
 		fmt.Fprintf(&b, "capacity pre-flight refused env %q (%s): %s", e.Env, e.Verdict.Code, e.Verdict.Reason)
 	}
 	fmt.Fprintf(&b, "\n  expected: this deploy needs %s", e.Demand)
-	if e.Verdict.HasComputePlan {
+	switch {
+	case e.Verdict.Code == CapacityCodeStaticSiteLimit:
+		// The compute ceiling is not what refused it, so printing it here
+		// would point at the wrong limit.
+		b.WriteString("\n  found:    the organization's static-site limit (every environment's site counts as one)")
+	case e.Verdict.HasComputePlan:
 		fmt.Fprintf(&b, "\n  found:    a compute plan with a ceiling of %dm CPU, %s memory, %d GiB storage",
 			e.Verdict.CeilingCPU, gibString(e.Verdict.CeilingMemory), e.Verdict.CeilingStorage)
-	} else {
+	default:
 		b.WriteString("\n  found:    no active compute plan")
 	}
 	if e.Verdict.Fix != "" {

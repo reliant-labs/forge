@@ -102,6 +102,25 @@ Everything that has to agree reads that one variable: the IdP binds it (`HostInf
 
 Pinning a dev port is still available if you want a stable URL — set `port: <n>` in forge.yaml and put the literal URI in `config.k`.
 
+### Calling the API from curl, with the same sign-in
+
+There is no `forge` verb that prints a dev token, and you do not need one. The sign-in a browser does is one POST: `POST /auth/login` on the API runs the whole OIDC flow server-side and answers with a `<project>_session` cookie, and the API reads that cookie on every RPC in dev. Keep the cookie in a private cookie jar and hand curl the JAR. Never copy the token into a shell variable or onto a command line:
+
+```sh
+API=http://localhost:<api port>   # the `forge env up` banner, or `forge env status dev`
+JAR=$(umask 077; mktemp -d)/cookies   # a 0700 directory only you can read
+curl -sS -c "$JAR" -H 'Content-Type: application/json' \
+  -d '{"email":"admin@<project>.localhost","password":"Password1!"}' "$API/auth/login"
+curl -sS -b "$JAR" -H 'Content-Type: application/json' -d '{}' "$API/<package>.<Service>/<Rpc>"
+rm -rf "$(dirname "$JAR")"   # when you are done
+```
+
+- **Why the jar, not the token.** The cookie's value IS the access token, a bearer credential good until it expires. A token in a shell variable lands in your history and every child's environment. As a command-line argument (`--auth-token`, `-H "Authorization: Bearer …"`), anyone on the machine who can list processes can read it. The jar is a file only you can read, and curl reads it itself. On a shared host, never pass the token on a command line.
+- `forge api curl <Service>.<Rpc> --port <api port>` prints the request with a `$TOKEN` placeholder. Replace its `-H "Authorization: …"` line with `-b "$JAR"` rather than filling the placeholder in.
+- The account is the one `idp-steps.yaml` declares (above), or any `seed_users` entry with the password its `password_secret` names. These are dev-only credentials of a local IdP: never point this at a deployed env. A password the policy rejects, an unverified address or a TOTP-enrolled account fails here exactly as it would on the sign-in screen (add `"totp":"<code>"` for the last).
+- curl sends no `Origin` or `Sec-Fetch-Site`, so the broker's cross-site guard lets it through; a request that claims another origin is refused.
+- The session expires like any other (Zitadel's default access-token lifetime): run the POST again. `/auth/login` is a 404 when native sign-in did not mount — see "Reading the failures".
+
 ## 2. Mint one against a shared secret — API smoke tests only
 
 No IdP, no container, **and no sign-in flow**. Appropriate for `curl`-ing an RPC or a scripted check; not appropriate for anything with a browser. The token carries whatever claims you typed, so it never exercises the claim shape your real issuer produces.
@@ -153,6 +172,6 @@ Zitadel decides this **per application**, not per request: an OIDC app is create
 | `iss` mismatch | `jwt_issuer` has a stray trailing slash, or names a different origin than the browser used. Zitadel's issuer is the bare origin — no path suffix. |
 | Sign-in page 404s after clicking sign in | The v2 login UI is required but not running — see `LoginV2.Required` above. |
 | `/auth/login` is a 404 | The API booted without a broker token or client id, so native sign-in did not mount (`api.log`: "native sign-in not configured"). Check `IDP_BROKER_TOKEN` in `secrets/dev.yaml` and that `_api`'s `config_secrets` names it; `forge env up dev` re-converges the identity and stores it. |
-| IdP never comes up, no `.forge/idp/pat.txt` | Read `.forge/hostinfra/idp/zitadel.log` (host path) or `docker compose logs idp` (container path). Most often postgres was not reachable. |
+| IdP never comes up, no `.forge/idp/pat.txt` | Read the IdP's log, `.forge/logs/<env>/<name>.log` for its HostInfra workload (`.forge/logs/dev/idp.log` when it is named `idp`; it is also in HyperDX under that service name) (host path) or `docker compose logs idp` (container path). Most often postgres was not reachable. |
 | Public RPC works, authenticated one 401s with a valid token | The token is fine; check `jwt_audience` — a token minted for another application of the same issuer is correctly rejected. |
 | `redirect_uri` mismatch AFTER typing a password | The broker's `oidc_redirect_uri` is not covered by what the identity step registered — confirm the frontend's `base_path` (KCL `forge.Frontend.base_path`, else the fallback in its next.config.ts) is what `.forge/identity/<name>.json` lists under `redirect_uris`. Nothing was redirected; the issuer rejected the server's auth request. |

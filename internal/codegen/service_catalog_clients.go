@@ -125,9 +125,10 @@ func catalogConfigFields(dir string) map[string]bool {
 	return fields
 }
 
-// isCatalogNewClient reports whether call invokes servicecatalog.NewClient,
-// generic instantiation included, by its resolved object rather than its
-// spelling.
+// isCatalogNewClient reports whether call invokes servicecatalog.NewClient —
+// or NewClientV2, its connect-go v2 twin, whose binding and constructor sit
+// at the same argument positions — generic instantiation included, by its
+// resolved object rather than its spelling.
 func isCatalogNewClient(info *types.Info, call *ast.CallExpr) bool {
 	fun := call.Fun
 	if idx, ok := fun.(*ast.IndexExpr); ok {
@@ -141,7 +142,7 @@ func isCatalogNewClient(info *types.Info, call *ast.CallExpr) bool {
 		return false
 	}
 	fn, ok := info.Uses[sel.Sel].(*types.Func)
-	return ok && fn.Pkg() != nil && fn.Pkg().Path() == "github.com/reliant-labs/forge/pkg/servicecatalog" && fn.Name() == "NewClient"
+	return ok && fn.Pkg() != nil && fn.Pkg().Path() == "github.com/reliant-labs/forge/pkg/servicecatalog" && (fn.Name() == "NewClient" || fn.Name() == "NewClientV2")
 }
 
 // catalogClient reads a NewClient call's declared metadata: the constant

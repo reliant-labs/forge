@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/pkg/auth"
 	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -54,6 +55,9 @@ type Input struct {
 	// Project is the Bundle's project, the identity project's name unless the
 	// declaration sets project_name.
 	Project string
+	// Env is the environment's name, for the commands a message names
+	// (`forge secret set --env <env>`). Optional.
+	Env string
 	// Identity is the rendered declaration. Its runtime must be "host".
 	Identity *release.ShapeIdentity
 
@@ -105,7 +109,9 @@ type Result struct {
 	// Warnings are things the pass left alone on purpose.
 	Warnings []string
 	// SocialCallbackURL is the redirect URI to register on the dev OAuth
-	// app of each social provider; empty when none is declared.
+	// app of each social provider; empty when none is declared. It is set
+	// whenever one is declared, including when a provider's secrets are not
+	// in the store yet: the OAuth app is registered before its secrets exist.
 	SocialCallbackURL string
 	// Mail is the LOGIN_POLICY mail state: dev (Mailpit), smtp or none.
 	Mail string
@@ -126,10 +132,14 @@ type SeedPassword struct {
 func Converge(ctx context.Context, in Input) (*Result, error) {
 	in, seedPasswords, seedWarnings := ensureSeedPasswords(in)
 	spec, warnings, err := Spec(in)
-	if err != nil {
-		return nil, err
-	}
 	warnings = append(seedWarnings, warnings...)
+	if err != nil {
+		// The warnings say what is missing (a social provider's secrets, an
+		// SMTP password) and the error points at them, and the callback is
+		// what the OAuth app needs before its secrets exist: both are
+		// reported even though nothing was converged.
+		return &Result{Warnings: warnings, SocialCallbackURL: SocialCallbackURL(in)}, err
+	}
 	mail := MailState(in)
 	keys := identity.DirKeyStore{Dir: in.KeysDir}
 	files := identity.FileOutputs{Path: in.OutputsPath}
@@ -149,10 +159,7 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Warnings: warnings, Mail: mail, SeedPasswords: seedPasswords}
-	if len(spec.IdPs) > 0 {
-		res.SocialCallbackURL = strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
-	}
+	res := &Result{Warnings: warnings, Mail: mail, SeedPasswords: seedPasswords, SocialCallbackURL: SocialCallbackURL(in)}
 	rep, err := rec.Reconcile(ctx, spec)
 	res.Report = rep
 	if err != nil {
@@ -165,10 +172,21 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return res, err
 	}
-	if res.StoreKeys, err = writeStore(in.StorePath, values); err != nil {
+	if res.StoreKeys, err = writeStore(in.StorePath, values, snapshotKeys(in), time.Now()); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+// SocialCallbackURL is the redirect URI every social provider's DEV OAuth app
+// registers: the dev IdP's own <issuer>/idps/callback, which is where the
+// issuer sends the provider back (it does the code exchange itself). Empty
+// when the identity declares no social provider.
+func SocialCallbackURL(in Input) string {
+	if in.Identity == nil || len(in.Identity.Social) == 0 {
+		return ""
+	}
+	return strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
 }
 
 // ensureSeedPasswords generates a password for every seed user whose
@@ -292,6 +310,9 @@ func Spec(in Input) (identity.Spec, []string, error) {
 	}
 	var warnings []string
 	spec := identity.Spec{Project: identity.ProjectSpec{Name: firstNonEmpty(id.ProjectName, in.Project)}}
+	if id.CodeLifetime != "" {
+		spec.CodeLifetime = id.PasswordCodeLifetime()
+	}
 
 	for _, r := range id.Roles {
 		spec.Roles = append(spec.Roles, identity.Role{
@@ -483,19 +504,22 @@ func socialIDP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
 	if s.ClientIDSecret != "" {
 		v, ok := secret(in, s.ClientIDSecret)
 		if !ok {
-			return identity.IdP{}, missingSocialSecret(s.Type, s.ClientIDSecret)
+			return identity.IdP{}, missingSocialSecret(in.Env, s.Type, s.ClientIDSecret)
 		}
 		clientID = v
 	}
 	clientSecret, ok := secret(in, s.ClientSecretSecret)
 	if !ok {
-		return identity.IdP{}, missingSocialSecret(s.Type, s.ClientSecretSecret)
+		return identity.IdP{}, missingSocialSecret(in.Env, s.Type, s.ClientSecretSecret)
 	}
 	return identity.IdP{Name: identity.IdPName(t), Type: t, ClientID: clientID, ClientSecret: clientSecret, Scopes: s.Scopes}, ""
 }
 
-func missingSocialSecret(typ, name string) string {
-	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge secret set --env <env> %s`", typ, name, typ, name)
+func missingSocialSecret(env, typ, name string) string {
+	if env == "" {
+		env = "<env>"
+	}
+	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge secret set --env %s %s`", typ, name, typ, env, name)
 }
 
 func containsMethod(ms []identity.Method, m identity.Method) bool {
@@ -615,9 +639,67 @@ func StoreValues(in Input, out identity.Output, machineKey func(user string) ([]
 	return values, nil
 }
 
+// snapshotRestamp is how old a delivered JWKS snapshot's delivered_at may grow
+// before an unchanged one is delivered again with a fresh stamp: half the
+// validator's default jwt_jwks_snapshot_max_age, so a snapshot in the store is
+// always comfortably usable.
+const snapshotRestamp = auth.DefaultJWKSSnapshotMaxAge / 2
+
+// snapshotKeys are the store keys that carry the JWKS snapshot.
+func snapshotKeys(in Input) map[string]bool {
+	prefix := release.IdentitySecretPrefix + in.Identity.Name
+	keys := map[string]bool{}
+	for _, r := range in.Refs {
+		if r.SecretName == prefix && r.SecretKey == "JWKS" {
+			keys[r.EnvName] = true
+		}
+	}
+	return keys
+}
+
+// sameSnapshot reports whether the snapshot in the store says what the new one
+// does, apart from when it was taken, and is still young. Every pass stamps a
+// new delivered_at, so comparing bytes would rewrite the store (and announce
+// it) on every `forge env up`; a changed key set or issuer, or a stamp past
+// snapshotRestamp, is delivered.
+func sameSnapshot(have, want string, now time.Time) bool {
+	h, hAt, ok := splitSnapshot(have)
+	if !ok {
+		return false
+	}
+	w, _, ok := splitSnapshot(want)
+	if !ok || h != w {
+		return false
+	}
+	age := now.Sub(hAt)
+	return age >= -time.Minute && age < snapshotRestamp
+}
+
+// splitSnapshot is a snapshot document's canonical form without delivered_at,
+// and its delivered_at.
+func splitSnapshot(doc string) (string, time.Time, bool) {
+	var m map[string]any
+	if json.Unmarshal([]byte(doc), &m) != nil {
+		return "", time.Time{}, false
+	}
+	at, _ := m["delivered_at"].(string)
+	t, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	delete(m, "delivered_at")
+	canon, err := json.Marshal(m) // map keys sort, so this is canonical
+	if err != nil {
+		return "", time.Time{}, false
+	}
+	return string(canon), t, true
+}
+
 // writeStore sets each key in the local store, touching the file only when a
-// value actually changed. The store keeps its comments and every other key.
-func writeStore(path string, values map[string]string) ([]string, error) {
+// value actually changed. A JWKS snapshot (a key in snapshots) counts as
+// changed only by sameSnapshot. The store keeps its comments and every other
+// key.
+func writeStore(path string, values map[string]string, snapshots map[string]bool, now time.Time) ([]string, error) {
 	store := secretFile{Path: path}
 	var written []string
 	for _, k := range sortedKeys(values) {
@@ -625,7 +707,7 @@ func writeStore(path string, values map[string]string) ([]string, error) {
 		if err != nil {
 			return written, fmt.Errorf("read %s: %w", path, err)
 		}
-		if cur == values[k] {
+		if cur == values[k] || (snapshots[k] && sameSnapshot(cur, values[k], now)) {
 			continue
 		}
 		if err := store.set(k, values[k]); err != nil {

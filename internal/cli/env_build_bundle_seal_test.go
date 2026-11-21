@@ -10,6 +10,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/bundle"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
 // bundleSealExclusions are the release.Shape fields the bundle deliberately
@@ -30,6 +31,16 @@ func fullyDeclaredShape() release.Shape {
 	delivery := release.ShapeIdentityDelivery{
 		Kind: release.ControlPlaneSecretIdentity, Name: "forge-identity-identity", Namespace: "app",
 		Cluster: "prod-ctx", ConnectedCluster: "prod",
+	}
+	identity := release.ShapeIdentity{
+		Name: "identity", Runtime: release.IdentityRuntimeHosted,
+		Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
+		Roles: []release.ShapeIdentityRole{{Key: "admin", MembersFrom: release.IdentityMembersConsole}},
+		Applications: []release.ShapeIdentityApplication{
+			{Name: "prod:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
+		},
+		Consumers:  []release.ShapeIdentityConsumer{{Workload: "api", Application: "prod:api"}},
+		Deliveries: []release.ShapeIdentityDelivery{delivery},
 	}
 	return release.Shape{
 		Kind:      release.EnvPersistent,
@@ -80,16 +91,11 @@ func fullyDeclaredShape() release.Shape {
 			WindowSeconds: 1800, MinRequests: 100, MaxErrorRateIncrease: 0.02, MaxP95Ratio: 2,
 			NewIssueMinEvents: 5, FailOn: []string{release.HealthErrorRate, release.HealthLatency},
 		},
-		Identity: &release.ShapeIdentity{
-			Name: "identity", Runtime: release.IdentityRuntimeHosted,
-			Login: release.ShapeIdentityLogin{Mode: release.IdentityLoginNative},
-			Roles: []release.ShapeIdentityRole{{Key: "admin", MembersFrom: release.IdentityMembersConsole}},
-			Applications: []release.ShapeIdentityApplication{
-				{Name: "prod:api", Workload: "api", Kind: release.IdentityAppNativeBroker},
-			},
-			Consumers:  []release.ShapeIdentityConsumer{{Workload: "api", Application: "prod:api"}},
-			Deliveries: []release.ShapeIdentityDelivery{delivery},
-		},
+		Identity: &identity,
+		// The same identity in both keys: the one form in which a shape may
+		// carry both (release.Shape.validateIdentities), so this one shape
+		// can set every field.
+		Identities: []release.ShapeIdentity{identity},
 		StoreSecrets: []release.ShapeStoreSecret{{
 			Cluster: "prod-ctx", ConnectedCluster: "prod", Namespace: "app", Store: release.StoreOpenBao,
 			Names: []string{"SIGNING_KEY", "SIGNING_PUB"}, Pins: []release.ShapeStorePin{{Name: "SIGNING_KEY", Version: 2}},
@@ -110,7 +116,12 @@ func fullyDeclaredShape() release.Shape {
 			{Name: "media", RuntimeKind: release.BucketRuntimeS3, Bucket: "acme-prod-media", Endpoint: "https://acct.r2.cloudflarestorage.com"},
 			{Name: "uploads", RuntimeKind: release.BucketRuntimeHosted, PublicRead: true},
 		},
-		Preview: &release.ShapePreview{Of: "preview", ExpiresAt: "2026-11-15T12:00:00Z", Source: "pr-12"},
+		Preview:   &release.ShapePreview{Of: "preview", ExpiresAt: "2026-11-15T12:00:00Z", Source: "pr-12"},
+		Telemetry: release.ShapeTelemetryOf([]telemetry.Target{hostedTelemetryTarget("api")}),
+		Changes: map[string]release.ShapeChange{"new-checkout": {
+			Type: release.ChangeTypeBool, Default: "control", Description: "Shorter checkout flow",
+			Variants: map[string]json.RawMessage{"control": json.RawMessage(`false`), "treatment": json.RawMessage(`true`)},
+		}},
 	}
 }
 

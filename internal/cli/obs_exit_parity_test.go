@@ -19,7 +19,9 @@ type errCaller struct{ err error }
 func (c errCaller) Call(context.Context, string, any, any) error { return c.err }
 
 // obsParityVerbs is every `forge obs` verb that prints a --json document, with
-// the arguments it needs to get past argument validation.
+// the arguments it needs to get past argument validation. blast-radius is not
+// here: its telemetry only weighs the answer, so every telemetry class below
+// exits 0 for it; obs_blast_radius_test.go holds its own parity tests.
 var obsParityVerbs = []struct {
 	name string
 	args []string
@@ -31,6 +33,7 @@ var obsParityVerbs = []struct {
 	{"traces", []string{"traces", "prod"}},
 	{"trace", []string{"trace", "0af7651916cd43dd8448eb211c80319c", "prod"}},
 	{"endpoints", []string{"endpoints", "prod"}},
+	{"ops", []string{"ops", "prod"}},
 	{"query", []string{"query", "prod", "--sql", "select 1"}},
 	{"dashboards audit", []string{"dashboards", "audit", "prod"}},
 	{"issues", []string{"issues", "prod"}},

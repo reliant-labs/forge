@@ -13,11 +13,10 @@
 //   - mountMovedCommands builds each New path from the SAME constructor the
 //     Old path uses — one definition, mounted twice — so the two cannot
 //     drift: same flags, same Args, same RunE.
-//   - legacyRel / legacyArgs map a new spelling back to the old one wherever
-//     a path is a key (the pin gate, the hand-off to the forge a project
-//     pins). Every forge has the old spelling; only this one and later have
-//     the new, so a command handed to an older pinned forge is handed over in
-//     the spelling it knows.
+//   - legacyRel maps a new spelling back to the old one wherever a path is a
+//     key (the pin gate, the hand-off mode), so each table is written once.
+//     A command handed to the forge a project pins goes over as typed: every
+//     forge a project can pin (v1.4.0 and later) has both spellings.
 //   - `forge project capabilities --json` lists the rows as
 //     deprecated_aliases, so an agent can rewrite a stale spelling
 //     mechanically.
@@ -38,7 +37,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
@@ -52,9 +50,7 @@ import (
 var deprecationWarningsEnabled = false
 
 // noDeprecationWarningsEnv silences the deprecation line (any non-empty
-// value), for a script that cannot be changed yet. It also rides on a
-// hand-off whose arguments legacyArgs rewrote: the user typed the new
-// spelling, so the pinned forge must not warn about the old one it was given.
+// value), for a script that cannot be changed yet.
 const noDeprecationWarningsEnv = "FORGE_NO_DEPRECATION_WARNINGS"
 
 // commandMove is one row: the command at Old (a path relative to forge's
@@ -305,115 +301,6 @@ func isMovedNounGroup(rel string) bool {
 // every path-keyed table in this package is written in.
 func commandRel(cmd, root *cobra.Command) string {
 	return legacyRel(strings.TrimSpace(strings.TrimPrefix(cmd.CommandPath(), root.CommandPath())))
-}
-
-// legacyArgs rewrites a command line (the arguments after forge's own name)
-// that types a new spelling into the old one, for a forge that may predate
-// the new nouns: `-C x cloud registry login --json` becomes
-// `-C x registry login --json`. Only the command words change; every other
-// argument keeps its place. rewritten is false, and args comes back as is,
-// when the line names no moved command.
-func legacyArgs(args []string) (out []string, rewritten bool) {
-	idx := commandWordIndexes(args)
-	words := make([]string, len(idx))
-	for i, j := range idx {
-		words[i] = args[j]
-	}
-	var best commandMove
-	found := false
-	for _, m := range commandMoves() {
-		if m.preexisting {
-			continue
-		}
-		newWords := strings.Fields(m.New)
-		if len(newWords) > len(words) || strings.Join(words[:len(newWords)], " ") != m.New {
-			continue
-		}
-		if !found || len(m.New) > len(best.New) {
-			best, found = m, true
-		}
-	}
-	if !found {
-		return args, false
-	}
-	n := len(strings.Fields(best.New))
-	drop := map[int]bool{}
-	for _, j := range idx[:n] {
-		drop[j] = true
-	}
-	for i, a := range args {
-		if i == idx[0] {
-			out = append(out, strings.Fields(best.Old)...)
-		}
-		if !drop[i] {
-			out = append(out, a)
-		}
-	}
-	return out, true
-}
-
-// commandWordIndexes are the positions in args of the command path's words,
-// resolved against this forge's command tree the way cobra resolves it: at
-// each level a flag (the command's own or one it inherits) that takes a value
-// consumes the next argument, and the path ends at `--` or at the first word
-// that is not a subcommand of the command reached so far. So neither a flag's
-// value (`--username alice`) nor an operand is mistaken for a path word, and
-// a path word after a flag (`cloud -C x registry`) is still found. A flag the
-// tree does not know is taken to stand alone: this forge cannot know its
-// arity.
-func commandWordIndexes(args []string) []int {
-	c := commandTree()
-	flagsOf := func(c *cobra.Command) *pflag.FlagSet {
-		fs := pflag.NewFlagSet(c.Name(), pflag.ContinueOnError)
-		fs.AddFlagSet(c.Flags())
-		fs.AddFlagSet(c.PersistentFlags())
-		fs.AddFlagSet(c.InheritedFlags())
-		return fs
-	}
-	fs := flagsOf(c)
-	takesValue := func(f *pflag.Flag) bool { return f != nil && f.NoOptDefVal == "" }
-	var idx []int
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--":
-			return idx
-		case strings.HasPrefix(a, "--"):
-			if !strings.Contains(a, "=") && takesValue(fs.Lookup(strings.TrimPrefix(a, "--"))) {
-				i++
-			}
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			if len(a) == 2 && takesValue(fs.ShorthandLookup(a[1:])) {
-				i++
-			}
-		default:
-			next := subcommandNamed(c, a)
-			if next == nil {
-				return idx
-			}
-			idx = append(idx, i)
-			c, fs = next, flagsOf(next)
-		}
-	}
-	return idx
-}
-
-// commandTree builds this forge's command tree for commandWordIndexes. It is
-// assigned in init: NewRootCmd reaches commandWordIndexes through the
-// commands' package-level run tables, so a direct reference would be an
-// initialization cycle.
-var commandTree func() *cobra.Command
-
-func init() { commandTree = NewRootCmd }
-
-// subcommandNamed is c's subcommand called, or aliased, name; nil if none.
-func subcommandNamed(c *cobra.Command, name string) *cobra.Command {
-	for _, child := range c.Commands() {
-		if child.Name() == name || child.HasAlias(name) {
-			return child
-		}
-	}
-	return nil
 }
 
 // deprecatedPathFor is the row whose Old path rel is, or lies under, when

@@ -108,7 +108,12 @@ func TestSilentDefaultNeedsSteadyTraffic(t *testing.T) {
 		if r.For != "0s" {
 			t.Errorf("service-silent for = %q: the silence window is in the SQL, so the hold time is 0s", r.For)
 		}
+		if r.Interval != "5m" {
+			t.Errorf("service-silent interval = %q, want 5m", r.Interval)
+		}
+		return
 	}
+	t.Fatal("no service-silent default")
 }
 
 // TestSilentDefaultCountsEveryCallAServiceServes pins forge#1727: the project's
@@ -527,9 +532,69 @@ func TestIssueAlertsAreTunedAndDisabledByID(t *testing.T) {
 		t.Errorf("disabled IssueRegressed = %q, want it recorded as off", r.Expr)
 	}
 
-	// Params are refused: a platform default has none to tune.
+	// A param the platform default does not take is refused.
 	if err := ValidateAlertTuning(map[string]AlertTuning{"new-issue": {Enabled: true, Params: map[string]float64{"events": 9}}}); err == nil {
-		t.Error("a param on a platform default must be refused")
+		t.Error("an unknown param on a platform default must be refused")
+	}
+}
+
+// new-issue's one param, the sessions a client-side timeout issue must reach
+// before it pages, travels as a second comment after the marker, and only when
+// the env tuned it: an untuned NewIssue is the bare marker every control plane
+// already matches, and a control plane that predates the param still finds the
+// marker in a tuned one.
+func TestNewIssueClientTimeoutSessionsParam(t *testing.T) {
+	in := AlertInputOf(fixture())
+	rules, _ := ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
+		"new-issue": {Enabled: true, Params: map[string]float64{PClientTimeoutMinSessions: 3}},
+	})
+	marker := "SELECT 1 AS value WHERE 0 /* reliant:platform new-issue env:{reliant_env_id:String} */"
+	want := marker + " /* reliant:params client_timeout_min_sessions=3 */"
+	if got := byAlert(rules)["NewIssue"].Expr; got != want {
+		t.Errorf("tuned NewIssue expr = %q, want %q", got, want)
+	}
+	if err := validateExprForTest(BindEnvID(want, "env-1")); err != nil {
+		t.Errorf("tuned NewIssue once bound is not an acceptable expr: %v", err)
+	}
+
+	// Tuned to its default: nothing to record.
+	rules, _ = ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
+		"new-issue": {Enabled: true, Params: map[string]float64{PClientTimeoutMinSessions: 2}},
+	})
+	if got := byAlert(rules)["NewIssue"].Expr; got != marker {
+		t.Errorf("NewIssue tuned to its default = %q, want the bare marker", got)
+	}
+
+	// Disabled keeps its off marker first; the param follows.
+	rules, _ = ResolveAlertDefaults(in, "dev", map[string]AlertTuning{
+		"new-issue": {Enabled: false, Params: map[string]float64{PClientTimeoutMinSessions: 1}},
+	})
+	if got := byAlert(rules)["NewIssue"].Expr; !strings.Contains(got, "env:{reliant_env_id:String} off */ /* reliant:params client_timeout_min_sessions=1 */") {
+		t.Errorf("disabled NewIssue = %q", got)
+	}
+
+	for _, bad := range []float64{0, -1, 1.5} {
+		tuning := map[string]AlertTuning{"new-issue": {Enabled: true, Params: map[string]float64{PClientTimeoutMinSessions: bad}}}
+		if err := ValidateAlertTuning(tuning); err == nil {
+			t.Errorf("client_timeout_min_sessions = %v must be refused", bad)
+		}
+		// Refused at render, not recorded for the control plane to round.
+		if rules, err := ResolveAlertDefaults(in, "dev", tuning); err == nil {
+			t.Errorf("rendering client_timeout_min_sessions = %v must fail, got %d rules", bad, len(rules))
+		}
+	}
+	var def float64
+	for _, d := range alertDefs {
+		if d.ID == PlatformNewIssue {
+			for _, p := range d.Params {
+				if p.Name == PClientTimeoutMinSessions {
+					def = p.Default
+				}
+			}
+		}
+	}
+	if def != 2 {
+		t.Errorf("client_timeout_min_sessions default = %v, want 2 (the control plane's default for a shape that records none)", def)
 	}
 }
 

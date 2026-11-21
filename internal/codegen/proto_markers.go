@@ -280,9 +280,16 @@ const (
 // its declaration (the raw scanner's shape).
 var requestOptionMarkerLineRE = ProtoMarkerAnyLineRE([]string{ProtoMarkerRequestOption})
 
-// RequestOptionMarkerCommentRE is requestOptionMarkerLineRE for comment text
+// requestOptionMarkerCommentRE is requestOptionMarkerLineRE for comment text
 // buf has already stripped the `//` from — the descriptor path's shape.
-var RequestOptionMarkerCommentRE = ProtoMarkerAnyCommentRE([]string{ProtoMarkerRequestOption})
+var requestOptionMarkerCommentRE = ProtoMarkerAnyCommentRE([]string{ProtoMarkerRequestOption})
+
+// CommentMarksRequestOption reports whether a field's comment text (slashes
+// already stripped, the descriptor path's shape) carries
+// ProtoMarkerRequestOption.
+func CommentMarksRequestOption(comment string) bool {
+	return requestOptionMarkerCommentRE.MatchString(comment)
+}
 
 // KnownProtoMarkers is the complete set of `forge:*` marker names a .proto
 // comment may carry, spanning every pass that reads one (entity birth,

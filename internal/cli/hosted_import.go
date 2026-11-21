@@ -475,7 +475,7 @@ func envKindToWire(k release.EnvKind) string {
 		// correct outcome: forge derives every kind from a render, so an
 		// invalid one here means the caller assembled the import wrong,
 		// and that must not be imported as a guess.
-		return "DEPLOY_ENVIRONMENT_KIND_UNSPECIFIED"
+		return deployEnvKindUnspecified
 	}
 }
 

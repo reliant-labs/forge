@@ -19,7 +19,7 @@ func TestFormFields_ErrorsAreWiredToTheirControls(t *testing.T) {
 		HooksImportPath: "@/hooks/crm-service-hooks", PkFieldCamel: "id",
 		CreateFields: []PageField{
 			{Name: "name", ProtoName: "name", Label: "Name", Type: "text", TSType: "string", Required: true, ZodExpr: `z.string().min(1, "Required")`},
-			{Name: "email", ProtoName: "email", Label: "Email", Type: "email", TSType: "string", ZodExpr: `z.string().email("Enter a valid email address")`},
+			{Name: "email", ProtoName: "email", Label: "Email", Type: "email", TSType: "string", ZodExpr: `z.string().pipe(z.email("Enter a valid email address"))`},
 		},
 	}
 	page.UpdateFields = page.CreateFields

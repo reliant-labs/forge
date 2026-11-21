@@ -46,11 +46,29 @@ const (
 	// and by at least the probe latency floor. It warns by default, as
 	// latency does.
 	HealthProbeLatency = "probe_latency"
+	// HealthChangedOpErrors: an op (a component method, an rpc, an endpoint)
+	// that the release's commit range changed has an error rate that rose by
+	// more than changed_op_max_error_rate_increase, with at least
+	// changed_op_min_errors errors after the promotion. It names the newest
+	// commit that changed the op. It warns by default: which ops a diff
+	// changed is inferred, and one op's window is a thin sample.
+	HealthChangedOpErrors = "changed_op_errors"
+	// HealthChangedOpLatency: a changed op's p95 grew by more than
+	// changed_op_max_p95_ratio. It warns by default, as latency does.
+	HealthChangedOpLatency = "changed_op_latency"
 )
 
-// HealthFindings is every finding code, in a stable order.
+// HealthFindings is every finding code, in a stable order. A code added here
+// is a value a control plane that predates it refuses in a recorded fail_on,
+// so it needs a bundle feature that withholds it (bundle_features.go:
+// BundleFeatureReleaseProbes, BundleFeatureReleaseHealthChangedOps).
 var HealthFindings = []string{HealthErrorRate, HealthLatency, HealthNewIssue, HealthRegressedIssue, HealthAlertFiring, HealthWorkloadRestarts,
-	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad, HealthProbeFailed, HealthProbeLatency}
+	HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad, HealthProbeFailed, HealthProbeLatency,
+	HealthChangedOpErrors, HealthChangedOpLatency}
+
+// ChangedOpFindings are the codes judged per op the release changed
+// (HealthChangedOpErrors, HealthChangedOpLatency).
+var ChangedOpFindings = []string{HealthChangedOpErrors, HealthChangedOpLatency}
 
 // How many services a release needs a baseline for
 // (ShapeReleaseHealth.RequireBaseline). A service's baseline is its before
@@ -202,7 +220,11 @@ func (h ShapeReleaseHealth) RegressedMinEvents() int {
 
 // DefaultReleaseHealth is the policy of an env that declares none. Latency and
 // restarts warn: both are noisy on a fresh rollout. A release-probe failure
-// fails: an env has probe findings only when it is probed.
+// fails: an env has probe findings only when it is probed. The browser
+// findings fail (owner, 2026-11-18): for a frontend alone they are the only
+// regression a release can show, and they need min_requests page views in
+// both windows before they fire. forge.ReleaseHealth.warn_on demotes any of
+// them without restating the list.
 //
 // It must agree with the defaults of forge.ReleaseHealth in kcl/schema.k;
 // TestReleaseHealthDefaultsAgreeWithKCL and TestDefaultFailOnMatchesKCL fail
@@ -214,7 +236,8 @@ func DefaultReleaseHealth() ShapeReleaseHealth {
 		MaxErrorRateIncrease: 0.01,
 		MaxP95Ratio:          1.5,
 		NewIssueMinEvents:    3,
-		FailOn:               []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue},
+		FailOn: []string{HealthAlertFiring, HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad,
+			HealthErrorRate, HealthNewIssue, HealthProbeFailed, HealthRegressedIssue},
 	}
 }
 

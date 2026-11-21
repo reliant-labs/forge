@@ -184,7 +184,7 @@ func (q ServerIssues) Compile() (Stmt, error) {
 	}
 	sql := "SELECT " + ServerFingerprintSQL + " AS fingerprint, ServiceName AS service,\n" +
 		"       argMax(" + ServerTitleSQL + ", Timestamp) AS title,\n" +
-		"       argMax(" + ServerCulpritSQL + ", Timestamp) AS culprit,\n" +
+		"       argMax(" + ServerIssueCulpritSQL + ", Timestamp) AS culprit,\n" +
 		"       argMax(LogAttributes['exception.type'], Timestamp) AS exception_type,\n" +
 		"       count() AS events, " + AffectedSQL() + " AS affected,\n" +
 		"       min(Timestamp) AS first_seen, max(Timestamp) AS last_seen,\n" +

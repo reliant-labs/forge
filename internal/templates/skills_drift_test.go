@@ -30,6 +30,9 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 	allowedGenFiles := map[string]struct{}{
 		// Per-package mock generation off contract.go.
 		"mock_gen.go": {},
+		// Per-package Service interface derived from a `//forge:contract`
+		// struct (generator/contract/derive.go).
+		"contract_gen.go": {},
 		// Per-package component-middleware decorator, generated off contract.go
 		// (sibling of mock_gen.go): New<Concrete>WithForgeMiddleware wraps New
 		// through the observe.ComponentChain. Re-introduced Wave 5 as the
@@ -75,6 +78,9 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		// ORM / entity wrapper generation.
 		"<entity>_orm_gen.go":   {}, // placeholder pattern referenced in skills
 		"<entity>_store_gen.go": {}, // per-entity store file (internal/generator/plan_orm_store_gen.go)
+		// Per-entity interface over the hand-written <entity>_repo_ext.go
+		// queries (internal/generator/plan_orm_ext_store_gen.go).
+		"<entity>_ext_store_gen.go": {},
 		// The Tier-1 renames: every hash-guarded file now says _gen in its
 		// NAME, so a reader can tell it is un-editable without opening it.
 		"orm_shared_gen.go":  {},

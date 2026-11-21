@@ -324,7 +324,9 @@ func TestProcessLessEnvironmentGetsItsFrontendAndProductDashboards(t *testing.T)
 	for _, d := range sp.Dashboards {
 		ids = append(ids, d.ID)
 	}
-	if !reflect.DeepEqual(ids, []string{"frontend", "product-overview", "users", "product", "acquisition"}) {
+	// The Overview page's cards follow; the bundle writer withholds them from
+	// a control plane that does not serve them (TestDefaultBundleCarriesNoFilterParams).
+	if !reflect.DeepEqual(ids, []string{"frontend", "product-overview", "users", "product", "acquisition", "traffic", "uptime"}) {
 		t.Fatalf("a process-less env has dashboards %v, want the frontend and the built-in product dashboards", ids)
 	}
 	b, err := json.Marshal(sp)

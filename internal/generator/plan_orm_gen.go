@@ -61,7 +61,7 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 		outputs = append(outputs, ormOutput{
 			file:   naming.ToSnakeCase(ent.Name) + "_orm_gen.go",
 			entity: ent.Name,
-			src:    renderORMEntity(pkgName, ent, hasRepoExtExtraType(root, orm, ent.Name)),
+			src:    renderORMEntityIn(dbDir, pkgName, ent, hasRepoExtExtraType(root, orm, ent.Name)),
 		})
 	}
 	for _, ent := range entities {
@@ -70,6 +70,15 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	outputs = append(outputs, ormOutput{file: storeGenFile, src: renderStoreAggregate(pkgName)})
 	if err := checkORMNameCollisions(dbDir, relDir, entities, outputs); err != nil {
 		return err
+	}
+	// The interfaces over each entity's hand-written <entity>_repo_ext.go
+	// queries, read from those files now (a seam this run scaffolds is born
+	// empty, so it has none). A name the project already declares is not a
+	// refusal here: the ext store joined the projection after projects had
+	// written their own, so it yields, with a note (plan_orm_ext_store_gen.go).
+	extStores, extNotes := renderExtStores(dbDir, relDir, pkgName, entities, outputs)
+	for _, note := range extNotes {
+		fmt.Printf("  ℹ️  %s\n", note)
 	}
 
 	if err := os.MkdirAll(dbDir, 0o755); err != nil {
@@ -82,10 +91,12 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	// entity disappearing from the projection doesn't change that.
 	// Removed forge-owned files are pruned from the manifest too.
 	expectedFiles := make(map[string]bool)
-	expectedFiles["types.go"] = true
 	for _, ent := range entities {
 		expectedFiles[naming.ToSnakeCase(ent.Name)+"_orm_gen.go"] = true
 		expectedFiles[entityStoreFile(ent)] = true
+	}
+	for _, ext := range extStores {
+		expectedFiles[ext.file] = true
 	}
 	sweepStaleORMFiles(root, relDir, expectedFiles, false, cs)
 	// A project that moved its ORM out of internal/db (database.orm.package)
@@ -95,19 +106,6 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	if relDir != config.DefaultORMPackage {
 		sweepStaleORMFiles(root, config.DefaultORMPackage, nil, true, cs)
 	}
-
-	// internal/db/orm_shared_gen.go is RETIRED. It declared exactly one
-	// symbol, `var ormTracer = otel.Tracer("orm")`, left over from the
-	// pre-generic per-entity ORM that opened its own spans. pkg/crud owns
-	// the tracing now and keeps the same tracer name (crud.repoTracer), so
-	// the generated var has had NO referent since the generic Repo landed:
-	// a rendered project compiles with the file deleted.
-	//
-	// It was also byte-identical in every project ever generated — the
-	// tierguard differential render is what surfaced it — so it was library
-	// code, and dead library code at that, sitting in the user's tree
-	// behind a "do not edit" banner.
-	codegen.RetireGenerated(root, filepath.Join(filepath.FromSlash(relDir), "orm_shared_gen.go"), cs)
 
 	for _, ent := range entities {
 		// The custom-query seam: a scaffold-once, user-owned sibling file
@@ -125,7 +123,7 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 
 		name := naming.ToSnakeCase(ent.Name) + "_orm_gen.go"
 		hasExtra := hasRepoExtExtraType(root, orm, ent.Name)
-		if err := writeORMFile(root, orm, name, renderORMEntity(pkgName, ent, hasExtra), cs); err != nil {
+		if err := writeORMFile(root, orm, name, renderORMEntityIn(dbDir, pkgName, ent, hasExtra), cs); err != nil {
 			return fmt.Errorf("generate ORM for entity %s: %w", ent.Name, err)
 		}
 	}
@@ -138,23 +136,16 @@ func GeneratePlanORM(root string, orm config.ORMConfig, entities []config.PlanEn
 	if err := writeStoreInterfaces(root, orm, entities, cs); err != nil {
 		return fmt.Errorf("generate store interfaces: %w", err)
 	}
-
-	// internal/db/types.go was the proto-entity era's alias file; a stale
-	// alias to a deleted pb type would shadow a generated struct. It is
-	// removed only when forge wrote it: `types.go` is the most ordinary
-	// name a hand-written data layer has, and this used to delete one
-	// unconditionally on the first generate that projected an entity.
-	if body, rerr := os.ReadFile(filepath.Join(dbDir, "types.go")); rerr == nil && forgeWroteFile(body) {
-		if err := checksums.RemoveJournaled(filepath.Join(dbDir, "types.go")); err != nil {
-			return fmt.Errorf("retire %s/types.go: %w", relDir, err)
+	for _, ext := range extStores {
+		if err := writeORMFile(root, orm, ext.file, ext.src, cs); err != nil {
+			return fmt.Errorf("generate ext store for entity %s: %w", ext.entity, err)
 		}
 	}
 	return nil
 }
 
 // sweepStaleORMFiles removes forge's ORM output in relDir that this run
-// does not rewrite — an entity whose table is gone, or the pre-rename
-// "_orm.go" spelling — but never a file the user owns (Tier-2 / disowned /
+// does not rewrite — an entity whose table is gone — but never a file the user owns (Tier-2 / disowned /
 // hand-edited): a disowned ORM file is the user's content now, and the
 // entity disappearing from the projection doesn't change that. withStore
 // sweeps store_gen.go too, for a directory the ORM has moved out of.
@@ -162,12 +153,9 @@ func sweepStaleORMFiles(root, relDir string, expected map[string]bool, withStore
 	dir := filepath.Join(root, filepath.FromSlash(relDir))
 	existing, _ := os.ReadDir(dir)
 	for _, e := range existing {
-		// Both spellings are swept: "_orm_gen.go" is the current name and
-		// "_orm.go" the pre-rename one, so an upgrading project's old copies
-		// are reclaimed by the same pass that prunes deleted entities.
 		nm := e.Name()
-		isORM := strings.HasSuffix(nm, "_orm.go") || strings.HasSuffix(nm, "_orm_gen.go") ||
-			strings.HasSuffix(nm, "_store_gen.go") || nm == "orm_shared.go" || (withStore && nm == storeGenFile)
+		isORM := strings.HasSuffix(nm, "_orm_gen.go") || strings.HasSuffix(nm, "_store_gen.go") ||
+			(withStore && nm == storeGenFile)
 		if e.IsDir() || !isORM || expected[nm] {
 			continue
 		}
@@ -268,6 +256,12 @@ func renderRepoExtSeam(pkgName string, ent config.PlanEntity) []byte {
 	b.WriteString("//      here (db.Bun() builders and raw SQL included) joins that\n")
 	b.WriteString("//      transaction; with any other ctx it runs on the pool.\n")
 	b.WriteString("//\n")
+	fmt.Fprintf(&b, "// Each exported func(ctx context.Context, db orm.Context, …) in this file is\n")
+	fmt.Fprintf(&b, "// also a method of %sExtStore (%s_ext_store_gen.go, regenerated\n", msgName, naming.ToSnakeCase(msgName))
+	b.WriteString("// from this file every forge generate), the handle bound: name that in a\n")
+	b.WriteString("// service's Deps — forge wires and mocks it — instead of hand-writing an\n")
+	b.WriteString("// adapter over these functions.\n")
+	b.WriteString("//\n")
 	b.WriteString("// Example (uncomment and adapt):\n")
 	b.WriteString("//\n")
 	fmt.Fprintf(&b, "//\tfunc Find%sBy(ctx context.Context, db orm.Context, /* args */) ([]*%s, error) {\n", msgName, msgName)
@@ -321,17 +315,35 @@ func writeRepoExtSetUpdate(b *strings.Builder, ent config.PlanEntity, msgName, p
 			stamped = true
 		}
 	}
+	version := versionColumn(ent)
 	b.WriteString("//\n")
-	b.WriteString("// A write over many rows is ONE set-based statement, never List then an\n")
-	fmt.Fprintf(b, "// Update%sMasked per row (N round trips: it times out at scale). It\n", msgName)
-	b.WriteString("// goes through db.Bun() like any raw query; there is no orm helper for it\n")
-	b.WriteString("// (no orm.Ident — name columns in the SQL, values as `?` arguments):\n")
+	if version != "" {
+		// No Update<Entity>Where for a versioned entity (setBasedUpdateDelegate):
+		// say why, and what a raw set-based write gives up.
+		fmt.Fprintf(b, "// %s is version-checked (forge:version on %s): every generated write is a\n", msgName, version)
+		b.WriteString("// compare-and-swap against the version its caller read, so there is no\n")
+		fmt.Fprintf(b, "// generated Update%sWhere — a set-based write has no version of each row\n", msgName)
+		b.WriteString("// to compare. A raw one, through db.Bun(), overwrites concurrent writes;\n")
+		fmt.Fprintf(b, "// write it only when that is the intent, and advance %s so a reader\n", version)
+		b.WriteString("// holding a row is Aborted on its next write (there is no orm.Ident — name\n")
+		b.WriteString("// columns in the SQL, values as `?` arguments):\n")
+	} else {
+		b.WriteString("// A write over many rows is ONE set-based statement, never List then an\n")
+		fmt.Fprintf(b, "// Update%sMasked per row (N round trips: it times out at scale). The\n", msgName)
+		fmt.Fprintf(b, "// generated Update%sWhere(ctx, db, values, fields, filters...) is that\n", msgName)
+		b.WriteString("// statement over List's own filters. For one it cannot express, go through\n")
+		b.WriteString("// db.Bun() like any raw query (there is no orm.Ident — name columns in the\n")
+		b.WriteString("// SQL, values as `?` arguments):\n")
+	}
 	b.WriteString("//\n")
 	fmt.Fprintf(b, "//\tfunc Move%s(ctx context.Context, db orm.Context, from, to any) (int64, error) {\n", naming.Pluralize(msgName))
 	fmt.Fprintf(b, "//\t\tres, err := db.Bun().NewUpdate().Model((*%s)(nil)).\n", msgName)
 	fmt.Fprintf(b, "//\t\t\tSet(\"%s = ?\", to).\n", col)
 	if stamped {
 		b.WriteString("//\t\t\tSet(\"updated_at = now()\"). // a builder write is not the generated path: stamp it\n")
+	}
+	if version != "" {
+		fmt.Fprintf(b, "//\t\t\tSet(\"%s = %s + 1\"). // not compared, so at least advanced\n", version, version)
 	}
 	fmt.Fprintf(b, "//\t\t\tWhere(\"%s = ?\", from).\n", col)
 	b.WriteString("//\t\t\tExec(ctx)\n")
@@ -340,6 +352,16 @@ func writeRepoExtSetUpdate(b *strings.Builder, ent config.PlanEntity, msgName, p
 	b.WriteString("//\t\t}\n")
 	b.WriteString("//\t\treturn res.RowsAffected()\n")
 	b.WriteString("//\t}\n")
+}
+
+// versionColumn is the entity's `forge:version` column, "" when it has none.
+func versionColumn(ent config.PlanEntity) string {
+	for _, f := range ent.Fields {
+		if f.Version {
+			return f.Name
+		}
+	}
+	return ""
 }
 
 // entityExtraTypeName is the name of the embedded computed-field carrier
@@ -546,6 +568,54 @@ func writeORMGeneratedHeader(b *strings.Builder, source string) {
 	b.WriteString("// Code generated by forge. DO NOT EDIT.\n")
 	b.WriteString("// forge-owned: regenerated every run — do not edit (forge project disown to take ownership)\n")
 	fmt.Fprintf(b, "// Source: %s\n", source)
+}
+
+// renderORMEntityIn is renderORMEntity for the project whose ORM package is
+// dbDir, plus the delegates a project may already declare itself and so are
+// emitted only when it does not (setBasedUpdateDelegate).
+func renderORMEntityIn(dbDir, pkgName string, ent config.PlanEntity, hasExtra bool) []byte {
+	src := renderORMEntity(pkgName, ent, hasExtra)
+	if extra := setBasedUpdateDelegate(dbDir, ent); extra != "" {
+		src = append(append(src, '\n'), extra...)
+	}
+	return src
+}
+
+// setBasedUpdateDelegate is Update<Entity>Where, the set-based write
+// (crud.Repo.UpdateWhere, forge#2266), for an entity that has a write path.
+//
+// It joined the projection after projects had written their own set-based
+// helpers in <entity>_repo_ext.go, and a name the project already declares
+// in the package is refused by checkORMNameCollisions — so a project that
+// declares Update<Entity>Where keeps its own and gets none (semver 1: adding
+// it must not break a project that compiled). It is a package-level function
+// only: the generated <Entity>Store interface gains no method, so no
+// hand-written implementation of a store stops compiling either.
+//
+// A `forge:version` entity gets none: crud.Repo.UpdateWhere refuses it (a
+// set-based write has no version of each row to compare), so the delegate
+// would be a function that always fails. Leaving it out makes that a
+// compile-time fact instead of a runtime error.
+func setBasedUpdateDelegate(dbDir string, ent config.PlanEntity) string {
+	if ent.ReadOnly || ent.AppendOnly || versionColumn(ent) != "" {
+		return ""
+	}
+	msgName := ent.Name
+	name := "Update" + msgName + "Where"
+	if projectDeclaresName(dbDir, name) {
+		return ""
+	}
+	repoVar := lowerFirst(msgName) + "Repo"
+	var b strings.Builder
+	fmt.Fprintf(&b, "// %s writes the named columns of EVERY live %s the filters match, in\n", name, msgName)
+	b.WriteString("// one statement, and returns how many rows it changed: the set-based\n")
+	fmt.Fprintf(&b, "// write that List%s followed by Update%sMasked per row should be.\n", msgName, msgName)
+	b.WriteString("// values holds the column values and fields names which are written\n")
+	b.WriteString("// (updated_at is stamped); filters are List's orm.QueryOptions, at least\n")
+	b.WriteString("// one. See crud.Repo.UpdateWhere.\n")
+	fmt.Fprintf(&b, "func %s(ctx context.Context, db orm.Context, values *%s, fields []string, filters ...orm.QueryOption) (int64, error) {\n", name, msgName)
+	fmt.Fprintf(&b, "\treturn %s.UpdateWhere(ctx, db, values, fields, filters...)\n}\n", repoVar)
+	return b.String()
 }
 
 func renderORMEntity(pkgName string, ent config.PlanEntity, hasExtra bool) []byte {

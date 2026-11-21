@@ -76,11 +76,42 @@ interfaces stay hand-declared, consumer-side, in `deps.go` (the existing
 3. Forensics on failure or slowness, redaction decided at codegen time: on an
    error or slow call, the span gets ONE `forge.forensics` event carrying the
    call's arguments as the generator classified them, rate-limited per op per
-   process. Deny by default: numbers, bools, durations, times, enums and
-   ID-shaped strings (parameter or field named `*ID`/`*Id`/`*IDs`/`*_id`) are
-   recorded; other strings record only their length; proto messages are
-   walked with protoreflect, honouring `debug_redact`, under the same field
-   rules; other Go structs record their type only. `// forge:no-capture <param>`
+   process. Deny by default: numbers, bools, enums and ID-shaped strings
+   (parameter or field named `id`/`ids`/`uuid`/`*ID`/`*Id`/`*IDs`/`*_id`/
+   `*_uuid`/`*Uuid`/`*UUID`; one rule on both sides, so the browser and the
+   server agree on every spelling) are
+   recorded by value — except under a secret name, where a string, bytes or
+   number of any kind records only `"[len=N]"` (a number's digit count),
+   ID-shaped or not. A name is secret when, lowercased with `_` and `-`
+   removed, it contains `token`, `secret`, `passw`, `credential`, `session`,
+   `cookie`, `apikey`, `privatekey`, `signingkey` or `otp`; or when one of its
+   words (split on `_`, `-`, camelCase and letter/digit boundaries), or two
+   adjacent words joined, is `pin`, `otp`, `cvv`, `cvc`, `ssn`, `tan`,
+   `passcode`, `securitycode`, `mfa` or `totp`, plural or not. So `pin`,
+   `userPIN`, `cvv2`, `security_code` and `session_id` are secret, and
+   `spinner`, `pinned`, `shipping` and `tank` are not. A secret-named bool or
+   enum keeps its value (`mfa_enabled`, `session_state`): it is one of a few
+   values the schema itself lists, so it cannot carry anything a person
+   typed, and it is usually the state a failure needs explained. A NUMBER
+   whose first or last word is `max`, `min`, `limit`, `count`, `total`,
+   `size`, `len` or `length`, or whose FIRST word is `num`, is a quantity,
+   not a secret, and keeps its value under a secret name (`max_tokens`,
+   `token_limit`, `session_count`, `num_sessions`). `num` counts only as the
+   first word: last, it reads as "number", so `pin_num`, `ssn_num` and
+   `otpNum` are the secret itself and record their digit count, as does
+   `otp_counter_id` (last word `id`). An ID-shaped secret name is never a
+   quantity, whatever leads it: `max_session_id` and `num_otp_id` record
+   their digit count. A string named like a quantity still records its
+   length.
+   Server (`pkg/observe/forensic_names.go`) and browser
+   (`web-runtime/src/rpc-forensics.ts`) are held to one table,
+   `pkg/observe/testdata/forensic_secret_names.json`. Times and durations (Go and proto well-known types)
+   are user content and record only their type; proto messages are walked
+   with protoreflect under the same field rules, and a `debug_redact` field
+   is omitted entirely. Encoding of a value that is not recorded:
+   `"[len=N]"` for strings and bytes, `"[count=N]"` for slices and maps,
+   `"[message]"` below the depth limit, `"[type=<Name>]"` for anything else
+   (times, durations, unclassified structs). `// forge:no-capture <param>`
    on a method excludes a parameter; forge.yaml
    `observability.forensics: false` turns the whole feature off. The capture
    closure is built lazily, so a successful fast call pays nothing.

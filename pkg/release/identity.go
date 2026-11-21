@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Managed identity: the part of an env's declaration (forge.ManagedIdentity)
@@ -108,6 +110,10 @@ const (
 	// IdentityManagedSecretPrefix starts the name of every managed secret a
 	// HOSTED consumer reads an identity output from.
 	IdentityManagedSecretPrefix = "RELIANT_IDENTITY_"
+	// DefaultIdentityName is ManagedIdentity.name when a declaration names
+	// none: the instance every env had before an env could declare several,
+	// whose slug and Secrets never carry a name ([IdentitySlugFor]).
+	DefaultIdentityName = "identity"
 )
 
 // IdentityOutputs is the closed set of outputs a consumer's config can be
@@ -205,6 +211,32 @@ type ShapeIdentity struct {
 	// DevMail is the mailpit HostInfra a host-run instance's mail goes to.
 	// Host runtime only.
 	DevMail string `json:"dev_mail,omitempty"`
+
+	// CodeLifetime is how long a password-set code stays redeemable (a reset
+	// link's, and the one invite/reset --return-code hands back), as a Go
+	// duration ("24h0m0s"). Empty is the provider's default,
+	// [DefaultIdentityCodeLifetime]. Read it through
+	// [ShapeIdentity.PasswordCodeLifetime].
+	CodeLifetime string `json:"code_lifetime,omitempty"`
+}
+
+const (
+	// DefaultIdentityCodeLifetime is the lifetime of a password-set code on
+	// an instance that declares none: Zitadel's default.
+	DefaultIdentityCodeLifetime = time.Hour
+	// MinIdentityCodeLifetime and MaxIdentityCodeLifetime bound a declared
+	// one: the code works like a password.
+	MinIdentityCodeLifetime = 5 * time.Minute
+	MaxIdentityCodeLifetime = 7 * 24 * time.Hour
+)
+
+// PasswordCodeLifetime is the declared password-set code lifetime, else
+// [DefaultIdentityCodeLifetime].
+func (i ShapeIdentity) PasswordCodeLifetime() time.Duration {
+	if d, err := time.ParseDuration(i.CodeLifetime); err == nil && d > 0 {
+		return d
+	}
+	return DefaultIdentityCodeLifetime
 }
 
 // ShapeIdentitySignup is who may create an account from the sign-in screen.
@@ -398,6 +430,109 @@ func IsIdentityKind(kind string) bool {
 		return true
 	}
 	return false
+}
+
+// identityListNameRE is the name rule of an entry of Shape.Identities (KCL
+// Bundle.identities): the name is part of the instance's issuer slug
+// ([IdentitySlugFor]) and of its delivered Secrets' names.
+var identityListNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
+
+// identityManagedToken is the part of an identity's name its hosted managed
+// secrets carry, RELIANT_IDENTITY_<token>_<output>: the name upper-cased,
+// each run of other characters one "_" (KCL render.k _idn_tok). Distinct
+// names can share one ("a-b" and "a--b" are both A_B), so validateIdentities
+// refuses two that do.
+func identityManagedToken(name string) string {
+	return identityTokenRunRE.ReplaceAllString(strings.ToUpper(name), "_")
+}
+
+var identityTokenRunRE = regexp.MustCompile(`[^A-Z0-9]+`)
+
+// AllIdentities is every managed identity the shape declares, keyed by
+// ShapeIdentity.Name: Shape.Identities when the env declares several, else
+// Shape.Identity alone, else none. Every reader of a shape's identities reads
+// them through this, so it never cares which key carried them.
+func (s Shape) AllIdentities() []ShapeIdentity {
+	if len(s.Identities) > 0 {
+		return s.Identities
+	}
+	if s.Identity != nil {
+		return []ShapeIdentity{*s.Identity}
+	}
+	return nil
+}
+
+// IdentityNamed is the shape's identity of that name, and whether it has one.
+func (s Shape) IdentityNamed(name string) (ShapeIdentity, bool) {
+	for _, i := range s.AllIdentities() {
+		if i.Name == name {
+			return i, true
+		}
+	}
+	return ShapeIdentity{}, false
+}
+
+// validateIdentities re-checks the shape's identities: each one's own
+// declaration, their names, and that no Secret is delivered for two of them.
+func (s Shape) validateIdentities() error {
+	if s.Identity != nil && len(s.Identities) > 0 {
+		// Both keys say the same thing only when Identity is the Identities
+		// entry of its name (a writer serving a reader of each key). Anything
+		// else would converge differently depending on which key was read.
+		same, ok := s.IdentityNamed(s.Identity.Name)
+		if !ok || !reflect.DeepEqual(same.canonical(), s.Identity.canonical()) {
+			return fmt.Errorf("%w: shape sets identity %q and identities, and identities has no identical entry of that name: one key or the other", ErrInvalid, s.Identity.Name)
+		}
+	}
+	ids := s.AllIdentities()
+	if len(ids) == 0 {
+		for _, c := range s.ControlPlaneSecrets {
+			if IsIdentityKind(c.Kind) {
+				return fmt.Errorf("%w: shape control-plane secret %s has the identity kind %q, and the shape declares no identity", ErrInvalid, c.Key(), c.Kind)
+			}
+		}
+		return nil
+	}
+	names := map[string]bool{}
+	tokens := map[string]string{}
+	deliveredBy := map[string]string{}
+	for _, i := range ids {
+		if len(s.Identities) > 0 && !identityListNameRE.MatchString(i.Name) {
+			return fmt.Errorf("%w: shape identities name %q must match %s", ErrInvalid, i.Name, identityListNameRE)
+		}
+		if names[i.Name] {
+			return fmt.Errorf("%w: shape declares identity %q twice: the name is the instance's key", ErrInvalid, i.Name)
+		}
+		names[i.Name] = true
+		tok := identityManagedToken(i.Name)
+		if other, dup := tokens[tok]; dup {
+			return fmt.Errorf("%w: shape identities %q and %q both name their hosted managed secrets %s%s_*: one identity would read the other's issuer and keys; rename one", ErrInvalid, other, i.Name, IdentityManagedSecretPrefix, tok)
+		}
+		tokens[tok] = i.Name
+		if err := i.validate(s.ControlPlaneSecrets); err != nil {
+			return err
+		}
+		for _, d := range i.Deliveries {
+			if other, dup := deliveredBy[d.key()]; dup {
+				return fmt.Errorf("%w: shape identities %q and %q both deliver %s: one Secret has one identity", ErrInvalid, other, i.Name, d.key())
+			}
+			deliveredBy[d.key()] = i.Name
+		}
+	}
+	return nil
+}
+
+// canonicalIdentities is each identity canonical, sorted by name.
+func canonicalIdentities(in []ShapeIdentity) []ShapeIdentity {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ShapeIdentity, len(in))
+	for n, i := range in {
+		out[n] = i.canonical()
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
 }
 
 // canonical returns the identity with every list sorted and every empty list
@@ -859,6 +994,19 @@ func (i ShapeIdentity) validateSignIn(roles map[string]ShapeIdentityRole, bad fu
 		}
 	}
 
+	// The password-set code lifetime.
+	if i.CodeLifetime != "" {
+		d, err := time.ParseDuration(i.CodeLifetime)
+		switch {
+		case err != nil:
+			return bad("code_lifetime %q is not a duration", i.CodeLifetime)
+		case d < MinIdentityCodeLifetime || d > MaxIdentityCodeLifetime:
+			return bad("code_lifetime %s is outside %s..%s", d, MinIdentityCodeLifetime, MaxIdentityCodeLifetime)
+		case i.ShareWith != "":
+			return bad("share_with reuses %q's instance, so code_lifetime belongs to the owner", i.ShareWith)
+		}
+	}
+
 	// V14: a sharer's sign-in belongs to the owner.
 	if i.ShareWith != "" && (len(i.Owners) > 0 || i.OwnerRole != "" || i.Signup != nil || i.Methods != nil || i.PasskeyRPID != "" || len(i.Social) > 0 || i.Email != nil) {
 		return bad("share_with reuses %q's instance, so owners, signup, methods, passkey_rp_id, social and email belong to the owner and must be at their defaults here", i.ShareWith)
@@ -914,13 +1062,45 @@ func IdentitySlug(envID, project, env string, hashChars int) string {
 	return slugLabel(project) + "-" + slugLabel(env) + "-" + hex.EncodeToString(sum[:])[:hashChars]
 }
 
+// IdentitySlugFor is [IdentitySlug] for a NAMED instance of an env that
+// declares several (Shape.Identities): <project>-<env>-<name>-<hash>. The
+// name [DefaultIdentityName] returns IdentitySlug's value, so the instance
+// every env had before names existed keeps its slug, and with it its issuer.
+//
+// The hash is the same function of envID, so two instances of one env differ
+// by name, and the control plane's unique index still decides uniqueness. To
+// stay a DNS label with the name inside it, the project and env labels share
+// what the name and the longest hash ([IdentitySlugMaxHash]) leave of 63
+// characters: at least 12 each, for a name of at most 24 (the KCL rule for
+// Bundle.identities). The budget does not depend on hashChars, so a retry
+// with a longer hash only extends the slug, as IdentitySlug's does.
+func IdentitySlugFor(envID, project, env, name string, hashChars int) string {
+	if name == DefaultIdentityName || name == "" {
+		return IdentitySlug(envID, project, env, hashChars)
+	}
+	hashChars = max(IdentitySlugMinHash, min(hashChars, IdentitySlugMaxHash))
+	sum := sha256.Sum256([]byte(envID))
+	n := slugLabel(name)
+	// <project>-<env>-<name>-<hash>: three separators.
+	budget := min(identitySlugLabelMax, (identitySlugMax-3-len(n)-IdentitySlugMaxHash)/2)
+	return slugLabelMax(project, budget) + "-" + slugLabelMax(env, budget) + "-" + n + "-" + hex.EncodeToString(sum[:])[:hashChars]
+}
+
 func slugLabel(s string) string {
+	return slugLabelMax(s, identitySlugLabelMax)
+}
+
+// slugLabelMax is slugLabel cut to at most limit characters.
+func slugLabelMax(s string, limit int) string {
 	s = strings.Trim(slugLabelRunRE.ReplaceAllString(strings.ToLower(s), "-"), "-")
 	if s == "" {
 		return "x"
 	}
-	if len(s) > identitySlugLabelMax {
-		s = strings.Trim(s[:identitySlugLabelMax], "-")
+	if len(s) > limit {
+		s = strings.Trim(s[:limit], "-")
+	}
+	if s == "" {
+		return "x"
 	}
 	return s
 }

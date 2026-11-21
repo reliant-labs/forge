@@ -79,6 +79,9 @@ type SQLPanel struct {
 //	services   the services in scope; [] = all
 //	<toggle>   each Scope.Toggles entry, as a Bool ("true" / "false") named by
 //	           the toggle's id (dashspec.FilterToggle)
+//	<filter>   each Scope.FilterParams entry, as a String named by the
+//	           filter param's id (dashspec.FilterParam); '' for one the
+//	           statement reads that the scope does not set
 //	reliant_env_id
 //	           the one environment in scope (EnvIDParam); absent otherwise,
 //	           and a statement that uses it is refused
@@ -123,6 +126,9 @@ func (q SQLPanel) Compile() (Stmt, error) {
 		}
 		params[name] = strconv.FormatBool(on)
 	}
+	if err := bindFilterParams(params, q.Scope.FilterParams, q.SQL); err != nil {
+		return Stmt{}, err
+	}
 	switch {
 	case q.Scope.EnvRestricted && len(q.Scope.EnvIDs) == 1:
 		// A String parameter is parsed in ClickHouse's escaped text format.
@@ -133,63 +139,58 @@ func (q SQLPanel) Compile() (Stmt, error) {
 	return Stmt{SQL: q.SQL, Params: params}, nil
 }
 
-var toggleName = regexp.MustCompile(dashspec.ToggleIDPattern)
+var (
+	toggleName      = regexp.MustCompile(dashspec.ToggleIDPattern)
+	filterParamName = regexp.MustCompile(dashspec.FilterParamIDPattern)
+)
+
+// bindFilterParams adds the dashboard's filter params (dashspec.FilterParam)
+// to params: each value in set as a String parameter named by its id, checked
+// by dashspec.CheckFilterParamValue and escaped for ClickHouse's text format,
+// never spliced into the statement. Every filter param sql uses that set does
+// not name is bound to the empty string (no filter), so a caller that knows nothing of
+// filter params (an older console, `forge obs query`) still runs a statement
+// that reads them, unfiltered. A filter param must be read as a String.
+func bindFilterParams(params, set map[string]string, sql string) error {
+	for name, v := range set {
+		if !filterParamName.MatchString(name) {
+			return invalid("filter %q: a filter param's name is its sql parameter name and must match %s", name, dashspec.FilterParamIDPattern)
+		}
+		if _, taken := params[name]; taken {
+			return invalid("filter %q shadows a toggle or a built-in sql parameter", name)
+		}
+		if err := dashspec.CheckFilterParamValue(v); err != nil {
+			return invalid("filter %q: %v", name, err)
+		}
+	}
+	for _, u := range dashspec.UsedSQLParams(sql) {
+		if _, taken := params[u.Name]; taken || !filterParamName.MatchString(u.Name) {
+			// Not a filter param, or a toggle whose id looks like one
+			// (toggles predate filter params; refused above when set names
+			// it too).
+			continue
+		}
+		if u.Type != "String" {
+			return invalid("the statement reads the filter param {%s:%s}; a filter param is a String: {%s:String}", u.Name, u.Type, u.Name)
+		}
+		params[u.Name] = ""
+	}
+	for name, v := range set {
+		params[name] = sqlStringEscaper.Replace(v)
+	}
+	return nil
+}
 
 // usesParam reports whether sql uses the ClickHouse parameter name ({name:Type},
 // spaces allowed inside the braces). One in a comment, a string literal or a
-// quoted identifier is not a use: ClickHouse never binds it. The statement has
-// already passed the guard, so every comment and quote is terminated.
+// quoted identifier is not a use: ClickHouse never binds it.
 func usesParam(sql, name string) bool {
-	n := len(sql)
-	for i := 0; i < n; {
-		c := sql[i]
-		switch {
-		case c == '-' && i+1 < n && sql[i+1] == '-', c == '#':
-			for i < n && sql[i] != '\n' {
-				i++
-			}
-		case c == '/' && i+1 < n && sql[i+1] == '*':
-			end := strings.Index(sql[i+2:], "*/")
-			if end < 0 {
-				return false
-			}
-			i += 2 + end + 2
-		case c == '\'' || c == '"' || c == '`':
-			i = skipQuoted(sql, i)
-		case c == '{':
-			end := strings.IndexByte(sql[i:], '}')
-			if end < 0 {
-				return false
-			}
-			if key, _, ok := strings.Cut(sql[i+1:i+end], ":"); ok && strings.TrimSpace(key) == name {
-				return true
-			}
-			i++
-		default:
-			i++
+	for _, u := range dashspec.UsedSQLParams(sql) {
+		if u.Name == name {
+			return true
 		}
 	}
 	return false
-}
-
-// skipQuoted is the index after the quoted run starting at s[i] (the end of s
-// when it is unterminated). A quote is closed by its own character; backslash
-// escapes and doubled quotes both work, as in the alert-rule guard.
-func skipQuoted(s string, i int) int {
-	q := s[i]
-	for j := i + 1; j < len(s); j++ {
-		switch s[j] {
-		case '\\':
-			j++
-		case q:
-			if j+1 < len(s) && s[j+1] == q {
-				j++
-				continue
-			}
-			return j + 1
-		}
-	}
-	return len(s)
 }
 
 // unixNanoText renders a Unix-nanosecond time as "<seconds>.<9 digits>".

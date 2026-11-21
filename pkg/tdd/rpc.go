@@ -27,6 +27,8 @@ import (
 // WantScaffoldStub — such a row self-destructs (goes red) the moment the
 // handler is implemented, forcing it to be rewritten with a real Check /
 // WantErr assertion.
+//
+// connect-go v2 projects use [CaseV2].
 type Case[Req, Resp any] struct {
 	// Name identifies the row; passed straight to t.Run.
 	Name string
@@ -81,6 +83,8 @@ type HandlerFunc[Req, Resp any] func(context.Context, *connect.Request[Req]) (*c
 // touches shared state stays correct. Wrap the call site in a parallel
 // outer test if you want concurrency; per-row parallelism is the caller's
 // choice and not the library's default.
+//
+// connect-go v2 projects use [TableRPCV2].
 func TableRPC[Req, Resp any](
 	t *testing.T,
 	cases []Case[Req, Resp],
@@ -181,7 +185,8 @@ func AssertScaffoldStub(t *testing.T, err error) {
 // handler may return a bare svcerr kind (`return nil, svcerr.NotFound("x")`)
 // because the interceptor wraps it. connect.CodeOf read that as Unknown,
 // which made the documented handler shape untestable without a client. For
-// a *connect.Error the two agree.
+// a *connect.Error the two agree — of either connect major, since svcerr.Code
+// reads both. connect-go v2 projects use [AssertConnectErrorV2].
 func AssertConnectError(t *testing.T, err error, want connect.Code) {
 	t.Helper()
 	if err == nil {

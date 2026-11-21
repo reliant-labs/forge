@@ -27,6 +27,9 @@ var goflagsExempt = map[string]string{
 	"internal/cli/lint/contract_inprocess_test.go:TestAnalysisEnvKeepsTrimpath":            "inputs to analysisEnv, asserting it merges -trimpath; never handed to go",
 	"internal/kclprojects/gomod.go:downloadEnv":                                            "the env of `go mod download`, which fetches a module and builds nothing",
 	"internal/kclprojects/kclprojects_test.go:TestDownloadEnvLeavesTheModuleOut":           "inputs to downloadEnv, asserting it drops -mod; never handed to go",
+	// The dev loop's own binaries keep their paths (WithTrimpath: "not for everything").
+	"internal/hostlaunch/hostlaunch.go:WithPGO":   "the env of a go run / air binary a developer runs and debugs, which keeps absolute paths on purpose",
+	"internal/hostlaunch/pgo_test.go:TestWithPGO": "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
 }
 
 // TestGOFLAGSOverridesKeepTrimpath pins that a child environment which SETS

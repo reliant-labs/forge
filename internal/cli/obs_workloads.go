@@ -61,13 +61,6 @@ type obsWorkloadsOpts struct {
 	jobs string
 }
 
-// workloadReader is what this verb needs of a backend. Only the control plane
-// serves it: a local stack's workloads are host processes or a cluster the
-// user already has kubectl for.
-type workloadReader interface {
-	Workloads(ctx context.Context, n obsbackend.Narrow) (obsbackend.WorkloadsResult, error)
-}
-
 func newObsWorkloadsCmd() *cobra.Command {
 	var o obsWorkloadsOpts
 	cmd := &cobra.Command{
@@ -132,7 +125,7 @@ func runObsWorkloads(ctx context.Context, d obsDeps, env string, o obsWorkloadsO
 	if err != nil {
 		return fail(err)
 	}
-	wr, ok := b.(workloadReader)
+	wr, ok := b.(obsbackend.WorkloadReader)
 	if !ok {
 		return fail(obsbackend.Undetermined("the %s backend has no workload state; for a local stack use `%s env status %s`", b.Info().Backend, Name(), env))
 	}

@@ -394,7 +394,7 @@ func (c *Client) Register(ctx context.Context, reg Registration) (string, error)
 	}
 
 	profile := profileFor(reg, email)
-	body, err := c.postJSON(ctx, "/v2/users/human", map[string]any{
+	req := map[string]any{
 		"username": email,
 		"profile":  profile,
 		"email": map[string]any{
@@ -405,7 +405,13 @@ func (c *Client) Register(ctx context.Context, reg Registration) (string, error)
 			"password":       reg.Password,
 			"changeRequired": false,
 		},
-	})
+	}
+	if !reg.EmailVerified {
+		// The legacy sign-up: an address nobody proves, so a contact field.
+		// No later proof claims the account (MetaContactOnly).
+		req["metadata"] = []any{metadataEntry(MetaContactOnly, "1")}
+	}
+	body, err := c.postJSON(ctx, "/v2/users/human", req)
 	if err != nil {
 		// A rejected password comes back as a *PasswordPolicyError the
 		// caller can branch on, rather than as a paraphrase to parse.

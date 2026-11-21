@@ -209,6 +209,14 @@ type unscopedRPC struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
+// unimplementedRPC is one authenticated RPC whose handler only answers
+// CodeUnimplemented, so it has no data to scope.
+type unimplementedRPC struct {
+	Service string `json:"service"`
+	Method  string `json:"method"`
+	File    string `json:"file"`
+}
+
 // acknowledgedRPC is one authenticated RPC the author has explicitly
 // declared global, with the reason they gave.
 type acknowledgedRPC struct {
@@ -216,6 +224,19 @@ type acknowledgedRPC struct {
 	Method  string `json:"method"`
 	File    string `json:"file"`
 	Reason  string `json:"reason"`
+}
+
+// malformedAck is a `forge:auth-unscoped-ok` the audit read and did NOT
+// accept: no reason, an empty one, or a lookalike separator where the colon
+// goes. Such a marker acknowledges nothing, so the RPC stays where it was
+// classified; this says why the author's acknowledgement did not count.
+type malformedAck struct {
+	Service  string `json:"service"`
+	Method   string `json:"method"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Written  string `json:"written"`
+	Expected string `json:"expected"`
 }
 
 // auditUnscopedAuth reports authenticated RPCs whose handlers never
@@ -235,7 +256,13 @@ type acknowledgedRPC struct {
 // anything a reader has to follow.
 //
 //nolint:funlen // One pass over the AST collecting one finding shape. The
-func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.Category {
+func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) (cat audittype.Category) {
+	// A malformed acknowledgement is reported whichever branch returns:
+	// it is a defect in its own right (a marker that does nothing), and
+	// the branch that classified its RPC says nothing about the marker.
+	var malformed []malformedAck
+	defer func() { cat = withMalformedAcks(cat, malformed) }()
+
 	services, err := codegen.ParseServicesFromProtos("", projectDir)
 	if err != nil {
 		return audittype.Category{
@@ -264,8 +291,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	var (
 		unscoped     []unscopedRPC
 		acknowledged []acknowledgedRPC
-		authTotal    int
-		scopedTotal  int
+		// unimplemented lists the handlers that only answer
+		// CodeUnimplemented: counted, never a finding (see
+		// audit_unscoped_auth_unimplemented.go).
+		unimplemented []unimplementedRPC
+		authTotal     int
+		scopedTotal   int
 		// The two raw-SQL states. Kept apart from `unscoped` because
 		// they are a different finding with a different remedy: these
 		// RPCs DID resolve the caller, and what is missing is the
@@ -290,10 +321,20 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	ownerTables := ownerScopedTables(cfg, projectDir)
 
 	// The CALLER half's vocabulary: forge's own seam, plus whatever the
-	// project declared resolves the caller (//forge:resolves-caller). Read
-	// once — the declarations are module-wide, not per service.
-	resolvers, ignoredMarkers := codegen.DeclaredCallerResolvers(projectDir)
+	// project declared resolves the caller (//forge:resolves-caller in
+	// code, lint.auth.caller_resolvers in forge.yaml). Read once — the
+	// declarations are module-wide, not per service. mod follows a
+	// handler's calls into the module's other packages (see
+	// audit_unscoped_auth_module.go).
+	mod := newModuleReach(projectDir)
+	declaredResolvers, ignoredMarkers := codegen.DeclaredCallerResolvers(projectDir)
+	configuredResolvers, invalidConfig := configuredCallerResolvers(cfg, mod)
+	resolvers := mergeCallerResolvers(declaredResolvers, configuredResolvers)
 	callers := newCallerSeam(resolvers)
+	callers.mod = mod
+	if mod != nil {
+		mod.seam = callers
+	}
 
 	for _, svc := range services {
 		// Only RPCs the proto declares authenticated are in scope. A
@@ -324,7 +365,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 			continue
 		}
 
-		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)))
+		handlers, herr := scanHandlerAuthUse(dir.Dir, callers.forPackage(handlerImportPath(projectDir, dir.Dir)), svc)
 		if herr != nil {
 			unresolvedSvcs = append(unresolvedSvcs, svc.Name)
 			continue
@@ -344,10 +385,20 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 			}
 			authTotal++
 			rel := relPath(projectDir, h.File)
+			if h.AckMalformed != "" {
+				malformed = append(malformed, malformedAck{
+					Service: svc.Name, Method: name, File: rel, Line: h.AckLine,
+					Written: h.AckMalformed, Expected: "// " + AuthUnscopedOKDirective + " <reason>",
+				})
+			}
 			switch {
 			case h.AckReason != "":
 				acknowledged = append(acknowledged, acknowledgedRPC{
 					Service: svc.Name, Method: name, File: rel, Reason: h.AckReason,
+				})
+			case h.Unimplemented:
+				unimplemented = append(unimplemented, unimplementedRPC{
+					Service: svc.Name, Method: name, File: rel,
 				})
 			case h.ReadsCaller:
 				// Resolving the caller is the WHOLE answer only when
@@ -380,6 +431,12 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 
 	sortUnscoped(unscoped)
 	sortAcknowledged(acknowledged)
+	sort.Slice(unimplemented, func(i, j int) bool {
+		if unimplemented[i].Service != unimplemented[j].Service {
+			return unimplemented[i].Service < unimplemented[j].Service
+		}
+		return unimplemented[i].Method < unimplemented[j].Method
+	})
 	sortRawSQL(rawSQLUnscoped)
 	sortRawSQL(rawSQLUnverifiable)
 
@@ -417,6 +474,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		"owner_scoped_tables":        sortedKeys(ownerTables),
 		"owner_marker":               schemadef.ColumnMarkerOwner,
 		"acknowledged_rpcs":          acknowledged,
+		"unimplemented_rpcs":         unimplemented,
 		"raw_sql_unscoped_rpcs":      rawSQLUnscoped,
 		"raw_sql_unverifiable_rpcs":  rawSQLUnverifiable,
 		"auth_seam":                  seam,
@@ -430,6 +488,9 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 	}
 	if len(ignoredMarkers) > 0 {
 		details["caller_resolver_markers_ignored"] = ignoredMarkers
+	}
+	if len(invalidConfig) > 0 {
+		details["caller_resolvers_config_invalid"] = invalidConfig
 	}
 
 	// FAIL LOUDLY ON AN EMPTY DERIVATION. The project declares
@@ -497,7 +558,20 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 				Details: details,
 			}
 		}
+		// An acknowledged RPC never resolves the caller: it is declared
+		// global with the marker, and is counted apart so the summary does
+		// not claim it does.
 		summary := fmt.Sprintf("all %d authenticated RPC(s) resolve the caller", authTotal)
+		implemented, noun := authTotal, "authenticated"
+		if len(unimplemented) > 0 {
+			implemented, noun = authTotal-len(unimplemented), "implemented authenticated"
+			summary = fmt.Sprintf("all %d %s RPC(s) resolve the caller", implemented, noun)
+		}
+		if len(acknowledged) > 0 {
+			summary = fmt.Sprintf("%d of %d %s RPC(s) resolve the caller; the other %d are acknowledged global with `// %s`",
+				scopedTotal, implemented, noun, len(acknowledged), AuthUnscopedOKDirective)
+		}
+		summary += unimplementedNote(len(unimplemented))
 		if authTotal == 0 {
 			summary = "no authenticated RPCs with handlers to inspect (n/a)"
 		}
@@ -532,7 +606,7 @@ func auditUnscopedAuth(cfg *config.ProjectConfig, projectDir string) audittype.C
 		// summary that says "rows" would read as a CRUD-only finding.
 		Summary: fmt.Sprintf(
 			"%d of %d authenticated RPC(s) never resolve the caller — every signed-in caller is treated identically (%s)",
-			len(unscoped), authTotal, seam),
+			len(unscoped), authTotal-len(unimplemented), seam) + unimplementedNote(len(unimplemented)),
 		Details: details,
 	}
 }
@@ -777,6 +851,13 @@ type handlerAuthUse struct {
 	ReadsCaller bool
 	Delegating  bool
 	AckReason   string
+	// Unimplemented is true when the body only answers CodeUnimplemented
+	// (bodyServesUnimplemented): there is nothing behind it to scope.
+	Unimplemented bool
+	// AckMalformed is a `forge:auth-unscoped-ok` comment on the handler
+	// that ackReason did not accept, as written; AckLine is its line.
+	AckMalformed string
+	AckLine      int
 	// SQL and HasSQL describe the hand-written queries this handler can
 	// reach. They are carried separately from ReadsCaller because they
 	// answer a different question: ReadsCaller says the caller was
@@ -799,18 +880,22 @@ type handlerAuthUse struct {
 // that set. The second pass stays a single lookup because the first has
 // already done the transitive work.
 //
-// The analysis is deliberately PACKAGE-LOCAL. It reads the same file
-// set — one handler package, no imports followed — so a helper that
-// lives in another package still reports as unscoped. That is the safe
-// direction: this pass resolves names, not types, and following a name
-// across a package boundary without a type checker would start clearing
-// handlers on coincidence.
+// The NAME analysis is package-local: a bare or receiver call
+// (`scope(ctx)`, `s.caller(ctx)`) is resolved only against this package's
+// declarations, because this pass resolves names, not types, and following
+// a bare name across a package boundary would clear handlers on
+// coincidence.
 //
-// The one crossing is a DECLARATION, not an inference: a function the
-// project marked `//forge:resolves-caller` (reliant's auth accessors) is
-// matched through the import that binds its package in each file, so
-// `auth.GetUserIDFromContext` counts only where `auth` IS that package.
-func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handlerAuthUse, error) {
+// Two crossings are exact rather than inferred. A function the project
+// declared a resolver (`//forge:resolves-caller`, or forge.yaml
+// lint.auth.caller_resolvers) is matched through the import that binds its
+// package in each file, so `auth.GetUserIDFromContext` counts only where
+// `auth` IS that package. And an import-qualified call into another
+// package of the same module (`auth.MustGetUserID(ctx)`) is followed into
+// that package, up to maxWrapperHops packages deep — a package-level
+// function is unique in its package, so the import names it exactly (see
+// audit_unscoped_auth_module.go).
+func scanHandlerAuthUse(dir string, callers packageCallerSeam, svc codegen.ServiceDef) (map[string]handlerAuthUse, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -842,6 +927,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 	// how a declared resolver's package identifier is bound.
 	var decls []*ast.FuncDecl
 	fileSeams := map[*ast.FuncDecl]fileCallerSeam{}
+	fileOf := map[*ast.FuncDecl]*ast.File{}
 	for _, pf := range files {
 		fs := callers.forFile(pf.file)
 		for _, decl := range pf.file.Decls {
@@ -851,10 +937,17 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 			}
 			decls = append(decls, fn)
 			fileSeams[fn] = fs
+			fileOf[fn] = pf.file
 		}
 	}
+	// reachesDirectly: the body names the seam or a declared resolver, or
+	// calls a function in another package of the module that reaches one.
+	reachesDirectly := func(fn *ast.FuncDecl) bool {
+		return bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
+			callers.mod.callsReachingImport(fn, fileOf[fn], maxWrapperHops)
+	}
 	seamReaching := seamReachingNames(decls, func(fn *ast.FuncDecl) bool {
-		return callers.declaresLocal(fn) || bodyReachesAuthSeam(fn.Body, fileSeams[fn])
+		return callers.declaresLocal(fn) || reachesDirectly(fn)
 	})
 
 	// The SQL half, computed over the SAME declaration set and the same
@@ -865,9 +958,12 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 		astFiles = append(astFiles, pf.file)
 	}
 	sqlByName := reachableSQL(decls, sqlLiteralsByDecl(decls, packageSQLConsts(astFiles)))
+	embeddedReceivers := embeddedUnimplementedReceivers(astFiles, svc)
 
 	out := map[string]handlerAuthUse{}
+	rank := map[string]int{}
 	for _, pf := range files {
+		imports := importIdents(pf.file)
 		for _, decl := range pf.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil || fn.Recv == nil || len(fn.Recv.List) == 0 {
@@ -881,14 +977,45 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 				Delegating: bodyIsCRUDDelegation(fn.Body),
 				AckReason:  ackReason(fn.Doc),
 			}
-			use.ReadsCaller = bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
+			use.Unimplemented = bodyServesUnimplemented(fn, imports, embeddedReceivers, svc.Name)
+			if use.AckReason == "" {
+				if c := malformedAckComment(fn.Doc); c != nil {
+					use.AckMalformed = strings.TrimSpace(c.Text)
+					use.AckLine = fset.Position(c.Pos()).Line
+				}
+			}
+			use.ReadsCaller = reachesDirectly(fn) ||
 				bodyCallsSeamReachingHelper(fn.Body, seamReaching, fn.Name.Name)
 			use.SQL = sqlByName[fn.Name.Name]
 			use.HasSQL = len(use.SQL) > 0
-			out[fn.Name.Name] = use
+			// Two exported methods can share an rpc's name — the handler
+			// and a generated mock of a dependency (mock_gen.go's
+			// MockRepository.GetChat). The handler is the one to judge,
+			// so the scaffolded receiver wins, then hand-written code.
+			if r := handlerRank(pf.path, fn); r >= rank[fn.Name.Name] {
+				rank[fn.Name.Name] = r
+				out[fn.Name.Name] = use
+			}
 		}
 	}
 	return out, nil
+}
+
+// handlerRank orders the exported methods sharing one name by how likely
+// each is to be the rpc's handler: a method on the scaffolded `Service`
+// type, then one in a hand-written file, then one in a generated file.
+func handlerRank(path string, fn *ast.FuncDecl) int {
+	recv := fn.Recv.List[0].Type
+	if star, ok := recv.(*ast.StarExpr); ok {
+		recv = star.X
+	}
+	if id, ok := recv.(*ast.Ident); ok && id.Name == "Service" {
+		return 2
+	}
+	if !strings.HasSuffix(path, "_gen.go") {
+		return 1
+	}
+	return 0
 }
 
 // seamReachingNames returns the names in one handler package that
@@ -1004,6 +1131,73 @@ func ackReason(doc *ast.CommentGroup) string {
 	return ""
 }
 
+// malformedAckComment returns the first comment in doc that starts the
+// `forge:auth-unscoped-ok` marker — `//` or `// `, then the name and nothing
+// that continues it — but is not an acknowledgement ackReason accepts:
+// `// forge:auth-unscoped-ok` alone, `// forge:auth-unscoped-ok:` with no
+// reason, or `// forge:auth-unscoped-ok — reason`. nil when there is none.
+// The caller checks ackReason first, so a doc that ALSO carries a valid
+// acknowledgement is not reported.
+//
+// A bare marker used to be silently ignored: the RPC stayed in
+// unscoped_rpcs and nothing said the line above it had been read and
+// refused (FG-32).
+func malformedAckComment(doc *ast.CommentGroup) *ast.Comment {
+	if doc == nil {
+		return nil
+	}
+	name := strings.TrimSuffix(AuthUnscopedOKDirective, ":")
+	for _, c := range doc.List {
+		text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(c.Text), "//"))
+		rest, ok := strings.CutPrefix(text, name)
+		if !ok {
+			continue
+		}
+		if rest != "" && isMarkerNameByte(rest[0]) {
+			continue // a different marker whose name starts with this one
+		}
+		if ackReason(&ast.CommentGroup{List: []*ast.Comment{c}}) == "" {
+			return c
+		}
+	}
+	return nil
+}
+
+func isMarkerNameByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '-' || b == '_'
+}
+
+// withMalformedAcks adds the malformed acknowledgements to a finished
+// category: listed under details.malformed_acknowledgements, named in the
+// summary, and an ok category becomes warn. It never raises warn to error —
+// the RPC behind a malformed marker is graded by what its handler does, as
+// if the marker were absent, which is exactly what forge did with it.
+func withMalformedAcks(cat audittype.Category, malformed []malformedAck) audittype.Category {
+	if len(malformed) == 0 {
+		return cat
+	}
+	sort.SliceStable(malformed, func(i, j int) bool {
+		if malformed[i].Service != malformed[j].Service {
+			return malformed[i].Service < malformed[j].Service
+		}
+		return malformed[i].Method < malformed[j].Method
+	})
+	if cat.Details == nil {
+		cat.Details = map[string]any{}
+	}
+	cat.Details["malformed_acknowledgements"] = malformed
+	parts := make([]string, 0, len(malformed))
+	for _, m := range malformed {
+		parts = append(parts, fmt.Sprintf("%s.%s (%s:%d)", m.Service, m.Method, m.File, m.Line))
+	}
+	cat.Summary += fmt.Sprintf("; %d %s marker(s) acknowledge nothing — no reason after the colon, so forge ignored them: %s. Write `// %s <reason>`",
+		len(malformed), strings.TrimSuffix(AuthUnscopedOKDirective, ":"), strings.Join(parts, ", "), AuthUnscopedOKDirective)
+	if cat.Status == audittype.StatusOK {
+		cat.Status = audittype.StatusWarn
+	}
+	return cat
+}
+
 // bodyReachesAuthSeam reports whether a function body names the auth seam,
 // one of the claims accessors it re-exports, or a resolver the project
 // declared. forge's own identifiers come from codegen, which is what stamps
@@ -1040,6 +1234,9 @@ func bodyReachesAuthSeam(body *ast.BlockStmt, fs fileCallerSeam) bool {
 // them.
 type callerSeam struct {
 	byPath map[string]declaredPackage
+	// mod follows import-qualified calls into the module's other
+	// packages; nil disables that (no go.mod, or a test of the local pass).
+	mod *moduleReach
 }
 
 type declaredPackage struct {

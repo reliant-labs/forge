@@ -70,25 +70,39 @@ func browserOnly(before, after BrowserStats) []ServiceHealth {
 	return Combine(nil, nil, map[string]BrowserHealth{"web": {Before: before, After: after}})
 }
 
+// demoted is the default fail_on without the named codes: what
+// forge.ReleaseHealth{warn_on = [...]} renders into the shape.
+func demoted(codes ...string) []string {
+	return slices.DeleteFunc(slices.Clone(release.DefaultReleaseHealth().FailOn), func(c string) bool { return slices.Contains(codes, c) })
+}
+
 func TestBrowserFindings(t *testing.T) {
 	steady := BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 10, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 800}
+	errorsRose := BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 200, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 800}
+	everythingRose := BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 200, Requests: 2000, FailedRequests: 200, PageLoadP95Ms: 2400}
 	for _, tc := range []struct {
 		name     string
 		after    BrowserStats
 		failOn   []string
 		verdict  Verdict
-		findings []string
+		findings []string // code/policy
 	}{
 		{"steady passes on page views alone", steady, nil, Pass, nil},
-		{"js errors per view rose: warns by default",
-			BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 200, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 800},
-			nil, Pass, []string{release.HealthBrowserErrors}},
-		{"failed requests rose", BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 10, Requests: 2000, FailedRequests: 200, PageLoadP95Ms: 800},
-			nil, Pass, []string{release.HealthBrowserFailedRequests}},
-		{"page load slowed", BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 10, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 2400},
-			nil, Pass, []string{release.HealthBrowserPageLoad}},
-		{"fail_on makes a browser finding fail", BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 200, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 800},
-			[]string{release.HealthBrowserErrors}, Fail, []string{release.HealthBrowserErrors}},
+		{"js errors per view rose: fails by default", errorsRose, nil, Fail, []string{"browser_errors/fail"}},
+		{"failed requests rose: fails by default", BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 10, Requests: 2000, FailedRequests: 200, PageLoadP95Ms: 800},
+			nil, Fail, []string{"browser_failed_requests/fail"}},
+		{"page load slowed: fails by default", BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 10, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 2400},
+			nil, Fail, []string{"browser_page_load/fail"}},
+		// warn_on = ["browser_page_load"]: that one warns, the others still fail.
+		{"a demoted finding warns, the others fail", everythingRose, demoted(release.HealthBrowserPageLoad), Fail,
+			[]string{"browser_errors/fail", "browser_failed_requests/fail", "browser_page_load/warn"}},
+		{"a demoted finding alone does not fail the release", BrowserStats{PageViews: 1000, PageLoads: 400, JSErrors: 10, Requests: 2000, FailedRequests: 2, PageLoadP95Ms: 2400},
+			demoted(release.HealthBrowserPageLoad), Pass, []string{"browser_page_load/warn"}},
+		// An explicit fail_on means what it always did: unlisted browser findings warn.
+		{"an explicit fail_on without browser codes warns", everythingRose, []string{release.HealthErrorRate, release.HealthNewIssue}, Pass,
+			[]string{"browser_errors/warn", "browser_failed_requests/warn", "browser_page_load/warn"}},
+		{"an explicit fail_on naming one fails on it alone", everythingRose, []string{release.HealthBrowserErrors}, Fail,
+			[]string{"browser_errors/fail", "browser_failed_requests/warn", "browser_page_load/warn"}},
 		{"under min_requests page views is not judged", BrowserStats{PageViews: 10, JSErrors: 10}, nil, Inconclusive, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,7 +113,7 @@ func TestBrowserFindings(t *testing.T) {
 			r := Evaluate(in)
 			var codes []string
 			for _, f := range r.Findings {
-				codes = append(codes, f.Code)
+				codes = append(codes, f.Code+"/"+f.Policy)
 			}
 			if r.Verdict != tc.verdict || !slices.Equal(codes, tc.findings) {
 				t.Errorf("verdict %s findings %v, want %s %v (%+v)", r.Verdict, codes, tc.verdict, tc.findings, r.Findings)
@@ -111,15 +125,16 @@ func TestBrowserFindings(t *testing.T) {
 	}
 }
 
-// The new codes are findings fail_on may name, and the browser findings warn
-// unless it does.
-func TestBrowserCodesAreFindingsThatWarnByDefault(t *testing.T) {
+// The browser codes are findings fail_on may name, and they fail by default
+// (owner, 2026-11-18): for a frontend alone they are the only regression a
+// release can show.
+func TestBrowserCodesAreFindingsThatFailByDefault(t *testing.T) {
 	for _, c := range []string{release.HealthBrowserErrors, release.HealthBrowserFailedRequests, release.HealthBrowserPageLoad} {
 		if !slices.Contains(release.HealthFindings, c) {
 			t.Errorf("%s is not in release.HealthFindings", c)
 		}
-		if slices.Contains(defaults(t).FailOn, c) {
-			t.Errorf("%s fails by default: a new signal must warn until an env opts in", c)
+		if !slices.Contains(defaults(t).FailOn, c) {
+			t.Errorf("%s does not fail by default", c)
 		}
 	}
 	if _, err := ParseFailOn("browser_errors,error_rate"); err != nil {

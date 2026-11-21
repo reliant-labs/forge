@@ -118,21 +118,15 @@ func kclStringListField(body, field string) []string {
 // matching `}`, skipping braces inside string literals.
 func kclBlockBody(src string, open int) (string, bool) {
 	depth := 1
-	inString := false
 	for i := open; i < len(src); i++ {
-		c := src[i]
-		switch {
-		case inString:
-			if c == '\\' {
-				i++
-			} else if c == '"' {
-				inString = false
-			}
-		case c == '"':
-			inString = true
-		case c == '{':
+		if end := kclProseEnd(src, i); end > i {
+			i = end - 1
+			continue
+		}
+		switch src[i] {
+		case '{':
 			depth++
-		case c == '}':
+		case '}':
 			depth--
 			if depth == 0 {
 				return src[open:i], true

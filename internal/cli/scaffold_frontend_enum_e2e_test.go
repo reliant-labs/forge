@@ -96,7 +96,7 @@ enum BrandStatus {
 		`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
 		// The zero value is never a choice and zod refuses it on both
 		// forms — the mirror of the born CHECK, which does not admit it.
-		`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+		`status: z.coerce.number().pipe(z.enum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
 		// The NOT NULL enum starts on its column DEFAULT, the first real
 		// member — what Create stores when the field is omitted.
 		"defaultValue={ BrandStatus.DRAFT }",
@@ -132,7 +132,7 @@ enum BrandStatus {
 	edit := readFileE2E(t, editPath)
 	for _, want := range []string{
 		`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
-		`status: z.coerce.number().pipe(z.nativeEnum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+		`status: z.coerce.number().pipe(z.enum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
 		"status: item.status,",
 		`{...register("name")}`,
 		`{...register("tagline")}`,

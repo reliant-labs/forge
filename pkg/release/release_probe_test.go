@@ -268,6 +268,31 @@ func TestLimitShapeStatesTheImplicitPolicyForAnOldReader(t *testing.T) {
 	}
 }
 
+// The default fails on the browser findings, so every non-default policy names
+// them. A reader that predates the probe feature may predate the browser codes
+// too (no feature of their own) and would refuse the whole shape, so it is
+// sent the policy without them; a current reader gets them all.
+func TestLimitShapeWithholdsBrowserCodesFromAnOldReader(t *testing.T) {
+	health := DefaultReleaseHealth()
+	health.WindowSeconds = 1800
+	full := Shape{Kind: EnvSelfManaged, ReleaseHealth: &health}
+	for _, c := range []string{HealthBrowserErrors, HealthBrowserFailedRequests, HealthBrowserPageLoad} {
+		if !health.Fails(c) {
+			t.Fatalf("the default does not fail on %s", c)
+		}
+	}
+	old := (&BundleReader{Features: []string{BundleFeatureReleaseHealth}}).LimitShape(full)
+	if want := []string{HealthAlertFiring, HealthErrorRate, HealthNewIssue, HealthRegressedIssue}; old.ReleaseHealth == nil || !reflect.DeepEqual(old.ReleaseHealth.FailOn, want) {
+		t.Fatalf("old reader's policy = %+v, want fail_on %v", old.ReleaseHealth, want)
+	}
+	if cur := (&BundleReader{Features: BundleDocFeatures()}).LimitShape(full); !reflect.DeepEqual(cur, full) {
+		t.Errorf("a current reader's shape changed: %+v", cur.ReleaseHealth)
+	}
+	if !slices.Contains(full.ReleaseHealth.FailOn, HealthBrowserErrors) {
+		t.Fatal("LimitShape modified the shape it was given")
+	}
+}
+
 // The release-probe codes are release-health findings; the default policy
 // fails on a probe failure and warns on probe latency, as it warns on latency.
 func TestReleaseProbeFindings(t *testing.T) {

@@ -1,25 +1,62 @@
 ---
 name: contracts
-description: Using forge's contract system — when to use contract.go, how to write one, what forge generate produces, integrating with tests.
+description: Using forge's contract system — mark the implementing struct with //forge:contract (forge derives the Service interface), or hand-write contract.go for strategy interfaces; what forge generate produces, integrating with tests.
 ---
 
 # Forge Contracts
 
-Internal Go packages in a forge project expose a Go interface in `contract.go`. The contract is the public surface of the package; everything else is implementation detail. From one `contract.go` `forge generate` produces the test seam (mocks) and the cross-cutting middleware (logging, tracing, metrics) for free.
+Internal Go packages in a forge project expose a Go interface as their contract. The contract is the public surface of the package; everything else is implementation detail. From the contract `forge generate` produces the test seam (mocks) and the cross-cutting middleware (logging, tracing, metrics) for free.
+
+There are two ways to declare it. For the usual single-implementation package you **mark the implementing struct** with `//forge:contract` and forge derives the interface from its exported methods, so you never write it twice. For a strategy interface, where several implementations satisfy one abstraction, you **hand-write `contract.go`**. Both feed the same mock and decorator generation.
 
 Applies to greenfield packages and ports alike.
 
-## When does a `contract.go` belong?
+## The marker form: `//forge:contract` on the struct
+
+```go
+// internal/email/service.go
+package email
+
+import "context"
+
+// service sends transactional email.
+//
+//forge:contract
+type service struct{ deps Deps }
+
+func New(deps Deps) (Service, error) { return &service{deps: deps}, nil }
+
+// Send delivers one message.
+func (s *service) Send(ctx context.Context, to, subject, body string) error { /* ... */ }
+```
+
+`forge generate` writes **`contract_gen.go`** (forge-owned; never edit it):
+
+- `type Service interface` holding every exported method *declared on* the marked type, pointer and value receivers alike. Unexported methods are skipped, and methods promoted from embedded fields are not included.
+- each method's doc comment copied across, so a method-level `// forge:no-observe` on the implementation still routes that method around the observe chain; the type's doc prose becomes the interface doc.
+- imports resolved from the files declaring the methods (aliases kept), plus `var _ Service = (*service)(nil)`.
+
+`mock_gen.go` and `middleware_gen.go` are then generated from it exactly as from a hand-written `contract.go`. The derived interface is always named `Service`. Add or remove an exported method and the interface, mock and decorator follow on the next `forge generate`; remove the marker and `contract_gen.go` is removed with it. A package-level `// forge:no-observe` can sit on the marked type's doc, as it can on a `Service` interface doc.
+
+**Dependency interfaces stay hand-declared, consumer-side.** Put them in `deps.go`, whose first line is `// forge:deps — consumer-declared interfaces for this package's Deps.` (the file `forge fix narrow-deps` writes), or in a `contract.go` kept beside the marked type. They are mocked together with `Service` (`MockStore`, …).
+
+Refused, by `forge generate` and by `forge lint` (`forgeconv-internal-package-contract-names`): two marked types in one package; a marker on an alias or a generic type; a marked type named `Service`; a package that has both a hand-written `Service` (or a `//forge:contract` / `//forge:service`-marked interface) and a marked type — pick one form per package.
+
+`forge scaffold package <name>` writes this shape: `service.go` with `Deps`, the marked `service` struct and `New`, and no `contract.go`. An existing single-implementation package migrates with `forge fix derive-contract <package-dir>`, which deletes the hand-written `Service`, marks the implementing type and moves leftover dependency interfaces to `deps.go`. It refuses when `Service` has no implementation or several, embeds interfaces, or the implementation exports methods outside `Service`.
+
+`//forge:contract` on an **interface** keeps its old meaning: that interface is the package contract under a non-canonical name.
+
+## When does a hand-written `contract.go` belong?
 
 Three categories of internal package, three answers:
 
-| Category | Has `contract.go`? | Why |
-|----------|--------------------|-----|
-| **Single-impl service** (DB-backed, calls external API, holds state) | Yes | Test seam + auto-generated middleware/tracing/metrics. The mock is the value. |
-| **Multi-impl with strategy pattern** (pluggable backends — local vs S3 storage, JWT vs Clerk auth) | Yes | The interface IS the abstraction; multiple implementations satisfy it. |
+| Category | Contract | Why |
+|----------|----------|-----|
+| **Single-impl service** (DB-backed, calls external API, holds state) | Marked struct (`//forge:contract`) | Test seam + auto-generated middleware/tracing/metrics. The mock is the value; the interface is derived, not written. |
+| **Multi-impl with strategy pattern** (pluggable backends — local vs S3 storage, JWT vs Clerk auth) | Hand-written `contract.go` | The interface IS the abstraction; multiple implementations satisfy it, so it cannot be derived from one of them. Adapter, client and eventbus scaffolds still write `contract.go`. |
 | **Pure utility** (string formatters, math helpers, no I/O / time / state) | Optional — see "Pure-utility packages" below | Nothing meaningful to mock. |
 
-The contract linter enforces this. By default, every `internal/` package with exported methods needs `contract.go`.
+The contract linter enforces this. By default, every `internal/` package with exported methods needs a contract: a `contract.go` or a `//forge:contract` type. Everything below that says "`contract.go`" about lint behaviour applies equally to a marked type.
 
 It judges a package's API, which is its non-test, hand-written source. Methods
 and vars in `_test.go` files are never flagged, so a test fake that satisfies a
@@ -39,7 +76,7 @@ In `forge.yaml`:
 
 ```yaml
 contracts:
-  strict: true              # default true — require contract.go
+  strict: true              # default true — require a contract (contract.go or a //forge:contract type)
   allow_exported_vars: false # default false — no globals
   allow_exported_funcs: true # default true — allow free functions
   exclude:                   # opt-out for genuine pure utilities
@@ -120,9 +157,9 @@ The remedy depends on your shape:
 
 Design for the *callers*, not the implementation. Have the split-or-narrow conversation at port time, not after lint failures pile up.
 
-## Writing a `contract.go`
+## Writing a `contract.go` (strategy interfaces)
 
-One file per package, defining one (or a few cohesive) interfaces. Keep methods focused — every method becomes a mock entry, a middleware wrapper, a tracing span.
+Reach for the hand-written form when the interface is the abstraction: several implementations, or a seam you want to read as a document. For a single implementation, prefer the marker form above. One file per package, defining one (or a few cohesive) interfaces. Keep methods focused — every method becomes a mock entry, a middleware wrapper, a tracing span.
 
 ```go
 // internal/email/contract.go
@@ -166,16 +203,16 @@ The constructor returns the interface type (`Service`), not the concrete struct.
 
 ## What `forge generate` produces
 
-For every `contract.go` it finds, one sibling file: **`mock_gen.go`** — holding a mock for **every interface in that file, not just `Service`**. `Service` → `MockService`; a `Store` interface declared beside it → `MockStore`; a `Charger` → `MockCharger`. The scaffold emits the stub immediately, so the mocks exist from the moment the directory does.
+For every contract it finds — a `contract.go`, or a `//forge:contract` type (which also gets `contract_gen.go`, above) — one sibling file: **`mock_gen.go`** — holding a mock for **every interface in the contract, not just `Service`**. `Service` → `MockService`; a `Store` interface declared beside it → `MockStore`; a `Charger` → `MockCharger`. The scaffold emits the stub immediately, so the mocks exist from the moment the directory does.
 
-**So never hand-roll a fake for a dep interface** — its mock is in the file next to the one you are typing in. The corollary: declare dep interfaces IN `contract.go`. One declared in `service.go` or a `ports.go` gets no mock; `contract.go` is the declared boundary, and mocking only what it declares is deliberate.
+**So never hand-roll a fake for a dep interface** — its mock is in the file next to the one you are typing in. The corollary: declare dep interfaces in the contract's boundary — `contract.go`, or `deps.go` (`// forge:deps` first line) beside a marked type. One declared in `service.go` or a `ports.go` gets no mock; mocking only what the boundary declares is deliberate.
 
 `mock_gen.go` is regenerated on every `forge generate`. **Never
-hand-edit it.** If the contract changes, edit `contract.go` and re-run.
+hand-edit it.** If the contract changes, edit `contract.go` (or the marked type's methods) and re-run.
 
 The generated file carries the canonical forge ownership header — a
 `// Code generated by forge. DO NOT EDIT.` line, a `// Source:` pointer
-at `contract.go`, and a `// To customize:` pointer back at the contract.
+at `contract.go` (or `contract_gen.go`), and a `// To customize:` pointer back at the contract.
 `forge lint --scaffolds` enforces both halves: hand-editing the `_gen.go`
 file (or stripping its header) is a build-gating error.
 
@@ -200,7 +237,7 @@ observability is Connect interceptors at the handler boundary
 
 ## Using mocks in tests
 
-Mocks come from `mock_gen.go` — one per interface in `contract.go`, so a dep interface has one too. They are drop-in for the real thing:
+Mocks come from `mock_gen.go` — one per interface in the contract, so a dep interface has one too. They are drop-in for the real thing:
 
 ```go
 // internal/user/service_test.go
@@ -256,7 +293,7 @@ contracts:
 Honest about the lack of test seam. Best for string-case conversions and pure formatters.
 
 ### (B) Wrap functions in a `Service` struct
-Expose the functions as methods on a struct, define a `Service` interface in `contract.go`. Mockable, but verbose at every call site (`naming.New().ToPascalCase(s)` instead of `naming.ToPascalCase(s)`).
+Expose the functions as methods on a struct and mark it `//forge:contract` (or define a `Service` interface in `contract.go`). Mockable, but verbose at every call site (`naming.New().ToPascalCase(s)` instead of `naming.ToPascalCase(s)`).
 
 ### (C) Hybrid
 Keep free functions for ergonomics AND expose a `Service` interface whose methods delegate to them. Pick this when consumers want mockability but you don't want to break call sites.
@@ -272,11 +309,10 @@ forge package new <name>
 ```
 
 Scaffolds `internal/<name>/`:
-- `contract.go` with a starter `Service` interface
-- `<name>.go` with a stub implementation
-- `mock_gen.go` via `forge generate`
+- `service.go` with `Deps`, the `//forge:contract`-marked `service` struct and `New`
+- `contract_gen.go` and `mock_gen.go` via `forge generate`
 
-It will refuse if the directory already exists. For ports of existing packages, hand-write `contract.go` first (extracted from the source's exported surface), run `forge generate`, then copy the implementation behind the interface. See `migration-cli` and `migration-service` for the porting flow.
+There is no `contract.go`: the `Service` interface is derived from the struct's exported methods. It will refuse if the directory already exists. For ports of existing packages, either move the implementation into the marked struct and let forge derive the interface, or (for a strategy interface, or when you want the surface reviewed first) hand-write `contract.go` extracted from the source's exported surface, run `forge generate`, then copy the implementation behind the interface. An existing hand-written single-implementation `Service` converts with `forge fix derive-contract <package-dir>`. See `migration-cli` and `migration-service` for the porting flow.
 
 ## Per-phase lint gate
 
@@ -288,9 +324,9 @@ If any of those three fail, the phase isn't done. Catching a contract gap at int
 
 ## Rules
 
-- One `contract.go` per package. The interface IS the public surface.
+- One contract per package: a `//forge:contract` struct (single implementation) or a `contract.go` (strategy interface), never both. The interface IS the public surface.
 - Constructors return the interface, not the concrete struct.
-- Never hand-edit `mock_gen.go`. Edit `contract.go` and re-run `forge generate`. (Pre-1.7 projects also had `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go`; those are removed by the next `forge generate`.)
+- Never hand-edit `mock_gen.go` or `contract_gen.go`. Edit `contract.go` (or the marked type's exported methods) and re-run `forge generate`. (Pre-1.7 projects also had `middleware_gen.go` / `tracing_gen.go` / `metrics_gen.go`; those are removed by the next `forge generate`.)
 - Naming: `Service` for single-impl, `<Name>er` for multi-impl pluggable backends.
 - Pure utilities: pick (A), (B), or (C) explicitly. Don't leave the package half-mocked.
 - `contracts.strict: true` from day one. Backfilling later is the most expensive option.

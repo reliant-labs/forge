@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/generator/contract"
@@ -34,11 +37,13 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 		}
 	}
 
-	if err := codegen.GenerateAuthSetup(modPath, projectDir); err != nil {
+	wrote, err := codegen.GenerateAuthSetup(modPath, projectDir)
+	if err != nil {
 		return err
 	}
-
-	fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	if wrote {
+		fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	}
 	return generateLoginBroker(modPath, projectDir)
 }
 
@@ -46,15 +51,23 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 // of the API-only sign-in flow, so a project that wants its own sign-in
 // screen has the endpoint already written rather than having to derive it
 // from the issuer's API docs. Inert until wired.
+//
+// The "Scaffolded" line prints only when this run wrote the file: it is
+// scaffold-once, and declined when the project already has it, deleted it on
+// purpose, or declares no config the broker could read. Agents and people
+// take a ✅ line as proof the file exists.
 func generateLoginBroker(modulePath, projectDir string) error {
 	projectName := filepath.Base(projectDir)
-	if err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir); err != nil {
+	wrote, err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir)
+	if err != nil {
 		return err
 	}
 	if w := codegen.LoginBrokerCookieMismatch(projectDir); w != "" {
 		fmt.Printf("  ⚠️  %s\n", w)
 	}
-	fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
+	if wrote {
+		fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
+	}
 	return nil
 }
 
@@ -186,8 +199,18 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	if cfg != nil {
 		extraIfaceTypes = cfg.Contracts.InterfaceTypeSet()
 	}
+	// Derived contracts first: every reader below — the Resolver, the mock,
+	// the decorator — reads contract_gen.go, so it must be current before
+	// any of them runs.
+	if err := deriveInternalContracts(internalDir, projectDir, cs); err != nil {
+		return err
+	}
+
 	contractOpts := contract.Options{
 		ExtraInterfaceTypes: extraIfaceTypes,
+		// forge.yaml observability.forensics: false — decorators capture no
+		// arguments.
+		NoForensics: cfg != nil && !cfg.Observability.ForensicsEnabled(),
 		// Route the mock_gen.go write through the manifest chokepoint —
 		// see the cs param doc above for the stale-sweep rationale.
 		ProjectRoot: projectDir,
@@ -240,8 +263,11 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			return filepath.SkipDir
 		}
 
-		contractPath := filepath.Join(path, "contract.go")
-		if _, statErr := os.Stat(contractPath); os.IsNotExist(statErr) {
+		// contract.go, or the contract_gen.go derived above from a
+		// `//forge:contract` type: either way the file the interface is
+		// read from.
+		contractPath := contractsrc.Path(path)
+		if contractPath == "" {
 			// A component with no contract.go (a handler, worker or
 			// operator) whose Deps interfaces `forge fix narrow-deps`
 			// declared in deps.go: its mocks follow that file, exactly as a
@@ -253,8 +279,6 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 				}
 			}
 			return nil
-		} else if statErr != nil {
-			return statErr
 		}
 
 		// Per-package opt-out: `//forge:exclude-contract` in this package's
@@ -329,8 +353,8 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 			if _, decErr := contract.WriteObservedDecorator(obsCF, path, ifaceName, mw.Constructor, mw.Struct, opNamespace, defaultChain, contractOpts); decErr != nil {
 				return fmt.Errorf("generate observability decorator for %s: %w", rel, decErr)
 			}
-		} else if remErr := contract.RemoveObservedDecorator(path); remErr != nil {
-			return fmt.Errorf("remove stale observability decorator for %s: %w", rel, remErr)
+		} else if remErr := removeObservedDecorator(path, rel, os.Stderr); remErr != nil {
+			return remErr
 		}
 		if before.ChangedIn(path) {
 			fmt.Printf("  ✅ Generated mock + middleware for %s/\n", rel)
@@ -398,6 +422,52 @@ func generateInternalPackageContracts(projectDir string, cfg *config.ProjectConf
 	declines.report()
 
 	return nil
+}
+
+// deriveInternalContracts writes contract_gen.go for every package under
+// internalDir whose contract is a `//forge:contract` type, and removes the
+// stale contract_gen.go of a package whose marker is gone
+// (contract.SyncDerivedContract).
+//
+// It walks every package, forge.yaml `contracts.exclude` and
+// `//forge:exclude-contract` included: those opt a package out of the mock
+// and the decorator, but contract_gen.go is the interface the package's own
+// code is written against (New returns Service), and the package does not
+// compile without it. testdata/ holds fixtures, not packages.
+func deriveInternalContracts(internalDir, projectDir string, cs *generator.FileChecksums) error {
+	opts := contract.Options{ProjectRoot: projectDir, Checksums: cs}
+	return filepath.WalkDir(internalDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+		if !contractsrc.HasMarkedType(path) && !fileExists(filepath.Join(path, contractsrc.DerivedFileName)) {
+			return nil
+		}
+		rel, relErr := filepath.Rel(projectDir, path)
+		if relErr != nil {
+			rel = path
+		}
+		rel = filepath.ToSlash(rel)
+		outcome, derr := contract.SyncDerivedContract(path, opts)
+		if derr != nil {
+			return fmt.Errorf("derive the contract of %s: %w", rel, derr)
+		}
+		switch outcome {
+		case contract.DeriveWritten:
+			fmt.Printf("  ✅ Derived %s/%s from its //forge:contract type\n", rel, contractsrc.DerivedFileName)
+		case contract.DeriveRemoved:
+			fmt.Printf("  🧹 Removed %s/%s (no //forge:contract type remains)\n", rel, contractsrc.DerivedFileName)
+		case contract.DeriveKept:
+			fmt.Printf("  ⚠️  %s/%s has no //forge:contract type behind it, but forge cannot prove the file is its own; delete it, or mark the implementing type\n", rel, contractsrc.DerivedFileName)
+		}
+		return nil
+	})
 }
 
 // contractTestBirth is everything the one-time contract_test.go scaffold
@@ -515,6 +585,26 @@ func reportRetirement(r contract.Retirement, err error) error {
 	return nil
 }
 
+// removeObservedDecorator removes the generated observability decorator of a
+// package that is not instrumented, and warns when the package opted out with
+// `// forge:no-observe` while keeping its owned newObserveChain seam: the
+// decorator was the seam's only caller, so it is now dead code that golangci's
+// `unused` rejects. The seam is the user's file, so forge names it and leaves
+// it alone.
+func removeObservedDecorator(path, rel string, w io.Writer) error {
+	if err := contract.RemoveObservedDecorator(path); err != nil {
+		return fmt.Errorf("remove stale observability decorator for %s: %w", rel, err)
+	}
+	if !codegen.HasPackageNoObserveDirective(path) {
+		return nil
+	}
+	if seam := codegen.UnreferencedObserveChainSeam(path); seam != "" {
+		seamRel := filepath.ToSlash(filepath.Join(rel, seam))
+		fmt.Fprintf(w, "  ⚠️  %s: %s opts out of observability (forge:no-observe), so nothing calls newObserveChain any more — delete the file (it is yours; forge won't), or drop forge:no-observe\n", seamRel, rel)
+	}
+	return nil
+}
+
 // packageHasTwoResultNew reports whether the package at dir defines a
 // constructor with the canonical two-result `func New(deps Deps) (Service, error)`
 // shape. Returns true if any *.go file in dir contains that signature.
@@ -559,7 +649,7 @@ func packageHasTwoResultNew(dir string) bool {
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
-func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
+func generateConfigLoader(projectDir string, features config.FeaturesConfig, major connectmajor.Major, cs *generator.FileChecksums) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/<project>/config/v1/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
@@ -636,7 +726,7 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 
 	// Re-render the primary binary's cmd/<bin>/cmd/serve.go so it stays in
 	// sync with the config fields.
-	if err := codegen.GenerateCmdServerForConfigs(configFields, inputs, projectDir, cs); err != nil {
+	if err := codegen.GenerateCmdServerForConfigs(configFields, inputs, major, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/<bin>/cmd/serve.go: %w", err)
 	}
 
@@ -738,6 +828,11 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
 		return err
+	}
+	// A block inside a block is not projected (one level, as the flattener
+	// documents); the Go loader still reads it, so say what config.k lacks.
+	for _, w := range codegen.UnprojectedNestedConfigBlocks(messages) {
+		fmt.Fprintf(os.Stderr, "  ⚠️  %s\n", w)
 	}
 
 	// Flatten all proto config fields. Most projects have a single

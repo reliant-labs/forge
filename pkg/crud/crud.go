@@ -330,6 +330,12 @@ func mapClosureErr(err error, safeMsg string) error {
 // *connect.Error here made svcerr.ToConnect find one already present and pass
 // its message straight through — which for a driver error is raw SQL, table
 // names and whatever the DSN contains.
+//
+// The pass-through covers both connect majors: svcerr.WrapOr classifies a
+// connect-go v2 *connect.Error as it does a v1 one, and always returns a v1
+// *connect.Error (a v2 verdict re-encoded with its code, message, details and
+// any reason it carried), so the errors.As below sees every verdict whichever
+// major the closure's error came from.
 func wrapOrInternal(err error, safeMsg string) error {
 	out := svcerr.WrapOr(err, svcerr.Internal(safeMsg))
 	var ce *connect.Error
@@ -337,6 +343,18 @@ func wrapOrInternal(err error, safeMsg string) error {
 		ce.Meta().Set(svcerr.ReasonHeader, ReasonInternal)
 	}
 	return out
+}
+
+// connectUnary adapts a connect-neutral handler to connect-go v1's
+// Request/Response wrappers — what each Handle* function is.
+func connectUnary[Req, Resp any](h func(context.Context, *Req) (*Resp, error)) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
+		resp, err := h(ctx, req.Msg)
+		if err != nil {
+			return nil, err
+		}
+		return connect.NewResponse(resp), nil
+	}
 }
 
 // pgFailure is the part of a postgres error the APPLICATION authored: the
@@ -444,9 +462,17 @@ type CreateOp[Req, Resp, Ent any] struct {
 // All error-mapping is fixed; the shim only carries data shape. A persisted
 // row records the <entity>_created product event (see events.go).
 func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	return connectUnary(Create(op))
+}
+
+// Create is [HandleCreate] in the connect-neutral shape a connect-go v2
+// handler has, func(ctx, *Req) (*Resp, error): the same lifecycle, error
+// mapping and product event. HandleCreate is this function behind the v1
+// Request/Response wrappers. See the package doc's "Connect majors".
+func Create[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.Context, *Req) (*Resp, error) {
 	event := eventEntity(op.EntitySnake, op.EntityLower, reflect.TypeFor[Ent](), "", "")
-	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
-		entity, err := op.Entity(ctx, req.Msg)
+	return func(ctx context.Context, req *Req) (*Resp, error) {
+		entity, err := op.Entity(ctx, req)
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
@@ -458,7 +484,7 @@ func HandleCreate[Req, Resp, Ent any](op CreateOp[Req, Resp, Ent]) func(context.
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 }
 
@@ -489,8 +515,16 @@ type GetOp[Req, Resp, Ent any] struct {
 // HandleGet runs fetch -> pack. Repository errors
 // are mapped to CodeNotFound; the legacy generator did the same.
 func HandleGet[Req, Resp, Ent any](op GetOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
-	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
-		entity, err := op.Fetch(ctx, op.ID(req.Msg))
+	return connectUnary(Get(op))
+}
+
+// Get is [HandleGet] in the connect-neutral shape a connect-go v2
+// handler has, func(ctx, *Req) (*Resp, error): the same lifecycle, error
+// mapping and product event. HandleGet is this function behind the v1
+// Request/Response wrappers. See the package doc's "Connect majors".
+func Get[Req, Resp, Ent any](op GetOp[Req, Resp, Ent]) func(context.Context, *Req) (*Resp, error) {
+	return func(ctx context.Context, req *Req) (*Resp, error) {
+		entity, err := op.Fetch(ctx, op.ID(req))
 		if err != nil {
 			return nil, mapRepoErr("get", op.EntityLower, err)
 		}
@@ -498,7 +532,7 @@ func HandleGet[Req, Resp, Ent any](op GetOp[Req, Resp, Ent]) func(context.Contex
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 }
 
@@ -617,13 +651,21 @@ type UpdateOp[Req, Resp, Ent any] struct {
 // A write that landed, on either path, records the <entity>_updated product
 // event (see events.go).
 func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	return connectUnary(Update(op))
+}
+
+// Update is [HandleUpdate] in the connect-neutral shape a connect-go v2
+// handler has, func(ctx, *Req) (*Resp, error): the same lifecycle, error
+// mapping and product event. HandleUpdate is this function behind the v1
+// Request/Response wrappers. See the package doc's "Connect majors".
+func Update[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.Context, *Req) (*Resp, error) {
 	event := eventEntity(op.EntitySnake, op.EntityLower, reflect.TypeFor[Ent](), "", "")
-	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
+	return func(ctx context.Context, req *Req) (*Resp, error) {
 		var paths []string
 		masked := false
 		if op.Mask != nil {
 			var full bool
-			paths, full = maskPaths(op.Mask(req.Msg))
+			paths, full = maskPaths(op.Mask(req))
 			masked = !full
 		}
 		if masked {
@@ -631,7 +673,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 				return nil, err
 			}
 		}
-		entity, err := op.Entity(ctx, req.Msg)
+		entity, err := op.Entity(ctx, req)
 		if errors.Is(err, ErrEntityRequired) {
 			return nil, clientErr(connect.NewError(
 				connect.CodeInvalidArgument,
@@ -659,7 +701,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 			if err != nil {
 				return nil, mapPackErr(err)
 			}
-			return connect.NewResponse(resp), nil
+			return resp, nil
 		}
 		if err := op.Persist(ctx, entity); err != nil {
 			return nil, mapRepoErr("update", op.EntityLower, err)
@@ -669,7 +711,7 @@ func HandleUpdate[Req, Resp, Ent any](op UpdateOp[Req, Resp, Ent]) func(context.
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 }
 
@@ -784,9 +826,17 @@ type DeleteOp[Req, Resp any] struct {
 // A delete that landed, soft or hard, records the <entity>_deleted product
 // event (see events.go).
 func HandleDelete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
+	return connectUnary(Delete(op))
+}
+
+// Delete is [HandleDelete] in the connect-neutral shape a connect-go v2
+// handler has, func(ctx, *Req) (*Resp, error): the same lifecycle, error
+// mapping and product event. HandleDelete is this function behind the v1
+// Request/Response wrappers. See the package doc's "Connect majors".
+func Delete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *Req) (*Resp, error) {
 	event := eventEntity(op.EntitySnake, op.EntityLower, reflect.TypeFor[Req](), "Delete", "Request")
-	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
-		if err := op.Persist(ctx, op.ID(req.Msg)); err != nil {
+	return func(ctx context.Context, req *Req) (*Resp, error) {
+		if err := op.Persist(ctx, op.ID(req)); err != nil {
 			return nil, mapRepoErr("delete", op.EntityLower, err)
 		}
 		trackWrite(ctx, event, "deleted")
@@ -797,7 +847,7 @@ func HandleDelete[Req, Resp any](op DeleteOp[Req, Resp]) func(context.Context, *
 			var zero Resp
 			resp = &zero
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 }
 
@@ -823,14 +873,14 @@ type ListOp[Req, Resp, Ent any] struct {
 	DefaultPageSize int // 0 -> 50
 	MaxPageSize     int // 0 -> 100
 
-	// HasOrderBy enables req.Msg.OrderBy / req.Msg.Descending handling
+	// HasOrderBy enables req.OrderBy / req.Descending handling
 	// via the OrderBy/Descending closures.
 	HasOrderBy bool
 	OrderBy    func(ctx context.Context, req *Req) (clause string, descending bool)
 
 	// Filters returns extra orm.QueryOption values built from per-field
 	// filter logic. The shim implements this as a static sequence of
-	// "if req.Msg.X != nil { opts = append(opts, orm.WhereILike(...)) }"
+	// "if req.X != nil { opts = append(opts, orm.WhereILike(...)) }"
 	// statements — same as the legacy template, just lifted into a
 	// closure.
 	//
@@ -885,7 +935,15 @@ type ListOp[Req, Resp, Ent any] struct {
 // with no continuation. Fetch all pages in primary-key order before sorting
 // locally when a different ordering is needed across multiple pages.
 func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Context, *connect.Request[Req]) (*connect.Response[Resp], error) {
-	return func(ctx context.Context, req *connect.Request[Req]) (*connect.Response[Resp], error) {
+	return connectUnary(List(op))
+}
+
+// List is [HandleList] in the connect-neutral shape a connect-go v2
+// handler has, func(ctx, *Req) (*Resp, error): the same lifecycle, error
+// mapping and product event. HandleList is this function behind the v1
+// Request/Response wrappers. See the package doc's "Connect majors".
+func List[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Context, *Req) (*Resp, error) {
+	return func(ctx context.Context, req *Req) (*Resp, error) {
 		// Filter opts (the WHERE clauses) are computed ONCE and shared by the
 		// list query and the total COUNT. The COUNT must see the filters but
 		// NOT the page limit or cursor (total_count is the count across ALL
@@ -894,7 +952,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		var filterOpts []orm.QueryOption
 		if op.Filters != nil {
 			var ferr error
-			filterOpts, ferr = op.Filters(ctx, req.Msg)
+			filterOpts, ferr = op.Filters(ctx, req)
 			if ferr != nil {
 				return nil, mapFilterErr(ferr)
 			}
@@ -910,7 +968,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		var orderClause string
 		var orderDesc bool
 		if op.HasOrderBy && op.OrderBy != nil {
-			orderClause, orderDesc = op.OrderBy(ctx, req.Msg)
+			orderClause, orderDesc = op.OrderBy(ctx, req)
 			if orderClause != "" {
 				if err := orm.ValidateOrderBy(orderClause, op.Columns); err != nil {
 					return nil, clientErr(connect.NewError(connect.CodeInvalidArgument, err), ReasonInvalidOrderBy)
@@ -924,7 +982,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		// Pagination clamp + fetch+1 + cursor decode.
 		pageSize := 0
 		if op.HasPagination {
-			pageSize = op.PageSize(req.Msg)
+			pageSize = op.PageSize(req)
 			defSize := op.DefaultPageSize
 			if defSize <= 0 {
 				defSize = 50
@@ -941,7 +999,7 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 			}
 			opts = append(opts, orm.WithLimit(pageSize+1))
 
-			if tok := op.PageToken(req.Msg); tok != "" {
+			if tok := op.PageToken(req); tok != "" {
 				cursor, derr := orm.DecodeCursor(tok)
 				if derr != nil {
 					// Preserve the legacy "invalid page token" wording exactly.
@@ -1020,6 +1078,6 @@ func HandleList[Req, Resp, Ent any](op ListOp[Req, Resp, Ent]) func(context.Cont
 		if err != nil {
 			return nil, mapPackErr(err)
 		}
-		return connect.NewResponse(resp), nil
+		return resp, nil
 	}
 }

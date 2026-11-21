@@ -362,7 +362,8 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd, err := hostlaunch.BuildCmd(runCtx, j.Name, hostRunnerSpec(j))
+	jobSpec := hostRunnerSpec(j)
+	cmd, err := hostlaunch.BuildCmd(runCtx, j.Name, jobSpec)
 	if err != nil {
 		return fmt.Errorf("job %s: %w", j.Name, err)
 	}
@@ -431,7 +432,8 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 		}
 		jobSecrets[k] = v
 	}
-	cmd.Env = hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv())
+	cmd.Env = hostlaunch.WithPGO(jobSpec, hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv()))
+	cmd.Env = withForgeShimOnPath(cmd.Env, j.Name)
 
 	// What this job gates, for the human reading the log. The raw
 	// `before` would print a bare "*", which says nothing about what is

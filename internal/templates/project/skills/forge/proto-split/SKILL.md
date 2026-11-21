@@ -233,7 +233,7 @@ handlers/billing/              # after
   service.go
 ```
 
-Each handler file imports its new gen package. Domain packages behind the handlers (`internal/<name>/contract.go`, from `forge scaffold package`) probably already split cleanly; if they don't, see `service-layer` for the per-domain shape.
+Each handler file imports its new gen package. Domain packages behind the handlers (`internal/<name>/service.go` with its `//forge:contract` type, from `forge scaffold package`) probably already split cleanly; if they don't, see `service-layer` for the per-domain shape.
 
 ### Regen, build, lint, test (forge commands)
 

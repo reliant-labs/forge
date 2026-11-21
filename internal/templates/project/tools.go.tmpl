@@ -15,7 +15,7 @@
 // Or manually:
 //
 //	go install google.golang.org/protobuf/cmd/protoc-gen-go
-//	go install connectrpc.com/connect/cmd/protoc-gen-connect-go
+//	go install {{if .ConnectV2}}connectrpc.com/connect/v2/cmd/protoc-gen-connect-go{{else}}connectrpc.com/connect/cmd/protoc-gen-connect-go{{end}}
 //
 // This file MUST live under a //go:build tools constraint so the imports
 // don't leak into production builds. They exist purely so `go mod tidy`
@@ -23,6 +23,10 @@
 package tools
 
 import (
+{{- if .ConnectV2}}
+	_ "connectrpc.com/connect/v2/cmd/protoc-gen-connect-go"
+{{- else}}
 	_ "connectrpc.com/connect/cmd/protoc-gen-connect-go"
+{{- end}}
 	_ "google.golang.org/protobuf/cmd/protoc-gen-go"
 )

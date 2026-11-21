@@ -13,7 +13,7 @@ import (
 // Deps holds dependencies for the {{.Name}} package.
 //
 // Every field you add must be an INTERFACE, not a concrete type — a
-// dep interface declared in contract.go, or another internal package's
+// dep interface declared in deps.go, or another internal package's
 // Service. `Store *db.PostgresRepository` compiles and then forces
 // every test of this package to open a real database;
 // `Store Store` takes the mock forge already generated. This is
@@ -29,6 +29,32 @@ type Deps struct {
 	// Add your dependencies here.
 }
 
+// ─── The contract ───────────────────────────────────────────────────
+//
+// The //forge:contract marker on `service` below makes its exported
+// methods the {{.Name}} package boundary. `forge generate` derives
+// `type Service interface` from them into contract_gen.go (forge-owned:
+// never edit it), and mock_gen.go and middleware_gen.go from that — so a
+// method is declared exactly once, here, on *service.
+//
+//   - Every exported method declared on service IS a Service method; keep
+//     helpers unexported. Exported types, functions (non-methods),
+//     constants, and variables are unrestricted.
+//   - Give each method a doc comment: it is copied onto the interface
+//     method in contract_gen.go, which is what callers read.
+//   - Re-run `forge generate` after adding, removing or re-signing a
+//     method. Until it runs, callers holding a Service cannot see a new
+//     method, and a removed one fails contract_gen.go's
+//     `var _ Service = (*service)(nil)` check.
+//
+// A method looks like this:
+//
+//	// Get returns the thing stored under id.
+//	func (s *service) Get(ctx context.Context, id string) (Thing, error) {
+//		return s.deps.Store.Get(ctx, id)
+//	}
+
+//forge:contract
 type service struct {
 	deps Deps
 }
@@ -47,7 +73,8 @@ type service struct {
 // decorator (span / metrics / structured logging / panic-recovery on every
 // Service method, routed through the owned observe_chain.go seam). Remove it
 // and add `// forge:no-observe` on this line to opt the package out; add
-// `// forge:no-observe` on a single Service method to skip just that method.
+// `// forge:no-observe` to a single method's doc comment to skip just that
+// method.
 func New(deps Deps) (Service, error) {
 	return &service{deps: deps}, nil
 }

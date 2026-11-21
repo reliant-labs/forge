@@ -224,6 +224,19 @@ type LevelPage struct {
 	Next string
 }
 
+// ObjectAccess is the byte-level upload and download a client performs
+// against a presigned URL. A real store never moves bytes through the API
+// process, so only an in-process store such as Memory implements it: it
+// performs the transfer directly, so a test can play the browser.
+type ObjectAccess interface {
+	// Put stores data at key, as a completed upload of a PresignPut URL
+	// would.
+	Put(key string, data []byte, contentType string) error
+	// Get returns a copy of the bytes stored at key, as a download of a
+	// PresignGet URL would, and whether there were any.
+	Get(key string) ([]byte, bool)
+}
+
 // DownloadPresigner signs forced downloads. Every Store in this package
 // implements it; use the package-level PresignDownload to call it on a Store.
 type DownloadPresigner interface {

@@ -73,9 +73,7 @@ func TestEveryCommandGroupRejectsUnknownSubcommands(t *testing.T) {
 //
 // `test` used to be listed here as "the runnable parent that swallowed its
 // argument". The command is gone (the suite lives in the project's
-// Taskfile.yml) and what stands in its place only ever returns an error, so
-// there is no swallow left to guard — see
-// TestRemovedTestCommandNamesItsReplacement.
+// Taskfile.yml), so there is no swallow left to guard.
 func TestUnknownSubcommandExitsNonZero(t *testing.T) {
 	// t.Chdir keeps a regressed arg check from shelling out to a real
 	// toolchain — outside a project there is nothing to run, and the

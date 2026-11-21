@@ -80,7 +80,7 @@ func EdgeContextFrom(ctx context.Context) EdgeContext {
 }
 
 // edgeContextFromHeader reads h, when the edge is trusted.
-func edgeContextFromHeader(ctx context.Context, h http.Header, trusted bool) context.Context {
+func edgeContextFromHeader(ctx context.Context, h interface{ Get(string) string }, trusted bool) context.Context {
 	if !trusted {
 		return ctx
 	}
@@ -117,6 +117,8 @@ func edgeContextMiddleware(next http.Handler, trusted bool) http.Handler {
 
 // EdgeContextInterceptor is EdgeContextMiddleware for a Connect handler
 // served behind some other HTTP stack. Chain installs it.
+//
+// connect-go v2 projects use EdgeContextInterceptorV2.
 func EdgeContextInterceptor() connect.Interceptor {
 	return edgeContextInterceptor{trusted: edgeTrusted()}
 }

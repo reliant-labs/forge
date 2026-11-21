@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
@@ -48,8 +49,8 @@ func IsWiredComponentDir(dir string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(dir, "contract.go")); err != nil {
-		return false // no contract.go: nothing declares a component here
+	if !contractsrc.HasContract(dir) {
+		return false // no contract.go or //forge:contract type: nothing declares a component here
 	}
 	if HasExcludeContractDirective(dir) {
 		return false // types-only / library shape, opted out by its own source

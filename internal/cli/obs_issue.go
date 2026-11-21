@@ -267,6 +267,7 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	if err != nil {
 		return fail(err)
 	}
+	res.Issue.Culprit = displayCulprit(res.Issue.Culprit, res.LatestEvent)
 	doc := obsIssueDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Suspects: []obsSuspectDoc{}, Statements: nil}
 	doc.Issue = issueRowDoc(res.Issue)
 	if n.Explain {
@@ -312,8 +313,14 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 		doc.Release = stampRelease(ctx, d.Release, d.Stderr, env, res.Issue.LastSeen)
 	}
 	commitRange := ""
-	if doc.FirstRelease != nil {
-		commitRange = doc.FirstRelease.CommitRange
+	if fr := doc.FirstRelease; fr != nil {
+		commitRange = fr.CommitRange
+		if commitRange == "" && fr.GitCommit != "" {
+			// The first release ever has no previous release to start a
+			// range at, but it still ends one: the error shipped in that
+			// commit, so a commit after it cannot have caused it.
+			commitRange = ".." + fr.GitCommit
+		}
 	}
 	doc.Suspects, doc.SuspectNote = d.suspects()(ctx, d.Stderr, res, commitRange)
 	doc.Suggested = o.inst.carrySuggested(issueSuggestions(env, res))
@@ -325,17 +332,39 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	return nil
 }
 
+// displayCulprit is the culprit `forge obs issue` shows. An issue grouped
+// before forge#2235 may name forge's own interceptor as its culprit
+// ("…/pkg/observe/interceptors.go in …(*loggingInterceptor).log"), which says
+// nothing about what failed. When its newest event is a record forge logged
+// for an rpc, the rpc's procedure is shown instead, as obsquery.ServerIssueCulprit
+// now spells it. Display only: the issue and its grouping are unchanged.
+func displayCulprit(culprit string, latest *obsbackend.IssueEvent) string {
+	if latest == nil || !obsquery.ForgeLibraryCulprit(culprit) {
+		return culprit
+	}
+	if r := (obsquery.ServerErrorRecord{Attributes: latest.Attributes}); r.Attributes[obsquery.LogKeyCodeFunction] != "" && r.LoggedByForge() {
+		return obsquery.ServerIssueCulprit(r)
+	}
+	return culprit
+}
+
 // suspectCommits asks the checkout which commits touched the files the error
 // was raised from. It never fails the verb: a missing checkout or shallow
 // history is a note on stderr and in the document, and the list is empty.
 func suspectCommits(ctx context.Context, errOut io.Writer, res obsbackend.GetIssueResult, commitRange string) ([]obsSuspectDoc, string) {
 	var files []string
-	if f := suspect.CulpritFile(res.Issue.Culprit); f != "" {
-		files = append(files, f)
+	seen := map[string]bool{}
+	add := func(f string) {
+		// The culprit is usually the top frame too: name each file once.
+		if f != "" && !seen[f] && len(files) < 4 {
+			seen[f] = true
+			files = append(files, f)
+		}
 	}
+	add(suspect.CulpritFile(res.Issue.Culprit))
 	for _, fr := range res.Frames {
-		if fr.File != "" && fr.InApp && len(files) < 4 {
-			files = append(files, fr.File)
+		if fr.InApp {
+			add(fr.File)
 		}
 	}
 	if len(files) == 0 {
@@ -365,7 +394,7 @@ func issueSuggestions(env string, res obsbackend.GetIssueResult) []string {
 	if t := res.Issue.LatestTraceID; t != "" {
 		cmds = append(cmds, obsout.Command("forge", "obs", "trace", t, env), obsout.Command("forge", "obs", "logs", env, "--trace", t))
 	}
-	if res.Issue.Platform != obsbackend.PlatformBrowser && res.Issue.Status != obsbackend.IssueResolved && !strings.HasPrefix(res.Issue.ID, obsquery.LocalIssuePrefix) {
+	if res.Issue.Status != obsbackend.IssueResolved && !strings.HasPrefix(res.Issue.ID, obsquery.LocalIssuePrefix) {
 		cmds = append(cmds, obsout.Command("forge", "obs", "issue", "resolve", res.Issue.ID, env, "--in", "next"))
 	}
 	return obsout.Suggest(cmds...)
@@ -564,5 +593,23 @@ func runObsIssueTriage(ctx context.Context, d obsDeps, verb, id, env string, o o
 		return err
 	}
 	fmt.Fprintf(d.Stdout, "%s is now %s\n", res.Issue.ID, res.Issue.Status)
+	if why := resolveMeaning(req); why != "" {
+		fmt.Fprintf(d.Stdout, "  %s\n", why)
+	}
 	return nil
+}
+
+// resolveMeaning says what a resolve does from here on, which the status
+// alone does not: when it took effect, and what reopens it.
+func resolveMeaning(req obsbackend.UpdateIssueStatusRequest) string {
+	if req.Status != obsbackend.IssueResolved {
+		return ""
+	}
+	// The control plane's rule (internal/issues): an event reopens a
+	// resolved issue only when its version was first promoted after the
+	// resolve took effect. Now and next both take effect now.
+	if req.ResolveIn == obsbackend.ResolveVersion {
+		return "resolved from " + req.Version + ": events from versions this env ran before it stay quiet, and an event from " + req.Version + " or a later release reopens it as a regression"
+	}
+	return "resolved as of now: events from the releases live now stay quiet, and an event from a release promoted after now reopens it as a regression"
 }

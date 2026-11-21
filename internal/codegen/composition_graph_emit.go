@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
@@ -36,6 +37,20 @@ type GraphGenInput struct {
 	// Roots, when set, receives the roots as processes — the reach the
 	// deploy config (config_gen.k's ROOTS) projects.
 	Roots *[]GraphRoot
+	// Mixed generates only the adopted roots of a legacy project
+	// (CompositionMixed): their constructors in MixedComposeFile, a graph of
+	// exactly what they reach, and nothing the legacy composition owns
+	// (mounts_services_gen.go stays, no service catalog is written).
+	Mixed bool
+}
+
+// composeRel is the owned constructor file this graph reconciles:
+// compose.go, or MixedComposeFile beside a legacy composition.
+func (in GraphGenInput) composeRel() string {
+	if in.Mixed {
+		return filepath.Join("internal", "app", MixedComposeFile)
+	}
+	return filepath.Join("internal", "app", "compose.go")
 }
 
 func (in GraphGenInput) warnings() io.Writer {
@@ -150,6 +165,10 @@ type routesGenView struct {
 	Imports        []graphImport
 	Services       []routesServiceView
 	Audiences      []routesAudienceView
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // GenerateGraph emits the composition graph for a project in graph mode
@@ -166,8 +185,17 @@ func GenerateGraph(in GraphGenInput) error {
 	for _, w := range staleGraphMethods(m.compose, m.byName) {
 		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
 	}
-	if w := m.unbuiltWarning(); w != "" {
+	// Beside a legacy composition everything the adopted roots do not
+	// reach is left out by design, so it is not news.
+	if w := m.unbuiltWarning(); w != "" && !in.Mixed {
 		fmt.Fprintf(in.warnings(), "  ⚠️  %s\n", w)
+	}
+	if !in.Mixed {
+		for _, r := range m.roots {
+			if r.Adopt {
+				fmt.Fprintf(in.warnings(), "  ⚠️  %s:%d: root %s declares adopt, which only generates a root beside a legacy Infra / NewComponents composition; this project has none, so remove it\n", r.File, r.Line, r.TypeName)
+			}
+		}
 	}
 
 	// graph_gen.go
@@ -182,8 +210,11 @@ func GenerateGraph(in GraphGenInput) error {
 		return err
 	}
 
-	// Write: the generated pair, then the owned compose.go.
-	RetireGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), in.Checksums)
+	// Write: the generated pair, then the owned compose.go. Beside a
+	// legacy composition the legacy mount surface is still in use.
+	if !in.Mixed {
+		RetireGenerated(in.ProjectDir, filepath.Join("internal", "app", "mounts_services_gen.go"), in.Checksums)
+	}
 	if err := writeForgeOwned(in.ProjectDir, filepath.Join("internal", "app", "graph_gen.go"), graphSrc, in.Checksums); err != nil {
 		return fmt.Errorf("write internal/app/graph_gen.go: %w", err)
 	}
@@ -191,15 +222,19 @@ func GenerateGraph(in GraphGenInput) error {
 		return fmt.Errorf("write internal/app/routes_gen.go: %w", err)
 	}
 	if !m.disowned && m.compose != m.existing {
-		if err := writeUserScaffold(filepath.Join(in.ProjectDir, "internal", "app", "compose.go"), []byte(m.compose)); err != nil {
-			return fmt.Errorf("write internal/app/compose.go: %w", err)
+		if err := writeUserScaffold(filepath.Join(in.ProjectDir, in.composeRel()), []byte(m.compose)); err != nil {
+			return fmt.Errorf("write %s: %w", filepath.ToSlash(in.composeRel()), err)
 		}
 	}
 	if in.Roots != nil {
 		*in.Roots = graphRoots(m.rootViews)
 	}
-	if err := emitGraphCatalog(in, m); err != nil {
-		return fmt.Errorf("write service catalog: %w", err)
+	// The service catalog describes the whole process set, which beside a
+	// legacy composition the adopted roots are not.
+	if !in.Mixed {
+		if err := emitGraphCatalog(in, m); err != nil {
+			return fmt.Errorf("write service catalog: %w", err)
+		}
 	}
 	// cmd/<bin>/cmd/roots_gen.go: one command per root.
 	return emitRootCommands(in.ProjectDir, in.ModulePath, m.rootViews, m.groups, m.configs.inputViews(), m.configs.rootMessage(), in.Checksums, in.warnings())
@@ -254,6 +289,11 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	providers, roots, groups, err := discoverAppDeclsAndGroups(in.ProjectDir)
 	if err != nil {
 		return nil, err
+	}
+	if in.Mixed {
+		if roots = adoptedRoots(roots); len(roots) == 0 {
+			return nil, fmt.Errorf("internal/app declares the legacy Infra / NewComponents composition and no root marked adopt, so there is no graph to generate beside it: mark a //forge:root struct `adopt` to generate it")
+		}
 	}
 
 	// Nodes: components, providers, then the generated ones.
@@ -342,6 +382,11 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if err := m.validateReachedConstructors(roots); err != nil {
 		return nil, err
 	}
+	if in.Mixed {
+		if err := m.validateMixedReach(in.ProjectDir, providers); err != nil {
+			return nil, err
+		}
+	}
 	return m, nil
 }
 
@@ -357,6 +402,11 @@ func (m *graphModel) wire(in GraphGenInput, resolver *graphResolver, roots []gra
 			return nil, err
 		}
 		allProblems := slices.Concat(problems, m.constructorGraphProblems())
+		if in.Mixed {
+			// Beside a legacy composition the graph is the adopted
+			// roots' closure and nothing more.
+			return m.outOfMixedReach(roots, draft, allProblems)
+		}
 		if len(allProblems) == 0 {
 			return nil, nil
 		}
@@ -517,11 +567,11 @@ func graphGenViewOf(module string, nodes []*graphNode, rootViews []graphRootView
 // — or the error to fail with, and the file is reconciled again without them.
 // A nil scope fails on any problem.
 func reconcileGraphComposeFile(in GraphGenInput, nodes []*graphNode, resolver *graphResolver, scope reachScope) (graphComposeFile, error) {
-	composeRel := filepath.Join("internal", "app", "compose.go")
+	composeRel := in.composeRel()
 	composeAbs := filepath.Join(in.ProjectDir, composeRel)
 	raw, rerr := os.ReadFile(composeAbs)
 	if rerr != nil && !os.IsNotExist(rerr) {
-		return graphComposeFile{}, fmt.Errorf("read internal/app/compose.go: %w", rerr)
+		return graphComposeFile{}, fmt.Errorf("read %s: %w", filepath.ToSlash(composeRel), rerr)
 	}
 	f := graphComposeFile{existing: string(raw)}
 	if disownedFilePresent(in.Checksums, composeRel, composeAbs) {
@@ -597,7 +647,7 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 	if err != nil {
 		return routesGenView{}, err
 	}
-	routesView := routesGenView{Module: in.ModulePath, ConnectImports: connectImports}
+	routesView := routesGenView{Module: in.ModulePath, ConnectImports: connectImports, ConnectV2: in.connectV2()}
 	routesImports := map[string]string{}
 	byAudience := map[string][]routesServiceView{"user": nil}
 	for _, row := range rows {
@@ -626,7 +676,7 @@ func addGraphRouteNodes(in GraphGenInput, compNode map[string]*graphNode, add fu
 			return routesGenView{}, err
 		}
 	}
-	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect",
+	routesView.Imports = sortedImports(routesImports, "fmt", "log/slog", "net/http", "strings", "connectrpc.com/connect", "connectrpc.com/connect/v2",
 		"github.com/reliant-labs/forge/pkg/middleware", "github.com/reliant-labs/forge/pkg/mountkit",
 		"github.com/reliant-labs/forge/pkg/mountkit/inventory", "github.com/reliant-labs/forge/pkg/authn")
 	return routesView, nil
@@ -970,6 +1020,10 @@ type providersGraphData struct {
 	// plain-named session cookie read in development only), and the auth
 	// config has Environment to decide it from.
 	DevSessionCookie bool
+	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
+	// the project's go.mod selects it (internal/connectmajor). False, the zero
+	// value, keeps every v1 render byte for byte.
+	ConnectV2 bool
 }
 
 // configTypeDeclares reports whether the config typeName — "" is the root
@@ -999,8 +1053,12 @@ func configTypeDeclares(messages []ConfigMessage, typeName string, rootFields ma
 var projectDevSessionCookieDecl = regexp.MustCompile(`(?m)^\s*DevSessionCookie\s+bool\b`)
 
 // projectAuthInterceptorDecl matches the auth interceptor the scaffolded
-// pkg/middleware/middleware.go declares.
-var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthInterceptor\(`)
+// pkg/middleware/middleware.go declares; projectAuthInterceptorV2Decl its
+// connect-go v2 form.
+var (
+	projectAuthInterceptorDecl   = regexp.MustCompile(`(?m)^func NewAuthInterceptor\(`)
+	projectAuthInterceptorV2Decl = regexp.MustCompile(`(?m)^func NewAuthInterceptorV2\(`)
+)
 
 // projectDeclaresAuthInterceptor reports whether the project's pkg/middleware
 // declares NewAuthInterceptor — forge's scaffold does, a project with a
@@ -1009,6 +1067,17 @@ var projectAuthInterceptorDecl = regexp.MustCompile(`(?m)^func NewAuthIntercepto
 // there. A project with no pkg/middleware yet is about to get forge's.
 func projectDeclaresAuthInterceptor(projectDir string) bool {
 	return projectMiddlewareDeclares(projectDir, projectAuthInterceptorDecl)
+}
+
+// projectDeclaresAuthInterceptorFor is projectDeclaresAuthInterceptor for the
+// connect-go major the providers target: a v2 project's UserAuth calls
+// NewAuthInterceptorV2, which only a middleware.go born on v2 (or ported to
+// it) declares.
+func projectDeclaresAuthInterceptorFor(projectDir string, v2 bool) bool {
+	if v2 {
+		return projectMiddlewareDeclares(projectDir, projectAuthInterceptorV2Decl)
+	}
+	return projectDeclaresAuthInterceptor(projectDir)
 }
 
 // projectClaimsEnricherDecl matches the enricher seam the scaffolded
@@ -1049,14 +1118,16 @@ func projectMiddlewareDeclares(projectDir string, decl *regexp.Regexp) bool {
 // GenerateGraphProviders scaffolds a graph-mode project's owned
 // internal/app/providers.go (the default providers: the database pool and
 // ORM, the outbound HTTP client, the user audience's authenticator, chain and
-// API listener, pprof) and auth.go, each exactly once.
-func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error {
+// API listener, pprof) and auth.go, each exactly once. major is the
+// connect-go major the providers are born on (zero: projectDir's go.mod's).
+func GenerateGraphProviders(modulePath, databaseDriver, projectDir string, major connectmajor.Major) error {
+	v2 := GenContext{ProjectDir: projectDir, ConnectMajor: major}.connectV2()
 	hasDB := databaseDriver != ""
 	// auth.go and login_broker.go read the config that declares their
 	// fields — a command config's, in a binary_config project — or none.
 	authConfig, hasJWT := configDeclaring(projectDir, jwtConfigFields)
 	brokerConfig, hasBroker := configDeclaring(projectDir, brokerConfigFields)
-	if err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB, AuthConfigType: authConfig, NoJWTConfig: !hasJWT}); err != nil {
+	if _, err := GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath, Graph: true, HasDatabase: hasDB, AuthConfigType: authConfig, NoJWTConfig: !hasJWT}); err != nil {
 		return err
 	}
 	rel := filepath.Join("internal", "app", "providers.go")
@@ -1067,8 +1138,9 @@ func GenerateGraphProviders(modulePath, databaseDriver, projectDir string) error
 	}
 	data := providersGraphData{Module: modulePath, HasDatabase: hasDB, RESTEnabled: projectAPIRESTEnabled(projectDir), ConfigFields: configFields,
 		AuthConfigType: authConfig, BrokerConfigType: brokerConfig, NoBrokerConfig: !hasBroker,
-		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptor(projectDir), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
-		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && configTypeDeclares(msgs, authConfig, configFields, "Environment")}
+		NoProjectAuthInterceptor: !projectDeclaresAuthInterceptorFor(projectDir, v2), ClaimsEnricher: projectDeclaresClaimsEnricher(projectDir),
+		DevSessionCookie: projectMiddlewareDeclares(projectDir, projectDevSessionCookieDecl) && configTypeDeclares(msgs, authConfig, configFields, "Environment"),
+		ConnectV2:        v2}
 	content, err := templates.ProjectTemplates().Render("providers-graph.go.tmpl", data)
 	if err != nil {
 		return fmt.Errorf("render providers-graph.go.tmpl: %w", err)

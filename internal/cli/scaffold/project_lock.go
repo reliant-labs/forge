@@ -1,10 +1,13 @@
 package scaffold
 
 import (
+	"os"
+
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/protofmt"
 )
 
 // projectLockAnnotation marks a scaffold command whose RunE runs holding the
@@ -46,6 +49,12 @@ func holdProjectLock(cmd *cobra.Command, f *factory.Factory) {
 				return err
 			}
 			defer release()
+			if !cmdutil.IsDryRun(c) {
+				// Every proto this command writes ends byte-identical to
+				// `buf format`'s output, settled under the lock before it
+				// is released (internal/protofmt).
+				defer protofmt.Begin(root, os.Stderr)()
+			}
 			return run(c, args)
 		}
 		if cmd.Annotations == nil {

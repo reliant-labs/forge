@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,31 @@ func (f *fakeSink) waitOne(t *testing.T) AuditEvent {
 	return f.events[len(f.events)-1]
 }
 
+// steppingClock is a fake audit clock that advances by step on every read,
+// so a call's timestamp is exactly start and its duration exactly step on
+// every OS — a real clock can measure a fast call as 0s (Windows).
+type steppingClock struct {
+	start time.Time
+	step  time.Duration
+	reads atomic.Int64
+}
+
+func newSteppingClock() *steppingClock {
+	return &steppingClock{start: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), step: 7 * time.Millisecond}
+}
+
+func (c *steppingClock) now() time.Time {
+	return c.start.Add(time.Duration(c.reads.Add(1)-1) * c.step)
+}
+
+// assertTiming checks ev was timed by c: one call, start to finish.
+func (c *steppingClock) assertTiming(t *testing.T, ev AuditEvent) {
+	t.Helper()
+	if !ev.Timestamp.Equal(c.start) || ev.Duration != c.step {
+		t.Errorf("event timing = (%v, %v), want (%v, %v) from the fake clock", ev.Timestamp, ev.Duration, c.start, c.step)
+	}
+}
+
 // ctxWithSpan returns a context carrying a remote span with a fixed,
 // valid trace id so we can assert the interceptor propagates trace_id.
 func ctxWithSpan(t *testing.T) (context.Context, string) {
@@ -76,12 +102,13 @@ func TestAuditInterceptorWithSink_SuccessPopulatesAllFields(t *testing.T) {
 	sink := newFakeSink()
 
 	ic := AuditInterceptorWithSink(logger, rlClaimsFromContext, sink)
+	clock := newSteppingClock()
+	ic.(*auditInterceptor).now = clock.now
 
 	baseCtx, wantTrace := ctxWithSpan(t)
 	ctx := rlContextWithClaims(baseCtx, &auth.Claims{UserID: "u-7", Email: "u@example.com"})
 
 	wrapped := ic.WrapUnary(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		time.Sleep(time.Millisecond)
 		return nil, nil
 	})
 	if _, err := wrapped(ctx, connect.NewRequest(&struct{}{})); err != nil {
@@ -104,12 +131,7 @@ func TestAuditInterceptorWithSink_SuccessPopulatesAllFields(t *testing.T) {
 	if ev.TraceID != wantTrace {
 		t.Errorf("TraceID=%q want %q", ev.TraceID, wantTrace)
 	}
-	if ev.Duration <= 0 {
-		t.Errorf("Duration not measured: %v", ev.Duration)
-	}
-	if ev.Timestamp.IsZero() {
-		t.Errorf("Timestamp not set")
-	}
+	clock.assertTiming(t, ev)
 
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"audit.event"`) || !strings.Contains(out, `"log_type":"audit"`) {

@@ -318,8 +318,17 @@ func listPackagePaths(ctx context.Context, patterns []string) ([]string, error) 
 
 // check runs the exclusion gate over its own load. Tests are not loaded: the
 // gate judges a package's non-test source and searches plain packages only.
+//
+// The search spans the whole module, so it reaches packages the run was never
+// asked about. One of those that does not compile — another agent's work in
+// progress in a shared checkout — is not a failure of this run: the scoped
+// packages loaded cleanly, and an unscoped run is where that package is
+// judged. It is searched as far as it type-checks, and the gate says, as a
+// warning on the requested package, which packages it could not search in
+// full (searchIncompleteFinding). A requested package that fails to load
+// still fails the lane: its own verdict would be half-made.
 func (l *excludeGateLoad) check(ctx context.Context, gate contract.ExcludeGateOptions) ([]contract.ExcludeFinding, error) {
-	pkgs, err := loadPackagesForAnalysis(ctx, l.search, analysisLoad{})
+	pkgs, err := loadPackagesForAnalysis(ctx, l.search, analysisLoad{allowBroken: true})
 	if err != nil {
 		return nil, err
 	}
@@ -328,12 +337,76 @@ func (l *excludeGateLoad) check(ctx context.Context, gate contract.ExcludeGateOp
 		want[r] = true
 	}
 	var roots []*packages.Package
+	var broken []string
 	for _, p := range pkgs {
 		if want[p.PkgPath] {
 			roots = append(roots, p)
+			continue
+		}
+		if importGraphHasErrors(p) {
+			broken = append(broken, p.PkgPath)
 		}
 	}
-	return contract.CheckExcludeDirectivesIn(roots, pkgs, gate), nil
+	if err := packageLoadErrors(roots); err != nil {
+		return nil, err
+	}
+	out := contract.CheckExcludeDirectivesIn(roots, pkgs, gate)
+	if f, ok := searchIncompleteFinding(roots, broken); ok {
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// importGraphHasErrors reports whether p, or any package it imports
+// (transitively), failed to load or type-check. Under allowBroken an error in
+// a dependency is recorded on the dependency's node, not on p, but p was still
+// type-checked against a half-checked import, so its search is incomplete too.
+func importGraphHasErrors(p *packages.Package) bool {
+	found := false
+	packages.Visit([]*packages.Package{p}, func(q *packages.Package) bool {
+		if found {
+			return false
+		}
+		if len(q.Errors) > 0 || len(q.TypeErrors) > 0 {
+			found = true
+			return false
+		}
+		return true
+	}, nil)
+	return found
+}
+
+// searchIncompleteFinding is the non-gating note that broken (the import
+// paths of module packages that failed to load) were searched only as far as
+// they type-check. It sits on the first requested package's first file, which
+// lies inside any --scope, so the scope filter keeps it.
+func searchIncompleteFinding(roots []*packages.Package, broken []string) (contract.ExcludeFinding, bool) {
+	if len(broken) == 0 {
+		return contract.ExcludeFinding{}, false
+	}
+	var file string
+	for _, r := range roots {
+		if len(r.GoFiles) > 0 {
+			file = r.GoFiles[0]
+			break
+		}
+	}
+	if file == "" {
+		return contract.ExcludeFinding{}, false
+	}
+	sort.Strings(broken)
+	const maxShown = 5
+	shown := broken
+	if len(shown) > maxShown {
+		shown = append(append([]string{}, shown[:maxShown]...), fmt.Sprintf("and %d more", len(broken)-maxShown))
+	}
+	return contract.ExcludeFinding{
+		Rule: contract.RuleExcludeSearchIncomplete, File: file, Line: 1,
+		Severity: finding.SeverityWarning,
+		Message: fmt.Sprintf("//forge:exclude-contract was judged without a full search of %d package(s) of this module that do not compile: %s",
+			len(broken), strings.Join(shown, ", ")),
+		FixHint: "the scoped packages are fine; once those packages build, an unscoped forge lint judges the marker against their implementations too",
+	}, true
 }
 
 // plainPackage reports whether p is a package as it builds outside tests: not
@@ -403,6 +476,10 @@ type analysisLoad struct {
 	depsFromSource bool
 	// tests loads each requested package's test variants as well.
 	tests bool
+	// allowBroken returns packages that failed to load (their Errors set)
+	// instead of failing the load: the caller decides which of them it can
+	// do without (the exclusion gate's search, excludeGateLoad.check).
+	allowBroken bool
 }
 
 // loadPackagesForAnalysis loads paths with the syntax and type information
@@ -444,10 +521,20 @@ func loadPackagesForAnalysis(ctx context.Context, paths []string, load analysisL
 	if err != nil {
 		return nil, fmt.Errorf("load packages %v: %w", paths, err)
 	}
+	if load.allowBroken {
+		return pkgs, nil
+	}
+	if err := packageLoadErrors(pkgs); err != nil {
+		return nil, err
+	}
+	return pkgs, nil
+}
 
-	// Broken packages mean the type information the analyzers depend on
-	// is incomplete — fail like the subprocess driver did rather than
-	// reporting half-analyzed results.
+// packageLoadErrors is the error for pkgs and their imports failing to load,
+// or nil. Broken packages mean the type information the analyzers depend on
+// is incomplete — fail like the subprocess driver did rather than reporting
+// half-analyzed results.
+func packageLoadErrors(pkgs []*packages.Package) error {
 	var loadErrs []string
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		for _, e := range p.Errors {
@@ -460,8 +547,7 @@ func loadPackagesForAnalysis(ctx context.Context, paths []string, load analysisL
 		if len(shown) > maxShown {
 			shown = append(append([]string{}, shown[:maxShown]...), fmt.Sprintf("… and %d more", len(loadErrs)-maxShown))
 		}
-		return nil, fmt.Errorf("packages failed to load:\n  %s", strings.Join(shown, "\n  "))
+		return fmt.Errorf("packages failed to load:\n  %s", strings.Join(shown, "\n  "))
 	}
-
-	return pkgs, nil
+	return nil
 }

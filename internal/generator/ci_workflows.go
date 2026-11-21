@@ -26,11 +26,19 @@ type CIWorkflowFile struct {
 // (internal/templates/ci/<provider>/): the provider whose files include its
 // Dest (CIProviderOfPath).
 func (f CIWorkflowFile) Render() ([]byte, error) {
+	return f.category().Render(f.Template, f.Data)
+}
+
+// SourcePath names the template file Render reads (templates.SourcePath).
+func (f CIWorkflowFile) SourcePath() string { return f.category().SourcePath(f.Template) }
+
+// category is the provider template category whose files include f.Dest.
+func (f CIWorkflowFile) category() templates.TemplateCategory {
 	provider := config.CIProviderGitHub
 	if isReliantCIPath(f.Dest) {
 		provider = config.CIProviderReliant
 	}
-	return templates.CITemplates(provider).Render(f.Template, f.Data)
+	return templates.CITemplates(provider)
 }
 
 // CIWorkflows is THE mapping from a project to its scaffolded GitHub Actions

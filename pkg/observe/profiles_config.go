@@ -15,8 +15,8 @@
 // Two ways to change them, and the environment wins:
 //
 //   - Config.Profiles, for a binary that always wants something else;
-//   - FORGE_PROFILES, FORGE_PROFILES_HEAP_INTERVAL, FORGE_PROFILES_CPU_INTERVAL
-//     and FORGE_PROFILES_CPU_DURATION, the deploy-time override (a workload's
+//   - FORGE_PROFILES, FORGE_PROFILES_HEAP_INTERVAL, FORGE_PROFILES_CPU_INTERVAL,
+//     FORGE_PROFILES_CPU_DURATION and FORGE_PROFILES_PGO, the deploy-time override (a workload's
 //     `profiling` block renders the first two, its `env` any of them), so one
 //     service can turn a type on, or sample faster, for a while without a code
 //     change.
@@ -78,6 +78,12 @@ const (
 	// duration ("5s", "10s"), at least MinCPUDuration and at most half the
 	// cycle.
 	EnvProfilesCPUDuration = "FORGE_PROFILES_CPU_DURATION"
+	// EnvProfilesPGO is whether CPU samples carry the per-frame start lines
+	// profile-guided builds read (profiles_pgo.go): "on" (the default) or
+	// "off". The KCL render sets it to off for a workload whose binary builds
+	// with PGO disabled, since nothing would read them and they cost about a
+	// quarter of a CPU profile's wire size.
+	EnvProfilesPGO = "FORGE_PROFILES_PGO"
 
 	// DefaultCPUInterval is the time between capture cycles by default.
 	DefaultCPUInterval = 5 * time.Minute
@@ -133,6 +139,9 @@ type profileSettings struct {
 	cpu, heap, alloc, goroutine, mutex, block bool
 	heapInterval                              time.Duration
 	cpuInterval, cpuDuration                  time.Duration
+	// pgoOff leaves the PGO start-line attributes off CPU samples
+	// (FORGE_PROFILES_PGO=off). The zero value attaches them.
+	pgoOff bool
 }
 
 // enabled reports whether any profile is captured at all.
@@ -204,6 +213,13 @@ func resolveProfileSettings(cfg ProfilesConfig) (profileSettings, []error) {
 	}
 
 	s := profileSettings{heapInterval: interval, cpuInterval: cycle, cpuDuration: window}
+	switch v := envValue(EnvProfilesPGO); strings.ToLower(v) {
+	case "", "on":
+	case "off":
+		s.pgoOff = true
+	default:
+		warns = append(warns, fmt.Errorf("%s=%q: want on or off; ignoring it", EnvProfilesPGO, v))
+	}
 	for _, t := range types {
 		switch t {
 		case ProfileCPU:

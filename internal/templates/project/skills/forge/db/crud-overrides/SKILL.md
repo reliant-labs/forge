@@ -276,9 +276,26 @@ The generated writes are single-row (`Update<Entity>Masked(ctx, db, e, fields)`)
 Asked to change every row matching a condition — archive a customer's open
 orders — do **not** `List<Entities>` and call `Update<Entity>Masked` per row:
 that is N round trips inside one transaction, and at 150,000 rows it hit the
-30s rpc deadline. Write one set-based `UPDATE` in the entity's
-`internal/db/<entity>_repo_ext.go` (the seam's header carries the same example
-for your entity), and call it from the handler:
+30s rpc deadline. The generated `Update<Entity>Where` is one statement over
+List's own filters, and returns how many rows it changed:
+
+```go
+n, err := db.UpdateOrderWhere(ctx, s.deps.DB, &db.Order{Status: "archived"}, []string{"status"},
+	orm.WhereEq("customer_id", customerID), orm.WhereNotEq("status", "archived"))
+```
+
+It stamps `updated_at`, never writes a soft-deleted row, and refuses a call
+with no filter (`orm.WhereIsNotNull` on the key means every row);
+`orm.WithOrderBy` + `orm.WithLimit` write a bounded batch. An entity with a
+`forge:version` column gets no `Update<Entity>Where` (and `crud.Repo.UpdateWhere`
+refuses it): each of its writes is a compare-and-swap against the version the
+caller read, and a set-based write has no version of each row to compare, so it
+would overwrite the concurrent writes the column exists to catch. Write such rows
+per row with `Update<Entity>Masked`, or — only when overwriting is the intent — a
+raw `UPDATE` that also sets `version = version + 1`.
+For a write it cannot express, write one set-based `UPDATE` in the entity's
+`internal/db/<entity>_repo_ext.go` (the seam's header carries an example for
+your entity), and call it from the handler:
 
 ```go
 // internal/db/order_repo_ext.go (yours)

@@ -183,5 +183,5 @@ func Install(ctx context.Context, dir, declared string, frozen bool) error {
 	if err := VerifyPinnedRunner(ctx, dir, runner); err != nil {
 		return err
 	}
-	return runInstall(ctx, runner, dir, installArgs(runner, dir, frozen))
+	return runInstall(ctx, output{}, runner, dir, installArgs(runner, dir, frozen))
 }

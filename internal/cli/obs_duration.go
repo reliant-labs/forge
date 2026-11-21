@@ -30,10 +30,16 @@ func (d *obsDurationValue) String() string { return time.Duration(*d).String() }
 // Type is "duration", as pflag's own, so --help reads the same.
 func (d *obsDurationValue) Type() string { return "duration" }
 
-// obsDurationVar registers a duration flag that also accepts days.
+// obsDurationVar registers a duration flag that also accepts days. A zero
+// default means "unset" (the usage names the real default), so --help does not
+// print "(default 0s)": pflag recognizes "0s" as zero only for its own
+// duration type, and an empty DefValue for any type.
 func obsDurationVar(f *pflag.FlagSet, p *time.Duration, name string, value time.Duration, usage string) {
 	*p = value
 	f.Var((*obsDurationValue)(p), name, usage)
+	if value == 0 {
+		f.Lookup(name).DefValue = ""
+	}
 }
 
 // parseObsDuration reads an optional leading "<n>d" and then, if anything is

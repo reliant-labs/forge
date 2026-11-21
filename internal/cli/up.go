@@ -54,6 +54,7 @@ import (
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostinfra"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/procguard"
 	"github.com/reliant-labs/forge/internal/projectstore"
 	"github.com/reliant-labs/forge/internal/secrets"
 
@@ -305,7 +306,7 @@ func newEnvUpCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.telemetry, "telemetry", "", "Where this stack's telemetry is stored: auto (hosted when the env declares a control_plane and you are signed in to Reliant, else local), hosted (fail instead of falling back) or local (the local ClickStack). Overrides "+devTelemetryEnvVar+" and observability.dev_telemetry; local anywhere wins.")
 	cmd.Flags().BoolVar(&opts.noSeed, "no-seed", false, "Skip the first-boot dev auto-seed. By default 'forge env up' seeds a dev database once when it is reachable and all seedable tables are empty.")
 	cmd.Flags().StringArrayVar(&opts.targets, "target", nil, "Scope the whole run — build, deploy, host and frontend phases — to specific services/operators/frontends by name (repeatable). Targeting only host/frontend apps builds no images. An unknown name is an error listing the env's app names. Default: everything.")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 
 	return cmd
 }
@@ -901,8 +902,14 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// defer closes it for every other way out, a failure included — the
 	// failed run is the one whose timings are most worth having.
 	timings := newUpTimings(nil)
+	// When this run started: the per-RPC table's window (up_endpoints.go).
+	upStarted := time.Now()
 	timingsRun := upTimingsRun{opts: opts, version: runningForgeVersion(), runID: newUpRunID()}
 	ctx = withUpTimings(ctx, timings)
+	// A failed run's last line is its RESULT line (command_result.go).
+	// Registered first so it runs last, after the timings record took the
+	// error as it was.
+	defer func() { err = upResultOnError(err, opts.env, timings.failedStage()) }()
 	defer func() { finishUpTimings(timings, timingsRun, err, os.Stderr) }()
 
 	// PROXY PREFLIGHT, first thing. When the environment routes through an HTTP
@@ -951,16 +958,10 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// what the env's KCL declares so a typo'd name fails here rather than
 	// silently rendering the default (an option nothing reads is not an error
 	// in KCL — it is simply unread). Validation degrades permissively if the
-	// project's options can't be discovered; the render still runs.
-	// Parse FIRST: it rejects malformed values and forge-reserved names, which
-	// deserve their own message ("image_tag is set by forge") rather than the
-	// declared-name check's "no such option" — image_tag is a real option, just
-	// not yours.
-	renderDArgs, err := parseRenderOptions(opts.renderOptions)
+	// project's options can't be discovered; the render still runs. See
+	// resolveRenderOptions for the order and the bool normalization.
+	renderDArgs, err := resolveRenderOptions(projectDir, opts.env, opts.renderOptions)
 	if err != nil {
-		return err
-	}
-	if err := validateRenderOptions(projectDir, opts.env, opts.renderOptions); err != nil {
 		return err
 	}
 	setRenderOptions(renderDArgs)
@@ -1318,6 +1319,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if err != nil {
 		return err
 	}
+	// One health rpc to each host service, now, so its span is stored by
+	// the time the per-RPC table below reads it (up_endpoints.go).
+	healthSent := sendUpHealthProbes(ctx, upStarted, collectUpServices(entities, opts.env, opts.targets, frontendsOn, portInUse))
 	// First-boot dev auto-seed. By this point the app's AUTO_MIGRATE has
 	// run (readiness gate passed), so the schema is current. Warn-never-
 	// fatal: a seed failure never breaks the dev loop.
@@ -1351,7 +1355,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// the summary lists exactly the frontends this run actually started.
 	// The cluster verdict rides in the same box: the half of "what came up"
 	// that runs in Kubernetes was missing from it entirely.
-	printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth, procs)
+	upRows := printUpSummary(entities, opts.env, detach, opts.targets, frontendsOn, clusterHealth, procs)
 
 	// Opportunistic storage maintenance, after the summary so its output never
 	// pushes the URLs off screen, and only on an env that actually came up —
@@ -1361,6 +1365,15 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// a 24h timestamp, and never fatal. See storage_converge.go.
 	if upReclaimsStorage(entities, clusterErr) {
 		maybeOpportunisticGC(ctx, os.Stdout, declaredRegistryContainers(entities.Clusters))
+	}
+	// The stack is up: what its RPCs did, then one line saying so, the last
+	// of the bring-up. A run whose cluster gate failed gets its line on the
+	// error instead.
+	if clusterErr == nil {
+		if upHasHostService(upRows) {
+			printUpEndpoints(ctx, os.Stdout, opts.env, healthSent)
+		}
+		fmt.Printf("\n%s\n", upResult(opts.env, upRows, detach).Line())
 	}
 
 	// PRESENCE, reported after the stack is actually up (§7.4). Here and
@@ -1418,8 +1431,12 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		go session.heartbeatUntil(beatCtx)
 	}
 
-	<-ctx.Done()
-	fmt.Println("\n[up] shutting down...")
+	if awaitHoldEnd(ctx, procs) {
+		fmt.Printf("\n[up] every process this run started has exited (stopped by `forge env down %s`, or on their own; see %s/) — nothing left to supervise, exiting.\n",
+			opts.env, upLogDir(opts.env))
+	} else {
+		fmt.Println("\n[up] shutting down...")
+	}
 	// Stop every heartbeat BEFORE the teardown report — the in-process one
 	// and the keeper, which procs.shutdown stops with the other children —
 	// so a beat in flight cannot land after the stopped row and resurrect
@@ -2243,7 +2260,7 @@ func enrichOwnership(rows []upServiceRow, projectID, env string) {
 // It is what makes the box tell the truth about BOTH halves of what was
 // brought up; a box that lists only host processes is the same silence the
 // exit code used to keep.
-func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary, registries ...*procRegistry) {
+func printUpSummary(e *KCLEntities, env string, background bool, targets []string, frontendsOn bool, cluster *clusterWorkloadSummary, registries ...*procRegistry) []upServiceRow {
 	rows := collectUpServices(e, env, targets, frontendsOn, portInUse)
 	for i := range rows {
 		if rows[i].Port <= 0 && len(registries) > 0 {
@@ -2257,7 +2274,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	probeRowsListening(compose, portInUse)
 	rows = append(rows, compose...)
 	if len(rows) == 0 && cluster == nil {
-		return
+		return rows
 	}
 	var trailers []string
 	// The lifecycle trailer is about the host/frontend children. With no
@@ -2282,6 +2299,7 @@ func printUpSummary(e *KCLEntities, env string, background bool, targets []strin
 	// notReadyLabel="starting" because a just-launched port not yet bound is
 	// booting, not down.
 	renderUpSummary(os.Stdout, env, rows, "starting", false, trailers, cluster)
+	return rows
 }
 
 // authParityTrailer returns a one-line banner warning when this environment's
@@ -2634,6 +2652,9 @@ type hostReadyResult struct {
 	port   int
 	state  portReadyState
 	exited string // observed runner exit, not inferred from a missing listener
+	// buildFailed is the compiler output of a hot-reload runner whose build
+	// failed: the runner keeps watching, so it never exits (up_build_failure.go).
+	buildFailed string
 	// holderPID / holderCmd identify the process actually on the port when
 	// state is portReadyForeign. Populated only for that state — for the
 	// others there is either no holder or the holder is our own child.
@@ -2693,7 +2714,7 @@ func evalHostReadiness(e *KCLEntities, projectID, envName string, targets []stri
 func hostReadyUnready(rs []hostReadyResult) []hostReadyResult {
 	var out []hostReadyResult
 	for _, r := range rs {
-		if r.state != portReadyOurs || r.exited != "" {
+		if r.state != portReadyOurs || r.exited != "" || r.buildFailed != "" {
 			out = append(out, r)
 		}
 	}
@@ -2713,6 +2734,8 @@ func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) e
 			reason = "held by another process — not the child this run started (stale/foreign holder)"
 		} else if r.exited != "" {
 			reason = "runner exited before readiness (" + r.exited + ")"
+		} else if r.buildFailed != "" {
+			reason = "its build failed (the hot-reload runner keeps watching for a fix):"
 		}
 		if r.port > 0 {
 			fmt.Fprintf(&b, "       %-14s :%d  %s\n", r.name, r.port, reason)
@@ -2721,6 +2744,11 @@ func hostReadyError(envName string, unready []hostReadyResult, e *KCLEntities) e
 				reason = "no live runner observed (portless process)"
 			}
 			fmt.Fprintf(&b, "       %-14s (no port)  %s\n", r.name, reason)
+		}
+		if r.buildFailed != "" {
+			for _, l := range strings.Split(r.buildFailed, "\n") {
+				fmt.Fprintf(&b, "       %-14s   | %s\n", "", l)
+			}
 		}
 		fmt.Fprintf(&b, "       %-14s   log: %s/%s.log\n", "", upLogDir(envName), r.name)
 		if r.holderPID > 0 {
@@ -2830,6 +2858,9 @@ func waitHostServicesReady(ctx context.Context, e *KCLEntities, projectID, envNa
 		}
 		for i := range rs {
 			rs[i].exited = procs.exitReason(rs[i].name)
+			if rs[i].state == portReadyNobody && rs[i].exited == "" {
+				rs[i].buildFailed = buildFailure(envName, rs[i].name)
+			}
 		}
 		ready.observe(rs)
 		return rs
@@ -3093,8 +3124,9 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 		return fmt.Errorf("group infrastructure services: %w", err)
 	}
 	projectDir := projectDirForKCL()
-	if err := prepareLocalCollector(projectDir, entities); err != nil {
-		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config): %w", err)
+	collectorChanged, err := prepareLocalCollector(projectDir, entities)
+	if err != nil {
+		return fmt.Errorf("prepare the local collector (.forge/logs mount, forwarder config, declared log parsing): %w", err)
 	}
 	// The local Alertmanager's configuration is rendered before compose
 	// mounts it, from the env's alerts and its secret store's receiver keys.
@@ -3130,10 +3162,23 @@ func prewarmInfra(ctx context.Context, env string, entities *KCLEntities) error 
 	// nothing in the dev loop dials it, and prewarming it would publish a
 	// production workload during `forge env up`, before the deploy the
 	// user asked for. The omission is a DECISION.
-	return deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
+	infraErr := deployInfraGroups(ctx, groups, map[string]deploytarget.Provider{
 		"host-infra": deploytarget.HostInfraProvider{ProjectDir: projectDir},
 		"compose":    deploytarget.ComposeProvider{ProjectDir: projectDir},
 	})
+	// Declared telemetry (forge.Telemetry) for what runs on this machine:
+	// a collector that was already running re-reads the log parsing it
+	// includes, and the local telemetry agent pulls the scrapes. Both after
+	// the infrastructure, so the engines and the collector are serving.
+	if collectorChanged {
+		reloadLocalCollector(ctx, projectDir, env, localCollectorService(entities))
+	}
+	var store map[string]string
+	if prov, perr := secretProviderFromEntities(entities, projectDir); perr == nil {
+		store = prov.All()
+	}
+	upLocalTelemetry(ctx, os.Stdout, projectDir, env, entities, store)
+	return infraErr
 }
 
 // deployInfraGroups runs each INFRASTRUCTURE group through its provider and
@@ -3267,6 +3312,9 @@ func reportEnvConflicts(service string, conflicts []envutil.EnvConflict) {
 // workload declares.
 func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
 	spec := hostRunnerSpec(w)
+	if err := withHostCover(ctx, &spec, w, env); err != nil {
+		return nil, "", err
+	}
 	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
 	if err != nil {
 		return nil, "", err
@@ -3292,8 +3340,12 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	declared := hostWorkloadConfig(cfg, w, secretsLayer, env)
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
-	cmd.Env = hostEnv
+	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
+	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
+	// A bare `forge` the process runs (the scaffolded .air.toml's `forge
+	// storage check`) is the forge running this env.
+	cmd.Env = withForgeShimOnPath(cmd.Env, w.Name)
 
 	return cmd, w.Name, nil
 }
@@ -3312,6 +3364,10 @@ func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
 	}
 	if g := w.GoBuild(); g != nil {
 		spec.GoPkg, spec.OutputName = g.Cmd, g.OutputName
+		// The env refuses workloads that disagree on a binary's PGO
+		// (ResolvePGOBinaries), so this workload's own declaration is the
+		// binary's.
+		spec.PGOOff = g.PGO != nil && g.PGO.Enabled != nil && !*g.PGO.Enabled
 	}
 	return spec
 }
@@ -3736,6 +3792,12 @@ type procRegistry struct {
 	// readStopTable reads the process table for the shutdown sweep; nil is
 	// the OS table. A test injects a failing or modelled one.
 	readStopTable func() (*stopTable, error)
+	// selfLineage is the command's own lineage, which the sweep never
+	// selects; nil is procguard.Self. A test with a modelled table injects
+	// an empty one, so a modelled pid that happens to be a real ancestor of
+	// the test process (Windows pids are small multiples of 4) is not
+	// skipped.
+	selfLineage func() procguard.Lineage
 }
 
 // stopped reports whether shutdown has run, so a second teardown path (a
@@ -4213,7 +4275,7 @@ func trackedStack(projectID, env string) []trackedProc {
 // printed "no tracked stack for env=dev" and exited 0 while the stack it meant
 // to stop kept running. A teardown that cannot fail is not a teardown.
 func runUpStop(env string) error {
-	projectDir, err := requireProjectDir("forge env down")
+	projectDir, err := requireStackProjectDir("forge env down")
 	if err != nil {
 		return err
 	}
@@ -4233,7 +4295,13 @@ func runUpStop(env string) error {
 			if err != nil {
 				err = fmt.Errorf("host infrastructure: %w", err)
 			}
-			return infraStopped, errors.Join(err, composeErr)
+			agentStopped, agentErr := stopLocalTelemetryAgent(projectDir, env)
+			if agentErr != nil {
+				agentErr = fmt.Errorf("telemetry agent: %w", agentErr)
+			} else if agentStopped {
+				infraStopped++
+			}
+			return infraStopped, errors.Join(err, agentErr, composeErr)
 		},
 	})
 }
@@ -4382,8 +4450,9 @@ func stopHostInfra(env string) (int, error) {
 // stream. The `<name>` is sanitised ("/" and ":" → "_") so frontend
 // labels like "frontend:web" map to a flat filename.
 func upLogPath(env, name string) (string, error) {
-	safe := strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), ":", "_")
-	return filepath.Join(projectDirForKCL(), ".forge", "logs", env, safe+".log"), nil
+	// hostinfra.LogPath is the one definition, so a host-infra engine's log
+	// and a host process's land in the same directory under the same rule.
+	return hostinfra.LogPath(projectDirForKCL(), env, name), nil
 }
 
 // upLogDir returns the directory upLogPath writes into, for the summary's

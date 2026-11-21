@@ -29,7 +29,7 @@
             "alias": "requests"
           }
         ],
-        "where": "SpanKind IN ('Server', 'SPAN_KIND_SERVER')",
+        "where": "SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND SpanAttributes['forge.probe'] != 'true'",
         "whereLanguage": "sql",
         "groupBy": "ResourceAttributes['service.version']",
         "granularity": "auto",
@@ -58,7 +58,7 @@
             "alias": "p95"
           }
         ],
-        "where": "SpanKind IN ('Server', 'SPAN_KIND_SERVER')",
+        "where": "SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND SpanAttributes['forge.probe'] != 'true'",
         "whereLanguage": "sql",
         "groupBy": "ResourceAttributes['service.version']",
         "granularity": "auto",
@@ -87,7 +87,7 @@
             "alias": "requests"
           }
         ],
-        "where": "SpanKind IN ('Server', 'SPAN_KIND_SERVER')",
+        "where": "SpanKind IN ('Server', 'SPAN_KIND_SERVER') AND SpanAttributes['forge.probe'] != 'true'",
         "whereLanguage": "sql",
         "groupBy": "ResourceAttributes['service.version']",
         "granularity": "auto",

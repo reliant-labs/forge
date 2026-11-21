@@ -37,7 +37,7 @@ func deployAllProject(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	write("forge.yaml", "name: deployall\nmodule_path: github.com/example/deployall\nversion: \"0.1.0\"\n")
+	write("forge.yaml", "name: deployall\nmodule_path: github.com/example/deployall\n")
 	markServiceProject(t, dir)
 	return dir
 }

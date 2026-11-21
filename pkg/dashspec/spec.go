@@ -1,6 +1,12 @@
 package dashspec
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"time"
+	"unicode"
+	"unicode/utf8"
+)
 
 // SpecVersion identifies the serialized shape of Spec. Bump it on a breaking
 // change so a consumer can refuse a spec it does not understand.
@@ -408,9 +414,11 @@ const (
 	AggMax           Agg = "max"
 	AggQuantile      Agg = "quantile"
 	AggLast          Agg = "last"
-	// AggRate, AggIncrease and AggMin are metrics-only. A rate is per second,
-	// an increase is per bucket, and both are time-weighted per series; on a
-	// monotonic sum, AggSum still means the increase.
+	// AggRate, AggIncrease and AggMin are metrics-only. An increase is what
+	// the counter grew by in the bucket (each sample's growth spread over the
+	// interval it covers, never extrapolated past the samples), and a rate is
+	// that per second of the time the samples cover; on a monotonic sum,
+	// AggSum still means the increase.
 	AggRate     Agg = "rate"
 	AggIncrease Agg = "increase"
 	AggMin      Agg = "min"
@@ -469,6 +477,16 @@ type Predicate struct {
 	Values []string `json:"values,omitempty"`
 }
 
+// The metric kinds a metrics series reads (Series.MetricType): the OTel data
+// point types, as the telemetry store keeps them.
+const (
+	MetricTypeSum          = "sum"
+	MetricTypeGauge        = "gauge"
+	MetricTypeHistogram    = "histogram"
+	MetricTypeExpHistogram = "exp_histogram"
+	MetricTypeSummary      = "summary"
+)
+
 // Series is one aggregate shown by a panel.
 type Series struct {
 	Label string `json:"label"`
@@ -480,7 +498,9 @@ type Series struct {
 	// AggCount.
 	Field string `json:"field,omitempty"`
 	// MetricType is "sum", "gauge", "histogram", "exp_histogram" or "summary"
-	// (metrics only).
+	// (metrics only): one of the MetricType* constants.
+	//
+	//dashspec:enum MetricType
 	MetricType string `json:"metricType,omitempty"`
 	// Where narrows this series alone (e.g. only the failed requests).
 	Where []Predicate `json:"where,omitempty"`
@@ -565,6 +585,10 @@ type Panel struct {
 	// drawn as one, open the data browser (see PanelLink). Only the console
 	// follows it.
 	Link *PanelLink `json:"link,omitempty"`
+	// Select makes a click on a row of a sql panel set one of the
+	// dashboard's filter params to that row's value (see RowSelect). Only
+	// a sql panel takes it.
+	Select *RowSelect `json:"select,omitempty"`
 	// HasError narrows a KindSessions panel to sessions that hit an error;
 	// only that kind takes it.
 	HasError bool `json:"hasError,omitempty"`
@@ -667,6 +691,90 @@ const FilterToggle FilterKind = "toggle"
 
 // ToggleIDPattern is what a toggle filter's id (its parameter name) must match.
 const ToggleIDPattern = `^[a-z][a-z0-9_]{0,31}$`
+
+// FilterParam is a value a viewer narrows a dashboard's sql panels by, most
+// often by clicking a row of a breakdown (a panel's Select): the page, the
+// channel, the country. A sql panel reads it as the ClickHouse parameter
+// named by its id, typed String, and the reader binds it to the empty string when the viewer
+// has set none, so a statement honours it as
+//
+//	({f_route:String} = '' OR route = {f_route:String})
+//
+// It is a typed value, never spliced into the SQL. The id is the parameter's
+// name and matches FilterParamIDPattern, whose "f_" prefix keeps it apart
+// from the built-in parameters and lets a reader bind the empty string to one a statement
+// uses that it was given no value for. A panel whose statement does not read
+// a parameter ignores it, so which filters a card honours is what its
+// statement reads.
+//
+// It is not a Filter: a Filter is a dropdown or a toggle the dashboard's
+// toolbar draws, while a filter param is set from the data and drawn as a
+// removable chip. A reader that predates it draws no control for it, and its
+// panels read the empty string (every row).
+type FilterParam struct {
+	ID string `json:"id"`
+	// Label names the filter on its chip ("Page", "Country").
+	Label string `json:"label"`
+	// Description is one sentence on what the filter keeps.
+	Description string `json:"description,omitempty"`
+}
+
+// FilterParamIDPattern is what a filter param's id (its parameter name) must
+// match.
+const FilterParamIDPattern = `^f_[a-z0-9_]{1,30}$`
+
+// Filter param bounds.
+const (
+	// MaxFilterParams bounds Dashboard.FilterParams.
+	MaxFilterParams = 16
+	// MaxFilterParamValueBytes bounds a filter param's value.
+	MaxFilterParamValueBytes = 512
+)
+
+// CheckFilterParamValue reports whether v is a value a filter param may be
+// set to: valid UTF-8 of at most MaxFilterParamValueBytes, with no control
+// characters. The value is bound as a typed parameter and never reaches the
+// SQL text whatever it holds; this keeps a reader from carrying a value no
+// row could match (a page, a country, a referrer) to the database.
+func CheckFilterParamValue(v string) error {
+	if len(v) > MaxFilterParamValueBytes {
+		return fmt.Errorf("a filter value is at most %d bytes", MaxFilterParamValueBytes)
+	}
+	if !utf8.ValidString(v) {
+		return errors.New("a filter value must be valid UTF-8")
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return errors.New("a filter value must not contain control characters")
+		}
+	}
+	return nil
+}
+
+// RowSelect makes a click on a row of a sql panel drawn as rows set one of the
+// dashboard's filter params to the row's value in Column: the Pages
+// breakdown's rows set f_route to their page. Only the Reliant console follows
+// it; any other reader draws the rows as they are.
+type RowSelect struct {
+	// Param is the id of one of the dashboard's FilterParams.
+	Param string `json:"param"`
+	// Column is the result column whose value the click sets it to.
+	Column string `json:"column"`
+}
+
+// FilterParamValues is the value of each filter param d declares: set's value
+// for one it names, else the empty string (no filter). Names d does not declare are dropped,
+// so a reader binds exactly the dashboard's params (obsquery.Scope.FilterParams).
+func (d Dashboard) FilterParamValues(set map[string]string) map[string]string {
+	var out map[string]string
+	for _, p := range d.FilterParams {
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[p.ID] = set[p.ID]
+	}
+	return out
+}
 
 // AnnotationSource names where a dashboard's time-series markers come from.
 type AnnotationSource string
@@ -797,9 +905,12 @@ type Dashboard struct {
 	// generated dashboard, or several consolidated into one). A reader that
 	// keeps per-dashboard state (stars, copies) moves it from a replaced id
 	// to this one. It never changes what the dashboard draws.
-	Replaces    []string     `json:"replaces,omitempty"`
-	Filters     []Filter     `json:"filters,omitempty"`
-	Annotations []Annotation `json:"annotations,omitempty"`
+	Replaces []string `json:"replaces,omitempty"`
+	Filters  []Filter `json:"filters,omitempty"`
+	// FilterParams are the values a viewer narrows the dashboard's sql
+	// panels by from the data (see FilterParam). At most MaxFilterParams.
+	FilterParams []FilterParam `json:"filterParams,omitempty"`
+	Annotations  []Annotation  `json:"annotations,omitempty"`
 	// DefaultRange is the time range the dashboard opens on when the viewer
 	// picked none: a number and a unit of s, m, h or d ("24h", "7d"), at most
 	// MaxDefaultRange. A dashboard whose panels bucket by day declares "7d";

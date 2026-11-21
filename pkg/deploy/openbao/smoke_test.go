@@ -63,6 +63,17 @@ import (
 
 const smokeOpenBaoImage = "quay.io/openbao/openbao:2.6.2"
 
+// The smoke tests label every docker network and container they create as
+// smokeDockerOwner's, and reap their own leftovers (a killed run never reaches
+// t.Cleanup; forge#2283). smokeDockerMaxRun is the longest a run of this
+// package takes, longer than any lane's -timeout for it; testdocker.ReapStale
+// never reaps a live run's resources on this host, and elsewhere waits past
+// this (or the binary's own -timeout, if longer) plus a margin.
+const (
+	smokeDockerOwner  = "openbao"
+	smokeDockerMaxRun = time.Hour
+)
+
 const kubectlShim = `#!/bin/bash
 # A directory-backed stand-in for the four kubectl questions converge.sh asks.
 # This fake API's state is shared with the host test runner, whose UID need not
@@ -292,13 +303,11 @@ func newSmoke(t *testing.T) *smoke {
 	sfx := fmt.Sprintf("%d", time.Now().UnixNano()%1e9)
 	s.net = "bao-smoke-" + sfx
 	s.server = "bao-server-" + sfx
-	if out, err := exec.Command("docker", "network", "create", s.net).CombinedOutput(); err != nil {
-		t.Fatalf("docker network: %v\n%s", err, out)
+	testdocker.ReapStale(t, smokeDockerOwner, smokeDockerMaxRun)
+	if err := testdocker.Network(t, smokeDockerOwner, s.net); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = exec.Command("docker", "rm", "-fv", s.server).Run()
-		_ = exec.Command("docker", "network", "rm", s.net).Run()
-	})
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-fv", s.server).Run() })
 
 	s.tlsDir = filepath.Join(s.dir, "tls")
 	s.writeCerts()
@@ -474,7 +483,8 @@ func (s *smoke) badToken() string { return "" }
 
 func (s *smoke) start() {
 	s.t.Helper()
-	out, err := exec.Command("docker", append(append([]string{"run", "-d", "--name", s.server, "--network", s.net}, testdocker.Publish(8200)...),
+	out, err := exec.Command("docker", append(append(append([]string{"run", "-d", "--name", s.server, "--network", s.net},
+		testdocker.Labels(smokeDockerOwner)...), testdocker.Publish(8200)...),
 		"--tmpfs", "/openbao/data:uid=100,gid=1000", "--tmpfs", "/openbao/audit:uid=100,gid=1000",
 		"-v", s.tlsDir+":/openbao/tls:ro", "-v", filepath.Join(s.dir, "config.hcl")+":/etc/bao/config.hcl:ro",
 		"-e", "BAO_STATIC_KEY="+s.hexKey, "-e", "BAO_API_ADDR=https://"+s.server+":8200",

@@ -283,7 +283,10 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   labelled **`merge:failed`**. On `review:changes` or `merge:failed`, fix and push: every
   push is reviewed again (pr-fix takes over a PR nobody is fixing). `hold` keeps a PR out
   of both queues. Never `gh pr merge` yourself, never `--admin`, never rerun Actions to
-  see green.
+  see green. **Approval is a check, never a label** (owner, 2026-11-20): what merges is
+  decided by the required checks (`CI gate`, and `Reliant review`, which reads the review
+  marker on the exact head); the `review:*` and `merge:*` labels are markers for people,
+  and no label turns a check green.
 - **Releasing: the `rc-train` workflow, never a chat.** control-plane's `rc-train` cuts a
   release candidate when a main moved and 2h passed, or right after a PR labelled
   **`release:asap`** merges: add that label to ship sooner. It tags a commit `main`

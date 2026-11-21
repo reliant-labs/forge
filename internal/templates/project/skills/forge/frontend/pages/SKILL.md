@@ -11,8 +11,8 @@ The example walks through adding `app/users/page.tsx` for a hypothetical `UserSe
 
 ## Step 1 — scaffold the entity (migration + CRUD RPCs)
 
-The schema lives in `db/migrations/`, not in proto — there is no
-`(forge.v1.entity)` annotation (those are retired and ignored). Declare the
+The schema lives in `db/migrations/`, not in proto — there is no entity
+annotation. Declare the
 message under a leading `// forge:entity` comment and run `forge scaffold`,
 which writes the create-table migration and scaffolds the CRUD messages +
 RPCs in one step. An entity is a table plus matching CRUD RPCs;
@@ -78,7 +78,7 @@ This produces:
 - Generated React Query hooks: `useListUsers`, `useGetUser`, `useCreateUser`, `useUpdateUser`, `useDeleteUser`. They are emitted per PROTO SERVICE, not per entity — `src/hooks/<service>-service-hooks_gen.ts` — so import from the barrel (`@/hooks`), which re-exports every generated hook file.
 - Generated Connect transport in `src/lib/connect.ts`.
 
-Never hand-edit `*-hooks.ts` — overwritten on next `forge generate`. Add custom hooks in a separate file (`src/hooks/custom-hooks.ts`).
+Never hand-edit `*-hooks_gen.ts` — overwritten on next `forge generate`. Add custom hooks in a separate file (`src/hooks/custom-hooks.ts`).
 
 ## Step 3 — build the page
 
@@ -333,15 +333,15 @@ take_screenshot()    # actual rendered pixels
 2. **Copying server data into Zustand.** React Query already caches it. Subscribe to the query, don't duplicate it.
 3. **Using `useState` for form state on a non-trivial form.** Use `react-hook-form` + Zod schema. See `frontend/patterns`.
 4. **Forgetting `"use client"`** on a page that uses hooks. Build error.
-5. **Hand-editing a generated `*-hooks.ts`.** Overwritten on next `forge generate`.
+5. **Hand-editing a generated `*-hooks_gen.ts`.** Overwritten on next `forge generate`.
 6. **Skipping screenshots.** Snapshots compile, tests pass, layout is broken in the browser.
 7. **Leaving a scaffolded form on the raw CRUD RPC when a domain verb owns the operation.** The generated create page wires `Create<Entity>`: the generator cannot tell whether `IssuePrescription` creates a row or transitions one, so it never guesses. You can. Point the form at the domain RPC when one exists — that is where the invariants and side effects live. Rewire the mutation hook only. To stop the *edit* page writing a column a domain RPC owns, declare it in the proto with `// forge:guards <table>.<column>` on that RPC's request (see `proto`): the column then leaves the scaffolded `update_mask` and renders as a disabled row naming the RPC, instead of being written raw and tripping whatever CHECK the RPC exists to enforce. Note that pages are scaffolded **once** — a page that predates the marker keeps writing the column, and `forge lint --guarded-fields` is what finds it.
-8. **Adding a `src/app/<entity>/[id]/` route.** `npm run build` refuses a dynamic segment in a static export. Use `/<entity>/view?id=…` (Step 6). A project scaffolded before forge v0.1.44 still has `[id]` pages. `forge skill load migrations/v0.1.44` converts them.
+8. **Adding a `src/app/<entity>/[id]/` route.** `npm run build` refuses a dynamic segment in a static export. Use `/<entity>/view?id=…` (Step 6). A project scaffolded before forge v0.1.44 still has `[id]` pages; `frontend/serving` converts them.
 9. **Hand-rolling mutation error toasts.** Mutation failures already surface through the app-wide chokepoint (`MutationCache.onError` in `src/lib/query-client.ts`). If your page renders the error inline (form banner), pass `meta: { silenceErrorToast: true }` to the mutation so the failure isn't announced twice — and show users `userMessage(err)` (from `@reliantlabs/forge-web-runtime`), never raw `err.message`.
 
 ## Rules
 
-- Generated hooks (`use<Method>`) come from `forge generate`. Never hand-edit `*-hooks.ts`.
+- Generated hooks (`use<Method>`) come from `forge generate`. Never hand-edit `*-hooks_gen.ts`.
 - Three states (loading, error, success) on every data-fetching page.
 - Server data lives in React Query; client UI state lives in Zustand. Never mix.
 - Subscribe to Zustand slices, not the whole store.

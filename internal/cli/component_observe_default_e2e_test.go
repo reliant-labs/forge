@@ -110,13 +110,13 @@ func (s *service) Ping(ctx context.Context) error { return nil }
 
 	runCmd(t, projectDir, forgeBin, "generate")
 	dec := readFileE2E(t, decoratorPath)
-	if !strings.Contains(dec, `o.chain.Run(ctx, "checkout.HealthCheck"`) {
+	if !strings.Contains(dec, `observe.RunOp(o.chain, ctx, forgeMiddlewareServiceOps.HealthCheck,`) {
 		t.Fatalf("HealthCheck must still route through the chain:\n%s", dec)
 	}
 	if !strings.Contains(dec, "func (o *forgeMiddlewareService) Ping(ctx context.Context) error {\n\treturn o.inner.Ping(ctx)\n}") {
 		t.Fatalf("Ping wrapper must delegate directly (no chain):\n%s", dec)
 	}
-	if strings.Contains(dec, `"checkout.Ping"`) {
+	if strings.Contains(dec, `"checkout.Ping"`) || strings.Contains(dec, "Ops.Ping") {
 		t.Fatalf("Ping must NOT be routed through the chain:\n%s", dec)
 	}
 

@@ -125,7 +125,7 @@ func TestExtractCRUDEntities_ZodValidators(t *testing.T) {
 	want := map[string]string{
 		"name":     `.min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters")`,
 		"quantity": `.gte(1, "Must be 1 or more").lte(99, "Must be 99 or less")`,
-		"email":    `.email("Enter a valid email address")`,
+		"email":    `.pipe(z.email("Enter a valid email address"))`,
 		// A 64-bit integer is edited as digit TEXT — an <input type="number">
 		// is a double and cannot hold every int64 — so the zod value is a
 		// string, and `.gte(0)` does not exist on a zod string. The numeric

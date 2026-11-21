@@ -500,7 +500,7 @@ func markerSpecs() []MarkerSpec {
 			AppliesTo: "deps-field",
 			Effect:    "Suppresses `forge lint --optional-deps-guard` on one dereference of a `forge:optional-dep` field that is provably safe by reasoning the analyzer cannot follow.",
 			Placement: "on the dereferencing line, or the line above it",
-			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked",
+			Example:   "return s.deps.Stripe.Charge(ctx, amt) // forge:optional-checked: New refuses a nil Stripe in prod",
 		},
 		{
 			Name:      "forge:constructor",
@@ -515,6 +515,13 @@ func markerSpecs() []MarkerSpec {
 			Effect:    "Opts out of the generated observability decorator, which every package whose constructor returns its contract gets by default. On the constructor it exempts the whole package (no middleware_gen.go, and compose.go constructs it unwrapped); on a single interface method it routes just that method around the chain.",
 			Placement: "on the constructor's doc comment (whole package), or above one interface method",
 			Example:   "type Service interface {\n\t// forge:no-observe\n\tHealthz() error\n}",
+		},
+		{
+			Name:      "forge:no-capture",
+			AppliesTo: "contract",
+			Effect:    "Keeps parameters out of the forge.forensics event a component span records when a call fails or runs slow. Forensics is redacted at generation time already (IDs, numbers and bools by value; other strings and collections by length; everything else by type); this drops the named parameters entirely, or every parameter when bare. forge.yaml `observability: {forensics: false}` turns capture off project-wide.",
+			Placement: "above one interface method, or on its implementation's doc comment",
+			Example:   "type Service interface {\n\t// forge:no-capture customerID\n\tLookup(ctx context.Context, customerID string) error\n}",
 		},
 		{
 			Name:      "forge:service",
@@ -554,16 +561,16 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      codegen.ResolvesCallerDirective,
 			AppliesTo: "function",
-			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, or through a helper in the handler's own package — as resolving the caller, and names it in its hint. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
+			Effect:    "Declares that calling this function resolves the caller: it reads the authenticated principal the auth interceptor put on the request context. Forge's own seam (middleware.GetUser / ClaimsFromContext in the scaffolded pkg/middleware) needs no marker. A project with its own auth package marks its accessors, and the unscoped_auth audit then counts a handler that calls one — through the import that binds the declaring package in that file, through a helper in the handler's own package, or through a wrapper in another package of the same module (followed up to four packages deep) — as resolving the caller, and names it in its hint. A function the marker cannot reach (a dependency, a sibling module) is declared in forge.yaml under lint.auth.caller_resolvers instead. Package-level functions only: a marker on a method is reported as ignored, because a call site does not name its receiver's type. `forge project audit --json` lists the declarations it found under unscoped_auth's caller_resolvers.",
 			Placement: "on the function's doc comment, spaced or unspaced, as the whole comment line",
 			Example:   "// GetUserIDFromContext returns the signed-in user's id.\n//\n//forge:resolves-caller\nfunc GetUserIDFromContext(ctx context.Context) (string, bool)",
 		},
 		{
 			Name:      "forge:contract",
 			AppliesTo: "contract",
-			Effect:    "Synonym of `forge:service`: declares this interface the package's contract when it is not named `Service`. `contract` reads better on a non-service package.",
-			Placement: "on the interface's doc comment",
-			Example:   "// forge:contract\ntype Store interface { Get(ctx context.Context, id string) (Row, error) }",
+			Effect:    "On a struct (any non-interface type): its exported methods ARE the package's contract — `forge generate` derives `type Service interface` from them into the forge-owned contract_gen.go (method docs copied, plus `var _ Service = (*T)(nil)`), and mock_gen.go and middleware_gen.go follow from it. One per package; not on an alias or a generic type, and not beside a hand-written Service. On an interface: synonym of `forge:service`, declaring it the package's contract when it is not named `Service`.",
+			Placement: "on the implementing type's doc comment (the derived form), or on the interface's doc comment",
+			Example:   "// forge:contract\ntype service struct{ deps Deps }\n\n// Send delivers one message.\nfunc (s *service) Send(ctx context.Context, to string) error",
 		},
 		{
 			Name:      "forge:provided",
@@ -589,7 +596,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:root",
 			AppliesTo: "root",
-			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it) and migrate=apply|wait|none (what its process does about the schema); an unknown option fails generate.",
+			Effect:    "Declares a struct in internal/app as a process ROOT: its fields are the nodes that process runs, and forge generates its command into roots_gen.go. With no root declared, the generated default `server` root runs every component. Options: command=<word>[,<word>…] (the command path that runs it), migrate=apply|wait|none (what its process does about the schema) and adopt (in a project still on the legacy Infra / NewComponents composition, generate this root's graph beside it — one root at a time, migrations/v1.0.0/composition-graph); an unknown option fails generate.",
 			Placement: "on the struct's doc comment, unspaced",
 			Example:   "//forge:root api command=serve migrate=apply\ntype API struct { ... }",
 		},
@@ -631,7 +638,7 @@ func markerSpecs() []MarkerSpec {
 		{
 			Name:      "forge:auth-unscoped-ok",
 			AppliesTo: "function",
-			Effect:    "Acknowledges that an authenticated rpc is intentionally global, so the unscoped_auth audit lists it as acknowledged rather than unscoped. The reason is required: the marker alone is the unfalsifiable comment the audit exists to replace.",
+			Effect:    "Acknowledges that an authenticated rpc is intentionally global, so the unscoped_auth audit lists it as acknowledged rather than unscoped. The reason is required: the marker alone is the unfalsifiable comment the audit exists to replace. A marker with no reason, an empty one, or a lookalike separator acknowledges nothing; the audit lists it under malformed_acknowledgements and `forge lint` warns on it (forge-go-markers-reason-missing).",
 			Placement: "on the handler method's doc comment; the reason follows a colon",
 			Example:   "// forge:auth-unscoped-ok: the plan catalog is the same for every caller\nfunc (s *Service) ListPlans(...)",
 		},

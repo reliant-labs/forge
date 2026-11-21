@@ -224,7 +224,7 @@ func TestUnwrittenFields_NoServiceBlockIsNotPending(t *testing.T) {
 // linter table and fell through to the WHOLE suite.
 func TestCollectSingleLinterJSON_ReadOnlyFieldsIsTargeted(t *testing.T) {
 	root := unwrittenProject(t, estimateServiceProto, "")
-	report, handled, err := collectSingleLinterJSON(t.Context(), lintFlags{readOnlyFields: true}, nil, root, nil, nil)
+	report, handled, err := collectSingleLinterJSON(t.Context(), lintFlags{readOnlyFields: true}, nil, root, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("collect: %v", err)
 	}

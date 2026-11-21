@@ -2,6 +2,7 @@ package pgtest
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,16 +37,23 @@ func fakeRepository(t *testing.T, script ...int) (*httptest.Server, *atomic.Int3
 	return srv, &hits
 }
 
-// withFetchPolicy points the relay at upstream with no real waiting, for the
-// duration of the test.
+// withFetchPolicy points the relay at upstream alone (no mirror) with no real
+// waiting, for the duration of the test. It also empties the pinned checksum
+// table, so a fake archive is verified against what the fake repository
+// publishes; a test of the pin sets its own.
 func withFetchPolicy(t *testing.T, upstream string, attempts int) {
 	t.Helper()
 	saved := fetchPolicy
-	fetchPolicy.upstreamURL = upstream
+	savedPins := pinnedArchiveSHA256
+	fetchPolicy.repositories = []string{upstream}
 	fetchPolicy.attempts = attempts
 	fetchPolicy.firstDelay = time.Millisecond
 	fetchPolicy.maxDelay = time.Millisecond
-	t.Cleanup(func() { fetchPolicy = saved })
+	pinnedArchiveSHA256 = map[string]string{}
+	t.Cleanup(func() {
+		fetchPolicy = saved
+		pinnedArchiveSHA256 = savedPins
+	})
 }
 
 // coldConfig is an embedded-postgres config whose binary cache is an empty
@@ -151,10 +159,11 @@ func TestFetchRelay_NoResponseNamesTheURL(t *testing.T) {
 		t.Errorf("relay answered %d for a repository that never responds, want 502", resp.StatusCode)
 	}
 
-	fe := relay.lastFailure()
-	if fe == nil {
+	ff := relay.lastFailure()
+	if ff == nil {
 		t.Fatal("a repository that never responds is not recorded as a FetchError")
 	}
+	fe := ff.lead
 	if fe.Status != 0 || fe.Err == nil || fe.Attempts != 2 {
 		t.Errorf("FetchError = %+v, want Status 0, a transport error, 2 attempts", fe)
 	}
@@ -162,6 +171,170 @@ func TestFetchRelay_NoResponseNamesTheURL(t *testing.T) {
 		if !strings.Contains(fe.Error(), want) {
 			t.Errorf("error does not contain %q:\n%v", want, fe)
 		}
+	}
+}
+
+// relayArtifact is an archive path as the library asks for it.
+const relayArtifact = "/io/zonky/test/postgres/embedded-postgres-binaries-linux-amd64/18.3.0/embedded-postgres-binaries-linux-amd64-18.3.0.jar"
+
+// scriptedRepository answers every archive GET with status (and, on 200,
+// body), counting those requests, and publishes the body's .sha256 beside
+// it when it serves the body (a 404 otherwise).
+func scriptedRepository(t *testing.T, status int, body string) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha256") {
+			if status != http.StatusOK {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = io.WriteString(w, sha256Hex([]byte(body)))
+			return
+		}
+		hits.Add(1)
+		if status == http.StatusOK {
+			_, _ = io.WriteString(w, body)
+			return
+		}
+		http.Error(w, http.StatusText(status), status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+// relayGet fetches relayArtifact through a relay over repositories.
+func relayGet(t *testing.T, repositories ...string) (*fetchRelay, int, string) {
+	t.Helper()
+	relay, err := startFetchRelay(repositories...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(relay.close)
+	resp, err := http.Get(relay.baseURL() + relayArtifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return relay, resp.StatusCode, string(body)
+}
+
+// TestFetchRelay_A404FallsBackToTheMirror is the defect from forge's main
+// (run 44491105411): Maven Central's CDN answered 404 for the published
+// 18.3.0 archive, and every pgtest-backed test failed. A 404 from the first
+// repository must not be final: the mirror is asked, and serves it.
+func TestFetchRelay_A404FallsBackToTheMirror(t *testing.T) {
+	primary, primaryHits := scriptedRepository(t, http.StatusNotFound, "")
+	mirror, mirrorHits := scriptedRepository(t, http.StatusOK, "archive bytes")
+	withFetchPolicy(t, primary.URL, 3)
+
+	relay, status, body := relayGet(t, primary.URL, mirror.URL)
+	if status != http.StatusOK || body != "archive bytes" {
+		t.Fatalf("relay answered %d %q, want the mirror's 200 archive", status, body)
+	}
+	if got := primaryHits.Load(); got != 1 {
+		t.Errorf("primary asked %d time(s); a 404 is an answer, not a blip to retry", got)
+	}
+	if got := mirrorHits.Load(); got != 1 {
+		t.Errorf("mirror asked %d time(s), want 1", got)
+	}
+	if fe := relay.lastFailure(); fe != nil {
+		t.Errorf("a fetch the mirror served is recorded as a failure: %v", fe)
+	}
+}
+
+// TestFetchRelay_ThePrimaryServingSkipsTheMirror: the mirror is a fallback,
+// never a second request on the happy path.
+func TestFetchRelay_ThePrimaryServingSkipsTheMirror(t *testing.T) {
+	primary, _ := scriptedRepository(t, http.StatusOK, "archive bytes")
+	mirror, mirrorHits := scriptedRepository(t, http.StatusOK, "mirror bytes")
+	withFetchPolicy(t, primary.URL, 3)
+
+	_, status, body := relayGet(t, primary.URL, mirror.URL)
+	if status != http.StatusOK || body != "archive bytes" {
+		t.Fatalf("relay answered %d %q, want the primary's archive", status, body)
+	}
+	if got := mirrorHits.Load(); got != 0 {
+		t.Errorf("mirror asked %d time(s) although the primary served the archive", got)
+	}
+}
+
+// TestFetchRelay_A404EverywhereIsNoPublishedBinary: only when every
+// repository says 404 is it reported as a version with no binary — naming
+// each repository asked.
+func TestFetchRelay_A404EverywhereIsNoPublishedBinary(t *testing.T) {
+	primary, _ := scriptedRepository(t, http.StatusNotFound, "")
+	mirror, _ := scriptedRepository(t, http.StatusNotFound, "")
+	withFetchPolicy(t, primary.URL, 3)
+
+	relay, status, _ := relayGet(t, primary.URL, mirror.URL)
+	if status != http.StatusNotFound {
+		t.Errorf("relay answered %d, want 404", status)
+	}
+	fe := relay.lastFailure()
+	if fe == nil || fe.lead.Status != http.StatusNotFound || len(fe.also) != 1 {
+		t.Fatalf("fetch failure = %+v, want a 404 with the mirror's 404 beside it", fe)
+	}
+	// The public view: errors.As finds the lead, and its Also still names
+	// the mirror's answer, as it did before fetchFailures existed.
+	var lead *FetchError
+	if !errors.As(fe, &lead) {
+		t.Fatalf("errors.As(%v, *FetchError) = false", fe)
+	}
+	if also := lead.Also(); len(also) != 1 || also[0].URL != mirror.URL+relayArtifact || also[0].Status != http.StatusNotFound {
+		t.Errorf("Also() = %+v, want the mirror's 404", also)
+	}
+	if also := (&FetchError{URL: "x"}).Also(); also != nil {
+		t.Errorf("Also() on a FetchError built by hand = %+v, want nil", also)
+	}
+	for _, want := range []string{primary.URL + relayArtifact, mirror.URL + relayArtifact, "no published binary"} {
+		if !strings.Contains(fe.Error(), want) {
+			t.Errorf("error does not contain %q:\n%v", want, fe)
+		}
+	}
+}
+
+// TestFetchRelay_ATransientMirrorFailureIsNotAMissingVersion: the primary's
+// 404 and the mirror's 503 together say "the registry is unwell", not "no
+// such version" — the transient failure leads, and the 404 is still named.
+func TestFetchRelay_ATransientMirrorFailureIsNotAMissingVersion(t *testing.T) {
+	primary, _ := scriptedRepository(t, http.StatusNotFound, "")
+	mirror, mirrorHits := scriptedRepository(t, http.StatusServiceUnavailable, "")
+	withFetchPolicy(t, primary.URL, 2)
+
+	relay, status, _ := relayGet(t, primary.URL, mirror.URL)
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("relay answered %d, want the mirror's 503", status)
+	}
+	if got := mirrorHits.Load(); got != 2 {
+		t.Errorf("mirror asked %d time(s), want the 2 the policy allows", got)
+	}
+	fe := relay.lastFailure()
+	if fe == nil || fe.lead.Status != http.StatusServiceUnavailable {
+		t.Fatalf("fetch failure = %+v, want the mirror's 503 to lead", fe)
+	}
+	msg := fe.Error()
+	if strings.Contains(msg, "no published binary") {
+		t.Errorf("a 404 beside a 503 is reported as a missing version:\n%s", msg)
+	}
+	for _, want := range []string{"transient", mirror.URL + relayArtifact, "Also tried " + primary.URL + relayArtifact + ": HTTP 404"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error does not contain %q:\n%s", want, msg)
+		}
+	}
+}
+
+// TestDefaultRepositoriesFallBackToAMirror pins production's list: Maven
+// Central first (the library's own default), then a mirror on separate
+// infrastructure.
+func TestDefaultRepositoriesFallBackToAMirror(t *testing.T) {
+	got := fetchPolicy.repositories
+	if len(got) != 2 || got[0] != defaultBinaryRepositoryURL || got[1] != mavenCentralMirrorURL {
+		t.Errorf("fetchPolicy.repositories = %v, want [%s %s]", got, defaultBinaryRepositoryURL, mavenCentralMirrorURL)
 	}
 }
 

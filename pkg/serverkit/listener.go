@@ -46,6 +46,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/reliant-labs/forge/pkg/forgepb"
+	"github.com/reliant-labs/forge/pkg/mountkit"
 )
 
 // ListenerConfig is one listener's own block: where it binds and how its
@@ -133,6 +134,7 @@ func (c Config) Listener() ListenerConfig {
 }
 
 // Routes is a set of handlers a Listener serves.
+// connect-go v2 routes are RoutesV2.
 type Routes interface {
 	// Register mounts every route on mux, building each Connect handler with
 	// opts — the listener's chain — and returns the fully qualified proto
@@ -144,6 +146,7 @@ type Routes interface {
 
 // RoutesFunc adapts a function to Routes — the shape of a generated
 // (*app.Components).Mount<Svc> closed over its receiver.
+// connect-go v2 projects use RoutesFuncV2.
 type RoutesFunc func(mux *http.ServeMux, opts ...connect.HandlerOption) []string
 
 // Register calls f.
@@ -151,15 +154,41 @@ func (f RoutesFunc) Register(mux *http.ServeMux, opts ...connect.HandlerOption) 
 	return f(mux, opts...)
 }
 
-// ListenerDeps configures a Listener. Config, Chain and Routes are required.
+// RoutesV2 is Routes for connect-go v2 services: a set of handlers a Listener
+// serves through its ChainV2.
+type RoutesV2 interface {
+	// RegisterV2 mounts every route through mux — mountkit.RegisterServiceV2
+	// (or mux.Register) for each v2 service, which builds it with the
+	// listener's chain, and mux.Mux() for plain HTTP routes — and returns the
+	// fully qualified proto service names it mounted, which the listener
+	// checks against its chain's audience.
+	RegisterV2(mux *mountkit.MuxV2) []string
+}
+
+// RoutesFuncV2 adapts a function to RoutesV2 — the shape of a generated v2
+// mount closed over its receiver.
+type RoutesFuncV2 func(mux *mountkit.MuxV2) []string
+
+// RegisterV2 calls f.
+func (f RoutesFuncV2) RegisterV2(mux *mountkit.MuxV2) []string { return f(mux) }
+
+// ListenerDeps configures a Listener. Config is required, and a route set
+// with its chain: Chain and Routes (connect-go v1), ChainV2 and RoutesV2
+// (connect-go v2), or both pairs on one listener while a project migrates —
+// then both chains must admit the same audience.
 type ListenerDeps struct {
 	// Config is the listener's own block: address, TLS, timeouts, drain.
 	Config ListenerConfig
 	// Chain is the interceptor chain every Connect route is built with, and
-	// the audience every mounted service must declare. Required.
+	// the audience every mounted service must declare. Required with Routes.
 	Chain *Chain
-	// Routes are what the listener serves. Required.
+	// Routes are what the listener serves. Required, unless RoutesV2 is set.
 	Routes Routes
+	// ChainV2 is Chain for the connect-go v2 routes. Required with RoutesV2.
+	ChainV2 *ChainV2
+	// RoutesV2 are the connect-go v2 routes the listener serves, mounted on
+	// the same mux as Routes.
+	RoutesV2 RoutesV2
 	// Logger receives the listener's lines and its drain phase; nil is
 	// slog.Default().
 	Logger *slog.Logger
@@ -173,6 +202,9 @@ type ListenerDeps struct {
 	// REST serves a vanguard REST transcoder over the mounted services
 	// (forge.yaml api.rest) in place of the bare Connect mux.
 	REST bool
+	// Ready is the process's readiness handler, which the health rpc asks
+	// (health.go). nil is the Front route on DefaultReadinessPath, if any.
+	Ready http.Handler
 }
 
 // Listener is an HTTP listener component. Build it with NewListener.
@@ -196,6 +228,15 @@ type Listener struct {
 // error — when a required dep is missing, and when a mounted service declares
 // an audience other than the chain's.
 func NewListener(deps ListenerDeps) (*Listener, error) {
+	if deps.RoutesV2 != nil || deps.ChainV2 != nil {
+		if deps.ChainV2 == nil {
+			return nil, errors.New("serverkit.NewListener: ListenerDeps.ChainV2 is required with RoutesV2: every listener authenticates through a chain (serverkit.NewChainV2)")
+		}
+		if deps.Routes != nil && deps.Chain == nil {
+			return nil, errors.New("serverkit.NewListener: ListenerDeps.Chain is required with Routes: every listener authenticates through a chain (serverkit.NewChain)")
+		}
+		return newListener(deps)
+	}
 	if deps.Chain == nil {
 		return nil, errors.New("serverkit.NewListener: ListenerDeps.Chain is required: every listener authenticates through a chain (serverkit.NewChain)")
 	}
@@ -210,8 +251,12 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 	if deps.Config.Addr == "" {
 		errs = append(errs, errors.New("ListenerDeps.Config.Addr is required"))
 	}
-	if deps.Routes == nil {
+	if deps.Routes == nil && deps.RoutesV2 == nil {
 		errs = append(errs, errors.New("ListenerDeps.Routes is required"))
+	}
+	if deps.Chain != nil && deps.ChainV2 != nil && deps.Chain.Audience() != deps.ChainV2.Audience() {
+		errs = append(errs, fmt.Errorf("ListenerDeps.Chain admits audience %q and ChainV2 audience %q: one listener serves one audience",
+			deps.Chain.Audience(), deps.ChainV2.Audience()))
 	}
 	if _, ok := deps.Front["/"]; ok {
 		errs = append(errs, errors.New(`ListenerDeps.Front may not claim "/": it is the routes' pattern`))
@@ -246,16 +291,38 @@ func newListener(deps ListenerDeps) (*Listener, error) {
 		if deps.Chain != nil {
 			opts = deps.Chain.HandlerOptions()
 		}
-		l.services = deps.Routes.Register(mux, opts...)
+		if deps.Routes != nil {
+			l.services = deps.Routes.Register(mux, opts...)
+		}
+		if deps.RoutesV2 != nil {
+			l.services = append(l.services, deps.RoutesV2.RegisterV2(deps.ChainV2.NewMux(mux))...)
+		}
+		// The health rpc, through the same chain (health.go): the v1 chain
+		// when the listener has one, else the v2 chain.
+		ready := readinessOf(deps.Ready, deps.Front)
+		var health bool
+		if deps.Chain == nil && deps.ChainV2 != nil {
+			health = mountHealthV2(mux, ready, deps.ChainV2.ServerInterceptors(), deps.ChainV2.HTTPOptions()...)
+		} else {
+			health = mountHealth(mux, ready, opts...)
+		}
 		handler = mux
 		if deps.REST {
 			if rest := RESTHandler(mux, l.services, logger); rest != nil {
 				handler = rest
+				if health {
+					handler = withHealthRoute(mux, rest)
+				}
 			}
 		}
 	}
-	if deps.Chain != nil {
+	switch {
+	case deps.Chain != nil:
 		l.audience = deps.Chain.Audience()
+	case deps.ChainV2 != nil:
+		l.audience = deps.ChainV2.Audience()
+	}
+	if deps.Chain != nil || deps.ChainV2 != nil {
 		if err := checkAudience(cfg.Addr, l.audience, l.services); err != nil {
 			return nil, err
 		}

@@ -404,6 +404,11 @@ func (c Cloud) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 	}
 	res := EndpointsResult{Statements: compiledStatements("endpoints", r)}
 	if req.Explain {
+		cr, err := c.queryPanel(ctx, clientNarrow(req.Narrow), clientRPCPanel(), 0)
+		if err := withClientRPCs(ctx, &res, nil, err); err != nil {
+			return res, err
+		}
+		res.Statements = append(res.Statements, compiledStatements("endpoints client", cr)...)
 		return res, nil
 	}
 	secs := req.Range.To.Sub(req.Range.From).Seconds()
@@ -422,8 +427,59 @@ func (c Cloud) Endpoints(ctx context.Context, req EndpointsRequest) (EndpointsRe
 		}
 		res.Endpoints = append(res.Endpoints, e)
 	}
+	clients, err := c.clientRPCs(ctx, req.Narrow)
+	if err := withClientRPCs(ctx, &res, clients, err); err != nil {
+		return res, err
+	}
 	rankEndpoints(&res, req)
 	return res, nil
+}
+
+// clientRPCs runs clientRPCPanel through QueryPanel: client calls and p95 by
+// "<rpc.service>/<rpc.method>". It is a plain traces table over span
+// attributes, so a control plane that serves the endpoints panel serves it.
+func (c Cloud) clientRPCs(ctx context.Context, n Narrow) (map[string]clientRPC, error) {
+	r, err := c.queryPanel(ctx, clientNarrow(n), clientRPCPanel(), 0)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]clientRPC{}
+	for _, row := range r.Rows {
+		if len(row.Values) < 2 {
+			return nil, Undetermined("the control plane returned %d values per client rpc, want 2", len(row.Values))
+		}
+		svc, method := row.Group["span.attr.rpc.service"], row.Group["span.attr.rpc.method"]
+		if svc == "" || method == "" {
+			continue
+		}
+		out[svc+"/"+method] = clientRPC{calls: finite(row.Values[0]), p95Ms: finite(row.Values[1])}
+	}
+	return out, nil
+}
+
+// clientRPC is one rpc's browser-side calls and p95, all frontends together.
+type clientRPC struct{ calls, p95Ms float64 }
+
+// withClientRPCs joins the client rpcs (keyed "<rpc.service>/<rpc.method>",
+// the otelconnect server span's name) onto res's endpoints, across services:
+// the client span's service is the frontend, never the server. The client
+// read is an enrichment, so its failure (readErr) is recorded on res and the
+// endpoints still stand; only a cancelled or expired ctx fails the read, since
+// then the caller has gone and a partial answer is not what it asked for.
+func withClientRPCs(ctx context.Context, res *EndpointsResult, clients map[string]clientRPC, readErr error) error {
+	if readErr != nil {
+		if ctx.Err() != nil {
+			return readErr
+		}
+		res.ClientUnavailable = readErr.Error()
+		return nil
+	}
+	for i := range res.Endpoints {
+		if cl, ok := clients[res.Endpoints[i].Name]; ok {
+			res.Endpoints[i].ClientCalls, res.Endpoints[i].ClientP95Ms = cl.calls, cl.p95Ms
+		}
+	}
+	return nil
 }
 
 // rankEndpoints sorts by req.Sort and applies req.Top.

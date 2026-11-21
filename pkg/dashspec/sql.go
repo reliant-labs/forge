@@ -45,6 +45,78 @@ const (
 	SQLParamServices = "services"
 )
 
+// SQLParamUse is one ClickHouse parameter a statement uses: {Name:Type}.
+type SQLParamUse struct {
+	Name string
+	// Type is the declared type as written, trimmed ("String",
+	// "Array(String)").
+	Type string
+}
+
+// UsedSQLParams lists the ClickHouse parameters sql uses ({name:Type}, spaces
+// allowed inside the braces), in order of first use, once each by name. One in
+// a comment, a string literal or a quoted identifier is not a use: ClickHouse
+// never binds it. sql is expected to have passed CheckSQL, so every comment
+// and quote is terminated; an unterminated one ends the scan.
+func UsedSQLParams(sql string) []SQLParamUse {
+	var out []SQLParamUse
+	seen := map[string]bool{}
+	n := len(sql)
+	for i := 0; i < n; {
+		c := sql[i]
+		switch {
+		case c == '-' && i+1 < n && sql[i+1] == '-', c == '#':
+			for i < n && sql[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < n && sql[i+1] == '*':
+			end := strings.Index(sql[i+2:], "*/")
+			if end < 0 {
+				return out
+			}
+			i += 2 + end + 2
+		case c == '\'' || c == '"' || c == '`':
+			i = skipQuotedSQL(sql, i)
+		case c == '{':
+			end := strings.IndexByte(sql[i:], '}')
+			if end < 0 {
+				return out
+			}
+			if key, typ, ok := strings.Cut(sql[i+1:i+end], ":"); ok {
+				name := strings.TrimSpace(key)
+				if name != "" && !seen[name] {
+					seen[name] = true
+					out = append(out, SQLParamUse{Name: name, Type: strings.TrimSpace(typ)})
+				}
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return out
+}
+
+// skipQuotedSQL is the index after the quoted run starting at s[i] (the end of
+// s when it is unterminated). A quote is closed by its own character;
+// backslash escapes and doubled quotes both work, as in the alert-rule guard.
+func skipQuotedSQL(s string, i int) int {
+	q := s[i]
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			j++
+		case q:
+			if j+1 < len(s) && s[j+1] == q {
+				j++
+				continue
+			}
+			return j + 1
+		}
+	}
+	return len(s)
+}
+
 // CheckSQL reports whether sql is a statement a KindSQL panel may carry:
 // non-empty, at most MaxSQLBytes, and exactly one read-only SELECT by the alert
 // rule guard (alerting.ValidateExpr), which refuses writes, DDL, SETTINGS,

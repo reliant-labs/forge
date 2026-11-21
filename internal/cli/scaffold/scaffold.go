@@ -46,6 +46,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/configproto"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/naming"
@@ -1033,6 +1034,26 @@ func reportPendingServiceMount(cfg *config.ProjectConfig, root, name string) {
 	bin := binaryName(cfg, root)
 	method := codegen.PendingServiceMount(root, bin, runtime)
 	if method == "" {
+		return
+	}
+	field := strings.TrimPrefix(method, "Mount")
+	if connectmajor.DetectOrDefault(root).IsV2() {
+		// connect-go v2: the mount registers the service on the shared
+		// mountkit.MuxV2 (one *connect.Server per interceptor chain).
+		fmt.Printf(`
+⚠️  internal/app's mount surface is yours (mounts_services_gen.go is disowned), so forge
+   cannot add the %q service's mount method. Until you add it, `+"`%s %s`"+` exits with
+   this instruction; every other command, including `+"`%s server`"+`'s MountAll, is unaffected.
+   Add next to the other Mount<Svc> methods in internal/app:
+
+       func (c *Components) %s(m *mountkit.MuxV2, cfg *config.Config, logger *slog.Logger) []string {
+           m.Register(c.%s.RegisterV2)
+           c.%s.RegisterHTTP(m.Mux(), fmw.HTTPStack(logger, middleware.ClaimsFromContext))
+           return []string{ /* <svc>v1connect.<Svc>ServiceName */ }
+       }
+
+   (and, if compose.go is also yours, construct c.%s in NewComponents). Then re-run `+"`forge generate`"+`.
+`, runtime, bin, runtime, bin, method, field, field, field)
 		return
 	}
 	fmt.Printf(`

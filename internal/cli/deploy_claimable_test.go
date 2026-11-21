@@ -19,6 +19,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/credentials"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	v1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 // fakeClaimableControlPlane is the hosted-deploy fake plus the ClaimableService
@@ -906,9 +907,7 @@ func TestClaimableDeploy_PlanOnlyPreviewsAndCreatesNothing(t *testing.T) {
 // now judge it from the checkout first: the preview fails, and the deploy is
 // refused before any proof of work, account or build — until it is committed.
 func TestClaimableDeploy_UnmergedMigrationIsRefusedBeforeAnythingIsCreated(t *testing.T) {
-	if testing.Short() {
-		t.Skip("renders KCL, execs git and runs the whole CLI; skipped in -short")
-	}
+	testkit.Slow(t, "renders KCL, execs git and runs the whole CLI")
 	fake, _ := claimableFixture(t)
 	dir, err := os.Getwd()
 	if err != nil {

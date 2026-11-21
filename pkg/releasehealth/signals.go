@@ -9,11 +9,14 @@ import (
 
 // What a service's figures were measured from (ServiceHealth.Signal).
 //
-// A release is judged on each service's own server spans. A service that sent
-// none in either window (a static site, an app without OpenTelemetry) is
-// judged on what the hosting platform's ingress measured for it instead: the
-// requests it answered, their status classes and their time to headers
-// (pkg/obsquery Overview.IngressRED). A frontend that sends browser telemetry
+// A release is judged on each service's own server spans. [Combine] can judge
+// a service that sent none in either window (a static site, an app without
+// OpenTelemetry) on what the hosting platform's ingress measured for it
+// instead: the requests it answered, their status classes and their time to
+// headers (pkg/obsquery Overview.IngressRED). No caller passes ingress
+// figures yet (the control plane and the local backend both pass nil), so
+// today such a service is not judged on its requests and, with no browser
+// telemetry either, the verdict is no_request_telemetry. A frontend that sends browser telemetry
 // is judged on that too, beside either or alone (Overview.BrowserRED): its
 // JavaScript errors per page view, the share of its fetch/XHR requests that
 // failed, and its p95 page load. [Combine] applies that precedence.
@@ -136,7 +139,8 @@ func Combine(spans, ingress []ServiceHealth, browser map[string]BrowserHealth) [
 // min_requests page views (a thinner before window is no baseline;
 // baseline.go). The JavaScript error rate (per page view) and the
 // failed-request rate are held to max_error_rate_increase, the p95 page load
-// to max_p95_ratio. They warn unless fail_on names them.
+// to max_p95_ratio. Their policy is fail_on's: the default fails on all
+// three, and forge.ReleaseHealth.warn_on takes one out of it.
 func browserFindings(s ServiceHealth, t Thresholds) []Finding {
 	b := s.Browser
 	if !t.gauge().browserComparable(s) {

@@ -301,6 +301,7 @@ import {
   registerRumSession,
   registerTelemetryStartup,
   rumSessionId,
+  setRpcTelemetry,
 } from "./telemetry-gate.js";
 import {
   type StartGate,
@@ -487,6 +488,18 @@ export interface BrowserTelemetryConfig {
    */
   frameStalls?: boolean;
   /**
+   * Attach a redacted `forge.forensics` event to the span of a failed RPC:
+   * the request's shape, never its content (rpc-forensics.ts: numbers,
+   * bools, enums and id-named strings as values, unless the name also names
+   * a secret, like `session_id`; every other string, bytes, list and map as
+   * a length; `debug_redact` fields never), once per
+   * procedure and error code per page load. Default true; forge's generated
+   * src/lib/otel_gen.ts passes false when the runtime config says
+   * `RPC_FORENSICS = "false"`. The RPC spans themselves (rpc-span.ts) are
+   * recorded either way.
+   */
+  rpcForensics?: boolean;
+  /**
    * How finely session replay records continuous input, as rrweb's
    * `sampling` (mousemove and scroll throttles in ms, `input: "last"` to keep
    * only a field's final value, …). Each key given replaces the runtime's
@@ -549,15 +562,6 @@ export interface BrowserTelemetryConfig {
    * `forge.visitor_id`. A `rid` in the landing URL wins over it.
    */
   visitorIdStorageKey?: string;
-  /**
-   * @deprecated Use `analytics` and grantAnalyticsConsent(). Kept working:
-   * with `analytics` unset, passing `attribution` at all sets the mode to
-   * "full" (it was always a choice about a persistent visitor id); `true`
-   * also grants consent at start, as `attribution: true` started attribution
-   * before; `false` waits for enableAttribution() / grantAnalyticsConsent().
-   * Unset, there is no visitor id below the `full` tier.
-   */
-  attribution?: boolean;
   /**
    * `last` (default): a visit carrying `rid`/`utm_*` replaces the stored
    * record. `first`: the first stored record is kept for good — a marketing
@@ -676,9 +680,8 @@ export function enableAttribution(options?: { search?: string }): void {
   grantAnalyticsConsent();
 }
 
-// The mode a config asks for: `analytics`, else the legacy `attribution`
-// (any explicit value meant a persistent visitor id: "full"), else the
-// cookieless default, "identified".
+// The mode a config asks for: `analytics`, else the cookieless default,
+// "identified".
 function configuredMode(config: BrowserTelemetryConfig): AnalyticsMode {
   const mode = config.analytics;
   if (
@@ -689,7 +692,7 @@ function configuredMode(config: BrowserTelemetryConfig): AnalyticsMode {
   ) {
     return mode;
   }
-  return config.attribution === undefined ? "identified" : "full";
+  return "identified";
 }
 
 // Start or stop the full tier's device state on a running SDK as the tier
@@ -758,9 +761,6 @@ export function initBrowserTelemetry(
       ? "full"
       : configured,
   );
-  if (config.analytics === undefined && config.attribution === true) {
-    grantAnalyticsConsent();
-  }
   if (currentAnalyticsMode() !== "full") {
     // Ids an earlier page load stored (before analytics were cookieless by
     // default, or under a mode since lowered) are not kept by a mode that
@@ -793,6 +793,8 @@ export function initBrowserTelemetry(
       : watchFrameStalls(() => !isTelemetryDisabled());
   const gate = startGate(config.start);
   const visible = firstVisible();
+  // What the RPC span stage of the interceptor chain records (rpc-span.ts).
+  setRpcTelemetry({ spans: true, forensics: config.rpcForensics !== false });
   started = start(config, ingest, { clicks, errors, stalls, gate, visible });
   // An RPC that waits for telemetry starts it now (telemetry-gate.ts), unless
   // the page has never been visible: no session starts before it has been
@@ -982,6 +984,9 @@ async function start(
       disable: () => {
         runningClient = null;
         stopReplay();
+        // The SDK's tracer provider stays registered: the RPC span stage
+        // stops recording on its own.
+        setRpcTelemetry({ spans: false, forensics: false });
         // Back to "no SDK": reportException returns false, so a caller falls
         // back to console.error and the error does not vanish.
         setExceptionReporter(null);

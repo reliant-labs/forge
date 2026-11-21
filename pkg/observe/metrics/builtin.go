@@ -9,6 +9,8 @@ const (
 	legacySince = "v0.1.0"
 	// drainSince is the release serverkit's shutdown phases were first measured in.
 	drainSince = "v0.1.46"
+	// resourceSince is the release pkg/resmetrics first reported in.
+	resourceSince = "v1.9.0"
 )
 
 const rejectedName = "forge.metrics.rejected_attributes"
@@ -29,12 +31,15 @@ func attr(key string, values ...string) Attribute { return Attribute{Key: key, V
 //     registry from BuiltinSpec;
 //   - go.*: the Go runtime instrumentation and the SQL pool/query metrics,
 //     created by those libraries and described here with the units they emit;
-//   - forge.metrics.*: the registry's own bookkeeping.
+//   - forge.metrics.*: the registry's own bookkeeping;
+//   - process.*, system.*, forge.process.*, forge.system.*, forge.cgroup.*
+//     and forge.resource.scope: the process and host resource metrics of
+//     pkg/resmetrics (resourceSpecs).
 //
 // Per-component call metrics (<package>.calls, .errors, .duration) are
 // declared as components are constructed, see DescribeCallMetrics.
 func builtinSpecs() []Spec {
-	return []Spec{
+	return append([]Spec{
 		{Name: "rpc.server.calls", Type: Counter, Unit: "{call}", Description: "Total RPC calls received.", Attributes: []Attribute{attr("procedure")}, Stability: Stable, Since: legacySince},
 		{Name: "rpc.server.errors", Type: Counter, Unit: "{error}", Description: "Total RPC calls that returned an error, by connect code and error class (server fault, user error, canceled). A call the server ended on purpose (svcerr.ExpectedClose) is not counted.", Attributes: []Attribute{attr("procedure"), attr("code", connectCodes...), attr("error_class", "server", "user", "canceled")}, Stability: Stable, Since: legacySince},
 		{Name: "rpc.server.duration", Type: Histogram, Unit: "s", Description: "RPC duration.", Attributes: []Attribute{attr("procedure")}, Stability: Stable, Since: legacySince},
@@ -62,6 +67,67 @@ func builtinSpecs() []Spec {
 		{Name: "forge.server.drain.duration", Type: Histogram, Unit: "s", Description: "How long each phase of a graceful shutdown took: the pre-stop pause, the listener drain (unary requests and long-lived streams), stopping workers and operators, the caller's teardown, each node a lifecyclekit supervisor stops (node), and the whole shutdown (total).", Attributes: []Attribute{attr("phase", "pre_stop", "listener", "workers", "operators", "teardown", "node", "total")}, Stability: Experimental, Since: drainSince},
 
 		{Name: rejectedName, Type: Counter, Unit: "{attribute}", Description: "Measurements whose attribute was not in the metric's declaration, corrected before export. A rising value means code records an attribute the schema does not list.", Attributes: []Attribute{attr("metric"), attr("reason", RejectUndeclaredKey, RejectUndeclaredValue)}, Stability: Experimental, Since: builtinSince},
+	}, resourceSpecs()...)
+}
+
+// resourceSpecs are the process and host resource metrics pkg/resmetrics
+// emits. The names follow the OpenTelemetry semantic conventions for process.*
+// and system.* (development status, so they are pinned here as literals, not
+// taken from a semconv package) and are forge.* where the conventions have no
+// name. Every attribute is closed over a listed set: no datapoint names a
+// command line, an executable, a user, a pid, a host or a mount path.
+func resourceSpecs() []Spec {
+	cpuModes := attr("cpu.mode", "user", "system", "idle", "iowait", "steal")
+	role := attr("forge.filesystem.role", "cwd", "tmp", "data")
+	pressure := []Attribute{attr("resource", "cpu", "memory", "io"), attr("kind", "some", "full")}
+	spec := func(name string, t Type, unit, desc string, attrs ...Attribute) Spec {
+		return Spec{Name: name, Type: t, Unit: unit, Description: desc, Attributes: attrs, Stability: Experimental, Since: resourceSince}
+	}
+	return []Spec{
+		// Group process: the binary itself.
+		spec("process.cpu.time", Counter, "s", "CPU time the process has used, by mode.", attr("cpu.mode", "user", "system")),
+		spec("process.cpu.utilization", Gauge, "1", "CPU the process used since the previous sample, in cores (above 1 when more than one core is busy)."),
+		spec("process.memory.usage", UpDownCounter, "By", "Resident set size of the process."),
+		spec("process.memory.virtual", UpDownCounter, "By", "Virtual memory size of the process."),
+		spec("forge.process.memory.go_gap", Gauge, "By", "Resident set size minus the memory the Go runtime has mapped: what cgo, mmap and fragmentation hold. Negative when the runtime has mapped more than is resident."),
+		spec("process.unix.file_descriptor.count", UpDownCounter, "{fd}", "Open file descriptors of the process."),
+		spec("forge.process.file_descriptor.limit", Gauge, "{fd}", "Soft RLIMIT_NOFILE of the process."),
+		spec("forge.process.file_descriptor.utilization", Gauge, "1", "Open file descriptors over the soft limit."),
+		spec("process.thread.count", UpDownCounter, "{thread}", "OS threads of the process."),
+		spec("process.context_switches", Counter, "{switch}", "Times the scheduler switched away from the process, by whether it yielded.", attr("process.context_switch_type", "voluntary", "involuntary")),
+		spec("process.paging.faults", Counter, "{fault}", "Page faults the process has taken, by type.", attr("system.paging.fault.type", "major", "minor")),
+		spec("process.disk.io", Counter, "By", "Bytes the process caused to be read from or written to storage.", attr("disk.io.direction", "read", "write")),
+		spec("process.uptime", Gauge, "s", "Time since the process started."),
+
+		// Group host: the machine, or the container's share of it.
+		spec("forge.resource.scope", Gauge, "{scope}", "1 for the view the host metrics report: host (the whole machine) or cgroup (inside a Kubernetes pod, the container only).", attr("scope", "host", "cgroup")),
+		spec("system.cpu.time", Counter, "s", "CPU time of the whole machine by mode, summed over every CPU. Nice time is counted as user, interrupt time as system.", cpuModes),
+		spec("system.cpu.utilization", Gauge, "1", "Share of all CPU time in each mode since the previous sample, from 0 to 1.", cpuModes),
+		spec("system.cpu.logical.count", UpDownCounter, "{cpu}", "Logical CPUs the process may run on, lowered to the cgroup's CPU quota when one is set."),
+		spec("system.cpu.load_average.1m", Gauge, "{thread}", "Run-queue load average over 1 minute."),
+		spec("system.cpu.load_average.5m", Gauge, "{thread}", "Run-queue load average over 5 minutes."),
+		spec("system.cpu.load_average.15m", Gauge, "{thread}", "Run-queue load average over 15 minutes."),
+		spec("system.memory.usage", UpDownCounter, "By", "Memory of the machine by state; cached is page cache, buffers and reclaimable slab, and the three add up to the total.", attr("system.memory.state", "used", "free", "cached")),
+		spec("system.memory.limit", UpDownCounter, "By", "Memory the process may use: the cgroup's memory.max when set, otherwise the machine's total."),
+		spec("system.linux.memory.available", UpDownCounter, "By", "The kernel's estimate of memory available to a new workload without swapping (MemAvailable)."),
+		spec("system.paging.usage", UpDownCounter, "By", "Swap space of the machine by state.", attr("system.paging.state", "used", "free")),
+		spec("system.filesystem.usage", UpDownCounter, "By", "Space on the volumes the process writes to, by state and by the volume's role (never its path). Free is what an unprivileged process may use.", attr("system.filesystem.state", "used", "free"), role),
+		spec("system.filesystem.utilization", Gauge, "1", "Used space over used plus free, per volume role.", role),
+		spec("forge.system.file_descriptor.count", Gauge, "{fd}", "File handles allocated on the machine."),
+		spec("forge.system.file_descriptor.limit", Gauge, "{fd}", "The machine's file handle limit (fs.file-max)."),
+		spec("forge.system.process.count", Gauge, "{process}", "Processes on the machine."),
+		spec("forge.system.process.limit", Gauge, "{process}", "The lower of the kernel's pid_max and threads-max."),
+
+		// Group host, from the process's cgroup v2.
+		spec("forge.cgroup.memory.working_set", UpDownCounter, "By", "The cgroup's memory.current minus inactive_file: the kubelet's working set."),
+		spec("forge.cgroup.memory.limit", UpDownCounter, "By", "The cgroup's memory.max; absent when it is max."),
+		spec("forge.cgroup.memory.oom_kills", Counter, "{kill}", "Processes the kernel killed for the cgroup's memory limit (memory.events oom_kill)."),
+		spec("forge.cgroup.pressure.stall_time", Counter, "s", "Time tasks in the cgroup stalled on a resource: some is at least one task, full is every task.", pressure...),
+		spec("forge.cgroup.pressure.avg10", Gauge, "1", "Share of the last ten seconds tasks in the cgroup stalled on a resource, from 0 to 1.", pressure...),
+		spec("forge.cgroup.cpu.throttled_periods", Counter, "{period}", "CPU quota periods in which the cgroup was throttled."),
+		spec("forge.cgroup.cpu.throttled_time", Counter, "s", "Time the cgroup was throttled by its CPU quota."),
+		spec("forge.cgroup.pids.count", Gauge, "{pid}", "Tasks in the cgroup (pids.current)."),
+		spec("forge.cgroup.pids.limit", Gauge, "{pid}", "The cgroup's pids.max; absent when it is max."),
 	}
 }
 

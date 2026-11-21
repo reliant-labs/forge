@@ -323,3 +323,23 @@ func TestCompositionGraph_NothingToDo(t *testing.T) {
 		t.Errorf("hand-composed Next:\n%s", next)
 	}
 }
+
+// forge#2285: a project that adopted roots beside the legacy composition
+// keeps their constructors in graph_compose.go; converting wholesale would
+// declare them twice, so the codemod refuses and says where they go.
+func TestCompositionGraph_RefusesWhileAdoptedRootsHaveTheirOwnComposeFile(t *testing.T) {
+	dir := copyLegacy(t)
+	if err := os.WriteFile(filepath.Join(dir, "internal", "app", codegen.MixedComposeFile), []byte("package app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := runCompositionGraph(dir, Options{Write: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked := strings.Join(rep.Blocked, "\n"); !strings.Contains(blocked, "internal/app/"+codegen.MixedComposeFile) || !strings.Contains(blocked, "compose.go") {
+		t.Fatalf("Blocked:\n%s", blocked)
+	}
+	if rep.Changed() {
+		t.Error("a refused conversion wrote")
+	}
+}

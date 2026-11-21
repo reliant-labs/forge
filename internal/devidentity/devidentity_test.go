@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/identity"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -419,7 +420,7 @@ func TestWriteStore_IsIdempotentAndKeepsTheRest(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# my dev secrets\nDATABASE_URL: postgres://x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	written, err := writeStore(path, map[string]string{"IDP_BROKER_TOKEN": "pat-1", "JWT_ISSUER": "http://localhost:8080"})
+	written, err := writeStore(path, map[string]string{"IDP_BROKER_TOKEN": "pat-1", "JWT_ISSUER": "http://localhost:8080"}, nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,16 +433,86 @@ func TestWriteStore_IsIdempotentAndKeepsTheRest(t *testing.T) {
 			t.Errorf("store lost %q:\n%s", want, raw)
 		}
 	}
-	again, err := writeStore(path, map[string]string{"IDP_BROKER_TOKEN": "pat-1", "JWT_ISSUER": "http://localhost:8080"})
+	again, err := writeStore(path, map[string]string{"IDP_BROKER_TOKEN": "pat-1", "JWT_ISSUER": "http://localhost:8080"}, nil, time.Now())
 	if err != nil || len(again) != 0 {
 		t.Fatalf("a converged store was rewritten: %v %v", again, err)
 	}
-	rotated, _ := writeStore(path, map[string]string{"IDP_BROKER_TOKEN": "pat-2"})
+	rotated, _ := writeStore(path, map[string]string{"IDP_BROKER_TOKEN": "pat-2"}, nil, time.Now())
 	if len(rotated) != 1 || rotated[0] != "IDP_BROKER_TOKEN" {
 		t.Errorf("a rotated token was not written: %v", rotated)
 	}
 	// Windows has no POSIX mode bits: Stat reports 0666 whatever was asked.
 	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("store mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+// The JWKS snapshot is stamped with a new delivered_at on every pass. The store
+// keeps the delivered one while the key set and issuer are unchanged and its
+// stamp is young, so `forge env up` neither rewrites the store nor announces it
+// each time; a rotation, or a stamp past snapshotRestamp, is written.
+func TestWriteStore_SnapshotIsRewrittenOnlyWhenKeysChangeOrItAges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dev.yaml")
+	snap := func(kid string, at time.Time) string {
+		return `{"delivered_at":"` + at.UTC().Format(time.RFC3339) + `","issuer":"http://localhost:8080","keys":[{"kid":"` + kid + `","kty":"RSA"}]}`
+	}
+	t0 := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	only := map[string]bool{"JWT_JWKS_SNAPSHOT": true}
+	write := func(v string, now time.Time) []string {
+		t.Helper()
+		w, err := writeStore(path, map[string]string{"JWT_JWKS_SNAPSHOT": v}, only, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	stored := func() string {
+		t.Helper()
+		v, err := secretFile{Path: path}.get("JWT_JWKS_SNAPSHOT")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+
+	if w := write(snap("k1", t0), t0); len(w) != 1 {
+		t.Fatalf("first snapshot not written: %v", w)
+	}
+	later := t0.Add(time.Hour)
+	if w := write(snap("k1", later), later); len(w) != 0 {
+		t.Errorf("an unchanged key set was rewritten for its new stamp: %v", w)
+	}
+	if stored() != snap("k1", t0) {
+		t.Errorf("the delivered stamp moved: %s", stored())
+	}
+	// A reordered document is the same snapshot.
+	reordered := `{"keys":[{"kty":"RSA","kid":"k1"}],"issuer":"http://localhost:8080","delivered_at":"` + later.Format(time.RFC3339) + `"}`
+	if w := write(reordered, later); len(w) != 0 {
+		t.Errorf("a reordered snapshot was rewritten: %v", w)
+	}
+	if w := write(snap("k2", later), later); len(w) != 1 || stored() != snap("k2", later) {
+		t.Errorf("a rotated key set was not written: %v", w)
+	}
+	aged := later.Add(snapshotRestamp)
+	if w := write(snap("k2", aged), aged); len(w) != 1 || stored() != snap("k2", aged) {
+		t.Errorf("a snapshot past snapshotRestamp was not restamped: %v", w)
+	}
+	// Without the snapshot marking, the value is compared as bytes.
+	next := aged.Add(time.Minute)
+	if w, _ := writeStore(path, map[string]string{"JWT_JWKS_SNAPSHOT": snap("k2", next)}, nil, next); len(w) != 1 {
+		t.Errorf("an unmarked key was not compared by bytes: %v", w)
+	}
+}
+
+func TestSnapshotKeys_AreTheIdentityJWKSRefs(t *testing.T) {
+	in := baseInput()
+	in.Refs = []Ref{
+		{EnvName: "JWT_ISSUER", SecretName: "forge-identity-identity", SecretKey: "ISSUER"},
+		{EnvName: "JWT_JWKS_SNAPSHOT", SecretName: "forge-identity-identity", SecretKey: "JWKS"},
+		{EnvName: "OTHER_JWKS", SecretName: "other", SecretKey: "JWKS"},
+	}
+	got := snapshotKeys(in)
+	if len(got) != 1 || !got["JWT_JWKS_SNAPSHOT"] {
+		t.Errorf("snapshotKeys = %v", got)
 	}
 }

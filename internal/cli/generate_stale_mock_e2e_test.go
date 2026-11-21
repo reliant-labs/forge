@@ -9,12 +9,16 @@ import (
 	"testing"
 )
 
-// TestE2EGenerateRegeneratesStaleMockBeforeValidation: a contract.go edit
-// that leaves the scaffolded mock_gen.go uncompilable must not block the
-// regeneration of that very mock — including under `generate --force`, which
-// installs an empty force scope and used to make the heal guard leave the
-// pristine-but-older mock in place, so the validation build then failed on
-// the generated file.
+// TestE2EGenerateRegeneratesStaleMockBeforeValidation: a contract edit
+// that leaves the derived contract_gen.go and the scaffolded mock_gen.go
+// uncompilable must not block the regeneration of those very files —
+// including under `generate --force`, which installs an empty force scope
+// and used to make the heal guard leave the pristine-but-older mock in
+// place, so the validation build then failed on the generated file.
+//
+// The default package scaffold declares its contract with `//forge:contract`
+// on the service type, so the edit is to service.go: contract_gen.go is
+// derived from it, and mock_gen.go from that.
 func TestE2EGenerateRegeneratesStaleMockBeforeValidation(t *testing.T) {
 	t.Parallel()
 	forgeBin := buildforgeBinary(t)
@@ -27,45 +31,42 @@ func TestE2EGenerateRegeneratesStaleMockBeforeValidation(t *testing.T) {
 	runCmd(t, projectDir, forgeBin, "generate")
 
 	pkgDir := filepath.Join(projectDir, "internal", "releasehealth")
-	contractPath := filepath.Join(pkgDir, "contract.go")
+	contractPath := filepath.Join(pkgDir, "contract_gen.go")
 	mockPath := filepath.Join(pkgDir, "mock_gen.go")
-	t.Logf("contract.go:\n%s", readFileE2E(t, contractPath))
-
-	// Round 1: add a method returning a new type and implement it.
-	contractSrc := readFileE2E(t, contractPath)
-	contractSrc = strings.Replace(contractSrc, "type Service interface {",
-		"// Report is a release health report.\ntype Report struct{ Healthy bool }\n\ntype Service interface {\n\tReport() (Report, error)\n", 1)
-	if err := os.WriteFile(contractPath, []byte(contractSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	implPath := filepath.Join(pkgDir, "service.go")
+	t.Logf("contract_gen.go:\n%s", readFileE2E(t, contractPath))
+
+	// Round 1: add a method returning a new type to the //forge:contract type.
 	impl := readFileE2E(t, implPath) +
-		"\nfunc (s *service) Report() (Report, error) { return Report{}, nil }\n"
+		"\n// Report is a release health report.\ntype Report struct{ Healthy bool }\n" +
+		"\n// Report returns the current release health.\nfunc (s *service) Report() (Report, error) { return Report{}, nil }\n"
 	if err := os.WriteFile(implPath, []byte(impl), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runCmd(t, projectDir, forgeBin, "generate")
+	if c := readFileE2E(t, contractPath); !strings.Contains(c, "Report() (Report, error)") {
+		t.Fatalf("contract_gen.go lacks Report after generate:\n%s", c)
+	}
 	if m := readFileE2E(t, mockPath); !strings.Contains(m, "Report") {
 		t.Fatalf("mock lacks Report after generate:\n%s", m)
 	}
 
-	// Round 2: the type the mock names is renamed away. The stale mock no
-	// longer compiles; generate must still regenerate it.
-	contractSrc = readFileE2E(t, contractPath)
-	contractSrc = strings.ReplaceAll(contractSrc, "Report struct", "Summary struct")
-	contractSrc = strings.ReplaceAll(contractSrc, "(Report, error)", "(Summary, error)")
-	if err := os.WriteFile(contractPath, []byte(contractSrc), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Round 2: the type the contract and mock name is renamed away. The
+	// stale contract_gen.go and mock no longer compile; generate must still
+	// regenerate both.
 	impl = readFileE2E(t, implPath)
+	impl = strings.ReplaceAll(impl, "type Report struct", "type Summary struct")
 	impl = strings.ReplaceAll(impl, "(Report, error) { return Report{}", "(Summary, error) { return Summary{}")
 	if err := os.WriteFile(implPath, []byte(impl), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out := runCmdKeep(t, projectDir, forgeBin, "generate", "--force")
+	if c := readFileE2E(t, contractPath); !strings.Contains(c, "Report() (Summary, error)") {
+		t.Fatalf("contract_gen.go was not re-derived from the edited service.go:\n%s\n--- generate output ---\n%s", c, out)
+	}
 	m := readFileE2E(t, mockPath)
 	if !strings.Contains(m, "Summary") || strings.Contains(m, "(Report,") {
-		t.Fatalf("mock was not regenerated from the edited contract.go:\n%s\n--- generate output ---\n%s", m, out)
+		t.Fatalf("mock was not regenerated from the re-derived contract:\n%s\n--- generate output ---\n%s", m, out)
 	}
 	runCmd(t, projectDir, "go", "build", "./...")
 }

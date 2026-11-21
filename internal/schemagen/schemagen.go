@@ -24,6 +24,8 @@
 // What reflection cannot see — a field decoded through json.RawMessage into a
 // union, a type with its own UnmarshalJSON, which fields are required — is
 // stated in [Options], next to the types, and nowhere else.
+//
+//forge:exclude-contract: a pure library over reflect and encoding/json, stdlib only: a schema generator and a validator with one implementation each, and nothing to substitute
 package schemagen
 
 import (

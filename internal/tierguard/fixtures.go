@@ -85,6 +85,9 @@ type fixture struct {
 	Entities map[string][]entityMessage
 	// Frontends are `--frontend` names (forge.yaml shape + features).
 	Frontends []string
+	// MakeTestGate replaces the scaffolded Taskfile with a project-owned
+	// Makefile. AGENTS.md's guide must reflect the project's actual gate.
+	MakeTestGate bool
 	// GatewayHTTPPort, when non-zero, moves the scaffolded `public` Gateway's
 	// http listener off its default (18080) in deploy/kcl/ingress.k.
 	//
@@ -122,6 +125,14 @@ type fixture struct {
 	// that whole half of the template unexercised, and the file then
 	// looks constant while really only being untested.
 	BinaryConfigs []binaryConfigBlock
+	// DatabaseTelemetryOff sets `default_telemetry = False` on the
+	// scaffolded forge.ManagedDatabase of every env. Its default
+	// telemetry (kcl/database_telemetry.k) is what the database's system
+	// dashboard, declared dashboard and spec part under
+	// deploy/observability/ are projected from; with every fixture keeping
+	// the default, those files render the same bytes and look like library
+	// code while really only being unexercised.
+	DatabaseTelemetryOff bool
 }
 
 // binaryConfigBlock is one config message bound to a binary — the
@@ -264,9 +275,10 @@ func projectB() fixture {
 // it produces is still attributable to something the user wrote.
 func projectD() fixture {
 	return fixture{
-		Label:  "D(no entities → no migrations, built-in-colliding service name)",
-		Name:   FixedProjectName,
-		Module: FixedModulePath,
+		Label:        "D(no entities → no migrations, built-in-colliding service name, Makefile gate)",
+		Name:         FixedProjectName,
+		Module:       FixedModulePath,
+		MakeTestGate: true,
 		// `version` collides with the built-in version subcommand. It is a
 		// legal service name (ReservedServiceNames covers only the
 		// worker/scheduler family), and the cmd-group generator skips its
@@ -274,6 +286,9 @@ func projectD() fixture {
 		Services: []string{"alpha", "version"},
 		// No Entities: nothing is marked `// forge:entity`, so `forge
 		// scaffold` births no table and db/migrations/ stays empty.
+		// The database keeps no default telemetry, so its dashboards and
+		// spec part are not emitted (presence-derived).
+		DatabaseTelemetryOff: true,
 	}
 }
 
@@ -358,6 +373,12 @@ func render(parent string, fx fixture) (*renderResult, error) {
 		return nil, err
 	}
 
+	if fx.DatabaseTelemetryOff {
+		if err := disableDatabaseTelemetry(root); err != nil {
+			return nil, err
+		}
+	}
+
 	for _, svc := range fx.Services[1:] {
 		if err := forgeIn(root, "scaffold", "service", svc); err != nil {
 			return nil, fmt.Errorf("scaffold service %s: %w", svc, err)
@@ -401,6 +422,17 @@ func render(parent string, fx fixture) (*renderResult, error) {
 	for _, pkg := range fx.InternalPackages {
 		if err := forgeIn(root, "package", "new", pkg.Name); err != nil {
 			return nil, fmt.Errorf("package new %s: %w", pkg.Name, err)
+		}
+	}
+
+	// Exercise a real gate input immediately before the measured generate;
+	// leaving every scaffold's Taskfile in place gives every Go guide the same gate.
+	if fx.MakeTestGate {
+		if err := os.Remove(filepath.Join(root, "Taskfile.yml")); err != nil {
+			return nil, fmt.Errorf("replace scaffolded Taskfile: %w", err)
+		}
+		if err := atomicfile.WriteFile(filepath.Join(root, "Makefile"), []byte("test:\n\tgo test ./...\n"), 0o644); err != nil {
+			return nil, fmt.Errorf("write project Makefile: %w", err)
 		}
 	}
 
@@ -451,6 +483,36 @@ func retargetGatewayListener(root string, port int) error {
 	}
 	out := strings.Replace(string(raw), scaffolded, fmt.Sprintf("port = %d", port), 1)
 	return atomicfile.WriteFile(path, []byte(out), 0o644)
+}
+
+// disableDatabaseTelemetry sets `default_telemetry = False` on the
+// scaffolded forge.ManagedDatabase in every env's main.k — the one-line
+// edit a user makes to stop forge watching the database.
+func disableDatabaseTelemetry(root string) error {
+	mains, err := filepath.Glob(filepath.Join(root, "deploy", "kcl", "*", "main.k"))
+	if err != nil {
+		return err
+	}
+	const scaffolded = "_db = forge.ManagedDatabase {\n"
+	edited := 0
+	for _, path := range mains {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		if !strings.Contains(string(raw), scaffolded) {
+			continue
+		}
+		out := strings.Replace(string(raw), scaffolded, scaffolded+"    default_telemetry = False\n", 1)
+		if err := atomicfile.WriteFile(path, []byte(out), 0o644); err != nil {
+			return err
+		}
+		edited++
+	}
+	if edited == 0 {
+		return fmt.Errorf("no deploy/kcl/*/main.k declares %q — the fixture's anchor moved with the env templates", strings.TrimSpace(scaffolded))
+	}
+	return nil
 }
 
 // binPlaceholder stands in for the binary-name path segment so renders

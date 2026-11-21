@@ -49,6 +49,7 @@ var FrontendRuntimeKeys = []string{
 	"OTEL_REPLAY",
 	"PAGE_VIEWS",
 	"REPLAY_SAMPLE_RATE",
+	"RPC_FORENSICS",
 }
 
 // FrontendConfigSchema is the machine-readable statement of which keys a

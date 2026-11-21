@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/generator/contract"
 )
 
 func TestGoMarkersSorted(t *testing.T) {
@@ -58,6 +60,15 @@ func TestClassifyGoMarkerComment(t *testing.T) {
 		{"//forge:lint-disable-next-line forge-go-markers: fixture", GoMarkerOK},
 		{"// forge:hash=0123abcd", GoMarkerOK},
 		{"//forge:no-orm: hand-written repository", GoMarkerOK},
+		// A reason-required marker with no reason (FG-32): its recognizer
+		// ignores it. The unspaced bare directive stays malformed.
+		{"// forge:auth-unscoped-ok: operators only", GoMarkerOK},
+		{"// forge:auth-unscoped-ok", GoMarkerReasonMissing},
+		{"// forge:auth-unscoped-ok:", GoMarkerReasonMissing},
+		{"//forge:auth-unscoped-ok:  ", GoMarkerReasonMissing},
+		{"//forge:auth-unscoped-ok", GoMarkerMalformed},
+		{"// forge:auth-unscoped-ok — operators only", GoMarkerMalformed},
+		{"// forge:auth-unscoped-ok is how a handler is acknowledged", GoMarkerNone},
 	}
 	for _, tc := range cases {
 		if got := ClassifyGoMarkerComment(tc.raw).Status; got != tc.want {
@@ -81,6 +92,7 @@ func TestGoMarkerRegistryAgreesWithRecognizers(t *testing.T) {
 		"forge:outbound-io":        func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, "forge:outbound-io") },
 		directiveConstructorMarker: func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, directiveConstructorMarker) },
 		directiveNoObserve:         func(raw string) bool { return commentEquals(&ast.Comment{Text: raw}, directiveNoObserve) },
+		contract.NoCaptureMarker:   func(raw string) bool { _, ok := contract.ParseNoCaptureComment(raw); return ok },
 		directiveServiceMarker: func(raw string) bool {
 			return HasServiceContractMarker(&ast.CommentGroup{List: []*ast.Comment{{Text: raw}}})
 		},

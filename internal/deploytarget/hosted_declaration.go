@@ -36,6 +36,9 @@ const ProcDeployCapabilities = "controlplane.v1.DeployService/GetCapabilities"
 func HostedBundleReader(ctx context.Context, c HostedCaller) (*release.BundleReader, error) {
 	var caps struct {
 		Features []string `json:"bundleDocumentFeatures"`
+		// TelemetryLimits is GetDeployCapabilitiesResponse.telemetry_limits:
+		// the caps the platform holds a hosted env's declared telemetry to.
+		TelemetryLimits *wireTelemetryLimits `json:"telemetryLimits"`
 	}
 	if err := c.Call(ctx, ProcDeployCapabilities, map[string]any{}, &caps); err != nil {
 		var cerr *cloud.Error
@@ -44,7 +47,30 @@ func HostedBundleReader(ctx context.Context, c HostedCaller) (*release.BundleRea
 		}
 		return nil, fmt.Errorf("ask the control plane which bundle-document features it decodes (GetCapabilities): %w", err)
 	}
-	return &release.BundleReader{Features: caps.Features}, nil
+	return &release.BundleReader{Features: caps.Features, Telemetry: caps.TelemetryLimits.limits()}, nil
+}
+
+// wireTelemetryLimits is controlplane.v1.TelemetryLimits in proto3 JSON. A
+// cap is read as a number or, the proto3-JSON form of a 64-bit integer, a
+// decimal string, so the control plane may declare either width. An unset
+// (or non-positive) cap is the default.
+type wireTelemetryLimits struct {
+	MaxSampleLimit   json.Number `json:"maxSampleLimit"`
+	MaxPulledTargets json.Number `json:"maxPulledTargets"`
+}
+
+func (w *wireTelemetryLimits) limits() *release.TelemetryLimits {
+	if w == nil {
+		return nil
+	}
+	n := func(v json.Number) int {
+		i, err := v.Int64()
+		if err != nil || i <= 0 || i > 1<<31-1 {
+			return 0
+		}
+		return int(i)
+	}
+	return &release.TelemetryLimits{MaxSampleLimit: n(w.MaxSampleLimit), MaxPulledTargets: n(w.MaxPulledTargets)}
 }
 
 // shapeWireFields is DeployEnvironmentSpec.shape: a google.protobuf.Struct,

@@ -8,8 +8,9 @@ browser through the runtime config document:
   * console_capture = False renders CONSOLE_CAPTURE = "false", and a
     replay_sample_rate below 1 renders REPLAY_SAMPLE_RATE; the defaults render
     nothing;
-  * page_views = False renders PAGE_VIEWS = "false" and identify_user = False
-    renders IDENTIFY_USER = "false"; the defaults (both on) render nothing;
+  * page_views = False renders PAGE_VIEWS = "false", identify_user = False
+    renders IDENTIFY_USER = "false" and rpc_forensics = False renders
+    RPC_FORENSICS = "false"; the defaults (all on) render nothing;
   * an author's own runtime_config entry for either key wins;
   * sourcemaps renders only when it is not the default "publish".
 """
@@ -65,7 +66,7 @@ _default_telemetry = forge.Frontend {
 _analytics_off = forge.Frontend {
     name = "quiet", image = "ghcr.io/acme/quiet", path = "quiet", type = "nextjs"
     runtime = forge.OnHosted {}
-    telemetry = forge.BrowserTelemetry {page_views = False, identify_user = False}
+    telemetry = forge.BrowserTelemetry {page_views = False, identify_user = False, rpc_forensics = False}
 }
 _on_host = forge.Frontend {
     name = "dev", path = "dev", type = "vite", port = 5173
@@ -109,4 +110,5 @@ assert_sourcemaps_off_renders = _by.tuned.sourcemaps == "off"
 assert_sourcemaps_default_renders_nothing = "sourcemaps" not in _by.plain and "sourcemaps" not in _by.dflt
 assert_page_views_off_renders = _spec("quiet").PAGE_VIEWS.value == "false"
 assert_identify_user_off_renders = _spec("quiet").IDENTIFY_USER.value == "false"
-assert_analytics_defaults_render_nothing = "PAGE_VIEWS" not in _spec("tuned") and "IDENTIFY_USER" not in _spec("tuned")
+assert_rpc_forensics_off_renders = _spec("quiet").RPC_FORENSICS.value == "false"
+assert_analytics_defaults_render_nothing = "PAGE_VIEWS" not in _spec("tuned") and "IDENTIFY_USER" not in _spec("tuned") and "RPC_FORENSICS" not in _spec("tuned")

@@ -25,6 +25,8 @@ type attemptCaller struct {
 	// releases answers GetRelease by version; a version not in it is
 	// NotFound.
 	releases map[string]wireRelease
+	// reportErrs answers the ReportDeployAttempt calls in order, then nil.
+	reportErrs []error
 }
 
 func (c *attemptCaller) Call(_ context.Context, procedure string, req, resp any) error {
@@ -38,6 +40,12 @@ func (c *attemptCaller) Call(_ context.Context, procedure string, req, resp any)
 	switch procedure {
 	case procOpenDeployAttempt:
 		return c.openErr
+	case procReportDeployAttempt:
+		if len(c.reportErrs) > 0 {
+			err := c.reportErrs[0]
+			c.reportErrs = c.reportErrs[1:]
+			return err
+		}
 	case procGetRelease:
 		w, ok := c.releases[body["version"].(string)]
 		if !ok {

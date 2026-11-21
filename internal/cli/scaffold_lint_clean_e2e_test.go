@@ -68,10 +68,20 @@ func TestE2EFreshScaffoldLintExitsZero(t *testing.T) {
 		// Custom mutations declare their activity event (or none), as
 		// forgeconv-activity-declared requires.
 		"  rpc ArchiveOrder(ArchiveOrderRequest) returns (ArchiveOrderResponse) {\n"+
-			"    option (forge.v1.method) = { activity: { verb: \"archive\", target: { kind: \"order\", id: \"id\" } } };\n"+
+			"    option (forge.v1.method) = {\n"+
+			"      activity: {\n"+
+			"        verb: \"archive\"\n"+
+			"        target: {\n"+
+			"          kind: \"order\"\n"+
+			"          id: \"id\"\n"+
+			"        }\n"+
+			"      }\n"+
+			"    };\n"+
 			"  }\n"+
 			"  rpc CreateApiKey(CreateApiKeyRequest) returns (CreateApiKeyResponse) {\n"+
-			"    option (forge.v1.method) = { activity: { none: \"fixture: the key is not persisted\" } };\n"+
+			"    option (forge.v1.method) = {\n"+
+			"      activity: {none: \"fixture: the key is not persisted\"}\n"+
+			"    };\n"+
 			"  }", 1)
 	proto += `
 // forge:entity
@@ -102,6 +112,12 @@ message CreateApiKeyResponse {}
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
 		t.Fatalf("author catalog proto: %v", err)
 	}
+	// The proto-format lane gates at every pin. The rpcs above are written
+	// as forge's pinned buf formats them, but buf releases disagree on a
+	// one-field option literal, and lint runs PATH's buf first: format the
+	// test's own input with the buf lint will use, before forge touches it,
+	// so the --no-fix run below still judges everything forge writes.
+	runCmd(t, projectDir, forgeBin, "lint", "--proto-format", "--fix")
 
 	runCmd(t, projectDir, forgeBin, "scaffold")
 	runCmd(t, projectDir, "go", "build", "./...")

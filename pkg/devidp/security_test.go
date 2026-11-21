@@ -64,54 +64,6 @@ func preRegister(t *testing.T, h *harness) *fakeUser {
 	return u
 }
 
-func TestTakeover_MagicLinkVerificationRevokesThePlantedPassword(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods))
-	u := preRegister(t, h)
-	victim := h.browser()
-	victim.post("/auth/magic/request", map[string]any{"email": "victim@acme.com"})
-	status, body := victim.post("/auth/magic/consume", map[string]any{"code": h.z.lastMail(t).code})
-	if status != 200 || body["subject"] != u.id {
-		t.Fatalf("victim's magic link: %d %v", status, body)
-	}
-	if signsIn(t, h, "victim@acme.com", attackerPassword) {
-		t.Fatal("TAKEOVER: the attacker's password works on the victim's verified account")
-	}
-}
-
-func TestTakeover_RegisteringAnExistingAddressReplacesThePlantedPasswordOnlyAfterProof(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods))
-	u := preRegister(t, h)
-	victim := h.browser()
-	if status, _ := victim.post("/auth/register", map[string]any{"email": "victim@acme.com", "password": "victim-password-1"}); status != 202 {
-		t.Fatalf("victim register: %d", status)
-	}
-	if h.z.user(u.id).password != attackerPassword {
-		t.Fatal("registering an existing account changed its password before any proof")
-	}
-	status, body := victim.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code})
-	if status != 200 || body["credentialsReset"] != false {
-		t.Fatalf("victim verify: %d %v", status, body)
-	}
-	if signsIn(t, h, "victim@acme.com", attackerPassword) {
-		t.Fatal("TAKEOVER: the attacker's password survived the victim's verification")
-	}
-	if !signsIn(t, h, "victim@acme.com", "victim-password-1") {
-		t.Fatal("the victim's own password, chosen at their registration, was not set after their proof")
-	}
-}
-
-func TestTakeover_VerifyingFromAnotherBrowserRevokesAndSaysSo(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods))
-	u := preRegister(t, h)
-	status, body := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code})
-	if status != 200 || body["credentialsReset"] != true {
-		t.Fatalf("verify: %d %v", status, body)
-	}
-	if signsIn(t, h, "victim@acme.com", attackerPassword) {
-		t.Fatal("TAKEOVER: a verification from a browser that set no credential kept them")
-	}
-}
-
 func TestTakeover_TheRegistrantsOwnBrowserKeepsItsPassword(t *testing.T) {
 	h := newHarness(t, policyWith(SignupOpen, allMethods))
 	alice := h.browser()
@@ -120,82 +72,6 @@ func TestTakeover_TheRegistrantsOwnBrowserKeepsItsPassword(t *testing.T) {
 	status, body := alice.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code})
 	if status != 200 || body["credentialsReset"] != false || !signsIn(t, h, "alice@acme.com", "alice-password-1") {
 		t.Fatalf("same-browser verify lost the registrant's password: %d %v", status, body)
-	}
-}
-
-func TestTakeover_InvitationRevokesThePlantedPassword(t *testing.T) {
-	for _, method := range []string{MethodPasskey, MethodMagicLink, MethodPassword} {
-		t.Run(method, func(t *testing.T) {
-			h := newHarness(t, policyWith(SignupOpen, allMethods))
-			u := preRegister(t, h)
-			planted := Passkey{ID: "planted", Name: "attacker"}
-			h.z.mu.Lock()
-			u.inviteCode = "inv-1"
-			u.passkeys = []Passkey{planted}
-			h.z.mu.Unlock()
-			body := map[string]any{"userID": u.id, "code": "inv-1", "method": method}
-			if method == MethodPassword {
-				body["password"] = "invitee-password-1"
-			}
-			if status, resp := h.browser().post("/auth/invite/accept", body); status >= 300 && status != 202 {
-				t.Fatalf("accept: %d %v", status, resp)
-			}
-			if signsIn(t, h, "victim@acme.com", attackerPassword) {
-				t.Fatal("TAKEOVER: the attacker's password survived the invitation")
-			}
-			for _, k := range h.z.user(u.id).passkeys {
-				if k.ID == planted.ID {
-					t.Fatal("a passkey set before the invitation survived it")
-				}
-			}
-		})
-	}
-}
-
-func TestTakeover_AnUnverifiedSocialLinkDoesNotSurviveTheOwnersProof(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods, google))
-	attacker := h.browser()
-	id := startSocial(t, attacker)
-	h.z.addIntent(id, "tok", intentResult("victim@acme.com", false))
-	if status, body := attacker.post("/auth/social/callback", map[string]any{"id": id, "token": "tok"}); status != 202 {
-		t.Fatalf("attacker social sign-up: %d %v", status, body)
-	}
-	u := h.z.userByEmail("victim@acme.com")
-	if u == nil || len(u.links) != 0 {
-		t.Fatalf("precondition: sign-up must not link an unverified provider before the proof, got %+v", u)
-	}
-	// An account an older broker created DID carry the link: plant it.
-	h.z.mu.Lock()
-	u.links = []IDPLink{{IdPID: "idp-google", UserID: "g-123", UserName: "victim@acme.com"}}
-	h.z.mu.Unlock()
-	victim := h.browser()
-	if status, body := victim.post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code}); status != 200 {
-		t.Fatalf("victim verify: %d %v", status, body)
-	}
-	if n := len(h.z.user(u.id).links); n != 0 {
-		t.Fatalf("TAKEOVER: %d identity-provider link(s) planted before the proof survived it", n)
-	}
-	// The attacker's provider identity is no longer linked: their next
-	// social sign-in reaches the "both verified" rule and is refused.
-	again := h.browser()
-	id2 := startSocial(t, again)
-	h.z.addIntent(id2, "tok2", intentResult("victim@acme.com", false))
-	status, body := again.post("/auth/social/callback", map[string]any{"id": id2, "token": "tok2"})
-	want(t, status, body, 409, CodeSocialLinkRequired)
-}
-
-func TestTakeover_ARevocationThatFailsLocksTheAccount(t *testing.T) {
-	h := newHarness(t, policyWith(SignupOpen, allMethods))
-	u := preRegister(t, h)
-	h.z.mu.Lock()
-	h.z.failLinks = true
-	h.z.mu.Unlock()
-	status, _ := h.browser().post("/auth/verify", map[string]any{"userID": u.id, "code": h.z.lastMail(t).code})
-	if status != http.StatusBadGateway {
-		t.Fatalf("verify answered %d, want 502", status)
-	}
-	if !h.z.user(u.id).locked {
-		t.Fatal("a verified account was left holding credentials nobody proved, and was not locked")
 	}
 }
 
@@ -216,8 +92,10 @@ func TestSignupRole_OnlySelfSignupsAndOnlyOnce(t *testing.T) {
 		t.Fatalf("an account that did not sign up got the sign-up role: %v", h.z.grants)
 	}
 
+	// Passwordless, so the re-verification below runs on a credential-less
+	// account: one holding credentials is never proven into.
 	b := h.browser()
-	b.post("/auth/register", map[string]any{"email": "self@acme.com", "password": "self-password-1"})
+	b.post("/auth/register", map[string]any{"email": "self@acme.com"})
 	self := h.z.userByEmail("self@acme.com")
 	b.post("/auth/verify", map[string]any{"userID": self.id, "code": h.z.lastMail(t).code})
 	if len(h.z.grants) != 1 {
@@ -227,7 +105,9 @@ func TestSignupRole_OnlySelfSignupsAndOnlyOnce(t *testing.T) {
 	h.z.mu.Lock()
 	self.verified, self.emailCode, h.z.grants = false, "ev-again", nil
 	h.z.mu.Unlock()
-	b.post("/auth/verify", map[string]any{"userID": self.id, "code": "ev-again"})
+	if status, body := b.post("/auth/verify", map[string]any{"userID": self.id, "code": "ev-again"}); status != 200 {
+		t.Fatalf("re-verification: %d %v", status, body)
+	}
 	if len(h.z.grants) != 0 {
 		t.Fatalf("a re-verification granted the sign-up role again: %v", h.z.grants)
 	}

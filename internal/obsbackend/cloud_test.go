@@ -104,17 +104,19 @@ func TestCloudTraceReadsSpansAndLogs(t *testing.T) {
 }
 
 func TestCloudEndpointsAndPanels(t *testing.T) {
-	f := &fakeCaller{replies: map[string]string{procQueryPanel: `{"columns":["requests","errors","p50","p95","p99"],"rows":[
+	// Endpoints runs two panels through QueryPanel (the server endpoints, then
+	// the browser's client spans), so the fake answers by panel id.
+	f := &endpointsPanelCaller{replies: map[string]string{"endpoints": `{"columns":["requests","errors","p50","p95","p99"],"rows":[
 		{"group":{"service.name":"api","span.name":"GET /a"},"values":[100,1,2,5,9]},
-		{"group":{"service.name":"api","span.name":"GET /b"},"values":[10,5,20,50,90]}]}`}}
-	res, err := cloudWith(f).Endpoints(context.Background(), EndpointsRequest{Narrow: narrowC(), Sort: "errors", Top: 1})
+		{"group":{"service.name":"api","span.name":"GET /b"},"values":[10,5,20,50,90]}]}`, "endpoints-client": `{}`}}
+	res, err := (Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: f}).Endpoints(context.Background(), EndpointsRequest{Narrow: narrowC(), Sort: "errors", Top: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Endpoints) != 1 || res.Endpoints[0].Name != "GET /b" || res.Omitted != 1 || res.Endpoints[0].ErrorRatio != 0.5 {
 		t.Errorf("%+v", res)
 	}
-	panel := f.reqs[procQueryPanel]["panel"].(map[string]any)
+	panel := f.panels["endpoints"]["panel"].(map[string]any)
 	if panel["kind"] != "table" || fmt.Sprint(panel["groupBy"]) != "[service.name span.name]" {
 		t.Errorf("panel %v", panel)
 	}
@@ -257,6 +259,15 @@ func TestMapCloudError(t *testing.T) {
 		if got := exitOf(MapCloudError(&cloud.Error{Code: code})); got != want {
 			t.Errorf("%s: exit %d, want %d", code, got, want)
 		}
+	}
+	// A project the caller cannot see is the request's fault, whichever
+	// answer the control plane gave, never "could not be reached".
+	unavailable := &cloud.ProjectUnavailableError{ProjectID: "hp-1", Wire: &cloud.Error{Code: "permission_denied"}}
+	if exitOf(MapCloudError(unavailable)) != ExitWrong {
+		t.Error("a hosted project the caller cannot see is not ExitWrong")
+	}
+	if f := FailureOf(unavailable); f.Class != ClassNotFound || f.Reason != cloud.ReasonHostedProjectNotFound {
+		t.Errorf("FailureOf(project unavailable) = %+v, want not_found / %s", f, cloud.ReasonHostedProjectNotFound)
 	}
 	if exitOf(MapCloudError(errors.New("dial tcp: refused"))) != ExitUndetermined {
 		t.Error("a transport failure is undetermined")

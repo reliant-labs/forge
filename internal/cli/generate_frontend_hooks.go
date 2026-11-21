@@ -327,11 +327,6 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 			if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
 				return fmt.Errorf("write hooks file %s: %w", outRel, err)
 			}
-			// Retire the pre-`_gen` copy. Two live hook modules would both
-			// be re-exported by the barrel below, so every hook symbol
-			// would be bound twice and the barrel would not compile.
-			codegen.RetireRenamedGenerated(projectDir,
-				filepath.Join(feDir, "src", "hooks", naming.ServiceHookFileLegacy(svc.Name)), cs)
 
 			// Emit a live happy-path test next to the generated hooks
 			// file. React Native uses a different rendering target (no
@@ -392,22 +387,39 @@ func reportUnknownHookAllowlist(fe config.FrontendConfig, services []codegen.Ser
 	}
 }
 
-// reportOrphanedHookFiles warns about *-hooks.ts files sitting in hooksDir
-// that this run did NOT (re)write and that carry no forge:hash marker —
-// left behind by a forge build old enough to predate routing hook writes
-// through the certification chokepoint (WriteGeneratedFile).
-//
-// It is report-only, never destructive, and deliberately narrower than
-// the marker-driven stale-artifact sweep (cleanupStaleArtifacts): a
-// hook file THIS run writes now carries a forge:hash marker, so any
-// future rename/removal is that sweep's job, automatically, with no
-// code here. The gap this function closes is the one the sweep cannot
-// close on its own — files written by a forge predating this fix, which
-// carry the Tier-1 "forge-owned, regenerated every run" banner but no
-// marker to certify it. Un-marked means forge cannot prove authorship,
-// so deleting one would be a guess; naming it, with the reason and the
-// remedy, is the guess-free half forge can own.
+// reportOrphanedHookFiles warns about the stale hook files in hooksDir that
+// orphanedHookFiles finds. It is report-only, never destructive.
 func reportOrphanedHookFiles(hooksDir string, live []hookFileEntry) {
+	orphans := orphanedHookFiles(hooksDir, live)
+	if len(orphans) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\n⚠️  %d stale hook file(s) in %s carry the \"forge-owned, regenerated every run\" banner "+
+		"but predate forge's hash-marker certification, so forge cannot prove it still owns the bytes and won't "+
+		"delete them automatically. forge no longer generates these (their service was renamed or removed) — "+
+		"delete them by hand:\n", len(orphans), hooksDir)
+	for _, name := range orphans {
+		fmt.Fprintf(os.Stderr, "   - %s\n", filepath.Join(hooksDir, name))
+	}
+}
+
+// orphanedHookFiles returns, sorted, the *-hooks.ts files in hooksDir that
+// this run did NOT (re)write, that carry forge's generated-file banner and
+// that carry no forge:hash marker — left behind by a forge build old enough
+// to predate routing hook writes through the certification chokepoint
+// (WriteGeneratedFile).
+//
+// It is deliberately narrower than the marker-driven stale-artifact sweep
+// (cleanupStaleArtifacts): a hook file THIS run writes now carries a
+// forge:hash marker, so any future rename/removal is that sweep's job,
+// automatically, with no code here. The gap this function closes is the one
+// the sweep cannot close on its own — files written by a forge predating
+// this fix, which carry the Tier-1 "forge-owned, regenerated every run"
+// banner but no marker to certify it. Un-marked means forge cannot prove
+// authorship, so deleting one would be a guess; naming it, with the reason
+// and the remedy, is the guess-free half forge can own. A *-hooks.ts with no
+// banner was never forge's: it is the user's own file, and is not named.
+func orphanedHookFiles(hooksDir string, live []hookFileEntry) []string {
 	liveNames := make(map[string]bool, len(live))
 	for _, f := range live {
 		liveNames[f.fileName] = true
@@ -415,7 +427,7 @@ func reportOrphanedHookFiles(hooksDir string, live []hookFileEntry) {
 
 	entries, err := os.ReadDir(hooksDir)
 	if err != nil {
-		return
+		return nil
 	}
 
 	var orphans []string
@@ -435,20 +447,31 @@ func reportOrphanedHookFiles(hooksDir string, live []hookFileEntry) {
 		if _, found := checksums.ExtractMarker(content); found {
 			continue
 		}
+		if !hasForgeGeneratedHeader(content) {
+			continue
+		}
 		orphans = append(orphans, name)
 	}
-	if len(orphans) == 0 {
-		return
-	}
 	sort.Strings(orphans)
+	return orphans
+}
 
-	fmt.Fprintf(os.Stderr, "\n⚠️  %d stale hook file(s) in %s carry the \"forge-owned, regenerated every run\" banner "+
-		"but predate forge's hash-marker certification, so forge cannot prove it still owns the bytes and won't "+
-		"delete them automatically. forge no longer generates these (their service was renamed or removed) — "+
-		"delete them by hand:\n", len(orphans), hooksDir)
-	for _, name := range orphans {
-		fmt.Fprintf(os.Stderr, "   - %s\n", filepath.Join(hooksDir, name))
+// hasForgeGeneratedHeader reports whether one of the first lines of content
+// carries forge's "Code generated by forge" banner, the first line of every
+// hook file forge ever rendered (internal/templates/frontend/hooks.ts.tmpl).
+// A few lines are searched, not just the first, so a header a tool prepended
+// (a lint directive, a license line) does not hide it.
+func hasForgeGeneratedHeader(content []byte) bool {
+	lines := bytes.SplitN(content, []byte("\n"), 6)
+	if len(lines) > 5 {
+		lines = lines[:5]
 	}
+	for _, line := range lines {
+		if bytes.Contains(line, []byte("Code generated by forge")) {
+			return true
+		}
+	}
+	return false
 }
 
 // hookFileEntry describes one generated hook file for index.ts generation.
@@ -516,8 +539,6 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 		if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
 			return fmt.Errorf("write hooks file %s: %w", outRel, err)
 		}
-		codegen.RetireRenamedGenerated(projectDir,
-			filepath.Join("packages", "hooks", "src", "generated", naming.ServiceHookFileLegacy(svc.Name)), cs)
 	}
 
 	if len(hookFiles) > 0 {

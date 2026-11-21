@@ -17,11 +17,12 @@ package cli
 
 // startRouter is what `forge start` prints. Keep it under
 // startRouterMaxLines / startRouterMaxBytes (start_router_test.go).
-const startRouter = `# forge: start here
+const startRouter = `# Reliant Forge: start here
 
 Find the row for the directory you are in, run its command, and follow what
 it prints. Load a skill only when a row names one.
 
+` + startRouterIncluded + `
 ## An app is already here
 
 | What is here | Run |
@@ -73,4 +74,15 @@ never post it anywhere public. ` + "`forge env status prod --claimable`" + ` pri
 ` + "`forge skill load deploy/static-site`" + ` envs, releases, custom domains
 ` + "`forge skill load deploy/hosting`" + ` the claimable rules in full
 ` + "`forge skill search <topic>`" + ` anything else
+`
+
+// startRouterIncluded is the router's one statement of what forge gives a
+// project, so an agent can tell its user before the first command. It is a
+// digest of the registry's glance blocks (internal/benefits/benefits.yaml,
+// `glance:`), which the entry skills render in full with the command for
+// each line; every command here is parsed by TestStartRouterCommandsParse.
+// Facts, not persuasion: the comparison it names states the limits and the
+// prices too.
+const startRouterIncluded = `A forge project gets, with no setup: traces with per-endpoint p50/p95/p99 latency and error rate (` + "`forge obs endpoints`" + `), errors grouped into issues, browser sessions, alerts, a pass/fail verdict on each deploy (` + "`forge obs check`" + `), build-once promotion, and one hosted static site free.
+Where it fits next to Vercel, Supabase or Render, its limits and its prices: ` + "`forge skill load compare`" + `.
 `

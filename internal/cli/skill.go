@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -532,6 +535,9 @@ func ResolveSkillContentAt(projectRoot, skillPath string) ([]byte, SkillScope, e
 	if err != nil || scope != SkillScopeForge {
 		return body, scope, err
 	}
+	if body, err = expandBenefitDirectives(body); err != nil {
+		return nil, scope, fmt.Errorf("skill %s: %w", skillPath, err)
+	}
 	binaryVersion := runningForgeVersion()
 	projectVersion := projectForgeVersionAt(projectRoot)
 	if !isForgeVersionSkew(binaryVersion, projectVersion) {
@@ -567,11 +573,97 @@ func RenderSkillContentAt(projectRoot, skillPath string, audience SkillAudience,
 // the command a reader types to invoke forge — so every command printed is
 // copy-pasteable under the mount that served it. "" and "forge" leave the
 // content unchanged.
+//
+// A YAML fence is a file (workflow, Taskfile or config), not a command typed
+// in the current shell; it stays as written. Outside YAML, package and server
+// names and commands already under the mount also stay as written.
 func rewriteForgeCommands(content []byte, cliName string) []byte {
 	if cliName == "" || cliName == "forge" {
 		return content
 	}
-	return forgeCmdRE.ReplaceAll(content, []byte(cliName+"$1"))
+	mountPrefix := []byte(strings.TrimSuffix(cliName, "forge"))
+	lines := bytes.SplitAfter(content, []byte("\n"))
+	fence := ""
+	inFence := false
+	for i, line := range lines {
+		if info, ok := fenceLine(line); ok {
+			if inFence {
+				inFence, fence = false, ""
+			} else {
+				inFence, fence = true, info
+			}
+			continue
+		}
+		if !inFence || (fence != "yaml" && fence != "yml") {
+			lines[i] = rewriteForgeCommandLine(line, cliName, mountPrefix)
+		}
+	}
+	return bytes.Join(lines, nil)
+}
+
+func rewriteForgeCommandLine(content []byte, cliName string, mountPrefix []byte) []byte {
+	var out []byte
+	last := 0
+	for _, m := range forgeCmdRE.FindAllIndex(content, -1) {
+		start, end := m[0], m[1] // end is just past the space
+		if !isForgeCommandAt(content, start, end, mountPrefix) {
+			continue
+		}
+		out = append(out, content[last:start]...)
+		out = append(out, cliName...)
+		out = append(out, ' ')
+		last = end
+	}
+	if out == nil {
+		return content
+	}
+	return append(out, content[last:]...)
+}
+
+// isForgeCommandAt reports whether the "forge " at content[start:end] is the
+// forge command, rather than part of a name or already under the mount.
+func isForgeCommandAt(content []byte, start, end int, mountPrefix []byte) bool {
+	if start > 0 {
+		switch content[start-1] {
+		case '/', '@', '-', '.', '_', ':':
+			return false // @reliantlabs/forge, reliant-forge, pkg.forge
+		}
+	}
+	if hasForgeMount(content[:start], mountPrefix) {
+		return false // already `reliant forge …`
+	}
+	if rest := content[end:]; bytes.HasPrefix(rest, []byte("-- ")) || bytes.Equal(rest, []byte("--")) {
+		return false // `mcp add forge -- npx …`: a server name, then the command it runs
+	}
+	return true
+}
+
+// hasForgeMount matches the mount itself, not its suffix inside a word
+// (myreliant) or another executable's name (other-reliant). A path to the
+// mount executable still qualifies, as does a shell/Markdown delimiter.
+func hasForgeMount(before, mount []byte) bool {
+	if len(mount) == 0 || !bytes.HasSuffix(before, mount) {
+		return false
+	}
+	if len(before) == len(mount) {
+		return true
+	}
+	r, _ := utf8.DecodeLastRune(before[:len(before)-len(mount)])
+	return unicode.IsSpace(r) || strings.ContainsRune("/`'\"([{=;|&<>", r)
+}
+
+// fenceLine reports whether line opens or closes a ``` code fence, and the
+// fence's info string (its language) lowercased.
+func fenceLine(line []byte) (string, bool) {
+	t := bytes.TrimSpace(line)
+	if !bytes.HasPrefix(t, []byte("```")) {
+		return "", false
+	}
+	info := strings.TrimSpace(string(bytes.TrimLeft(t, "`")))
+	if f := strings.Fields(info); len(f) > 0 {
+		info = f[0]
+	}
+	return strings.ToLower(info), true
 }
 
 // forgeModulePath is forge's Go module path, used to discover the forge

@@ -209,6 +209,34 @@ describe("initBrowserTelemetry", () => {
       "react.component_stack": "at X",
     });
   });
+
+  it("tells the RPC span stage what it may record: forensics per rpcForensics, nothing once disabled", async () => {
+    stubDom();
+    let { t, k } = await load();
+    let gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: true,
+    });
+    k.disableTelemetry();
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: false,
+      forensics: false,
+    });
+
+    ({ t, k } = await load());
+    gate = await import("./telemetry-gate.js");
+    await t.initBrowserTelemetry({
+      serviceName: "web",
+      endpoint: "/_otel",
+      rpcForensics: false,
+    });
+    expect(gate.currentRpcTelemetry()).toEqual({
+      spans: true,
+      forensics: false,
+    });
+  });
 });
 
 describe("reportException de-duplication", () => {
@@ -2264,19 +2292,18 @@ describe("app.client, visitor.id and user_identified", () => {
     );
   });
 
-  it("adopts rid and utm from the URL and reports them once per user (legacy attribution: true)", async () => {
-    // attribution: true, from before the tiers, still means "full, with
-    // consent": an app that chose it keeps what it chose.
+  it("adopts rid and utm from the URL and reports them once per user (full, with consent)", async () => {
     const rid = "0b8f3c2e-6a1d-4f7e-9c55-2d1e8a7b4c90";
     stubDom();
     (
       window as unknown as { location: Record<string, string> }
     ).location.search = `?rid=${rid}&utm_source=news`;
     const { t, k } = await load();
+    k.grantAnalyticsConsent();
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
-      attribution: true,
+      analytics: "full",
     });
 
     expect(setGlobalAttributes).toHaveBeenCalledWith(
@@ -2307,7 +2334,7 @@ describe("app.client, visitor.id and user_identified", () => {
     return store;
   }
 
-  it("with attribution: false creates, stores and stamps no visitor id", async () => {
+  it("with analytics: full and no consent creates, stores and stamps no visitor id", async () => {
     const store = stubDomWithLocalStorage("?utm_source=news");
     const { t, k } = await load();
     const index = await import("./index.js");
@@ -2315,7 +2342,7 @@ describe("app.client, visitor.id and user_identified", () => {
       serviceName: "web",
       endpoint: "/_otel",
       appClient: "landing",
-      attribution: false,
+      analytics: "full",
     });
 
     expect(setGlobalAttributes).toHaveBeenCalledWith({
@@ -2345,7 +2372,7 @@ describe("app.client, visitor.id and user_identified", () => {
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
-      attribution: false,
+      analytics: "full",
       attributionTouch: "first",
       visitorIdStorageKey: "site.visitor_id",
     });
@@ -2374,7 +2401,7 @@ describe("app.client, visitor.id and user_identified", () => {
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
-      attribution: false,
+      analytics: "full",
     });
 
     expect(setGlobalAttributes).toHaveBeenCalledWith({
@@ -2383,7 +2410,7 @@ describe("app.client, visitor.id and user_identified", () => {
     });
   });
 
-  // The default config (no `analytics`, no `attribution`) is "identified";
+  // The default config (no `analytics`) is "identified";
   // init must not lower the "full" enableAttribution raised before it, or the
   // landing handoff loses its visitor id and user_identified never fires.
   it("enableAttribution before init with the default config keeps the full tier", async () => {
@@ -2429,7 +2456,7 @@ describe("app.client, visitor.id and user_identified", () => {
     await t.initBrowserTelemetry({
       serviceName: "web",
       endpoint: "/_otel",
-      attribution: false,
+      analytics: "full",
     });
     k.disableTelemetry();
     setGlobalAttributes.mockReset();

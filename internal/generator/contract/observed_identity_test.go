@@ -34,7 +34,7 @@ func TestObservedDecoratorCarriesCatalogMethodIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{".WithMethodIDs(map[string]string{", servicecatalog.MethodID("example.com/shop/internal/orders", "Service", "Get"), `o.chain.Run(p0, "orders.Get"`} {
+	for _, want := range []string{".WithMethodIDs(map[string]string{", servicecatalog.MethodID("example.com/shop/internal/orders", "Service", "Get"), `observe.RunOp(o.chain, p0, forgeMiddlewareServiceOps.Get, observe.NoArgs{}`, `Get: observe.NewOp("orders.Get", "example.com/shop/internal/orders.Service.Get", "internal/orders/contract.go")`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("missing %q in %s", want, raw)
 		}

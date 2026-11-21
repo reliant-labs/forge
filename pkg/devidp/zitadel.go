@@ -53,7 +53,36 @@ type Client struct {
 	// DefaultOrg when empty.
 	OrgID string
 
+	// ProvenCredentialsOnly makes every call that ADDS a credential refuse
+	// an account whose address is unverified (ErrUnverifiedAccount), before
+	// it writes anything: a password where there was none (SetPassword;
+	// ResetPassword too, unless the account holds no credential at all —
+	// a reset code the person presents proves the address, which the
+	// redemption then marks verified), a passkey (MintPasskeyRegistrationCode,
+	// RegisterPasskey, VerifyPasskeyRegistration), a social link
+	// (AddIDPLink, CreateUser's IDPLinks), the one-time-code method
+	// (EnsureOTPEmail), and CreateUser with a Password unless ContactOnly. An
+	// account that cannot be read is refused too (fail closed). It also makes
+	// FindUserByEmail name the one verified account where several share an
+	// address. See forge#2121.
+	//
+	// Off by default, so existing callers keep the behaviour they had.
+	// SignInRoutes always works with it on, and the scaffolded login broker
+	// sets it.
+	ProvenCredentialsOnly bool
+
 	http *http.Client
+	// clk is the clock first-password attempts are dated by (time.Now when
+	// nil); a test injects one. An interface, not a func, so Client stays
+	// comparable (a func field would break == on it, a pkg/ API break).
+	clk interface{ now() time.Time }
+}
+
+func (c *Client) clock() time.Time {
+	if c.clk != nil {
+		return c.clk.now()
+	}
+	return time.Now()
 }
 
 // requestTimeout bounds a single API call. Generous for a local container,

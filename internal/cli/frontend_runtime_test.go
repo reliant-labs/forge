@@ -219,7 +219,7 @@ func TestFrontendRuntime_DispatchTable(t *testing.T) {
 			} else if want.destination != "" && !kinds[want.destination] {
 				t.Errorf("destinations = %v, want %s", kinds, want.destination)
 			}
-			kept := filterFrontendsForBuild([]config.FrontendConfig{{Name: "web"}}, e)
+			kept := filterFrontendsForBuild([]config.FrontendConfig{{Name: "web"}}, e, "prod", false)
 			if got := len(kept) == 1; got != want.prodBuild {
 				t.Errorf("filterFrontendsForBuild kept = %v, want %v", got, want.prodBuild)
 			}

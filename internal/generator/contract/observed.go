@@ -73,6 +73,18 @@ type observedMethod struct {
 	Signature string // parameter list, e.g. "ctx context.Context, in RunInput"
 	Results   string // result list with parens when needed, e.g. "(RunResult, error)"
 	Body      string // full statement body (gofmt normalizes indentation)
+	// Capture is the method's forensics capture type and its
+	// RecordForensics method, or "" (observed_forensics.go).
+	Capture string
+}
+
+// observedOp is one entry of the decorator's Ops table: the constant
+// identity of one chain-routed method (observed_forensics.go).
+type observedOp struct {
+	Method   string
+	Name     string // "<opNamespace>.<Method>": forge.op and the span name
+	Function string // code.function.name, "" when the import path is unknown
+	File     string // code.file.path, project-relative
 }
 
 // observedData is the input to observedTmpl.
@@ -87,6 +99,10 @@ type observedData struct {
 	ChainExpr   string
 	ChainSource string
 	Methods     []observedMethod
+	// OpsVar names the package-level table of every chain-routed method's
+	// *observe.Op; Ops is its rows (empty when every method is skipped).
+	OpsVar string
+	Ops    []observedOp
 	// InstrumentedCtor is NewInstrumented's rendered declaration, or "" when
 	// the package's New cannot have one (observed_ctor.go).
 	InstrumentedCtor string
@@ -124,11 +140,21 @@ type {{ .StructName }} struct {
 	inner {{ .Iface }}
 	chain *observe.ComponentChain
 }
-{{ range .Methods }}
+{{ if .Ops }}
+// {{ .OpsVar }} is each wrapped method's operation: its span name (forge.op)
+// and where its code lives (code.function.name, code.file.path), plus the
+// per-process state slow marking and forensics keep for it.
+var {{ .OpsVar }} = struct {
+{{ range .Ops }}	{{ .Method }} *observe.Op
+{{ end }}}{
+{{ range .Ops }}	{{ .Method }}: observe.NewOp({{ printf "%q" .Name }}, {{ printf "%q" .Function }}, {{ printf "%q" .File }}),
+{{ end }}}
+{{ end }}{{ range .Methods }}
 func ({{ $.Receiver }} *{{ $.StructName }}) {{ .Name }}({{ .Signature }}){{ if .Results }} {{ .Results }}{{ end }} {
 	{{ .Body }}
 }
-{{ end }}`))
+{{ if .Capture }}
+{{ .Capture }}{{ end }}{{ end }}`))
 
 // WriteObservedDecorator renders middleware_gen.go for the interface named
 // ifaceName in cf, wrapping every method of that interface. ctorName / structName
@@ -170,24 +196,53 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		return false, nil
 	}
 
+	root, module := findModule(dir)
+	scope := importPathOf(root, module, dir)
+	scan := scanImplementation(dir, *target)
+	ifaceFile := codeFile(root, filepath.Join(dir, cf.sourceName()))
+	opsVar := structName + "Ops"
+
 	methods := make([]observedMethod, 0, len(target.Methods))
-	for _, m := range target.Methods {
+	var ops []observedOp
+	for _, orig := range target.Methods {
+		argsType := structName + orig.Name + "Args"
 		// Render from a copy whose parameter names cannot shadow what the
 		// wrapper body spells — see decoratorBodyIdents.
-		m = m.withBodyScopedNames(decoratorBodyIdents(m)...)
-		body := renderObservedBody(m, opNamespace)
+		m := orig.withBodyScopedNames(append(decoratorBodyIdents(orig), "observe", opsVar, argsType)...)
 		if m.SkipObserve {
 			// Method-level `// forge:no-observe`: the wrapper still exists (the
 			// decorator satisfies the whole interface) but this method routes
 			// AROUND the chain — a direct delegation to the inner impl.
-			body = renderDirectBody(m)
+			methods = append(methods, observedMethod{
+				Name:      m.Name,
+				Signature: m.ParamSignature(),
+				Results:   m.ResultSignature(),
+				Body:      renderDirectBody(m),
+			})
+			continue
 		}
-		methods = append(methods, observedMethod{
+		op := observedOp{Method: m.Name, Name: opNamespace + "." + m.Name, File: ifaceFile}
+		if scope != "" {
+			op.Function = scope + "." + ifaceName + "." + m.Name
+		}
+		if f := scan.files[m.Name]; f != "" {
+			op.File = codeFile(root, f)
+		}
+		ops = append(ops, op)
+		var capture *methodCapture
+		if !opts.NoForensics {
+			capture = buildCapture(orig, m, argsType, cf, scan.noCapture[m.Name])
+		}
+		om := observedMethod{
 			Name:      m.Name,
 			Signature: m.ParamSignature(),
 			Results:   m.ResultSignature(),
-			Body:      body,
-		})
+			Body:      renderObservedBody(m, opsVar+"."+m.Name, capture.literal()),
+		}
+		if capture != nil {
+			om.Capture = capture.decl(m.Name)
+		}
+		methods = append(methods, om)
 	}
 
 	data := observedData{
@@ -201,6 +256,8 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		ChainExpr:   observeChainSeamFunc + "()",
 		ChainSource: "assembled by " + observeChainSeamFunc + " in observe_chain.go",
 		Methods:     methods,
+		OpsVar:      opsVar,
+		Ops:         ops,
 	}
 	if c, ok := findInstrumentableCtor(dir, ifaceName); ok {
 		data.InstrumentedCtor = renderInstrumentedCtor(c, ifaceName, ctorName)
@@ -215,10 +272,8 @@ func WriteObservedDecorator(cf *File, dir, ifaceName, ctorName, structName, opNa
 		data.ChainSource = "observe.DefaultComponentChain builds (an owned\n// observe_chain.go seam replaces it)"
 	}
 
-	// Attach a generated constant map without changing any Run/Around call or
-	// the owned chain seam. Scope+interface+method is servicecatalog.MethodID.
-	root, module := findModule(dir)
-	scope := importPathOf(root, module, dir)
+	// Attach a generated constant map without changing the owned chain seam.
+	// Scope+interface+method is servicecatalog.MethodID.
 	if scope != "" {
 		var ids strings.Builder
 		ids.WriteString(".WithMethodIDs(map[string]string{")
@@ -297,13 +352,15 @@ func renderDirectBody(m MethodDef) string {
 }
 
 // renderObservedBody renders the statement body of one wrapper method. It
-// routes the inner call through the chain via chain.Around (the common
-// single-value-plus-error shape) or chain.Run (error-only and every other
-// shape), capturing any non-error results out of the closure. Methods without
-// a context parameter run under context.Background() — metrics / recovery /
-// logging still apply; there is simply no parent context to propagate.
-func renderObservedBody(m MethodDef, opNamespace string) string {
-	op := fmt.Sprintf("%q", opNamespace+"."+m.Name)
+// routes the inner call through the chain via observe.AroundOp (the common
+// single-value-plus-error shape) or observe.RunOp (error-only and every other
+// shape), capturing any non-error results out of the closure. opExpr is the
+// method's *observe.Op and argsExpr its forensics capture value. Methods
+// without a context parameter run under context.Background() — metrics /
+// recovery / logging still apply; there is simply no parent context to
+// propagate.
+func renderObservedBody(m MethodDef, opExpr, argsExpr string) string {
+	op := opExpr + ", " + argsExpr
 	inner := fmt.Sprintf("%s.inner.%s(%s)", decoratorReceiver, m.Name, m.CallArgs())
 	chain := decoratorReceiver + ".chain"
 
@@ -320,13 +377,13 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	case len(results) == 1 && results[0].TypeExpr == "error":
 		// error-only: one-liner through the general primitive.
 		return fmt.Sprintf(
-			"return %s.Run(%s, %s, func(%s) error {\n\treturn %s\n})",
+			"return observe.RunOp(%s, %s, %s, func(%s) error {\n\treturn %s\n})",
 			chain, outerCtx, op, closureParam, inner)
 
 	case len(results) == 2 && results[1].TypeExpr == "error":
 		// (T, error): the common shape — generic sugar keeps it a one-liner.
 		return fmt.Sprintf(
-			"return %s.Around(%s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
+			"return observe.AroundOp(%s, %s, %s, func(%s) (%s, error) {\n\treturn %s\n})",
 			chain, outerCtx, op, closureParam, results[0].TypeExpr, inner)
 	}
 
@@ -342,7 +399,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	if len(nonErr) == 0 && !lastIsErr {
 		// Pure void method: no results at all.
 		return fmt.Sprintf(
-			"_ = %s.Run(%s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
+			"_ = observe.RunOp(%s, %s, %s, func(%s) error {\n\t%s\n\treturn nil\n})",
 			chain, outerCtx, op, closureParam, inner)
 	}
 
@@ -357,7 +414,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 		// `err :=` is safe: the wrapper's result list is unnamed and no
 		// parameter is named err (withBodyScopedNames), so nothing in scope
 		// declares it already.
-		fmt.Fprintf(&b, "err := %s.Run(%s, %s, func(%s) error {\n",
+		fmt.Fprintf(&b, "err := observe.RunOp(%s, %s, %s, func(%s) error {\n",
 			chain, outerCtx, op, closureParam)
 		b.WriteString("\tvar e error\n")
 		fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(append(append([]string{}, names...), "e"), ", "), inner)
@@ -367,7 +424,7 @@ func renderObservedBody(m MethodDef, opNamespace string) string {
 	}
 
 	// One or more non-error results, no error result.
-	fmt.Fprintf(&b, "_ = %s.Run(%s, %s, func(%s) error {\n", chain, outerCtx, op, closureParam)
+	fmt.Fprintf(&b, "_ = observe.RunOp(%s, %s, %s, func(%s) error {\n", chain, outerCtx, op, closureParam)
 	fmt.Fprintf(&b, "\t%s = %s\n", strings.Join(names, ", "), inner)
 	b.WriteString("\treturn nil\n})\n")
 	fmt.Fprintf(&b, "return %s", strings.Join(names, ", "))

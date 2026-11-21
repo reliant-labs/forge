@@ -105,6 +105,11 @@ type AuditAPI struct {
 	// and the derived proto API — each with where it came from.
 	Resources func(cfg *config.ProjectConfig, projectDir string) audittype.Category
 
+	// Workloads inventories every declared workload: each env's render,
+	// projected to name, kind, build, image and runtime per env. Nil leaves
+	// the shape category without a workloads key.
+	Workloads func(projectDir string) audittype.WorkloadInventory
+
 	// ListEnvs lists the project's declared environments (deploy/kcl/<env>).
 	ListEnvs func(projectDir string) ([]string, error)
 

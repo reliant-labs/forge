@@ -1,7 +1,7 @@
 package cli
 
 // The hosted MCP tools: forge's ACCOUNT-scoped tools (monitoring, releases,
-// envs) plus the catalog tools (skills, benefits, explain_error), served by a
+// envs) plus the catalog tools (skills, benefits, why, explain_error), served by a
 // remote MCP server that runs inside someone else's process — Reliant's
 // "Reliant Forge" connector on reliant-api-server — on behalf of whoever
 // signed in to it. forge/cli.AddHostedTools is the public seam.
@@ -9,7 +9,7 @@ package cli
 // THE SPLIT. The local stdio `forge mcp` keeps the repo tools (lint,
 // generate, shapes, adopt …): they need the repo. The hosted server needs no
 // install and no repo, so it serves what lives in the account. Where both
-// serve a tool (skill_*, benefits, explain_error) it is the same tool: the
+// serve a tool (skill_*, benefits, why, explain_error) it is the same tool: the
 // same name and the same input schema, less the local server's repo-only
 // `dir` (both are built from one args struct, mcp_tools.go).
 //
@@ -125,6 +125,8 @@ var hostedToolInfos = []AccountToolInfo{
 		Description: "Search the environment's logs with the log query language (service:api severity:error \"connection refused\", trace_id:…, attr.http.route:/v1/jobs). The `forge obs logs <env> <query> --json` document."},
 	{Name: "obs_traces", Title: "Find traces", NeedsTarget: true,
 		Description: "The environment's traces, newest first or slowest first, failing only or by route, with a rate / errors / duration summary. The `forge obs traces <env> --json` document."},
+	{Name: "obs_ops", Title: "Ops by traffic and latency", NeedsTarget: true,
+		Description: "Every component op (<pkg>.<Method> spans from forge's generated component decorators) and RPC: calls, error ratio, p50/p95/p99 weighted for tail sampling, with the op's code location. The `forge obs ops <env> --json` document."},
 	{Name: "obs_check", Title: "Release health verdict", NeedsTarget: true,
 		Description: "Judge a release: PASS, FAIL or INCONCLUSIVE for the env's current promotion (or the one named), comparing the windows before and after it. exit_code 0 good, 1 regressed (see findings and suggested), 2 not proven good, 8 not enough data yet: check again later. The `forge obs check <env> --json` document."},
 	{Name: "obs_changes", Title: "What changed", NeedsTarget: true,
@@ -140,7 +142,8 @@ var hostedToolInfos = []AccountToolInfo{
 	{Name: "release_record", Title: "Record a deploy", Mutating: true, NeedsTarget: true,
 		Description: "Record that the team's own pipeline deployed a version to an environment: a record-only release and its promotion, the deploy marker obs_changes lists and obs_check judges. Idempotent for the same version and content. `forge release record --env --version --commit [--workload --image]…`."},
 	{Name: "benefits", Title: "What forge does",
-		Description: "What forge does for an existing repo in any language, as JSON: each benefit with its first step (adopt) and the agent time to first value (estimate), to quote to your user. all=true lists every shipped benefit. Then skill_load name=adopt."},
+		Description: "What Reliant Forge does for an existing repo in any language, as JSON: each benefit's claim, its first step (adopt) and the agent time to first value (estimate), checked against the forge binary, to quote to your user. all=true lists every shipped benefit. Limits and hosting prices: skill_load name=compare. Then skill_load name=adopt."},
+	{Name: "why", Title: "Why forge", Description: mcpDescWhy},
 	{Name: "skill_list", Title: "Skill catalog", Description: mcpDescSkillList},
 	{Name: "skill_search", Title: "Find a skill", Description: mcpDescSkillSearch},
 	{Name: "skill_load", Title: "Load a skill", Description: mcpDescSkillLoad},
@@ -156,7 +159,7 @@ func HostedInstructions() string { return hostedInstructions }
 
 const hostedInstructions = "This is Reliant Forge (github.com/reliant-labs/forge), signed in to the user's Reliant account — not " +
 	"Atlassian Forge and not Foundry's forge. These tools read and act on what lives in the account: monitoring " +
-	"(obs_status, obs_issues, obs_issue, obs_logs, obs_traces, obs_check, obs_changes), releases (releases_list, " +
+	"(obs_status, obs_issues, obs_issue, obs_logs, obs_traces, obs_ops, obs_check, obs_changes), releases (releases_list, " +
 	"release_show, release_record) and environments (envs_list, obs_init). Each takes `project` (the forge project " +
 	"name, as in the console's https://forge.reliantlabs.io/forge/p/<project>) and usually `env`; start with " +
 	"envs_list or obs_status. Every result is the CLI's --json document plus console_url, the page that shows it. " +
@@ -203,39 +206,65 @@ type hostedTools struct {
 // hostedTarget is the project and env every account tool takes.
 type hostedTarget struct {
 	Project string `json:"project" jsonschema:"the forge project name: forge.yaml name, the console's /forge/p/<project>"`
-	Env     string `json:"env" jsonschema:"the environment, e.g. prod or staging (envs_list names them)"`
+	Env     string `json:"env" jsonschema:"the environment, e.g. prod or staging"`
 }
 
-// hostedWindow is the time range and page size of a read.
-type hostedWindow struct {
+// hostedRange is the time range and services of a read.
+type hostedRange struct {
 	Since    string   `json:"since,omitempty" jsonschema:"how far back to read: 15m, 2h, 7d (default: the tool's own window)"`
 	From     string   `json:"from,omitempty" jsonschema:"range start, RFC 3339 (overrides since)"`
 	To       string   `json:"to,omitempty" jsonschema:"range end, RFC 3339 (default now)"`
 	Services []string `json:"services,omitempty" jsonschema:"only these service.name values"`
-	Limit    int      `json:"limit,omitempty" jsonschema:"most items to return (default: the tool's own page size)"`
+}
+
+func (r hostedRange) args() []string {
+	var a []string
+	a = flagArg(a, "--since", r.Since)
+	a = flagArg(a, "--from", r.From)
+	a = flagArg(a, "--to", r.To)
+	for _, s := range r.Services {
+		a = flagArg(a, "--service", s)
+	}
+	return a
+}
+
+// hostedWindow is the time range and page size of a read.
+type hostedWindow struct {
+	hostedRange
+	Limit int `json:"limit,omitempty" jsonschema:"most items to return (default: the tool's own page size)"`
 }
 
 func (w hostedWindow) args() []string {
-	var a []string
-	a = flagArg(a, "--since", w.Since)
-	a = flagArg(a, "--from", w.From)
-	a = flagArg(a, "--to", w.To)
-	for _, s := range w.Services {
-		a = flagArg(a, "--service", s)
-	}
+	a := w.hostedRange.args()
 	if w.Limit > 0 {
 		a = append(a, "--limit", fmt.Sprint(w.Limit))
 	}
 	return a
 }
 
+// The obs tools both servers serve (obs_status, obs_issues, obs_issue,
+// obs_logs, obs_check) take one args struct each: the hosted input adds the
+// project and env (hostedTarget), the local one the repo and env
+// (mcp_obs_local.go), so the two schemas cannot drift. Each args struct
+// builds the flags it maps to.
+
 type hostedObsStatusInput struct {
 	hostedTarget
+	obsStatusArgs
+}
+
+type obsStatusArgs struct {
 	hostedWindow
 }
 
+func (a obsStatusArgs) args() []string { return a.hostedWindow.args() }
+
 type hostedObsIssuesInput struct {
 	hostedTarget
+	obsIssuesArgs
+}
+
+type obsIssuesArgs struct {
 	hostedWindow
 	Status       []string `json:"status,omitempty" jsonschema:"only issues in these states (default: the open ones)"`
 	SinceRelease string   `json:"since_release,omitempty" jsonschema:"only issues first seen in this release version"`
@@ -243,20 +272,61 @@ type hostedObsIssuesInput struct {
 	PageToken    string   `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
 }
 
+func (in obsIssuesArgs) args() []string {
+	a := in.hostedWindow.args()
+	for _, s := range in.Status {
+		a = flagArg(a, "--status", s)
+	}
+	a = flagArg(a, "--since-release", in.SinceRelease)
+	a = flagArg(a, "--sort", in.Sort)
+	return flagArg(a, "--page-token", in.PageToken)
+}
+
 type hostedObsIssueInput struct {
 	hostedTarget
+	obsIssueArgs
+}
+
+type obsIssueArgs struct {
 	ID     string `json:"id" jsonschema:"the issue id from obs_issues or obs_status, e.g. ISS-7f3a or sfp1-…"`
 	Events int    `json:"events,omitempty" jsonschema:"also list this many of its latest events"`
 }
 
+// args is the command line after the issue id and the env positionals.
+func (in obsIssueArgs) args() []string {
+	if in.Events > 0 {
+		return []string{"--events", fmt.Sprint(in.Events)}
+	}
+	return nil
+}
+
 type hostedObsLogsInput struct {
 	hostedTarget
+	obsLogsArgs
+}
+
+type obsLogsArgs struct {
 	hostedWindow
 	Query     string   `json:"query,omitempty" jsonschema:"the log query: service:api severity:error \"connection refused\", body:timeout OR body:deadline, trace_id:…"`
 	Severity  []string `json:"severity,omitempty" jsonschema:"only these severities: trace, debug, info, warn, error, fatal"`
 	Trace     string   `json:"trace,omitempty" jsonschema:"only the logs of this trace id"`
 	Oldest    bool     `json:"oldest,omitempty" jsonschema:"oldest first"`
 	PageToken string   `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
+}
+
+// args is the command line after the env and query positionals: two always,
+// so the env is never read as a query.
+func (in obsLogsArgs) args() []string {
+	args := in.hostedWindow.args()
+	for _, s := range in.Severity {
+		args = flagArg(args, "--severity", s)
+	}
+	args = flagArg(args, "--trace", in.Trace)
+	args = flagArg(args, "--page-token", in.PageToken)
+	if in.Oldest {
+		args = append(args, "--oldest")
+	}
+	return args
 }
 
 type hostedObsTracesInput struct {
@@ -269,11 +339,31 @@ type hostedObsTracesInput struct {
 	PageToken   string `json:"page_token,omitempty" jsonschema:"resume from a next_page_token"`
 }
 
+// hostedObsOpsInput has no limit: an ops ranking's size is top.
+type hostedObsOpsInput struct {
+	hostedTarget
+	hostedRange
+	Sort string   `json:"sort,omitempty" jsonschema:"calls | p95 | errors | rate (default calls)"`
+	Top  int      `json:"top,omitempty" jsonschema:"most ops to return (default 20)"`
+	Kind []string `json:"kind,omitempty" jsonschema:"only these kinds: rpc, endpoint, component (default all)"`
+	Name []string `json:"name,omitempty" jsonschema:"only these ops, by span name (at most 200); each is listed, with found false when it had no spans; top then defaults to every requested op"`
+}
+
 type hostedObsCheckInput struct {
 	hostedTarget
+	obsCheckArgs
+}
+
+type obsCheckArgs struct {
 	Release   string `json:"release,omitempty" jsonschema:"judge the promotion of this release version (default: the env's current one)"`
 	Promotion string `json:"promotion,omitempty" jsonschema:"judge this promotion id"`
 	Window    string `json:"window,omitempty" jsonschema:"width of each window (default the env's release_health.window, 15m; max 6h)"`
+}
+
+func (in obsCheckArgs) args() []string {
+	a := flagArg(nil, "--release", in.Release)
+	a = flagArg(a, "--promotion", in.Promotion)
+	return flagArg(a, "--window", in.Window)
 }
 
 type hostedObsChangesInput struct {
@@ -382,6 +472,10 @@ func (h *hostedTools) register(srv *mcp.Server, info AccountToolInfo) {
 		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in benefitsArgs) (*mcp.CallToolResult, any, error) {
 			return hostedBenefits(in), nil, nil
 		})
+	case "why":
+		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in whyArgs) (*mcp.CallToolResult, any, error) {
+			return hostedWhy(in), nil, nil
+		})
 	case "skill_list":
 		mcp.AddTool(srv, tool, func(_ context.Context, _ *mcp.CallToolRequest, in skillListArgs) (*mcp.CallToolResult, any, error) {
 			return hostedSkillList(in), nil, nil
@@ -414,20 +508,11 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 	switch info.Name {
 	case "obs_status":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsStatusInput) (*mcp.CallToolResult, any, error) {
-			return obs(newObsStatusCmdWith, in.hostedWindow.args, func(c hostedCall) string { return c.console.Home(c.target.Env) })(ctx, req, in.hostedTarget)
+			return obs(newObsStatusCmdWith, in.obsStatusArgs.args, func(c hostedCall) string { return c.console.Home(c.target.Env) })(ctx, req, in.hostedTarget)
 		})
 	case "obs_issues":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsIssuesInput) (*mcp.CallToolResult, any, error) {
-			args := func() []string {
-				a := in.hostedWindow.args()
-				for _, s := range in.Status {
-					a = flagArg(a, "--status", s)
-				}
-				a = flagArg(a, "--since-release", in.SinceRelease)
-				a = flagArg(a, "--sort", in.Sort)
-				return flagArg(a, "--page-token", in.PageToken)
-			}
-			return obs(newObsIssuesCmdWith, args, func(c hostedCall) string { return c.console.View("errors", c.target.Env) })(ctx, req, in.hostedTarget)
+			return obs(newObsIssuesCmdWith, in.obsIssuesArgs.args, func(c hostedCall) string { return c.console.View("errors", c.target.Env) })(ctx, req, in.hostedTarget)
 		})
 	case "obs_issue":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsIssueInput) (*mcp.CallToolResult, any, error) {
@@ -438,10 +523,7 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 			if err != nil {
 				return hostedRefused(err), nil, nil
 			}
-			args := []string{in.ID, in.Env}
-			if in.Events > 0 {
-				args = append(args, "--events", fmt.Sprint(in.Events))
-			}
+			args := append([]string{in.ID, in.Env}, in.obsIssueArgs.args()...)
 			return h.runObs(ctx, c, newObsIssueCmdWith, args, c.console.View("errors", c.target.Env)), nil, nil
 		})
 	case "obs_logs":
@@ -450,16 +532,7 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 			if err != nil {
 				return hostedRefused(err), nil, nil
 			}
-			// Two positionals always, so the env is never read as a query.
-			args := append([]string{in.Env, in.Query}, in.hostedWindow.args()...)
-			for _, s := range in.Severity {
-				args = flagArg(args, "--severity", s)
-			}
-			args = flagArg(args, "--trace", in.Trace)
-			args = flagArg(args, "--page-token", in.PageToken)
-			if in.Oldest {
-				args = append(args, "--oldest")
-			}
+			args := append([]string{in.Env, in.Query}, in.obsLogsArgs.args()...)
 			return h.runObs(ctx, c, newObsLogsCmdWith, args, c.console.View("logs", c.target.Env)), nil, nil
 		})
 	case "obs_traces":
@@ -478,13 +551,30 @@ func (h *hostedTools) registerObs(srv *mcp.Server, tool *mcp.Tool, info AccountT
 			}
 			return obs(newObsTracesCmdWith, args, func(c hostedCall) string { return c.console.View("traces", c.target.Env) })(ctx, req, in.hostedTarget)
 		})
+	case "obs_ops":
+		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsOpsInput) (*mcp.CallToolResult, any, error) {
+			args := func() []string {
+				a := in.hostedRange.args()
+				a = flagArg(a, "--sort", in.Sort)
+				if in.Top > 0 {
+					a = append(a, "--top", fmt.Sprint(in.Top))
+				}
+				for _, k := range in.Kind {
+					a = flagArg(a, "--kind", k)
+				}
+				for _, n := range in.Name {
+					a = append(a, "--name", n)
+				}
+				return a
+			}
+			// No locator: the code location is the span's own, since the
+			// server has no checkout to find the rest in.
+			build := func(d obsDepsFunc) *cobra.Command { return newObsOpsCmdWith(d, nil) }
+			return obs(build, args, func(c hostedCall) string { return c.console.View("traces", c.target.Env) })(ctx, req, in.hostedTarget)
+		})
 	case "obs_check":
 		mcp.AddTool(srv, tool, func(ctx context.Context, req *mcp.CallToolRequest, in hostedObsCheckInput) (*mcp.CallToolResult, any, error) {
-			args := func() []string {
-				a := flagArg(nil, "--release", in.Release)
-				a = flagArg(a, "--promotion", in.Promotion)
-				return flagArg(a, "--window", in.Window)
-			}
+			args := in.obsCheckArgs.args
 			link := func(c hostedCall) string {
 				if in.Release != "" {
 					return c.console.Release(in.Release, c.target.Env)
@@ -651,6 +741,7 @@ func (h *hostedTools) obsDeps(c hostedCall, stdout, stderr io.Writer) obsDeps {
 		Suspects: func(context.Context, io.Writer, obsbackend.GetIssueResult, string) ([]obsSuspectDoc, string) {
 			return []obsSuspectDoc{}, "suspect commits need the repository: run `forge obs issue <id> <env>` in it"
 		},
+		OpChanges: noCheckoutOpChanges,
 	}
 }
 
@@ -914,6 +1005,18 @@ func hostedBenefits(in benefitsArgs) *mcp.CallToolResult {
 	return structuredResult(buildBenefitsReport(reg, false, in.All, in.Category), "")
 }
 
+func hostedWhy(in whyArgs) *mcp.CallToolResult {
+	reg, err := benefits.Load()
+	if err != nil {
+		return hostedRefused(err)
+	}
+	rep, err := buildWhyReport(reg, in.Reason)
+	if err != nil {
+		return hostedRefused(err)
+	}
+	return structuredResult(rep, "")
+}
+
 func hostedSkills(includeMigrations bool) ([]skillMeta, error) {
 	skills, err := listForgeShippedSkills()
 	if err != nil || includeMigrations {
@@ -966,6 +1069,9 @@ func hostedSkillLoad(in skillLoadArgs) *mcp.CallToolResult {
 			continue
 		}
 		body, err := s.body()
+		if err == nil {
+			body, err = expandBenefitDirectives(body)
+		}
 		if err != nil {
 			return hostedRefused(err)
 		}

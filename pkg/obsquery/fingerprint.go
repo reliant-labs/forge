@@ -154,13 +154,6 @@ const (
 	// failures (ServerFailureFilterSQL), and server records of any level that
 	// carry a source. The control plane's ingest view filters on it.
 	IssueRecordFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR ` + sqlWarnServerFailure + ` OR LogAttributes['issue.source'] != '')`
-	// IssueEventFilterSQL is the issue filter before WARN server failures
-	// joined it: server errors and sourced records only. Its value is frozen
-	// because a Go constant's value is part of the v1 API.
-	//
-	// Deprecated: use IssueRecordFilterSQL, which also selects WARN server
-	// failures (retryable codes, a server deadline logged at WARN).
-	IssueEventFilterSQL = `ResourceAttributes['rum.sessionId'] = '' AND (SeverityNumber >= 17 OR LogAttributes['issue.source'] != '')`
 	// IssueSourceSQL is a record's issue source, "" for an error.
 	IssueSourceSQL = `LogAttributes['issue.source']`
 )
@@ -265,9 +258,29 @@ var (
 	ServerEventCauseSQL = errCauseSQL(`if(Attributes['error'] != '', Attributes['error'], Attributes['exception.message'])`)
 )
 
+// ForgeLibraryFunctionPrefix starts the function name of every frame in
+// forge's own libraries (forge/pkg). A record logged there, such as the
+// logging interceptor's "rpc failed" for a deadline that carries no handler
+// stack, names forge's interceptor as where it was logged, which tells the
+// reader nothing about which rpc failed (forge#2235).
+const ForgeLibraryFunctionPrefix = "github.com/reliant-labs/forge/pkg/"
+
+// sqlLoggedByForge selects a record forge's own libraries logged for an rpc.
+const sqlLoggedByForge = `(startsWith(` + sqlFunction + `, '` + ForgeLibraryFunctionPrefix + `') AND LogAttributes['procedure'] != '')`
+
 // ServerCulpritSQL is where an issue was logged: "file in function", or the
 // function alone (ScopeName for a record with no source location).
+//
+// Deprecated: use ServerIssueCulpritSQL, which names the rpc rather than
+// forge's interceptor for a record forge logged (forge#2235).
 const ServerCulpritSQL = `if(LogAttributes['code.file.path'] != '', concat(LogAttributes['code.file.path'], ' in ', ` + sqlFunction + `), ` + sqlFunction + `)`
+
+// ServerIssueCulpritSQL is an issue's culprit: ServerCulpritSQL, except that a
+// record forge's own libraries logged for an rpc shows the rpc's procedure:
+// the interceptor is where every such record is logged, the procedure is what
+// failed. Display only: the fingerprints still read the function, so no
+// issue regroups.
+const ServerIssueCulpritSQL = `if(` + sqlLoggedByForge + `, LogAttributes['procedure'], ` + ServerCulpritSQL + `)`
 
 // ServerErrorRecord is the part of an otel_logs row sfp1 reads.
 type ServerErrorRecord struct {
@@ -334,8 +347,33 @@ func ServerTitle(r ServerErrorRecord) string {
 	return norm
 }
 
-// ServerCulprit is the Go reference for ServerCulpritSQL.
-func ServerCulprit(r ServerErrorRecord) string {
+// LoggedByForge reports whether forge's own libraries logged r for an rpc:
+// its function is in forge/pkg and it carries the rpc's procedure.
+func (r ServerErrorRecord) LoggedByForge() bool {
+	return strings.HasPrefix(r.function(), ForgeLibraryFunctionPrefix) && r.Attributes[LogKeyProcedure] != ""
+}
+
+// ForgeLibraryCulprit reports whether culprit, as ServerCulpritSQL spelled it
+// before forge#2235, names a function in forge's own libraries: an issue
+// stored then still shows forge's interceptor.
+func ForgeLibraryCulprit(culprit string) bool {
+	function := culprit
+	if i := strings.LastIndex(culprit, " in "); i >= 0 {
+		function = culprit[i+len(" in "):]
+	}
+	return strings.HasPrefix(function, ForgeLibraryFunctionPrefix)
+}
+
+// ServerIssueCulprit is the Go reference for ServerIssueCulpritSQL.
+func ServerIssueCulprit(r ServerErrorRecord) string {
+	if r.LoggedByForge() {
+		return r.Attributes[LogKeyProcedure]
+	}
+	return serverCulprit(r)
+}
+
+// serverCulprit is the Go reference for ServerCulpritSQL.
+func serverCulprit(r ServerErrorRecord) string {
 	if file := r.Attributes[LogKeyCodeFile]; file != "" {
 		return file + " in " + r.function()
 	}

@@ -58,8 +58,16 @@ exits 7 with the same block rather than reporting drift.
 | `NO_COMPUTE_PLAN` | The deploy runs compute — a workload, job, managed database or image build — and the org has no active compute plan. A deploy of static sites alone does not get it, unless the control plane cannot inspect the bundle (then it assumes one workload). **Queued** (above) on a current control plane; refused by one that predates queueing | Subscribe to a compute plan in billing settings |
 | `STATIC_FREE_TIER_EXCEEDED` | No compute plan, static sites only, but past the free tier: more than one static site across the orgs its owner owns without a plan (every env's site counts), or more than 1 GiB stored. **Queued** like `NO_COMPUTE_PLAN` | Subscribe to a compute plan, or delete another env's static site |
 | `EXCEEDS_CEILING` | The plan's CPU/memory/storage ceiling is below the demand | Reduce resources or upgrade |
+| `STATIC_SITE_LIMIT_REACHED` | The org has billing and the deploy would take it past its live static-site limit: 100 by default, every environment's site counting as one. A soft cap. Refused, never queued | Delete a site or environment you no longer need, or ask support for a higher limit (the fix line says how) |
 | `SPEND_CAP_REACHED` | The org's spend cap is reached | Raise the cap |
 | `PLAN_UNKNOWN` | The plan could not be determined | Retry; it is never read as "no plan" |
+
+A static release has a size cap too, checked when the bundle is recorded or
+promoted (the pre-flight cannot see sizes): 1 GiB stored for the free site
+(three copies of a release) and 5 GiB per release, as pushed, with billing.
+Over it, `RecordBundle` / `Promote` fail with ResourceExhausted, reason
+`static_release_too_large` on a billed org; the message names the size, the
+cap and how to ask for more.
 
 A plan too small, a met spend limit and an unknown plan are still REFUSED: a
 ceiling breach is usually a config fix, a spend limit also clears unattended at

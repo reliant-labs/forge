@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/procguard"
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
@@ -122,6 +123,10 @@ func stopTestRegistry(t *testing.T, read func() (*stopTable, error)) (*procRegis
 	dir, projectID, env := testStack(t)
 	reg := newProcRegistry(projectID, dir, env)
 	reg.readStopTable = read
+	// The table is modelled, so the real lineage has no say in it: a
+	// modelled pid can be a real ancestor of this test (it was, on a
+	// Windows runner, and the sweep skipped it).
+	reg.selfLineage = func() procguard.Lineage { return procguard.Lineage{} }
 	done := make(chan struct{})
 	close(done)
 	reg.processes = []*managedProcess{{name: "api", pid: 4242, done: done}}

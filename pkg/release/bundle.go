@@ -549,8 +549,20 @@ type Shape struct {
 	// reconciler converges, and which workloads consume it. Names and
 	// destinations only; every issued value is delivered, never recorded.
 	// Omitted when the env declares none, so every shape recorded before the
-	// field encodes and hashes exactly as it did.
+	// field encodes and hashes exactly as it did. It is set when the env
+	// declares exactly ONE identity, whatever its name and however KCL spells
+	// it (Bundle.identity, or a one-entry Bundle.identities), so a shape with
+	// one identity encodes exactly as it always did and every control plane
+	// keeps converging it. Read every identity through [Shape.AllIdentities].
 	Identity *ShapeIdentity `json:"identity,omitempty"`
+	// Identities are the env's managed identities when it declares SEVERAL
+	// (KCL Bundle.identities), each its own instance keyed by
+	// ShapeIdentity.Name. Identity is then nil. A control plane that predates
+	// it would read only Identity, so converge nothing: a shape carrying it is
+	// refused to one that does not advertise
+	// [CapabilityConvergesSeveralIdentities] ([BundleReader.CheckIdentities]),
+	// and its key is a bundle-document feature ([BundleFeatureIdentities]).
+	Identities []ShapeIdentity `json:"identities,omitempty"`
 	// Databases is what the env declares about its managed databases beyond
 	// their workload entries: today whether live dashboard panels may query
 	// each one, and under which limits (ManagedDatabase.dashboards). One entry
@@ -573,6 +585,15 @@ type Shape struct {
 	// shape, so it is a bundle-document feature
 	// ([BundleFeatureExternalDatabases]).
 	ExternalDatabases []ShapeExternalDatabase `json:"external_databases,omitempty"`
+	// Telemetry is the env's declared telemetry targets (forge.Telemetry)
+	// that run on Reliant hosting, normalized: what the platform collects,
+	// since forge runs no collector there. Sorted by service name. Omitted
+	// when the env declares no hosted target, so every shape recorded before
+	// the field encodes and hashes exactly as it did. A control plane that
+	// predates it refuses the whole shape, so it is a bundle-document feature
+	// ([BundleFeatureTelemetry]), and it is sent only to one that also
+	// collects it ([CapabilityCollectsTelemetry]). See telemetry.go.
+	Telemetry []ShapeTelemetry `json:"telemetry,omitempty"`
 	// Applier is who applies this env when it DECLARES one: "forge" for a real
 	// environment none of whose delivery units has moved onto the hub yet (a
 	// transitional state, see [ApplierForge]), or "flux" for one an in-cluster
@@ -611,6 +632,16 @@ type Shape struct {
 	// recorded before the field encodes and hashes exactly as it did; a
 	// bundle-document feature ([BundleFeaturePreview]).
 	Preview *ShapePreview `json:"preview,omitempty"`
+	// Changes are the Forge Changes the release can serve, keyed by change
+	// key (changes.yaml at the project root, the same in every env): each
+	// one's value type, variants and default. The control plane refuses to
+	// deliver a variant the env's release does not declare. Who gets which
+	// variant is NOT here: that is live delivery state the control plane
+	// owns. Omitted when the project declares none, so every shape recorded
+	// before the field encodes and hashes exactly as it did; a control plane
+	// that predates it refuses the whole shape, so it is a bundle-document
+	// feature ([BundleFeatureChanges]).
+	Changes map[string]ShapeChange `json:"changes,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -1213,6 +1244,9 @@ func (s Shape) Validate() error {
 	if err := validateShapeBuckets(s.Buckets); err != nil {
 		return err
 	}
+	if err := validateShapeChanges(s.Changes); err != nil {
+		return err
+	}
 	if s.ReleaseHealth != nil {
 		if err := s.ReleaseHealth.canonical().validate(); err != nil {
 			return err
@@ -1228,6 +1262,9 @@ func (s Shape) Validate() error {
 		return err
 	}
 	if err := s.validateExternalDatabases(); err != nil {
+		return err
+	}
+	if err := validateShapeTelemetry(s.Telemetry); err != nil {
 		return err
 	}
 	delivered := map[string]bool{}
@@ -1258,16 +1295,8 @@ func (s Shape) Validate() error {
 	if err := s.validateStoreSecrets(); err != nil {
 		return err
 	}
-	if s.Identity != nil {
-		if err := s.Identity.validate(s.ControlPlaneSecrets); err != nil {
-			return err
-		}
-	} else {
-		for _, c := range s.ControlPlaneSecrets {
-			if IsIdentityKind(c.Kind) {
-				return fmt.Errorf("%w: shape control-plane secret %s has the identity kind %q, and the shape declares no identity", ErrInvalid, c.Key(), c.Kind)
-			}
-		}
+	if err := s.validateIdentities(); err != nil {
+		return err
 	}
 	return s.validateAlerts()
 }
@@ -1405,6 +1434,7 @@ func (s Shape) Canonical() Shape {
 		out.DataAccess = nil
 	}
 	out.Buckets = canonicalShapeBuckets(s.Buckets)
+	out.Changes = canonicalShapeChanges(s.Changes)
 	if s.ReleaseHealth != nil {
 		if h := s.ReleaseHealth.canonical(); !s.ReleaseHealth.IsDefault() {
 			out.ReleaseHealth = &h
@@ -1416,10 +1446,12 @@ func (s Shape) Canonical() Shape {
 	out.ReleaseProbes = canonicalReleaseProbes(s.ReleaseProbes)
 	out.Databases = canonicalShapeDatabases(s.Databases)
 	out.ExternalDatabases = canonicalExternalDatabases(s.ExternalDatabases)
+	out.Telemetry = canonicalShapeTelemetry(s.Telemetry)
 	if s.Identity != nil {
 		id := s.Identity.canonical()
 		out.Identity = &id
 	}
+	out.Identities = canonicalIdentities(s.Identities)
 	// Alerts sort by name. Routes do NOT sort: first match wins, so their order
 	// is part of their meaning.
 	if len(s.Alerts) > 0 {

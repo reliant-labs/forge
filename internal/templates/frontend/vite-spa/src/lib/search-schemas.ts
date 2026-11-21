@@ -41,6 +41,6 @@ import type { z } from "zod";
  * keeps Zod's inferred type in scope at the call site. Pass the result
  * to `createRoute({ validateSearch: schema.parse })`.
  */
-export function defineSearchSchema<S extends z.ZodTypeAny>(schema: S): S {
+export function defineSearchSchema<S extends z.ZodType>(schema: S): S {
   return schema;
 }

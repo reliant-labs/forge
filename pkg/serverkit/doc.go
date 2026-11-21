@@ -137,6 +137,20 @@
 // lifecycle lifecyclekit.Supervise runs, so a main with several listeners
 // hands them to it with the Drainer as its policy.
 //
+// # connect-go v2
+//
+// Every connect-typed piece has a v2 twin beside it, named with a V2 suffix:
+// NewChainV2 (ChainDepsV2, ChainV2, AuthenticatorV2 from AuthPolicyV2,
+// AuthForV2 or AuthWithCallerV2), RoutesV2 / RoutesFuncV2 and
+// ListenerDeps.ChainV2 / RoutesV2, Server.ChainV2 / ServerInterceptors /
+// HTTPOptions, and StreamDrainInterceptorV2. Server.Mount takes a
+// mountkit.RegistrarV2 as it takes a Registrar. The chain is the same stack in
+// the same order with the same defaults; a slot is dropped by its No field
+// (NoAudit: true) instead of an Omit, because a v2 interceptor is a func. The
+// health rpc, the audience check, the drain contract, REST transcoding
+// (RESTHandler relays into the mux, whichever major serves it) and the payload
+// caps behave as on v1, and a v1 client sees the same wire from either.
+//
 // # Worker shutdown contract
 //
 // Each worker runs in its own goroutine with a per-worker context

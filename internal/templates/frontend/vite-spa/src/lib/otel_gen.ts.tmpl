@@ -62,6 +62,12 @@
 // @reliantlabs/forge-web-runtime) after its consent manager says yes. GPC /
 // DNT cap a browser at aggregate with no user id.
 //
+// Every RPC is a client span named `<rpc.service>/<rpc.method>`, in the same
+// trace as the server's span (the runtime's interceptor stack). A failed RPC's
+// span carries one redacted `forge.forensics` event: the request's shape,
+// never its content (debug_redact fields never). `rpc_forensics = False`
+// arrives as RPC_FORENSICS = "false" and leaves the event out.
+//
 // The SDK insists on an apiKey. It is sent a public placeholder (see
 // PLACEHOLDER_API_KEY in the runtime); a collector that enforces ingestion
 // auth must have the proxy in front of it strip that header or replace it
@@ -76,13 +82,14 @@
 // analytics tier: ANALYTICS_MODE = "full" and grantAnalyticsConsent() before
 // this module starts telemetry.
 //
-// The VITE_OTEL_ENDPOINT / VITE_ENVIRONMENT / VITE_OTEL_REPLAY build
-// variables are DEPRECATED. A frontend's KCL that declares one (in `config`
-// or `env_vars`) already gets the same value in its runtime config, which
-// wins. One that is only exported in the shell at `vite build` is still
-// read when config.js does not set the key, and the page warns once (in the
-// console) naming the variable and the KCL field to move it to. That
-// fallback is removed in the next major version of forge.
+// The VITE_OTEL_ENDPOINT / VITE_ENVIRONMENT build variables are DEPRECATED.
+// A frontend's KCL that declares one (in `config` or `env_vars`) already gets
+// the same value in its runtime config, which wins. One that is only exported
+// in the shell at `vite build` is still read when config.js does not set the
+// key, and the page warns once (in the console) naming the variable and the
+// KCL field to move it to. That fallback is removed in the next major version
+// of forge. Session replay has no build variable: it is read from the runtime
+// config alone.
 //
 // Distributed tracing itself — the traceparent attached to every RPC, which
 // is what makes browser spans join the backend's trace — is always on, needs
@@ -240,13 +247,7 @@ export function initTelemetry(): void {
     import.meta.env.VITE_OTEL_ENDPOINT as string | undefined,
     "config.otel_endpoint",
   );
-  const replay = runtimeOrBuild(
-    used,
-    cfg.OTEL_REPLAY,
-    "VITE_OTEL_REPLAY",
-    import.meta.env.VITE_OTEL_REPLAY as string | undefined,
-    "telemetry.replay = True",
-  );
+  const replay = text(cfg.OTEL_REPLAY);
   warnBuildFallback(used);
 
   // Built apart from the call, not as a literal argument: a literal is checked
@@ -278,6 +279,9 @@ export function initTelemetry(): void {
     // runtime config says PAGE_VIEWS = "false".
     pageViews:
       text(cfg.PAGE_VIEWS) === "false" ? false : { basePath: import.meta.env.BASE_URL },
+    // A failed RPC's span carries its redacted request shape, unless the
+    // runtime config says RPC_FORENSICS = "false".
+    rpcForensics: text(cfg.RPC_FORENSICS) !== "false",
 {{- if .IdentifySession}}
     // The signed-in user's opaque id on every event, unless the runtime
     // config says IDENTIFY_USER = "false".

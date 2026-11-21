@@ -60,6 +60,8 @@ const DrainedTrailer = "x-forge-drained"
 // the request context, which NewHTTPServer populates. Put it in the
 // interceptor chain inner to logging and metrics, so they record the status
 // the client received.
+//
+// connect-go v2 servers use StreamDrainInterceptorV2.
 func StreamDrainInterceptor() connect.Interceptor { return &streamDrainInterceptor{} }
 
 type streamDrainInterceptor struct {

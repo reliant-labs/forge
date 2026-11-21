@@ -75,13 +75,15 @@ into every environment it is promoted to.
 | replay sample rate | `REPLAY_SAMPLE_RATE` | KCL `telemetry.replay_sample_rate` | every session |
 | `page_viewed {route}` and `page_engaged {route, view_id, engaged_ms, scroll_pct}` product events | `PAGE_VIEWS = "false"` | KCL `telemetry.page_views = False` | **on** |
 | signed-in user id on every event | `IDENTIFY_USER = "false"` | KCL `telemetry.identify_user = False` | **on** with native sign-in |
+| redacted request shape on a failed RPC's span (`forge.forensics`; see `frontend-runtime/transport`) | `RPC_FORENSICS = "false"` | KCL `telemetry.rpc_forensics = False` | **on** |
 | `service.version` | — (a build fact: `NEXT_PUBLIC_APP_VERSION` / `VITE_APP_VERSION`) | the deploy | the **build id** a deploy injects (12-hex hash of the frontend source and build env), unless you set it |
 
 For a deployed environment, declare `otel_endpoint = "/_otel"` in the
 frontend's KCL `config` block. Every web frontend's `config.js` names its
 environment, so `ENVIRONMENT` needs no declaration. A literal
-`{NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT` / `ENVIRONMENT` / `OTEL_REPLAY` in the
-frontend's `env_vars` is carried into the runtime config as well, so older
+`{NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT` / `ENVIRONMENT` in the frontend's
+`env_vars` is carried into the runtime config as well (`OTEL_REPLAY` is not:
+use `telemetry.replay`), so older
 declarations keep working (on `forge.OnHosted`, only the ingest path: the
 control plane writes that document's `ENVIRONMENT`). A build variable only exported in the shell at
 `npm run build` is a **deprecated** fallback: used when `config.js` lacks the
@@ -127,9 +129,8 @@ erases what `full` stored and keeps the running session in memory;
 `optOutOfAnalytics()` is the person's objection to analytics at all. A start
 in a mode that can never reach `full` erases ids an earlier page load stored.
 Under GPC / DNT the browser's events carry **no user id** (not even from
-`setTelemetryUser`), and no auth event is sent. `attribution` /
-`enableAttribution()` are deprecated spellings of mode `full` + consent and
-keep working. The contract, and what each tier sends:
+`setTelemetryUser`), and no auth event is sent. `enableAttribution()` is a
+deprecated spelling of mode `full` + consent. The contract, and what each tier sends:
 `observability/product-events`.
 
 **Where a visit came from.** In `full`, the stored attribution keeps

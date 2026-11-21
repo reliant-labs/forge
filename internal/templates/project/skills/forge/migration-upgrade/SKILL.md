@@ -74,6 +74,7 @@ small enough that every migration in it is still true.
 # Inspect the current pin and the binary version.
 grep forge_version forge.yaml
 forge version
+forge version --pinned [--json]   # the pinned forge's executable, version and source (self|tools|cache|built)
 
 # A project whose go.mod requires forge: bump it there first.
 go get github.com/reliant-labs/forge@vX.Y.Z && go mod tidy
@@ -173,7 +174,9 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
                 "gates_from": "v1.0.1", "fix": "…", "examples": ["…"]}],
   "template_drift": ["Dockerfile"],
   "offers": [{"path": "docker-compose.yml", "since": "v0.0.2",
-              "command": "forge project rescaffold docker-compose.yml"}]
+              "command": "forge project rescaffold docker-compose.yml"}],
+  "crossed": [{"version": "v1.0.0", "source": "changelog", "…": "…"}],
+  "generated_changes": [{"generator": "middleware_gen.go", "files": ["…"], "notes": []}]
 }
 ```
 
@@ -191,6 +194,11 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
 - `offers` are scaffold-once files the project never had whose templates are
   not new across the range; upgrade did not add them, and `command` does. They
   never change the exit code.
+
+- `crossed` (what each release and the untagged tail brought, with the
+  `agent_instructions` their PRs address to you) and `generated_changes` (the
+  generated files generate changed, by generator): read them before you judge
+  the diff — `forge skill load migration-upgrade/range`.
 
 ### Re-vendoring a contract the project copies from another repository
 
@@ -292,6 +300,13 @@ list` prints, what `forge project upgrade apply <id>` takes, and what
 lands in `.forge/migrations.json`. One skill covers everything that
 release broke — do not create a directory per individual change.
 
+### Telling the agent what to do: commit trailers
+
+A change a consumer's agent must act on carries an `Agent-Instructions:` (and,
+for generated output, a `Generated-Change:`) commit trailer; the release
+renders it into CHANGELOG.md and upgrade shows it. The contract:
+`forge skill load migration-upgrade/range`.
+
 ### A breaking change registers its codemod, and upgrade runs it
 
 A PR that breaks a consumer (the API-diff gate names it with `API-BREAK:
@@ -353,14 +368,23 @@ Good detection is a grep or a file test. Detection runs in-process, so
 stick to shell builtins (`test`, `[`, `&&`, `||`, `!`) plus `grep` / `rg`,
 which forge provides as portable built-ins supporting only `-q -i -F -E -r
 -e` (`rg` is recursive by default). Any other external tool will not exist
-on stock Windows. Three examples of the
+on stock Windows. Four examples of the
 `detection:` frontmatter value:
 
 ```text
 test -f pkg/app/wire_gen.go
 rg -q 'forge:server-set' internal/
 grep -q '^dev_target:' forge.yaml
+forge-detect pre-zod4-forms
 ```
+
+When forge itself reads the shape — `forge generate` decides from it, and a
+grep would read it differently — the detection asks forge instead:
+`forge-detect <name>` is a built-in that runs a Go detector registered in
+`internal/cli/upgrade_migration_detectors.go` (exit 0: the old shape is
+there). `pre-zod4-forms` is one: it reads each frontend's zod range with the
+same semver parser generate writes pages from, so the playbook is offered to
+exactly the frontends generate still writes zod 3 for.
 
 A migration with no detection applies to NOTHING — it cannot demonstrate
 any project needs it, so it stays out of every worklist rather than

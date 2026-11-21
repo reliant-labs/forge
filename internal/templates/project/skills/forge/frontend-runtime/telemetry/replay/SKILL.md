@@ -20,10 +20,13 @@ StaticSite spec too, so the platform reads it live) and opts the env's
 observability policy in, so the platform keeps the events. A hosted frontend
 with it on needs the env to declare `observability`. An author's own
 `runtime_config.OTEL_REPLAY` still wins over it (so `"false"` there keeps that
-frontend off). The env-wide `observability.signals.replay` is a **deprecated**
-opt-in that keeps working but switches no frontend on, and a
-`{NEXT_PUBLIC_,VITE_}OTEL_REPLAY` build variable is a deprecated fallback.
-Envs scaffolded before v1.4.0 declare both: `migrations/v1.4.0` moves them.
+frontend off). There is no env-wide switch: `ObservabilitySignals` has no
+`replay` field (the render records the result as `signals.replay`), and a
+`{NEXT_PUBLIC_,VITE_}OTEL_REPLAY` build variable in `env_vars` is not carried
+into the runtime config. Envs scaffolded before v1.4.0 declared both, and
+forge v1.9.0 no longer accepts either: delete `replay` from the env's
+`ObservabilitySignals` and the `OTEL_REPLAY` build variable, and set
+`telemetry = forge.BrowserTelemetry {replay = True}` on the frontend instead.
 With observability or browser telemetry off, nothing records.
 
 Replay records a person, so it runs only in the **`full` analytics tier**:

@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.8.0] - 2026-11-19
+
+### Added
+
+- **web-runtime:** record frame stalls in every browser; leaner session replay recording ([#2255](https://github.com/reliant-labs/forge/pull/2255))
+- **obs:** say when "new users" counting starts mid-range ([#2288](https://github.com/reliant-labs/forge/pull/2288))
+- **web-runtime:** an invalidate option on generated mutation hooks replaces or skips the success refresh ([#2297](https://github.com/reliant-labs/forge/pull/2297))
+- **new:** register forge's MCP server in a Claude Code project's .mcp.json and say to restart the session to load it ([#2299](https://github.com/reliant-labs/forge/pull/2299))
+- **merge-driver:** writing commands leave the clone's git config alone unless forge.yaml opts in to git.merge_driver: auto ([#2308](https://github.com/reliant-labs/forge/pull/2308))
+- **testkit:** the test server checks protovalidate rules as production does, warning first ([#2321](https://github.com/reliant-labs/forge/pull/2321))
+- **obs:** Product analytics Overview and chart panel kinds ([#2289](https://github.com/reliant-labs/forge/pull/2289))
+- **login:** after forge login, the browser goes on to the web app, where a new account is walked through setup ([#2312](https://github.com/reliant-labs/forge/pull/2312))
+- **env:** env status verifies a hosted static site against the release marker its live URL serves ([#2302](https://github.com/reliant-labs/forge/pull/2302))
+- **deploy:** check registry push access with the realm before a pushing build builds ([#2305](https://github.com/reliant-labs/forge/pull/2305))
+- **project:** forge project new --auth-mode none scaffolds an app with no sign-in system ([#2330](https://github.com/reliant-labs/forge/pull/2330))
+- **deploy:** record the git source of every release and deploy ([#2328](https://github.com/reliant-labs/forge/pull/2328))
+- **ci:** forge ci gate --tier and --json, for CI run as a Reliant check ([#2331](https://github.com/reliant-labs/forge/pull/2331))
+- **cli:** stop, tear down or delete an app, and manage kept databases ([#2341](https://github.com/reliant-labs/forge/pull/2341))
+- **ci:** ci.provider reliant generates Reliant check workflows instead of GitHub Actions ([#2340](https://github.com/reliant-labs/forge/pull/2340))
+
+### Changed
+
+- **web-runtime:** start telemetry after first paint and yield during init ([#2254](https://github.com/reliant-labs/forge/pull/2254))
+- **frontend:** connect.ts is owned, not regenerated; forge auth suggests forge api ([#2275](https://github.com/reliant-labs/forge/pull/2275))
+- **memory:** project memory and scaffold headers are short, with pointers to skills for depth ([#2311](https://github.com/reliant-labs/forge/pull/2311))
+- **orm:** show the set-based UPDATE that replaces a List + per-row update loop ([#2317](https://github.com/reliant-labs/forge/pull/2317))
+- **web-runtime:** own the replay recorder — off-main-thread encoding, lazy chunk; drive HyperDX's ESM parts ([#2310](https://github.com/reliant-labs/forge/pull/2310))
+- **env:** UNREACHABLE means forge could not observe what runs, a static site answering with no release marker included ([#2343](https://github.com/reliant-labs/forge/pull/2343))
+
+### Fixed
+
+- **web-runtime:** record one click span per real click again ([#2253](https://github.com/reliant-labs/forge/pull/2253))
+- **obs:** issue resolve/ignore/unresolve write without reading the issue first, so triage spends no query quota ([#2257](https://github.com/reliant-labs/forge/pull/2257))
+- **generate:** CRD helpers before KCL renders, no observability from a failed env render, --help-dev leaves git config alone ([#2258](https://github.com/reliant-labs/forge/pull/2258))
+- **frontend:** scaffolded create/edit pages accept fractional values in double/float fields ([#2261](https://github.com/reliant-labs/forge/pull/2261))
+- **serverkit:** PgxConn reaches the \*pgx.Conn under OpenDB's pooler-drain connection ([#2272](https://github.com/reliant-labs/forge/pull/2272))
+- **forgecompat:** a clean source build of the commit a project resolves is that forge ([#2270](https://github.com/reliant-labs/forge/pull/2270))
+- **lint:** generated-code-ignored skips forge's own atomic-write temp files and KCL probe dirs ([#2271](https://github.com/reliant-labs/forge/pull/2271))
+- **generate:** the marker scan skips another project's Go module, so the stale sweep never deletes its files ([#2274](https://github.com/reliant-labs/forge/pull/2274))
+- **kcl:** an AlertRule expr may open with SQL comments, as the evaluator accepts ([#2277](https://github.com/reliant-labs/forge/pull/2277))
+- **secrets:** an empty store value is missing at pre-flight; access lists follow the env's control plane ([#2260](https://github.com/reliant-labs/forge/pull/2260))
+- **orm:** refuse bun-style ? in raw Exec/Query/QueryRow with an error that says to use $1 ([#2292](https://github.com/reliant-labs/forge/pull/2292))
+- **lint:** forge-state-ignored's fix follows the rule that excludes the path ([#2273](https://github.com/reliant-labs/forge/pull/2273))
+- **generate:** print pinned-tool resolution only under --verbose ([#2293](https://github.com/reliant-labs/forge/pull/2293))
+- **graph:** scope disowned composition validation by root reach ([#2262](https://github.com/reliant-labs/forge/pull/2262))
+- **deploy:** judge unmerged migrations before a claimable deploy builds or mints, and say so in forge start ([#2295](https://github.com/reliant-labs/forge/pull/2295))
+- **generate:** a failed env render cached before config_gen.k exists is rendered again, so a fresh project new completes ([#2291](https://github.com/reliant-labs/forge/pull/2291))
+- **db:** migration rebase refreshes the re-versioned file's Created and newest header lines ([#2284](https://github.com/reliant-labs/forge/pull/2284))
+- **lint:** a pseudo-version pin grades as the release it leads to, and project upgrade names the rules a pin bump starts gating ([#2301](https://github.com/reliant-labs/forge/pull/2301))
+- **obs:** obs check waits out a query-quota refusal instead of reporting not proven ([#2269](https://github.com/reliant-labs/forge/pull/2269))
+- **storage:** env up reports only its own registries' cleanup, with the reason; a stopped cluster skips registry GC instead of failing it ([#2303](https://github.com/reliant-labs/forge/pull/2303))
+- **deploy:** env status --claimable says nothing is deployed when every attempt failed ([#2294](https://github.com/reliant-labs/forge/pull/2294))
+- **deploy:** static-site and source-map pushes present the credential docker push used ([#2298](https://github.com/reliant-labs/forge/pull/2298))
+- **lint,obs:** a --scope that reaches no frontend skips the typecheck; add-panel judges a section against the target dashboard ([#2259](https://github.com/reliant-labs/forge/pull/2259))
+- **codemod:** composition-graph re-resolves a legacy 'no provider' nil instead of carrying it over a provider ([#2315](https://github.com/reliant-labs/forge/pull/2315))
+- **lint:** forge's own tree passes forge lint's format and commit-policy lanes ([#2316](https://github.com/reliant-labs/forge/pull/2316))
+- **obs:** release health doesn't fail a release on an alert that was already flapping before it ([#2290](https://github.com/reliant-labs/forge/pull/2290))
+- **obs:** obs check judges a retried promotion from the control plane's live_at ([#2319](https://github.com/reliant-labs/forge/pull/2319))
+- **identity:** say when a returned invite/reset code lapses and how to reissue it ([#2322](https://github.com/reliant-labs/forge/pull/2322))
+- **merge-driver:** a clone forge already wired keeps its driver maintained unless forge.yaml says manual ([#2325](https://github.com/reliant-labs/forge/pull/2325))
+- **generate:** warn when an owned login broker sets the plain session cookie the middleware no longer reads ([#2333](https://github.com/reliant-labs/forge/pull/2333))
+- **lint:** forgeconv-list-filter-optional judges only the fields the generated filter reads ([#2318](https://github.com/reliant-labs/forge/pull/2318))
+- **ci:** the scaffolded jobs that run forge lint check out full history ([#2339](https://github.com/reliant-labs/forge/pull/2339))
+- **lint:** a pin that jumps a rule's warn-first window warns for one pin; lint --scope skips db-grants without the descriptor ([#2320](https://github.com/reliant-labs/forge/pull/2320))
+- **mocks:** the fixture freshness guard passes a pulled migration that touches no fixture ([#2332](https://github.com/reliant-labs/forge/pull/2332))
+
 ## [v1.7.0] - 2026-11-17
 
 ### Added
@@ -9055,7 +9121,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.8.0...HEAD
+[v1.8.0]: https://github.com/reliant-labs/forge/compare/v1.7.0...v1.8.0
 [v1.7.0]: https://github.com/reliant-labs/forge/compare/v1.6.0...v1.7.0
 [v1.6.0]: https://github.com/reliant-labs/forge/compare/v1.5.0...v1.6.0
 [v1.5.0]: https://github.com/reliant-labs/forge/compare/v1.4.0...v1.5.0

@@ -23,7 +23,8 @@ import {
 ## What is in here, and what is deliberately not
 
 **In:** mechanism. The interceptor stack (auth, brand headers, W3C
-traceparent, error normalization, idempotency-gated retry), the session
+traceparent, a client span per RPC with redacted failure forensics, error
+normalization, idempotency-gated retry), the session
 derived from JWT claims, the error boundary, the toast queue, the
 `<Resource>` tristate/pagination container, trace-context propagation,
 the HyperDX browser SDK wiring (`/telemetry` subpath), and integer money / basis-point formatting and parsing.
@@ -290,10 +291,8 @@ false`, a 401 or 403, and any answer naming nobody (another non-2xx, a
   replaces the stored ones (last touch); `attributionTouch: "first"` keeps the
   first for good, for a marketing site attributing acquisition.
 
-  `attribution` and `enableAttribution({ search })` (from `/telemetry`) are
-  deprecated spellings that keep working: passing `attribution` at all means
-  mode `full`, `true` also grants consent at start, and `enableAttribution()`
-  raises the default mode to `full` and grants. `search` is the landing URL's
+  `enableAttribution({ search })` (from `/telemetry`, deprecated) raises the
+  default mode to `full` and grants consent. `search` is the landing URL's
   query string kept from page load, for when a client-side navigation has
   dropped it since. `revokeAnalyticsConsent()` erases the stored ids on
   withdrawal; `getAttribution()` is the captured record, for a site that
@@ -510,6 +509,83 @@ interface Interaction {
   synthesized trace id, so its RPCs still share one trace on the server. After
   `disableTelemetry()` it records nothing either. Nothing here throws.
 
+## RPC spans and failure forensics
+
+`buildRuntimeInterceptors()` records one **client span per RPC**, unary and
+streaming alike (`src/rpc-span.ts`):
+
+|            |                                                                                                                                                                               |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| name       | `<rpc.service>/<rpc.method>`, e.g. `pkg.v1.ChatService/GetChat`                                                                                                               |
+| kind       | `CLIENT`                                                                                                                                                                      |
+| attributes | `rpc.system = connect_rpc`, `rpc.service` (fully qualified), `rpc.method`, `forge.rpc.client = true`; on failure `rpc.connect_rpc.error_code` (the Connect code, `not_found`) |
+| status     | `ERROR` on failure. A cancelled call carries `canceled` but no error status and no forensics: it broke nothing                                                                |
+| ends       | when a unary response or error arrives; when a stream completes, fails, or the caller stops reading                                                                           |
+
+`rpc.service` + `rpc.method` are what forge servers' otelconnect spans carry,
+so they are the join between what the browser saw and what the server did.
+The stage sits directly outside `traceInterceptor`: the RPC span is the
+context the `traceparent` is written from (and, with the SDK, the parent of
+its fetch span), so the server's span is its descendant in the same trace.
+
+With no tracer provider registered (telemetry off, SSR, a React Native app
+without an OpenTelemetry SDK) the API hands out a non-recording span; the stage
+drops it and the call goes on exactly as without it. A React Native app that
+registers its own provider gets the spans through
+`@reliantlabs/forge-web-runtime/interceptors` with no DOM involved.
+
+**Forensics.** A failed call's span gets one `forge.forensics` event with
+`forensics.reason = error` and the request message's shape, classified deny by
+default by reflection (`src/rpc-forensics.ts`), keyed
+`forensics.arg.<proto field name>` (nested fields joined with `.`):
+
+| Field                                                                                                                        | Recorded                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| number, bool                                                                                                                 | the value (a 64-bit integer beyond 2^53 as its decimal string)                                                                  |
+| enum                                                                                                                         | the value's name                                                                                                                |
+| string named like an id (`id`, `uuid`, `*_id`, `*_ids`, `*_uuid`, `*Id`, `*ID`, `*Ids`, `*Uuid`, `*UUID`)                    | the value, cut to 128 characters                                                                                                |
+| a string or number with a secret name, id-shaped or not (`pin`, `cvv`, `security_code`, `session_id`, `apiKeyId`: see below) | `"[len=N]"` (a number's digit count), never the value                                                                           |
+| any other string, bytes                                                                                                      | `"[len=N]"`                                                                                                                     |
+| repeated, map                                                                                                                | `"[count=N]"`                                                                                                                   |
+| `Timestamp`, `Duration`, `google.type` `Date`, `DateTime`, `TimeOfDay`, `Interval`, `Month`, `DayOfWeek`                     | `"[type=<Name>]"`, e.g. `"[type=Timestamp]"`: never the value or its subfields (a time is content: a birthdate, an appointment) |
+| other message                                                                                                                | its set fields, three levels deep (`"[message]"` below)                                                                         |
+| `[debug_redact = true]`                                                                                                      | never, not even its presence                                                                                                    |
+
+A name is secret (`isSecretNamed`) when, lowercased with `_` and `-` removed,
+it contains `token`, `secret`, `passw`, `credential`, `session`, `cookie`,
+`apikey`, `privatekey`, `signingkey` or `otp`; or when one of its words (split
+on `_`, `-`, camelCase and letter/digit boundaries), or two adjacent words
+joined, is `pin`, `otp`, `cvv`, `cvc`, `ssn`, `tan`, `passcode`,
+`securitycode`, `mfa` or `totp`, plural or not. So `userPIN`, `cvv2` and
+`security_code` are secret, and `spinner`, `pinned`, `shipping` and `tank` are
+not. A number whose first or last word is `max`, `min`, `limit`, `count`,
+`total`, `size`, `len` or `length`, or whose first word is `num`, is a
+quantity, not a secret, and keeps its value (`isSecretNumberNamed`:
+`max_tokens`, `token_limit`, `session_count`, `num_sessions`). A trailing
+`num` reads as "number", so `pin_num`, `ssn_num` and `otpNum` still record
+their digit count, as does `otp_counter_id` (last word `id`). An id-shaped
+secret name is never a quantity, whatever leads it: `max_session_id` and
+`num_otp_id` record their digit count. A string named
+like a quantity still records its length. A secret-named bool or enum keeps its value (`mfa_enabled`,
+`session_state`): one of a few values the schema lists cannot carry a typed
+secret. forge's server-side forensics applies the same rules, id shapes
+included, tested against the same table.
+
+Unset fields are left out; at most 32 fields are recorded
+(`forensics.truncated = true` says a record was cut). A record is attached at
+most once per procedure and error code per page load, and at most 256
+signatures per page load. For a stream, the request is the first message the
+caller sent.
+
+Turning it off: `initBrowserTelemetry({ rpcForensics: false })` (forge's
+generated `otel_gen.ts` passes it when the runtime config says
+`RPC_FORENSICS = "false"`, which KCL renders from
+`telemetry = forge.BrowserTelemetry {rpc_forensics = False}`), or
+`buildRuntimeInterceptors({ rpcForensics: false })` for one chain.
+`buildRuntimeInterceptors({ rpcSpans: false })` leaves the span stage out.
+After `disableTelemetry()` the stage records nothing. A hand-built chain uses
+`rpcSpanInterceptor()` directly outside `traceInterceptor()`.
+
 ## Node and Electron-main telemetry (`/node`)
 
 `initNodeTelemetry` is the browser entry's twin for a Node process — an
@@ -622,18 +698,56 @@ const relay = await startOtelRelay({ upstream: "http://127.0.0.1:4318" });
 
 `createOtelProxyHandler` is the shared handler, for any other Node server.
 
+## The Vite dev server's browser-log receiver (`/vite`)
+
+`installDevLogging()` posts each browser console line, uncaught error and
+unhandled rejection to `/__forge/log` in dev. Import it from `/devlog`, which
+imports no other package, when that is all an app takes from the runtime (an
+adopted site with no RPC client). The barrel exports it too, but the barrel
+also needs the optional peers `@connectrpc/connect` and `@bufbuild/protobuf`.
+
+```ts
+// src/main.tsx
+import { installDevLogging } from "@reliantlabs/forge-web-runtime/devlog";
+if (import.meta.env.DEV) installDevLogging({ dev: true });
+```
+
+`forgeDevLog()` is the
+Vite dev server's end of that: it prints each line as `[browser:<level>] <msg>`
+on the dev server's stdout, which `forge env up` tees to
+`.forge/logs/<env>/frontend_<name>.log`. It accepts both wire shapes: the
+`{"entries":[…]}` batch, answered with `X-Forge-Devlog: 2`, and the legacy
+single `{"level","msg"}`. Lines over 8,000 characters are truncated. A
+malformed post or one over 1 MiB prints a `[forge-devlog] dropped …` warn line
+instead of disappearing. The plugin has `apply: "serve"`, so a build never
+contains the endpoint.
+
+```ts
+// vite.config.ts
+import { forgeDevLog } from "@reliantlabs/forge-web-runtime/vite";
+plugins: [react(), forgeDevLog()];
+```
+
+It replaces the `src/lib/devlog-plugin.ts` that forge's Vite scaffolds write
+today. They switch to `forgeDevLog()` once the runtime floor forge scaffolds
+includes a release that ships it. A project that has that file can keep it. To
+switch, delete the file and use `forgeDevLog()` in its place.
+
 ## The DOM-free interceptors entry point
 
 ```ts
 import {
   buildRuntimeInterceptors, // the Connect transport stack
+  rpcSpanInterceptor, // the per-RPC client span stage, for hand-built chains
   ConnectClientError, // what the stack throws
   setTraceSampled, // traceInterceptor's knob
 } from "@reliantlabs/forge-web-runtime/interceptors";
 ```
 
-The `./interceptors` subpath is the transport layer on its own: `src/errors.ts`
-and `src/trace.ts` are the only modules it reaches. It imports **no React and
+The `./interceptors` subpath is the transport layer on its own: the
+interceptors, typed errors, trace propagation and the RPC span stage
+(`src/rpc-span.ts`, `src/rpc-forensics.ts`), and the dependency-free
+registries they report to. It imports **no React and
 no `@types/react`**, so a consumer never typechecks components it does not
 render.
 

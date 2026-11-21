@@ -13,7 +13,8 @@ type Report struct {
 	// Dir is the class's slot directory.
 	Dir     string
 	Holders []Holder
-	// Waiting is the queue, oldest first.
+	// Waiting is the queue in the order it is served: express waiters, then
+	// bulk waiters, each lane oldest first. Holder.Lane names the lane.
 	Waiting []Holder
 }
 
@@ -41,7 +42,14 @@ func Status(class string, opt Options) (Report, error) {
 		rep.Holders = append(rep.Holders, h)
 	}
 	sort.Slice(rep.Holders, func(a, b int) bool { return rep.Holders[a].Slot < rep.Holders[b].Slot })
-	rep.Waiting = queue{dir: filepath.Join(dir, "queue")}.live("")
+	for _, w := range (queue{dir: filepath.Join(dir, expressQueueDir)}).live("") {
+		w.Lane = LaneExpress // the queue it sits in decides, whatever its record says
+		rep.Waiting = append(rep.Waiting, w)
+	}
+	for _, w := range (queue{dir: filepath.Join(dir, "queue")}).live("") {
+		w.Lane = LaneBulk
+		rep.Waiting = append(rep.Waiting, w)
+	}
 	return rep, nil
 }
 

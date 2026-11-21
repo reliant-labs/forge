@@ -21,4 +21,5 @@ output = forge.render(forge.Bundle {
 _p = output.delivery_policy
 assert_signing_audits = _p.signing.mode == "audit" and _p.signing.key == "org_kms"
 assert_flux_verify_audits = _p.flux_verify.mode == "audit"
-assert_provenance_sbom_enforces = _p.provenance_sbom.mode == "enforce"
+# can refuse a promotion with no SBOM (sbom-required): audit
+assert_provenance_sbom_audits = _p.provenance_sbom.mode == "audit"

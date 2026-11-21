@@ -91,7 +91,7 @@ func hostedPushFixture(registry string) string {
 //
 // It drives the command that OWNS pushing and releasing: `forge env build
 // <env>`. These tests moved with the flags, because the top-level
-// compile-only verb now refuses them and can no longer resolve a push plan
+// compile-only verb does not have them and can no longer resolve a push plan
 // at all.
 //
 // The env is a POSITIONAL here, so the "push first" / "push last" orderings

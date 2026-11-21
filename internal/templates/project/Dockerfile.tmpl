@@ -55,10 +55,16 @@ COPY . .
 # is the primary binary, and a workload's `args` (deploy/kcl/workloads.k)
 # pick its subcommand. Building them all into a single image keeps one
 # build + one push + one registry tag for the whole project.
+#
+# Profile-guided optimization is per binary: `-pgo=auto` (Go's default)
+# reads the committed cmd/<bin>/default.pgo when it exists, which `forge pgo
+# pull` writes. `forge build` passes `--build-arg FORGE_PGO_<BIN>=off` for a
+# binary whose KCL build declares `pgo = forge.PGO {enabled = False}`.
 {{- range .Binaries }}
+ARG {{pgoBuildArg .Dir}}=auto
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}{{if $.VersionVar}} -X {{$.VersionVar}}=${FORGE_VERSION}{{end}}" -o /app/bin/{{.Dir}} ./cmd/{{.Dir}}
+    CGO_ENABLED=0 go build -pgo={{printf "${%s}" (pgoBuildArg .Dir)}} -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}{{if $.VersionVar}} -X {{$.VersionVar}}=${FORGE_VERSION}{{end}}" -o /app/bin/{{.Dir}} ./cmd/{{.Dir}}
 {{- end }}
 
 # ── Debug builder (only used by the `debug` stage) ──
@@ -70,10 +76,13 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # Dockerfile fork; see its FRICTION.md "Dockerfile debug-builder split".)
 FROM builder AS debug-builder
 
-# Debug build — full symbols, no inlining.
+# Debug build — full symbols, no inlining. A stage does not inherit its
+# parent's ARGs, so the binary's PGO arg is declared again: without it a
+# binary whose PGO is off would still read its default.pgo here.
+ARG {{pgoBuildArg .Name}}=auto
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
-    CGO_ENABLED=0 go build -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd/{{.Name}}
+    CGO_ENABLED=0 go build -pgo={{printf "${%s}" (pgoBuildArg .Name)}} -trimpath -buildvcs=true -gcflags="all=-N -l" -o /app/bin/{{.Name}}-debug ./cmd/{{.Name}}
 
 # Install Delve
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -96,7 +105,7 @@ EXPOSE 8080 6060
 CMD ["air", "-c", ".air.toml"]
 
 # ── Debug stage (use with: docker build --target debug) ──
-FROM alpine:3.21 AS debug
+FROM alpine:3.24 AS debug
 
 # Named time zones must work without the builder's GOROOT zoneinfo archive.
 RUN apk --no-cache add ca-certificates tzdata
@@ -121,8 +130,52 @@ EXPOSE 8080 2345
 ENTRYPOINT ["dlv", "exec", "--headless", "--listen=:2345", "--api-version=2", "--accept-multiclient", "--continue", "/app/{{.Name}}", "--"]
 CMD ["server"]
 
+# ── Cover builder (only used by the `cover` stage) ──
+# Every binary again, instrumented for test coverage (-cover
+# -covermode=atomic). `forge build` builds the `cover` stage for an env that
+# runs coverage-instrumented builds (local, ephemeral and preview envs of a
+# project that opts in: kcl/schema.k Tests) and passes FORGE_COVERPKG, the
+# packages to instrument; empty instruments Go's default, the main module.
+# The production stage never depends on it, so its image is unchanged.
+FROM builder AS cover-builder
+
+ARG FORGE_COVERPKG=
+{{- range .Binaries }}
+ARG {{pgoBuildArg .Dir}}=auto
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 go build -cover -covermode=atomic ${FORGE_COVERPKG:+-coverpkg=${FORGE_COVERPKG}} -pgo={{printf "${%s}" (pgoBuildArg .Dir)}} -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${FORGE_VERSION} -X main.commit=${FORGE_COMMIT} -X main.date=${FORGE_DATE}{{if $.VersionVar}} -X {{$.VersionVar}}=${FORGE_VERSION}{{end}}" -o /app/cover/{{.Dir}} ./cmd/{{.Dir}}
+{{- end }}
+
+# ── Cover stage (use with: docker build --target cover) ──
+# The production image with instrumented binaries. Go writes a binary's
+# coverage counters to GOCOVERDIR when it exits; /tmp is the emptyDir forge
+# mounts in every pod it renders (the root filesystem is read-only), so the
+# counters outlive a container restart. serverkit's /debug/coverage serves
+# them live on the debug listener.
+FROM alpine:3.21 AS cover
+
+RUN apk --no-cache add ca-certificates tzdata
+
+WORKDIR /app
+{{- range .Binaries }}
+COPY --from=cover-builder /app/cover/{{.Dir}} ./{{.Dir}}
+{{- end }}
+
+ENV GOCOVERDIR=/tmp
+
+USER 65532:65532
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
+
+ENTRYPOINT ["/app/{{.Name}}"]
+CMD ["server"]
+
 # ── Production stage (default) ──
-FROM alpine:3.21 AS production
+FROM alpine:3.24 AS production
 
 # Named time zones must work without the builder's GOROOT zoneinfo archive.
 RUN apk --no-cache add ca-certificates tzdata

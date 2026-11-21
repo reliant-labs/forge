@@ -638,13 +638,25 @@ func requireProjectDir(verb string) (string, error) {
 	cfgPath, err := findProjectConfigFile()
 	if err != nil {
 		cwd, _ := os.Getwd()
-		return "", fmt.Errorf("%s: no %s found in %s or any parent — cannot tell which project's stack to act on.\n"+
-			"     run it from inside the project, or reach every forge stack on this machine with:\n"+
-			"       forge env ps          # what is running, and where\n"+
-			"       forge env down --all  # stop all of it",
+		return "", fmt.Errorf("%s: no %s found in %s or any parent — cannot tell which project you mean.\n"+
+			"     run it from inside the project, or pass -C <project dir>",
 			verb, defaultProjectConfigFile, cwd)
 	}
 	return filepath.Dir(cfgPath), nil
+}
+
+// requireStackProjectDir is requireProjectDir for a verb that acts on a
+// running stack: its failure also names the verbs that reach every stack on
+// the machine without a project.
+func requireStackProjectDir(verb string) (string, error) {
+	dir, err := requireProjectDir(verb)
+	if err != nil {
+		return "", fmt.Errorf("%w\n"+
+			"     or reach every forge stack on this machine with:\n"+
+			"       forge env ps          # what is running, and where\n"+
+			"       forge env down --all  # stop all of it", err)
+	}
+	return dir, nil
 }
 
 // runUpStopAll stops every forge-started stack on this machine, whatever

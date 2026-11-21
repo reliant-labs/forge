@@ -226,3 +226,23 @@ func TestFrontendKCLEntry_DeclaresANonDefaultType(t *testing.T) {
 		t.Errorf("a Next.js frontend is the schema default and must not declare a type:\n%s", got)
 	}
 }
+
+// TestFrontendKCLDeclaration_PublicDirFollowsTheType: a published frontend
+// declares the directory its own build writes — out/ for a Next.js static
+// export, dist/ for the Vite scaffold (no build.outDir) and an Expo web
+// export. "out" for a Vite frontend published a directory its build never
+// wrote, which `forge lint --static-export` reports as
+// static-export-vite-out-dir.
+func TestFrontendKCLDeclaration_PublicDirFollowsTheType(t *testing.T) {
+	cases := map[string]string{"nextjs": `public_dir = "out"`, "vite-spa": `public_dir = "dist"`, "react-native": `public_dir = "dist"`}
+	for scaffoldType, want := range cases {
+		for _, binding := range []frontendBinding{frontendHosted, frontendOnBucket} {
+			if got := frontendKCLDeclaration("spa", kclFrontendType(scaffoldType), binding, 0, nil); !strings.Contains(got, want) {
+				t.Errorf("%s: a published frontend must declare %s:\n%s", scaffoldType, want, got)
+			}
+		}
+	}
+	if got := frontendKCLDeclaration("spa", "vite", frontendOnHost, 0, nil); strings.Contains(got, "public_dir") {
+		t.Errorf("a dev-server binding publishes nothing and must not declare public_dir:\n%s", got)
+	}
+}

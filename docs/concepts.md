@@ -119,9 +119,8 @@ Neither derives from the other. They evolve on independent clocks, and
 generated conversions map their intersection by name.
 
 Forge used to accept entity declarations in proto annotations
-(`(forge.v1.entity)`, `pk:`, `timestamps:`). Those are **retired and
-ignored** — they survive only as deprecated tombstones. Delete them if you
-find them; do not copy them forward.
+(`(forge.v1.entity)`, `pk:`, `timestamps:`). Those extensions are **removed**
+from forge.proto, so a proto still carrying one fails to compile: delete it.
 
 ### Why introspection instead of declaration
 
@@ -172,23 +171,31 @@ set):
 
 ## 3. Contracts, and why the LLM story rests on them
 
-Every internal package declares a `contract.go` with three things: the
-interface, a `Deps` struct, and a constructor.
+Every internal package declares a contract with three things: the
+interface, a `Deps` struct, and a constructor. For the usual single
+implementation you do not write the interface: mark the implementing struct
+`//forge:contract` and `forge generate` derives `Service` from its exported
+methods into `contract_gen.go`.
 
 ```go
 package email
-
-type Service interface {
-    Send(ctx context.Context, to, subject, body string) error
-}
 
 type Deps struct {
     Logger *slog.Logger
     Store  Store          // interface-typed, always
 }
 
+//forge:contract
+type service struct{ deps Deps }
+
 func New(deps Deps) (Service, error)
+
+func (s *service) Send(ctx context.Context, to, subject, body string) error
 ```
+
+A hand-written `contract.go` holding `type Service interface { Send(...) error }`
+is the other form, and the right one when several implementations satisfy one
+interface (a strategy). Both feed the same mock and decorator generation.
 
 **Names are not forced.** The lint rule explains why:
 
@@ -204,7 +211,8 @@ accepts, generate can wire.
 ### What you get from it
 
 `forge generate` writes `mock_gen.go` with a mock for **every interface in
-the file**, not just the main one:
+the contract** (the derived or hand-written `Service`, plus the dependency
+interfaces beside it), not just the main one:
 
 ```go
 type MockRepository struct {
@@ -227,8 +235,8 @@ the tests:
 3. **The compile-time assertion** breaks the build _at the mock_ when the
    contract changes, not at some distant call site three packages away.
 
-Declare dependency interfaces in `contract.go`. An interface declared in
-`service.go` gets no mock.
+Declare dependency interfaces in `contract.go`, or in `deps.go` beside a
+marked type. An interface declared in `service.go` gets no mock.
 
 ### Deps are interfaces, enforced
 

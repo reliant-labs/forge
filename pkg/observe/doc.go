@@ -18,7 +18,12 @@
 //     that opens one span per method, records call metrics and logs failures,
 //     through DefaultComponentChain or the package's own observe_chain.go
 //     seam. It is the default; `// forge:no-observe` on the package (or one
-//     method) opts out. compose.go constructs the package wrapped;
+//     method) opts out. compose.go constructs the package wrapped. Each
+//     method carries a generated *Op (component_op.go), so its span also
+//     names its code (forge.op, code.function.name, code.file.path), is
+//     marked forge.slow when the call runs far above the op's own normal,
+//     and records one redacted forge.forensics event on a server-fault error
+//     or a slow call (component_forensics.go);
 //   - outbound calls: NewClientStack for Connect clients.
 //
 // The per-call helpers (TraceCall, LogCall, RecordCall) remain for code
@@ -49,6 +54,17 @@
 //	    observe.LoggingInterceptor(logger),
 //	    auth.Interceptor(...),
 //	}
+//
+// # connect-go v2
+//
+// A project on connect-go v2 (connectrpc.com/connect/v2) uses the V2 form of
+// every Connect-typed symbol here — ChainV2 / DepsV2, DefaultMiddlewaresV2,
+// LoggingInterceptorV2 and the other XInterceptorV2s, Deadline.InterceptorV2,
+// TrustRemoteByV2, NewClientStackV2 — and passes the chain to
+// connectv2.NewServer. Behaviour is the v1 form's: the same log records,
+// spans, metrics and headers (interceptors_v2.go). The trust classifiers take
+// connect-free inputs (TraceTrustClassifier, HeaderReader), since v2 has no
+// Peer type.
 //
 // # The environment contract
 //
@@ -81,6 +97,23 @@
 //
 // With export on, Setup also records Go runtime metrics
 // (go.opentelemetry.io/contrib/instrumentation/runtime).
+//
+// # Resource metrics
+//
+// With export on or off, Setup registers the process and host resource
+// metrics of pkg/resmetrics on its meter provider, so they are on /metrics
+// and, with export on, in OTLP: the process's CPU, RSS, fds against their
+// limit, threads, context switches, page faults, disk IO and uptime, and the
+// machine's CPU, load, memory, swap, filesystems and fd/pid pressure, or —
+// inside a Kubernetes pod — the container's cgroup v2 memory, OOM kills,
+// pressure, throttling and pids instead of the node's. One switch turns them
+// down, and wins over Config.ResourceMetrics:
+//
+//	FORGE_OBSERVE_RESOURCE_METRICS   auto (default) | all | process | host | off
+//	FORGE_OBSERVE_RESOURCE_INTERVAL  max age of a sample, a Go duration (15s; at least 1s)
+//
+// off starts no sampler. OTEL_SDK_DISABLED and OTEL_METRICS_EXPORTER=none
+// govern export only and leave /metrics as it is.
 //
 // # Logs
 //

@@ -17,7 +17,11 @@ description: >-
 # ~/.cache/forge/embedded-postgres on a Linux runner, %LocalAppData% on
 # Windows and ~/Library/Caches on macOS — so the path follows runner.os. (The
 # Windows job fetched on every run until it used this action, and a Maven
-# Central 404 for a published 18.3.0 archive turned main red.)
+# Central 404 for a published 18.3.0 archive turned main red; the `build`
+# job did the same until 2026-11-19. pkg/pgtest now falls back to a mirror
+# of Maven Central on such a 404, and internal/ciguard's
+# TestEveryTestJobRestoresEmbeddedPostgres holds every job that runs Go
+# tests to this restore.)
 #
 # WHY THE SAVED KEY IS THE DIRECTORY'S CONTENT, not go.sum. One job boots
 # more than one postgres: the default 18.3.0, and 16.9.0 for

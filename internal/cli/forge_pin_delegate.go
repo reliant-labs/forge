@@ -72,6 +72,10 @@ import (
 // describe or operate this binary or this machine, not the project.
 //
 //   - version, help, completion: about this binary and this shell.
+//     `version --pinned` included: it ANSWERS which forge the project pins
+//     (forge_pinned.go), so handing it to that forge would only make the
+//     answer depend on the forge in hand, and a tool outside the project
+//     asks it precisely because it cannot reach the pin itself.
 //   - project upgrade: moves the pin, so it is run by the forge being moved
 //     TO, and must work when the old pin cannot be built.
 //   - project new: the project it writes is not the one around the cwd.
@@ -87,6 +91,8 @@ import (
 //     request run under that forge, past its own pin check (a delegate does
 //     not check). Each request is checked against its own project instead
 //     (serveRequestsUnderTheirOwnPins).
+//   - test begin, test capture: pin-independent plumbing in front of every
+//     test lane (pinIndependentCommands says why).
 //   - env ps, env devstack: they list, and allocate ports for, the stacks on
 //     this machine across projects, from ownership markers and the block
 //     registry, never from one project's KCL.
@@ -101,7 +107,7 @@ import (
 var handOffExempt = []string{
 	"", "version", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd,
 	"project upgrade", "project new", "report-bug", "telemetry", "storage", "slot", "mcp",
-	"env ps", "env devstack",
+	"env ps", "env devstack", "test begin", "test capture",
 }
 
 // handOffMode is how a command meets the forge its project pins.
@@ -183,8 +189,9 @@ func machineWideRun(rel string, flags *pflag.FlagSet) bool {
 var (
 	pinDelegateResolver = func(w io.Writer) *forgedelegate.Resolver {
 		return &forgedelegate.Resolver{
-			Log:     w,
-			Version: forgedelegate.RunVersion,
+			Log:            w,
+			Version:        forgedelegate.RunVersion,
+			CommandVersion: forgedelegate.RunCommandVersion,
 			Same: func(want, got string) bool {
 				skewed, ok := pinSkew(want, got, "")
 				return ok && !skewed
@@ -493,10 +500,7 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bo
 	}
 	// handed: the decision was the delegate's, so nothing runs here even
 	// when it failed; its error (and exit code) is returned as is.
-	// The pinned forge may predate the 14 nouns: it is given the spelling
-	// every forge has (legacyArgs), and told not to warn about it.
-	args, rewritten := legacyArgs(args)
-	return true, execPinned(w, t, res, args, rewritten)
+	return true, execPinned(w, t, res, args)
 }
 
 // pinTarget is the forge the command at rel must run under in projectRoot,
@@ -515,7 +519,7 @@ func pinTarget(rel string, allow bool, projectRoot string) (t delegateTarget, ok
 	if !ok {
 		return delegateTarget{}, false, ""
 	}
-	if allow || forgecompat.SkewOverridden() || t.devAgainstTag(rel) {
+	if allow || forgecompat.SkewOverridden() || childOfThisForge() || t.devAgainstTag(rel) {
 		// Run this forge; checkForgePinSkew warns, or refuses.
 		return delegateTarget{}, false, ""
 	}
@@ -533,6 +537,19 @@ type PinnedForge struct {
 	Key string
 	// Want says which forge the project wants, for a message.
 	Want string
+	// Source says where Path came from: PinnedSourceSelf (this forge is the
+	// project's), or forgedelegate's KindTools, KindCache or KindBuilt.
+	Source string
+	// Args are the arguments that come before forge's own when running Path:
+	// ["forge"] when Path is this forge's executable and forge is embedded
+	// in it (`reliant forge`), else none. Set by ResolvePinnedForgePath.
+	Args []string
+	// Version is the version Path reports. Set by ResolvePinnedForgePath.
+	Version string
+	// Pin is forge.yaml's forge_version, and Checkout the local forge
+	// checkout the project is linked to, when it is. Set by
+	// ResolvePinnedForgePath.
+	Pin, Checkout string
 }
 
 // ResolvePinnedForge is the hand-off's decision and resolution without the
@@ -553,7 +570,7 @@ func ResolvePinnedForge(ctx context.Context, projectRoot, command string, log io
 	if err != nil {
 		return PinnedForge{}, false, handOffFailure(projectRoot, t, command, err)
 	}
-	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String()}, true, nil
+	return PinnedForge{Path: res.Path, Key: t.resultKey(res.Path), Want: t.String(), Source: res.Kind}, true, nil
 }
 
 // noteUnpinned says which forge runs when no project pin decides it. Only an
@@ -667,14 +684,10 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 // delegate's exit status IS this process's, and it returns only when exec(2)
 // itself failed; on Windows it relays the delegate's exit status; a test seam
 // returns the delegate's error. Callers propagate that error unchanged.
-func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
+func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string) error {
 	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
 		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
-	env := forgedelegate.Env(t.String())
-	if respelled {
-		env = append(env, noDeprecationWarningsEnv+"=1")
-	}
-	return pinDelegateExec(res.Path, args, env)
+	return pinDelegateExec(res.Path, args, forgedelegate.Env(t.String()))
 }
 
 // resolveTarget finds, or builds, the forge t names.
@@ -691,8 +704,6 @@ func resolveTarget(ctx context.Context, w io.Writer, projectRoot string, t deleg
 // named when it reports the pin (nothing to download or build); otherwise the
 // `go run` form, which fetches and builds the pin into Go's cache.
 func pinnedRunLine(projectRoot, pin string, args []string) string {
-	// The pinned forge may predate the 14 nouns (deprecated_aliases.go).
-	args, _ = legacyArgs(args)
 	if local, ok := pinDelegateResolver(io.Discard).LocalPinned(context.Background(), projectRoot, pin); ok {
 		if abs, err := filepath.Abs(local); err == nil {
 			local = abs

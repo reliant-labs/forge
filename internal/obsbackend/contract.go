@@ -3,6 +3,8 @@ package obsbackend
 import (
 	"context"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // Backend is what a `forge obs` verb reads telemetry through. The local
@@ -62,6 +64,14 @@ type UserActivityReader interface {
 	UserActivity(ctx context.Context, req UserActivityRequest) (UserActivityResult, error)
 }
 
+// TelemetryArrivalReader reads whether the systems an env declares
+// forge.Telemetry for are reaching the store: per signal the newest row, per
+// scraped endpoint the newest result (`forge obs telemetry`). Only the local
+// backend implements it.
+type TelemetryArrivalReader interface {
+	TelemetryArrival(ctx context.Context, req TelemetryArrivalRequest) (TelemetryArrivalResult, error)
+}
+
 // HealthReader judges a release: the windows before and after a promotion,
 // per service, and what the release opened (`forge obs check`). The local
 // backend judges from the ClickStack with pkg/releasehealth; the cloud
@@ -88,6 +98,16 @@ type ChangesReader interface {
 //forge:contract
 type OverviewReader interface {
 	Overview(ctx context.Context, req OverviewRequest) (OverviewResult, error)
+}
+
+// OpsReader ranks the env's ops — rpcs, endpoints and component methods —
+// by RED figures (`forge obs ops`), and reads them for named ops over any
+// window (release health, blast radius). Both backends implement it with the
+// same pkg/obsquery panels; the cloud one runs them through QueryPanel.
+//
+//forge:contract
+type OpsReader interface {
+	Ops(ctx context.Context, req OpsRequest) (OpsResult, error)
 }
 
 // AlertReader lists the env's active alerts, firing or pending. Only the
@@ -119,6 +139,35 @@ type DeliveryReader interface {
 	TelemetryDeliveries(ctx context.Context) (DeliveriesResult, error)
 }
 
+// PromotionGateReader reads every gate recorded on a promotion, the
+// pre-promote ones and those appended after it: what says when an attempt of
+// it shipped (`forge obs check`, releasehealth.LiveAt). Only the cloud backend
+// implements it: a local env has no promotions.
+//
+//forge:contract
+type PromotionGateReader interface {
+	PromotionGates(ctx context.Context, promotionID string) ([]release.Gate, error)
+}
+
+// WorkloadReader reads the env's per-workload restarts, crash loops, last
+// termination reasons and failing jobs (`forge obs workloads`). Only the cloud
+// backend implements it: a local stack's workloads are host processes or a
+// cluster the user already has kubectl for.
+//
+//forge:contract
+type WorkloadReader interface {
+	Workloads(ctx context.Context, n Narrow) (WorkloadsResult, error)
+}
+
+// TraceExtentReader reads when one trace ran, from its spans: the range
+// `forge obs logs --trace` reads when none was named. Both backends implement
+// it.
+//
+//forge:contract
+type TraceExtentReader interface {
+	TraceExtent(ctx context.Context, req TraceRequest) (TraceExtent, error)
+}
+
 // DashboardReader replays the console's dashboards: the index it lists for an
 // env, a dashboard's spec, and one panel run the way the console runs it, read
 // back as counts (`forge obs dashboards audit`). Only the cloud backend
@@ -129,4 +178,14 @@ type DashboardReader interface {
 	ListDashboards(ctx context.Context, project string) ([]DashboardInfo, error)
 	GetDashboard(ctx context.Context, ref DashboardRef) (DashboardDocument, error)
 	QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (PanelReadout, error)
+}
+
+// PGOExporter reads an env's merged CPU profile in the shape `go build -pgo`
+// takes: what `forge pgo pull` fetches from the control plane. Only the cloud
+// backend implements it; a ClickStack's profiles are read through
+// pkg/profilequery instead.
+//
+//forge:contract
+type PGOExporter interface {
+	ExportPGOProfile(ctx context.Context, req ExportPGORequest) (ExportPGOResult, error)
 }

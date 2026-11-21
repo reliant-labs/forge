@@ -20,6 +20,8 @@ const chainMeterScope = "github.com/reliant-labs/forge/pkg/observe"
 // degrades the corresponding interceptor (slog.Default for the logger,
 // pass-through interceptors for tracer/meter), so projects that haven't
 // configured OTel can still use the helper.
+//
+// connect-go v2 projects use DefaultMiddlewareDepsV2.
 type DefaultMiddlewareDeps struct {
 	// Logger is the slog.Logger used by RecoveryInterceptor and
 	// LoggingInterceptor. nil falls back to slog.Default.
@@ -113,6 +115,8 @@ type DefaultMiddlewareDeps struct {
 // nil tracer / nil meter degrade to pass-through interceptors. nil
 // logger falls back to slog.Default. This makes DefaultMiddlewares
 // safe to wire from a test harness that doesn't configure OTel.
+//
+// connect-go v2 projects use DefaultMiddlewaresV2.
 func DefaultMiddlewares(deps DefaultMiddlewareDeps) []connect.Interceptor {
 	chain := []connect.Interceptor{
 		RecoveryInterceptor(deps.Logger),
@@ -147,6 +151,8 @@ func DefaultMiddlewares(deps DefaultMiddlewareDeps) []connect.Interceptor {
 // middleware.RateLimitInterceptor for RateLimit. Passing the constructed
 // VALUE (not a setter) is the whole point: the wiring is visible at the
 // call site and testable without globals.
+//
+// connect-go v2 projects use DepsV2.
 type Deps struct {
 	// Logger feeds RecoveryInterceptor and LoggingInterceptor. nil falls
 	// back to slog.Default — same degradation as DefaultMiddlewareDeps.
@@ -301,6 +307,8 @@ type Deps struct {
 // stable length via no-op interceptors) — except Deadline, whose nil is
 // forge's default budget. A worker process passing all-nil application
 // collaborators gets the observability chain plus that budget.
+//
+// connect-go v2 projects use ChainV2.
 func Chain(deps Deps) []connect.Interceptor {
 	var chain []connect.Interceptor
 	if deps.Trace != nil {

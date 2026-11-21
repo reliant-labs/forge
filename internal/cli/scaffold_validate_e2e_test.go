@@ -47,9 +47,10 @@ import (
 func TestE2EValidateConstraintsProjection(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
-	// `project new dashapp --service catalog --frontend dashboard`, shared
-	// with the other tests that start there (shared_project_e2e_test.go).
-	projectDir := newProjectFromSharedE2E(t, forgeBin, dashboardCatalogProjectE2E)
+	// `project new dashapp --service catalog --frontend dashboard --connect
+	// v1` (shared_project_e2e_test.go): the wire check below drives the v1
+	// interceptor and asserts the v1 chain.
+	projectDir := newProjectFromSharedE2E(t, forgeBin, dashboardCatalogV1ProjectE2E)
 
 	// Author the marked entity with the full protovalidate subset. The
 	// validate.proto import is inserted after the syntax line; forge
@@ -118,7 +119,7 @@ message Widget {
 		`quantity: z.coerce.number().gte(0, "Must be 0 or more"),`,
 		`name: z.string().min(2, "Must be at least 2 characters").max(64, "Must be at most 64 characters"),`,
 		`sku: z.string().regex(new RegExp("^SKU-[0-9]+$"), "Not in the expected format"),`,
-		`email: z.string().email("Enter a valid email address"),`,
+		`email: z.string().pipe(z.email("Enter a valid email address")),`,
 		`code: z.string().min(1, "Required"),`,
 		`currency: z.string().min(3, "Must be at least 3 characters").max(3, "Must be at most 3 characters"),`,
 	} {

@@ -164,18 +164,29 @@ type Retiring struct {
 	DeleteAfter time.Time
 }
 
-// SignInCodeLifetime is how long a minted sign-in code stays redeemable:
-// Zitadel's default PasswordVerificationCode expiry (cmd/defaults.yaml,
+// SignInCodeLifetime is how long a minted sign-in code stays redeemable on
+// an instance whose Spec declares no CodeLifetime: Zitadel's default
+// PasswordVerificationCode expiry (cmd/defaults.yaml,
 // SecretGenerators.PasswordVerificationCode.Expiry). An instance configured
 // otherwise makes SignInCode.ExpiresAt an estimate.
-const SignInCodeLifetime = time.Hour
+const SignInCodeLifetime = DefaultCodeLifetime
+
+// codeLifetime is how long a password-set code this spec's instance mints
+// stays redeemable.
+func (s Spec) codeLifetime() time.Duration {
+	if s.CodeLifetime > 0 {
+		return s.CodeLifetime
+	}
+	return SignInCodeLifetime
+}
 
 // SignInCode is a one-time code that lets a credential-less member set a first
 // password. It is single-use and short-lived; treat it as a secret.
 type SignInCode struct {
 	Email string
 	Code  string
-	// ExpiresAt is Options.Now at minting plus SignInCodeLifetime.
+	// ExpiresAt is Options.Now at minting plus the spec's CodeLifetime
+	// (SignInCodeLifetime when it declares none).
 	ExpiresAt time.Time
 }
 
@@ -236,6 +247,11 @@ type run struct {
 	machine       map[string]MachineOutput
 	apps          map[string]AppOutput
 	idpIDs        map[string]string // identity provider name -> Zitadel id
+	// codeLifetimeErr is why the password-reset code generator could not be
+	// converged to Spec.CodeLifetime this pass. While it is set no
+	// password-set code is minted: its real expiry is unknown, so the
+	// ExpiresAt reported beside it would be wrong.
+	codeLifetimeErr error
 }
 
 func (p *run) dry() bool { return p.o.DryRun }
@@ -335,6 +351,7 @@ func (r *Reconciler) reconcile(ctx context.Context, spec Spec, force []RotateTar
 	}
 	step(p.ensureRoles)
 	step(p.ensurePolicies)
+	step(p.ensurePasswordCodeGenerator)
 	step(p.ensureMail)
 	// IdPs follow the login policy: linking one into it needs the policy.
 	step(p.ensureIdPs)

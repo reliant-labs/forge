@@ -106,6 +106,12 @@ type Capacity struct {
 	// `forge slot status`.
 	Source  string
 	Machine Machine
+	// Express is how many of the Slots are reserved for the express lane:
+	// bulk holders lock only indices [0, Slots-Express). ExpressSlotsEnv
+	// overrides it; the default is DefaultExpressSlots(Slots).
+	Express int
+	// ExpressSource says where Express came from.
+	ExpressSource string
 }
 
 // SlotsEnv is the variable that overrides a class's slot count:
@@ -138,7 +144,24 @@ func CapacityFor(class string, env []string) (Capacity, error) {
 		}
 		c.Slots, c.Source = n, name+"="+v
 	}
+	if err := c.resolveExpress(env); err != nil {
+		return Capacity{}, err
+	}
 	return c, nil
+}
+
+// resolveExpress sets Express from env for the current Slots.
+func (c *Capacity) resolveExpress(env []string) error {
+	if c.Unlimited {
+		c.Express, c.ExpressSource = 0, ""
+		return nil
+	}
+	r, src, err := expressFor(c.Class, c.Slots, env)
+	if err != nil {
+		return err
+	}
+	c.Express, c.ExpressSource = r, src
+	return nil
 }
 
 func (c Capacity) defaultSource() string {

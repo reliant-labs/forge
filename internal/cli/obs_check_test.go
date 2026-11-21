@@ -19,6 +19,7 @@ import (
 	"github.com/reliant-labs/forge/internal/obsbackend"
 	"github.com/reliant-labs/forge/pkg/obsquery"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/releasehealth"
 )
 
 const procHealth = "controlplane.v1.ObservabilityService/GetReleaseHealth"
@@ -95,6 +96,12 @@ type obsCheckHarness struct {
 	sleeps int
 	slept  []time.Duration
 	ledger obsbackend.LedgerReader
+	// opChanges is the changed-op source; nil reads none (no git in a
+	// test), so a check judges no changed ops unless the test says.
+	opChanges opChangeFunc
+	// wrapLocal replaces the local backend, to give it another OpsReader
+	// or none (obs_check_changed_ops_test.go).
+	wrapLocal func(obsbackend.Local) obsbackend.Backend
 }
 
 func (e *obsCheckHarness) run(t *testing.T, facts obsbackend.Facts, caller obsbackend.Caller, local obsbackend.Runner, args ...string) (string, string, error) {
@@ -112,12 +119,20 @@ func (e *obsCheckHarness) run(t *testing.T, facts obsbackend.Facts, caller obsba
 	obsDepsOverride = &obsDeps{
 		Facts: func(context.Context, io.Writer, string) (obsbackend.Facts, error) { return facts, nil },
 		Local: func(env string) obsbackend.Backend {
-			return obsbackend.Local{Env: env, Runner: local, Ledger: func() (obsbackend.LedgerReader, error) { return e.ledger, nil }}
+			l := obsbackend.Local{Env: env, Runner: local, Ledger: func() (obsbackend.LedgerReader, error) { return e.ledger, nil }}
+			if e.wrapLocal != nil {
+				return e.wrapLocal(l)
+			}
+			return l
 		},
 		Cloud: func(_ context.Context, env string) (obsbackend.Cloud, error) {
 			return obsbackend.Cloud{Env: env, EnvID: "env-prod", OrgID: "org-1", Caller: caller}, nil
 		},
-		Now: func() time.Time { return e.now },
+		Now:       func() time.Time { return e.now },
+		OpChanges: e.opChanges,
+	}
+	if e.opChanges == nil {
+		obsDepsOverride.OpChanges = func(context.Context, string, releasehealth.Subject) opChanges { return opChanges{} }
 	}
 	cmd := newTestRootCmd(t)
 	cmd.SetOut(&out)
@@ -947,6 +962,90 @@ func TestObsCheckAlertThatFlappedBeforeThePromotionDoesNotFail(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			doc, stderr, _, err := run(t, tc.history, tc.errs, tc.args...)
 			if exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" || doc["baseline_alerts"] != nil {
+				t.Errorf("exit = %d (%v), doc = %v; want FAIL", exitCodeForError(err), err, doc)
+			}
+			if !strings.Contains(stderr, tc.stderr) {
+				t.Errorf("stderr = %q, want %q", stderr, tc.stderr)
+			}
+		})
+	}
+}
+
+// control-plane v1.23.0-rc.9 (2026-11-19): prod's check exited 1 on one
+// alert_firing finding, IssueSpike for an issue first seen 3.5h before the
+// promotion in the previous build and firing at the same rate under the
+// release; the IssueSpike instance first fired after the promotion, so the
+// history had nothing to discount. The check reads the issue the alert names,
+// its events by version from the baseline window's start to the after
+// window's end, and holds the answer to the pre-existing-alert rule: the
+// finding warns, the alert is listed in pre_existing_alerts, and the check
+// passes. The same issue firing 3x as often, or an issue it cannot read,
+// still fails.
+func TestObsCheckAlertOnAPreExistingIssueDoesNotFail(t *testing.T) {
+	const spike = `{"rule":"IssueSpike","fingerprint":"s1","firingAt":"2026-10-22T11:45:00Z","labels":{"severity":"warning","issue_id":"7f55","first_build":"v1","service":"workspace-controller"}}`
+	const finding = `{"code":"RELEASE_FINDING_CODE_ALERT_FIRING","value":1,"threshold":1,"policy":"fail","message":"alert IssueSpike opened after the promotion and is still firing"}`
+	reply := strings.Replace(healthReply("RELEASE_VERDICT_FAIL", true, finding, ""), `"verdict"`, `"firingAlerts":[`+spike+`],"verdict"`, 1)
+	// ~30 an hour on v1 since 08:00, and ~23 on v2 after the 11:40
+	// promotion. The issue is read twice: the after window first, then the
+	// baseline's whole hours before the promotion.
+	const header = `{"issue":{"id":"7f55","service":"workspace-controller","firstSeenAt":"2026-10-22T08:00:00Z","firstVersion":"v1"},"byVersion":[`
+	before := header + `{"version":"v1","events":"90","firstSeenAt":"2026-10-22T08:00:00Z","lastSeenAt":"2026-10-22T10:59:00Z"}]}`
+	issue := func(v2Events int, v2Last string) []string {
+		return []string{fmt.Sprintf(header+
+			`{"version":"v1","events":"12","firstSeenAt":"2026-10-22T11:00:00Z","lastSeenAt":"2026-10-22T11:42:00Z"},`+
+			`{"version":"v2","events":"%d","firstSeenAt":"2026-10-22T11:41:00Z","lastSeenAt":"%s"}]}`, v2Events, v2Last), before}
+	}
+	run := func(t *testing.T, issueReplies []string, errs map[string]error) (map[string]any, string, *seqCaller, error) {
+		t.Helper()
+		caller := &seqCaller{replies: map[string][]string{procHealth: {reply}, procGetIssueCheck: issueReplies}, errs: errs}
+		out, stderr, err := newObsCheckHarness().run(t, cloudFacts(), caller, nil, "check", "prod", "--json")
+		return decode(t, out), stderr, caller, err
+	}
+
+	doc, _, caller, err := run(t, issue(6, "2026-10-22T11:54:00Z"), nil)
+	if err != nil {
+		t.Fatalf("exit = %d (%v), want 0; doc = %v", exitCodeForError(err), err, doc)
+	}
+	fs, _ := doc["findings"].([]any)
+	if doc["verdict"] != "PASS" || len(fs) != 1 || doc["firing_alerts"] != nil {
+		t.Fatalf("doc = %v", doc)
+	}
+	if f := fs[0].(map[string]any); f["policy"] != "warn" || f["pre_existing"] != true ||
+		!strings.Contains(fmt.Sprint(f["unattributed"]), "pre-existing alert (first seen v1, rate unchanged)") {
+		t.Errorf("finding = %v, want a pre-existing warn", f)
+	}
+	if pa, _ := doc["pre_existing_alerts"].([]any); len(pa) != 1 || pa[0].(map[string]any)["issue"].(map[string]any)["id"] != "7f55" {
+		t.Errorf("pre_existing_alerts = %v", doc["pre_existing_alerts"])
+	}
+	var bodies []string
+	for _, c := range caller.calls {
+		if c.procedure == procGetIssueCheck {
+			bodies = append(bodies, c.body)
+		}
+	}
+	// The after window from the promotion to its end, then the baseline's
+	// whole hours: from the first hour inside the 24h before 11:40 to the
+	// hour holding the promotion, which the rollout shares.
+	if len(bodies) != 2 || !strings.Contains(bodies[0], `"issueId":"7f55"`) ||
+		!strings.Contains(bodies[0], `"start":"2026-10-22T11:40:00Z"`) || !strings.Contains(bodies[0], `"end":"2026-10-22T11:55:00Z"`) ||
+		!strings.Contains(bodies[1], `"start":"2026-10-21T12:00:00Z"`) || !strings.Contains(bodies[1], `"end":"2026-10-22T11:00:00Z"`) {
+		t.Errorf("GetIssue requests = %v", bodies)
+	}
+
+	for name, tc := range map[string]struct {
+		issue  []string
+		errs   map[string]error
+		stderr string
+	}{
+		"the issue fires 3x as often": {issue: issue(18, "2026-10-22T11:54:00Z")},
+		// The hour the after window ends in, counted past its end: the
+		// window's own events cannot be told from the later ones.
+		"the release's events reach past the after window": {issue: issue(9, "2026-10-22T12:30:00Z")},
+		"the issue unreadable":                             {issue: issue(6, "2026-10-22T11:54:00Z"), errs: map[string]error{procGetIssueCheck: errors.New("permission denied")}, stderr: "could not read issue 7f55, so the alert that names it counts"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, stderr, _, err := run(t, tc.issue, tc.errs)
+			if exitCodeForError(err) != exitWrong || doc["verdict"] != "FAIL" || doc["pre_existing_alerts"] != nil {
 				t.Errorf("exit = %d (%v), doc = %v; want FAIL", exitCodeForError(err), err, doc)
 			}
 			if !strings.Contains(stderr, tc.stderr) {

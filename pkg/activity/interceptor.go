@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	connectv2 "connectrpc.com/connect/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -100,7 +101,16 @@ type Deps struct {
 	Writer Writer
 	// ViaFrom names the channel a request came through. nil is
 	// [DefaultVia].
+	//
+	// It is read by the connect-go v1 [Interceptor] only; the v2
+	// [InterceptorV2] reads ViaFromV2. Each constructor refuses Deps that set
+	// only the other major's hook, because falling back to the default would
+	// record the wrong channel without saying so.
 	ViaFrom func(ctx context.Context, req connect.AnyRequest) string
+	// ViaFromV2 is ViaFrom for [InterceptorV2]: it receives the call's
+	// CallInfo (request headers, peer, Spec), never nil. nil is
+	// [DefaultViaV2].
+	ViaFromV2 func(ctx context.Context, info *connectv2.CallInfo) string
 	// Logger reports failed writes and malformed declarations. nil is
 	// slog.Default().
 	Logger *slog.Logger
@@ -118,7 +128,13 @@ func DefaultVia(_ context.Context, req connect.AnyRequest) string {
 }
 
 func viaFromHeader(h http.Header) string {
-	v := strings.ToLower(strings.TrimSpace(h.Get(ViaHeader)))
+	return viaFromValue(h.Get(ViaHeader))
+}
+
+// viaFromValue normalizes a Forge-Via header value: lowercased, a short
+// token, or "api".
+func viaFromValue(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
 	if v == "" || len(v) > 32 || !viaRE(v) {
 		return ViaAPI
 	}
@@ -146,9 +162,25 @@ func viaRE(v string) bool {
 // best-effort: a write failure is logged and counted and the RPC still
 // succeeds. A failed call writes nothing. An rpc declaring nothing, or
 // `none`, passes straight through.
+//
+// connect-go v2 projects use [InterceptorV2].
 func Interceptor(deps Deps) (connect.Interceptor, error) {
+	if deps.ViaFrom == nil && deps.ViaFromV2 != nil {
+		return nil, errors.New("activity.Interceptor: Deps.ViaFromV2 is set but Deps.ViaFrom is not — " +
+			"this is the connect-go v1 interceptor, which reads ViaFrom; set ViaFrom too, or build a v2 chain with activity.InterceptorV2")
+	}
+	ic, err := newInterceptor(deps, "activity.Interceptor")
+	if err != nil {
+		return nil, err
+	}
+	return ic, nil
+}
+
+// newInterceptor checks and defaults deps for the constructor named ctor.
+// Both connect majors' constructors share it.
+func newInterceptor(deps Deps, ctor string) (*interceptor, error) {
 	if deps.Principal == nil {
-		return nil, errors.New("activity.Interceptor: Deps.Principal is required — it names who is calling. " +
+		return nil, errors.New(ctor + ": Deps.Principal is required — it names who is calling. " +
 			"An app on forge/pkg/authn passes activity.ClaimsPrincipal(authn.ClaimsFromContext); " +
 			"an app whose auth keeps the caller its own way implements activity.Principal over it")
 	}
@@ -160,6 +192,9 @@ func Interceptor(deps Deps) (connect.Interceptor, error) {
 	}
 	if deps.ViaFrom == nil {
 		deps.ViaFrom = DefaultVia
+	}
+	if deps.ViaFromV2 == nil {
+		deps.ViaFromV2 = DefaultViaV2
 	}
 	if deps.WriteTimeout <= 0 {
 		deps.WriteTimeout = DefaultWriteTimeout
@@ -188,16 +223,16 @@ type resolution struct {
 	once sync.Once // logs err once
 }
 
-func (i *interceptor) resolve(spec connect.Spec) *resolution {
-	if r, ok := i.decls.Load(spec.Procedure); ok {
+func (i *interceptor) resolve(procedure string, schema any) *resolution {
+	if r, ok := i.decls.Load(procedure); ok {
 		return r.(*resolution)
 	}
 	r := &resolution{}
-	md, ok := spec.Schema.(protoreflect.MethodDescriptor)
+	md, ok := schema.(protoreflect.MethodDescriptor)
 	if ok {
 		r.decl, r.err = Resolve(md)
 	}
-	actual, _ := i.decls.LoadOrStore(spec.Procedure, r)
+	actual, _ := i.decls.LoadOrStore(procedure, r)
 	return actual.(*resolution)
 }
 
@@ -206,11 +241,17 @@ func (i *interceptor) active(spec connect.Spec) *Declaration {
 	if spec.IsClient {
 		return nil
 	}
-	r := i.resolve(spec)
+	return i.activeFor(spec.Procedure, spec.Schema)
+}
+
+// activeFor is active for a server call of procedure, whose Spec carries
+// schema: the part both connect majors share.
+func (i *interceptor) activeFor(procedure string, schema any) *Declaration {
+	r := i.resolve(procedure, schema)
 	if r.err != nil {
 		r.once.Do(func() {
 			i.deps.Logger.Error("activity: malformed declaration; no events are recorded for this rpc (forge lint names the fix)",
-				"procedure", spec.Procedure, "error", r.err)
+				"procedure", procedure, "error", r.err)
 		})
 		return nil
 	}

@@ -1,3 +1,10 @@
+// The tag keeps this file out of a plain `go test` of the fixture directory:
+// it needs mock_gen.go and middleware_gen.go, which exist only in the sandbox
+// TestGenerate_ParamsNamedLikeBodyIdentifiers generates them into, and that
+// test builds it with -tags identcollision.
+
+//go:build identcollision
+
 package identcollision
 
 import (
@@ -31,19 +38,22 @@ func TestEveryArgumentReachesTheMock(t *testing.T) {
 	_, _, _ = svc.Named(ctx, "m")
 	svc.Fire(7, 8)
 	_, _ = svc.Pair(9, "r0")
+	res := &Result{N: 1}
+	_ = svc.Capture(ctx, "ord_1", "note", 10, 1.5, true, at, time.Second, []string{"t"}, map[string]int{"k": 1}, res, Status(2), 11, "r", "x", "y")
 
 	for method, want := range map[string][]any{
-		"Apply":  {"m", 1},
-		"Lookup": {"o", 2, true, "err", "context"},
-		"Report": {boom},
-		"Wait":   {3 * time.Second},
-		"Stamp":  {"new", 4, "error"},
-		"Fetch":  {"Result"},
-		"Trace":  {"ctx", at, "span", 5, 6, true},
-		"Mixed":  {"p0"},
-		"Named":  {"m"},
-		"Fire":   {7, 8},
-		"Pair":   {9, "r0"},
+		"Apply":   {"m", 1},
+		"Lookup":  {"o", 2, true, "err", "context"},
+		"Report":  {boom},
+		"Wait":    {3 * time.Second},
+		"Stamp":   {"new", 4, "error"},
+		"Fetch":   {"Result"},
+		"Trace":   {"ctx", at, "span", 5, 6, true},
+		"Mixed":   {"p0"},
+		"Named":   {"m"},
+		"Fire":    {7, 8},
+		"Pair":    {9, "r0"},
+		"Capture": {"ord_1", "note", uint(10), 1.5, true, at, time.Second, []string{"t"}, map[string]int{"k": 1}, res, Status(2), 11, "r", []string{"x", "y"}},
 	} {
 		calls := mock.Calls(method)
 		if len(calls) != 1 {

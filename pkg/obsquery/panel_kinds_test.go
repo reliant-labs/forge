@@ -305,3 +305,77 @@ func TestSQLPanelBindsToggles(t *testing.T) {
 		}
 	}
 }
+
+// A dashboard's filter params reach a sql panel as typed String parameters
+// named by their ids, their values escaped for ClickHouse's text format and
+// never spliced into the statement. One the statement reads that the scope
+// does not set is bound to the empty string, so a caller that knows nothing of
+// filters runs the panel unfiltered.
+func TestSQLPanelBindsFilterParams(t *testing.T) {
+	const sql = "SELECT count() FROM product_events WHERE ({f_route:String} = '' OR Props['route'] = {f_route:String})" +
+		" AND ({ f_country : String } = '' OR Country = {f_country:String}) AND '{f_quoted:String}' != ''"
+	sc := Scope{Database: "t_org_a", Start: time.Unix(1700000000, 0), End: time.Unix(1700003600, 0)}
+	compile := func(sc Scope, sql string) (Stmt, error) {
+		return SQLPanel{Scope: sc, SQL: sql, StepSeconds: 30}.Compile()
+	}
+
+	st, err := compile(sc, sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := st.Params["f_route"]; !ok || v != "" {
+		t.Errorf("an unset f_route = %q, %v; want the empty string", v, ok)
+	}
+	if v, ok := st.Params["f_country"]; !ok || v != "" {
+		t.Errorf("an unset f_country = %q, %v; want the empty string", v, ok)
+	}
+	if _, ok := st.Params["f_quoted"]; ok {
+		t.Error("a parameter inside a string literal was bound")
+	}
+
+	sc.FilterParams = map[string]string{"f_route": `/it's\here`, "f_unused": "x"}
+	st, err = compile(sc, sql)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.SQL != sql {
+		t.Errorf("the statement changed:\n%s", st.SQL)
+	}
+	if got := st.Params["f_route"]; got != `/it\'s\\here` {
+		t.Errorf("f_route = %q, want it escaped for the text format", got)
+	}
+	if st.Params["f_country"] != "" || st.Params["f_unused"] != "x" {
+		t.Errorf("params %v", st.Params)
+	}
+
+	for name, c := range map[string]struct {
+		set  map[string]string
+		sql  string
+		want string
+	}{
+		"not-a-param-name":  {map[string]string{"route": "/"}, sql, "must match"},
+		"upper-case":        {map[string]string{"f_Route": "/"}, sql, "must match"},
+		"control-character": {map[string]string{"f_route": "/\n"}, sql, "control characters"},
+		"too-long":          {map[string]string{"f_route": strings.Repeat("a", 513)}, sql, "at most"},
+		"not-utf8":          {map[string]string{"f_route": "\xff"}, sql, "UTF-8"},
+		"read-as-array":     {nil, "SELECT count() FROM t WHERE has({f_route:Array(String)}, x)", "a filter param is a String"},
+	} {
+		sc := sc
+		sc.FilterParams = c.set
+		if _, err := compile(sc, c.sql); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want %q", name, err, c.want)
+		}
+	}
+	// A toggle and a filter param are one parameter namespace.
+	sc.FilterParams = map[string]string{"f_route": "/"}
+	sc.Toggles = map[string]bool{"f_route": true}
+	if _, err := compile(sc, sql); err == nil || !strings.Contains(err.Error(), "shadows") {
+		t.Errorf("a filter param named like a toggle: err = %v", err)
+	}
+	// A toggle that predates filter params and has an f_ id stays a Bool.
+	sc.FilterParams, sc.Toggles = nil, map[string]bool{"f_internal": true}
+	st, err = compile(sc, "SELECT count() FROM product_events WHERE {f_internal:Bool}")
+	if err != nil || st.Params["f_internal"] != "true" {
+		t.Errorf("a toggle named f_internal: params %v, err %v", st.Params, err)
+	}
+}

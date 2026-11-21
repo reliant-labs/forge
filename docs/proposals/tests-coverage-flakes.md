@@ -1391,6 +1391,23 @@ worker):
 | **Flake events and states** | 400 days. Rows only, about 100 bytes each, which is what scores and history read                                                                                                                                |
 | **Raw uploads**             | Deleted once ingest succeeds. The normalised documents are the record                                                                                                                                           |
 
+**Which rule governs a report.** A report is immutable and keyed by its
+commit, not by the branch it was uploaded under. It is never copied, moved or
+duplicated; only the rule that governs it changes.
+
+- A commit is governed by the default-branch rule as soon as it is reachable
+  from the default branch. The control plane learns that from the GitHub
+  connection (a push to the default branch, a merged PR), or from a
+  default-branch upload that names the commit. Its report then counts toward
+  the newest 50 like any other default-branch report.
+- The other-branch rule only ever deletes reports of commits that are **not**
+  reachable from the default branch.
+- A merge commit or a fast-forward makes the branch's head reachable, so its
+  report passes to the default-branch rule. A squash or rebase merge creates a
+  new commit, which gets its own report from the default branch's CI. The
+  branch's report of the pre-merge commit stays unreachable and is deleted a
+  day after the merge, under the branch rule.
+
 **Knobs.** There is one, `tests.retention.default_branch_reports` (default
 50), and a project may only lower it. Every other number is a constant: no
 free/paid split, no per-plan block in `pricing.yaml`, no separate Tests

@@ -520,8 +520,9 @@ func checkDBQueryPolicy(o dbQueryOptions, policy string) error {
 // reads as the read-only role, which the generated grants keep them from.
 // The migrator creates that role NOLOGIN wherever it may (pkg/migratekit), so
 // on a scratch env forge switches the session to it with SET ROLE. A database
-// without the role, or an app role that may not assume it, reads as before,
-// and says so. --app-role keeps the app's role on purpose. Only a scratch env:
+// without the role or its grants reads as before, and says so; an app role
+// that may not assume a granted role is refused (fail closed), never read as
+// itself. --app-role keeps the app's role on purpose. Only a scratch env:
 // a real env read through a DATABASE_URL is checkDBQueryRole's to judge.
 func readAsReadOnlyRole(ctx context.Context, conn *pgx.Conn, o dbQueryOptions, t dbQueryTarget, errOut io.Writer) error {
 	if o.appRole || !t.scratch || t.scope.Transport != "direct" {
@@ -544,8 +545,13 @@ func readAsReadOnlyRole(ctx context.Context, conn *pgx.Conn, o dbQueryOptions, t
 		if ctx.Err() != nil {
 			return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("switching to %s: %v", dbgrants.RoleName, err)}
 		}
-		fmt.Fprintf(errOut, "note: reading %s as the app's role %q, not %s (%v): forge:secret columns are readable here\n",
-			o.env, conn.Config().User, dbgrants.RoleName, firstLine(err.Error()))
+		// The role exists and holds this database's grants, so the read is
+		// meant to be restricted: reading as the app's role instead would
+		// expose forge:secret columns while appearing to hide them. Fail
+		// closed; --app-role is how to read as the app's role on purpose.
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s reads as %s, whose grants are applied here, but the app's role %q may not assume it (%s): forge did not fall back to %q, which can read forge:secret columns. Grant it (GRANT %s TO %s), or pass --app-role to read as %q on purpose",
+			o.env, dbgrants.RoleName, conn.Config().User, firstLine(err.Error()), conn.Config().User,
+			pgx.Identifier{dbgrants.RoleName}.Sanitize(), pgx.Identifier{conn.Config().User}.Sanitize(), conn.Config().User)}
 	}
 	return nil
 }

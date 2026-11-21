@@ -180,7 +180,7 @@ func TestReleaseRecordSBOM_FlagMistakesRefuseTheRecord(t *testing.T) {
 		"unknown workload": {recordSBOMOptions{specs: []string{"apii=" + cdx}}, `workload "apii", which this record does not: it names api, web`},
 		"twice":            {recordSBOMOptions{specs: []string{"api=" + cdx, "api=" + cdx}}, "twice"},
 		"no path":          {recordSBOMOptions{specs: []string{"api"}}, "<workload>=<path>"},
-		"missing file":     {recordSBOMOptions{specs: []string{"api=" + cdx + ".nope"}}, "no such file"},
+		"missing file":     {recordSBOMOptions{specs: []string{"api=" + cdx + ".nope"}}, "api.cdx.json.nope"}, // the OS words the not-found error itself
 		"not an SBOM":      {recordSBOMOptions{specs: []string{"api=" + notSBOM}}, "not an SBOM forge can record"},
 		"no-sbom and sbom": {recordSBOMOptions{noSBOM: true, specs: []string{"api=" + cdx}}, "cannot be combined"},
 		"source w/ images": {recordSBOMOptions{source: t.TempDir()}, "version-only"},

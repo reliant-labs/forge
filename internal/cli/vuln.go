@@ -135,6 +135,7 @@ these verbs read this machine's ledger only, and say so for such an env.`,
 	cmd.AddCommand(newVulnSBOMCmd(deps))
 	cmd.AddCommand(newVulnDBCmd(deps))
 	cmd.AddCommand(newVulnExemptCmd(deps))
+	cmd.AddCommand(newVulnPatchCmd(deps))
 	return cmdutil.StrictGroup(cmd)
 }
 

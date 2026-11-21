@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/testhost"
 )
 
 // The scaffolded contract_test.go tells every user, verbatim, that a
@@ -135,21 +136,6 @@ func skipTypeCheckUnderShort(t *testing.T) {
 	}
 }
 
-// isProxyOutage reports a go build that failed reading from the module proxy
-// over the network (a stream error, a timeout, a reset): the host lacks the
-// proxy, not the generated mock. A 404 from the proxy is a real failure.
-func isProxyOutage(out string) bool {
-	if !strings.Contains(out, "proxy.golang.org") {
-		return false
-	}
-	for _, sig := range []string{"stream error", "i/o timeout", "connection reset", "unexpected EOF", "TLS handshake timeout", "no such host", "503 Service Unavailable", "502 Bad Gateway"} {
-		if strings.Contains(out, sig) {
-			return true
-		}
-	}
-	return false
-}
-
 // buildDepsProject compiles the whole throwaway project, which is the
 // assertion that actually matters: a mock for a foreign interface has to
 // re-qualify every type in the method signatures (*Estimate is *db.Estimate
@@ -164,9 +150,7 @@ func buildDepsProject(t *testing.T, root string) {
 	cmd.Dir = root
 	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod"))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		if isProxyOutage(string(out)) {
-			t.Skipf("the Go module proxy is unreachable from the sandbox build:\n%s", out)
-		}
+		testhost.SkipIfModuleDownloadFailed(t, out)
 		mock, _ := os.ReadFile(filepath.Join(root, "internal", "pipeline", "mock_gen.go"))
 		t.Fatalf("go build of generated mock failed: %v\n%s\n---- mock_gen.go ----\n%s", err, out, mock)
 	}

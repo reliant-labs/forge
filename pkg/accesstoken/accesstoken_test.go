@@ -534,7 +534,9 @@ func TestTestsScopes_AreTheirOwnAuthority(t *testing.T) {
 		t.Error("tests:write must not read or mint tests:read: a PR's upload token must not read every run's failure output")
 	}
 
-	now := time.Now()
+	// A fixed instant, not the wall clock: no grant here expires, so the
+	// verdicts must not depend on when the test runs.
+	now := time.Date(2026, time.November, 21, 12, 0, 0, 0, time.UTC)
 	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
 	for _, s := range tests {
 		org := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s)}

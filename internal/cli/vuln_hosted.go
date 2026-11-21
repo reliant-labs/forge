@@ -21,7 +21,9 @@ import (
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/sbomoci"
 	"github.com/reliant-labs/forge/internal/vulnscan"
+	"github.com/reliant-labs/forge/pkg/release"
 )
 
 // hostedVulnClient is the client of env's control plane, with the credential
@@ -283,19 +285,78 @@ func hostedVulnSBOM(ctx context.Context, deps vulnDeps, env vulnEnv, opts vulnSB
 		return nil, undeterminedf("open this machine's ledger: %v", err)
 	}
 	data, err := store.GetSBOM(a.SBOMDigest)
-	if err != nil {
-		if errors.Is(err, ledgerfile.ErrSBOMNotFound) {
-			where := ""
-			if a.Referrer != "" {
-				where = " Its OCI referrer is " + a.Referrer + "."
-			}
-			return nil, undeterminedf("the control plane records SBOM %s for %s in release %s, and this machine's ledger has no copy: "+
-				"the release was cut on another machine.%s Reading it from there is not in this forge yet", a.SBOMDigest, name, version, where)
-		}
-		if errors.Is(err, ledgerfile.ErrSBOMCorrupt) {
-			return nil, undeterminedf("the SBOM of %s in release %s: %v", name, version, err)
-		}
+	if err == nil {
+		return data, nil
+	}
+	if errors.Is(err, ledgerfile.ErrSBOMCorrupt) {
+		return nil, undeterminedf("the SBOM of %s in release %s: %v", name, version, err)
+	}
+	if !errors.Is(err, ledgerfile.ErrSBOMNotFound) {
 		return nil, err
 	}
-	return data, nil
+	// Cut on another machine: the bytes are beside the image, as its OCI
+	// referrer. The control plane names the SBOM's digest and referrer; the
+	// release it holds names the image's digest, which is what proves a
+	// referrer describes this artifact (sbomoci.Fetch). The bytes are
+	// verified against the recorded digest and cached into this machine's
+	// ledger, so the next read (and every scan) needs no network.
+	subject, why := hostedSBOMSubject(ctx, src, env, version, name, a)
+	if subject != "" {
+		art := release.Artifact{SBOM: &release.SBOMRef{Digest: a.SBOMDigest, Referrer: a.Referrer, Status: release.SBOMStatusOK}}
+		host, _, _ := strings.Cut(subject, "/")
+		credential, cerr := sbomRegistryCredential(deps.projectDir(), env.Name, env.entities, host)
+		if cerr == nil {
+			data, _, ferr := sbomReferrerFetch(ctx, store, art, subject, sbomoci.RegistryOptions{Credential: credential})
+			if ferr == nil {
+				return data, nil
+			}
+			why = ferr.Error()
+		} else {
+			why = "registry credential for " + host + ": " + cerr.Error()
+		}
+	}
+	where := ""
+	if a.Referrer != "" {
+		where = " Its OCI referrer is " + a.Referrer + "."
+	}
+	return nil, undeterminedf("the control plane records SBOM %s for %s in release %s, and this machine's ledger has no copy "+
+		"(the release was cut on another machine), and it could not be read from beside the image: %s.%s", a.SBOMDigest, name, version, why, where)
+}
+
+// sbomReferrerFetch reads an SBOM from the machine ledger or its OCI
+// referrer. A var so a test states the registry.
+var sbomReferrerFetch = sbomoci.FetchWith
+
+// hostedSBOMSubject is `<repository>@<digest>` of artifact name in release
+// version, as the control plane holds the release: the subject an OCI
+// referrer of its SBOM is checked against. The repository is where the cut
+// pushed it (sbomSubjectRepository), else the recorded referrer's own
+// repository (a referrer lives beside its subject). "" with the reason when
+// there is none: an artifact that is not one shared OCI image, or a release
+// the control plane would not return.
+func hostedSBOMSubject(ctx context.Context, src hostedVulnSource, env vulnEnv, version, name string, a wireReleaseArtifactSBOM) (subject, why string) {
+	rels := hostedLedger(src.reader.client, env.Endpoint, env.Project, "").Releases
+	rel, err := rels.Get(ctx, version)
+	switch {
+	case err != nil:
+		return "", "read release " + version + " from the control plane: " + err.Error()
+	case rel == nil:
+		return "", "the control plane returned no release " + version
+	}
+	art, ok := rel.Artifacts[name]
+	if !ok {
+		return "", "the control plane's release " + version + " has no artifact " + name
+	}
+	digest, ok := art.SharedDigest()
+	if !ok {
+		return "", name + " is not one shared OCI image, so it has no referrer to read"
+	}
+	repository := sbomSubjectRepository(name, art, env.entities)
+	if repository == "" && a.Referrer != "" {
+		repository, _, _ = strings.Cut(a.Referrer, "@")
+	}
+	if repository == "" {
+		return "", "nothing names the registry repository of " + name
+	}
+	return repository + "@" + digest, ""
 }

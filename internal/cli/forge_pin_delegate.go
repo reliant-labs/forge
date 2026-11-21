@@ -326,6 +326,11 @@ func parseInvocation(args []string) invocation {
 		return invocation{rel: firstCommandWord(root, args), projectDir: scanProjectDir(args)}
 	}
 	cmd.FParseErrWhitelist.UnknownFlags = true
+	// This parse is a dry run: a deprecated flag's notice is printed by the
+	// real parse that follows, once, not by this one too.
+	cmd.Flags().SetOutput(io.Discard)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
 	_ = cmd.ParseFlags(rest)
 	inv := invocation{rel: commandRel(cmd, root)}
 	inv.allow, _ = cmd.Flags().GetBool(allowVersionSkewFlag)
@@ -500,7 +505,10 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bo
 	}
 	// handed: the decision was the delegate's, so nothing runs here even
 	// when it failed; its error (and exit code) is returned as is.
-	return true, execPinned(w, t, res, args)
+	// The pinned forge may predate the 14 nouns: it is given the spelling
+	// every forge has (legacyArgs), and told not to warn about it.
+	args, rewritten := legacyArgs(args)
+	return true, execPinned(w, t, res, args, rewritten)
 }
 
 // pinTarget is the forge the command at rel must run under in projectRoot,
@@ -684,10 +692,14 @@ func delegateTargetFor(projectRoot string) (t delegateTarget, ok bool) {
 // delegate's exit status IS this process's, and it returns only when exec(2)
 // itself failed; on Windows it relays the delegate's exit status; a test seam
 // returns the delegate's error. Callers propagate that error unchanged.
-func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string) error {
+func execPinned(w io.Writer, t delegateTarget, res forgedelegate.Result, args []string, respelled bool) error {
 	_, _ = fmt.Fprintf(w, "forge: this forge is %s, but the project wants %s — running %s instead (%s, or %s=1, to run this one)\n",
 		t.binary, t, res.Source, "--"+allowVersionSkewFlag, allowVersionSkewEnv)
-	return pinDelegateExec(res.Path, args, forgedelegate.Env(t.String()))
+	env := forgedelegate.Env(t.String())
+	if respelled {
+		env = append(env, noDeprecationWarningsEnv+"=1")
+	}
+	return pinDelegateExec(res.Path, args, env)
 }
 
 // resolveTarget finds, or builds, the forge t names.
@@ -704,6 +716,8 @@ func resolveTarget(ctx context.Context, w io.Writer, projectRoot string, t deleg
 // named when it reports the pin (nothing to download or build); otherwise the
 // `go run` form, which fetches and builds the pin into Go's cache.
 func pinnedRunLine(projectRoot, pin string, args []string) string {
+	// The pinned forge may predate the 14 nouns (deprecated_aliases.go).
+	args, _ = legacyArgs(args)
 	if local, ok := pinDelegateResolver(io.Discard).LocalPinned(context.Background(), projectRoot, pin); ok {
 		if abs, err := filepath.Abs(local); err == nil {
 			local = abs

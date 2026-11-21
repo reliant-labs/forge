@@ -9,6 +9,7 @@ import "testing"
 func TestAPIConfigRoundTrip(t *testing.T) {
 	data := []byte(`name: test
 module_path: github.com/foo/bar
+version: 0.1.0
 api:
   openapi: true
   rest: false

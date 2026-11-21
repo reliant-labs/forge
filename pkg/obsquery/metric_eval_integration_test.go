@@ -218,6 +218,56 @@ func TestMetricSemanticsAgainstClickHouse(t *testing.T) {
 		}
 	})
 
+	t.Run("an increase is the counter's growth, not its rate times the range", func(t *testing.T) {
+		// 4, 4, 12 at 60s (forge obs metrics query --agg increase --kind number
+		// --since 15m read 60): 8 from a series that existed before the read,
+		// 12 from one that started inside it (its first sample is all new).
+		for _, c2 := range []struct {
+			name  string
+			start time.Time
+			want  float64
+		}{{"grew_old", base.Add(-2 * time.Hour), 8}, {"grew_born", base.Add(2*time.Minute + 30*time.Second), 12}} {
+			chExec(t, c, fmt.Sprintf(`INSERT INTO otel_metrics_sum SELECT map('service.name','api'), 'api', '%s', '{req}', map(), %s, %s + number*60, [4, 4, 12][number+1], 2, 1 FROM numbers(3)`,
+				c2.name, ts(c2.start), ts(base.Add(3*time.Minute+20*time.Second))))
+			sc := scope(base.Add(-5*time.Minute), base.Add(10*time.Minute))
+			res := eval(t, c, sc, panel("number", ser("A", c2.name, "increase", "sum")), obsquery.EvalOptions{Now: sc.End})
+			if s := res.Series[0]; s.Reduced == nil || !near(*s.Reduced, c2.want) {
+				t.Errorf("%s: increase = %v, want %v", c2.name, s.Reduced, c2.want)
+			}
+			line := eval(t, c, sc, panel("line", ser("A", c2.name, "increase", "sum")), obsquery.EvalOptions{StepSeconds: 60, Now: sc.End})
+			var sum float64
+			for _, p := range line.Series[0].Points {
+				sum += p.Value
+			}
+			if !near(sum, c2.want) {
+				t.Errorf("%s: the line's buckets add up to %v (%v), want %v", c2.name, sum, pointValues(line.Series[0]), c2.want)
+			}
+		}
+	})
+
+	t.Run("a pod replaced mid-range: rate 2 and its increase, not twice either", func(t *testing.T) {
+		// pod a at 2/s until 10:29; pod b from 10:29:30 at 2/s (60 by its first export).
+		seedSum(t, c, "replaced", true, 2, start, base, 30, 60, 1000, 120, "map('pod','a')")
+		seedSum(t, c, "replaced", true, 2, base.Add(29*time.Minute+30*time.Second), base.Add(30*time.Minute), 41, 60, 60, 120, "map('pod','b')")
+		sc := scope(base.Add(10*time.Minute), base.Add(50*time.Minute))
+		rate := eval(t, c, sc, panel("number", ser("A", "replaced", "rate", "sum")), obsquery.EvalOptions{})
+		if s := rate.Series[0]; s.Reduced == nil || !near(*s.Reduced, 2) {
+			t.Errorf("rate = %v, want 2 (each pod's own rate summed read 4)", s.Reduced)
+		}
+		inc := eval(t, c, sc, panel("number", ser("A", "replaced", "increase", "sum")), obsquery.EvalOptions{})
+		if s := inc.Series[0]; s.Reduced == nil || !near(*s.Reduced, 4740) {
+			t.Errorf("increase = %v, want 4740 (2/s over the 2370s the pods covered)", s.Reduced)
+		}
+		for _, step := range []int32{60, 600} {
+			res := eval(t, c, sc, panel("line", ser("A", "replaced", "rate", "sum")), obsquery.EvalOptions{StepSeconds: step})
+			for _, p := range res.Series[0].Points {
+				if !near(p.Value, 2) {
+					t.Errorf("step %d: rate %s = %v, want 2 across the replacement", step, p.Time.Format("15:04"), p.Value)
+				}
+			}
+		}
+	})
+
 	t.Run("two series: the total rate is 4, not the mean 2", func(t *testing.T) {
 		seedSum(t, c, "two", true, 2, start, base, 10, 60, 1000, 120, "map('pod','a')")
 		seedSum(t, c, "two", true, 2, start, base, 10, 60, 5000, 120, "map('pod','b')")

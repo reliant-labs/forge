@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -567,11 +568,50 @@ func TestMetricQueryReadsALookbackAndDropsRowsBeforeStart(t *testing.T) {
 	if !sawLookback || !sawStart {
 		t.Errorf("params = %v: want a read from start-2*interval (%s) and an outer filter from start (%s)", st.Params, lookback, start)
 	}
-	if !strings.Contains(st.SQL, "sum(inc) / sum(dt)") {
-		t.Errorf("rate is not time-weighted:\n%s", st.SQL)
+	if !strings.Contains(st.SQL, "inc / dt AS r") || !strings.Contains(st.SQL, "/ sum(fresh)") {
+		t.Errorf("rate is not time-weighted over the time the samples cover:\n%s", st.SQL)
 	}
 	if strings.Contains(st.SQL, "sum(inc) / {p") {
 		t.Errorf("rate still divides by the step:\n%s", st.SQL)
+	}
+}
+
+// An increase is the counter's growth: each sample's increment spread over the
+// interval it covers, never a rate multiplied by the bucket or the range
+// (which reported 60 for a counter that grew by 8 in a 15m window). The read
+// runs past End, so the sample after End gives the last bucket its share.
+func TestCounterIncreaseIsNotExtrapolatedOverTheRange(t *testing.T) {
+	for _, reduce := range []bool{false, true} {
+		q := MetricQuery{
+			Scope: scope(), Name: "m", Info: MetricInfo{Type: MetricSum, Monotonic: true, IntervalSeconds: 60},
+			Agg: AggIncrease, StepSeconds: 60, Reduce: reduce,
+		}
+		if reduce {
+			q.StepSeconds = 0
+		}
+		st, err := q.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertParameterized(t, st)
+		if !strings.Contains(st.SQL, "toFloat64(sum(r * (c1 - c0))) AS value") {
+			t.Errorf("reduce=%v: an increase is the sum of the overlaps:\n%s", reduce, st.SQL)
+		}
+		if regexp.MustCompile(`\) \* \{p\d+:Float64\}`).MatchString(st.SQL) || strings.Contains(st.SQL, "fresh") {
+			t.Errorf("reduce=%v: an increase is not a rate times a width:\n%s", reduce, st.SQL)
+		}
+		lookahead := fmt.Sprint(q.Scope.End.Add(120 * time.Second).Unix())
+		saw := false
+		for _, v := range st.Params {
+			saw = saw || v == lookahead
+		}
+		if !saw {
+			t.Errorf("reduce=%v: params = %v: want a read to End+2*interval (%s)", reduce, st.Params, lookahead)
+		}
+		// A series that starts inside the read counts its first sample whole.
+		if !strings.Contains(st.SQL, "OR born") {
+			t.Errorf("reduce=%v: a series born in the read loses its first sample:\n%s", reduce, st.SQL)
+		}
 	}
 }
 

@@ -414,9 +414,11 @@ const (
 	AggMax           Agg = "max"
 	AggQuantile      Agg = "quantile"
 	AggLast          Agg = "last"
-	// AggRate, AggIncrease and AggMin are metrics-only. A rate is per second,
-	// an increase is per bucket, and both are time-weighted per series; on a
-	// monotonic sum, AggSum still means the increase.
+	// AggRate, AggIncrease and AggMin are metrics-only. An increase is what
+	// the counter grew by in the bucket (each sample's growth spread over the
+	// interval it covers, never extrapolated past the samples), and a rate is
+	// that per second of the time the samples cover; on a monotonic sum,
+	// AggSum still means the increase.
 	AggRate     Agg = "rate"
 	AggIncrease Agg = "increase"
 	AggMin      Agg = "min"

@@ -62,12 +62,31 @@ type lifecycleDeployment struct {
 	Observed *struct {
 		State     string `json:"state,omitempty"`
 		LastError string `json:"lastError,omitempty"`
+		// SuspendReason is why the tier CR is suspended (its Suspended
+		// condition), DEPLOY_SUSPEND_REASON_UNSPECIFIED or absent when it
+		// is not.
+		SuspendReason string `json:"suspendReason,omitempty"`
 	} `json:"observed,omitempty"`
 }
 
+// observedSuspendedState is the wire's SUSPENDED observed state.
+const observedSuspendedState = "DEPLOY_OBSERVED_STATE_SUSPENDED"
+
+// observedState is the deployment's observed state, with a suspension the
+// observation only states as a reason read as SUSPENDED. The operator
+// suspends a workload by holding its phase at Pending with Suspended=True,
+// and the control plane reports that as PENDING plus a suspend reason, so
+// `forge env stop --wait` waited for a SUSPENDED it was never sent. Only
+// PENDING is read that way: a suspend reason beside PROGRESSING, DEGRADED,
+// FAILED or READY is a stale condition on a workload still running (or
+// failing), never a confirmed stop.
 func (d lifecycleDeployment) observedState() string {
 	if d.Observed == nil {
 		return ""
+	}
+	if d.Observed.State == "DEPLOY_OBSERVED_STATE_PENDING" &&
+		d.Observed.SuspendReason != "" && d.Observed.SuspendReason != "DEPLOY_SUSPEND_REASON_UNSPECIFIED" {
+		return observedSuspendedState
 	}
 	return d.Observed.State
 }
@@ -607,7 +626,7 @@ func reasonSuffix(reason string) string {
 func observedSettled(d lifecycleDeployment, runState string) bool {
 	switch runState {
 	case runStateSuspended:
-		return d.observedState() == "DEPLOY_OBSERVED_STATE_SUSPENDED"
+		return d.observedState() == observedSuspendedState
 	default:
 		return d.observedState() == "DEPLOY_OBSERVED_STATE_READY"
 	}

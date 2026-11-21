@@ -233,6 +233,44 @@ func TestDiamond_AuthoritativeColumnNarrowedTwiceRefuses(t *testing.T) {
 	}
 }
 
+// A conflict on one route must not leave the other routes partially resolved.
+// Here owner_chat_id claims worktree_id first. The project declaration must
+// therefore leave even its otherwise satisfiable chat_id route unresolved.
+func TestDiamond_AuthoritativeRouteConflictRejectsWholePair(t *testing.T) {
+	tables := twoRouteSchema("forge:ref authoritative")
+	for i := range tables {
+		switch tables[i].Name {
+		case "jobs":
+			tables[i].Columns = append([]schemadef.Column{col("owner_chat_id", schemadef.TypeString, true, false)}, tables[i].Columns...)
+			tables[i].ForeignKeys = append(tables[i].ForeignKeys, schemadef.ForeignKey{
+				Column: "owner_chat_id", RefTable: "chats", RefColumn: "id", Comment: "forge:ref authoritative",
+			})
+		case "worktrees":
+			tables[i].Columns = append(tables[i].Columns, col("chat_id", schemadef.TypeString, true, false))
+			tables[i].ForeignKeys = append(tables[i].ForeignKeys, schemadef.ForeignKey{
+				Column: "chat_id", RefTable: "chats", RefColumn: "id",
+			})
+			tables[i].ForeignKeys[0].Comment = "forge:ref independent"
+		}
+	}
+	p := buildOrFail(t, tables, Config{Rows: 20, Salt: 1})
+	for _, ap := range p.authRefs["jobs"] {
+		if ap.directCol == "project_id" {
+			t.Fatal("conflicting declaration was partially accepted")
+		}
+	}
+	if n := routeDisagreements(t, p, "jobs", "owner_chat_id", "worktree_id", "worktrees", "chat_id"); n != 0 {
+		t.Fatalf("earlier accepted declaration lost %d agreements", n)
+	}
+	if n := routeDisagreements(t, p, "jobs", "project_id", "chat_id", "chats", "project_id"); n == 0 {
+		t.Fatal("fixture must leave the unclaimed project route disagreeing")
+	}
+	var ude *UndeclaredDiamondError
+	if err := p.Validate(); !errors.As(err, &ude) {
+		t.Fatalf("an unresolved authoritative pair must refuse: %v", err)
+	}
+}
+
 // The resolver accepts an authoritative route and then checks it against the
 // rows it produced. When the routes share no parent the narrowing has nothing
 // to draw from and every cell falls back to the independent pick; that must

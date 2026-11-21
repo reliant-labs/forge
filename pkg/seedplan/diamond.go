@@ -320,23 +320,38 @@ func (p *Plan) resolveDiamonds() (derived map[string]map[string][]fkHop, auth ma
 			}
 			continue
 		}
-		kept := authPair{directCol: ap.directCol}
+		// Accept the whole pair or none of it. Dropping one conflicting
+		// route would narrow the truth using only a subset of its routes;
+		// accidental agreement on the dropped route could then hide the
+		// unresolved declaration from diamondRefusal.
+		issue := ""
+		seen := map[string]bool{}
 		for _, rt := range ap.routes {
 			vk := pairKey{k.table, rt.viaCol}
 			if r, taken := role[vk]; taken {
-				rt.d.issue = fmt.Sprintf("%s.%s is already %s, so it cannot also be narrowed to agree with %s.%s",
+				issue = fmt.Sprintf("%s.%s is already %s, so it cannot also be narrowed to agree with %s.%s",
 					k.table, rt.viaCol, r, k.table, k.col)
-				undeclared = append(undeclared, rt.d)
-				continue
+				break
 			}
-			role[vk] = fmt.Sprintf("narrowed to agree with %s.%s", k.table, k.col)
-			kept.routes = append(kept.routes, rt)
+			if seen[rt.viaCol] {
+				issue = fmt.Sprintf("%s.%s reaches %s.%s through multiple routes that cannot be narrowed independently",
+					k.table, rt.viaCol, k.table, k.col)
+				break
+			}
+			seen[rt.viaCol] = true
 		}
-		if len(kept.routes) == 0 {
+		if issue != "" {
+			for _, rt := range ap.routes {
+				rt.d.issue = issue
+				undeclared = append(undeclared, rt.d)
+			}
 			continue
 		}
+		for _, rt := range ap.routes {
+			role[pairKey{k.table, rt.viaCol}] = fmt.Sprintf("narrowed to agree with %s.%s", k.table, k.col)
+		}
 		role[k] = "authoritative for its own reference"
-		auth[k.table] = append(auth[k.table], kept)
+		auth[k.table] = append(auth[k.table], *ap)
 	}
 
 	if len(derived) == 0 {

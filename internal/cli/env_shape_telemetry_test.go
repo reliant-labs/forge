@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -208,5 +209,58 @@ func TestRenderContract_HostedTelemetryReachesTheShape(t *testing.T) {
 	}
 	if strings.Contains(string(enc), "SEARCH_OTLP_ENABLED") {
 		t.Errorf("a literal OTLP env value reached the shape:\n%s", enc)
+	}
+}
+
+// A hosted env whose only telemetry is forge's own default (a ManagedDatabase's)
+// deploys to a control plane that does not collect hosted telemetry without a
+// word: the default is withheld silently, and is not held to caps the control
+// plane will never apply to it. A declared target beside it is still named,
+// alone, with the capability the control plane lacks. That holds for one that
+// decodes nothing and for one on a newer forge pin that only decodes.
+func TestCheckBundleTelemetryIsQuietAboutDefaults(t *testing.T) {
+	db := hostedTelemetryTarget("db-postgres")
+	db.Source, db.Attachment, db.Origin = "manageddatabase:db", telemetry.AttachManagedDatabase, telemetry.OriginDefault
+	tight := &release.TelemetryLimits{MaxPulledTargets: 1, MaxSampleLimit: 1}
+	defaultOnly := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db})}
+	mixed := release.Shape{Kind: release.EnvPersistent, Telemetry: release.ShapeTelemetryOf([]telemetry.Target{db, hostedTelemetryTarget("api")})}
+
+	// The caps bite: a control plane that collects refuses the default
+	// target under them, so the silence below is not caps that pass anyway.
+	collects := &release.BundleReader{Features: []string{release.BundleFeatureTelemetry, release.CapabilityCollectsTelemetry}, Telemetry: tight}
+	if err := checkBundleTelemetry(io.Discard, "prod-default-collects", defaultOnly, collects); err == nil {
+		t.Fatal("caps tighter than the default target were not enforced on a control plane that collects")
+	}
+
+	for name, c := range map[string]struct {
+		r       *release.BundleReader
+		missing string
+	}{
+		"old":          {&release.BundleReader{Features: []string{release.BundleFeatureStorage}}, `"shape-telemetry" or "collects-telemetry"`},
+		"decodes only": {&release.BundleReader{Features: release.BundleDocFeatures(), Telemetry: tight}, `"collects-telemetry"`},
+	} {
+		onlyEnv, mixedEnv := "prod-default-only-"+name, "prod-default-mixed-"+name
+		// The warning is deduped per env and process: forget these envs so a
+		// repeated run (-count, -cpu) sees the first warning again.
+		for _, env := range []string{onlyEnv, mixedEnv} {
+			telemetryUncollectedNoted.Delete(env)
+			t.Cleanup(func() { telemetryUncollectedNoted.Delete(env) })
+		}
+
+		var out bytes.Buffer
+		if err := checkBundleTelemetry(&out, onlyEnv, defaultOnly, c.r); err != nil || out.Len() != 0 {
+			t.Errorf("%s: default-only telemetry: err %v, output %q; want silence", name, err, out.String())
+		}
+
+		if err := checkBundleTelemetry(&out, mixedEnv, mixed, c.r); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got := out.String()
+		if !strings.Contains(got, "[bundle]     - api (workload:api): metrics\n") || strings.Contains(got, "db-postgres") {
+			t.Errorf("%s: the warning must name the declared target and only it:\n%s", name, got)
+		}
+		if want := "(it does not advertise " + c.missing + ")"; !strings.Contains(got, want) {
+			t.Errorf("%s: the warning does not name %s:\n%s", name, want, got)
+		}
 	}
 }

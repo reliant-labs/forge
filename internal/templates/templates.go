@@ -551,6 +551,17 @@ type BuildImagesWorkflowData struct {
 	// its per-commit image for a cluster env and promote releases through
 	// hosted ones, and only the env this job builds for decides.
 	Hosted bool
+
+	// ForgeVersion is the project's pinned forge_version. The scan job runs
+	// `forge vuln scan` only for a pin that has it (ForgeAtLeast); an older
+	// pin keeps the Trivy scan and the SBOM action its forge cannot replace.
+	ForgeVersion string
+}
+
+// ForgeAtLeast reports whether the project's pinned forge has everything
+// release has; see forgeAtLeast.
+func (d BuildImagesWorkflowData) ForgeAtLeast(release string) bool {
+	return forgeAtLeast(d.ForgeVersion, release)
 }
 
 // ReleaseWorkflowData holds data for release.yml and the vendored
@@ -604,6 +615,28 @@ func ReleaseStages(envs []DeployEnv, mixed map[string]bool) []ReleaseStage {
 	}
 	return out
 }
+
+// PGORefreshWorkflowData holds data for pgo-refresh.yml, the weekly job that
+// pulls an env's CPU profiles into each Go binary's cmd/<bin>/default.pgo and
+// opens a pull request when one changed. Emitted for a service project with a
+// hosted env: the platform stores that env's profiles.
+type PGORefreshWorkflowData struct {
+	ProjectName string
+	// Env is the env whose profiles are pulled: the last hosted env in
+	// promotion order, the one real traffic reaches.
+	Env string
+}
+
+// PGORefreshTokenScopes are the scopes pgo-refresh.yml's FORGE_OBS_TOKEN
+// needs: `forge pgo pull` resolves the organization and looks the hosted env
+// up (deploy:read) before it exports profiles (obs:read). An explicit token
+// is never elevated, so it must carry both; it needs no deploy:write.
+// internal/cli TestPGORefreshTokenScopesCoverPGOPull holds this to the calls
+// the pull really makes.
+const PGORefreshTokenScopes = "deploy:read,obs:read"
+
+// TokenScopes is PGORefreshTokenScopes, for the template.
+func (PGORefreshWorkflowData) TokenScopes() string { return PGORefreshTokenScopes }
 
 // E2EWorkflowData holds data for the standalone E2E test workflow template.
 type E2EWorkflowData struct {

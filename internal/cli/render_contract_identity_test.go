@@ -320,3 +320,59 @@ func TestRenderContract_IdentityV2Host(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderContract_IdentitiesSugarIsByteIdentical: `identities = [X]` renders
+// exactly what `identity = X` does, so moving a declaration to the list form
+// changes nothing a control plane reads.
+func TestRenderContract_IdentitiesSugarIsByteIdentical(t *testing.T) {
+	_, single := loadContract(t, "identity-cluster")
+	_, list := loadContract(t, "identity-cluster-list")
+	if string(single) != string(list) {
+		t.Fatal("identity-cluster-list.json differs from identity-cluster.json: Bundle.identities = [X] must render byte-identically to Bundle.identity = X")
+	}
+}
+
+// TestRenderContract_IdentitiesTwo drives the production consumers from a
+// render of two identities: the strict decoder, the shape projection (which
+// carries them as Shape.Identities and no Identity), and the shape's own
+// validation, deliveries included.
+func TestRenderContract_IdentitiesTwo(t *testing.T) {
+	e, _ := loadContract(t, "identities-two")
+	if e.Identity != nil || len(e.Identities) != 2 {
+		t.Fatalf("render: identity=%v identities=%d, want only the list of two", e.Identity, len(e.Identities))
+	}
+	shape, err := bundle.ProjectShape(bundle.ShapeInput{
+		Kind:                release.EnvSelfManaged,
+		Workloads:           shapeWorkloadsOf(e),
+		ControlPlaneSecrets: shapeControlPlaneSecretsOf(e),
+		Identity:            shapeIdentityOf(e),
+		Identities:          shapeIdentitiesOf(e),
+	})
+	if err != nil {
+		t.Fatalf("ProjectShape: %v", err)
+	}
+	if err := shape.Validate(); err != nil {
+		t.Fatalf("the projected shape is invalid: %v", err)
+	}
+	if shape.Identity != nil || len(shape.AllIdentities()) != 2 {
+		t.Fatalf("shape identities = %+v / %+v", shape.Identity, shape.Identities)
+	}
+	users, ok := shape.IdentityNamed("users")
+	if !ok || users.ProjectName != "acme-app" || len(users.Applications) != 1 || users.Applications[0].Workload != "api" {
+		t.Fatalf("users = %+v", users)
+	}
+	ops, _ := shape.IdentityNamed(release.DefaultIdentityName)
+	if len(ops.Applications) != 1 || ops.Applications[0].Workload != "admin-api" {
+		t.Fatalf("operators = %+v", ops)
+	}
+	for _, id := range shape.AllIdentities() {
+		for _, d := range id.Deliveries {
+			if !strings.HasPrefix(d.Name, release.IdentitySecretPrefix+id.Name) {
+				t.Errorf("identity %s delivers %s, which is not its own Secret", id.Name, d.Name)
+			}
+		}
+	}
+	if err := (&release.BundleReader{Features: release.BundleDocFeatures()}).CheckIdentities(shape); err == nil {
+		t.Error("a control plane that only decodes identities was allowed the shape")
+	}
+}

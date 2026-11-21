@@ -50,11 +50,13 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		{"ci k3d", "ci.yml.tmpl", k3d},
 		{"ci minimal", "ci.yml.tmpl", minimal},
 		{"proto-breaking", "proto-breaking.yml.tmpl", full},
-		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true}},
+		{"build-images", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, ForgeVersion: "v1.10.0"}},
+		// A pin before `forge vuln` renders the Trivy scan and SBOM action.
+		{"build-images pre-vuln", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, ForgeVersion: "v1.9.0"}},
 		// The hosted build job is a different document — no registry login,
 		// a control-plane token instead — so it goes through prettier,
 		// actionlint and the no-registry rules on its own.
-		{"build-images hosted", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, Hosted: true}},
+		{"build-images hosted", "build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "demo", BuildEnv: "staging", VulnDocker: true, Hosted: true, ForgeVersion: "v1.10.0"}},
 		{"release", "release.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, nil)}},
 		{"release mixed", "release.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, map[string]bool{"prod": true})}},
 		{"forge-deploy action", "forge-deploy-action.yml.tmpl", ReleaseWorkflowData{ProjectName: "demo", BuildEnv: "staging", Stages: ReleaseStages([]DeployEnv{{Name: "staging"}, {Name: "prod", Protection: true}}, nil)}},
@@ -66,6 +68,7 @@ func renderedWorkflows(t *testing.T) map[string][]byte {
 		// (a fixed node-version), the one scalar the other cases miss.
 		{"e2e frontend without path", "e2e.yml.tmpl", E2EWorkflowData{ProjectName: "demo", Runtime: "docker-compose", HasFrontends: true}},
 		{"dependabot", "dependabot.yml.tmpl", DependabotData{FrontendName: "web", RunsProtocGenGo: true}},
+		{"pgo-refresh", "pgo-refresh.yml.tmpl", PGORefreshWorkflowData{ProjectName: "demo", Env: "prod"}},
 	}
 	out := map[string][]byte{}
 	for _, c := range cases {

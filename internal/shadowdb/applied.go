@@ -121,11 +121,9 @@ func Tables(projectDir, migDir string) ([]schemadef.Table, error) {
 func appliedTables(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
-		set, err := migrationSet(projectDir, migDir)
-		if err != nil {
-			return nil, err
-		}
-		return schemadef.ApplyAndIntrospectSetAt(set, Resolve(projectDir))
+		tables, shadow, err := applyPrivate(projectDir, migDir, Resolve(projectDir))
+		closeShadow(shadow)
+		return tables, err
 	}
 	if err != nil || tpl == nil {
 		return nil, err
@@ -154,12 +152,8 @@ func withoutToolLedgers(projectDir, migDir string, tables []schemadef.Table) []s
 func Views(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
-		set, err := migrationSet(projectDir, migDir)
-		if err != nil {
-			return nil, err
-		}
-		_, shadow, err := schemadef.ApplyAndIntrospectSetShadowAt(set, Resolve(projectDir))
-		defer shadow.Close()
+		_, shadow, err := applyPrivate(projectDir, migDir, Resolve(projectDir))
+		defer closeShadow(shadow)
 		if err != nil || shadow == nil {
 			return nil, err
 		}
@@ -204,18 +198,32 @@ func openApplied(projectDir, migDir string) ([]schemadef.Table, *schemadef.Shado
 	return tpl.Tables(), shadow, nil
 }
 
-// applyPrivate applies migDir to a database of the caller's own.
+// applyPrivate applies migDir to a database of the caller's own, on
+// embedded postgres instead when server turns out to be gone (wentAway).
 func applyPrivate(projectDir, migDir, server string) ([]schemadef.Table, *schemadef.Shadow, error) {
 	set, err := migrationSet(projectDir, migDir)
 	if err != nil {
 		return nil, nil, err
 	}
-	tables, shadow, err := schemadef.ApplyAndIntrospectSetShadowAt(set, server)
+	tables, shadow, err := applyShadow(set, server)
+	if wentAway(server, err) {
+		closeShadow(shadow)
+		warnFallback(server, err)
+		tables, shadow, err = applyShadow(set, "")
+	}
 	if err != nil {
-		shadow.Close()
+		closeShadow(shadow)
 		return nil, nil, err
 	}
 	return tables, shadow, nil
+}
+
+// closeShadow closes shadow when there is one: a failed apply may return
+// none, and every cleanup path here runs after one.
+func closeShadow(shadow *schemadef.Shadow) {
+	if shadow != nil {
+		shadow.Close()
+	}
 }
 
 // runTemplate returns this run's template for migDir's current content,
@@ -263,7 +271,16 @@ func runTemplate(projectDir, migDir string) (tpl *schemadef.Template, done func(
 		return e.tpl, e.mu.Unlock, nil
 	}
 	start := time.Now()
-	built, err := set.ApplyTemplateAt(server)
+	built, err := applyTemplate(set, server)
+	if wentAway(server, err) {
+		// The server Resolve picked was up when it was probed and is not
+		// now: another checkout's dev stack, stopped mid-run. The run moves
+		// to embedded postgres, which nobody else can stop, and this reader
+		// starts over there.
+		e.mu.Unlock()
+		demoteServer(projectDir, server, err)
+		return runTemplate(projectDir, migDir)
+	}
 	if err != nil {
 		// Not memoized: the next reader tries again. A migration that does
 		// not apply fails every reader the same way, and a transient fault

@@ -1,8 +1,10 @@
 # Proposal: self-upgrading long-lived binaries (`forge/pkg/selfupdate`)
 
 **Status:** approved by the owner 2026-11-19. F1 (`forge/pkg/selfupdate` core)
-is implemented; where its API differs from the sketch in §3, §10 says how and
-why. F2, F3 and the reliant phases have not landed.
+is implemented, and so is F2's verification half (the Sigstore verifier and the
+channel-manifest source); where their API differs from the sketch in §3, §10
+and §11 say how and why. F2's Windows swap, F3 and the reliant phases have not
+landed.
 **Date:** 2026-11-19
 **Scope:** forge (new package `pkg/selfupdate`, opt-in hook in `pkg/serverkit`),
 reliant (first consumer, release pipeline), control-plane (signal source only).
@@ -580,3 +582,34 @@ design is unchanged; these are the API details building it settled.
   (`pkg/.golangci.yml`); `FORGE_MANAGED_BY` (a supervisor-to-binary contract)
   and the `os.Environ()` handed to exec are exempted in one file,
   `selfupdate/env.go`.
+
+## 11. F2 implementation notes (verification half)
+
+- **`pkg/selfupdate/sigstore`**: `New(Config{Repo, Identity, Issuer,
+PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
+  built on `github.com/sigstore/sigstore-go` (in process; no cosign or gh on the
+  machine). It requires a Fulcio certificate chaining to the trusted root, one
+  transparency-log entry, one certificate timestamp and one observer timestamp,
+  the certificate identity (`Identity` must be an anchored `^…$` regexp; an
+  unanchored one is refused) and issuer (default GitHub Actions), the predicate
+  type, **every** downloaded file but the bundle among the statement's sha256
+  subjects, and the predicate's `repository == Repo` and `release == rel.Tag`
+  (the replay rule). A release with no bundle is refused.
+- **Trusted root.** Nil `TrustedRoot` fetches the public-good root through TUF
+  at each verification (keys rotate; an upgrade check is rare, so the fetch is
+  cheap), cached on disk only under `TUFCachePath`. A pinned root is for tests
+  and air-gapped machines. The package's test verifies forge v1.8.0's real
+  signed `checksums.txt` against a pinned snapshot of the public-good root, and
+  that each rule above refuses.
+- **`ManifestSource{URL, Repository, Client}`** requires the manifest's repository to match the caller's expected `owner/repo` and reads schema 1 of the channel manifest,
+  the format reliant's R0 publishes as `daemon-channels.json`
+  (`dev-docs/cli-release-artifacts.md`): one channel's version, tag, commit
+  time, `checksums`, `bundle` and per-`goos/goarch` archives, each named by the
+  last element of its https URL, on an allowed origin (`AllowedOrigins`, default the
+  manifest's own; a redirect of the manifest off its origin is refused). The
+  manifest's own signature is not checked:
+  it only names the target. The files are verified against their release's
+  bundle (a manifest pointing at another release's files fails the replay
+  rule), and `Updater.Check` never moves backwards, so a held-back manifest can
+  delay an upgrade but never install anything. An unknown schema is refused.
+- **Windows swap** is still `ErrUnsupported`.

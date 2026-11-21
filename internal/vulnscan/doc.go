@@ -50,11 +50,14 @@
 //
 // # Caching it in CI
 //
-// Cache the directory ($FORGE_VULN_DB_DIR) keyed by the database's build
-// date: `forge vuln db status --json` prints it as `cache_key`
-// (forge-vulndb-v6-<YYYY-MM-DD>). A job that restores yesterday's cache
-// (restore-keys: forge-vulndb-v6-) refreshes it only when a newer build is
-// published, which is a 205 MB download at most once a day.
+// Cache the directory ($FORGE_VULN_DB_DIR) under a key the job knows
+// before it restores: today's UTC date (forge-vulndb-v6-<YYYY-MM-DD>), with
+// restore-keys forge-vulndb-v6-. A job that restores an earlier day's cache
+// runs `forge vuln db pull`, which downloads only when a newer build is
+// published, and saves under today's key: a 205 MB download at most once a
+// day. `forge vuln db status --json`'s `cache_key` is the database's own
+// build date; it is known only once the database is on disk, so it cannot be
+// the restore key.
 //
 //forge:lint-disable-next-line forge-exclude-contract-outbound-io: the one outbound call is the database listing read, and every input it reaches out with (URL, Client, Grype, Run, Dir) is already an injectable DB field the tests point at an httptest server and a fake grype, as internal/toolfetch does; a contract.go Service would be one implementation with no substitution point, and a consumer (the promotion gate, the control-plane read) declares its own narrow interface over Scan or Ensure
 //forge:exclude-contract: a CLI-driven scanner and machine-wide database cache, not an injected application component

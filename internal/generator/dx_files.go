@@ -477,7 +477,7 @@ repos:
       - id: check-json
 
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.18.4
+    rev: ` + templates.GitleaksVersion + `
     hooks:
       - id: gitleaks
 

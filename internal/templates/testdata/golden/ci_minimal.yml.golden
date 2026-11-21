@@ -217,7 +217,8 @@ jobs:
       # stand in for go.mod's version.
       - name: Install codegen tools
         run: forge tools install --force
-      # The gate builds govulncheck and go-licenses at their pins on first use.
+      # The gate builds govulncheck, go-licenses and gitleaks at their pins on
+      # first use.
       # Cached by version, so a restored entry is only ever a hit or a harmless
       # miss: the gate checks the version of what it finds.
       - name: Cache gate tools

@@ -16,6 +16,8 @@
 //     pass-through) — reading the Authorization header by default, or
 //     whatever channel [Policy.ExtractToken] names;
 //   - claims plumbing: validate → enrich → stash on the context;
+//   - how the caller authenticated — the channel the credential arrived
+//     in and its kind, read with [AuthMethod] — recorded beside the claims;
 //   - the claims stash itself — [Claims], [ContextWithClaims],
 //     [ClaimsFromContext] and the [GetUser] handler helper, over a
 //     context key this package keeps private so there is exactly one
@@ -73,7 +75,7 @@
 //	        ValidateContext:     deps.Validate, // (*auth.Authenticator).Authenticate
 //	        Unauthenticated:     UnauthenticatedProcedures,
 //	        Enrich:              enrichClaims,
-//	        ExtractToken:        credentialFrom, // Bearer, else X-API-Key, else the session cookie
+//	        ExtractCredential:   credentialFrom, // Bearer, else X-API-Key, else the session cookie, with its Channel
 //	    })
 //	}
 //
@@ -256,7 +258,28 @@ type Policy struct {
 	//
 	// nil (the default) reads "Authorization: Bearer <token>", so existing
 	// services are unaffected.
+	//
+	// The interceptor infers the channel the token came from (see
+	// [AuthMethod]) by finding it in the request: the Authorization header,
+	// the X-API-Key header, else [ChannelUnknown] — never [ChannelCookie],
+	// which a token-only extractor cannot prove it read, so a browser-session
+	// check fails closed for it. Set ExtractCredential instead to name the
+	// channel, the cookie included.
 	ExtractToken func(header http.Header) string
+
+	// ExtractCredential is ExtractToken that also names the channel the
+	// token was read from, which [AuthMethod] reports to handlers — for
+	// example [ChannelCookie] for a browser's session cookie, so a handler
+	// can require a person in the app rather than a program holding the
+	// same user's token. Its token follows ExtractToken's rules: raw, no
+	// "Bearer " prefix, "" for no credential presented.
+	//
+	// Set at most one of ExtractToken and ExtractCredential: NewInterceptor
+	// refuses a policy that sets both, because two readers of one
+	// credential is a configuration error, not a precedence question. With
+	// neither set the Authorization header is read, as
+	// [ChannelAuthorization].
+	ExtractCredential func(header http.Header) (token string, channel Channel)
 
 	// MapError, when non-nil, maps a token-validation failure into the
 	// connect error returned to the caller. It receives the raw error
@@ -347,6 +370,9 @@ func newInterceptor(p Policy, ctor string) (*interceptor, error) {
 		case p.Validate != nil && p.ValidateContext != nil:
 			return nil, errors.New(ctor + ": Policy.Validate and Policy.ValidateContext are both set — " +
 				"a policy has ONE validator; pass it as ValidateContext, or as Validate when it needs no request context")
+		case p.ExtractToken != nil && p.ExtractCredential != nil:
+			return nil, errors.New(ctor + ": Policy.ExtractToken and Policy.ExtractCredential are both set — " +
+				"a policy reads its credential ONE way; pass ExtractCredential, which also names the channel")
 		}
 		ic := &interceptor{policy: p}
 		if p.ContextWithClaims == nil {
@@ -404,7 +430,8 @@ func (a *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if a.allowUnauthenticated(req.Spec().Procedure) {
 			return next(ctx, req)
 		}
-		ctx, err := a.authenticate(ctx, a.policy.authorization(req.Header()))
+		authorization, channel := a.policy.credential(req.Header())
+		ctx, err := a.authenticate(ctx, authorization, channel)
 		if err != nil {
 			return nil, errorToV1(err)
 		}
@@ -421,7 +448,8 @@ func (a *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 		if a.allowUnauthenticated(conn.Spec().Procedure) {
 			return next(ctx, conn)
 		}
-		ctx, err := a.authenticate(ctx, a.policy.authorization(conn.RequestHeader()))
+		authorization, channel := a.policy.credential(conn.RequestHeader())
+		ctx, err := a.authenticate(ctx, authorization, channel)
 		if err != nil {
 			return errorToV1(err)
 		}
@@ -429,8 +457,12 @@ func (a *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 	}
 }
 
-// authorization returns the caller's credential in Authorization-header
-// form ("Bearer <token>"), from whichever channel this policy reads.
+// credential returns the caller's credential in Authorization-header form
+// ("Bearer <token>"), from whichever channel this policy reads, and that
+// channel: ExtractCredential's own answer, ChannelAuthorization for the
+// default header read, or the channel inferred from where ExtractToken's
+// token sits in the request (inferChannel). The channel is meaningless when
+// the credential is "".
 //
 // Normalizing to the header form here — rather than teaching authenticate
 // about two shapes — keeps ONE credential path below this point. Everything
@@ -441,15 +473,22 @@ func (a *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 //
 // An extractor that finds nothing yields "", which authenticate treats as a
 // missing credential — fail-closed, and still subject to AnonymousOK.
-func (p Policy) authorization(header http.Header) string {
-	if p.ExtractToken == nil {
-		return header.Get("Authorization")
+func (p Policy) credential(header http.Header) (authorization string, channel Channel) {
+	switch {
+	case p.ExtractCredential != nil:
+		token, ch := p.ExtractCredential(header)
+		if token == "" {
+			return "", ChannelUnknown
+		}
+		return "Bearer " + token, ch
+	case p.ExtractToken != nil:
+		token := p.ExtractToken(header)
+		if token == "" {
+			return "", ChannelUnknown
+		}
+		return "Bearer " + token, inferChannel(header, token)
 	}
-	token := p.ExtractToken(header)
-	if token == "" {
-		return ""
-	}
-	return "Bearer " + token
+	return header.Get("Authorization"), ChannelAuthorization
 }
 
 // validate runs whichever validator the policy carries. NewInterceptor
@@ -492,7 +531,11 @@ func (a *interceptor) allowUnauthenticated(procedure string) bool {
 // anonymous pass). When AnonymousOK is false the strict posture holds: the
 // only unauthenticated path is the explicit allow-list, checked by the
 // callers BEFORE invoking this function.
-func (a *interceptor) authenticate(ctx context.Context, authorization string) (context.Context, error) {
+//
+// channel is where the credential arrived (Policy.credential); with the
+// validated credential kind it becomes the Method AuthMethod reads, stashed
+// beside the claims.
+func (a *interceptor) authenticate(ctx context.Context, authorization string, channel Channel) (context.Context, error) {
 	if authorization == "" {
 		if a.policy.AnonymousOK {
 			// Non-gating: no credential presented, proceed claim-less.
@@ -554,6 +597,10 @@ func (a *interceptor) authenticate(ctx context.Context, authorization string) (c
 
 	ctx = a.policy.ContextWithClaims(ctx, claims)
 	ctx = withTelemetryUser(ctx, claims)
+	// How the caller authenticated, from the request and the credential the
+	// validator proved (restored after Enrich above) — never from the token's
+	// contents. Before Decorate, so Decorate can read it too.
+	ctx = ContextWithAuthMethod(ctx, Method{Channel: channel, Credential: claims.Credential.Kind()})
 	if a.policy.Decorate != nil {
 		// The single post-authentication chokepoint: layer any
 		// project-owned context (dual identity bridge, raw Authorization

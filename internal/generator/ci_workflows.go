@@ -296,6 +296,8 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 				BuildEnv:    buildEnv,
 				VulnDocker:  ci.VulnDocker,
 				Hosted:      buildEnvHosted,
+				// What the workflow may run is what the pinned forge has.
+				ForgeVersion: cfg.ForgeVersion,
 			}})
 		}
 		// deploy.yml exists while it has an env to deploy. A project whose
@@ -318,17 +320,7 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 				}},
 			)
 		}
-		if len(hostedEnvs) > 0 {
-			data := templates.ReleaseWorkflowData{
-				ProjectName: cfg.Name,
-				BuildEnv:    hostedEnvs[0].Name,
-				Stages:      templates.ReleaseStages(hostedEnvs, mixed),
-			}
-			files = append(files,
-				CIWorkflowFile{"release.yml.tmpl", ".github/workflows/release.yml", data},
-				CIWorkflowFile{"forge-deploy-action.yml.tmpl", ForgeDeployActionPath, data},
-			)
-		}
+		files = append(files, hostedReleaseFiles(cfg.Name, hostedEnvs, mixed)...)
 		if hasE2E {
 			files = append(files, CIWorkflowFile{"e2e.yml.tmpl", ".github/workflows/e2e.yml", templates.E2EWorkflowData{
 				ProjectName:  cfg.Name,
@@ -347,6 +339,31 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 		RunsProtocGenGo: hasServices,
 	}})
 	return files
+}
+
+// hostedReleaseFiles are the files a project with hosted envs (in promotion
+// order) gets beyond ci.yml: release.yml and the vendored forge-deploy action
+// it calls, and pgo-refresh.yml. None without a hosted env.
+func hostedReleaseFiles(project string, hostedEnvs []templates.DeployEnv, mixed map[string]bool) []CIWorkflowFile {
+	if len(hostedEnvs) == 0 {
+		return nil
+	}
+	data := templates.ReleaseWorkflowData{
+		ProjectName: project,
+		BuildEnv:    hostedEnvs[0].Name,
+		Stages:      templates.ReleaseStages(hostedEnvs, mixed),
+	}
+	return []CIWorkflowFile{
+		{"release.yml.tmpl", ".github/workflows/release.yml", data},
+		{"forge-deploy-action.yml.tmpl", ForgeDeployActionPath, data},
+		// The platform stores a hosted env's profiles, so a hosted project
+		// can keep its committed default.pgo current with the env real
+		// traffic reaches: the last one promoted to.
+		{"pgo-refresh.yml.tmpl", ".github/workflows/pgo-refresh.yml", templates.PGORefreshWorkflowData{
+			ProjectName: project,
+			Env:         hostedEnvs[len(hostedEnvs)-1].Name,
+		}},
+	}
 }
 
 // ForeignCIWorkflow reports whether relPath, a CI file forge would scaffold,

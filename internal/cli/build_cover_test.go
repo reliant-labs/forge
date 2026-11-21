@@ -338,7 +338,7 @@ func TestCoverBuildFlags_RealBuild(t *testing.T) {
 	bin := filepath.Join(dir, "shop")
 	build := exec.Command("go", append(append([]string{"build"}, flags...), "-o", bin, "./cmd/shop")...)
 	build.Dir = dir
-	build.Env = goexec.Env("GOFLAGS=-mod=mod", "GOWORK=off")
+	build.Env = goexec.WithTrimpath(goexec.Env("GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build %v: %v\n%s", flags, err, out)
 	}
@@ -394,7 +394,7 @@ func TestCoverImageArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.applyCover(bins)
+	e.applyCover(bins, true)
 	api, edge := e.Workloads[0].Build.Docker, e.Workloads[1].Build.Docker
 	if !e.Workloads[0].CoverBuild() || e.Workloads[1].CoverBuild() {
 		t.Fatalf("api runs ./cmd/shop (instrumented), edge ./cmd/proxy (declared off): got api=%v edge=%v",

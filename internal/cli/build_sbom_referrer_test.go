@@ -81,7 +81,7 @@ func TestAttachSBOMReferrer_AttachesBesideTheImage(t *testing.T) {
 	if c.subject != name+"@"+digest || !c.opts.Created.Equal(in.CutAt) || c.opts.Release != "v2.0.0" || c.opts.Generator != "syft@v1.57.2" {
 		t.Errorf("attach call = %+v", c)
 	}
-	got, source, err := sbomoci.FetchWith(context.Background(), nil, release.Artifact{SBOM: &ref}, "",
+	got, source, err := sbomoci.FetchWith(context.Background(), nil, release.Artifact{SBOM: &ref}, name+"@"+digest,
 		sbomoci.RegistryOptions{Credential: func(context.Context, string) (auth.Credential, error) { return auth.EmptyCredential, nil }})
 	if err != nil || source != sbomoci.SourceReferrer || !bytes.Equal(got, data) {
 		t.Errorf("the recorded referrer does not read back: (%q, %q, %v)", got, source, err)

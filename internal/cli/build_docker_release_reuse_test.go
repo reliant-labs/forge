@@ -207,15 +207,26 @@ func TestDockerReleaseBuild_GitSourceContextInputsResolveInTheCheckout(t *testin
 	writeInput(t, checkout, "Dockerfile", "FROM python\nCOPY . /app\n")
 	writeInput(t, checkout, "app.py", "print('v1')")
 	writeInput(t, f.projDir, "app.py", "the project's own file of the same name")
+	writeOverrides(t, f.projDir, map[string]string{"github.com/acme/billing": checkout})
+	prev := captureDockerSource
+	captureDockerSource = func(context.Context, string, string, string) *buildtarget.Source { return nil }
+	t.Cleanup(func() { captureDockerSource = prev })
 	pinned := func() WorkloadEntity {
-		return f.workload(func(d *DockerBuild) {
+		w := f.workload(func(d *DockerBuild) {
 			d.ContextSource = &config.GitSource{Repo: "github.com/acme/billing", Ref: "v2.3.1"}
-			d.ContextDir, d.DockerfilePath = checkout, filepath.Join(checkout, "Dockerfile")
 			d.Inputs = []string{"**/*.py"}
 		})
+		if err := resolveDockerBuildSources(context.Background(), f.projDir, w.Name, w.Build.Docker); err != nil {
+			t.Fatal(err)
+		}
+		if got := serviceDockerfile(w.Build.Docker); got != filepath.Join(checkout, "Dockerfile") {
+			t.Fatalf("Docker would build %q, want the checkout Dockerfile", got)
+		}
+		return w
 	}
 	f.cut("v1", pinned(), buildOptions{})
 	writeInput(t, f.projDir, "app.py", "edited in the project, not the checkout")
+	writeInput(t, f.projDir, "Dockerfile", "FROM scratch\nLABEL unused=changed\n")
 	if r := f.cut("v2", pinned(), buildOptions{}); !r.upToDate || f.runs != 1 {
 		t.Fatalf("an edit outside the checkout rebuilt (runs=%d)", f.runs)
 	}
@@ -223,10 +234,14 @@ func TestDockerReleaseBuild_GitSourceContextInputsResolveInTheCheckout(t *testin
 	if r := f.cut("v3", pinned(), buildOptions{}); r.upToDate || f.runs != 2 {
 		t.Fatalf("an edit inside the checkout was reused (runs=%d)", f.runs)
 	}
+	writeInput(t, checkout, "Dockerfile", "FROM python\nCOPY . /new-app\n")
+	if r := f.cut("v4", pinned(), buildOptions{}); r.upToDate || f.runs != 3 {
+		t.Fatalf("the resolved Dockerfile changed without a rebuild (runs=%d)", f.runs)
+	}
 	// The pin is part of the declaration: another ref is another image.
 	moved := pinned()
 	moved.Build.Docker.ContextSource = &config.GitSource{Repo: "github.com/acme/billing", Ref: "v2.4.0"}
-	if r := f.cut("v4", moved, buildOptions{}); r.upToDate || f.runs != 3 {
+	if r := f.cut("v5", moved, buildOptions{}); r.upToDate || f.runs != 4 {
 		t.Fatalf("a moved GitSource ref was reused (runs=%d)", f.runs)
 	}
 }

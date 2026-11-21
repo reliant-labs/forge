@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/reliant-labs/forge/pkg/serverkit"
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -27,7 +26,10 @@ func TestCoverageHandler_RealCoverBuild(t *testing.T) {
 
 	cover := startCovServer(t, filepath.Join(dir, "cover"), "-cover", "-covermode=atomic")
 	for _, target := range []string{serverkit.CoveragePath, serverkit.CoveragePath + "?reset=1"} {
-		body := getWithin(t, "http://"+cover+target, 10*time.Second)
+		code, body := getOnce(t, "http://"+cover+target)
+		if code != http.StatusOK {
+			t.Fatalf("%s answered %d: %s", target, code, body)
+		}
 		var meta, counters bool
 		tr := tar.NewReader(bytes.NewReader(body))
 		for {
@@ -47,23 +49,26 @@ func TestCoverageHandler_RealCoverBuild(t *testing.T) {
 	}
 
 	plain := startCovServer(t, filepath.Join(dir, "plain"))
-	var resp *http.Response
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var err error
-		resp, err = http.Get("http://" + plain + serverkit.CoveragePath)
-		if err == nil || time.Now().After(deadline) {
-			if err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if code, _ := getOnce(t, "http://"+plain+serverkit.CoveragePath); code != http.StatusNotFound {
+		t.Errorf("binary built without -cover answered %d, want 404", code)
 	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("binary built without -cover answered %d, want 404", resp.StatusCode)
+}
+
+// getOnce GETs url once. covserver prints its address only after its
+// listener is bound, so the connection is accepted with no retry: the event
+// the test waits on is that line, not a duration.
+func getOnce(t *testing.T, url string) (int, []byte) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, body
 }
 
 // startCovServer builds testdata/covserver to bin with flags, runs it, and

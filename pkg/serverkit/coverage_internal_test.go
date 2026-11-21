@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,11 +133,39 @@ func TestCoverageHandler_RefusesOtherMethods(t *testing.T) {
 	}
 }
 
-// The endpoint rides the debug listener's mux, never the public one.
-func TestPprofMuxMountsCoverage(t *testing.T) {
-	p := NewPprof(Config{PprofAddr: "127.0.0.1:0"}, nil)
-	_, pattern := p.srv.Handler.(*http.ServeMux).Handler(httptest.NewRequest(http.MethodGet, CoveragePath, nil))
-	if pattern != CoveragePath {
-		t.Fatalf("debug mux routes %s to %q, want the coverage handler", CoveragePath, pattern)
+// The endpoint rides the debug listener's mux, never the public one, and
+// only when that listener is bound to loopback: it reads and resets the
+// process's counters with no auth. A reachable bind withholds it, and says so
+// once.
+func TestPprofMuxMountsCoverageOnlyOnLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		addr    string
+		mounted bool
+	}{
+		{"127.0.0.1:6060", true},
+		{"127.0.0.5:0", true},
+		{"localhost:6060", true},
+		{"[::1]:6060", true},
+		{"0.0.0.0:6060", false},
+		{":6060", false},
+		{"[::]:6060", false},
+		{"10.0.0.7:6060", false},
+		{"pprof.internal:6060", false},
+	} {
+		var logs bytes.Buffer
+		p := NewPprof(Config{PprofAddr: tc.addr}, slog.New(slog.NewTextHandler(&logs, nil)))
+		_, pattern := p.srv.Handler.(*http.ServeMux).Handler(httptest.NewRequest(http.MethodGet, CoveragePath, nil))
+		if got := pattern == CoveragePath; got != tc.mounted {
+			t.Errorf("%s: coverage mounted = %v, want %v", tc.addr, got, tc.mounted)
+		}
+		withheld := strings.Count(logs.String(), "coverage endpoint withheld")
+		if want := map[bool]int{true: 0, false: 1}[tc.mounted]; withheld != want {
+			t.Errorf("%s: logged the withheld endpoint %d times, want %d:\n%s", tc.addr, withheld, want, logs.String())
+		}
+	}
+	// pprof itself is unaffected: a reachable bind is the author's choice for it.
+	p := NewPprof(Config{PprofAddr: "0.0.0.0:6060"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, pattern := p.srv.Handler.(*http.ServeMux).Handler(httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)); pattern != "/debug/pprof/" {
+		t.Errorf("pprof routes /debug/pprof/heap to %q", pattern)
 	}
 }

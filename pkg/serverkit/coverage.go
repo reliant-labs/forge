@@ -35,7 +35,9 @@ const CoveragePath = "/debug/coverage"
 // at exit), and 409 when it
 // was built in a mode other than atomic: Go writes and clears live counters
 // only in atomic mode (`-covermode=atomic`, which every forge cover build
-// uses). It is mounted on the debug listener only, never the public edge.
+// uses). It is mounted on the debug listener only, never the public edge,
+// and only when that listener is bound to loopback: it reads and resets
+// process-wide counters with no auth, so loopback is its auth.
 func CoverageHandler() http.Handler {
 	return coverageHandler{rt: goCoverage{}}
 }

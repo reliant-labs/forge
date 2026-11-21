@@ -122,7 +122,7 @@ func appliedTables(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
 		tables, shadow, err := applyPrivate(projectDir, migDir, Resolve(projectDir))
-		shadow.Close()
+		closeShadow(shadow)
 		return tables, err
 	}
 	if err != nil || tpl == nil {
@@ -153,7 +153,7 @@ func Views(projectDir, migDir string) ([]schemadef.Table, error) {
 	tpl, done, err := runTemplate(projectDir, migDir)
 	if errors.Is(err, errOutsideRun) {
 		_, shadow, err := applyPrivate(projectDir, migDir, Resolve(projectDir))
-		defer shadow.Close()
+		defer closeShadow(shadow)
 		if err != nil || shadow == nil {
 			return nil, err
 		}
@@ -207,15 +207,23 @@ func applyPrivate(projectDir, migDir, server string) ([]schemadef.Table, *schema
 	}
 	tables, shadow, err := applyShadow(set, server)
 	if wentAway(server, err) {
-		shadow.Close()
+		closeShadow(shadow)
 		warnFallback(server, err)
 		tables, shadow, err = applyShadow(set, "")
 	}
 	if err != nil {
-		shadow.Close()
+		closeShadow(shadow)
 		return nil, nil, err
 	}
 	return tables, shadow, nil
+}
+
+// closeShadow closes shadow when there is one: a failed apply may return
+// none, and every cleanup path here runs after one.
+func closeShadow(shadow *schemadef.Shadow) {
+	if shadow != nil {
+		shadow.Close()
+	}
 }
 
 // runTemplate returns this run's template for migDir's current content,

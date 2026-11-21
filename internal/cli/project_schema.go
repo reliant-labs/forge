@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/schemagen"
+	"github.com/reliant-labs/forge/internal/testcollect"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -62,6 +63,7 @@ func publishedSchemas() map[string]struct {
 		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
 		"test-report":   testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
 		"test-flakes":   testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
+		"test-collect":  testDocumentSchema("test-collect", testcollect.Schema, reflect.TypeOf(testcollect.Document{}), "the coverage `forge test collect <env> --json` pulled from each workload of an env: where from, its build, the stale builds kept apart"),
 	}
 }
 

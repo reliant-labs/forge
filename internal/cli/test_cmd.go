@@ -32,5 +32,6 @@ cannot be written is a warning, never a different verdict. FORGE_TESTS=off
 turns recording off for one invocation.`,
 	}
 	cmd.AddCommand(newTestBeginCmd(), newTestCaptureCmd())
+	cmd.AddCommand(newTestCollectCmd())
 	return cmdutil.StrictGroup(cmd)
 }

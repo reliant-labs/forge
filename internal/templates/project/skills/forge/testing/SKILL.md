@@ -295,6 +295,8 @@ is compiled into the default lane, where nothing skips it.
 - `testing/integration` — real-DB tests behind `//go:build integration`.
 - `testing/flow` — hand-written multi-entity RPC tests: seed the FK spine with `seedplan.SeedGraph`, drive the real service against a migrated DB, assert the derived result + the negative/gap case.
 - `testing/e2e` — full-stack flows behind `//go:build e2e`.
+- `testing/coverage` — what the lanes record (results, coverage, diff coverage), `forge test report`, and e2e coverage from instrumented `cover` builds.
+- `testing/flakes` — flake states, the flake gate and the quarantine, computed from the same record.
 - `testing/patterns` — copy-paste-ready table-driven templates for the four most common test shapes.
 
 For Next.js / vite-spa / React frontends, this Go-flavored skill does NOT apply. Load the top-level `frontend-testing` skill instead — it covers Vitest + Testing Library patterns, the `mockTransport()` seam, and the four-state page coverage rule.

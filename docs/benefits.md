@@ -81,6 +81,7 @@ prints this list for the directory you run it in.
 | [Slow-test gating for the fast tier](#slow-test-enforcement)  | In a Go module, run `forge lint --slow-tests`, then mark each test it names with `testkit.Slow` (`go get github.com/reliant-labs/forge`).                                                                                                                                        | ~15 min    |
 | [Test time budgets](#test-budget)                             | In a Go module, pipe `go test -short -json ./...` into `forge ci test-budget`.                                                                                                                                                                                                   | ~5 min     |
 | [Skipped-test detection in CI](#skipped-pass-detector)        | In a Go module, pipe `go test -json ./...` into `forge ci verify-test-run`.                                                                                                                                                                                                      | ~5 min     |
+| [Record any CI's test reports](#test-record-any-ci)           | After your tests, run `forge test ingest --lane <name> --format junit <report.xml>` and then `forge test report` (add `--format cobertura <coverage.xml>` for coverage).                                                                                                         | ~10 min    |
 | [Bug-class linters, one verdict](#one-lint-gate)              | Run `forge lint --quiet` at the repo root; lanes that need a Go module or a forge project skip and say why.                                                                                                                                                                      | ~10 min    |
 | [Timezone-safe date bucketing](#time-bucketing-lint)          | Run `forge lint --time-bucketing` in a Go module whose migrations are `db/migrations/*.up.sql` (it reads the column types from them).                                                                                                                                            | ~5 min     |
 | [Broken-trace detection and fixes](#lint-rules-tracing)       | In a Go module, run `forge lint --tracing`; `--fix` rewrites each log call to its `…Context` form.                                                                                                                                                                               | ~10 min    |
@@ -1005,6 +1006,84 @@ _Enforced · Forge, on any infrastructure_
 - command `forge lint --tests`
 - lint lane `forge lint --tests`
 - lint lane `forge lint --conventions`
+
+<a id="test-record-coverage"></a>
+
+### Results and coverage recorded per lane
+
+Each scaffolded test lane records its results and its statement coverage under `.forge/tests/runs/` through `forge test capture`, which passes the command's own exit code through, and `forge test report` merges the lanes into one report with diff coverage against the base and generated code left out of the percentages.
+
+_Recorded · Forge, on any infrastructure_
+
+**Use:** `task test`, then `task test:report`; `forge test coverage --diff origin/main` lists the changed lines no test reached, and `--format lcov|cobertura|html` hands the figures to other tools.
+
+**Why:** forge never decides how the tests run: the flags live in your Taskfile and forge records what they produced. Runs from different trees, or from two builds of one package, are refused rather than averaged, and coverage never decides an exit code.
+
+**Evidence:**
+
+- command `forge test capture`
+- command `forge test report`
+- command `forge test coverage`
+- library [`pkg/testreport`](../pkg/testreport)
+- skill `testing/coverage` (`forge skill load testing/coverage`)
+
+<a id="test-record-any-ci"></a>
+
+### Record any CI's test reports
+
+`forge test ingest` copies a JUnit, Vitest, LCOV, Cobertura or istanbul report from any language's runner into a recorded run, and `forge test report` summarises it, with no forge.yaml.
+
+_Enforced · Forge, on any infrastructure_
+
+**Works in any repo** (no forge.yaml). **Start:** After your tests, run `forge test ingest --lane <name> --format junit <report.xml>` and then `forge test report` (add `--format cobertura <coverage.xml>` for coverage). **Agent time:** ~10 min.
+
+**Use:** `forge test ingest --lane pytest --format junit report.xml`, then `forge test report`; `--upload` sends it to a control plane that records Tests.
+
+**Evidence:**
+
+- command `forge test ingest`
+- command `forge test report`
+- skill `deploy/record` (`forge skill load deploy/record`)
+
+<a id="e2e-cover-builds"></a>
+
+### End-to-end coverage from cover builds
+
+Go servers in local, ephemeral and preview envs are built with `-cover`, and `forge test collect` pulls what an e2e run reached into the same report as the unit lanes; a persistent env refuses a cover build unless it says why, so prod runs the digest staging ran.
+
+_Enforced · Forge, on any infrastructure_
+
+**Use:** `task test:e2e ENV=<env>` zeroes the counters, runs the suite and collects; `forge.Tests` in `deploy/kcl/<env>/main.k` overrides the default.
+
+**Why:** The coverage endpoint is served on the debug listener's loopback address only, and counters from two builds of one package are never merged.
+
+**Evidence:**
+
+- command `forge test collect`
+- source [`pkg/serverkit/coverage.go`](../pkg/serverkit/coverage.go)
+- source [`internal/cli/build_cover.go`](../internal/cli/build_cover.go)
+- skill `testing/coverage` (`forge skill load testing/coverage`)
+
+<a id="flake-states-quarantine"></a>
+
+### Flaky tests found, ranked, quarantined
+
+`forge test flakes` derives each test's state (suspected, flaky, quarantined, fixed, removed) from the recorded runs, leaves host and correlated-infrastructure failures out of the scores, ranks by flake rate with its n, and writes the quarantine as one file per test.
+
+_Recorded · Forge, on any infrastructure_
+
+**Use:** `forge test flakes`, `forge test quarantine add <test-id>`; `forge test flakes gate` runs the tests a change adds or edits three times, and blocks only when `lint.rules: {flake-check: error}`.
+
+**Why:** Flaky means confirmed events on two or more distinct commits, so a burst of re-runs on one commit counts once. Flake issues and quarantine pull requests are opt-in (`tests.flakes.issues`, `quarantine: pr`).
+
+**Evidence:**
+
+- command `forge test flakes`
+- command `forge test flakes gate`
+- command `forge test flakes confirm`
+- command `forge test quarantine add`
+- library [`pkg/testreport`](../pkg/testreport)
+- skill `testing/flakes` (`forge skill load testing/flakes`)
 
 <a id="kcl-eval-tests"></a>
 

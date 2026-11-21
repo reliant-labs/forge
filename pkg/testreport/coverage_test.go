@@ -340,6 +340,54 @@ func TestMerge_PathsAndExclusions(t *testing.T) {
 	}
 }
 
+// A Go profile names a file by import path; another input may name the same
+// file by its path (an absolute path under Root, an LCOV or Cobertura
+// report). Once Merge derives the path from the module path, both are one
+// file, and a line-granular report of it is a granularity mismatch rather
+// than a second file.
+func TestMerge_ImportPathAndRepoPathAreOneFile(t *testing.T) {
+	byImport := parseCov(t, "unit.out", testreport.LaneUnit)
+	byPath, err := parseCovString(t, "mode: atomic\n/repo/a/a.go:13.2,13.9 1 4\n/repo/a/a.go:5.2,5.11 1 0\n/repo/a/a.go:6.3,7.1 1 0\n/repo/a/a.go:8.2,8.10 1 0\n/repo/a/a.go:15.3,15.12 1 0\n/repo/a/a.go:17.3,17.11 1 0\n/repo/a/a.go:19.2,19.10 1 0\n/repo/a/a.go:23.24,23.41 1 0\n",
+		testreport.CoverageOptions{Lane: testreport.LaneE2E, Tree: "tree1", Root: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byPath.Files[0].Path != "a/a.go" || byPath.Files[0].ImportPath != "" {
+		t.Fatalf("by-path input: %+v", byPath.Files[0])
+	}
+	m := merge(t, testreport.MergeOptions{ModulePath: "example.com/demo"}, byImport, byPath)
+	var aFiles []testreport.CoverageFile
+	for _, f := range m.Files {
+		if f.Path == "a/a.go" {
+			aFiles = append(aFiles, f)
+		}
+	}
+	if len(aFiles) != 1 {
+		t.Fatalf("a/a.go appears %d times: %+v", len(aFiles), m.Files)
+	}
+	f := aFiles[0]
+	if f.ImportPath != "example.com/demo/a/a.go" || f.Granularity != testreport.GranularityStatement || len(f.Blocks) != 8 {
+		t.Errorf("merged file %+v", f)
+	}
+	if e := m.Summary().Lanes[testreport.LaneE2E]; e.Statements != 8 || e.Covered != 1 {
+		t.Errorf("e2e lane over a/a.go: %+v", e)
+	}
+
+	// The same file as LCOV lines: one file, two granularities, refused.
+	lcov, err := parseCovString(t, "SF:/repo/a/a.go\nDA:5,1\nend_of_record\n", testreport.CoverageOptions{Lane: "lines", Tree: "tree1", Root: "/repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gm *testreport.GranularityMismatchError
+	if _, err := testreport.Merge([]*testreport.Coverage{byImport, lcov}, testreport.MergeOptions{ModulePath: "example.com/demo"}); !errors.As(err, &gm) || gm.File != "a/a.go" {
+		t.Errorf("profile + LCOV of one .go file: %v", err)
+	}
+	// In either order.
+	if _, err := testreport.Merge([]*testreport.Coverage{lcov, byImport}, testreport.MergeOptions{ModulePath: "example.com/demo"}); !errors.As(err, &gm) {
+		t.Errorf("LCOV first: %v", err)
+	}
+}
+
 func TestMatchGlob(t *testing.T) {
 	cases := []struct {
 		glob, path string

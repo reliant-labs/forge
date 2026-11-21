@@ -50,7 +50,7 @@ func publishedSchemas() map[string]struct {
 			body: envSchemaJSON,
 		},
 		"test-results":  testDocumentSchema("test-results", testreport.SchemaResults, reflect.TypeOf(testreport.Results{}), "one lane run's test cases, normalised from go test -json, JUnit or Vitest JSON (.forge/tests/runs/<id>/<lane>/)"),
-		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "covered files, their statement blocks and hits per lane, with each file's repo path and git blob id; `forge test coverage --json`"),
+		"test-coverage": testDocumentSchema("test-coverage", testreport.SchemaCoverage, reflect.TypeOf(testreport.Coverage{}), "the stored per-commit coverage document: covered files, their statement blocks and hits per lane, each file's repo path and git blob id; embedded as `coverage` in `forge test coverage --json`"),
 		"test-report":   testDocumentSchema("test-report", testreport.SchemaReport, reflect.TypeOf(testreport.Report{}), "a summary of test runs on one tree: totals, coverage figures, failures and flake signals; `forge test report --json`"),
 		"test-flakes":   testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
 	}

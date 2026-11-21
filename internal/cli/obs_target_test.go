@@ -34,7 +34,7 @@ func obsTargetProject(t *testing.T, endpoint string) string {
 			t.Fatal(err)
 		}
 	}
-	write("forge.yaml", "name: obstarget\nmodule_path: github.com/example/obstarget\nversion: \"0.1.0\"\n")
+	write("forge.yaml", "name: obstarget\nmodule_path: github.com/example/obstarget\n")
 	write("deploy/kcl/kcl.mod", "[package]\nname = \"obstarget-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
 	write("deploy/kcl/prod/main.k", "# declaration under test; never evaluated\n")
 	ensureLedgerReady(t, dir)

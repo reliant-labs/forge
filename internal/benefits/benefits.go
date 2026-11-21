@@ -10,12 +10,14 @@
 //
 //   - docs/benefits.md          RenderMarkdown, the whole page
 //   - README.md                 RenderReadmeTable, spliced between the
-//     `<!-- benefits:start -->` / `<!-- benefits:end -->` markers
+//     `<!-- benefits:start -->` / `<!-- benefits:end -->` markers, and
+//     RenderReadmeReasons between `<!-- reasons:start -->` / `<!-- reasons:end -->`
+//   - docs/why-forge.md         RenderWhy, the reasons with their evidence
 //
 // Other sites (the landing page) read benefits.yaml itself.
 //
-// `task docs:benefits` rewrites the two files; TestRenderedFilesAreCurrent
-// fails when either is stale.
+// `task docs:benefits` rewrites the files; TestRenderedFilesAreCurrent
+// fails when any is stale.
 //
 // This package checks only what it can check alone: the schema (Validate).
 // Whether each evidence item still EXISTS — a command in the cobra tree, a
@@ -100,6 +102,10 @@ type Registry struct {
 	// (the `compare` skill) renders them, so the trade-offs are as checked as
 	// the wins.
 	Limits []Limit `yaml:"limits,omitempty" json:"limits,omitempty"`
+	// Reasons are why forge: the cross-layer argument the benefits back,
+	// each citing the entries that prove it (reasons.go). They render as
+	// docs/why-forge.md, the README's "Why Forge" block and `forge why`.
+	Reasons []Reason `yaml:"reasons,omitempty" json:"reasons,omitempty"`
 }
 
 // Glance audiences: an app with an API, and a frontend-only static site.
@@ -389,6 +395,7 @@ func (r *Registry) Validate() error {
 	}
 	r.validateGlance(ids, fail)
 	r.validateLimits(ids, cats, fail)
+	r.validateReasons(fail)
 	return errors.Join(errs...)
 }
 

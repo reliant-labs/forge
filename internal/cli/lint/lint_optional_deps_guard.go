@@ -201,6 +201,18 @@ func CollectOptionalDepsGuardFindings(projectDir string) ([]OptionalDepsGuardFin
 // prose that merely mentions the marker doesn't suppress anything.
 const optionalCheckedDirective = "forge:optional-checked"
 
+// isOptionalCheckedDirective reports whether text, a comment's content, is
+// the directive: bare, or followed by `: <reason>` as its marker grammar
+// (codegen.GoMarkerReasoned) allows. A reason used to suppress nothing
+// (forge report b43668fe), which punished the author who wrote down why.
+func isOptionalCheckedDirective(text string) bool {
+	if text == optionalCheckedDirective {
+		return true
+	}
+	rest, ok := strings.CutPrefix(text, optionalCheckedDirective)
+	return ok && strings.HasPrefix(rest, ":")
+}
+
 // optionalDepsGuardFinding is one unguarded deref of an optional-dep
 // field. File is projectDir-relative; Line/Col are 1-based positions of
 // the deref's root expression (the optional field selector itself, not
@@ -391,7 +403,7 @@ func scanPackageForUnguardedDerefs(projectDir, pkgDir, role, pkgName string, opt
 		suppressed := map[int]bool{}
 		for _, cg := range file.Comments {
 			for _, c := range cg.List {
-				if commentDirectiveText(c.Text) == optionalCheckedDirective {
+				if isOptionalCheckedDirective(commentDirectiveText(c.Text)) {
 					suppressed[fset.Position(c.Pos()).Line] = true
 				}
 			}

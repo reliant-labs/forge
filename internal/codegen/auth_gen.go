@@ -38,13 +38,17 @@ type AuthSetupTemplateData struct {
 // Scaffold-once, never overwritten after first emit (os.Stat guard) — the
 // user owns the bytes. The generated cmd serve wiring calls app.SetupAuth
 // and threads the returned validator into the auth interceptor.
-func GenerateAuthSetup(modulePath, projectDir string) error {
+func GenerateAuthSetup(modulePath, projectDir string) (bool, error) {
 	return GenerateAuthSetupData(projectDir, AuthSetupTemplateData{Module: modulePath})
 }
 
 // GenerateAuthSetupData is GenerateAuthSetup with the whole template input:
 // a project in graph mode passes Graph and HasDatabase.
-func GenerateAuthSetupData(projectDir string, data AuthSetupTemplateData) error {
+//
+// The bool reports whether this call created the file: false when the
+// scaffold-once guard declined (the file exists, or was deleted on purpose),
+// so a caller never prints "Scaffolded" for a file it did not write.
+func GenerateAuthSetupData(projectDir string, data AuthSetupTemplateData) (bool, error) {
 	appDir := filepath.Join(projectDir, "internal", "app")
 	path := filepath.Join(appDir, "auth.go")
 	rel := filepath.Join("internal", "app", "auth.go")
@@ -53,18 +57,18 @@ func GenerateAuthSetupData(projectDir string, data AuthSetupTemplateData) error 
 		// never resurrect a deleted one. A project that wires auth its own
 		// way (or has no auth surface at all) deletes this file and it
 		// stays gone.
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
-		return fmt.Errorf("create internal/app dir: %w", err)
+		return false, fmt.Errorf("create internal/app dir: %w", err)
 	}
 	content, err := templates.ProjectTemplates().Render("app-auth.go.tmpl", data)
 	if err != nil {
-		return fmt.Errorf("render app-auth.go.tmpl: %w", err)
+		return false, fmt.Errorf("render app-auth.go.tmpl: %w", err)
 	}
 	if err := writeUserScaffold(path, content); err != nil {
-		return err
+		return false, err
 	}
 	checksums.RecordScaffold(projectDir, rel)
-	return nil
+	return true, nil
 }

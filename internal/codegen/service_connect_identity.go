@@ -79,6 +79,7 @@ func reconcileConnectIdentity(svc ServiceDef, root, dir string, cs *checksums.Fi
 		for _, shape := range []struct{ prefix, suffix, target string }{
 			{"Unimplemented", "Handler", svc.GoName()},
 			{"New", "Handler", svc.GoName()},
+			{"Register", "Handler", svc.GoName()}, // connect-go v2's RegisterV2 body
 			{"", "Name", svc.Name},
 		} {
 			old := sel.Sel.Name

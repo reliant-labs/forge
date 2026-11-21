@@ -1,5 +1,7 @@
 package templates
 
+import "github.com/reliant-labs/forge/pkg/toolpins"
+
 // GolangciLintVersion is the one golangci-lint release forge installs and
 // ships: forge's own CI and scripts/bootstrap.sh, and — through the CI
 // template and the scaffolded scripts/bootstrap.sh — every project forge
@@ -90,3 +92,21 @@ const GovulncheckVersion = "v1.7.0"
 // GoLicensesVersion is the go-licenses release `forge ci gate` installs when
 // the one on PATH is not it.
 const GoLicensesVersion = "v1.6.0"
+
+// SyftVersion is the syft release forge generates SBOMs with (CycloneDX
+// JSON, one per release artifact). GrypeVersion is the grype release forge
+// scans those SBOMs with. Both are installed by internal/toolfetch as
+// upstream release binaries, each archive verified against a sha256 compiled
+// into forge, never whatever is on PATH: a scanner release changes what it
+// matches, so the verdict of a scan must name the exact scanner that
+// produced it.
+//
+// They are pkg/toolpins' versions, the public package that also holds each
+// archive's sha256, so forge, control-plane's scanner image and anything
+// else read one copy. Bump them there, with the release's checksums file
+// (pkg/toolpins/testdata), which TestPinsMatchTheUpstreamChecksumsFiles
+// holds the pins to.
+const (
+	SyftVersion  = toolpins.SyftVersion
+	GrypeVersion = toolpins.GrypeVersion
+)

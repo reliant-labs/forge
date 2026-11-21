@@ -21,6 +21,8 @@ import (
 //   - neither: the defaults (dev's same-origin /_otel, empty in a build,
 //     replay off, no environment), and nothing is warned.
 //
+// Session replay has no build variable: one set at build time is ignored.
+//
 // The bundler's part is reproduced, not skipped: Vite's
 // `import.meta.env.X` is defined from the case's build variables, as `vite
 // build` inlines it, and Next's `process.env.X` is the real environment.
@@ -65,7 +67,7 @@ func TestTelemetryBuildVariableFallbackBehaviour(t *testing.T) {
 			name:  "deprecated build fallback warns once",
 			build: map[string]string{"OTEL_ENDPOINT": "/build", "ENVIRONMENT": "frozen", "OTEL_REPLAY": "true"},
 			check: func(t *testing.T, prefix string, r result) {
-				want := map[string]any{"endpoint": "/build", "environment": "frozen", "replay": true}
+				want := map[string]any{"endpoint": "/build", "environment": "frozen", "replay": false}
 				for k, v := range want {
 					if r.Options[k] != v {
 						t.Errorf("%s = %v, want the build value %v", k, r.Options[k], v)
@@ -78,7 +80,6 @@ func TestTelemetryBuildVariableFallbackBehaviour(t *testing.T) {
 				for _, part := range []string{
 					prefix + "OTEL_ENDPOINT (declare it as config.otel_endpoint)",
 					prefix + "ENVIRONMENT (declare it as config.environment)",
-					prefix + "OTEL_REPLAY (declare it as telemetry.replay = True)",
 					"runtime config",
 					"deprecated",
 					"next major version of forge",
@@ -87,19 +88,22 @@ func TestTelemetryBuildVariableFallbackBehaviour(t *testing.T) {
 						t.Errorf("warning does not say %q:\n%s", part, w)
 					}
 				}
+				if strings.Contains(w, prefix+"OTEL_REPLAY") {
+					t.Errorf("warning names %sOTEL_REPLAY, which is never read:\n%s", prefix, w)
+				}
 			},
 		},
 		{
 			name:    "a partial runtime config warns only for the key it lacks",
-			runtime: map[string]string{"OTEL_ENDPOINT": "/rt", "ENVIRONMENT": "staging"},
-			build:   map[string]string{"OTEL_ENDPOINT": "/build", "OTEL_REPLAY": "true"},
+			runtime: map[string]string{"OTEL_ENDPOINT": "/rt"},
+			build:   map[string]string{"OTEL_ENDPOINT": "/build", "ENVIRONMENT": "frozen"},
 			check: func(t *testing.T, prefix string, r result) {
-				if r.Options["endpoint"] != "/rt" || r.Options["replay"] != true {
-					t.Errorf("options = %v, want endpoint from runtime, replay from the build", r.Options)
+				if r.Options["endpoint"] != "/rt" || r.Options["environment"] != "frozen" {
+					t.Errorf("options = %v, want endpoint from runtime, environment from the build", r.Options)
 				}
-				if len(r.Warns) != 1 || !strings.Contains(r.Warns[0], prefix+"OTEL_REPLAY") ||
+				if len(r.Warns) != 1 || !strings.Contains(r.Warns[0], prefix+"ENVIRONMENT") ||
 					strings.Contains(r.Warns[0], prefix+"OTEL_ENDPOINT") {
-					t.Errorf("want one warning naming %sOTEL_REPLAY alone, got %q", prefix, r.Warns)
+					t.Errorf("want one warning naming %sENVIRONMENT alone, got %q", prefix, r.Warns)
 				}
 			},
 		},

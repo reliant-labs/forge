@@ -86,7 +86,7 @@ const operatorRenderFailure = "evaluate KCL in /tmp/p/addverbs: exit status 1\n"
 // The cause of a failed render is kcl's diagnostic message, not the
 // subprocess's "exit status 1" nor the annotated source line above it.
 func TestRenderFailureCause_KCLDiagnostic(t *testing.T) {
-	want := "workload 'fleet' is bound to _on_cluster, but deploy/kcl/prod/main.k declares no `_cluster`: declare the cluster you operate there"
+	want := "workload 'fleet' is bound to _on_cluster, but deploy/kcl/prod/main.k declares no `_cluster`: declare the cluster you operate there (at /tmp/p/addverbs/deploy/kcl/base/env.k:69:1)"
 	if got := renderFailureCause(errors.New(operatorRenderFailure)); got != want {
 		t.Errorf("renderFailureCause = %q, want %q", got, want)
 	}

@@ -184,11 +184,19 @@ func startServer() (*server, error) {
 // no-op when this process never opened a database, and is idempotent.
 //
 // The forge CLI defers Shutdown so every `forge generate` process cleans up
-// its share on exit; ordinary `go test` binaries that never call it are
-// backstopped by reapStaleInstances. (`forge test` used to be the other
-// deferring caller. It is gone — projects run their suite through
-// `task test` — so the per-package `go test` binaries a suite spawns now reach
-// the pool directly, which is the path reapStaleInstances covers.)
+// its share on exit. A `go test` binary calls it only from a TestMain:
+//
+//	func TestMain(m *testing.M) {
+//		code := m.Run()
+//		pgtest.Shutdown()
+//		os.Exit(code)
+//	}
+//
+// One that does not (`forge test` used to defer it for the whole suite; it is
+// gone, and projects run `task test`) drops its lease when it exits and leaves
+// the shared server running, idle: the next process reuses it, and a later
+// boot's reapStaleInstances removes it once it is older than
+// staleInstanceAge. See pool.go, "Teardown strategy".
 func Shutdown() {
 	sharedMu.Lock()
 	defer sharedMu.Unlock()

@@ -162,6 +162,24 @@ func TestPreflightBufTemplate_Flags(t *testing.T) {
 				"go get -tool google.golang.org/protobuf/cmd/protoc-gen-go"},
 		},
 		{
+			// A connect-go v2 project's protoc-gen-connect-go is v2's.
+			name:  "go tool not declared in a connect-go v2 project",
+			local: "[go, tool, protoc-gen-connect-go]",
+			files: map[string]string{"go.mod": "module example.com/app\n\ngo 1.24\n\n" +
+				"require connectrpc.com/connect/v2 v2.0.2\n"},
+			programs: []string{"go"},
+			want: []string{"`go tool protoc-gen-connect-go` finds no tool directive",
+				"go get -tool connectrpc.com/connect/v2/cmd/protoc-gen-connect-go"},
+		},
+		{
+			name:     "go tool not declared in a connect-go v1 project",
+			local:    "[go, tool, protoc-gen-connect-go]",
+			files:    map[string]string{"go.mod": "module example.com/app\n\ngo 1.24\n\nrequire connectrpc.com/connect v1.21.1\n"},
+			programs: []string{"go"},
+			want: []string{"`go tool protoc-gen-connect-go` finds no tool directive",
+				"go get -tool connectrpc.com/connect/cmd/protoc-gen-connect-go"},
+		},
+		{
 			name:  "go tool declared by a go.work module",
 			local: "[go, tool, protoc-gen-connect-go]",
 			files: map[string]string{

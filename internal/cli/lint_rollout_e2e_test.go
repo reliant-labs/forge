@@ -16,11 +16,27 @@ import (
 // release the project's forge_version has not been through is a warning, and
 // the verdict line — the last line of the run — says so; pinning the release
 // it gates from turns the same finding into a failure; lint.rules opts in
-// early. forge-column-markers is a rule that is warn-first at this commit.
+// early.
+//
+// The binary under test is the one forge build that links a grace row in:
+// rolloutLinkFixture declares forge-column-markers new in v1.0.0 with grace
+// until v1.0.1, so the test, not the release calendar, controls the window.
+// Nothing else differs from the shipped binary, so this proves the grading,
+// the note, the verdict line and lint.rules exactly as a real grace row
+// (newRules) meets them.
 func TestE2ENewRuleWarnsUntilPinReachesGatesFrom(t *testing.T) {
 	t.Parallel()
-	forgeBin := buildforgeBinary(t)
+	requireTool(t, "go")
 	dir := t.TempDir()
+	forgeBin := filepath.Join(dir, "forge-rollout-fixture")
+	repo := findRepoRoot(t)
+	build := exec.Command("go", "build", "-ldflags",
+		devForgeRootLDFlag(repo)+" -X github.com/reliant-labs/forge/internal/cli/lint.rolloutLinkFixture=forge-column-markers@v1.0.0@v1.0.1",
+		"-o", forgeBin, "./cmd/forge")
+	build.Dir = repo
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build forge with the rollout fixture: %v\n%s", err, out)
+	}
 	runCmd(t, dir, forgeBin, "project", "new", "rollapp", "--mod", "example.com/rollapp", "--kind", "cli")
 	projectDir := filepath.Join(dir, "rollapp")
 

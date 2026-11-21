@@ -77,7 +77,7 @@ func TestEnvRender_DOptionReachesTheManifests(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("forge.yaml", "name: renderopt\nmodule_path: github.com/example/renderopt\nversion: \"0.1.0\"\n")
+	write("forge.yaml", "name: renderopt\nmodule_path: github.com/example/renderopt\n")
 	write("deploy/kcl/kcl.mod", "[package]\nname = \"renderopt-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
 	write("deploy/kcl/prod/main.k", `import forge
 import forge.workloads as fw

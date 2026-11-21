@@ -49,16 +49,16 @@ func TestUnscopedAuth_FollowsWrappersInOtherPackagesOfTheModule(t *testing.T) {
 	seamImport := `"example.com/app/pkg/` + seamPkg + `"`
 
 	src := handlerSource([]string{
-		`"example.com/app/internal/authz"`,
+		`"example.com/app/internal/whoami"`,
 		`"example.com/app/internal/lookup"`,
 		seamImport,
-		`extauthz "github.com/other/authz"`,
+		`extwhoami "github.com/other/whoami"`,
 	},
-		handlerCalling("GetOrder", "authz.Caller(ctx)"),           // one hop
-		handlerCalling("GetInvoice", "authz.Deep(ctx)"),           // two hops
+		handlerCalling("GetOrder", "whoami.Caller(ctx)"),          // one hop
+		handlerCalling("GetInvoice", "whoami.Deep(ctx)"),          // two hops
 		handlerCalling("GetSession", seamPkg+".RequireUser(ctx)"), // a wrapper in the seam package
 		handlerCalling("ListOrders", "lookup.Owner(ctx)"),         // reaches store.GetUser, a row fetch
-		handlerCalling("ListInvoices", "extauthz.Caller(ctx)"),    // same name, outside the module
+		handlerCalling("ListInvoices", "extwhoami.Caller(ctx)"),   // same name, outside the module
 		delegationBody("GetCart"),                                 // no getter at all
 	)
 	dir := writeProject(t, "ShopService", map[string]bool{
@@ -66,7 +66,7 @@ func TestUnscopedAuth_FollowsWrappersInOtherPackagesOfTheModule(t *testing.T) {
 		"ListOrders": true, "ListInvoices": true, "GetCart": true,
 	}, src)
 	writeSeamPackage(t, dir)
-	writeFile(t, filepath.Join(dir, "internal", "authz", "authz.go"), goFile("authz",
+	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
 		[]string{seamImport, `"example.com/app/internal/session"`},
 		"func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n\n"+
 			"func Deep(ctx context.Context) any { return session.User(ctx) }\n"))
@@ -87,6 +87,73 @@ func TestUnscopedAuth_FollowsWrappersInOtherPackagesOfTheModule(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("unscoped = %v, want %v — a same-module wrapper of the seam clears its handler at any hop "+
 			"within the bound; a same-named row fetch, a package outside the module, and a bare delegation do not", got, want)
+	}
+}
+
+func TestUnscopedAuth_WrapperReferencesAreNotCalls(t *testing.T) {
+	seamPkg, _, _ := strings.Cut(codegen.CRUDAuthSeam(), ".")
+	seamImport := `"example.com/app/pkg/` + seamPkg + `"`
+	src := handlerSource([]string{`"example.com/app/internal/whoami"`},
+		handlerCalling("GetOrder", "whoami.Caller"),
+		handlerCalling("GetInvoice", "consume(whoami.Caller)"),
+		handlerCalling("GetCart", "whoami.Client.UserID"),
+		handlerCalling("GetSession", "whoami.Indirect(ctx)"),
+		handlerCalling("ListOrders", "whoami.Caller(ctx)"),
+	)
+	dir := writeProject(t, "ShopService", map[string]bool{
+		"GetOrder": true, "GetInvoice": true, "GetCart": true, "GetSession": true, "ListOrders": true,
+	}, src)
+	writeSeamPackage(t, dir)
+	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
+		[]string{seamImport, `"example.com/app/internal/session"`},
+		"func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n"+
+			"type Client struct { UserID string }\n"+
+			"type Other struct{}\n"+
+			"func (Other) Client(ctx context.Context) any { return Caller(ctx) }\n"+
+			"func Indirect(ctx context.Context) any { return session.Caller }\n"))
+	writeFile(t, filepath.Join(dir, "internal", "session", "session.go"), goFile("session",
+		[]string{seamImport}, "func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n"))
+
+	got := unscopedMethods(t, auditUnscopedAuth(nil, dir))
+	slices.Sort(got)
+	if want := []string{"GetCart", "GetInvoice", "GetOrder", "GetSession"}; !slices.Equal(got, want) {
+		t.Fatalf("unscoped = %v, want %v — only an invoked wrapper resolves the caller", got, want)
+	}
+}
+
+// A local name that shadows the import alias is not the imported package:
+// `whoami.Caller(ctx)` on a local `whoami` value, in a handler or in a
+// followed wrapper, never clears a handler.
+func TestUnscopedAuth_ShadowedImportAliasIsNotTheWrapper(t *testing.T) {
+	seamPkg, _, _ := strings.Cut(codegen.CRUDAuthSeam(), ".")
+	seamImport := `"example.com/app/pkg/` + seamPkg + `"`
+	shadowed := func(method, decl string) string {
+		return "func (s *Service) " + method + "(ctx context.Context, req *connect.Request[pb." + method + "Request]) (*connect.Response[pb." + method + "Response], error) {\n" +
+			"\t" + decl + "\n\t_ = whoami.Caller(ctx)\n\treturn nil, nil\n}\n"
+	}
+	src := handlerSource([]string{`"example.com/app/internal/whoami"`, `"example.com/app/internal/relay"`},
+		shadowed("GetOrder", "whoami := s.lookup"),
+		shadowed("GetInvoice", "var whoami fakeWhoami"),
+		shadowed("GetCart", "for _, whoami := range s.lookups { _ = whoami }"),
+		"func (s *Service) GetSession(ctx context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {\n"+
+			"\tf := func(whoami fakeWhoami) any { return whoami.Caller(ctx) }\n\t_ = f\n\treturn nil, nil\n}\n",
+		handlerCalling("ListInvoices", "relay.Shadowed(ctx, nil)"),
+		handlerCalling("ListOrders", "whoami.Caller(ctx)"),
+	)
+	dir := writeProject(t, "ShopService", map[string]bool{
+		"GetOrder": true, "GetInvoice": true, "GetCart": true, "GetSession": true, "ListInvoices": true, "ListOrders": true,
+	}, src)
+	writeSeamPackage(t, dir)
+	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
+		[]string{seamImport}, "func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n"))
+	writeFile(t, filepath.Join(dir, "internal", "relay", "relay.go"), goFile("relay",
+		[]string{`"example.com/app/internal/whoami"`},
+		"func Shadowed(ctx context.Context, whoami fakeWhoami) any { return whoami.Caller(ctx) }\n"))
+
+	got := unscopedMethods(t, auditUnscopedAuth(nil, dir))
+	slices.Sort(got)
+	if want := []string{"GetCart", "GetInvoice", "GetOrder", "GetSession", "ListInvoices"}; !slices.Equal(got, want) {
+		t.Fatalf("unscoped = %v, want %v — only the imported whoami resolves the caller, never a local value of that name", got, want)
 	}
 }
 

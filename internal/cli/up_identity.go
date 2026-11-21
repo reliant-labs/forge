@@ -158,6 +158,13 @@ func idpPATLocations(zitadel *HostInfraEntity, projectDir string) hostinfra.IDPP
 	}.IDPPATLocations(projectDir)
 }
 
+// idpLogPath is the host IdP's log, project-relative for display: the file
+// hostinfra writes for the zitadel workload, .forge/logs/<env>/<name>.log
+// (named for the workload, whatever its data_dir).
+func idpLogPath(env string, zitadel *HostInfraEntity) string {
+	return filepath.ToSlash(hostinfra.LogPath("", env, zitadel.Name))
+}
+
 // convergeDevIdentityFn is devidentity.Converge, swappable so a test needs no
 // IdP.
 var convergeDevIdentityFn = devidentity.Converge
@@ -300,7 +307,7 @@ func convergeHostIdentity(ctx context.Context, e *KCLEntities, projectDir string
 	}
 	if err != nil {
 		fmt.Printf("[up] identity %s FAILED — continuing, because sign-in is the only thing that needs it:\n%v\n", id.Name, err)
-		fmt.Printf("[up] the IdP's log is %s\n", filepath.Join(".forge", "hostinfra", "idp", "zitadel.log"))
+		fmt.Printf("[up] the IdP's log is %s\n", idpLogPath(e.Env, zitadel))
 		return
 	}
 	for _, n := range notes {

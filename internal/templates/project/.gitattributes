@@ -36,3 +36,5 @@ forge_service_catalog.json merge=forge-generated
 .forge/scaffolded/** merge=forge-generated
 .forge/hashes/** merge=forge-generated
 .forge/disowned.json merge=forge-generated
+# Only the hash-proven forge guide is regenerable; Project Notes merge as text.
+/AGENTS.md merge=forge-generated

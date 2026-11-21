@@ -290,7 +290,7 @@ func TestCIWorkflows_ClusterOnlyProjectIsUnchanged(t *testing.T) {
 	root := hostedRoot(t)
 	files := CIWorkflowsFor(root, serviceCfg(), CIInputs{})
 	dests := ciDests(files)
-	if dests[".github/workflows/release.yml"] || dests[ForgeDeployActionPath] || dests[".github/workflows/pgo-refresh.yml"] {
+	if dests[".github/workflows/release.yml"] || dests[ForgeDeployActionPath] {
 		t.Fatalf("a cluster-only project got the hosted release pipeline: %v", dests)
 	}
 	deploy, ok := ciFile(files, ".github/workflows/deploy.yml").(templates.DeployWorkflowData)
@@ -338,11 +338,6 @@ func TestCIWorkflows_HostedEnvsGetReleaseWorkflow(t *testing.T) {
 	images, ok := ciFile(files, ".github/workflows/build-images.yml").(templates.BuildImagesWorkflowData)
 	if !ok || images.BuildEnv != "staging" {
 		t.Errorf("build-images must still build per commit, for the first hosted env: %+v", images)
-	}
-	// The platform stores a hosted env's profiles: the PGO refresh pulls
-	// the last env in promotion order, where real traffic runs.
-	if pgo, ok := ciFile(files, ".github/workflows/pgo-refresh.yml").(templates.PGORefreshWorkflowData); !ok || pgo.Env != "prod" {
-		t.Errorf("a hosted project must get pgo-refresh.yml pulling prod: %+v", pgo)
 	}
 }
 

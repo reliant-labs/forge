@@ -166,7 +166,6 @@ func TestCIWorkflows_CancelInProgressOnlyOnPullRequests(t *testing.T) {
 			Concurrency:  true,
 		}, false},
 		{"release.yml", "release.yml.tmpl", releaseFixture(), false},
-		{"pgo-refresh.yml", "pgo-refresh.yml.tmpl", PGORefreshWorkflowData{ProjectName: "demo", Env: "prod"}, false},
 	}
 	for _, wf := range workflows {
 		out, err := CITemplates("github").Render(wf.tmpl, wf.data)

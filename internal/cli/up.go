@@ -3295,6 +3295,9 @@ func reportEnvConflicts(service string, conflicts []envutil.EnvConflict) {
 // workload declares.
 func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w WorkloadEntity, secretsLayer map[string]string, env string) (*exec.Cmd, string, error) {
 	spec := hostRunnerSpec(w)
+	if err := withHostCover(ctx, &spec, w, env); err != nil {
+		return nil, "", err
+	}
 	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
 	if err != nil {
 		return nil, "", err
@@ -3321,7 +3324,11 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
+	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
+	// A bare `forge` the process runs (the scaffolded .air.toml's `forge
+	// storage check`) is the forge running this env.
+	cmd.Env = withForgeShimOnPath(cmd.Env, w.Name)
 
 	return cmd, w.Name, nil
 }

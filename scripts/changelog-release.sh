@@ -29,6 +29,24 @@
 # commits are skipped. Each bullet is the PR title less its `(#N)`, which
 # becomes a link to the pull request when the origin is on github.com.
 #
+# AGENT INSTRUCTIONS AND GENERATED-OUTPUT NOTES. A commit body may carry two
+# trailers, read from every commit of the squash (its body holds each commit
+# message of the PR):
+#
+#   Agent-Instructions: <what the agent upgrading across this change must do>
+#   Generated-Change: <generated file name or glob>: <what its output now does>
+#
+# A trailer's value continues on following lines that start with whitespace.
+# Each is rendered as a nested bullet under the PR's entry:
+#
+#   - **observe:** record failing calls' argument shapes ([#2349](…))
+#     - Agent: mark a sensitive argument `forge:no-capture`
+#     - Generated: middleware_gen.go: failing calls record redacted argument shapes
+#
+# `forge project upgrade` reads them back (internal/cli/upgrade_crossed.go)
+# and puts them in front of the agent running an upgrade across the release:
+# crossed[].agent_instructions and generated_changes[].notes in its --json.
+#
 # --generated-out also receives ONLY the commit bullets, grouped, with no
 # heading: a GitHub release body is capped at 125000 characters, and the first
 # section a long-lived Unreleased is folded into can be far larger.
@@ -73,6 +91,21 @@ trap 'rm -rf "$WORK"' EXIT
 # worth of changes, so only the Unreleased prose is folded in.
 
 G_BREAKING="" G_ADDED="" G_CHANGED="" G_FIXED=""
+
+# trailer_bullets BODY — the nested "  - Agent: …" / "  - Generated: …"
+# bullets for a commit body's Agent-Instructions / Generated-Change trailers,
+# one per line, each newline-terminated; nothing when it has none.
+trailer_bullets() {
+  printf '%s\n' "$1" | awk '
+    function flush() { if (cur != "") print cur; cur = "" }
+    /^[Aa]gent-[Ii]nstructions:/ { flush(); v = $0; sub(/^[^:]*:[ \t]*/, "", v); if (v != "") cur = "  - Agent: " v; next }
+    /^[Gg]enerated-[Cc]hange:/   { flush(); v = $0; sub(/^[^:]*:[ \t]*/, "", v); if (v != "") cur = "  - Generated: " v; next }
+    cur != "" && /^[ \t]+[^ \t]/ { v = $0; sub(/^[ \t]+/, "", v); cur = cur " " v; next }
+    { flush() }
+    END { flush() }
+  '
+}
+
 conv_re='^([A-Za-z]+)(\(([^)]+)\))?(!)?:[[:space:]]+(.+)$'
 
 while IFS= read -r -d $'\x1e' rec; do
@@ -107,6 +140,9 @@ while IFS= read -r -d $'\x1e' rec; do
     for b in $BREAKING_PRS; do [ "$b" = "$pr" ] && breaking=1; done
   fi
 
+  extras="$(trailer_bullets "$body")"
+  [ -z "$extras" ] || extras+=$'\n'
+
   ref=""
   if [ -n "$pr" ]; then
     if [ -n "$REPO_URL" ]; then ref=" ([#$pr]($REPO_URL/pull/$pr))"; else ref=" (#$pr)"; fi
@@ -116,9 +152,9 @@ while IFS= read -r -d $'\x1e' rec; do
     label="$type"
     [ -n "$scope" ] && label="$type($scope)"
     if [ -n "$label" ]; then
-      G_BREAKING+="- **${label}:** ${desc}${ref}"$'\n'
+      G_BREAKING+="- **${label}:** ${desc}${ref}"$'\n'"${extras}"
     else
-      G_BREAKING+="- ${desc}${ref}"$'\n'
+      G_BREAKING+="- ${desc}${ref}"$'\n'"${extras}"
     fi
     continue
   fi
@@ -126,9 +162,9 @@ while IFS= read -r -d $'\x1e' rec; do
   text="$desc"
   [ -n "$scope" ] && text="**${scope}:** ${desc}"
   case "$type" in
-    feat) G_ADDED+="- ${text}${ref}"$'\n' ;;
-    fix)  G_FIXED+="- ${text}${ref}"$'\n' ;;
-    *)    G_CHANGED+="- ${text}${ref}"$'\n' ;;
+    feat) G_ADDED+="- ${text}${ref}"$'\n'"${extras}" ;;
+    fix)  G_FIXED+="- ${text}${ref}"$'\n'"${extras}" ;;
+    *)    G_CHANGED+="- ${text}${ref}"$'\n'"${extras}" ;;
   esac
 done < <(if [ -n "$PREV_TAG" ]; then git log --no-merges --reverse --format='%H%x1f%s%x1f%b%x1e' "$PREV_TAG..HEAD"; fi)
 

@@ -116,6 +116,11 @@ type KCLEntities struct {
 	// env, and when it expires (forge env preview). Nil for every other env.
 	Preview *release.ShapePreview `json:"preview,omitempty"`
 
+	// Tests is Bundle.tests as declared: nil when the env declares nothing.
+	// The effective coverage of each binary is resolved by RenderKCLWith
+	// (ResolveCoverBinaries) and read through WorkloadEntity.CoverBuild.
+	Tests *TestsEntity `json:"tests,omitempty"`
+
 	// Applier is "forge" when the env DECLARES that forge applies it
 	// (Bundle.applier): a real environment, not a scratch one, none of whose
 	// delivery units has moved onto the hub yet. Transitional. "flux" when an
@@ -843,6 +848,9 @@ type DNSRecordEntity struct {
 // deploy dispatcher groups by Runtime, and a Hosted workload's Spec is
 // published verbatim as a forge.dev Workload CR.
 type WorkloadEntity struct {
+	// cover is set when the env builds this workload's Go binary with
+	// -cover (ResolveCoverBinaries). Set only by applyCover; never decoded.
+	cover *workloadCover
 	// releaseTemplate is this workload's ShellBuild as a SECOND render of a
 	// --release build composed it, with image_tag bound to a sentinel: the
 	// command and env before the release tag went in. Set only by
@@ -1059,6 +1067,19 @@ type BuildConfigEntity struct {
 	Docker     *DockerBuild // populated when Type=="docker"
 	Shell      *ShellBuild  // populated when Type=="shell"
 	Remote     *RemoteBuild // populated when Type=="remote"
+	// Outputs are the files the build produces that the release ships
+	// (kcl/schema.k Build.outputs), recorded by hash as file artifacts —
+	// see harvestDeclaredOutputs. Empty for a build that declares none.
+	Outputs []BuildOutput
+}
+
+// BuildOutput mirrors the kcl/schema.k BuildOutput: one file, directory or
+// glob a build writes, relative to the build's working directory (a
+// ShellBuild's resolved cwd, else the project root), and the platform it is
+// for ("" when platform-neutral).
+type BuildOutput struct {
+	Path     string `json:"path"`
+	Platform string `json:"platform,omitempty"`
 }
 
 // GoBuild mirrors the kcl/schema.k GoBuild. Cmd is the go-build target
@@ -1078,6 +1099,10 @@ type GoBuild struct {
 	// declares none decodes exactly as before. Read it through
 	// ResolvePGOBinaries, which applies the defaults.
 	PGO *PGOConfig `json:"pgo,omitempty"`
+	// Coverage is the binary's own coverage answer (kcl/schema.k
+	// GoBuild.coverage); nil follows the env's Tests. Read it through
+	// ResolveCoverBinaries / WorkloadEntity.CoverBuild.
+	Coverage *bool `json:"coverage,omitempty"`
 }
 
 // DockerBuild mirrors the kcl/schema.k DockerBuild — the per-service
@@ -1113,11 +1138,18 @@ type DockerBuild struct {
 	// builds, keyed by package path ("./cmd/app"). A binary it does not name
 	// gets the defaults (kcl/schema.k DockerBuild.pgo).
 	PGO map[string]PGOConfig `json:"pgo,omitempty"`
+	// Coverage is the coverage answer of each Go binary the image builds
+	// that it names, keyed by package path; a binary it does not name
+	// follows the env's Tests (kcl/schema.k DockerBuild.coverage).
+	Coverage map[string]bool `json:"coverage,omitempty"`
 	// Inputs are the globs (relative to the project root, or to the resolved
 	// GitSource context) naming the files the image is built from. Declared,
 	// they let a --release build reuse an earlier release's image whose
 	// fingerprint is unchanged — see build_docker_release_reuse.go.
 	Inputs []string `json:"inputs,omitempty"`
+	// cover is set when the env builds this image instrumented: the binary
+	// its workload runs is a cover build (applyCover). Never decoded.
+	cover *workloadCover
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -1685,6 +1717,7 @@ type kclRenderRaw struct {
 	ImageTag                 string                                    `json:"image_tag,omitempty"`
 	Lifecycle                string                                    `json:"lifecycle,omitempty"`
 	Preview                  *release.ShapePreview                     `json:"preview,omitempty"`
+	Tests                    *TestsEntity                              `json:"tests,omitempty"`
 	Applier                  string                                    `json:"applier,omitempty"`
 	FluxDelivery             *FluxDeliveryEntity                       `json:"flux_delivery,omitempty"`
 	DeliveryUnits            []deliveryUnitRaw                         `json:"delivery_units,omitempty"`
@@ -1999,6 +2032,14 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	if _, err := ResolvePGOBinaries(entities); err != nil {
 		return nil, err
 	}
+	// One binary, one build: the same for coverage, and an instrumented
+	// binary in a persistent env must say why. The env's default reads
+	// forge.yaml's opt-in (tests.coverage), so it is resolved here.
+	coverBins, err := ResolveCoverBinaries(entities, config.ReadTestsCoverage(projectDir))
+	if err != nil {
+		return nil, err
+	}
+	entities.applyCover(coverBins)
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }
@@ -2104,6 +2145,7 @@ func parseKCLEntities(data []byte) (*KCLEntities, error) {
 		ImageTag:                 raw.ImageTag,
 		Lifecycle:                raw.Lifecycle,
 		Preview:                  raw.Preview,
+		Tests:                    raw.Tests,
 		Applier:                  raw.Applier,
 		FluxDelivery:             raw.FluxDelivery,
 		DeliveryUnits:            deliveryUnitsOf(raw.DeliveryUnits),
@@ -2309,13 +2351,15 @@ func dispatchRuntime(name string, raw json.RawMessage) (RuntimeEntity, error) {
 // should not silently fall back.
 func dispatchBuild(svcName string, raw json.RawMessage) (result BuildConfigEntity, err error) {
 	var identity struct {
-		Unit       string `json:"unit"`
-		InputsFile string `json:"inputs_file"`
+		Unit       string        `json:"unit"`
+		InputsFile string        `json:"inputs_file"`
+		Outputs    []BuildOutput `json:"outputs"`
 	}
 	defer func() {
 		if err == nil {
 			result.Unit = identity.Unit
 			result.InputsFile = identity.InputsFile
+			result.Outputs = identity.Outputs
 		}
 	}()
 	trimmed := bytes.TrimSpace(raw)

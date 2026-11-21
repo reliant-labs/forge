@@ -298,6 +298,41 @@ const (
 	// Like obs:read it may be bound to one environment, confining the token
 	// to that env's findings.
 	ScopeVulnRead Scope = "vuln:read"
+
+	// The two scopes below are the Tests product: test results, coverage and
+	// flaky tests recorded per commit, release and environment (control-plane
+	// TestService).
+
+	// ScopeTestsRead reads the org's test record: runs and their failures,
+	// coverage per package, file and line, flake states and a release's
+	// tests.
+	//
+	// ITS OWN SCOPE, NOT A DEPLOY READ. A test's failure output can quote
+	// config, request bodies and log lines, so it is not readable by every
+	// token that can see or record a deploy. It implies nothing and nothing
+	// implies it — not deploy:read, not deploy:write, not tests:write. A
+	// store grants it to deploy:read holders once, explicitly, rather than
+	// through an implication every future deploy:read token would inherit
+	// (the vuln:read rule).
+	//
+	// Like vuln:read it may be bound to one environment, confining the
+	// token to the runs recorded against that env.
+	ScopeTestsRead Scope = "tests:read"
+	// ScopeTestsWrite uploads test runs (control-plane RecordTestRun), and
+	// does nothing else. A narrow upload scope like sourcemaps:write: a pull
+	// request's CI job records its tests holding this, without deploy:write
+	// and the release, promotion and gate authority that comes with it. A
+	// consumer that also accepts deploy:write for an upload (so a deploying
+	// CI needs no second token) says so in its own rpc mapping; this package
+	// does not imply it.
+	//
+	// It implies nothing and nothing implies it. In particular it does not
+	// imply tests:read: an upload reads nothing back, and the CI token of
+	// every pull request must not become a way to read every run's failure
+	// output. Unlike sourcemaps:write it is not registry-only: its whole
+	// authority is a control-plane rpc. It binds to nothing (an upload names
+	// its environment in the request, which this binding would not confine).
+	ScopeTestsWrite Scope = "tests:write"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -342,6 +377,8 @@ var AllScopes = []Scope{
 	ScopeChangesWrite,
 	ScopeChangesLaunch,
 	ScopeVulnRead,
+	ScopeTestsRead,
+	ScopeTestsWrite,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an

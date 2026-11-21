@@ -1,6 +1,6 @@
 ---
 name: deploy/build
-description: Before and during the build of an env's artifacts — the pre-flight checks (lint, tests, validate-kcl, doctor), `forge env build <env> --push` and `forge build <env>` with their flags, the one project image and how `args` pick its subcommand, the hosted registry login, the boot config check before a push, and Docker build contexts.
+description: Before and during the build of an env's artifacts — the pre-flight checks (lint, tests, validate-kcl, doctor), `forge env build <env> --push` and `forge build <env>` with their flags, the one project image and how `args` pick its subcommand, the hosted registry login, the boot config check before a push, Docker build contexts, and declared file `outputs` (a CLI archive, installer or desktop bundle recorded in the release with no image).
 ---
 
 # Pre-flight and build
@@ -74,9 +74,45 @@ that is not reproducible no longer rolls every workload pinned to it. The log
 names the matched inputs and the reused digest, or why it ran (no inputs,
 no earlier release, a release cut before forge recorded inputs, inputs
 changed, digest gone). A command that bakes the tag into the image (a
-version stamp) would carry the old stamp: give it no `inputs`. A hosted
+version stamp) would carry the old stamp: give it no `inputs`. A
+`DockerBuild` takes `inputs` too (project-root relative, or inside a GitSource
+`context`): the Dockerfile's content and the whole declaration are keyed, the
+tag is not (forge adds `-t`), so a build arg carrying the tag never reuses. A hosted
 ledger keeps `inputs_digest` only once its control plane stores it; until
 then hosted releases rebuild as before.
+
+## Ship files, not only images: `outputs`
+
+A CLI archive, an installer or a desktop bundle is not a container image, so
+never invent an image name for one. Declare a `forge.BuildOnly` workload with
+NO `image`, whose build lists the files it writes:
+
+```
+_cli = fw.Workload {
+    name = "acme-cli"
+    kind = "tool"
+    runtime = forge.BuildOnly {}
+    build = forge.ShellBuild {          # or forge.GoBuild {cmd = "./cmd/acme"}
+        cmd = "./scripts/package.sh"
+        outputs = [
+            forge.BuildOutput {path = "dist/acme_linux_amd64.tar.gz", platform = "linux/amd64"}
+            forge.BuildOutput {path = "dist/*.zip"}
+        ]
+    }
+}
+```
+
+`path` is relative to the ShellBuild's `cwd` (else the project root), with
+the `inputs` globs (`*`, `**`, a directory = every file beneath it); never
+absolute or `..`. With no `image`, nothing is pushed or resolved for it.
+After the build forge records every matched file in the release as a `file`
+artifact keyed `<workload>/<path>`: sha256, size and the declared platform.
+`forge env releases show <env> <v>` lists them under `files`, and a compare
+reports a file only when its bytes change. A `--release` build refuses an
+output that matched no file; a plain build warns. forge hashes the files and
+never uploads them: publishing stays the build's (or CI's) job. Any GoBuild,
+DockerBuild or ShellBuild may declare outputs (an image build that also writes
+an SBOM keeps its image); a RemoteBuild cannot.
 
 ## The hosted registry takes your control-plane credential
 

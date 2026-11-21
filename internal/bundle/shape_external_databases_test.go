@@ -1,6 +1,7 @@
 package bundle
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -36,5 +37,30 @@ func TestShapeBuildersKeepExternalDatabases(t *testing.T) {
 	}
 	if !reflect.DeepEqual(in.ExternalDatabases, want) {
 		t.Errorf("snapshot input lost the external databases:\n got %+v\nwant %+v", in.ExternalDatabases, want)
+	}
+}
+
+// Both shape builders carry the project's declared changes, for the same
+// reason: a sealed bundle whose shape lacks them disagrees with the
+// declaration it was sealed from.
+func TestShapeBuildersKeepChanges(t *testing.T) {
+	changes := map[string]release.ShapeChange{"new-checkout": {
+		Type: release.ChangeTypeBool, Default: "control",
+		Variants: map[string]json.RawMessage{"control": json.RawMessage(`false`), "treatment": json.RawMessage(`true`)},
+	}}
+	projected, err := ProjectShape(ShapeInput{Kind: release.EnvPersistent, Changes: changes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(projected.Changes, changes) {
+		t.Errorf("ProjectShape lost the changes:\n got %+v\nwant %+v", projected.Changes, changes)
+	}
+	d := release.Shape{Kind: release.EnvPersistent, Changes: changes}
+	in, err := snapshotShapeInput(release.Snapshot{Declaration: &d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(in.Changes, changes) {
+		t.Errorf("snapshot input lost the changes:\n got %+v\nwant %+v", in.Changes, changes)
 	}
 }

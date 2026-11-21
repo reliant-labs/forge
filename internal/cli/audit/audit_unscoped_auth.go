@@ -876,7 +876,7 @@ func scanHandlerAuthUse(dir string, callers packageCallerSeam) (map[string]handl
 	// calls a function in another package of the module that reaches one.
 	reachesDirectly := func(fn *ast.FuncDecl) bool {
 		return bodyReachesAuthSeam(fn.Body, fileSeams[fn]) ||
-			callers.mod.callsReachingImport(fn.Body, fileOf[fn], maxWrapperHops)
+			callers.mod.callsReachingImport(fn, fileOf[fn], maxWrapperHops)
 	}
 	seamReaching := seamReachingNames(decls, func(fn *ast.FuncDecl) bool {
 		return callers.declaresLocal(fn) || reachesDirectly(fn)

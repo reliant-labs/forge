@@ -183,17 +183,28 @@ func (m *moduleReach) moduleImports(f *ast.File) map[string]string {
 	return out
 }
 
-// callsReachingImport reports whether body calls `<import>.<Func>`,
-// with the import a package of the main module, where Func resolves the
-// caller within hops further packages.
-func (m *moduleReach) callsReachingImport(body ast.Node, f *ast.File, hops int) bool {
-	if m == nil || hops <= 0 || body == nil || f == nil {
+// callsReachingImport reports whether fn calls `<import>.<Func>`, with the
+// import a package of the main module, where Func resolves the caller
+// within hops further packages.
+//
+// An import alias that fn itself declares as a name anywhere — a receiver,
+// parameter or result, a `:=`, a var, const or type, a closure's parameter —
+// is not followed in fn at all, whatever the scope: `auth.UserID(ctx)` on a
+// local `auth` value is not the imported resolver. The files are parsed
+// without object resolution, so this is the conservative reading; a call it
+// skips is reported, never cleared.
+func (m *moduleReach) callsReachingImport(fn *ast.FuncDecl, f *ast.File, hops int) bool {
+	if m == nil || hops <= 0 || fn == nil || fn.Body == nil || f == nil {
 		return false
 	}
 	imports := m.moduleImports(f)
+	for name := range localNames(fn) {
+		delete(imports, name)
+	}
 	if len(imports) == 0 {
 		return false
 	}
+	body := fn.Body
 	found := false
 	ast.Inspect(body, func(n ast.Node) bool {
 		if found {
@@ -219,6 +230,55 @@ func (m *moduleReach) callsReachingImport(body ast.Node, f *ast.File, hops int) 
 		return !found
 	})
 	return found
+}
+
+// localNames are the identifiers fn declares anywhere in its signature or
+// body.
+func localNames(fn *ast.FuncDecl) map[string]bool {
+	out := map[string]bool{}
+	fields := func(fl *ast.FieldList) {
+		if fl == nil {
+			return
+		}
+		for _, f := range fl.List {
+			for _, n := range f.Names {
+				out[n.Name] = true
+			}
+		}
+	}
+	fields(fn.Recv)
+	ast.Inspect(fn, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncType:
+			fields(n.TypeParams)
+			fields(n.Params)
+			fields(n.Results)
+		case *ast.AssignStmt:
+			if n.Tok == token.DEFINE {
+				for _, l := range n.Lhs {
+					if id, ok := l.(*ast.Ident); ok {
+						out[id.Name] = true
+					}
+				}
+			}
+		case *ast.RangeStmt:
+			if n.Tok == token.DEFINE {
+				for _, e := range []ast.Expr{n.Key, n.Value} {
+					if id, ok := e.(*ast.Ident); ok {
+						out[id.Name] = true
+					}
+				}
+			}
+		case *ast.ValueSpec:
+			for _, id := range n.Names {
+				out[id.Name] = true
+			}
+		case *ast.TypeSpec:
+			out[n.Name.Name] = true
+		}
+		return true
+	})
+	return out
 }
 
 // reaching returns the names in a package of the main module that resolve
@@ -268,7 +328,7 @@ func (m *moduleReach) reaching(importPath string, hops int) map[string]bool {
 		}
 		return pkgSeam.declaresLocal(fn) ||
 			bodyReachesQualifiedSeam(fn.Body, fileSeams[fn]) ||
-			m.callsReachingImport(fn.Body, fileOf[fn], hops)
+			m.callsReachingImport(fn, fileOf[fn], hops)
 	})
 	m.memo[key] = names
 	return names

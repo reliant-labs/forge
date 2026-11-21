@@ -121,6 +121,42 @@ func TestUnscopedAuth_WrapperReferencesAreNotCalls(t *testing.T) {
 	}
 }
 
+// A local name that shadows the import alias is not the imported package:
+// `whoami.Caller(ctx)` on a local `whoami` value, in a handler or in a
+// followed wrapper, never clears a handler.
+func TestUnscopedAuth_ShadowedImportAliasIsNotTheWrapper(t *testing.T) {
+	seamPkg, _, _ := strings.Cut(codegen.CRUDAuthSeam(), ".")
+	seamImport := `"example.com/app/pkg/` + seamPkg + `"`
+	shadowed := func(method, decl string) string {
+		return "func (s *Service) " + method + "(ctx context.Context, req *connect.Request[pb." + method + "Request]) (*connect.Response[pb." + method + "Response], error) {\n" +
+			"\t" + decl + "\n\t_ = whoami.Caller(ctx)\n\treturn nil, nil\n}\n"
+	}
+	src := handlerSource([]string{`"example.com/app/internal/whoami"`, `"example.com/app/internal/relay"`},
+		shadowed("GetOrder", "whoami := s.lookup"),
+		shadowed("GetInvoice", "var whoami fakeWhoami"),
+		shadowed("GetCart", "for _, whoami := range s.lookups { _ = whoami }"),
+		"func (s *Service) GetSession(ctx context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {\n"+
+			"\tf := func(whoami fakeWhoami) any { return whoami.Caller(ctx) }\n\t_ = f\n\treturn nil, nil\n}\n",
+		handlerCalling("ListInvoices", "relay.Shadowed(ctx, nil)"),
+		handlerCalling("ListOrders", "whoami.Caller(ctx)"),
+	)
+	dir := writeProject(t, "ShopService", map[string]bool{
+		"GetOrder": true, "GetInvoice": true, "GetCart": true, "GetSession": true, "ListInvoices": true, "ListOrders": true,
+	}, src)
+	writeSeamPackage(t, dir)
+	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
+		[]string{seamImport}, "func Caller(ctx context.Context) any { c, _ := "+seamCall+"; return c }\n"))
+	writeFile(t, filepath.Join(dir, "internal", "relay", "relay.go"), goFile("relay",
+		[]string{`"example.com/app/internal/whoami"`},
+		"func Shadowed(ctx context.Context, whoami fakeWhoami) any { return whoami.Caller(ctx) }\n"))
+
+	got := unscopedMethods(t, auditUnscopedAuth(nil, dir))
+	slices.Sort(got)
+	if want := []string{"GetCart", "GetInvoice", "GetOrder", "GetSession", "ListInvoices"}; !slices.Equal(got, want) {
+		t.Fatalf("unscoped = %v, want %v — only the imported whoami resolves the caller, never a local value of that name", got, want)
+	}
+}
+
 // The walk is bounded: a chain longer than maxWrapperHops packages reports
 // unscoped (mark the resolver instead), and an import cycle — which does not
 // build, but can sit on disk — terminates.

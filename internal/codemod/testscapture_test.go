@@ -24,7 +24,9 @@ import (
 //   - goldens: internal/templates' goldens at v1.8.0 (in) and now (want,
 //     read from internal/templates/testdata/golden through links.txt), with
 //     ci.test.coverage set: the coverage step follows `task coverage` onto
-//     coverage.html, and forge.yaml keeps the legacy key.
+//     coverage.html, and forge.yaml keeps the legacy key. A template change
+//     this codemod does not make (ci.yml's gate-tools comment) is carried
+//     into in/ as well, so the comparison stays about the codemod.
 //   - dockerfile-pgo: today's Dockerfile golden without its cover stages.
 //   - flag-edits: the v1.8 Taskfile with flags added to two lanes; they stay.
 //   - customised: a Taskfile, Dockerfile and .air.toml a project edited, so

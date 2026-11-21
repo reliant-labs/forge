@@ -99,6 +99,18 @@ func TestCRUDOps_IntegerPrimaryKeyCrossesTheTextSeam(t *testing.T) {
 			"key, err := strconv.ParseInt(id, 10, 64)",
 			"return nil, orm.ErrNoRows",
 		}},
+		{"int32", "uint32", []string{
+			"return strconv.FormatUint(uint64(req.Id), 10)",
+			"key, err := strconv.ParseInt(id, 10, 32)",
+			"return db.GetTaskByID(ctx, s.deps.DB, int32(key))",
+			"return db.DeleteTask(ctx, s.deps.DB, int32(key))",
+		}},
+		{"int64", "uint64", []string{
+			"return strconv.FormatUint(req.Id, 10)",
+			"key, err := strconv.ParseInt(id, 10, 64)",
+			"return db.GetTaskByID(ctx, s.deps.DB, key)",
+			"return db.DeleteTask(ctx, s.deps.DB, key)",
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.pkGoType+"_over_"+tc.reqProtoType, func(t *testing.T) {
@@ -150,6 +162,18 @@ func TestCRUDOps_UncarriableKeyIsACustomShape(t *testing.T) {
 		}
 		if !m.ShapeMismatch || !strings.Contains(m.MismatchReason, "projects to Go type time.Time") {
 			t.Errorf("%s: ShapeMismatch=%v reason=%q, want the key-type refusal", m.MethodName, m.ShapeMismatch, m.MismatchReason)
+		}
+	}
+
+	for _, storage := range []string{"uint32", "uint64"} {
+		ops, unsigned := renderTaskOps(t, storage, storage)
+		for _, m := range unsigned.CRUDMethods {
+			if m.Operation != "create" && (!m.ShapeMismatch || !strings.Contains(m.MismatchReason, "projects to Go type "+storage)) {
+				t.Errorf("%s over %s: want unsigned storage refusal, got %q", m.MethodName, storage, m.MismatchReason)
+			}
+		}
+		if strings.Contains(ops, "strconv.ParseInt(") || strings.Contains(ops, "strconv.ParseUint(") {
+			t.Errorf("unsupported %s storage must not generate a key parser:\n%s", storage, ops)
 		}
 	}
 

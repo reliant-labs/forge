@@ -29,8 +29,8 @@ func TestE2EIntegerPrimaryKey(t *testing.T) {
 	projectDir := filepath.Join(dir, "intpkapp")
 	addCorpusForgePkgReplace(t, projectDir)
 
-	// The author's schema keys the table on BIGSERIAL and the proto carries
-	// the key as int64: the quintet the report's project declared.
+	// The row still uses signed BIGSERIAL and an int64 entity field. The
+	// request proto can use unsigned scalars without changing that storage.
 	protoPath := filepath.Join(projectDir, "proto", "services", "tasks", "v1", "tasks.proto")
 	proto := strings.Replace(readFileE2E(t, protoPath), "  // TODO: Add your RPC methods here.\n", `  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
   rpc GetTask(GetTaskRequest) returns (GetTaskResponse);
@@ -52,7 +52,7 @@ message CreateTaskResponse {
 }
 
 message GetTaskRequest {
-  int64 id = 1;
+  uint32 id = 1;
 }
 
 message GetTaskResponse {
@@ -78,7 +78,7 @@ message UpdateTaskResponse {
 }
 
 message DeleteTaskRequest {
-  int64 id = 1;
+  uint64 id = 1;
 }
 
 message DeleteTaskResponse {}
@@ -103,7 +103,8 @@ message DeleteTaskResponse {}
 
 	ops := readFileE2E(t, filepath.Join(projectDir, "internal", "handlers", "tasks", "handlers_crud_ops_gen.go"))
 	for _, want := range []string{
-		"return strconv.FormatInt(req.Id, 10)",
+		"return strconv.FormatUint(uint64(req.Id), 10)",
+		"return strconv.FormatUint(req.Id, 10)",
 		"key, err := strconv.ParseInt(id, 10, 64)",
 		"return strconv.FormatInt(entity.ID, 10)",
 	} {
@@ -135,6 +136,7 @@ func writeIntPKRoundTripTest(t *testing.T, projectDir string) {
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -145,7 +147,8 @@ import (
 )
 
 func TestIntegerPrimaryKeyRoundTrip(t *testing.T) {
-	svc := tasks.NewTest%[1]s(t, tasks.WithDB(tasks.NewMigratedTestDB(t)))
+	db := tasks.NewMigratedTestDB(t)
+	svc := tasks.NewTest%[1]s(t, tasks.WithDB(db))
 	ctx := middleware.ContextWithClaims(context.Background(),
 		&middleware.Claims{UserID: "test-user", Email: "test@example.com"})
 
@@ -162,7 +165,7 @@ func TestIntegerPrimaryKeyRoundTrip(t *testing.T) {
 		ids = append(ids, id)
 	}
 
-	got, err := svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: ids[1]}))
+	got, err := svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: uint32(ids[1])}))
 	if err != nil {
 		t.Fatalf("get: %%v", err)
 	}
@@ -190,17 +193,37 @@ func TestIntegerPrimaryKeyRoundTrip(t *testing.T) {
 	if _, err := svc.UpdateTask(ctx, connect.NewRequest(&pb.UpdateTaskRequest{Task: &pb.Task{Id: ids[0], Title: "renamed"}})); err != nil {
 		t.Fatalf("update: %%v", err)
 	}
-	got, err = svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: ids[0]}))
+	got, err = svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: uint32(ids[0])}))
 	if err != nil || got.Msg.GetTask().GetTitle() != "renamed" {
 		t.Fatalf("get after update: %%v, %%v", got, err)
 	}
 
-	if _, err := svc.DeleteTask(ctx, connect.NewRequest(&pb.DeleteTaskRequest{Id: ids[0]})); err != nil {
+	if _, err := svc.DeleteTask(ctx, connect.NewRequest(&pb.DeleteTaskRequest{Id: uint64(ids[0])})); err != nil {
 		t.Fatalf("delete: %%v", err)
 	}
-	_, err = svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: ids[0]}))
+	_, err = svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: uint32(ids[0])}))
 	if connect.CodeOf(err) != connect.CodeNotFound {
 		t.Fatalf("get after delete: %%v, want NotFound", err)
+	}
+
+	// A uint32 request need not fit int32: the actual column is BIGINT.
+	// A uint64 beyond MaxInt64, however, must not wrap to a signed row key.
+	if _, err := db.Exec(ctx, "INSERT INTO tasks (id, title) VALUES ($1, 'wide'), (-1, 'negative'), ($2, 'largest')", int64(math.MaxUint32), int64(math.MaxInt64)); err != nil {
+		t.Fatal(err)
+	}
+	wide, err := svc.GetTask(ctx, connect.NewRequest(&pb.GetTaskRequest{Id: math.MaxUint32}))
+	if err != nil || wide.Msg.GetTask().GetId() != math.MaxUint32 {
+		t.Fatalf("get MaxUint32 through signed BIGINT: %%v, %%v", wide, err)
+	}
+	if _, err := svc.DeleteTask(ctx, connect.NewRequest(&pb.DeleteTaskRequest{Id: math.MaxInt64})); err != nil {
+		t.Fatalf("delete MaxInt64 through uint64 request: %%v", err)
+	}
+	if _, err := svc.DeleteTask(ctx, connect.NewRequest(&pb.DeleteTaskRequest{Id: math.MaxUint64})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("delete MaxUint64 must refuse signed overflow: %%v", err)
+	}
+	var negative int
+	if err := db.QueryRow(ctx, "SELECT count(*) FROM tasks WHERE id = -1").Scan(&negative); err != nil || negative != 1 {
+		t.Fatalf("overflow touched the negative row: count=%%d, err=%%v", negative, err)
 	}
 }
 `, m[1])

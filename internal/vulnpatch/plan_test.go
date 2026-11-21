@@ -195,15 +195,14 @@ func TestGoAlreadyFixedAndLocationHint(t *testing.T) {
 func TestNoPatcherYet(t *testing.T) {
 	t.Parallel()
 	root := writeTree(t, map[string]string{"go.mod": goModApp})
-	stdlib := goFinding("GO-2026-9", "stdlib", "go1.22.1", "go1.22.4")
 	osPkg := vulnscan.Finding{ID: "CVE-1", FixState: "fixed", FixedIn: []string{"1.4-r0"}, Package: vulnscan.Package{Name: "zlib", Version: "1.3.2-r1", Type: "apk"}}
 	py := vulnscan.Finding{ID: "CVE-2", FixState: "fixed", FixedIn: []string{"1.1"}, Package: vulnscan.Package{Name: "requests", Version: "1.0", Type: "python"}}
 	jar := vulnscan.Finding{ID: "CVE-3", FixState: "fixed", FixedIn: []string{"2.0"}, Package: vulnscan.Package{Name: "log4j", Version: "1.0", Type: "java-archive"}}
 	unfixed := goFinding("GO-4", "example.com/lib", "v1.2.0")
 	unfixed.FixState = vulnscan.FixStateNotFixed
-	doc, fr := patch(t, root, []vulnscan.Finding{stdlib, osPkg, py, jar, unfixed}, Options{}, nil, nil)
+	doc, fr := patch(t, root, []vulnscan.Finding{osPkg, py, jar, unfixed}, Options{}, nil, nil)
 	wantCmds(t, fr)
-	for i, want := range []string{"Go standard library", "OS package (apk)", "in no Python manifest", "java-archive", "no fixed version (fix state: not-fixed)"} {
+	for i, want := range []string{"OS package (apk), and the tree has no Dockerfile", "in no Python manifest", "java-archive", "no fixed version (fix state: not-fixed)"} {
 		if r := doc.Findings[i]; r.Status != StatusSkipped || !strings.Contains(r.Reason, want) {
 			t.Errorf("finding %d = %s %q, want skipped mentioning %q", i, r.Status, r.Reason, want)
 		}
@@ -212,7 +211,7 @@ func TestNoPatcherYet(t *testing.T) {
 		t.Errorf("exit = %d changed = %v", doc.ExitCode, doc.Changed)
 	}
 	// --ecosystem npm leaves every one of them out.
-	doc, _ = patch(t, root, []vulnscan.Finding{stdlib, osPkg, py, jar, unfixed}, Options{Ecosystems: []Ecosystem{EcosystemNPM}}, nil, nil)
+	doc, _ = patch(t, root, []vulnscan.Finding{osPkg, py, jar, unfixed}, Options{Ecosystems: []Ecosystem{EcosystemNPM}}, nil, nil)
 	if len(doc.Findings) != 0 || doc.ExitCode != ExitOK {
 		t.Errorf("--ecosystem npm kept %+v (exit %d)", doc.Findings, doc.ExitCode)
 	}
@@ -650,13 +649,21 @@ func TestDocumentGolden(t *testing.T) {
 		"go.mod":                goModApp,
 		"web/package.json":      "{\n  \"name\": \"web\",\n  \"dependencies\": {\"ws\": \"^8.20.0\"}\n}\n",
 		"web/package-lock.json": packageLock(map[string]string{"node_modules/ws": "8.20.0"}),
+		"Dockerfile":            "FROM golang:1.22.3 AS build\nFROM alpine:3.19.1\n",
 	})
 	osPkg := vulnscan.Finding{ID: "CVE-2026-4738", Severity: vulnscan.SeverityHigh, FixState: "fixed", FixedIn: []string{"1.4-r0"}, Package: vulnscan.Package{Name: "zlib", Version: "1.3.2-r1", Type: "apk"}}
+	reg := alpineRegistry()
+	reg.digests[golangRepo+":1.22.5"] = dg("6")
 	doc, _ := patch(t, root, []vulnscan.Finding{
 		goFinding("GO-2026-0001", "example.com/lib", "v1.2.0", "v1.2.5"),
 		npmFinding("GHSA-96hv-2xvq-fx4p", "ws", "8.20.0", "8.21.0"),
 		osPkg,
-	}, Options{}, nil, &VerifyOptions{Command: "task test:short", Source: VerifySourceTaskfile, Rescan: func(context.Context, string) ([]vulnscan.Finding, error) { return nil, nil }})
+		stdlibFinding("GO-2026-0002", "go1.22.3", "1.21.11", "1.22.5"),
+	}, Options{Registry: reg}, nil, &VerifyOptions{
+		Command: "task test:short", Source: VerifySourceTaskfile,
+		Rescan:    func(context.Context, string) ([]vulnscan.Finding, error) { return nil, nil },
+		ScanImage: func(context.Context, string) ([]vulnscan.Finding, error) { return nil, nil },
+	})
 	doc.Dir = "/repo"
 	got, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

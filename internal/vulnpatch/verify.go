@@ -97,6 +97,10 @@ type VerifyOptions struct {
 	// Rescan rescans each changed manifest's directory; nil rescans
 	// nothing, and every bumped finding stays "bumped".
 	Rescan RescanFunc
+	// ScanImage rescans the image of each Dockerfile Apply changed, after
+	// Verify rebuilds it with docker; nil rebuilds nothing, and a finding
+	// fixed in a Dockerfile stays "bumped".
+	ScanImage ScanImageFunc
 }
 
 // Verify runs the gate, then rescans the directory of every manifest Apply
@@ -120,13 +124,18 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 		}
 	}
 	p.verify = v
+	byImage := p.verifyImages(ctx, run, o.ScanImage, v)
 	if o.Rescan == nil {
 		return v
 	}
 	dirs := map[string]bool{}
+	byDir := map[int]bool{} // results a directory rescan settles
 	for _, b := range p.bumps {
-		if b.done != nil {
+		if b.done != nil && b.eco != EcosystemDocker {
 			dirs[b.dir] = true
+			for _, r := range b.results {
+				byDir[r] = !byImage[r]
+			}
 		}
 	}
 	var sorted []string
@@ -152,11 +161,12 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 		scans[d] = fs
 	}
 	if len(errs) > 0 {
-		v.RescanError = strings.Join(errs, "; ")
+		// The image rescans (verifyImages) may have failed too: keep both.
+		v.RescanError = strings.Join(append(nonEmpty(v.RescanError), errs...), "; ")
 	}
 	for i := range p.Results {
 		r := &p.Results[i]
-		if r.Status != StatusBumped {
+		if r.Status != StatusBumped || !byDir[i] {
 			continue
 		}
 		rdirs, minTo := p.resultDirs(i)
@@ -186,7 +196,7 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 				// fix did not fix it). Any other version is another copy
 				// of the package, which this finding was not about.
 				got := f.Package.Version
-				if sameVersion(r.Ecosystem, got, r.Installed) || atLeast(r.Ecosystem, got, minTo) {
+				if bumpedCopy(r, got, minTo) {
 					r.Status = StatusStillPresent
 					r.Reason = "the rescan of " + relTo(p.Dir, d) + " still reports it, in " + f.Package.Name + " " + got
 					break scan
@@ -202,7 +212,9 @@ func (p *Plan) Verify(ctx context.Context, o VerifyOptions) *VerifyResult {
 // sorted, and the lowest version those bumps raised the package to.
 func (p *Plan) resultDirs(i int) (dirs []string, minTo string) {
 	for _, b := range p.bumps {
-		if b.done == nil {
+		// A Dockerfile is verified by rebuilding its image, never by a
+		// directory rescan (verifyImages).
+		if b.done == nil || b.eco == EcosystemDocker {
 			continue
 		}
 		for _, r := range b.results {
@@ -259,27 +271,44 @@ func purlBase(purl string) string {
 	return purl
 }
 
-// sameVersion reports whether a and b are one version of ecosystem e, with
-// or without a leading "v" (PEP 440 equality for Python: "2.31" is
-// "2.31.0").
-func sameVersion(e Ecosystem, a, b string) bool {
-	if pythonEcosystem(e) {
-		return pyEqual(a, b)
+// bumpedCopy reports whether a rescan that reports r's advisory on r's
+// package at version got is reporting the copy r bumped: still at the
+// installed version (the bump did not take), or at minTo or later (the fix
+// did not fix it). Any other version is another copy of the package. A Go
+// standard library version is compared without its "go" prefix; a PyPI
+// version as PEP 440 orders it ("2.31" is "2.31.0").
+func bumpedCopy(r *Result, got, minTo string) bool {
+	installed := r.Installed
+	switch kind, _ := classify(r.Package); kind {
+	case kindGoStdlib:
+		got, installed, minTo = goBare(got), goBare(installed), goBare(minTo)
+	case kindPython:
+		_, okGot := parsePyVersion(got)
+		_, okMin := parsePyVersion(minTo)
+		return pyEqual(got, installed) || okGot && okMin && comparePyVersions(got, minTo) >= 0
 	}
+	return sameVersion(got, installed) || atLeast(got, minTo)
+}
+
+func nonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return []string{s}
+}
+
+// sameVersion reports whether a and b are one version, with or without a
+// leading "v".
+func sameVersion(a, b string) bool {
 	if npmVersion(a) == npmVersion(b) {
 		return true
 	}
 	return canonical(a) != "" && canonical(b) != "" && compareVersions(a, b) == 0
 }
 
-// atLeast reports whether v is min or later in ecosystem e's order; false
-// when either is not a version.
-func atLeast(e Ecosystem, v, min string) bool {
-	if pythonEcosystem(e) {
-		_, okV := parsePyVersion(v)
-		_, okMin := parsePyVersion(min)
-		return okV && okMin && comparePyVersions(v, min) >= 0
-	}
+// atLeast reports whether v is min or later; false when either is not a
+// version.
+func atLeast(v, min string) bool {
 	return canonical(v) != "" && canonical(min) != "" && compareVersions(v, min) >= 0
 }
 

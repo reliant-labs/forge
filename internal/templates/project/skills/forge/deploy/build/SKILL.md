@@ -1,6 +1,6 @@
 ---
 name: deploy/build
-description: Before and during the build of an env's artifacts — the pre-flight checks (lint, tests, validate-kcl, doctor), `forge env build <env> --push` and `forge build <env>` with their flags, the one project image and how `args` pick its subcommand, the hosted registry login, the boot config check before a push, and Docker build contexts.
+description: Before and during the build of an env's artifacts — the pre-flight checks (lint, tests, validate-kcl, doctor), `forge env build <env> --push` and `forge build <env>` with their flags, the one project image and how `args` pick its subcommand, the hosted registry login, the boot config check before a push, Docker build contexts, and declared file `outputs` (a CLI archive, installer or desktop bundle recorded in the release with no image).
 ---
 
 # Pre-flight and build
@@ -36,6 +36,18 @@ what the pod runs, the same subcommand the host runtime runs.
 ## Profile-guided builds
 
 A Go binary with a committed `cmd/<bin>/default.pgo` is built with it (Go's default `-pgo=auto`), on every runtime. `forge pgo pull --env prod` writes the file from production's CPU profiles and `forge env build` prints a `pgo:` line per binary; `pgo = forge.PGO {...}` on a `GoBuild` (or `DockerBuild.pgo`, keyed by binary) sets the source env and window, and `enabled = False` passes `-pgo=off`. Load `observability/profiles`.
+
+A `ShellBuild` is opaque to forge, so it pulls a profile only for the binaries the build's `pgo` names, each a `forge.ShellPGO` keyed by its package path relative to `cwd`. That is how a deploy repo refreshes the profile of a binary it builds from a sibling checkout:
+
+```
+build = forge.ShellBuild {
+    cwd = "../reliant"
+    cmd = "./scripts/build-reliant-image.sh"
+    pgo = {"./cmd/reliant" = forge.ShellPGO {from_env = "prod"}}
+}
+```
+
+`forge pgo pull --env prod` then merges the CPU profiles of every workload this build serves into `../reliant/cmd/reliant/default.pgo`, which a command running `go build ./cmd/reliant` from `cwd` reads; commit it in that checkout. `out` names another path (relative to the project root, never past the directory holding it; required when the build has a `source`), and `namespace` reads profiles another `service.namespace` reported (default: this project's). forge never edits the command, so `enabled = False` only makes `pull` skip the binary. The named profiles are part of the build's `inputs` fingerprint, so a refreshed one rebuilds the image even when the globs (`**/*.go`) do not select it.
 
 ## Skip an unchanged ShellBuild with `inputs`
 
@@ -80,6 +92,39 @@ version stamp) would carry the old stamp: give it no `inputs`. A
 tag is not (forge adds `-t`), so a build arg carrying the tag never reuses. A hosted
 ledger keeps `inputs_digest` only once its control plane stores it; until
 then hosted releases rebuild as before.
+
+## Ship files, not only images: `outputs`
+
+A CLI archive, an installer or a desktop bundle is not a container image, so
+never invent an image name for one. Declare a `forge.BuildOnly` workload with
+NO `image`, whose build lists the files it writes:
+
+```
+_cli = fw.Workload {
+    name = "acme-cli"
+    kind = "tool"
+    runtime = forge.BuildOnly {}
+    build = forge.ShellBuild {          # or forge.GoBuild {cmd = "./cmd/acme"}
+        cmd = "./scripts/package.sh"
+        outputs = [
+            forge.BuildOutput {path = "dist/acme_linux_amd64.tar.gz", platform = "linux/amd64"}
+            forge.BuildOutput {path = "dist/*.zip"}
+        ]
+    }
+}
+```
+
+`path` is relative to the ShellBuild's `cwd` (else the project root), with
+the `inputs` globs (`*`, `**`, a directory = every file beneath it); never
+absolute or `..`. With no `image`, nothing is pushed or resolved for it.
+After the build forge records every matched file in the release as a `file`
+artifact keyed `<workload>/<path>`: sha256, size and the declared platform.
+`forge env releases show <env> <v>` lists them under `files`, and a compare
+reports a file only when its bytes change. A `--release` build refuses an
+output that matched no file; a plain build warns. forge hashes the files and
+never uploads them: publishing stays the build's (or CI's) job. Any GoBuild,
+DockerBuild or ShellBuild may declare outputs (an image build that also writes
+an SBOM keeps its image); a RemoteBuild cannot.
 
 ## The hosted registry takes your control-plane credential
 

@@ -117,15 +117,15 @@
           "type": "string"
         },
         "manifest": {
-          "description": "Manifest is the go.mod or lockfile, relative to the patched tree.",
+          "description": "Manifest is the go.mod, lockfile or Dockerfile, relative to the patched tree.",
           "type": "string"
         },
         "package": {
-          "description": "Package is the module or package name.",
+          "description": "Package is the module or package name; \"toolchain\" for a go.mod's toolchain directive, and the image (alpine, golang) for a Dockerfile's FROM.",
           "type": "string"
         },
         "from": {
-          "description": "From and To are the versions before and after.",
+          "description": "From and To are the versions before and after; for a Dockerfile, the image references.",
           "type": "string"
         },
         "to": {
@@ -146,7 +146,7 @@
           }
         },
         "edits": {
-          "description": "Edits are the changes the patcher made to a file itself rather than through a tool: an override in package.json, a pin rewritten in a requirements file or a .in.",
+          "description": "Edits are the changes the patcher made to a file itself rather than through a tool: an override in package.json, a pin rewritten in a requirements file or a .in, a Dockerfile's FROM.",
           "type": [
             "array",
             "null"
@@ -267,7 +267,7 @@
           ]
         },
         "installed": {
-          "description": "Installed is the version the finding names, and Target the version it is bumped to (\"\" when skipped before a target was chosen).",
+          "description": "Installed is the version the finding names, and Target the version it is bumped to (\"\" when skipped before a target was chosen). For an OS package, Target is the base image reference its Dockerfile is refreshed to.",
           "type": "string"
         },
         "target": {
@@ -277,7 +277,7 @@
           ]
         },
         "manifests": {
-          "description": "Manifests are the tree's files the package resolved to, relative to Dir (go.mod, package-lock.json, ...).",
+          "description": "Manifests are the tree's files the package resolved to, relative to Dir (go.mod, package-lock.json, Dockerfile, ...).",
           "type": [
             "array",
             "null"
@@ -370,6 +370,16 @@
         "rescanned": {
           "description": "Rescanned are the directories rescanned, relative to the tree.",
           "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rebuilt": {
+          "description": "Rebuilt are the Dockerfiles changed, rebuilt with docker and whose images were rescanned, relative to the tree.",
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "type": "string"
           }

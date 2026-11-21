@@ -2,8 +2,6 @@ package vulnpatch
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,15 +13,6 @@ func pyFinding(id, name, version string, fixed ...string) vulnscan.Finding {
 		ID: id, Severity: vulnscan.SeverityHigh, FixState: vulnscan.FixStateFixed, FixedIn: fixed,
 		Package: vulnscan.Package{Name: name, Version: version, Type: "python", PURL: "pkg:pypi/" + strings.ToLower(name) + "@" + version},
 	}
-}
-
-func readFile(t *testing.T, root, rel string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
 }
 
 func TestPipRewritesHandKeptPins(t *testing.T) {

@@ -199,15 +199,41 @@ schema RuntimeClass:
 
 schema BuildVariant:
     """One Go build variant. Used by Service.deploy = BuildOnly for
-    multi-variant builds (e.g. `dev`, `prod` ldflag matrix)."""
+    multi-variant builds (e.g. `dev`, `prod` ldflag matrix, or one binary
+    per goos/goarch).
+
+    Each variant is its own `go build` of the workload's GoBuild `cmd`, into
+    `<output dir>/<output_name>`:
+
+        runtime = forge.BuildOnly {build_variants = [
+            forge.BuildVariant {name = "linux-amd64", goos = "linux", goarch = "amd64"}
+            forge.BuildVariant {
+                name = "darwin-arm64", goos = "darwin", goarch = "arm64"
+                output_name = "acme-darwin-arm64"
+                env = {"CGO_ENABLED" = "1"}
+            }
+        ]}
+    """
     name: str
     ldflags: [str] = []
     tags: [str] = []
     goos: str = ""
     goarch: str = ""
+    # Build-time process env for this variant's `go build`, merged over
+    # forge's own (declared keys win). Variants build with CGO_ENABLED=0
+    # unless this sets it, e.g. {"CGO_ENABLED" = "1"} for a binary that
+    # links C.
+    env: {str: str} = {}
+    # The binary's basename. "" is `<workload>-<variant name>`. On a
+    # windows variant `.exe` is appended. It is also the binary's key in the
+    # release ledger, so two variants of one env must not share it.
+    output_name: str = ""
 
     check:
         name, "BuildVariant.name is required"
+        all k in env {k}, "BuildVariant.env must not contain an empty name (variant '${name}')"
+        "/" not in output_name and "\\" not in output_name, \
+            "BuildVariant.output_name '${output_name}' must be a file name, not a path (variant '${name}')"
 
 schema ConfigMap:
     """A Kubernetes ConfigMap — non-sensitive key/value pairs.
@@ -1267,8 +1293,25 @@ schema ManagedDatabase(Database):
     # Live dashboard panels over this database's data (DatabaseDashboards).
     # Absent means disabled.
     dashboards?: DatabaseDashboards
+    # How the database itself is watched. Unset, it gets
+    # forge.managed_database_telemetry(name) (kcl/database_telemetry.k): its
+    # instances' metrics with a bounded allow list, its Postgres logs, a
+    # Postgres check and a database dashboard, as service `<name>-postgres`,
+    # collected like any forge.Telemetry (forge's agent on a cluster, the
+    # platform on forge.OnHosted). Set, it REPLACES that default; extend the
+    # default with `forge.managed_database_telemetry("<name>") | {...}`. The
+    # target is the database's instances (pods `cnpg.io/cluster: <name>`,
+    # ports `metrics` 9187 and `postgres` 5432), so selector, namespaces,
+    # cluster and address are refused.
+    telemetry?: Telemetry
+    # False turns the default telemetry off: the database's and its share of
+    # the CloudNativePG operator's (a cluster's operator is watched while any
+    # database on it keeps the default). A declared `telemetry` still renders.
+    default_telemetry: bool = True
 
     check:
+        not telemetry or _tel_targets_self(telemetry), \
+            "ManagedDatabase '${name}': telemetry targets this database's instances itself, so selector, namespaces, cluster and address are refused"
         not (dashboards and spec.dashboards), \
             "ManagedDatabase '${name}' declares dashboards twice: set `dashboards = forge.DatabaseDashboards {...}` on the ManagedDatabase, not on `spec`"
         regex.match(name, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(name) <= 40, \
@@ -3132,6 +3175,49 @@ schema ClusterClient:
 # field from a sibling field).
 # ---------------------------------------------------------------------------
 
+schema BuildOutput:
+    """One FILE a build produces that the release ships: a CLI archive, an
+    installer, a desktop bundle, a checksum list. After a successful build
+    forge hashes every file `path` matches and records each in the release
+    ledger as a file artifact (sha256 + size), keyed `<workload>/<path>`, so
+    a release names the exact bytes it shipped — not only its images.
+
+        build = forge.ShellBuild {
+            cmd = "./scripts/package.sh"
+            outputs = [
+                forge.BuildOutput {path = "dist/acme_linux_amd64.tar.gz", platform = "linux/amd64"}
+                forge.BuildOutput {path = "dist/acme_darwin_arm64.tar.gz", platform = "darwin/arm64"}
+                forge.BuildOutput {path = "dist/checksums.txt"}
+            ]
+        }
+
+    `path` is relative to the build's working directory: a ShellBuild's
+    resolved `cwd` (or its `source` checkout), else the project root. It is
+    a file, a directory (every file beneath it), or a glob: `*` `?` `[...]`
+    match within one path segment and a whole `**` segment matches any
+    depth (`dist/*.tar.gz`, `out/**/*.dmg`). It never leaves that directory.
+
+    A `--release` build refuses a declared output that matches no file (a
+    release records only bytes that exist); a plain build warns. Forge
+    hashes the files and never uploads them: publishing stays the build's
+    (or CI's) job."""
+    # A file, directory or glob, relative to the build's working directory.
+    path: str
+    # The OS/arch the file is for ("darwin/arm64", "windows/amd64"), recorded
+    # with it in the release. Informational; "" for a platform-neutral file.
+    platform: str = ""
+
+    check:
+        path.strip() != "", "BuildOutput.path is required: the file, directory or glob the build writes"
+        not path.startswith("/") and not path.startswith("\\") and not regex.match(path, r"^[A-Za-z]:"), \
+            "BuildOutput.path '${path}' is absolute; outputs are relative to the build's working directory (a ShellBuild's cwd, else the project root)"
+        ".." not in path.replace("\\", "/").split("/"), \
+            "BuildOutput.path '${path}' leaves the build's working directory (`..`); set the ShellBuild's cwd to the directory that holds the output instead"
+        path.strip() not in [".", "./"], \
+            "BuildOutput.path '${path}' names the whole working directory; name the files the release ships (e.g. \"dist/*.tar.gz\")"
+        not platform or regex.match(platform, r"^[a-z0-9]+/[a-z0-9_]+(/[a-z0-9]+)?$"), \
+            "BuildOutput.platform '${platform}' is not an os/arch pair such as \"linux/amd64\" or \"darwin/arm64\""
+
 schema Build:
     """Base build concept. Concrete build types (GoBuild / DockerBuild /
     ShellBuild) inherit this. Discriminated by `type` in the rendered
@@ -3145,6 +3231,15 @@ schema Build:
     # JSON file consumed by the native planner/receipt helper. Paths relative
     # to the project. Missing/dynamic inputs cannot authorize build reuse.
     inputs_file: str = ""
+    # Files the build produces that the release ships (see BuildOutput):
+    # each is hashed into the release ledger as a file artifact. A
+    # forge.BuildOnly workload that declares outputs needs no `image` — its
+    # artifact is the files, and no image is pushed or resolved for it.
+    outputs: [BuildOutput] = []
+
+    check:
+        len(outputs) == len({o.path: None for o in outputs}), \
+            "Build.outputs names the same path twice: ${[o.path for o in outputs]}"
 
 # A Go binary's package path, relative to the project: "./cmd/app". Already
 # in its one spelling — no `.` or `..` segment — so the key forge's build
@@ -3185,6 +3280,9 @@ schema PGO:
 
         build = forge.DockerBuild {pgo = {"./cmd/proxy" = forge.PGO {enabled = False}}}
 
+    A ShellBuild's command is opaque to forge, so it pulls a profile only for
+    the binaries the build's `pgo` names, each a ShellPGO (see ShellPGO).
+
     One binary has one profile. A modular-monolith binary that runs as the
     server, a worker and a cron gets ONE profile merging every workload that
     runs it, weighted by CPU — which is what the compiler should optimize.
@@ -3220,6 +3318,84 @@ schema PGO:
             "PGO.min_weight '${min_weight}' is not a duration — it needs a unit, e.g. '10s' or '500ms'"
         all s in services {s}, "PGO.services must not contain an empty name"
 
+schema ShellPGO(PGO):
+    """Profile-guided optimization for one Go binary a ShellBuild's command
+    builds (ShellBuild.pgo, keyed by the binary's package path relative to
+    the build's cwd). Every PGO field means what it does on a GoBuild, and two
+    more say what forge cannot see inside a shell command:
+
+        build = forge.ShellBuild {
+            cwd = "../reliant"
+            cmd = "./scripts/build-image.sh"
+            pgo = {"./cmd/reliant" = forge.ShellPGO {from_env = "prod"}}
+        }
+
+    `forge pgo pull --env prod` then writes ../reliant/cmd/reliant/default.pgo
+    from the CPU profiles of every workload this build serves, and a command
+    that runs `go build ./cmd/reliant` from cwd reads it (Go's default
+    `-pgo=auto`). The profile is also part of the build's `inputs`
+    fingerprint, so committing a refreshed one rebuilds the image.
+
+    forge does not edit the command, so `enabled = False` only makes
+    `forge pgo pull` skip the binary: whether the build uses a profile is the
+    command's own `-pgo`.
+    """
+    # Where `forge pgo pull` writes the profile, relative to the project root
+    # (a leading `../` reaches a sibling checkout, as `cwd` does). "" is
+    # `<cwd>/<binary>/default.pgo`, the file `go build <binary>` run from cwd
+    # reads. Required when the build has a `source`: forge resolves that
+    # checkout per invocation, so there is nowhere lasting to write by default.
+    out: str = ""
+    # The OTEL service.namespace whose profiles are merged. "" is this
+    # project's (Bundle.project), which every workload it renders reports.
+    namespace: str = ""
+
+    check:
+        not out.startswith("/"), \
+            "ShellPGO.out '${out}' is relative to the project root (use ../ for a sibling checkout), never absolute"
+        not out.endswith("/"), \
+            "ShellPGO.out '${out}' names the profile FILE (e.g. '../reliant/cmd/reliant/default.pgo'), not a directory"
+
+schema Tests:
+    """How this env's Go binaries are built for test coverage: whether forge
+    instruments them (`go build -cover -covermode=atomic`) so the coverage an
+    e2e or integration run drives through a running server is measured.
+
+    Unset, `coverage` is computed, never scaffolded: on for an env with
+    `lifecycle = "local"` or `"ephemeral"` and for a preview instance, when
+    forge.yaml opts the project in (`tests.coverage: true`, which a new
+    scaffold writes and the `tests` upgrade playbook adds); off otherwise.
+    An env with no lifecycle and no preview is PERSISTENT — forge treats it
+    as production — and is never instrumented by default.
+
+        tests = forge.Tests {coverage = False}                # never here
+        tests = forge.Tests {coverage_packages = ["./internal/..."]}
+
+    A persistent env refuses `coverage = True` unless it says why, so a
+    staging deliberately used for e2e is a decision on the record:
+
+        tests = forge.Tests {coverage = True, coverage_in_persistent_env = "staging runs the nightly e2e"}
+
+    A build may override the env for its own binary (GoBuild.coverage,
+    DockerBuild.coverage). One binary has one answer: two workloads of an
+    env that run the same binary must agree on it, or the env does not
+    render.
+    """
+    # Build this env's Go workloads with -cover. Unset: the computed default above.
+    coverage?: bool
+    # The packages a cover build instruments: "main" (the project's module,
+    # minus its gen/ tree), or explicit `-coverpkg` patterns.
+    coverage_packages: "main" | [str] = "main"
+    # Required to turn coverage on in a persistent env: the reason, recorded
+    # with the env.
+    coverage_in_persistent_env?: str
+
+    check:
+        typeof(coverage_packages) == "str" or (coverage_packages and all p in coverage_packages {p.strip()}), \
+            "Tests.coverage_packages is \"main\" or a non-empty list of -coverpkg patterns, e.g. [\"./internal/...\"]"
+        not coverage_in_persistent_env or coverage_in_persistent_env.strip(), \
+            "Tests.coverage_in_persistent_env is the reason a persistent env is instrumented; it cannot be blank"
+
 schema GoBuild(Build):
     """Build the service with `go build`. `cmd` is the build target
     package (e.g. "./cmd/trader") — REQUIRED, so there is no hardcoded
@@ -3236,6 +3412,9 @@ schema GoBuild(Build):
     flags: [str] = []
     env: {str: str} = {}
     pgo: PGO = PGO {}
+    # Build the binary with -cover (True) or without it (False) whatever the
+    # env's `tests.coverage` says. Unset follows the env (see Tests).
+    coverage?: bool
 
     check:
         type == "go", "GoBuild.type must be 'go'"
@@ -3309,6 +3488,10 @@ schema DockerBuild(Build):
     # a disabled one, which the scaffolded Dockerfile's `go build -pgo=`
     # reads (and a Dockerfile without that ARG ignores).
     pgo: {str: PGO} = {}
+    # Coverage per Go binary the image builds, keyed by package path like
+    # `pgo`: True or False whatever the env's `tests.coverage` says. A binary
+    # not named follows the env (see Tests).
+    coverage: {str: bool} = {}
     # Files the image is built from, as globs — the same pattern grammar as
     # ShellBuild.inputs, relative to the project root, or to the checkout
     # when `context` is a GitSource (the base `dockerfile` resolves against).
@@ -3348,6 +3531,8 @@ schema DockerBuild(Build):
             "DockerBuild.inputs entries are relative to the project root (or the GitSource context), never absolute"
         all k in pgo {_pgo_binary_key(k)}, \
             "DockerBuild.pgo is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
+        all k in coverage {_pgo_binary_key(k)}, \
+            "DockerBuild.coverage is keyed by a binary's package path, e.g. './cmd/app' — got ${[k for k in coverage if not _pgo_binary_key(k)]}"
 
 schema ShellBuild(Build):
     """Build the service by running `cmd` verbatim via `sh -c`. The ONE
@@ -3489,7 +3674,8 @@ schema ShellBuild(Build):
         nothing outside is read or keyed on.
       * fingerprint — sha256 over everything that identifies the build's
         artifact (the command, the resolved cwd, the declared `source`,
-        `inputs_file` and its content, `unit`, `output_name`), `env`
+        `inputs_file` and its content, `unit`, `output_name`, and the
+        content of each profile `pgo` names — see ShellPGO), `env`
         (with every built_images value, so a rebuilt parent rebuilds its
         children), the platform, the pushed image and tag, the patterns,
         and every selected file's path, size, executable bit and CONTENT.
@@ -3573,9 +3759,19 @@ schema ShellBuild(Build):
     # same inputs (minus the release tag the KCL composed in) are unchanged.
     # Empty: the command runs on every build. See the docstring.
     inputs: [str] = []
+    # Profile-guided optimization per Go binary the command builds, keyed by
+    # the binary's package path relative to cwd ("./cmd/app"): where
+    # `forge pgo pull` writes its default.pgo, and whose profiles. A binary
+    # not named is not pulled (forge cannot see what the command builds).
+    # See ShellPGO.
+    pgo: {str: ShellPGO} = {}
 
     check:
         type == "shell", "ShellBuild.type must be 'shell'"
+        all k in pgo {_pgo_binary_key(k)}, \
+            "ShellBuild.pgo is keyed by a binary's package path relative to cwd, e.g. './cmd/app' — got ${[k for k in pgo if not _pgo_binary_key(k)]}"
+        not source or all k in pgo {pgo[k].out}, \
+            "ShellBuild.pgo needs `out` on every binary when the build has a `source`: forge resolves that checkout per invocation, so the profile has no lasting default path — got ${[k for k in pgo if not pgo[k].out]}"
         all p in inputs { p.strip() != "" and p.strip() != "!" }, \
             "ShellBuild.inputs entries are globs relative to the build's cwd; an empty entry selects nothing"
         all p in inputs { not p.lstrip("!").startswith("/") }, \
@@ -3687,6 +3883,8 @@ schema RemoteBuild(Build):
         memory_bytes > 0, "RemoteBuild.memory_bytes must be positive"
         cache_gib >= 0, "RemoteBuild.cache_gib must not be negative"
         timeout_seconds >= 60, "RemoteBuild.timeout_seconds must be at least 60"
+        not outputs, \
+            "RemoteBuild.outputs: a remote build leaves nothing on this machine to hash; build the files with a ShellBuild or GoBuild and declare its outputs there"
 
 # ---------------------------------------------------------------------------
 # Frontend runtimes, and the static-build facts they share.
@@ -6682,7 +6880,9 @@ schema DeliveryPolicy:
     # (the platform signs, and verifies server-side), `off` without one
     # (nothing signs a self-hosted env's bundles yet). Resolved at render.
     signing?: Signing
-    provenance_sbom: Control = Control {mode = "enforce"}
+    # `audit` (owner, 2026-11-20): enforcing it refuses a promotion whose
+    # artifacts have no SBOM, so it is a control that can block a deploy.
+    provenance_sbom: Control = Control {mode = "audit"}
     # Unset follows `signing`'s rule: `audit` with a control plane, `off`
     # without one. `enforce` writes OCIRepository spec.verify on the hub.
     flux_verify?: Control
@@ -7831,7 +8031,9 @@ _OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]
 
 # ---------------------------------------------------------------------------
 # ManagedIdentity — the env's users, declared. One identity-provider instance
-# per env (or one shared with a sibling env), converged by the control plane.
+# per declaration (or one shared with a sibling env), converged by the control
+# plane; an env declares one (Bundle.identity) or several, by name
+# (Bundle.identities).
 # ---------------------------------------------------------------------------
 
 schema IdentityRole:
@@ -8001,6 +8203,9 @@ type IdentityMethod = "password" | "passkey" | "magic_link"
 # passkey_rp_id): lower case, no wildcard, no trailing dot.
 _IDN_DNS_RE = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z]{2,}$"
 _IDN_EMAIL_RE = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+# A ManagedIdentity.name in Bundle.identities: part of the issuer slug
+# (pkg/release.IdentitySlugFor) and of the delivered Secrets' names.
+_IDN_LIST_NAME_RE = r"^[a-z][a-z0-9-]{0,23}$"
 
 schema IdentityGoogle:
     """Sign in with Google, through the APP'S OWN OAuth client. Register the
@@ -8109,6 +8314,11 @@ schema ManagedIdentity:
         # a preview env reusing staging's users
         identity = forge.ManagedIdentity {share_with = "staging"}
 
+        # SEVERAL instances in one env, keyed by `name`: the operators'
+        # identity beside the app's end users. Each declares its own
+        # applications and consumers (a workload brokers sign-in for one).
+        identities = [idn.OPERATORS, idn.USERS | {name = "users"}]
+
     WHERE IT RUNS is `runtime`: `forge.OnHosted {}` (the default) is an
     instance on the control plane's shared identity deployment and needs
     `Bundle.control_plane`; `forge.IdentityOnHost {infra}` is the env's own
@@ -8124,8 +8334,14 @@ schema ManagedIdentity:
     public route; the control plane also raises it by itself for a consumer
     that runs outside the network.
 
+    `name` is the instance's key: its delivered Secrets
+    (forge-identity-<name>), its managed secrets, its issuer slug
+    (pkg/release.IdentitySlugFor) and, in an env with several, what an
+    IdentityRef's `identity` names. Renaming an identity replaces it.
+
     `share_with` reuses the instance of another env of THE SAME PROJECT (it
-    is a bare env name, so another project is unspellable). The owner must
+    is a bare env name, so another project is unspellable), the one of the
+    same `name` there. The owner must
     declare an identity and must not itself be a sharer: no chains (checked
     at render, which renders the owner). A sharer declares only applications
     and consumers; roles, smtp, seed users, machine users, domain and
@@ -8773,7 +8989,17 @@ schema Bundle:
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).
     # Declaring it AND hand-setting a config field it fills is refused.
+    # Sugar for `identities = [identity]`: the two render byte-identically.
     identity?: ManagedIdentity
+    # SEVERAL managed identities in one env, each its own instance (its own
+    # issuer, keys and users), keyed by ManagedIdentity.name: an operator
+    # identity beside the app's end users, say. Each application (login
+    # broker) belongs to one of them, and a workload reading two maps one's
+    # outputs onto other config fields (IdentityConsumer.fields). Set this OR
+    # `identity`, never both. Names are unique and match
+    # ^[a-z][a-z0-9-]{0,23}$; an IdentityRef names the one it reads with
+    # `identity = "<name>"`.
+    identities: [ManagedIdentity] = []
     # The env's own secret store (forge.OpenBao): opt-in, like `observability`
     # and `identity`. UNSET renders nothing. A forge.ExternalSecret reads from
     # it with `source = forge.StoreSource {store = forge.OpenBaoStore {}}`.
@@ -8788,8 +9014,16 @@ schema Bundle:
     # the store, because they cannot live in what they bootstrap. UNSET =
     # forge.OutOfBand {} - provisioned by hand, and only checked.
     bootstrap_source?: GCPSecretManager | OutOfBand
+    # Test coverage of this env's Go builds (see Tests): instrumented by
+    # default for local, ephemeral and preview envs of a project that opts in.
+    tests: Tests = Tests {}
 
     check:
+        # A PERSISTENT env (no lifecycle, not a preview) is production as far
+        # as forge knows, and an instrumented build there is a decision, not
+        # a default.
+        not tests.coverage or lifecycle or preview or tests.coverage_in_persistent_env, \
+            "Bundle.tests.coverage = True on a persistent env (no lifecycle, not a preview): instrumented builds are for local, ephemeral and preview envs. If this env really runs e2e against cover builds, say why: tests = forge.Tests {coverage = True, coverage_in_persistent_env = \"<why>\"}"
         # The key grammar, checked at load so a typo'd key is a KCL error
         # pointing at the declaration rather than a "target not found" from
         # the Go apply — which would read as "forge rendered no such object"
@@ -8964,22 +9198,32 @@ schema Bundle:
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
                 manifests, generated, rendered_secrets)) == 0, \
             "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+        # SEVERAL IDENTITIES (Bundle.identities): which instances exist is
+        # judged before anything derived from them (their Secrets, below).
+        not (identity and len(identities) > 0), \
+            "Bundle.identity and Bundle.identities are both set: put every instance in identities (identity is sugar for identities = [identity])"
+        len(_duplicates([i.name for i in identities])) == 0, \
+            "Bundle.identities: a name is declared twice: ${_duplicates([i.name for i in identities])}. ManagedIdentity.name is the instance's key (its issuer, its delivered Secrets and its users), so each identity names its own"
+        len(_duplicates([_idn_tok(i.name) for i in identities])) == 0, \
+            "Bundle.identities: ${[i.name for i in identities if _idn_tok(i.name) in _duplicates([_idn_tok(j.name) for j in identities])]} differ only in their punctuation, so a hosted consumer would read all of them from the same managed secrets (RELIANT_IDENTITY_${_duplicates([_idn_tok(i.name) for i in identities])[0] if _duplicates([_idn_tok(i.name) for i in identities]) else ''}_*): rename one"
+        all i in identities { regex.match(i.name, _IDN_LIST_NAME_RE) }, \
+            "Bundle.identities names ${[i.name for i in identities if not regex.match(i.name, _IDN_LIST_NAME_RE)]} must match ^[a-z][a-z0-9-]{0,23}$: the name is part of the instance's issuer slug and of its delivered Secrets' names"
         # A CONTROL-PLANE SECRET NEEDS A CONTROL PLANE TO DELIVER IT, AND A
         # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
         # are refused here, while the author is looking at the KCL, rather than
         # as a deploy that is accepted and never delivers.
-        len(_cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0 or control_plane, \
-            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
-        len(_cps_unbound(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
-            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), cluster_target, connected_clusters)
+        len(_cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
         not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
             "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
-        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
-        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
-        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
@@ -8992,48 +9236,21 @@ schema Bundle:
             "Bundle.required_secrets ${_unsourced_required(required_secrets)} declare no `source`, but other ExternalSecrets in this Bundle do. Once any Secret is store-backed, each one that is not says why with `out_of_band_reason = \"...\"` (or gets a `source`)"
         len(_duplicates([s.namespace + "/" + s.name for s in required_secrets if s.source])) == 0, \
             "Bundle.required_secrets: a store-backed Secret is declared twice: ${_duplicates([s.namespace + '/' + s.name for s in required_secrets if s.source])}. Two ExternalSecrets for one Secret would fight over its keys"
-        not openbao or openbao.writer.type != "oidc" or identity, \
+        not openbao or openbao.writer.type != "oidc" or len(_idn_all(identity, identities)) > 0, \
             "Bundle.openbao.writer is an OpenBaoOIDCWriter, which signs writers in with the env's ManagedIdentity, but the Bundle declares no `identity`. Declare `identity = forge.ManagedIdentity {...}`, or keep the default writer (forge.OpenBaoSAWriter {}), which needs only cluster access"
-        not openbao or openbao.writer.type != "oidc" or openbao.writer.role in [r.key for r in identity.roles if identity], \
-            "Bundle.openbao.writer.role '${openbao.writer.role if openbao and openbao.writer.type == 'oidc' else ''}' is not a role of Bundle.identity (declared: ${[r.key for r in identity.roles] if identity else []})"
+        not openbao or openbao.writer.type != "oidc" or openbao.writer.role in [r.key for i in _idn_all(identity, identities) for r in i.roles], \
+            "Bundle.openbao.writer.role '${openbao.writer.role if openbao and openbao.writer.type == 'oidc' else ''}' is not a role of Bundle.identity (declared: ${[r.key for i in _idn_all(identity, identities) for r in i.roles]})"
         not openbao or not openbao.public or openbao.public.gateway in [g.name for g in gateways], \
             "Bundle.openbao.public.gateway '${openbao.public.gateway if openbao and openbao.public else ''}' is not a forge.Gateway in Bundle.gateways (declared: ${[g.name for g in gateways]}). Declare the Gateway, or name an existing one"
         # MANAGED IDENTITY (forge.ManagedIdentity). The structural rules live on
         # the schema; these need the Bundle: its control plane, workloads,
-        # infra and lifecycle.
+        # infra and lifecycle. Every rule is judged per identity, and the
+        # rules between identities (names, brokers, the host IdP, social
+        # clients) once over all of them: see _idn_bundle_errors.
         all s in control_plane_secrets { s.kind not in IDENTITY_SECRET_KINDS }, \
             "Bundle.control_plane_secrets ${[s.name for s in control_plane_secrets if s.kind in IDENTITY_SECRET_KINDS]} have an identity kind. Those are DERIVED from Bundle.identity (forge.ManagedIdentity) and never declared by hand: declare the identity and forge lists its Secrets"
-        not (identity and _idn_rt(identity) == "hosted") or control_plane, \
-            "Bundle.identity runs on the hosted runtime, which needs control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what provisions the instance and delivers its outputs. For a local env use `runtime = forge.IdentityOnHost {infra = \"idp\"}`"
-        not (identity and identity.runtime and identity.runtime.type == "host") or any i in infra { i.name == identity.runtime.infra and i.engine == "zitadel" }, \
-            "Bundle.identity.runtime = IdentityOnHost names infra '${identity.runtime.infra if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'zitadel' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
-        len(identity.seed_users if identity else []) == 0 or lifecycle in ["local", "ephemeral"], \
-            "Bundle.identity.seed_users create users with known passwords, so they are only allowed in an env that declares `lifecycle = \"local\"` or \"ephemeral\" (a real environment's users sign up or are invited). Remove them from this env, or declare the lifecycle if it really is scratch"
-        # V15: a named dev mail server is a mailpit HostInfra.
-        not (identity and identity.runtime and identity.runtime.type == "host" and identity.runtime.mail) or any i in infra { i.name == identity.runtime.mail and i.engine == "mailpit" }, \
-            "Bundle.identity.runtime = IdentityOnHost names mail '${identity.runtime.mail if identity and identity.runtime and identity.runtime.type == 'host' else ''}', which is not a forge.HostInfra with engine 'mailpit' in Bundle.infra. Declared infra: ${[i.name for i in infra]}"
-        # V5 / V6: a magic link is an email, and open or domain signup verifies
-        # the address by email before any session.
-        not identity or "magic_link" not in identity.methods or _idn_mail_available(identity, infra), \
-            "Bundle.identity.methods offer \"magic_link\", but the identity can send no mail: ${_idn_no_mail_msg(identity)}"
-        not identity or identity.signup == "invite" or _idn_mail_available(identity, infra), \
-            "Bundle.identity.signup = \"${identity.signup if identity else ''}\" verifies every new address by email before a session, but the identity can send no mail: ${_idn_no_mail_msg(identity)}"
-        # A social client secret is read only by the identity reconciler: no
-        # workload is handed it.
-        len(_idn_social_secret_readers(workloads, identity)) == 0, \
-            "${_idn_social_secret_readers(workloads, identity)} read a secret that Bundle.identity.social names as an OAuth client secret. Only the identity reconciler reads it (it is stored in the identity provider), so drop it from the workload's env"
-        not identity or not identity.share_with or identity.share_with != env, \
-            "Bundle.identity.share_with '${identity.share_with if identity else ''}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"
-        len(_idn_bad_apps(workloads, identity, env, project)) == 0, \
-            "Bundle.identity.applications name workloads that are not service workloads of this env: ${_idn_bad_apps(workloads, identity, env, project)}. An application's workload runs the sign-in endpoint. Declared: ${[w.name for w in workloads if w.kind == 'service']}"
-        len(_idn_bad_consumers(workloads, identity, env, project)) == 0, \
-            "Bundle.identity.consumers name workloads that are not service workloads on a runtime that can reach the instance (${_idn_reach(identity) if identity else []}): ${_idn_bad_consumers(workloads, identity, env, project)}"
-        not identity or len(_idn_apps(workloads, identity, env, project)) > 0 or len(_idn_consumers(workloads, identity, env, project)) == 0, \
-            "Bundle.identity has consumers but no application: no workload can broker a sign-in. Declare `applications`, or bind a service workload named 'api'"
-        not identity or _idn_rt(identity) != "host" or all m in identity.machine_users { not m.key_secret }, \
-            "Bundle.identity.machine_users key_secret/cluster apply to a hosted instance, where the control plane delivers the key. A host-run IdP keeps the key in the env's secret store: drop key_secret and cluster"
-        not identity or _idn_rt(identity) != "hosted" or all m in identity.machine_users { m.key_secret }, \
-            "Bundle.identity.machine_users ${[m.name for m in (identity.machine_users if identity else []) if not m.key_secret]} have no key_secret/cluster: a hosted instance delivers a machine user's key to a Secret on a connected cluster, so say which"
+        len(_idn_bundle_errors(_idn_all(identity, identities), workloads, infra, env, project, lifecycle, control_plane)) == 0, \
+            _idn_first_error(_idn_bundle_errors(_idn_all(identity, identities), workloads, infra, env, project, lifecycle, control_plane))
         # THE DESTINATION'S HEADERS MUST RESOLVE. The node agent reads them
         # through a secretKeyRef in its own namespace, and a Secret nothing
         # supplies leaves the DaemonSet in CreateContainerConfigError with
@@ -9042,7 +9259,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, identity, env, project, control_plane_secrets))), \
+        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

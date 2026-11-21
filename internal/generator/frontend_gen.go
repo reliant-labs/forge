@@ -183,7 +183,9 @@ func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
 // route-guard.tsx, the seam gating the frontend later re-attaches to.
 func isSignInScreen(rel string) bool {
 	rel = strings.TrimSuffix(filepath.ToSlash(rel), ".tmpl")
-	if strings.HasPrefix(rel, "src/app/auth/") {
+	// src/app/account/ is the signed-in person's account page, which mounts
+	// the passkeys panel: with no sign-in there is no account to manage.
+	if strings.HasPrefix(rel, "src/app/auth/") || strings.HasPrefix(rel, "src/app/account/") {
 		return true
 	}
 	_, ok := signInOnlyFiles[rel]
@@ -197,6 +199,7 @@ func isSignInScreen(rel string) bool {
 // tree and absent from the public one.
 var signInOnlyFiles = map[string]struct{}{
 	"src/components/accept-invite-form.tsx":    {},
+	"src/components/account-settings.tsx":      {},
 	"src/components/auth-ui.tsx":               {},
 	"src/components/forgot-password-form.tsx":  {},
 	"src/components/magic-link-form.tsx":       {},

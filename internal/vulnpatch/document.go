@@ -16,11 +16,12 @@ const (
 	EcosystemNPM  Ecosystem = "npm"
 	EcosystemPNPM Ecosystem = "pnpm"
 	EcosystemYarn Ecosystem = "yarn"
+	// EcosystemDocker (ospkg.go) is a Dockerfile's base image.
 )
 
 // Ecosystems are the values --ecosystem accepts.
 func Ecosystems() []Ecosystem {
-	return []Ecosystem{EcosystemGo, EcosystemNPM, EcosystemPNPM, EcosystemYarn, EcosystemPip, EcosystemPoetry, EcosystemUV}
+	return []Ecosystem{EcosystemGo, EcosystemNPM, EcosystemPNPM, EcosystemYarn, EcosystemPip, EcosystemPoetry, EcosystemUV, EcosystemDocker}
 }
 
 // Status is what happened to one finding.
@@ -93,11 +94,13 @@ type Result struct {
 	// Ecosystem is the patcher that handled it; "" when none applies.
 	Ecosystem Ecosystem `json:"ecosystem,omitempty"`
 	// Installed is the version the finding names, and Target the version
-	// it is bumped to ("" when skipped before a target was chosen).
+	// it is bumped to ("" when skipped before a target was chosen). For an
+	// OS package, Target is the base image reference its Dockerfile is
+	// refreshed to.
 	Installed string `json:"installed"`
 	Target    string `json:"target,omitempty"`
 	// Manifests are the tree's files the package resolved to, relative to
-	// Dir (go.mod, package-lock.json, ...).
+	// Dir (go.mod, package-lock.json, Dockerfile, ...).
 	Manifests []string `json:"manifests,omitempty"`
 	// Status is fixed, still_present, bumped, failed or skipped.
 	Status Status `json:"status"`
@@ -109,11 +112,15 @@ type Result struct {
 type Bump struct {
 	// Ecosystem is the tool that applied it.
 	Ecosystem Ecosystem `json:"ecosystem"`
-	// Manifest is the go.mod or lockfile, relative to the patched tree.
+	// Manifest is the go.mod, lockfile or Dockerfile, relative to the
+	// patched tree.
 	Manifest string `json:"manifest"`
-	// Package is the module or package name.
+	// Package is the module or package name; "toolchain" for a go.mod's
+	// toolchain directive, and the image (alpine, golang) for a
+	// Dockerfile's FROM.
 	Package string `json:"package"`
-	// From and To are the versions before and after.
+	// From and To are the versions before and after; for a Dockerfile, the
+	// image references.
 	From string `json:"from"`
 	To   string `json:"to"`
 	// Direct reports a direct dependency; a transitive npm, pnpm or yarn
@@ -126,7 +133,7 @@ type Bump struct {
 	Commands [][]string `json:"commands"`
 	// Edits are the changes the patcher made to a file itself rather than
 	// through a tool: an override in package.json, a pin rewritten in a
-	// requirements file or a .in.
+	// requirements file or a .in, a Dockerfile's FROM.
 	Edits []string `json:"edits,omitempty"`
 	// Error is the failure, with the tool's output tail; "" on success.
 	Error string `json:"error,omitempty"`
@@ -146,6 +153,9 @@ type VerifyResult struct {
 	Output string `json:"output,omitempty"`
 	// Rescanned are the directories rescanned, relative to the tree.
 	Rescanned []string `json:"rescanned"`
+	// Rebuilt are the Dockerfiles changed, rebuilt with docker and whose
+	// images were rescanned, relative to the tree.
+	Rebuilt []string `json:"rebuilt,omitempty"`
 	// RescanError is why the rescan could not run, when it could not.
 	RescanError string `json:"rescan_error,omitempty"`
 }

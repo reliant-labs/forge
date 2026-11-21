@@ -48,6 +48,14 @@ const (
 	// AttachObservability is Observability.telemetry: anything else, by
 	// selector and cluster, or by address.
 	AttachObservability Attachment = "observability"
+	// AttachManagedDatabase is a forge.ManagedDatabase's telemetry: its
+	// declared one, or the default forge renders for it (kcl/
+	// database_telemetry.k), whose target is the database's CloudNativePG
+	// instances (pods `cnpg.io/cluster: <name>`). The default CloudNativePG
+	// operator target of a cluster holding such databases attaches here too.
+	// Like Manifests, forge renders no NetworkPolicy for it unless asked:
+	// one selecting the instances would deny every other Postgres caller.
+	AttachManagedDatabase Attachment = "manageddatabase"
 )
 
 // Runtime is where the target runs, and so which collector reaches it.
@@ -101,8 +109,10 @@ type Target struct {
 	ServiceName string `json:"service_name"`
 	Scope       Scope  `json:"scope"`
 	// Source names the declaration: "workload:<name>", "hostinfra:<name>",
-	// "manifests:<name>" ("manifests" for an unnamed group) or
-	// "observability".
+	// "manifests:<name>" ("manifests" for an unnamed group),
+	// "observability", "manageddatabase:<name>", or
+	// "manageddatabase-operator:<cluster>" for a cluster's default
+	// CloudNativePG operator target.
 	Source     string     `json:"source"`
 	Attachment Attachment `json:"attachment"`
 	Runtime    Runtime    `json:"runtime"`
@@ -139,6 +149,8 @@ type Target struct {
 	//   - nil on AttachManifests/AttachObservability: render NO policy. forge
 	//     cannot know whether those pods are already policy-selected; the
 	//     project owns admission (Warnings notes that the collector needs it).
+	//   - nil on AttachManagedDatabase: render NO policy either. A policy
+	//     selecting the instances would deny every other Postgres caller.
 	//   - true: render it. false: never.
 	//
 	// AdmitCollector resolves it.

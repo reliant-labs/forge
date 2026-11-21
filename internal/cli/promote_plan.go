@@ -580,6 +580,10 @@ type promotePlan struct {
 	// FloorsRaised are the rollback floors the recorded promotion raised,
 	// read back from the ledger after the write.
 	FloorsRaised []release.Floor `json:"floors_raised,omitempty"`
+	// Vulnerabilities is what the env's control plane does with the
+	// release's SBOMs and findings (GetCapabilities.vulnerability_features,
+	// hosted_vuln.go). Nil for an env whose ledger is not a control plane.
+	Vulnerabilities *promotePlanVulns `json:"vulnerabilities,omitempty"`
 	// Expected is the compare-and-set the write asserts: the promotion id
 	// it requires to be current, or "unbound". Present under --plan too —
 	// it is what the real promote WOULD send — so a reviewer sees an
@@ -1482,6 +1486,7 @@ func renderPromotePlanText(out io.Writer, plan promotePlan) {
 	for _, f := range plan.FloorsRaised {
 		fmt.Fprintf(out, "  floor     RAISED %s %s floor %s: %s\n", f.Kind, f.Source, f.ID, describeFloor(f))
 	}
+	renderPlanVulns(out, plan.Vulnerabilities)
 	if plan.Direction == promoteDirectionBehind {
 		// A backwards promote is not a rollback and cannot be one: the
 		// newer release's migrations stay applied and the rows it wrote stay

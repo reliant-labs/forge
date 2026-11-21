@@ -455,14 +455,18 @@ func (s *Sampler) processRate(now time.Time, c *ProcessCPU, next *counters) {
 }
 
 // hostRate sets c's per-mode utilization from the CPU times of the previous
-// sample that read them, and records these for the next.
+// sample that read them, and records these for the next. Unavailable modes
+// contribute neither a delta nor time to the utilization denominator.
 func (s *Sampler) hostRate(c *HostCPU, next *counters) {
 	cur := c.Seconds
 	if prev := s.prev; prev.haveH {
 		d := CPUModes{
 			User: cur.User - prev.hostCPU.User, System: cur.System - prev.hostCPU.System,
-			Idle: cur.Idle - prev.hostCPU.Idle, IOWait: cur.IOWait - prev.hostCPU.IOWait,
-			Steal: cur.Steal - prev.hostCPU.Steal,
+			Idle: cur.Idle - prev.hostCPU.Idle,
+		}
+		if !c.NoIOWaitSteal {
+			d.IOWait = cur.IOWait - prev.hostCPU.IOWait
+			d.Steal = cur.Steal - prev.hostCPU.Steal
 		}
 		if total := d.User + d.System + d.Idle + d.IOWait + d.Steal; total > 0 {
 			c.Utilization = &CPUModes{

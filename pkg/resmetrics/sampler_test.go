@@ -129,6 +129,35 @@ func TestSnapshotReadsEveryFixtureFile(t *testing.T) {
 	}
 }
 
+func TestHostRateUsesOnlyMeasuredModes(t *testing.T) {
+	for _, noIOWaitSteal := range []bool{false, true} {
+		t.Run(map[bool]string{false: "linux", true: "native"}[noIOWaitSteal], func(t *testing.T) {
+			s := &Sampler{prev: counters{
+				haveH:   true,
+				hostCPU: CPUModes{User: 10, System: 20, Idle: 30, IOWait: 40, Steal: 50},
+			}}
+			c := &HostCPU{
+				Seconds:       CPUModes{User: 12, System: 23, Idle: 35, IOWait: 44, Steal: 56},
+				NoIOWaitSteal: noIOWaitSteal,
+			}
+			want := CPUModes{User: 0.1, System: 0.15, Idle: 0.25, IOWait: 0.2, Steal: 0.3}
+			if noIOWaitSteal {
+				// A previous source populated modes the native reader cannot measure.
+				c.Seconds.IOWait, c.Seconds.Steal = 0, 0
+				want = CPUModes{User: 0.2, System: 0.3, Idle: 0.5}
+			}
+			var next counters
+			s.hostRate(c, &next)
+			if c.Utilization == nil || !modesNear(*c.Utilization, want) {
+				t.Fatalf("utilization = %+v, want %+v", c.Utilization, want)
+			}
+			if !next.haveH || next.hostCPU != c.Seconds {
+				t.Fatalf("next counters = %+v, want current CPU times", next)
+			}
+		})
+	}
+}
+
 func modesNear(a, b CPUModes) bool {
 	return near(a.User, b.User) && near(a.System, b.System) && near(a.Idle, b.Idle) && near(a.IOWait, b.IOWait) && near(a.Steal, b.Steal)
 }

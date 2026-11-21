@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.9.0] - 2026-11-20
+
+### Added
+
+- **web-runtime:** per-RPC client spans and redacted failure forensics ([#2348](https://github.com/reliant-labs/forge/pull/2348))
+- **deploy,up:** env deploy, env build --release and env up end with a RESULT line; env up shows per-RPC latency; hosted deploys name what the release includes ([#2306](https://github.com/reliant-labs/forge/pull/2306))
+- **deploy:** warn when one app is deployed from two repositories ([#2342](https://github.com/reliant-labs/forge/pull/2342))
+- **deploy:** build steps print one line each with their timing; the full output goes to .forge/logs/<env>/deploy.log ([#2309](https://github.com/reliant-labs/forge/pull/2309))
+- **skills:** entry skills and forge start open with what a project gets, and a compare skill states limits and prices ([#2300](https://github.com/reliant-labs/forge/pull/2300))
+- **deploy:** name the static-site limit, not the compute ceiling, when a billed org's capacity pre-flight is refused ([#2365](https://github.com/reliant-labs/forge/pull/2365))
+- **serverkit,up:** serve grpc.health.v1.Health/Check through the chain, and env up's first request is that health rpc ([#2313](https://github.com/reliant-labs/forge/pull/2313))
+- **composition:** adopt the composition graph one root at a time beside a legacy composition ([#2334](https://github.com/reliant-labs/forge/pull/2334))
+- **obs:** new-issue's client_timeout_min_sessions holds a client-side timeout's page until its second session ([#2371](https://github.com/reliant-labs/forge/pull/2371))
+- **observe:** code location, slow marking and redacted forensics at component boundaries ([#2349](https://github.com/reliant-labs/forge/pull/2349))
+- **build:** reuse the previous release's image when a step's declared inputs are unchanged ([#2377](https://github.com/reliant-labs/forge/pull/2377))
+- **obs:** browser regressions fail a release by default; warn_on demotes a finding ([#2370](https://github.com/reliant-labs/forge/pull/2370))
+- **orm:** generated Update<Entity>Where, a set-based update over List's filters ([#2335](https://github.com/reliant-labs/forge/pull/2335))
+- **hostslot:** an express lane with reserved slots, so a scoped command never waits behind hour-long heavy jobs ([#2375](https://github.com/reliant-labs/forge/pull/2375))
+- **obs:** obs ops, obs blast-radius and op-scoped release health ([#2364](https://github.com/reliant-labs/forge/pull/2364))
+- **contracts:** //forge:contract on a struct derives the Service interface ([#2350](https://github.com/reliant-labs/forge/pull/2350))
+- **pgo:** profile-guided builds from the CPU profiles forge already collects ([#2378](https://github.com/reliant-labs/forge/pull/2378))
+
+### Changed
+
+- **proposals:** runtime context — join telemetry to code, diff and agent ([#2347](https://github.com/reliant-labs/forge/pull/2347))
+- **e2e:** a forge child over its budget in TestE2EDebugEnvUpAttachAndStart dumps its goroutines ([#2352](https://github.com/reliant-labs/forge/pull/2352))
+- **deps:** refresh Go dependencies (pgx 5.13, nats 1.56, x/net, x/tools, google api, controller-runtime 0.25.3, docker/cli 29.10) ([#2359](https://github.com/reliant-labs/forge/pull/2359))
+- **proposals:** per-project context for dashboard panels (#2233) ([#2351](https://github.com/reliant-labs/forge/pull/2351))
+- **proposals:** forensics never records times or durations; one value encoding ([#2372](https://github.com/reliant-labs/forge/pull/2372))
+- **goexec:** keep -trimpath in the PGO tests go builds, exempt WithPGO ([#2392](https://github.com/reliant-labs/forge/pull/2392))
+
+### Fixed
+
+- **observe:** user- and canceled-class errors don't mark the server span Error ([#2263](https://github.com/reliant-labs/forge/pull/2263))
+- **web-runtime:** telemetry starts under Node test runners again ([#2344](https://github.com/reliant-labs/forge/pull/2344))
+- **generate:** report an in-tree producer's pin lag as a pending pin bump, not a failed build ([#2336](https://github.com/reliant-labs/forge/pull/2336))
+- **e2e:** green main's E2E Suite — scaffold operator no longer fails generate; two e2e checks stop flagging correct output ([#2345](https://github.com/reliant-labs/forge/pull/2345))
+- **generate:** forge:no-observe names the owned observe_chain.go seam it leaves unused ([#2356](https://github.com/reliant-labs/forge/pull/2356))
+- **lint:** unsafe-add-not-null-column suggests a constant DEFAULT before the backfill path ([#2353](https://github.com/reliant-labs/forge/pull/2353))
+- **identity:** the delivered JWKS snapshot carries delivered_at and issuer, so an inline JWT_JWKS_SNAPSHOT is usable ([#2355](https://github.com/reliant-labs/forge/pull/2355))
+- **generate:** the stale-hook warning ignores a hand-written \*-hooks.ts with no forge banner ([#2358](https://github.com/reliant-labs/forge/pull/2358))
+- **obs:** an issue forge's own interceptor logged names the rpc as its culprit ([#2304](https://github.com/reliant-labs/forge/pull/2304))
+- **lint:** a build's copy of the dev runtime config is not ignored generated source ([#2286](https://github.com/reliant-labs/forge/pull/2286))
+- **scaffold:** forge-written protos pass buf format, and forge lint --proto-format runs the hook's check ([#2307](https://github.com/reliant-labs/forge/pull/2307))
+- **test:** the shutdown sweep's tests model the command's lineage too, so a modelled pid is never a real Windows ancestor ([#2366](https://github.com/reliant-labs/forge/pull/2366))
+- **cli:** drop the RESULT line's unset log= key, which the dead-claims guard rejects ([#2367](https://github.com/reliant-labs/forge/pull/2367))
+- **lint:** optional-deps-guard accepts a protobuf getter on an optional proto-message dep ([#2357](https://github.com/reliant-labs/forge/pull/2357))
+- **testdocker:** label the openbao smoke tests' docker networks and reap only our own stale ones ([#2369](https://github.com/reliant-labs/forge/pull/2369))
+- **lint:** make forge's own contract lane pass, and stop flagging commands and const-shaped built values ([#2374](https://github.com/reliant-labs/forge/pull/2374))
+- **scaffold:** frontends pin zod 4 (GHSA-mrhx-c7xc-m3w5) and generated forms use the zod 4 API ([#2368](https://github.com/reliant-labs/forge/pull/2368))
+- **skills:** allowlist the composition-graph migration's user-project paths ([#2376](https://github.com/reliant-labs/forge/pull/2376))
+- **devidp:** never put a credential on an unverified account; drop the proof eviction ([#2179](https://github.com/reliant-labs/forge/pull/2179))
+- **cliev:** count delivered telemetry in-process so TestDailyCap no longer depends on the host's loopback latency ([#2379](https://github.com/reliant-labs/forge/pull/2379))
+- **forensics:** secret-named plain numbers record only their length ([#2380](https://github.com/reliant-labs/forge/pull/2380))
+- **generate:** a failed run's rewind spares files another writer changed after forge wrote them ([#2329](https://github.com/reliant-labs/forge/pull/2329))
+- **lint:** keep backend scopes out of unrelated frontend installs ([#2314](https://github.com/reliant-labs/forge/pull/2314))
+- **observe:** trace forge's own outbound HTTP and SQL, and exempt hand-encoded OTLP exporters from forge-tracing-raw-http-client ([#2373](https://github.com/reliant-labs/forge/pull/2373))
+- **skills:** keep release-healths list off the buf template guards `- local:` pattern ([#2386](https://github.com/reliant-labs/forge/pull/2386))
+- **cli:** record a coherent release source and show the two-remotes warning on snapshots ([#2382](https://github.com/reliant-labs/forge/pull/2382))
+- **pgtest:** fall back to a Maven Central mirror when Maven Central 404s a published postgres archive ([#2387](https://github.com/reliant-labs/forge/pull/2387))
+- **pgtest:** fail closed when no checksum is published ([#2389](https://github.com/reliant-labs/forge/pull/2389))
+- **cli:** set the deploy attempts flush backoff on the real path ([#2390](https://github.com/reliant-labs/forge/pull/2390))
+- **devidp:** dev Zitadel moves to v4.20.5, in step with the deployed one ([#2391](https://github.com/reliant-labs/forge/pull/2391))
+
 ## [v1.8.0] - 2026-11-19
 
 ### Added
@@ -9121,7 +9185,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.9.0...HEAD
+[v1.9.0]: https://github.com/reliant-labs/forge/compare/v1.8.0...v1.9.0
 [v1.8.0]: https://github.com/reliant-labs/forge/compare/v1.7.0...v1.8.0
 [v1.7.0]: https://github.com/reliant-labs/forge/compare/v1.6.0...v1.7.0
 [v1.6.0]: https://github.com/reliant-labs/forge/compare/v1.5.0...v1.6.0

@@ -697,8 +697,11 @@ test_run_packages(run_id, org_id, package, test_set_digest, attempts_per_test,
           PRIMARY KEY (run_id, package))
 test_sets(org_id, digest, test_key_ids bigint[], PRIMARY KEY (org_id, digest))
 
--- One per attempt of every test with a non-pass attempt in the run (capped at
--- 200k per run; monthly partitions). A test whose attempts all passed has no row.
+-- Row condition: a test has rows iff at least one of its attempts in the run
+-- did not pass; it then has one row for EVERY attempt, passing ones included
+-- (a retry pass keeps its pass). A test whose attempts all passed has none.
+-- Monthly partitions. The 200k cap is the upload's (below): it counts every
+-- attempt of every case, so a run can never store more rows than it.
 test_case_results(run_id, org_id, test_key_id, attempt, status pass|fail|skip,
           duration_ms, failure_sig_hash, verdict NULL,
           PRIMARY KEY (run_id, test_key_id, attempt))
@@ -758,8 +761,10 @@ test_infra_events(id, org_id, project, kind host|infra, infra_group, test_key_id
   commit. For our repos this removes about 99% of the rows.
 
 - **Sizes.** An upload is capped at 32 MiB compressed (`gzip` required above 1
-  MiB) and 200k cases, matching `RecordReleaseSBOM`. A larger upload is refused
-  with a reason, never truncated. Phase 0 measured the three repos: a full
+  MiB) and 200k cases, matching `RecordReleaseSBOM`. A case is one attempt of
+  one test: a lane run with `-count=3` over 70k tests is 210k cases and is
+  refused, so the cap bounds `test_case_results` rows per run as well. A larger
+  upload is refused with a reason, never truncated. Phase 0 measured the three repos: a full
   unit lane's per-package profile is about 9, 13.5 and 17 MB as text and 0.9,
   1.2 and 1.5 MB gzipped (forge, control-plane, reliant), and one server's
   covdata is a 1.15 MB gzipped meta file plus 5 to 18 KB of counters per

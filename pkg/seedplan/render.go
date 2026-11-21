@@ -520,7 +520,11 @@ func (p *Plan) statement(tp tablePlan) string {
 	for i, cp := range written {
 		cols[i] = quoteIdent(cp.col.Name)
 	}
-	fmt.Fprintf(&b, "INSERT INTO %s (%s) VALUES\n", QualifiedTable(tp.table), strings.Join(cols, ", "))
+	overriding := ""
+	if writesIdentity(tp) {
+		overriding = " OVERRIDING SYSTEM VALUE" // see writesIdentity
+	}
+	fmt.Fprintf(&b, "INSERT INTO %s (%s)%s VALUES\n", QualifiedTable(tp.table), strings.Join(cols, ", "), overriding)
 	for i := 0; i < tp.n; i++ {
 		vals := make([]string, len(written))
 		for j, cp := range written {
@@ -558,8 +562,9 @@ func (p *Plan) Statements() []string {
 }
 
 // Render returns the full deterministic SQL: a stable header (no timestamps)
-// plus every INSERT in topological order. Byte-identical for identical
-// (schema, pools, config).
+// plus every INSERT in topological order, each followed by the statement
+// that advances the sequences its explicit keys bypassed (see sequence.go).
+// Byte-identical for identical (schema, pools, config).
 func (p *Plan) Render() string {
 	var b strings.Builder
 	b.WriteString("-- Deterministic seed data materialized by `forge db seed`.\n")
@@ -573,6 +578,7 @@ func (p *Plan) Render() string {
 			}
 			fmt.Fprintf(&b, "-- %s\n", tp.table.Name)
 			b.WriteString(s)
+			b.WriteString(p.sequenceSync(tp))
 		}
 	}
 	return b.String()

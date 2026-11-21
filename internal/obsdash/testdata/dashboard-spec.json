@@ -3272,7 +3272,6 @@
         }
       ],
       "defaultRange": "30d",
-      "defaultCompare": "period",
       "panels": [
         {
           "section": "glance",
@@ -3597,7 +3596,6 @@
         }
       ],
       "defaultRange": "30d",
-      "defaultCompare": "period",
       "panels": [
         {
           "section": "glance",
@@ -3897,7 +3895,6 @@
         }
       ],
       "defaultRange": "7d",
-      "defaultCompare": "period",
       "panels": [
         {
           "section": "glance",
@@ -4172,7 +4169,6 @@
         }
       ],
       "defaultRange": "30d",
-      "defaultCompare": "period",
       "panels": [
         {
           "section": "glance",
@@ -4447,7 +4443,6 @@
         }
       ],
       "defaultRange": "7d",
-      "defaultCompare": "period",
       "panels": [
         {
           "section": "glance",
@@ -4876,7 +4871,6 @@
         }
       ],
       "defaultRange": "7d",
-      "defaultCompare": "period",
       "panels": [
         {
           "section": "calls",

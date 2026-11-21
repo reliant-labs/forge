@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/pkg/toolpins"
 )
 
 const fakeBinary = "#!/bin/sh\necho fake 1.2.3\n"
@@ -455,25 +455,33 @@ func TestMirrorReplacesGitHub(t *testing.T) {
 	}
 }
 
-// Every platform forge supports has a checksum for the version
-// templates pins, so a version bump without its checksums fails here.
-func TestPinnedChecksumsCoverEveryPlatform(t *testing.T) {
+// The pins are pkg/toolpins' (which holds the platform-coverage and
+// upstream-checksum tests): every pinned archive resolves here under the
+// same asset name, to the same archive and executable sums, and nothing
+// else does.
+func TestToolsArePkgToolpins(t *testing.T) {
 	t.Parallel()
-	hexSum := regexp.MustCompile(`^[0-9a-f]{64}$`)
-	platforms := [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "amd64"}, {"darwin", "arm64"}, {"windows", "amd64"}}
+	pins := toolpins.All()
+	if len(Tools()) != len(pins) {
+		t.Fatalf("toolfetch has %d tools, toolpins %d", len(Tools()), len(pins))
+	}
 	for _, tool := range Tools() {
-		for _, p := range platforms {
-			if _, s, ok := tool.checksum(p[0], p[1]); !ok || !hexSum.MatchString(s) {
-				t.Errorf("%s %s has no sha256 for %s/%s (%s)", tool.Name, tool.Version, p[0], p[1], tool.Asset(p[0], p[1]))
-			}
+		p, ok := toolpins.Lookup(tool.Name)
+		if !ok || p.Version != tool.Version || p.Repo != tool.Repo || p.GoPackage != tool.GoPackage {
+			t.Errorf("%s: toolfetch %+v does not match toolpins %+v", tool.Name, tool, p)
+			continue
 		}
-		ver := "_" + strings.TrimPrefix(tool.Version, "v") + "_"
-		for asset, s := range tool.Checksums {
-			if !strings.HasPrefix(asset, tool.Name+ver) {
-				t.Errorf("%s: checksum for %s is not for the pinned version %s", tool.Name, asset, tool.Version)
+		if len(tool.Checksums) != len(p.Archives) {
+			t.Errorf("%s: %d checksums, toolpins has %d archives", tool.Name, len(tool.Checksums), len(p.Archives))
+		}
+		for _, a := range p.Archives {
+			asset, sum, ok := tool.checksum(a.GOOS, a.GOARCH)
+			bin, binOK := tool.binaryChecksum(a.GOOS, a.GOARCH)
+			if !binOK || bin != a.BinarySHA256 {
+				t.Errorf("%s %s/%s: toolfetch's executable pin %s, toolpins pins %s", tool.Name, a.GOOS, a.GOARCH, bin, a.BinarySHA256)
 			}
-			if !hexSum.MatchString(s) {
-				t.Errorf("%s: checksum for %s is %q, not a sha256", tool.Name, asset, s)
+			if !ok || asset != a.Name || sum != a.SHA256 || tool.Binary(a.GOOS) != a.Binary {
+				t.Errorf("%s %s/%s: toolfetch resolves %s %s, toolpins pins %s %s", tool.Name, a.GOOS, a.GOARCH, asset, sum, a.Name, a.SHA256)
 			}
 		}
 	}

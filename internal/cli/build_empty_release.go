@@ -39,6 +39,9 @@ func releaseCapturesNothing(projectDir string, entities *KCLEntities, targets bu
 			return "", false
 		case w.OnRuntime(RuntimeBuildOnly) && w.Runtime.BuildOnly != nil && len(w.Runtime.BuildOnly.BuildVariants) > 0:
 			return "", false
+		case w.Build.Type != "" && len(w.Build.Outputs) > 0:
+			// Declared files: the cut hashes them (harvestDeclaredOutputs).
+			return "", false
 		}
 	}
 	for _, fe := range entities.Frontends {
@@ -66,7 +69,7 @@ func releaseCapturesNothing(projectDir string, entities *KCLEntities, targets bu
 			return "", false
 		}
 	}
-	return fmt.Sprintf("env %q declares nothing a release can pin: no workload with an image forge builds, no ShellBuild, no hosted workload or static site, no source-pinned frontend, no build-only binary, and no publishable package in the project", opts.env), true
+	return fmt.Sprintf("env %q declares nothing a release can pin: no workload with an image forge builds, no ShellBuild, no hosted workload or static site, no source-pinned frontend, no build-only binary, no declared build output, and no publishable package in the project", opts.env), true
 }
 
 // errEmptyRelease is the refusal. It names the cause and the way out, and says

@@ -296,6 +296,8 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 				BuildEnv:    buildEnv,
 				VulnDocker:  ci.VulnDocker,
 				Hosted:      buildEnvHosted,
+				// What the workflow may run is what the pinned forge has.
+				ForgeVersion: cfg.ForgeVersion,
 			}})
 		}
 		// deploy.yml exists while it has an env to deploy. A project whose

@@ -46,6 +46,17 @@ func TestValidateReleaseFlags_RequiresEnv(t *testing.T) {
 	}
 }
 
+func TestBuildPushFlagRegistered(t *testing.T) {
+	cmd := newBuildCmd()
+	f := cmd.Flags().Lookup("push")
+	if f == nil {
+		t.Fatal("--push flag not registered on build command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--push default = %q, want false", f.DefValue)
+	}
+}
+
 func TestBuildDebugFlagExists(t *testing.T) {
 	cmd := newBuildCmd()
 

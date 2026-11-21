@@ -93,6 +93,23 @@ func TestGeneratedProjectDeliversTelemetryToClickStack(t *testing.T) {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// It also writes the declared-log-parsing includes the collector config
+	// loads through ${file:} (internal/cli writeTelemetryIncludes), before the
+	// collector starts: these are its no-ops, for an env that declares none.
+	// Without them the collector cannot resolve its config and never starts.
+	includeDir := filepath.Join(root, filepath.FromSlash(clickstack.TelemetryIncludeDir))
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, doc := range map[string]string{
+		clickstack.TelemetryPreserveFile: "type: noop\nid: forge_telemetry_original\n",
+		clickstack.TelemetryIdentityFile: "error_mode: ignore\n",
+		clickstack.TelemetryParseFile:    "error_mode: ignore\n",
+	} {
+		if err := os.WriteFile(filepath.Join(includeDir, name), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	project := fmt.Sprintf("forge-cs-gate-%d", time.Now().UnixNano())
 	compose := func(args ...string) ([]byte, error) {

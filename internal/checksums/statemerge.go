@@ -6,12 +6,13 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 )
 
 // MergeStateFile three-way merges one of the committed state files under
-// .forge/ (disowned.json, a certificate under hashes/, a ledger entry under
-// scaffolded/) key by key, and
+// .forge/ (disowned.json, the legacy scaffolded.json, a certificate under
+// hashes/, a ledger entry under scaffolded/) key by key, and
 // renders the result exactly as forge's own writers do.
 //
 // WHY. Every branch that adds a service records its births in the scaffold
@@ -24,13 +25,14 @@ import (
 // merged as maps, the only collision left is one key whose value both sides
 // changed, and for these files that has a forge answer:
 //
-//   - a ledger entry under scaffolded/: a birth recorded on either side is
-//     recorded; one
+//   - a ledger entry under scaffolded/ (and the legacy scaffolded.json, key
+//     by key): a birth recorded on either side is recorded; one
 //     side's deletion (rescaffold) stands when the other left the entry
 //     alone. Both sides recording the same path keep this side's entry —
 //     the timestamp is provenance nobody branches on.
-//   - a certificate under .forge/hashes/: both sides re-rendered the same
-//     comment-incapable output. The merge driver keeps THIS side's bytes for that output (see the cli merge
+//   - a certificate under .forge/hashes/ (and the legacy hashes.json, key
+//     by key): both sides re-rendered the same comment-incapable output. The
+//     merge driver keeps THIS side's bytes for that output (see the cli merge
 //     driver), so this side's hash is the one that certifies them, and the
 //     next `forge generate` renders the merged inputs over a file it can
 //     still verify. One side's change alone (or deletion) stands.
@@ -51,6 +53,22 @@ func MergeStateFile(relPath string, base, ours, theirs []byte) (merged []byte, o
 		return nil, false
 	}
 	switch path.Base(relPath) {
+	case path.Base(LegacyScaffoldedFile):
+		var b, o, t scaffoldedJSON
+		if !decodeState(base, &b) || !decodeState(ours, &o) || !decodeState(theirs, &t) {
+			return nil, false
+		}
+		out := scaffoldedJSON{
+			Files:          mergeKeyed(b.Files, o.Files, t.Files),
+			AbsentReported: mergeSet(b.AbsentReported, o.AbsentReported, t.AbsentReported),
+		}
+		return encodeState(out)
+	case path.Base(LegacyHashesFile):
+		var b, o, t hashesJSON
+		if !decodeState(base, &b) || !decodeState(ours, &o) || !decodeState(theirs, &t) {
+			return nil, false
+		}
+		return encodeState(hashesJSON{Files: mergeKeyed(b.Files, o.Files, t.Files)})
 	case path.Base(DisownedFile):
 		var b, o, t disownedJSON
 		if !decodeState(base, &b) || !decodeState(ours, &o) || !decodeState(theirs, &t) {
@@ -163,5 +181,26 @@ func mergeKeyed[V any](base, ours, theirs map[string]V) map[string]V {
 			out[k] = o
 		}
 	}
+	return out
+}
+
+// mergeSet is mergeKeyed over a sorted string set.
+func mergeSet(base, ours, theirs []string) []string {
+	asMap := func(s []string) map[string]bool {
+		m := map[string]bool{}
+		for _, v := range s {
+			m[v] = true
+		}
+		return m
+	}
+	merged := mergeKeyed(asMap(base), asMap(ours), asMap(theirs))
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(merged))
+	for v := range merged {
+		out = append(out, v)
+	}
+	sort.Strings(out)
 	return out
 }

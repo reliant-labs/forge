@@ -59,6 +59,16 @@ var (
 		Module:  "github.com/google/go-licenses",
 		Version: templates.GoLicensesVersion,
 	}
+	// Gitleaks is the secret scanner `forge ci secret-scan` runs. A release
+	// binary on PATH (brew, the GitHub release) records "(devel)" in its
+	// build info, so its version is read from `gitleaks version`.
+	Gitleaks = Tool{
+		Binary:      "gitleaks",
+		Module:      "github.com/zricethezav/gitleaks/v8",
+		Version:     templates.GitleaksVersion,
+		VersionArgs: []string{"version"},
+		VersionRE:   regexp.MustCompile(`v?(\d+\.\d+\.\d+)`),
+	}
 )
 
 // VulnSBOMCheck is the gate row of `forge ci vuln-sbom`, and its two "could
@@ -474,7 +484,28 @@ func (p planner) checksLane() []Check {
 		}
 	}
 
-	// 5. Vulnerabilities and licenses.
+	// 5. Vulnerabilities, committed secrets and licenses.
+	out = append(out, p.scanChecks()...)
+
+	// 6. Deployability, last: it is the one that renders every env's KCL.
+	if ci.HasKCL {
+		out = append(out,
+			// Asserts the render is something `kubectl apply` accepts, not
+			// merely that the KCL evaluates.
+			Check{Name: "validate-kcl", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("ci", "validate-kcl")},
+			// Would an SRE let this reach production: probes, resource
+			// requests/limits, credentials from Secrets, bound ServiceAccounts.
+			Check{Name: "deployability", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("doctor", "--signal", "deploy")},
+		)
+	}
+	return out
+}
+
+// scanChecks are the checks lane's scanners: known vulnerabilities (Go,
+// npm, the lockfiles' SBOM), committed secrets and dependency licenses.
+func (p planner) scanChecks() []Check {
+	ci := p.CI
+	var out []Check
 	if ci.VulnGo {
 		out = append(out, Check{
 			Name:  "vuln-go",
@@ -499,6 +530,7 @@ func (p planner) checksLane() []Check {
 		})
 	}
 	out = append(out, p.vulnSBOM()...)
+	out = append(out, p.secretScan())
 	if ci.LicenseCheck {
 		out = append(out, Check{
 			Name:  "license-check",
@@ -509,19 +541,54 @@ func (p planner) checksLane() []Check {
 			Argv:  licenseCheckArgv(p.Root),
 		})
 	}
-
-	// 6. Deployability, last: it is the one that renders every env's KCL.
-	if ci.HasKCL {
-		out = append(out,
-			// Asserts the render is something `kubectl apply` accepts, not
-			// merely that the KCL evaluates.
-			Check{Name: "validate-kcl", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("ci", "validate-kcl")},
-			// Would an SRE let this reach production: probes, resource
-			// requests/limits, credentials from Secrets, bound ServiceAccounts.
-			Check{Name: "deployability", Lane: LaneChecks, Group: GroupKCL, Heavy: true, Argv: p.forge("doctor", "--signal", "deploy")},
-		)
-	}
 	return out
+}
+
+// SecretScanCheck is the name of the gate's secret-scan row.
+const SecretScanCheck = "secret-scan"
+
+// secretScan is the gitleaks row: the commits this change adds, scanned for
+// committed credentials with the gitleaks forge pins (`forge ci secret-scan
+// --branch`). It judges only those commits (BranchRange), never the history
+// before them, so pinning the forge that added it cannot fail a gate over a
+// credential committed long ago; a missing gitleaks is SKIPPED like any other
+// pinned tool. A project that wants a different scan takes the row over with
+// a ci.gate.extra_checks entry that `replaces: secret-scan`.
+func (p planner) secretScan() Check {
+	c := Check{
+		Name:  SecretScanCheck,
+		Lane:  LaneChecks,
+		Group: GroupStatic,
+		Tools: []Tool{Gitleaks},
+		Argv:  p.forge("ci", "secret-scan", "--branch"),
+		// Which commits are new depends on the refs, not the tree.
+		NoCache: true,
+	}
+	if !isGitCheckout(p.Root) {
+		c.NotApplicable = "not a git checkout: there are no commits to scan"
+	}
+	return c
+}
+
+// isGitCheckout reports whether root is inside a git work tree: a `.git`
+// directory, or the `.git` file a linked worktree has, at root or above it.
+// Read from the filesystem rather than by running git, so planning stays a
+// pure function of the files.
+func isGitCheckout(root string) bool {
+	dir, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
 }
 
 // vulnSBOM is the vuln-sbom row.

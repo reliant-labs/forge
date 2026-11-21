@@ -255,6 +255,19 @@ func TestComponentOpCapturePanicNeverChangesTheOutcome(t *testing.T) {
 	}
 }
 
+func TestForensicIDName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"id": true, "ID": true, "orderID": true, "orderId": true, "orderIDs": true,
+		"order_id": true, "order_ids": true, "UUID": true,
+		"sessionID": false, "session_id": false, "tokenID": false, "apiKeyID": false, "otp_counter_id": false,
+		"paid": false, "valid": false, "name": false, "": false, "Ident": false,
+	} {
+		if got := ForensicIDName(name); got != want {
+			t.Errorf("ForensicIDName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // orderType builds, at runtime, the descriptor of
 //
 //	message Order {
@@ -494,6 +507,17 @@ func TestComponentOpForensicsNeverRecordsATimeValue(t *testing.T) {
 			if strings.Contains(string(kv.Key), s) || strings.Contains(kv.Value.Emit(), s) {
 				t.Fatalf("a time value reached forensics: %s=%s", kv.Key, kv.Value.Emit())
 			}
+		}
+	}
+}
+
+func TestForensicSecretIDName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"otp_counter_id": true, "sessionID": true, "apiTokenIds": true,
+		"orderID": false, "id": false, "otp": false, "session": false, "tokenCount": false,
+	} {
+		if got := ForensicSecretIDName(name); got != want {
+			t.Errorf("ForensicSecretIDName(%q) = %v, want %v", name, got, want)
 		}
 	}
 }

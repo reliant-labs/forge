@@ -859,6 +859,24 @@ func planHosted(group ServiceGroup) ([]hostedPlanItem, error) {
 	return planHostedWith(group, groupDigests(group))
 }
 
+// canonicalSourceCIDRPorts returns ports with every allowedSourceCIDRs entry in
+// canonical form, so the control plane stores and enforces one spelling. It
+// copies rather than editing the caller's slice. An entry that does not
+// normalize is left for Validate to refuse.
+func canonicalSourceCIDRPorts(ports []v1alpha1.Port) []v1alpha1.Port {
+	out := ports
+	for i, p := range ports {
+		if len(p.AllowedSourceCIDRs) == 0 {
+			continue
+		}
+		if &out[0] == &ports[0] {
+			out = append([]v1alpha1.Port(nil), ports...)
+		}
+		out[i].AllowedSourceCIDRs = v1alpha1.NormalizeSourceCIDRs(p.AllowedSourceCIDRs)
+	}
+	return out
+}
+
 func groupDigests(group ServiceGroup) map[string]string {
 	if group.Hosted == nil {
 		return nil
@@ -894,6 +912,7 @@ func planHostedWith(group ServiceGroup, digests map[string]string) ([]hostedPlan
 				continue
 			}
 			spec := *w.Workload
+			spec.Ports = canonicalSourceCIDRPorts(spec.Ports)
 			artifact := hostedArtifactOf(svc.Name, w)
 			if other, dup := seen[artifact]; dup && HostedImageRepository(spec.Image) != other {
 				errs = append(errs, fmt.Errorf("%s: image %q and %q share the release artifact name %q, so one binding cannot pin both; rename one repository",

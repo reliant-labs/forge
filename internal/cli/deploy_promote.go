@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os/user"
 	"path/filepath"
+	"strings"
 
 	"github.com/reliant-labs/forge/pkg/deploystate"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -298,6 +299,7 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	plan.Vulnerabilities = hostedVulnPlan(ctx, ledger)
 	guard := guardFor(plan, opts.ExpectCurrent, opts.Supersede)
 	guard.Target, guard.RaiseFloorReason = floorTarget, opts.RaiseFloorReason
+	guard.VulnGateOverrideReason = strings.TrimSpace(opts.OverrideVulnGate)
 	if guard.ExpectUnbound {
 		plan.Expected = expectUnboundLiteral
 	} else {

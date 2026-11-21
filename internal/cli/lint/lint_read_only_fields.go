@@ -56,7 +56,9 @@
 //     that shape, and a warning beside a hard error reads like the softer
 //     of two verdicts;
 //  5. the column declares no `forge:fill=` strategy — that marker already
-//     answers the question this rule asks;
+//     answers the question this rule asks — and is not a `forge:version`
+//     column, whose value pkg/crud owns (it seeds and increments it on every
+//     generated write);
 //  6. the column is not one of forge's managed columns (created_at,
 //     updated_at, deleted_at), which pkg/crud stamps from generated code
 //     the Go scan deliberately cannot see;
@@ -351,6 +353,10 @@ func columnIsUnpopulated(col sqlColumn) bool {
 	case col.FillDeclared:
 		// `forge:fill=` already names who populates the column.
 		return false
+	case col.Versioned:
+		// `forge:version`: pkg/crud's generated writes increment it, from
+		// generated code the Go scan excludes by design (obs ea205894).
+		return false
 	case isManagedColumn(col.Name):
 		// pkg/crud stamps created_at/updated_at and manages deleted_at,
 		// all from GENERATED code the Go scan excludes by design. Without
@@ -482,6 +488,9 @@ type sqlColumn struct {
 	// FillDeclared records a `forge:fill=` COMMENT ON COLUMN, which names
 	// who populates the column and so answers this rule's question.
 	FillDeclared bool
+	// Versioned records a `forge:version` COMMENT ON COLUMN: the column is
+	// the entity's optimistic-concurrency version, which pkg/crud writes.
+	Versioned bool
 }
 
 var (
@@ -498,6 +507,7 @@ var (
 	notNullColRe    = regexp.MustCompile(`(?is)\bNOT\s+NULL\b`)
 	primaryKeyColRe = regexp.MustCompile(`(?is)\bPRIMARY\s+KEY\b`)
 	fillMarkerRe    = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(schemadef.ColumnMarkerFill) + `\s*=`)
+	versionMarkerRe = regexp.MustCompile(`(?i)(?:^|\s)` + regexp.QuoteMeta(schemadef.ColumnMarkerVersion) + `(?:\s|$)`)
 )
 
 // readOnlyColumnsFromMigrations reads the project's columns out of its
@@ -783,12 +793,13 @@ func columnsWrittenByGoSQLLiterals(projectDir string) (map[string]bool, error) {
 	return written, nil
 }
 
-// applyFillMarkers records which columns declare a `forge:fill=` strategy,
-// read from COMMENT ON COLUMN the same way the column-markers lint reads
-// them.
+// applyFillMarkers records which columns declare a `forge:fill=` strategy
+// or are a `forge:version` column, read from COMMENT ON COLUMN the same way
+// the column-markers lint reads them.
 func applyFillMarkers(live map[string]map[string]sqlColumn, content string) {
 	for _, m := range commentOnColumnRe.FindAllStringSubmatch(content, -1) {
-		if !fillMarkerRe.MatchString(m[2]) {
+		fill, version := fillMarkerRe.MatchString(m[2]), versionMarkerRe.MatchString(m[2])
+		if !fill && !version {
 			continue
 		}
 		// `table.column`, or `schema.table.column` when qualified.
@@ -801,7 +812,8 @@ func applyFillMarkers(live map[string]map[string]sqlColumn, content string) {
 		if !ok {
 			continue
 		}
-		col.FillDeclared = true
+		col.FillDeclared = col.FillDeclared || fill
+		col.Versioned = col.Versioned || version
 		live[table][name] = col
 	}
 }

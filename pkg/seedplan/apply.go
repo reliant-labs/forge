@@ -111,7 +111,9 @@ func BuildLivePlanFromTables(ctx context.Context, db *sql.DB, tables []schemadef
 
 // Apply executes the plan's INSERTs in a single transaction, in topological
 // order, and reports rows inserted per table. Idempotent (ON CONFLICT DO
-// NOTHING).
+// NOTHING). After each INSERT it advances the sequences feeding the keys it
+// wrote past the table's largest value, so the app's own next INSERT does
+// not collide with a seeded row.
 //
 // It REFUSES a plan that would write rows contradicting an invariant the
 // schema implies but does not state — an undeclared diamond (see diamond.go).
@@ -141,6 +143,14 @@ func Apply(ctx context.Context, db *sql.DB, plan *Plan) (*Result, error) {
 		}
 		n, _ := r.RowsAffected()
 		res.Tables = append(res.Tables, TableResult{Table: tp.table.Name, Inserted: n})
+		// The explicit keys bypassed the sequences that feed them; move
+		// those past the seeded rows so the app's next INSERT does not
+		// draw a key a seeded row holds (sequence.go).
+		if sync := plan.sequenceSync(tp); sync != "" {
+			if _, err := tx.ExecContext(ctx, sync); err != nil {
+				return nil, fmt.Errorf("advance %s's sequences past the seeded keys: %w", tp.table.Name, err)
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

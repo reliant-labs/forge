@@ -167,8 +167,8 @@ var rollbackRoot string
 // deleted.
 var rollbackTrees map[string]bool
 
-// rollbackTreeIDs is the directory each captured tree was, first seen: at
-// capture, or at the settle point after the tool created it. A tree that is
+// rollbackTreeIDs is the directory each captured tree was: at capture, or at
+// the settle point after the tool created or swapped it in. A tree that is
 // no longer that directory — replaced by another one, by a symlink, or
 // reached through a symlinked parent — is another writer's, and nothing
 // beneath it is walked or deleted (forge#2329 review).
@@ -380,10 +380,16 @@ func SettleJournal(root string) {
 		rollbackJournal[relPath] = entry
 	}
 	for tree := range rollbackDirtyTrees {
-		if _, seen := rollbackTreeIDs[tree]; !seen {
-			// Absent at capture: the directory the tool created is the
-			// tree from here on.
-			if info, err := os.Lstat(filepath.Join(root, tree)); err == nil && info.IsDir() && throughRealDirs(root, tree) {
+		// The tool ran since the last settle point, so the directory there
+		// now is the one it left: the one it created when the path was
+		// absent at capture, or the twin it swapped in for the captured one
+		// (a generator that writes to scratch and renames the result into
+		// place, so a failure never leaves the tree half-written). Either
+		// way it is the tree from here on; the pre-run files are already in
+		// the journal. A directory replaced AFTER this point is another
+		// writer's (treeIntact), and a symlink never becomes the tree.
+		if info, err := os.Lstat(filepath.Join(root, tree)); err == nil && info.IsDir() && throughRealDirs(root, tree) {
+			if id, seen := rollbackTreeIDs[tree]; !seen || !os.SameFile(id, info) {
 				rollbackTreeIDs[tree] = info
 			}
 		}

@@ -65,7 +65,7 @@ A stack stitched from separate tools has no shared model of the app: the tracer 
 - [Wiring checked as a graph](benefits.md#composition-graph-lint)
 - [Deploy anywhere, declare once](benefits.md#workload-once-bind-per-env)
 - [Find any symbol instantly](benefits.md#shapes-map)
-- [Whole surface in one call](benefits.md#capabilities-introspection)
+- [Capabilities introspection](benefits.md#capabilities-introspection)
 
 ---
 
@@ -83,12 +83,12 @@ Hand instrumentation is the work that gets skipped, and the RPC that pages you i
 
 - [Every request traced and measured](benefits.md#edge-telemetry)
 - [Package contracts enforced](benefits.md#contract-lint)
-- [Traces that never break](benefits.md#lint-rules-tracing)
+- [Broken-trace detection and fixes](benefits.md#lint-rules-tracing)
 - [Dashboards derived from code](benefits.md#generated-dashboards)
 - [Observability stack included](benefits.md#local-clickstack)
 - [Query prod from the shell](benefits.md#obs-cli)
 - [Proves telemetry actually arrives](benefits.md#telemetry-proven)
-- [Traces that show missing spans](benefits.md#readable-traces)
+- [Trace trees with uninstrumented time](benefits.md#readable-traces)
 - [Continuous CPU and heap profiling](benefits.md#continuous-profiling)
 - [Profile-guided builds from production](benefits.md#profile-guided-builds)
 - [Real-user sessions and replay](benefits.md#rum-sessions)
@@ -131,16 +131,16 @@ When each environment rebuilds, staging tested a different artifact than the one
 **Backed by:**
 
 - [Build once, promote by digest](benefits.md#build-once-promote-by-digest)
-- [One bundle, every env](benefits.md#frontend-runtime-config)
+- [Runtime frontend config per env](benefits.md#frontend-runtime-config)
 - [Environments as typed code](benefits.md#envs-in-kcl)
 - [One env base, per-env deltas](benefits.md#shared-env-base)
 - [Config errors caught before push](benefits.md#config-check-before-push)
-- [Prove parity before deploying](benefits.md#env-verify-parity)
+- [Pre-deploy parity verification](benefits.md#env-verify-parity)
 - [Diff your code against deployed](benefits.md#env-diff)
 - [Deploy plans with binding approval](benefits.md#deploy-plan-approval)
-- [No stale deploy overwrites a hotfix](benefits.md#promote-cas)
+- [Compare-and-set promotions](benefits.md#promote-cas)
 - [Deploys wait, then smoke-test](benefits.md#deploy-waits-for-health)
-- [Roll forward, deliberately](benefits.md#roll-forward)
+- [Roll-forward recovery](benefits.md#roll-forward)
 - [Rollback floors per environment](benefits.md#rollback-floors)
 
 ---
@@ -160,7 +160,7 @@ The migration that takes prod down is rarely wrong SQL; it is a lock queued behi
 - [SQL migrations are the schema](benefits.md#sql-first-schema)
 - [Migration safety checks](benefits.md#migration-safety)
 - [Measured migration locks and rewrites](benefits.md#migration-analysis)
-- [Migrations that never wedge prod](benefits.md#never-waiting-migrations)
+- [Migration lock and statement timeouts](benefits.md#never-waiting-migrations)
 - [Migrations gate every rollout](benefits.md#migrations-gate-rollout)
 - [Out-of-order migrations refused](benefits.md#migration-release-guard)
 - [Rollback floors per environment](benefits.md#rollback-floors)
@@ -183,7 +183,7 @@ A generic linter cannot tell that a read-only field is never written, that a lis
 
 - [Bug-class linters, one verdict](benefits.md#one-lint-gate)
 - [The whole CI gate, locally](benefits.md#local-ci-gate)
-- [Catches fields nothing writes](benefits.md#unwritten-fields)
+- [Unwritten read-only field detection](benefits.md#unwritten-fields)
 - [List filters that actually filter](benefits.md#list-filter-optional)
 - [Wiring checked as a graph](benefits.md#composition-graph-lint)
 - [Find rpcs that ignore the caller](benefits.md#unscoped-auth-audit)
@@ -191,7 +191,7 @@ A generic linter cannot tell that a read-only field is never written, that a lis
 - [Static-export breakage caught early](benefits.md#static-export-lint)
 - [Breaking API changes gated](benefits.md#proto-breaking-gate)
 - [Stale codegen can't merge](benefits.md#generated-drift)
-- [A skipped lane never passes](benefits.md#lint-skip-is-failure)
+- [Skipped lint lanes fail the gate](benefits.md#lint-skip-is-failure)
 - [New rules warn before gating](benefits.md#lint-rollout-grace)
 
 ---
@@ -236,12 +236,12 @@ An agent in an unfamiliar repo spends its tokens finding where things are and wr
 - [Skills that match your forge](benefits.md#skills-in-the-binary)
 - [Built-in MCP server](benefits.md#mcp-server)
 - [Hosted MCP connector](benefits.md#hosted-mcp) _(Reliant)_
-- [Whole surface in one call](benefits.md#capabilities-introspection)
+- [Capabilities introspection](benefits.md#capabilities-introspection)
 - [Find any symbol instantly](benefits.md#shapes-map)
 - [Project state snapshot](benefits.md#project-audit)
 - [JSON everywhere, with next steps](benefits.md#machine-readable-json)
 - [Exit codes pipelines can branch on](benefits.md#exit-code-contract)
-- [Layout agents can predict](benefits.md#predictable-layout)
+- [Predictable project layout](benefits.md#predictable-layout)
 - [One marker, a whole entity](benefits.md#entity-from-one-marker)
 - [A generated mock per interface](benefits.md#generated-mocks)
 - [Bug-class linters, one verdict](benefits.md#one-lint-gate)
@@ -260,13 +260,13 @@ Mock-heavy tests pass while production breaks, and tests against real dependenci
 
 - [A generated mock per interface](benefits.md#generated-mocks)
 - [Real Postgres in every test](benefits.md#pgtest-real-postgres)
-- [Three tiers, real subject](benefits.md#test-tiers)
+- [Unit, integration and e2e tiers](benefits.md#test-tiers)
 - [CRUD tests come free](benefits.md#entity-lifecycle-tests)
 - [Flow tests over real data](benefits.md#flow-tests-seedgraph)
 - [Table-driven tests, batteries included](benefits.md#tdd-library)
-- [Fast test tier stays fast](benefits.md#slow-test-enforcement)
-- [No stale cached passes](benefits.md#cache-soundness)
-- [A skipped suite isn't green](benefits.md#skipped-pass-detector)
+- [Slow-test gating for the fast tier](benefits.md#slow-test-enforcement)
+- [Go test cache soundness checks](benefits.md#cache-soundness)
+- [Skipped-test detection in CI](benefits.md#skipped-pass-detector)
 - [Test-hygiene rules](benefits.md#lint-rules-tests)
 - [Test fixtures checked against schema](benefits.md#fixture-drift-lint)
 
@@ -310,13 +310,13 @@ A framework that demands a rewrite only ever gets adopted on a new project. Forg
 
 - [Adopt an existing app](benefits.md#adopt-existing-project)
 - [Adopt any Vite or Next app](benefits.md#adopt-frontend)
-- [Areas forge never writes](benefits.md#scaffold-exclude)
+- [Exclude paths from codegen](benefits.md#scaffold-exclude)
 - [Keep your migration tool](benefits.md#keep-your-migration-tool)
 - [Keep your deploy tool](benefits.md#external-deploy-tooling)
 - [Record deploys from existing CI](benefits.md#record-deploys)
 - [Bring your own IdP](benefits.md#byo-issuer)
 - [Send telemetry anywhere](benefits.md#telemetry-anywhere)
-- [Every generated file has an exit](benefits.md#owned-seams-disown)
+- [Disown any generated file](benefits.md#owned-seams-disown)
 - [Override any field, bring any YAML](benefits.md#overrides-byo-yaml)
 - [Connect a cluster you run](benefits.md#cluster-connect)
 - [Monitoring for any app](benefits.md#monitoring-any-language) _(hosted)_
@@ -363,4 +363,7 @@ them beside Vercel, Supabase and Render.
 - **No hosted cron jobs or operators.** Hosting runs services, workers and jobs, not cron-kind workloads or Kubernetes operators. Instead: a worker that runs its own schedule runs hosted; bind a cron job or an operator to a cluster you run and keep the rest hosted.
 - **Generated backends are Go.** The typed API, ORM, handlers and tests forge generates are Go over Connect RPC, with TypeScript clients; a backend in another language deploys from its Dockerfile with environments, releases, hosting and OpenTelemetry monitoring, but none of the generated code.
 - **One hosted region.** Hosted services and managed databases run in one region, GCP us-central1, with no region choice; static sites are served through the CDN edge. Instead: bind a workload to a cluster you run in another region (`forge.OnCluster`).
+- **Hosted backends do not autoscale.** A hosted service or worker runs the replica count its env declares; it does not scale with traffic between a min and a max, and a managed database's storage and compute do not grow on their own. Instead: raise the replica count or the shape in the env's `main.k` and deploy, or bind the workload to a cluster you run and give it your own HorizontalPodAutoscaler.
+- **Hosted profiling is opt-in.** Continuous CPU and heap profiling is on by default only against the local ClickStack; a hosted env collects profiles only once its `main.k` sets `signals.profiles = True`. Instead: set `observability = forge.Observability { signals = forge.ObservabilitySignals { profiles = True } }` in the env's `main.k`.
+- **No sign-in gate on deployments.** Hosted URLs, previews included, are public; there is no team sign-in or password in front of a whole deployment. Managed identity signs in your app's own users, and each RPC requires a signed-in caller unless its proto opts out, but a static site or page is served to anyone. Instead: put the pages behind your app's own sign-in (the frontend route guard and `auth_required`), or keep a private preview on a cluster you run behind your own access proxy.
 - **Unclaimed deploys are temporary.** A deploy with no account goes offline after 72 hours unless its claim link is opened, and an unclaimed service has no outbound internet.

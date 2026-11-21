@@ -459,3 +459,54 @@ func TestResolvePromoteFrom_WithoutTheFlagIsAPassThrough(t *testing.T) {
 		t.Fatalf("resolvePromoteFrom = %+v, want only the version", got)
 	}
 }
+
+// `forge env deploy prod --from staging` with no version plans against the
+// release staging runs. The bundle step and §8.6 plan run BEFORE runPromote, so
+// resolving there was too late: they planned against "", recorded no bundle and
+// computed no digest, and a converger env refused the --yes the plan offered
+// with plan_required.
+func TestResolveDeployFrom_PlansAgainstTheSourceRelease(t *testing.T) {
+	fake, store := promoteFromFixture(t, []string{"v1", "v2"}, []string{"v1"})
+	sourceCurrent, _, err := store.Current(context.Background(), "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planVersion, source, err := resolveDeployFrom(context.Background(), "prod", t.TempDir(), promoteCmdFlags{fromEnv: "staging"})
+	if err != nil {
+		t.Fatalf("resolveDeployFrom: %v", err)
+	}
+	if planVersion != "v2" {
+		t.Fatalf("plan version = %q, want staging's v2", planVersion)
+	}
+	if source == nil || !source.VersionFromSource || source.FromPromotionID != sourceCurrent.ID {
+		t.Fatalf("source = %+v, want staging's promotion %q with the version marked a preview", source, sourceCurrent.ID)
+	}
+
+	// runPromote takes the source the deploy resolved, rather than reading
+	// the source again: any further ledger lookup fails the test.
+	stubPromoteLedgers(t, map[string]promoteEnvLedger{})
+	if _, err := runHostedPromote(t, store, "", promoteOptions{From: promoteFromOptions{Env: "staging"}, resolvedFrom: source}); err != nil {
+		t.Fatalf("promote with the resolved source: %v", err)
+	}
+	// Still the server's call: the id is sent and the previewed version is not.
+	body := fake.lastPromoteBody(t)
+	if got := body["fromPromotionId"]; got != sourceCurrent.ID {
+		t.Fatalf("fromPromotionId = %v, want %q (body %v)", got, sourceCurrent.ID, body)
+	}
+	if sent, present := body["version"]; present {
+		t.Errorf("version %q was sent: the server must resolve it from fromPromotionId (body %v)", sent, body)
+	}
+	if cur, _, _ := store.Current(context.Background(), "prod"); cur.Release != "v2" {
+		t.Fatalf("prod is on %s, want staging's v2", cur.Release)
+	}
+}
+
+// Without --from the deploy plans against the version it was given, and no
+// source is resolved.
+func TestResolveDeployFrom_WithoutTheFlagIsThePositionalVersion(t *testing.T) {
+	stubPromoteLedgers(t, map[string]promoteEnvLedger{}) // any lookup fails the test
+	planVersion, source, err := resolveDeployFrom(context.Background(), "prod", t.TempDir(), promoteCmdFlags{version: "v1"})
+	if err != nil || planVersion != "v1" || source != nil {
+		t.Fatalf("resolveDeployFrom = %q, %+v, %v; want v1, nil, nil", planVersion, source, err)
+	}
+}

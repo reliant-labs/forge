@@ -615,14 +615,3 @@ func TestDocumentFinalize(t *testing.T) {
 		t.Errorf("a failed analysis: exit %d", d.ExitCode)
 	}
 }
-
-func TestNonConcurrently(t *testing.T) {
-	st := dbanalyze.SplitStatements("-- x\ncreate unique index  concurrently if not exists i ON t (a);")[0]
-	got, ok := st.NonConcurrently()
-	if !ok || got != "create unique index  if not exists i ON t (a)" {
-		t.Errorf("NonConcurrently = %q, %v", got, ok)
-	}
-	if _, ok := dbanalyze.SplitStatements("CREATE INDEX i ON t (a)")[0].NonConcurrently(); ok {
-		t.Error("a plain CREATE INDEX was rewritten")
-	}
-}

@@ -274,6 +274,17 @@ func readEnvRecords(ctx context.Context, projectDir, env string, now time.Time) 
 		// unreadable rather than as empty.
 		return envStatusRecords{}, fmt.Errorf("render deploy/kcl/%s to find this env's records: %w", env, err)
 	}
+	return readEnvRecordsFor(ctx, projectDir, env, entities, now)
+}
+
+// readEnvRecordsFor is readEnvRecords over an already-rendered declaration.
+func readEnvRecordsFor(ctx context.Context, projectDir, env string, entities *KCLEntities, now time.Time) (envStatusRecords, error) {
+	// The ledger, not the session target, says where the records are: a
+	// hosted env reports no sessions (its sessionTarget is not Hosted), yet
+	// its promotions and floors live on its control plane.
+	if l, lerr := ledgerForEntities(env, entities, projectDir); lerr == nil && l.Hosted {
+		return readHostedEnvRecords(ctx, env, entities, now)
+	}
 	target, err := sessionTargetForEntities(env, entities, projectDir)
 	if err != nil {
 		return envStatusRecords{}, err

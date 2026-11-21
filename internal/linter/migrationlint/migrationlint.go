@@ -315,12 +315,25 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// see without a live schema, and guessing beyond it would be worse than
 	// the finding.
 	generatedColumns := map[string]bool{}
+	// emptyTables are the tables this migration created empty and that no
+	// statement since could have written a row to (blocking_index.go): an
+	// index built on one is not a blocking build.
+	emptyTables := map[indexRelation]bool{}
 	var findings []Finding
 
 	for _, stmt := range statements {
 		text := strings.TrimSpace(stmt.Text)
 		if text == "" {
 			continue
+		}
+
+		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, emptyTables); ok {
+			findings = append(findings, f)
+		}
+		if table, ok := createdTable(text); ok {
+			emptyTables[table] = true
+		} else if !preservesEmptyTables(text, emptyTables) {
+			clear(emptyTables)
 		}
 
 		if severity := severityFor(cfg.DestructiveChange); severity != "" && destructiveRe.MatchString(text) && !allowDestructive {
@@ -652,6 +665,8 @@ func RemediationFor(rule string) string {
 		return NonTransactionalStatementRemediation
 	case RuleEnumValueUsedBeforeCommit:
 		return EnumValueUsedBeforeCommitRemediation
+	case RuleBlockingIndexBuild:
+		return BlockingIndexBuildRemediation
 	case RuleCompatUndeclared:
 		return CompatUndeclaredRemediation
 	case RuleCompatReason:

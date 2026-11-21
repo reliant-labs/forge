@@ -20,4 +20,4 @@ The scaffolded home page is the dashboard, and its tiles call entity RPCs that n
 
 ## Projects scaffolded before these lists
 
-The guard is scaffolded once, so an older project keeps its own copy with the single prefix list. `forge project upgrade --check` shows the template's newer `route-guard.tsx`. Port the exact list and the `RouteAccessContext.Provider` by hand. Until you do, the sidebar shows every route, as it always has: with no provider, `useCanVisit()` allows everything.
+`publicExactPaths` is in route guards scaffolded by forge v1.8.0 and later. The guard is scaffolded once, so an older project keeps its own copy with the single prefix list, `publicPaths`. There, listing a page also opens everything under it: adding `"/products"` makes `/products/new` and `/products/edit` public too. Do not list a section's root in the prefix list to publish one page; port the exact list first. `forge project upgrade --check` shows the template's newer `route-guard.tsx`. Port the exact list and the `RouteAccessContext.Provider` by hand. Until you do, the sidebar shows every route, as it always has: with no provider, `useCanVisit()` allows everything.

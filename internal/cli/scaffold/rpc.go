@@ -52,6 +52,7 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/pkg/activity"
 )
 
 // rpcDeclaredInServiceProtoDir reports whether any .proto file under the
@@ -241,6 +242,11 @@ func runRPC(f *factory.Factory, svc, rpcName string, mode rpcStreamMode) error {
 		fmt.Println("     generated CRUD ops) until you do.")
 		fmt.Printf("  2. Iterate with `task test:short -- ./internal/handlers/%s/...`;\n", hc.ImportLeaf)
 		fmt.Println("     run `task test` before you finish.")
+		if activity.IsMutatingName(rpcName) {
+			fmt.Println("  3. Unless its proto already does, declare the activity event it records,")
+			fmt.Println("     or `forge lint` fails (forgeconv-activity-declared):")
+			fmt.Print(activityOptionHint("       "))
+		}
 		return nil
 	}
 
@@ -629,6 +635,15 @@ func buildRPCProtoSnippet(rpcName string, mode rpcStreamMode) string {
 		rpcLine = fmt.Sprintf("  rpc %s(%s) returns (%s);", rpcName, reqType, respType)
 	}
 
+	if mode == rpcUnary && activity.IsMutatingName(rpcName) {
+		// A mutating rpc must declare the activity it records, or forge lint
+		// fails: carry the option in the snippet, not as a later surprise.
+		rpcLine = strings.TrimSuffix(rpcLine, ";") + " {\n" +
+			"    // Declare the event it records (forge lint: forgeconv-activity-declared),\n" +
+			"    // or `activity: { none: \"<why>\" }` if it changes nothing worth recording.\n" +
+			"    option (forge.v1.method) = { activity: { verb: \"<verb>\", target: { kind: \"<kind>\", id: \"<field path>\" } } };\n" +
+			"  }"
+	}
 	return fmt.Sprintf(`
 // Paste inside `+"`service <YourService> { ... }`"+`:
 %s
@@ -643,4 +658,11 @@ message %s {
 }
 
 `, rpcLine, reqType, respType)
+}
+
+// activityOptionHint is the declaration a mutating rpc's proto carries, each
+// line prefixed with indent.
+func activityOptionHint(indent string) string {
+	return indent + "option (forge.v1.method) = { activity: { verb: \"<verb>\", target: { kind: \"<kind>\", id: \"<field path>\" } } };\n" +
+		indent + "(or `activity: { none: \"<why>\" }` when it changes nothing worth recording)\n"
 }

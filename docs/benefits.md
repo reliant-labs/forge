@@ -4066,6 +4066,7 @@ _In progress · Reliant hosting_
 
 - library [`pkg/changes`](../pkg/changes)
 - library [`pkg/changes/openfeature`](../pkg/changes/openfeature)
+- library [`pkg/experimentstats`](../pkg/experimentstats)
 - library [`pkg/observe`](../pkg/observe)
 - source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
 - source [`web-runtime/src/changes-store.ts`](../web-runtime/src/changes-store.ts)

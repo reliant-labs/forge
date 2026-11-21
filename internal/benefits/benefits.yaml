@@ -4812,6 +4812,7 @@ benefits:
     evidence:
       - library: pkg/changes
       - library: pkg/changes/openfeature
+      - library: pkg/experimentstats
       - library: pkg/observe
       - path: web-runtime/src/track.ts
       - path: web-runtime/src/changes-store.ts

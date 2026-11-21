@@ -231,19 +231,34 @@ tests = forge.Tests {coverage = True, coverage_in_persistent_env = "staging runs
 long-lived pod may never exit cleanly, so the preferred path is a pull:
 
 - serverkit serves `/debug/coverage` on its pprof listener, **loopback only**
-  (`127.0.0.1:6060`, reachable from nowhere else). It answers a tar of the
-  coverage data; `?reset=1` zeroes the counters afterwards (valid in atomic
-  mode only); a binary built without `-cover` answers 404.
+  (`127.0.0.1:6060`, reachable from nowhere else). It is **read-only**: it
+  answers GET with a tar of the coverage data and nothing else. A POST or any
+  `?reset` gets 405; a request from a browser (an `Origin` header, a
+  cross-site or same-site `Sec-Fetch-Site`, or a non-loopback `Host`) gets 403;
+  a binary built without `-cover` answers 404. Nothing a request can do changes
+  the running process's counters.
 - `forge test collect <env>` reaches it per runtime: a host process over
   localhost, a cluster pod through a port-forward, and a compose container by
   `docker cp` of what its process flushed at exit (compose binds pprof on
   0.0.0.0, so the endpoint is withheld there).
 
 ```bash
-forge test collect dev --reset --run "$RUN"            # zero the counters
+forge test collect dev --reset --run "$RUN"            # baseline: count from here
 forge test capture --run "$RUN" --lane e2e -- go test -tags=e2e -json ./e2e/...
-forge test collect dev --run "$RUN" --lane e2e         # pull, convert, record
+forge test collect dev --run "$RUN" --lane e2e         # pull, subtract the baseline, record
 ```
+
+**`--reset` does not zero anything.** The endpoint is read-only and the
+running processes are left alone. `--reset` pulls each live process's counters
+and records them as a **client-side baseline**, keyed by process (scope, build
+hash, pid). Every later collect subtracts that baseline block by block, clamped
+at 0, and writes `covdata/<workload>/since-reset.out` as the lane's coverage
+input. What a process flushes at exit is baselined the same way. A new pid, a
+new pod or build, or a restart is counted **whole**, since nothing of it
+predates the reset. Counter files flushed before the reset, by any process
+including one that has since exited, are recorded by (source, name, sha256) and
+left out of every later collect; a file flushed after it is always collected.
+Run `--reset` before the lane and collect after it.
 
 The scaffolded `task test:e2e ENV=<env>` does exactly this, collecting even
 when the suite fails. Coverage lands in `<run>/<lane>/covdata/<workload>/`

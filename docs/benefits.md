@@ -1078,9 +1078,9 @@ Go servers in local, ephemeral and preview envs are built with `-cover`, and `fo
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `task test:e2e ENV=<env>` zeroes the counters, runs the suite and collects; `forge.Tests` in `deploy/kcl/<env>/main.k` overrides the default.
+**Use:** `task test:e2e ENV=<env>` baselines the counters, runs the suite and collects what it reached since; `forge.Tests` in `deploy/kcl/<env>/main.k` overrides the default.
 
-**Why:** The coverage endpoint is served on the debug listener's loopback address only, and counters from two builds of one package are never merged.
+**Why:** The coverage endpoint is read-only and served on the debug listener's loopback address only, and counters from two builds of one package are never merged.
 
 **Evidence:**
 

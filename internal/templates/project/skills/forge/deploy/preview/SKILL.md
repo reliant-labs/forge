@@ -122,8 +122,8 @@ jobs:
       - run: forge env deploy ${{ steps.preview.outputs.name }} --yes --json > deploy.json
       - run: forge obs check ${{ steps.preview.outputs.name }} --wait --json || true
       # e2e against the preview, with the servers' coverage. A preview runs
-      # the release's instrumented (cover) variant, so `task test:e2e` zeroes
-      # its counters, runs the suite and collects what it reached into the
+      # the release's instrumented (cover) variant, so `task test:e2e` baselines
+      # its counters, runs the suite and collects what it reached since then into the
       # run's e2e lane (`forge test collect`; on a cluster you operate — a
       # hosted preview's pods are not reachable, so it records results only).
       # The report step uploads it. Skipped when the project has no e2e

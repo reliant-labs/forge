@@ -491,6 +491,24 @@ describe("the published surface", () => {
     expect(money).not.toMatch(/^\s*import\s/m);
   });
 
+  it("keeps the Changes evaluator IN the barrel, free of imports", () => {
+    // Every frontend imports the barrel, so the evaluator must be pure:
+    // hashing and parsing, no SDK, no network, nothing on import.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
+    for (const symbol of [
+      "evaluateChange",
+      "parseChangesSnapshot",
+      "changePreviewHash",
+      "ChangeResult",
+    ]) {
+      expect(barrel.includes(symbol), `barrel must export ${symbol}`).toBe(
+        true,
+      );
+    }
+    const changes = readFileSync(join(pkgDir, "dist", "changes.js"), "utf8");
+    expect(changes).not.toMatch(/^\s*import\s/m);
+  });
+
   it("declares a React type surface that is identical on React 18 and 19", () => {
     // The peer range is the promise; this is the property that makes it true.
     expect(pkg.peerDependencies["react"]).toBe("^18.3.0 || ^19.0.0");

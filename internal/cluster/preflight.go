@@ -2531,18 +2531,16 @@ func (KubectlSecretGetter) GetSecretKeys(ctx context.Context, kctx, namespace, n
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := kubectlCmd(ctx, kctx, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := kubectlRead(ctx, kctx, args...)
+	if err != nil {
+		msg := strings.TrimSpace(string(stderr))
 		if strings.Contains(msg, "NotFound") || strings.Contains(msg, "not found") {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("kubectl get secret: %v: %s", err, msg)
 	}
 	keys := map[string]struct{}{}
-	for _, line := range strings.Split(stdout.String(), "\n") {
+	for _, line := range strings.Split(string(stdout), "\n") {
 		if k := strings.TrimSpace(line); k != "" {
 			keys[k] = struct{}{}
 		}
@@ -2562,8 +2560,7 @@ func (KubectlSecretValueGetter) GetSecretValues(ctx context.Context, kctx, names
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := kubectlCmd(ctx, kctx, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := kubectlReadCombined(ctx, kctx, args...)
 	if err != nil {
 		if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
 			return nil, false, nil
@@ -2620,8 +2617,7 @@ type KubectlServedKinds struct{}
 func (KubectlServedKinds) ServedKinds(ctx context.Context, kctx string) (map[string]struct{}, error) {
 	// --no-headers keeps parsing simple; -o wide guarantees the APIVERSION
 	// column is present (some kubectl versions omit it without -o wide).
-	cmd := kubectlCmd(ctx, kctx, "api-resources", "--no-headers", "-o", "wide")
-	out, err := cmd.CombinedOutput()
+	out, err := kubectlReadCombined(ctx, kctx, "api-resources", "--no-headers", "-o", "wide")
 	if err != nil {
 		return nil, fmt.Errorf("kubectl api-resources: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -2709,8 +2705,7 @@ func kubectlDataKeys(ctx context.Context, kctx, namespace, kind, name string) (m
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := kubectlCmd(ctx, kctx, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := kubectlReadCombined(ctx, kctx, args...)
 	if err != nil {
 		if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
 			return nil, false, nil
@@ -2818,8 +2813,7 @@ func (KubectlPullCredsResolver) ResolveDockerConfig(ctx context.Context, kctx, n
 		if namespace != "" {
 			args = append(args, "-n", namespace)
 		}
-		cmd := kubectlCmd(ctx, kctx, args...)
-		out, err := cmd.CombinedOutput()
+		out, err := kubectlReadCombined(ctx, kctx, args...)
 		if err != nil {
 			// A not-found pull secret is a SKIP (the existence preflight already
 			// reports a genuinely-missing imagePullSecret); any other non-zero

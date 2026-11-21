@@ -4598,6 +4598,36 @@ benefits:
       - path: pkg/obsbuiltin/population_clickhouse_test.go
       - skill: observability/product-analytics
 
+  - id: controlled-rollouts-and-experiments
+    category: run
+    title: Controlled rollouts and A/B tests
+    claim: >-
+      Planned: one change ships new app behavior to everyone, as a gradual
+      rollout, or as a comparison of versions, with stable cohorts by user,
+      account, or visitor.
+    status: in-progress
+    availability: hosted
+    use: >-
+      Create a change with its default and new behavior, then choose who gets
+      it: everyone (remote config), a gradual rollout to a stable percentage,
+      or compare versions (an A/B test measured against your own product
+      events). The same user, account, or visitor keeps the same outcome, and
+      ramping up only adds people. The planned project-level Experiments
+      screen and Reliant agents use the same permissions and audit trail; apps
+      still implement both behaviors.
+    why: >-
+      The deterministic evaluation core, exposure events, and product-event
+      tracking are building blocks, not a shipped rollout or experiment
+      service. The proposed first version evaluates a versioned policy locally
+      in the app, without a network call on each request or changes to load
+      balancers.
+    evidence:
+      - library: pkg/changes
+      - library: pkg/observe
+      - path: web-runtime/src/track.ts
+      - path: web-runtime/src/exposure.ts
+      - skill: observability/product-analytics
+
   - id: builtin-ai-hub
     category: run
     title: Built-in LLM and workflow monitoring

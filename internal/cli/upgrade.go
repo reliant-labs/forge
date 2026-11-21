@@ -17,22 +17,8 @@ import (
 	"github.com/reliant-labs/forge/internal/generator"
 )
 
-func newUpgradeCmd() *cobra.Command {
-	var (
-		check      bool
-		force      bool
-		toVersion  string
-		dryRun     bool
-		all        bool
-		jsonOut    bool
-		allowDirty bool
-		skip       []string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "upgrade [--force <path>...]",
-		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
-		Long: `Take the project from the forge it pins to a newer one, and do every mechanical
+// upgradeCmdLong is the help text of `forge project upgrade`.
+const upgradeCmdLong = `Take the project from the forge it pins to a newer one, and do every mechanical
 step on the way, so the gate is green without hand edits. In order:
 
   modules             go get / go mod tidy the forge requirement of each module
@@ -74,9 +60,17 @@ EXIT CODES (the contract a pin bot branches on)
 --json prints exactly one document on stdout (schema forge-project-upgrade/v1:
 ok, exit_code, error, mode, from, to, converged, phases, codemods, locks,
 playbooks, vendored_contracts, needs_human, upcoming, starts_gating,
-template_drift); progress
+template_drift, offers, crossed, generated_changes); progress
 goes to stderr. ok and exit_code are the process's own. It is also printed for
 a failing run, so a bot can read what was applied before the failure.
+
+What the range brings is printed first (--json: crossed): each release tag the
+bump crosses and the commits after the last one, with their changelog entries,
+and the steps their PRs address to the agent running the upgrade
+(agent_instructions; forge's PRs declare them with an Agent-Instructions:
+commit trailer). generated_changes names the generated files generate changed,
+by generator, with what the range says about each: a test that pins generated
+output may need updating.
 
 Template drift: detect on frozen files (files written at 'forge project new' time but
 not updated by 'forge generate') and apply updates from newer Forge templates.
@@ -142,8 +136,25 @@ Examples:
   forge project upgrade --check --all          # Every reported file (still no inline diffs)
   forge project upgrade --force                # Apply all updates, even for user-modified files
   forge project upgrade --force buf.yaml       # Overwrite ONLY buf.yaml; leave other edits alone
-  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`,
-		Args: cobra.ArbitraryArgs,
+  forge project upgrade --json                 # What a pin bot runs; exit 0 means merge, 9 means hand to a person`
+
+func newUpgradeCmd() *cobra.Command {
+	var (
+		check      bool
+		force      bool
+		toVersion  string
+		dryRun     bool
+		all        bool
+		jsonOut    bool
+		allowDirty bool
+		skip       []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "upgrade [--force <path>...]",
+		Short: "Move the project to a newer forge and apply every mechanical fix for the range",
+		Long:  upgradeCmdLong,
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --dry-run is an alias for --check; either toggles dry-run.
 			return runUpgradeCommand(cmd, upgradeOptions{

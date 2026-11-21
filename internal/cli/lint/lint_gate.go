@@ -256,6 +256,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "slow-tests", on: &f.slowTests},
 		{name: "test-waits", on: &f.testWaits},
 		{name: "proto-format", on: &f.protoFormat},
+		{name: "telemetry", on: &f.telemetry},
 	}
 }
 

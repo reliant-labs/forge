@@ -64,6 +64,8 @@ before verifying generated files. Missing plugins or a pre-dirtied tree must
 fail, not certify skipped output. Installation details and troubleshooting:
 `forge skill load ci/toolchain`.
 
+To retry only unchanged Go test failures once in the merge tier, load `ci/retry-failed`.
+
 ### No workflow names a registry
 
 An image registry is part of a WORKLOAD's `image` in `deploy/kcl/workloads.k`

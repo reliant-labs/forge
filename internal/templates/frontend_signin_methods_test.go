@@ -143,3 +143,23 @@ func TestBrowserTreesMountThePasskeysPanel(t *testing.T) {
 		})
 	}
 }
+
+// The issuer sends a failed social sign-in back to devidp.SocialFailurePath
+// with its OWN error replacing the URL's (error=access_denied when the person
+// cancels at the provider), so the sign-in page must read the social=failed
+// marker: testing error=social alone never shows the failure.
+func TestSignInPageReadsTheSocialFailureMarker(t *testing.T) {
+	for _, kind := range browserKinds {
+		t.Run(kind, func(t *testing.T) {
+			tree := authTreeFor(t, kind)
+			f := "src/app/auth/sign-in/page.tsx"
+			if kind == "vite-spa" {
+				f = "src/routes.tsx"
+			}
+			src := renderFrontend(t, tree[f], kind)
+			if !strings.Contains(src, `.get("social") === "failed"`) {
+				t.Errorf("%s does not read social=failed, so a provider refusal shows no message", f)
+			}
+		})
+	}
+}

@@ -28,7 +28,9 @@ package config
 //   - Cardinality: a repeated field is carried by env/flag as ONE
 //     comma-separated string, each element parsed with the field's element
 //     kind, with surrounding whitespace trimmed and blank elements dropped.
-//     Each layer REPLACES the whole list; there is no append. An element
+//     Each layer REPLACES the whole list; there is no append across layers.
+//     Within the flag layer a repeated flag appends (--x a --x b is [a b]).
+//     An element
 //     containing a comma cannot be expressed and belongs in the config file.
 //     Map fields are rejected with a diagnostic naming the field. See
 //     parseValue/parseList.
@@ -319,7 +321,11 @@ func registerFlagsForDesc(flags *pflag.FlagSet, desc protoreflect.MessageDescrip
 		// "8080,9090" at all, and pflag's StringSlice does not round-trip
 		// here, because its Value.String() renders "[a,b]" and the loader
 		// would then read the brackets as data.
-		if fd.IsList() || isDurationField(fd) {
+		if fd.IsList() {
+			flags.Var(&listFlag{value: def}, name, desc)
+			continue
+		}
+		if isDurationField(fd) {
 			flags.String(name, def, desc)
 			continue
 		}
@@ -754,6 +760,29 @@ func parseValue(m protoreflect.Message, fd protoreflect.FieldDescriptor, raw str
 		return parseList(m, fd, raw)
 	}
 	return parseElement(fd, raw)
+}
+
+// listFlag is a repeated field's flag: the comma-separated string the env
+// layer carries, which a repeated flag APPENDS to, so `--x a --x b` is the
+// list [a b] and `--x a,b` is too. A plain String flag kept only the last
+// occurrence and dropped the rest without a word (forge report 3090dbbf).
+// The first occurrence replaces the proto default; Type is "string", so
+// help and GetString read it as the string flag it always was.
+type listFlag struct {
+	value string
+	set   bool
+}
+
+func (f *listFlag) String() string { return f.value }
+func (f *listFlag) Type() string   { return "string" }
+
+func (f *listFlag) Set(v string) error {
+	if f.set {
+		f.value += "," + v
+	} else {
+		f.value, f.set = v, true
+	}
+	return nil
 }
 
 // errMapField is the diagnostic for a config-bound map field. A map has no

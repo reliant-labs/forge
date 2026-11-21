@@ -622,17 +622,33 @@ func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 // componentNeedsBirth reports whether a core component at dest is still to
 // be scaffolded: by the ledger inside a project, by absence outside one.
 //
-// Presence is checked first and backfills nothing: a frontend scaffolded
-// before the ledger existed would otherwise gain a ledger line per installed
-// component on its next generate, for no decision anyone made.
+// A present component with no birth record is BACKFILLED, as
+// checksums.ScaffoldOnceDecision does for every other scaffold-once file: a
+// frontend scaffolded before the ledger existed has its components on disk
+// and no records, and without one the user's first deletion of a component
+// reads as "never scaffolded", so the next generate wrote it again with a
+// fresh record (and `forge generate --check` reported that rebirth as drift).
+// Fresh frontends record every component at birth, so the backfill only
+// brings an older frontend's ledger to the same state, once. Adopted
+// frontends never reach here (ensureFrontendComponents skips them), so a
+// present file under a core component's name is forge's starter copy.
 func componentNeedsBirth(root, dest string) bool {
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		return false // present (or unreadable): the user's bytes
-	}
+	rel := ""
 	if root != "" {
-		if rel, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(rel, "..") {
-			return !checksums.ScaffoldRecorded(root, filepath.ToSlash(rel))
+		if r, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(r, "..") {
+			rel = filepath.ToSlash(r)
 		}
+	}
+	if _, err := os.Stat(dest); err == nil {
+		if rel != "" {
+			checksums.RecordScaffold(root, rel) // no-op when already recorded
+		}
+		return false // present: the user's bytes
+	} else if !os.IsNotExist(err) {
+		return false // unreadable: not a birth forge can vouch for
+	}
+	if rel != "" {
+		return !checksums.ScaffoldRecorded(root, rel)
 	}
 	return true
 }

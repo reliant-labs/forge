@@ -150,3 +150,23 @@ func TestParseRangeAndCulpritFile(t *testing.T) {
 		t.Errorf("a function-only culprit has no file, got %q", got)
 	}
 }
+
+// An issue first seen in a project's first-ever release has no previous
+// release to start a range at. "..<first release's commit>" is the history
+// that SHIPPED in that release: the commit that introduced the error is in it,
+// and a commit made after the release cannot be (forge obs issue).
+func TestFindUpToTheFirstReleaseExcludesLaterCommits(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	dir, sh := repo(t)
+	got, err := Finder{Dir: dir}.Find(context.Background(), ".."+sh[1], []string{"internal/store/db.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subjects []string
+	for _, c := range got {
+		subjects = append(subjects, c.Subject)
+	}
+	if want := []string{"fix pool leak (#11)", "initial"}; !reflect.DeepEqual(subjects, want) {
+		t.Fatalf("subjects = %v, want %v: the commits after the release (#12, tweak) cannot have caused an error it already had", subjects, want)
+	}
+}

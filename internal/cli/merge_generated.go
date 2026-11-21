@@ -90,6 +90,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -581,13 +582,14 @@ func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
 	_, _, skewed := mergeDriverPinCheck(root)
 	var command string
 	var ok bool
-	if haveRegistered && !skewed {
+	if haveRegistered && !skewed && driverCommandCurrent(registered) {
 		// A binary of this same pinned identity already registered itself
 		// and is still on disk: it IS the pinned forge, so keep it. Without
 		// this, every copy of the pin at a different path — each worktree's
 		// tool-cache install, a `go install`ed one, a durable `go run` copy
 		// — rewrote the config to name itself, and two of them alternating
-		// rewrote it on every run.
+		// rewrote it on every run. A registration in an older shape
+		// (no launcher clause) is replaced once, by whichever copy runs.
 		command, ok = registered, true
 	} else {
 		command, ok = mergeDriverCommand(!skewed)
@@ -596,7 +598,7 @@ func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
 		changes = append(changes, fmt.Sprintf("%s.%s.command = %s: the driver of this forge's identity, for a driver of another pin to hand a merge to",
 			pinnedDriverSection, mergeDriverIdentity(), command))
 	}
-	if ok && current != command && (!driverCommandUsable(current) || (!skewed && !driverCommandDelegates(current))) {
+	if ok && current != command && (!driverCommandUsable(current) || (!skewed && !driverCommandCurrent(current))) {
 		_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
 			nameKey, "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
 		if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
@@ -742,35 +744,105 @@ func driverCommandUsable(command string) bool {
 const driverGuardPrefix = "[ -x "
 
 // driverCommandLine is the command git runs through `sh -c` for one merge: the
-// forge at bin when it still exists; else the same forge, reinstalled; else a
-// merge that FAILS, loudly.
+// forge at bin when it still exists; else the same forge, reinstalled; else
+// the forge on PATH, which hands the merge to the forge the project pins; else
+// a merge that FAILS, loudly.
 //
 // The command names ONE binary by absolute path, and that binary can vanish —
 // the durable copies are pruned to the most recently used identities
-// (keptDriverCopies), a worktree on an older pin outlives its copy, and a
-// removed tool cache takes an installed one. On 2026-10-26 thirteen of
-// reliant's worktrees named an evicted copy.
+// (keptDriverCopies), a worktree on an older pin outlives its copy, a removed
+// tool cache takes an installed one, and the pinned forge a hand-off runs
+// lives in forgedelegate's cache, whose entries are evicted as others are
+// built (a project bridged to a forge checkout makes a new one for every
+// edit of it). On 2026-10-26 thirteen of reliant's worktrees named an evicted
+// copy; on 2026-11-20 control-plane's clone named a dozen evicted
+// pinned/checkout-* builds.
 //
 // So when bin is gone and this forge has a module version, the command
 // reinstalls that version into its durable-copy directory
 // (`go install …/cmd/forge@<version>`, GOBIN=<cache>/<identity>) and merges
-// with it: the same forge, so the same rules. When that is impossible (no
-// version, no go, no network) the merge fails: git's text merge is written
-// into %A, markers and all, the driver exits 1 so git reports the file
-// conflicted, and it says which forge is gone and what repairs it. It never
-// exits 0 without forge having merged: an earlier fallback kept this side of a
-// conflicting generated file and exited 0, so git recorded a stale mock as
-// cleanly merged and nothing downstream knew to regenerate it.
+// with it: the same forge, so the same rules. When that is impossible (a
+// build of a checkout or a dirty tree names no version to install; no go, no
+// network), it resolves forge at merge time instead: the entry point on PATH
+// (driverLauncherClause) hands merge-generated to the forge the project pins,
+// as it does every project command. Only when there is none does the merge
+// fail: git's text merge is written into %A, markers and all, the driver
+// exits 1 so git reports the file conflicted, and it says which forge is gone
+// and what repairs it. It never exits 0 without forge having merged: an
+// earlier fallback kept this side of a conflicting generated file and exited
+// 0, so git recorded a stale mock as cleanly merged and nothing downstream
+// knew to regenerate it.
 func driverCommandLine(bin, name string) string {
 	q := shellQuote(bin)
 	words := strings.Fields(name)
 	words[0] = q
 	return driverGuardPrefix + q + " ] && exec " + strings.Join(words, " ") + " merge-generated %O %A %B %L %P; " +
 		driverReinstallClause() +
+		driverLauncherClause(name) +
 		"git merge-file --marker-size=%L -L ours -L base -L theirs %A %O %B; " +
 		"printf 'forge merge-generated %s: FAILED: the forge this merge driver names (%s) is gone and could not be reinstalled, " +
-		"so forge did not merge this file; it is left conflicted. Run `" + name + " merge-driver install` with the pinned forge, then merge again.\\n' %P " +
+		"and no forge is on PATH, so forge did not merge this file; it is left conflicted. Run `" + name + " merge-driver install` with the pinned forge, then merge again.\\n' %P " +
 		q + " >&2; exit 1"
+}
+
+// driverLauncherMarker opens each clause of driverLauncherClause, and so tells
+// a command written since forge resolved a vanished driver at merge time from
+// an older one, which the pinned forge rewrites (driverCommandCurrent).
+const driverLauncherMarker = "command -v "
+
+// driverLaunchers are the forge entry points, each a command line up to
+// forge's own arguments, that a driver whose forge is gone looks up on PATH:
+// how this forge was invoked (cmdutil.Name: `forge`, or `reliant forge` when
+// forge is mounted in a host), then `forge`, then `reliant forge`, which is
+// the only forge a Reliant workspace may have. A seam for tests, which must
+// not reach a real forge on the machine's PATH.
+var driverLaunchers = defaultDriverLaunchers
+
+func defaultDriverLaunchers(name string) [][]string {
+	var out [][]string
+	seen := map[string]bool{}
+	for _, cand := range [][]string{strings.Fields(name), {"forge"}, {"reliant", "forge"}} {
+		// Each word is written into the command unquoted, so only a plain
+		// program or subcommand name qualifies (a test binary's
+		// `cli.test forge` does too, and finds nothing on PATH).
+		if len(cand) == 0 || slices.ContainsFunc(cand, func(w string) bool { return !launcherWordRE.MatchString(w) }) {
+			continue
+		}
+		if key := strings.Join(cand, " "); !seen[key] {
+			seen[key] = true
+			out = append(out, cand)
+		}
+	}
+	return out
+}
+
+var launcherWordRE = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// driverLauncherClause is the part of the driver command that resolves forge
+// at merge time: the first entry point of driverLaunchers found on PATH runs
+// the merge. Every forge entry point hands a project command — merge-generated
+// included — to the forge that project pins (forge_pin_delegate.go), building
+// it when no copy is cached, and that forge merges by the project's rules. A
+// forge that cannot reach the pin fails the merge with its reason, which git
+// reports as a conflict.
+func driverLauncherClause(name string) string {
+	var b strings.Builder
+	for _, l := range driverLaunchers(name) {
+		cmd := strings.Join(l, " ")
+		b.WriteString(driverLauncherMarker + l[0] + " >/dev/null 2>&1 && { printf 'forge merge-generated %s: the forge this driver names is gone; merging with `" +
+			cmd + "` from PATH, which runs the forge the project pins\\n' %P >&2; exec " + cmd + " merge-generated %O %A %B %L %P; }; ")
+	}
+	return b.String()
+}
+
+// driverCommandCurrent reports whether a configured driver command is in the
+// shape this forge writes: it hands each merge to the pinned forge
+// (driverCommandDelegates) and resolves forge at merge time when the binary
+// it names is gone (driverLauncherClause). The pinned forge rewrites an older
+// shape, so a clone wired before the launcher clause existed gets it from the
+// next writing command rather than from the first merge that fails.
+func driverCommandCurrent(command string) bool {
+	return driverCommandDelegates(command) && strings.Contains(command, driverLauncherMarker)
 }
 
 // driverReinstallClause is the part of the driver command that brings a
@@ -876,11 +948,22 @@ var mergeDriverCacheDir = func() (string, error) {
 }
 
 // keptDriverCopies is how many forge identities keep a durable copy. A copy
-// is the whole binary, and a pin-per-fix workflow makes several a day. A
-// clone whose driver named an evicted copy has an unusable driver: the next
-// forge command repairs it, and a merge before that falls back to git's
-// plain merge, saying why (merge_driver_pin.go).
-const keptDriverCopies = 3
+// is the whole binary (a hard link, when it is a copy of a build that still
+// exists), and a pin-per-fix workflow makes several a day. A clone whose
+// driver named an evicted copy has an unusable driver: the next forge command
+// repairs it, and a merge before that reinstalls the copy or resolves forge on
+// PATH (driverCommandLine).
+//
+// IT MUST EXCEED THE PINS MERGING AT ONCE, for the reason forgedelegate's
+// keepVersions does: with 3, a shared machine running a dozen pins kept
+// evicting the copies its clones' drivers named, and merges failed with
+// `<copy>/forge: not found` (forge reports 3371cb20, 3a924320).
+const keptDriverCopies = 16
+
+// driverCopyGrace is how long a copy stays after it was last used, whatever
+// keptDriverCopies says: a merge installs a copy and runs it moments later,
+// and a concurrent prune must not land in between.
+const driverCopyGrace = time.Hour
 
 // durableDriverCopy returns a path that will outlive this process holding
 // exe's bytes: <cache>/<identity>/<name>, written once per identity (a hard
@@ -950,7 +1033,8 @@ func copyExecutable(src, dst string) error {
 }
 
 // pruneDriverCopies keeps the keptDriverCopies most recently used identity
-// directories under cache, and always the one named keep.
+// directories under cache, every one used within driverCopyGrace, and always
+// the one named keep.
 func pruneDriverCopies(cache, keep string) {
 	entries, err := os.ReadDir(cache)
 	if err != nil {
@@ -970,7 +1054,11 @@ func pruneDriverCopies(cache, keep string) {
 		}
 	}
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].used.After(dirs[j].used) })
+	recent := time.Now().Add(-driverCopyGrace)
 	for i := keptDriverCopies - 1; i < len(dirs); i++ {
+		if dirs[i].used.After(recent) {
+			continue
+		}
 		_ = os.RemoveAll(filepath.Join(cache, dirs[i].name))
 	}
 }

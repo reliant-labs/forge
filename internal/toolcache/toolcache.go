@@ -7,7 +7,7 @@
 // # Layout
 //
 //	$FORGE_TOOLS_CACHE (default <UserCacheDir>/forge/tools)/
-//	  <kind>/                      gate, golangci-lint, pinned
+//	  <kind>/                      gate, golangci-lint, pinned, release
 //	    <key>/                     one ENTRY: a tool at one version (+toolchain)
 //	      <binary>
 //	    .build-<key>-*/            an install in progress
@@ -54,6 +54,10 @@ const (
 	KindGolangci = "golangci-lint"
 	// KindPinned holds go.mod-pinned codegen plugins and the dev loop's air.
 	KindPinned = "pinned"
+	// KindRelease holds non-Go tools forge installs from upstream release
+	// archives verified against sha256 values compiled into forge — syft
+	// and grype (internal/toolfetch).
+	KindRelease = "release"
 )
 
 const (

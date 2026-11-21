@@ -26,6 +26,7 @@ import (
 
 	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/serverkit/drainbudget"
+	"github.com/reliant-labs/forge/pkg/telemetry/collector"
 )
 
 // RenderWorkloads renders an environment's whole workload SET into the
@@ -84,20 +85,25 @@ func RenderWorkloads(ws []v1alpha1.Workload, p v1alpha1.Profile, ctx Context) ([
 	if err != nil {
 		return nil, err
 	}
-	var objs []runtime.Object
+	var out []*unstructured.Unstructured
 	for _, w := range set.list {
 		o, err := set.render(w, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("workload %s: %w", w.name, err)
 		}
-		objs = append(objs, o...)
+		u, err := toUnstructured(o)
+		if err != nil {
+			return nil, err
+		}
+		stampKind(u, w.kind)
+		out = append(out, u...)
 	}
 	if ctx.Network != nil {
-		objs = append(objs, envNetworkPolicies(ctx.Namespace, *ctx.Network)...)
-	}
-	out, err := toUnstructured(objs)
-	if err != nil {
-		return nil, err
+		u, err := toUnstructured(envNetworkPolicies(ctx.Namespace, *ctx.Network))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u...)
 	}
 	stampEnv(out, ctx.Env)
 	stampVersion(out, ctx.Version)
@@ -1407,7 +1413,41 @@ func (set *workloadSet) ingressPolicy(w *workload, ctx Context) runtime.Object {
 	if len(public) > 0 {
 		np.Spec.Ingress = append(np.Spec.Ingress, networkingv1.NetworkPolicyIngressRule{Ports: public})
 	}
+	np.Spec.Ingress = append(np.Spec.Ingress, telemetryIngressRules(w.name, ctx.Telemetry)...)
 	return np
+}
+
+// telemetryIngressRules are the rules admitting the collector that pulls the
+// declared telemetry of workload name (forge.Telemetry on it): the
+// cross-namespace scraper this policy otherwise denies. One rule per target
+// that admits its collector, on exactly its scrape, pprof and check ports,
+// from exactly the collector's pods (collector.WorkloadIngressRule).
+func telemetryIngressRules(name string, tel *WorkloadTelemetry) []networkingv1.NetworkPolicyIngressRule {
+	if tel == nil {
+		return nil
+	}
+	var out []networkingv1.NetworkPolicyIngressRule
+	for _, t := range tel.Targets {
+		if t.Source != "workload:"+name {
+			continue
+		}
+		raw, ok := collector.WorkloadIngressRule(t, tel.Collector)
+		if !ok {
+			continue
+		}
+		// The translator speaks plain maps (one shape for every caller);
+		// the rule is a NetworkPolicyIngressRule by construction.
+		b, err := json.Marshal(raw)
+		if err != nil {
+			panic(fmt.Sprintf("telemetry ingress rule: %v", err))
+		}
+		var rule networkingv1.NetworkPolicyIngressRule
+		if err := json.Unmarshal(b, &rule); err != nil {
+			panic(fmt.Sprintf("telemetry ingress rule: %v", err))
+		}
+		out = append(out, rule)
+	}
+	return out
 }
 
 // envNetworkPolicies ports kcl/lib/netpol.k:53-122 render_network_policies:

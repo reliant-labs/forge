@@ -102,22 +102,24 @@ Everything that has to agree reads that one variable: the IdP binds it (`HostInf
 
 Pinning a dev port is still available if you want a stable URL — set `port: <n>` in forge.yaml and put the literal URI in `config.k`.
 
-### A token for curl, from the same sign-in
+### Calling the API from curl, with the same sign-in
 
-There is no `forge` verb that prints a dev token. You do not need one: the sign-in a browser does is one POST, and what it sets is the access token itself. `POST /auth/login` on the API runs the whole OIDC flow server-side and answers with a `<project>_session` cookie whose VALUE is the access token the validator checks — the same JWT a `Authorization: Bearer` header carries (`credentialFrom` in `pkg/middleware` reads either).
+There is no `forge` verb that prints a dev token, and you do not need one. The sign-in a browser does is one POST: `POST /auth/login` on the API runs the whole OIDC flow server-side and answers with a `<project>_session` cookie, and the API reads that cookie on every RPC in dev. Keep the cookie in a private cookie jar and hand curl the JAR. Never copy the token into a shell variable or onto a command line:
 
 ```sh
 API=http://localhost:<api port>   # the `forge env up` banner, or `forge env status dev`
-curl -sS -c /tmp/dev.cookies -H 'Content-Type: application/json' \
+JAR=$(umask 077; mktemp -d)/cookies   # a 0700 directory only you can read
+curl -sS -c "$JAR" -H 'Content-Type: application/json' \
   -d '{"email":"admin@<project>.localhost","password":"Password1!"}' "$API/auth/login"
-TOKEN=$(awk '$6 ~ /_session$/ {print $7}' /tmp/dev.cookies)
-forge api curl <Service>.<Rpc> --port <api port> --auth-token "$TOKEN"   # or curl -H "Authorization: Bearer $TOKEN" …
+curl -sS -b "$JAR" -H 'Content-Type: application/json' -d '{}' "$API/<package>.<Service>/<Rpc>"
+rm -rf "$(dirname "$JAR")"   # when you are done
 ```
 
-- The account is the one `idp-steps.yaml` declares (above), or any `seed_users` entry with the password its `password_secret` names. A password the policy rejects, an unverified address or a TOTP-enrolled account fails here exactly as it would on the sign-in screen (add `"totp":"<code>"` for the last).
+- **Why the jar, not the token.** The cookie's value IS the access token, a bearer credential good until it expires. A token in a shell variable lands in your history and every child's environment. As a command-line argument (`--auth-token`, `-H "Authorization: Bearer …"`), anyone on the machine who can list processes can read it. The jar is a file only you can read, and curl reads it itself. On a shared host, never pass the token on a command line.
+- `forge api curl <Service>.<Rpc> --port <api port>` prints the request with a `$TOKEN` placeholder. Replace its `-H "Authorization: …"` line with `-b "$JAR"` rather than filling the placeholder in.
+- The account is the one `idp-steps.yaml` declares (above), or any `seed_users` entry with the password its `password_secret` names. These are dev-only credentials of a local IdP: never point this at a deployed env. A password the policy rejects, an unverified address or a TOTP-enrolled account fails here exactly as it would on the sign-in screen (add `"totp":"<code>"` for the last).
 - curl sends no `Origin` or `Sec-Fetch-Site`, so the broker's cross-site guard lets it through; a request that claims another origin is refused.
-- `curl -b /tmp/dev.cookies` works too, without extracting anything: the API reads the session cookie on every RPC in dev.
-- The token expires like any other (Zitadel's default access-token lifetime): run the POST again. `/auth/login` is a 404 when native sign-in did not mount — see "Reading the failures".
+- The session expires like any other (Zitadel's default access-token lifetime): run the POST again. `/auth/login` is a 404 when native sign-in did not mount — see "Reading the failures".
 
 ## 2. Mint one against a shared secret — API smoke tests only
 

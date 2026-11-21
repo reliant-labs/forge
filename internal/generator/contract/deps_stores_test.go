@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/testhost"
 )
 
 // The scaffolded contract_test.go tells every user, verbatim, that a
@@ -149,6 +150,7 @@ func buildDepsProject(t *testing.T, root string) {
 	cmd.Dir = root
 	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod"))
 	if out, err := cmd.CombinedOutput(); err != nil {
+		testhost.SkipIfModuleDownloadFailed(t, out)
 		mock, _ := os.ReadFile(filepath.Join(root, "internal", "pipeline", "mock_gen.go"))
 		t.Fatalf("go build of generated mock failed: %v\n%s\n---- mock_gen.go ----\n%s", err, out, mock)
 	}

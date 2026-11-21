@@ -51,7 +51,8 @@ read-only statement and prints the rows.
 
 To see what pending migrations do on a real postgres — locks, rewrites,
 validation scans — 'forge db analyze' measures them in a rolled-back
-transaction.
+transaction. 'forge db analyze queries' plans the query shapes the tests
+captured (FORGE_QUERY_CAPTURE_DIR) and reports what no index serves.
 
 When something is wedged:
 

@@ -148,8 +148,9 @@ func TestDeployTemplate_EmptyEnvironments(t *testing.T) {
 
 func TestBuildImagesTemplate_Full(t *testing.T) {
 	data := BuildImagesWorkflowData{
-		ProjectName: "myapp",
-		VulnDocker:  true,
+		ProjectName:  "myapp",
+		VulnDocker:   true,
+		ForgeVersion: "v1.10.0",
 	}
 
 	out, err := CITemplates("github").Render("build-images.yml.tmpl", data)
@@ -169,12 +170,21 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 		t.Error("missing concurrency group")
 	}
 
-	// Trivy scan
-	if !strings.Contains(s, "trivy-scan:") {
-		t.Error("missing trivy-scan job")
+	// The pushed image is scanned by forge's own pinned grype, judged by
+	// vuln_gate; no third-party scanner or SBOM action is wired in.
+	if !strings.Contains(s, "vuln-scan:") {
+		t.Error("missing vuln-scan job")
 	}
-	if !strings.Contains(s, "exit-code: \"1\"") {
-		t.Error("trivy should fail on vulnerabilities")
+	if !strings.Contains(s, `forge vuln scan --image "$IMAGE_REF"`) {
+		t.Error("the scan job should run `forge vuln scan --image` over the pushed digest")
+	}
+	for _, gone := range []string{"trivy", "anchore/sbom-action", "spdx"} {
+		if strings.Contains(strings.ToLower(s), gone) {
+			t.Errorf("build-images.yml still wires %q: forge vuln scan and the cut's SBOM replaced it", gone)
+		}
+	}
+	if !strings.Contains(s, "cosign sign --yes") {
+		t.Error("the image must stay cosign-signed")
 	}
 
 	// No frontend images here: they are per-env (config.js is rendered
@@ -194,7 +204,7 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 	// private repositories outside Enterprise Cloud ("Feature not available
 	// for user-owned private repositories") — AFTER the image is pushed, so
 	// every push to main went red (houndersclub). The image stays
-	// cosign-signed with an SBOM either way.
+	// cosign-signed either way.
 	i := strings.Index(s, "uses: actions/attest-build-provenance@")
 	if i < 0 {
 		t.Fatal("missing the provenance attestation step")
@@ -204,12 +214,9 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 		t.Errorf("provenance attestation is not gated off for private repositories:\n%s", step)
 	}
 
-	// The SBOM is attached to the image as a signed attestation, not only a
-	// run artifact that expires with the run, and a private repository's
-	// image still gets provenance, as a cosign attestation (NS FG-22).
-	if !strings.Contains(s, `cosign attest --yes --type spdxjson --predicate sbom-`) {
-		t.Error("the SBOM is not attached to the image (cosign attest --type spdxjson)")
-	}
+	// A private repository's image still gets provenance, as a cosign
+	// attestation (NS FG-22). (The SBOM attestation is the pre-v1.10.0
+	// form's: TestBuildImagesTemplate_ScanFollowsThePinnedForge.)
 	j := strings.Index(s, "cosign attest --yes --type slsaprovenance1")
 	if j < 0 {
 		t.Fatal("no provenance for a private repository's image")
@@ -225,8 +232,50 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 	}
 
 	// Summary includes all jobs
-	if !strings.Contains(s, "trivy scan") {
-		t.Error("summary should include trivy scan")
+	if !strings.Contains(s, "vulnerability scan") {
+		t.Error("summary should include the vulnerability scan")
+	}
+}
+
+// A project pinned to a forge that predates `forge vuln` (v1.10.0) must not
+// run it: its CI runs the pinned forge. It keeps the scan and the SBOM it had
+// before, and a pin at or past v1.10.0 (a pre-release of it included) gets
+// forge's own.
+func TestBuildImagesTemplate_ScanFollowsThePinnedForge(t *testing.T) {
+	for _, c := range []struct {
+		pin       string
+		forgeScan bool
+	}{
+		{"v1.10.0", true},
+		{"v1.10.1-0.20261121000000-abcdef123456", true},
+		{"v1.11.0-rc.1", true},
+		{"v1.9.0", false},
+		{"v1.9.1-0.20261121000000-abcdef123456", false},
+		{"", false},
+		{"devel", false},
+	} {
+		out, err := CITemplates("github").Render("build-images.yml.tmpl", BuildImagesWorkflowData{ProjectName: "myapp", BuildEnv: "staging", VulnDocker: true, ForgeVersion: c.pin})
+		if err != nil {
+			t.Fatalf("pin %q: %v", c.pin, err)
+		}
+		s := string(out)
+		if !strings.Contains(s, "vuln-scan:") {
+			t.Errorf("pin %q: the scan job is missing", c.pin)
+		}
+		forge := strings.Contains(s, `forge vuln scan --image "$IMAGE_REF"`) && strings.Contains(s, "run: forge vuln db pull")
+		// The older pin's SBOM is attached to the image as a signed
+		// attestation, not only a run artifact that expires with the run.
+		legacy := strings.Contains(s, "aquasecurity/trivy-action@") && strings.Contains(s, "anchore/sbom-action@") &&
+			strings.Contains(s, "cosign attest --yes --type spdxjson --predicate sbom-")
+		if strings.Contains(s, "--type spdxjson") != !c.forgeScan {
+			t.Errorf("pin %q: the SPDX SBOM attestation is rendered %v; want it only without the forge scan", c.pin, !c.forgeScan)
+		}
+		if !strings.Contains(s, "cosign attest --yes --type slsaprovenance1") {
+			t.Errorf("pin %q: no provenance for a private repository's image", c.pin)
+		}
+		if forge != c.forgeScan || legacy == c.forgeScan {
+			t.Errorf("pin %q: forge scan %v, Trivy + SBOM action %v; want the forge scan %v", c.pin, forge, legacy, c.forgeScan)
+		}
 	}
 }
 
@@ -243,8 +292,8 @@ func TestBuildImagesTemplate_Minimal(t *testing.T) {
 
 	s := string(out)
 
-	// Should NOT have trivy
-	if strings.Contains(s, "trivy-scan:") {
-		t.Error("should not have trivy-scan when VulnDocker=false")
+	// Should NOT have the scan job
+	if strings.Contains(s, "vuln-scan:") {
+		t.Error("should not have vuln-scan when VulnDocker=false")
 	}
 }

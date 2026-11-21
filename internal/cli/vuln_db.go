@@ -45,9 +45,12 @@ download it. Older than five days, it is stale: every verdict against it exits 2
                       verifies each archive against the listing's sha256.
   FORGE_VULN_DB_DIR   where the database lives.
 
-CI: cache $FORGE_VULN_DB_DIR keyed by ` + "`forge vuln db status --json | jq -r .cache_key`" + `
-after the job (forge-vulndb-v6-<build date>), restoring with the prefix
-forge-vulndb-v6- so a job downloads at most once a day.`,
+CI: set FORGE_VULN_DB_DIR and cache it under today's UTC date
+(forge-vulndb-v6-<YYYY-MM-DD>, known before the restore), with the prefix
+forge-vulndb-v6- as the fallback; run ` + "`forge vuln db pull`" + ` on anything but an
+exact hit (it downloads only a newer build) and save under today's key, so a
+job downloads at most once a day. The status document's cache_key is the
+database's build date, known only once it is on disk.`,
 	}
 	cmd.AddCommand(newVulnDBStatusCmd(deps), newVulnDBPullCmd(deps), newVulnDBImportCmd(deps))
 	return cmdutil.StrictGroup(cmd)

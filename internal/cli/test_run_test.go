@@ -216,7 +216,7 @@ func TestTestRunText(t *testing.T) {
 
 // The verb runs only the project's lanes, and says so first.
 func TestTestRunHelpSaysItNeverRunsGoTest(t *testing.T) {
-	t.Parallel()
+	// Not parallel: newTestRootCmd resets package state (the recorded route).
 	cmd := newTestRunCmd()
 	first, _, _ := strings.Cut(cmd.Long, "\n")
 	for name, text := range map[string]string{"Short": cmd.Short, "the first line of Long": first} {

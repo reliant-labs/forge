@@ -8,7 +8,7 @@ import (
 // The group's name is the one `forge test` was removed under (ci_test_run.go),
 // so its help says first, before anything else, that it runs no suite.
 func TestTestGroupSaysItRunsNoSuiteOfItsOwn(t *testing.T) {
-	t.Parallel()
+	// Not parallel: newTestRootCmd resets package state (the recorded route).
 	cmd := newTestCmd()
 	first, _, _ := strings.Cut(cmd.Long, "\n")
 	for name, text := range map[string]string{"Short": cmd.Short, "the first line of Long": first} {

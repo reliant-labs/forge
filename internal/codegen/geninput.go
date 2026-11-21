@@ -18,7 +18,10 @@
 // signature change at the call site only — the body is untouched.
 package codegen
 
-import "github.com/reliant-labs/forge/internal/checksums"
+import (
+	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/connectmajor"
+)
 
 // GenContext is the project-scoped context shared by every emitter's
 // GenInput. Embed it; do not pass it around on its own.
@@ -40,4 +43,20 @@ type GenContext struct {
 	// so `forge project audit` doesn't flag forge-owned output as stale. A nil
 	// tracker is tolerated everywhere — the file is still written.
 	Checksums *checksums.FileChecksums
+
+	// ConnectMajor is the connect-go major the project's Go code targets
+	// (internal/connectmajor). `forge generate` detects it once per run and
+	// sets it here; the zero value means "read it from ProjectDir's go.mod"
+	// (v1 when there is none), so a caller that never heard of v2 renders
+	// what it always did.
+	ConnectMajor connectmajor.Major
+}
+
+// connectV2 reports whether the project's emitted wiring targets connect-go
+// v2: ConnectMajor when set, else the major ProjectDir's go.mod selects.
+func (g GenContext) connectV2() bool {
+	if g.ConnectMajor != 0 {
+		return g.ConnectMajor.IsV2()
+	}
+	return g.ProjectDir != "" && connectmajor.DetectOrDefault(g.ProjectDir).IsV2()
 }

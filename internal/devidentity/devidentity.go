@@ -55,6 +55,9 @@ type Input struct {
 	// Project is the Bundle's project, the identity project's name unless the
 	// declaration sets project_name.
 	Project string
+	// Env is the environment's name, for the commands a message names
+	// (`forge secret set --env <env>`). Optional.
+	Env string
 	// Identity is the rendered declaration. Its runtime must be "host".
 	Identity *release.ShapeIdentity
 
@@ -106,7 +109,9 @@ type Result struct {
 	// Warnings are things the pass left alone on purpose.
 	Warnings []string
 	// SocialCallbackURL is the redirect URI to register on the dev OAuth
-	// app of each social provider; empty when none is declared.
+	// app of each social provider; empty when none is declared. It is set
+	// whenever one is declared, including when a provider's secrets are not
+	// in the store yet: the OAuth app is registered before its secrets exist.
 	SocialCallbackURL string
 	// Mail is the LOGIN_POLICY mail state: dev (Mailpit), smtp or none.
 	Mail string
@@ -127,10 +132,14 @@ type SeedPassword struct {
 func Converge(ctx context.Context, in Input) (*Result, error) {
 	in, seedPasswords, seedWarnings := ensureSeedPasswords(in)
 	spec, warnings, err := Spec(in)
-	if err != nil {
-		return nil, err
-	}
 	warnings = append(seedWarnings, warnings...)
+	if err != nil {
+		// The warnings say what is missing (a social provider's secrets, an
+		// SMTP password) and the error points at them, and the callback is
+		// what the OAuth app needs before its secrets exist: both are
+		// reported even though nothing was converged.
+		return &Result{Warnings: warnings, SocialCallbackURL: SocialCallbackURL(in)}, err
+	}
 	mail := MailState(in)
 	keys := identity.DirKeyStore{Dir: in.KeysDir}
 	files := identity.FileOutputs{Path: in.OutputsPath}
@@ -150,10 +159,7 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Warnings: warnings, Mail: mail, SeedPasswords: seedPasswords}
-	if len(spec.IdPs) > 0 {
-		res.SocialCallbackURL = strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
-	}
+	res := &Result{Warnings: warnings, Mail: mail, SeedPasswords: seedPasswords, SocialCallbackURL: SocialCallbackURL(in)}
 	rep, err := rec.Reconcile(ctx, spec)
 	res.Report = rep
 	if err != nil {
@@ -170,6 +176,17 @@ func Converge(ctx context.Context, in Input) (*Result, error) {
 		return res, err
 	}
 	return res, nil
+}
+
+// SocialCallbackURL is the redirect URI every social provider's DEV OAuth app
+// registers: the dev IdP's own <issuer>/idps/callback, which is where the
+// issuer sends the provider back (it does the code exchange itself). Empty
+// when the identity declares no social provider.
+func SocialCallbackURL(in Input) string {
+	if in.Identity == nil || len(in.Identity.Social) == 0 {
+		return ""
+	}
+	return strings.TrimRight(in.BaseURL, "/") + "/idps/callback"
 }
 
 // ensureSeedPasswords generates a password for every seed user whose
@@ -487,20 +504,23 @@ func socialIDP(in Input, s release.ShapeIdentitySocial) (identity.IdP, string) {
 	if s.ClientIDSecret != "" {
 		v, ok := secret(in, s.ClientIDSecret)
 		if !ok {
-			return identity.IdP{}, missingSocialSecret(s.Type, s.ClientIDSecret)
+			return identity.IdP{}, missingSocialSecret(in.Env, s.Type, s.ClientIDSecret)
 		}
 		clientID = v
 	}
 	clientSecret, ok := secret(in, s.ClientSecretSecret)
 	if !ok {
-		return identity.IdP{}, missingSocialSecret(s.Type, s.ClientSecretSecret)
+		return identity.IdP{}, missingSocialSecret(in.Env, s.Type, s.ClientSecretSecret)
 	}
 	return identity.IdP{Name: identity.IdPName(t), Type: t, ClientID: clientID, ClientSecret: clientSecret, Scopes: s.Scopes,
 		PassTokens: s.PassTokens}, ""
 }
 
-func missingSocialSecret(typ, name string) string {
-	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge secret set --env <env> %s`", typ, name, typ, name)
+func missingSocialSecret(env, typ, name string) string {
+	if env == "" {
+		env = "<env>"
+	}
+	return fmt.Sprintf("social %s: secret %s is not in the env's store, so %s sign-in is off in this env. Create a DEV OAuth app (its callback is printed below), then `forge secret set --env %s %s`", typ, name, typ, env, name)
 }
 
 func containsMethod(ms []identity.Method, m identity.Method) bool {

@@ -1,7 +1,7 @@
 # forge versioning: what a project pins, and what a dev build does instead
 
 forge is **one Go module**, `github.com/reliant-labs/forge`. Generated projects
-import `github.com/reliant-labs/forge/pkg/*` (serverkit, appkit, orm, observe,
+import `github.com/reliant-labs/forge/pkg/*` (serverkit, lifecyclekit, orm, observe,
 testkit, ...) — those are packages inside that module, not a separate one.
 
 This document is the canonical description of how that dependency is versioned.

@@ -367,3 +367,7 @@ forge skill load testing        # the test pyramid and the harness patterns
 
 If you are migrating an existing codebase rather than starting fresh, start
 with `forge skill load migration`.
+
+Why forge is shaped this way, as reasons with the checked benefits behind
+each: `forge why`, or [why-forge.md](why-forge.md). Every benefit, one layer
+at a time: [benefits.md](benefits.md).

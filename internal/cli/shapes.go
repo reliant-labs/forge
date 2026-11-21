@@ -58,14 +58,16 @@ import (
 //	store    EstimateStore                 internal/db/store_gen.go:214  go doc ./internal/db EstimateStore
 //	handler  RoofopsService.RecalculateEstimate internal/handlers/roofops/rpc_recalculate_estimate.go:24  unwired-stub
 //	hook     useListEstimates              frontends/dashboard/src/hooks/roofops-service-hooks_gen.ts:212
+//	root     worker                        internal/app/roots.go:12  type=Worker command=worker migrate=wait fields=3
+//	workload api                           deploy/kcl/workloads.k:20  kind=service build=go image=ghcr.io/acme/shop
 //	deploy-target FirebaseHosting          forge:kcl/schema.k:1851  on=Frontend  required=project,site,public_dir  …
 
 type shape struct {
-	Kind   string // rpc | message | enum | table | store | handler | hook | deploy-target
-	Name   string
-	File   string
-	Line   int
-	Detail string
+	Kind   string `json:"kind"` // rpc | message | enum | table | store | handler | hook | root | workload | deploy-target
+	Name   string `json:"name"`
+	File   string `json:"file"`
+	Line   int    `json:"line"`
+	Detail string `json:"detail,omitempty"`
 }
 
 var (
@@ -86,6 +88,7 @@ func newShapesCmd() *cobra.Command {
 		kinds         string
 		service       string
 		unimplemented bool
+		asJSON        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "shapes",
@@ -112,6 +115,12 @@ Examples:
   forge project shapes --service ChatService    # one service's rpcs and their handlers
   forge project shapes --unimplemented          # declared rpcs with no handler (or a stub)
   forge project shapes --kind deploy-target     # what a workload's deploy= accepts
+  forge project shapes --kind root,workload     # every process: //forge:root structs and KCL workloads
+  forge project shapes --grep api --json        # the matches as a JSON array
+
+A root line is a //forge:root struct in internal/app; a workload line is a
+named workload literal in deploy/kcl, as its source writes it (where each env
+runs it is forge project audit --json's .categories.shape.details.workloads).
 
 A handler line is named like the rpc it serves (ChatService.SendMessage), so
 rpc and handler lines diff by name. Only methods on a handler package's
@@ -146,6 +155,9 @@ Register are not listed.`,
 			}
 
 			out := cmd.OutOrStdout()
+			if asJSON {
+				return writeShapesJSON(out, shapes, want, pat)
+			}
 
 			// Group by the alternation branch that matched, so ONE call asking
 			// about several entities reads like several answers instead of one
@@ -199,16 +211,26 @@ Register are not listed.`,
 			}
 
 			if n == 0 {
-				fmt.Fprintln(out, "no shapes matched (is this a forge project with protos?)")
+				switch {
+				case len(shapes) == 0:
+					fmt.Fprintln(out, "no shapes matched (is this a forge project with protos?)")
+				case grepPat != "":
+					// The index has shapes; the pattern named none. Fields and
+					// columns are not shapes, so say where those live.
+					fmt.Fprintf(out, "no shape matched %q among %d shapes. Shapes are rpcs, messages, enums, tables, stores, handlers, hooks, roots and workloads — not fields or columns: for one, `rg -n '%s' proto db/migrations`\n", grepPat, len(shapes), grepPat)
+				default:
+					fmt.Fprintf(out, "no shape of the requested kind among %d shapes\n", len(shapes))
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&grepPat, "grep", "", "case-insensitive regex filter over name and detail")
-	cmd.Flags().StringVar(&kinds, "kind", "", "comma-separated kinds: rpc,message,enum,table,store,handler,hook,deploy-target")
+	cmd.Flags().StringVar(&kinds, "kind", "", "comma-separated kinds: rpc,message,enum,table,store,handler,hook,root,workload,deploy-target")
 	cmd.Flags().StringVar(&service, "service", "", "only this service's rpcs and handlers (ChatService, or Chat)")
 	cmd.Flags().BoolVar(&unimplemented, "unimplemented", false,
 		"list the declared rpcs of forge-managed services that have no handler method, or only forge's unwired stub")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the matching shapes as a JSON array of {kind, name, file, line, detail}")
 	return cmd
 }
 
@@ -280,6 +302,8 @@ func collectShapes(projectDir string) []shape {
 	out = append(out, scanStores(filepath.Join(projectDir, filepath.FromSlash(ormDir)), ormDir)...)
 	out = append(out, scanHandlers(projectDir, rpcs)...)
 	out = append(out, scanHooks(filepath.Join(projectDir, "frontends"))...)
+	out = append(out, scanRoots(projectDir)...)
+	out = append(out, scanWorkloads(projectDir)...)
 	out = append(out, scanDeployTargets(projectDir)...)
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -307,10 +331,14 @@ func kindRank(k string) int {
 		return 5
 	case "hook":
 		return 6
-	case "deploy-target":
+	case "root":
 		return 7
+	case "workload":
+		return 8
+	case "deploy-target":
+		return 9
 	}
-	return 8
+	return 10
 }
 
 // eachLine runs fn over every line of every file under root matching ext.

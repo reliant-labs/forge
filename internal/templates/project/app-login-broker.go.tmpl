@@ -85,8 +85,7 @@ const SecureSessionCookieName = middleware.SecureSessionCookieName
 
 // Your pkg/middleware reads only the plain name, so the cookie keeps it even
 // when Secure. Declare `SecureSessionCookieName = "__Host-" + SessionCookieName`
-// there and read it first (`forge skill load migrations/v1.1.0/identity-v2`),
-// then point this at it: until then a sibling site under a shared parent
+// there and read it first, then point this at it: until then a sibling site under a shared parent
 // domain can plant a session cookie.
 const SecureSessionCookieName = SessionCookieName
 {{- end}}

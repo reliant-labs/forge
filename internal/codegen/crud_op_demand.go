@@ -67,11 +67,8 @@ type handlerPackageScan struct {
 // handlersGeneratedFiles are the forge-owned files in a handler package
 // that declare *Service methods or ops. They are forge's output, not the
 // package's demand, so the scan never reads them — otherwise the ops file
-// would demand itself. handlers_gen.go and handlers_crud_gen.go are
-// retired emitters still found on older projects' disks.
+// would demand itself.
 var handlersGeneratedFiles = map[string]bool{
-	"handlers_gen.go":          true,
-	"handlers_crud_gen.go":     true,
 	"handlers_crud_ops_gen.go": true,
 }
 

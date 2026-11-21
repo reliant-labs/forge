@@ -137,9 +137,15 @@ schema IdentityRef:
     reads a reserved managed secret, a cluster workload a key of the Secret
     the control plane delivers (`forge-identity-<name>`), a host process the
     env's secret store. The control plane is the only writer of all three.
+
+    `identity` names the `forge.ManagedIdentity` to read from, for an env
+    that declares several (`Bundle.identities`). Empty is accepted only while
+    the env declares exactly one; with several it is ambiguous, and the
+    render says which names to choose from.
     """
     output: str
     application: str = ""
+    identity: str = ""
 
     check:
         output in ["issuer", "audience", "scopes", "idp_base", "jwks", "client_id", "redirect_uri", "login_uri", "broker_token", "roles_claim", "login_policy"], \
@@ -338,12 +344,24 @@ schema OnHosted:
     check:
         platform in ["amd64", "arm64"], "OnHosted.platform must be 'amd64' or 'arm64' (the GOARCH of the control plane's platform's nodes)"
 
+# Match hostlaunch.ExeName for a declared target. Do not append a second
+# extension when the output name already ends in .exe (in any casing).
+_build_variant_filename = lambda v: BuildVariant -> str {
+    v.output_name + (".exe" if v.goos == "windows" and not v.output_name.lower().endswith(".exe") else "")
+}
+
 schema BuildOnly:
     """Built and shipped, never run: a CLI in a release artifact, an image
     other workloads pull. `build_variants` emits several binaries from one
     Go build (different ldflags / tags / arch)."""
     type: "build-only" = "build-only"
     build_variants: [BuildVariant] = []
+
+    check:
+        len([v.output_name for v in build_variants if v.output_name]) == len({v.output_name: None for v in build_variants if v.output_name}), \
+            "BuildOnly.build_variants: two variants share an output_name — each would overwrite the other's binary"
+        len([v.output_name for v in build_variants if v.output_name]) == len({_build_variant_filename(v): None for v in build_variants if v.output_name}), \
+            "BuildOnly.build_variants: two variants write the same binary filename after adding the Windows .exe suffix"
 
 # The env-var names forge sets for an OnExternal hook. A hook's own `env`
 # may not redefine one: forge's value would win anyway, so a redefinition
@@ -647,6 +665,12 @@ schema Workload:
     # live heap every two hours. Rendered as FORGE_PROFILES / FORGE_PROFILES_HEAP_INTERVAL on
     # every runtime that runs a process; the workload's own `env` wins.
     profiling?: Profiling
+    # How what this workload runs is observed when forge did not build it (a
+    # third-party image): scrapes, log parsing, OTLP env remaps, profiles,
+    # checks and alerts (see forge.Telemetry). The target IS this workload:
+    # its service name, pods and ports come from it. Authoring-only: it
+    # renders into output.telemetry, never into the spec.
+    telemetry?: Telemetry
 
     # --- v1alpha1.WorkloadSpec ---
     kind: str = "service"
@@ -736,6 +760,10 @@ schema Workload:
         kind in caps.WORKLOAD_KINDS, \
             "Workload.kind must be one of ${caps.WORKLOAD_KINDS} — got '${kind}'. A kind says HOW this runs, not what code is inside it."
         replicas > 0, "Workload '${name}': replicas must be positive"
+        not telemetry or _tel_targets_self(telemetry), \
+            "Workload '${name}': telemetry targets this workload itself, so selector, namespaces, cluster and address are refused (they come from its runtime)"
+        not telemetry or kind != "tool", \
+            "Workload '${name}': telemetry is not supported for kind='tool' — a tool is never scheduled, so there is nothing to observe"
         go_memory_limit_percent == Undefined or go_memory_limit_percent == None or (go_memory_limit_percent >= 0 and go_memory_limit_percent <= 95), \
             "Workload '${name}': go_memory_limit_percent must be 0 (off) or 1..95 — got ${go_memory_limit_percent}. GOMEMLIMIT is a fraction of the container limit, and the limit also has to hold memory the Go runtime does not count."
 

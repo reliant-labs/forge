@@ -46,7 +46,9 @@ func TestE2EScaffoldReadOnlyFieldRefusedOnClientUpdate(t *testing.T) {
 	forgeBin := buildforgeBinary(t)
 	dir := t.TempDir()
 
-	runCmd(t, dir, forgeBin, "project", "new", "roapp", "--mod", "example.com/roapp", "--service", "orders")
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
+	runCmd(t, dir, forgeBin, "project", "new", "roapp", "--mod", "example.com/roapp", "--service", "orders", "--connect", "v1")
 	projectDir := filepath.Join(dir, "roapp")
 	addCorpusForgePkgReplace(t, projectDir)
 

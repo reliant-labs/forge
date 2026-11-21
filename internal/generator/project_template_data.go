@@ -191,8 +191,7 @@ type projectTemplateData struct {
 	HasMigrations bool
 	// ConnectV2 reports that the project's Go code targets connect-go v2
 	// (connectrpc.com/connect/v2) rather than v1 — the major its go.mod
-	// selects (internal/connectmajor), or the scaffold's explicit choice
-	// (ProjectGenerator.ConnectMajor). Templates that name a connect-go
+	// selects (internal/connectmajor). Templates that name a connect-go
 	// module branch on it; false, the zero value, keeps every v1 render.
 	ConnectV2 bool
 }
@@ -305,9 +304,11 @@ func (g *ProjectGenerator) forScaffold() projectTemplateData {
 		// version, or the published release its source descends from; an
 		// in-place scaffold adopting a module keeps that module's pin.
 		ForgeVersion: g.requiredForgeVersion(),
-		// REST is off at scaffold time; users opt-in post-scaffold by
-		// editing forge.yaml's `api.rest:` and re-running `forge generate`
-		// (RegenerateInfraFiles re-renders buf.yaml from the live value).
+		// REST is off at scaffold time. Opting in post-scaffold
+		// (forge.yaml `api.rest: true`) is a hand edit of owned files —
+		// providers.go, buf.yaml, the protos — which `forge generate` names
+		// in its post-generation warnings (restWiringWarnings) rather than
+		// rewriting.
 		RESTEnabled: false,
 		GenModule:   g.genModule(),
 		VersionVar:  g.BuildVersionVar,

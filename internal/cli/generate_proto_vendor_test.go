@@ -249,7 +249,7 @@ func TestForgeWrittenGoTemplatesSkipVendoredProtos(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(remote, "buf.gen.yaml"), scaffold, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := rewriteBufGenYamlToRemote(remote); err != nil {
+	if err := rewriteBufGenYamlToRemote(remote, 0); err != nil {
 		t.Fatal(err)
 	}
 	written["rewriteBufGenYamlToRemote"], _ = os.ReadFile(filepath.Join(remote, "buf.gen.yaml"))

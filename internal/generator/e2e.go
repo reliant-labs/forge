@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -44,6 +45,10 @@ type E2ETemplateData struct {
 	// the harness and the CLI cannot disagree; a service whose name collides
 	// with a built-in command gets none, and `server` runs it.
 	ServeArgs []string
+	// ConnectV2 renders connect-go v2 clients and tdd rows: the major the
+	// project's go.mod selects (internal/connectmajor). The e2e files are
+	// scaffold-once, so they are born at the project's major.
+	ConnectV2 bool
 }
 
 // e2eServeArgs returns the CLI argv that serves serviceName in the scaffolded
@@ -93,6 +98,7 @@ func GenerateE2ETests(projectDir, serviceName, modulePath, projectName string, m
 		Methods:              goMethods,
 		FirstRequestType:     "",
 		ServeArgs:            e2eServeArgs(projectDir, serviceName),
+		ConnectV2:            connectmajor.DetectOrDefault(projectDir).IsV2(),
 	}
 
 	templateFiles := []struct {

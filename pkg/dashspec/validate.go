@@ -1139,7 +1139,7 @@ func (v *validator) searchPanel(path string, o map[string]any, sig Signal) {
 // hasObservations reports whether a metric kind records observations (a count
 // and a distribution) rather than a single value.
 func hasObservations(metricType string) bool {
-	return metricType == "histogram" || metricType == "exp_histogram" || metricType == "summary"
+	return metricType == MetricTypeHistogram || metricType == MetricTypeExpHistogram || metricType == MetricTypeSummary
 }
 
 func (v *validator) series(path string, s map[string]any, sig Signal, labels map[string]bool) {
@@ -1152,7 +1152,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 	}
 	agg := v.oneOf(path, s, "agg", true, string(AggCount), string(AggCountDistinct), string(AggSum), string(AggAvg), string(AggMax), string(AggQuantile), string(AggLast), string(AggRate), string(AggIncrease), string(AggMin))
 	field := v.str(path, s, "field", false)
-	metricType := v.oneOf(path, s, "metricType", false, "sum", "gauge", "histogram", "exp_histogram", "summary")
+	metricType := v.oneOf(path, s, "metricType", false, MetricTypeSum, MetricTypeGauge, MetricTypeHistogram, MetricTypeExpHistogram, MetricTypeSummary)
 	q, hasQ := v.number(path, s, "quantile")
 	if agg == string(AggQuantile) {
 		if !hasQ || q <= 0 || q > 1 {
@@ -1181,7 +1181,7 @@ func (v *validator) series(path string, s map[string]any, sig Signal, labels map
 		if agg == string(AggCount) && !hasObservations(metricType) {
 			v.add(childPath(path, "agg"), "count over a metric needs a histogram, exp_histogram or summary metricType (its observations); a sum's growth is rate or increase (agg sum on a monotonic sum is its increase)")
 		}
-		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == "gauge" {
+		if (agg == string(AggRate) || agg == string(AggIncrease)) && metricType == MetricTypeGauge {
 			v.add(childPath(path, "agg"), "%s needs metricType \"sum\" (a monotonic counter) or a histogram or summary, not a gauge", agg)
 		}
 	case Traces, Logs:

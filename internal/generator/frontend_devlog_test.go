@@ -37,7 +37,7 @@ func TestViteDevLogFromRuntimeFollowsTheFloor(t *testing.T) {
 func TestForgeDevLogIsExportedFromTheRuntime(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "web-runtime", "src", "vite.ts"))
 	if err != nil {
-		t.Skipf("web-runtime/src/vite.ts not readable: %v", err)
+		t.Fatalf("web-runtime/src/vite.ts not readable: %v", err)
 	}
 	if !regexp.MustCompile(`(?m)^export function forgeDevLog\(`).Match(src) {
 		t.Fatal("web-runtime/src/vite.ts no longer exports forgeDevLog, which the floor-gated Vite scaffolds import")
@@ -90,8 +90,7 @@ func TestViteSPAScaffoldFollowsTheRuntimeFloor(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/app\n\ngo 1.25\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			opts := FrontendGenOptions{webRuntimeFloor: tc.floor}
-			if err := GenerateFrontendFilesWithOptions(root, "example.com/app", "app", "web", 8080, "vite-spa", opts); err != nil {
+			if err := generateFrontendFiles(root, "example.com/app", "app", "web", 8080, "vite-spa", FrontendGenOptions{}, tc.floor); err != nil {
 				t.Fatal(err)
 			}
 			fe := filepath.Join(root, "frontends", "web")

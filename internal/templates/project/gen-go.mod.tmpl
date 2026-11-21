@@ -3,7 +3,11 @@ module {{.Module}}/gen
 go {{.GoVersion}}
 
 require (
+{{- if connectV2 .}}
+	connectrpc.com/connect/v2 v2.0.2
+{{- else}}
 	connectrpc.com/connect v1.19.0
+{{- end}}
 	google.golang.org/protobuf v1.36.9
 {{- if .ForgeVersion}}
 	// The generated *.pb.go in this module blank-import forge's shared

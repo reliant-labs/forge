@@ -160,12 +160,48 @@ func Serve() {
 }
 `
 
+	// connect-go v2 projects build the chain with serverkit.NewChainV2, which
+	// applies the same caps by the same rule.
+	chainV2Capped := `package cmd
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		Auth:         auth,
+		ReadMaxBytes: skCfg.ReadMaxBytes,
+	})
+	_ = chain
+}
+`
+	chainV2Uncapped := `package cmd
+
+import sk "github.com/reliant-labs/forge/pkg/serverkit"
+
+func Serve() {
+	chain, _ := sk.NewChainV2(sk.ChainDepsV2{Auth: auth, SendMaxBytes: -1})
+	_ = chain
+}
+`
+
 	tests := []struct {
 		name     string
 		serve    string
 		want     Status
 		evidence string
 	}{
+		{
+			name:     "a serverkit v2 chain is capped",
+			serve:    chainV2Capped,
+			want:     StatusPass,
+			evidence: "NewChainV2.SendMaxBytes(default 4 MiB)",
+		},
+		{
+			name:     "a v2 chain with a negative cap is unlimited",
+			serve:    chainV2Uncapped,
+			want:     StatusFail,
+			evidence: "serverkit.ChainDepsV2{SendMaxBytes: -1}",
+		},
 		{
 			name:     "a serverkit chain is capped",
 			serve:    chainCapped,
@@ -604,5 +640,34 @@ func TestConnectHandlerEvidence(t *testing.T) {
 				t.Fatalf("evidence %q does not mention %q", joined, tt.want)
 			}
 		})
+	}
+}
+
+// TestCheckPayloadLimitsReadsTheGraphProvider pins NS FG-25: a graph-composed
+// project builds its serverkit chain, caps and all, in a provider under
+// internal/app/, and cmd/ only projects the config. A fresh service scaffold
+// is that shape, and the check, reading cmd/ alone, failed the scaffold's own
+// `task ci` with "payloads are unbounded".
+func TestCheckPayloadLimitsReadsTheGraphProvider(t *testing.T) {
+	dir := payloadProject(t, map[string]string{
+		"cmd/app/cmd/serve.go": "package cmd\n\nfunc serverkitConfig() {}\n",
+		"internal/app/providers.go": `package app
+
+import "github.com/reliant-labs/forge/pkg/serverkit"
+
+func provideChain(d deps) {
+	chain, err := serverkit.NewChainV2(serverkit.ChainDepsV2{
+		ReadMaxBytes: d.ServerCfg.ReadMaxBytes,
+		SendMaxBytes: d.ServerCfg.SendMaxBytes,
+	})
+	_, _ = chain, err
+}
+`,
+		"forge.yaml":                        payloadForgeYAML,
+		"gen/forge_descriptor/fixture.json": payloadDescriptorWithService,
+	})
+	got := CheckPayloadLimits(context.Background(), &Environment{ProjectDir: dir})
+	if got.Status != StatusPass || !strings.Contains(got.Evidence, filepath.FromSlash("internal/app/providers.go")) {
+		t.Fatalf("status = %q (%s), evidence %q; want a pass sourced from internal/app/providers.go", got.Status, got.Message, got.Evidence)
 	}
 }

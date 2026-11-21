@@ -76,7 +76,18 @@ SELECT toDateTime64('%s', 9), 't%d', 's%d', '%s', '%s', '%s', map('deployment.en
 		t.Errorf("component code: %+v", c)
 	}
 
-	res, err = l.Ops(context.Background(), obsbackend.OpsRequest{Narrow: n, Names: []string{"todo.Create", "GET /healthz"}, Kinds: []string{obsbackend.OpKindComponent, obsbackend.OpKindRPC}})
+	res, err = l.Ops(context.Background(), obsbackend.OpsRequest{Narrow: n, Names: []string{"todo.Create", "GET /healthz"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]bool{}
+	for _, o := range res.Ops {
+		named[o.Name] = true
+	}
+	if len(res.Ops) != 2 || !named["todo.Create"] || !named["GET /healthz"] {
+		t.Errorf("named ops only, the rpc left out: %+v", res.Ops)
+	}
+	res, err = l.Ops(context.Background(), obsbackend.OpsRequest{Narrow: n, Names: []string{"todo.Create"}, Kinds: []string{obsbackend.OpKindComponent, obsbackend.OpKindRPC}})
 	if err != nil {
 		t.Fatal(err)
 	}

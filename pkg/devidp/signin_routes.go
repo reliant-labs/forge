@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/reliant-labs/forge/pkg/observe"
@@ -60,10 +59,6 @@ type SignInRoutes struct {
 	codeByIP        *limiter
 	registerByIP    *limiter
 	socialStartByIP *limiter
-
-	// locker is the config's ProofLocker (deprecated), nil when none was
-	// supplied: then nothing is locked (see lockAccount).
-	locker ProofLocker
 }
 
 // The routes. The scaffolded broker mounts each with
@@ -177,16 +172,6 @@ type SignInRoutesConfig struct {
 	PasswordPolicy func(context.Context) (PasswordPolicy, error)
 	RejectPassword func(ctx context.Context, w http.ResponseWriter, password string, err *PasswordPolicyError)
 
-	// ProofLocker, when set, is still taken exactly where it was: around an
-	// address proof, around a verification together with the credentials
-	// it installs, and around a passkey enrolment. A lock that cannot be
-	// taken still refuses the request ("unavailable"). nil takes no lock.
-	//
-	// Deprecated: an address proof writes nothing but the issuer's own
-	// verification of a credential-less account, so nothing needs
-	// serialising across replicas any more (forge#2121). Leave it nil.
-	ProofLocker ProofLocker
-
 	// UpstreamTokens receives the provider's own tokens after each
 	// successful social sign-in through a provider whose policy entry has
 	// PassTokens, server-side, before the response is written. Store them
@@ -266,23 +251,7 @@ func NewSignInRoutes(cfg SignInRoutesConfig) (*SignInRoutes, error) {
 		registerByIP:    newLimiter(20, time.Hour),
 		socialStartByIP: newLimiter(60, 15*time.Minute),
 	}
-	r.locker = cfg.ProofLocker
 	return r, nil
-}
-
-// lockAccount takes the deprecated ProofLocker for userID, where one was
-// supplied, and returns its release (safe to call twice). An error refuses
-// the work it guards, as it always did. With no locker it holds nothing.
-func (r *SignInRoutes) lockAccount(ctx context.Context, userID string) (func(), error) {
-	if r.locker == nil {
-		return func() {}, nil
-	}
-	release, err := r.locker.LockAccount(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("the account's proof lock: %w", err)
-	}
-	var once sync.Once
-	return func() { once.Do(release) }, nil
 }
 
 // RPID is the passkey relying-party id in use.
@@ -753,14 +722,6 @@ func (r *SignInRoutes) HandlePasskeyRegisterFinish(w http.ResponseWriter, req *h
 		writeErr(w, http.StatusBadRequest, CodePasskeyFailed, "That passkey could not be registered.")
 		return
 	}
-	// A supplied (deprecated) ProofLocker still guards an enrolment; one
-	// that cannot be taken refuses it and keeps the binding for a retry.
-	release, err := r.lockAccount(ctx, userID)
-	if err != nil {
-		r.unavailable(ctx, w, "passkey registration: the account's proof lock could not be taken", err)
-		return
-	}
-	defer release()
 	r.clearBinding(w, registerCookie)
 	if err := r.cfg.Client.VerifyPasskeyRegistration(ctx, userID, b.PasskeyID, body.Credential, body.Name); err != nil {
 		r.cfg.Logger.WarnContext(ctx, "passkey registration rejected", "user_id", userID, "error", err)
@@ -1045,7 +1006,7 @@ func (r *SignInRoutes) HandleSocialStart(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	authURL, intentID, err := r.cfg.Client.StartIDPIntent(ctx, social.IdPID,
-		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+"/auth/sign-in?error=social")
+		r.cfg.AppBase+"/auth/social/callback", r.cfg.AppBase+SocialFailurePath)
 	if err != nil {
 		r.unavailable(ctx, w, "social sign-in could not start", err)
 		return
@@ -1056,6 +1017,18 @@ func (r *SignInRoutes) HandleSocialStart(w http.ResponseWriter, req *http.Reques
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"redirect": authURL})
 }
+
+// SocialFailurePath is where the issuer sends the browser when a social
+// sign-in fails at the provider (the person cancelled, the provider refused
+// the client): the sign-in page, marked social=failed so it can say the sign-in
+// did not complete.
+//
+// The issuer SETS error, error_description and id on this URL, replacing any
+// it carried (Zitadel v4.20.5, proven by the social sign-in e2e: a provider's
+// access_denied arrives as error=access_denied), so error=social never reaches
+// the page that way. It stays for sign-in pages scaffolded before social=failed
+// existed, which test only error=social; social=failed is what survives.
+const SocialFailurePath = "/auth/sign-in?error=social&social=failed"
 
 // SafeReturnTo keeps a same-origin path and turns anything else into "/".
 //
@@ -1511,16 +1484,7 @@ func (r *SignInRoutes) HandleVerify(w http.ResponseWriter, req *http.Request) {
 	// writes nothing but the verification (proveAddress); THEN the address
 	// is taken over if this is a fresh account, and this browser's pending
 	// social link and password are attached — to a verified account.
-	// A supplied (deprecated) ProofLocker is held across the proof AND the
-	// credentials installed after it, as it always was.
-	release, err := r.lockAccount(ctx, userID)
-	if err != nil {
-		r.codeByUser.refund(userID)
-		r.unavailable(ctx, w, "verification: the account's proof lock could not be taken", err)
-		return
-	}
-	defer release()
-	err = r.proveAddressHeld(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
+	err = r.proveAddress(ctx, before, func() error { return c.VerifyEmail(ctx, userID, code) })
 	if errors.Is(err, errHoldsCredentials) {
 		// A link for an account holding credentials nobody proved (mailed
 		// before forge#2121's fix): it is never proven into, and nothing on

@@ -327,11 +327,6 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 			if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
 				return fmt.Errorf("write hooks file %s: %w", outRel, err)
 			}
-			// Retire the pre-`_gen` copy. Two live hook modules would both
-			// be re-exported by the barrel below, so every hook symbol
-			// would be bound twice and the barrel would not compile.
-			codegen.RetireRenamedGenerated(projectDir,
-				filepath.Join(feDir, "src", "hooks", naming.ServiceHookFileLegacy(svc.Name)), cs)
 
 			// Emit a live happy-path test next to the generated hooks
 			// file. React Native uses a different rendering target (no
@@ -544,8 +539,6 @@ func generateFrontendHooksWorkspace(cfg *config.ProjectConfig, services []codege
 		if _, err := checksums.WriteGeneratedFile(projectDir, outRel, buf.Bytes(), cs, true); err != nil {
 			return fmt.Errorf("write hooks file %s: %w", outRel, err)
 		}
-		codegen.RetireRenamedGenerated(projectDir,
-			filepath.Join("packages", "hooks", "src", "generated", naming.ServiceHookFileLegacy(svc.Name)), cs)
 	}
 
 	if len(hookFiles) > 0 {

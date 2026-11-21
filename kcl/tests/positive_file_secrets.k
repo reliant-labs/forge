@@ -78,8 +78,7 @@ assert_not_dotenv = not output_store.secret_provider.path.startswith(".env")
 # Values never enter the manifest stream from a provider declaration.
 assert_no_secret_manifest = len([m for m in manifests_dir if m.kind == "Secret"]) == 0
 
-# from defaults to "dir": the common case needs no `from` at all, so the
-# deprecated dotenv source can't be reached by accident.
+# from defaults to "file": the common case needs no `from` at all.
 assert_default_from = output_rendered.secret_provider.secrets[0].keys["stripe_secret_key"]["from"] == "file"
 assert_dir_key = output_rendered.secret_provider.secrets[0].keys["stripe_secret_key"].key == "STRIPE_SECRET_KEY"
 

@@ -69,6 +69,14 @@ type PGOSettings struct {
 	// Services are the declared OTEL service names, sorted; empty means
 	// every workload that runs the binary (PGOBinary.Services).
 	Services []string
+	// Out is where `forge pgo pull` writes the profile, relative to the
+	// project root with forward slashes (or absolute, for a build whose cwd
+	// is); empty is the binary's own <package>/default.pgo. Only a
+	// ShellBuild sets it (shellPGOBinary).
+	Out string
+	// Namespace is the OTEL service.namespace whose profiles are merged;
+	// empty is the env's project. Only a ShellBuild sets it.
+	Namespace string
 }
 
 // PGOBinary is one Go binary an env builds.
@@ -94,8 +102,13 @@ func (b PGOBinary) Dir() string { return path.Base(b.Package) }
 
 // ProfilePath is where the binary's committed profile lives, relative to
 // the project root with forward slashes: "cmd/app/default.pgo". `go build`
-// reads exactly this file under -pgo=auto.
+// reads exactly this file under -pgo=auto. A ShellBuild may name another
+// (PGOSettings.Out), such as a sibling checkout's
+// "../reliant/cmd/reliant/default.pgo".
 func (b PGOBinary) ProfilePath() string {
+	if b.PGO.Out != "" {
+		return b.PGO.Out
+	}
 	return path.Join(strings.TrimPrefix(b.Package, "./"), "default.pgo")
 }
 
@@ -109,6 +122,11 @@ func (b PGOBinary) ProfilePath() string {
 //     project Dockerfile's ENTRYPOINT runs the primary binary, ./cmd/<project>.
 //     A workload on another Dockerfile runs a binary only when its pgo names
 //     it (the command's, or its only key); forge cannot see inside the image.
+//   - a ShellBuild workload declares ShellBuild.pgo for each binary it names
+//     (keyed by package relative to its cwd), and runs the one it names, or
+//     the one its command's executable is named after (shellWorkloadBinary).
+//     forge cannot see what a shell command builds, so a binary it does not
+//     name is not one of the env's.
 //
 // Workloads of one env that run, or name, the same binary must agree on its
 // PGO — a workload that runs it without naming it declares the defaults — or
@@ -123,11 +141,7 @@ func ResolvePGOBinaries(e *KCLEntities) ([]PGOBinary, error) {
 	}
 	claims := map[string]claim{}
 	runs := map[string][]string{}
-	declare := func(pkg, workload string, cfg *PGOConfig) error {
-		s, err := cfg.settings(e.Env)
-		if err != nil {
-			return fmt.Errorf("workload %q: binary %s: %w", workload, pkg, err)
-		}
+	claimSettings := func(pkg, workload string, s PGOSettings) error {
 		prev, ok := claims[pkg]
 		if !ok {
 			claims[pkg] = claim{workload: workload, pgo: s}
@@ -139,6 +153,13 @@ func ResolvePGOBinaries(e *KCLEntities) ([]PGOBinary, error) {
 				prev.workload, workload, pkg, prev.pgo, s)
 		}
 		return nil
+	}
+	declare := func(pkg, workload string, cfg *PGOConfig) error {
+		s, err := cfg.settings(e.Env)
+		if err != nil {
+			return fmt.Errorf("workload %q: binary %s: %w", workload, pkg, err)
+		}
+		return claimSettings(pkg, workload, s)
 	}
 	for _, w := range e.Workloads {
 		switch {
@@ -172,6 +193,22 @@ func ResolvePGOBinaries(e *KCLEntities) ([]PGOBinary, error) {
 				}
 			}
 			runs[pkg] = append(runs[pkg], w.Name)
+		case w.Build.Type == "shell" && w.Build.Shell != nil:
+			sh := w.Build.Shell
+			named := map[string]string{} // key -> package
+			for _, k := range sortedKeys(sh.PGO) {
+				pkg, s, err := shellPGOBinary(sh, k, e.Env)
+				if err != nil {
+					return nil, fmt.Errorf("workload %q: ShellBuild.pgo[%q]: %w", w.Name, k, err)
+				}
+				if err := claimSettings(pkg, w.Name, s); err != nil {
+					return nil, err
+				}
+				named[k] = pkg
+			}
+			if pkg := shellWorkloadBinary(w, named); pkg != "" {
+				runs[pkg] = append(runs[pkg], w.Name)
+			}
 		}
 	}
 	out := make([]PGOBinary, 0, len(claims))
@@ -437,9 +474,88 @@ func (c *PGOConfig) settings(env string) (PGOSettings, error) {
 	return s, nil
 }
 
+// shellPGOBinary resolves the binary a ShellBuild's pgo names by key (its
+// package path relative to the build's cwd): the binary's package, as the
+// project-relative path PGO keys every binary by ("../reliant/cmd/reliant"
+// for cwd "../reliant"), and its effective PGO, with the profile's path in
+// Out unless it is the package's own default.pgo. A build with a `source`
+// runs in a checkout forge resolves per invocation, so its binary is keyed
+// by the repository's path and must name `out` (kcl/schema.k ShellPGO).
+func shellPGOBinary(sh *ShellBuild, key, env string) (string, PGOSettings, error) {
+	cfg := sh.PGO[key]
+	s, err := cfg.settings(env)
+	if err != nil {
+		return "", PGOSettings{}, err
+	}
+	out := strings.TrimSpace(filepath.ToSlash(cfg.Out))
+	if path.IsAbs(out) || strings.HasSuffix(out, "/") {
+		return "", PGOSettings{}, fmt.Errorf("ShellPGO.out %q is the profile file's path relative to the project root, e.g. \"../reliant/cmd/reliant/default.pgo\"", cfg.Out)
+	}
+	rel := strings.TrimPrefix(path.Clean(filepath.ToSlash(key)), "./")
+	var pkg string
+	if sh.Source != nil {
+		if out == "" {
+			return "", PGOSettings{}, fmt.Errorf("the build has a `source`, so ShellPGO.out must say where the profile goes")
+		}
+		pkg = path.Join(gitSourcePath(sh.Source.Repo), sh.Source.Subdir, rel)
+	} else {
+		pkg = normalizePGOPackage(path.Join(filepath.ToSlash(sh.Cwd), rel))
+	}
+	own := path.Join(strings.TrimPrefix(pkg, "./"), "default.pgo")
+	if out == "" {
+		out = own
+	}
+	if out = path.Clean(out); out != own || !strings.HasPrefix(pkg, "./") {
+		// Only a binary of this project has a default.pgo the package
+		// path alone names; anything else carries its path.
+		s.Out = out
+	}
+	s.Namespace = strings.TrimSpace(cfg.Namespace)
+	return pkg, s, nil
+}
+
+// gitSourcePath spells a GitSource repo as a path: "github.com/acme/api" for
+// it and for "https://github.com/acme/api.git" or "git@github.com:acme/api".
+func gitSourcePath(repo string) string {
+	r := strings.TrimSpace(repo)
+	if _, rest, ok := strings.Cut(r, "://"); ok {
+		r = rest
+	}
+	if at := strings.Index(r, "@"); at >= 0 && at < strings.IndexAny(r+"/", ":/") {
+		r = strings.Replace(r[at+1:], ":", "/", 1)
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(r, "/"), ".git")
+}
+
+// shellWorkloadBinary is the binary a ShellBuild workload runs among those
+// its pgo names (key -> package): the only one, or the one whose directory
+// the command's executable is named after. "" when forge cannot tell, so the
+// binary's profiles are read only from the services its pgo names.
+func shellWorkloadBinary(w WorkloadEntity, named map[string]string) string {
+	if len(named) == 1 {
+		for _, pkg := range named {
+			return pkg
+		}
+	}
+	if len(w.Spec.Command) == 0 {
+		return ""
+	}
+	exe, match := path.Base(w.Spec.Command[0]), ""
+	for _, k := range sortedKeys(named) {
+		if path.Base(named[k]) == exe {
+			if match != "" {
+				return ""
+			}
+			match = named[k]
+		}
+	}
+	return match
+}
+
 func (s PGOSettings) equal(o PGOSettings) bool {
 	return s.Enabled == o.Enabled && s.FromEnv == o.FromEnv && s.Since == o.Since &&
-		s.MinWeight == o.MinWeight && slices.Equal(s.Services, o.Services)
+		s.MinWeight == o.MinWeight && slices.Equal(s.Services, o.Services) &&
+		s.Out == o.Out && s.Namespace == o.Namespace
 }
 
 // String is the settings as an error message names them.
@@ -450,6 +566,12 @@ func (s PGOSettings) String() string {
 	out := fmt.Sprintf("from_env=%q since=%s min_weight=%s", s.FromEnv, s.Since, s.MinWeight)
 	if len(s.Services) > 0 {
 		out += " services=" + strings.Join(s.Services, ",")
+	}
+	if s.Out != "" {
+		out += " out=" + s.Out
+	}
+	if s.Namespace != "" {
+		out += " namespace=" + s.Namespace
 	}
 	return out
 }

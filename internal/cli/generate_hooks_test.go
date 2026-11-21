@@ -180,7 +180,6 @@ func TestRunGenerateHooks_ReportsWhatRan(t *testing.T) {
 	testkit.Slow(t, "execs go")
 	t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
 	t.Setenv(gitHooksOptOutEnv, "")
-	t.Setenv(legacyGitHooksOptOutEnv, "")
 	hooks := []config.GenerateHook{
 		helperHook("sqlc", "", "write", "a.txt"),
 		helperHook("docs", "", "write", "b.txt"),
@@ -203,16 +202,14 @@ func TestRunGenerateHooks_ReportsWhatRan(t *testing.T) {
 	}
 }
 
-// FORGE_NO_HOOKS read as "skip forge.yaml's hooks" to the agents who set it,
-// and it never did. Under either git-hooks variable the hooks still run, and
-// the step says so where the agent is looking.
+// The git-hooks opt-out read as "skip forge.yaml's hooks" to the agents who
+// set it, and it never did. Under it the hooks still run, and the step says
+// so where the agent is looking.
 func TestRunGenerateHooks_GitHooksOptOutDoesNotSkipThem(t *testing.T) {
 	testkit.Slow(t, "execs go")
-	for _, env := range []string{gitHooksOptOutEnv, legacyGitHooksOptOutEnv} {
+	for _, env := range []string{gitHooksOptOutEnv} {
 		t.Run(env, func(t *testing.T) {
 			t.Setenv("FORGE_GENERATE_HOOK_HELPER", "1")
-			t.Setenv(gitHooksOptOutEnv, "")
-			t.Setenv(legacyGitHooksOptOutEnv, "")
 			t.Setenv(env, "1")
 			root := t.TempDir()
 			var out bytes.Buffer

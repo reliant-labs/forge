@@ -556,6 +556,11 @@ message AppConfig {
     description: "How old a JWKS snapshot's `delivered_at` may be and still be trusted (Go duration; default 7 days). JWKS keys carry no expiry of their own, so this is the bound on running with last-known keys. Past it the snapshot is ignored: while the issuer is down the server fails closed on every token and keeps retrying, and an unreachable issuer at boot refuses to start."
   }];
 
+  // FIELD NUMBERS ARE NOT IN DECLARATION ORDER: fields are grouped by topic,
+  // so the last field above is not the highest number. The highest number
+  // forge scaffolds is 50: give a new field 51 or above (and keep counting up
+  // from the highest one this message holds), never "the last line's + 1".
+  //
   // NOTE: there is intentionally NO `service_name` config field. The OTel
   // service.name is the binary's APP IDENTITY, emitted as the generated
   // `ServiceName` constant in internal/cli/root.go and passed to serverkit

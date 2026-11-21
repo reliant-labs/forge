@@ -39,7 +39,6 @@
     }
   ],
   "defaultRange": "30d",
-  "defaultCompare": "period",
   "panels": [
     {
       "section": "glance",

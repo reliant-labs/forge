@@ -166,7 +166,6 @@ func TestRunIntrospectHandlers_FromDescriptor(t *testing.T) {
 	// Minimal forge.yaml so findProjectConfigFile() roots at dir.
 	yaml := `name: introspect-test
 module_path: github.com/test/introspect-test
-version: 0.0.1
 forge_version: dev
 `
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte(yaml), 0o644); err != nil {

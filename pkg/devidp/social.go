@@ -75,9 +75,11 @@ type IDPResult struct {
 	GivenName     string
 	FamilyName    string
 	// Upstream are the provider's own tokens, from idpInformation.oauth
-	// when the issuer reports them. They redact themselves and refuse to
-	// marshal; see SignInRoutesConfig.UpstreamTokens.
-	Upstream UpstreamTokens
+	// when the issuer reports them (nil otherwise). They redact themselves
+	// and are never serialised: a pointer excluded from JSON, so an
+	// IDPResult still marshals and compares as it did before it existed.
+	// See SignInRoutesConfig.UpstreamTokens.
+	Upstream *UpstreamTokens `json:"-"`
 }
 
 // RetrieveIDPIntent reads a completed intent. The token is the one the
@@ -134,7 +136,7 @@ func (c *Client) RetrieveIDPIntent(ctx context.Context, intentID, token string) 
 		r.GivenName, r.FamilyName = h.Profile.GivenName, h.Profile.FamilyName
 	}
 	if o := out.IDPInformation.OAuth; o != nil {
-		r.Upstream = UpstreamTokens{AccessToken: o.AccessToken, IDToken: o.IDToken, RefreshToken: o.RefreshToken}
+		r.Upstream = &UpstreamTokens{AccessToken: o.AccessToken, IDToken: o.IDToken, RefreshToken: o.RefreshToken}
 	}
 	return r, nil
 }

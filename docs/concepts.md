@@ -119,9 +119,8 @@ Neither derives from the other. They evolve on independent clocks, and
 generated conversions map their intersection by name.
 
 Forge used to accept entity declarations in proto annotations
-(`(forge.v1.entity)`, `pk:`, `timestamps:`). Those are **retired and
-ignored** — they survive only as deprecated tombstones. Delete them if you
-find them; do not copy them forward.
+(`(forge.v1.entity)`, `pk:`, `timestamps:`). Those extensions are **removed**
+from forge.proto, so a proto still carrying one fails to compile: delete it.
 
 ### Why introspection instead of declaration
 

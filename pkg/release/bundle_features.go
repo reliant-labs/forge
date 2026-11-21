@@ -3,8 +3,10 @@ package release
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // Optional parts of the bundle document ([BundleDoc]) that a reader may not
@@ -207,7 +209,50 @@ const (
 	// it the whole shape. So it is sent the policy without them, and judges
 	// them as the default does: warn.
 	BundleFeatureReleaseHealthChangedOps = "shape-release-health-changed-ops"
+	// BundleFeatureChanges is Shape.Changes: the Forge Changes the release
+	// declares (changes.yaml). A control plane that predates it serves no
+	// change for the env, so the app evaluates every key as unknown and
+	// keeps its code defaults: a shape carrying them is written only to one
+	// that names the feature. A project that declares none carries no key,
+	// so it needs nothing of the reader.
+	BundleFeatureChanges = "shape-changes"
+	// BundleFeatureTelemetry is Shape.Telemetry: the declared telemetry
+	// targets (forge.Telemetry) of a hosted env, which the platform collects
+	// because forge runs no collector there. Like every feature here it means
+	// only that the reader DECODES them: a control plane advertises
+	// [BundleDocFeatures] verbatim on every forge pin bump. Collecting them is
+	// [CapabilityCollectsTelemetry], and forge sends the targets only to a
+	// reader that names both ([BundleReader.CollectsTelemetry]); to any other
+	// it leaves them out and warns, naming the targets
+	// ([BundleReader.TelemetryWarning]). A shape that declares no hosted
+	// target carries no key, so it needs nothing of the reader.
+	BundleFeatureTelemetry = "shape-telemetry"
+	// BundleFeatureIdentities is Shape.Identities: the env's managed
+	// identities when it declares several (KCL Bundle.identities). Decoding
+	// the key is not converging it: a control plane advertises this list on
+	// every forge pin bump, and one whose reconciler reads only
+	// Shape.Identity would record such a shape and converge none of its
+	// identities. So a shape carrying it is also refused to a control plane
+	// that does not advertise [CapabilityConvergesSeveralIdentities]
+	// ([BundleReader.CheckIdentities]) — never sent to it with the key
+	// stripped. A shape with one identity carries Shape.Identity alone, as it
+	// always did, and needs nothing of the reader.
+	BundleFeatureIdentities = "shape-identities"
 )
+
+// CapabilityConvergesSeveralIdentities is advertised beside the bundle
+// features by a control plane that converges EVERY entry of
+// Shape.Identities (one instance per name, each with its own slug from
+// [IdentitySlugFor], key-store namespace, status and deliveries) and whose
+// IdentityService addresses an instance by the request's `identity` name.
+// Like [CapabilityEnforcesPromotionChecks] it is deliberately not in
+// [BundleDocFeatures]: that list means "decodes" and is advertised verbatim
+// on every pin bump, which would claim a convergence the reconciler does not
+// perform. A control plane adds this by hand, in the change that makes it
+// converge several identities. Until it does, forge refuses to declare or
+// record a shape with several identities there ([BundleReader.CheckIdentities]),
+// so an older control plane fails the deploy instead of converging nothing.
+const CapabilityConvergesSeveralIdentities = "converges-several-identities"
 
 // CapabilityEnforcesPromotionChecks is advertised beside the bundle features
 // by a control plane whose promote transaction JUDGES the required gates and
@@ -235,12 +280,27 @@ const CapabilityEnforcesPromotionChecks = "enforces-promotion-checks"
 // a bundle built for no control plane (the machine ledger) carries none.
 const CapabilityServesDashboardFilterParams = "serves-dashboard-filter-params"
 
+// CapabilityCollectsTelemetry is advertised beside the bundle features by a
+// control plane that COLLECTS a hosted env's declared telemetry
+// (Shape.Telemetry): its platform agent scrapes, receives and tails the
+// targets the shape names. Decoding them is [BundleFeatureTelemetry], which
+// a control plane advertises verbatim on every forge pin bump, so a pin bump
+// alone would otherwise claim collection, and forge would send the targets
+// without a warning while nothing collected them.
+//
+// Like [CapabilityEnforcesPromotionChecks] it is deliberately not in
+// [BundleDocFeatures]. A control plane adds this by hand, in the change that
+// makes it collect hosted telemetry. Until a control plane names both, forge
+// withholds the targets from what it records there and warns the person
+// deploying ([BundleReader.TelemetryWarning]).
+const CapabilityCollectsTelemetry = "collects-telemetry"
+
 // BundleDocFeatures is every optional bundle feature this version's
 // [DecodeBundleDoc] and [ValidateManifestsLayer] accept. A control plane
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -248,6 +308,10 @@ func BundleDocFeatures() []string {
 // own decoder — every feature — which is what a machine ledger reads with.
 type BundleReader struct {
 	Features []string
+	// Telemetry is the caps the control plane holds a hosted env's declared
+	// telemetry to (GetCapabilities.telemetry_limits), nil when it advertises
+	// none: then the defaults apply ([BundleReader.TelemetryCaps]).
+	Telemetry *TelemetryLimits
 }
 
 // Supports reports whether the reader decodes feature. A nil reader decodes
@@ -382,6 +446,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	if !r.Supports(BundleFeatureDatabaseDashboards) {
 		s.Databases = nil
 	}
+	if !r.CollectsTelemetry() {
+		s.Telemetry = nil
+	}
 	if !r.Supports(BundleFeatureExternalDatabases) {
 		s.ExternalDatabases = nil
 	} else if !r.Supports(BundleFeatureExternalDatabaseTLS) {
@@ -400,19 +467,20 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 			s.Workloads = ws
 		}
 	}
-	if !r.Supports(BundleFeatureIdentitySignIn) && s.Identity != nil {
-		id := *s.Identity
-		id.Owners, id.OwnerRole, id.Signup, id.Methods = nil, "", nil, nil
-		id.PasskeyRPID, id.Social, id.Email, id.DevMail = "", nil, nil, ""
-		// The login_policy output is a sign-in addition too: a reader predating
-		// it rejects a consumer that maps or omits it as an unknown output.
-		id.Consumers = withoutLoginPolicyOutput(id.Consumers)
+	if s.Identity != nil {
+		id := r.limitIdentity(*s.Identity)
 		s.Identity = &id
 	}
-	if !r.Supports(BundleFeatureIdentityCodeLifetime) && s.Identity != nil && s.Identity.CodeLifetime != "" {
-		id := *s.Identity
-		id.CodeLifetime = ""
-		s.Identity = &id
+	if !r.Supports(BundleFeatureIdentities) {
+		// Never reached for a shape that carries them: CheckIdentities refuses
+		// the reader first. Stripped for the strict decoder all the same.
+		s.Identities = nil
+	} else if len(s.Identities) > 0 {
+		ids := slices.Clone(s.Identities)
+		for i := range ids {
+			ids[i] = r.limitIdentity(ids[i])
+		}
+		s.Identities = ids
 	}
 	if !r.Supports(BundleFeatureHealthGate) && s.DeliveryPolicy != nil && s.DeliveryPolicy.HealthGate != nil {
 		pol := *s.DeliveryPolicy
@@ -421,6 +489,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeaturePreview) {
 		s.Preview = nil
+	}
+	if !r.Supports(BundleFeatureChanges) {
+		s.Changes = nil
 	}
 	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
 		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {
@@ -449,6 +520,42 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 		s.ObservabilityPolicy = &pol
 	}
 	return s
+}
+
+// limitIdentity is one identity without the parts the reader does not decode.
+// A copy: id's lists are not modified.
+func (r *BundleReader) limitIdentity(id ShapeIdentity) ShapeIdentity {
+	if !r.Supports(BundleFeatureIdentitySignIn) {
+		id.Owners, id.OwnerRole, id.Signup, id.Methods = nil, "", nil, nil
+		id.PasskeyRPID, id.Social, id.Email, id.DevMail = "", nil, nil, ""
+		// The login_policy output is a sign-in addition too: a reader predating
+		// it rejects a consumer that maps or omits it as an unknown output.
+		id.Consumers = withoutLoginPolicyOutput(id.Consumers)
+	}
+	if !r.Supports(BundleFeatureIdentityCodeLifetime) && id.CodeLifetime != "" {
+		id.CodeLifetime = ""
+	}
+	return id
+}
+
+// CheckIdentities refuses a shape with several identities to a reader that
+// does not converge them: one that does not advertise
+// [CapabilityConvergesSeveralIdentities] would record the shape and converge
+// none of its identities (or, predating [BundleFeatureIdentities], be sent
+// none at all), so every workload reading them would wait on Secrets nobody
+// writes. A shape with one identity, and the nil reader (this forge's own
+// machine ledger), always pass. Callers run it before anything is written.
+func (r *BundleReader) CheckIdentities(s Shape) error {
+	if len(s.Identities) == 0 || r.Supports(CapabilityConvergesSeveralIdentities) {
+		return nil
+	}
+	names := make([]string, 0, len(s.Identities))
+	for _, i := range s.Identities {
+		names = append(names, i.Name)
+	}
+	return fmt.Errorf("this env declares %d managed identities (%s), and this control plane converges only one per env "+
+		"(it does not advertise %q). Upgrade the control plane, or declare one identity in this env until it is",
+		len(names), strings.Join(names, ", "), CapabilityConvergesSeveralIdentities)
 }
 
 // identityOutputLoginPolicy is the identity output the sign-in feature added.

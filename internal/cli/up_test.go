@@ -781,7 +781,6 @@ func TestRunUpServices_EndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	writeForgeYAML(t, dir, `name: demo
 module_path: github.com/example/demo
-version: "0.1.0"
 binary: shared
 `)
 	fixture := fmt.Sprintf(`{

@@ -45,7 +45,8 @@ import (
 //   - src/mocks/<entity>_gen.ts — per-entity fixtures, carrying the values
 //     the project's own seed plan writes into the dev database for those
 //     rows. There is deliberately no barrel over them: mock-transport_gen.ts
-//     imports each module by name (see retireMocksIndex).
+//     imports each module by name, because its dispatch table needs them
+//     separated, not flattened.
 //   - src/mocks/scenario-types.ts, src/mocks/scenario-rpcs_gen.ts, and
 //     src/mocks/scenarios/{default,index}.ts — the scenarios scaffolding.
 //     See docs/adr/0002-frontend-scenarios.md.
@@ -142,11 +143,6 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 		if _, err := WriteGeneratedFileTier1(root, rel, buf.Bytes(), cs, true); err != nil {
 			return 0, fmt.Errorf("write mock data file %s: %w", rel, err)
 		}
-		// The pre-`_gen` copy of this fixture module, from a project
-		// generated before the rename. Reclaimed here, in the emitter that
-		// supersedes it, so the project is left with one file rather than
-		// two that drift apart.
-		codegen.RetireRenamedGenerated(root, filepath.Join(mocksRel, slug+".ts"), cs)
 		mockFileCount++
 	}
 
@@ -202,24 +198,6 @@ func EmitFrontendMockSurface(root, feRel string, services []codegen.ServiceDef, 
 	if _, err := WriteGeneratedFileTier1(root, filepath.Join(libRel, "mock-transport_gen.ts"), buf.Bytes(), cs, true); err != nil {
 		return 0, fmt.Errorf("write mock transport: %w", err)
 	}
-	// Retire the pre-`_gen` transport. Two live copies would both register
-	// module-scope scenario state, and connect.ts would resolve whichever
-	// one its specifier names — so the stale copy is not merely untidy, it
-	// is a second, divergent mock pipeline.
-	codegen.RetireRenamedGenerated(root, filepath.Join(libRel, "mock-transport.ts"), cs)
-
-	// The mocks barrel is RETIRED, not written. It re-exported the entity
-	// fixture modules — a list forge already knows, and one nothing imported:
-	// mock-transport_gen.ts names each `@/mocks/<slug>_gen` module directly,
-	// because it needs the per-entity namespace anyway to build its dispatch
-	// table. A barrel over a known list with no importers is scaffolded code
-	// that only exists to be regenerated.
-	//
-	// Both spellings are reclaimed: `index_gen.ts` from a project generated
-	// after the `_gen` rename, and the pre-rename `index.ts` behind it. Each
-	// goes through the ownership test, so a copy the user disowned or
-	// hand-edited is left alone.
-	retireMocksIndex(root, mocksRel, cs)
 
 	return mockFileCount, nil
 }
@@ -318,25 +296,6 @@ func EmitServiceDefaults(root, feRel string, cs *FileChecksums) (int, error) {
 	return len(modules), nil
 }
 
-// retireMocksIndex reclaims the mocks barrel, which forge no longer emits.
-//
-// It was five lines of which one was real — `export * from "./orders_gen";`
-// per entity — over a list forge derives from the same entities it just wrote
-// fixtures for, and NOTHING imported it: the only consumer of the fixtures,
-// mock-transport_gen.ts, imports each module under its own namespace
-// (`import * as ordersMocks from "@/mocks/orders_gen"`) because its dispatch
-// table needs them separated, not flattened.
-//
-// Both spellings are swept, newest first: `index_gen.ts` from a project
-// generated after the `_gen` rename, and `index.ts` from one generated before
-// it. Neither is a rename — there is no successor file — so both go through
-// RetireGenerated rather than RetireRenamedGenerated, and a user's disowned
-// or hand-edited barrel is left in place as an ordinary module of theirs.
-func retireMocksIndex(root, mocksRel string, cs *FileChecksums) {
-	codegen.RetireGenerated(root, filepath.Join(mocksRel, "index_gen.ts"), cs)
-	codegen.RetireGenerated(root, filepath.Join(mocksRel, "index.ts"), cs)
-}
-
 // EmitScenarioScaffolding writes the scenarios files under the
 // project-relative <mocksRel>/scenarios/ inside root:
 //
@@ -374,7 +333,6 @@ func EmitScenarioScaffolding(root, mocksRel string, services []codegen.ServiceDe
 	if _, err := WriteGeneratedFileTier1(root, filepath.Join(mocksRel, "scenario-types_gen.ts"), typesContent, cs, true); err != nil {
 		return fmt.Errorf("write scenario-types_gen.ts: %w", err)
 	}
-	codegen.RetireRenamedGenerated(root, filepath.Join(mocksRel, "scenario-types.ts"), cs)
 
 	// 1b) scenario-rpcs_gen.ts (Tier-1 — generator-owned). The typed
 	// handler map every Scenario.handlers literal checks against.
@@ -456,12 +414,9 @@ func WriteScenariosIndex(root, scenariosRel string, cs *FileChecksums) error {
 			continue
 		}
 		name := e.Name()
-		// Skip the registry barrel under BOTH names: the current
-		// `index_gen.ts` and the pre-rename `index.ts` that may still be
-		// on disk in an older project when this walk runs (it is retired
-		// below, after the barrel is written). Treating either as a
-		// scenario would make the barrel import itself.
-		if name == "index_gen.ts" || name == "index.ts" {
+		// Skip the registry barrel: treating it as a scenario would make
+		// the barrel import itself.
+		if name == "index_gen.ts" {
 			continue
 		}
 		if !strings.HasSuffix(name, ".ts") {
@@ -493,7 +448,6 @@ func WriteScenariosIndex(root, scenariosRel string, cs *FileChecksums) error {
 	if _, err := WriteGeneratedFileTier1(root, filepath.Join(scenariosRel, "index_gen.ts"), buf.Bytes(), cs, true); err != nil {
 		return err
 	}
-	codegen.RetireRenamedGenerated(root, filepath.Join(scenariosRel, "index.ts"), cs)
 	return nil
 }
 

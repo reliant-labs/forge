@@ -12,10 +12,13 @@ import (
 
 // The `-D name=value` render options a `forge env up` was invoked with.
 //
-// forge relays these to KCL and does NOT interpret them. It never parses a
-// value, never knows what an option means, and never acts on one itself —
-// the env's KCL reads `option("<name>")` and decides. That is the whole
-// contract: forge owns the transport, the project owns the meaning.
+// forge relays these to KCL and does NOT interpret them. It never knows what
+// an option means and never acts on one itself — the env's KCL reads
+// `option("<name>")` and decides. That is the whole contract: forge owns the
+// transport, the project owns the meaning. The one exception is transport,
+// not meaning: a value for an option the KCL declares `type="bool"` is
+// normalized to the spelling KCL reads as a bool, or refused
+// (normalizeBoolOption), because KCL reads any other string as False.
 //
 // `forge env up`, `forge env build` and `forge env render` bind them; `forge
 // env render` also passes them to its manifest render (withRenderOptionKV), so
@@ -110,25 +113,58 @@ func withRenderOptionKV(kv map[string]string, dArgs []string) map[string]string 
 	return out
 }
 
-// validateRenderOptions checks the -D names against the options the env's KCL
-// actually declares, so a typo fails before the render instead of silently
-// doing nothing (an unread option is not an error in KCL — it is just unread).
+// resolveRenderOptions is the one path every command that binds -D takes
+// (`forge env up`, `forge env build`/`forge build`, `forge env render`): parse,
+// check against what the env's KCL declares, and return the render-ready
+// bindings.
+//
+// Parse runs FIRST: it rejects malformed values and forge-reserved names,
+// which deserve their own message ("image_tag is set by forge") rather than
+// the declared-name check's "no such option" — image_tag is a real option,
+// just not yours. The bindings come from the CHECKED values, so a bool
+// option's value reaches KCL in the one spelling KCL reads as true.
+func resolveRenderOptions(projectDir, envName string, values []string) ([]string, error) {
+	if _, err := parseRenderOptions(values); err != nil {
+		return nil, err
+	}
+	checked, err := validateRenderOptions(projectDir, envName, values)
+	if err != nil {
+		return nil, err
+	}
+	return parseRenderOptions(checked)
+}
+
+// validateRenderOptions checks the -D values against the options the env's
+// KCL actually declares, and returns them ready to bind:
+//
+//   - a name the env never reads fails, so a typo fails before the render
+//     instead of silently doing nothing (an unread option is not an error in
+//     KCL — it is just unread);
+//   - a value for an option declared `type="bool"` is normalized to KCL's
+//     spelling, or refused (see normalizeBoolOption).
 //
 // Degrades PERMISSIVELY: when discovery can't see the project's options at all
-// it returns nil rather than rejecting. A caller who passed a real option must
-// not be blocked because forge failed to parse the KCL — the render is about to
-// happen anyway and will report any genuine problem with a better message.
-func validateRenderOptions(projectDir, envName string, values []string) error {
+// it returns the values unchanged rather than rejecting. A caller who passed a
+// real option must not be blocked because forge failed to parse the KCL — the
+// render is about to happen anyway and will report any genuine problem with a
+// better message.
+func validateRenderOptions(projectDir, envName string, values []string) ([]string, error) {
 	if len(values) == 0 {
-		return nil
+		return values, nil
 	}
 	declared, discoverable, err := kcloptions.Discover(projectDir, envName)
 	if err != nil || !discoverable {
-		return nil
+		return values, nil
 	}
-	known := make(map[string]bool, len(declared))
+	return checkRenderOptions(envName, declared, values)
+}
+
+// checkRenderOptions is validateRenderOptions over an already-discovered
+// option list: the declared-name check, then the bool normalization.
+func checkRenderOptions(envName string, declared []kcloptions.Option, values []string) ([]string, error) {
+	byName := make(map[string]kcloptions.Option, len(declared))
 	for _, o := range declared {
-		known[o.Name] = true
+		byName[o.Name] = o
 	}
 
 	var unknown []string
@@ -137,26 +173,62 @@ func validateRenderOptions(projectDir, envName string, values []string) error {
 		if idx := strings.Index(raw, "="); idx >= 0 {
 			name = strings.TrimSpace(raw[:idx])
 		}
-		if name != "" && !known[name] {
+		if _, ok := byName[name]; name != "" && !ok {
 			unknown = append(unknown, name)
 		}
 	}
-	if len(unknown) == 0 {
-		return nil
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		msg := fmt.Sprintf("-D: deploy/kcl/%s/ declares no option named %s",
+			envName, quoteJoin(unknown))
+		if len(declared) == 0 {
+			return nil, fmt.Errorf("%s (it declares none; add `option(\"<name>\")` to its KCL)", msg)
+		}
+		names := make([]string, 0, len(declared))
+		for _, o := range declared {
+			names = append(names, o.Name)
+		}
+		return nil, fmt.Errorf("%s; it declares %s (see `forge env options %s`)",
+			msg, quoteJoin(names), envName)
 	}
 
-	sort.Strings(unknown)
-	msg := fmt.Sprintf("-D: deploy/kcl/%s/ declares no option named %s",
-		envName, quoteJoin(unknown))
-	if len(declared) == 0 {
-		return fmt.Errorf("%s (it declares none; add `option(\"<name>\")` to its KCL)", msg)
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		name, value, ok := strings.Cut(raw, "=")
+		name = strings.TrimSpace(name)
+		if !ok || !strings.EqualFold(strings.TrimSpace(byName[name].Type), "bool") {
+			out = append(out, raw)
+			continue
+		}
+		canonical, err := normalizeBoolOption(envName, name, value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, name+"="+canonical)
 	}
-	names := make([]string, 0, len(declared))
-	for _, o := range declared {
-		names = append(names, o.Name)
+	return out, nil
+}
+
+// normalizeBoolOption maps a -D value for an option the env declares
+// `type="bool"` to "true" or "false".
+//
+// Every -D value is bound as a KCL string (parseRenderOptions), and KCL's
+// option(type="bool") converts a string to True only when it is exactly
+// "true" or "True"; anything else — "1", "TRUE", "yes" — is silently False.
+// So `-D debug_image=1` used to build the non-debug image with no word said.
+// The spellings a person means as a bool are mapped to the one KCL reads, and
+// anything else is refused: a value that cannot be read as a bool is a
+// mistake, and binding it would be the same silent False.
+func normalizeBoolOption(envName, name, value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes":
+		return "true", nil
+	case "false", "0", "no":
+		return "false", nil
 	}
-	return fmt.Errorf("%s; it declares %s (see `forge env options %s`)",
-		msg, quoteJoin(names), envName)
+	return "", fmt.Errorf(
+		"-D %s=%s: deploy/kcl/%s/ declares %q as a bool option; give true or false (1/0 and yes/no, any case, are accepted too)",
+		name, value, envName, name)
 }
 
 func quoteJoin(items []string) string {

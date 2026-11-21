@@ -18,6 +18,9 @@
 //	--check <path>   DETAILS    — that one file's diff
 //	--check --all    every row, still without inline diffs
 //
+// Across a pin bump, the summary also lists only the rows whose template
+// the range changed and counts the rest in one line (upgrade_drift_range.go).
+//
 // ── Ranking is the product ────────────────────────────────────────────
 //
 // The ordering is not cosmetic; it is the only part of the report that
@@ -72,6 +75,10 @@ type driftRow struct {
 	// state the numbers do not explain by themselves (adopted this run,
 	// forced, skipped). Empty for the common case.
 	Note string
+	// Changed is whether the row's template changed across the upgrade's
+	// range (templateRange); nil when that cannot be told. The default
+	// view lists only the changed and the unknown rows.
+	Changed *bool
 }
 
 // cheap reports whether adopting this row costs the user nothing they

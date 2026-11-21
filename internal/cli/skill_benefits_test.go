@@ -7,14 +7,28 @@ import (
 	"github.com/reliant-labs/forge/internal/benefits"
 )
 
-// TestGlanceCommandsParse runs every glance line's command through the real
-// command tree and its flag set: a glance tells an agent what to run to see
-// the payoff, so a renamed verb or flag must fail here, not in front of a
+// TestGlanceCommandsParse runs every glance line's command, and every
+// reason's show command, through the real command tree and its flag set: a
+// glance or a reason tells an agent what to run to see the payoff, so a renamed verb or flag must fail here, not in front of a
 // user.
 func TestGlanceCommandsParse(t *testing.T) {
 	reg, err := benefits.Load()
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, rs := range reg.Reasons {
+		if rs.Show == "" {
+			continue
+		}
+		root := newTestRootCmd(t)
+		cmd, rest, err := root.Find(strings.Fields(rs.Show))
+		if err != nil || cmd == root {
+			t.Errorf("reason %s: `forge %s`: no such command (%v)", rs.ID, rs.Show, err)
+			continue
+		}
+		if err := cmd.ParseFlags(rest); err != nil {
+			t.Errorf("reason %s: `forge %s`: %v", rs.ID, rs.Show, err)
+		}
 	}
 	for audience, facts := range reg.Glance {
 		for _, f := range facts {

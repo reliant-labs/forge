@@ -61,7 +61,7 @@ func writeHostedRenderProjectBuild(t *testing.T, image, build string) string {
 			t.Fatal(err)
 		}
 	}
-	write("forge.yaml", "name: hostedrender\nmodule_path: github.com/example/hostedrender\nversion: \"0.1.0\"\n")
+	write("forge.yaml", "name: hostedrender\nmodule_path: github.com/example/hostedrender\n")
 	write("deploy/kcl/kcl.mod", "[package]\nname = \"hostedrender-deploy\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n")
 	orgDecl := "\n        registry_host = \"" + testRenderRegistryHost + "\""
 	write("deploy/kcl/prod/main.k", `import forge

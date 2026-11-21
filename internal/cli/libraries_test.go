@@ -44,17 +44,49 @@ func realPkgSubdirs(t *testing.T) map[string]bool {
 		t.Fatalf("read forge/pkg: %v", err)
 	}
 	out := map[string]bool{}
-	for _, e := range entries {
+	visible := func(e os.DirEntry) bool {
 		n := e.Name()
-		if !e.IsDir() || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") || n == "testdata" {
+		return e.IsDir() && !strings.HasPrefix(n, ".") && !strings.HasPrefix(n, "_") && n != "testdata"
+	}
+	for _, e := range entries {
+		if !visible(e) {
 			continue
 		}
-		out[n] = true
+		dir := filepath.Join(repoPkgDir(t), e.Name())
+		if hasGoSource(t, dir) {
+			out[e.Name()] = true
+			continue
+		}
+		// A grouping directory (pkg/appkit): its packages are the libraries.
+		children, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, c := range children {
+			if visible(c) && hasGoSource(t, filepath.Join(dir, c.Name())) {
+				out[e.Name()+"/"+c.Name()] = true
+			}
+		}
 	}
 	if len(out) == 0 {
 		t.Fatal("forge/pkg has no subpackages — the truth source is wrong, so every assertion below would pass vacuously")
 	}
 	return out
+}
+
+// hasGoSource reports whether dir holds a non-test .go file.
+func hasGoSource(t *testing.T, dir string) bool {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, e := range entries {
+		if n := e.Name(); !e.IsDir() && strings.HasSuffix(n, ".go") && !strings.HasSuffix(n, "_test.go") {
+			return true
+		}
+	}
+	return false
 }
 
 // TestReadForgePkgPackages_EnumeratesEveryRealSubpackage is the property

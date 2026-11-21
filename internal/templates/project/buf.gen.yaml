@@ -18,8 +18,8 @@ version: v2
 #
 # OpenAPI specs: set `api.openapi: true` in forge.yaml. Forge will
 # invoke protoc-gen-connect-openapi via a synthesized template; you
-# do NOT need to add it here. Install with:
-#   go install github.com/sudorandom/protoc-gen-connect-openapi@latest
+# do NOT need to add it here, nor install it: forge installs the
+# version it pins into its tool cache on first use.
 # forge/v1/forge.proto is a COMPILE input only — its annotations are imported
 # by the project's other protos, but its Go is NOT generated here. Forge ships
 # the generated descriptor as the shared `github.com/reliant-labs/forge/pkg/forgepb`

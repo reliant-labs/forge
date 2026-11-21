@@ -119,9 +119,8 @@ func TestLayerEnv(t *testing.T) {
 }
 
 // TestLaunchSpecPort pins which PORT a launched service binds. --app-port
-// sets it for any binary, a plain main package included. Without it, --port
-// still sets a cobra service's PORT, as it did before --app-port existed;
-// with neither, the configured PORT stands.
+// sets it for any binary, a plain main package included. --port is Delve's
+// alone: without --app-port the configured PORT stands.
 func TestLaunchSpecPort(t *testing.T) {
 	dir := t.TempDir()
 	writeMain(t, filepath.Join(dir, "cmd", "app", "main.go"))
@@ -135,7 +134,7 @@ func TestLaunchSpecPort(t *testing.T) {
 		}{
 			{"neither", "./cmd/app", startOptions{}, ""},
 			{"app-port", "./cmd/app", startOptions{port: 2345, appPort: 18080}, "18080"},
-			{"legacy --port", "./cmd/app", startOptions{port: 2345}, "2345"},
+			{"--port alone", "./cmd/app", startOptions{port: 2345}, ""},
 			{"app-port on a plain main", "./cmd/standalone", startOptions{appPort: 18080}, "18080"},
 			{"--port on a plain main", "./cmd/standalone", startOptions{port: 2345}, ""},
 		}

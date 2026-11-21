@@ -47,6 +47,14 @@
 // [AssertScaffoldStubV2]. They behave exactly as their v1 twins. The other
 // helpers have no connect type and serve both majors.
 //
+// v2 moves request and response metadata from the Request/Response
+// wrappers to the call's *connect.CallInfo, which is nil when a test calls
+// a handler method directly. So the v2 table calls each handler through
+// [CallV2] — an in-process connect.Server.Call with a real CallInfo and no
+// interceptors — and a [CaseV2] row sets request headers with Header and
+// reads response metadata with CheckCallInfo, as a v1 row did with
+// Req.Header() and resp.Header(). Hand-written tests call CallV2 directly.
+//
 // See pkg/tdd/*_test.go for usage examples; the same patterns appear in
 // the templates under internal/templates/{service,internal-package,test/e2e}.
 package tdd

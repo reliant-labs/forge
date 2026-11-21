@@ -10,6 +10,11 @@ import (
 // it to compute the next requeue delay without importing
 // k8s.io/client-go/util/workqueue.
 //
+// It has no jitter and is indexed from 0. Code that is not a reconciler
+// uses forge/pkg/retry instead: the same schedule with jitter, a
+// retry loop, Retry-After and error classification, without linking
+// controller-runtime.
+//
 // The zero value is NOT useful; callers should set Initial, Max, and
 // Factor explicitly. A typical configuration:
 //

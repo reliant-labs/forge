@@ -43,9 +43,12 @@ func TestE2EUnmountedServiceIsFailClosed(t *testing.T) {
 	dir := t.TempDir()
 
 	runCmd(t, dir, forgeBin,
+		// --connect v1: this test writes connect-go v1 code into the project, or
+		// asserts v1 wiring.
 		"project", "new", "tonly",
 		"--mod", "github.com/test/tonly",
 		"--service", "api",
+		"--connect", "v1",
 	)
 	projectDir := filepath.Join(dir, "tonly")
 	assertPathExistsE2E(t, filepath.Join(projectDir, "forge.yaml"))

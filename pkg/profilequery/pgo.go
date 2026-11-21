@@ -370,13 +370,10 @@ func sortEdges(es []Edge) {
 
 // pgoProvenancePrefix starts the provenance comment WritePGO records: a
 // version, then one JSON object (pgoProvenance), so any service name, env or
-// namespace round-trips. pgoLegacyPrefix and pgoLegacyDataPrefix are the
-// key=value pair of comments forge wrote before; ReadPGO still reads them.
+// namespace round-trips.
 const (
 	pgoProvenancePrefix = "forge pgo v1 "
 	pgoVersionPrefix    = "forge pgo v"
-	pgoLegacyPrefix     = "forge pgo: "
-	pgoLegacyDataPrefix = "forge pgo data: "
 )
 
 // pgoProvenance is the JSON body of the provenance comment.
@@ -546,31 +543,6 @@ func ReadPGO(r io.Reader) (PGOProfile, error) {
 		case strings.HasPrefix(c, pgoVersionPrefix):
 			v, _, _ := strings.Cut(strings.TrimPrefix(c, pgoVersionPrefix), " ")
 			return PGOProfile{}, fmt.Errorf("parse pgo profile: written by a newer forge (provenance v%s, this forge reads v1); upgrade forge", v)
-		case strings.HasPrefix(c, pgoLegacyPrefix):
-			found = true
-			for k, v := range commentFields(strings.TrimPrefix(c, pgoLegacyPrefix)) {
-				switch k {
-				case "env":
-					p.Env = v
-				case "services":
-					if v != "" {
-						p.Services = strings.Split(v, ",")
-					}
-				case "from":
-					p.From = parseRFC3339(v)
-				case "to":
-					p.To = parseRFC3339(v)
-				}
-			}
-		case strings.HasPrefix(c, pgoLegacyDataPrefix):
-			for k, v := range commentFields(strings.TrimPrefix(c, pgoLegacyDataPrefix)) {
-				switch k {
-				case "oldest":
-					p.Oldest = parseRFC3339(v)
-				case "newest":
-					p.Newest = parseRFC3339(v)
-				}
-			}
 		}
 	}
 	if !found {
@@ -638,18 +610,6 @@ func readPGOBytes(r io.Reader) ([]byte, error) {
 // ErrNotForgePGO is ReadPGO's error for a pprof file without forge's
 // provenance comment.
 var ErrNotForgePGO = errors.New("not a forge pgo profile (no `forge pgo` provenance comment)")
-
-// commentFields splits "k=v k2=v2" (values contain no spaces): the legacy
-// provenance comments.
-func commentFields(s string) map[string]string {
-	out := map[string]string{}
-	for _, f := range strings.Fields(s) {
-		if k, v, ok := strings.Cut(f, "="); ok {
-			out[k] = v
-		}
-	}
-	return out
-}
 
 func parseRFC3339(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)

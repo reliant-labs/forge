@@ -17,7 +17,8 @@ import (
 //
 // Like verify-test-run it runs nothing. It reads the record of the -short run
 // the project already made, because a second spelling of the suite would time
-// a different suite than the one the project runs (see test_removed.go).
+// a different suite than the one the project runs (why `forge test` was
+// removed).
 func newCITestBudgetCmd() *cobra.Command {
 	var (
 		from     string

@@ -116,11 +116,11 @@ func TestRetrieveIDPIntent_DecodesTheProvidersTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Upstream.AccessToken != upAccess || res.Upstream.RefreshToken != upRefresh || res.Upstream.IDToken != upID {
+	if res.Upstream == nil || res.Upstream.AccessToken != upAccess || res.Upstream.RefreshToken != upRefresh || res.Upstream.IDToken != upID {
 		t.Fatalf("upstream = %q %q %q", res.Upstream.AccessToken, res.Upstream.RefreshToken, res.Upstream.IDToken)
 	}
 	z.addIntent("intent-2", "tok", intentResult("g@acme.com", true))
-	if res, _ := z.client().RetrieveIDPIntent(context.Background(), "intent-2", "tok"); res.Upstream.AccessToken != "" {
+	if res, _ := z.client().RetrieveIDPIntent(context.Background(), "intent-2", "tok"); res.Upstream != nil {
 		t.Fatal("tokens invented for an intent without idpInformation.oauth")
 	}
 }
@@ -146,6 +146,35 @@ func TestUpstreamTokens_RedactAndRefuseToMarshal(t *testing.T) {
 	}
 	if _, err := json.Marshal(g); err == nil {
 		t.Error("a grant marshalled with its tokens")
+	}
+}
+
+// IDPResult is public: adding Upstream must not change how a result without
+// it marshals, nor stop it being a comparable value (==, a map key).
+func TestIDPResult_StillMarshalsAndCompares(t *testing.T) {
+	legacy := IDPResult{Email: "g@acme.com", EmailVerified: true}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("json.Marshal(legacy IDPResult) = %v", err)
+	}
+	if strings.Contains(string(raw), "Upstream") {
+		t.Errorf("legacy result gained a field: %s", raw)
+	}
+	withTokens := legacy
+	withTokens.Upstream = &UpstreamTokens{AccessToken: upAccess, RefreshToken: upRefresh, IDToken: upID}
+	raw, err = json.Marshal(withTokens)
+	if err != nil {
+		t.Fatalf("json.Marshal(IDPResult with tokens) = %v", err)
+	}
+	if strings.Contains(string(raw), "UPSTREAM") {
+		t.Errorf("tokens serialised with the result: %s", raw)
+	}
+	seen := map[IDPResult]bool{legacy: true}
+	if !seen[IDPResult{Email: "g@acme.com", EmailVerified: true}] || legacy == withTokens {
+		t.Error("IDPResult is no longer compared by value")
+	}
+	if s := fmt.Sprintf("%v %+v", withTokens, withTokens); strings.Contains(s, "UPSTREAM") {
+		t.Errorf("formatted result leaks: %s", s)
 	}
 }
 

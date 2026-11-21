@@ -1,6 +1,6 @@
 ---
 name: deploy/managed-identity/upstream-tokens
-description: Calling GitHub or Google as the signed-in user — `pass_tokens = True` on forge.IdentityGitHub / forge.IdentityGoogle hands the provider's own access (and refresh, where issued) token from each social sign-in to the app's login broker hook, server-side only; WithUpstreamTokens / RequireUpstreamTokens, devidp.UpstreamGrant, storing it sealed, what is never handed, and refresh.
+description: Calling GitHub or Google as the signed-in user — `pass_tokens = True` on forge.IdentityGitHub / forge.IdentityGoogle hands the provider's own access (and refresh, where issued) token from each social sign-in to the app's login broker hook, server-side only, dev-only (IdentityOnHost) until the hosted control plane delivers it; WithUpstreamTokens / RequireUpstreamTokens, devidp.UpstreamGrant, storing it sealed, what is never handed, and refresh.
 ---
 
 # Upstream provider tokens from a social sign-in
@@ -12,6 +12,13 @@ holds that token; `pass_tokens` asks the login broker to hand it to **your
 server code**. It never reaches the browser: no response body, cookie or
 redirect carries it, it prints as `[redacted]` in logs, and
 `devidp.UpstreamTokens` refuses `json.Marshal`.
+
+## Dev-only for now
+
+`pass_tokens` works on a `forge.IdentityOnHost` identity (the dev loop). A
+hosted identity refuses it at render time: the hosted control plane does not
+yet carry it into the login policy it delivers, so the hook would never run.
+The refusal lifts when the control plane does.
 
 ## Declare it
 

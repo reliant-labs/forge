@@ -46,6 +46,7 @@ func newBenefitsCmd() *cobra.Command {
 		jsonOut  bool
 		all      bool
 		category string
+		why      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "benefits",
@@ -65,6 +66,7 @@ benefit.
   forge project benefits --category run  one category (build, data, test, dev,
                                          guardrails, security, ship, host, run, agents)
   forge project benefits --json          for machines (the MCP benefits tool)
+  forge project benefits --why           the reasons these benefits back (forge why)
 
 Next, 'forge skill load adopt': the survey, the estimate rubric and every entry
 point, for bringing forge into an existing app without a rewrite.`,
@@ -73,6 +75,15 @@ point, for bringing forge into an existing app without a rewrite.`,
 			reg, err := benefits.Load()
 			if err != nil {
 				return err
+			}
+			// --why is `forge why`: the reasons read nothing from the
+			// directory, so they need no project lookup.
+			if why {
+				rep, err := buildWhyReport(reg, "")
+				if err != nil {
+					return err
+				}
+				return writeWhyOutput(cmd.OutOrStdout(), rep, jsonOut, false)
 			}
 			if category != "" && !reg.HasCategory(category) {
 				return cliutil.UserErr("forge project benefits --category "+category,
@@ -98,6 +109,9 @@ point, for bringing forge into an existing app without a rewrite.`,
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Print the benefits as JSON")
 	cmd.Flags().BoolVar(&all, "all", false, "List every shipped benefit, not only the ones that apply here")
 	cmd.Flags().StringVar(&category, "category", "", "Only this category (build, data, test, dev, guardrails, security, ship, host, run, agents)")
+	cmd.Flags().BoolVar(&why, "why", false, "Print the reasons these benefits back instead, as forge why does (with --json, its forge.why/v1 document)")
+	cmd.MarkFlagsMutuallyExclusive("why", "all")
+	cmd.MarkFlagsMutuallyExclusive("why", "category")
 	return cmd
 }
 

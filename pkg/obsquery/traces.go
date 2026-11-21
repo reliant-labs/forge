@@ -225,6 +225,10 @@ type traceParts struct {
 	// spans picks the spans a trace's columns aggregate: the range and the
 	// scope's resource-level filters.
 	spans []string
+	// windowSpans are spans with the range narrowed to a candidate window
+	// (CompileWindow): the spans a windowed page's phase 1 reads. Without a
+	// window they are spans.
+	windowSpans []string
 	// candidates narrow which traces are aggregated at all, each a
 	// `TraceId IN (...)` superset of what having keeps. They test the trace id
 	// alone, so they never change a kept trace's columns.
@@ -289,8 +293,12 @@ func (q TraceQuery) pageOrder() string {
 // the same as the one-pass statement's for each kept trace (the candidate
 // filters test only the trace id, which phase 1 has already applied), so every
 // row is unchanged.
-func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) {
-	p, err := q.traceParts(b, page, withGroups)
+//
+// A non-zero from after the range start is a candidate window (CompileWindow):
+// phase 1 reads only the spans at or after it, and keeps windowSlack more ids
+// than the page, while phase 2 still reads the whole range.
+func (q TraceQuery) perTrace(b *builder, page, withGroups bool, from time.Time) (string, error) {
+	p, err := q.traceParts(b, page, withGroups, from)
 	if err != nil {
 		return "", err
 	}
@@ -310,15 +318,19 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 	}
 	// Phase 1 names every column a having term or the order reads, so each
 	// means here what it meant in the one-pass statement.
+	keep := q.Limit + 1
+	if from.After(q.Scope.Start) {
+		keep += windowSlack(q.Limit)
+	}
 	ids := "SELECT TraceId AS trace_id,\n" +
 		"       min(Timestamp) AS start,\n" +
 		"       toFloat64(" + traceDurNanoExpr + ") / 1000000 AS dur_ms,\n" +
 		"       argMin(SpanName, (ParentSpanId != '', Timestamp)) AS root_name,\n" +
 		"       countIf(" + spanErrorExpr + ") AS error_count\n" +
-		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(p.conds()) + "\n" +
+		"FROM " + b.table(q.Scope, "otel_traces") + "\n" + where(append(append([]string{}, p.windowSpans...), p.candidates...)) + "\n" +
 		"GROUP BY trace_id" + p.havingClause() + "\n" +
 		"ORDER BY " + q.pageOrder() + "\n" +
-		"LIMIT " + strconv.Itoa(q.Limit+1)
+		"LIMIT " + strconv.Itoa(keep)
 	page1 := "TraceId IN (SELECT trace_id FROM (\n    " + strings.ReplaceAll(ids, "\n", "\n    ") + "\n  ))"
 	return tracePageCols + p.groupCols + "\n" +
 		"FROM " + b.table(q.Scope, "otel_traces") + "\n" +
@@ -328,7 +340,9 @@ func (q TraceQuery) perTrace(b *builder, page, withGroups bool) (string, error) 
 
 // traceParts validates q and builds the WHERE and HAVING of its per-trace
 // statements, binding their parameters.
-func (q TraceQuery) traceParts(b *builder, page, withGroups bool) (traceParts, error) {
+// A from after the range start narrows windowSpans and the candidate sets to
+// the spans at or after it; spans keep the whole range.
+func (q TraceQuery) traceParts(b *builder, page, withGroups bool, from time.Time) (traceParts, error) {
 	if err := checkRumValue("user_id", q.UserID); err != nil {
 		return traceParts{}, err
 	}
@@ -350,6 +364,15 @@ func (q TraceQuery) traceParts(b *builder, page, withGroups bool) (traceParts, e
 		return traceParts{}, err
 	}
 	spans = append(spans, sc...)
+	// The candidate range: the whole range, or a window's. A trace whose
+	// spans all lie in the window has the same aggregates over the window as
+	// over the range, so every candidate set below stays a superset of what
+	// the HAVING keeps for such a trace (CompileWindow).
+	win, windowSpans := q.Scope, spans
+	if from.After(q.Scope.Start) {
+		win.Start = from
+		windowSpans = append([]string{b.rangeCond("Timestamp", win), "TraceId != ''"}, sc...)
+	}
 	var candidates []string
 	// Narrow the traces to aggregate before aggregating them. The per-trace
 	// GROUP BY reads every span in the range, which over days of traffic
@@ -359,7 +382,7 @@ func (q TraceQuery) traceParts(b *builder, page, withGroups bool) (traceParts, e
 	// result is unchanged. (A root is the earliest parentless span, or the
 	// earliest span of an orphaned trace, so the name test is over any span.)
 	prefilter := func(pred string, narrow []string) {
-		sub := append([]string{b.rangeCond("Timestamp", q.Scope), pred}, narrow...)
+		sub := append([]string{b.rangeCond("Timestamp", win), pred}, narrow...)
 		candidates = append(candidates, "TraceId IN (SELECT TraceId FROM "+b.table(q.Scope, "otel_traces")+" "+where(sub)+")")
 	}
 	if q.ErrorsOnly {
@@ -436,12 +459,16 @@ func (q TraceQuery) traceParts(b *builder, page, withGroups bool) (traceParts, e
 			groupCols += ",\n       argMin(toString(" + e + "), (ParentSpanId != '', Timestamp)) AS g" + strconv.Itoa(i)
 		}
 	}
-	return traceParts{spans: spans, candidates: candidates, having: having, groupCols: groupCols}, nil
+	return traceParts{spans: spans, windowSpans: windowSpans, candidates: candidates, having: having, groupCols: groupCols}, nil
 }
 
 // Compile builds the page statement in q.Order (newest first by default), one
 // row more than Limit.
 func (q TraceQuery) Compile() (Stmt, error) {
+	return q.compilePage(time.Time{})
+}
+
+func (q TraceQuery) compilePage(from time.Time) (Stmt, error) {
 	if err := q.Scope.validate(MaxRangeTraces); err != nil {
 		return Stmt{}, err
 	}
@@ -452,11 +479,104 @@ func (q TraceQuery) Compile() (Stmt, error) {
 		return Stmt{}, invalid("page size must be 1-%d", MaxTraceLimit)
 	}
 	b := newBuilder(q.Scope)
-	inner, err := q.perTrace(b, true, false)
+	inner, err := q.perTrace(b, true, false, from)
 	if err != nil {
 		return Stmt{}, err
 	}
 	return b.stmt(inner + "\nORDER BY " + q.pageOrder() + "\nLIMIT " + strconv.Itoa(q.Limit+1)), nil
+}
+
+// A newest-first page over a wide range is the newest few traces of it, yet
+// Compile's phase 1 aggregates every trace of the range to find them: a
+// GROUP BY over every span, which over 24h of prod traffic (~40M spans) ran
+// 15-40s and a 7d range ran past every deadline. A candidate window bounds
+// that scan. CompileWindow(from) draws phase 1's candidates only from the
+// spans at or after from, while phase 2 still computes each candidate's
+// columns over the whole range, so every row it returns is the trace's true
+// row. A page is then tried over PageWindows, narrowest first, and the first
+// one WindowPageExact accepts is the page; if none is, Compile's is.
+//
+// Why an accepted page is Compile's page: call a trace whole when every span
+// of it the scope selects lies at or after from. A whole trace has the same
+// aggregates over the window as over the range (start, duration, errors, root,
+// the span-level filters), so phase 1 ranks and filters it exactly as Compile
+// does, and phase 2 reports its true start, at or after from. Any other trace
+// started before from. So the rows starting at or after from are the whole
+// traces among the candidates, in order; and every trace phase 1 did not keep
+// ranks below all of them (a whole one ranked below the last candidate, any
+// other started before from). When the page's Limit+1 rows all start at or
+// after from, they are therefore the newest Limit+1 traces the filters keep:
+// Compile's rows, columns and order. A trace that is not whole (it started
+// before the window and has spans in it) sorts after every whole one; the
+// windowSlack extra candidates leave room for a few of them before a window
+// has to be widened.
+
+// minWindowedRange is the narrowest range PageWindows windows. Below it a
+// whole-range page is already cheap.
+const minWindowedRange = time.Hour
+
+// minPageWindow is the narrowest candidate window PageWindows proposes.
+const minPageWindow = 5 * time.Minute
+
+// windowSlack is how many more candidates than the page a windowed phase 1
+// keeps, so a few traces that began before the window do not crowd whole ones
+// out of it.
+func windowSlack(limit int) int { return limit/4 + 2 }
+
+// PageWindows are the candidate windows, as CompileWindow's from, a page tries
+// before Compile's whole-range statement, narrowest first: a 64th of the range
+// (at least five minutes) back from its end, or from the cursor's position on
+// a later page, then each window eight times wider, while narrower than the
+// range. A duration-ordered page, whose slowest traces may lie anywhere in the
+// range, and a range under minWindowedRange have none.
+func (q TraceQuery) PageWindows() []time.Time {
+	if q.Order != OrderNewest {
+		return nil
+	}
+	anchor := q.Scope.End
+	if q.Cursor != nil {
+		if c := time.Unix(0, q.Cursor.TsNano); c.Before(anchor) {
+			anchor = c
+		}
+	}
+	span := anchor.Sub(q.Scope.Start)
+	if q.Scope.End.Sub(q.Scope.Start) < minWindowedRange || span <= 0 {
+		return nil
+	}
+	var out []time.Time
+	for w := max(span/64, minPageWindow); w < span; w *= 8 {
+		out = append(out, anchor.Add(-w))
+	}
+	return out
+}
+
+// CompileWindow builds the page statement with its candidate traces drawn only
+// from the spans at or after from; the rows are each trace's columns over the
+// whole range, newest first, at most Limit+1 of them. It is Compile's page
+// only when WindowPageExact says so. The window applies to the newest-first
+// order alone; a from at or before the range start is Compile's statement.
+func (q TraceQuery) CompileWindow(from time.Time) (Stmt, error) {
+	if q.Order != OrderNewest {
+		return Stmt{}, invalid("a candidate window applies to the newest-first order only")
+	}
+	if !from.Before(q.Scope.End) {
+		return Stmt{}, invalid("a candidate window must start before the range ends")
+	}
+	return q.compilePage(from)
+}
+
+// WindowPageExact reports whether the rows CompileWindow(from) returned are
+// the rows Compile returns. starts are the rows' start column, in the order
+// returned. It holds when the window covers the whole range, or when the
+// statement returned Limit+1 rows (the page and the row that says another page
+// follows) all starting strictly after from. Strictly: a row whose start
+// equals from is accepted by no proof that rests on how precisely the start
+// column and from compare, so the page widens its window instead.
+func (q TraceQuery) WindowPageExact(from time.Time, starts []time.Time) bool {
+	if !from.After(q.Scope.Start) {
+		return true
+	}
+	return len(starts) > q.Limit && starts[q.Limit].After(from)
 }
 
 // CompileRED builds the RED summary over every trace the filters match.
@@ -466,7 +586,7 @@ func (q TraceQuery) CompileRED() (Stmt, error) {
 		return Stmt{}, err
 	}
 	b := newBuilder(q.Scope)
-	inner, err := q.perTrace(b, false, false)
+	inner, err := q.perTrace(b, false, false, time.Time{})
 	if err != nil {
 		return Stmt{}, err
 	}
@@ -488,7 +608,7 @@ func (q TraceQuery) CompileREDGroups() (Stmt, error) {
 		return Stmt{}, invalid("group_by takes 1-%d keys", MaxMetricGroupBy)
 	}
 	b := newBuilder(q.Scope)
-	inner, err := q.perTrace(b, false, true)
+	inner, err := q.perTrace(b, false, true, time.Time{})
 	if err != nil {
 		return Stmt{}, err
 	}

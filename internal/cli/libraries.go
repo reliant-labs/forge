@@ -387,7 +387,9 @@ func forgePkgVersionInGoMod(ctx context.Context) (string, error) {
 }
 
 // readForgePkgPackages lists the subdirectories of the resolved module that
-// are Go packages, each with the synopsis of its own package doc.
+// are Go packages, each with the synopsis of its own package doc. A
+// directory that holds no package of its own but groups packages
+// (pkg/appkit/operatorkit) lists those, named by their path under pkg/.
 func readForgePkgPackages(moduleDir string) ([]LibrarySpec, error) {
 	entries, err := os.ReadDir(moduleDir)
 	if err != nil {
@@ -395,17 +397,10 @@ func readForgePkgPackages(moduleDir string) ([]LibrarySpec, error) {
 	}
 
 	var out []LibrarySpec
-	for _, e := range entries {
-		name := e.Name()
-		// Dot- and underscore-prefixed directories are invisible to the go
-		// tool; testdata is data, not a library.
-		if !e.IsDir() || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" {
-			continue
-		}
-		pkgDir := filepath.Join(moduleDir, name)
+	add := func(name, pkgDir string) bool {
 		synopsis, isPkg := packageSynopsis(pkgDir)
 		if !isPkg {
-			continue
+			return false
 		}
 		out = append(out, LibrarySpec{
 			Name:       name,
@@ -413,9 +408,36 @@ func readForgePkgPackages(moduleDir string) ([]LibrarySpec, error) {
 			Dir:        pkgDir,
 			Synopsis:   synopsis,
 		})
+		return true
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || !isLibraryDirName(name) {
+			continue
+		}
+		pkgDir := filepath.Join(moduleDir, name)
+		if add(name, pkgDir) {
+			continue
+		}
+		children, err := os.ReadDir(pkgDir)
+		if err != nil {
+			continue
+		}
+		for _, c := range children {
+			if c.IsDir() && isLibraryDirName(c.Name()) {
+				add(name+"/"+c.Name(), filepath.Join(pkgDir, c.Name()))
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// isLibraryDirName reports whether a directory can hold a library: dot- and
+// underscore-prefixed directories are invisible to the go tool, and testdata
+// is data, not a library.
+func isLibraryDirName(name string) bool {
+	return !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") && name != "testdata"
 }
 
 // packageSynopsis reports whether dir holds a non-test Go package and, if

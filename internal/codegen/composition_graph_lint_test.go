@@ -159,6 +159,21 @@ func TestLintGraph_AudienceMismatchThroughTheListener(t *testing.T) {
 	}
 }
 
+// A connect-go v2 project's chain embeds serverkit.ChainV2; the audience is
+// read through it exactly as through a v1 serverkit.Chain.
+func TestLintGraph_AudienceReadThroughAConnectV2Chain(t *testing.T) {
+	m := newLintGraphFixture(t).m
+	sk := types.NewPackage(serverkitPkg, "serverkit")
+	app := types.NewPackage("example.com/x/internal/app", "app")
+	chainV2 := types.NewNamed(types.NewTypeName(token.NoPos, sk, "ChainV2", nil), types.NewStruct(nil, nil), nil)
+	userChain := types.NewNamed(types.NewTypeName(token.NoPos, app, "UserChain", nil),
+		types.NewStruct([]*types.Var{types.NewField(token.NoPos, app, "", types.NewPointer(chainV2), true)}, nil), nil)
+	m.u.produced["UserChain"] = types.NewPointer(userChain)
+	if got := m.audienceFindings(); len(got) != 0 {
+		t.Fatalf("a user listener over a v2 user chain serving user routes: %s", rulesOf(got))
+	}
+}
+
 func TestLintGraph_ChainWithNoAudienceMarkerIsAWarning(t *testing.T) {
 	m := newLintGraphFixture(t).m
 	m.byName["UserAuth"].AuthAudience = ""

@@ -113,7 +113,9 @@ message LLMChatResponse {
 	}
 	expect("alphav1connect/service.go", read("internal", "handlers", "alphav1connect", "service.go"),
 		"alphav1connectv1connect.UnimplementedAlphav1ConnectServiceHandler",
-		"alphav1connectv1connect.NewAlphav1ConnectServiceHandler(")
+		// connect-go v2, project new's default: the handler registers on a
+		// *connect.Server.
+		"alphav1connectv1connect.RegisterAlphav1ConnectServiceHandler(")
 	expect("base64/handlers_crud_ops_gen.go", read("internal", "handlers", "base64", "handlers_crud_ops_gen.go"),
 		"if req.Base64Item == nil",
 		"m.Sha256Sum = e.Sha256sum",
@@ -123,7 +125,7 @@ message LLMChatResponse {
 		"if req.Oauth2Token == nil")
 	expect("oauth2/rpc_get_oauth2token_stats.go", read("internal", "handlers", "oauth2", "rpc_get_oauth2token_stats.go"),
 		"func (s *Service) GetOauth2TokenStats(",
-		"*connect.Request[pb.GetOauth2TokenStatsRequest]")
+		"req *pb.GetOauth2TokenStatsRequest")
 
 	// ── generate x2: green and byte-for-byte idempotent ──
 	snaps := make([]map[string]string, 0, 2)

@@ -174,7 +174,9 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
                 "gates_from": "v1.0.1", "fix": "…", "examples": ["…"]}],
   "template_drift": ["Dockerfile"],
   "offers": [{"path": "docker-compose.yml", "since": "v0.0.2",
-              "command": "forge project rescaffold docker-compose.yml"}]
+              "command": "forge project rescaffold docker-compose.yml"}],
+  "crossed": [{"version": "v1.0.0", "source": "changelog", "…": "…"}],
+  "generated_changes": [{"generator": "middleware_gen.go", "files": ["…"], "notes": []}]
 }
 ```
 
@@ -192,6 +194,11 @@ was applied before the failure. Schema `forge-project-upgrade/v1`:
 - `offers` are scaffold-once files the project never had whose templates are
   not new across the range; upgrade did not add them, and `command` does. They
   never change the exit code.
+
+- `crossed` (what each release and the untagged tail brought, with the
+  `agent_instructions` their PRs address to you) and `generated_changes` (the
+  generated files generate changed, by generator): read them before you judge
+  the diff — `forge skill load migration-upgrade/range`.
 
 ### Re-vendoring a contract the project copies from another repository
 
@@ -292,6 +299,13 @@ The directory name IS the identifier: it's what `forge project upgrade
 list` prints, what `forge project upgrade apply <id>` takes, and what
 lands in `.forge/migrations.json`. One skill covers everything that
 release broke — do not create a directory per individual change.
+
+### Telling the agent what to do: commit trailers
+
+A change a consumer's agent must act on carries an `Agent-Instructions:` (and,
+for generated output, a `Generated-Change:`) commit trailer; the release
+renders it into CHANGELOG.md and upgrade shows it. The contract:
+`forge skill load migration-upgrade/range`.
 
 ### A breaking change registers its codemod, and upgrade runs it
 

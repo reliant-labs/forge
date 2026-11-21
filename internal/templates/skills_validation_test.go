@@ -43,8 +43,8 @@
 //     comment must satisfy buf's PACKAGE_DIRECTORY_MATCH.
 //  9. A top-level key in a block the prose introduces as forge.yaml must
 //     be one forge.yaml accepts. Truth source: config.LoadProject over a
-//     synthetic doc — removed keys (removedSchemaKeys) surface on the
-//     config warning sink, keys that never existed as load errors.
+//     synthetic doc — retired keys (removedSchemaKeys) and keys that
+//     never existed both surface as load errors.
 //  10. A `--flag` spelled after a `forge <chain>` invocation must be one
 //     that chain's command actually accepts (own, inherited, or global).
 //     Validator 1 only proves the chain resolves; a flag forge dropped —
@@ -680,7 +680,7 @@ func TestSkillsPathReferencesExist(t *testing.T) {
 // ─── validator 3: forge.v1 annotation field references ──────────────────
 
 // annotationDescriptors maps the extension names skills use —
-// (forge.v1.entity) etc. — to the protoreflect descriptors of their real
+// (forge.v1.method) etc. — to the protoreflect descriptors of their real
 // payload messages. These descriptors come from the generated package
 // pkg/forgepb, itself generated from
 // internal/assets/proto/forge/v1/forge.proto, so the schema is the truth:
@@ -688,8 +688,6 @@ func TestSkillsPathReferencesExist(t *testing.T) {
 // the old name fail here.
 func annotationDescriptors() map[string]protoreflect.MessageDescriptor {
 	return map[string]protoreflect.MessageDescriptor{
-		"entity":          (&forgev1.EntityOptions{}).ProtoReflect().Descriptor(),
-		"field":           (&forgev1.FieldOptions{}).ProtoReflect().Descriptor(),
 		"service":         (&forgev1.ServiceOptions{}).ProtoReflect().Descriptor(),
 		"method":          (&forgev1.MethodOptions{}).ProtoReflect().Descriptor(),
 		"config":          (&forgev1.ConfigFieldOptions{}).ProtoReflect().Descriptor(),
@@ -975,7 +973,7 @@ func scanAnnotationRegion(region string, descs map[string]protoreflect.MessageDe
 		if !ok {
 			out = append(out, annViolation{
 				claim:  "(forge.v1." + ext + ")",
-				reason: "no such forge.v1 extension (valid: entity, field, service, method, config, binary_config, frontend_config, filter)",
+				reason: "no such forge.v1 extension (valid: service, method, config, binary_config, frontend_config, filter)",
 			})
 			continue
 		}
@@ -989,7 +987,7 @@ func scanAnnotationRegion(region string, descs map[string]protoreflect.MessageDe
 		if !ok {
 			out = append(out, annViolation{
 				claim:  "(forge.v1." + ext + ")",
-				reason: "no such forge.v1 extension (valid: entity, field, service, method, config, binary_config, frontend_config, filter)",
+				reason: "no such forge.v1 extension (valid: service, method, config, binary_config, frontend_config, filter)",
 			})
 			continue
 		}
@@ -1152,13 +1150,16 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 	// Annotation validator: known-bad literals must be flagged.
 	descs := annotationDescriptors()
 	badMD := "```proto\n" +
-		"message Task {\n" +
-		"  option (forge.v1.entity) = {\n" +
-		"    table_name: \"tasks\"    // no such field (real name: table)\n" +
-		"    timestamps: true\n" +
+		"service Tasks {\n" +
+		"  option (forge.v1.service) = {\n" +
+		"    service_name: \"tasks\"    // no such field (real name: name)\n" +
+		"    version: \"v1\"\n" +
 		"  };\n" +
-		"  string title = 1 [(forge.v1.field) = { validate: \"url\" }];\n" + // message field given a scalar
-		"  string email = 2 [(forge.v1.field) = { store: true }];\n" + // enum field given a bool
+		"  rpc A(R) returns (R) { option (forge.v1.method) = { timeout: \"30s\" }; }\n" + // message field given a scalar
+		"  rpc B(R) returns (R) { option (forge.v1.service) = { visibility: true }; }\n" + // enum field given a bool
+		"}\n" +
+		"message Task {\n" +
+		"  option (forge.v1.entity) = { table: \"tasks\" };\n" + // the retired extension
 		"}\n" +
 		"```\n"
 	var claims []string
@@ -1168,29 +1169,25 @@ func TestSkillsValidatorsCatchKnownBadClaims(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"(forge.v1.entity).table_name",
-		"(forge.v1.field).validate",
-		"(forge.v1.field).store",
+		"(forge.v1.service).service_name",
+		"(forge.v1.method).timeout",
+		"(forge.v1.service).visibility",
+		"(forge.v1.entity)",
 	} {
 		if !slices.Contains(claims, want) {
 			t.Errorf("annotation validator missed known-bad claim %s (got %v)", want, claims)
 		}
 	}
-	if len(claims) != 3 {
+	if len(claims) != 4 {
 		t.Errorf("annotation validator reported unexpected extra violations: %v", claims)
 	}
 
 	// Correct literals — including nested messages, lists, enum values,
 	// colon-less message fields, and dotted references — must pass.
 	goodMD := "```proto\n" +
-		"message Task {\n" +
-		"  option (forge.v1.entity) = {\n" +
-		"    table: \"tasks\"\n" +
-		"    soft_delete: true\n" +
-		"    indexes: [{ name: \"by_org\", fields: [\"org_id\", \"status\"], unique: true }]\n" +
-		"    middleware: [\"tracing\", \"metrics\"]\n" +
-		"  };\n" +
-		"  string url = 1 [(forge.v1.field) = { store: STORE_AS_JSONB, validate: { format: \"url\", min_length: 3 } }];\n" +
+		"message ListTasksRequest {\n" +
+		"  string url = 1 [(forge.v1.config) = { env_var: \"URL\", allowed_values: [\"a\", \"b\"], role: CONFIG_FIELD_ROLE_MODE, env_var_aliases: [{ name: \"OLD_URL\", deprecated: true }] }];\n" +
+		"  string key_prefix = 2 [(forge.v1.filter) = { column: \"key\", op: LIST_FILTER_OP_PREFIX }];\n" +
 		"}\n" +
 		"```\n" +
 		"and `(forge.v1.service) = { name: \"tasks\" version: \"v1\" auth { auth_required: true } }`\n" +
@@ -2105,8 +2102,8 @@ var forgeYAMLTopKeyRE = regexp.MustCompile(`(?m)^([a-z][a-z0-9_]*):`)
 
 // forgeYAMLKeyVerdict runs the REAL loader over a minimal forge.yaml that
 // declares `key`, and reports why forge refuses it (or "" when it is a
-// legitimate key). Removed keys surface as warnings on the config warning
-// sink; keys that never existed surface as `unknown key` load errors.
+// legitimate key). Retired keys surface as `"<key>" is no longer …` load
+// errors; keys that never existed as `unknown key` load errors.
 // Routing through config.LoadProject keeps removedSchemaKeys — the
 // authoritative list — as the single source of truth without copying it.
 func forgeYAMLKeyVerdict(key string) string {
@@ -2124,9 +2121,16 @@ func forgeYAMLKeyVerdict(key string) string {
 	// opposite of the truth this helper exists to establish. An assertion
 	// coupled to a phrase dies when the phrase improves.
 	quoted := `"` + key + `"`
-	for _, line := range strings.Split(warnings.String(), "\n") {
-		if i := strings.Index(line, quoted); i >= 0 {
-			return strings.TrimSpace(line[i:])
+	surfaced := warnings.String()
+	if err != nil {
+		surfaced += "\n" + err.Error()
+	}
+	// A retired key is an issue whose message STARTS with the quoted key
+	// (`forge.yaml:3:1: "<key>" …`); an unknown key's starts with
+	// `unknown key`.
+	for _, line := range strings.Split(surfaced, "\n") {
+		if i := strings.Index(line, ": "+quoted); i >= 0 {
+			return strings.TrimSpace(line[i+2:])
 		}
 	}
 	if err != nil && strings.Contains(err.Error(), `unknown key "`+key+`"`) {
@@ -2204,7 +2208,7 @@ func TestProtoAndForgeYAMLValidatorsCatchKnownBadClaims(t *testing.T) {
 	}
 
 	// 9. forge.yaml keys.
-	for _, removed := range []string{"services", "components", "binaries", "packs", "test"} {
+	for _, removed := range []string{"services", "components", "binaries", "packs", "test", "frontends"} {
 		if v := forgeYAMLKeyVerdict(removed); v == "" {
 			t.Errorf("forgeYAMLKeyVerdict(%q) is empty — forge.yaml REJECTS that key", removed)
 		}
@@ -2212,7 +2216,7 @@ func TestProtoAndForgeYAMLValidatorsCatchKnownBadClaims(t *testing.T) {
 	if v := forgeYAMLKeyVerdict("no_such_key_at_all"); v == "" {
 		t.Error("forgeYAMLKeyVerdict accepted a key forge.yaml has never had")
 	}
-	for _, real := range []string{"name", "database", "features", "contracts", "frontends"} {
+	for _, real := range []string{"name", "database", "features", "contracts"} {
 		if v := forgeYAMLKeyVerdict(real); v != "" {
 			t.Errorf("forgeYAMLKeyVerdict(%q) = %q, but it is a real forge.yaml key", real, v)
 		}

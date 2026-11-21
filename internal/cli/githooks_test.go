@@ -30,8 +30,6 @@ func TestEnsureGitHooksActivated(t *testing.T) {
 		{name: "the project's own hook is left alone", hook: projectHook, want: ""},
 		{name: "no hook, nothing to activate", hook: "", want: ""},
 		{name: "FORGE_NO_GIT_HOOKS opts out", hook: forgeHook, optOut: gitHooksOptOutEnv, want: ""},
-		// The earlier name: a clone opted out under it stays opted out.
-		{name: "FORGE_NO_HOOKS still opts out", hook: forgeHook, optOut: legacyGitHooksOptOutEnv, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateGit(t)
@@ -67,7 +65,6 @@ func TestActivateGitHooks_HonoursOptOut(t *testing.T) {
 	}{
 		{name: "activated by default", want: ".githooks"},
 		{name: "FORGE_NO_GIT_HOOKS opts out", optOut: gitHooksOptOutEnv, want: ""},
-		{name: "FORGE_NO_HOOKS opts out", optOut: legacyGitHooksOptOutEnv, want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateGit(t)

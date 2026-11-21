@@ -26,6 +26,7 @@ func TestEveryRuleDeclaresItsTools(t *testing.T) {
 		"RuleNonTimestampVersion": RuleNonTimestampVersion, "RuleVersionBelowMergedHead": RuleVersionBelowMergedHead,
 		"RuleCompatConflict": RuleCompatConflict, "RuleCompatUndeclared": RuleCompatUndeclared,
 		"RuleCompatReason": RuleCompatReason, "RuleInvalidAdoption": RuleInvalidAdoption,
+		"RuleBlockingIndexBuild": RuleBlockingIndexBuild,
 	}
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {

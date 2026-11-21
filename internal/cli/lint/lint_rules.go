@@ -80,7 +80,7 @@ func gradableRules() []string {
 		migrationlint.RuleDuplicateVersion, migrationlint.RuleEnumValueUsedBeforeCommit,
 		migrationlint.RuleInvalidAdoption, migrationlint.RuleNoDownMigration,
 		migrationlint.RuleNonTimestampVersion, migrationlint.RuleNonTransactionalStatement,
-		migrationlint.RuleVersionBelowMergedHead,
+		migrationlint.RuleVersionBelowMergedHead, migrationlint.RuleBlockingIndexBuild,
 		"destructive-change", "set-not-null-without-backfill", "unsafe-add-not-null-column", "volatile-default",
 		// forge conventions (proto, Go tree, frontend env)
 		"forgeconv-activity-declared", "forgeconv-allocate-port-spacing",
@@ -90,7 +90,7 @@ func gradableRules() []string {
 		"forgeconv-frontend-env-forge-owned", "forgeconv-frontend-process-env",
 		"forgeconv-handler-connect-error", "forgeconv-handler-file-size",
 		"forgeconv-list-filter-optional", "forgeconv-no-container-deps", "forgeconv-no-getenv",
-		"forgeconv-no-handler-error-mapping", "forgeconv-one-service-per-file",
+		"forgeconv-no-handler-error-mapping", "forgeconv-one-rpc-per-file", "forgeconv-one-service-per-file",
 		"forgeconv-optional-dep-marker-position", "forgeconv-product-event-pii", "forgeconv-service-dir-consistency",
 		"forgeconv-tx-lock-under-serializable", "forgeconv-unwrapped-domain-error",
 		string(contractcheck.RuleInternalPackageContractNames), string(contractcheck.RuleDepsAreInterfaces),
@@ -117,15 +117,19 @@ func gradableRules() []string {
 		"hosted-image-base/host-bearing-image", pdbRuleID,
 		release.RuleJobTTL, release.RuleJobUnhashed, release.RuleForceData,
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
+		// delivery policy verdicts graded outside forge lint (rollout_grade.go)
+		RuleVulnGate, RuleSBOMRequired,
 		// auth scaffold
 		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,
 		secrets.RuleSingleOwner, ruleSecretsNotRendered,
+		// declared telemetry
+		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
 		// schema markers
 		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
-		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, "forge-vendored-proto-drift",
+		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, ruleGoMarkersReasonMissing, "forge-vendored-proto-drift",
 		// proto formatting (the pre-commit buf-format hook's check)
 		ruleProtoFormat,
 		// write policy
@@ -140,6 +144,8 @@ func gradableRules() []string {
 		commitpolicy.RuleForgeStateIgnored,
 		// frontend lockfile
 		ruleFrontendLockDrift,
+		// frontend lanes: lint stops installing dependencies (rolled out)
+		ruleFrontendNoInstall,
 		// cross-lane workarounds
 		"workaround-testing-extras", "workaround-cmd-not-in-binaries",
 		// config reach

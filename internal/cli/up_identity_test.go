@@ -56,6 +56,16 @@ func TestHostIdentity_OnlyAHostRuntimeIdentity(t *testing.T) {
 	if hostIdentity(nil) != nil || hostIdentity(&KCLEntities{}) != nil {
 		t.Error("no identity means no step")
 	}
+	// Several (Bundle.identities): the one on the host IdP is the dev loop's,
+	// the hosted ones the control plane's.
+	e = identityEntities()
+	host := *e.Identity
+	host.Name = "ops"
+	e.Identity = nil
+	e.Identities = []release.ShapeIdentity{{Name: "users", Runtime: release.IdentityRuntimeHosted}, host}
+	if got := hostIdentity(e); got == nil || got.Name != "ops" {
+		t.Errorf("hostIdentity of several = %+v, want the host-run ops", got)
+	}
 }
 
 // The launch pre-flight demands every declared secret from the store, but the
@@ -282,5 +292,19 @@ func TestMissingIDPPATMessage(t *testing.T) {
 	custom := missingIDPPATMessage("identity", z, hostinfra.IDPPATLocations{Checkout: "/src/clone/secrets/pat.txt"}, "dev")
 	if !strings.Contains(custom, "copy the token from the checkout that initialized it to /src/clone/secrets/pat.txt") {
 		t.Errorf("a declared path is the only location, so the fix names it:\n%s", custom)
+	}
+}
+
+// The IdP's log is the file hostinfra writes for the zitadel WORKLOAD, under
+// the env's log directory — not a fixed .forge/hostinfra/idp/zitadel.log,
+// which named the wrong file for any IdP not called "idp".
+func TestIDPLogPath_IsTheWorkloadsEnvLog(t *testing.T) {
+	for _, tc := range []struct{ env, name, want string }{
+		{"dev", "idp", ".forge/logs/dev/idp.log"},
+		{"e2e", "auth", ".forge/logs/e2e/auth.log"},
+	} {
+		if got := idpLogPath(tc.env, &HostInfraEntity{Name: tc.name, Engine: hostinfra.EngineZitadel}); got != tc.want {
+			t.Errorf("idpLogPath(%q, %q) = %q, want %q", tc.env, tc.name, got, tc.want)
+		}
 	}
 }

@@ -110,12 +110,12 @@ func (r *SignInRoutes) handUpstreamTokens(ctx context.Context, social LoginPolic
 		return true
 	}
 	strict := r.cfg.RequireUpstreamTokens
-	if res.Upstream.AccessToken == "" {
+	if res.Upstream == nil || res.Upstream.AccessToken == "" {
 		r.cfg.Logger.WarnContext(ctx, "social sign-in: the issuer reported no provider access token",
 			"user_id", subject, "provider", social.Type, "required", strict)
 		return !strict
 	}
-	tokens := res.Upstream
+	tokens := *res.Upstream
 	tokens.Scopes = append([]string(nil), social.Scopes...)
 	err := r.cfg.UpstreamTokens(ctx, UpstreamGrant{
 		Subject: subject, Provider: social.Type, IdPID: res.Link.IdPID,

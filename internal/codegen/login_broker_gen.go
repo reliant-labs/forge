@@ -85,7 +85,8 @@ func LoginBrokerCookieMismatch(projectDir string) string {
 	return "internal/app/login_broker.go sets the session cookie by its plain name (SessionCookieName), but pkg/middleware reads only " +
 		"SecureSessionCookieName (the __Host- name) outside development: deployed sign-in succeeds and every rpc after it is 401. " +
 		"Set `SecureSessionCookieName` wherever the broker sets, reads or clears the session cookie on a secure origin " +
-		"(`forge skill load migrations/v1.1.0/identity-v2`, step 11), or delete login_broker.go to have forge scaffold the current one"
+		"(declare `SecureSessionCookieName = \"__Host-\" + SessionCookieName` in pkg/middleware and use it when the request is secure), " +
+		"or delete login_broker.go to have forge scaffold the current one"
 }
 
 // GenerateLoginBroker scaffolds internal/app/login_broker.go ONCE — the

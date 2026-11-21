@@ -15,8 +15,8 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// configWarningSink is where non-fatal config warnings (deprecated
-// top-level keys) are written. It defaults to os.Stderr so the notice
+// configWarningSink is where non-fatal config warnings (a generate step
+// that no longer runs, generate_hooks.go) are written. It defaults to os.Stderr so the notice
 // reaches the user on every load path (forge generate / forge project upgrade /
 // any caller of LoadProject) without those callers having to
 // thread a warnings slice through. The config package is otherwise
@@ -201,11 +201,9 @@ func LoadProject(data []byte, path string) (*ProjectConfig, error) {
 	// that would otherwise blow up the generator with a confusing
 	// downstream error.
 
-	// Partition non-fatal warnings (deprecated top-level keys) out of the
-	// gating error set. Warnings are flushed to the user unconditionally —
-	// whether or not the load also has hard errors — so a deprecated key
-	// is never lost to a silent rewrite even when other issues abort the
-	// load.
+	// Partition non-fatal warnings out of the gating error set. Warnings
+	// are flushed to the user unconditionally — whether or not the load
+	// also has hard errors.
 	errIssues, warnIssues := partitionIssues(issues)
 	flushConfigWarnings(label, warnIssues)
 	if len(errIssues) > 0 {
@@ -305,17 +303,13 @@ type validationIssue struct {
 	warning bool
 }
 
-// refusedSchemaKeys are retired forge.yaml keys that FAIL the load, with their
-// runbook, instead of warning like removedSchemaKeys.
-//
-// A removed key normally warns: forge wrote it, and a forge.yaml forge
-// authored must keep loading across a schema removal. A key lands here
-// instead when silently ignoring it would change what forge DOES — a stale
-// value that used to steer a build keeps sitting in the file, the build stops
-// honouring it, and nothing says so. A registry is the case in point: a
-// project whose images went to `docker.registry` would start pushing to the
-// registry its env declares (or stop pushing), with a warning scrolled past
-// on a CI log as the only trace.
+// refusedSchemaKeys are retired forge.yaml keys whose stale value used to
+// steer what forge DOES (a build, a push, a seed). Like every entry in
+// removedSchemaKeys they fail the load with their runbook; they are kept
+// apart because each one is a behaviour change a user must act on, not
+// dead config. A registry is the case in point: a project whose images went
+// to `docker.registry` would start pushing to the registry its env declares
+// (or stop pushing).
 var refusedSchemaKeys = map[string]string{
 	// An image registry is declared in the env's KCL, and nowhere else: no
 	// flag, no forge-owned `-D`, no environment variable, no forge.yaml key.
@@ -348,9 +342,10 @@ var refusedSchemaKeys = map[string]string{
 // removedSchemaKeys maps a normalized key path of a forge.yaml key that
 // was deliberately removed from the schema (as opposed to a typo) to the
 // one-line "what to do instead" guidance emitted as the issue's Fix:
-// hint. When validation hits one of these, that hint replaces the generic
-// "unknown key — did you mean ...?", which would otherwise mislead an
-// agent into renaming the key rather than migrating it.
+// hint. A retired key fails the load like a typo does — forge no longer
+// tolerates retired keys — but when validation hits one of these, that hint
+// replaces the generic "unknown key — did you mean ...?", which would
+// otherwise mislead an agent into renaming the key rather than migrating it.
 //
 // A hint is written for someone who has to edit this file right now, so
 // it is imperative, self-contained, and names the skill documenting the
@@ -378,11 +373,11 @@ var refusedSchemaKeys = map[string]string{
 //     Host/cluster placement moved to the per-env `deploy:` field on
 //     the KCL `forge.Service` schema.
 //   - environments (top level): removed in the KCL-canonical cleanup
-//     (8d3e185) — handled separately by deprecatedTopLevelKeys below
-//     because mid-migration projects must still LOAD; it is reported as
-//     a non-fatal WARNING (not silently skipped) so the user migrates it
-//     before the next forge.yaml rewrite drops it.
+//     (8d3e185).
 var removedSchemaKeys = map[string]string{
+	"environments": "delete the block — per-env deploy info lives in each env's KCL " +
+		"(deploy/kcl/<env>/main.k) or env document (deploy/envs/<env>.yaml), and per-env app " +
+		"config in the env's typed config (deploy/kcl/<env>/config.k).",
 	// The auth VALIDATOR is no longer config — it is owned code. Picking a
 	// validator (JWT/Clerk/Auth0/custom) is a code-wiring choice; the
 	// per-DEPLOYMENT values it reads are typed config fields like every
@@ -509,19 +504,8 @@ var removedSchemaKeys = map[string]string{
 	// down_files_allowed_until grandfathered pre-policy down migrations as a
 	// warning. There is nothing to grandfather: forge never runs a down file,
 	// so deleting one is always safe, and every down file is a lint error.
-	// `forge project upgrade` stamped this key, so it must warn, not fail.
 	"database.migration_safety.down_files_allowed_until": "delete the key and delete the down migrations it " +
 		"grandfathered — forge never runs them, so removing them is always safe; `forge lint` errors on every down file.",
-	// deploy graduated from experimental to a stable kind-derived flag in
-	// the front-door rework; projects scaffolded in the experimental
-	// window still carry the old nesting.
-	// ingress and operators graduated out of experimental: both are
-	// prod-critical, and warning on every invocation about a project's own
-	// production configuration bought nobody safety. `forge generate`
-	// rewrites these automatically (stepGraduateExperimental); the warning
-	// is for the commands that only read.
-	// external_builds was deleted, not graduated: it had already been
-	// reduced to an inert key nothing consulted (fr-da9a6614fb).
 	// forge does not manage documentation. `forge docs generate` and the
 	// ADR scaffolding `forge new` wrote are gone, so both switches gate
 	// nothing; a project's docs/ directory is entirely its own.
@@ -537,27 +521,6 @@ var sliceIndexRe = regexp.MustCompile(`\[\d+\]`)
 // can be looked up in removedSchemaKeys.
 func normalizeKeyPath(p string) string {
 	return sliceIndexRe.ReplaceAllString(p, "[]")
-}
-
-// deprecatedTopLevelKeys maps a top-level forge.yaml key that was once
-// part of the schema (but has since been removed) to the migration
-// guidance shown when it is encountered. These keys are NOT errors: a
-// project mid-migration must still LOAD. But they are also NOT silently
-// dropped — NormalizeForWrite re-serializes forge.yaml without them, so
-// the next rewrite would lose the user's real config (e.g. per-env log
-// levels under `environments:`) with zero trace. We emit a warning so
-// the loss is visible and the user is pointed at the migration skill.
-//
-// Currently:
-//   - `environments`: removed in the deploy-target-architecture
-//     migration. Per-env deploy info (cluster/namespace/registry/
-//     domain) now lives in KCL `forge.K8sCluster` blocks; per-env
-//     app config lives in sibling `config.<env>.yaml` files.
-var deprecatedTopLevelKeys = map[string]string{
-	"environments": "this key is no longer part of the forge.yaml schema and will be DROPPED on the next " +
-		"forge.yaml rewrite (forge generate / forge project upgrade re-serialize the file). Migrate per-env config " +
-		"before you lose it: per-env deploy info moves to KCL `forge.K8sCluster` blocks and per-env app config " +
-		"moves to sibling `config.<env>.yaml` files next to forge.yaml.",
 }
 
 // walkUnknownKeys recursively descends a yaml.Node mapping against the
@@ -595,58 +558,24 @@ func walkUnknownKeys(node *yaml.Node, path string, t reflect.Type) []validationI
 			continue
 		}
 		key := keyNode.Value
-		// Deprecated keys at the top level do NOT fail validation
-		// (projects mid-migration must still load), but they are NOT
-		// silently dropped either: the next forge.yaml rewrite would
-		// lose the config without a trace. Emit a non-gating warning
-		// that names the key and points at the migration skill.
-		if path == "" {
-			if hint, ok := deprecatedTopLevelKeys[key]; ok {
-				out = append(out, validationIssue{
-					line:    keyNode.Line,
-					column:  keyNode.Column,
-					msg:     fmt.Sprintf("%q is a deprecated top-level key", key),
-					fix:     hint,
-					warning: true,
-				})
-				continue
-			}
-		}
 		field, ok := known[key]
 		if !ok {
 			full := qualifiedKey(path, key)
-			// Removed keys come FIRST: a key that used to be in the
-			// schema gets its specific migration message, never a
+			// Retired keys come FIRST: a key that used to be in the
+			// schema fails with its specific migration message, never a
 			// Levenshtein "did you mean" (which would suggest renaming
 			// instead of migrating — the exact trap an agent reading
 			// the error would fall into).
-			//
-			// A removed key is one forge ITSELF wrote a version ago, so it
-			// is a WARNING, not a hard fail (fr-57edf33aca): a forge.yaml
-			// forge authored must keep loading across a schema removal —
-			// every config-loading command hard-failing on forge's own
-			// retired key strands the project until a human edits the file.
-			// The warning still carries the migration hint, and the next
-			// forge.yaml rewrite (NormalizeForWrite) drops the dead key, so
-			// the deprecation is visible and self-healing. Genuine typos
-			// (NOT in removedSchemaKeys) stay fatal below — that distinction
-			// is the whole point of the map.
-			if fix, refused := refusedSchemaKeys[normalizeKeyPath(full)]; refused {
+			hint, retired := refusedSchemaKeys[normalizeKeyPath(full)]
+			if !retired {
+				hint, retired = removedSchemaKeys[normalizeKeyPath(full)]
+			}
+			if retired {
 				out = append(out, validationIssue{
 					line:   keyNode.Line,
 					column: keyNode.Column,
 					msg:    fmt.Sprintf("%q is no longer a forge.yaml key", full),
-					fix:    fix,
-				})
-				continue
-			}
-			if fix, removed := removedSchemaKeys[normalizeKeyPath(full)]; removed {
-				out = append(out, validationIssue{
-					line:    keyNode.Line,
-					column:  keyNode.Column,
-					msg:     fmt.Sprintf("%q is no longer a forge.yaml key", full),
-					fix:     fix,
-					warning: true,
+					fix:    hint,
 				})
 				continue
 			}
@@ -850,6 +779,7 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateLintLanes(cfg, root)...)
 	out = append(out, validateScaffoldExclude(cfg, root)...)
 	out = append(out, validateCIWorkflows(cfg, root)...)
+	out = append(out, validateTests(cfg, root)...)
 	return out
 }
 

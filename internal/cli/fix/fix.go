@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator/contract"
+	"github.com/reliant-labs/forge/internal/templates"
 )
 
 func init() { factory.Register(newCmd) }
@@ -56,7 +58,7 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   c.Name,
 		Short: c.Short,
-		Long:  c.Long + "\n\nThe rest of the " + c.Version + " story is the migration skill: `forge skill load migrations/" + c.Version + "`.",
+		Long:  c.Long + migrationSkillSentence(c.Version),
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := cmdutil.ProjectRoot()
@@ -85,7 +87,7 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 				return cliutil.UserErr("forge fix "+c.Name,
 					fmt.Sprintf("%d shape(s) the codemod cannot convert without deciding for you; nothing was written", len(rep.Blocked)),
 					"",
-					"clear each item listed above, then re-run; `forge skill load migrations/"+c.Version+"` is the manual path")
+					"clear each item listed above, then re-run"+manualPathClause(c.Version))
 			}
 			return nil
 		},
@@ -219,4 +221,31 @@ calls; to shrink it, split the package.`,
 			return nil
 		},
 	}
+}
+
+// migrationSkillShipped reports whether forge still ships the migration
+// skill of release version. A codemod can outlive its release's playbook:
+// the playbook is deleted when the release ages out of the upgrade window,
+// while the codemod stays as long as a project might still need it.
+func migrationSkillShipped(version string) bool {
+	_, err := templates.ProjectTemplates().Get(path.Join("skills", "forge", "migrations", version, "SKILL.md"))
+	return err == nil
+}
+
+// migrationSkillSentence closes a codemod's help with its migration skill,
+// when forge still ships it.
+func migrationSkillSentence(version string) string {
+	if !migrationSkillShipped(version) {
+		return ""
+	}
+	return "\n\nThe rest of the " + version + " story is the migration skill: `forge skill load migrations/" + version + "`."
+}
+
+// manualPathClause names the migration skill as the manual path, when forge
+// still ships it.
+func manualPathClause(version string) string {
+	if !migrationSkillShipped(version) {
+		return ""
+	}
+	return "; `forge skill load migrations/" + version + "` is the manual path"
 }

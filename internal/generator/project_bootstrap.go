@@ -92,6 +92,12 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		// later replace this file with descriptor-derived imports.
 		connectPkg := pkg + "v1connect"
 		connectImport := g.ModulePath + "/gen/services/" + pkg + "/v1/" + connectPkg
+		// The service's mount helper (codegen's mountMethodFor): no RPC
+		// exists yet, so none collides with it.
+		mountMethod := "Register"
+		if g.connectMajor().IsV2() {
+			mountMethod = "RegisterV2"
+		}
 		services = []bootstrapTestService{
 			{
 				Name:                   g.ServiceName,
@@ -101,7 +107,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				ConnectServiceGoName:   connectService,
 				ProtoConnectImportPath: connectImport,
 				ProtoConnectPkg:        connectPkg,
-				MountMethod:            "Register",
+				MountMethod:            mountMethod,
 				Alias:                  pkg,
 				VarName:                lowerFirstRune(fieldName),
 				// Spelled out rather than taken from
@@ -165,6 +171,11 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			UnfilledDeps    []unresolvedStub
 
 			ExtraImports []extraImport
+
+			// ConnectV2 renders the connect-go v2 harness — the major
+			// this scaffold targets, as forge generate will read it back
+			// from go.mod.
+			ConnectV2 bool
 		}{
 			Module:    g.ModulePath,
 			Package:   svc.Package,
@@ -198,6 +209,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			ConfigDefaults: "Defaults",
 
 			ExtraImports: nil, // No cross-package auto-stubs at initial scaffold time
+			ConnectV2:    g.connectMajor().IsV2(),
 		}
 
 		content, err := templates.ProjectTemplates().Render("component_test_helpers.go.tmpl", data)

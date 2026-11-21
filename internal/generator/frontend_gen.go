@@ -135,19 +135,6 @@ type FrontendGenOptions struct {
 	// answer "signed out" without an issuer, and are what gating the
 	// frontend later re-attaches to.
 	Public bool
-
-	// webRuntimeFloor overrides the runtime floor the scaffold is rendered
-	// against (default webRuntimePublishedRange). Tests only: it lets the
-	// floor-gated choices (viteDevLogFromRuntime) be exercised offline.
-	webRuntimeFloor string
-}
-
-// runtimeFloor is the runtime floor this render scaffolds against.
-func (o FrontendGenOptions) runtimeFloor() string {
-	if o.webRuntimeFloor != "" {
-		return o.webRuntimeFloor
-	}
-	return webRuntimePublishedRange
 }
 
 // FrontendTypedConfig tells the frontend templates which typed config
@@ -196,7 +183,9 @@ func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
 // route-guard.tsx, the seam gating the frontend later re-attaches to.
 func isSignInScreen(rel string) bool {
 	rel = strings.TrimSuffix(filepath.ToSlash(rel), ".tmpl")
-	if strings.HasPrefix(rel, "src/app/auth/") {
+	// src/app/account/ is the signed-in person's account page, which mounts
+	// the passkeys panel: with no sign-in there is no account to manage.
+	if strings.HasPrefix(rel, "src/app/auth/") || strings.HasPrefix(rel, "src/app/account/") {
 		return true
 	}
 	_, ok := signInOnlyFiles[rel]
@@ -210,6 +199,7 @@ func isSignInScreen(rel string) bool {
 // tree and absent from the public one.
 var signInOnlyFiles = map[string]struct{}{
 	"src/components/accept-invite-form.tsx":    {},
+	"src/components/account-settings.tsx":      {},
 	"src/components/auth-ui.tsx":               {},
 	"src/components/forgot-password-form.tsx":  {},
 	"src/components/magic-link-form.tsx":       {},
@@ -244,6 +234,14 @@ func GenerateFrontendFiles(root, modulePath, projectName, frontendName string, a
 // byte-identical to GenerateFrontendFiles so existing callers and
 // snapshot tests are unaffected.
 func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions) error {
+	return generateFrontendFiles(root, modulePath, projectName, frontendName, apiPort, kind, opts, webRuntimePublishedRange)
+}
+
+// generateFrontendFiles renders against runtimeFloor, the web-runtime floor
+// the floor-gated choices (viteDevLogFromRuntime) read: production passes
+// webRuntimePublishedRange, and a test passes another floor to exercise
+// those choices offline (as writeSiteStarter takes its range).
+func generateFrontendFiles(root, modulePath, projectName, frontendName string, apiPort int, kind string, opts FrontendGenOptions, runtimeFloor string) error {
 	frontendDir := filepath.Join(root, "frontends", frontendName)
 	if err := os.MkdirAll(frontendDir, 0755); err != nil {
 		return fmt.Errorf("create frontend directory: %w", err)
@@ -299,7 +297,7 @@ func GenerateFrontendFilesWithOptions(root, modulePath, projectName, frontendNam
 		// first `forge generate` re-derives from disk.
 		IdentifySession: webTree,
 
-		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(opts.runtimeFloor()),
+		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(runtimeFloor),
 	}
 	if opts.Workspaces {
 		data.APIPackage = layout.APIPackage
@@ -624,17 +622,33 @@ func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 // componentNeedsBirth reports whether a core component at dest is still to
 // be scaffolded: by the ledger inside a project, by absence outside one.
 //
-// Presence is checked first and backfills nothing: a frontend scaffolded
-// before the ledger existed would otherwise gain a ledger line per installed
-// component on its next generate, for no decision anyone made.
+// A present component with no birth record is BACKFILLED, as
+// checksums.ScaffoldOnceDecision does for every other scaffold-once file: a
+// frontend scaffolded before the ledger existed has its components on disk
+// and no records, and without one the user's first deletion of a component
+// reads as "never scaffolded", so the next generate wrote it again with a
+// fresh record (and `forge generate --check` reported that rebirth as drift).
+// Fresh frontends record every component at birth, so the backfill only
+// brings an older frontend's ledger to the same state, once. Adopted
+// frontends never reach here (ensureFrontendComponents skips them), so a
+// present file under a core component's name is forge's starter copy.
 func componentNeedsBirth(root, dest string) bool {
-	if _, err := os.Stat(dest); !os.IsNotExist(err) {
-		return false // present (or unreadable): the user's bytes
-	}
+	rel := ""
 	if root != "" {
-		if rel, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(rel, "..") {
-			return !checksums.ScaffoldRecorded(root, filepath.ToSlash(rel))
+		if r, err := filepath.Rel(root, dest); err == nil && !strings.HasPrefix(r, "..") {
+			rel = filepath.ToSlash(r)
 		}
+	}
+	if _, err := os.Stat(dest); err == nil {
+		if rel != "" {
+			checksums.RecordScaffold(root, rel) // no-op when already recorded
+		}
+		return false // present: the user's bytes
+	} else if !os.IsNotExist(err) {
+		return false // unreadable: not a birth forge can vouch for
+	}
+	if rel != "" {
+		return !checksums.ScaffoldRecorded(root, rel)
 	}
 	return true
 }

@@ -120,57 +120,6 @@ func TestProdKeyInWorktreeIsNotAStack(t *testing.T) {
 	}
 }
 
-// TestLegacyRegistryKeepsBlocks is the migration lock, and it is the one that
-// protects real machines. A block is not a cache: it is multiplied by 100 into
-// host ports that k3d pre-maps at cluster creation and that an issuer bakes
-// into its `iss` claim and redirect URIs. Reading an old registry must
-// therefore preserve every index EXACTLY — a "helpful" re-allocation would
-// break sign-in and cluster ingress on an existing checkout.
-func TestLegacyRegistryKeepsBlocks(t *testing.T) {
-	testkit.Slow(t, "execs git")
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".forge"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// The pre-stack-flag on-disk form, exactly as shipped.
-	legacy := []byte(`{"": 0, "prod": 1, "wt-feat": 2}`)
-	if err := os.WriteFile(filepath.Join(dir, registryRel), legacy, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	setActiveWorktree(t, "")
-	for key, want := range map[string]int{"prod": 3100, "wt-feat": 3200} {
-		got, err := AllocatePort(dir, 3000, key)
-		if err != nil {
-			t.Fatalf("AllocatePort(%s): %v", key, err)
-		}
-		if got != want {
-			t.Errorf("legacy key %q moved: port = %d, want %d — "+
-				"a moved block invalidates a k3d host mapping or a baked-in issuer claim", key, got, want)
-		}
-	}
-
-	// A legacy entry carries no stack flag, so it starts out unlabelled
-	// rather than being guessed at.
-	if stacks, _ := ListStacks(dir); len(stacks) != 0 {
-		t.Errorf("legacy entries were guessed into the stack roster: %v", stacks)
-	}
-
-	// Bringing that worktree's stack up re-marks it, without moving the block.
-	setActiveWorktree(t, "wt-feat")
-	got, err := AllocatePort(dir, 3000, "wt-feat")
-	if err != nil {
-		t.Fatalf("AllocatePort(wt-feat): %v", err)
-	}
-	if got != 3200 {
-		t.Errorf("promoting a legacy entry to a stack moved its block: %d, want 3200", got)
-	}
-	stacks, _ := ListStacks(dir)
-	if len(stacks) != 1 || stacks[0] != "wt-feat" {
-		t.Errorf("roster after promotion = %v, want [wt-feat]", stacks)
-	}
-}
-
 // TestRegistryRoundTripsNewFormat pins the on-disk shape, since it is read by
 // a future forge and must stay decodable.
 func TestRegistryRoundTripsNewFormat(t *testing.T) {

@@ -269,6 +269,11 @@ func (g *ProjectGenerator) generatePkgMiddleware() error {
 		{"middleware.go.tmpl", "middleware.go", true},
 		{"middleware_test.go", "middleware_test.go", false},
 	}
+	// A connect-go v2 project's pair declares and tests NewAuthInterceptorV2
+	// (connectV2Twins).
+	for i := range middlewareFiles {
+		middlewareFiles[i].templateName = connectMajorTemplate(middlewareFiles[i].templateName, g.connectMajor().IsV2())
+	}
 
 	for _, f := range middlewareFiles {
 		destPath := filepath.Join(g.Path, "pkg", "middleware", f.destName)

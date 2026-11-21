@@ -59,32 +59,19 @@ func GenerateReadOnlyGrants(projectDir string, services []ServiceDef, cs *checks
 			return false, fmt.Errorf("write %s: %w", rel, err)
 		}
 	}
-	// A table that is gone takes its row with it, and the retired dashboard
-	// grants go whole. Only forge's own pristine file is removed: a
-	// hand-edited or disowned one is reported by the drift lanes, never
-	// deleted.
-	for _, dir := range []string{dbgrants.GrantsRowsDir, retiredDashboardGrantsRowsDir} {
-		entries, _ := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(dir)))
-		for _, e := range entries {
-			rel := dir + "/" + e.Name()
-			if e.IsDir() || !strings.HasSuffix(e.Name(), "_gen.sql") || files[rel] != nil {
-				continue
-			}
-			removeRetiredForgeFile(projectDir, filepath.FromSlash(rel), cs)
+	// A table that is gone takes its row with it. Only forge's own pristine
+	// file is removed: a hand-edited or disowned one is reported by the
+	// drift lanes, never deleted.
+	entries, _ := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(dbgrants.GrantsRowsDir)))
+	for _, e := range entries {
+		rel := dbgrants.GrantsRowsDir + "/" + e.Name()
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_gen.sql") || files[rel] != nil {
+			continue
 		}
+		removeRetiredForgeFile(projectDir, filepath.FromSlash(rel), cs)
 	}
-	removeRetiredForgeFile(projectDir, filepath.FromSlash(retiredDashboardGrantsPath), cs)
-	// Gone once it is empty; a directory still holding a kept file stays.
-	_ = os.Remove(filepath.Join(projectDir, filepath.FromSlash(retiredDashboardGrantsRowsDir)))
 	return true, nil
 }
-
-// The dashboard role's generated grants, retired when its access moved to the
-// project's own migrations (migrations/v1.0.14).
-const (
-	retiredDashboardGrantsPath    = "db/grants/dashboard_gen.sql"
-	retiredDashboardGrantsRowsDir = "db/grants/dashboard"
-)
 
 // GrantsFileSet is every grants file `forge generate` writes for tables, keyed
 // by project-relative path: the read-only role's script and one row per table

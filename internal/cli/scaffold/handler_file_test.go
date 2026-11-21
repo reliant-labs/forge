@@ -23,7 +23,6 @@ import (
 // pkg/app composition root so requireServiceKind passes.
 const minimalServiceForgeYAML = `name: testproj
 module_path: example.com/testproj
-version: 0.1.0
 `
 
 func TestRunAddHandlerFile_HappyPath(t *testing.T) {

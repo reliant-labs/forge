@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
@@ -29,8 +30,7 @@ import (
 //
 // So the env moves from an optional modifier to the command's subject, and the
 // two flags move with it. Top-level `forge build` keeps what genuinely needs
-// no env — compiling — and refuses the two flags with a pointer here (see
-// refuseBuildPublishFlag in build.go).
+// no env — compiling — and does not have the two flags.
 //
 // `forge release cut` folded into this command as `--release <v> --no-build`:
 // it was the cut WITHOUT the build, for the pipeline shape where build and
@@ -64,8 +64,9 @@ an environment to mean anything:
                   carries no registry.
 
   --release vX    record an IMMUTABLE RELEASE: capture every artifact's digest
-                  into a release ledger (.forge/releases/vX.json, or the
-                  control plane when the env declares one).
+                  into a release ledger (this machine's, under
+                  $FORGE_LEDGER_HOME, or the control plane when the env
+                  declares one; ` + "`forge ledger where <env>`" + `).
                   IMPLIES --push — a release pins registry-addressable
                   digests, and a local tag cannot be promoted anywhere.
 
@@ -180,7 +181,7 @@ Examples:
 	cmd.Flags().StringArrayVarP(&selectors, "target", "t", nil, "Build target; repeatable for snapshot composition (default all)")
 	cmd.Flags().StringVar(&basePromotion, "base-promotion", "", "Compose from this exact desired promotion (or resolve current once before builds)")
 	cmd.Flags().BoolVar(&snapshotBootstrap, "snapshot-bootstrap", false, "Build a complete sealed snapshot selecting all consumers; never use legacy state as a partial base")
-	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim — forge does not interpret the value. List an env's options with 'forge env options <env>'.")
+	cmd.Flags().StringArrayVarP(&opts.renderOptions, "option", "D", nil, "Set a render option the env's KCL declares, as name=value (repeatable). Relayed to KCL verbatim, except that an option declared type=\"bool\" takes true/false (1/0, yes/no accepted). List an env's options with 'forge env options <env>'.")
 	cmd.Flags().BoolVar(&opts.parallel, "parallel", true, "Build services in parallel")
 	cmd.Flags().BoolVar(&opts.buildDocker, "docker", false, "Build Docker images for all services (implied by --push and --release)")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build with debug symbols for Delve")
@@ -192,9 +193,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.skipGenerate, "no-generate", false, "Skip the pre-build code-generation check. By default this runs forge generate when gen/ is missing or proto sources are newer than the generated tree.")
 	cmd.Flags().BoolVar(&opts.plan, "plan", false, "Resolve the exact build set this invocation would build (same KCL discovery, same --target narrowing) and PREFLIGHT every step without running it: each go-build package exists and is a main package, each Dockerfile and frontend build script exists, each ShellBuild cwd exists, and with --release the ledger would cover everything the env declares. Builds, pushes, generates and writes nothing; exits non-zero on anything the real build would fail on. Pass it the release's exact arguments to gate a PR on the cut.")
 	cmd.Flags().StringVar(&opts.gateJSON, "gate-json", "", "Also write this build's result to `FILE` as a gate document, for `forge gate record` or `forge env deploy --gate`. A FILE, not a stdout mode: the build log and the exit code are unchanged.")
-	cmd.Flags().StringVar(&opts.release, "release", "", "Record an immutable release with this version label (e.g. v1.4.0). IMPLIES --push. The release's artifact SET (project images plus per-env external build_cmd images) is discovered from deploy/kcl/<env>/main.k; the built images stay env-agnostic, so promote the release to every env with 'forge env deploy <env> <version>'. Captures each artifact's digest into a release ledger, which every later deploy pins.")
-	cmd.Flags().BoolVar(&opts.allowPassedMigrations, allowPassedMigrationsFlag, false, "With --release: cut it even though it carries a migration the env's schema has already passed (exit 4 without it). Only for SQL already applied to the env's database by hand and recorded in schema_migrations_applied — otherwise the env's migrator refuses it at boot")
-	cmd.Flags().BoolVar(&opts.allowUnmergedMigrations, allowUnmergedMigrationsFlag, false, "With --release, for an env on a control plane: cut it even though it carries one of the project's migrations that is not on the default branch (exit 4 without it). For a hotfix that cannot land on main first")
+	registerReleaseCutFlags(cmd.Flags(), &opts)
 	cmd.Flags().BoolVar(&noBuild, "no-build", false, "With --release: record the release over the digests an earlier --push already captured in .forge/state, without rebuilding. This is the cut-only half of a pipeline whose build and release are separate jobs.")
 	cmd.Flags().StringVar(&opts.bundleEnvs, "bundle-envs", "", "Write a bundle for each of these envs (comma-separated) from this one build, instead of only for the env argument. A release is env-agnostic and a bundle is not, so this is how one cut produces the manifests for every env it will ship to — each pinned to the same release and the same source. Each env is rendered; each bundle is pushed beside its images for a control-plane env, or written to this machine's ledger otherwise.")
 	registerRunFlags(cmd.Flags(), &opts.run)
@@ -383,41 +382,11 @@ func runEnvBuildCutOnly(ctx context.Context, opts buildOptions) error {
 	return writeBuildBundle(ctx, opts)
 }
 
-// refuseBuildPublishFlag is top-level `forge env build`'s refusal for --push and
-// --release, which moved to `forge env build <env>`.
-//
-// Top-level `forge build` is COMPILE-ONLY: a local check that the tree builds,
-// which is why its environment argument is optional. Publishing is not that.
-// Both flags always needed an env to resolve — a push destination comes from
-// the env's workload declarations, a release's artifact set from its render —
-// so on a command with an optional env they were a combination that could only
-// fail at runtime. The refusal names the replacement rather than the
-// constraint, because the user's next keystroke is the command, not an
-// explanation.
-func refuseBuildPublishFlag(flag, env string) error {
-	target := "<env>"
-	if env != "" {
-		target = env
-	}
-	return fmt.Errorf("`forge build` is compile-only and cannot %s — use `forge env build %s --%s`.\n"+
-		"  %s needs an environment to resolve: %s\n"+
-		"  Top-level `forge build` compiles the tree as a local check, which is why its environment argument is optional",
-		publishVerb(flag), target, flag, "--"+flag, publishWhy(flag))
-}
-
-// publishVerb and publishWhy keep the refusal specific to the flag the user
-// actually passed: a message that says "cannot push or release" makes the
-// reader work out which half applies to them.
-func publishVerb(flag string) string {
-	if flag == "release" {
-		return "record a release"
-	}
-	return "push images"
-}
-
-func publishWhy(flag string) string {
-	if flag == "release" {
-		return "the release's artifact SET (including the per-env external build_cmd images) is discovered from deploy/kcl/<env>/main.k"
-	}
-	return "each image's destination is declared on its own workload in the env's render"
+// registerReleaseCutFlags declares `forge env build`'s release-cut flags:
+// --release and what governs the cut it records.
+func registerReleaseCutFlags(flags *pflag.FlagSet, opts *buildOptions) {
+	flags.StringVar(&opts.release, "release", "", "Record an immutable release with this version label (e.g. v1.4.0). IMPLIES --push. The release's artifact SET (project images plus per-env external build_cmd images) is discovered from deploy/kcl/<env>/main.k; the built images stay env-agnostic, so promote the release to every env with 'forge env deploy <env> <version>'. Captures each artifact's digest into a release ledger, which every later deploy pins.")
+	flags.BoolVar(&opts.allowPassedMigrations, allowPassedMigrationsFlag, false, "With --release: cut it even though it carries a migration the env's schema has already passed (exit 4 without it). Only for SQL already applied to the env's database by hand and recorded in schema_migrations_applied — otherwise the env's migrator refuses it at boot")
+	flags.BoolVar(&opts.allowUnmergedMigrations, allowUnmergedMigrationsFlag, false, "With --release, for an env on a control plane: cut it even though it carries one of the project's migrations that is not on the default branch (exit 4 without it). For a hotfix that cannot land on main first")
+	flags.BoolVar(&opts.noSBOM, "no-sbom", false, "With --release: cut it without generating an SBOM for each artifact (forge generates one with its pinned syft by default, and records it as evidence on the release). Warns, and each artifact records why it has none. To turn SBOMs off for an env, declare provenance_sbom = forge.Control {mode = \"off\"} in its KCL instead")
 }

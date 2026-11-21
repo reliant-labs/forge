@@ -50,7 +50,7 @@ scaffold:
   is: a file there is untouched, an absent one is never created, and nothing
   there is deleted by the stale-file sweep.
 - Each run reports what it declined, once per path, in its normal output:
-  `↷ frontends/web/src/hooks/item-hooks.ts skipped (scaffold.exclude: frontends/web/**)`
+  `↷ frontends/web/src/hooks/item-hooks_gen.ts skipped (scaffold.exclude: frontends/web/**)`
   (five per glob, then a count; `-v` lists them all).
 - It is enforced, not advisory. Every run that holds the generate lock
   captures the excluded files first and puts back anything it changed,

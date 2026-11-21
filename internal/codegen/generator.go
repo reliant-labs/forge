@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/naming"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -73,6 +74,77 @@ type ServiceTemplateData struct {
 	// (ProjectHasTypedConfig): service.go imports <module>/pkg/config and
 	// declares Deps.Config only then.
 	HasConfig bool
+	// ConnectV2 is whether the project builds against connect-go v2 (the
+	// run's major stamped on the ServiceDef, else connectmajor.Detect on
+	// its go.mod; connectV2For). It selects the v2 shapes in
+	// every service template: bare-message handler signatures, the
+	// per-rpc generated stream types, RegisterV2 on a *connect.Server, and
+	// the tdd/testkit V2 helpers in the scaffolded tests. False renders the
+	// v1 shapes byte-for-byte as before.
+	ConnectV2 bool
+	// MountMethod is the name service.go gives its mount helper
+	// (mountMethodFor): RegisterV2 for a v2 service, else the first of
+	// MountV2, Mount2V2, … no RPC uses. The v1 template still always writes
+	// Register.
+	MountMethod string
+}
+
+// HasStreamingMethods reports whether any method streams in either
+// direction. A connect-go v2 handler file imports the generated
+// <pkg>connect package only for a streaming method's per-rpc stream type.
+func (d ServiceTemplateData) HasStreamingMethods() bool {
+	for _, m := range d.Methods {
+		if m.ClientStreaming || m.ServerStreaming {
+			return true
+		}
+	}
+	return false
+}
+
+// NamesPbMessages reports whether a connect-go v2 handler file for these
+// methods names a pb message type. A bidirectional v2 handler names none —
+// both directions ride its per-rpc stream type — so a file holding only
+// bidi stubs must not import pb (an unused import does not compile). The v1
+// signatures name the messages for every shape.
+func (d ServiceTemplateData) NamesPbMessages() bool {
+	for _, m := range d.Methods {
+		if !(m.ClientStreaming && m.ServerStreaming) {
+			return true
+		}
+	}
+	return false
+}
+
+// connectV2For reports whether svc's emitted files target connect-go v2:
+// the major stamped on svc (ServiceDef.ConnectMajor) when there is one,
+// else the major projectDir's go.mod selects — the fallback for a caller
+// outside a generate run. No project ("" — test-only callers) is v1, the
+// historical shape, as is any go.mod connectmajor cannot read.
+func connectV2For(svc ServiceDef, projectDir string) bool {
+	return GenContext{ProjectDir: projectDir, ConnectMajor: svc.ConnectMajor}.connectV2()
+}
+
+// majorOf is the connect-go major a rendered ConnectV2 flag stands for.
+func majorOf(connectV2 bool) connectmajor.Major {
+	if connectV2 {
+		return connectmajor.V2
+	}
+	return connectmajor.V1
+}
+
+// WithConnectMajor returns services with ConnectMajor set to major on each,
+// leaving the input slice untouched. `forge generate` applies it once to the
+// services it parsed, so every per-service emitter renders the run's major.
+func WithConnectMajor(services []ServiceDef, major connectmajor.Major) []ServiceDef {
+	if services == nil {
+		return nil
+	}
+	out := make([]ServiceDef, len(services))
+	for i, s := range services {
+		s.ConnectMajor = major
+		out[i] = s
+	}
+	return out
 }
 
 // protoImportPath derives the relative proto import path for a service
@@ -145,6 +217,7 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 	// ServicePackage / ServiceImportPath / TestHelperName from disk truth
 	// — see GenerateMissingHandlerStubs's applyDiskIdentity.
 	pkgName := naming.ServicePackage(svc.Name)
+	v2 := connectV2For(svc, pd)
 
 	return ServiceTemplateData{
 		ServiceName:         pkgName,
@@ -159,7 +232,9 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 		Methods:             methods,
 		TestHelperName:      ComputeTestHelperName(pkgName, pd),
 		// With no project to look at, keep the historical shape.
-		HasConfig: pd == "" || ProjectHasTypedConfig(pd),
+		HasConfig:   pd == "" || ProjectHasTypedConfig(pd),
+		ConnectV2:   v2,
+		MountMethod: mountMethodFor(svc, v2),
 	}
 }
 
@@ -172,8 +247,19 @@ func GenerateMock(svc ServiceDef, projectDir, mockDir string, cs *checksums.File
 		return MockResult{Skipped: "no RPCs"}, nil
 	}
 
-	// Prepare template data
-	data := prepareServiceData(svc)
+	v2 := connectV2For(svc, projectDir)
+	data := prepareServiceData(svc, v2)
+	if v2 && projectDir != "" {
+		res, err := ResolveServiceComponent(projectDir, svc.Name)
+		if err != nil {
+			return MockResult{}, err
+		}
+		mount, err := resolveMountHelper(svc, true, projectDir, res.Dir, cs)
+		if err != nil {
+			return MockResult{}, fmt.Errorf("resolve %s mock mount helper: %w", svc.Name, err)
+		}
+		data["MountMethod"] = mount.name
+	}
 
 	// Parse and execute template
 	tmpl, err := template.New("mock").Parse(mockTemplate)
@@ -358,16 +444,29 @@ func mockImportAlias(goPkg string, seq int) string {
 	return base
 }
 
-// prepareServiceData prepares template data for service generation
-func prepareServiceData(svc ServiceDef) map[string]any {
+// prepareServiceData prepares template data for service generation.
+// connectV2 selects the connect-go v2 mock (bare-message signatures, the
+// per-rpc generated stream types, RegisterV2 on a *connect.Server).
+func prepareServiceData(svc ServiceDef, connectV2 bool) map[string]any {
 	var methods []map[string]any
 	res := newMockTypeResolver(svc)
 
 	for _, method := range svc.Methods {
+		// Only the selected major's builders may see the resolver: it
+		// records every package a signature names as an import, so a
+		// discarded v1 signature (which names both messages of a stream)
+		// would leave a v2 mock importing a package only its per-rpc
+		// stream type mentions — an unused import, which does not compile.
+		var sig, ret string
+		if connectV2 {
+			sig, ret = buildMethodSignatureV2(svc, method, res), buildReturnTypeV2(method, res)
+		} else {
+			sig, ret = buildMethodSignature(method, res), buildReturnType(method, res)
+		}
 		methods = append(methods, map[string]any{
 			"Name":       method.GoName(),
-			"Signature":  buildMethodSignature(method, res),
-			"ReturnType": buildReturnType(method, res),
+			"Signature":  sig,
+			"ReturnType": ret,
 			"ReturnStub": buildReturnStub(method),
 			"CallArgs":   buildCallArgs(method),
 		})
@@ -377,14 +476,10 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 	// sign-up endpoint. The mock's mount helper is called Register too, and
 	// one type cannot carry both, so the template renames the helper when
 	// they would collide. Without this the generated mock does not compile,
-	// and the error names a method the author never wrote.
-	hasRegisterRPC := false
-	for _, m := range svc.Methods {
-		if m.GoName() == "Register" {
-			hasRegisterRPC = true
-			break
-		}
-	}
+	// and the error names a method the author never wrote. mountMethodFor
+	// decides, as it does for the real service, so the mock and the service
+	// agree on the name.
+	mountMethod := mountMethodFor(svc, connectV2)
 
 	return map[string]any{
 		// The mock embeds and constructs connect-go's handler types, so it
@@ -397,10 +492,11 @@ func prepareServiceData(svc ServiceDef) map[string]any {
 		"ModulePath":       svc.ModulePath,
 		"Methods":          methods,
 		"HasMethods":       len(svc.Methods) > 0,
-		"HasRegisterRPC":   hasRegisterRPC,
+		"MountMethod":      mountMethod,
 		"NeedsEmptypb":     res.needsEmp,
 		"NeedsPb":          res.needsPb,
 		"ForeignImports":   res.imports,
+		"ConnectV2":        connectV2,
 	}
 }
 
@@ -442,6 +538,35 @@ func buildReturnType(m Method, r *mockTypeResolver) string {
 		return "error"
 	default:
 		return fmt.Sprintf("(*connect.Response[%s], error)", outputGoType(m, r))
+	}
+}
+
+// buildMethodSignatureV2 is buildMethodSignature for a connect-go v2
+// handler: bare messages, and a stream is the per-rpc value type
+// protoc-gen-connect-go v2 declares in the service's <pkg>connect package —
+// <Service><Method>ServerStream on the handler side of every streaming
+// shape (the client-stream and bidi handlers read from it too).
+func buildMethodSignatureV2(svc ServiceDef, m Method, r *mockTypeResolver) string {
+	stream := svc.PkgName + "connect." + svc.GoName() + m.GoName() + "ServerStream"
+	switch {
+	case m.ClientStreaming:
+		// Client and bidirectional streaming: the stream carries the input.
+		return "ctx context.Context, stream " + stream
+	case m.ServerStreaming:
+		return fmt.Sprintf("ctx context.Context, req *%s, stream %s", inputGoType(m, r), stream)
+	default:
+		return fmt.Sprintf("ctx context.Context, req *%s", inputGoType(m, r))
+	}
+}
+
+// buildReturnTypeV2 is buildReturnType for a connect-go v2 handler: the
+// response message is returned bare.
+func buildReturnTypeV2(m Method, r *mockTypeResolver) string {
+	switch {
+	case m.ServerStreaming:
+		return "error"
+	default:
+		return fmt.Sprintf("(*%s, error)", outputGoType(m, r))
 	}
 }
 

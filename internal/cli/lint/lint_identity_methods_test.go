@@ -3,6 +3,9 @@ package lint
 import (
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 const identityV2KCL = `import forge
@@ -60,7 +63,7 @@ func TestIdentityMethods_LegacyBrokerIgnoresEveryDeclaration(t *testing.T) {
 		if f.Rule != ruleIdentityMethods || f.Severity != "error" || f.File != "deploy/kcl/identity.k" || f.Line == 0 {
 			t.Errorf("finding %+v", f)
 		}
-		if !strings.Contains(f.Message, "idp_login_policy") || !strings.Contains(f.FixHint, "migrations/v1.1.0/identity-v2") {
+		if !strings.Contains(f.Message, "idp_login_policy") || !strings.Contains(f.FixHint, "mountSignInMethods") {
 			t.Errorf("finding does not name the cause and the fix: %+v", f)
 		}
 	}
@@ -115,5 +118,31 @@ func more(mux *http.ServeMux) {
 				t.Fatalf("got %+v, %v; want nothing", got, err)
 			}
 		})
+	}
+}
+
+// TestIdentityMethods_RunsInTheConventionsLane pins TL-79: `forge lint
+// --conventions` is the quick lane, and it must fail the broker the full
+// sweep fails, not pass it.
+func TestIdentityMethods_RunsInTheConventionsLane(t *testing.T) {
+	root := t.TempDir()
+	writeOpenSignupFile(t, root, "deploy/kcl/identity.k", identityV2KCL)
+	writeOpenSignupFile(t, root, "internal/app/login_broker.go", legacyBroker)
+	t.Chdir(root)
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return nil, ErrProjectConfigNotFound
+	})
+	report, handled, err := collectSingleLinterJSON(t.Context(), lintFlags{conventions: true}, nil, root, nil, nil, nil)
+	if err != nil || !handled {
+		t.Fatalf("collectSingleLinterJSON(--conventions) = handled %v, err %v", handled, err)
+	}
+	n := 0
+	for _, f := range report.Findings {
+		if f.Rule == ruleIdentityMethods {
+			n++
+		}
+	}
+	if n != 4 || report.OK {
+		t.Errorf("--conventions reported %d %s finding(s), ok=%v; want the full sweep's 4, gated", n, ruleIdentityMethods, report.OK)
 	}
 }

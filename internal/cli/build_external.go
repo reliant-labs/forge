@@ -360,13 +360,18 @@ func buildExternalUnit(ctx context.Context, svc WorkloadEntity, opts buildOption
 	// registry manifest — the e2e workspace-base/reliant case — or an
 	// unreachable registry) records no digest and deploy falls back to the
 	// tag exactly as before. NEVER fails the build.
-	pushedRef := externalPushedRef(svc, svcTag, opts.pushPlan.pushBase)
+	//
+	// An image-less build-only ShellBuild pushed nothing. Its declared
+	// outputs, if any, are recorded separately as file artifacts.
 	digest, platforms := "", []string(nil)
-	if d, p, derr := externalImageDigestResolver(ctx, pushedRef); derr == nil {
-		digest, platforms = d, p
-		fmt.Printf("[build] %s: pushed digest %s\n", svc.Name, digest)
-	} else {
-		fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", pushedRef, derr)
+	if svc.Image != "" {
+		pushedRef := externalPushedRef(svc, svcTag, opts.pushPlan.pushBase)
+		if d, p, derr := externalImageDigestResolver(ctx, pushedRef); derr == nil {
+			digest, platforms = d, p
+			fmt.Printf("[build] %s: pushed digest %s\n", svc.Name, digest)
+		} else {
+			fmt.Printf("[build]   Note: could not capture image digest for %s (%v); deploy will use the tag\n", pushedRef, derr)
+		}
 	}
 
 	warnSelfModifiedInputs(svc, spec, cwd, projectDir, opts, inputs.fp)
@@ -439,6 +444,14 @@ func recordExternalBuildState(svc WorkloadEntity, opts buildOptions, projectDir 
 		} else {
 			fmt.Printf("[build] %s: wrote build state: %s\n", consumer.Name, buildtarget.StatePath(projectDir, opts.env, consumer.Name))
 		}
+	}
+
+	// An image-less build has no tag a deploy pulls: leave the env's
+	// deploy-side handoff to the builds that pushed one. Writing it would
+	// replace the project image's (or another ShellBuild's) image and
+	// digest with an empty one, since the last writer wins.
+	if state.Image == "" {
+		return
 	}
 
 	// Also write the deploy-side build-<env>.json so a subsequent

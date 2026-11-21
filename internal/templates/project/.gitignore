@@ -94,21 +94,9 @@ node_modules/
 # touched any proto.
 /gen/forge_descriptor/
 
-# ── Machine-local forge state (NEVER committed) ──
-#
-# .forge-kcl/ is where older forge versions copied their KCL module into the
-# project. forge now supplies `import forge` from the binary that is
-# rendering (docs: forge's ADR 0003), so nothing writes this directory any
-# more and `forge generate` deletes a leftover one. It stays ignored because
-# a committed copy pins one forge build's schemas into every clone and CI
-# checkout; `forge lint` fails if one is tracked.
-.forge-kcl/
-
 # Seed data materializes at RUNTIME (`forge db seed` / `forge env up`
 # auto-seed) — forge writes no seed files into the project. db/seeds/custom/
-# is your hand-authored demo-data overlay and IS committed. Legacy
-# auto-generated db/seeds/*.sql / db/fixtures/ from older forge versions can
-# be deleted.
+# is your hand-authored demo-data overlay and IS committed.
 
 # ── IDE ──
 .idea/

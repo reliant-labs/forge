@@ -2231,9 +2231,12 @@ func TestE2EFixtureCorpusCRUDLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now()
 
+	// --connect v1: this test writes connect-go v1 code into the project, or
+	// asserts v1 wiring.
 	runCmd(t, dir, forgeBin, "project", "new", "crudlife",
 		"--mod", "example.com/crudlife",
 		"--service", "item",
+		"--connect", "v1",
 	)
 	projectDir := filepath.Join(dir, "crudlife")
 	addCorpusForgePkgReplace(t, projectDir)

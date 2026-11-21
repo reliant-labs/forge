@@ -196,7 +196,8 @@ func parseImportCSV(r io.Reader, each func(int, ImportUser, error) error) error 
 		if err == io.EOF {
 			return nil
 		}
-		line, _ := cr.FieldPos(0)
+		// FieldPos is only valid for a record Read returned without error:
+		// after a malformed row it can panic, so the error is handled first.
 		if err != nil {
 			var pe *csv.ParseError
 			if errors.As(err, &pe) {
@@ -207,6 +208,7 @@ func parseImportCSV(r io.Reader, each func(int, ImportUser, error) error) error 
 			}
 			return err
 		}
+		line, _ := cr.FieldPos(0)
 		u, rowErr := csvImportRow(cols, rec)
 		if cerr := each(line, u, rowErr); cerr != nil {
 			return cerr

@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -689,34 +690,35 @@ func (m *importer) converge(ctx context.Context, u ImportUser, cur *v2Human) Imp
 	}
 
 	base := "/v2/users/" + url.PathEscape(u.ID)
-	if profileDiff && m.opts.UpdateExisting {
-		if err := m.p.c.call(ctx, http.MethodPut, "/v2/users/human/"+url.PathEscape(u.ID), map[string]any{"profile": m.profile(u)}, nil, idem); err != nil && !isNoChange(err) {
-			return result(u.ID, ImportFailed, "profile: "+err.Error())
+	// The writes that the instance can refuse for the row's own sake (a
+	// link another account holds, a hash it does not accept) go first, so a
+	// refusal usually lands before anything was written. One that lands
+	// after an earlier write is reported as failed, naming what was already
+	// written: conflict and invalid promise nothing was.
+	var written []string
+	refused := func(reason string, outcome ImportOutcome) ImportResult {
+		if len(written) == 0 {
+			return result(u.ID, outcome, reason)
 		}
+		return result(u.ID, ImportFailed, reason+"; already written: "+strings.Join(written, ","))
 	}
-	if verify && m.opts.UpdateExisting {
-		if err := m.markVerified(ctx, u.ID); err != nil {
-			return result(u.ID, ImportFailed, "email_verified: "+err.Error())
+	failed := func(reason string) ImportResult {
+		if len(written) > 0 {
+			reason += "; already written: " + strings.Join(written, ",")
 		}
+		return result(u.ID, ImportFailed, reason)
 	}
 	if m.opts.UpdateExisting {
 		for _, l := range addLinks {
 			err := m.p.c.call(ctx, http.MethodPost, base+"/links", map[string]any{"idpLink": m.linkBody(l)}, nil, idem)
 			if err != nil && !isNoChange(err) {
 				if reason, outcome := classifyImportError(err, true, ""); reason == ReasonLinkTaken || reason == ReasonProviderNotApplied {
-					return result(u.ID, outcome, reason)
+					return refused(reason, outcome)
 				}
-				return result(u.ID, ImportFailed, "link: "+err.Error())
+				return failed("link: " + err.Error())
 			}
-		}
-		if len(setMD) > 0 {
-			if err := m.p.c.call(ctx, http.MethodPost, base+"/metadata", map[string]any{"metadata": metadataBody(setMD)}, nil, idem); err != nil {
-				return result(u.ID, ImportFailed, "metadata: "+err.Error())
-			}
-		}
-		if len(missingRoles) > 0 {
-			if err := m.grant(ctx, u, g); err != nil {
-				return result(u.ID, ImportFailed, err.Error())
+			if !slices.Contains(written, "links") {
+				written = append(written, "links")
 			}
 		}
 	}
@@ -726,9 +728,39 @@ func (m *importer) converge(ctx context.Context, u ImportUser, cur *v2Human) Imp
 		}, nil, idem)
 		if err != nil {
 			if reason, outcome := classifyImportError(err, false, hashScheme(u.PasswordHash)); reason == ReasonUnsupportedHash || reason == ReasonInvalidHash {
-				return result(u.ID, outcome, reason)
+				return refused(reason, outcome)
 			}
-			return result(u.ID, ImportFailed, "password: "+err.Error())
+			return failed("password: " + err.Error())
+		}
+		written = append(written, "password")
+	}
+	if profileDiff && m.opts.UpdateExisting {
+		// The row's names over the account's current ones: a name the row
+		// omits keeps its value, never one derived from the address.
+		cp := cur.Human.Profile
+		next := ImportUser{Email: u.Email, GivenName: cmp.Or(u.GivenName, cp.GivenName), FamilyName: cmp.Or(u.FamilyName, cp.FamilyName), DisplayName: cmp.Or(u.DisplayName, cp.DisplayName)}
+		if err := m.p.c.call(ctx, http.MethodPut, "/v2/users/human/"+url.PathEscape(u.ID), map[string]any{"profile": m.profile(next)}, nil, idem); err != nil && !isNoChange(err) {
+			return failed("profile: " + err.Error())
+		}
+		written = append(written, "profile")
+	}
+	if verify && m.opts.UpdateExisting {
+		if err := m.markVerified(ctx, u.ID); err != nil {
+			return failed("email_verified: " + err.Error())
+		}
+		written = append(written, "email_verified")
+	}
+	if m.opts.UpdateExisting {
+		if len(setMD) > 0 {
+			if err := m.p.c.call(ctx, http.MethodPost, base+"/metadata", map[string]any{"metadata": metadataBody(setMD)}, nil, idem); err != nil {
+				return failed("metadata: " + err.Error())
+			}
+			written = append(written, "metadata")
+		}
+		if len(missingRoles) > 0 {
+			if err := m.grant(ctx, u, g); err != nil {
+				return failed(err.Error())
+			}
 		}
 	}
 	return result(u.ID, ImportUpdated, strings.Join(changed, ","))

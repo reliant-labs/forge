@@ -476,3 +476,51 @@ func TestClassifyImportError(t *testing.T) {
 		}
 	}
 }
+
+// A row that changes only the display name keeps the account's given and
+// family names: an omitted name is never replaced by one derived from the
+// address.
+func TestImportUsers_UpdatingOneProfileFieldKeepsTheOthers(t *testing.T) {
+	f, r := convergedForImport(t, nil)
+	f.users[ada().ID] = &fUser{ID: ada().ID, UserName: "ada@acme.example", Email: "ada@acme.example", Given: "Augusta", Family: "King", DisplayName: "Ada"}
+	row := ImportUser{ID: ada().ID, Email: "ada@acme.example", DisplayName: "Countess"}
+	res := importOne(t, r, ImportOptions{UpdateExisting: true}, row)
+	wantResult(t, res[0], ImportUpdated, "profile")
+	if got := f.users[ada().ID]; got.Given != "Augusta" || got.Family != "King" || got.DisplayName != "Countess" {
+		t.Errorf("profile = %q %q %q, want Augusta King Countess", got.Given, got.Family, got.DisplayName)
+	}
+}
+
+// A refusal after an earlier write of the same row is not "conflict" (which
+// promises nothing was written): it fails, naming what was written.
+func TestImportUsers_ARefusalAfterAWriteSaysWhatWasWritten(t *testing.T) {
+	f, r := convergedForImport(t, nil)
+	importOne(t, r, ImportOptions{}, ada()) // ada holds github 583231
+	f.users["plain"] = &fUser{ID: "plain", UserName: "plain@acme.example", Email: "plain@acme.example"}
+	plain := ImportUser{ID: "plain", Email: "plain@acme.example", Links: []ImportLink{
+		{Provider: "github", ProviderUserID: "999"},    // free: written
+		{Provider: "github", ProviderUserID: "583231"}, // ada's: refused
+	}}
+	res := importOne(t, r, ImportOptions{UpdateExisting: true}, plain)
+	wantResult(t, res[0], ImportFailed, ReasonLinkTaken+"; already written: links")
+	if len(f.users["plain"].Links) != 1 {
+		t.Errorf("links = %+v, want the free one", f.users["plain"].Links)
+	}
+}
+
+// A malformed first field is reported as that row's error, never a panic.
+func TestParseImportFile_CSVMalformedRow(t *testing.T) {
+	in := "id,email\n\"u1,a@acme.example\n"
+	var errs []string
+	if err := ParseImportFile(strings.NewReader(in), func(line int, _ ImportUser, err error) error {
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%d: %v", line, err))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(errs) != 1 || !strings.Contains(errs[0], "not a CSV row") {
+		t.Errorf("errors = %v", errs)
+	}
+}

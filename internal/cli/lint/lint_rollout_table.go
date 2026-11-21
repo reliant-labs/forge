@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
+	"github.com/reliant-labs/forge/internal/linter/testscapture"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
 )
@@ -269,6 +270,12 @@ var shippedRules = []rolloutGroup{
 	// lint.rules raise it (`flake-check: error`), as forge, control-plane
 	// and reliant do.
 	{IntroducedIn: "v1.9.0", Rules: []string{RuleFlakeCheck}},
+	// forge lint's tests-capture step: a Taskfile test lane that runs go
+	// test without `forge test capture`, so nothing it runs is recorded
+	// (the tests playbook, migrations/v1.9.0/tests, moves it). Advisory at
+	// any pin — recording is report-only by default, so this never gates
+	// on its own; the row lets lint.rules raise it (`tests-capture: error`).
+	{IntroducedIn: "v1.9.0", Rules: []string{testscapture.Rule}},
 }
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.

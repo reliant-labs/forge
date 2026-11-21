@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/linter/testscapture"
 	"github.com/reliant-labs/forge/internal/shellrun"
 )
 
@@ -29,6 +31,8 @@ func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 	switch name {
 	case "pre-zod4-forms":
 		return projectHasPreZod4Frontend, true
+	case "tests-capture":
+		return projectHasUncapturedTestLane, true
 	}
 	return nil, false
 }
@@ -90,4 +94,16 @@ func projectHasPreZod4Frontend(projectRoot string) bool {
 		}
 	}
 	return false
+}
+
+// projectHasUncapturedTestLane reports whether the project's Taskfile has a
+// test lane whose go test runs without `forge test capture` — what the
+// tests-capture lint rule reports, read by the same analyzer, so the v1.9.0
+// playbook is offered exactly while `forge lint` warns about it.
+func projectHasUncapturedTestLane(projectRoot string) bool {
+	src, err := os.ReadFile(filepath.Join(projectRoot, "Taskfile.yml"))
+	if err != nil {
+		return false
+	}
+	return len(testscapture.CheckTaskfile("Taskfile.yml", src)) > 0
 }

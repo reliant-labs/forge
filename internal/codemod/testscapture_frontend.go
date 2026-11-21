@@ -131,7 +131,7 @@ func (r *tcRun) vitestConfig(fe string) {
 	// The const sits where a new scaffold has it: after the web runtime's
 	// peers, else above the config and the comment that heads it.
 	at := -1
-	if p := tsPeersRe.FindStringIndex(next); p != nil && p[1] <= exp[0] {
+	if p := tsPeersRe.FindStringIndex(next); len(p) == 2 && p[1] <= exp[0] {
 		at = p[1]
 	}
 	if at < 0 {

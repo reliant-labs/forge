@@ -215,7 +215,9 @@ func copyFixtureTree(t *testing.T, src, dst string) map[string]string {
 // does not reach the codemod fails here rather than in a project upgraded to
 // a shape no scaffold has.
 func TestTestsCaptureBlocksAreTodaysTemplates(t *testing.T) {
-	golden := func(name string) string { return readFile(t, filepath.Join("..", "templates", "testdata", "golden"), name) }
+	golden := func(name string) string {
+		return readFile(t, filepath.Join("..", "templates", "testdata", "golden"), name)
+	}
 	tmpl := func(rel string) string { return readFile(t, filepath.Join("..", "templates"), rel) }
 	sources := map[string]string{
 		"Taskfile.yml.golden": golden("Taskfile.yml.golden"),

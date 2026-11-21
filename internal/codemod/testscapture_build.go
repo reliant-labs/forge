@@ -130,7 +130,7 @@ func (r *tcRun) dockerfile() {
 	lastCopy := -1
 	for _, in := range production.instrs {
 		text := in.text
-		if m := dfCopyBinRe.FindStringSubmatch(text); m != nil && built[m[1]] {
+		if m := dfCopyBinRe.FindStringSubmatch(text); len(m) == 3 && built[m[1]] {
 			text = "COPY --from=cover-builder /app/cover/" + m[1] + " " + m[2]
 		}
 		n := len(groups)
@@ -187,7 +187,7 @@ func (r *tcRun) airTOML() {
 			continue
 		}
 		m := airCmdRe.FindStringSubmatch(l)
-		if m == nil || m[2] != m[4] || done[section] {
+		if len(m) != 5 || m[2] != m[4] || done[section] {
 			continue
 		}
 		cmd := m[3]

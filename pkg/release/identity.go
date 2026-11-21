@@ -437,6 +437,17 @@ func IsIdentityKind(kind string) bool {
 // ([IdentitySlugFor]) and of its delivered Secrets' names.
 var identityListNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,23}$`)
 
+// identityManagedToken is the part of an identity's name its hosted managed
+// secrets carry, RELIANT_IDENTITY_<token>_<output>: the name upper-cased,
+// each run of other characters one "_" (KCL render.k _idn_tok). Distinct
+// names can share one ("a-b" and "a--b" are both A_B), so validateIdentities
+// refuses two that do.
+func identityManagedToken(name string) string {
+	return identityTokenRunRE.ReplaceAllString(strings.ToUpper(name), "_")
+}
+
+var identityTokenRunRE = regexp.MustCompile(`[^A-Z0-9]+`)
+
 // AllIdentities is every managed identity the shape declares, keyed by
 // ShapeIdentity.Name: Shape.Identities when the env declares several, else
 // Shape.Identity alone, else none. Every reader of a shape's identities reads
@@ -483,6 +494,7 @@ func (s Shape) validateIdentities() error {
 		return nil
 	}
 	names := map[string]bool{}
+	tokens := map[string]string{}
 	deliveredBy := map[string]string{}
 	for _, i := range ids {
 		if len(s.Identities) > 0 && !identityListNameRE.MatchString(i.Name) {
@@ -492,6 +504,11 @@ func (s Shape) validateIdentities() error {
 			return fmt.Errorf("%w: shape declares identity %q twice: the name is the instance's key", ErrInvalid, i.Name)
 		}
 		names[i.Name] = true
+		tok := identityManagedToken(i.Name)
+		if other, dup := tokens[tok]; dup {
+			return fmt.Errorf("%w: shape identities %q and %q both name their hosted managed secrets %s%s_*: one identity would read the other's issuer and keys; rename one", ErrInvalid, other, i.Name, IdentityManagedSecretPrefix, tok)
+		}
+		tokens[tok] = i.Name
 		if err := i.validate(s.ControlPlaneSecrets); err != nil {
 			return err
 		}

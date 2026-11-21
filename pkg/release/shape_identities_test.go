@@ -143,6 +143,13 @@ func TestShape_IdentitiesValidate(t *testing.T) {
 			s.Identities[0].Name = "9users"
 			s.Identities[0].Deliveries = nil
 		}, `identities name "9users" must match`},
+		"one managed-secret namespace, two identities": {func(s *Shape) {
+			u := usersIdentity()
+			u.Name, u.Deliveries = "a-b", nil
+			v := usersIdentity()
+			v.Name, v.Deliveries = "a--b", nil
+			s.Identities = []ShapeIdentity{u, v}
+		}, `identities "a-b" and "a--b" both name their hosted managed secrets RELIANT_IDENTITY_A_B_*`},
 		"one Secret, two identities": {func(s *Shape) {
 			s.Identities[0].Deliveries = []ShapeIdentityDelivery{idCluster()}
 		}, `both deliver gke_acme_prod/acme/forge-identity-identity`},

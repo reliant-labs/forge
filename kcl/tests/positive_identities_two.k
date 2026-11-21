@@ -83,9 +83,9 @@ assert_gateway_users_issuer = _gw["USERS_JWT_ISSUER"].secretRef.name == "forge-i
 assert_gateway_users_scopes = _gw["USERS_OIDC_SCOPES"].secretRef.name == "forge-identity-users"
 assert_gateway_one_roles_claim = _gw["JWT_ROLES_CLAIM"].value == "auto" and "USERS_JWT_ROLES_CLAIM" not in _gw
 assert_gateway_operator_jwks_file = _gw["JWT_JWKS_SNAPSHOT_FILE"].value == "/var/run/secrets/forge/identity-jwks/jwks.json"
-assert_gateway_users_jwks_file = _gw["USERS_JWT_JWKS_SNAPSHOT_FILE"].value == "/var/run/secrets/forge/identity-jwks-users/jwks.json"
-assert_gateway_volumes = sorted(_vols("gateway")) == ["forge-identity-jwks", "forge-identity-jwks-users"]
-assert_gateway_users_volume = _vols("gateway")["forge-identity-jwks-users"].mountPath == "/var/run/secrets/forge/identity-jwks-users" and _vols("gateway")["forge-identity-jwks-users"].source.secret.name == "forge-identity-users-jwks"
+assert_gateway_users_jwks_file = _gw["USERS_JWT_JWKS_SNAPSHOT_FILE"].value == "/var/run/secrets/forge/identity-jwks--users/jwks.json"
+assert_gateway_volumes = sorted(_vols("gateway")) == ["forge-identity-jwks", "forge-identity-jwks--users"]
+assert_gateway_users_volume = _vols("gateway")["forge-identity-jwks--users"].mountPath == "/var/run/secrets/forge/identity-jwks--users" and _vols("gateway")["forge-identity-jwks--users"].source.secret.name == "forge-identity-users-jwks"
 assert_gateway_brokers_nothing = "OIDC_CLIENT_ID" not in _gw and "IDP_BROKER_TOKEN_FILE" not in _gw
 
 # An explicit IdentityRef names the identity it reads.

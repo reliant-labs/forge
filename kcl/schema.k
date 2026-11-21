@@ -8963,6 +8963,8 @@ schema Bundle:
             "Bundle.identity and Bundle.identities are both set: put every instance in identities (identity is sugar for identities = [identity])"
         len(_duplicates([i.name for i in identities])) == 0, \
             "Bundle.identities: a name is declared twice: ${_duplicates([i.name for i in identities])}. ManagedIdentity.name is the instance's key (its issuer, its delivered Secrets and its users), so each identity names its own"
+        len(_duplicates([_idn_tok(i.name) for i in identities])) == 0, \
+            "Bundle.identities: ${[i.name for i in identities if _idn_tok(i.name) in _duplicates([_idn_tok(j.name) for j in identities])]} differ only in their punctuation, so a hosted consumer would read all of them from the same managed secrets (RELIANT_IDENTITY_${_duplicates([_idn_tok(i.name) for i in identities])[0] if _duplicates([_idn_tok(i.name) for i in identities]) else ''}_*): rename one"
         all i in identities { regex.match(i.name, _IDN_LIST_NAME_RE) }, \
             "Bundle.identities names ${[i.name for i in identities if not regex.match(i.name, _IDN_LIST_NAME_RE)]} must match ^[a-z][a-z0-9-]{0,23}$: the name is part of the instance's issuer slug and of its delivered Secrets' names"
         # A CONTROL-PLANE SECRET NEEDS A CONTROL PLANE TO DELIVER IT, AND A

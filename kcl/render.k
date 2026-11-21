@@ -1449,12 +1449,19 @@ _idn_of = lambda w: any, bundle: Bundle -> [any] {
 }
 
 # Where a cluster consumer's identity FILES are mounted: IDENTITY_DIR and
-# IDENTITY_JWKS_DIR, plus "-<name>" for an identity other than the default
+# IDENTITY_JWKS_DIR, plus "--<name>" for an identity other than the default
 # one ("identity") when the workload reads files of several. A workload that
 # reads one identity mounts exactly as it always did, whatever its name.
+#
+# The separator is "--" because a name starts with a letter: the default
+# pair is forge-identity and forge-identity-jwks, a named pair
+# forge-identity--<name> and forge-identity-jwks--<name>, and no name can
+# make one of those another (a single "-" did: an identity named "jwks"
+# mounted its broker token as forge-identity-jwks, the default's snapshot).
+# Volume names and mount paths share the suffix, so both stay disjoint.
 _idn_dir_suffix = lambda w: any, id: any, rt: any, bundle: Bundle -> str {
     _files = [i for i in _idn_of(w, bundle) if _idn_lowering(i, rt) == "secret"]
-    "-" + id.name if len(_files) > 1 and id.name != "identity" else ""
+    "--" + id.name if len(_files) > 1 and id.name != "identity" else ""
 }
 
 _idn_entries = lambda c: any, id: any, rt: any, bundle: Bundle, sfx: str -> {str:} {

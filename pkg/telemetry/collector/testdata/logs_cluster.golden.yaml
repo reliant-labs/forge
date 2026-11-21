@@ -104,6 +104,25 @@ processors:
     - context: resource
       statements:
       - delete_matching_keys(attributes, "^forge\\.telemetry\\.label\\.")
+    trace_statements:
+    - conditions:
+      - (attributes["k8s.namespace.name"] == "temporal") and attributes["forge.telemetry.label.app.kubernetes.io/component"]
+        == "frontend" and attributes["forge.telemetry.label.app.kubernetes.io/name"]
+        == "temporal"
+      context: resource
+      statements:
+      - set(attributes["service.name"], "temporal")
+      - set(attributes["deployment.environment.name"], "dev")
+      - set(attributes["service.namespace"], "acme")
+    - conditions:
+      - (attributes["k8s.namespace.name"] == "openbao") and attributes["forge.telemetry.label.app.kubernetes.io/name"]
+        == "openbao"
+      context: resource
+      statements:
+      - set(attributes["service.name"], "openbao")
+    - context: resource
+      statements:
+      - delete_matching_keys(attributes, "^forge\\.telemetry\\.label\\.")
   transform/telemetry_logs:
     error_mode: silent
     log_statements:

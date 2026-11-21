@@ -227,6 +227,12 @@ type ProjectConfig struct {
 	// `coverage` is read by the env render (instrumented builds, through
 	// ReadTestsCoverage), the rest by the `forge test` verbs.
 	Tests TestsConfig `yaml:"tests,omitempty"`
+	// Vuln steers the SBOMs and vulnerability findings forge records for
+	// each release, and how it patches them. See [VulnConfig]; read where
+	// the release cut stores an OCI artifact's SBOM (internal/sbomoci), and
+	// by `forge vuln patch` (internal/cli/vuln_patch.go) for
+	// vuln.patch.verify.
+	Vuln VulnConfig `yaml:"vuln,omitempty"`
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the
 	// brownfield seam (monitoring.go).

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -572,3 +573,26 @@ func TestEnvDiff_RefusesBothOrNeitherTarget(t *testing.T) {
 		}
 	}
 }
+
+// forge report 0c712860: the candidate render was unbound, so it omitted the
+// service.version the deploy's render stamped into every workload's
+// OTEL_RESOURCE_ATTRIBUTES, and an unchanged checkout read "config changed"
+// for every workload right after its deploy. The render is bound to the
+// release the applied bundle was built for.
+func TestEnvDiff_RendersUnderTheLiveBundlesRelease(t *testing.T) {
+	prev := renderEnvShapeForDiff
+	t.Cleanup(func() { renderEnvShapeForDiff = prev })
+	var bound []string
+	renderEnvShapeForDiff = func(ctx context.Context, _, env string, _ io.Writer) (envShapeDoc, []string, error) {
+		bound = append(bound, kclrender.Release(ctx))
+		return envShapeDoc{Env: env, Shape: diffShape(obj("Deployment", "api", "a"))}, nil, nil
+	}
+	live := liveSide{Known: true, Source: "bundle", Release: "v9.9.0", Shape: ptrShape(diffShape(obj("Deployment", "api", "a")))}
+	diffOneEnv(context.Background(), t.TempDir(), "prod", live, envDiffOptions{}, io.Discard)
+	diffOneEnv(context.Background(), t.TempDir(), "prod", liveSide{Known: true}, envDiffOptions{}, io.Discard)
+	if len(bound) != 2 || bound[0] != "v9.9.0" || bound[1] != "" {
+		t.Fatalf("renders were bound to %q, want [v9.9.0, \"\"] (the live bundle's release; none when no bundle)", bound)
+	}
+}
+
+func ptrShape(s release.Shape) *release.Shape { return &s }

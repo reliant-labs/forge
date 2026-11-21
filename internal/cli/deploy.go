@@ -1363,9 +1363,9 @@ func resolveEnvMainK(store *projectstore.Store, envName string) (string, error) 
 	if kclDir == "" {
 		kclDir = "deploy/kcl"
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDirForKCL(), kclDir, envName)
 	if !envHasDeclaration(projectDirForKCL(), envName, mainK) {
-		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists\nAvailable environments can be found under %s/ and deploy/envs/", envName, mainK, envName, kclDir)
+		return "", fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists\nAvailable environments can be found under %s/ and deploy/envs/", envName, shown, envName, kclDir)
 	}
 	return mainK, nil
 }

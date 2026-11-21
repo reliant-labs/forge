@@ -1943,6 +1943,7 @@ _Enforced · Forge, on any infrastructure_
 | `static-export-next-image`                 | `next/image` with its default server-side optimizer, which the export refuses unless `images.unoptimized` is set                                                                                                                                        | `--static-export`   |
 | `static-export-config-routes`              | `rewrites`, `redirects` or `headers` in `next.config` not gated to development: they work under `next dev` and 404 or vanish on a static host                                                                                                           | `--static-export`   |
 | `static-export-trailing-slash`             | A frontend on a bucket with `trailingSlash` off: the export writes `<route>.html` and a bucket serves objects by exact name, so every route but `/` 404s                                                                                                | `--static-export`   |
+| `static-export-partial-prerender`          | `cacheComponents: true` (create-next-app's Next.js 16 default) or `experimental.ppr` in `next.config`, which turns on partial prerendering and makes `next build` refuse the export                                                                     | `--static-export`   |
 | `static-export-vite-out-dir`               | A Vite frontend on a static runtime whose `build.outDir` is not the env's `public_dir`, so the deploy publishes a directory the build never wrote: missing, or stale from an older build                                                                | `--static-export`   |
 | `static-export-vite-base`                  | A Vite `base` that misses where the env mounts the frontend (`base_path`, or the site root), so every script and stylesheet 404s and the page loads blank; or a relative base with a path-based client router, which breaks deep links to nested routes | `--static-export`   |
 | `forgeconv-frontend-process-env`           | Reading `process.env` or `import.meta.env` in frontend source freezes the bundle to the environment it was built for, defeating build-once promotion, and bypasses the typed schema and the secret refusal                                              | `--conventions`     |
@@ -3935,6 +3936,26 @@ _Enforced · Reliant hosting_
 
 - library [`pkg/obsbuiltin`](../pkg/obsbuiltin)
 - source [`pkg/obsbuiltin/population_clickhouse_test.go`](../pkg/obsbuiltin/population_clickhouse_test.go)
+- skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
+
+<a id="controlled-rollouts-and-experiments"></a>
+
+### Controlled rollouts and A/B tests
+
+Planned: one change ships new app behavior to everyone, as a gradual rollout, or as a comparison of versions, with stable cohorts by user, account, or visitor.
+
+_In progress · Reliant hosting_
+
+**Use:** Create a change with its default and new behavior, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The planned project-level Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
+
+**Why:** The deterministic evaluation core, exposure events, and product-event tracking are building blocks, not a shipped rollout or experiment service. The proposed first version evaluates a versioned policy locally in the app, without a network call on each request or changes to load balancers.
+
+**Evidence:**
+
+- library [`pkg/changes`](../pkg/changes)
+- library [`pkg/observe`](../pkg/observe)
+- source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
+- source [`web-runtime/src/exposure.ts`](../web-runtime/src/exposure.ts)
 - skill `observability/product-analytics` (`forge skill load observability/product-analytics`)
 
 <a id="builtin-ai-hub"></a>

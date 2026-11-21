@@ -27,5 +27,5 @@ import "embed"
 // Module is the embedded forge KCL module, rooted at this directory
 // (paths like "kcl.mod", "schema.k", "workloads/expand.k").
 //
-//go:embed kcl.mod *.k workloads/*.k lib/*.k tiers/*.k
+//go:embed kcl.mod *.k workloads/*.k lib/*.k tiers/*.k dashspec/*.k
 var Module embed.FS

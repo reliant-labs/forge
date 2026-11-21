@@ -58,6 +58,7 @@ import (
 	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 	"github.com/reliant-labs/forge/pkg/release"
 	"github.com/reliant-labs/forge/pkg/stsresize"
+	"github.com/reliant-labs/forge/pkg/telemetry/collector"
 )
 
 // RolloutMode is what Apply does after the manifests land.
@@ -1599,8 +1600,18 @@ func extractManifestsIn(ctx context.Context, projectDir string, kclOutput []byte
 		return "", nil, err
 	}
 
-	items, err = expandTierDeclarations(items, network, pullSecrets)
+	tel, err := decodeTelemetry(out)
 	if err != nil {
+		return "", nil, err
+	}
+	collectors := tel.collectors(items)
+	items, err = expandTierDeclarationsWith(items, network, pullSecrets, tel, collectors)
+	if err != nil {
+		return "", nil, err
+	}
+	// The NetworkPolicies Manifests and Observability telemetry asks for,
+	// beside the objects they admit the collector into (telemetry.go).
+	if items, err = insertTelemetryPolicies(items, tel, collectors); err != nil {
 		return "", nil, err
 	}
 
@@ -1784,6 +1795,14 @@ func (g *workloadGroup) unitOf(app string) string {
 // NetworkPolicies, which carry no app label — so multi-cluster scoping and
 // env-scoped prune/status see them exactly as they saw the record.
 func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullSecrets map[workloadGroupKey][]string) ([]any, error) {
+	return expandTierDeclarationsWith(items, network, pullSecrets, nil, nil)
+}
+
+// expandTierDeclarationsWith is expandTierDeclarations with the env's
+// declared telemetry: each group's Workload targets and the collector of its
+// cluster ride its RenderWorkloads call (deploy.Context.Telemetry), so the
+// workloads' own NetworkPolicies admit the collector that pulls them.
+func expandTierDeclarationsWith(items []any, network *deploy.EnvNetworkPolicy, pullSecrets map[workloadGroupKey][]string, tel *envTelemetry, collectors map[string]collector.CollectorRef) ([]any, error) {
 	groups := map[workloadGroupKey]*workloadGroup{}
 	var order []workloadGroupKey
 	leaders := map[int]workloadGroupKey{}
@@ -1835,6 +1854,7 @@ func expandTierDeclarations(items []any, network *deploy.EnvNetworkPolicy, pullS
 			Version:          g.labels[deploy.LabelVersion],
 			Network:          network,
 			ImagePullSecrets: pullSecrets[key],
+			Telemetry:        tel.workloads(key.cluster, collectors),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("render workloads (cluster %q, namespace %s): %w", key.cluster, key.namespace, err)

@@ -202,6 +202,11 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 	if err := reconcileConnectIdentity(svc, projectDir, targetDir, cs); err != nil {
 		return nil, fmt.Errorf("reconcile Connect service identity: %w", err)
 	}
+	// Before the scan: a v2 helper still named RegisterV2 beside an RPC of
+	// that name would otherwise be counted as the RPC's implementation.
+	if err := reconcileMountHelper(svc, projectDir, targetDir, cs); err != nil {
+		return nil, fmt.Errorf("reconcile the service's mount helper name: %w", err)
+	}
 	existing, err := ScanExistingMethods(targetDir, false)
 	if err != nil {
 		return nil, fmt.Errorf("scan existing methods: %w", err)
@@ -359,7 +364,9 @@ func GenerateMissingHandlerStubs(svc ServiceDef, projectDir, targetDir string, c
 //     it, or renamed the method away and kept the file): render a method-only
 //     fragment and APPEND it, then re-parse and ensure the imports the stub
 //     needs (context, connectrpc.com/connect, forge/pkg/svcerr, and the
-//     aliased proto pkg `pb`) are present before gofmt-ing the whole file.
+//     aliased proto pkg `pb`; for connect-go v2, the generated <pkg>connect
+//     package of a streaming stub instead of the runtime) are present before
+//     gofmt-ing the whole file.
 //     Every stub body references all of them, so none is left unused — which
 //     is why `fmt` is NOT among them: svcerr.ScaffoldStub composes the message
 //     from the RPC name, so the stub no longer formats anything itself, and
@@ -432,9 +439,20 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 	// when the import (by path, and by name for the alias) is already present —
 	// which it is for any handler file that already declares handler methods.
 	astutil.AddImport(fset, file, "context")
-	astutil.AddImport(fset, file, "connectrpc.com/connect")
+	if data.ConnectV2 {
+		// A v2 stub names no connect runtime type; a streaming one names
+		// its per-rpc stream type in the generated <pkg>connect package.
+		if data.HasStreamingMethods() {
+			pbPath := data.Module + "/gen/" + data.ProtoPackage + "/v1"
+			astutil.AddNamedImport(fset, file, data.ProtoConnectPackage, pbPath+"/"+data.ProtoConnectPackage)
+		}
+	} else {
+		astutil.AddImport(fset, file, "connectrpc.com/connect")
+	}
 	astutil.AddImport(fset, file, "github.com/reliant-labs/forge/pkg/svcerr")
-	astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")
+	if !data.ConnectV2 || data.NamesPbMessages() {
+		astutil.AddNamedImport(fset, file, "pb", data.Module+"/gen/"+data.ProtoPackage+"/v1")
+	}
 
 	var buf bytes.Buffer
 	if err := format.Node(&buf, fset, file); err != nil {
@@ -465,7 +483,7 @@ func scaffoldHandlerStubs(handlersPath string, data ServiceTemplateData) error {
 // directory and is already indifferent to filenames. Projects born before
 // the split keep their handlers.go and keep working, untouched.
 func RPCHandlerFileName(rpc string) string {
-	return rpcHandlerPrefix + naming.ToSnakeCase(rpc) + ".go"
+	return rpcHandlerPrefix + buildSafeStem(naming.ToSnakeCase(rpc)) + ".go"
 }
 
 const rpcHandlerPrefix = "rpc_"
@@ -482,7 +500,7 @@ const rpcHandlerPrefix = "rpc_"
 // (IsScaffoldTestFile) — including the pre-split
 // `handlers_scaffold_test.go` that older projects still carry on disk.
 func ScaffoldTestFileName(rpc string) string {
-	return scaffoldTestPrefix + naming.ToSnakeCase(rpc) + "_test.go"
+	return scaffoldTestPrefix + buildSafeStem(naming.ToSnakeCase(rpc)) + "_test.go"
 }
 
 const scaffoldTestPrefix = "handlers_scaffold_"

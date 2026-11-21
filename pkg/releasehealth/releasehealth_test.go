@@ -912,3 +912,31 @@ func TestWithIssueThresholdsHoldsAnOlderAnswerToTheRule(t *testing.T) {
 		}
 	})
 }
+
+// An issue first seen or regressed after the after window closed is a later
+// incident's, not the release's (bug report c8706934: 71 issues regressed by a
+// database restart 3.5h after a closed window failed the promotion). The
+// window is [P, after.To), as for alerts.
+func TestIssuesAfterTheWindowAreNotTheRelease(t *testing.T) {
+	in := input(t, true, svc("api", 1000, 1000, 0.01, 0.01, 100, 100))
+	end := in.Windows.After.To
+	in.NewIssues = []Issue{
+		{ID: "ISS-LATE", Events: 9, FirstSeenAt: end.Add(3 * time.Hour), FirstVersion: "v2"},
+		{ID: "ISS-EDGE", Events: 9, FirstSeenAt: end, FirstVersion: "v2"},
+	}
+	in.RegressedIssues = []Issue{
+		{ID: "ISS-DB", Events: 4, RegressedAt: end.Add(3*time.Hour + 30*time.Minute)},
+		{ID: "ISS-IN", Events: 4, RegressedAt: end.Add(-time.Second)},
+	}
+	r := Evaluate(in)
+	var codes []string
+	for _, f := range r.Findings {
+		codes = append(codes, f.Code+":"+f.Ref)
+	}
+	if len(codes) != 1 || codes[0] != "regressed_issue:ISS-IN" {
+		t.Fatalf("findings = %v, want only the regression inside the window", codes)
+	}
+	if len(r.NewIssues) != 0 || len(r.RegressedIssues) != 1 {
+		t.Errorf("report issues = %v / %v", r.NewIssues, r.RegressedIssues)
+	}
+}

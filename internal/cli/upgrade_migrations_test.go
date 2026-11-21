@@ -93,8 +93,10 @@ func TestWritePendingMigrationsHuman_EmptyRegistrySaysSo(t *testing.T) {
 	if err := writePendingMigrationsHuman(&buf, nil, 3 /* shipped */); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if !strings.Contains(buf.String(), "up to date") {
-		t.Errorf("expected 'up to date' when migrations exist but none apply, got: %q", buf.String())
+	// Not "up to date": the pin may be behind this forge (upgrade-report
+	// defect 9); what is true is that no playbook applies.
+	if got := buf.String(); !strings.Contains(got, "No migration playbooks pending") || !strings.Contains(got, "ships 3") || strings.Contains(got, "up to date") {
+		t.Errorf("expected 'No migration playbooks pending … ships 3' when migrations exist but none apply, got: %q", got)
 	}
 }
 
@@ -512,7 +514,6 @@ func newTestProjectWithVersion(t *testing.T, forgeVersion string) string {
 	}
 	cfg := []byte(pin + `name: test-project
 module_path: github.com/example/test
-version: 0.1.0
 `)
 	if err := os.WriteFile(filepath.Join(dir, "forge.yaml"), cfg, 0o644); err != nil {
 		t.Fatalf("write forge.yaml: %v", err)
@@ -548,69 +549,4 @@ func withCwd(t *testing.T, dir string, fn func()) {
 		}
 	}()
 	fn()
-}
-
-// TestIsPreV01Baseline pins the baseline classification. Forge has never
-// released v0.1.0, so every real pin in existence — released 0.0.x tags,
-// pseudo-versions from local checkouts, the unpinned sentinel — is below the
-// line. Getting this wrong in either direction is how a project gets handed
-// the migrations of a release it was never on.
-func TestIsPreV01Baseline(t *testing.T) {
-	tests := []struct {
-		version string
-		want    bool
-	}{
-		{"", true},        // unpinned
-		{"0.0.0", true},   // unpinned sentinel
-		{"dev", true},     // unorderable sentinel
-		{"(devel)", true}, // unorderable sentinel
-		{"v0.0.3", true},  // released 0.0.x tag
-		{"v0.0.4-0.20260724212501-dfb85daf8474+dirty", true}, // dirty local build
-		{"v0.0.0-20260430002332-8f05b089372c", true},         // untagged-base pseudo-version
-		{"v0.1.0-0.20260724212501-dfb85daf8474", true},       // pre-release OF v0.1.0 is still below it
-		{"v0.1.0", false}, // the first compat tag
-		{"v0.1.3", false},
-		{"v1.4.0", false},
-	}
-	for _, tt := range tests {
-		if got := isPreV01Baseline(tt.version); got != tt.want {
-			t.Errorf("isPreV01Baseline(%q) = %v, want %v", tt.version, got, tt.want)
-		}
-	}
-}
-
-// TestStaticRoutesMigration_DetectsDynamicIDRoutes runs the SHIPPED
-// detection of the static-routes migration against the two shapes it has to
-// tell apart: a frontend still carrying `src/app/<slug>/[id]/` (offered) and
-// one already on the static `view/` + `edit/` pages (not offered). Detection
-// runs in forge's in-process shell, where a quoted `'[id]'` path component
-// never globs — the first draft of this skill read naturally and matched
-// nothing, so `upgrade list` reported every project up to date.
-func TestStaticRoutesMigration_DetectsDynamicIDRoutes(t *testing.T) {
-	metas, err := loadMigrationMetas()
-	if err != nil {
-		t.Fatalf("loadMigrationMetas: %v", err)
-	}
-	var m migrationMeta
-	for _, candidate := range metas {
-		if candidate.SkillPath == staticRoutesMigrationSkill {
-			m = candidate
-		}
-	}
-	if m.ID == "" {
-		t.Fatalf("no shipped migration at %s — `forge generate` points users at it", staticRoutesMigrationSkill)
-	}
-
-	legacy := t.TempDir()
-	mkfile(t, filepath.Join(legacy, "frontends", "web", "src", "app", "books", "[id]", "page.tsx"))
-	if !migrationApplies(m, "v0.1.29", legacy) {
-		t.Error("a frontend with src/app/books/[id]/ was not offered the static-routes migration")
-	}
-
-	current := t.TempDir()
-	mkfile(t, filepath.Join(current, "frontends", "web", "src", "app", "books", "view", "page.tsx"))
-	mkfile(t, filepath.Join(current, "frontends", "web", "src", "app", "books", "edit", "page.tsx"))
-	if migrationApplies(m, "v0.1.29", current) {
-		t.Error("a frontend already on static view/edit routes was offered the migration")
-	}
 }

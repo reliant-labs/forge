@@ -294,7 +294,8 @@ func (m *graphModel) audienceFindings() []GraphFinding {
 			if dn == nil {
 				continue
 			}
-			if dt, ok := m.u.produced[d]; ok && embedsNamed(dt, serverkitPkg, "Chain", 0) {
+			// A connect-go v2 project's chains are serverkit.ChainV2.
+			if dt, ok := m.u.produced[d]; ok && (embedsNamed(dt, serverkitPkg, "Chain", 0) || embedsNamed(dt, serverkitPkg, "ChainV2", 0)) {
 				chains = append(chains, d)
 				m.walk(d, func(x *graphNode) bool {
 					if x.AuthAudience != "" {

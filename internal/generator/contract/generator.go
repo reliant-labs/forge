@@ -1215,6 +1215,24 @@ var crossPackageInterfaces = map[string]bool{
 	"connect.StreamingClientInterceptor":  true,
 	"connect.AnyRequest":                  true,
 	"connect.AnyResponse":                 true,
+	// connect-go v2: interceptors are func types and streams interfaces,
+	// so a nil is their zero value too. Listed under both the `connect`
+	// name a v2 project's own code imports it as and the `connectv2`
+	// alias forge/pkg uses. (A v1 `connect.ServerStream` is generic and
+	// always spelled with its type argument, so the bare names below can
+	// only be v2's.)
+	"connect.ServerInterceptor":   true,
+	"connect.ClientInterceptor":   true,
+	"connect.ServerFunc":          true,
+	"connect.ClientFunc":          true,
+	"connect.ServerStream":        true,
+	"connect.ClientStream":        true,
+	"connectv2.ServerInterceptor": true,
+	"connectv2.ClientInterceptor": true,
+	"connectv2.ServerFunc":        true,
+	"connectv2.ClientFunc":        true,
+	"connectv2.ServerStream":      true,
+	"connectv2.ClientStream":      true,
 }
 
 // isInterfaceType reports whether typeExpr names an interface — either a

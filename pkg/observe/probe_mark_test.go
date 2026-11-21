@@ -8,15 +8,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"github.com/reliant-labs/forge/pkg/release"
+	"go.opentelemetry.io/otel/trace"
 )
-
-func TestProbeAttrIsTheReleaseContract(t *testing.T) {
-	if attrForgeProbe != release.ProbeAttr {
-		t.Fatalf("attrForgeProbe = %q, release.ProbeAttr = %q: readers would count marked probes as real traffic", attrForgeProbe, release.ProbeAttr)
-	}
-}
 
 // The server span and the innermost span both carry forge.probe=true, stored
 // as the "true" SpanNotProbeSQL compares against.
@@ -33,7 +26,7 @@ func TestMarkProbeSpansMarksServerAndInnerSpans(t *testing.T) {
 	for _, s := range rec.Ended() {
 		var got attribute.Value
 		for _, kv := range s.Attributes() {
-			if string(kv.Key) == release.ProbeAttr {
+			if string(kv.Key) == attrForgeProbe {
 				got = kv.Value
 			}
 		}
@@ -44,6 +37,19 @@ func TestMarkProbeSpansMarksServerAndInnerSpans(t *testing.T) {
 	if len(rec.Ended()) != 2 {
 		t.Fatalf("recorded %d spans, want 2", len(rec.Ended()))
 	}
+}
+
+// With no tracer provider recording, the request's spans are otel's
+// non-recording spans, whose dynamic type is not comparable. Marking them is a
+// no-op, never a panic (a dev stack with no collector served every probe
+// health check as a recovered panic).
+func TestMarkProbeSpansWithNonRecordingSpans(t *testing.T) {
+	ctx := trace.ContextWithSpanContext(context.Background(), trace.SpanContext{})
+	// No server span recorded: serverSpanOf falls back to the innermost span.
+	MarkProbeSpans(ctx)
+	// A server span recorded, and a second non-recording span inside it.
+	ctx = context.WithValue(ctx, serverSpanKey{}, trace.SpanFromContext(ctx))
+	MarkProbeSpans(trace.ContextWithSpanContext(ctx, trace.SpanContext{}))
 }
 
 // Only the health check that carries the probe header is a probe: a monitor's

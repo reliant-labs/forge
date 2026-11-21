@@ -569,12 +569,14 @@ func (q TraceQuery) CompileWindow(from time.Time) (Stmt, error) {
 // the rows Compile returns. starts are the rows' start column, in the order
 // returned. It holds when the window covers the whole range, or when the
 // statement returned Limit+1 rows (the page and the row that says another page
-// follows) all starting at or after from.
+// follows) all starting strictly after from. Strictly: a row whose start
+// equals from is accepted by no proof that rests on how precisely the start
+// column and from compare, so the page widens its window instead.
 func (q TraceQuery) WindowPageExact(from time.Time, starts []time.Time) bool {
 	if !from.After(q.Scope.Start) {
 		return true
 	}
-	return len(starts) > q.Limit && !starts[q.Limit].Before(from)
+	return len(starts) > q.Limit && starts[q.Limit].After(from)
 }
 
 // CompileRED builds the RED summary over every trace the filters match.

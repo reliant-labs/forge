@@ -142,12 +142,13 @@ func TestWindowPageExact(t *testing.T) {
 		starts []time.Time
 		want   bool
 	}{
-		"a full page in the window":             {from, at(50, 40, 30), true},
-		"the lookahead row began before it":     {from, at(50, 40, 29), false},
-		"too few rows to know the page":         {from, at(50, 40), false},
-		"no rows":                               {from, nil, false},
-		"the window is the range":               {t0, at(50), true},
-		"the window covers more than the range": {t0.Add(-time.Hour), nil, true},
+		"a full page in the window":              {from, at(50, 40, 31), true},
+		"the lookahead row starts exactly at it": {from, at(50, 40, 30), false},
+		"the lookahead row began before it":      {from, at(50, 40, 29), false},
+		"too few rows to know the page":          {from, at(50, 40), false},
+		"no rows":                                {from, nil, false},
+		"the window is the range":                {t0, at(50), true},
+		"the window covers more than the range":  {t0.Add(-time.Hour), nil, true},
 	} {
 		if got := q.WindowPageExact(c.from, c.starts); got != c.want {
 			t.Errorf("%s: WindowPageExact = %v, want %v", name, got, c.want)

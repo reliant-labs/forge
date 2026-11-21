@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -72,6 +74,12 @@ var (
 	testRunTaskExec  = execTaskLane
 	// testRunProvenance reads the run's git facts; nil is begin's own.
 	testRunProvenance func(ctx context.Context, dir string) (release.Provenance, error)
+	// testRunNow is the clock lane durations and the run's id are read from.
+	testRunNow = time.Now
+	// testRunSignals interrupt the run. forge stays up on them to mark what
+	// did not finish and write the document (the running `task` gets the
+	// terminal's Ctrl-C too); a test empties it and cancels the context.
+	testRunSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 )
 
 // newTestRunCmd is `forge test run`: the project's own Taskfile lanes, run as
@@ -117,6 +125,11 @@ Then ` + "`forge test report <run>`" + ` summarises what the lanes recorded.`,
 
 func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 	ctx := cmd.Context()
+	if len(testRunSignals) > 0 {
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, testRunSignals...)
+		defer stop()
+	}
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	laneOut := out
 	if asJSON {
@@ -169,7 +182,7 @@ func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 		return finish(exitRefused, "REFUSED: "+what+"; forge test run runs only the project's own Taskfile lanes")
 	}
 
-	begun := testcapture.Begin(ctx, testcapture.BeginOptions{Dir: root, ProjectRoot: root, ForgeVersion: buildinfo.Version(), Provenance: testRunProvenance})
+	begun := testcapture.Begin(ctx, testcapture.BeginOptions{Dir: root, ProjectRoot: root, ForgeVersion: buildinfo.Version(), Provenance: testRunProvenance, Now: testRunNow})
 	for _, w := range begun.Warnings {
 		fmt.Fprintf(errOut, "forge test run: warning: %s\n", w)
 	}
@@ -179,31 +192,8 @@ func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 		env = append(env, testcapture.EnvRun+"="+begun.Dir)
 	}
 
-	failed, canceled := []string{}, []string{}
-	for _, lane := range lanes {
-		if err := ctx.Err(); err != nil {
-			// Every requested lane gets a row: one never started says so.
-			doc.Tasks = append(doc.Tasks, testRunTask{Task: lane, ExitCode: -1, Error: "not started: the run was interrupted", Canceled: true})
-			canceled = append(canceled, lane)
-			continue
-		}
-		fmt.Fprintf(errOut, "forge test run: task %s\n", lane)
-		started := time.Now()
-		code, err := testRunTaskExec(ctx, root, env, laneOut, errOut, lane)
-		t := testRunTask{Task: lane, ExitCode: code, DurationMS: time.Since(started).Milliseconds()}
-		if err != nil {
-			t.Error = err.Error()
-		}
-		switch {
-		case code != 0 && ctx.Err() != nil:
-			// Cut short by the interruption: not a verdict on the lane.
-			t.Canceled = true
-			canceled = append(canceled, lane)
-		case code != 0:
-			failed = append(failed, fmt.Sprintf("%s (exit %d)", lane, code))
-		}
-		doc.Tasks = append(doc.Tasks, t)
-	}
+	tasks, failed, canceled := runTestRunLanes(ctx, root, env, laneOut, errOut, lanes)
+	doc.Tasks = tasks
 
 	if begun.Recording {
 		if r, err := testlocal.Open(begun.Dir); err != nil {
@@ -232,6 +222,38 @@ func runTestRun(cmd *cobra.Command, lanes []string, asJSON bool) error {
 		return finish(exitWrong, "FAIL: "+strings.Join(failed, ", "))
 	}
 	return finish(exitOK, "")
+}
+
+// runTestRunLanes runs each lane in order. It returns a row for every lane
+// asked for, the lanes that failed (with their exit codes), and the lanes the
+// interruption cut short or kept from starting.
+func runTestRunLanes(ctx context.Context, root string, env []string, laneOut, errOut io.Writer, lanes []string) (tasks []testRunTask, failed, canceled []string) {
+	tasks, failed, canceled = []testRunTask{}, []string{}, []string{}
+	for _, lane := range lanes {
+		if err := ctx.Err(); err != nil {
+			// Every requested lane gets a row: one never started says so.
+			tasks = append(tasks, testRunTask{Task: lane, ExitCode: -1, Error: "not started: the run was interrupted", Canceled: true})
+			canceled = append(canceled, lane)
+			continue
+		}
+		fmt.Fprintf(errOut, "forge test run: task %s\n", lane)
+		started := testRunNow()
+		code, err := testRunTaskExec(ctx, root, env, laneOut, errOut, lane)
+		t := testRunTask{Task: lane, ExitCode: code, DurationMS: testRunNow().Sub(started).Milliseconds()}
+		if err != nil {
+			t.Error = err.Error()
+		}
+		switch {
+		case code != 0 && ctx.Err() != nil:
+			// Cut short by the interruption: not a verdict on the lane.
+			t.Canceled = true
+			canceled = append(canceled, lane)
+		case code != 0:
+			failed = append(failed, fmt.Sprintf("%s (exit %d)", lane, code))
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, failed, canceled
 }
 
 // testLaneCandidates are the Taskfile's tasks worth naming in a refusal: the

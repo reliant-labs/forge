@@ -236,3 +236,17 @@ func TestExistingMachineLedgerNeverCreatesOne(t *testing.T) {
 		t.Fatal("a directory with no forge.yaml name has a ledger")
 	}
 }
+
+// A clean run that records no commit (legacy or malformed) does not make a
+// lane expected of the release's commit either.
+func TestExpectedLanesIgnoreRunsWithNoCommit(t *testing.T) {
+	t.Parallel()
+	root, git := evProject(t)
+	evRun(t, root, "01NOCOMMIT", "", evAt.Add(-time.Hour), false, "integration")
+	evRun(t, root, "01A", trCommit, evAt.Add(-2*time.Hour), false, "unit")
+	var store evStore
+	ref := releaseTestsRef(context.Background(), releaseTestsInput{Root: root, Commit: trCommit, At: evAt, Git: git, Put: store.put})
+	if ref.Status != release.TestsStatusOK || strings.Join(ref.Lanes, ",") != "unit" || *ref.Totals != (release.TestsTotals{Passed: 1}) {
+		t.Fatalf("the run with no commit leaked into the evidence: %+v %+v", ref, ref.Totals)
+	}
+}

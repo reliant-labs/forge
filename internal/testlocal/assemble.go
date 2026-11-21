@@ -101,10 +101,10 @@ func Assemble(ctx context.Context, opts Options) (*Assembly, error) {
 	}
 	first := opts.Runs[0]
 	a := &Assembly{Commit: first.Commit, Tree: first.TreeHash, Dirty: first.Dirty, Project: first.Project}
+	// The commit is the first run's and never adopted from another: the
+	// runs share it (sameSource), and a clean run that records none is
+	// refused rather than attributed to a commit it cannot be shown to be of.
 	for _, r := range opts.Runs {
-		if a.Commit == "" {
-			a.Commit = r.Commit
-		}
 		if a.Tree == "" {
 			a.Tree = r.TreeHash
 		}
@@ -179,6 +179,10 @@ func sameSource(runs []*Run) error {
 			return &SourceError{Detail: fmt.Sprintf("run %s is on a dirty tree and run %s is not; a dirty run never joins a commit's report", dirtyOf(r0, r).ID, cleanOf(r0, r).ID)}
 		case r.TreeHash != "" && r0.TreeHash != "" && r.TreeHash != r0.TreeHash:
 			return &SourceError{Detail: fmt.Sprintf("run %s is on tree %s, run %s on tree %s", r0.ID, short(r0.TreeHash), r.ID, short(r.TreeHash))}
+		case !r0.Dirty && r.Commit == "" && r0.Commit == "":
+			return &SourceError{Detail: fmt.Sprintf("clean runs %s and %s record no commit, so they cannot be shown to be the same source", r0.ID, r.ID)}
+		case !r0.Dirty && (r.Commit == "" || r0.Commit == ""):
+			return &SourceError{Detail: fmt.Sprintf("clean run %s records no commit, so it cannot be shown to be the same source as run %s", noCommitOf(r0, r).ID, withCommitOf(r0, r).ID)}
 		case r0.Dirty && (r.TreeHash == "" || r0.TreeHash == ""):
 			return &SourceError{Detail: fmt.Sprintf("dirty runs %s and %s have no recorded tree, so they cannot be shown to be the same source", r0.ID, r.ID)}
 		case !r0.Dirty && r.Commit != r0.Commit:
@@ -186,6 +190,20 @@ func sameSource(runs []*Run) error {
 		}
 	}
 	return nil
+}
+
+func noCommitOf(a, b *Run) *Run {
+	if a.Commit == "" {
+		return a
+	}
+	return b
+}
+
+func withCommitOf(a, b *Run) *Run {
+	if a.Commit == "" {
+		return b
+	}
+	return a
 }
 
 func dirtyOf(a, b *Run) *Run {

@@ -20,7 +20,10 @@ import (
 )
 
 // These tests answer the Taskfile through fakes of `task --list-all` and
-// `task <lane>`: nothing execs task, git or go.
+// `task <lane>`, and read a fixed clock: nothing execs task, git or go.
+
+// trRunEpoch is the fixed clock's start; each reading advances it a second.
+var trRunEpoch = time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 
 // trTaskLanes fakes the Taskfile: tasks lists its lanes, and running a lane
 // records a capture of that name into $FORGE_TEST_RUN (when record is set)
@@ -31,7 +34,13 @@ func trTaskLanes(t *testing.T, tasks []string, codes map[string]int, record map[
 	trWrite(t, filepath.Join(root, "forge.yaml"), "name: shop\n")
 	t.Chdir(root)
 	var ran []string
-	prevList, prevExec, prevProv := testRunListTasks, testRunTaskExec, testRunProvenance
+	prevList, prevExec, prevProv, prevNow, prevSig := testRunListTasks, testRunTaskExec, testRunProvenance, testRunNow, testRunSignals
+	clock := trRunEpoch
+	testRunNow = func() time.Time {
+		clock = clock.Add(time.Second)
+		return clock
+	}
+	testRunSignals = nil
 	testRunListTasks = func(context.Context, string) (map[string]bool, error) {
 		out := map[string]bool{}
 		for _, n := range tasks {
@@ -49,7 +58,7 @@ func trTaskLanes(t *testing.T, tasks []string, codes map[string]int, record map[
 		ran = append(ran, lane+"@"+run)
 		fmt.Fprintf(stdout, "lane %s output\n", lane)
 		if capture := record[lane]; capture != "" && run != "" {
-			now := time.Now().UTC()
+			now := trRunEpoch
 			trJSON(t, filepath.Join(run, capture, testreport.LaneManifestFile), testreport.LaneManifest{
 				Schema: testreport.LaneManifestSchema, Lane: capture, ExitCode: codes[lane], StartedAt: now, FinishedAt: now,
 				Format: testreport.LaneFormatGoJSON, Results: testreport.LaneResultsParsed,
@@ -63,7 +72,9 @@ func trTaskLanes(t *testing.T, tasks []string, codes map[string]int, record map[
 	testRunProvenance = func(context.Context, string) (release.Provenance, error) {
 		return release.Provenance{Commit: trCommit}, nil
 	}
-	t.Cleanup(func() { testRunListTasks, testRunTaskExec, testRunProvenance = prevList, prevExec, prevProv })
+	t.Cleanup(func() {
+		testRunListTasks, testRunTaskExec, testRunProvenance, testRunNow, testRunSignals = prevList, prevExec, prevProv, prevNow, prevSig
+	})
 	return &ran
 }
 
@@ -184,7 +195,7 @@ func TestTestRunInterruptedListsEveryLane(t *testing.T) {
 		t.Fatalf("ran %v, tasks %+v", *ran, doc.Tasks)
 	}
 	first, second := doc.Tasks[0], doc.Tasks[1]
-	if first.Task != "test" || !first.Canceled || second.Task != "test:integration" || !second.Canceled || second.ExitCode != -1 || second.DurationMS != 0 {
+	if first.Task != "test" || !first.Canceled || first.DurationMS != 1000 || second.Task != "test:integration" || !second.Canceled || second.ExitCode != -1 || second.DurationMS != 0 {
 		t.Fatalf("tasks %+v", doc.Tasks)
 	}
 	if !strings.HasPrefix(doc.Error, "UNDETERMINED: interrupted") || strings.Contains(doc.Error, "FAIL") {

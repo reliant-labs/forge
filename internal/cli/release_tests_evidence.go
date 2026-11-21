@@ -164,7 +164,8 @@ func runLaneNames(runs []*testlocal.Run) []string {
 }
 
 // expectedLanes are the lanes the project records: every lane of a clean run
-// in the window before at, irregular lanes aside.
+// of a commit in the window before at, irregular lanes aside. A run that
+// records no commit proves nothing, here as in the evidence itself.
 func expectedLanes(all []*testlocal.Run, at time.Time) []string {
 	if at.IsZero() {
 		at = time.Now()
@@ -172,7 +173,7 @@ func expectedLanes(all []*testlocal.Run, at time.Time) []string {
 	from := at.Add(-expectedLanesWindow)
 	seen := map[string]bool{}
 	for _, r := range all {
-		if r.Dirty || r.CreatedAt.Before(from) || r.CreatedAt.After(at) {
+		if r.Dirty || r.Commit == "" || r.CreatedAt.Before(from) || r.CreatedAt.After(at) {
 			continue
 		}
 		for _, l := range r.Lanes {

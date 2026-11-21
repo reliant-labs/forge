@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,8 +16,10 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
+	"golang.org/x/tools/go/packages"
 
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // harnessmocks.go — `forge fix harness-mocks`, the v1.0.0 move of the test
@@ -155,10 +158,7 @@ func rewriteHarnessMockDir(root, rel, module string, renames []codegen.HarnessMo
 	for _, tf := range files {
 		parsed = append(parsed, tf.hf)
 	}
-	fields, err := gatherHarnessFields(root, abs, module, parsed, byStub)
-	if err != nil {
-		return fmt.Errorf("%s: %w", rel, err)
-	}
+	fields := gatherHarnessFields(abs, importPath, parsed, byStub, embedded)
 	for _, tf := range files {
 		if !opts.Scope.Contains(tf.rel) {
 			continue
@@ -349,13 +349,13 @@ func (hf *harnessFile) rewrite(src []byte, byStub map[string]codegen.HarnessMock
 			}
 			// The Sel of any other selector is a field, a method or another
 			// package's name — never this package's stub type. It is the
-			// embedded stub's FIELD when the package embeds one, unless a
-			// field of that name is declared elsewhere too: without types
-			// the receiver's struct is unknown, so that one is reported.
+			// embedded stub's FIELD only when the type checker resolves it
+			// to that field; one it could not resolve is reported.
 			if embedded[x.Sel.Name] {
-				if fields.ambiguous[x.Sel.Name] {
+				switch stub, ok := fields.resolved[posKey(hf.filename, fset.Position(x.Sel.Pos()).Offset)]; {
+				case !ok:
 					leave(x.Sel)
-				} else {
+				case stub:
 					renameField(x.Sel)
 				}
 			}
@@ -504,36 +504,37 @@ type harnessFields struct {
 	// embeds is, per "<package clause>.<type>" for every top-level struct
 	// type of the directory's test files, the retired stubs it embeds.
 	embeds map[string]map[string]bool
-	// ambiguous is every retired stub name that is ALSO some other
-	// field's name: a named field, or an embedding of another type, in
-	// this directory or in a package of the module its tests import. A
-	// selector of that name cannot be told apart without types.
-	ambiguous map[string]bool
+	// resolved is, per "<test file base name>:<offset>" of a selector's
+	// field name or a struct literal's key spelled like an embedded stub,
+	// whether the type checker resolved it to one of those embedded stub
+	// fields (true) or to some other field (false). A name it could not
+	// resolve is absent: the rewrite reports it rather than guess.
+	resolved map[string]bool
 }
 
-func gatherHarnessFields(root, abs, module string, files []*harnessFile, byStub map[string]codegen.HarnessMockRename) (*harnessFields, error) {
-	hf := &harnessFields{embeds: map[string]map[string]bool{}, ambiguous: map[string]bool{}}
-	other := func(name string) {
-		if _, ok := byStub[name]; ok {
-			hf.ambiguous[name] = true
-		}
-	}
-	dirs := map[string]bool{}
+// posKey names a position in one of the handler directory's files.
+func posKey(filename string, offset int) string {
+	return filepath.Base(filename) + ":" + strconv.Itoa(offset)
+}
+
+func gatherHarnessFields(abs, importPath string, files []*harnessFile, byStub map[string]codegen.HarnessMockRename, embedded map[string]map[string]bool) *harnessFields {
+	hf := &harnessFields{embeds: map[string]map[string]bool{}, resolved: map[string]bool{}}
+	// decls is where each embedded stub field is declared: the position
+	// go/types gives the field's object.
+	decls := map[string]bool{}
 	for _, f := range files {
 		ast.Inspect(f.f, func(n ast.Node) bool {
-			st, ok := n.(*ast.StructType)
-			if !ok {
-				return true
-			}
-			for _, field := range st.Fields.List {
-				for _, id := range field.Names {
-					other(id.Name)
-				}
-				if len(field.Names) > 0 {
-					continue
-				}
-				if _, isStub := f.stubRef(unstar(field.Type), byStub); !isStub {
-					other(embeddedName(field.Type))
+			if st, ok := n.(*ast.StructType); ok {
+				for _, field := range st.Fields.List {
+					if len(field.Names) > 0 {
+						continue
+					}
+					if _, isStub := f.stubRef(unstar(field.Type), byStub); isStub {
+						decls[posKey(f.filename, f.fset.Position(field.Type.Pos()).Offset)] = true
+						if id := embeddedIdent(field.Type); id != nil {
+							decls[posKey(f.filename, f.fset.Position(id.Pos()).Offset)] = true
+						}
+					}
 				}
 			}
 			return true
@@ -545,47 +546,77 @@ func gatherHarnessFields(root, abs, module string, files []*harnessFile, byStub 
 			}
 			for _, spec := range gd.Specs {
 				ts := spec.(*ast.TypeSpec)
-				st, ok := ts.Type.(*ast.StructType)
-				if !ok {
-					continue
+				if st, ok := ts.Type.(*ast.StructType); ok {
+					hf.embeds[f.f.Name.Name+"."+ts.Name.Name] = f.structEmbeds(st, byStub)
 				}
-				hf.embeds[f.f.Name.Name+"."+ts.Name.Name] = f.structEmbeds(st, byStub)
-			}
-		}
-		for p := range f.imported {
-			if strings.HasPrefix(p, module+"/") {
-				dirs[filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(p, module+"/")))] = true
 			}
 		}
 	}
-	// The package's own non-test files, and the module's packages its tests
-	// import: none can embed a test-only stub, so every field there spelled
-	// like one is another field.
-	dirs[abs] = true
-	for d := range dirs {
-		entries, err := os.ReadDir(d)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, err
+	names := map[string]bool{}
+	for _, set := range embedded {
+		for name := range set {
+			names[name] = true
 		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+	}
+	if len(names) > 0 {
+		hf.resolve(abs, importPath, names, decls)
+	}
+	return hf
+}
+
+// resolve type-checks the handler's test packages and records, for every
+// selector and struct literal key named like an embedded stub, whether it is
+// that embedded field. Only the field's object can say so: a selector's
+// receiver may be any struct, a dependency's included. A package that does
+// not load leaves every such name unresolved, so each is reported.
+func (hf *harnessFields) resolve(abs, importPath string, names, decls map[string]bool) {
+	cfg := &packages.Config{
+		// Type information survives errors: once forge generate retires
+		// the stubs, the tests no longer compile, and the fields' objects
+		// are still what decides.
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+			packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
+		Dir:   abs,
+		Env:   goexec.Env(),
+		Tests: true,
+	}
+	pkgs, err := packages.Load(cfg, ".")
+	if err != nil {
+		return
+	}
+	for _, p := range pkgs {
+		if p.TypesInfo == nil {
+			continue
+		}
+		stubField := func(obj types.Object) bool {
+			v, ok := obj.(*types.Var)
+			if !ok || !v.IsField() || !v.Embedded() || v.Pkg() == nil {
+				return false
+			}
+			if path := v.Pkg().Path(); path != importPath && path != importPath+"_test" {
+				return false
+			}
+			at := p.Fset.Position(v.Pos())
+			return at.IsValid() && decls[posKey(at.Filename, at.Offset)]
+		}
+		for _, file := range p.Syntax {
+			filename := p.Fset.Position(file.Pos()).Filename
+			if filepath.Dir(filename) != abs && !sameDir(filepath.Dir(filename), abs) {
 				continue
 			}
-			f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(d, e.Name()), nil, parser.SkipObjectResolution)
-			if err != nil {
-				continue // not this codemod's to judge
-			}
-			ast.Inspect(f, func(n ast.Node) bool {
-				if st, ok := n.(*ast.StructType); ok {
-					for _, field := range st.Fields.List {
-						for _, id := range field.Names {
-							other(id.Name)
-						}
-						if len(field.Names) == 0 {
-							other(embeddedName(field.Type))
+			ast.Inspect(file, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.SelectorExpr:
+					if !names[x.Sel.Name] {
+						return true
+					}
+					if sel := p.TypesInfo.Selections[x]; sel != nil && sel.Kind() == types.FieldVal {
+						hf.resolved[posKey(filename, p.Fset.Position(x.Sel.Pos()).Offset)] = stubField(sel.Obj())
+					}
+				case *ast.KeyValueExpr:
+					if id, ok := x.Key.(*ast.Ident); ok && names[id.Name] {
+						if obj := p.TypesInfo.Uses[id]; obj != nil {
+							hf.resolved[posKey(filename, p.Fset.Position(id.Pos()).Offset)] = stubField(obj)
 						}
 					}
 				}
@@ -593,7 +624,28 @@ func gatherHarnessFields(root, abs, module string, files []*harnessFile, byStub 
 			})
 		}
 	}
-	return hf, nil
+}
+
+// sameDir reports whether a and b name one directory (through symlinks).
+func sameDir(a, b string) bool {
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	return err1 == nil && err2 == nil && ra == rb
+}
+
+// embeddedIdent is the identifier naming an embedded field of type e.
+func embeddedIdent(e ast.Expr) *ast.Ident {
+	switch t := unstar(e).(type) {
+	case *ast.Ident:
+		return t
+	case *ast.SelectorExpr:
+		return t.Sel
+	case *ast.IndexExpr:
+		return embeddedIdent(t.X)
+	case *ast.IndexListExpr:
+		return embeddedIdent(t.X)
+	}
+	return nil
 }
 
 // structEmbeds is the retired stubs st embeds.
@@ -657,21 +709,6 @@ func unstar(e ast.Expr) ast.Expr {
 	return e
 }
 
-// embeddedName is the field name an embedded field of type e gets.
-func embeddedName(e ast.Expr) string {
-	switch t := unstar(e).(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return embeddedName(t.X)
-	case *ast.IndexListExpr:
-		return embeddedName(t.X)
-	}
-	return ""
-}
-
 // keyAction is what the rewrite does with one key of a composite literal.
 type keyAction int
 
@@ -689,14 +726,20 @@ func (hf *harnessFile) keyAction(lit *ast.CompositeLit, kv *ast.KeyValueExpr, by
 	if !isIdent || !embedded[id.Name] || !hf.keysAreFields(lit) {
 		return keyVisit
 	}
+	if stub, ok := fields.resolved[posKey(hf.filename, hf.fset.Position(id.Pos()).Offset)]; ok {
+		if stub {
+			return keyRename
+		}
+		return keyKeep
+	}
+	// Unresolved (the package did not load): the literal's type, read
+	// from the syntax, decides when it can.
 	embeds, known := hf.litEmbeds(lit, byStub, fields)
 	switch {
 	case known && embeds[id.Name]:
 		return keyRename
 	case known:
 		return keyKeep
-	case fields.ambiguous[id.Name]:
-		return keyReport
 	}
-	return keyRename
+	return keyReport
 }

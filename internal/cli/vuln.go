@@ -159,6 +159,10 @@ type vulnEnv struct {
 	Project string
 	// decl is the env's control-plane declaration (hosted envs only).
 	decl *cloud.Declaration
+	// entities is the env's render, nil for an env with no declaration:
+	// where a hosted release's artifacts were pushed, and the registry
+	// identity a read of them presents (vuln_hosted.go).
+	entities *KCLEntities
 	// GradedAs is the mode the warn-first rollout judges Gate.Mode at
 	// (vuln_gate.go): audit for an enforce while the vuln-gate rule does
 	// not gate the project yet. "" is the declared mode.
@@ -201,6 +205,7 @@ func resolveVulnEnv(ctx context.Context, projectDir, env string) (vulnEnv, error
 		}
 		out.Project = hostedEnvRefFor(env, entities).Project
 		out.decl = decl
+		out.entities = entities
 	}
 	return out, nil
 }

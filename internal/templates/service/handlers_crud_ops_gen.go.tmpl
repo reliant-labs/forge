@@ -101,13 +101,13 @@ func (s *Service) crud{{.MethodName}}Op() crud.CreateOp[pb.{{.InputType}}, pb.{{
 				func(e *{{$.ORMQualifier}}.{{.EntityName}}) string { return {{.OwnedEntityID}} },
 				{{.OwnerStamp}},
 				func(ctx context.Context, entity *{{$.ORMQualifier}}.{{.EntityName}}) error {
-					return {{$.ORMQualifier}}.Create{{.EntityName}}(ctx, s.deps.DB, entity)
+					return {{.ORMCall $.ORMQualifier (print "Create" .EntityName)}}, entity)
 				},
 				func(ctx context.Context, opts ...orm.QueryOption) ([]*{{$.ORMQualifier}}.{{.EntityName}}, error) {
-					return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+					return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 				})
 {{- else}}
-			return {{$.ORMQualifier}}.Create{{.EntityName}}(ctx, s.deps.DB, entity)
+			return {{.ORMCall $.ORMQualifier (print "Create" .EntityName)}}, entity)
 {{- end}}
 		},
 		Pack: func(entity *{{$.ORMQualifier}}.{{.EntityName}}) (*pb.{{.OutputType}}, error) {
@@ -146,10 +146,10 @@ func (s *Service) crud{{.MethodName}}Op() crud.GetOp[pb.{{.InputType}}, pb.{{.Ou
 			return crud.ScopedGet(ctx, "{{.PkColumnName}}", id, opts,
 {{- end}}
 				func(ctx context.Context, {{if .PkParseBits}}_{{else}}id{{end}} string) (*{{$.ORMQualifier}}.{{.EntityName}}, error) {
-					return {{$.ORMQualifier}}.Get{{.EntityName}}ByID(ctx, s.deps.DB, {{.PkKeyArg}})
+					return {{.ORMCall $.ORMQualifier (print "Get" .EntityName "ByID")}}, {{.PkKeyArg}})
 				},
 				func(ctx context.Context, opts ...orm.QueryOption) ([]*{{$.ORMQualifier}}.{{.EntityName}}, error) {
-					return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+					return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 				})
 		},
 		Pack: func(entity *{{$.ORMQualifier}}.{{.EntityName}}) (*pb.{{.OutputType}}, error) {
@@ -272,12 +272,12 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 			if err != nil {
 				return nil, err
 			}
-			return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+			return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 {{- else if or .HasPagination .HasFilters .HasOrderBy}}
-			return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+			return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 {{- else}}
 			_ = opts
-			return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB)
+			return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}})
 {{- end}}
 		},
 {{- if .HasTotalCount}}
@@ -290,7 +290,7 @@ func (s *Service) crud{{.MethodName}}Op() crud.ListOp[pb.{{.InputType}}, pb.{{.O
 				return 0, err
 			}
 {{- end}}
-			return {{$.ORMQualifier}}.Count{{.EntityName}}(ctx, s.deps.DB, opts...)
+			return {{.ORMCall $.ORMQualifier (print "Count" .EntityName)}}, opts...)
 		},
 {{- end}}
 		EntityID: func(entity *{{$.ORMQualifier}}.{{.EntityName}}) string { return {{.PkEntityKey}} },
@@ -357,14 +357,14 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 {{- end}}
 				func(ctx context.Context, entity *{{$.ORMQualifier}}.{{.EntityName}}) error {
 {{- if .ReadOnlyColumns}}
-					return {{$.ORMQualifier}}.Update{{.EntityName}}(ctx, s.deps.DB, entity,
+					return {{.ORMCall $.ORMQualifier (print "Update" .EntityName)}}, entity,
 						crud.Preserve({{- range $i, $c := .ReadOnlyColumns}}{{if $i}}, {{end}}"{{$c}}"{{- end}}))
 {{- else}}
-					return {{$.ORMQualifier}}.Update{{.EntityName}}(ctx, s.deps.DB, entity)
+					return {{.ORMCall $.ORMQualifier (print "Update" .EntityName)}}, entity)
 {{- end}}
 				},
 				func(ctx context.Context, opts ...orm.QueryOption) ([]*{{$.ORMQualifier}}.{{.EntityName}}, error) {
-					return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+					return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 				})
 		},
 {{- if .UpdateMaskField}}
@@ -383,10 +383,10 @@ func (s *Service) crud{{.MethodName}}Op() crud.UpdateOp[pb.{{.InputType}}, pb.{{
 			return crud.ScopedUpdateMasked(ctx, "{{.PkColumnName}}", {{.PkEntityKey}}, entity, fields, opts,
 {{- end}}
 				func(ctx context.Context, entity *{{$.ORMQualifier}}.{{.EntityName}}, fields []string) error {
-					return {{$.ORMQualifier}}.Update{{.EntityName}}Masked(ctx, s.deps.DB, entity, fields)
+					return {{.ORMCall $.ORMQualifier (print "Update" .EntityName "Masked")}}, entity, fields)
 				},
 				func(ctx context.Context, opts ...orm.QueryOption) ([]*{{$.ORMQualifier}}.{{.EntityName}}, error) {
-					return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+					return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 				})
 		},
 {{- end}}
@@ -425,10 +425,10 @@ func (s *Service) crud{{.MethodName}}Op() crud.DeleteOp[pb.{{.InputType}}, pb.{{
 			return crud.ScopedDelete(ctx, "{{.PkColumnName}}", id, opts,
 {{- end}}
 				func(ctx context.Context, {{if .PkParseBits}}_{{else}}id{{end}} string) error {
-					return {{$.ORMQualifier}}.Delete{{.EntityName}}(ctx, s.deps.DB, {{.PkKeyArg}})
+					return {{.ORMCall $.ORMQualifier (print "Delete" .EntityName)}}, {{.PkKeyArg}})
 				},
 				func(ctx context.Context, opts ...orm.QueryOption) ([]*{{$.ORMQualifier}}.{{.EntityName}}, error) {
-					return {{$.ORMQualifier}}.List{{.EntityName}}(ctx, s.deps.DB, opts...)
+					return {{.ORMCall $.ORMQualifier (print "List" .EntityName)}}, opts...)
 				})
 		},
 	}

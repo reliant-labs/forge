@@ -186,6 +186,10 @@ func (r *typesResolver) forgeMock(importPath, typeName string) (string, bool) {
 type DepsAutoMock struct {
 	// FieldName is the Deps field name as declared (e.g. "Pause").
 	FieldName string
+	// RealStore marks a field NewTest<Svc> defaults to the real generated
+	// store (StoreDefaults) rather than this mock, which a test can still
+	// inject.
+	RealStore bool
 	// Interface is the field's type as the Deps struct spells it
 	// ("runs.PauseController", "Repository"). It is for the generated
 	// comment only.

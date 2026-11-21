@@ -63,7 +63,7 @@ import (
 {{- if .AutoStubs}}
 	"github.com/reliant-labs/forge/pkg/contractkit"
 {{- end}}
-{{- if .HasDB}}
+{{- if .TestDB}}
 	"github.com/reliant-labs/forge/pkg/orm"
 {{- end}}
 	"github.com/reliant-labs/forge/pkg/testkit"
@@ -77,7 +77,7 @@ import (
 {{- if .IsService}}
 	"{{.Module}}/pkg/middleware"
 {{- end}}
-{{- if and .HasDB .HasMigrationsFS}}
+{{- if and .TestDB .HasMigrationsFS}}
 	forgedb "{{.Module}}/db"
 {{- end}}
 {{- if .IsService}}
@@ -88,7 +88,7 @@ import (
 {{- end}}
 )
 
-// TestOption configures the cross-cutting test defaults (logger{{if .ConfigImport}}, config{{end}}{{if .HasDB}},
+// TestOption configures the cross-cutting test defaults (logger{{if .ConfigImport}}, config{{end}}{{if .TestDB}},
 // DB{{end}}) every factory in this file shares.
 //
 // There is no per-component option INTERFACE here (the retired
@@ -105,7 +105,7 @@ type testConfig struct {
 {{- if .ConfigImport}}
 	cfg    *config.{{.ConfigType}}
 {{- end}}
-{{- if .HasDB}}
+{{- if .TestDB}}
 	db     orm.Context
 	// newDB makes the default database on first use (database), so a test
 	// that supplies its own through WithDB never pays for a second one.
@@ -136,7 +136,7 @@ func WithConfig(cfg *config.{{.ConfigType}}) TestOption {
 	return func(c *testConfig) { c.cfg = cfg }
 }
 {{- end}}
-{{- if .HasDB}}
+{{- if .TestDB}}
 
 // WithDB overrides the default test database.
 // Use this to provide a pre-seeded database or a custom ORM context.
@@ -205,7 +205,7 @@ func WithPlaceholderDeps() TestOption {
 {{if .IsService}}
 // NewTest{{.FieldName}} creates a test instance of the {{.FieldName}} service with
 // test defaults. By default, deps are minimal (discard logger).
-{{- if .HasDB}}
+{{- if .TestDB}}
 // A fresh isolated database on the shared ephemeral postgres is created
 // automatically{{if .HasMigrationsFS}}, with the project's migrations applied
 // (NewMigratedTestDB){{end}}; WithDB supplies another.
@@ -281,8 +281,18 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 	}
 {{- end}}
 {{- $parent := . }}
+{{- range .StoreDefaults}}
+	// {{.FieldName}} is the generated store the CRUD ops persist through, so
+	// it defaults to the real one over the test database, as compose.go
+	// builds it over the ORM: the CRUD tests run against postgres unchanged.
+	// Inject a double through With{{$parent.FieldName}}Deps — the generated
+	// one, or any {{.Interface}} — and no database is created for it.
+	if deps.{{.FieldName}} == nil {
+		deps.{{.FieldName}} = {{.Qual}}.NewStore(cfg.database()).{{.Accessor}}()
+	}
+{{- end}}
 {{- range .AutoStubs}}
-{{- if not .Optional}}
+{{- if and (not .Optional) (not .RealStore)}}
 	// Auto-stub {{.FieldName}} ({{.InterfaceQualified}}). Synthesized so
 	// validateDeps accepts NewTest{{$parent.FieldName}} construction without
 	// hand-rolled stubs in the project. A test that reaches this dependency
@@ -294,7 +304,7 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 {{- end}}
 {{- end}}
 {{- range .AutoMocks}}
-{{- if not .Optional}}
+{{- if and (not .Optional) (not .RealStore)}}
 	// {{.FieldName}} ({{.Interface}}) gets the mock forge generates for it,
 	// {{.MockType}}. A test that reaches this dependency sets the methods it
 	// calls — With{{$parent.FieldName}}Deps(Deps{ {{- .FieldName}}: &{{.MockType}}{...}}) — or
@@ -346,6 +356,13 @@ func newTest{{.FieldName}}Deps(cfg *testConfig) Deps {
 // other path passes one: With{{$svc.FieldName}}Deps(Deps{ {{- .FieldName}}: &{{.StubType}}{...}}).
 // forge mocks this interface nowhere (no mock_gen.go has it), so the harness
 // synthesizes this double, the same shape as a forge contract mock:
+{{- else if .RealStore -}}
+// {{.StubType}} stands in for {{.InterfaceQualified}} (Deps.{{.FieldName}}), the
+// store the generated CRUD ops persist through. NewTest{{$svc.FieldName}} defaults
+// the field to the real store over the test database; pass this double to test
+// a handler with no database at all. forge mocks this interface nowhere (no
+// mock_gen.go has it), so the harness synthesizes this double, the same shape
+// as a forge contract mock:
 {{- else -}}
 // {{.StubType}} stands in for {{.InterfaceQualified}} (Deps.{{.FieldName}}) so
 // NewTest{{$svc.FieldName}} can construct the service even when the field is
@@ -493,7 +510,7 @@ func defaultTestConfig(t *testing.T) *testConfig {
 {{- if .ConfigImport}}
 		cfg:    {{with .ConfigDefaults}}config.{{.}}(){{else}}&config.{{.ConfigType}}{}{{end}},
 {{- end}}
-{{- if .HasDB}}
+{{- if .TestDB}}
 {{- if .HasMigrationsFS}}
 		// The project's migrations applied (NewMigratedTestDB): a fresh
 		// isolated database cloned from the migrated template on the shared
@@ -511,7 +528,7 @@ func defaultTestConfig(t *testing.T) *testConfig {
 {{- end}}
 	}
 }
-{{- if and .HasDB .HasMigrationsFS}}
+{{- if and .TestDB .HasMigrationsFS}}
 
 // NewMigratedTestDB returns a real-postgres ORM context with the
 // project's embedded db/migrations applied — the same FS AutoMigrate

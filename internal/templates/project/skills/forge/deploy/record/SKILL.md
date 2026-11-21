@@ -123,6 +123,12 @@ store. An SBOM that cannot be produced (no syft for the platform, a registry
 401) warns, is recorded as unavailable with the reason, and the record still
 succeeds.
 
+Each workload's SBOM, generated or supplied with `--sbom`, is also attached
+beside its image as an OCI referrer, with the same credentials: the image is
+one your pipeline pushed. The release records the referrer's address. A
+registry that refuses the write warns and keeps the ledger copy;
+`vuln: {attach_sbom: false}` in forge.yaml stops trying.
+
 | Flag | What it records |
 |---|---|
 | `--sbom <workload>=<path>` (repeatable) | the SBOM your pipeline already produced, CycloneDX or SPDX 2.x JSON, verbatim (`source: ci-provided`, the format the document states, the digest of the bytes as given). A workload the record does not name, or a file that is not an SBOM, refuses the record before anything is cut |

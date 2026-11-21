@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/internal/sbom"
@@ -167,6 +168,8 @@ func readProvidedSBOM(path string) (providedSBOM, error) {
 // recordSBOMRun is what recordReleaseSBOMs needs about the record.
 type recordSBOMRun struct {
 	projectDir, project, env, version string
+	// createdAt is the release's CreatedAt, the hooks' CutAt.
+	createdAt time.Time
 	// declared is the env's render when a declaration admitted the record.
 	declared *KCLEntities
 	plan     recordSBOMPlan
@@ -365,8 +368,13 @@ func runRecordSBOMHooks(ctx context.Context, in recordSBOMRun, artifacts map[str
 	inputs := make([]sbomGenerated, 0, len(stored))
 	for _, name := range sortedArtifactNames(artifacts) {
 		if data, ok := stored[name]; ok {
-			inputs = append(inputs, sbomGenerated{Env: in.env, Version: in.version, Name: name,
-				Artifact: artifacts[name], Bytes: data, Entities: in.declared})
+			// Built: an image a record names by --image is one the CI
+			// recording it pushed, so a referrer beside it is the
+			// project's to write (sbomSubjectPushedByProject).
+			art := artifacts[name]
+			_, image := art.SharedDigest()
+			inputs = append(inputs, sbomGenerated{ProjectDir: in.projectDir, Env: in.env, Version: in.version,
+				CutAt: in.createdAt, Name: name, Built: image, Artifact: art, Bytes: data, Entities: in.declared})
 		}
 	}
 	var (

@@ -492,14 +492,15 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	}
 	// SBOMs are produced last, after every check that can refuse the
 	// record, so a refused record pays for no syft run.
+	createdAt := time.Now().UTC()
 	sbomRun := recordSBOMRun{projectDir: sc.projectDir, project: project, env: env,
-		version: version, declared: declared, plan: sbomPlan}
+		version: version, createdAt: createdAt, declared: declared, plan: sbomPlan}
 	sboms := recordReleaseSBOMs(ctx, sbomRun, artifacts, errOut)
 	sourceSBOM := recordSourceSBOM(ctx, sbomRun, errOut)
 	sboms = append(sourceSBOMEntry(sourceSBOM), sboms...)
 	res, err := recordReleaseInto(ctx, target, recordInput{
 		project: project, env: env, version: version, commit: commit,
-		artifacts: artifacts, workloads: workloads, run: run, sourceSBOM: sourceSBOM,
+		artifacts: artifacts, workloads: workloads, run: run, sourceSBOM: sourceSBOM, createdAt: createdAt,
 		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
 	})
 	if err != nil {
@@ -517,6 +518,9 @@ type recordInput struct {
 	run                           release.Run
 	// sourceSBOM is the release's source SBOM (--sbom-source), or nil.
 	sourceSBOM *release.SBOMRef
+	// createdAt is the release's CreatedAt, the instant its SBOM referrers
+	// were stamped with; zero means now.
+	createdAt time.Time
 	// ci marks a record made inside CI: its promotion's actor is "ci".
 	ci bool
 }
@@ -526,12 +530,16 @@ type recordInput struct {
 // hosted release_record tool, which resolves its target from the signed-in
 // person instead of this machine.
 func recordReleaseInto(ctx context.Context, target recordLedger, in recordInput) (releaseRecordResult, error) {
+	createdAt := in.createdAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
 	project, env, version, commit, artifacts, workloads, run := in.project, in.env, in.version, in.commit, in.artifacts, in.workloads, in.run
 	rel := release.Release{
 		Version:    version,
 		Project:    project,
 		Git:        release.Git{Commit: commit},
-		CreatedAt:  time.Now().UTC(),
+		CreatedAt:  createdAt,
 		Artifacts:  artifacts,
 		Run:        run,
 		RecordOnly: true,

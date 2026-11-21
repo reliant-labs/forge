@@ -16,6 +16,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/reliant-labs/forge/internal/sbom"
+	"github.com/reliant-labs/forge/internal/sbomoci/ocitest"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -582,5 +583,64 @@ func TestReleaseRecordSBOM_NoSBOMWithSBOMIsRefusedUnderPolicyOff(t *testing.T) {
 	}
 	if n := len(rt.cp.called("CutRelease")); n != 0 {
 		t.Errorf("a refused record cut %d release(s)", n)
+	}
+}
+
+// A recorded image gets its SBOM attached beside it as a referrer, through
+// the cut's hook: the CI recording it pushed it (Built), the referrer is
+// stamped with the release's CreatedAt, and the release records where it is.
+// A supplied --sbom is attached the same way as a generated one.
+func TestReleaseRecordSBOM_AttachesReferrersBesideRecordedImages(t *testing.T) {
+	newSBOMRecordTest(t)
+	calls := useReferrerRegistry(t)
+	f := ocitest.New(t, nil)
+	apiRepo, apiDigest := splitSubject(f.PutSubject("acme/api", "v1"))
+	webRepo, webDigest := splitSubject(f.PutSubject("acme/web", "v1"))
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	useRecordLedger(t, defaultRecordLedger)
+	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
+	cdx := writeSBOMFile(t, "web.cdx.json", recordCycloneDX)
+	o := releaseRecordOptions{env: "prod", version: "v1.4.0", commit: recordCommitA,
+		workloads: []string{"api", "web"}, images: []string{apiRepo + "@" + apiDigest, webRepo + "@" + webDigest},
+		sbom: recordSBOMOptions{specs: []string{"web=" + cdx}}}
+
+	var warn bytes.Buffer
+	if _, err := recordReleaseIn(context.Background(), o, sc, &warn); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if strings.Contains(warn.String(), "not attached") {
+		t.Errorf("an attach failed:\n%s", warn.String())
+	}
+	l, err := machineLedger(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := l.Releases.Get(context.Background(), "v1.4.0")
+	if err != nil || rel == nil {
+		t.Fatalf("release: %v", err)
+	}
+	subjects := map[string]string{}
+	for _, c := range *calls {
+		if !c.opts.Created.Equal(rel.CreatedAt) || c.opts.Release != "v1.4.0" {
+			t.Errorf("attach %s: created %v release %q, want the release's CreatedAt %v and v1.4.0", c.subject, c.opts.Created, c.opts.Release, rel.CreatedAt)
+		}
+		subjects[c.subject] = c.opts.Generator
+	}
+	for w, subject := range map[string]string{"api": apiRepo + "@" + apiDigest, "web": webRepo + "@" + webDigest} {
+		if _, ok := subjects[subject]; !ok {
+			t.Errorf("%s: no attach attempt for %s (got %v)", w, subject, subjects)
+		}
+		ref := rel.Artifacts[w].SBOM
+		repo, _ := splitSubject(subject)
+		if ref == nil || !strings.HasPrefix(ref.Referrer, repo+"@sha256:") {
+			t.Errorf("%s: recorded SBOM %+v, want a referrer beside %s", w, ref, repo)
+		}
+	}
+	if got := subjects[webRepo+"@"+webDigest]; got != "trivy@0.50.0" {
+		t.Errorf("the supplied SBOM was attached with generator %q, want the document's", got)
 	}
 }

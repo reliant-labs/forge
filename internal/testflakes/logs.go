@@ -67,9 +67,10 @@ type runLogs struct {
 }
 
 // readRunLogs reads failedLog (`gh run view --log-failed` output, lines
-// "<job>\t<step>\t<timestamp> <line>"; nil for none) and every *.log and
-// *.json file under dir ("" for none). Jobs on Windows or macOS are dropped:
-// a failure there, rerun here, would "pass" and be misreported as a flake.
+// "<job>\t<step>\t<timestamp> <line>"; nil for none) and every *.log file
+// and `go test -json` stream (*.json or *.jsonl) under dir ("" for none).
+// Jobs on Windows or macOS are dropped: a failure there, rerun here, would
+// "pass" and be misreported as a flake.
 func readRunLogs(failedLog []byte, dir string) runLogs {
 	var rl runLogs
 	for _, raw := range splitLines(failedLog) {
@@ -95,7 +96,7 @@ func readRunLogs(failedLog []byte, dir string) runLogs {
 		switch filepath.Ext(p) {
 		case ".log":
 			logs = append(logs, p)
-		case ".json":
+		case ".json", ".jsonl":
 			streams = append(streams, p)
 		}
 		return nil

@@ -47,6 +47,15 @@ func flaky(name string, st testreport.State, runs ...string) testreport.FlakyTes
 	return ft
 }
 
+// healed is a test that was suspected and went quiet: healthy, with the time
+// it healed, as ComputeFlakes reports it.
+func healed(name string, runs ...string) testreport.FlakyTest {
+	ft := flaky(name, testreport.StateHealthy, runs...)
+	since := day0.Add(15 * 24 * time.Hour)
+	ft.Since = &since
+	return ft
+}
+
 func TestSyncIssues(t *testing.T) {
 	root := newModule(t, map[string]string{
 		"internal/a/a_test.go": "package a\n\nfunc TestNew(t *testing.T) {\n\tif x() {\n\t\tt.Fatal(\"boom\")\n\t}\n}\n\nfunc TestOther(t *testing.T) {}\n",
@@ -61,7 +70,7 @@ func TestSyncIssues(t *testing.T) {
 	doc := &testreport.Flakes{Tests: []testreport.FlakyTest{
 		flaky("TestNew", testreport.StateSuspected, "r1"),
 		flaky("TestKnown", testreport.StateFlaky, "r1", "r2"),
-		flaky("TestHealed", testreport.StateHealthy, "r0"),
+		healed("TestHealed", "r0"),
 	}}
 	out := &bytes.Buffer{}
 	res := SyncIssues(context.Background(), IssueOptions{Root: root, Repo: "acme/m", GH: gh.run, Stdout: out, Getenv: noEnv}, doc)
@@ -106,5 +115,31 @@ func TestSyncIssuesDryRunWritesNothing(t *testing.T) {
 	res := SyncIssues(context.Background(), IssueOptions{Root: newModule(t, nil), Repo: "acme/m", GH: gh.run, Stdout: &bytes.Buffer{}, DryRun: true}, doc)
 	if len(gh.writes) != 0 || len(res.Messages) != 2 {
 		t.Errorf("writes %v, messages %v", gh.writes, res.Messages)
+	}
+}
+
+// A test that failed again when rerun (real) is not a flake: the record gives
+// it no issue, and the open issue an earlier flake of it filed is kept, not
+// closed as "has not flaked again".
+func TestSyncIssuesLeavesARealFailureAlone(t *testing.T) {
+	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n\nfunc TestReal(t *testing.T) {}\n"})
+	pkg := testModule + "/internal/a"
+	fail := ev("fail", pkg, "", "")
+	addRun(t, root, "c1", "t1", day0, "unit", failRun(pkg, "TestReal", "no\n")+fail, 1)
+	addRun(t, root, "c1", "t1", day0.Add(time.Hour), LaneConfirm, failRun(pkg, "TestReal", "no again\n")+fail, 1)
+	doc, warnings := ComputeFlakes(FlakesOptions{Root: root, Now: day0.Add(2 * time.Hour), States: []testreport.State{
+		testreport.StateHealthy, testreport.StateSuspected, testreport.StateFlaky,
+		testreport.StateFixed, testreport.StateQuarantined, testreport.StateRemoved,
+	}})
+	if len(warnings) > 0 {
+		t.Fatalf("warnings: %v", warnings)
+	}
+	if got := stateOf(doc, "TestReal"); got != testreport.StateHealthy {
+		t.Fatalf("TestReal: %q, want healthy (real failures only)", got)
+	}
+	gh := &fakeGH{open: `[{"number":4,"title":"flake:suspected: TestReal (internal/a)","state":"OPEN","url":"https://github.com/acme/m/issues/4"}]`}
+	res := SyncIssues(context.Background(), IssueOptions{Root: root, Repo: "acme/m", GH: gh.run, Stdout: &bytes.Buffer{}, Getenv: noEnv}, doc)
+	if len(gh.writes) != 0 || len(res.Opened)+len(res.Closed)+len(res.Updated) != 0 {
+		t.Errorf("a real failure must neither open nor close an issue: writes %v, result %+v", gh.writes, res)
 	}
 }

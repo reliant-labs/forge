@@ -1153,8 +1153,11 @@ type DockerBuild struct {
 	// fingerprint is unchanged — see build_docker_release_reuse.go.
 	Inputs []string `json:"inputs,omitempty"`
 	// cover is set when the env builds this image instrumented: the binary
-	// its workload runs is a cover build (applyCover). Never decoded.
-	cover *workloadCover
+	// its workload runs is a cover build (applyCover). coverVariant is set
+	// when a release build of it also pushes its cover stage beside it, for
+	// a preview of the release. Never decoded.
+	cover        *workloadCover
+	coverVariant *workloadCover
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):
@@ -2078,11 +2081,12 @@ func RenderKCLWith(ctx context.Context, projectDir, env string, extra []string) 
 	// One binary, one build: the same for coverage, and an instrumented
 	// binary in a persistent env must say why. The env's default reads
 	// forge.yaml's opt-in (tests.coverage), so it is resolved here.
-	coverBins, err := ResolveCoverBinaries(entities, config.ReadTestsCoverage(projectDir))
+	optIn := config.ReadTestsCoverage(projectDir)
+	coverBins, err := ResolveCoverBinaries(entities, optIn)
 	if err != nil {
 		return nil, err
 	}
-	entities.applyCover(coverBins)
+	entities.applyCover(coverBins, optIn)
 	entities.ControlPlane.bindOrgLookup(env)
 	return entities, nil
 }

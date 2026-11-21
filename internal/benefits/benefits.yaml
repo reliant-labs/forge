@@ -2812,18 +2812,21 @@ benefits:
     claim: >-
       The generated `build-images.yml` attaches a keyless cosign signature and a
       build-provenance attestation to every image it pushes, bound to its
-      digest.
+      digest and stored in the registry beside it (`cosign
+      verify-attestation`), private repositories included.
     availability: forge
     headline: true
     why: >-
-      The provenance attestation is skipped for private repositories outside
-      GitHub Enterprise Cloud (GitHub's attestation store refuses them). This
-      is the generated GitHub workflow only; `forge env build` itself does not
-      sign, and the DeliveryPolicy
-      `signing`/`trusted_builder`/`admission_verify` controls do not read these
-      signatures. From forge v1.10.0 the workflow writes no SBOM, because
-      forge records one at every release cut (`sbom-vuln-scan`); a project
-      pinned to an older forge keeps the workflow's SPDX SBOM artifact.
+      Public repositories' provenance goes to GitHub's attestation store; a
+      private repository's, which that store refuses outside GitHub
+      Enterprise Cloud, goes to the registry as a cosign attestation. This is
+      the generated GitHub workflow only; `forge env build` itself does not
+      sign, and the DeliveryPolicy `signing`/`trusted_builder`/`admission_verify`
+      controls do not read these signatures. From forge v1.10.0 the workflow
+      writes no SBOM, because forge records one at every release cut and
+      attaches it as an OCI referrer (`sbom-vuln-scan`); a project pinned to an
+      older forge keeps the workflow's SPDX SBOM, as a run artifact and a
+      cosign attestation.
     evidence:
       - path: internal/templates/ci/github/build-images.yml.tmpl
 

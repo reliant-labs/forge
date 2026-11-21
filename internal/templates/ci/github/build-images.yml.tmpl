@@ -159,6 +159,16 @@ jobs:
           name: sbom-{{.ProjectName}}
           path: sbom-{{.ProjectName}}.spdx.json
           if-no-files-found: error
+
+      - name: Attach SBOM to the image (cosign attest)
+        # The run artifact above expires with the run and is not where a
+        # consumer of the image looks. A signed in-toto attestation in the
+        # registry, beside the image, is: `cosign verify-attestation --type
+        # spdxjson <image>` reads it back. Keyless, like the signature, so it
+        # works on a private repository too.
+        env:
+          IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+        run: cosign attest --yes --type spdxjson --predicate sbom-{{.ProjectName}}.spdx.json "$IMAGE_REF"
 {{- end}}
 
       - name: Attest build provenance
@@ -166,14 +176,69 @@ jobs:
         # private ones on GitHub Enterprise Cloud). Elsewhere the step fails
         # with "Feature not available for user-owned private repositories"
         # AFTER the image is pushed, turning every push to main red. The image
-        # is still cosign-signed above; this condition only skips the SLSA
-        # provenance upload. On Enterprise Cloud, drop it.
+        # is still cosign-signed above, and the next step gives a private
+        # repository's image the same provenance as a cosign attestation. On
+        # Enterprise Cloud, drop this condition (and the next step).
         if: ${{"{{"}} !github.event.repository.private {{"}}"}}
         uses: actions/attest-build-provenance@v1
         with:
           subject-name: ${{"{{"}} steps.ref.outputs.image {{"}}"}}
           subject-digest: ${{"{{"}} steps.ref.outputs.digest {{"}}"}}
           push-to-registry: true
+
+      - name: Attest build provenance (private repositories, cosign)
+        # Where GitHub's attestation store refuses the upload, the same SLSA
+        # v1 provenance goes to the registry as a cosign attestation instead,
+        # so a private repository's image is not left without one.
+        # `cosign verify-attestation --type slsaprovenance1 <image>` reads it.
+        # Every value comes from this step's env, set from the github context
+        # (nothing is read from the runner's ambient environment), and the
+        # predicate is checked complete before it is signed: a field that
+        # resolved empty fails the step rather than attest a provenance that
+        # binds the image to nothing.
+        if: ${{"{{"}} github.event.repository.private {{"}}"}}
+        env:
+          IMAGE_REF: ${{"{{"}} steps.ref.outputs.ref {{"}}"}}
+          SERVER_URL: ${{"{{"}} github.server_url {{"}}"}}
+          REPOSITORY: ${{"{{"}} github.repository {{"}}"}}
+          REPOSITORY_ID: ${{"{{"}} github.repository_id {{"}}"}}
+          REPOSITORY_OWNER_ID: ${{"{{"}} github.repository_owner_id {{"}}"}}
+          SOURCE_REF: ${{"{{"}} github.ref {{"}}"}}
+          SOURCE_SHA: ${{"{{"}} github.sha {{"}}"}}
+          WORKFLOW_REF: ${{"{{"}} github.workflow_ref {{"}}"}}
+          EVENT_NAME: ${{"{{"}} github.event_name {{"}}"}}
+          RUNNER_ENV: ${{"{{"}} runner.environment {{"}}"}}
+          RUN_ID: ${{"{{"}} github.run_id {{"}}"}}
+          RUN_ATTEMPT: ${{"{{"}} github.run_attempt {{"}}"}}
+        run: |
+          # github.workflow_ref is <owner>/<repo>/<path>@<ref>.
+          workflow_path="${WORKFLOW_REF#"$REPOSITORY"/}"
+          workflow_path="${workflow_path%%@*}"
+          jq -n \
+            --arg server "$SERVER_URL" --arg repo "$REPOSITORY" \
+            --arg repo_id "$REPOSITORY_ID" --arg owner_id "$REPOSITORY_OWNER_ID" \
+            --arg ref "$SOURCE_REF" --arg sha "$SOURCE_SHA" --arg path "$workflow_path" \
+            --arg workflow_ref "$WORKFLOW_REF" --arg event "$EVENT_NAME" --arg runner "$RUNNER_ENV" \
+            --arg run_id "$RUN_ID" --arg attempt "$RUN_ATTEMPT" '{
+            buildDefinition: {
+              buildType: "https://actions.github.io/buildtypes/workflow/v1",
+              externalParameters: {workflow: {ref: $ref, repository: ($server + "/" + $repo), path: $path}},
+              internalParameters: {github: {event_name: $event, repository_id: $repo_id, repository_owner_id: $owner_id, runner_environment: $runner}},
+              resolvedDependencies: [{uri: ("git+" + $server + "/" + $repo + "@" + $ref), digest: {gitCommit: $sha}}]
+            },
+            runDetails: {
+              builder: {id: ($server + "/" + $workflow_ref)},
+              metadata: {invocationId: ($server + "/" + $repo + "/actions/runs/" + $run_id + "/attempts/" + $attempt)}
+            }
+          }' > provenance.json
+          jq -e '
+            def set: type == "string" and length > 0;
+            (.buildDefinition.externalParameters.workflow | (.ref | set) and (.repository | set) and (.path | set) and (.path | startswith(".github/workflows/")))
+            and (.buildDefinition.resolvedDependencies[0] | (.uri | set) and (.digest.gitCommit | test("^[0-9a-f]{40}$")))
+            and (.buildDefinition.internalParameters.github | (.event_name | set))
+            and (.runDetails.builder.id | set) and (.runDetails.metadata.invocationId | set)
+          ' provenance.json > /dev/null || { echo "provenance predicate is incomplete:" >&2; cat provenance.json >&2; exit 1; }
+          cosign attest --yes --type slsaprovenance1 --predicate provenance.json "$IMAGE_REF"
 {{- if .VulnDocker}}
 
   vuln-scan:

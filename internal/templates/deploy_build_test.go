@@ -214,6 +214,17 @@ func TestBuildImagesTemplate_Full(t *testing.T) {
 		t.Errorf("provenance attestation is not gated off for private repositories:\n%s", step)
 	}
 
+	// A private repository's image still gets provenance, as a cosign
+	// attestation (NS FG-22). (The SBOM attestation is the pre-v1.10.0
+	// form's: TestBuildImagesTemplate_ScanFollowsThePinnedForge.)
+	j := strings.Index(s, "cosign attest --yes --type slsaprovenance1")
+	if j < 0 {
+		t.Fatal("no provenance for a private repository's image")
+	}
+	if step := s[strings.LastIndex(s[:j], "- name:"):j]; !strings.Contains(step, "if: ${{ github.event.repository.private }}") {
+		t.Errorf("the cosign provenance step is not the private-repository path:\n%s", step)
+	}
+
 	// The image is built and tagged by forge — sha-<short>, or the
 	// dispatch's override — not by docker/metadata-action.
 	if !strings.Contains(s, `tag="${IMAGE_TAG_OVERRIDE:-sha-${GITHUB_SHA::7}}"`) {
@@ -252,7 +263,16 @@ func TestBuildImagesTemplate_ScanFollowsThePinnedForge(t *testing.T) {
 			t.Errorf("pin %q: the scan job is missing", c.pin)
 		}
 		forge := strings.Contains(s, `forge vuln scan --image "$IMAGE_REF"`) && strings.Contains(s, "run: forge vuln db pull")
-		legacy := strings.Contains(s, "aquasecurity/trivy-action@") && strings.Contains(s, "anchore/sbom-action@")
+		// The older pin's SBOM is attached to the image as a signed
+		// attestation, not only a run artifact that expires with the run.
+		legacy := strings.Contains(s, "aquasecurity/trivy-action@") && strings.Contains(s, "anchore/sbom-action@") &&
+			strings.Contains(s, "cosign attest --yes --type spdxjson --predicate sbom-")
+		if strings.Contains(s, "--type spdxjson") != !c.forgeScan {
+			t.Errorf("pin %q: the SPDX SBOM attestation is rendered %v; want it only without the forge scan", c.pin, !c.forgeScan)
+		}
+		if !strings.Contains(s, "cosign attest --yes --type slsaprovenance1") {
+			t.Errorf("pin %q: no provenance for a private repository's image", c.pin)
+		}
 		if forge != c.forgeScan || legacy == c.forgeScan {
 			t.Errorf("pin %q: forge scan %v, Trivy + SBOM action %v; want the forge scan %v", c.pin, forge, legacy, c.forgeScan)
 		}

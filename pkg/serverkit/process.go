@@ -39,7 +39,8 @@ func SetupTelemetry(ctx context.Context, cfg Config) (func(context.Context) erro
 //
 // A bind failure is logged and the endpoint skipped, never a component
 // failure: a debug surface that can take the service down is worse than
-// none. The declared-metrics schema rides the same listener.
+// none. The declared-metrics schema and a -cover build's coverage
+// (CoveragePath) ride the same listener.
 type Pprof struct {
 	addr   string
 	logger *slog.Logger
@@ -61,6 +62,9 @@ func NewPprof(cfg Config, logger *slog.Logger) *Pprof {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// Coverage of a -cover build (404 for any other), pulled while the
+	// process runs: see CoverageHandler.
+	mux.Handle(CoveragePath, CoverageHandler())
 	mux.Handle(metrics.SchemaPath, metrics.SchemaHandler(metrics.Default(), cfg.ServiceName, schemaVersion(cfg.ServiceVersion)))
 	return &Pprof{
 		addr:   cfg.PprofAddr,

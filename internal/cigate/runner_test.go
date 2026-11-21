@@ -336,3 +336,33 @@ func TestOSExec_ResolvesTheProgramOnTheCommandsPATH(t *testing.T) {
 		t.Error("a missing program must be an error")
 	}
 }
+
+// A check that says it could not run AND that not running fails nothing (a
+// warn-first rule below its GatesFrom) is an allowed SKIP, named with its
+// reason, never a pass and never CI_SKIP's doing; its other skip status still
+// fails the gate.
+func TestRun_AllowedSkipExitCode(t *testing.T) {
+	exec := func(code int) func(context.Context, string, []string, []string, io.Writer) error {
+		return func(_ context.Context, _ string, _ []string, _ []string, out io.Writer) error {
+			fmt.Fprintln(out, "not scanned: no vulnerability database on this machine")
+			return codedErr(code)
+		}
+	}
+	c := check(VulnSBOMCheck, "forge")
+	c.SkipExitCode, c.AllowedSkipExitCode = VulnSBOMSkipExit, VulnSBOMAllowedSkipExit
+
+	rep := Run(context.Background(), "checks", []Check{c}, Options{Out: io.Discard, Exec: exec(VulnSBOMAllowedSkipExit)})
+	if rep.Failed() || statuses(rep)[VulnSBOMCheck] != Skip || !rep.Results[0].Allowed {
+		t.Fatalf("allowed skip: %+v", rep.Results)
+	}
+	var out bytes.Buffer
+	rep.RenderText(&out)
+	if !strings.Contains(out.String(), "no vulnerability database") || strings.Contains(out.String(), "allowed by CI_SKIP") {
+		t.Errorf("the row must name its own reason, not CI_SKIP:\n%s", out.String())
+	}
+
+	rep = Run(context.Background(), "checks", []Check{c}, Options{Out: io.Discard, Exec: exec(VulnSBOMSkipExit)})
+	if !rep.Failed() || statuses(rep)[VulnSBOMCheck] != Skip || rep.Results[0].Allowed {
+		t.Fatalf("a gating skip must fail the gate: %+v", rep.Results)
+	}
+}

@@ -1861,6 +1861,10 @@ type releaseCutOutcome struct {
 	Ledger string
 	// Images, Packages and Files count the artifacts by kind.
 	Images, Packages, Files int
+	// Vulns is the advisory scan of the cut's SBOMs (vuln_gate.go); nil
+	// when nothing was judged (no SBOMs by policy, vuln_gate off, a
+	// claimable deploy).
+	Vulns *cutVulnVerdict
 }
 
 // printReleaseCut is the text rendering of a cut.
@@ -1875,6 +1879,7 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
 		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
 	}
+	printCutVulnVerdict(out, cut.Vulns)
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
@@ -1992,13 +1997,18 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
 		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// The advisory verdict on those SBOMs, printed under the release line.
+	// Never fails the cut (vuln_gate.go).
+	vulns := scanReleaseAtCut(ctx, cutVulnInput{
+		ProjectDir: projectDir, Env: env, Entities: entities, Release: &rel, Hosted: ledger.Hosted, Log: os.Stderr,
+	})
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
 	}
 	return releaseCutOutcome{
 		Release: rel, Created: created, Ledger: ledger.Releases.Location(),
-		Images: images, Packages: packages, Files: files,
+		Images: images, Packages: packages, Files: files, Vulns: vulns,
 	}, nil
 }
 

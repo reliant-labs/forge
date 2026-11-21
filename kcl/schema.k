@@ -6731,7 +6731,9 @@ schema DeliveryPolicy:
     # (the platform signs, and verifies server-side), `off` without one
     # (nothing signs a self-hosted env's bundles yet). Resolved at render.
     signing?: Signing
-    provenance_sbom: Control = Control {mode = "enforce"}
+    # `audit` (owner, 2026-11-20): enforcing it refuses a promotion whose
+    # artifacts have no SBOM, so it is a control that can block a deploy.
+    provenance_sbom: Control = Control {mode = "audit"}
     # Unset follows `signing`'s rule: `audit` with a control plane, `off`
     # without one. `enforce` writes OCIRepository spec.verify on the hub.
     flux_verify?: Control

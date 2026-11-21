@@ -111,6 +111,9 @@ type ShapeInput struct {
 	Buckets []release.ShapeBucket
 	// Preview marks the env a preview instance (forge.Preview).
 	Preview *release.ShapePreview
+	// Changes are the Forge Changes the project declares (changes.yaml),
+	// keyed by change key, or nil when it declares none.
+	Changes map[string]release.ShapeChange
 }
 
 // ProjectShape projects one env's render into the shape a ledger indexes.
@@ -172,6 +175,7 @@ func (in ShapeInput) shapeWith(objects []release.ShapeObject) release.Shape {
 		HostInfra:           in.HostInfra,
 		Buckets:             in.Buckets,
 		Preview:             in.Preview,
+		Changes:             in.Changes,
 	}.WithStoreSecrets(in.Store).Canonical()
 }
 

@@ -40,3 +40,17 @@ func TestGradeFindingGatesAShippedRule(t *testing.T) {
 		t.Errorf("pinned at v1.7.0: %q %v %q, want an error", sev, keep, note)
 	}
 }
+
+// The v1.7.0 migration rules stay closed; query findings warn until v1.10.0.
+func TestDBAnalyzeQueryRulesWarnFromTheirOwnRelease(t *testing.T) {
+	for _, rule := range dbanalyze.MigrationRuleIDs() {
+		if ro := lintRollouts[rule]; ro.IntroducedIn != "v1.7.0" || ro.GatesFrom != "" {
+			t.Errorf("%s: got %+v, want v1.7.0 with no grace", rule, ro)
+		}
+	}
+	for _, rule := range dbanalyze.QueryRuleIDs() {
+		if ro := lintRollouts[rule]; ro.IntroducedIn != "v1.9.0" || ro.GatesFrom != "v1.10.0" {
+			t.Errorf("%s: got %+v, want v1.9.0 with grace until v1.10.0", rule, ro)
+		}
+	}
+}

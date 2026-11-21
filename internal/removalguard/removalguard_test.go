@@ -1744,6 +1744,8 @@ var removals = []removal{
 					// The telemetry translator's collector tests decode the
 					// file exporter's OTLP/JSON the same way.
 					"pkg/telemetry/collector/otelcol_test.go",
+					// So does the local telemetry agent's end-to-end test.
+					"internal/cli/up_telemetry_slow_test.go",
 					// forge's own CLI events (pkg/observe/cliev) post the same OTLP/JSON.
 					"pkg/observe/cliev/otlp.go",
 					// The telemetry translator's tests read the pinned collector's

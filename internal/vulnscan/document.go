@@ -154,7 +154,10 @@ type DocumentInput struct {
 	Env     string
 	Release string
 	// Gate is the env's vuln_gate, resolved.
-	Gate      release.ShapeVulnGate
+	Gate release.ShapeVulnGate
+	// GradedAs is the mode the rollout grades Gate.Mode as; "" is the
+	// declared mode (EvaluateInput.GradedAs).
+	GradedAs  release.DeliveryMode
 	Artifacts []ArtifactScan
 	Filter    Filter
 	Now       time.Time
@@ -232,7 +235,7 @@ func BuildDocument(in DocumentInput) Document {
 	for _, k := range order {
 		all = append(all, byKey[k].Finding)
 	}
-	ev := Evaluate(EvaluateInput{Gate: in.Gate, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now})
+	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now})
 	doc.Gate = ev.Gate
 	if doc.DB.Stale && ev.Gate.Verdict == VerdictStale {
 		doc.Notes = append(doc.Notes, fmt.Sprintf("undetermined: the newest scan of an artifact used a vulnerability database built %s, older than %s, and no current scan replaced it", doc.DB.BuiltAt.Format("2006-01-02"), humanDuration(StaleAfter)))

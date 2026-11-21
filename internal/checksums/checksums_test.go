@@ -305,11 +305,10 @@ func TestUncertifiedGenOutputsRecordNoHash(t *testing.T) {
 	if !Uncertified(catalog) || Uncertified(spec) || Uncertified("gen/foo_gen.go") || Uncertified("gen/my-own.json") {
 		t.Fatal("Uncertified: forge's named gen/ aggregates only, never a user's file")
 	}
-	stale := filepath.Join(root, filepath.FromSlash(HashCertPath(catalog)))
-	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, ".forge"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(stale, []byte(Hash([]byte("stale"))+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, LegacyHashesFile), []byte(`{"files":{"`+catalog+`":"stale"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cs, err := Load(root)

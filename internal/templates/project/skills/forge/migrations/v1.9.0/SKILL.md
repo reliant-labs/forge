@@ -132,15 +132,15 @@ in the env's KCL).
 3. Name `forge.IdentityGoogle` / `forge.IdentityGitHub` in `social`.
 4. `forge env render <env>` for each env you changed.
 
-## 6. `cmd/<bin>/cmd/root_gen.go` is no longer generated
+## 6. `cmd/<bin>/cmd/root_gen.go` is a deprecated compatibility file
 
 **Use when** `cmd/<bin>/cmd/root.go` calls `generatedCommands(`.
 
 ### What changed
 
-The compatibility emitter for command trees that predate the scaffold-once
-`root.go` is gone. `forge generate` deletes a stale `root_gen.go`, so
-`generatedCommands` and `migrationSource` are undefined.
+Nothing breaks within major 1: `forge generate` keeps emitting `root_gen.go`
+for a `root.go` that still calls `generatedCommands()`, and deletes it once
+`root.go` stops. A v2 stops emitting it, so port `root.go` before then.
 
 ### What to do
 

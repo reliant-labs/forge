@@ -118,6 +118,24 @@ func (b *loginBroker) sessionCookie() string {
 // BrokerOption configures RegisterLoginBroker.
 type BrokerOption func(*loginBroker)
 
+// WithUpstreamTokens hands the social provider's OWN tokens from each
+// sign-in to store, server-side, for every provider declared with
+// `pass_tokens = True` (forge.IdentityGitHub / forge.IdentityGoogle), so this
+// app can call the provider's API as the user. They never reach the browser.
+// Store them sealed (encrypted at rest) in this app's database, keyed by
+// (g.Subject, g.Provider), and replace the row on each sign-in. An error is
+// logged and the sign-in still succeeds; add RequireUpstreamTokens to refuse
+// it instead.
+func WithUpstreamTokens(store func(ctx context.Context, g devidp.UpstreamGrant) error) BrokerOption {
+	return func(b *loginBroker) { b.upstreamTokens = store }
+}
+
+// RequireUpstreamTokens refuses a social sign-in through a `pass_tokens`
+// provider when the WithUpstreamTokens store fails or no token came back.
+func RequireUpstreamTokens() BrokerOption {
+	return func(b *loginBroker) { b.requireUpstreamTokens = true }
+}
+
 // WithSessions keeps sessions SERVER-SIDE in m: the cookie holds an opaque
 // session id, the access and refresh tokens stay on the server, the access
 // token is renewed before it expires (so nobody is signed out mid-task), and
@@ -326,6 +344,11 @@ type loginBroker struct {
 	policy  devidp.LoginPolicy
 	methods *devidp.SignInRoutes
 
+	// upstreamTokens takes a social provider's tokens (WithUpstreamTokens);
+	// nil drops them.
+	upstreamTokens        func(context.Context, devidp.UpstreamGrant) error
+	requireUpstreamTokens bool
+
 	// proxyHops is how many trusted reverse proxies append to
 	// X-Forwarded-For (devidp.ClientIP). 0 keys rate limits on the
 	// connection's peer, which behind a proxy makes every per-IP budget a
@@ -413,6 +436,9 @@ func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{o
 		},
 		PasswordPolicy: b.passwordPolicy,
 		RejectPassword: b.writePasswordRejection,
+		// A `pass_tokens` provider's own tokens, server-side only.
+		UpstreamTokens:        b.upstreamTokens,
+		RequireUpstreamTokens: b.requireUpstreamTokens,
 	})
 	if err != nil {
 		// Fail CLOSED rather than serve half a policy: password sign-in

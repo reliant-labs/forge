@@ -2151,27 +2151,67 @@ _Enforced · Forge, on any infrastructure_
 
 ### Dependency and image scanning
 
-`forge ci vuln-scan` runs govulncheck over every Go module and npm audit over every frontend, refuses a pass it did not verify, and takes reviewed, expiring exemptions instead of silent ignores.
+`forge ci vuln-scan` runs govulncheck over every Go module and npm audit over every frontend, refuses a pass it did not verify, and takes reviewed, expiring exemptions instead of silent ignores; the generated `ci.yml` also scans the images CI builds with Trivy.
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** Container images are scanned by Trivy steps in the generated GitHub workflows (`ci.yml`'s docker build and `build-images.yml`), not by `forge ci vuln-scan`, so they run in CI only and `ci.vuln_scan.exemptions` does not cover them.
+**Why:** The Trivy step is a generated GitHub Actions step in `ci.yml`'s docker build (`ci.vuln_scan.docker` turns it off), not `forge ci vuln-scan`, so it runs in CI only and `ci.vuln_scan.exemptions` does not cover it. What forge scans itself, from the SBOM of every release it cuts, is `sbom-vuln-scan`; `build-images.yml` scans each image it pushes with `forge vuln scan` (Trivy for a project pinned before forge v1.10.0).
 
 **Evidence:**
 
 - command `forge ci vuln-scan`
 - source [`internal/cli/ci_vuln_npm.go`](../internal/cli/ci_vuln_npm.go)
 - source [`internal/cli/ci_vuln_exempt.go`](../internal/cli/ci_vuln_exempt.go)
+- source [`internal/templates/ci/github/ci.yml.tmpl`](../internal/templates/ci/github/ci.yml.tmpl)
 
-<a id="image-supply-chain"></a>
+<a id="sbom-vuln-scan"></a>
 
-### Signed images, SBOM and provenance
+### SBOM and scan per release
 
-The generated `build-images.yml` attaches an SPDX SBOM, a keyless cosign signature and a build-provenance attestation to every image, bound to its digest and stored in the registry beside it (`cosign verify-attestation`), private repositories included.
+Every release forge cuts records a CycloneDX SBOM of each artifact's shipped bytes, stored with the release and beside the image in its registry, and scans it with grype, so `forge vuln list <env>` says what a release is known to be vulnerable to and never reports "not scanned" as clean.
+
+_Recorded · Forge, on any infrastructure_
+
+**Use:** Nothing to set up: `forge env build <env> --release v1.0.0` (or the cut inside `forge env deploy`) does it. Read it back with `forge vuln list <env>`; `forge vuln db pull` fetches the vulnerability database once per machine. `forge vuln patch <env> --verify` bumps each vulnerable Go or npm/pnpm/yarn dependency to its fix and runs your gate over the result.
+
+**Why:** forge installs syft and grype as pinned release binaries whose sha256 is compiled into forge. An artifact it could not describe is recorded `unavailable` with the reason, a static site's SBOM is its lockfile (it can overstate the bundle), and nothing is refused unless an env opts in (`vuln-gate-self-hosted`). `--no-sbom` and `provenance_sbom = off` turn it off.
+
+**Evidence:**
+
+- skill `vuln` (`forge skill load vuln`)
+- command `forge vuln scan`
+- command `forge vuln list`
+- command `forge vuln sbom`
+- command `forge vuln db status`
+- command `forge vuln patch`
+- source [`internal/sbom/sbom.go`](../internal/sbom/sbom.go)
+- source [`internal/vulnscan/doc.go`](../internal/vulnscan/doc.go)
+
+<a id="secret-scan"></a>
+
+### Committed secrets caught
+
+`forge ci secret-scan` runs gitleaks at forge's pin, and the gate (`task ci`, CI's checks job) scans every commit a change adds. Static sites get the gitleaks pre-commit hook API projects carry.
 
 _Enforced · Forge, on any infrastructure_
 
-**Why:** The SBOM is uploaded as a workflow run artifact, not attached to the image in the registry, and the provenance attestation is skipped for private repositories outside GitHub Enterprise Cloud (GitHub's attestation store refuses them). This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `provenance_sbom`/`trusted_builder`/`admission_verify` controls are recorded, not enforced.
+**Use:** `forge ci secret-scan`, or `task ci`
+
+**Evidence:**
+
+- command `forge ci secret-scan`
+- source [`internal/cigate/plan.go`](../internal/cigate/plan.go)
+- skill `ci/gate` (`forge skill load ci/gate`)
+
+<a id="image-supply-chain"></a>
+
+### Signed images and provenance
+
+The generated `build-images.yml` attaches a keyless cosign signature and a build-provenance attestation to every image it pushes, bound to its digest and stored in the registry beside it (`cosign verify-attestation`), private repositories included.
+
+_Enforced · Forge, on any infrastructure_
+
+**Why:** Public repositories' provenance goes to GitHub's attestation store; a private repository's, which that store refuses outside GitHub Enterprise Cloud, goes to the registry as a cosign attestation. This is the generated GitHub workflow only; `forge env build` itself does not sign, and the DeliveryPolicy `signing`/`trusted_builder`/`admission_verify` controls do not read these signatures. From forge v1.10.0 the workflow writes no SBOM, because forge records one at every release cut and attaches it as an OCI referrer (`sbom-vuln-scan`); a project pinned to an older forge keeps the workflow's SPDX SBOM, as a run artifact and a cosign attestation.
 
 **Evidence:**
 
@@ -3175,6 +3215,7 @@ _Enforced · Forge, on any infrastructure_
 
 - command `forge vuln exempt`
 - command `forge ci vuln-sbom`
+- skill `vuln` (`forge skill load vuln`)
 - source [`internal/cli/vuln_gate.go`](../internal/cli/vuln_gate.go)
 
 | Rule            | Bug class it prevents                                                                                                                | Lane               |
@@ -3186,13 +3227,13 @@ _Enforced · Forge, on any infrastructure_
 
 ### Per-env delivery policy controls
 
-`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, while `provenance_sbom`, `trusted_builder`, `admission_verify`, `signed_promotions`, `vuln_gate`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
+`forge.DeliveryPolicy` declares per env what a release must prove, each control `off`, `audit` or `enforce`: `health_gate`, `signing` and `flux_verify` are enforced on a control plane, `required_gates` and `approval_hook` wherever the env's ledger lives, `vuln_gate` and `provenance_sbom` are judged by forge itself for an env with no control plane (warn first, and `audit` unless you opt in), while `trusted_builder`, `admission_verify`, `signed_promotions`, `bundle_kinds` and `approvals` are recorded and refuse nothing yet.
 
 _Recorded · Forge, on any infrastructure_
 
 **Use:** `delivery_policy = forge.DeliveryPolicy { ... }` in `deploy/kcl/<env>/main.k`
 
-**Why:** Setting a recorded control to `enforce` today is a declaration of intent. `forge env build` does not sign images; only an env with a control plane gets its bundles signed, by the platform. A control that cannot block a deploy defaults to `enforce`; one that can defaults to `audit`, so you read its would-deny verdicts before turning it on.
+**Why:** Setting a recorded control to `enforce` today is a declaration of intent. `vuln_gate` and `provenance_sbom` are not recorded-only for a self-hosted env (`vuln-gate-self-hosted`); on a control-plane env they are the control plane's to judge, once it advertises `enforces-vuln-gate`. `forge env build` does not sign images; only an env with a control plane gets its bundles signed, by the platform. A control that cannot block a deploy defaults to `enforce`; one that can defaults to `audit`, so you read its would-deny verdicts before turning it on.
 
 **Evidence:**
 

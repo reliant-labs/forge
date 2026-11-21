@@ -607,11 +607,13 @@ _obs_browser_off = lambda b: Bundle -> bool {
 }
 
 # The env is opted in to session replay, so the platform keeps replay events:
-# observability is on and a frontend switched replay on with telemetry.replay.
-# A frontend's switch counts only while browser telemetry is on: with it off,
-# nothing records (see _runtime_config_declared), so nothing is opted in for it.
+# observability is on and either the deprecated env-wide signals.replay is
+# set or a frontend switched replay on with telemetry.replay. A frontend's
+# switch counts only while browser telemetry is on: with it off, nothing
+# records (see _runtime_config_declared), so nothing is opted in for it.
 _obs_replay_opted_in = lambda b: Bundle -> bool {
-    _obs_on(b) and not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }
+    _obs_on(b) and (b.observability.signals.replay \
+        or (not _obs_browser_off(b) and any f in b.frontends { _frontend_replay_on(f) }))
 }
 
 # The frontend switched session replay on (BrowserTelemetry.replay).
@@ -2065,6 +2067,22 @@ _hosted_domain_violations = lambda w: any -> [str] {
     ["domains ${_d}: a hosted custom hostname is a control-plane resource, not spec — it needs DNS at your registrar, ownership verification and a certificate, and it binds to ONE environment while this file renders to many. Create it once and bind it: `forge domain add ${_d[0]}`, then `forge domain bind ${_d[0]} --env <env> --target ${w.name}`. (forge.OnCluster keeps `Port.domains`: there you own the ingress.)"] if _d else []
 }
 
+# A port's `allowedSourceCIDRs` is a promise that other clients are turned
+# away, so a runtime that cannot keep it must refuse it: serving everyone while
+# the declaration reads "restricted" is the failure this prevents. Only hosted
+# enforces it (the platform proxy checks the client address and answers 403).
+# A host process or a compose service has no ingress forge controls. On a
+# cluster you operate, forge renders the Gateway and HTTPRoute but sets no
+# client-address detection (ClientTrafficPolicy), so what Envoy sees behind
+# your load balancer is not something forge can vouch for. A compose or
+# build-only workload already refuses `ports` whole.
+_source_cidr_violations = lambda w: any, rt: any -> [str] {
+    [
+        "port ${p.name}: allowedSourceCIDRs ${p.allowedSourceCIDRs} cannot be enforced on the ${rt.type} runtime, and forge will not drop it silently (the port would serve every client). Only forge.OnHosted enforces a per-port source allowlist; bind this workload to forge.OnHosted, or remove allowedSourceCIDRs and restrict access where you own the ingress."
+        for p in (w.ports or []) if p.allowedSourceCIDRs
+    ] if rt.type in ["host", "cluster", "external"] else []
+}
+
 _mask_violations = lambda w: any, rt: any -> [str] {
     _hosted = ["${f}: ${tiers.RESTRICTED_FIELD_REASONS[f]}" for f in tiers.RESTRICTED_FIELD_REASONS if f in w and _set(w, f)] \
         + ["env ${k} (${_channel(v)}): ${tiers.RESTRICTED_FIELD_REASONS['env.' + _channel(v)]}" for k, v in w.env if "env." + _channel(v) in tiers.RESTRICTED_FIELD_REASONS and not (_channel(v) == "secretRef" and v.store_key)] \
@@ -2083,7 +2101,7 @@ _mask_violations = lambda w: any, rt: any -> [str] {
     _build_only = ["${f}: ${_BUILD_ONLY_REFUSED[f]}" for f in _BUILD_ONLY_REFUSED if _set(w, f)] \
         + (["build: a build-only workload with no build has nothing to produce"] if not w.build else []) \
         if rt.type == "build-only" else []
-    _hosted + _host + _compose + _build_only
+    _hosted + _host + _compose + _build_only + _source_cidr_violations(w, rt)
 }
 
 # ---------------------------------------------------------------------------
@@ -2507,7 +2525,8 @@ _render_observability = lambda b: Bundle -> any {
             "profiles": _obs_profiles_on(b)
             "metadata": _o.signals.metadata
             "browser": _o.signals.browser
-            # Derived, as policy.opt_in is: any frontend's telemetry.replay.
+            # Derived, as policy.opt_in is: the deprecated env-wide switch
+            # or any frontend's telemetry.replay.
             "replay": _obs_replay_opted_in(b)
         }
         # The opt-out (and the one opt-in), resolved: recorded in the release shape.
@@ -2707,12 +2726,19 @@ _tel_otlp = lambda t: Telemetry, svc: str, rt: str, b: Bundle -> any {
     } if _o else None
 }
 
-_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle -> any {
+# origin is "default" for a target forge renders with no declaration of the
+# project's (a ManagedDatabase's default and its operator's): collected like
+# any other, but a deploy does not warn that it goes uncollected on a control
+# plane that does not collect hosted telemetry yet (pkg/telemetry
+# OriginDefault). Absent for a declared target.
+_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle, origin: str = "" -> any {
     {
         "service_name": svc
         "scope": t.scope
         "source": source
         "attachment": attachment
+        if origin:
+            "origin": origin
         "runtime": rt
         "cluster": cluster
         "namespaces": namespaces
@@ -2814,7 +2840,7 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
     _tel_target(t, t.service_name or managed_database_service_name(db.name), "manageddatabase:${db.name}", "manageddatabase", _p.runtime, \
         "" if _hosted else (_p.cluster or ""), \
         [_p.namespace] if not _hosted and _p.namespace else [], \
-        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b)
+        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b, "" if db.telemetry else "default")
 }
 
 # Every Telemetry the env declares, beside its resolved service name:
@@ -2841,7 +2867,7 @@ _tel_cnpg_operators = lambda b: Bundle -> [any] {
         "svc": CNPG_OPERATOR_SERVICE if len(_clusters) == 1 else CNPG_OPERATOR_SERVICE + "-" + regex.replace(c.lower(), r"[^-a-z0-9_.]", "-").strip("-_.")
     } for c in _clusters]
     [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc, _tel_ships(b, "metrics"), _tel_ships(b, "logs")), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
-        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b) for o in _named if o.svc not in _taken]
+        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b, "default") for o in _named if o.svc not in _taken]
 }
 
 _render_telemetry = lambda b: Bundle -> [any] {
@@ -3526,33 +3552,38 @@ _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | Work
 #
 #   OTEL_ENDPOINT   config.otel_endpoint, or {NEXT_PUBLIC_,VITE_}OTEL_ENDPOINT
 #   ENVIRONMENT     config.environment, or {NEXT_PUBLIC_,VITE_}ENVIRONMENT
+#   OTEL_REPLAY     {NEXT_PUBLIC_,VITE_}OTEL_REPLAY (deprecated: a frontend
+#                   that sets telemetry.replay gets OTEL_REPLAY from
+#                   _telemetry_runtime_config, and the build variable is not
+#                   carried over it)
 #
-# (Session replay is not one of them: it is switched on per frontend with
-# telemetry.replay, which _telemetry_runtime_config renders as OTEL_REPLAY. A
-# {NEXT_PUBLIC_,VITE_}OTEL_REPLAY build variable is not carried.)
-#
-# otel_gen.ts reads these from the runtime config: a build variable is baked
-# into the bundle and follows that build into every environment it is
-# promoted to. So each declaration is carried into the runtime config (the
-# build variable still renders, for code that reads it). An env_vars literal
-# outranks `config`, as it does for the build variable; a secret or
-# config-map entry is never carried, because config.js is public. React
-# Native has no runtime config document, so it gets nothing.
+# otel_gen.ts reads these from the runtime config first (a build variable is
+# only its deprecated fallback): a build variable is baked into the bundle and
+# follows that build into every environment it is promoted to. So each
+# declaration is carried into the runtime config too (the build variable still
+# renders, for code that reads it). An env_vars literal outranks `config`, as
+# it does for the build variable; a secret or config-map entry is never
+# carried, because config.js is public. React Native has no runtime config
+# document, so it gets nothing.
 #
 # A HOSTED frontend gets OTEL_ENDPOINT alone. Its document is written by the
 # control plane, which sets ENVIRONMENT to the environment it actually serves;
-# a literal published in the StaticSite spec would override that, so it stays
-# out of the spec. The ingest path is the author's explicit choice for that
-# environment, and the spec already carries an author's runtime_config the
-# same way.
+# a literal published in the StaticSite spec would override that (and a fixed
+# OTEL_REPLAY carried from a build variable would apply that build's replay
+# choice wherever the spec lands), so those stay out of the spec. A hosted
+# frontend switches replay on per env with telemetry.replay instead. The
+# ingest path is the author's explicit choice for that environment, and the
+# spec already carries an author's runtime_config the same way.
 _env_scoped_runtime_config = lambda f: Frontend -> {str:str} {
     _c = f.config
     _endpoint = _build_var_literal(f, "OTEL_ENDPOINT", _c.otel_endpoint if _c and _c.otel_endpoint else None)
     _environment = _build_var_literal(f, "ENVIRONMENT", _c.environment if _c and _c.environment else None)
+    _replay = _build_var_literal(f, "OTEL_REPLAY", None)
     _hosted = _frontend_hosted(f)
     {} if f.type not in ["nextjs", "vite"] else \
         ({OTEL_ENDPOINT = _endpoint} if _endpoint is not None else {}) \
-        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {})
+        | ({ENVIRONMENT = _environment} if _environment is not None and not _hosted else {}) \
+        | ({OTEL_REPLAY = _replay} if _replay is not None and not _hosted and not _frontend_replay_on(f) else {})
 }
 
 # The value of the last env_vars entry that sets the frontend's build variable

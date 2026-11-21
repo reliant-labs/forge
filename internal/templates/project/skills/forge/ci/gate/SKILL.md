@@ -24,9 +24,22 @@ CI cannot drift from the local verdict. `forge ci gate --list` names every check
 and its lane. For a project with services and a frontend the `checks` lane is:
 `deps-<fe>`, `verify-generated`, `golangci-lint`, `buf-lint`, `migration-safety`,
 `lint-<fe>`, `typecheck-<fe>`, `css-health-<fe>`, `go-build`, `build-<fe>`,
-`vuln-go`, `vuln-npm`, `license-check`, `validate-kcl`, `deployability`. Which
-rows exist follows the same forge.yaml toggles the workflow renders from
-(`ci.lint`, `ci.vuln_scan`, ...), so a toggle means the same thing in both.
+`vuln-go`, `vuln-npm`, `vuln-sbom` (the lockfiles' SBOM scanned by grype,
+graded warn-first: `vuln`), `secret-scan`, `license-check`, `validate-kcl`,
+`deployability`. Which rows exist follows the same forge.yaml toggles the
+workflow renders from (`ci.lint`, `ci.vuln_scan`, ...), so a toggle means the
+same thing in both.
+`secret-scan` runs `forge ci secret-scan --branch`: gitleaks, at the version
+forge pins (the scaffolded pre-commit hook's), over the commits the change adds —
+since the merge-base with `origin/<default branch>` (or `CI_BASE`), the last
+commit on the default branch. A base it finds no merge-base with (a shallow
+clone: check out with `fetch-depth: 0`) fails the row rather than scanning
+less. It judges the change, never the history before
+it, so pinning the forge that added the row cannot fail a gate over a
+credential committed long ago. A false positive is silenced the gitleaks way:
+its fingerprint in `.gitleaksignore`, or a `gitleaks:allow` comment on the
+line. A real one must be revoked: deleting it in a new commit leaves it in the
+history. `forge ci secret-scan` with no flag scans every commit.
 `license-check` judges the licenses of your dependencies, not your own code:
 it passes go-licenses `--ignore` for the module in `go.mod` and for the modules
 a root `go.work` uses from inside the project, so a project needs no LICENSE

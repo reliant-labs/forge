@@ -106,6 +106,9 @@ var FieldProfiles = map[string]Profile{
 	// past the hosted user's own workload.
 	"ports.appProtocol": ProfileRestricted,
 	"ports.domains":     ProfileRestricted,
+	// allowedSourceCIDRs only narrows who may reach the author's own
+	// exposed port, and the platform enforces it.
+	"ports.allowedSourceCIDRs": ProfileRestricted,
 
 	"probes":                     ProfileRestricted,
 	"probes.port":                ProfileRestricted,

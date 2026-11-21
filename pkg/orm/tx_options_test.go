@@ -32,8 +32,8 @@ func TestTxOptions_UnsetLevelIsRejectedNamingTheCallSite(t *testing.T) {
 		{"Tx.RunTx (a join)", func(o TxPolicy) (error, int) { return tx.RunTx(ctx, o, fn), line() }},
 		{"Tx.RunTransaction (a join)", func(o TxPolicy) (error, int) { return tx.RunTransaction(ctx, o, handleFn), line() }},
 	}
-	// Built by mutation rather than as literals: a level-less literal reads
-	// as a mistake, so each is derived from a named policy.
+	// Built by mutation rather than as literals: `forge fix tx-isolation`
+	// would (rightly, in old code) spell a level-less literal out.
 	var zero TxOptions
 	readOnlyNoLevel := ReadCommitted.WithReadOnly()
 	readOnlyNoLevel.Isolation = 0

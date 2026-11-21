@@ -1,6 +1,6 @@
 // File: internal/cli/scaffold/entity_removed_forms_test.go
 //
-// The `field:type` flag grammar was removed: the proto
+// The `field:type` flag grammar and `--from-schema` were removed: the proto
 // is the only place an entity is declared. These tests pin the REFUSALS,
 // because a removal whose old spelling fails obscurely is worse than the
 // feature it removed — the user typed something forge understood last week
@@ -86,12 +86,67 @@ func TestEntity_RefusalNamesTheMessageForgeWouldBirth(t *testing.T) {
 	}
 }
 
-// `forge scaffold entity` needs a name unless --from-proto sweeps a service.
-func TestEntity_ArgsCheck(t *testing.T) {
+// `--from-schema` stays PARSEABLE so it can be refused with an explanation.
+// Dropped outright it would answer with cobra's `unknown flag`, which tells
+// the caller nothing about why forge no longer adopts an existing database —
+// and that "why" is not something they can guess.
+func TestEntity_FromSchemaRefusesWithTheReasonAndTheAlternative(t *testing.T) {
+	cmd := newEntityCmd(testFactory())
+
+	if f := cmd.Flags().Lookup("from-schema"); f == nil {
+		t.Fatal("--from-schema must still PARSE so it can be refused; dropping it yields cobra's `unknown flag`")
+	} else if !f.Hidden {
+		t.Error("--from-schema exists only to be refused, so it must not appear in --help")
+	}
+
+	if err := cmd.Flags().Set("from-schema", "invoices"); err != nil {
+		t.Fatal(err)
+	}
+	// Through Args, not RunE: with no entity name the arity check would
+	// otherwise fire first and print usage.
+	err := cmd.Args(cmd, nil)
+	if err == nil {
+		t.Fatal("--from-schema must refuse, ahead of the arity check")
+	}
+	got := err.Error()
+
+	for _, want := range []string{
+		// The removal and the reason — a product decision the caller
+		// cannot infer from a flag disappearing.
+		"--from-schema was removed",
+		"adopt a database forge did not create",
+		// The proto-first path, named for the table they asked about
+		// (singularized: `invoices` → message Invoice).
+		"// forge:entity",
+		"message Invoice {",
+		"forge scaffold",
+		// The collision an already-applied table will cause, and the way
+		// to keep it — without this the advice is a trap.
+		"ALREADY-APPLIED table will collide",
+		"forge generate",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("refusal is missing %q — the user cannot act on it:\n%s", want, got)
+		}
+	}
+
+	// An Args error normally keeps cobra's usage block. This one must not:
+	// the flag list says nothing about why --from-schema is gone, and
+	// putting it between the user and the explanation is the dump this
+	// refusal exists to replace.
+	if !cmd.SilenceUsage {
+		t.Error("the refusal must suppress the usage dump — it is an explanation, not an arity mistake")
+	}
+}
+
+// The refusal must not fire for anyone who did not ask for it: it sits in
+// the Args validator, which runs on every `forge scaffold entity`.
+func TestEntity_WithoutFromSchemaTheArgsCheckIsUnchanged(t *testing.T) {
 	cmd := newEntityCmd(testFactory())
 	if err := cmd.Args(cmd, []string{"order"}); err != nil {
-		t.Errorf("a named entity was refused by the args check: %v", err)
+		t.Errorf("the --from-schema refusal fired without the flag: %v", err)
 	}
+	// And the arity check it precedes still works.
 	if err := cmd.Args(cmd, nil); err == nil {
 		t.Error("a bare `scaffold entity` must still be an args error, so usage still prints")
 	}

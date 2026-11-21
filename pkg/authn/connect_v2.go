@@ -56,7 +56,8 @@ func (a *interceptor) wrapV2(next connectv2.ServerFunc) connectv2.ServerFunc {
 		if a.allowUnauthenticated(spec.Procedure) {
 			return next(ctx, spec, stream)
 		}
-		authed, err := a.authenticate(ctx, a.policy.authorization(requestHeaderV2(ctx)))
+		authorization, channel := a.policy.credential(requestHeaderV2(ctx))
+		authed, err := a.authenticate(ctx, authorization, channel)
 		if err != nil {
 			return errorToV2(ctx, err)
 		}

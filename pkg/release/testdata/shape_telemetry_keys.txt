@@ -82,6 +82,7 @@ metrics[].tls.server_name
 namespaces
 namespaces[]
 network_policy
+origin
 otlp
 otlp.env
 otlp.env{}

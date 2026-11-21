@@ -49,7 +49,9 @@ The design:
    verbatim on every forge pin bump, so the decode feature alone would claim collection;
    `collects-telemetry` is not in that list, and a control plane adds it by hand, in the change
    that makes it collect. Forge sends the targets only to a control plane that names both, and
-   otherwise strips them and warns, naming the targets and the missing capability.
+   otherwise strips them and warns, naming the targets and the missing capability. A target
+   forge renders on its own (`origin: default`, a ManagedDatabase's) is stripped the same way
+   but never named, and a strip of defaults alone says nothing.
 3. **One translator, `pkg/telemetry/collector`:** `Target` → OpenTelemetry Collector config
    fragments. It has four consumers:
 
@@ -927,7 +929,8 @@ observability, cluster = "", protocol = "http/protobuf")` resolves only the tran
 - `Telemetry.dashboards: [dashspec.Dashboard] = []` (`kcl/telemetry.k` imports `.dashspec`;
   projects write `import forge.dashspec as ds`). Each renders through `dashspec.dashboard_json`
   into `Target.Dashboards []json.RawMessage`, kept raw so `dashspec.ParseDashboard` (in
-  `telemetry.Validate` and again in obsdash) is the one judge, with line and column. Ids are
+  `telemetry.Validate`, passed in as `Options.ValidateDashboard` so pkg/telemetry stays a
+  dependency leaf, and again in obsdash) is the one judge, with line and column. Ids are
   unique within a Telemetry (KCL) and within an env (Validate). The `dash_*` re-exports of §2
   were not added: the F2 helpers (`ds.rate`, `ds.quantile`, `ds.gauge`, `ds.ratio`) are the one
   spelling.

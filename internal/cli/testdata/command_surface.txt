@@ -19,7 +19,7 @@ forge app	group	allow-version-skew:bool project-dir/C:string
 forge app delete	cmd	allow-version-skew:bool cancel:bool endpoint:string project-dir/C:string status:bool token:string yes:bool
 forge app stop	cmd	allow-version-skew:bool endpoint:string project-dir/C:string token:string yes:bool
 forge app teardown	cmd	allow-version-skew:bool endpoint:string keep-data:bool project-dir/C:string token:string yes:bool
-forge build	group	allow-version-skew:bool debug:bool docker:bool gate-json:string no-generate:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string rebuild:bool tag:string target-arch:string target/t:string
+forge build	group	allow-version-skew:bool debug:bool docker:bool gate-json:string no-generate:bool option/D:stringArray output/o:string parallel:bool plan:bool project-dir/C:string push:bool rebuild:bool release:string tag:string target-arch:string target/t:string
 forge build receipt	cmd	allow-version-skew:bool inputs:string output:stringArray project-dir/C:string
 forge ci	group	allow-version-skew:bool project-dir/C:string
 forge ci gate	cmd	allow-version-skew:bool base:string full:bool groups:bool jobs:int list:bool no-cache:bool only:stringSlice project-dir/C:string report:string skip:stringSlice
@@ -230,9 +230,11 @@ forge fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run
 forge fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix derive-contract	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
+forge fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix tests-capture	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
+forge fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge frontend	group	allow-version-skew:bool project-dir/C:string
 forge frontend sourcemaps	group	allow-version-skew:bool project-dir/C:string
@@ -249,14 +251,16 @@ forge ledger export	cmd	allow-version-skew:bool dir:string env:string project-di
 forge ledger import	cmd	allow-version-skew:bool apply:bool from-file-ledger:string from-git:bool project-dir/C:string rev:string
 forge ledger show	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge ledger where	cmd	allow-version-skew:bool json:bool project-dir/C:string
-forge lint	cmd	allow-skip:stringArray allow-version-skew:bool banners:bool check-workarounds:bool check:bool closed-sets:bool column-markers:bool computed-fields:bool config-deps:bool config-reach:bool contract:bool conventions:bool create-nullability:bool db-grants:bool exported-vars:bool fix:bool fixture-drift:bool frontend-stores:bool gate-json:string generated-drift:bool go-markers:bool graph:bool guarded-fields:bool help-dev:bool install:bool json:bool migration-safety:bool no-fix:bool optional-deps-guard:bool project-dir/C:string proto-format:bool proto-markers:bool proto-options:bool quiet/q:bool read-only-fields:bool scaffolds:bool scope:stringSlice secrets:bool show-suppressed:bool skip-frontends:bool slow-tests:bool static-export:bool strict:bool suggest-buf-excepts:bool suggest-excludes:bool telemetry:bool test-waits:bool tests:bool time-bucketing:bool tracing:bool vendored-protos:bool
+forge lint	cmd	allow-skip:stringArray allow-version-skew:bool banners:bool check-workarounds:bool check:bool closed-sets:bool column-markers:bool computed-fields:bool config-deps:bool config-reach:bool contract:bool conventions:bool create-nullability:bool crud-fixtures:bool db-grants:bool exported-vars:bool fix:bool fixture-drift:bool frontend-stores:bool gate-json:string generated-drift:bool go-markers:bool graph:bool guarded-fields:bool help-dev:bool install:bool json:bool migration-safety:bool no-fix:bool optional-deps-guard:bool project-dir/C:string proto-format:bool proto-markers:bool proto-options:bool quiet/q:bool read-only-fields:bool scaffolds:bool scope:stringSlice secrets:bool show-suppressed:bool skip-frontends:bool slow-tests:bool static-export:bool strict:bool suggest-buf-excepts:bool suggest-excludes:bool telemetry:bool test-waits:bool tests:bool time-bucketing:bool tracing:bool vendored-protos:bool
 forge lint fix	group	allow-version-skew:bool project-dir/C:string
 forge lint fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge lint fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge lint fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge lint fix harness-mocks	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge lint fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix tests-capture	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
+forge lint fix tx-isolation	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge login	cmd	allow-version-skew:bool endpoint:string no-verify:bool project-dir/C:string token:string
 forge logout	cmd	allow-version-skew:bool endpoint:string project-dir/C:string
@@ -274,7 +278,7 @@ forge machine storage install	cmd	policy:string project-dir/C:string
 forge machine storage policy	cmd	policy:string project-dir/C:string
 forge machine storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice
 forge machine storage status	cmd	policy:string project-dir/C:string
-forge machine storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string repo:string
+forge machine storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string reliant-managed:bool repo:string
 forge machine tools	group	allow-version-skew:bool project-dir/C:string
 forge machine tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string
 forge machine tools pins	cmd	allow-version-skew:bool archives:bool json:bool project-dir/C:string
@@ -391,7 +395,7 @@ forge scaffold	group	allow-version-skew:bool dry-run:bool project-dir/C:string s
 forge scaffold adapter	cmd	allow-version-skew:bool base-url-env:string base-url:bool dry-run:bool kind:string no-generate:bool project-dir/C:string type:string
 forge scaffold binary	cmd	allow-version-skew:bool project-dir/C:string
 forge scaffold crd	cmd	allow-version-skew:bool group:string operator:string project-dir/C:string shape:string
-forge scaffold entity	cmd	allow-version-skew:bool dry-run:bool from-proto:string no-timestamps:bool project-dir/C:string soft-delete:bool table:string
+forge scaffold entity	cmd	allow-version-skew:bool dry-run:bool from-proto:string from-schema:string no-timestamps:bool project-dir/C:string soft-delete:bool table:string
 forge scaffold frontend	cmd	allow-version-skew:bool auth-mode:string base-path:string kind:string no-generate:bool output:string port:int project-dir/C:string routes:stringSlice
 forge scaffold handler-file	cmd	allow-version-skew:bool project-dir/C:string
 forge scaffold library	cmd	allow-version-skew:bool force:bool no-exclude:bool path:string project-dir/C:string
@@ -431,7 +435,7 @@ forge storage install	cmd	policy:string project-dir/C:string
 forge storage policy	cmd	policy:string project-dir/C:string
 forge storage register	cmd	builder:stringSlice context:stringSlice ledger:string pin:stringSlice policy:string project-dir/C:string repository:stringSlice
 forge storage status	cmd	policy:string project-dir/C:string
-forge storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string repo:string
+forge storage worktrees	cmd	apply:bool base:string idle:duration policy:string project-dir/C:string reliant-managed:bool repo:string
 forge telemetry	group	project-dir/C:string
 forge telemetry off	cmd	project-dir/C:string
 forge telemetry on	cmd	project-dir/C:string

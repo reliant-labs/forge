@@ -8,6 +8,8 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // The seams every exec goes through, so tests never start go, git or gh.
@@ -87,6 +89,7 @@ func firstArgs(args []string, n int) string {
 func ExecListPackages(ctx context.Context, dir string) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-f", "{{.Dir}}", "./...")
 	cmd.Dir = dir
+	cmd.Env = goexec.Env()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

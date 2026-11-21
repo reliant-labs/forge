@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"text/template/parse"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
@@ -43,6 +44,12 @@ import (
 // by hand, after a release a template wants to use): that only makes check 2
 // stricter. It may never name a newer one.
 //
+// A command newer than that release may still be RUN by a template inside
+// `{{if .ForgeAtLeast "vX.Y.Z"}}` (templates.BuildImagesWorkflowData), which
+// renders it only for a project whose pinned forge is at least vX.Y.Z, the
+// first release with the command. Such an invocation must still exist in
+// this binary (check 1); check 2 is replaced by guardedInvocationProblem.
+//
 // Not checked: flags (the trees record commands only); commands named in
 // prose — comments, docs, skills — which nothing executes; and a `forge
 // <word>` whose first word is no forge command at all, which in a run file is
@@ -68,7 +75,11 @@ func TestScaffoldTemplatesRunOnlyReleasedForgeCommands(t *testing.T) {
 		if _, ok := tree["forge "+inv.words[0]]; !ok {
 			continue
 		}
-		if problem := releasedInvocationProblem(inv.words, tree, released, releasedVersion); problem != "" {
+		problem := releasedInvocationProblem(inv.words, tree, released, releasedVersion)
+		if inv.guard != "" {
+			problem = guardedInvocationProblem(inv.words, tree, released, releasedVersion, buildinfo.PublishedFloor(), inv.guard)
+		}
+		if problem != "" {
 			problems = append(problems, fmt.Sprintf("%s:%d: %s\n      %s", inv.file, inv.line, problem, strings.TrimSpace(inv.text)))
 		}
 	}
@@ -143,6 +154,49 @@ func TestReleasedCommandChecks(t *testing.T) {
 	}
 }
 
+// A command newer than the snapshot is accepted only inside a ForgeAtLeast
+// guard naming a release after the floor, and only real control flow counts
+// as a guard.
+func TestGuardedInvocations(t *testing.T) {
+	leaf := forgeCommand{runs: true, takesArgs: true}
+	tree := map[string]forgeCommand{"forge vuln": {}, "forge vuln scan": leaf, "forge env": {}, "forge env build": leaf}
+	released := map[string]bool{"forge env": true, "forge env build": true}
+	for _, c := range []struct {
+		words, guard, want string // want: a substring of the problem; "" is none
+	}{
+		{"vuln scan --image x", "v1.10.0", ""},              // a release after the floor
+		{"env build prod", "v1.2.0", ""},                    // released anyway
+		{"vuln scan", "v1.5.0", ""},                         // at or before the floor, newer than the snapshot: unchecked
+		{"vuln scan", "v1.0.10", "is not in forge v1.0.15"}, // the snapshot covers the guard and lacks it
+		{"vuln nope", "v1.10.0", "has no subcommand"},       // check 1 still applies
+		{"vuln scan", "latest", "not a release version"},
+	} {
+		problem := guardedInvocationProblem(strings.Fields(c.words), tree, released, "v1.0.15", "v1.8.0", c.guard)
+		if (c.want == "") != (problem == "") || !strings.Contains(problem, c.want) {
+			t.Errorf("guardedInvocationProblem(%q, guard %q) = %q; want a problem containing %q", c.words, c.guard, problem, c.want)
+		}
+	}
+
+	body := "a: forge env build\n" +
+		"{{- if .ForgeAtLeast \"v1.10.0\"}}\n" +
+		"b: forge vuln scan\n" +
+		"{{- if .ForgeAtLeast \"v1.11.0\"}}\n" +
+		"c: forge vuln scan\n" +
+		"{{- end}}\n" +
+		"{{- else}}\n" +
+		"d: trivy\n" +
+		"{{- end}}\n" +
+		"{{- if not (.ForgeAtLeast \"v1.10.0\")}}\n" +
+		"e: forge vuln scan\n" +
+		"{{- end}}\n" +
+		"{{/* f: forge vuln scan */}}\n"
+	got := forgeGuardedLines(t, "t", body)
+	want := map[int]string{3: "v1.10.0", 5: "v1.11.0"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("forgeGuardedLines = %v; want %v", got, want)
+	}
+}
+
 // releasedSnapshotProblem reports why a snapshot of release snapshot cannot
 // stand for floor, the release this source descends from: it must be a valid
 // version no newer than floor.
@@ -167,6 +221,109 @@ func releasedInvocationProblem(words []string, tree map[string]forgeCommand, rel
 			"testdata/released_commands.txt with scripts/released-commands.sh", cmdPath, releasedVersion)
 	}
 	return problem
+}
+
+// guardedInvocationProblem is the release check for an invocation a template
+// renders only under `{{if .ForgeAtLeast guard}}`, i.e. only for a project
+// pinned to guard or later. The command must exist in this binary, and in
+// guard: it does when the released snapshot already lists it, or when guard
+// is a release after floor (the release this source descends from), which
+// will be cut from this source or a later one and so has every command it
+// has (v1 never removes a command). A guard at or before floor names a
+// release this source already descends from: only a snapshot of guard or a
+// later release can vouch for it, so a snapshot older than guard leaves it
+// as it was accepted when it was written.
+func guardedInvocationProblem(words []string, tree map[string]forgeCommand, released map[string]bool, releasedVersion, floor, guard string) string {
+	cmdPath, problem := resolveForgeInvocation(words, tree)
+	switch {
+	case problem != "" || released[cmdPath]:
+		return problem
+	case !semver.IsValid(guard):
+		return fmt.Sprintf("`%s` is guarded by ForgeAtLeast %q, which is not a release version", cmdPath, guard)
+	case semver.IsValid(floor) && semver.Compare(guard, floor) > 0:
+		return ""
+	case semver.Compare(releasedVersion, guard) < 0:
+		return ""
+	}
+	return fmt.Sprintf("`%s` is guarded by ForgeAtLeast %s, but is not in forge %s (testdata/released_commands.txt), "+
+		"a release at or after the guard: name the first release that has the command", cmdPath, guard, releasedVersion)
+}
+
+// forgeGuardedLines maps each line of a template body (1-based) that only
+// ever renders inside `{{if .ForgeAtLeast "vX.Y.Z"}}` to the newest such
+// guard around it. It reads the body's own parse tree, so a guard is the
+// template's real control flow, not a comment; a line that also carries
+// text outside the guard is not guarded.
+func forgeGuardedLines(t *testing.T, name, body string) map[int]string {
+	t.Helper()
+	tr := parse.New(name)
+	tr.Mode = parse.SkipFuncCheck
+	set := map[string]*parse.Tree{}
+	if _, err := tr.Parse(body, "", "", set); err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	lineOf := func(pos int) int { return strings.Count(body[:pos], "\n") + 1 }
+	guarded, unguarded := map[int]string{}, map[int]bool{}
+	var walk func(n parse.Node, guard string)
+	walk = func(n parse.Node, guard string) {
+		switch n := n.(type) {
+		case *parse.ListNode:
+			if n == nil {
+				return
+			}
+			for _, c := range n.Nodes {
+				walk(c, guard)
+			}
+		case *parse.TextNode:
+			// The newline that ends an action's own line is not on the
+			// lines the text carries.
+			text := strings.TrimLeft(string(n.Text), "\n")
+			start := int(n.Pos) + len(n.Text) - len(text)
+			for l := lineOf(start); l <= lineOf(start+len(text)); l++ {
+				if guard == "" {
+					unguarded[l] = true
+				} else if g, ok := guarded[l]; !ok || semver.Compare(guard, g) > 0 {
+					guarded[l] = guard
+				}
+			}
+		case *parse.IfNode:
+			inner := guard
+			if g := forgeAtLeastGuard(n.Pipe); g != "" && (inner == "" || semver.Compare(g, inner) > 0) {
+				inner = g
+			}
+			walk(n.List, inner)
+			walk(n.ElseList, guard)
+		case *parse.RangeNode:
+			walk(n.List, guard)
+			walk(n.ElseList, guard)
+		case *parse.WithNode:
+			walk(n.List, guard)
+			walk(n.ElseList, guard)
+		}
+	}
+	for _, tree := range set {
+		walk(tree.Root, "")
+	}
+	for l := range unguarded {
+		delete(guarded, l)
+	}
+	return guarded
+}
+
+// forgeAtLeastGuard returns vX.Y.Z when pipe is exactly `.ForgeAtLeast
+// "vX.Y.Z"`, and "" for anything else (a negation, an `or`, a variable).
+func forgeAtLeastGuard(pipe *parse.PipeNode) string {
+	if pipe == nil || len(pipe.Decl) != 0 || len(pipe.Cmds) != 1 || len(pipe.Cmds[0].Args) != 2 {
+		return ""
+	}
+	field, ok := pipe.Cmds[0].Args[0].(*parse.FieldNode)
+	if !ok || len(field.Ident) != 1 || field.Ident[0] != "ForgeAtLeast" {
+		return ""
+	}
+	if release, ok := pipe.Cmds[0].Args[1].(*parse.StringNode); ok {
+		return release.Text
+	}
+	return ""
 }
 
 // forgeCommand is what the resolver needs to know of one command.
@@ -267,6 +424,9 @@ type forgeInvocation struct {
 	line  int
 	text  string
 	words []string
+	// guard is the ForgeAtLeast release the invocation renders under, or
+	// "" (forgeGuardedLines).
+	guard string
 }
 
 // forgeInvocationRE finds `forge <words>` (or the Taskfile's `{{.FORGE}}
@@ -316,6 +476,10 @@ func scaffoldTemplateForgeInvocations(t *testing.T) []forgeInvocation {
 				t.Fatalf("read %s/%s: %v", category, name, err)
 			}
 			text := templateRawAction.ReplaceAllString(unescape.Replace(string(body)), "$1")
+			if strings.Count(text, "\n") != strings.Count(string(body), "\n") {
+				t.Fatalf("%s/%s: unescaping changed its line count, so guarded lines cannot be mapped", category, name)
+			}
+			guards := forgeGuardedLines(t, category+"/"+name, string(body))
 			for i, line := range strings.Split(text, "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "#") {
 					continue
@@ -323,7 +487,7 @@ func scaffoldTemplateForgeInvocations(t *testing.T) []forgeInvocation {
 				for _, m := range forgeInvocationRE.FindAllStringSubmatch(line, -1) {
 					out = append(out, forgeInvocation{
 						file: path.Join("internal/templates", category, name), line: i + 1, text: line,
-						words: strings.Fields(m[1]),
+						words: strings.Fields(m[1]), guard: guards[i+1],
 					})
 				}
 			}

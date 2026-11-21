@@ -58,8 +58,11 @@ func newCodemodCmd(f *factory.Factory, c codemod.Codemod) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   c.Name,
 		Short: c.Short,
-		Long:  c.Long + migrationSkillSentence(c.Version),
-		Args:  cobra.NoArgs,
+		// A deprecated codemod is hidden from --help and warns once on
+		// stderr, naming its replacement; it still runs (semver v1).
+		Deprecated: c.Deprecated,
+		Long:       c.Long + migrationSkillSentence(c.Version),
+		Args:       cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := cmdutil.ProjectRoot()
 			if err != nil {

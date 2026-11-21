@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -53,14 +54,30 @@ func hookActivationSkipped(cmd *cobra.Command) bool {
 // either, and has its own opt-out, FORGE_NO_MERGE_DRIVER (merge_generated.go).
 const gitHooksOptOutEnv = "FORGE_NO_GIT_HOOKS"
 
+// legacyGitHooksOptOutEnv is gitHooksOptOutEnv's earlier spelling, still
+// honoured so a clone opted out under it stays opted out. It was renamed
+// because "hooks" read as forge.yaml's generate hooks too: people set it
+// expecting `forge generate` to skip `make sqlc`, and it never did.
+const legacyGitHooksOptOutEnv = "FORGE_NO_HOOKS"
+
 // gitHooksOptOut returns the variable that opts this process out of forge
-// configuring git hooks, or "" when it is not set.
+// configuring git hooks, or "" when neither is set.
 func gitHooksOptOut() string {
 	if os.Getenv(gitHooksOptOutEnv) != "" {
 		return gitHooksOptOutEnv
 	}
+	if os.Getenv(legacyGitHooksOptOutEnv) != "" {
+		legacyGitHooksOptOutWarning.Do(func() {
+			fmt.Fprintf(os.Stderr, "forge: %s is deprecated, use %s=1 (it means the same)\n", legacyGitHooksOptOutEnv, gitHooksOptOutEnv)
+		})
+		return legacyGitHooksOptOutEnv
+	}
 	return ""
 }
+
+// legacyGitHooksOptOutWarning prints the FORGE_NO_HOOKS deprecation line once
+// per process, however many steps ask whether git hooks are opted out.
+var legacyGitHooksOptOutWarning sync.Once
 
 // ensureGitHooksActivated makes forge's committed git hooks fire in a
 // fresh clone or new worktree without any explicit install step or new

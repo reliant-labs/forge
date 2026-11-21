@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/goexec"
+
 	"github.com/reliant-labs/forge/pkg/testkit"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -51,7 +53,7 @@ func TestSecondRunFails(t *testing.T) {
 	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	res := Gate(context.Background(), GateOptions{
 		Root: root, Base: "HEAD~1", Stdout: out, Stderr: errOut, Getenv: noEnv,
-		Environ: append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off"),
+		Environ: goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")),
 		Begin:   begin(root, "c1", "t1", time.Now()),
 	})
 	if res.ExitCode != GateFailed {

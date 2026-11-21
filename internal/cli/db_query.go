@@ -53,6 +53,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 
+	"github.com/reliant-labs/forge/pkg/dbgrants"
 	"github.com/reliant-labs/forge/pkg/dbquery"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -83,6 +84,9 @@ type dbQueryOptions struct {
 	// allowWritableRole lets a real env be read as a role that can do more
 	// than read (checkDBQueryRole).
 	allowWritableRole bool
+	// appRole reads a direct-transport env as the app's own role instead of
+	// switching to the read-only role (readAsReadOnlyRole).
+	appRole bool
 }
 
 func newDBQueryCommand() *cobra.Command {
@@ -101,6 +105,10 @@ Postgres itself regardless.
 The connection follows the workload (` + "`--workload`" + `, default "api"):
   OnHost / OnCompose  its resolved DATABASE_URL, the same value
                       ` + "`" + Name() + ` env exec` + "`" + ` gives the process
+                      — on a local env, switched to the read-only forge_ro
+                      role once its grants are applied, so forge:secret
+                      columns stay hidden in dev too (--app-role keeps the
+                      app's own role)
   OnCluster           a port-forward with your kube context to the env's
                       ManagedDatabase (` + "`--database`" + ` when it has several), as
                       the read-only forge_ro role; scratch envs only
@@ -201,6 +209,7 @@ connection lost).
 	cmd.Flags().StringVar(&o.reason, "reason", "", "Required on a real env: why you are reading it (at most 500 characters)")
 	cmd.Flags().StringVar(&o.addr, "addr", "", "Dial host:port directly (your VPN, kubectl port-forward or bastion) instead of forge's own transport; not for a hosted env")
 	cmd.Flags().StringVar(&o.sslmode, "sslmode", "", "With --addr on a cluster database: verify-full (default, against the cluster CA), require or disable")
+	cmd.Flags().BoolVar(&o.appRole, "app-role", false, "On a local env reached by the workload's DATABASE_URL, read as the app's own role instead of switching to "+dbgrants.RoleName+" (forge:secret columns become readable)")
 	cmd.Flags().BoolVar(&o.allowWritableRole, "allow-writable-role", false, "On a real env, read as a role that can do more than read (still in a READ ONLY transaction; the audit record says so)")
 	return cmd
 }
@@ -326,6 +335,9 @@ func runDBQuery(ctx context.Context, stdin io.Reader, out, errOut io.Writer, o d
 			return nil, exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("cannot connect to %s's database (workload %q): %s; is it running? (%s env up %s)", o.env, target.scope.Workload, redactDSNError(err, target.dsn), Name(), o.env)}
 		}
 		defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+		if err := readAsReadOnlyRole(ctx, conn, o, target, errOut); err != nil {
+			return nil, err
+		}
 		role, err := checkDBQueryRole(ctx, conn, o, target)
 		if err != nil {
 			return nil, err
@@ -501,6 +513,49 @@ func checkDBQueryPolicy(o dbQueryOptions, policy string) error {
 	}
 }
 
+// readAsReadOnlyRole makes a local env read like every other one (NS FG-24).
+// A direct transport (OnHost / OnCompose) connects with the workload's own
+// DATABASE_URL, the app's owner role, so forge:secret columns were readable
+// in dev — and the dev seeder fills them — while every cluster and hosted env
+// reads as the read-only role, which the generated grants keep them from.
+// The migrator creates that role NOLOGIN wherever it may (pkg/migratekit), so
+// on a scratch env forge switches the session to it with SET ROLE. A database
+// without the role or its grants reads as before, and says so; an app role
+// that may not assume a granted role is refused (fail closed), never read as
+// itself. --app-role keeps the app's role on purpose. Only a scratch env:
+// a real env read through a DATABASE_URL is checkDBQueryRole's to judge.
+func readAsReadOnlyRole(ctx context.Context, conn *pgx.Conn, o dbQueryOptions, t dbQueryTarget, errOut io.Writer) error {
+	if o.appRole || !t.scratch || t.scope.Transport != "direct" {
+		return nil
+	}
+	// Roles are cluster-wide and grants per database: a role another
+	// project's migrations created, with no grants here, would refuse every
+	// table. Switch only once this database's grants have been applied.
+	var granted bool
+	if err := conn.QueryRow(ctx, readOnlyRoleGrantedSQL, dbgrants.RoleName).Scan(&granted); err != nil || !granted {
+		why := "it has no grants in this database"
+		if err != nil {
+			why = firstLine(err.Error())
+		}
+		fmt.Fprintf(errOut, "note: reading %s as the app's role %q, not %s (%s): forge:secret columns are readable here; the migrator creates the role and applies its grants\n",
+			o.env, conn.Config().User, dbgrants.RoleName, why)
+		return nil
+	}
+	if _, err := conn.Exec(ctx, "SET ROLE "+pgx.Identifier{dbgrants.RoleName}.Sanitize()); err != nil {
+		if ctx.Err() != nil {
+			return exitCodeError{code: exitUndetermined, msg: fmt.Sprintf("switching to %s: %v", dbgrants.RoleName, err)}
+		}
+		// The role exists and holds this database's grants, so the read is
+		// meant to be restricted: reading as the app's role instead would
+		// expose forge:secret columns while appearing to hide them. Fail
+		// closed; --app-role is how to read as the app's role on purpose.
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s reads as %s, whose grants are applied here, but the app's role %q may not assume it (%s): forge did not fall back to %q, which can read forge:secret columns. Grant it (GRANT %s TO %s), or pass --app-role to read as %q on purpose",
+			o.env, dbgrants.RoleName, conn.Config().User, firstLine(err.Error()), conn.Config().User,
+			pgx.Identifier{dbgrants.RoleName}.Sanitize(), pgx.Identifier{conn.Config().User}.Sanitize(), conn.Config().User)}
+	}
+	return nil
+}
+
 // checkDBQueryRole is the role rule: a real env's database is read as a role
 // that cannot write. The READ ONLY transaction refuses writes either way, but
 // it binds this one transaction, not the role: a role that can write can also
@@ -517,7 +572,7 @@ func checkDBQueryPolicy(o dbQueryOptions, policy string) error {
 // is given.
 func checkDBQueryRole(ctx context.Context, conn *pgx.Conn, o dbQueryOptions, t dbQueryTarget) (dbquery.Role, error) {
 	if t.scratch {
-		return dbquery.Role{Name: conn.Config().User}, nil
+		return dbquery.Role{Name: sessionRole(ctx, conn)}, nil
 	}
 	role, err := dbquery.InspectRole(ctx, conn)
 	if err != nil {
@@ -528,6 +583,24 @@ func checkDBQueryRole(ctx context.Context, conn *pgx.Conn, o dbQueryOptions, t d
 			o.env, role.Name, strings.Join(role.Writes, "; "), role.Name)}
 	}
 	return role, nil
+}
+
+// readOnlyRoleGrantedSQL reports whether the role ($1) may read any table or
+// column of this database outside the system schemas.
+const readOnlyRoleGrantedSQL = `SELECT EXISTS (
+	SELECT 1 FROM pg_roles r, pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+	WHERE r.rolname = $1 AND c.relkind IN ('r', 'p', 'v', 'm')
+	  AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+	  AND (has_table_privilege(r.oid, c.oid, 'SELECT') OR has_any_column_privilege(r.oid, c.oid, 'SELECT')))`
+
+// sessionRole is the role the session reads as — current_user, which SET
+// ROLE changes — falling back to the role it signed in as.
+func sessionRole(ctx context.Context, conn *pgx.Conn) string {
+	var name string
+	if err := conn.QueryRow(ctx, "SELECT current_user").Scan(&name); err != nil || name == "" {
+		return conn.Config().User
+	}
+	return name
 }
 
 // dbQueryError maps a dbquery failure onto the exit table: the request was

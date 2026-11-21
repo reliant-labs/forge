@@ -244,6 +244,9 @@ func TestComputeDepsDoubles_PrefersForgeMocks(t *testing.T) {
 	if m := got["Sink"]; m.MockType != "runs.MockSink" || !m.Optional {
 		t.Errorf("Sink = %+v, want an optional runs.MockSink", m)
 	}
+	if m := got["Pause"]; m.StubType != "StubPause" {
+		t.Errorf("Pause.StubType = %q, want StubPause (the name forge fix harness-mocks rewrites)", m.StubType)
+	}
 }
 
 // TestGenerateBootstrapTesting_InstallsForgeMocks generates the REAL

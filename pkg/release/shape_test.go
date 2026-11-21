@@ -98,7 +98,7 @@ func TestDiffShapes(t *testing.T) {
 		Objects:   []ShapeObject{obj("Deployment", "api", "c"), obj("Deployment", "new", "d")},
 	}
 	d := DiffShapes(&live, cand)
-	if d.LiveUnknown || d.Empty() {
+	if d.LiveUnknown || d.KindChanged != nil || d.Empty() {
 		t.Fatalf("unexpected: %+v", d)
 	}
 	if len(d.Added) != 1 || d.Added[0].Name != "new" || len(d.Removed) != 1 || d.Removed[0].Name != "old" || len(d.Changed) != 1 {

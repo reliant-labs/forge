@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
+
 	"github.com/reliant-labs/forge/internal/testcapture"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -143,7 +145,7 @@ func recordLane(runDir string, l laneRun) (string, error) {
 		Coverage:   []testreport.LaneCoverageInput{},
 		Warnings:   l.Warnings,
 	}
-	if err := os.WriteFile(filepath.Join(laneDir, testreport.LaneResultsFile), stored, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(laneDir, testreport.LaneResultsFile), stored, 0o644); err != nil {
 		m.Results = testreport.LaneResultsMissing
 		m.Warnings = append(m.Warnings, fmt.Sprintf("cannot store the stream: %v", err))
 	} else {

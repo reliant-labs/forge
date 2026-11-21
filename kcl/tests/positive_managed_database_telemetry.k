@@ -49,11 +49,13 @@ assert_db_check = _db.checks[0].port_name == "postgres" and _db.checks[0].kind =
 assert_db_dashboard = _db.dashboards[0].id == "orders-postgres" and len(_db.dashboards[0].panels) > 0
 assert_db_no_policy = "network_policy" not in _db
 assert_db_default_alerts = _db.default_alerts
+# A default is marked as forge's, so a deploy does not warn it goes uncollected.
+assert_db_origin = _db.origin == "default"
 _op = _c["cloudnative-pg"]
 assert_operator = _op.attachment == "manageddatabase" and _op.source == "manageddatabase-operator:k3d-shop" \
     and _op.cluster == "k3d-shop" and _op.namespaces == [] \
     and _op.selector == {"app.kubernetes.io/name": "cloudnative-pg"} and _op.metrics[0].port == 8080 \
-    and _op.metrics[0].allow == forge.CNPG_OPERATOR_METRICS_ALLOW
+    and _op.metrics[0].allow == forge.CNPG_OPERATOR_METRICS_ALLOW and _op.origin == "default"
 assert_two_targets = len(_c) == 2
 
 # 3: hosted.
@@ -61,19 +63,22 @@ _h = _t([forge.ManagedDatabase {name = "orders", runtime = forge.OnHosted {}}], 
 _hdb = _h["orders-postgres"]
 assert_hosted = len(_h) == 1 and _hdb.runtime == "hosted" and _hdb.cluster == "" \
     and _hdb.namespaces == [] and _hdb.selector == {"cnpg.io/cluster": "orders"} \
-    and _hdb.metrics[0].allow and _hdb.metrics[0].sample_limit <= 5000
+    and _hdb.metrics[0].allow and _hdb.metrics[0].sample_limit <= 5000 and _hdb.origin == "default"
 
 # 4: replace, and extend.
 _mine = forge.Telemetry {checks = [forge.HealthCheck {port = "postgres"}]}
 _r = _t([forge.ManagedDatabase {name = "orders", telemetry = _mine}], Undefined)
 assert_replaced = _r["orders-postgres"].metrics == [] and _r["orders-postgres"].dashboards == [] \
     and len(_r["orders-postgres"].checks) == 1 and "cloudnative-pg" in _r
+# A database's own Telemetry is the project's, extended default or not; the
+# operator target beside it is still forge's.
+assert_replaced_origin = "origin" not in _r["orders-postgres"] and _r["cloudnative-pg"].origin == "default"
 _x = _t([forge.ManagedDatabase {
     name = "orders"
     telemetry = forge.managed_database_telemetry("orders") | {service_name = "orders-db", default_alerts = False}
 }], Undefined)
 assert_extended = "orders-db" in _x and len(_x["orders-db"].metrics) == 1 and not _x["orders-db"].default_alerts \
-    and _x["orders-db"].source == "manageddatabase:orders"
+    and _x["orders-db"].source == "manageddatabase:orders" and "origin" not in _x["orders-db"]
 
 # 5: off.
 _o = _t([forge.ManagedDatabase {name = "orders", default_telemetry = False}], Undefined)

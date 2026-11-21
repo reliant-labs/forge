@@ -3724,6 +3724,13 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	}
 
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
+	// An env that instruments the image's binary builds the Dockerfile's
+	// cover stage (kcl/schema.k Tests, coverImageArgs).
+	coverArgs, coverErr := coverImageArgs(ctx, svcName, d)
+	if coverErr != nil {
+		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: coverErr}
+	}
+	dockerArgs = append(dockerArgs[:1:1], append(coverArgs, dockerArgs[1:]...)...)
 	// The image's timestamps follow the last change to ITS inputs (context +
 	// Dockerfile), so an unrelated commit does not move its digest.
 	epoch := ""

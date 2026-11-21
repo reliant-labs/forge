@@ -1147,6 +1147,9 @@ type DockerBuild struct {
 	// they let a --release build reuse an earlier release's image whose
 	// fingerprint is unchanged — see build_docker_release_reuse.go.
 	Inputs []string `json:"inputs,omitempty"`
+	// cover is set when the env builds this image instrumented: the binary
+	// its workload runs is a cover build (applyCover). Never decoded.
+	cover *workloadCover
 
 	// ContextSource and DockerfileSource are the GitSource members of the
 	// `context` and `dockerfile` unions (kcl/schema.k `str | GitSource`):

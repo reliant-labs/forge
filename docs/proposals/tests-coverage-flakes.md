@@ -8,7 +8,9 @@ Where the body below disagrees with those two, the decisions win. Phase 0
 measured the design on 2026-11-20/21, and the eight amendments that came out
 of it are folded into the body
 ([Amendment 2](#amendment-2-phase-0-results-2026-11-21)). Phase 1 is in
-progress; nothing is merged in forge, control-plane or reliant yet.
+progress; nothing is merged in forge, control-plane or reliant yet. The
+implementation is tracked in
+[forge#2628](https://github.com/reliant-labs/forge/issues/2628).
 **Date:** 2026-11-20, updated 2026-11-21
 **Scope:** forge (test capture, coverage merge, instrumented builds, KCL, CLI,
 scaffold and upgrade playbook), control-plane (test-run store, merge, flake
@@ -218,6 +220,15 @@ test:
 - **`test:short` is not captured locally.** It is the inner loop, and it
   stays exactly what it is. `task test` and the CI lanes are what get
   recorded, including a CI lane that runs the `-short` tier.
+- **Capture and the test cache.** `forge test capture` exports
+  `FORGE_TEST_RUN`, `FORGE_TEST_LANE` and `FORGE_TEST_LANE_DIR` to the lane's
+  command, because a nested `forge test begin` and Vitest's coverage
+  directory need them. Go's test cache keys on the environment variables a
+  test reads, so a project whose tests read those variables loses cache
+  replay, since their values change every run. In practice only forge's own
+  tests read them, and forge's `scripts/ci-go-test.sh` unsets them before
+  starting Go ([forge#2626](https://github.com/reliant-labs/forge/pull/2626),
+  which moves forge's own lanes onto capture).
 - **Frontend.** The scaffolded `vitest.config.ts` gets `coverage: {provider:
 "v8", reporter: ["json", "lcov"], reportsDirectory: process.env.FORGE_TEST_LANE_DIR}`.
   Coverage stays off when the variable is unset, so a bare `npm test` is
@@ -962,8 +973,12 @@ Data · Storage · Auth · Security ▾ · Configure ▾.
 **Recommendation: (a)**, plus the release tab and the Overview card as views
 onto the same data. The group is visible in every project and never hides on an
 empty read. An empty page shows "No test runs yet" with the one command for the
-project's situation. The Overview row carries a badge with the count of `flaky`
-tests (not `suspected`), like the alerts badge. Proposed order: … Deployments ▾
+project's situation. The Overview row carries a badge, like the alerts badge.
+By default it counts `flaky` tests, not `suspected`. A project whose flake
+policy acts at `suspected` (`tests.flakes.issues: true` or `quarantine: pr`,
+which includes forge, control-plane and reliant) counts `suspected` plus
+`flaky` instead ([Decision (2026-11-21): nav badge count](#decision-2026-11-21-nav-badge-count)).
+Proposed order: … Deployments ▾
 · **Tests ▾** · Data · Storage · Auth · Security ▾ · Configure ▾.
 
 Paths (`TESTS_SEGMENT = "tests"`): `/forge/p/<project>/tests`,
@@ -1042,7 +1057,10 @@ PR on opt-in projects, otherwise shows the command), and **Open issue**.
   combined %.
 - The Overview landing gets a **Tests** card beside Releases: coverage with a
   sparkline, pass rate and flaky count. "Needs attention" gains "N new flaky
-  tests" and "coverage of `<pkg>` fell N points in `<release>`".
+  tests" and "coverage of `<pkg>` fell N points in `<release>`". Where the
+  project's flake policy acts at `suspected`, it also gains "N suspected
+  tests", and the nav badge counts them too (3.1). The summary returns the
+  policy, so the web never guesses it.
 
 ### 3.3 Data path
 
@@ -1445,6 +1463,21 @@ The owner settled the control-plane service names: **`TestsService`** in
 `proto/services/tests_admin/v1/`. forge requires a service's name to match
 its proto directory, so the name follows from the directory and is not
 reopened ([2.3](#23-api)).
+
+### Decision (2026-11-21): nav badge count
+
+The owner decided that the Tests nav badge and the Needs-attention
+"suspected" row follow the project's flake policy. That is the switch that
+files flake issues and opens quarantine PRs at `suspected`: forge.yaml
+`tests.flakes.issues: true` or `tests.flakes.quarantine: pr`.
+
+- **Policy on** (our three repos, and any project that opts in): the badge
+  counts `suspected` plus `flaky`, and Needs attention lists suspected tests.
+- **Policy off** (the customer default): the badge counts `flaky` only, as
+  [3.1](#31-where-it-lives) proposed, and there is no suspected row.
+
+forge sends the policy with each upload, and `GetTestSummary` returns it
+(control-plane#3331), so the web reads the project's own setting.
 
 ## Amendment 1: coverage source and retention (2026-11-20)
 

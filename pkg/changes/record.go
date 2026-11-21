@@ -2,7 +2,7 @@ package changes
 
 import (
 	"context"
-	"hash/fnv"
+	"crypto/sha256"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -65,11 +65,34 @@ type recorder struct {
 	now  func() time.Time
 }
 
-// seenKey is one remembered evaluation. The unit id is kept as a hash, so
-// the memory holds no raw ids; a collision costs one unrecorded duplicate.
+// seenKey is one remembered evaluation. Who it was about is kept as a
+// SHA-256 digest (evalIdentity's), so the memory holds no raw ids.
 type seenKey struct {
-	unit              uint64
+	who               [sha256.Size]byte
 	key, run, variant string
+}
+
+// evalIdentity is who an evaluation is about, for the recorder's daily
+// memory: the change's unit, namespaced by its name (a user id and an
+// account id that happen to be equal are two units), else, for a change
+// with no unit (everyone mode), the targeting key, else the actor ctx
+// carries. "" when nothing names anyone: such evaluations are remembered
+// as one.
+func evalIdentity(ctx context.Context, unitName, unitID string, ec EvalContext) string {
+	switch {
+	case unitID != "":
+		return "unit:" + unitName + "\x00" + unitID
+	case ec.TargetingKey != "":
+		return "targeting\x00" + ec.TargetingKey
+	}
+	a := observe.ActorFrom(ctx)
+	switch {
+	case a.UserID != "":
+		return "user\x00" + a.UserID
+	case a.AnonymousID != "":
+		return "visitor\x00" + a.AnonymousID
+	}
+	return ""
 }
 
 func newRecorder() *recorder {
@@ -97,9 +120,8 @@ func (rec *recorder) record(ctx context.Context, snap *Snapshot, key string, ec 
 		return
 	}
 	unitName, unitID := snap.unit(key, ec)
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(unitID))
-	if !rec.first(seenKey{unit: h.Sum64(), key: key, run: r.Run, variant: r.Variant}) {
+	who := sha256.Sum256([]byte(evalIdentity(ctx, unitName, unitID, ec)))
+	if !rec.first(seenKey{who: who, key: key, run: r.Run, variant: r.Variant}) {
 		return
 	}
 	attrs := []slog.Attr{

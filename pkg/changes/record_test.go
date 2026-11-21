@@ -97,6 +97,25 @@ func TestStoreRecordsAnAssignmentOnce(t *testing.T) {
 	}
 }
 
+// A change with no unit (everyone mode) still records each caller once a
+// day: by its targeting key, else the actor the context carries. It never
+// collapses every caller into the first one.
+func TestStoreRecordsEachCallerOfAChangeWithNoUnit(t *testing.T) {
+	s, ctx, buf := recordingStore(t)
+	for _, id := range []string{"u1", "u2", "u1", "u3", "u2"} {
+		s.Evaluate(ctx, "all", EvalContext{TargetingKey: id})
+	}
+	if n := len(events(t, buf)); n != 3 {
+		t.Fatalf("three callers of an everyone change recorded %d events, want 3", n)
+	}
+	for _, a := range []observe.Actor{{UserID: "a"}, {UserID: "b"}, {UserID: "a"}, {AnonymousID: "a"}} {
+		s.Evaluate(observe.WithActor(ctx, a), "all", EvalContext{})
+	}
+	if n := len(events(t, buf)); n != 6 {
+		t.Fatalf("three more actors (user a, user b, visitor a): %d events in all, want 6", n)
+	}
+}
+
 func TestStoreRecordsOnlyUsefulReasons(t *testing.T) {
 	cases := []struct {
 		key    string
@@ -160,11 +179,11 @@ func TestStoreCustomOnEvaluateReplacesRecording(t *testing.T) {
 func TestRecorderForgetsDaily(t *testing.T) {
 	now := time.Date(2026, 11, 20, 23, 59, 0, 0, time.UTC)
 	rec := &recorder{now: func() time.Time { return now }}
-	k := seenKey{unit: 1, key: "exp", run: "r_1", variant: "treatment"}
+	k := seenKey{who: [32]byte{1}, key: "exp", run: "r_1", variant: "treatment"}
 	if !rec.first(k) || rec.first(k) {
 		t.Fatal("the first evaluation must record and the second must not")
 	}
-	if !rec.first(seenKey{unit: 1, key: "exp", run: "r_2", variant: "treatment"}) {
+	if !rec.first(seenKey{who: [32]byte{1}, key: "exp", run: "r_2", variant: "treatment"}) {
 		t.Fatal("a new run is a new assignment")
 	}
 	now = now.Add(2 * time.Minute)
@@ -173,18 +192,24 @@ func TestRecorderForgetsDaily(t *testing.T) {
 	}
 }
 
+// whoOf is a distinct identity digest per i.
+func whoOf(i int) (w [32]byte) {
+	w[0], w[1], w[2] = byte(i), byte(i>>8), byte(i>>16)
+	return w
+}
+
 func TestRecorderIsBounded(t *testing.T) {
 	rec := newRecorder()
-	first := seenKey{unit: 0, key: "exp"}
+	first := seenKey{who: [32]byte{0}, key: "exp"}
 	rec.first(first)
 	for i := 1; i < maxRemembered; i++ {
-		rec.first(seenKey{unit: uint64(i), key: "exp"})
+		rec.first(seenKey{who: whoOf(i), key: "exp"})
 	}
 	if len(rec.seen) != maxRemembered {
 		t.Fatalf("remembered %d, want %d", len(rec.seen), maxRemembered)
 	}
 	// Full: the next new key clears the memory, so the first is new again.
-	rec.first(seenKey{unit: maxRemembered, key: "exp"})
+	rec.first(seenKey{who: whoOf(maxRemembered), key: "exp"})
 	if len(rec.seen) != 1 || !rec.first(first) {
 		t.Fatalf("a full memory was not cleared (%d remembered)", len(rec.seen))
 	}

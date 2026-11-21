@@ -139,7 +139,7 @@ func runVulnExempt(ctx context.Context, out io.Writer, deps vulnDeps, env, id st
 	if err != nil {
 		return fmt.Errorf("forge vuln exempt %s %s: %w", env, id, err)
 	}
-	rel := relOrAbs(projectDir, path)
+	rel := filepath.ToSlash(relOrAbs(projectDir, path)) // the same spelling on every OS
 	if !changed {
 		_, _ = fmt.Fprintf(out, "%s already exempts %s (expires %s); nothing changed\n", rel, id, opts.expires)
 		return nil

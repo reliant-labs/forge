@@ -532,11 +532,12 @@ func LoadSecretsFile(path string) (map[string]string, error) {
 //
 //	final = base ⊕ projectConfig ⊕ secrets ⊕ envVars
 //
-// Order (each later layer overrides earlier on key conflict among the
-// three map layers — base os.Environ() always wins so a developer's
-// shell override beats them all):
+// Order (each later layer overrides earlier on key conflict). A DECLARED
+// key wins over base too (envutil.MergeDeclaredWins): the shell overrides a
+// declared key only when FORGE_ENV_OVERRIDE (ShellWinsEnvVar) names it.
 //
-//  1. base — the parent process env (typically os.Environ()). Wins last.
+//  1. base — the parent process env (typically os.Environ()). Supplies every
+//     key the three layers below do not declare.
 //  2. projectConfig — forge.yaml `environments[<env>].config` projected
 //     to env-var strings. Same non-secret values cluster-mode services
 //     see via the ConfigMap projection, layered here so host-mode

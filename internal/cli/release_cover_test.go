@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -142,6 +143,12 @@ func TestApplyCover_ReleaseVariantEligibility(t *testing.T) {
 		{"env says no", &KCLEntities{Env: "staging", Project: "shop", Tests: &TestsEntity{Coverage: boolp(false)}, Workloads: []WorkloadEntity{img("api", nil)}}, true, false},
 		{"build says no", &KCLEntities{Env: "staging", Project: "shop", Workloads: []WorkloadEntity{img("api", map[string]bool{"./cmd/shop": false})}}, true, false},
 		{"already the cover build", &KCLEntities{Env: "dev", Lifecycle: "local", Project: "shop", Workloads: []WorkloadEntity{img("api", nil)}}, true, false},
+		// The binary's coverage is per binary, not per image: another
+		// workload that runs ./cmd/shop and declares it off turns the
+		// variant off for this image too, as a preview's own build would.
+		{"another workload turns the binary off", &KCLEntities{Env: "staging", Project: "shop", Workloads: []WorkloadEntity{
+			img("api", nil), img("api-2", map[string]bool{"cmd/shop": false}),
+		}}, true, false},
 	} {
 		bins, err := ResolveCoverBinaries(tc.e, tc.optIn)
 		if err != nil {
@@ -167,7 +174,7 @@ func TestCoverVariantArgs(t *testing.T) {
 	}
 	d := &DockerBuild{Dockerfile: "Dockerfile", coverVariant: &workloadCover{packages: []string{"./internal/..."}}}
 	shared := []string{"build", "--platform=linux/amd64", "-t", "ghcr.io/acme/shop:v1.4.0", "-t", "localhost:5050/shop:v1.4.0", "-f", "Dockerfile", "."}
-	got, err := coverVariantArgs(context.Background(), "shop", "Dockerfile", d, shared)
+	got, err := coverVariantArgs(context.Background(), "shop", d, shared)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +182,24 @@ func TestCoverVariantArgs(t *testing.T) {
 		"-t", "ghcr.io/acme/shop:v1.4.0-cover", "-t", "localhost:5050/shop:v1.4.0-cover", "-f", "Dockerfile", "."}
 	if !slices.Equal(got, want) {
 		t.Errorf("args = %v\nwant %v", got, want)
+	}
+	// Every spelling of a tag docker accepts is suffixed; an argv with no
+	// tag at all builds no variant rather than push over the shared tags.
+	long := []string{"build", "--tag", "ghcr.io/acme/shop:v1.4.0", "--tag=localhost:5050/shop:v1.4.0", "-t=a/b:v1", "-tc/d:v1", "-f", "Dockerfile", "."}
+	got, err = coverVariantArgs(context.Background(), "shop", d, long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"build", "--target", "cover", "--build-arg", "FORGE_COVERPKG=./internal/...",
+		"--tag", "ghcr.io/acme/shop:v1.4.0-cover", "--tag=localhost:5050/shop:v1.4.0-cover", "-t=a/b:v1-cover", "-tc/d:v1-cover", "-f", "Dockerfile", "."}
+	if !slices.Equal(got, want) {
+		t.Errorf("long-form args = %v\nwant %v", got, want)
+	}
+	if _, err := coverVariantArgs(context.Background(), "shop", d, []string{"build", "-f", "Dockerfile", "."}); !errors.Is(err, errCoverVariantUntagged) {
+		t.Errorf("an untagged argv: err %v, want errCoverVariantUntagged", err)
+	}
+	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", d, []string{"build", "-f", "Dockerfile", "."}, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
+		t.Errorf("an untagged argv built a variant (%q, %v)", dg, err)
 	}
 	for ref, want := range map[string]string{
 		"ghcr.io/acme/shop:v1.4.0": "ghcr.io/acme/shop:v1.4.0-cover",
@@ -186,11 +211,40 @@ func TestCoverVariantArgs(t *testing.T) {
 	}
 	// No variant is built where there is nothing to push or no stage.
 	for name, d := range map[string]*DockerBuild{"not marked": {Dockerfile: "Dockerfile"}, "own target": {Target: "debug", coverVariant: d.coverVariant}} {
-		if dg, err := buildReleaseCoverVariant(context.Background(), "shop", "Dockerfile", d, shared, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
+		if dg, err := buildReleaseCoverVariant(context.Background(), "shop", d, shared, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
 			t.Errorf("%s: built a variant (%q, %v)", name, dg, err)
 		}
 	}
-	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", "Dockerfile", d, shared, nil, false); dg != "" || err != nil {
+	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", d, shared, nil, false); dg != "" || err != nil {
 		t.Errorf("a release that pushes nowhere built a variant (%q, %v)", dg, err)
+	}
+}
+
+// A release image built from a GitSource Dockerfile gets its cover variant
+// argv from the pinned file's cover stage, not a local Dockerfile; a pinned
+// Dockerfile without the stage gets none (and builds nothing).
+func TestCoverVariantArgs_GitSourceDockerfile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("forge.yaml", []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checkout := t.TempDir()
+	withStage := filepath.Join(checkout, "with.Dockerfile")
+	without := filepath.Join(checkout, "without.Dockerfile")
+	for p, body := range map[string]string{withStage: "FROM alpine AS cover\nFROM alpine AS production\n", without: "FROM alpine AS production\n"} {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := &config.GitSource{Repo: "github.com/acme/other", Ref: "v1"}
+	shared := []string{"build", "-t", "ghcr.io/acme/shop:v1.4.0", "-f", withStage, "."}
+	d := &DockerBuild{DockerfileSource: src, DockerfilePath: withStage, coverVariant: &workloadCover{}}
+	got, err := coverVariantArgs(context.Background(), "shop", d, shared)
+	if want := []string{"build", "--target", "cover", "-t", "ghcr.io/acme/shop:v1.4.0-cover", "-f", withStage, "."}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("args = %v (err %v), want %v", got, err, want)
+	}
+	noStage := &DockerBuild{DockerfileSource: src, DockerfilePath: without, coverVariant: &workloadCover{}}
+	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", noStage, shared, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
+		t.Errorf("a pinned Dockerfile without the cover stage built a variant (%q, %v)", dg, err)
 	}
 }

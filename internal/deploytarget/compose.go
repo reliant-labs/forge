@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 )
 
 // ComposeProvider deploys each service in a group via docker-compose
@@ -46,14 +48,35 @@ func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	// it is a property of the installed CLI, not of any one service, and
 	// re-shelling for every service would add a process per deploy to
 	// re-learn the same answer.
-	if err := p.checkWaitSupport(ctx, runner, group); err != nil {
+	// A best-effort service is left out of the fatal probe: a compose too
+	// old for its readiness wait is that service's failure, handled below
+	// like any other, never the whole group's.
+	if err := p.checkWaitSupport(ctx, runner, group, false); err != nil {
 		return err
 	}
+	var bestEffortWait error
+	bestEffortProbed := false
 	for _, svc := range group.Services {
 		if svc.Compose == nil {
 			return fmt.Errorf("compose %s: Compose spec is nil (group misrouted?)", svc.Name)
 		}
-		if err := p.deployOne(ctx, runner, group, svc); err != nil {
+		err := error(nil)
+		if svc.Compose.BestEffort && composeWait(svc.Compose) && !group.DryRun {
+			if !bestEffortProbed {
+				bestEffortWait, bestEffortProbed = ensureComposeSupportsWait(ctx, runner), true
+			}
+			err = bestEffortWait
+		}
+		if err == nil {
+			err = p.deployOne(ctx, runner, group, svc)
+		}
+		if err != nil {
+			if svc.Compose.BestEffort {
+				fmt.Printf("  warning: %s did not come up, and nothing the app needs depends on it, so the stack starts without it: %v\n"+
+					"  (local telemetry is unavailable until it does; retry with `%s env up %s --target %s`)\n",
+					svc.Name, err, cmdutil.Name(), group.Env, svc.Name)
+				continue
+			}
 			return err
 		}
 	}
@@ -63,13 +86,14 @@ func (p ComposeProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 // checkWaitSupport verifies the installed docker compose understands
 // the readiness flags, but only when some service in the group actually
 // asks to wait. A group that has opted out entirely should not need a
-// newer compose than the one it was working with before.
-func (p ComposeProvider) checkWaitSupport(ctx context.Context, runner commandRunner, group ServiceGroup) error {
+// newer compose than the one it was working with before. bestEffort says
+// whether best-effort services count.
+func (p ComposeProvider) checkWaitSupport(ctx context.Context, runner commandRunner, group ServiceGroup, bestEffort bool) error {
 	if group.DryRun {
 		return nil
 	}
 	for _, svc := range group.Services {
-		if svc.Compose != nil && composeWait(svc.Compose) {
+		if svc.Compose != nil && composeWait(svc.Compose) && (bestEffort || !svc.Compose.BestEffort) {
 			return ensureComposeSupportsWait(ctx, runner)
 		}
 	}

@@ -2471,6 +2471,7 @@ func FormatPreflightReport(r PreflightResult) string {
 		b.WriteString("      local cluster alone — it would diverge dev from the cloud.\n")
 	}
 	writeVolumeResizeFix(&b, r)
+	writeUndeclaredSecretFix(&b, r)
 	if len(r.MissingRequiredSecretKeys) > 0 {
 		b.WriteString("  - provision the DECLARED external Secret(s) above out-of-band in their\n")
 		b.WriteString("      namespace (e.g. the cert-manager `cloudflare-api-token`); forge does\n")
@@ -2531,18 +2532,16 @@ func (KubectlSecretGetter) GetSecretKeys(ctx context.Context, kctx, namespace, n
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := kubectlCmd(ctx, kctx, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout, stderr, err := kubectlRead(ctx, kctx, args...)
+	if err != nil {
+		msg := strings.TrimSpace(string(stderr))
 		if strings.Contains(msg, "NotFound") || strings.Contains(msg, "not found") {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("kubectl get secret: %v: %s", err, msg)
 	}
 	keys := map[string]struct{}{}
-	for _, line := range strings.Split(stdout.String(), "\n") {
+	for _, line := range strings.Split(string(stdout), "\n") {
 		if k := strings.TrimSpace(line); k != "" {
 			keys[k] = struct{}{}
 		}
@@ -2562,8 +2561,7 @@ func (KubectlSecretValueGetter) GetSecretValues(ctx context.Context, kctx, names
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := kubectlCmd(ctx, kctx, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := kubectlReadCombined(ctx, kctx, args...)
 	if err != nil {
 		if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
 			return nil, false, nil
@@ -2620,8 +2618,7 @@ type KubectlServedKinds struct{}
 func (KubectlServedKinds) ServedKinds(ctx context.Context, kctx string) (map[string]struct{}, error) {
 	// --no-headers keeps parsing simple; -o wide guarantees the APIVERSION
 	// column is present (some kubectl versions omit it without -o wide).
-	cmd := kubectlCmd(ctx, kctx, "api-resources", "--no-headers", "-o", "wide")
-	out, err := cmd.CombinedOutput()
+	out, err := kubectlReadCombined(ctx, kctx, "api-resources", "--no-headers", "-o", "wide")
 	if err != nil {
 		return nil, fmt.Errorf("kubectl api-resources: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -2709,8 +2706,7 @@ func kubectlDataKeys(ctx context.Context, kctx, namespace, kind, name string) (m
 	if namespace != "" {
 		args = append(args, "-n", namespace)
 	}
-	cmd := kubectlCmd(ctx, kctx, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := kubectlReadCombined(ctx, kctx, args...)
 	if err != nil {
 		if strings.Contains(string(out), "NotFound") || strings.Contains(string(out), "not found") {
 			return nil, false, nil
@@ -2818,8 +2814,7 @@ func (KubectlPullCredsResolver) ResolveDockerConfig(ctx context.Context, kctx, n
 		if namespace != "" {
 			args = append(args, "-n", namespace)
 		}
-		cmd := kubectlCmd(ctx, kctx, args...)
-		out, err := cmd.CombinedOutput()
+		out, err := kubectlReadCombined(ctx, kctx, args...)
 		if err != nil {
 			// A not-found pull secret is a SKIP (the existence preflight already
 			// reports a genuinely-missing imagePullSecret); any other non-zero
@@ -2902,4 +2897,19 @@ func writeVolumeResizeFix(b *strings.Builder, r PreflightResult) {
 	b.WriteString("      class and access modes alone. A volume cannot shrink; to move data to a smaller or different\n")
 	b.WriteString("      volume, restore into a new StatefulSet. A claim whose StorageClass lacks allowVolumeExpansion\n")
 	b.WriteString("      must have expansion enabled on the class first.\n")
+}
+
+// writeUndeclaredSecretFix is the fix line for Secrets a workload mounts but
+// nothing provides: it names the Bundle field an out-of-band Secret is
+// declared in, required_secrets, with the declaration to paste.
+func writeUndeclaredSecretFix(b *strings.Builder, r PreflightResult) {
+	if len(r.UndeclaredSecretMounts) == 0 {
+		return
+	}
+	b.WriteString("  - declare each Secret a workload mounts but nothing provides: if you provision it\n")
+	b.WriteString("      yourself, list it in the env's Bundle under required_secrets, e.g.\n")
+	fmt.Fprintf(b, "        required_secrets = [forge.ExternalSecret {name = %q, namespace = \"<ns>\", keys = [\"<key>\"]}]\n", r.UndeclaredSecretMounts[0].Secret)
+	b.WriteString("      (the keys are the ones the workload reads, as written — a config secret's are\n")
+	b.WriteString("      lowercase, e.g. database_url); the preflight then checks them. Or let a\n")
+	b.WriteString("      secret_provider render it.\n")
 }

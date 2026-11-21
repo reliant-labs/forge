@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -400,29 +401,87 @@ func TestCoverImageArgs(t *testing.T) {
 			e.Workloads[0].CoverBuild(), e.Workloads[1].CoverBuild())
 	}
 
-	args, err := coverImageArgs(context.Background(), "api", "Dockerfile", api)
+	args, err := coverImageArgs(context.Background(), "api", api)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := []string{"--target", "cover", "--build-arg", "FORGE_COVERPKG=./internal/..."}; !slices.Equal(args, want) {
 		t.Errorf("args = %v, want %v", args, want)
 	}
-	for name, tc := range map[string]struct {
-		dockerfile string
-		d          *DockerBuild
-	}{
-		"not instrumented": {"Dockerfile", edge},
-		"no cover stage":   {"old.Dockerfile", api},
-		"its own target":   {"Dockerfile", &DockerBuild{Target: "debug", cover: api.cover}},
-		"no docker build":  {"Dockerfile", nil},
+	for name, d := range map[string]*DockerBuild{
+		"not instrumented": edge,
+		"no cover stage":   {Dockerfile: "old.Dockerfile", cover: api.cover},
+		"its own target":   {Target: "debug", cover: api.cover},
+		"no docker build":  nil,
 	} {
-		if args, err := coverImageArgs(context.Background(), "api", tc.dockerfile, tc.d); err != nil || args != nil {
+		if args, err := coverImageArgs(context.Background(), "api", d); err != nil || args != nil {
 			t.Errorf("%s: args = %v (err %v), want none", name, args, err)
 		}
 	}
 	// Another context builds another module: Go's default packages, not ours.
 	other := &DockerBuild{Context: "svc", cover: api.cover}
-	if args, _ := coverImageArgs(context.Background(), "api", "Dockerfile", other); !slices.Equal(args, []string{"--target", "cover"}) {
+	if args, _ := coverImageArgs(context.Background(), "api", other); !slices.Equal(args, []string{"--target", "cover"}) {
 		t.Errorf("another context: args = %v, want only the target", args)
+	}
+}
+
+// A GitSource Dockerfile is read where its pin resolved to — never the deploy
+// repo's own Dockerfile — whether the pin names the file itself or a context
+// it lives in, and with or without a local Dockerfile beside forge.yaml.
+func TestCoverImageArgs_GitSourceDockerfile(t *testing.T) {
+	project := t.TempDir()
+	t.Chdir(project)
+	if err := os.WriteFile("forge.yaml", []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checkout := t.TempDir() // the resolved pin, outside the project
+	write := func(rel, body string) string {
+		t.Helper()
+		p := filepath.Join(checkout, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	withStage := write("with/Dockerfile", "FROM golang AS builder\nFROM alpine AS cover\nFROM alpine AS production\n")
+	without := write("without/Dockerfile", "FROM golang AS builder\nFROM alpine AS production\n")
+	cover := &workloadCover{}
+	src := &config.GitSource{Repo: "github.com/acme/other", Ref: "v1"}
+
+	for _, local := range []string{"", "FROM alpine AS cover\n", "FROM alpine AS production\n"} {
+		_ = os.Remove("Dockerfile")
+		if local != "" {
+			if err := os.WriteFile("Dockerfile", []byte(local), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for name, tc := range map[string]struct {
+			d    *DockerBuild
+			want []string
+		}{
+			"pinned Dockerfile with a cover stage":    {&DockerBuild{DockerfileSource: src, DockerfilePath: withStage, cover: cover}, []string{"--target", "cover"}},
+			"pinned Dockerfile without a cover stage": {&DockerBuild{DockerfileSource: src, DockerfilePath: without, cover: cover}, nil},
+			"pinned context with a cover stage":       {&DockerBuild{ContextSource: src, ContextDir: filepath.Dir(withStage), DockerfilePath: withStage, cover: cover}, []string{"--target", "cover"}},
+			"pinned context without a cover stage":    {&DockerBuild{ContextSource: src, ContextDir: filepath.Dir(without), DockerfilePath: without, cover: cover}, nil},
+		} {
+			args, err := coverImageArgs(context.Background(), "api", tc.d)
+			if err != nil || !slices.Equal(args, tc.want) {
+				t.Errorf("%s (local Dockerfile %q): args = %v (err %v), want %v", name, local, args, err, tc.want)
+			}
+		}
+	}
+
+	// A resolved Dockerfile outside its pinned context, or a pin that was
+	// never resolved, is an error rather than a guess at some other file.
+	for name, d := range map[string]*DockerBuild{
+		"outside the context": {ContextSource: src, ContextDir: filepath.Dir(without), DockerfilePath: withStage, cover: cover},
+		"unresolved pin":      {DockerfileSource: src, cover: cover},
+	} {
+		if _, err := coverImageArgs(context.Background(), "api", d); err == nil {
+			t.Errorf("%s: want an error", name)
+		}
 	}
 }

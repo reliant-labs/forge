@@ -16,6 +16,7 @@ import {
 import { useRef, useState } from "react";
 
 import { AcceptInviteForm } from "@/components/accept-invite-form";
+import { AccountSettings } from "@/components/account-settings";
 import {
   AuthAlert,
   AuthCard,
@@ -206,8 +207,11 @@ const signInRoute = createRoute({
     const [unverified, setUnverified] = useState(false);
     // "Check your email": an open sign-up mails a link before any session.
     const [notice, setNotice] = useState<string | null>(null);
-    // The provider round trip came back failed (Google/GitHub sign-in).
-    const socialFailed = new URLSearchParams(window.location.search).get("error") === "social";
+    // The provider round trip came back failed (Google/GitHub sign-in). The
+    // issuer replaces `error` with the provider's own (access_denied, …), so
+    // the broker marks its failure URL social=failed (devidp.SocialFailurePath).
+    const signInParams = new URLSearchParams(window.location.search);
+    const socialFailed = signInParams.get("social") === "failed" || signInParams.get("error") === "social";
     // What a password must contain. Only shown when signing up.
     const policy = usePasswordPolicy();
     // Whether the typed password misses a rule the policy states. Drawn red
@@ -564,6 +568,18 @@ const socialCallbackRoute = createRoute({
   },
 });
 
+// ── The account page ───────────────────────────────────────────────────
+//
+// /account, linked from the user menu: who is signed in, and the passkeys
+// panel where they enrol the passkey the sign-in screen offers. Signed-in
+// only (the guard gates it) and inside the shell. The content is
+// @/components/account-settings, shared with the Next.js scaffold.
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account",
+  component: AccountSettings,
+});
+
 {{end -}}
 // ── FORGE-ROUTES: BEGIN (managed by `forge scaffold page` and `forge generate`) ──
 // Entity routes are appended below this marker. Hand-editing inside this
@@ -600,6 +616,7 @@ const routeTree = rootRoute.addChildren([
   inviteRoute,
   verifyRoute,
   socialCallbackRoute,
+  accountRoute,
 {{- end}}
   ...generatedRoutes,
 ]);

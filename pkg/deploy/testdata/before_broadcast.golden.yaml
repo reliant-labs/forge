@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api
   namespace: demo-prod
 spec:
@@ -27,6 +28,7 @@ spec:
         app.kubernetes.io/name: api
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: service
     spec:
       automountServiceAccountToken: false
       containers:
@@ -145,6 +147,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api
   namespace: demo-prod
 spec:
@@ -165,6 +168,7 @@ metadata:
     app.kubernetes.io/name: api
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: service
   name: api
   namespace: demo-prod
 ---
@@ -176,6 +180,7 @@ metadata:
     app.kubernetes.io/name: reconciler
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: reconciler
   namespace: demo-prod
 spec:
@@ -196,6 +201,7 @@ spec:
         app.kubernetes.io/name: reconciler
         app.kubernetes.io/part-of: demo
         forge.dev/env: prod
+        forge.dev/kind: worker
     spec:
       automountServiceAccountToken: false
       containers:
@@ -274,6 +280,7 @@ metadata:
     app.kubernetes.io/name: reconciler
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: worker
   name: reconciler
   namespace: demo-prod
 ---
@@ -285,6 +292,7 @@ metadata:
     app.kubernetes.io/name: nightly
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: cron
   name: nightly
   namespace: demo-prod
 spec:
@@ -297,6 +305,7 @@ spec:
             app.kubernetes.io/name: nightly
             app.kubernetes.io/part-of: demo
             forge.dev/env: prod
+            forge.dev/kind: cron
         spec:
           automountServiceAccountToken: false
           containers:
@@ -348,6 +357,7 @@ metadata:
     app.kubernetes.io/name: nightly
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: cron
   name: nightly
   namespace: demo-prod
 ---
@@ -362,6 +372,7 @@ metadata:
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
     forge.dev/job-name: report
+    forge.dev/kind: job
     forge.dev/spec-hash: 630ed7a96b
   name: report-630ed7a96b
   namespace: demo-prod
@@ -453,5 +464,6 @@ metadata:
     app.kubernetes.io/name: report
     app.kubernetes.io/part-of: demo
     forge.dev/env: prod
+    forge.dev/kind: job
   name: report
   namespace: demo-prod

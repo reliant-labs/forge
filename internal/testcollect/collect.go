@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,8 +21,13 @@ import (
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
-// CoveragePath is serverkit's endpoint (pkg/serverkit.CoveragePath).
-const CoveragePath = "/debug/coverage"
+// CoveragePath and ResetHeader are serverkit's endpoint and reset header
+// (pkg/serverkit.CoveragePath, CoverageResetHeader), repeated so the forge
+// binary does not link serverkit; a test holds them equal.
+const (
+	CoveragePath = "/debug/coverage"
+	ResetHeader  = "X-Forge-Coverage-Reset"
+)
 
 // DefaultLane is the lane collected coverage is recorded under: servers are
 // exercised by the e2e lane.
@@ -107,8 +113,9 @@ type Pod struct {
 type Kube interface {
 	// Pods lists the running pods selector picks.
 	Pods(ctx context.Context, kubeContext, namespace, selector string) ([]Pod, error)
-	// Get sends GET pathAndQuery to port inside a pod.
-	Get(ctx context.Context, kubeContext, namespace, pod string, port int, pathAndQuery string) (*http.Response, error)
+	// Do sends req to port inside a pod. req is addressed to
+	// 127.0.0.1:<port>, as the pod's own loopback listener sees it.
+	Do(ctx context.Context, kubeContext, namespace, pod string, port int, req *http.Request) (*http.Response, error)
 }
 
 // Options configure Collect.
@@ -194,7 +201,13 @@ func Collect(ctx context.Context, opts Options) *Document {
 	var writes []pending
 	for _, t := range opts.Targets {
 		r := WorkloadResult{Name: t.Workload, Runtime: t.Runtime}
+		// The name becomes a directory under the run and under
+		// .forge/tests/covdata, which a collect removes and rewrites, so a
+		// name that is not one plain path element is never touched.
+		nameErr := validateWorkloadName(t.Workload)
 		switch {
+		case nameErr != nil:
+			r.State, r.Reason = StateFailed, nameErr.Error()
 		case t.Coverage != "":
 			r.State, r.Coverage = StateUnavailable, t.Coverage
 			if t.Coverage == CoverageNotInstrumented {
@@ -246,6 +259,25 @@ func Collect(ctx context.Context, opts Options) *Document {
 		doc.Suggested = append(doc.Suggested, "forge test report "+doc.Run)
 	}
 	return stamp(doc, code, msg)
+}
+
+// validateWorkloadName refuses a workload name that is not exactly one plain
+// path element: empty, ".", "..", or holding a separator (either OS's), a NUL
+// or a volume name. Collect joins the name into paths it removes and
+// rewrites, so a rendered env must not be able to point them elsewhere.
+func validateWorkloadName(name string) error {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\:`+"\x00") ||
+		filepath.Base(name) != name || filepath.VolumeName(name) != "" {
+		return fmt.Errorf("workload name %q is not a single path element; not collected", name)
+	}
+	return nil
+}
+
+// within reports whether p is dir or lies beneath it.
+func within(dir, p string) bool {
+	r, err := filepath.Rel(dir, p)
+	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) && !filepath.IsAbs(r)
 }
 
 // pending is a workload whose builds are waiting to be written: the index of
@@ -398,7 +430,11 @@ func gatherPods(ctx context.Context, opts Options, c *ClusterTarget, reset bool,
 	}
 	for _, p := range pods {
 		s := Source{Kind: SourcePod, From: c.Namespace + "/" + p.Name}
-		resp, err := opts.Kube.Get(ctx, c.Context, c.Namespace, p.Name, c.Port, coveragePathQuery(reset))
+		req, err := coverageRequest(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(c.Port)), reset)
+		var resp *http.Response
+		if err == nil {
+			resp, err = opts.Kube.Do(ctx, c.Context, c.Namespace, p.Name, c.Port, req)
+		}
 		fs := readResponse(resp, err, &s)
 		for i := range fs {
 			fs[i].live, fs[i].started = true, p.Started
@@ -407,17 +443,28 @@ func gatherPods(ctx context.Context, opts Options, c *ClusterTarget, reset bool,
 	}
 }
 
-func coveragePathQuery(reset bool) string {
+// coverageRequest is serverkit's request for addr: GET reads; a reset is
+// POST with ResetHeader (serverkit refuses a reset in any other form, so no
+// web page can trigger one).
+func coverageRequest(ctx context.Context, addr string, reset bool) (*http.Request, error) {
+	method := http.MethodGet
 	if reset {
-		return CoveragePath + "?reset=1"
+		method = http.MethodPost
 	}
-	return CoveragePath
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+addr+CoveragePath, nil)
+	if err != nil {
+		return nil, err
+	}
+	if reset {
+		req.Header.Set(ResetHeader, "1")
+	}
+	return req, nil
 }
 
-// pullHTTP GETs a host's /debug/coverage.
+// pullHTTP pulls a host's /debug/coverage (with reset, and zeroes it).
 func pullHTTP(ctx context.Context, c *http.Client, addr string, reset bool) ([]covFile, Source) {
 	s := Source{Kind: SourcePull, From: addr}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+coveragePathQuery(reset), nil)
+	req, err := coverageRequest(ctx, addr, reset)
 	if err != nil {
 		s.Status, s.Error = SourceFailed, err.Error()
 		return nil, s
@@ -531,6 +578,11 @@ func recordRun(ctx context.Context, opts Options, doc *Document, run string, wri
 		r := &doc.Workloads[p.idx]
 		relDir := testreport.LaneCoverDataDir + "/" + r.Name
 		dir := filepath.Join(laneDir, filepath.FromSlash(relDir))
+		covRoot := filepath.Join(laneDir, filepath.FromSlash(testreport.LaneCoverDataDir))
+		if err := validateWorkloadName(r.Name); err != nil || dir == covRoot || !within(covRoot, dir) {
+			r.State, r.Reason = StateFailed, fmt.Sprintf("workload name %q would write outside the run's coverage directory; not collected", r.Name)
+			continue
+		}
 		// The pulls are cumulative and the flushed files are re-read
 		// whole, so a collect replaces the workload's previous one.
 		err := os.RemoveAll(dir)

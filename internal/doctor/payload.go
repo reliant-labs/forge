@@ -140,6 +140,7 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 	}
 
 	var (
+		visit    func(root, path string, d os.DirEntry, err error) error
 		uses     []capUse
 		problems []string
 		mounting []string
@@ -149,7 +150,17 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 	// connect-go v2's mount, and proves one only in v2 code.
 	projectV2 := connectmajor.DetectOrDefault(env.ProjectDir).IsV2()
 
-	walkErr := filepath.WalkDir(cmdDir, func(path string, d os.DirEntry, err error) error {
+	// scan reads one tree's Go files. The composition root is cmd/**, and in
+	// a graph-composed project (internal/app/compose.go) the serverkit chain
+	// that carries the caps is built by a provider in internal/app/, so that
+	// tree is read too: a fresh service scaffold set its caps there and this
+	// check, reading cmd/ alone, failed it (NS FG-25).
+	scan := func(root string) func(path string, d os.DirEntry, err error) error {
+		return func(path string, d os.DirEntry, err error) error {
+			return visit(root, path, d, err)
+		}
+	}
+	visit = func(root, path string, d os.DirEntry, err error) error {
 		if err != nil {
 			// An unreadable SUBTREE is not this check's failure — the
 			// composition root is still readable and still answers.
@@ -158,7 +169,7 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 			// "no Go files under cmd/" (a Skip — "not applicable") about a
 			// tree it never opened. Propagate it so the caller can say it
 			// could not obtain the facts.
-			if path == cmdDir {
+			if path == root {
 				return err
 			}
 			return nil //nolint:nilerr // an unreadable subtree is not this check's failure
@@ -223,7 +234,15 @@ func CheckPayloadLimits(_ context.Context, env *Environment) CheckResult {
 			return true
 		})
 		return nil
-	})
+	}
+	walkErr := filepath.WalkDir(cmdDir, scan(cmdDir))
+	if walkErr == nil {
+		if appDir := filepath.Join(env.ProjectDir, "internal", "app"); isDir(appDir) {
+			// Best effort: cmd/ answered the question of whether the
+			// project has a composition root at all.
+			_ = filepath.WalkDir(appDir, scan(appDir))
+		}
+	}
 	if walkErr != nil {
 		// The composition root is the only place the answer lives, so an
 		// unreadable cmd/ is not a benign "nothing found" — forge could not
@@ -717,4 +736,9 @@ func exprString(e ast.Expr) string {
 	default:
 		return strconv.Quote(fmt.Sprintf("%T", e))
 	}
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }

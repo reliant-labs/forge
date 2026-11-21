@@ -97,7 +97,7 @@ func appendNamedBuildContexts(dockerArgs []string, contexts map[string]config.Bu
 			value = c.SourceDir
 		}
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
-		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
+		fmt.Printf("[build] docker build-context %s\n", withholdFlagValue("--build-context", name+"="+value))
 	}
 	return dockerArgs
 }
@@ -2748,8 +2748,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	// `docker-image://`, …). cwd is the project root by construction
 	// (forge build runs alongside forge.yaml).
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	fmt.Printf("[build] %s: %s\n", cfg.Name, dockerCommandLine(dockerArgs))
 
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
@@ -2905,18 +2905,6 @@ func k3dMirrorRepositories(repository string) []string {
 	return []string{"registry.localhost:" + port + "/" + path}
 }
 
-// countTags counts the `-t` flags in a docker build arg list for the
-// progress line. Cheap; only used for human-readable output.
-func countTags(args []string) int {
-	n := 0
-	for _, a := range args {
-		if a == "-t" {
-			n++
-		}
-	}
-	return n
-}
-
 // dockerBuild builds a Docker image for a frontend from its own
 // Dockerfile, tagged with tags.local, and pushes tags.push after a
 // successful build.
@@ -2954,8 +2942,8 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
+	fmt.Printf("[build] %s: %s\n", name, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "frontend image "+name+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: name + " (docker)", kind: "docker", image: name, duration: time.Since(start), err: err}
@@ -3693,7 +3681,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
 	}
 	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
-	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
+	fmt.Printf("[build] %s: %s\n", svcName, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}

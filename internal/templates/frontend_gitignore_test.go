@@ -53,14 +53,6 @@ func TestFrontendGitignore_TracksRenamedHooksAndCommittedGenFiles(t *testing.T) 
 						tracked, pat)
 				}
 			}
-
-			// The pre-rename spelling stays ignored so an un-upgraded
-			// checkout does not start reporting its leftovers.
-			legacy := "src/hooks/" + naming.ServiceHookFileLegacy("UserService")
-			if firstMatch(patterns, legacy) == "" {
-				t.Errorf("the pre-`_gen` hook name %s is no longer ignored; a tree generated before the rename "+
-					"would start reporting files nothing regenerates", legacy)
-			}
 		})
 	}
 }

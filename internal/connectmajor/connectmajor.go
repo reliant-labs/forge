@@ -31,6 +31,8 @@
 // that cannot import them has produced a broken build, not a choice. Moving a
 // project to v2 is `go get connectrpc.com/connect/v2` plus the import in its
 // code; `forge generate` follows.
+//
+//forge:exclude-contract: a value type (Major) and the pure functions that decide it from go.mod; there is no collaborator to substitute
 package connectmajor
 
 import (
@@ -63,6 +65,14 @@ const (
 	ModuleV1 = "connectrpc.com/connect"
 	ModuleV2 = "connectrpc.com/connect/v2"
 )
+
+// V2ScaffoldVersion is the connect-go v2 release forge scaffolds a v2
+// project against: the version its go.mod and gen/go.mod templates require,
+// and the version a --buf-plugins=remote v2 project pins the BSR plugin at.
+// It is held equal to forge's own go.mod requirement of ModuleV2 by
+// TestV2ScaffoldVersionMatchesForgeGoMod, so a forge bump of connect-go v2
+// moves the scaffold with it.
+const V2ScaffoldVersion = "v2.0.2"
 
 // Default is the major a project resolves to with no evidence: forge's
 // historical (and, within forge major 1, permanent) default.

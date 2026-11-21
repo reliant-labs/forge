@@ -83,7 +83,13 @@ CORS, and the session cookie is first-party to the host the page is on.
   the device can reach.
 
 A frontend scaffolded before this has neither `src/lib/api-base.ts` nor the
-`/_api` rewrite: `forge skill load migrations/v0.1.46/dev-api-proxy`.
+`/_api` rewrite. Every file involved is scaffold-once, and
+`forge project upgrade --check --all` lists each with its diff:
+`forge project rescaffold frontends/<name>/src/lib/api-base.ts frontends/<name>/src/lib/api-base.test.ts`
+writes the module, `forge project upgrade --force <file>` adopts an unedited
+`next.config.ts` / `vite.config.ts`, `src/lib/connect.ts` and
+`src/lib/auth/native-login.ts`, and an edited one takes the template's
+`FORGE_DEV_API_PROXY` block by hand (each file's diff shows it).
 
 ## Static export: what a route may be
 
@@ -108,8 +114,13 @@ three rules:
   leaves it out. Server-runtime redirects become a client component calling
   `useRouter().replace()` in a `useEffect`.
 
-A frontend scaffolded before v0.1.44 has `[id]` pages. To convert it:
-`forge skill load migrations/v0.1.44`.
+A frontend scaffolded before v0.1.44 has `[id]` pages. To convert one, move
+`<slug>/[id]/page.tsx` to `<slug>/view/page.tsx` and `<slug>/[id]/edit/page.tsx`
+to `<slug>/edit/page.tsx`, read the id with `useEntityIdParam()` inside a
+`<Suspense>` boundary, and build links with `entityViewHref` /
+`entityEditHref`. A page you never edited is simpler to replace: delete the
+`[id]/` directory and run `forge generate`, which scaffolds `view/` and `edit/`
+once it is gone.
 
 ## How a static host resolves the export
 
@@ -164,6 +175,8 @@ being exportable without anything noticing. Two checks catch it:
     - `next/headers`
     - `dynamic = "force-dynamic"` or `revalidate = 0`
     - next/image without `images.unoptimized`
+    - `cacheComponents: true` (create-next-app's Next.js 16 default) or
+      `experimental.ppr`: partial prerendering
     - a next.config that does not export, or that disagrees with forge.yaml
   - Warnings are what the export drops silently:
     - `middleware.ts` / `proxy.ts`
@@ -183,6 +196,14 @@ The real `next build` stays authoritative. CI's
 run it. The lint is a text scan: it does not follow a re-exported
 `generateStaticParams` or a computed next.config, and stays silent rather
 than guess.
+
+The same lane checks each **Vite** frontend bound to a static runtime: that
+`vite build` writes into the env's `public_dir` (`build.outDir`, `dist` by
+default), and that `base` matches the env's `base_path` (`/` at the site
+root). A relative `base` with a path-based client router warns. A value it
+cannot read statically is named in a note, not guessed. Every other frontend,
+such as an unbound Vite app or an Expo app, gets an explicit "not applicable"
+line.
 
 ## Serving under a path prefix (`base_path`)
 

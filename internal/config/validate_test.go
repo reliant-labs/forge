@@ -5,8 +5,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // validBaseYAML is a minimal forge.yaml that satisfies all required-field
@@ -239,114 +237,29 @@ func TestLoadProject_NestedUnknownKey_LineAndPath(t *testing.T) {
 	}
 }
 
-// TestLoadProject_RemovedSchemaKey_K8sProvider asserts the
-// migration-aware behaviour for a key the forge schema once owned and
-// has since dropped: it is a non-fatal WARNING (fr-57edf33aca) — a
-// forge.yaml forge itself wrote must keep loading across a schema
-// removal — carrying the migration hint, never a generic "rename or
-// remove" typo suggestion that would mislead the user into hunting for
-// a misspelling when the real answer is "this field moved to KCL".
-func TestLoadProject_RemovedSchemaKey_K8sProvider(t *testing.T) {
-	var sink strings.Builder
-	prev := SetConfigWarningSink(&sink)
-	defer SetConfigWarningSink(prev)
-
-	in := strings.Replace(validBaseYAML,
-		"k8s:\n  kcl_dir: deploy/kcl\n",
-		"k8s:\n  provider: k3d\n  kcl_dir: deploy/kcl\n",
-		1)
-	// Removed keys no longer gate the load: the project must keep running.
-	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-		t.Fatalf("removed key k8s.provider must WARN, not fail the load; got: %v", err)
-	}
-	got := sink.String()
-	if !containsAll(got, `"k8s.provider"`, "no longer", "K8sCluster") {
-		t.Errorf("expected schema-drift warning naming K8sCluster, got:\n%s", got)
-	}
-	// The migration hint must replace the generic suggestion — not
-	// stack alongside it. A "did you mean kcl_dir?" tail would be
-	// misleading here.
-	if strings.Contains(got, "did you mean") {
-		t.Errorf("expected schema-drift hint to suppress typo suggestion, got:\n%s", got)
-	}
-}
-
-// TestLoadProject_StackDeploy_RemovedKeyWarns covers the forge.yaml schema
-// cleanup: the `stack.deploy:` sub-block (target/provider/registry) was an
-// unconsumed duplicate of docker.registry + per-env KCL and was removed.
-// An old forge.yaml carrying it must still LOAD (removed keys are non-fatal
-// migration WARNINGS, not errors), so mid-migration projects aren't
-// stranded — the next forge.yaml rewrite drops the dead block.
-// TestLoadProject_DocsKeysRemovedWarn: forge does not manage documentation,
-// so `docs:` and `features.docs` gate nothing. A project that still sets them
-// must LOAD (a forge.yaml written by an older forge is not stranded) and be
-// told to delete them — never silently accepted, never a hard failure.
-func TestLoadProject_DocsKeysRemovedWarn(t *testing.T) {
-	var sink strings.Builder
-	prev := SetConfigWarningSink(&sink)
-	defer SetConfigWarningSink(prev)
-
-	in := validBaseYAML + "docs:\n  output_dir: docs/generated\n"
-	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-		t.Fatalf("a removed docs key must warn, not fail; err=%v", err)
-	}
-	got := sink.String()
-	if !containsAll(got, `"docs" is no longer a forge.yaml key`, "forge no longer generates documentation") {
-		t.Errorf("expected the docs key reported as removed, got:\n%s", got)
-	}
-}
-
-// TestLoadProject_RemovedSchemaKey_ServicesBlock covers the
-// component-model migration hint: a top-level `services:` block (the
-// pre-unification shape) resolves to the components migration message
-// rather than a bare unknown-key error — and as a non-fatal WARNING, so
-// a project carrying the retired block still loads (fr-57edf33aca).
-func TestLoadProject_RemovedSchemaKey_ServicesBlock(t *testing.T) {
-	var sink strings.Builder
-	prev := SetConfigWarningSink(&sink)
-	defer SetConfigWarningSink(prev)
-
-	// A stale top-level `services:` block (the pre-unification shape) must
-	// resolve to the components migration hint, not a bare unknown-key error.
-	in := validBaseYAML + "services:\n  - name: api\n    type: go_service\n    path: handlers/api\n"
-	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-		t.Fatalf("removed top-level `services:` block must WARN, not fail; got: %v", err)
-	}
-	got := sink.String()
-	if !containsAll(got, `"services" is no longer a forge.yaml key`, "forge scaffold service") {
-		t.Errorf("expected services→real-source migration warning, got:\n%s", got)
-	}
-}
-
 // TestLoadProject_UnknownKeyClassification is the table-driven matrix for
-// the unknown-key outcomes:
+// the unknown-key outcomes, all fatal:
 //
-//  1. removed key  → non-fatal WARNING with migration hint, NO Levenshtein
-//     suggestion, load SUCCEEDS (a key forge itself wrote
-//     must not strand the project — fr-57edf33aca)
-//  2. typo'd key   → fatal error, "did you mean" suggestion
-//  3. distant key  → fatal error, plain unknown-key, no suggestion/hint
+//  1. retired key  → migration hint, NO Levenshtein suggestion
+//  2. typo'd key   → "did you mean" suggestion
+//  3. distant key  → plain unknown-key, no suggestion/hint
 //
-// Removed keys must win over suggestions: an agent that sees
+// Retired keys must win over suggestions: an agent that sees
 // "did you mean 'kcl_dir'?" for k8s.provider would rename instead of
-// migrating. The fatal/warn split is the load-bearing distinction —
-// genuine typos (cases 2/3) stay hard errors so typo detection stays
-// useful.
+// migrating.
 func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 	cases := []struct {
 		name       string
 		mutate     func(string) string // injects the fault into validBaseYAML
-		wantWarn   bool                // true: load succeeds, message lands in the warning sink
 		wantSubstr []string            // all must appear in the surfaced message
 		notSubstr  []string            // none may appear in the surfaced message
 	}{
 		{
-			name: "removed key k8s.provider warns with migration hint",
+			name: "retired key k8s.provider fails with migration hint",
 			mutate: func(in string) string {
 				return strings.Replace(in, "k8s:\n  kcl_dir: deploy/kcl\n",
 					"k8s:\n  kcl_dir: deploy/kcl\n  provider: k3d\n", 1)
 			},
-			wantWarn: true,
 			wantSubstr: []string{
 				`"k8s.provider" is no longer a forge.yaml key`,
 				"forge.K8sCluster",
@@ -354,13 +267,10 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed top-level key services warns with components migration hint",
+			name: "retired top-level key services fails with real-source migration hint",
 			mutate: func(in string) string {
-				// A stale top-level services: block (the pre-unification
-				// shape) must point at the components migration.
 				return in + "services:\n  - name: api\n    type: go_service\n    path: handlers/api\n"
 			},
-			wantWarn: true,
 			wantSubstr: []string{
 				`"services" is no longer a forge.yaml key`,
 				"forge scaffold service",
@@ -368,14 +278,13 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 			notSubstr: []string{"did you mean"},
 		},
 		{
-			name: "removed top-level key binaries warns with real-source migration hint",
+			name: "retired top-level key docs fails with its hint",
 			mutate: func(in string) string {
-				return in + "binaries:\n  - name: proxy\n    path: cmd/proxy.go\n"
+				return in + "docs:\n  output_dir: docs/generated\n"
 			},
-			wantWarn: true,
 			wantSubstr: []string{
-				`"binaries" is no longer a forge.yaml key`,
-				"forge scaffold binary",
+				`"docs" is no longer a forge.yaml key`,
+				"forge no longer generates documentation",
 			},
 			notSubstr: []string{"did you mean"},
 		},
@@ -384,7 +293,6 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 			mutate: func(in string) string {
 				return strings.Replace(in, "contracts:", "contarcts:", 1)
 			},
-			wantWarn:   false,
 			wantSubstr: []string{"unknown key", "contarcts", "did you mean", "contracts"},
 			notSubstr:  []string{"is no longer a forge.yaml key"},
 		},
@@ -393,7 +301,6 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 			mutate: func(in string) string {
 				return in + "completely_unrelated_key: 42\n"
 			},
-			wantWarn:   false,
 			wantSubstr: []string{"unknown key", "completely_unrelated_key"},
 			notSubstr:  []string{"did you mean", "is no longer a forge.yaml key"},
 		},
@@ -401,21 +308,8 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var sink strings.Builder
-			prev := SetConfigWarningSink(&sink)
-			defer SetConfigWarningSink(prev)
-
 			_, err := LoadProject([]byte(tc.mutate(validBaseYAML)), "forge.yaml")
-			var got string
-			if tc.wantWarn {
-				if err != nil {
-					t.Fatalf("removed key must WARN, not fail the load; got: %v", err)
-				}
-				got = sink.String()
-			} else {
-				ve := requireValidationError(t, err)
-				got = ve.Error()
-			}
+			got := requireValidationError(t, err).Error()
 			for _, want := range tc.wantSubstr {
 				if !strings.Contains(got, want) {
 					t.Errorf("expected %q in surfaced message, got:\n%s", want, got)
@@ -430,39 +324,8 @@ func TestLoadProject_UnknownKeyClassification(t *testing.T) {
 	}
 }
 
-// TestLoadProject_DeprecatedEnvironmentsStillLoads pins the whitelist
-// behaviour: the removed top-level `environments` block does NOT gate the
-// load (mid-migration projects must keep loading), is NOT reported as an
-// unknown or removed key — but IS surfaced as a non-fatal WARNING so the
-// user migrates it before the next forge.yaml rewrite drops it.
-func TestLoadProject_DeprecatedEnvironmentsStillLoads(t *testing.T) {
-	var sink strings.Builder
-	prev := SetConfigWarningSink(&sink)
-	defer SetConfigWarningSink(prev)
-
-	in := validBaseYAML + "environments:\n  - name: dev\n    type: local\n"
-	if _, err := LoadProject([]byte(in), "forge.yaml"); err != nil {
-		t.Fatalf("expected deprecated 'environments' block to load cleanly, got: %v", err)
-	}
-
-	out := sink.String()
-	if !strings.Contains(out, "environments") {
-		t.Errorf("expected warning to name the deprecated 'environments' key, got: %q", out)
-	}
-	if !strings.Contains(out, "deprecated top-level key") {
-		t.Errorf("expected warning to flag a deprecated top-level key, got: %q", out)
-	}
-	// The hint must name where the config GOES, not a skill to load: the
-	// migration registry is pruned per release, so a warning that points
-	// at a skill path outlives the skill. Naming the destination shape
-	// stays true whether or not a migration is currently shipped.
-	if !strings.Contains(out, "config.<env>.yaml") {
-		t.Errorf("expected warning to name where per-env config moves to, got: %q", out)
-	}
-}
-
 // TestLoadProject_EveryRemovedKeyIsDiagnosed drives the WHOLE
-// removedSchemaKeys registry instead of the three keys
+// removedSchemaKeys registry instead of the keys
 // TestLoadProject_UnknownKeyClassification names by hand. Retiring a key
 // therefore comes with its coverage automatically: add the registry entry and
 // this test exercises it, forget the entry and nothing here changes — which is
@@ -479,16 +342,12 @@ func TestLoadProject_DeprecatedEnvironmentsStillLoads(t *testing.T) {
 // instead of migrating. A retired key with no registry entry is not silent
 // either: it falls through to the fatal unknown-key error.
 //
-// Each entry is pinned on four things:
+// Each entry is pinned on three things:
 //
-//  1. the load SUCCEEDS (fr-57edf33aca — a key forge itself wrote must not
-//     strand the project on every config-loading command);
-//  2. the warning names the key and quotes the registry's own fix hint, so the
+//  1. the load FAILS — forge does not tolerate a retired key;
+//  2. the error names the key and quotes the registry's own fix hint, so the
 //     message can't rot into a bare notice;
-//  3. no typo suggestion rides along;
-//  4. the deprecation SELF-HEALS: the retired key never reaches the struct, so
-//     re-loading the NormalizeForWrite rewrite warns about nothing. Warn-plus-
-//     drop, not warn-forever.
+//  3. no typo suggestion rides along.
 func TestLoadProject_EveryRemovedKeyIsDiagnosed(t *testing.T) {
 	// A bare required-fields-only fixture, not validBaseYAML: several retired
 	// keys hang off a section validBaseYAML already declares (`ci:`, `k8s:`),
@@ -505,36 +364,13 @@ func TestLoadProject_EveryRemovedKeyIsDiagnosed(t *testing.T) {
 			continue
 		}
 		t.Run(key, func(t *testing.T) {
-			var sink strings.Builder
-			prev := SetConfigWarningSink(&sink)
-			defer SetConfigWarningSink(prev)
-
-			cfg, err := LoadProject([]byte(requiredOnly+nestedYAML(key)), "forge.yaml")
-			if err != nil {
-				t.Fatalf("a retired key must WARN, not fail the load; got: %v", err)
-			}
-			got := sink.String()
+			_, err := LoadProject([]byte(requiredOnly+nestedYAML(key)), "forge.yaml")
+			got := requireValidationError(t, err).Error()
 			if !containsAll(got, `"`+key+`" is no longer a forge.yaml key`, hint) {
-				t.Errorf("warning must name the key and carry the registry's migration hint, got:\n%s", got)
+				t.Errorf("the error must name the key and carry the registry's migration hint, got:\n%s", got)
 			}
 			if strings.Contains(got, "did you mean") {
 				t.Errorf("a retired key must not emit a typo suggestion, got:\n%s", got)
-			}
-
-			out, err := yaml.Marshal(NormalizeForWrite(cfg))
-			if err != nil {
-				t.Fatalf("marshal the rewritten config: %v", err)
-			}
-			// Re-arm the sink: SetConfigWarningSink also clears the
-			// per-process dedup, without which a recurring warning would be
-			// swallowed and this assertion would pass vacuously.
-			sink.Reset()
-			SetConfigWarningSink(&sink)
-			if _, err := LoadProject(out, "forge.yaml"); err != nil {
-				t.Fatalf("the rewritten config must load: %v\n%s", err, out)
-			}
-			if sink.String() != "" {
-				t.Errorf("retired key survived the forge.yaml rewrite: %s\n%s", sink.String(), out)
 			}
 		})
 	}

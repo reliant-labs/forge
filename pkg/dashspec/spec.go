@@ -475,6 +475,16 @@ type Predicate struct {
 	Values []string `json:"values,omitempty"`
 }
 
+// The metric kinds a metrics series reads (Series.MetricType): the OTel data
+// point types, as the telemetry store keeps them.
+const (
+	MetricTypeSum          = "sum"
+	MetricTypeGauge        = "gauge"
+	MetricTypeHistogram    = "histogram"
+	MetricTypeExpHistogram = "exp_histogram"
+	MetricTypeSummary      = "summary"
+)
+
 // Series is one aggregate shown by a panel.
 type Series struct {
 	Label string `json:"label"`
@@ -486,7 +496,9 @@ type Series struct {
 	// AggCount.
 	Field string `json:"field,omitempty"`
 	// MetricType is "sum", "gauge", "histogram", "exp_histogram" or "summary"
-	// (metrics only).
+	// (metrics only): one of the MetricType* constants.
+	//
+	//dashspec:enum MetricType
 	MetricType string `json:"metricType,omitempty"`
 	// Where narrows this series alone (e.g. only the failed requests).
 	Where []Predicate `json:"where,omitempty"`

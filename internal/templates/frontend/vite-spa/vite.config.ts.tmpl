@@ -2,13 +2,23 @@ import fs from "node:fs";
 import path from "node:path";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+{{- if .DevLogFromRuntime}}
+import {
+  forgeDevLog,
+  forgeOtelProxy,
+  forgeRuntimeConfig,
+} from "@reliantlabs/forge-web-runtime/vite";
+{{- else}}
 import { forgeOtelProxy, forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
+{{- end}}
 // `vitest/config` re-exports vite's defineConfig with the `test` block typed.
 // Importing it from "vite" instead type-errors on `test`, and this file is in
 // the tsconfig `include` list.
 import { defineConfig } from "vitest/config";
+{{- if not .DevLogFromRuntime}}
 
 import { devLogPlugin } from "./src/lib/devlog-plugin";
+{{- end}}
 
 // The libraries @reliantlabs/forge-web-runtime declares as peerDependencies —
 // read from the installed package so this list can never drift from what the
@@ -166,7 +176,7 @@ export default defineConfig(({ command, mode }) => {
     define: devApiProxy
       ? { "import.meta.env.FORGE_DEV_API_PROXY": JSON.stringify(devApiProxy) }
       : {},
-    // devLogPlugin is dev-only (`apply: "serve"`): it receives the browser
+    // {{if .DevLogFromRuntime}}forgeDevLog{{else}}devLogPlugin{{end}} is dev-only (`apply: "serve"`): it receives the browser
     // console lines that installDevLogging() posts in src/main.tsx and prints
     // them to this dev server's stdout, which `forge env up` tees to
     // .forge/logs/<env>/frontend_<name>.log. Delete both to opt out.
@@ -183,7 +193,7 @@ export default defineConfig(({ command, mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      devLogPlugin(),
+      {{if .DevLogFromRuntime}}forgeDevLog(){{else}}devLogPlugin(){{end}},
       forgeRuntimeConfig(),
       forgeOtelProxy({ upstream: OTEL_ENDPOINT }),
     ],

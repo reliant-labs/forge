@@ -52,7 +52,7 @@ func SiteStarterKindNames() []string { return []string{"nextjs", "vite-spa"} }
 // Tailwind PostCSS wiring. One file, so a fix to it reaches both.
 var siteStarterReused = map[string][]struct{ from, to string }{
 	"vite": {
-		{from: "vite-spa/src/lib/devlog-plugin.ts", to: "src/lib/devlog-plugin.ts"},
+		{from: "vite-spa/" + inlinedDevLogPlugin, to: inlinedDevLogPlugin},
 	},
 	"nextjs": {
 		{from: "nextjs/src/app/%5F_forge/log/route.ts", to: "src/app/%5F_forge/log/route.ts"},
@@ -76,6 +76,8 @@ type siteStarterData struct {
 	Connect  string
 	Protobuf string
 	OTelAPI  string
+	// DevLogFromRuntime: see templates.FrontendTemplateData. Vite only.
+	DevLogFromRuntime bool
 }
 
 // WriteSiteStarter writes the starter app of a greenfield static site into
@@ -84,6 +86,12 @@ type siteStarterData struct {
 // what SiteStarterFrontend returned; WriteSiteScaffold then writes the forge
 // files declaring it.
 func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
+	return writeSiteStarter(dir, projectName, fe, webRuntimePublishedRange)
+}
+
+// writeSiteStarter is WriteSiteStarter against the given runtime floor, so
+// the floor-gated choices can be exercised offline.
+func writeSiteStarter(dir, projectName string, fe SiteFrontend, runtimeFloor string) error {
 	root := path.Join("site", fe.Type)
 	files, err := templates.FrontendTemplates().List(root)
 	if err != nil {
@@ -98,6 +106,8 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 		Connect:         webRuntimePeer("@connectrpc/connect"),
 		Protobuf:        webRuntimePeer("@bufbuild/protobuf"),
 		OTelAPI:         webRuntimePeer("@opentelemetry/api"),
+
+		DevLogFromRuntime: fe.Type == "vite" && viteDevLogFromRuntime(runtimeFloor),
 	}
 	for _, rel := range files {
 		content, err := templates.FrontendTemplates().Render(path.Join(root, rel), data)
@@ -129,6 +139,9 @@ func WriteSiteStarter(dir, projectName string, fe SiteFrontend) error {
 		return err
 	}
 	for _, f := range siteStarterReused[fe.Type] {
+		if data.DevLogFromRuntime && f.to == inlinedDevLogPlugin {
+			continue // the runtime's forgeDevLog() receives the lines
+		}
 		content, err := templates.FrontendTemplates().Get(f.from)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", f.from, err)

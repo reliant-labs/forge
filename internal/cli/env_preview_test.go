@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -112,6 +113,9 @@ func TestPreviewCreate(t *testing.T) {
 	m, ok, err := kclrender.ReadPreviewMarker(inst)
 	if err != nil || !ok || m.Of != "preview" || m.ExpiresAt != doc.ExpiresAt {
 		t.Fatalf("marker: %+v %v %v", m, ok, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(inst, previewGitignoreFileName)); err != nil || string(b) != previewGitignore {
+		t.Errorf("instance .gitignore = %q, %v; want the self-ignoring %q", b, err, previewGitignore)
 	}
 
 	// Re-running refreshes the expiry.
@@ -332,11 +336,11 @@ func TestPreviewCreateRefreshMatchesTheTemplateExactly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{kclrender.PreviewMarkerFile, previewHeaderFileName, "config.k", "main.k", "overlays/api.k", "overlays/renamed.k"}
+	want := []string{kclrender.PreviewMarkerFile, previewHeaderFileName, previewGitignoreFileName, "config.k", "main.k", "overlays/api.k", "overlays/renamed.k"}
 	sort.Strings(got)
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Fatalf("instance holds %v, want exactly the template plus marker and header: %v", got, want)
+		t.Fatalf("instance holds %v, want exactly the template plus marker, header and .gitignore: %v", got, want)
 	}
 	if b, _ := os.ReadFile(filepath.Join(inst, "overlays", "api.k")); string(b) != "# api v2\n" {
 		t.Errorf("overlays/api.k = %q, want the template's current content", b)
@@ -415,5 +419,35 @@ func TestFindExpiredPreviewsDedupesOnlyAgainstTheSameTemplate(t *testing.T) {
 	sort.Strings(names)
 	if want := "namespace:demo-other,namespace:demo-removed"; strings.Join(names, ",") != want {
 		t.Fatalf("expired: %v, want %s (the live instance's namespace kept)", names, want)
+	}
+}
+
+// TestPreviewInstanceLeavesTheCheckoutClean pins NS FG-21 against git
+// itself: creating a preview in a committed checkout leaves `git status`
+// empty, so `env deploy <instance>` does not cut a dirty-tree release.
+func TestPreviewInstanceLeavesTheCheckoutClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs git in a temporary repository; runs in task test")
+	}
+	dir := previewProject(t)
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("commit", "-q", "-m", "init")
+	installPreviewWorld(t, &fakePreviewWorld{}, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))
+	if _, err := createPreview(context.Background(), dir, previewKeyFlags{pr: 42, from: "preview"}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if st := git("status", "--porcelain", "--untracked-files=all"); strings.TrimSpace(st) != "" {
+		t.Fatalf("a preview instance dirtied the checkout:\n%s", st)
 	}
 }

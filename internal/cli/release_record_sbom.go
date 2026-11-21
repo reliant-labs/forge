@@ -68,6 +68,9 @@ type recordSBOMEntry struct {
 	Status   string `json:"status"`
 	Source   string `json:"source,omitempty"`
 	Format   string `json:"format,omitempty"`
+	// Referrer is where the SBOM was attached beside its image (an OCI
+	// referrer, `repo@sha256:…`), when it was.
+	Referrer string `json:"referrer,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 }
 
@@ -176,10 +179,11 @@ type recordSBOMRun struct {
 }
 
 // recordReleaseSBOMs sets Artifact.SBOM on every artifact of a record and
-// stores the bytes in this machine's ledger, then runs the post-generate
-// hooks over each SBOM it stored, exactly as the cut does. It never fails
-// the record: an SBOM it could not produce or store is recorded unavailable
-// and warned. It returns one entry per artifact with an SBOM ref.
+// stores the bytes in this machine's ledger. It returns the bytes of each
+// SBOM it stored, by artifact, for the post-generate hooks, which run only
+// once the record is cut (attachRecordReferrers). It never fails the
+// record: an SBOM it could not produce or store is recorded unavailable and
+// warned.
 //
 // EXPLICIT EVIDENCE IS NEVER DISCARDED. An env that declares provenance_sbom
 // off turns off what forge does by default, generating an SBOM from each
@@ -187,7 +191,7 @@ type recordSBOMRun struct {
 // is recorded under any policy, exactly as it is with the policy on. Under
 // off the workloads named only by --image get no SBOM and no entry, as at
 // the cut, which records nothing for them and says nothing.
-func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[string]release.Artifact, warn io.Writer) []recordSBOMEntry {
+func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[string]release.Artifact, warn io.Writer) map[string][]byte {
 	if len(artifacts) == 0 {
 		return nil
 	}
@@ -202,7 +206,7 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 		}
 		fmt.Fprintf(warn, "warning: --no-sbom: release %s recorded without an SBOM for its %d workload(s); they will show as not scanned\n",
 			in.version, len(names))
-		return recordSBOMEntries(artifacts)
+		return nil
 	}
 
 	var (
@@ -281,8 +285,6 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 		}
 	}
 
-	runRecordSBOMHooks(ctx, in, artifacts, stored, warn)
-
 	if off && len(in.plan.provided) > 0 {
 		fmt.Fprintf(warn, "note: env %s declares provenance_sbom off, so forge generated no SBOM; the %d SBOM(s) passed with --sbom are recorded\n",
 			in.env, len(in.plan.provided))
@@ -293,7 +295,7 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 			fmt.Fprintf(warn, "warning: release %s recorded without an SBOM for %s: %s\n", in.version, name, ref.Reason)
 		}
 	}
-	return recordSBOMEntries(artifacts)
+	return stored
 }
 
 // newRecordSBOMGenerator is the cut's generator, cache and registry
@@ -355,6 +357,71 @@ func putRecordSBOM(in recordSBOMRun, ref release.SBOMRef, data []byte) error {
 		err = fmt.Errorf("the ledger stored it as %s, not %s", digest, ref.Digest)
 	}
 	return err
+}
+
+// attachRecordReferrers runs the post-generate hooks (the OCI referrer
+// attach beside each image, a scan) over the SBOMs a record stored, once the
+// record is cut and promoted, and backfills the referrers they add into the
+// recorded release. A refused record never reaches it, so nothing is written
+// beside an image for a release that was not recorded; a record whose
+// promotion failed attaches nothing either, and its retry (an idempotent cut,
+// a no-op promotion) attaches then.
+//
+// The hooks act on what the release RECORDS: an artifact whose recorded SBOM
+// is another one (a retry after a syft upgrade; the first SBOM recorded
+// stands) keeps it and is not attached again, nor is one whose recorded SBOM
+// already names a referrer.
+//
+// The referrers are backfilled through the ledger's own fill-never-replace
+// path (release.BackfillSBOMs, which a re-cut of the same content runs). A
+// control plane records no SBOM refs yet, so on a hosted ledger the
+// referrers are attached and listed in the result, and not persisted.
+func attachRecordReferrers(ctx context.Context, target recordLedger, in recordSBOMRun, artifacts map[string]release.Artifact, stored map[string][]byte, warn io.Writer) {
+	if len(sbomPostGenerate) == 0 || len(stored) == 0 {
+		return
+	}
+	recorded, err := target.ledger.Releases.Get(ctx, in.version)
+	if err != nil {
+		fmt.Fprintf(warn, "warning: release %s is recorded, but its SBOMs were not attached beside the images: read it back: %v\n", in.version, err)
+		return
+	}
+	run := map[string][]byte{}
+	for name, data := range stored {
+		if recorded != nil {
+			if ref := recorded.Artifacts[name].SBOM; ref.HasSBOM() && (ref.Digest != artifacts[name].SBOM.Digest || ref.Referrer != "") {
+				setArtifactSBOM(artifacts, name, *ref)
+				continue
+			}
+		}
+		run[name] = data
+	}
+	runRecordSBOMHooks(ctx, in, artifacts, run, warn)
+
+	attached := 0
+	for name := range run {
+		if artifacts[name].SBOM.Referrer != "" {
+			attached++
+		}
+	}
+	if attached == 0 {
+		return
+	}
+	if target.ledger.Hosted || recorded == nil {
+		fmt.Fprintf(warn, "note: release %s's SBOMs are attached beside %d image(s); the control plane does not record SBOM references yet, so the referrers are listed here only\n",
+			in.version, attached)
+		return
+	}
+	filled := *recorded
+	filled.Artifacts = make(map[string]release.Artifact, len(recorded.Artifacts))
+	for n, a := range recorded.Artifacts {
+		if _, ok := run[n]; ok {
+			a.SBOM = artifacts[n].SBOM
+		}
+		filled.Artifacts[n] = a
+	}
+	if _, err := target.ledger.Releases.Cut(ctx, filled); err != nil {
+		fmt.Fprintf(warn, "warning: release %s's SBOMs are attached beside the images, but the referrers were not recorded: %v\n", in.version, err)
+	}
 }
 
 // runRecordSBOMHooks runs the cut's post-generate hooks (attach as an OCI
@@ -431,7 +498,7 @@ func recordSBOMEntries(artifacts map[string]release.Artifact) []recordSBOMEntry 
 			continue
 		}
 		out = append(out, recordSBOMEntry{Workload: name, Digest: ref.Digest, Status: ref.Status,
-			Source: ref.Source, Format: ref.Format, Reason: ref.Reason})
+			Source: ref.Source, Format: ref.Format, Referrer: ref.Referrer, Reason: ref.Reason})
 	}
 	return out
 }

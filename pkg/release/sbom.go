@@ -90,6 +90,12 @@ func (s *SBOMRef) validate() error {
 // only says [SBOMStatusUnavailable] names no SBOM, so a later ref that names
 // one fills it.
 //
+// The same rule holds within a recorded SBOM: when requested names the SAME
+// SBOM (equal Digest) and knows where it was attached beside its artifact
+// (Referrer) while the record does not, the Referrer is filled in. A
+// recorded Referrer is never replaced, and a Referrer for another SBOM is
+// never taken.
+//
 // The release's own [Release.SourceSBOM] follows the same rule.
 //
 // existing is not modified; the result has its own Artifacts map.
@@ -127,7 +133,15 @@ func BackfillSBOMs(existing, requested Release) (Release, bool) {
 // backfillRef is the one fill-never-replace rule: a copy of requested when
 // the record should take it, and whether it should.
 func backfillRef(existing, requested *SBOMRef) (*SBOMRef, bool) {
-	if requested == nil || existing.HasSBOM() {
+	if requested == nil {
+		return nil, false
+	}
+	if existing.HasSBOM() {
+		if existing.Referrer == "" && requested.Referrer != "" && requested.Digest == existing.Digest {
+			ref := *existing
+			ref.Referrer = requested.Referrer
+			return &ref, true
+		}
 		return nil, false
 	}
 	if existing != nil && !requested.HasSBOM() {

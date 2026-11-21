@@ -125,9 +125,12 @@ succeeds.
 
 Each workload's SBOM, generated or supplied with `--sbom`, is also attached
 beside its image as an OCI referrer, with the same credentials: the image is
-one your pipeline pushed. The release records the referrer's address. A
-registry that refuses the write warns and keeps the ledger copy;
-`vuln: {attach_sbom: false}` in forge.yaml stops trying.
+one your pipeline pushed. Nothing is written beside an image until the record
+is accepted: a record refused as a conflict runs no syft and attaches nothing,
+and one whose promotion fails attaches nothing until its retry. The release
+records the referrer's address (a control plane does not store it yet; the
+`--json` result lists it). A registry that refuses the write warns and keeps
+the ledger copy; `vuln: {attach_sbom: false}` in forge.yaml stops trying.
 
 | Flag | What it records |
 |---|---|
@@ -301,7 +304,7 @@ verdict cannot tell the new release's traffic from the old.
 `--json` prints one object: `project`, `env`, `version`, `commit`, `workloads`
 (name → ref@digest), `ledger` (`hosted` | `machine`), `location`,
 `release_created`, `promoted`, `promotion_id`, `run_url`, `console_url`, and
-`sboms`: one `{workload, digest, status, source, format, reason}` per recorded
+`sboms`: one `{workload, digest, status, source, format, referrer, reason}` per recorded
 artifact (`status` `ok`, or `unavailable` with the `reason`). The release's
 source SBOM (`--sbom-source`) is the entry whose `workload` is `""`.
 

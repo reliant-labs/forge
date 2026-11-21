@@ -337,3 +337,31 @@ func TestSourceSBOMIsEvidenceNotIdentity(t *testing.T) {
 		t.Fatalf("WithoutSBOMs left an sbom: %s", raw)
 	}
 }
+
+// Where an SBOM was attached beside its artifact is filled in for the SAME
+// SBOM, never replaced, and never taken from another SBOM.
+func TestBackfillSBOMsFillsTheReferrerOfTheSameSBOM(t *testing.T) {
+	t.Parallel()
+	plain := okSBOM("c", "syft@v1.57.2")
+	attached := okSBOM("c", "syft@v1.57.2")
+	attached.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("f")
+	existing := sbomTestRelease(map[string]*SBOMRef{"api": plain})
+
+	got, changed := BackfillSBOMs(existing, sbomTestRelease(map[string]*SBOMRef{"api": attached}))
+	if !changed || got.Artifacts["api"].SBOM.Referrer != attached.Referrer || got.Artifacts["api"].SBOM.Digest != plain.Digest {
+		t.Fatalf("referrer not filled: %+v changed=%v", got.Artifacts["api"].SBOM, changed)
+	}
+	if existing.Artifacts["api"].SBOM.Referrer != "" {
+		t.Fatal("BackfillSBOMs modified the existing record")
+	}
+	other := okSBOM("c", "syft@v1.57.2")
+	other.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("e")
+	if _, changed := BackfillSBOMs(got, sbomTestRelease(map[string]*SBOMRef{"api": other})); changed {
+		t.Fatal("a recorded referrer was replaced")
+	}
+	newer := okSBOM("d", "syft@v1.60.0")
+	newer.Referrer = "ghcr.io/acme/api@" + sbomTestDigest("e")
+	if _, changed := BackfillSBOMs(existing, sbomTestRelease(map[string]*SBOMRef{"api": newer})); changed {
+		t.Fatal("the referrer of another SBOM was taken")
+	}
+}

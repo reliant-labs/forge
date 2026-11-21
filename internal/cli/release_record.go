@@ -490,24 +490,92 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	if target.note != "" {
 		fmt.Fprintln(errOut, target.note)
 	}
-	// SBOMs are produced last, after every check that can refuse the
-	// record, so a refused record pays for no syft run.
 	createdAt := time.Now().UTC()
+	in := recordInput{
+		project: project, env: env, version: version, commit: commit,
+		artifacts: artifacts, workloads: workloads, run: run, createdAt: createdAt,
+		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
+	}
+	// ORDER MATTERS: nothing outside this machine is touched until the
+	// record is accepted.
+	//
+	//  1. Every check that can refuse the record without writing: the
+	//     flags (above), the release itself, a conflict with the version
+	//     already recorded, and the env's current promotion being readable.
+	//  2. The SBOMs: syft reads the images (a registry READ) and the
+	//     bytes go to this machine's SBOM cache and content-addressed
+	//     ledger store, neither of which a refused record leaves wrong (an
+	//     unreferenced blob at worst).
+	//  3. The cut and the promotion (recordReleaseInto).
+	//  4. Only then the post-generate hooks, which WRITE beside images
+	//     someone else published (the OCI referrer), and their referrers
+	//     are backfilled into the recorded release.
+	if err := precheckRecord(ctx, target, in); err != nil {
+		return releaseRecordResult{}, err
+	}
 	sbomRun := recordSBOMRun{projectDir: sc.projectDir, project: project, env: env,
 		version: version, createdAt: createdAt, declared: declared, plan: sbomPlan}
-	sboms := recordReleaseSBOMs(ctx, sbomRun, artifacts, errOut)
-	sourceSBOM := recordSourceSBOM(ctx, sbomRun, errOut)
-	sboms = append(sourceSBOMEntry(sourceSBOM), sboms...)
-	res, err := recordReleaseInto(ctx, target, recordInput{
-		project: project, env: env, version: version, commit: commit,
-		artifacts: artifacts, workloads: workloads, run: run, sourceSBOM: sourceSBOM, createdAt: createdAt,
-		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
-	})
+	stored := recordReleaseSBOMs(ctx, sbomRun, artifacts, errOut)
+	in.sourceSBOM = recordSourceSBOM(ctx, sbomRun, errOut)
+	res, err := recordReleaseInto(ctx, target, in)
 	if err != nil {
 		return res, err
 	}
-	res.SBOMs = sboms
+	attachRecordReferrers(ctx, target, sbomRun, artifacts, stored, errOut)
+	res.SBOMs = append(sourceSBOMEntry(in.sourceSBOM), recordSBOMEntries(artifacts)...)
 	return res, nil
+}
+
+// precheckRecord refuses, before anything is generated or written, a record
+// recordReleaseInto would refuse: an invalid release, a version already
+// recorded with other content, and an env whose current promotion cannot be
+// read. A read that fails refuses too: the cut would need the same ledger.
+// (What only the write can decide, the control plane's own refusal of the
+// promotion, stays with the write; the hooks run after it.)
+func precheckRecord(ctx context.Context, target recordLedger, in recordInput) error {
+	rel := recordedRelease(in)
+	if err := rel.Validate(); err != nil {
+		return err
+	}
+	existing, err := target.ledger.Releases.Get(ctx, in.version)
+	if err != nil {
+		return fmt.Errorf("read release %s before recording it: %w", in.version, err)
+	}
+	if existing != nil {
+		if err := release.CheckRecut(*existing, rel); err != nil {
+			return recordConflict(in.version, err)
+		}
+	}
+	if _, _, err := target.ledger.Bindings.Current(ctx, in.env); err != nil {
+		return fmt.Errorf("read env %s's current release: %w", in.env, err)
+	}
+	return nil
+}
+
+// recordConflict is the refusal of a version already recorded with other
+// content.
+func recordConflict(version string, err error) error {
+	return fmt.Errorf("version %s is already recorded with different content "+
+		"(other digests, or — version-only — another commit); a version names one release, so record this one under a new version: %w",
+		version, err)
+}
+
+// recordedRelease is the release a record cuts.
+func recordedRelease(in recordInput) release.Release {
+	createdAt := in.createdAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	return release.Release{
+		Version:    in.version,
+		Project:    in.project,
+		Git:        release.Git{Commit: in.commit},
+		CreatedAt:  createdAt,
+		Artifacts:  in.artifacts,
+		Run:        in.run,
+		RecordOnly: true,
+		SourceSBOM: in.sourceSBOM,
+	}
 }
 
 // recordInput is one record, resolved: what recordReleaseInto writes.
@@ -530,30 +598,15 @@ type recordInput struct {
 // hosted release_record tool, which resolves its target from the signed-in
 // person instead of this machine.
 func recordReleaseInto(ctx context.Context, target recordLedger, in recordInput) (releaseRecordResult, error) {
-	createdAt := in.createdAt
-	if createdAt.IsZero() {
-		createdAt = time.Now().UTC()
-	}
-	project, env, version, commit, artifacts, workloads, run := in.project, in.env, in.version, in.commit, in.artifacts, in.workloads, in.run
-	rel := release.Release{
-		Version:    version,
-		Project:    project,
-		Git:        release.Git{Commit: commit},
-		CreatedAt:  createdAt,
-		Artifacts:  artifacts,
-		Run:        run,
-		RecordOnly: true,
-		SourceSBOM: in.sourceSBOM,
-	}
+	project, env, version, commit, workloads, run := in.project, in.env, in.version, in.commit, in.workloads, in.run
+	rel := recordedRelease(in)
 	if err := rel.Validate(); err != nil {
 		return releaseRecordResult{}, err
 	}
 	created, err := target.ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		if errors.Is(err, release.ErrReleaseConflict) {
-			return releaseRecordResult{}, fmt.Errorf("version %s is already recorded with different content "+
-				"(other digests, or — version-only — another commit); a version names one release, so record this one under a new version: %w",
-				version, err)
+			return releaseRecordResult{}, recordConflict(version, err)
 		}
 		return releaseRecordResult{}, fmt.Errorf("record release %s: %w", version, err)
 	}

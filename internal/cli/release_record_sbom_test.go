@@ -15,6 +15,7 @@ import (
 
 	"oras.land/oras-go/v2/registry/remote/auth"
 
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/internal/sbomoci/ocitest"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -642,5 +643,115 @@ func TestReleaseRecordSBOM_AttachesReferrersBesideRecordedImages(t *testing.T) {
 	}
 	if got := subjects[webRepo+"@"+webDigest]; got != "trivy@0.50.0" {
 		t.Errorf("the supplied SBOM was attached with generator %q, want the document's", got)
+	}
+}
+
+// A record refused as a conflict, before anything is cut, runs no syft and
+// attaches nothing beside the images.
+func TestReleaseRecordSBOM_AConflictingRecordRunsNoSyftAndAttachesNothing(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	calls := useReferrerRegistry(t)
+	f := ocitest.New(t, nil)
+	repo, digestA := splitSubject(f.PutSubject("acme/api", "v1"))
+	_, digestB := splitSubject(f.PutSubject("acme/api", "v2"))
+	rec := func(digest string) error {
+		_, err := recordReleaseIn(context.Background(), releaseRecordOptions{env: "prod", version: "v1.4.0",
+			workloads: []string{"api"}, images: []string{repo + "@" + digest}}, rt.sc, &bytes.Buffer{})
+		return err
+	}
+	if err := rec(digestA); err != nil {
+		t.Fatalf("first record: %v", err)
+	}
+	syftBefore, attachBefore := len(rt.syft.calls()), len(*calls)
+	if attachBefore != 1 {
+		t.Fatalf("the accepted record attached %d time(s), want 1", attachBefore)
+	}
+
+	err := rec(digestB)
+	if !errors.Is(err, release.ErrReleaseConflict) {
+		t.Fatalf("err = %v, want the conflict", err)
+	}
+	if n := len(rt.syft.calls()) - syftBefore; n != 0 {
+		t.Errorf("a refused record ran syft %d time(s)", n)
+	}
+	if n := len(*calls) - attachBefore; n != 0 {
+		t.Errorf("a refused record attached %d referrer(s)", n)
+	}
+	if n := len(rt.cp.called("CutRelease")); n != 1 {
+		t.Errorf("CutRelease called %d times, want only the first record's", n)
+	}
+}
+
+// The hooks run after the promotion. A promotion the control plane refuses
+// after the cut leaves a recorded release with nothing attached beside its
+// image (generation already ran; it writes only to this machine), and the
+// retry, an idempotent cut and a promotion, attaches then. On a hosted
+// ledger the referrer is listed in the result, and the output says the
+// control plane does not record it yet.
+func TestReleaseRecordSBOM_APromotionFailureAttachesNothingUntilTheRetry(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	calls := useReferrerRegistry(t)
+	f := ocitest.New(t, nil)
+	repo, digest := splitSubject(f.PutSubject("acme/api", "v1"))
+	o := releaseRecordOptions{env: "prod", version: "v1.4.0", workloads: []string{"api"}, images: []string{repo + "@" + digest}}
+
+	rt.cp.promoteErr = &cloud.Error{Code: "failed_precondition", Message: "environment is pinned"}
+	if _, err := recordReleaseIn(context.Background(), o, rt.sc, &bytes.Buffer{}); err == nil {
+		t.Fatal("the refused promotion was not reported")
+	}
+	if len(rt.cp.called("CutRelease")) != 1 {
+		t.Fatal("the release was not cut before the promotion")
+	}
+	if n := len(*calls); n != 0 {
+		t.Fatalf("a record whose promotion failed attached %d referrer(s)", n)
+	}
+
+	rt.cp.promoteErr = nil
+	var warn bytes.Buffer
+	res, err := recordReleaseIn(context.Background(), o, rt.sc, &warn)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if res.ReleaseCreated || !res.Promoted || len(*calls) != 1 {
+		t.Fatalf("retry: %+v, %d attach(es); want the same release, promoted, attached once", res, len(*calls))
+	}
+	if e := sbomEntry(t, res, "api"); !strings.HasPrefix(e.Referrer, repo+"@sha256:") {
+		t.Errorf("api entry %+v, want the referrer", e)
+	}
+	if !strings.Contains(warn.String(), "does not record SBOM references yet") {
+		t.Errorf("the hosted note is missing:\n%s", warn.String())
+	}
+}
+
+// On the machine ledger a retry neither re-attaches nor loses the referrer:
+// the first record backfilled it, and the hooks act on what is recorded.
+func TestReleaseRecordSBOM_RetryKeepsTheRecordedReferrer(t *testing.T) {
+	newSBOMRecordTest(t)
+	calls := useReferrerRegistry(t)
+	f := ocitest.New(t, nil)
+	repo, digest := splitSubject(f.PutSubject("acme/api", "v1"))
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	useRecordLedger(t, defaultRecordLedger)
+	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
+	o := releaseRecordOptions{env: "prod", version: "v1.4.0", commit: recordCommitA, workloads: []string{"api"}, images: []string{repo + "@" + digest}}
+
+	first, err := recordReleaseIn(context.Background(), o, sc, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := recordReleaseIn(context.Background(), o, sc, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(*calls); n != 1 {
+		t.Errorf("attached %d time(s) over a record and its retry, want 1", n)
+	}
+	want := sbomEntry(t, first, "api").Referrer
+	if want == "" || sbomEntry(t, again, "api").Referrer != want {
+		t.Errorf("referrer %q then %q", want, sbomEntry(t, again, "api").Referrer)
 	}
 }

@@ -10,20 +10,20 @@ import (
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
-// The fixtures under testdata/coverage are real tool output from a two-package
+// The fixtures under testdata/cover are real tool output from a two-package
 // module (example.com/demo: a, b, cmd/server), made with go1.27:
 //
-//	unit.out           go test -covermode=atomic -coverprofile ./a ./b
-//	coverpkg.out       the same with -coverpkg=./... (blocks repeat per test binary)
-//	server.out         go tool covdata textfmt of a -cover server binary's run (cov1/)
-//	covdata-merged.out covdata textfmt of `go tool covdata merge` of the unit
+//	unit.profile           go test -covermode=atomic -coverprofile ./a ./b
+//	coverpkg.profile       the same with -coverpkg=./... (blocks repeat per test binary)
+//	server.profile         go tool covdata textfmt of a -cover server binary's run (cov1/)
+//	covdata-merged.profile covdata textfmt of `go tool covdata merge` of the unit
 //	                   tests' -test.gocoverdir output and cov1/
-//	shifted.out        the server rebuilt after a one-line shift in a/a.go (cov2/)
-//	set.out            go test -covermode=set -coverprofile ./a
+//	shifted.profile        the server rebuilt after a one-line shift in a/a.go (cov2/)
+//	set.profile            go test -covermode=set -coverprofile ./a
 
 func parseCov(t *testing.T, file string, lane testreport.Lane, opts ...func(*testreport.CoverageOptions)) *testreport.Coverage {
 	t.Helper()
-	f, err := os.Open("testdata/coverage/" + file)
+	f, err := os.Open("testdata/cover/" + file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +79,8 @@ func merge(t *testing.T, opts testreport.MergeOptions, docs ...*testreport.Cover
 // Phase 0, case 1: a unit profile and an instrumented server's textfmt output
 // name exactly the same blocks for the packages both cover.
 func TestMerge_IdenticalBlockSets(t *testing.T) {
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
-	server := parseCov(t, "server.out", testreport.LaneE2E)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
+	server := parseCov(t, "server.profile", testreport.LaneE2E)
 	ub, sb := blocks(unit), blocks(server)
 	shared := 0
 	for k, u := range ub {
@@ -106,10 +106,10 @@ func TestMerge_IdenticalBlockSets(t *testing.T) {
 // server's equals Go's own `covdata merge` of the same counters, block for
 // block and count for count.
 func TestMerge_UnionEqualsCovdataMerge(t *testing.T) {
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
-	server := parseCov(t, "server.out", testreport.LaneE2E)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
+	server := parseCov(t, "server.profile", testreport.LaneE2E)
 	got := blocks(merge(t, testreport.MergeOptions{}, unit, server))
-	want := blocks(parseCov(t, "covdata-merged.out", "merged"))
+	want := blocks(parseCov(t, "covdata-merged.profile", "merged"))
 	if len(got) != len(want) {
 		t.Fatalf("union has %d blocks, covdata merge %d", len(got), len(want))
 	}
@@ -123,15 +123,15 @@ func TestMerge_UnionEqualsCovdataMerge(t *testing.T) {
 // Phase 0, case 3: two builds of different source are refused, never averaged
 // (covdata merge itself accepts them and reports 72 statements for 36).
 func TestMerge_ShiftedBuildIsRefused(t *testing.T) {
-	server := parseCov(t, "server.out", testreport.LaneE2E)
-	shifted := parseCov(t, "shifted.out", testreport.LaneE2E)
+	server := parseCov(t, "server.profile", testreport.LaneE2E)
+	shifted := parseCov(t, "shifted.profile", testreport.LaneE2E)
 	_, err := testreport.Merge([]*testreport.Coverage{server, shifted}, testreport.MergeOptions{})
 	var sm *testreport.SourceMismatchError
 	if !errors.As(err, &sm) || !strings.Contains(sm.File, "a/a.go") {
 		t.Fatalf("shifted build: %v", err)
 	}
 	// The same happens against the unit lane.
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
 	if _, err := testreport.Merge([]*testreport.Coverage{unit, shifted}, testreport.MergeOptions{}); !errors.As(err, &sm) {
 		t.Errorf("shifted build vs unit lane: %v", err)
 	}
@@ -140,14 +140,14 @@ func TestMerge_ShiftedBuildIsRefused(t *testing.T) {
 // Phase 0, case 4: a -coverpkg profile repeats each block once per test
 // binary; parsing deduplicates it, summing the counts.
 func TestParseCoverage_CoverpkgDedupe(t *testing.T) {
-	raw, err := os.ReadFile("testdata/coverage/coverpkg.out")
+	raw, err := os.ReadFile("testdata/cover/coverpkg.profile")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if lines := strings.Count(string(raw), "\n") - 1; lines != 24 {
 		t.Fatalf("fixture has %d block lines", lines)
 	}
-	c := parseCov(t, "coverpkg.out", testreport.LaneUnit)
+	c := parseCov(t, "coverpkg.profile", testreport.LaneUnit)
 	b := blocks(c)
 	if len(b) != 12 {
 		t.Errorf("deduplicated to %d blocks, want 12 (a and b)", len(b))
@@ -156,7 +156,7 @@ func TestParseCoverage_CoverpkgDedupe(t *testing.T) {
 	if got := b["go:example.com/demo/a/a.go:5.2.5.11"].hits; got != 2 {
 		t.Errorf("a.Abs's first block: %d hits, want 2 (one from each test binary)", got)
 	}
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
 	if _, err := testreport.Merge([]*testreport.Coverage{c, unit}, testreport.MergeOptions{}); err == nil {
 		// unit and coverpkg are the same lane and the same source; fine.
 	} else {
@@ -198,13 +198,13 @@ func TestParseCoverage_Malformed(t *testing.T) {
 }
 
 func TestMerge_Refusals(t *testing.T) {
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
-	other := parseCov(t, "server.out", testreport.LaneE2E, func(o *testreport.CoverageOptions) { o.Tree = "tree2" })
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
+	other := parseCov(t, "server.profile", testreport.LaneE2E, func(o *testreport.CoverageOptions) { o.Tree = "tree2" })
 	var tm *testreport.TreeMismatchError
 	if _, err := testreport.Merge([]*testreport.Coverage{unit, other}, testreport.MergeOptions{}); !errors.As(err, &tm) {
 		t.Errorf("different trees: %v", err)
 	}
-	unknown := parseCov(t, "server.out", testreport.LaneE2E, func(o *testreport.CoverageOptions) { o.Tree = "" })
+	unknown := parseCov(t, "server.profile", testreport.LaneE2E, func(o *testreport.CoverageOptions) { o.Tree = "" })
 	if _, err := testreport.Merge([]*testreport.Coverage{unit, unknown}, testreport.MergeOptions{}); !errors.As(err, &tm) {
 		t.Errorf("a known and an unknown tree: %v", err)
 	}
@@ -212,8 +212,8 @@ func TestMerge_Refusals(t *testing.T) {
 	fp := func(v string) func(*testreport.CoverageOptions) {
 		return func(o *testreport.CoverageOptions) { o.BuildFingerprint = v }
 	}
-	a := parseCov(t, "unit.out", testreport.LaneUnit, fp("pkgfp-1"))
-	b := parseCov(t, "server.out", testreport.LaneE2E, fp("pkgfp-2"))
+	a := parseCov(t, "unit.profile", testreport.LaneUnit, fp("pkgfp-1"))
+	b := parseCov(t, "server.profile", testreport.LaneE2E, fp("pkgfp-2"))
 	var bm *testreport.BuildMismatchError
 	if _, err := testreport.Merge([]*testreport.Coverage{a, b}, testreport.MergeOptions{}); !errors.As(err, &bm) {
 		t.Errorf("two fingerprints for one package: %v", err)
@@ -233,7 +233,7 @@ func TestMerge_Refusals(t *testing.T) {
 	}
 
 	m := merge(t, testreport.MergeOptions{}, unit)
-	server := parseCov(t, "server.out", testreport.LaneE2E)
+	server := parseCov(t, "server.profile", testreport.LaneE2E)
 	both := merge(t, testreport.MergeOptions{}, unit, server)
 	var om *testreport.OverlapError
 	if _, err := testreport.Merge([]*testreport.Coverage{m, both}, testreport.MergeOptions{}); !errors.As(err, &om) {
@@ -244,8 +244,8 @@ func TestMerge_Refusals(t *testing.T) {
 // Two binaries built from one tree (an api and a worker sharing a package)
 // have different covmeta hashes but the same blocks: they merge.
 func TestMerge_TwoBinariesOfOneTreeMerge(t *testing.T) {
-	api := parseCov(t, "server.out", testreport.LaneE2E)
-	worker := parseCov(t, "server.out", testreport.LaneE2E)
+	api := parseCov(t, "server.profile", testreport.LaneE2E)
+	worker := parseCov(t, "server.profile", testreport.LaneE2E)
 	worker.Inputs[0].Digest = "sha256:worker"
 	m := merge(t, testreport.MergeOptions{}, api, worker)
 	if got := blocks(m)["go:example.com/demo/a/a.go:13.2.13.9"].hits; got != 4 {
@@ -254,8 +254,8 @@ func TestMerge_TwoBinariesOfOneTreeMerge(t *testing.T) {
 }
 
 func TestMerge_IdempotentOnDigest(t *testing.T) {
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
-	again := parseCov(t, "unit.out", testreport.LaneUnit)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
+	again := parseCov(t, "unit.profile", testreport.LaneUnit)
 	once := blocks(merge(t, testreport.MergeOptions{}, unit))
 	twice := merge(t, testreport.MergeOptions{}, unit, again)
 	if len(twice.Inputs) != 1 {
@@ -274,7 +274,7 @@ func TestMerge_IdempotentOnDigest(t *testing.T) {
 }
 
 func TestMerge_SetModeIsBoolean(t *testing.T) {
-	set := parseCov(t, "set.out", testreport.LaneUnit)
+	set := parseCov(t, "set.profile", testreport.LaneUnit)
 	if set.Lanes[0].Mode != testreport.ModeSet || set.Inputs[0].Mode != "set" {
 		t.Fatalf("set lane: %+v %+v", set.Lanes, set.Inputs)
 	}
@@ -286,7 +286,7 @@ func TestMerge_SetModeIsBoolean(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a partial block set of a/a.go merged: %+v", m.Files)
 	}
-	server := parseCov(t, "server.out", testreport.LaneUnit) // same lane, count mode
+	server := parseCov(t, "server.profile", testreport.LaneUnit) // same lane, count mode
 	m = merge(t, testreport.MergeOptions{}, set, server)
 	if m.Lanes[0].Mode != testreport.ModeSet {
 		t.Errorf("a lane a set input joined is a set lane: %+v", m.Lanes)
@@ -346,7 +346,7 @@ func TestMerge_PathsAndExclusions(t *testing.T) {
 // file, and a line-granular report of it is a granularity mismatch rather
 // than a second file.
 func TestMerge_ImportPathAndRepoPathAreOneFile(t *testing.T) {
-	byImport := parseCov(t, "unit.out", testreport.LaneUnit)
+	byImport := parseCov(t, "unit.profile", testreport.LaneUnit)
 	byPath, err := parseCovString(t, "mode: atomic\n/repo/a/a.go:13.2,13.9 1 4\n/repo/a/a.go:5.2,5.11 1 0\n/repo/a/a.go:6.3,7.1 1 0\n/repo/a/a.go:8.2,8.10 1 0\n/repo/a/a.go:15.3,15.12 1 0\n/repo/a/a.go:17.3,17.11 1 0\n/repo/a/a.go:19.2,19.10 1 0\n/repo/a/a.go:23.24,23.41 1 0\n",
 		testreport.CoverageOptions{Lane: testreport.LaneE2E, Tree: "tree1", Root: "/repo"})
 	if err != nil {
@@ -418,8 +418,8 @@ func TestMatchGlob(t *testing.T) {
 }
 
 func TestViews_LanesCombinedOnlyE2E(t *testing.T) {
-	unit := parseCov(t, "unit.out", testreport.LaneUnit)
-	server := parseCov(t, "server.out", testreport.LaneE2E)
+	unit := parseCov(t, "unit.profile", testreport.LaneUnit)
+	server := parseCov(t, "server.profile", testreport.LaneE2E)
 	m := merge(t, testreport.MergeOptions{ModulePath: "example.com/demo"}, unit, server)
 	s := m.Summary()
 	// unit instruments a and b (12 statements, 3 covered); the server also
@@ -463,7 +463,7 @@ func TestViews_LanesCombinedOnlyE2E(t *testing.T) {
 	if d.Available || d.Reason != "no report for base" {
 		t.Errorf("delta without base %+v", d)
 	}
-	base := merge(t, testreport.MergeOptions{}, parseCov(t, "server.out", testreport.LaneE2E))
+	base := merge(t, testreport.MergeOptions{}, parseCov(t, "server.profile", testreport.LaneE2E))
 	d = testreport.Delta(m, base)
 	if !d.Available || d.Value != 23.1 {
 		t.Errorf("delta %+v (69.2 - 46.2)", d)

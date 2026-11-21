@@ -235,6 +235,39 @@ func TestCollectHostPullAndExitFlush(t *testing.T) {
 	}
 }
 
+// A workload name is joined into directories a collect removes and rewrites,
+// so a rendered env naming a workload "../../keep" must not reach outside the
+// run: the workload fails, is never pulled, and nothing outside is touched.
+func TestCollectRefusesAWorkloadNameThatIsNotOnePathElement(t *testing.T) {
+	f := newFixture(t)
+	srv := &coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.300.9000", "LIVE")}
+	addr := srv.start(t)
+	keep := filepath.Join(f.run, "keep") // where e2e/covdata/../../keep lands
+	writeFiles(t, keep, "precious")
+
+	for _, name := range []string{"../../keep", "a/b", `a\b`, "..", ".", ""} {
+		doc := Collect(context.Background(), f.options(Target{
+			Workload: name, Runtime: "host",
+			Host: &HostTarget{PullAddr: addr, CoverDir: filepath.Join(f.root, "cover")},
+		}))
+		if wl := doc.Workloads[0]; wl.State != StateFailed || !strings.Contains(wl.Reason, "single path element") {
+			t.Errorf("workload %q: state %s reason %q, want failed as not a single path element", name, wl.State, wl.Reason)
+		}
+		if doc.Run != "" {
+			t.Errorf("workload %q: recorded run %q", name, doc.Run)
+		}
+	}
+	if q := srv.got(); len(q) != 0 {
+		t.Errorf("pulled %v for workloads with unsafe names", q)
+	}
+	if got := dirNames(t, keep); !slices.Equal(got, []string{"precious"}) {
+		t.Errorf("dir outside the run's coverage now holds %v", got)
+	}
+	if err := validateWorkloadName("api-server_2"); err != nil {
+		t.Errorf("a plain workload name was refused: %v", err)
+	}
+}
+
 // --reset pulls with ?reset=1 and discards what it got, and fences off the
 // counters flushed before it: the next collect leaves them out. No run is
 // created for a reset.

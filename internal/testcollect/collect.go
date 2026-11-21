@@ -201,7 +201,13 @@ func Collect(ctx context.Context, opts Options) *Document {
 	var writes []pending
 	for _, t := range opts.Targets {
 		r := WorkloadResult{Name: t.Workload, Runtime: t.Runtime}
+		// The name becomes a directory under the run and under
+		// .forge/tests/covdata, which a collect removes and rewrites, so a
+		// name that is not one plain path element is never touched.
+		nameErr := validateWorkloadName(t.Workload)
 		switch {
+		case nameErr != nil:
+			r.State, r.Reason = StateFailed, nameErr.Error()
 		case t.Coverage != "":
 			r.State, r.Coverage = StateUnavailable, t.Coverage
 			if t.Coverage == CoverageNotInstrumented {
@@ -253,6 +259,25 @@ func Collect(ctx context.Context, opts Options) *Document {
 		doc.Suggested = append(doc.Suggested, "forge test report "+doc.Run)
 	}
 	return stamp(doc, code, msg)
+}
+
+// validateWorkloadName refuses a workload name that is not exactly one plain
+// path element: empty, ".", "..", or holding a separator (either OS's), a NUL
+// or a volume name. Collect joins the name into paths it removes and
+// rewrites, so a rendered env must not be able to point them elsewhere.
+func validateWorkloadName(name string) error {
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\:`+"\x00") ||
+		filepath.Base(name) != name || filepath.VolumeName(name) != "" {
+		return fmt.Errorf("workload name %q is not a single path element; not collected", name)
+	}
+	return nil
+}
+
+// within reports whether p is dir or lies beneath it.
+func within(dir, p string) bool {
+	r, err := filepath.Rel(dir, p)
+	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator)) && !filepath.IsAbs(r)
 }
 
 // pending is a workload whose builds are waiting to be written: the index of
@@ -553,6 +578,11 @@ func recordRun(ctx context.Context, opts Options, doc *Document, run string, wri
 		r := &doc.Workloads[p.idx]
 		relDir := testreport.LaneCoverDataDir + "/" + r.Name
 		dir := filepath.Join(laneDir, filepath.FromSlash(relDir))
+		covRoot := filepath.Join(laneDir, filepath.FromSlash(testreport.LaneCoverDataDir))
+		if err := validateWorkloadName(r.Name); err != nil || dir == covRoot || !within(covRoot, dir) {
+			r.State, r.Reason = StateFailed, fmt.Sprintf("workload name %q would write outside the run's coverage directory; not collected", r.Name)
+			continue
+		}
 		// The pulls are cumulative and the flushed files are re-read
 		// whole, so a collect replaces the workload's previous one.
 		err := os.RemoveAll(dir)

@@ -101,6 +101,33 @@ func TestLoginIsReadBackByCredential(t *testing.T) {
 	}
 }
 
+// A missing configured helper may not turn a helper-backed login into a
+// write to config.json, even though file storage is allowed for file-backed
+// configurations. The existing file must be unchanged on failure.
+func TestLoginDoesNotFallBackWhenConfiguredHelperIsMissing(t *testing.T) {
+	const host = "registry.example.com"
+	for _, tc := range []struct{ name, config string }{
+		{"global store", `{"credsStore":"forge-test-missing"}`},
+		{"registry helper", `{"credHelpers":{"registry.example.com":"forge-test-missing"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Use an empty PATH so a machine-local helper cannot affect the test.
+			t.Setenv("PATH", t.TempDir())
+			if err := LoginTo(context.Background(), path, host, "forge", "dummy-test-value"); err == nil {
+				t.Fatal("login succeeded without the configured helper")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != tc.config {
+				t.Fatalf("failed helper login changed config.json (read error: %v)", err)
+			}
+		})
+	}
+}
+
 // A host pinned to config.json by an empty credHelpers entry (the anonymous
 // deploy's throwaway config) is written to the file, never to the
 // credsStore, which is what Credential then reads.

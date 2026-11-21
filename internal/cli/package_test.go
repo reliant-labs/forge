@@ -37,7 +37,6 @@ func TestRunPackageNew(t *testing.T) {
 	// Write minimal forge.yaml
 	configContent := `name: testproject
 module_path: example.com/testproject
-version: "0.1.0"
 `
 	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
@@ -149,7 +148,6 @@ func TestRunPackageNewClientKind(t *testing.T) {
 
 	configContent := `name: testproject
 module_path: example.com/testproject
-version: "0.1.0"
 `
 	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)
@@ -449,7 +447,6 @@ func TestRunPackageNewScaffoldsObserveChainSeam(t *testing.T) {
 	}
 	configContent := `name: testproject
 module_path: example.com/testproject
-version: "0.1.0"
 `
 	if err := os.WriteFile("forge.yaml", []byte(configContent), 0644); err != nil {
 		t.Fatal(err)

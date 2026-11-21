@@ -2,6 +2,7 @@ package lint
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -108,7 +109,9 @@ exit 99
 			if err != nil {
 				t.Fatal(err)
 			}
-			outcomes := collectLintOutcomesFrom(&lintRunCtx{ctx: context.Background(), cfg: cfg, cwd: root, scope: scope},
+			// --install: scope must narrow which frontends an opted-in
+			// install touches, not just which findings are reported.
+			outcomes := collectLintOutcomesFrom(&lintRunCtx{ctx: context.Background(), cfg: cfg, cwd: root, scope: scope, install: true, installOut: io.Discard},
 				[]linterStep{findStep(t, "frontend typecheck")})
 			log := readLog(t, calls)
 			for _, name := range []string{"web", "admin"} {

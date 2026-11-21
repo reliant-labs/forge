@@ -48,8 +48,6 @@ func withTempProject(t *testing.T, forgeYAML string) string {
 const minimalForgeYAML = `# project manifest — hand-edited
 name: testproj
 module_path: example.com/testproj
-version: 0.1.0
-hot_reload: false
 contracts:
   strict: true
   exclude:

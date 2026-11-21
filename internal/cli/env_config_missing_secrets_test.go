@@ -120,3 +120,80 @@ func TestEnvExecRefusesMissingSecrets(t *testing.T) {
 		t.Fatalf("the child must not run: stdout %q", out)
 	}
 }
+
+func TestEnvConfigMasksUnreferencedProviderValues(t *testing.T) {
+	testkit.Slow(t, "evaluates a KCL project natively")
+	withKCLFixture(t, `{"output":{"secret_provider":{"type":"file","path":"secrets.yaml"},"workloads":[
+		{"name":"compose-app","kind":"service","runtime":{"type":"compose","env_file":"local.env"},"spec":{"kind":"service"}},
+		{"name":"host-app","kind":"service","runtime":{"type":"host"},"spec":{"kind":"service","env":[{"name":"ALIAS","value":"dummy-alias-value"},{"name":"PUBLIC","value":"visible"}]}}
+	]}}`)
+	if err := os.WriteFile("secrets.yaml", []byte("UNREFERENCED: dummy-provider-value\nORIGINAL: dummy-alias-value\nOVERRIDDEN: dummy-replaced-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("local.env", []byte("OVERRIDDEN=public-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	table, _, err := runEnvConfigSplit(t, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(table, "dummy-provider-value") || strings.Contains(table, "dummy-alias-value") {
+		t.Error("default table exposed a value present in the secret store")
+	}
+	if !strings.Contains(table, "public-value") || !strings.Contains(table, "visible") {
+		t.Error("default table hid public values")
+	}
+	shown, _, err := runEnvConfigSplit(t, "dev", "--show-secrets")
+	if err != nil || !strings.Contains(shown, "dummy-provider-value") || !strings.Contains(shown, "dummy-alias-value") {
+		t.Fatalf("--show-secrets did not preserve the opt-in display (err %v)", err)
+	}
+	stdout, _, err := runEnvConfigSplit(t, "dev", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report envConfigReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"compose-app": "ORIGINAL UNREFERENCED", "host-app": "ALIAS"}
+	if len(report.Workloads) != len(want) {
+		t.Fatalf("got %d workloads, want %d", len(report.Workloads), len(want))
+	}
+	for _, row := range report.Workloads {
+		if got := strings.Join(row.SecretVars, " "); got != want[row.Name] {
+			t.Errorf("%s: secret_vars %q, want %q", row.Name, got, want[row.Name])
+		}
+	}
+}
+
+// A readback must not put a secret in a terminal or an agent's transcript
+// (forge report a7cfb588): the table masks a secret-sourced value unless
+// --show-secrets is given, and --json carries it and names it in secret_vars.
+func TestEnvConfigMasksSecretValuesInTheTable(t *testing.T) {
+	testkit.Slow(t, "evaluates a KCL project natively")
+	withMissingSecretFixture(t)
+
+	table, _, err := runEnvConfigSplit(t, "dev")
+	if err != nil {
+		t.Fatalf("table view: %v", err)
+	}
+	if strings.Contains(table, "local-secret") || !strings.Contains(table, "<secret, 12 bytes>") || !strings.Contains(table, "debug") {
+		t.Errorf("the table must mask TOKEN and show LOG_LEVEL:\n%s", table)
+	}
+	shown, _, err := runEnvConfigSplit(t, "dev", "--show-secrets")
+	if err != nil || !strings.Contains(shown, "local-secret") {
+		t.Errorf("--show-secrets must print the value (err %v):\n%s", err, shown)
+	}
+	stdout, _, err := runEnvConfigSplit(t, "dev", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report envConfigReport
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	api := report.Workloads[0]
+	if api.Env["TOKEN"] != "local-secret" || len(api.SecretVars) != 1 || api.SecretVars[0] != "TOKEN" {
+		t.Errorf("--json must carry the value and name it in secret_vars: env %v, secret_vars %v", api.Env, api.SecretVars)
+	}
+}

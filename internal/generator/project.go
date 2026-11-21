@@ -119,16 +119,13 @@ type ProjectGenerator struct {
 	// pipeline (generateCIFiles) without rendering a half-born project.
 	hostedEnvs []string
 
-	// ConnectMajor is the connect-go major the scaffold targets. The zero
-	// value means "the project's own": the major treeDir()'s go.mod selects
-	// (internal/connectmajor), which is v1 for a fresh project and the
-	// adopted module's choice for `--in-place`. A caller that is about to
-	// write a v2 go.mod sets it explicitly.
+	// ConnectMajor is the explicit choice for a new service scaffold, before
+	// its go.mod exists. Zero keeps the choice in the project's own go.mod.
 	ConnectMajor connectmajor.Major
 }
 
-// connectMajor resolves ConnectMajor: the explicit choice, else the major
-// the project's go.mod selects (v1 when there is none).
+// connectMajor uses the explicit scaffold choice when set; otherwise it
+// reads the adopted project's go.mod and falls back to v1 without one.
 func (g *ProjectGenerator) connectMajor() connectmajor.Major {
 	if g.ConnectMajor != 0 {
 		return g.ConnectMajor

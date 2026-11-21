@@ -3,6 +3,7 @@ package audit
 import (
 	"encoding/json"
 	"maps"
+	"path/filepath"
 	"slices"
 	"sort"
 	"testing"
@@ -127,6 +128,34 @@ func TestReportJSON_HasSummaryBesideTheExistingKeys(t *testing.T) {
 	if got := per["unscoped_auth"].(map[string]any)["findings"]; got != 0.0 {
 		t.Errorf("per_category.unscoped_auth.findings = %v, want 0", got)
 	}
+}
+
+func TestSummarize_Lockfiles(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		files []string
+		want  int
+	}{
+		{name: "no locks"},
+		{name: "single manager", files: []string{"pnpm-lock.yaml"}},
+		{name: "mixed managers", files: []string{"pnpm-lock.yaml", "package-lock.json", "web/yarn.lock"}, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cat := auditLockfiles(writeLockfileTree(t, tc.files...))
+			s := summarize(map[string]audittype.Category{"lockfiles": cat})
+			got := s.PerCategory["lockfiles"].Findings
+			if got == nil || *got != tc.want || s.Findings != tc.want {
+				t.Fatalf("findings = %v, total = %d, want %d", deref(got), s.Findings, tc.want)
+			}
+		})
+	}
+	t.Run("incomplete scan", func(t *testing.T) {
+		cat := auditLockfiles(filepath.Join(t.TempDir(), "missing"))
+		s := summarize(map[string]audittype.Category{"lockfiles": cat})
+		if s.PerCategory["lockfiles"].Findings != nil || cat.Status != audittype.StatusWarn {
+			t.Fatalf("incomplete scan must warn with unknown findings: %+v", s)
+		}
+	})
 }
 
 func ptr(n int) *int { return &n }

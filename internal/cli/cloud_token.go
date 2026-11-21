@@ -383,8 +383,15 @@ func (r *personSessionRefusal) ExitCode() int { return exitNeedsHuman }
 
 func (r *personSessionRefusal) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "the control plane at %s does not let a CLI login (`forge login`) %s access tokens: "+
-		"a token a CLI login minted would outlive revoking the login.\n", r.err.Endpoint, r.action)
+	if strings.Contains(r.err.Message, "machine credential") {
+		// The same refusal, for a CI or agent token (control-plane#3209):
+		// a machine credential never administers machine credentials.
+		fmt.Fprintf(&b, "the control plane at %s does not let a machine token (a CI or agent credential) %s access tokens: "+
+			"a token may not mint or manage tokens.\n", r.err.Endpoint, r.action)
+	} else {
+		fmt.Fprintf(&b, "the control plane at %s does not let a CLI login (`forge login`) %s access tokens: "+
+			"a token a CLI login minted would outlive revoking the login.\n", r.err.Endpoint, r.action)
+	}
 	where := "in the web app's Settings → API tokens"
 	if u := cloud.TokenSettingsURL(r.err.Endpoint); u != "" {
 		where = "in the web app: " + u + " (Settings → API tokens)"

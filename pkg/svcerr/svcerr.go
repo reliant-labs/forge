@@ -435,6 +435,12 @@ func ToConnect(err error) *connect.Error {
 //
 // It is identical to ToConnect but returns error so it composes with
 // `return ..., err`-style handler signatures. Wrap(nil) returns nil.
+//
+// In a connect-go v2 project the result is still a v1 *connect.Error.
+// [InterceptorV2] puts it on the wire exactly as a v2 error, but in process
+// connectv2.CodeOf reads it as CodeUnknown and errors.As finds no
+// *connectv2.Error: read it with [CodeV2], [ToConnectV2] and [MetaOf], which
+// understand either major.
 func Wrap(err error) error {
 	ce := ToConnect(err)
 	if ce == nil {
@@ -850,6 +856,9 @@ func IsClassified(err error) bool {
 // WrapOr(nil, _) is nil. A nil fallback is treated as [ErrInternal]. An
 // unclassified fallback is redacted like any other unrecognised error: the
 // client reads [InternalMessage].
+//
+// Like [Wrap], it returns a v1 *connect.Error in a connect-go v2 project too;
+// read it in process with [CodeV2], [ToConnectV2] and [MetaOf].
 func WrapOr(err, fallback error) error {
 	if err == nil {
 		return nil

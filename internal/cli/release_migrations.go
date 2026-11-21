@@ -510,6 +510,11 @@ func checkDeployMigrations(ctx context.Context, out io.Writer, projectDir, env, 
 		return nil
 	}
 	if rel.Migrations == nil {
+		if !projectHasMigrations(projectDir) {
+			// Nothing to record: a release of a project with no
+			// migrations (a static site) records none by design.
+			return nil
+		}
 		fmt.Fprintf(out, "[deploy] note: release %s records no migrations (cut before forge recorded them), so its migrations were not checked against what %s has applied\n", version, env)
 		return nil
 	}
@@ -542,4 +547,14 @@ func ledgerLocation(l envLedger) string {
 		return l.Bindings.Location()
 	}
 	return "this env's ledger"
+}
+
+// projectHasMigrations reports whether the project keeps a migrations
+// directory. A release of one that does not (a static site, a project with no
+// database) records no migrations and no rollback-floor declarations because
+// there are none, whatever forge cut it, so "cut before forge recorded them"
+// would be untrue there.
+func projectHasMigrations(projectDir string) bool {
+	fi, err := os.Stat(config.MigrationsPathIn(projectDir))
+	return err == nil && fi.IsDir()
 }

@@ -40,7 +40,7 @@ A site forge started (`forge project new --kind site`) mirrors every `console.*`
 grep '\[browser:error\]' .forge/logs/dev/*.log
 ```
 
-An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` and serves the dev-server receiver; `forge skill load debug` covers both halves.
+An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime/devlog` and serves the dev-server receiver; `forge skill load debug` covers both halves.
 
 ## Build it as a static export
 

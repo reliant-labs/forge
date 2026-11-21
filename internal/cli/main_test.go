@@ -49,6 +49,10 @@ func TestMain(m *testing.M) {
 	}
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
+	// Nor does a merge driver a test writes reach the forge on the
+	// developer's PATH when its own binary is gone: the launcher clause
+	// names an entry point no machine has. A test of the clause sets its own.
+	driverLaunchers = func(string) [][]string { return [][]string{{"forge-test-no-such-launcher"}} }
 	// This binary serves `forge protoc-gen-forge` (below), so the root may
 	// register the self-exec descriptor extractor (descriptorSelfExecAllowed).
 	testBinaryServesForge = true
@@ -68,6 +72,11 @@ func TestMain(m *testing.M) {
 	// readable" is the CI answer, so it is the hermetic default; a test that
 	// wants a describe sets one (cluster_connect_test.go).
 	gkeDescribeOf = func(gkeContext) (gkeDescription, bool) { return gkeDescription{}, false }
+	// Nor does `forge project upgrade` read the developer's module cache
+	// for the pinned forge's templates (upgrade_drift_range.go): whether a
+	// fixture's rows are listed must not depend on which forge releases this
+	// machine has downloaded. A test of the range filter builds its own.
+	forgeModuleSource = func(string) (string, string) { return "", "unit tests do not read the module cache" }
 	// Nor does any test touch the host's k3d, kubectl, or docker. These
 	// were real shell-outs from -short unit tests, and this box is shared:
 	// `forge cluster up`'s test ran `kubectl config use-context
@@ -85,6 +94,17 @@ func TestMain(m *testing.M) {
 		return nil, errors.New("unit tests do not query a container registry")
 	}
 	buildxAvailable = func(context.Context) bool { return false }
+	// Nor does any release cut install or run syft: the clean-CI answer is
+	// "no SBOM generator", which records each artifact's SBOM as unavailable
+	// and cuts. A test of SBOM generation states the tool and fakes syft
+	// (build_sbom_test.go).
+	sbomTool = func(context.Context) (string, string, error) {
+		return "", "", errors.New("unit tests do not install syft")
+	}
+	sbomCacheDir = func() string { return "" }
+	// Nor does any cut push an SBOM referrer to a registry: a test of the
+	// attach points it at an in-process one (build_sbom_referrer_test.go).
+	sbomReferrerAttach = nil
 	// Nor does any build ask a registry's token realm about push access: the
 	// clean-CI answer is "not verified", which proceeds. A test of the
 	// preflight states the realm's answer (registry_push_preflight_test.go).

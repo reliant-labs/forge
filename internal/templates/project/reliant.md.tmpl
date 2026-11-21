@@ -30,7 +30,7 @@ Skills come from the binary, so they match the forge you run. Load one before gu
 {{.CLI}} obs check <env> --wait --json   # after a deploy: proves the release good, or names what regressed
 ```
 
-`{{.CLI}} skill list` is the catalog. `{{.CLI}} project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `{{.CLI}} project capabilities` lists every verb; `{{.CLI}} project benefits` lists what this project gets without setup. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
+`{{.CLI}} skill list` is the catalog. `{{.CLI}} project libraries <pkg>` prints a forge library's whole API: never search the filesystem for forge's source. `{{.CLI}} project capabilities` lists every verb; `{{.CLI}} project benefits` lists what this project gets without setup. `{{.CLI}} why` gives the reasons behind them. A skill that disagrees with this project is a forge bug: trust the project and report it (below).
 
 ## Critical rules
 
@@ -87,7 +87,7 @@ user asks; adopting a service means removing its marker, one service per PR
 ## Proto and schema rules
 
 - An rpc is CRUD only when unary and named exactly `Create<E>`/`Get<E>`/`Update<E>`/`Delete<E>`/`List<Es>` for an entity (a table AND a message). Everything else is custom and yours. A CRUD-named rpc that does more (`CreateTask` also wires dependencies) gets `// forge:custom` above it; never rename one to dodge detection (`proto`).
-- Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete. The old proto entity annotations are retired and ignored: delete leftovers. Fields clients must not write: `db/write-policy`.
+- Behavior comes from real columns: `created_at`+`updated_at` ⇒ managed timestamps, `deleted_at` ⇒ soft delete. The old proto entity annotations are removed (a proto carrying one no longer compiles): delete leftovers. Fields clients must not write: `db/write-policy`.
 - List filter fields **must** be `optional` (otherwise they silently no-op); one service per `.proto` file; shared messages in `proto/shared/v1/types.proto`, never service-to-service imports. `{{.CLI}} lint --conventions` enforces these.
 
 ## The scaffolded frontend is starter code
@@ -154,7 +154,7 @@ A site forge started (`{{.CLI}} project new --kind site`) mirrors every `console
 grep '\[browser:error\]' .forge/logs/dev/*.log
 ```
 
-An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime` and serves the dev-server receiver; `{{.CLI}} skill load debug` covers both halves.
+An uncaught `TypeError` produces no `console` call anywhere in your source, so grepping the code finds nothing while the stack trace sits in that file. An adopted app has the same sink once it calls `installDevLogging()` from `@reliantlabs/forge-web-runtime/devlog` and serves the dev-server receiver; `{{.CLI}} skill load debug` covers both halves.
 
 ## Build it as a static export
 

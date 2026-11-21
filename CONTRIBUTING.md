@@ -124,6 +124,20 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org)
 Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `build`.
 The scope is the package or area you touched (e.g. `api`, `db`, `deploy`).
 
+The PR title is the CHANGELOG entry (`scripts/changelog-release.sh` writes
+CHANGELOG.md at release time; a PR never edits it). When a consumer's agent
+must act on your change, say so in a commit trailer, which the release renders
+under the entry and `forge project upgrade` shows the agent running an upgrade
+across it:
+
+```
+Agent-Instructions: <an imperative step for the agent upgrading across this change>
+Generated-Change: <generated file name or glob>: <what its output now does>
+```
+
+The `migration-upgrade` skill (`forge skill load migration-upgrade`) has the
+contract.
+
 The pre-commit `commit-msg` hook enforces this via
 [commitlint](https://commitlint.js.org/). Install hooks with
 `pre-commit install --hook-type commit-msg` to catch violations locally.

@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 // Every platform forge supports has a pinned checksum for every engine, so
 // "no binary for this platform" can only mean upstream stopped publishing it.
 func TestSupervisedReleasesPinEveryPlatform(t *testing.T) {
-	for _, rel := range []binaryRelease{natsRelease, temporalRelease, mailpitRelease} {
+	for _, rel := range []binaryRelease{natsRelease, temporalRelease, mailpitRelease, otelcolRelease} {
 		for _, goos := range []string{"linux", "darwin", "windows"} {
 			for _, goarch := range []string{"amd64", "arm64"} {
 				asset, ok := rel.assetFor(goos, goarch)
@@ -210,6 +211,32 @@ func TestTemporalArgs(t *testing.T) {
 	}
 	if got := temporalNamespaces(Spec{}); !slices.Equal(got, []string{"default"}) {
 		t.Errorf("no declared namespace should wait on default, got %v", got)
+	}
+	if slices.Contains(args, "--metrics-port") {
+		t.Errorf("no declared metrics port should leave the server's own choice: %v", args)
+	}
+	spec.TemporalMetricsPort = 21063
+	args = temporalArgs(spec, "/d")
+	if i := slices.Index(args, "--metrics-port"); i < 0 || i+1 >= len(args) || args[i+1] != "21063" {
+		t.Errorf("a declared metrics port should be passed as --metrics-port 21063: %v", args)
+	}
+}
+
+func TestTemporalDriftNamesAnUnservedMetricsPort(t *testing.T) {
+	if msg := temporalDrift(Spec{}); msg != "" {
+		t.Errorf("no declared metrics port is no drift, got %q", msg)
+	}
+	port := freeTCPPort(t)
+	if msg := temporalDrift(Spec{TemporalMetricsPort: port}); !strings.Contains(msg, strconv.Itoa(port)) {
+		t.Errorf("an unserved declared metrics port should be named, got %q", msg)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		t.Skipf("cannot listen on the freed port: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	if msg := temporalDrift(Spec{TemporalMetricsPort: port}); msg != "" {
+		t.Errorf("a served metrics port is no drift, got %q", msg)
 	}
 }
 

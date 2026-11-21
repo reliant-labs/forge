@@ -183,7 +183,8 @@ a Node server, with nothing in `out/` to publish. The error names the
 frontend, the env and both fixes. `forge lint --static-export` runs offline and
 reports, each with file:line, what `next build` would refuse for an export: a
 `[id]` route without `generateStaticParams`, server actions, `next/headers`,
-next/image without `unoptimized`. It also warns on what the export drops
+next/image without `unoptimized`, `cacheComponents: true` (create-next-app's
+Next.js 16 default). It also warns on what the export drops
 silently, such as middleware and rewrites. The real `next build` in CI stays
 authoritative. The lane only tells you sooner.
 

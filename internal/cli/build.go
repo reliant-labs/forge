@@ -97,7 +97,7 @@ func appendNamedBuildContexts(dockerArgs []string, contexts map[string]config.Bu
 			value = c.SourceDir
 		}
 		dockerArgs = append(dockerArgs, "--build-context", name+"="+value)
-		fmt.Printf("[build] docker build-context %s=%s\n", name, value)
+		fmt.Printf("[build] docker build-context %s\n", withholdFlagValue("--build-context", name+"="+value))
 	}
 	return dockerArgs
 }
@@ -494,7 +494,8 @@ type buildResult struct {
 	// goTargets are the exact recipes compiled into this invocation's project image.
 	goTargets []goBuildTarget
 	// upToDate marks a ShellBuild whose declared inputs were unchanged and
-	// whose last pushed image still stands, so its command did not run.
+	// whose last pushed image still stands, so its command did not run — or
+	// a DockerBuild whose --release build reused an earlier release's image.
 	upToDate bool
 	// variant is the build variant this image IS ("cover": built from the
 	// Dockerfile's cover stage), empty for the shared build; coverDigest the
@@ -502,6 +503,11 @@ type buildResult struct {
 	// build. Both are persisted to the build state and recorded by the cut.
 	variant     string
 	coverDigest string
+	// releaseInputsDigest and carriedFrom are a DockerBuild's release
+	// evidence (build_docker_release_reuse.go): its declared inputs as a
+	// release compares them, and the release whose image it reused ("" when
+	// it built). persistImageBuildStates records them for the cut.
+	releaseInputsDigest, carriedFrom string
 }
 
 // prepareBuild runs the three setup steps every build needs before it can
@@ -1708,13 +1714,18 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 			repository = opts.pushPlan.repositoryFor(r.image)
 		}
 		state := buildtarget.State{
-			Service:     r.image,
-			Image:       repository,
-			Tag:         r.tag,
-			PushedAt:    nowRFC3339(),
-			Digest:      r.digest,
-			Platforms:   r.platforms,
-			Source:      r.source,
+			Service:   r.image,
+			Image:     repository,
+			Tag:       r.tag,
+			PushedAt:  nowRFC3339(),
+			Digest:    r.digest,
+			Platforms: r.platforms,
+			Source:    r.source,
+			// A DockerBuild's declared inputs, for the next release to
+			// compare, and the release whose image it reused.
+			ReleaseInputsDigest: r.releaseInputsDigest,
+			CarriedFrom:         r.carriedFrom,
+			// A cover-built image, or the cover variant pushed beside it.
 			Variant:     r.variant,
 			CoverDigest: r.coverDigest,
 		}
@@ -1742,6 +1753,11 @@ func persistImageBuildStates(opts buildOptions, succeeded []buildResult) {
 func finishReleaseArtifacts(ctx context.Context, opts buildOptions, entities *KCLEntities, pushed []string) error {
 	if err := buildHostedStaticSites(ctx, projectDirForKCL(), entities, opts); err != nil {
 		return err
+	}
+	if opts.release == "" && !opts.plan {
+		// A --release build refuses a declared output that matched nothing
+		// (at the cut); a plain build says so and carries on.
+		warnMissingDeclaredOutputs(ctx, os.Stdout, projectDirForKCL(), entities)
 	}
 	if opts.release != "" {
 		// Before the cut: a dashboard that does not validate must not leave a
@@ -1823,7 +1839,8 @@ func buildBundlePins(projectDir, env string) release.BundlePins {
 //   - OCI images, from the build-state digests (harvestReleaseArtifacts);
 //   - npm packages, from what `npm pack` would publish;
 //   - Go modules, from the repo's own go.mod/go.sum pair;
-//   - files, from the build-only binaries this build emitted.
+//   - files, from the build-only binaries this build emitted and the
+//     outputs each build declares (harvestDeclaredOutputs).
 //
 // Images are merged FIRST and never overwritten (see mergeReleaseArtifacts), so
 // adding the other kinds cannot perturb the digests an env deploys.
@@ -1859,6 +1876,10 @@ type releaseCutOutcome struct {
 	Ledger string
 	// Images, Packages and Files count the artifacts by kind.
 	Images, Packages, Files int
+	// Vulns is the advisory scan of the cut's SBOMs (vuln_gate.go); nil
+	// when nothing was judged (no SBOMs by policy, vuln_gate off, a
+	// claimable deploy).
+	Vulns *cutVulnVerdict
 }
 
 // printReleaseCut is the text rendering of a cut.
@@ -1873,6 +1894,7 @@ func printReleaseCut(out io.Writer, cut releaseCutOutcome) {
 		fmt.Fprintf(out, "[build]   Ledger: %s\n", cut.Ledger)
 		fmt.Fprintf(out, "[build]   Deploy:  forge env deploy <env> %s\n", cut.Release.Version)
 	}
+	printCutVulnVerdict(out, cut.Vulns)
 }
 
 // cutReleaseFromBuildState is the one CUT path: harvest what the last build
@@ -1892,6 +1914,16 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	packages := mergeReleaseArtifacts(artifacts, harvestNPMArtifacts(ctx, projectDir))
 	packages += mergeReleaseArtifacts(artifacts, harvestGoModuleArtifacts(projectDir))
 	files := mergeReleaseArtifacts(artifacts, harvestFileArtifacts(projectDir, outputDir, entities))
+	// The files each build's `outputs` declare. A declared output that
+	// matched nothing refuses the cut: the author said the release ships it.
+	declared, missing, err := harvestDeclaredOutputs(ctx, projectDir, entities)
+	if err != nil {
+		return releaseCutOutcome{}, fmt.Errorf("--release %s: %w", version, err)
+	}
+	if len(missing) > 0 {
+		return releaseCutOutcome{}, errMissingDeclaredOutputs(version, missing)
+	}
+	files += mergeReleaseArtifacts(artifacts, declared)
 	// A hosted env's backends name images the build state may not hold (CI
 	// pushed them). Record each declared image so the release covers what
 	// the hosted deploy ships — keyed by the address under the platform's
@@ -1988,15 +2020,20 @@ func cutReleaseFromBuildState(ctx context.Context, projectDir, env, version, out
 	// for them. Never fails the cut (build_sbom.go).
 	generateReleaseSBOMs(ctx, sbomCut{
 		ProjectDir: projectDir, Env: env, Version: version, OutputDir: outputDir,
-		Entities: entities, Built: built, NoSBOM: opts.noSBOM,
+		Entities: entities, Built: built, NoSBOM: opts.noSBOM, CreatedAt: rel.CreatedAt,
 	}, rel.Artifacts, os.Stderr)
+	// The advisory verdict on those SBOMs, printed under the release line.
+	// Never fails the cut (vuln_gate.go).
+	vulns := scanReleaseAtCut(ctx, cutVulnInput{
+		ProjectDir: projectDir, Env: env, Entities: entities, Release: &rel, Hosted: ledger.Hosted, Log: os.Stderr,
+	})
 	created, err := ledger.Releases.Cut(ctx, rel)
 	if err != nil {
 		return releaseCutOutcome{}, fmt.Errorf("--release %s: record the release in %s: %w", version, ledger.Releases.Location(), err)
 	}
 	return releaseCutOutcome{
 		Release: rel, Created: created, Ledger: ledger.Releases.Location(),
-		Images: images, Packages: packages, Files: files,
+		Images: images, Packages: packages, Files: files, Vulns: vulns,
 	}, nil
 }
 
@@ -2773,8 +2810,8 @@ func dockerBuildProject(ctx context.Context, cfg *config.ProjectConfig, tags doc
 	// `docker-image://`, …). cwd is the project root by construction
 	// (forge build runs alongside forge.yaml).
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", cfg.Name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, ".")
+	fmt.Printf("[build] %s: %s\n", cfg.Name, dockerCommandLine(dockerArgs))
 
 	if err := prepareDockerBuildStorage(ctx, projectDirForKCL()); err != nil {
 		return buildResult{name: cfg.Name + " (docker)", kind: "docker", duration: time.Since(start), err: err}
@@ -2930,18 +2967,6 @@ func k3dMirrorRepositories(repository string) []string {
 	return []string{"registry.localhost:" + port + "/" + path}
 }
 
-// countTags counts the `-t` flags in a docker build arg list for the
-// progress line. Cheap; only used for human-readable output.
-func countTags(args []string) int {
-	n := 0
-	for _, a := range args {
-		if a == "-t" {
-			n++
-		}
-	}
-	return n
-}
-
 // dockerBuild builds a Docker image for a frontend from its own
 // Dockerfile, tagged with tags.local, and pushes tags.push after a
 // successful build.
@@ -2979,8 +3004,8 @@ func dockerBuild(ctx context.Context, cfg *config.ProjectConfig, name, path stri
 	// dockerBuildProject — useful when the frontend Dockerfile needs
 	// to reference paths outside its own subtree.
 	dockerArgs = appendBuildContexts(dockerArgs, cfg, "")
-	fmt.Printf("[build] %s: docker build (%d tags)\n", name, countTags(dockerArgs))
 	dockerArgs = append(dockerArgs, "-f", dockerfile, path)
+	fmt.Printf("[build] %s: %s\n", name, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "frontend image "+name+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: name + " (docker)", kind: "docker", image: name, duration: time.Since(start), err: err}
@@ -3394,6 +3419,11 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 	var out []buildResult
 	workloads := e.Workloads
 	aliases := map[string][]WorkloadEntity{}
+	// A --release build compares DockerBuilds that declare inputs against
+	// earlier releases (build_docker_release_reuse.go); the ledger is read
+	// once, and only if one needs it.
+	projectDir := projectDirForKCL()
+	reuseBase := newReleaseReuseBase(ctx, projectDir, opts)
 	if opts.composition != nil {
 		units, err := compositionBuildUnits(e)
 		if err != nil {
@@ -3418,12 +3448,12 @@ func buildKCLDockerShell(ctx context.Context, cfg *config.ProjectConfig, e *KCLE
 				continue
 			}
 			repository, imageTag := serviceDockerImage(w, resolvedTag, opts)
-			builder := buildServiceDocker
-			if opts.composition != nil {
-				builder = compositionDockerBuilder
-			}
 			result := timedBuild(ctx, func() buildResult {
-				return builder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				if opts.composition != nil {
+					return compositionDockerBuilder(ctx, cfg, w.Name, repository, w.Build.Docker, opts, cfgArchForDocker, imageTag)
+				}
+				target := releaseDockerTarget{repository: repository, tag: imageTag}
+				return buildServiceDockerReusing(ctx, cfg, w, target, opts, cfgArchForDocker, projectDir, reuseBase)
 			})
 			result.workload = w.Name
 			out = append(out, result)
@@ -3505,15 +3535,7 @@ func buildServiceRemote(svcName string) buildResult {
 // DockerBuild.pgo disables.
 func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile string, d *DockerBuild, opts buildOptions, cfgArchForDocker, resolvedTag string) (dockerArgs, pushTags []string) {
 	dockerArgs = []string{"build"}
-	// platform: the DockerBuild's explicit platform wins; otherwise the
-	// env-wide cluster arch (cfgArchForDocker), cross-compiled to linux.
-	platform := ""
-	if d != nil && d.Platform != "" {
-		platform = d.Platform
-	} else if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
-		platform = "linux/" + a
-	}
-	if platform != "" {
+	if platform := serviceDockerPlatform(d, opts, cfgArchForDocker); platform != "" {
 		dockerArgs = append(dockerArgs, "--platform="+platform)
 	}
 	if d != nil && d.Target != "" {
@@ -3547,6 +3569,19 @@ func serviceDockerBuildArgs(cfg *config.ProjectConfig, repository, dockerfile st
 	}
 	dockerArgs = append(dockerArgs, "-f", dockerfile, serviceDockerContext(d))
 	return dockerArgs, pushTags
+}
+
+// serviceDockerPlatform is the platform a DockerBuild builds for: its explicit
+// platform wins; otherwise the env-wide cluster arch (cfgArchForDocker),
+// cross-compiled to linux. "" builds for the daemon's own platform.
+func serviceDockerPlatform(d *DockerBuild, opts buildOptions, cfgArchForDocker string) string {
+	if d != nil && d.Platform != "" {
+		return d.Platform
+	}
+	if a := resolveBuildArch(cfgArchForDocker, opts.targetArch, true); a != "" {
+		return "linux/" + a
+	}
+	return ""
 }
 
 // serviceDockerContext is the MAIN `docker build` context directory for a
@@ -3700,7 +3735,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	dockerArgs, pushTags := serviceDockerBuildArgs(cfg, repository, dockerfile, d, opts, cfgArchForDocker, resolvedTag)
 	// An env that instruments the image's binary builds the Dockerfile's
 	// cover stage (kcl/schema.k Tests, coverImageArgs).
-	coverArgs, coverErr := coverImageArgs(ctx, svcName, dockerfile, d)
+	coverArgs, coverErr := coverImageArgs(ctx, svcName, d)
 	if coverErr != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: coverErr}
 	}
@@ -3715,7 +3750,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 		epoch = resolveSourceDateEpoch(ctx, ".", serviceDockerContext(d), dockerfile)
 	}
 	dockerArgs = appendSourceDateEpoch(dockerArgs, epoch)
-	fmt.Printf("[build] %s: docker build -f %s %s (%d tags)\n", svcName, dockerfile, serviceDockerContext(d), countTags(dockerArgs))
+	fmt.Printf("[build] %s: %s\n", svcName, dockerCommandLine(dockerArgs))
 
 	if err := requireImageDaemon(ctx, "service "+svcName+" ("+dockerfile+")"); err != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: err}
@@ -3755,7 +3790,7 @@ func buildServiceDocker(ctx context.Context, cfg *config.ProjectConfig, svcName,
 	// A release build of an image whose project opts in to coverage also
 	// builds and pushes its cover stage, BESIDE the shared image: a preview
 	// of the release runs it (release.CoverVariant).
-	coverDigest, cerr := buildReleaseCoverVariant(ctx, svcName, dockerfile, d, dockerArgs, pushTags, len(coverArgs) > 0)
+	coverDigest, cerr := buildReleaseCoverVariant(ctx, svcName, d, dockerArgs, pushTags, len(coverArgs) > 0)
 	if cerr != nil {
 		return buildResult{name: svcName + " (docker)", kind: "docker", duration: time.Since(start), err: cerr}
 	}

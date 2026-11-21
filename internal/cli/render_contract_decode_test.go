@@ -46,7 +46,7 @@ func runtimesOf(e *KCLEntities) map[string][]string {
 // Every golden decodes, strictly, and every workload's runtime block carries
 // exactly the variant its type names — nothing guessed, nothing dropped.
 func TestRenderContract_EveryGoldenDecodes(t *testing.T) {
-	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "mixed", "unit-split", "flux-delivery"} {
+	for _, name := range []string{"host", "compose", "cluster", "hosted", "build-only", "build-outputs", "mixed", "unit-split", "flux-delivery"} {
 		t.Run(name, func(t *testing.T) {
 			e, _ := loadContract(t, name)
 			if len(e.Workloads) == 0 {
@@ -151,6 +151,28 @@ func TestRenderContract_RuntimeFacts(t *testing.T) {
 		bo := e.WorkloadsOn(RuntimeBuildOnly)
 		if len(bo) == 0 || len(bo[0].Runtime.BuildOnly.BuildVariants) == 0 {
 			t.Fatalf("build-only workload or its variants not decoded: %+v", bo)
+		}
+	})
+	t.Run("build-outputs", func(t *testing.T) {
+		e, _ := loadContract(t, "build-outputs")
+		byName := map[string]WorkloadEntity{}
+		for _, w := range e.Workloads {
+			byName[w.Name] = w
+		}
+		cli, installer := byName["acme-cli"], byName["installer"]
+		// Files only: no artifact name, so nothing pushes or resolves an image.
+		if cli.Image != "" || cli.BuildImage != "" {
+			t.Errorf("files-only workload decoded image %q / build image %q, want none", cli.Image, cli.BuildImage)
+		}
+		wantCLI := []BuildOutput{{Path: "dist/acme_linux_amd64.tar.gz", Platform: "linux/amd64"}, {Path: "dist/*.txt"}}
+		if !reflect.DeepEqual(cli.Build.Outputs, wantCLI) || cli.EffectiveBuildCwd() != "tools/cli" {
+			t.Errorf("acme-cli outputs = %+v (cwd %q), want %+v in tools/cli", cli.Build.Outputs, cli.EffectiveBuildCwd(), wantCLI)
+		}
+		if installer.Image != "ghcr.io/acme/installer" {
+			t.Errorf("an image-bearing build-only workload lost its image: %q", installer.Image)
+		}
+		if want := []BuildOutput{{Path: "out/acme-setup.exe", Platform: "windows/amd64"}}; !reflect.DeepEqual(installer.Build.Outputs, want) {
+			t.Errorf("installer outputs = %+v, want %+v", installer.Build.Outputs, want)
 		}
 	})
 }

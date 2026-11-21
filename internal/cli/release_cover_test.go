@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/pkg/release"
 )
@@ -167,7 +168,7 @@ func TestCoverVariantArgs(t *testing.T) {
 	}
 	d := &DockerBuild{Dockerfile: "Dockerfile", coverVariant: &workloadCover{packages: []string{"./internal/..."}}}
 	shared := []string{"build", "--platform=linux/amd64", "-t", "ghcr.io/acme/shop:v1.4.0", "-t", "localhost:5050/shop:v1.4.0", "-f", "Dockerfile", "."}
-	got, err := coverVariantArgs(context.Background(), "shop", "Dockerfile", d, shared)
+	got, err := coverVariantArgs(context.Background(), "shop", d, shared)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,11 +187,40 @@ func TestCoverVariantArgs(t *testing.T) {
 	}
 	// No variant is built where there is nothing to push or no stage.
 	for name, d := range map[string]*DockerBuild{"not marked": {Dockerfile: "Dockerfile"}, "own target": {Target: "debug", coverVariant: d.coverVariant}} {
-		if dg, err := buildReleaseCoverVariant(context.Background(), "shop", "Dockerfile", d, shared, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
+		if dg, err := buildReleaseCoverVariant(context.Background(), "shop", d, shared, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
 			t.Errorf("%s: built a variant (%q, %v)", name, dg, err)
 		}
 	}
-	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", "Dockerfile", d, shared, nil, false); dg != "" || err != nil {
+	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", d, shared, nil, false); dg != "" || err != nil {
 		t.Errorf("a release that pushes nowhere built a variant (%q, %v)", dg, err)
+	}
+}
+
+// A release image built from a GitSource Dockerfile gets its cover variant
+// argv from the pinned file's cover stage, not a local Dockerfile; a pinned
+// Dockerfile without the stage gets none (and builds nothing).
+func TestCoverVariantArgs_GitSourceDockerfile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("forge.yaml", []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checkout := t.TempDir()
+	withStage := filepath.Join(checkout, "with.Dockerfile")
+	without := filepath.Join(checkout, "without.Dockerfile")
+	for p, body := range map[string]string{withStage: "FROM alpine AS cover\nFROM alpine AS production\n", without: "FROM alpine AS production\n"} {
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := &config.GitSource{Repo: "github.com/acme/other", Ref: "v1"}
+	shared := []string{"build", "-t", "ghcr.io/acme/shop:v1.4.0", "-f", withStage, "."}
+	d := &DockerBuild{DockerfileSource: src, DockerfilePath: withStage, coverVariant: &workloadCover{}}
+	got, err := coverVariantArgs(context.Background(), "shop", d, shared)
+	if want := []string{"build", "--target", "cover", "-t", "ghcr.io/acme/shop:v1.4.0-cover", "-f", withStage, "."}; err != nil || !slices.Equal(got, want) {
+		t.Errorf("args = %v (err %v), want %v", got, err, want)
+	}
+	noStage := &DockerBuild{DockerfileSource: src, DockerfilePath: without, coverVariant: &workloadCover{}}
+	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", noStage, shared, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
+		t.Errorf("a pinned Dockerfile without the cover stage built a variant (%q, %v)", dg, err)
 	}
 }

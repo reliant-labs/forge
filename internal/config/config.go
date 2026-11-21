@@ -227,6 +227,12 @@ type ProjectConfig struct {
 	// `coverage` is read by the env render (instrumented builds, through
 	// ReadTestsCoverage), the rest by the `forge test` verbs.
 	Tests TestsConfig `yaml:"tests,omitempty"`
+	// Vuln steers the SBOMs and vulnerability findings forge records for
+	// each release, and how it patches them. See [VulnConfig]; read where
+	// the release cut stores an OCI artifact's SBOM (internal/sbomoci), and
+	// by `forge vuln patch` (internal/cli/vuln_patch.go) for
+	// vuln.patch.verify.
+	Vuln VulnConfig `yaml:"vuln,omitempty"`
 	// Envs names the environments this project declares WITHOUT a deploy/kcl
 	// tree, and Monitoring switches forge's observability on for them: the
 	// brownfield seam (monitoring.go).
@@ -1190,8 +1196,11 @@ type CIVulnConfig struct {
 	//
 	// One list serves both scanners, and each entry's ID says which one it
 	// belongs to: govulncheck reports GO-YYYY-NNNN ids, npm audit reports
-	// GHSA-xxxx-xxxx-xxxx ids. An id neither scanner reports fails the gate,
-	// since it can accept nothing.
+	// GHSA-xxxx-xxxx-xxxx ids, and any other advisory id (a CVE) belongs to
+	// the SBOM scan (`forge ci vuln-sbom`, grype), which matches it against
+	// a finding's id or aliases. A string that is not an advisory id, or an
+	// entry with no reason or no parseable expiry, fails the gate, since it
+	// can accept nothing.
 	//
 	// Scoped by ID on purpose: an exemption suppresses the advisories it
 	// names and nothing else, so a new CVE in the very same module or

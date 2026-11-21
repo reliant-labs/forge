@@ -105,7 +105,7 @@ EXPOSE 8080 6060
 CMD ["air", "-c", ".air.toml"]
 
 # ── Debug stage (use with: docker build --target debug) ──
-FROM alpine:3.21 AS debug
+FROM alpine:3.24 AS debug
 
 # Named time zones must work without the builder's GOROOT zoneinfo archive.
 RUN apk --no-cache add ca-certificates tzdata
@@ -175,7 +175,7 @@ ENTRYPOINT ["/app/{{.Name}}"]
 CMD ["server"]
 
 # ── Production stage (default) ──
-FROM alpine:3.21 AS production
+FROM alpine:3.24 AS production
 
 # Named time zones must work without the builder's GOROOT zoneinfo archive.
 RUN apk --no-cache add ca-certificates tzdata

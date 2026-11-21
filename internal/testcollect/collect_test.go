@@ -302,6 +302,45 @@ func TestFailedResetKeepsEarlierCounters(t *testing.T) {
 	}
 }
 
+// roundTripFunc is an http.RoundTripper from a func.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A reset that reached no process (down, or timed out) zeroed nothing: no
+// fence is written and the flushed counters stay in the next collect. The
+// transport fails in-process, not by dialing a closed port, so it is
+// instant and the same on every OS.
+func TestUnreachableResetKeepsEarlierCounters(t *testing.T) {
+	f := newFixture(t)
+	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
+	writeFiles(t, cover, "covmeta.aa", "covcounters.aa.200.5000")
+	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: "127.0.0.1:1", CoverDir: cover}}
+
+	opts := f.options(target)
+	opts.Reset = true
+	opts.Now = func() time.Time { return time.Unix(0, 6000) }
+	opts.HTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial tcp 127.0.0.1:1: connect: connection refused")
+	})}
+	doc := Collect(context.Background(), opts)
+	if wl := doc.Workloads[0]; wl.State != StateUnreachable {
+		t.Fatalf("an unreachable reset: state %s (%s), want unreachable", wl.State, wl.Reason)
+	}
+	if _, err := os.Stat(ResetMarker(f.root, "dev", "api")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an unreachable reset wrote the fence: %v", err)
+	}
+
+	target.Host.PullAddr = (&coverageServer{tar: tarOf(t, "covmeta.aa", "M", "covcounters.aa.300.9000", "LIVE")}).start(t)
+	doc, err := collectErr(context.Background(), f.options(target))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 2 {
+		t.Fatalf("after an unreachable reset: build %+v, want the live and the earlier flushed counters", b)
+	}
+}
+
 // --reset pulls with ?reset=1 and discards what it got, and fences off the
 // counters flushed before it: the next collect leaves them out. No run is
 // created for a reset.

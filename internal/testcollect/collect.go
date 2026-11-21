@@ -547,7 +547,15 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 		}
 		_, s := pullHTTP(ctx, opts.HTTP, t.Host.PullAddr, true)
 		r.Sources = append(r.Sources, s)
-		if s.Status == SourceFailed {
+		// Only an answer the process gave proves the counters were zeroed:
+		// a refusal, or no answer at all (down, timed out), zeroed nothing,
+		// so the fence stays where it was.
+		switch s.Status {
+		case SourceOK, SourceEmpty:
+		case SourceUnreachable:
+			r.State, r.Reason = StateUnreachable, s.Error+" (not reset: the earlier counters are kept)"
+			return
+		default:
 			r.State, r.Reason = StateFailed, s.Error+" (not reset: the earlier counters are kept)"
 			return
 		}

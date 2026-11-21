@@ -282,7 +282,8 @@ var alertDefs = []alertDef{
 	{
 		AlertDefaultInfo: AlertDefaultInfo{
 			ID: "service-silent", Alert: "ServiceSilent", Title: "A service with steady traffic went quiet",
-			Severity: SeverityWarning, For: "0s", Interval: "1m", Signal: "metrics",
+			// This warning scans a day of traffic and already requires ten minutes of silence.
+			Severity: SeverityWarning, For: "0s", Interval: "5m", Signal: "metrics",
 			Params: []AlertParam{
 				{"silent_minutes", 10, "minutes without a request before it fires"},
 				{"min_active_hours", 18, "of the previous 24h, the hours the service must have served requests in to count as steady (a quiet staging service never pages)"},

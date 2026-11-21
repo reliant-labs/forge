@@ -102,7 +102,9 @@ ci:
 Reason and expiry are required. Expired/incomplete entries fail the gate;
 entries matching nothing are reported for removal. A new advisory in the same
 package still fails. Each scanner considers only its ID namespace, so Go entries
-do not appear stale to npm and vice versa. Scaffolding Next.js records a
+do not appear stale to npm and vice versa. Any other advisory id (a CVE) is the
+SBOM scan's (`vuln-sbom`, which matches an id or any alias, so a CVE covers the
+GHSA of the same advisory); govulncheck and npm audit never judge it. Scaffolding Next.js records a
 90-day reviewed acceptance for its unfixable dev-only braces advisory in
 `forge.yaml`, visibly, rather than disabling the npm scan.
 

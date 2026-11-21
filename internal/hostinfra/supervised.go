@@ -161,6 +161,14 @@ type downloadUnavailableError struct{ err error }
 func (e *downloadUnavailableError) Error() string { return e.err.Error() }
 func (e *downloadUnavailableError) Unwrap() error { return e.err }
 
+// IsDownloadUnavailable reports whether err is a release download the host
+// could not complete (no connection, or a 5xx): a missing host resource, not
+// a wrong pin.
+func IsDownloadUnavailable(err error) bool {
+	var unavailable *downloadUnavailableError
+	return errors.As(err, &unavailable)
+}
+
 // downloadStatus turns a non-200 release response into an error, marking a
 // 5xx as unavailable.
 func downloadStatus(url string, code int) error {
@@ -306,8 +314,24 @@ type supervisedEngine struct {
 	args func(spec Spec, dataDir string) []string
 	// ready performs ONE readiness probe against a running instance.
 	ready func(ctx context.Context, spec Spec, bin string) bool
+	// drift, when set, names what an already-running instance does not do
+	// that the declaration asks for (a listener added since it started),
+	// or "" when it matches. It is reported, never acted on: restarting a
+	// server under a running stack is the developer's call.
+	drift func(spec Spec) string
 	// readyTimeout bounds the wait for the first boot.
 	readyTimeout time.Duration
+}
+
+// reportDrift prints what an adopted instance does not serve that the
+// declaration asks for (see drift).
+func (e supervisedEngine) reportDrift(spec Spec) {
+	if e.drift == nil {
+		return
+	}
+	if msg := e.drift(spec); msg != "" {
+		fmt.Printf("  %s: ⚠ %s\n", spec.Name, msg)
+	}
 }
 
 func (e supervisedEngine) pidFile(dataDir string) string {
@@ -336,6 +360,7 @@ func (e supervisedEngine) start(ctx context.Context, projectDir string, spec Spe
 				return fmt.Errorf("host-infra %s: %w", spec.Name, err)
 			}
 			fmt.Printf("  %s: already ready on :%d (host process)\n", spec.Name, spec.Port)
+			e.reportDrift(spec)
 			return nil
 		}
 	}

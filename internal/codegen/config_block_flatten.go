@@ -84,7 +84,7 @@ func flattenWithBlocks(fields []ConfigField, byName map[string]*ConfigMessage) [
 		}
 		for _, bf := range bm.Fields {
 			if bf.MessageType != "" {
-				continue // one nesting level, as elsewhere
+				continue // one nesting level, as elsewhere (UnprojectedNestedConfigBlocks names what this drops)
 			}
 			bf.KCLBlock = f.Name
 			bf.KCLBlockType = f.MessageType

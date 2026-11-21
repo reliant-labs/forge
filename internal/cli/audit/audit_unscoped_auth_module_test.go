@@ -137,11 +137,13 @@ func TestUnscopedAuth_ShadowedImportAliasIsNotTheWrapper(t *testing.T) {
 		shadowed("GetCart", "for _, whoami := range s.lookups { _ = whoami }"),
 		"func (s *Service) GetSession(ctx context.Context, req *connect.Request[pb.GetSessionRequest]) (*connect.Response[pb.GetSessionResponse], error) {\n"+
 			"\tf := func(whoami fakeWhoami) any { return whoami.Caller(ctx) }\n\t_ = f\n\treturn nil, nil\n}\n",
+		"func (s *Service) GetLine(ctx context.Context, req *connect.Request[pb.GetLineRequest]) (*connect.Response[pb.GetLineResponse], error) {\n"+
+			"\tselect {\n\tcase whoami := <-s.lookups:\n\t\t_ = whoami.Caller(ctx)\n\t}\n\treturn nil, nil\n}\n",
 		handlerCalling("ListInvoices", "relay.Shadowed(ctx, nil)"),
 		handlerCalling("ListOrders", "whoami.Caller(ctx)"),
 	)
 	dir := writeProject(t, "ShopService", map[string]bool{
-		"GetOrder": true, "GetInvoice": true, "GetCart": true, "GetSession": true, "ListInvoices": true, "ListOrders": true,
+		"GetOrder": true, "GetInvoice": true, "GetCart": true, "GetSession": true, "GetLine": true, "ListInvoices": true, "ListOrders": true,
 	}, src)
 	writeSeamPackage(t, dir)
 	writeFile(t, filepath.Join(dir, "internal", "whoami", "whoami.go"), goFile("whoami",
@@ -152,7 +154,7 @@ func TestUnscopedAuth_ShadowedImportAliasIsNotTheWrapper(t *testing.T) {
 
 	got := unscopedMethods(t, auditUnscopedAuth(nil, dir))
 	slices.Sort(got)
-	if want := []string{"GetCart", "GetInvoice", "GetOrder", "GetSession", "ListInvoices"}; !slices.Equal(got, want) {
+	if want := []string{"GetCart", "GetInvoice", "GetLine", "GetOrder", "GetSession", "ListInvoices"}; !slices.Equal(got, want) {
 		t.Fatalf("unscoped = %v, want %v — only the imported whoami resolves the caller, never a local value of that name", got, want)
 	}
 }

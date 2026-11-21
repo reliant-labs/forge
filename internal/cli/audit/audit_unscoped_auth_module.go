@@ -188,9 +188,11 @@ func (m *moduleReach) moduleImports(f *ast.File) map[string]string {
 // within hops further packages.
 //
 // An import alias that fn itself declares as a name anywhere — a receiver,
-// parameter or result, a `:=`, a var, const or type, a closure's parameter —
-// is not followed in fn at all, whatever the scope: `auth.UserID(ctx)` on a
-// local `auth` value is not the imported resolver. The files are parsed
+// parameter or result, a `:=` (a select case's receive included), a var,
+// const or type, a closure's parameter — is not followed in fn at all,
+// whatever the scope: `auth.UserID(ctx)` on a local `auth` value is not the
+// imported resolver. (A label lives in its own namespace and cannot shadow
+// a package name.) The files are parsed
 // without object resolution, so this is the conservative reading; a call it
 // skips is reported, never cleared.
 func (m *moduleReach) callsReachingImport(fn *ast.FuncDecl, f *ast.File, hops int) bool {

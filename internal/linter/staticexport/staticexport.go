@@ -65,6 +65,8 @@ const (
 	RuleNextImage      = "static-export-next-image"
 	RuleConfigRoutes   = "static-export-config-routes"
 	RuleTrailingSlash  = "static-export-trailing-slash"
+	// RulePartialPrerender: next.config turns on cacheComponents / ppr.
+	RulePartialPrerender = "static-export-partial-prerender"
 )
 
 // RuleIDs lists every rule this package emits.
@@ -72,7 +74,7 @@ func RuleIDs() []string {
 	return []string{
 		RuleNotExported, RuleDynamicSegment, RuleRouteHandler, RuleMiddleware,
 		RuleServerAction, RuleNextHeaders, RuleDynamicConfig, RuleNextImage,
-		RuleConfigRoutes, RuleTrailingSlash,
+		RuleConfigRoutes, RuleTrailingSlash, RulePartialPrerender,
 		RuleViteOutDir, RuleViteBase,
 	}
 }
@@ -124,6 +126,7 @@ func Check(fe Frontend) ([]finding.Finding, error) {
 	c.checkMiddleware()
 	c.checkSourceConstructs()
 	c.checkNextImage()
+	c.checkPartialPrerender()
 	c.checkConfigRoutes()
 	c.checkTrailingSlash()
 	sort.SliceStable(c.out, func(i, j int) bool {

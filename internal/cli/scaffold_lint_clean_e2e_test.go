@@ -156,7 +156,7 @@ message CreateApiKeyResponse {}
 	// routes, next/image is unoptimized, and the dev log route is POST-only
 	// and dev-guarded. A scaffold this lane flagged would be one whose
 	// staging/prod `npm run build` fails, or whose hosted site lacks pages.
-	if !strings.Contains(out, "static-export clean — 1 static frontend(s)") {
+	if !strings.Contains(out, "static-export clean — 1 Next.js frontend(s)") {
 		t.Errorf("static-export lane did not judge the scaffolded frontend clean:\n%s", out)
 	}
 

@@ -178,6 +178,18 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 		}
 	}
 
+	// A build variant rides BESIDE the shared artifact as its own
+	// `<repository>#<variant>` artifact (release.VariantArtifactName), never
+	// in its place: a cover image is not what a persistent env runs.
+	addVariant := func(repository, variant, digest string) {
+		if repository == "" || !release.ValidDigest(digest) {
+			return
+		}
+		out[release.VariantArtifactName(repository, variant)] = release.Artifact{
+			Kind: release.KindOCI, Mode: release.ModeVariant, Digests: map[string]string{variant: digest},
+		}
+	}
+
 	// Aggregate project-image build state(s): env-specific, then the
 	// env-agnostic default a plain `forge env build --release` (no --env) writes.
 	for _, key := range buildStateLookupEnvs(envName) {
@@ -209,7 +221,14 @@ func harvestReleaseArtifacts(projectDir, envName string) map[string]release.Arti
 			if err != nil || st == nil {
 				continue
 			}
-			add(st.Image, st.Digest, st.Platforms, st.Source.ForRelease(), st.ReleaseInputsDigest, st.CarriedFrom)
+			if st.Variant != "" {
+				addVariant(st.Image, st.Variant, st.Digest)
+			} else {
+				add(st.Image, st.Digest, st.Platforms, st.Source.ForRelease(), st.ReleaseInputsDigest, st.CarriedFrom)
+			}
+			if st.CoverDigest != "" {
+				addVariant(st.Image, release.CoverVariant, st.CoverDigest)
+			}
 		}
 	}
 

@@ -838,7 +838,9 @@ func computePromotePlan(ctx context.Context, opts promotePlanOptions) (promotePl
 		target = *rel
 	}
 
-	resolved, err := resolveReleaseDigests(target)
+	// The env's pins from the release (promoteTargetPins): a preview runs
+	// the cover variant, and a cover digest never lands on a persistent env.
+	resolved, err := promoteTargetPins(projectDir, opts.Env, target)
 	if err != nil {
 		return promotePlan{}, err
 	}

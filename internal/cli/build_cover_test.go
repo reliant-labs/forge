@@ -394,7 +394,7 @@ func TestCoverImageArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.applyCover(bins)
+	e.applyCover(bins, true)
 	api, edge := e.Workloads[0].Build.Docker, e.Workloads[1].Build.Docker
 	if !e.Workloads[0].CoverBuild() || e.Workloads[1].CoverBuild() {
 		t.Fatalf("api runs ./cmd/shop (instrumented), edge ./cmd/proxy (declared off): got api=%v edge=%v",

@@ -99,6 +99,13 @@ func IsMutating(md protoreflect.MethodDescriptor) bool {
 	return !hasReadPrefix(string(md.Name()))
 }
 
+// IsMutatingName reports whether an rpc named name is treated as mutating
+// by name alone: it does not start with a read verb (Get, List, …). It is
+// IsMutating without the descriptor, for tools that know only the name (a
+// scaffold printing what to declare); an rpc marked NO_SIDE_EFFECTS is not
+// mutating whatever its name.
+func IsMutatingName(name string) bool { return !hasReadPrefix(name) }
+
 func hasReadPrefix(name string) bool {
 	for _, p := range readPrefixes {
 		if !strings.HasPrefix(name, p) {

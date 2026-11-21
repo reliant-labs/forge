@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/kclrender"
 	"github.com/reliant-labs/forge/internal/kcltest"
+	"github.com/reliant-labs/forge/internal/kclvendor"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -216,5 +218,62 @@ func TestGraphRoots_UnknownBeforeTheFirstCompose(t *testing.T) {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("config_gen.k lacks %s: the default server root was not projected", want)
 		}
+	}
+}
+
+// A workload's own env wins over the config it is projected: the documented
+// blobstore setup is a typed config block whose unset leaves project as ""
+// plus `forge.bucket_env` on the workload, and `workloadEnvMap(cfg, w) |
+// w.env` (deploy/kcl/base/env.k) must not fail with KCL's "conflicting values
+// on the attribute" for a string under a BucketRef.
+func TestRootsKCL_WorkloadEnvOverridesAProjectedString(t *testing.T) {
+	testkit.Slow(t, "evaluates KCL through the native runtime")
+	t.Cleanup(kclvendor.SetCacheDirForTest(t.TempDir()))
+	fields, roots := twoRootFixture()
+	module, err := GenerateConfigKCL(fields, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"kcl.mod":                 "[package]\nname = \"roots_proof\"\n",
+		ConfigSchemaModule + ".k": module + RootsKCL(roots),
+		"main.k": `import forge
+import config_gen
+
+_c = config_gen.AppConfig {}
+_api = {
+    name = "api"
+    config_secrets = []
+    # forge.bucket_env's shape: a comprehension, so each entry unions (:)
+    # rather than overrides (=).
+    env = {_k: forge.BucketRef {name = "uploads", key = "endpoint"} for _k in ["STRIPE_SITE_URL"]} | {PORT = "9090"}
+} | config_gen.root_of("server")
+env = config_gen.workloadEnvMap(_c, _api) | _api.env
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := kclrender.Run(dir, dir, nil)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	var got struct {
+		Env map[string]any `json:"env"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	ref, ok := got.Env["STRIPE_SITE_URL"].(map[string]any)
+	if !ok || ref["name"] != "uploads" || ref["key"] != "endpoint" {
+		t.Errorf("STRIPE_SITE_URL = %#v, want the workload's BucketRef", got.Env["STRIPE_SITE_URL"])
+	}
+	if got.Env["PORT"] != "9090" {
+		t.Errorf("PORT = %#v, want the workload's own \"9090\"", got.Env["PORT"])
+	}
+	if _, ok := got.Env["DATABASE_URL"].(map[string]any); !ok {
+		t.Errorf("DATABASE_URL = %#v: the projected credential must survive", got.Env["DATABASE_URL"])
 	}
 }

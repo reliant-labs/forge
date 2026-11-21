@@ -109,8 +109,8 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	for _, tool := range list.Tools {
 		got[tool.Name] = tool
 	}
-	readOnly := []string{"benefits", "capabilities", "schema", "annotations", "libraries", "audit", "shapes", "blast_radius", "skill_list", "skill_search", "skill_load",
-		"deploy_status", "explain_error"}
+	readOnly := []string{"benefits", "why", "capabilities", "schema", "annotations", "libraries", "audit", "shapes", "blast_radius", "skill_list", "skill_search", "skill_load",
+		"deploy_status", "explain_error", "db_query", "obs_status", "obs_issues", "obs_issue", "obs_logs", "obs_check"}
 	mutating := []string{"lint", "generate", "report_bug", "deploy_claimable"}
 	if len(got) != len(readOnly)+len(mutating) {
 		t.Errorf("got %d tools, want %d: %v", len(got), len(readOnly)+len(mutating), got)
@@ -139,7 +139,7 @@ func TestMCP_ListsTheTools(t *testing.T) {
 	// says so.
 	// So do the deploy tools, which talk to the control plane.
 	// blast_radius may ask an env's control plane for traffic.
-	for _, name := range []string{"report_bug", "deploy_claimable", "deploy_status", "blast_radius"} {
+	for _, name := range []string{"report_bug", "deploy_claimable", "deploy_status", "blast_radius", "db_query", "obs_status", "obs_issues", "obs_issue", "obs_logs", "obs_check"} {
 		if rb := got[name]; rb != nil && (rb.Annotations == nil || rb.Annotations.OpenWorldHint == nil || !*rb.Annotations.OpenWorldHint) {
 			t.Errorf("%s must be annotated open-world", name)
 		}
@@ -360,8 +360,8 @@ func TestMCP_AnswersEveryRequestReadBeforeStdinCloses(t *testing.T) {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 17 {
-		t.Fatalf("tools/list response = %s (err %v), want 17 tools", got[2], err)
+	if err := json.Unmarshal(got[2], &list); err != nil || len(list.Tools) != 24 {
+		t.Fatalf("tools/list response = %s (err %v), want 24 tools", got[2], err)
 	}
 }
 

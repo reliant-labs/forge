@@ -180,6 +180,28 @@ type Workload struct {
 	// deployment declares — what it is doing, and what DNS the author
 	// still owes. Empty for a deployment that declares none.
 	Domains []CustomDomain `json:"domains,omitempty"`
+	// Backup is a managed database's backup state, as the control plane
+	// reads it; nil for every other tier, and for a database whose env
+	// configured no object store (no backups is not "no backups yet").
+	Backup *Backup `json:"backup,omitempty"`
+}
+
+// Backup answers "if this database broke right now, what would I get back?"
+// Three facts, because each can be true without the others: a base backup, a
+// WAL archive that reaches the store, and the oldest point a restore reaches.
+type Backup struct {
+	// LastSuccessfulBackup is RFC3339 for when the last base backup
+	// completed; empty when none ever has, which means nothing to restore.
+	LastSuccessfulBackup string `json:"last_successful_backup,omitempty"`
+	// WALArchivingHealthy is whether WAL is reaching the object store now.
+	// False is the silent failure: the database keeps serving, and every
+	// minute it does cannot be recovered to.
+	WALArchivingHealthy bool `json:"wal_archiving_healthy"`
+	// EarliestRestorableTime is RFC3339 for the floor on point-in-time
+	// restore; empty until a first backup exists.
+	EarliestRestorableTime string `json:"earliest_restorable_time,omitempty"`
+	// LastError is the last archiving or backup error, verbatim.
+	LastError string `json:"last_error,omitempty"`
 }
 
 // CustomDomain is one declared custom hostname's observed state.

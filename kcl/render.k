@@ -2887,6 +2887,16 @@ render = lambda bundle: Bundle -> any {
         # expires. Absent for every other env.
         if bundle.preview:
             "preview": {"of": bundle.preview.of, "expires_at": bundle.preview.expires_at, "source": bundle.preview.source if bundle.preview.source else None}
+        # Test coverage of the env's Go builds (Bundle.tests), as declared:
+        # forge computes the default (kcl/schema.k Tests), because it reads
+        # forge.yaml's opt-in. Absent when the env declares nothing, so an
+        # env that predates it renders exactly as before.
+        if typeof(bundle.tests.coverage) == "bool" or typeof(bundle.tests.coverage_packages) == "list" or bundle.tests.coverage_in_persistent_env:
+            "tests": {
+                "coverage": bundle.tests.coverage if typeof(bundle.tests.coverage) == "bool" else None
+                "coverage_packages": bundle.tests.coverage_packages if typeof(bundle.tests.coverage_packages) == "list" else None
+                "coverage_in_persistent_env": bundle.tests.coverage_in_persistent_env if bundle.tests.coverage_in_persistent_env else None
+            }
         # WHO APPLIES, declared: "forge" for a real env forge applies (the
         # platform's own env), "flux" for one an in-cluster Flux forge installs
         # reconciles, else null. See Bundle.applier.
@@ -3490,6 +3500,10 @@ _render_go_build = lambda b: GoBuild -> any {
         "env": b.env if b.env else {}
         if not _pgo_is_default(b.pgo):
             "pgo": _render_pgo(b.pgo)
+        # The binary's own coverage answer (kcl/schema.k Tests); absent
+        # follows the env's.
+        if typeof(b.coverage) == "bool":
+            "coverage": b.coverage
     }
 }
 
@@ -3519,6 +3533,9 @@ _render_docker_build = lambda b: DockerBuild -> any {
         # absent when none are declared.
         if b.inputs:
             "inputs": b.inputs
+        # Per-binary coverage, keyed by package path; absent when none is named.
+        if b.coverage:
+            "coverage": b.coverage
     }
 }
 

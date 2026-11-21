@@ -4671,7 +4671,9 @@ benefits:
       pgo status` shows each binary's file, source and age. A hosted env's
       profiles are pulled through the control plane (sign-in required). Tune or
       opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo`
-      in KCL.
+      in KCL. A hosted project gets `.github/workflows/pgo-refresh.yml` (an
+      existing one on its next `forge generate`), which pulls weekly and opens a
+      pull request when the env's profiles changed a binary's file.
     why: >-
       Go applies PGO per main package, so a binary that runs as server, worker
       and cron gets one profile merging all of them, weighted by CPU. A missing
@@ -4683,6 +4685,7 @@ benefits:
       - library: pkg/profilequery
       - skill: observability/profiles
       - path: pkg/observe/PROFILES.md
+      - path: internal/templates/ci/github/pgo-refresh.yml.tmpl
       - external: control-plane:internal/handlers/observability/rpc_export_pgo_profile.go
 
   - id: alerts-as-code

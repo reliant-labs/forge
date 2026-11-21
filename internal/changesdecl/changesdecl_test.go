@@ -119,6 +119,8 @@ func TestParseRefusesWithFileAndLine(t *testing.T) {
 		"two problems": {"version: 1\nchanges:\n  a: {type: int, default: x, variants: {x: 1}}\n  b: {type: bool, default: y, variants: {x: true}}\n",
 			[]string{`changes.yaml:3: change "a": type "int"`, `changes.yaml:4: change "b": default "y" is not one of its variants (x)`}},
 		"not yaml": {"version: [1\n", []string{"changes.yaml: yaml:"}},
+		"a second document": {"version: 1\nchanges: {}\n---\nversion: 1\nchanges:\n  k: {type: bool, default: a, variants: {a: true}}\n",
+			[]string{"changes.yaml:3: a second YAML document"}},
 	}
 	for name, tc := range cases {
 		_, err := Parse(FileName, []byte(tc.yaml))
@@ -131,6 +133,13 @@ func TestParseRefusesWithFileAndLine(t *testing.T) {
 				t.Errorf("%s: error does not contain %q:\n%v", name, w, err)
 			}
 		}
+	}
+}
+
+// A bare trailing `---` is no second document.
+func TestParseAcceptsATrailingDocumentMarker(t *testing.T) {
+	if _, err := Parse(FileName, []byte("version: 1\nchanges: {}\n---\n")); err != nil {
+		t.Fatal(err)
 	}
 }
 

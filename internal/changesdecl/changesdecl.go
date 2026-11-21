@@ -26,9 +26,11 @@
 package changesdecl
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -177,10 +179,40 @@ func (p *parser) errorf(line int, format string, args ...any) {
 	p.errs = append(p.errs, fmt.Sprintf("%s:%d: %s", p.name, line, fmt.Sprintf(format, args...)))
 }
 
+// emptyDocument reports a document with no content, as a bare trailing `---`
+// decodes.
+func emptyDocument(n *yaml.Node) bool {
+	if len(n.Content) == 0 {
+		return true
+	}
+	c := n.Content[0]
+	return len(n.Content) == 1 && c.Kind == yaml.ScalarNode && c.Tag == "!!null" && c.Value == ""
+}
+
 func (p *parser) parse(data []byte) *Decl {
+	// One document only: yaml.Unmarshal reads the first of a stream and
+	// drops the rest, so a change declared after a `---` would pass
+	// generate and never ship.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
 		p.errs = append(p.errs, fmt.Sprintf("%s: %v", p.name, err))
+		return nil
+	}
+	for {
+		var extra yaml.Node
+		err := dec.Decode(&extra)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			p.errs = append(p.errs, fmt.Sprintf("%s: %v", p.name, err))
+			return nil
+		}
+		if emptyDocument(&extra) {
+			continue // a trailing `---` with nothing after it
+		}
+		p.errorf(extra.Line, "a second YAML document: %s holds exactly one (remove the `---` and merge it into the first)", FileName)
 		return nil
 	}
 	if len(doc.Content) == 0 {

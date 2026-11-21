@@ -2597,12 +2597,15 @@ _tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: s
     }
 }
 
+# A cluster workload's target is always scoped to its namespace (ClusterTarget
+# requires one): an empty list would let the app.kubernetes.io/name selector
+# match same-named pods of every namespace and stamp them as this service.
 _tel_workload = lambda w: any, b: Bundle -> any {
     _rt = w.runtime
     _c = _rt.type == "cluster"
     _tel_target(w.telemetry, _tel_service_name(w), "workload:${w.name}", "workload", _rt.type, \
         _rt.target.cluster if _c else "", \
-        [_rt.target.namespace] if _c and _rt.target.namespace else [], \
+        [_rt.target.namespace] if _c else [], \
         {"app.kubernetes.io/name": w.name} if _rt.type in ["cluster", "hosted"] else {}, \
         "127.0.0.1" if _rt.type in ["host", "compose"] else "", \
         {p.name: p.port for p in w.ports} if w.ports else {}, b)
@@ -3523,6 +3526,8 @@ _render_build_variant = lambda bv: BuildVariant -> any {
         "tags": bv.tags
         "goos": bv.goos if bv.goos else None
         "goarch": bv.goarch if bv.goarch else None
+        "env_at_build": bv.env if bv.env else None
+        "output_name": bv.output_name if bv.output_name else None
     }
 }
 
@@ -3627,6 +3632,10 @@ _render_shell_build = lambda b: ShellBuild -> any {
             "built_images": b.built_images
         if b.inputs:
             "inputs": b.inputs
+        # Per-binary PGO (ShellPGO), keyed by cwd-relative package path;
+        # absent when none is named.
+        if b.pgo:
+            "pgo": {k: _render_pgo(v) | {"out": v.out, "namespace": v.namespace} for k, v in b.pgo}
     }
 }
 

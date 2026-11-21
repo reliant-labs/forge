@@ -379,7 +379,7 @@ func collectSingleLinterJSON(
 		}
 		return report(collectMigrationSafetyJSON(cfg))
 	case flags.conventions:
-		return report(collectConventionsJSON(forgeconv.LintOptions{Strict: flags.strict}))
+		return report(collectConventionsLaneJSON(cwd, forgeconv.LintOptions{Strict: flags.strict}))
 	case flags.generatedDrift:
 		return report(collectGeneratedDriftJSON(cwd))
 	case flags.frontendStores:
@@ -445,6 +445,8 @@ func collectSingleLinterJSON(
 		// `forge lint --proto-format --fix` writes buf's output (--json
 		// refuses --fix, so it stays detect-only).
 		return report(collectProtoFormatJSON(ctx, cwd, formatKeep(scope, paths), flags.autoFix()))
+	case flags.telemetry:
+		return report(collectTelemetryJSON(&lintRunCtx{ctx: ctx, cfg: cfg, cwd: cwd}))
 	}
 
 	return nil, false, nil
@@ -534,6 +536,27 @@ func collectConventionsJSON(opts forgeconv.LintOptions) ([]lintJSONFinding, bool
 	}
 	out = append(out, findingsToJSON(combined.Findings)...)
 	return out, combined.HasErrors(), nil
+}
+
+// collectConventionsLaneJSON is `forge lint --conventions`: the forgeconv
+// rules plus forgeconv-identity-methods, which the full sweep runs as a lane
+// of its own (identity-methods lint) because it reads deploy/kcl. Without it
+// here the quick lane passed a broker that does not mount a declared sign-in
+// method, and only the full `forge lint` failed it.
+func collectConventionsLaneJSON(cwd string, opts forgeconv.LintOptions) ([]lintJSONFinding, bool, error) {
+	out, gated, err := collectConventionsJSON(opts)
+	if err != nil {
+		return nil, false, err
+	}
+	if cwd != "" && dirExists(filepath.Join(cwd, "deploy", "kcl")) && dirExists(filepath.Join(cwd, "internal")) {
+		ids, err := collectIdentityMethodsJSON(cwd)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, ids...)
+		gated = gated || len(ids) > 0
+	}
+	return out, gated, nil
 }
 
 // collectMigrationSafetyJSON lints the migrations of EVERY database the

@@ -88,7 +88,10 @@ func (c Counts) Total() int { return c.Critical + c.High + c.Medium + c.Low + c.
 // artifacts.
 type DocumentFinding struct {
 	Finding
-	// Artifacts are the release artifacts the package is in.
+	// Artifacts are the release artifacts the package is in. Empty (never
+	// absent) for a finding its source attributes to the release as a whole
+	// and to no artifact; text output says "release" for it. Such a finding
+	// is judged, counted and listed like any other.
 	Artifacts []string `json:"artifacts"`
 	// FirstSeen is the first stored scan that reported it.
 	FirstSeen time.Time `json:"first_seen,omitzero"`
@@ -111,6 +114,22 @@ type ArtifactScan struct {
 	// History is every stored scan of its SBOM, oldest first: where
 	// FirstSeen comes from. Latest alone is enough without it.
 	History []*Scan
+	// FirstSeen is when each finding was first seen, by Finding.Key(), as
+	// a ledger that keeps it itself reports it (a control plane's
+	// per-environment first_seen_at). It wins over History; a finding it
+	// does not name falls back to History, then to Latest.ScannedAt.
+	FirstSeen map[string]time.Time
+}
+
+// ReleaseFinding is a finding its source attributes to a release as a whole
+// and to none of its artifacts: a control plane's finding with no artifact
+// names. It is never spread onto the artifacts, which would claim each of
+// them contains the package.
+type ReleaseFinding struct {
+	Finding Finding
+	// FirstSeen is when it was first seen, as the source reports it; zero
+	// when the source does not say.
+	FirstSeen time.Time
 }
 
 // Filter narrows the listed findings. The gate always judges all of them.
@@ -163,6 +182,30 @@ type DocumentInput struct {
 	Now       time.Time
 	// Notes are carried into the document (Document.Notes).
 	Notes []string
+	// Stale marks the findings stale whatever the database's build time
+	// says: the source of the scans judged them so (a control plane whose
+	// own freshness bound passed, or whose newest scan is STALE).
+	Stale bool
+	// FreshnessFromSource says the source of the scans judges their
+	// freshness itself: a control plane, whose per-artifact scan states and
+	// database freshness bound are the record. The document is then stale
+	// exactly when Stale says so, and ScanIsCurrent is not applied to the
+	// scans' database build times, which neither this machine's clock nor
+	// its StaleAfter govern. An artifact the source has not scanned is
+	// still unscanned (no Latest), so the verdict is determined exactly
+	// when the source's own scan state says it can be.
+	FreshnessFromSource bool
+	// ReleaseFindings are findings attributed to the release and to no
+	// artifact. They join the document with an empty Artifacts list and the
+	// gate judges them with every other finding. One whose key an artifact
+	// already carries is that artifact's finding (its first-seen time still
+	// counts).
+	ReleaseFindings []ReleaseFinding
+	// Judged is an authoritative ledger's judgement of the findings
+	// (EvaluateInput.Judged); nil judges them with Gate.
+	Judged map[string]Judgement
+	// JudgedBy is GateResult.JudgedBy.
+	JudgedBy string
 }
 
 // ScanIsCurrent reports whether s can vouch for an artifact at now: its
@@ -204,7 +247,10 @@ func BuildDocument(in DocumentInput) Document {
 		firstSeen := firstSeenIn(a.History)
 		for _, f := range a.Latest.Findings {
 			k := f.Key()
-			seen := firstSeen[k]
+			seen := a.FirstSeen[k]
+			if seen.IsZero() {
+				seen = firstSeen[k]
+			}
 			if seen.IsZero() {
 				seen = a.Latest.ScannedAt
 			}
@@ -219,13 +265,24 @@ func BuildDocument(in DocumentInput) Document {
 			order = append(order, k)
 		}
 	}
+	for _, rf := range in.ReleaseFindings {
+		k := rf.Finding.Key()
+		if d, ok := byKey[k]; ok {
+			if !rf.FirstSeen.IsZero() && (d.FirstSeen.IsZero() || rf.FirstSeen.Before(d.FirstSeen)) {
+				d.FirstSeen = rf.FirstSeen
+			}
+			continue
+		}
+		byKey[k] = &DocumentFinding{Finding: rf.Finding, Artifacts: []string{}, FirstSeen: rf.FirstSeen}
+		order = append(order, k)
+	}
 	// The document is as fresh as its oldest artifact: when that
-	// artifact's newest scan is not current (ScanIsCurrent), nor is the
-	// verdict.
+	// artifact's newest scan is not current (ScanIsCurrent, or the
+	// source's own judgement under FreshnessFromSource), nor is the verdict.
 	if oldest != nil {
 		doc.DB = DocumentDB{
 			Scanner: oldest.Scanner, Version: oldest.ScannerVersion, Schema: oldest.DBSchema,
-			BuiltAt: oldest.DBBuiltAt, Stale: !ScanIsCurrent(oldest, in.Now),
+			BuiltAt: oldest.DBBuiltAt, Stale: in.Stale || (!in.FreshnessFromSource && !ScanIsCurrent(oldest, in.Now)),
 		}
 	} else {
 		doc.DB = DocumentDB{Scanner: ScannerGrype}
@@ -235,9 +292,14 @@ func BuildDocument(in DocumentInput) Document {
 	for _, k := range order {
 		all = append(all, byKey[k].Finding)
 	}
-	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now})
+	ev := Evaluate(EvaluateInput{Gate: in.Gate, GradedAs: in.GradedAs, Findings: all, Coverage: doc.Coverage, Stale: doc.DB.Stale, Now: in.Now, Judged: in.Judged})
 	doc.Gate = ev.Gate
-	if doc.DB.Stale && ev.Gate.Verdict == VerdictStale {
+	doc.Gate.JudgedBy = in.JudgedBy
+	switch {
+	case !doc.DB.Stale || ev.Gate.Verdict != VerdictStale:
+	case in.FreshnessFromSource:
+		doc.Notes = append(doc.Notes, "undetermined: the ledger these findings come from judges them stale, and no current scan replaced them")
+	default:
 		doc.Notes = append(doc.Notes, fmt.Sprintf("undetermined: the newest scan of an artifact used a vulnerability database built %s, older than %s, and no current scan replaced it", doc.DB.BuiltAt.Format("2006-01-02"), humanDuration(StaleAfter)))
 	}
 	for i, j := range ev.Findings {

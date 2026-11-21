@@ -130,14 +130,13 @@ func lastLine(s, fallback string) string {
 }
 
 // checkPromotionPolicy renders the env's delivery policy and, for an env
-// whose ledger is not a control plane, judges the promotion against it. It
+// whose ledger is not a control plane, judges the promotion against it; for a
+// ledger-only env (a control plane that converges nothing forge applies), it
+// judges vuln_gate and provenance_sbom from the control plane's findings. It
 // returns the gates the checks record on the promotion.
 func checkPromotionPolicy(ctx context.Context, out io.Writer, projectDir string, ledger envLedger, in promotionCheckInput) ([]release.Gate, error) {
-	if ledger.Hosted {
+	if ledger.Hosted && !ledger.ledgerOnly() {
 		// The control plane judges it, in the promotion's transaction.
-		// (vuln_gate for a ledger-only env — forge applies, the control
-		// plane converges nothing — needs the control plane's findings:
-		// see vuln_gate_promote.go's header.)
 		return nil, nil
 	}
 	entities, err := RenderKCL(ctx, projectDir, in.Env)
@@ -145,6 +144,13 @@ func checkPromotionPolicy(ctx context.Context, out io.Writer, projectDir string,
 		// The deploy renders the env again and reports its own error; a
 		// policy that cannot be read here is one the plan cannot show either.
 		return nil, nil //nolint:nilerr // the plan reports a render failure on its own terms
+	}
+	if ledger.Hosted {
+		// A ledger-only env (forge applies, the control plane converges
+		// nothing): vuln_gate and provenance_sbom from the control plane's
+		// findings (vuln_gate_promote.go's header). Its required gates and
+		// approval hook stay the control plane's, as for every hosted env.
+		return checkPromotionVulnGates(ctx, out, projectDir, ledger, entities.DeliveryPolicy, in)
 	}
 	// The vulnerability checks first: a release they refuse is refused
 	// before the approval hook asks anyone about it, and the hook sees

@@ -38,8 +38,9 @@
 // support write-through. So the move is first recorded in StateDir/move.json,
 // and a process killed inside the window leaves that journal behind. The
 // binary itself cannot start from a missing path; the next [Boot] that does
-// run with the same state directory (another binary sharing it, or the image
-// set aside, <name>.old-<ns>.exe, started by hand) renames the image back.
+// run from the image set aside, <name>.old-<ns>.exe, started by hand with
+// the same state directory, renames its own image back. Recovery rejects
+// journal paths outside that install directory or unrelated to that binary.
 // Renaming that file back by hand does the same.
 //
 // # Confirm and revert

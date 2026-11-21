@@ -39,8 +39,8 @@ func (f swapFS) orHost() swapFS {
 // before the install path is first renamed and removed once it holds a
 // binary again. Between the two renames the install path is missing; if the
 // process dies there, the journal is how the next [Boot] that can run
-// (another binary sharing the state directory, or the image set aside,
-// started by hand) puts it back: [recoverMove].
+// (the image set aside, started by hand) puts its own install back:
+// [recoverMove].
 type moveJournal struct {
 	// Path is the install path; Aside the name its old file was renamed
 	// to; Staged the copy that was to take its place.
@@ -141,7 +141,7 @@ func (f swapFS) setAside(path string, now time.Time, record func(aside string) e
 // before the interrupted move, so state.json, written only after a move
 // completes, still describes it. It returns the install path it restored
 // ("" when there was nothing to restore).
-func recoverMove(f swapFS, dir string) (string, error) {
+func recoverMove(f swapFS, dir, exe string) (string, error) {
 	journal := journalPath(dir)
 	data, err := os.ReadFile(journal)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -155,6 +155,9 @@ func recoverMove(f swapFS, dir string) (string, error) {
 		// Torn before the move began: the journal is written before the
 		// first rename, so nothing was moved under it.
 		return "", os.Remove(journal)
+	}
+	if err := j.validate(exe); err != nil {
+		return "", fmt.Errorf("selfupdate: invalid move journal: %w", err)
 	}
 	restored := ""
 	if _, err := os.Lstat(j.Path); errors.Is(err, fs.ErrNotExist) {
@@ -176,6 +179,45 @@ func recoverMove(f swapFS, dir string) (string, error) {
 		return restored, err
 	}
 	return restored, syncDir(filepath.Dir(j.Path))
+}
+
+// validate binds recovery to the running install (or its renamed image),
+// never to an arbitrary binary named by writable state. All journal operands
+// must be clean absolute siblings with the names our swap generates. Reject
+// symlinks and directories as well, before performing any mutation.
+func (j moveJournal) validate(exe string) error {
+	if !filepath.IsAbs(exe) || !filepath.IsAbs(j.Path) || filepath.Clean(j.Path) != j.Path ||
+		filepath.Dir(j.Path) != filepath.Dir(exe) ||
+		(j.Path != exe && !isAsideOf(filepath.Base(j.Path), filepath.Base(exe))) {
+		return errors.New("install path does not match the running binary")
+	}
+	if filepath.Dir(j.Aside) != filepath.Dir(j.Path) || filepath.Clean(j.Aside) != j.Aside ||
+		!isAsideOf(filepath.Base(j.Path), filepath.Base(j.Aside)) {
+		return errors.New("unexpected aside path")
+	}
+	prefix := "." + filepath.Base(j.Path) + ".new-"
+	suffix, ok := strings.CutPrefix(filepath.Base(j.Staged), prefix)
+	if filepath.Dir(j.Staged) != filepath.Dir(j.Path) || filepath.Clean(j.Staged) != j.Staged || !ok || suffix == "" {
+		return errors.New("unexpected staged path")
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return errors.New("unexpected staged suffix")
+		}
+	}
+	for _, path := range []string{j.Path, j.Aside, j.Staged} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", path)
+		}
+	}
+	return nil
 }
 
 // asideName is <dir>/<stem>.old-<ns><ext> for path <dir>/<stem><ext>:

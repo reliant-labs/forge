@@ -548,7 +548,7 @@ func TestWindowsSwapKilledBetweenTheRenamesIsRecoveredAtTheNextBoot(t *testing.T
 	}
 }
 
-func TestWindowsRevertKilledBetweenTheRenamesIsRecoveredByAnotherBinary(t *testing.T) {
+func TestWindowsRevertKilledBetweenTheRenamesIsRecoveredByItsAside(t *testing.T) {
 	t.Parallel()
 	lfs := newLockingFS()
 	u, exe, _, newBin := windowsSwap(t, lfs, time.Hour)
@@ -568,10 +568,14 @@ func TestWindowsRevertKilledBetweenTheRenamesIsRecoveredByAnotherBinary(t *testi
 		t.Fatalf("the fault was not injected between the renames: %v", err)
 	}
 
-	// Another binary sharing the state directory starts and restores the
-	// install to what it held before the interrupted revert.
+	// Start the image set aside, restoring only its own install. An unrelated
+	// binary sharing writable state must not authorize journal operations.
 	lfs.revive()
-	other := installed(t, []byte("another binary"))
+	var interrupted moveJournal
+	if err := json.Unmarshal(readFile(t, journalPath(u.cfg.StateDir)), &interrupted); err != nil {
+		t.Fatal(err)
+	}
+	other := interrupted.Aside
 	boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()},
 		bootEnv{exe: other, pid: 5, exec: rec.exec, alive: allAlive, fs: lfs.fs()})
 	if !bytes.Equal(readFile(t, exe), newBin) {
@@ -594,7 +598,7 @@ func TestRecoverMove(t *testing.T) {
 	t.Parallel()
 	t.Run("nothing to recover", func(t *testing.T) {
 		t.Parallel()
-		if got, err := recoverMove(newLockingFS().fs(), t.TempDir()); err != nil || got != "" {
+		if got, err := recoverMove(newLockingFS().fs(), t.TempDir(), installed(t, []byte("running"))); err != nil || got != "" {
 			t.Fatalf("%q %v", got, err)
 		}
 	})
@@ -613,7 +617,7 @@ func TestRecoverMove(t *testing.T) {
 		if err := os.WriteFile(journalPath(dir), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := recoverMove(newLockingFS().fs(), dir); err != nil || got != "" {
+		if got, err := recoverMove(newLockingFS().fs(), dir, exe); err != nil || got != "" {
 			t.Fatalf("%q %v, want nothing restored", got, err)
 		}
 		if !bytes.Equal(readFile(t, exe), []byte("new")) {
@@ -628,10 +632,11 @@ func TestRecoverMove(t *testing.T) {
 	t.Run("a torn journal", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
+		exe := installed(t, []byte("running"))
 		if err := os.WriteFile(journalPath(dir), []byte("{\"pa"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := recoverMove(newLockingFS().fs(), dir); err != nil || got != "" {
+		if got, err := recoverMove(newLockingFS().fs(), dir, exe); err != nil || got != "" {
 			t.Fatalf("%q %v", got, err)
 		}
 		if _, err := os.Stat(journalPath(dir)); !errors.Is(err, fs.ErrNotExist) {
@@ -642,11 +647,11 @@ func TestRecoverMove(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		exe := filepath.Join(t.TempDir(), "app.exe")
-		data, _ := json.Marshal(moveJournal{Path: exe, Aside: asideName(exe, 1)})
+		data, _ := json.Marshal(moveJournal{Path: exe, Aside: asideName(exe, 1), Staged: filepath.Join(filepath.Dir(exe), ".app.exe.new-1")})
 		if err := os.WriteFile(journalPath(dir), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := recoverMove(newLockingFS().fs(), dir); err == nil {
+		if _, err := recoverMove(newLockingFS().fs(), dir, exe); err == nil {
 			t.Fatal("want an error naming what could not be restored")
 		}
 		if _, err := os.Stat(journalPath(dir)); err != nil {

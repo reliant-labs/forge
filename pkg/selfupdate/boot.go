@@ -103,9 +103,9 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 	err = withLock(ctx, p.dir, func() error {
 		// Windows: a process that died between renaming its install aside
 		// and moving the new binary in left the install path missing. This
-		// start runs some other binary (one sharing the state directory, or
-		// the image set aside, started by hand): put the install back.
-		if restored, err := recoverMove(env.fs, p.dir); err != nil {
+		// start runs the image set aside, started by hand: put its own
+		// install back. Unrelated binaries cannot authorize journal paths.
+		if restored, err := recoverMove(env.fs, p.dir, exe); err != nil {
 			p.log.Error("selfupdate: boot: recover an interrupted swap", "err", err)
 		} else if restored != "" {
 			p.log.Warn("selfupdate: boot: restored an install an interrupted swap left missing", "path", restored)

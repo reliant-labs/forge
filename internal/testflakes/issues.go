@@ -87,113 +87,129 @@ func SyncIssues(ctx context.Context, o IssueOptions, doc *testreport.Flakes) Iss
 	if o.Stdout == nil {
 		o.Stdout = os.Stdout
 	}
-	res := IssueResult{URLs: map[string]string{}}
-	say := func(format string, a ...any) {
-		msg := fmt.Sprintf(format, a...)
-		res.Messages = append(res.Messages, msg)
-		fmt.Fprintf(o.Stdout, "forge test flakes --issues: %s\n", msg)
+	s := &issueSync{o: o, res: IssueResult{URLs: map[string]string{}}}
+	s.repo = o.Repo
+	if s.repo == "" {
+		s.repo = o.Getenv("GITHUB_REPOSITORY")
 	}
-	repo := o.Repo
-	if repo == "" {
-		repo = o.Getenv("GITHUB_REPOSITORY")
-	}
-	if repo == "" {
+	if s.repo == "" {
 		out, err := o.GH(ctx, "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
 		if err != nil {
-			say("cannot tell which repository to file issues in (set GITHUB_REPOSITORY or pass --repo): %v", err)
-			return res
+			s.say("cannot tell which repository to file issues in (set GITHUB_REPOSITORY or pass --repo): %v", err)
+			return s.res
 		}
-		repo = strings.TrimSpace(string(out))
+		s.repo = strings.TrimSpace(string(out))
 	}
-	module, _ := ModulePath(o.Root)
+	s.module, _ = ModulePath(o.Root)
 
 	open := map[string]ghIssue{} // title -> issue
-	if out, err := o.GH(ctx, "issue", "list", "-R", repo, "--label", LabelSuspected, "--state", "open", "--limit", "500", "--json", "number,title,state,url"); err == nil {
-		var issues []ghIssue
-		if json.Unmarshal(out, &issues) == nil {
-			for _, i := range issues {
-				open[i.Title] = i
-			}
-		}
-	} else {
-		say("cannot list the open %s issues: %v", LabelSuspected, err)
-		return res
+	out, err := o.GH(ctx, "issue", "list", "-R", s.repo, "--label", LabelSuspected, "--state", "open", "--limit", "500", "--json", "number,title,state,url")
+	if err != nil {
+		s.say("cannot list the open %s issues: %v", LabelSuspected, err)
+		return s.res
 	}
-	labelled := false
+	var issues []ghIssue
+	if json.Unmarshal(out, &issues) == nil {
+		for _, i := range issues {
+			open[i.Title] = i
+		}
+	}
 	for _, t := range doc.Tests {
 		if t.ID.Name == "" || t.ID.Lang != testreport.LangGo {
 			continue
 		}
-		title := IssueTitle(t.ID, module)
 		switch t.State {
 		case testreport.StateSuspected, testreport.StateFlaky:
-			if !labelled && !o.DryRun {
-				_, _ = o.GH(ctx, "label", "create", LabelSuspected, "-R", repo, "--color", "FBCA04",
-					"--description", "A test failed, then passed on a retry of the same tree")
-				labelled = true
-			}
-			existing, found := findIssue(ctx, o.GH, repo, t.ID.Name, title)
-			if !found {
-				if o.DryRun {
-					say("--dry-run: would open an issue for %s", t.ID)
-					continue
-				}
-				out, err := o.GH(ctx, "issue", "create", "-R", repo, "--title", title, "--label", LabelSuspected, "--body", issueBody(o.Root, module, t))
-				if err != nil {
-					say("could not open an issue for %s: %v", t.ID.Name, err)
-					continue
-				}
-				url := strings.TrimSpace(string(out))
-				res.URLs[t.ID.String()] = url
-				res.Opened = append(res.Opened, url)
-				say("opened %s for %s", url, t.ID.Name)
-				continue
-			}
-			res.URLs[t.ID.String()] = existing.URL
-			fresh := newEvents(t.Events, existing.text())
-			if len(fresh) == 0 && existing.State != "CLOSED" {
-				continue
-			}
-			if o.DryRun {
-				say("--dry-run: would update #%d (%s)", existing.Number, t.ID.Name)
-				continue
-			}
-			num := fmt.Sprint(existing.Number)
-			if existing.State == "CLOSED" {
-				if _, err := o.GH(ctx, "issue", "reopen", num, "-R", repo); err != nil {
-					say("could not reopen #%d: %v", existing.Number, err)
-				} else {
-					say("reopened #%d (%s)", existing.Number, t.ID.Name)
-				}
-			}
-			if len(fresh) > 0 {
-				if _, err := o.GH(ctx, "issue", "comment", num, "-R", repo, "--body", "Failed then passed on retry again:\n\n"+eventLines(fresh)); err != nil {
-					say("could not comment on #%d: %v", existing.Number, err)
-					continue
-				}
-			}
-			res.Updated = append(res.Updated, existing.URL)
-			say("commented on #%d (%s)", existing.Number, t.ID.Name)
+			s.file(ctx, t)
 		default:
-			existing, ok := open[title]
-			if !ok {
-				continue
+			if existing, ok := open[IssueTitle(t.ID, s.module)]; ok {
+				s.close(ctx, t, existing)
 			}
-			reason := closeReason(t)
-			if o.DryRun {
-				say("--dry-run: would close #%d: %s", existing.Number, reason)
-				continue
-			}
-			if _, err := o.GH(ctx, "issue", "close", fmt.Sprint(existing.Number), "-R", repo, "--reason", "not planned",
-				"--comment", "Closed by `forge test flakes --issues`: "+reason+". A new flake of this test reopens it."); err != nil {
-				say("could not close #%d: %v", existing.Number, err)
-				continue
-			}
-			res.Closed = append(res.Closed, existing.URL)
-			say("closed #%d: %s", existing.Number, reason)
 		}
 	}
-	return res
+	return s.res
+}
+
+type issueSync struct {
+	o        IssueOptions
+	repo     string
+	module   string
+	res      IssueResult
+	labelled bool
+}
+
+func (s *issueSync) say(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	s.res.Messages = append(s.res.Messages, msg)
+	fmt.Fprintf(s.o.Stdout, "forge test flakes --issues: %s\n", msg)
+}
+
+// file opens t's issue, or brings the existing one up to date.
+func (s *issueSync) file(ctx context.Context, t testreport.FlakyTest) {
+	o, title := s.o, IssueTitle(t.ID, s.module)
+	if !s.labelled && !o.DryRun {
+		_, _ = o.GH(ctx, "label", "create", LabelSuspected, "-R", s.repo, "--color", "FBCA04",
+			"--description", "A test failed, then passed on a retry of the same tree")
+		s.labelled = true
+	}
+	existing, found := findIssue(ctx, o.GH, s.repo, t.ID.Name, title)
+	if !found {
+		if o.DryRun {
+			s.say("--dry-run: would open an issue for %s", t.ID)
+			return
+		}
+		out, err := o.GH(ctx, "issue", "create", "-R", s.repo, "--title", title, "--label", LabelSuspected, "--body", issueBody(o.Root, s.module, t))
+		if err != nil {
+			s.say("could not open an issue for %s: %v", t.ID.Name, err)
+			return
+		}
+		url := strings.TrimSpace(string(out))
+		s.res.URLs[t.ID.String()] = url
+		s.res.Opened = append(s.res.Opened, url)
+		s.say("opened %s for %s", url, t.ID.Name)
+		return
+	}
+	s.res.URLs[t.ID.String()] = existing.URL
+	fresh := newEvents(t.Events, existing.text())
+	if len(fresh) == 0 && existing.State != "CLOSED" {
+		return
+	}
+	if o.DryRun {
+		s.say("--dry-run: would update #%d (%s)", existing.Number, t.ID.Name)
+		return
+	}
+	num := fmt.Sprint(existing.Number)
+	if existing.State == "CLOSED" {
+		if _, err := o.GH(ctx, "issue", "reopen", num, "-R", s.repo); err != nil {
+			s.say("could not reopen #%d: %v", existing.Number, err)
+		} else {
+			s.say("reopened #%d (%s)", existing.Number, t.ID.Name)
+		}
+	}
+	if len(fresh) > 0 {
+		if _, err := o.GH(ctx, "issue", "comment", num, "-R", s.repo, "--body", "Failed then passed on retry again:\n\n"+eventLines(fresh)); err != nil {
+			s.say("could not comment on #%d: %v", existing.Number, err)
+			return
+		}
+	}
+	s.res.Updated = append(s.res.Updated, existing.URL)
+	s.say("commented on #%d (%s)", existing.Number, t.ID.Name)
+}
+
+// close closes the open issue of a test that left suspected and flaky.
+func (s *issueSync) close(ctx context.Context, t testreport.FlakyTest, existing ghIssue) {
+	reason := closeReason(t)
+	if s.o.DryRun {
+		s.say("--dry-run: would close #%d: %s", existing.Number, reason)
+		return
+	}
+	if _, err := s.o.GH(ctx, "issue", "close", fmt.Sprint(existing.Number), "-R", s.repo, "--reason", "not planned",
+		"--comment", "Closed by `forge test flakes --issues`: "+reason+". A new flake of this test reopens it."); err != nil {
+		s.say("could not close #%d: %v", existing.Number, err)
+		return
+	}
+	s.res.Closed = append(s.res.Closed, existing.URL)
+	s.say("closed #%d: %s", existing.Number, reason)
 }
 
 // IssueTitle is the issue title of a test's flake: flake-report.sh's.

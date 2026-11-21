@@ -344,7 +344,7 @@ func (c *confirmer) readFrom() ([]testreport.Case, bool) {
 		c.say("could not read %s: %v", o.From, err)
 		return nil, false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	res, err := testreport.ParseResults(f, testreport.ResultsOptions{Lane: testreport.Lane(src.Lane)})
 	if err != nil {
 		c.say("could not read the results in %s: %v", o.From, err)
@@ -388,7 +388,7 @@ func (c *confirmer) readRun(ctx context.Context, module string) ([]testreport.Ca
 		c.say("cannot make a directory for the run's artifacts: %v", err)
 		return logFailures(readRunLogs(failed, ""), module), true
 	}
-	defer os.RemoveAll(art)
+	defer func() { _ = os.RemoveAll(art) }()
 	names, _ := o.GH(ctx, "api", fmt.Sprintf("repos/%s/actions/runs/%s/artifacts", repo, o.RunID), "-q", ".artifacts[] | select(.expired == false) | .name")
 	for _, name := range strings.Fields(string(names)) {
 		if !artifactRe.MatchString(name) {
@@ -577,7 +577,7 @@ func buildTags(dir string, names []string) []string {
 			}
 			lines := strings.SplitN(string(data), "\n", 6)
 			for i := 0; i < len(lines) && i < 5; i++ {
-				if m := buildTagRe.FindStringSubmatch(strings.TrimRight(lines[i], "\r")); m != nil && !seen[m[1]] {
+				if m := buildTagRe.FindStringSubmatch(strings.TrimRight(lines[i], "\r")); len(m) == 2 && !seen[m[1]] {
 					seen[m[1]] = true
 					tags = append(tags, m[1])
 				}

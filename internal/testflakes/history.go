@@ -97,7 +97,7 @@ func readLaneResults(runDir, lane string, lm testreport.LaneManifest) *testrepor
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	opts := testreport.ResultsOptions{Lane: testreport.Lane(lane)}
 	switch lm.Format {
 	case testreport.LaneFormatGoJSON:

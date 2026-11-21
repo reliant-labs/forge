@@ -232,7 +232,7 @@ func readEntry(p string) (Entry, error) {
 	if err != nil {
 		return Entry{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var e Entry
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {

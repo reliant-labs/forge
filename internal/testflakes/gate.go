@@ -160,7 +160,7 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 	actions := o.Getenv("GITHUB_ACTIONS") == "true"
 	o.summary(fmt.Sprintf("### flake gate (%s): new and edited tests, %s\n", mode, strings.Join(flags, " ")))
 	for _, p := range pkgs {
-		o.summary(fmt.Sprintf("- selected package: `%s`", p))
+		o.summary(fmt.Sprintf("- selected package: %#q", p))
 	}
 	if actions {
 		fmt.Fprintf(o.Stdout, "::group::changed tests (%s) — %d packages, scheduled by go test\n", mode, len(pkgs))
@@ -235,7 +235,7 @@ func (o *GateOptions) summary(line string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	fmt.Fprintln(f, line)
 }
 

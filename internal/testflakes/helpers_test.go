@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -106,5 +105,3 @@ func hasArg(argv []string, arg string) bool {
 	}
 	return false
 }
-
-func lines(s string) []string { return strings.Split(strings.TrimSpace(s), "\n") }

@@ -143,6 +143,12 @@ func TestApplyCover_ReleaseVariantEligibility(t *testing.T) {
 		{"env says no", &KCLEntities{Env: "staging", Project: "shop", Tests: &TestsEntity{Coverage: boolp(false)}, Workloads: []WorkloadEntity{img("api", nil)}}, true, false},
 		{"build says no", &KCLEntities{Env: "staging", Project: "shop", Workloads: []WorkloadEntity{img("api", map[string]bool{"./cmd/shop": false})}}, true, false},
 		{"already the cover build", &KCLEntities{Env: "dev", Lifecycle: "local", Project: "shop", Workloads: []WorkloadEntity{img("api", nil)}}, true, false},
+		// The binary's coverage is per binary, not per image: another
+		// workload that runs ./cmd/shop and declares it off turns the
+		// variant off for this image too, as a preview's own build would.
+		{"another workload turns the binary off", &KCLEntities{Env: "staging", Project: "shop", Workloads: []WorkloadEntity{
+			img("api", nil), img("api-2", map[string]bool{"cmd/shop": false}),
+		}}, true, false},
 	} {
 		bins, err := ResolveCoverBinaries(tc.e, tc.optIn)
 		if err != nil {
@@ -176,6 +182,24 @@ func TestCoverVariantArgs(t *testing.T) {
 		"-t", "ghcr.io/acme/shop:v1.4.0-cover", "-t", "localhost:5050/shop:v1.4.0-cover", "-f", "Dockerfile", "."}
 	if !slices.Equal(got, want) {
 		t.Errorf("args = %v\nwant %v", got, want)
+	}
+	// Every spelling of a tag docker accepts is suffixed; an argv with no
+	// tag at all builds no variant rather than push over the shared tags.
+	long := []string{"build", "--tag", "ghcr.io/acme/shop:v1.4.0", "--tag=localhost:5050/shop:v1.4.0", "-t=a/b:v1", "-tc/d:v1", "-f", "Dockerfile", "."}
+	got, err = coverVariantArgs(context.Background(), "shop", d, long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"build", "--target", "cover", "--build-arg", "FORGE_COVERPKG=./internal/...",
+		"--tag", "ghcr.io/acme/shop:v1.4.0-cover", "--tag=localhost:5050/shop:v1.4.0-cover", "-t=a/b:v1-cover", "-tc/d:v1-cover", "-f", "Dockerfile", "."}
+	if !slices.Equal(got, want) {
+		t.Errorf("long-form args = %v\nwant %v", got, want)
+	}
+	if _, err := coverVariantArgs(context.Background(), "shop", d, []string{"build", "-f", "Dockerfile", "."}); !errors.Is(err, errCoverVariantUntagged) {
+		t.Errorf("an untagged argv: err %v, want errCoverVariantUntagged", err)
+	}
+	if dg, err := buildReleaseCoverVariant(context.Background(), "shop", d, []string{"build", "-f", "Dockerfile", "."}, []string{"ghcr.io/acme/shop:v1.4.0"}, false); dg != "" || err != nil {
+		t.Errorf("an untagged argv built a variant (%q, %v)", dg, err)
 	}
 	for ref, want := range map[string]string{
 		"ghcr.io/acme/shop:v1.4.0": "ghcr.io/acme/shop:v1.4.0-cover",

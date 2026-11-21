@@ -29,7 +29,8 @@ type LocalRun struct {
 // LoadRecord reads every captured lane of every run under root's
 // .forge/tests/runs/, oldest run first. A confirm lane also yields the red
 // run's failures it read (as lane <source lane>, on the source's tree),
-// unless those are a local run already in the record. Unreadable runs are
+// unless those are a local run already in the record, or the source's tree
+// is unknown or not the tree the reruns ran on. Unreadable runs are
 // skipped and named in the warnings.
 func LoadRecord(root string) ([]LocalRun, []string) {
 	runsRoot := testreport.RunsRoot(root)
@@ -76,6 +77,11 @@ func LoadRecord(root string) ([]LocalRun, []string) {
 			}
 			doc, err := ReadConfirm(testreport.LaneDir(runDir, lane))
 			if err != nil || doc.Source.LocalRun != "" || len(doc.Failures) == 0 {
+				continue
+			}
+			if doc.Source.Tree == "" || doc.Source.Tree != m.TreeHash {
+				// Not proven to be the reruns' snapshot: kept out of the
+				// record, so a pass here never confirms a failure there.
 				continue
 			}
 			out = append(out, LocalRun{RunRecord: testreport.RunRecord{

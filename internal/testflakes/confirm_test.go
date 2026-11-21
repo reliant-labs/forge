@@ -195,13 +195,61 @@ func TestConfirmCorrelatesAndBoundsReruns(t *testing.T) {
 	if len(doc.Infra) != 1 || len(doc.Infra[0].Members) != 3 || !strings.HasPrefix(doc.Infra[0].Reason, "package:") {
 		t.Fatalf("infra = %+v", doc.Infra)
 	}
+	// The results file is not a recorded run's, so the failures' tree is
+	// unknown: the two reruns that pass are inconclusive too, not flakes.
 	c := doc.Counts
-	if c.Correlated != 3 || c.Confirmed != 2 || c.Inconclusive != 1 {
-		t.Errorf("counts = %+v\n%s", c, f.out)
+	if c.Correlated != 3 || c.Confirmed != 0 || c.Inconclusive != 3 || len(doc.Suggested) != 0 {
+		t.Errorf("counts = %+v, suggested %v\n%s", c, doc.Suggested, f.out)
 	}
 	for _, call := range r.calls {
 		if strings.HasSuffix(call[len(call)-1], "internal/x") {
 			t.Errorf("a correlated group must not be rerun: %v", call)
+		}
+	}
+}
+
+// A pass on retry confirms a flake only when the failure's tree is known
+// and is the tree the retry ran on. Here the source commit's tree cannot be
+// read (the commit is not in this clone): the pass is inconclusive, nothing
+// is suggested for quarantine, and the record holds no flake.
+func TestConfirmNeedsTheFailuresTree(t *testing.T) {
+	r := &fakeRunner{script: func(argv []string) (string, int) {
+		switch argv[len(argv)-1] {
+		case "./internal/a":
+			return passRun(testModule+"/internal/a", "TestFlaky") + ev("pass", testModule+"/internal/a", "", ""), 0
+		case "./internal/e":
+			return failRun(testModule+"/internal/e", "TestStream", "boom again\n") + ev("fail", testModule+"/internal/e", "", ""), 1
+		}
+		return "", 1
+	}}
+	f := newConfirmFixture(t, r)
+	f.opts.LogsDir, f.opts.SHA = "testdata/gate-logs", "missingcommit"
+	f.opts.Git = func(_ context.Context, _ string, args ...string) (string, error) {
+		if args[0] == "rev-parse" && args[1] == "missingcommit^{tree}" {
+			return "", errors.New("fatal: not a valid object name")
+		}
+		return "tree1", nil
+	}
+	doc := RunConfirm(context.Background(), f.opts)
+	if doc.Source.Tree != "" || doc.Tree != "tree1" {
+		t.Fatalf("source tree %q, rerun tree %q", doc.Source.Tree, doc.Tree)
+	}
+	for _, v := range doc.Tests {
+		if v.Test.Name == "TestFlaky" && (v.Verdict != testreport.VerdictInconclusive || !strings.Contains(v.Reason, "tree is unknown")) {
+			t.Errorf("TestFlaky: %s (%s), want inconclusive", v.Verdict, v.Reason)
+		}
+	}
+	if doc.Counts.Confirmed != 0 || len(doc.Suggested) != 0 {
+		t.Errorf("counts %+v, suggested %v", doc.Counts, doc.Suggested)
+	}
+	stored, err := ReadConfirm(testreport.LaneDir(doc.Run, LaneConfirm))
+	if err != nil || stored.Counts.Confirmed != 0 {
+		t.Fatalf("confirm.json: %v %+v", err, stored)
+	}
+	flakes, _ := ComputeFlakes(FlakesOptions{Root: f.root, Now: f.clock.Add(time.Hour)})
+	for _, ft := range flakes.Tests {
+		if ft.ID.Name == "TestFlaky" {
+			t.Errorf("a pass on an unproven tree made TestFlaky a flake: %+v", ft)
 		}
 	}
 }

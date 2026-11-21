@@ -147,7 +147,12 @@ func importPath(pkg, module string) (string, error) {
 			return "", errors.New("the module root package needs a go.mod to name it")
 		}
 		return module, nil
-	case module != "" && (pkg == module || strings.HasPrefix(pkg, module+"/")):
+	case module != "" && pkg == module:
+		return pkg, nil
+	case module != "" && strings.HasPrefix(pkg, module+"/"):
+		if err := checkPackageDir(strings.TrimPrefix(pkg, module+"/")); err != nil {
+			return "", fmt.Errorf("package %s: %w", pkg, err)
+		}
 		return pkg, nil
 	case strings.HasPrefix(pkg, "./"):
 		pkg = strings.TrimPrefix(pkg, "./")
@@ -162,19 +167,49 @@ func importPath(pkg, module string) (string, error) {
 	if strings.HasPrefix(clean, "../") || clean == ".." {
 		return "", fmt.Errorf("package %s is outside the module", pkg)
 	}
+	if err := checkPackageDir(clean); err != nil {
+		return "", fmt.Errorf("package %s: %w", pkg, err)
+	}
 	return module + "/" + clean, nil
 }
 
+// checkPackageDir refuses a module-relative package directory that is not
+// a plain relative path inside the module: absolute, `.` or `..` segments,
+// empty segments, or a backslash. It is what keeps an entry's file under
+// ci/quarantine/<lang>/.
+func checkPackageDir(dir string) error {
+	if dir == "" || strings.HasPrefix(dir, "/") || strings.Contains(dir, `\`) {
+		return fmt.Errorf("%q is not a directory inside the module", dir)
+	}
+	for _, seg := range strings.Split(dir, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("%q is not a directory inside the module", dir)
+		}
+	}
+	return nil
+}
+
 // EntryPath is the file an entry for id lives in, relative to the project
-// root and slash-separated.
+// root and slash-separated. It refuses an id whose package or name would
+// put the file anywhere but under ci/quarantine/<lang>/: callers join the
+// path to the project root and write it.
 func EntryPath(id testreport.TestID, module string) (string, error) {
 	dir := RootPackageDir
 	switch {
 	case id.Package == module:
 	case strings.HasPrefix(id.Package, module+"/"):
 		dir = strings.TrimPrefix(id.Package, module+"/")
+		if err := checkPackageDir(dir); err != nil {
+			return "", fmt.Errorf("package %s: %w", id.Package, err)
+		}
 	default:
 		return "", fmt.Errorf("package %s is not in module %s", id.Package, module)
+	}
+	if !goTestName.MatchString(id.Name) {
+		return "", fmt.Errorf("test %q is not a Go test function name (Test…)", id.Name)
+	}
+	if id.Lang != testreport.LangGo {
+		return "", fmt.Errorf("test %s: only Go tests can be quarantined today", id)
 	}
 	return path.Join(QuarantineDir, string(id.Lang), dir, id.Name+".yaml"), nil
 }

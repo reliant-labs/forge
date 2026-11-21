@@ -251,6 +251,11 @@ func RunConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
 		}
 		*v = c.judge(f, results)
 	}
+	laneDir := ""
+	if len(rerun) > 0 {
+		laneDir = c.record(ctx, stream, laneExit)
+	}
+	c.requireSameTree(rerun, verdicts)
 	for _, f := range failures {
 		v := verdicts[f.ID]
 		doc.Tests = append(doc.Tests, *v)
@@ -266,10 +271,42 @@ func RunConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
 			doc.Suggested = append(doc.Suggested, quarantineSuggestion(t.Test, ""))
 		}
 	}
-	if len(rerun) > 0 {
-		c.record(ctx, stream, laneExit)
+	if laneDir != "" {
+		c.writeDoc(laneDir)
 	}
 	return doc
+}
+
+// requireSameTree keeps "failed, then passed on retry" a confirmed flake
+// only when the failure's tree and the reruns' tree are both known and
+// equal. A pass on another snapshot, or on one nobody can name (the
+// source commit is not in this clone, its metadata could not be read, the
+// reruns were not recorded), proves nothing about the failure: it could be
+// a real regression the checkout no longer has. Those are inconclusive.
+func (c *confirmer) requireSameTree(rerun []testreport.Case, verdicts map[testreport.TestID]*ConfirmedTest) {
+	src, ran := c.doc.Source.Tree, c.doc.Tree
+	if src != "" && src == ran {
+		return
+	}
+	reason := "passed on retry, but the failure's tree is unknown, so the retry proves nothing"
+	switch {
+	case src != "" && ran != "":
+		reason = fmt.Sprintf("passed on retry on tree %s, but the failure came from tree %s", short(ran), short(src))
+	case src != "":
+		reason = "passed on retry, but the retry's tree is unknown (not recorded), so it proves nothing"
+	}
+	downgraded := 0
+	for _, f := range rerun {
+		v := verdicts[f.ID]
+		if v == nil || v.Verdict != testreport.VerdictConfirmed {
+			continue
+		}
+		v.Verdict, v.Reason = testreport.VerdictInconclusive, reason
+		downgraded++
+	}
+	if downgraded > 0 {
+		c.say("%d test(s) passed on retry, but not on the failure's tree: inconclusive, not flakes (%s; rerun from a checkout of %s)", downgraded, reason, orNone(c.doc.Source.Commit))
+	}
 }
 
 // stored is a failure as the document keeps it: output bounded.
@@ -657,31 +694,35 @@ func rerunOf(r *testreport.Results, id testreport.TestID) (*testreport.Case, *te
 	return top, pkg
 }
 
-// record writes the reruns as lane confirm of a new run, with the document
-// beside them.
-func (c *confirmer) record(ctx context.Context, stream []byte, exit int) {
+// record writes the reruns as lane confirm of a new run and returns the
+// lane's directory ("" when nothing was recorded); writeDoc puts the
+// document beside them once the verdicts are final.
+func (c *confirmer) record(ctx context.Context, stream []byte, exit int) string {
 	o := c.o
 	runDir, recording, warnings := openRun(ctx, o.Begin)
 	for _, w := range warnings {
 		fmt.Fprintf(o.Stderr, "forge test flakes confirm: warning: %s\n", w)
 	}
 	if !recording {
-		return
+		return ""
 	}
 	now := o.Now()
 	cmd := []string{"forge", "test", "flakes", "confirm", "--" + c.doc.Source.Kind, c.doc.Source.Ref}
 	laneDir, err := recordLane(runDir, laneRun{Lane: LaneConfirm, Command: cmd, StartedAt: now, FinishedAt: now, ExitCode: exit, Stream: stream})
 	if err != nil {
 		fmt.Fprintf(o.Stderr, "forge test flakes confirm: warning: %v\n", err)
-		return
+		return ""
 	}
 	c.doc.Run = runDir
 	if m, err := testreport.ReadRunManifest(runDir); err == nil {
 		c.doc.Commit, c.doc.Tree = m.Commit, m.TreeHash
-		if src := c.doc.Source.Tree; src != "" && m.TreeHash != "" && src != m.TreeHash {
-			c.say("the reruns ran on tree %s, but the failures came from tree %s: recorded, but they confirm nothing for the record (rerun from a checkout of %s)", short(m.TreeHash), short(src), orNone(c.doc.Source.Commit))
-		}
 	}
+	return laneDir
+}
+
+// writeDoc writes the document into the confirm lane's directory.
+func (c *confirmer) writeDoc(laneDir string) {
+	o := c.o
 	data, err := json.MarshalIndent(c.doc, "", "  ")
 	if err == nil {
 		err = atomicfile.WriteFile(filepath.Join(laneDir, ConfirmFile), append(data, '\n'), 0o644)

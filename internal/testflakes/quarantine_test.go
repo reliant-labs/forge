@@ -25,6 +25,13 @@ func TestParseQuarantineTarget(t *testing.T) {
 		{in: "github.com/other/mod/x:TestX", err: "not in module"},
 		{in: "../escape:TestX", err: "outside the module"},
 		{in: "TestNoPackage", err: "want go:"},
+		// An import path under the module is not taken as it is: its
+		// directory must stay inside the module (and so the entry's file
+		// inside ci/quarantine/go/).
+		{in: "go:example.com/m/pkg/../../../outside:TestX", err: "not a directory inside the module"},
+		{in: "example.com/m/./x:TestX", err: "not a directory inside the module"},
+		{in: "example.com/m//x:TestX", err: "not a directory inside the module"},
+		{in: `./internal\x:TestX`, err: "not a directory inside the module"},
 	}
 	for _, c := range cases {
 		id, err := ParseQuarantineTarget(c.in, testModule)
@@ -41,6 +48,33 @@ func TestParseQuarantineTarget(t *testing.T) {
 		if id.Lang != testreport.LangGo || id.Package != c.pkg || id.Name != c.name {
 			t.Errorf("%s: got %+v", c.in, id)
 		}
+	}
+}
+
+// EntryPath never names a file outside ci/quarantine/go/, whatever id it is
+// handed: QuarantineAdd and QuarantineRemove join it to the project root.
+func TestEntryPathStaysInTheQuarantineDir(t *testing.T) {
+	bad := []testreport.TestID{
+		{Lang: testreport.LangGo, Package: testModule + "/../../outside", Name: "TestX"},
+		{Lang: testreport.LangGo, Package: testModule + "/a/../../b", Name: "TestX"},
+		{Lang: testreport.LangGo, Package: testModule + "/x", Name: "TestX/../../../../outside"},
+		{Lang: testreport.LangGo, Package: testModule + "/x", Name: ".."},
+		{Lang: testreport.LangGo, Package: testModule + "/x", Name: `TestX\..\y`},
+		{Lang: testreport.Lang("../../x"), Package: testModule + "/x", Name: "TestX"},
+	}
+	for _, id := range bad {
+		if p, err := EntryPath(id, testModule); err == nil {
+			t.Errorf("%+v: path %q, want refused", id, p)
+		}
+	}
+	root := newModule(t, nil)
+	e := Entry{Lang: testreport.LangGo, Package: testModule + "/../../outside", Test: "TestX"}
+	if _, err := QuarantineAdd(root, testModule, e, false); err == nil {
+		t.Fatal("QuarantineAdd wrote an entry outside ci/quarantine")
+	}
+	p, err := EntryPath(testreport.TestID{Lang: testreport.LangGo, Package: testModule + "/internal/a", Name: "TestA"}, testModule)
+	if err != nil || p != "ci/quarantine/go/internal/a/TestA.yaml" {
+		t.Errorf("path = %q, %v", p, err)
 	}
 }
 

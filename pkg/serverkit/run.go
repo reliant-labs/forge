@@ -137,7 +137,8 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// it), the rpc is routed to the Mux ahead of Handler, as the Listener does
 	// for its own REST swap: a transcoder serves only the project's services,
 	// so the rpc mounted beneath it would otherwise answer 404.
-	if srv.Mux != nil && mountHealth(srv.Mux, ready, srv.handlerOptions()...) {
+	// A Server configured only for connect-go v2 builds it with its v2 chain.
+	if srv.Mux != nil && srv.mountHealthOn(ready) {
 		if srv.Handler != http.Handler(srv.Mux) {
 			srv.Handler = withHealthRoute(srv.Mux, srv.Handler)
 		}
@@ -165,12 +166,13 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	// Server.Chain the listener also checks every mounted service's declared
 	// audience against the chain's, and refuses to serve a mismatch.
 	listener, err := newListener(ListenerDeps{
-		Config: cfg.Listener(),
-		Chain:  srv.Chain,
-		Routes: &handlerRoutes{handler: srv.Handler, services: srv.MountedNames()},
-		Logger: logger,
-		Edge:   edge,
-		Front:  front,
+		Config:  cfg.Listener(),
+		Chain:   srv.Chain,
+		ChainV2: srv.ChainV2,
+		Routes:  &handlerRoutes{handler: srv.Handler, services: srv.MountedNames()},
+		Logger:  logger,
+		Edge:    edge,
+		Front:   front,
 	})
 	if err != nil {
 		return err

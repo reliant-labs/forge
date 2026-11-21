@@ -318,6 +318,48 @@ func TestUniqueFK_SurvivesTheAutoResolvedDiamond(t *testing.T) {
 	}
 }
 
+// A composite UNIQUE that pairs a foreign key with a data column — reliant's
+// `messages UNIQUE (chat_id, seq)` — must not deal the foreign key when the
+// data column alone can tell every row apart. Dealing it marked the column as
+// owned, and every forge:ref declaration on it (authoritative and derived-from
+// alike) was then refused with "already takes a dealt parent per row".
+func TestCompositeUnique_DataMemberLeavesTheForeignKeyToForgeRef(t *testing.T) {
+	const rows = 20
+	for _, decl := range []string{"forge:ref authoritative", "forge:ref derived-from=prescription_id"} {
+		t.Run(decl, func(t *testing.T) {
+			tables := diamondSchema(decl)
+			for i := range tables {
+				if tables[i].Name != "orders" {
+					continue
+				}
+				tables[i].Columns = append(tables[i].Columns, col("seq", schemadef.TypeInt, true, false))
+				tables[i].Indexes = []schemadef.Index{
+					{Name: "orders_patient_id_seq_key", Columns: []string{"patient_id", "seq"}, Unique: true},
+				}
+			}
+			p := buildOrFail(t, tables, Config{Rows: rows, Salt: 1})
+
+			if err := p.Validate(); err != nil {
+				t.Fatalf("a data member covers the row count, so the foreign key is free for forge:ref: %v", err)
+			}
+			if p.tupleOwns("orders", "patient_id") {
+				t.Error("orders.patient_id was dealt by the composite UNIQUE although seq alone makes the tuple distinct")
+			}
+			if n := countDisagreeing(t, p, rows); n != 0 {
+				t.Errorf("%s must make every row agree; %d of %d still disagree", decl, n, rows)
+			}
+			seen := map[string]int{}
+			for i := 0; i < p.rowsOf["orders"]; i++ {
+				v := tupleAt(t, p, "orders", []string{"patient_id", "seq"}, i)
+				if prev, dup := seen[v]; dup {
+					t.Errorf("rows %d and %d repeat the tuple %s", prev, i, v)
+				}
+				seen[v] = i
+			}
+		})
+	}
+}
+
 // membershipMigration is the real control-plane shape, reduced to the
 // constraint under test.
 const membershipMigration = `

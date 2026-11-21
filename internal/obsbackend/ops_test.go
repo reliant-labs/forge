@@ -401,3 +401,49 @@ func TestCloudOpsByVersion(t *testing.T) {
 		t.Errorf("rows %v, want %s", got, want)
 	}
 }
+
+// A named request reaches the control plane as an `in` on span.name in each
+// panel it asks, so the server scans only those ops: the client never ranks
+// every op and filters afterwards.
+func TestCloudOpsPushesNamesDownToQueryPanel(t *testing.T) {
+	pc := &panelCaller{replies: map[string]string{
+		"ops-server":    `{"rows":[{"group":{"service.name":"api","span.name":"todo.v1.TodoService/CreateTodo"},"values":[100,1,2,5,9]}]}`,
+		"ops-component": `{"rows":[]}`,
+		"ops-code":      `{"rows":[]}`,
+	}}
+	c := Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: pc}
+	names := []string{"todo.v1.TodoService/CreateTodo", "claimable.IsUnclaimedUser"}
+	res, err := c.Ops(context.Background(), OpsRequest{Narrow: narrowC(), Names: names})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Ops) != 1 || res.Ops[0].Name != names[0] {
+		t.Errorf("ops %+v", res.Ops)
+	}
+	want := map[string]string{"ops-server": names[0], "ops-component": names[1], "ops-code": names[1]}
+	if len(pc.panels) != 3 {
+		t.Fatalf("sent %d panels, want server, component and code", len(pc.panels))
+	}
+	for _, p := range pc.panels {
+		var in []any
+		for _, w := range p["where"].([]any) {
+			if w := w.(map[string]any); w["field"] == "span.name" && w["op"] == "in" {
+				in = w["values"].([]any)
+			}
+		}
+		if fmt.Sprint(in) != "["+want[fmt.Sprint(p["id"])]+"]" {
+			t.Errorf("panel %v: span.name in %v, want [%s]", p["id"], in, want[fmt.Sprint(p["id"])])
+		}
+	}
+}
+
+func TestOpsNameOutsideKindIsRefused(t *testing.T) {
+	r := fixtureOpsRunner()
+	_, err := Local{Env: "dev", Runner: r}.Ops(context.Background(), OpsRequest{Narrow: rng(), Kinds: []string{OpKindRPC}, Names: []string{"todo.Create"}})
+	if exitOf(err) != ExitWrong || !strings.Contains(err.Error(), `"todo.Create" is a component op`) {
+		t.Errorf("err = %v", err)
+	}
+	if len(r.ran) != 0 {
+		t.Errorf("ran %d statements for a refused request", len(r.ran))
+	}
+}

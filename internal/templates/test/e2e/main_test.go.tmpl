@@ -80,7 +80,7 @@ func TestMain(m *testing.M) {
 	}
 
 	// 4. Wait for the service to be ready
-	fmt.Println("==> Waiting for service health check...")
+	fmt.Println("==> Waiting for service readiness...")
 	if err := waitForHealth(baseURL, 30*time.Second); err != nil {
 		cleanup()
 		log.Fatalf("service failed to become ready: %v", err)
@@ -134,6 +134,11 @@ func findProjectRoot() string {
 	return "../.."
 }
 
+// waitForHealth polls /readyz until it answers 200. Not /healthz: the serve
+// command's boot probes answer /healthz 200 from before migrations run and the
+// graph is built, while the API is not yet listening, so an RPC sent then gets
+// the boot listener's 404 ("unimplemented: 404 Not Found"). /readyz answers
+// 503 until the API listener owns the address and its checks pass.
 func waitForHealth(base string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -141,11 +146,11 @@ func waitForHealth(base string, timeout time.Duration) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
-	healthURL := base + "/healthz"
+	healthURL := base + "/readyz"
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("health check timed out after %s", timeout)
+			return fmt.Errorf("readiness check (%s) timed out after %s", healthURL, timeout)
 		case <-ticker.C:
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 			if err != nil {

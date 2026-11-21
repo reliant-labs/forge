@@ -42,6 +42,9 @@ type goldenCase struct {
 	network *EnvNetworkPolicy
 	pull    []string
 	ws      []v1alpha1.Workload
+	// telemetry is Context.Telemetry: declared telemetry whose collector
+	// the workloads' own policies admit.
+	telemetry *WorkloadTelemetry
 }
 
 func gw(name string, spec v1alpha1.WorkloadSpec) v1alpha1.Workload {
@@ -132,6 +135,12 @@ func goldenCases() []goldenCase {
 		}},
 		{name: "netpol", network: &EnvNetworkPolicy{EgressPorts: []int32{443, 5432}, TelemetryNamespace: "observability", IngressNamespace: "gateway-system"},
 			ws: []v1alpha1.Workload{scaffoldAPI()}},
+		// An image-only workload whose declared telemetry forge's node agent
+		// scrapes: its own policy admits the agent on the scrape port, and
+		// the api beside it renders exactly as in netpol.
+		{name: "netpol_telemetry", network: &EnvNetworkPolicy{EgressPorts: []int32{443, 5432}, TelemetryNamespace: "observability", IngressNamespace: "gateway-system"},
+			ws:        []v1alpha1.Workload{scaffoldAPI(), gw("zitadel", v1alpha1.WorkloadSpec{Kind: v1alpha1.KindService, Ports: []v1alpha1.Port{{Name: "http", Port: 8080}}})},
+			telemetry: &WorkloadTelemetry{Collector: AgentCollectorRef("observability"), Targets: telemetryTargets()}},
 		// enableServiceLinks is the opt-in: this pod renders true, its
 		// neighbour keeps the default false.
 		{name: "service_links", ws: []v1alpha1.Workload{
@@ -169,6 +178,7 @@ func TestGolden(t *testing.T) {
 			rctx := goldenCtx
 			rctx.Network = c.network
 			rctx.ImagePullSecrets = c.pull
+			rctx.Telemetry = c.telemetry
 			objs, err := RenderWorkloads(c.ws, c.profile, rctx)
 			if err != nil {
 				t.Fatal(err)

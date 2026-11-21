@@ -241,7 +241,7 @@ func (fx *crudTestFixtures) buildEntitySeedPlan(root string) *entitySeedPlan {
 // unplacedConstraintNote explains a seeding failure that the planner saw
 // coming. The seed plan for an entity's parents records every multi-column
 // constraint it could not place (a discriminated union that overlaps another
-// constraint, a biconditional, …) and leaves those rows satisfying them only by
+// constraint, a CHECK over a function call, …) and leaves those rows satisfying them only by
 // chance. When postgres then rejects a parent row, those notes are the cause,
 // and the raw constraint violation alone does not say so. Returns "" when the
 // plan made no such note.
@@ -271,7 +271,7 @@ func (fx *crudTestFixtures) unplacedConstraintNote(table, failure string) string
 		b.WriteString("\n    - " + strings.TrimPrefix(w, "seed plan: "))
 	}
 	b.WriteString("\n  A vocabulary in db/seeds/vocab.yaml does not help here: a minimal row leaves nullable columns unset, and these constraints require some of them.")
-	b.WriteString("\n  Either restate the constraint in a form forge can place (one union per set of columns; a one-way implication instead of a biconditional — see `forge skill load db/seeding`),")
+	b.WriteString("\n  Either restate the constraint in a form forge can place (one union per set of columns — see `forge skill load db/seeding`),")
 	b.WriteString("\n  or take the factory over with `forge project disown <this file>` and build the request by hand.")
 	return b.String()
 }

@@ -58,7 +58,7 @@ func TestFreshScaffold_GoIsFormattedAndTakesContextFirst(t *testing.T) {
 			}
 			if tc.withLogin {
 				// login_broker.go is born by generate, not by project new.
-				if err := codegen.GenerateLoginBroker("example.com/"+name, name, root); err != nil {
+				if _, err := codegen.GenerateLoginBroker("example.com/"+name, name, root); err != nil {
 					t.Fatalf("GenerateLoginBroker: %v", err)
 				}
 				broker, err := os.ReadFile(filepath.Join(root, "internal", "app", "login_broker.go"))

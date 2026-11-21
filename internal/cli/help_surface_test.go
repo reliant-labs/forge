@@ -66,6 +66,10 @@ func TestGenerateHelpSurface(t *testing.T) {
 		"force-cleanup",
 		"heal",
 		"help-dev",
+		// VISIBLE on purpose: the connect-go v2 migration guide
+		// (docs/proposals/connect-v2.md, section 5) tells users to pass it,
+		// and a failed compile's rollback report names it.
+		"keep-on-build-failure",
 		// VISIBLE on purpose: a skipped run says "--no-cache runs every
 		// step", and the flag it names must be one --help shows.
 		"no-cache",

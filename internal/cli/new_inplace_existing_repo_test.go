@@ -64,7 +64,6 @@ func isolateGit(t *testing.T) {
 	// the existing-repo case asserts forge declines to configure hooks by
 	// itself, not because the user opted out.
 	t.Setenv(gitHooksOptOutEnv, "")
-	t.Setenv(legacyGitHooksOptOutEnv, "")
 }
 
 func writeTestFile(t *testing.T, path, body string) {

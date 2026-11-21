@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/depsurface"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -36,11 +37,13 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 		}
 	}
 
-	if err := codegen.GenerateAuthSetup(modPath, projectDir); err != nil {
+	wrote, err := codegen.GenerateAuthSetup(modPath, projectDir)
+	if err != nil {
 		return err
 	}
-
-	fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	if wrote {
+		fmt.Println("  ✅ Scaffolded internal/app/auth.go (SetupAuth — yours to edit)")
+	}
 	return generateLoginBroker(modPath, projectDir)
 }
 
@@ -48,15 +51,23 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 // of the API-only sign-in flow, so a project that wants its own sign-in
 // screen has the endpoint already written rather than having to derive it
 // from the issuer's API docs. Inert until wired.
+//
+// The "Scaffolded" line prints only when this run wrote the file: it is
+// scaffold-once, and declined when the project already has it, deleted it on
+// purpose, or declares no config the broker could read. Agents and people
+// take a ✅ line as proof the file exists.
 func generateLoginBroker(modulePath, projectDir string) error {
 	projectName := filepath.Base(projectDir)
-	if err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir); err != nil {
+	wrote, err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir)
+	if err != nil {
 		return err
 	}
 	if w := codegen.LoginBrokerCookieMismatch(projectDir); w != "" {
 		fmt.Printf("  ⚠️  %s\n", w)
 	}
-	fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
+	if wrote {
+		fmt.Println("  ✅ Scaffolded internal/app/login_broker.go (API-only sign-in — yours to edit)")
+	}
 	return nil
 }
 
@@ -638,7 +649,7 @@ func packageHasTwoResultNew(dir string) bool {
 // cmd/server.go — when migrations are disabled, migration-related
 // fields (AutoMigrate, DatabaseUrl, pool tuning) are excluded from
 // the server template so it doesn't reference app.AutoMigrate().
-func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs *generator.FileChecksums) (map[string]bool, error) {
+func generateConfigLoader(projectDir string, features config.FeaturesConfig, major connectmajor.Major, cs *generator.FileChecksums) (map[string]bool, error) {
 	fmt.Println("🔧 Generating config loader from proto/<project>/config/v1/...")
 
 	messages, err := codegen.ParseConfigProtosFromDir(filepath.Join(projectDir, "proto", "config"))
@@ -715,7 +726,7 @@ func generateConfigLoader(projectDir string, features config.FeaturesConfig, cs 
 
 	// Re-render the primary binary's cmd/<bin>/cmd/serve.go so it stays in
 	// sync with the config fields.
-	if err := codegen.GenerateCmdServerForConfigs(configFields, inputs, projectDir, cs); err != nil {
+	if err := codegen.GenerateCmdServerForConfigs(configFields, inputs, major, projectDir, cs); err != nil {
 		return nil, fmt.Errorf("failed to regenerate cmd/<bin>/cmd/serve.go: %w", err)
 	}
 
@@ -817,6 +828,11 @@ func generatePerEnvDeployConfig(projectDir string, cfg *config.ProjectConfig, cs
 	}
 	if err := codegen.ValidateConfigEnvFamilies(messages); err != nil {
 		return err
+	}
+	// A block inside a block is not projected (one level, as the flattener
+	// documents); the Go loader still reads it, so say what config.k lacks.
+	for _, w := range codegen.UnprojectedNestedConfigBlocks(messages) {
+		fmt.Fprintf(os.Stderr, "  ⚠️  %s\n", w)
 	}
 
 	// Flatten all proto config fields. Most projects have a single

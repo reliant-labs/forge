@@ -724,3 +724,69 @@ func TestSvcerrClassificationCoversPackage(t *testing.T) {
 		}
 	}
 }
+
+// A connect error is non-nil in both connect-go majors: v1's NewError, and
+// v2's NewError and Errorf — under v2's major-version import path, which
+// names package connect — plus the .WithCause / .WithDetail clones v2
+// builds on one. A With* call on anything else proves nothing.
+func TestOptionalDepsGuard_ConnectErrorBothMajors(t *testing.T) {
+	t.Parallel()
+	const v1 = `"connectrpc.com/connect"`
+	const v2 = `"connectrpc.com/connect/v2"`
+	cases := []struct {
+		name, importSpec, expr string
+		findings               int
+	}{
+		{name: "v1-new-error", importSpec: v1, expr: `connect.NewError(connect.CodeUnavailable, cause)`},
+		{name: "v2-new-error", importSpec: v2, expr: `connect.NewError(connect.CodeUnavailable, "not configured")`},
+		{name: "v2-errorf", importSpec: v2, expr: `connect.Errorf(connect.CodeUnavailable, "%s not configured", "svc")`},
+		{name: "v2-with-cause", importSpec: v2, expr: `connect.NewError(connect.CodeUnavailable, "not configured").WithCause(cause)`},
+		{name: "v2-chained-clones", importSpec: v2, expr: `connect.Errorf(connect.CodeUnavailable, "x").WithCause(cause).WithDetail(nil)`},
+		{name: "v2-aliased", importSpec: `cv2 ` + v2, expr: `cv2.NewError(cv2.CodeUnavailable, "not configured")`},
+		// v1 has no Errorf, so an Errorf on the v1 path is not credited.
+		{name: "v1-errorf-is-not-a-constructor", importSpec: v1, expr: `connect.Errorf(connect.CodeUnavailable, "x")`, findings: 1},
+		{name: "with-cause-on-an-unknown-call", importSpec: v2, expr: `wrap(cause).WithCause(cause)`, findings: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			projectDir := t.TempDir()
+			alias := "connect"
+			if strings.HasPrefix(tc.importSpec, "cv2 ") {
+				alias = "cv2"
+			}
+			src := strings.NewReplacer("IMPORT", tc.importSpec, "ERROR_EXPR", tc.expr, "ALIAS", alias).Replace(`import IMPORT
+
+var _ = ALIAS.CodeUnavailable
+
+type wrapped struct{ error }
+
+func (w wrapped) WithCause(error) error { return w }
+
+func wrap(err error) wrapped { return wrapped{err} }
+
+func (s *Service) gate(cause error) error {
+	if s.deps.Svc == nil {
+		return ERROR_EXPR
+	}
+	return nil
+}
+
+func (s *Service) Call(cause error) error {
+	if err := s.gate(cause); err != nil {
+		return err
+	}
+	return s.deps.Svc.Do()
+}
+`)
+			writeOptionalGuardPkg(t, projectDir, "fixture", src)
+			got, err := collectOptionalDepsGuardFindings(projectDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != tc.findings {
+				t.Fatalf("findings = %d, want %d: %+v", len(got), tc.findings, got)
+			}
+		})
+	}
+}

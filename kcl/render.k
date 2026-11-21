@@ -3630,6 +3630,10 @@ _render_shell_build = lambda b: ShellBuild -> any {
             "built_images": b.built_images
         if b.inputs:
             "inputs": b.inputs
+        # Per-binary PGO (ShellPGO), keyed by cwd-relative package path;
+        # absent when none is named.
+        if b.pgo:
+            "pgo": {k: _render_pgo(v) | {"out": v.out, "namespace": v.namespace} for k, v in b.pgo}
     }
 }
 

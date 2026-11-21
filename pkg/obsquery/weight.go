@@ -48,4 +48,11 @@ const (
 	// spanWeightInt is the weight as the UInt64 the weighted-quantile functions
 	// require.
 	spanWeightInt = "toUInt64(round(" + spanWeightExpr + "))"
+
+	// spanWeightRegexExpr and spanWeightIntRegex are the weight read through
+	// spanThresholdRegex alone: the values of the deprecated SpanWeightSQL and
+	// SpanWeightIntSQL, which a public constant must keep.
+	spanWeightRegexExpr = "if(" + spanThresholdRegex + " = '', 1.0, round(least(" + maxSpanWeight + ", 1 / greatest(1 - " +
+		"reinterpretAsUInt64(reverse(unhex(concat('00', rightPad(left(" + spanThresholdRegex + ", 14), 14, '0'))))) / 72057594037927936, 0.000001)), 6))"
+	spanWeightIntRegex = "toUInt64(round(" + spanWeightRegexExpr + "))"
 )

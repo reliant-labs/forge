@@ -3947,7 +3947,7 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge pgo pull --env prod`, commit `cmd/*/default.pgo`, rebuild; `forge pgo status` shows each binary's file, source and age. A hosted env's profiles are pulled through the control plane (sign-in required). Tune or opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo` in KCL.
+**Use:** `forge pgo pull --env prod`, commit `cmd/*/default.pgo`, rebuild; `forge pgo status` shows each binary's file, source and age. A hosted env's profiles are pulled through the control plane (sign-in required). Tune or opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo` in KCL. A hosted project gets `.github/workflows/pgo-refresh.yml` (an existing one on its next `forge generate`), which pulls weekly and opens a pull request when the env's profiles changed a binary's file.
 
 **Why:** Go applies PGO per main package, so a binary that runs as server, worker and cron gets one profile merging all of them, weighted by CPU. A missing source, too little data or an older control plane leaves the committed file untouched and the build unaffected.
 
@@ -3958,6 +3958,7 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/profilequery`](../pkg/profilequery)
 - skill `observability/profiles` (`forge skill load observability/profiles`)
 - source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
+- source [`internal/templates/ci/github/pgo-refresh.yml.tmpl`](../internal/templates/ci/github/pgo-refresh.yml.tmpl)
 - `internal/handlers/observability/rpc_export_pgo_profile.go` in the control-plane repo
 
 <a id="alerts-as-code"></a>

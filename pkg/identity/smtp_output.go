@@ -416,7 +416,11 @@ func (p *run) loginPolicyDoc(ctx context.Context, si SignIn) (*LoginPolicyDoc, e
 		doc.Methods = append(doc.Methods, string(m))
 	}
 	for _, i := range p.spec.IdPs {
-		doc.Social = append(doc.Social, LoginPolicySocial{Type: string(i.Type), IdPID: p.idpIDs[i.Name], Label: socialLabels[i.Type]})
+		s := LoginPolicySocial{Type: string(i.Type), IdPID: p.idpIDs[i.Name], Label: socialLabels[i.Type]}
+		if i.PassTokens {
+			s.PassTokens, s.Scopes = true, strings.Join(i.Scopes, " ")
+		}
+		doc.Social = append(doc.Social, s)
 	}
 	if pw := p.spec.Policies.PasswordComplexity; pw != nil {
 		doc.Password = &LoginPolicyPassword{MinLength: pw.MinLength, Uppercase: pw.RequireUppercase,

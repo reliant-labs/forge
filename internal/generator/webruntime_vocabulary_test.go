@@ -165,7 +165,7 @@ func computeWebRuntimeVocabulary(t *testing.T) []string {
 // which also keeps Go's test cache honest about them.
 func TestWebRuntimeVocabularyIsCurrent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("..", "..", "web-runtime", "src")); err != nil {
-		t.Skipf("web-runtime/src not readable: %v", err)
+		t.Fatalf("web-runtime/src not readable: %v", err)
 	}
 	want := webRuntimeVocabularyHeader + strings.Join(computeWebRuntimeVocabulary(t), "\n") + "\n"
 	if os.Getenv("UPDATE_WEBRUNTIME_VOCABULARY") != "" {

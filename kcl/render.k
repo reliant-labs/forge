@@ -1268,6 +1268,11 @@ _idn_bundle_errors_of = lambda l: str, id: any, workloads: [any], infra: [any], 
         # workload is handed it.
         [len(_readers) == 0, \
             "${_readers} read a secret that ${l}.social names as an OAuth client secret. Only the identity reconciler reads it (it is stored in the identity provider), so drop it from the workload's env"]
+        # pass_tokens is dev-only until the hosted control plane carries it
+        # into the login policy it delivers: on a hosted instance the hook
+        # would silently never run.
+        [True if _idn_rt(id) != "hosted" or all s in id.social { not s.pass_tokens } else False, \
+            "${l}.social ${[s.type for s in id.social if s.pass_tokens]} set pass_tokens, which works only on forge.IdentityOnHost for now: the hosted control plane does not yet deliver it to the login broker, so the upstream-tokens hook would never run. Drop pass_tokens from this env"]
         [True if not id.share_with or id.share_with != env else False, \
             "${l}.share_with '${id.share_with}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"]
         [len(_bad_apps) == 0, \
@@ -1638,6 +1643,9 @@ _render_identity = lambda b: Bundle, _id: any -> any {
                 "client_id_secret": s.client_id.name if typeof(s.client_id) != "str" else None
                 "client_secret_secret": s.client_secret.name
                 "scopes": s.scopes
+                # Only when on, so a shape without it is unchanged.
+                if s.pass_tokens:
+                    "pass_tokens": True
             } for s in _id.social]
         if _id.email:
             "email": {
@@ -2726,12 +2734,19 @@ _tel_otlp = lambda t: Telemetry, svc: str, rt: str, b: Bundle -> any {
     } if _o else None
 }
 
-_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle -> any {
+# origin is "default" for a target forge renders with no declaration of the
+# project's (a ManagedDatabase's default and its operator's): collected like
+# any other, but a deploy does not warn that it goes uncollected on a control
+# plane that does not collect hosted telemetry yet (pkg/telemetry
+# OriginDefault). Absent for a declared target.
+_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle, origin: str = "" -> any {
     {
         "service_name": svc
         "scope": t.scope
         "source": source
         "attachment": attachment
+        if origin:
+            "origin": origin
         "runtime": rt
         "cluster": cluster
         "namespaces": namespaces
@@ -2833,7 +2848,7 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
     _tel_target(t, t.service_name or managed_database_service_name(db.name), "manageddatabase:${db.name}", "manageddatabase", _p.runtime, \
         "" if _hosted else (_p.cluster or ""), \
         [_p.namespace] if not _hosted and _p.namespace else [], \
-        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b)
+        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b, "" if db.telemetry else "default")
 }
 
 # Every Telemetry the env declares, beside its resolved service name:
@@ -2860,7 +2875,7 @@ _tel_cnpg_operators = lambda b: Bundle -> [any] {
         "svc": CNPG_OPERATOR_SERVICE if len(_clusters) == 1 else CNPG_OPERATOR_SERVICE + "-" + regex.replace(c.lower(), r"[^-a-z0-9_.]", "-").strip("-_.")
     } for c in _clusters]
     [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc, _tel_ships(b, "metrics"), _tel_ships(b, "logs")), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
-        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b) for o in _named if o.svc not in _taken]
+        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b, "default") for o in _named if o.svc not in _taken]
 }
 
 _render_telemetry = lambda b: Bundle -> [any] {

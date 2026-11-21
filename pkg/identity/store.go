@@ -238,6 +238,13 @@ type LoginPolicySocial struct {
 	Type  string `json:"type"`
 	IdPID string `json:"idp_id"`
 	Label string `json:"label"`
+	// PassTokens: the broker hands the provider's tokens to the app's hook
+	// ([IdP.PassTokens]). Scopes are the declared scopes, carried only with
+	// it, space-separated as OAuth writes them (a string, so
+	// LoginPolicySocial stays comparable). Both are omitted otherwise, so the
+	// document is unchanged.
+	PassTokens bool   `json:"pass_tokens,omitempty"`
+	Scopes     string `json:"scopes,omitempty"`
 }
 
 // LoginPolicyPassword is the password complexity a sign-up form checks.

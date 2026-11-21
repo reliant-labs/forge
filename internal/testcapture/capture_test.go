@@ -339,3 +339,49 @@ func TestExecuteForwardsSignals(t *testing.T) {
 		t.Fatalf("killed: exit %d, want %d", code, 128+int(syscall.SIGKILL))
 	}
 }
+
+// Lanes of one run can finish at once: each append to run.json holds the
+// run's lock, so none is lost.
+func TestRecordLaneAppendsUnderTheLock(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	lanes := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
+	errs := make(chan error, len(lanes))
+	for _, lane := range lanes {
+		go func() {
+			if err := os.MkdirAll(filepath.Join(h.run, lane), 0o755); err != nil {
+				errs <- err
+				return
+			}
+			errs <- RecordLane(h.run, testreport.LaneManifest{Lane: lane, Format: testreport.LaneFormatJUnit, Results: testreport.LaneResultsParsed})
+		}()
+	}
+	for range lanes {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	run, err := testreport.ReadRunManifest(h.run)
+	if err != nil || len(run.Lanes) != len(lanes) {
+		t.Fatalf("run.json lanes = %v, %v; want all %d", run.Lanes, err, len(lanes))
+	}
+	m, err := testreport.ReadLaneManifest(h.run, "c")
+	if err != nil || m.Schema != testreport.LaneManifestSchema || m.Coverage == nil {
+		t.Fatalf("capture.json = %+v, %v", m, err)
+	}
+	if err := RecordLane(h.run, testreport.LaneManifest{Lane: "../x"}); err == nil {
+		t.Fatal("RecordLane accepted a lane that is not a path segment")
+	}
+}
+
+func TestResultsName(t *testing.T) {
+	t.Parallel()
+	for f, want := range map[testreport.LaneFormat]string{
+		testreport.LaneFormatGoJSON: "results.json", testreport.LaneFormatJUnit: "junit.xml",
+		testreport.LaneFormatVitest: "vitest.json", testreport.LaneFormatUnknown: "results.tap",
+	} {
+		if got := ResultsName(f, "out/report.TAP"); got != want {
+			t.Errorf("ResultsName(%s) = %q, want %q", f, got, want)
+		}
+	}
+}

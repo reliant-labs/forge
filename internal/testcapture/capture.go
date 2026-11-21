@@ -151,51 +151,9 @@ func (c *capture) prepare(ctx context.Context) {
 		c.warn("%v; running the command without recording it", err)
 		return
 	}
-	run := c.opts.RunDir
-	if run == "" {
-		run = strings.TrimSpace(c.opts.Getenv(EnvRun))
-	}
-	if run == "" {
-		res := Begin(ctx, c.opts.Begin)
-		for _, w := range res.Warnings {
-			c.warn("%s", w)
-		}
-		if !res.Recording {
-			_ = os.Remove(res.Dir) // the unused scratch directory, if empty
-			c.warn("no run to record into; running the command without recording it")
-			return
-		}
-		run = res.Dir
-	} else {
-		abs, err := filepath.Abs(run)
-		if err != nil {
-			c.warn("--run %s: %v; running the command without recording it", run, err)
-			return
-		}
-		run = abs
-		if _, err := os.Stat(filepath.Join(run, testreport.RunManifestFile)); err != nil {
-			// A directory a Taskfile chose but no begin wrote: make it
-			// a run, as begin does for EnvRun.
-			b := c.opts.Begin
-			b.Getenv = func(k string) string {
-				if k == EnvRun {
-					return run
-				}
-				return c.opts.Getenv(k)
-			}
-			res := Begin(ctx, b)
-			for _, w := range res.Warnings {
-				c.warn("%s", w)
-			}
-			if !res.Recording || res.Dir != run {
-				if !res.Recording {
-					_ = os.Remove(res.Dir) // the unused scratch directory, if empty
-				}
-				c.warn("%s is not a run and cannot be made one; running the command without recording it", run)
-				c.ensureLaneDir(run)
-				return
-			}
-		}
+	run, ok := c.resolveRun(ctx)
+	if !ok {
+		return
 	}
 	c.runDir = run
 	c.laneDir = testreport.LaneDir(run, c.opts.Lane)
@@ -212,6 +170,56 @@ func (c *capture) prepare(ctx context.Context) {
 		return
 	}
 	c.recording = true
+}
+
+// resolveRun is the run to record into: --run, else EnvRun, else a new run.
+// A directory with no run.json yet (one a Taskfile chose) is made a run, as
+// begin does for EnvRun. ok is false when there is no run to record into.
+func (c *capture) resolveRun(ctx context.Context) (string, bool) {
+	run := c.opts.RunDir
+	if run == "" {
+		run = strings.TrimSpace(c.opts.Getenv(EnvRun))
+	}
+	if run == "" {
+		return c.beginRun(ctx, c.opts.Begin, "")
+	}
+	abs, err := filepath.Abs(run)
+	if err != nil {
+		c.warn("--run %s: %v; running the command without recording it", run, err)
+		return "", false
+	}
+	if _, err := os.Stat(filepath.Join(abs, testreport.RunManifestFile)); err == nil {
+		return abs, true
+	}
+	b := c.opts.Begin
+	b.Getenv = func(k string) string {
+		if k == EnvRun {
+			return abs
+		}
+		return c.opts.Getenv(k)
+	}
+	return c.beginRun(ctx, b, abs)
+}
+
+// beginRun begins a run; want is the directory it must be in ("" any).
+func (c *capture) beginRun(ctx context.Context, b BeginOptions, want string) (string, bool) {
+	res := Begin(ctx, b)
+	for _, w := range res.Warnings {
+		c.warn("%s", w)
+	}
+	if res.Recording && (want == "" || res.Dir == want) {
+		return res.Dir, true
+	}
+	if !res.Recording {
+		_ = os.Remove(res.Dir) // the unused scratch directory, if empty
+	}
+	if want == "" {
+		c.warn("no run to record into; running the command without recording it")
+	} else {
+		c.warn("%s is not a run and cannot be made one; running the command without recording it", want)
+		c.ensureLaneDir(want)
+	}
+	return "", false
 }
 
 // ensureLaneDir creates <run>/<lane> so a command told to write its coverage
@@ -288,17 +296,36 @@ func (c *capture) run(ctx context.Context) CaptureResult {
 
 // record writes capture.json and adds the lane to run.json.
 func (c *capture) record() {
-	data, err := marshalManifest(c.lane)
+	if err := RecordLane(c.runDir, c.lane); err != nil {
+		c.warn("%v", err)
+	}
+}
+
+// RecordLane writes m as <runDir>/<m.Lane>/capture.json and adds the lane to
+// run.json, under the run's lock: how capture records a lane, and how anything
+// else that records one (forge test ingest) must, so every reader finds lanes
+// the same way. The lane directory must exist.
+func RecordLane(runDir string, m testreport.LaneManifest) error {
+	if err := testreport.ValidateLaneName(m.Lane); err != nil {
+		return err
+	}
+	if m.Schema == "" {
+		m.Schema = testreport.LaneManifestSchema
+	}
+	if m.Coverage == nil {
+		m.Coverage = []testreport.LaneCoverageInput{}
+	}
+	data, err := marshalManifest(m)
 	if err == nil {
-		err = atomicfile.WriteFile(filepath.Join(c.laneDir, testreport.LaneManifestFile), data, 0o644)
+		err = atomicfile.WriteFile(filepath.Join(testreport.LaneDir(runDir, m.Lane), testreport.LaneManifestFile), data, 0o644)
 	}
 	if err != nil {
-		c.warn("cannot write the lane's capture.json: %v", err)
-		return
+		return fmt.Errorf("cannot write lane %s's capture.json: %w", m.Lane, err)
 	}
-	if err := appendLane(c.runDir, c.opts.Lane); err != nil {
-		c.warn("cannot add lane %s to run.json: %v", c.opts.Lane, err)
+	if err := appendLane(runDir, m.Lane); err != nil {
+		return fmt.Errorf("cannot add lane %s to run.json: %w", m.Lane, err)
 	}
+	return nil
 }
 
 // appendLane adds lane to run.json's lanes under a lock, since lanes of one
@@ -540,7 +567,7 @@ func (c *capture) copyResults(declared testreport.LaneFormat) {
 	if detected != testreport.LaneFormatUnknown && detected == c.lane.Format {
 		c.lane.Results = testreport.LaneResultsParsed
 	}
-	name := resultsName(c.lane.Format, src)
+	name := ResultsName(c.lane.Format, src)
 	var s Scrubber
 	if err := atomicfile.WriteFile(filepath.Join(c.laneDir, name), []byte(s.Text(string(data))), 0o644); err != nil {
 		c.warn("cannot store %s: %v", src, err)
@@ -550,9 +577,11 @@ func (c *capture) copyResults(declared testreport.LaneFormat) {
 	c.lane.ResultsFile = name
 }
 
-// resultsName is the name a copied report is stored under: one per format, so
-// a reader finds it from capture.json's results_file without guessing.
-func resultsName(f testreport.LaneFormat, src string) string {
+// ResultsName is the name a copied report is stored under in a lane
+// directory: one per format (results.json, junit.xml, vitest.json), so a
+// reader finds it from capture.json's results_file without guessing. An
+// unknown format keeps src's extension.
+func ResultsName(f testreport.LaneFormat, src string) string {
 	switch f {
 	case testreport.LaneFormatGoJSON:
 		return testreport.LaneResultsFile
@@ -645,7 +674,7 @@ func readHead(path string, n int) []byte {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, n)
 	k, _ := io.ReadFull(f, buf)
 	return buf[:k]

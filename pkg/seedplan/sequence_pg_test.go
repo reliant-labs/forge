@@ -148,6 +148,49 @@ func TestApply_AdvancesKeySequencesPastSeededRows(t *testing.T) {
 	}
 }
 
+func TestApply_DoesNotReissueSequenceKeysWithoutRows(t *testing.T) {
+	requirePG(t)
+	ctx := context.Background()
+	db, dir := setupSequenceDB(t)
+	// nextval is not transactional: a failed insert or rolled-back
+	// transaction leaves these keys consumed but absent from the tables.
+	if _, err := db.ExecContext(ctx, `
+SELECT setval('tasks_id_seq', 30, true);
+SELECT setval('descending_notes_id_seq', -30, true);`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO tasks (title) VALUES ('rolled back');
+INSERT INTO descending_notes (body) VALUES ('rolled back');`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, db, "tasks", 0)
+	assertCount(t, db, "descending_notes", 0)
+	plan, err := BuildLivePlan(ctx, db, dir, "", Config{Rows: 5, Salt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := Apply(ctx, db, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if id := appInsert(t, db, `INSERT INTO tasks (title) VALUES ('app')`); id != 32 {
+		t.Errorf("ascending sequence reissued a key: got %d, want 32", id)
+	}
+	if id := appInsert(t, db, `INSERT INTO descending_notes (body) VALUES ('app')`); id != -34 {
+		t.Errorf("descending sequence reissued a key: got %d, want -34", id)
+	}
+}
+
 func TestApply_SequenceBoundsDoNotOverflowOrWrap(t *testing.T) {
 	requirePG(t)
 	ctx := context.Background()

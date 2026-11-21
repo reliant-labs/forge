@@ -128,7 +128,8 @@ task test                                  # unit + every frontend's tests
 task test:integration                      # the `integration`-tagged lane
 task test:e2e                              # the e2e lane
 task test:all                              # unit + frontend + integration
-task coverage                              # coverage.out + coverage.html
+task test:report                           # what those lanes recorded
+task coverage                              # coverage.html from the recorded run
 ```
 
 Everything after `--` replaces the default `./...`, so it takes both package
@@ -258,6 +259,22 @@ time.Sleep(100 * time.Millisecond)
 
 The rules warn in a project pinned below the release after the one that ships
 them, then gate.
+
+### Every lane is recorded
+
+`task test`, `test:integration`, `test:e2e` and `test:frontend` run their
+command through `forge test capture`, which stores the results and coverage
+under `.forge/tests/runs/` and exits with the command's own status;
+`task test:report` (`forge test report`) reads that record, and CI uploads it.
+`test:short` records nothing. Recording never decides a verdict, and
+`FORGE_TESTS=off` turns it off for one run.
+
+A lane that runs `go test` without capture is reported by `forge lint` as
+`tests-capture`: a warning at every pin, which `lint.rules: {tests-capture:
+error}` makes gate. A project scaffolded before v1.9.0 has such lanes until
+the tests playbook moves them — `forge project upgrade` runs it, `forge fix
+tests-capture` rewrites a scaffolded lane on its own, and
+`forge skill load migrations/v1.9.0/tests` covers a lane you wrote yourself.
 
 ## Don't hand-roll what forge already provides
 

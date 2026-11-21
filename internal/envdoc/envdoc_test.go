@@ -429,6 +429,32 @@ workloads:
 	}
 }
 
+// allowedSourceCIDRs is enforced only by the hosted platform, so the runtimes
+// that run the port refuse it rather than serve every client.
+func TestAllowedSourceCIDRsRefusedOffHosted(t *testing.T) {
+	for _, rt := range []string{"host", "cluster", "external"} {
+		t.Run(rt, func(t *testing.T) {
+			dir := t.TempDir()
+			runtime := "{type: " + rt + "}"
+			if rt == "cluster" {
+				runtime = "{type: cluster, cluster: k3d-shop, namespace: shop}"
+			}
+			writeDoc(t, dir, "prod.yaml", monitoringOnly+`workloads:
+  - name: feeds
+    image: ghcr.io/acme/feeds:v1
+    runtime: `+runtime+`
+    spec: {ports: [{name: http, port: 8080, expose: true, allowedSourceCIDRs: ["188.34.190.188/32"]}]}
+`)
+			_, _, err := Load(dir, "prod", Options{})
+			for _, want := range []string{`workload "feeds" on the ` + rt + ` runtime: port http: allowedSourceCIDRs`, "188.34.190.188/32", "only the hosted runtime enforces"} {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("err lacks %q: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
 func TestDanglingRequiresIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	writeDoc(t, dir, "prod.yaml", monitoringOnly+`workloads:

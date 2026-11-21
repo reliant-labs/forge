@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -622,9 +623,19 @@ func maskViolations(w, spec map[string]any, rt, kind string) []string {
 		}
 		return out
 	}
+	// render.k _source_cidr_violations: only hosted enforces a port's
+	// allowedSourceCIDRs, so the runtimes that run its port refuse it.
+	var sourceCIDRs []string
+	if rt == "host" || rt == "cluster" || rt == "external" {
+		for _, p := range decodeSpec(spec).Ports {
+			if len(p.AllowedSourceCIDRs) > 0 {
+				sourceCIDRs = append(sourceCIDRs, fmt.Sprintf("workload %q on the %s runtime: port %s: allowedSourceCIDRs %v cannot be enforced on this runtime, and forge will not drop it silently (the port would serve every client): only the hosted runtime enforces a per-port source allowlist", name, rt, p.Name, p.AllowedSourceCIDRs))
+			}
+		}
+	}
 	switch rt {
 	case "host":
-		out := refuse(localRefused)
+		out := slices.Concat(sourceCIDRs, refuse(localRefused))
 		if specSet(w, spec, "replicas") {
 			out = append(out, fmt.Sprintf("workload %q on the host runtime: replicas: a host workload is one local process; forge env up launches it once", name))
 		}
@@ -646,5 +657,5 @@ func maskViolations(w, spec map[string]any, rt, kind string) []string {
 		}
 		return out
 	}
-	return nil
+	return sourceCIDRs
 }

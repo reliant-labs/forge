@@ -502,3 +502,33 @@ func recordedBackendImage(t *testing.T, g ServiceGroup, name string) string {
 	t.Fatalf("no record named %q", name)
 	return ""
 }
+
+// A port's allowedSourceCIDRs rides the hosted Workload record: the control
+// plane enforces it, so forge must publish it, in canonical form, and must not
+// edit the caller's spec while doing so.
+func TestHostedRecordsCarryAllowedSourceCIDRs(t *testing.T) {
+	g := hostedGroup("v1", map[string]string{"api": digestA}, v1alpha1.Resources{})
+	spec := g.Services[0].Hosted.Workload
+	spec.Ports = []v1alpha1.Port{{Name: "http", Port: 8080, Expose: true, AllowedSourceCIDRs: []string{"188.34.190.188", "10.0.0.5/24"}}}
+	recs, err := HostedRecords(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var api string
+	for _, r := range recs {
+		if r.Name == "api" {
+			api = string(r.YAML)
+		}
+	}
+	if !strings.Contains(api, "allowedSourceCIDRs:") || !strings.Contains(api, "188.34.190.188/32") || !strings.Contains(api, "10.0.0.0/24") {
+		t.Errorf("api record does not carry the canonical allowedSourceCIDRs:\n%s", api)
+	}
+	if got := spec.Ports[0].AllowedSourceCIDRs[0]; got != "188.34.190.188" {
+		t.Errorf("publishing edited the caller's spec: %v", spec.Ports[0].AllowedSourceCIDRs)
+	}
+
+	spec.Ports[0].Expose = false
+	if _, err := HostedRecords(g); err == nil || !strings.Contains(err.Error(), "only meaningful on the exposed port") {
+		t.Errorf("an unexposed port with allowedSourceCIDRs must be refused before publish, got %v", err)
+	}
+}

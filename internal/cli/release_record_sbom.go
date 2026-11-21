@@ -15,8 +15,10 @@ package cli
 //   - --sbom <workload>=<path>: an SBOM the pipeline produced itself,
 //     CycloneDX or SPDX JSON, recorded verbatim (Source ci-provided).
 //   - --sbom-source <dir>: a version-only record names no image, so the
-//     source tree's lockfiles are described instead, as the SBOM of one git
-//     artifact named after the project (recordSourceArtifact).
+//     source tree's lockfiles are described instead, as the release's own
+//     evidence (release.Release.SourceSBOM). It adds no artifact: a
+//     release's identity never depends on a flag, so the same version
+//     recorded with or without it is the same release.
 //
 // WARN-FIRST, as at the cut: an SBOM forge could not produce warns, is
 // recorded unavailable with the reason, and the record still succeeds. What
@@ -30,7 +32,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -53,8 +54,9 @@ type recordSBOMOptions struct {
 // recordSBOMEntry is one artifact's SBOM in the record's result (`--json`
 // `sboms`).
 type recordSBOMEntry struct {
-	// Workload is the artifact's name in the release: the --workload, or
-	// the project for an --sbom-source record.
+	// Workload is the artifact's name in the release (the --workload), or
+	// "" for the release's source SBOM (--sbom-source). A workload is never
+	// named "", so the two cannot be confused.
 	Workload string `json:"workload"`
 	Digest   string `json:"digest,omitempty"`
 	Status   string `json:"status"`
@@ -75,9 +77,8 @@ type providedSBOM struct {
 type recordSBOMPlan struct {
 	noSBOM   bool
 	provided map[string]providedSBOM
-	// sourceDir is --sbom-source, absolute. sourceName is the artifact it
-	// describes, set once that artifact is added to the release.
-	sourceDir, sourceName string
+	// sourceDir is --sbom-source, absolute.
+	sourceDir string
 }
 
 // planRecordSBOMs checks the SBOM flags against the record's workloads and
@@ -158,62 +159,6 @@ func readProvidedSBOM(path string) (providedSBOM, error) {
 	return providedSBOM{path: path, data: data, doc: doc}, nil
 }
 
-// recordSourceArtifact is the artifact an --sbom-source SBOM describes: the
-// source tree at the record's commit, as a git source pin (repo, the commit
-// as its ref, and the tree's directory within the repository). It restates
-// the commit a version-only record already names, so a retry with the same
-// flags is the same release.
-//
-// It is an artifact of the release's identity, so it never depends on
-// whether syft then succeeds: a record that could name it always does. A
-// tree with no origin remote, or a record with no commit, cannot name one;
-// the error says why, and the record stays version-only, without an SBOM.
-func recordSourceArtifact(dir, commit string) (release.Artifact, error) {
-	if commit == "" {
-		return release.Artifact{}, errors.New("the record names no commit (pass --commit)")
-	}
-	top := recordSourceGit(dir, "rev-parse", "--show-toplevel")
-	if top == "" {
-		return release.Artifact{}, fmt.Errorf("%s is not in a git checkout", dir)
-	}
-	repo := release.CanonicalRepo(recordSourceGit(dir, "remote", "get-url", "origin"))
-	if repo == "" {
-		return release.Artifact{}, fmt.Errorf("the checkout at %s has no origin remote to name the source by", top)
-	}
-	src := &release.Source{Repo: repo, Ref: commit, Commit: commit}
-	if rel, err := filepath.Rel(evalDir(top), evalDir(dir)); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-		src.Subdir = filepath.ToSlash(rel)
-	}
-	return release.Artifact{Kind: release.KindGit, Mode: release.ModeSource, Source: src}, nil
-}
-
-// evalDir resolves symlinks so a checkout reached through one compares to
-// git's toplevel, which git reports resolved.
-func evalDir(dir string) string {
-	if d, err := filepath.EvalSymlinks(dir); err == nil {
-		return d
-	}
-	return dir
-}
-
-// recordSourceGit runs git for recordSourceArtifact. A seam: tests state
-// the checkout instead of running git.
-var recordSourceGit = recordGitOutput
-
-// recordGitOutput runs git in dir and returns its trimmed output, "" on any
-// failure.
-func recordGitOutput(dir string, args ...string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), ledgerGitReadTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 // recordSBOMRun is what recordReleaseSBOMs needs about the record.
 type recordSBOMRun struct {
 	projectDir, project, env, version string
@@ -286,32 +231,24 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 			}
 			continue
 		}
-		if name == in.plan.sourceName && in.plan.sourceDir != "" {
-			targets = append(targets, plannedSBOM{name: name,
-				target: sbom.Target{Name: name, Kind: sbom.KindDir, Ref: in.plan.sourceDir, Version: in.version}})
-			continue
-		}
 		digest, ok := art.SharedDigest()
 		if !ok {
 			continue // a record names shared images only; anything else describes no shipped bytes here
 		}
-		// The repository, not the workload, names the document's subject:
-		// the same digest cut by forge gets the same SBOM.
+		// The repository, not the workload, names the document's subject,
+		// and an image SBOM carries no release version, as at the cut: the
+		// same digest, cut by forge or recorded, is one SBOM (and one
+		// cache entry).
 		subject := art.URI
 		if subject == "" {
 			subject = name
 		}
 		targets = append(targets, plannedSBOM{name: name,
-			target: sbom.Target{Name: subject, Kind: sbom.KindRegistry, Ref: subject + "@" + digest, Subject: digest, Version: in.version}})
+			target: sbom.Target{Name: subject, Kind: sbom.KindRegistry, Ref: subject + "@" + digest, Subject: digest}})
 	}
 
 	if len(targets) > 0 {
-		// The cut's registry credential path: the env's control-plane
-		// identity for its platform registry, the docker store elsewhere.
-		gen := &sbom.Generator{Tool: sbomTool, Runner: sbomRunner, RegistryAuth: sbomRegistryAuth(in.projectDir, in.env, in.declared)}
-		if dir := sbomCacheDir(); dir != "" {
-			gen.Cache = &sbom.Cache{Dir: dir}
-		}
+		gen := newRecordSBOMGenerator(in)
 		list := make([]sbom.Target, len(targets))
 		for i, t := range targets {
 			list[i] = t.target
@@ -336,6 +273,63 @@ func recordReleaseSBOMs(ctx context.Context, in recordSBOMRun, artifacts map[str
 		}
 	}
 	return recordSBOMEntries(artifacts)
+}
+
+// newRecordSBOMGenerator is the cut's generator, cache and registry
+// credential path (the env's control-plane identity for its platform
+// registry, the docker store elsewhere), for a record.
+func newRecordSBOMGenerator(in recordSBOMRun) *sbom.Generator {
+	gen := &sbom.Generator{
+		Tool: sbomTool, Runner: sbomRunner, RegistryAuth: sbomRegistryAuth(in.projectDir, in.env, in.declared),
+		Concurrency: sbom.DefaultConcurrency, Timeout: sbom.DefaultTimeout,
+	}
+	if dir := sbomCacheDir(); dir != "" {
+		gen.Cache = &sbom.Cache{Dir: dir}
+	}
+	return gen
+}
+
+// recordSourceSBOM describes --sbom-source's tree for a version-only record
+// and stores the bytes in this machine's ledger: the release's SourceSBOM.
+// Like every record SBOM it never fails the record; nil when there is none
+// to describe (no --sbom-source, or the env declares SBOMs off).
+//
+// The post-generate hooks do not run for it: they act on an artifact (a
+// referrer is attached to an image), and a source SBOM has none.
+func recordSourceSBOM(ctx context.Context, in recordSBOMRun, warn io.Writer) *release.SBOMRef {
+	if in.plan.sourceDir == "" || sbomPolicyOff(in.declared) {
+		return nil
+	}
+	// A tree has no one digest, so the scan is never cached (the cache
+	// keys on a subject digest); the release version is the tree's
+	// version, which is what the document should say.
+	r := newRecordSBOMGenerator(in).Generate(ctx, []sbom.Target{{
+		Name: in.project, Kind: sbom.KindDir, Ref: in.plan.sourceDir, Version: in.version}})[0]
+	ref := r.Ref
+	if ref.HasSBOM() {
+		if err := putRecordSBOM(in, ref, r.Bytes); err != nil {
+			ref = release.SBOMRef{Status: release.SBOMStatusUnavailable, Source: ref.Source,
+				Reason: "could not store the SBOM in the machine ledger: " + err.Error()}
+		}
+	}
+	if !ref.HasSBOM() {
+		fmt.Fprintf(warn, "warning: release %s recorded without an SBOM of its source %s: %s\n", in.version, in.plan.sourceDir, ref.Reason)
+	}
+	return &ref
+}
+
+// putRecordSBOM stores data in the record project's machine ledger and
+// checks it was stored under ref's digest.
+func putRecordSBOM(in recordSBOMRun, ref release.SBOMRef, data []byte) error {
+	store, err := openRecordSBOMStore(in.projectDir, in.project)
+	if err != nil {
+		return err
+	}
+	digest, err := store.PutSBOM(data)
+	if err == nil && digest != ref.Digest {
+		err = fmt.Errorf("the ledger stored it as %s, not %s", digest, ref.Digest)
+	}
+	return err
 }
 
 // runRecordSBOMHooks runs the cut's post-generate hooks (attach as an OCI
@@ -389,6 +383,15 @@ func openRecordSBOMStore(projectDir, project string) (*ledgerfile.Store, error) 
 	return ledgerfile.Open(home, id)
 }
 
+// sourceSBOMEntry is the `sboms` entry of a release's source SBOM:
+// workload "".
+func sourceSBOMEntry(ref *release.SBOMRef) []recordSBOMEntry {
+	if ref == nil {
+		return nil
+	}
+	return []recordSBOMEntry{{Digest: ref.Digest, Status: ref.Status, Source: ref.Source, Format: ref.Format, Reason: ref.Reason}}
+}
+
 // recordSBOMEntries lists every artifact's SBOM ref, by name.
 func recordSBOMEntries(artifacts map[string]release.Artifact) []recordSBOMEntry {
 	var out []recordSBOMEntry
@@ -406,10 +409,14 @@ func recordSBOMEntries(artifacts map[string]release.Artifact) []recordSBOMEntry 
 // printRecordSBOMs is the text output's SBOM lines.
 func printRecordSBOMs(w io.Writer, entries []recordSBOMEntry) {
 	for _, e := range entries {
+		what := e.Workload
+		if what == "" {
+			what = "(source)"
+		}
 		if e.Digest != "" {
-			fmt.Fprintf(w, "  sbom     %-8s %s (%s, %s)\n", e.Workload, e.Digest, e.Format, e.Source)
+			fmt.Fprintf(w, "  sbom     %-8s %s (%s, %s)\n", what, e.Digest, e.Format, e.Source)
 			continue
 		}
-		fmt.Fprintf(w, "  sbom     %-8s none: %s\n", e.Workload, e.Reason)
+		fmt.Fprintf(w, "  sbom     %-8s none: %s\n", what, e.Reason)
 	}
 }

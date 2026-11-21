@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/pkg/release"
-	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const (
@@ -220,62 +218,110 @@ func TestReleaseRecordSBOM_NoSBOM(t *testing.T) {
 	}
 }
 
-// --sbom-source on a version-only record: the source tree at the record's
-// commit becomes one git artifact named after the project, described by a
-// directory scan.
+// --sbom-source on a version-only record: a directory scan of the tree,
+// recorded as the release's source SBOM. It adds no artifact, so the same
+// version recorded with or without the flag is the same release, and a
+// record without it first is filled in, never replaced, by one with it.
 func TestReleaseRecordSBOM_SourceTreeOfAVersionOnlyRecord(t *testing.T) {
 	rt := newSBOMRecordTest(t)
-	top := t.TempDir()
-	tree := filepath.Join(top, "services", "api")
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, "forge.yaml"), []byte("name: shop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(projectDir, "services", "api")
 	if err := os.MkdirAll(tree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	prevGit := recordSourceGit
-	recordSourceGit = func(dir string, args ...string) string {
-		switch strings.Join(args, " ") {
-		case "rev-parse --show-toplevel":
-			return top
-		case "remote get-url origin":
-			return "git@github.com:Acme/Shop.git"
+	t.Setenv(ledgerSelectionEnv, string(ledgerSelectMachine))
+	useRecordLedger(t, defaultRecordLedger)
+	sc := recordScope{projectDir: projectDir, project: "shop", getenv: func(string) string { return "" }}
+	plain := releaseRecordOptions{env: "prod", version: "v1.4.0", commit: recordCommitA}
+	withSource := plain
+	withSource.sbom = recordSBOMOptions{source: tree}
+	recorded := func() *release.Release {
+		t.Helper()
+		l, err := machineLedger(projectDir)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return ""
+		rel, err := l.Releases.Get(context.Background(), "v1.4.0")
+		if err != nil || rel == nil {
+			t.Fatalf("release: %v", err)
+		}
+		return rel
 	}
-	t.Cleanup(func() { recordSourceGit = prevGit })
 
-	o := releaseRecordOptions{env: "prod", version: "v1.4.0", sbom: recordSBOMOptions{source: tree}}
-	res, err := recordReleaseIn(context.Background(), o, rt.sc, &bytes.Buffer{})
-	if err != nil {
-		t.Fatalf("record: %v", err)
+	first, err := recordReleaseIn(context.Background(), plain, sc, &bytes.Buffer{})
+	if err != nil || !first.ReleaseCreated || len(first.SBOMs) != 0 {
+		t.Fatalf("plain record: %+v %v", first, err)
 	}
-	e := sbomEntry(t, res, "shop")
-	if e.Status != release.SBOMStatusOK || e.Source != release.SBOMSourceLockfile {
-		t.Errorf("shop: %+v", e)
+	if rel := recorded(); rel.SourceSBOM != nil || len(rel.Artifacts) != 0 {
+		t.Fatalf("plain record carries %+v / %v", rel.SourceSBOM, rel.Artifacts)
+	}
+
+	res, err := recordReleaseIn(context.Background(), withSource, sc, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("the same version with --sbom-source is a conflict: %v", err)
+	}
+	if res.ReleaseCreated {
+		t.Error("--sbom-source made a different release")
+	}
+	if len(res.SBOMs) != 1 {
+		t.Fatalf("sboms = %+v, want the source entry", res.SBOMs)
+	}
+	e := res.SBOMs[0]
+	if e.Workload != "" || e.Status != release.SBOMStatusOK || e.Source != release.SBOMSourceLockfile || e.Format != sbom.Format {
+		t.Errorf("source entry: %+v", e)
 	}
 	if calls := rt.syft.calls(); len(calls) != 1 || calls[0] != "dir:"+tree {
 		t.Errorf("syft read %v, want a dir scan of %s", calls, tree)
 	}
-	arts := rt.cp.called("CutRelease")[0]["artifacts"].([]any)
-	if len(arts) != 1 {
-		t.Fatalf("CutRelease artifacts = %v, want the source tree", arts)
+	rel := recorded()
+	if rel.SourceSBOM == nil || rel.SourceSBOM.Digest != e.Digest || len(rel.Artifacts) != 0 {
+		t.Fatalf("recorded source SBOM %+v, artifacts %v; want the SBOM and no artifact", rel.SourceSBOM, rel.Artifacts)
 	}
-	a := arts[0].(map[string]any)
-	src, _ := a["source"].(map[string]any)
-	if a["name"] != "shop" || a["kind"] != string(release.KindGit) || src["repo"] != "github.com/Acme/Shop" ||
-		src["ref"] != recordCommitA || src["commit"] != recordCommitA || src["subdir"] != "services/api" {
-		t.Errorf("source artifact = %v", a)
+	store, err := openRecordSBOMStore(projectDir, "shop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetSBOM(e.Digest); err != nil {
+		t.Errorf("the machine ledger does not hold the source SBOM: %v", err)
 	}
 
-	// A retry is the same release; one with no origin to name the source by
-	// stays version-only and warns.
-	if again, err := recordReleaseIn(context.Background(), o, rt.sc, &bytes.Buffer{}); err != nil || again.ReleaseCreated {
-		t.Errorf("retry: %+v %v", again, err)
+	// Without the flag again: still the same release, the SBOM kept.
+	if again, err := recordReleaseIn(context.Background(), plain, sc, &bytes.Buffer{}); err != nil || again.ReleaseCreated {
+		t.Fatalf("plain re-record: %+v %v", again, err)
 	}
-	recordSourceGit = func(string, ...string) string { return "" }
+	if rel := recorded(); rel.SourceSBOM == nil || rel.SourceSBOM.Digest != e.Digest {
+		t.Errorf("the source SBOM was dropped: %+v", rel.SourceSBOM)
+	}
+
+	var out bytes.Buffer
+	printReleaseRecord(&out, res)
+	if !strings.Contains(out.String(), "sbom     (source) "+e.Digest) {
+		t.Errorf("text output does not list the source SBOM:\n%s", out.String())
+	}
+}
+
+// A source tree syft cannot read warns, records the source SBOM as
+// unavailable, and the record succeeds.
+func TestReleaseRecordSBOM_SourceTreeFailureWarns(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	rt.syft.fail = map[string]error{"dir": errors.New("permission denied")}
 	var warn bytes.Buffer
-	o.version = "v1.5.0"
-	res, err = recordReleaseIn(context.Background(), o, rt.sc, &warn)
-	if err != nil || len(res.SBOMs) != 0 || !strings.Contains(warn.String(), "recorded version-only, without an SBOM") {
-		t.Errorf("no checkout: %+v %v %q", res, err, warn.String())
+	res, err := recordReleaseIn(context.Background(),
+		releaseRecordOptions{env: "prod", version: "v1.4.0", sbom: recordSBOMOptions{source: t.TempDir()}}, rt.sc, &warn)
+	if err != nil {
+		t.Fatalf("a failed source SBOM failed the record: %v", err)
+	}
+	if len(res.SBOMs) != 1 || res.SBOMs[0].Status != release.SBOMStatusUnavailable || !strings.Contains(res.SBOMs[0].Reason, "permission denied") {
+		t.Errorf("sboms: %+v", res.SBOMs)
+	}
+	if !strings.Contains(warn.String(), "without an SBOM of its source") {
+		t.Errorf("warning: %q", warn.String())
+	}
+	if arts, _ := rt.cp.called("CutRelease")[0]["artifacts"].([]any); len(arts) != 0 {
+		t.Errorf("--sbom-source added artifacts: %v", arts)
 	}
 }
 
@@ -363,37 +409,6 @@ func TestReleaseRecordSBOM_MachineLedgerAndJSON(t *testing.T) {
 	}
 }
 
-// The real git: the source artifact names the checkout's origin and the
-// tree's directory within it.
-func TestRecordSourceArtifact_RealGit(t *testing.T) {
-	testkit.Slow(t, "runs git init, remote and rev-parse")
-	top := t.TempDir()
-	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "https://github.com/acme/shop.git"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = top
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
-		}
-	}
-	tree := filepath.Join(top, "web")
-	if err := os.MkdirAll(tree, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	art, err := recordSourceArtifact(tree, recordCommitA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := art.Validate("shop"); err != nil {
-		t.Fatalf("the source artifact does not validate: %v", err)
-	}
-	if art.Source.Repo != "github.com/acme/shop" || art.Source.Subdir != "web" || art.Source.Commit != recordCommitA {
-		t.Errorf("source = %+v", art.Source)
-	}
-	if _, err := recordSourceArtifact(tree, ""); err == nil || !strings.Contains(err.Error(), "--commit") {
-		t.Errorf("no commit: %v", err)
-	}
-}
-
 // Registry reads go through the cut's credential path: the record's env and
 // its declaration decide whether forge's own control-plane identity is
 // offered for the image's registry.
@@ -419,5 +434,34 @@ func TestReleaseRecordSBOM_RegistryReadsUseTheCutsCredentialPath(t *testing.T) {
 	}
 	if ref := artifacts["api"].SBOM; ref == nil || ref.Status != release.SBOMStatusOK {
 		t.Errorf("SBOM %+v", ref)
+	}
+}
+
+// A recorded image is described exactly as the cut describes it (the
+// repository as the source name, no release version), so an image forge
+// already cut is a cache hit for a record of another version, and the two
+// name one SBOM.
+func TestReleaseRecordSBOM_SharesTheCutsSBOMForAnImage(t *testing.T) {
+	rt := newSBOMRecordTest(t)
+	cache := t.TempDir()
+	useFakeSyft(t, rt.syft, cache)
+	dir := newLedgerTestProject(t, "sbomshare")
+	cut := map[string]release.Artifact{"ghcr.io/acme/api": sbomTestImage(recordDigestA)}
+	generateReleaseSBOMs(context.Background(), sbomCut{ProjectDir: dir, Env: "prod", Version: "v1.3.0"}, cut, &bytes.Buffer{})
+	if !cut["ghcr.io/acme/api"].SBOM.HasSBOM() {
+		t.Fatalf("cut: %+v", cut["ghcr.io/acme/api"].SBOM)
+	}
+	before := len(rt.syft.calls())
+
+	o := releaseRecordOptions{env: "prod", version: "v1.4.0", workloads: []string{"api"}, images: []string{"ghcr.io/acme/api@" + recordDigestA}}
+	res, err := recordReleaseIn(context.Background(), o, rt.sc, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if n := len(rt.syft.calls()) - before; n != 0 {
+		t.Errorf("the record ran syft %d time(s) for an image the cut already described", n)
+	}
+	if got := sbomEntry(t, res, "api").Digest; got != cut["ghcr.io/acme/api"].SBOM.Digest {
+		t.Errorf("record SBOM %s, cut SBOM %s: want one SBOM", got, cut["ghcr.io/acme/api"].SBOM.Digest)
 	}
 }

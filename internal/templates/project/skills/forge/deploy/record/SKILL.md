@@ -127,7 +127,7 @@ succeeds.
 |---|---|
 | `--sbom <workload>=<path>` (repeatable) | the SBOM your pipeline already produced, CycloneDX or SPDX 2.x JSON, verbatim (`source: ci-provided`, the format the document states, the digest of the bytes as given). A workload the record does not name, or a file that is not an SBOM, refuses the record before anything is cut |
 | `--no-sbom` | no SBOMs: each workload shows as not scanned (`skipped: --no-sbom`) |
-| `--sbom-source <dir>` | version-only records: syft scans that source tree's lockfiles (dev dependencies excluded, `source: lockfile`). The release then names one artifact, a git source pin of the checkout at the record's commit (origin repo, commit, the directory as `subdir`), named after the project, and the SBOM is on it. It needs a commit and an origin remote; without them the record stays version-only and warns. Recording the same version later without the flag is a conflict, because the artifact is part of the release |
+| `--sbom-source <dir>` | version-only records: syft scans that source tree's lockfiles (dev dependencies excluded, `source: lockfile`) and the SBOM is recorded on the release itself (`source_sbom`), not on an artifact. It adds nothing to the release's identity, so the same version recorded with or without the flag is the same release, and a later record with it fills in an SBOM an earlier one lacked (never replacing one) |
 
 ## Where it records
 
@@ -289,7 +289,8 @@ verdict cannot tell the new release's traffic from the old.
 (name → ref@digest), `ledger` (`hosted` | `machine`), `location`,
 `release_created`, `promoted`, `promotion_id`, `run_url`, `console_url`, and
 `sboms`: one `{workload, digest, status, source, format, reason}` per recorded
-artifact (`status` `ok`, or `unavailable` with the `reason`).
+artifact (`status` `ok`, or `unavailable` with the `reason`). The release's
+source SBOM (`--sbom-source`) is the entry whose `workload` is `""`.
 
 ## Next
 

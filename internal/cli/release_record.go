@@ -488,22 +488,16 @@ func recordReleaseIn(ctx context.Context, o releaseRecordOptions, sc recordScope
 	if target.note != "" {
 		fmt.Fprintln(errOut, target.note)
 	}
-	if sbomPlan.sourceDir != "" {
-		art, serr := recordSourceArtifact(sbomPlan.sourceDir, commit)
-		if serr != nil {
-			fmt.Fprintf(errOut, "warning: release %s recorded version-only, without an SBOM of %s: %v\n", version, sbomPlan.sourceDir, serr)
-		} else {
-			artifacts = map[string]release.Artifact{project: art}
-			sbomPlan.sourceName = project
-		}
-	}
 	// SBOMs are produced last, after every check that can refuse the
 	// record, so a refused record pays for no syft run.
-	sboms := recordReleaseSBOMs(ctx, recordSBOMRun{projectDir: sc.projectDir, project: project, env: env,
-		version: version, declared: declared, plan: sbomPlan}, artifacts, errOut)
+	sbomRun := recordSBOMRun{projectDir: sc.projectDir, project: project, env: env,
+		version: version, declared: declared, plan: sbomPlan}
+	sboms := recordReleaseSBOMs(ctx, sbomRun, artifacts, errOut)
+	sourceSBOM := recordSourceSBOM(ctx, sbomRun, errOut)
+	sboms = append(sourceSBOMEntry(sourceSBOM), sboms...)
 	res, err := recordReleaseInto(ctx, target, recordInput{
 		project: project, env: env, version: version, commit: commit,
-		artifacts: artifacts, workloads: workloads, run: run,
+		artifacts: artifacts, workloads: workloads, run: run, sourceSBOM: sourceSBOM,
 		ci: runFromEnvironment(sc.getenv) != (release.Run{}) || sc.getenv("CI") != "",
 	})
 	if err != nil {
@@ -519,6 +513,8 @@ type recordInput struct {
 	artifacts                     map[string]release.Artifact
 	workloads                     map[string]string
 	run                           release.Run
+	// sourceSBOM is the release's source SBOM (--sbom-source), or nil.
+	sourceSBOM *release.SBOMRef
 	// ci marks a record made inside CI: its promotion's actor is "ci".
 	ci bool
 }
@@ -537,6 +533,7 @@ func recordReleaseInto(ctx context.Context, target recordLedger, in recordInput)
 		Artifacts:  artifacts,
 		Run:        run,
 		RecordOnly: true,
+		SourceSBOM: in.sourceSBOM,
 	}
 	if err := rel.Validate(); err != nil {
 		return releaseRecordResult{}, err

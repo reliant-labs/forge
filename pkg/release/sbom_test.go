@@ -282,3 +282,58 @@ func TestSnapshotReleaseNeverCarriesSBOM(t *testing.T) {
 		t.Fatalf("WithoutSBOMs left an sbom: %s", raw)
 	}
 }
+
+// A release's source SBOM is evidence like an artifact's: it never changes
+// the release's identity, a re-cut fills it but never replaces it, and a
+// snapshot release refuses it (and WithoutSBOMs strips it).
+func TestSourceSBOMIsEvidenceNotIdentity(t *testing.T) {
+	t.Parallel()
+	recorded := Release{Version: "v1.4.0", RecordOnly: true, Git: Git{Commit: "0123456789abcdef0123456789abcdef01234567"}}
+	withSource := recorded
+	withSource.SourceSBOM = &SBOMRef{Digest: sbomTestDigest("c"), Format: SBOMFormatCycloneDXJSON, Source: SBOMSourceLockfile, Status: SBOMStatusOK}
+	if err := withSource.Validate(); err != nil {
+		t.Fatalf("a version-only record with a source SBOM: %v", err)
+	}
+	for _, pair := range [][2]Release{{recorded, withSource}, {withSource, recorded}} {
+		if err := CheckRecut(pair[0], pair[1]); err != nil {
+			t.Fatalf("CheckRecut refused a source-SBOM-only difference: %v", err)
+		}
+	}
+
+	filled, changed := BackfillSBOMs(recorded, withSource)
+	if !changed || filled.SourceSBOM == nil || filled.SourceSBOM.Digest != sbomTestDigest("c") || recorded.SourceSBOM != nil {
+		t.Fatalf("backfill: %+v changed=%v (existing %+v)", filled.SourceSBOM, changed, recorded.SourceSBOM)
+	}
+	other := withSource
+	other.SourceSBOM = &SBOMRef{Digest: sbomTestDigest("d"), Status: SBOMStatusOK}
+	if kept, changed := BackfillSBOMs(withSource, other); changed || kept.SourceSBOM.Digest != sbomTestDigest("c") {
+		t.Fatalf("backfill replaced a recorded source SBOM: %+v", kept.SourceSBOM)
+	}
+	none := recorded
+	none.SourceSBOM = &SBOMRef{Status: SBOMStatusUnavailable, Reason: "skipped"}
+	if got, changed := BackfillSBOMs(none, withSource); !changed || !got.SourceSBOM.HasSBOM() {
+		t.Fatalf("an unavailable source SBOM was not filled: %+v", got.SourceSBOM)
+	}
+	if _, changed := BackfillSBOMs(none, Release{SourceSBOM: &SBOMRef{Status: SBOMStatusUnavailable, Reason: "other"}}); changed {
+		t.Fatal("a second 'none' replaced the first reason")
+	}
+
+	bad := withSource
+	bad.SourceSBOM = &SBOMRef{Status: SBOMStatusOK}
+	if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Validate accepted an ok source SBOM with no digest: %v", err)
+	}
+
+	snap := snapshotTestRelease(t)
+	snap.SourceSBOM = withSource.SourceSBOM
+	if err := snap.Validate(); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "source SBOM") {
+		t.Fatalf("Validate accepted a snapshot release with a source SBOM: %v", err)
+	}
+	stripped := snap.WithoutSBOMs()
+	if stripped.SourceSBOM != nil || snap.SourceSBOM == nil {
+		t.Fatalf("WithoutSBOMs: stripped %+v, receiver %+v", stripped.SourceSBOM, snap.SourceSBOM)
+	}
+	if raw, _ := json.Marshal(stripped); bytes.Contains(raw, []byte("sbom")) {
+		t.Fatalf("WithoutSBOMs left an sbom: %s", raw)
+	}
+}

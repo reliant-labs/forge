@@ -2,6 +2,7 @@ package sbom
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestGenerate_DirScansTheTreeAndIsNotCached(t *testing.T) {
 		t.Errorf("syft sources %v, want two dir scans of %s", got, dir)
 	}
 
-	missing := g.Generate(context.Background(), []Target{{Name: "shop", Kind: KindDir, Ref: dir + "/nope"}})[0]
+	missing := g.Generate(context.Background(), []Target{{Name: "shop", Kind: KindDir, Ref: filepath.Join(dir, "nope")}})[0]
 	if missing.Ref.Status != release.SBOMStatusUnavailable || !strings.Contains(missing.Ref.Reason, "not a directory") {
 		t.Errorf("missing dir: %+v", missing.Ref)
 	}

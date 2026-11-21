@@ -142,8 +142,6 @@ type FlakesOptions struct {
 	// States keeps only tests in these states; empty keeps every state but
 	// healthy.
 	States []testreport.State
-	// Issues maps a test's id string to its issue URL, when known.
-	Issues map[string]string
 }
 
 // ComputeFlakes is the forge.test.flakes/v1 document of the local record:
@@ -206,9 +204,6 @@ func ComputeFlakes(o FlakesOptions) (*testreport.Flakes, []string) {
 		if isQ {
 			ft.Quarantine = q.Document(o.Now)
 			ft.Issue = q.Issue
-		}
-		if url := o.Issues[id.String()]; url != "" {
-			ft.Issue = url
 		}
 		doc.Tests = append(doc.Tests, ft)
 	}

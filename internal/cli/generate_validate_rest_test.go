@@ -83,8 +83,51 @@ func TestRESTWiringWarnings_ExistingProjectNamesEachManualEdit(t *testing.T) {
 	if w := restWiringWarnings(dir, &config.ProjectConfig{}, true); w != nil {
 		t.Errorf("api.rest off: want no warnings, got %v", w)
 	}
-	if w := restWiringWarnings(dir, cfg, false); w != nil {
+	if w := restWiringWarnings(t.TempDir(), cfg, false); w != nil {
 		t.Errorf("no services: want no warnings, got %v", w)
+	}
+	// Empty service metadata (the directory-scan fallback) is not "no
+	// services" while proto/services/ holds a proto (review B2).
+	if w := restWiringWarnings(dir, cfg, false); len(w) != 3 {
+		t.Errorf("empty metadata with a service proto: want the 3 warnings, got %v", w)
+	}
+}
+
+// The server check reads Go syntax in the PRIMARY server's files (review B1):
+// a comment, another binary, or a RESTHandler result that never reaches the
+// server's Handler does not count as REST being served.
+func TestRESTServerWarning_ReadsThePrimaryServersWiring(t *testing.T) {
+	providersOff := strings.Replace(restTestProviders, "%s", "false", 1)
+	for _, tt := range []struct {
+		name  string
+		files map[string]string
+		warn  bool
+	}{
+		{"REST: true only in a comment", map[string]string{
+			"internal/app/providers.go": providersOff + "\n// REST: true once we are ready\n",
+		}, true},
+		{"another binary serves REST", map[string]string{
+			"internal/app/providers.go": providersOff,
+			"cmd/admin/cmd/serve.go":    "package cmd\n\nfunc serve() { srv.Handler = serverkit.RESTHandler(srv.Mux, m, l) }\n",
+		}, true},
+		{"a RESTHandler result that never reaches Handler", map[string]string{
+			"cmd/app/cmd/serve.go": "package cmd\n\nfunc serve() { rest := serverkit.RESTHandler(srv.Mux, m, l); _ = rest }\n",
+		}, true},
+		{"REST from config is the project's choice", map[string]string{
+			"internal/app/providers.go": strings.Replace(restTestProviders, "%s", "cfg.API.REST", 1),
+		}, false},
+		{"the primary binary assigns the handler directly", map[string]string{
+			"cmd/app/cmd/serve.go": "package cmd\n\nfunc serve() { srv.Handler = serverkit.RESTHandler(srv.Mux, m, l) }\n",
+		}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.files["forge.yaml"] = "name: app\n"
+			writeRESTFixture(t, dir, tt.files)
+			if w := restServerWarning(dir); (w != "") != tt.warn {
+				t.Fatalf("warning = %q, want warn=%v", w, tt.warn)
+			}
+		})
 	}
 }
 
@@ -123,7 +166,7 @@ func TestRESTWiringWarnings_LegacyServeGo(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			writeRESTFixture(t, dir, map[string]string{"cmd/app/cmd/serve.go": tt.serve})
+			writeRESTFixture(t, dir, map[string]string{"forge.yaml": "name: app\n", "cmd/app/cmd/serve.go": tt.serve})
 			w := restServerWarning(dir)
 			if got := w != ""; got != tt.warn {
 				t.Fatalf("warning = %q, want warn=%v", w, tt.warn)

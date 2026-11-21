@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -17,15 +20,7 @@ import (
 // the import every google.api.http annotation needs.
 const googleapisBufDep = "buf.build/googleapis/googleapis"
 
-var (
-	// restListenerOff / restListenerOn match the graph-mode providers.go's
-	// serverkit.ListenerDeps field, born `REST: <api.rest at scaffold>`.
-	restListenerOff = regexp.MustCompile(`\bREST:\s*false\b`)
-	restListenerOn  = regexp.MustCompile(`\bREST:\s*true\b`)
-	// restHandlerCall is the legacy serve.go's REST swap.
-	restHandlerCall = regexp.MustCompile(`\bRESTHandler\(`)
-	httpAnnotation  = regexp.MustCompile(`\(\s*google\.api\.http\s*\)`)
-)
+var httpAnnotation = regexp.MustCompile(`\(\s*google\.api\.http\s*\)`)
 
 // restWiringWarnings reports, for a project with `api.rest: true`, each piece
 // of REST wiring that is missing, naming the manual edit that adds it.
@@ -38,9 +33,13 @@ var (
 // therefore changes none of them, and forge does not rewrite them — so
 // generate says what to change instead of claiming REST is on (obs 4e9ce6c3).
 //
+// hasServices says whether the caller's service metadata lists any; when it
+// lists none (the directory-scan fallback), a .proto under proto/services/
+// counts, so missing metadata never silences the warnings.
+//
 // Advisory: a check that cannot read its file reports nothing.
 func restWiringWarnings(projectDir string, cfg *config.ProjectConfig, hasServices bool) []string {
-	if cfg == nil || !cfg.API.REST || !hasServices {
+	if cfg == nil || !cfg.API.REST || !(hasServices || hasServiceProtos(projectDir)) {
 		return nil
 	}
 	var warnings []string
@@ -56,31 +55,49 @@ func restWiringWarnings(projectDir string, cfg *config.ProjectConfig, hasService
 	return warnings
 }
 
-// restServerWarning: the server serves REST when some Go file under
-// internal/app/ or cmd/ sets `REST: true` or calls RESTHandler. It is unwired
-// when a file sets `REST: false` and none turns it on, or when neither
-// spelling appears anywhere (a legacy serve.go born without the swap).
+// hasServiceProtos reports whether proto/services/ holds a .proto file.
+func hasServiceProtos(projectDir string) bool {
+	found := false
+	_ = filepath.WalkDir(filepath.Join(projectDir, "proto", "services"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".proto") {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// restServerWarning reads the PRIMARY server's own wiring, as Go syntax (so
+// a comment, a string or another binary never counts): the Go files of
+// internal/app/ and of the primary binary's cmd/<bin>/cmd/. REST is on when a
+// serverkit.ListenerDeps literal sets REST to true (or to an expression forge
+// cannot evaluate, which is the project's own choice), or when a
+// serverkit.RESTHandler result is assigned to a server's Handler. It is
+// unwired when a literal sets `REST: false` and nothing turns it on, or when
+// neither appears (a legacy serve.go born without the swap).
 func restServerWarning(projectDir string) string {
-	var off, on bool
+	dirs := []string{filepath.Join(projectDir, "internal", "app")}
+	if bin := bootstrapBinaryName(projectDir); bin != "" {
+		dirs = append(dirs, filepath.Join(projectDir, "cmd", bin, "cmd"))
+	}
+	var on bool
 	offAt := ""
-	for _, dir := range []string{filepath.Join("internal", "app"), "cmd"} {
-		_ = filepath.WalkDir(filepath.Join(projectDir, dir), func(p string, d fs.DirEntry, err error) error {
+	fset := token.NewFileSet()
+	for _, dir := range dirs {
+		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 				return nil
 			}
-			src, err := os.ReadFile(p)
+			f, err := parser.ParseFile(fset, p, nil, parser.SkipObjectResolution)
 			if err != nil {
 				return nil
 			}
-			if restListenerOn.Match(src) || restHandlerCall.Match(src) {
-				on = true
-			}
-			if loc := restListenerOff.FindIndex(src); loc != nil {
-				off = true
-				if offAt == "" {
-					rel, _ := filepath.Rel(projectDir, p)
-					offAt = fmt.Sprintf("%s:%d", filepath.ToSlash(rel), 1+strings.Count(string(src[:loc[0]]), "\n"))
-				}
+			fileOn, offPos := restWiring(f)
+			on = on || fileOn
+			if offPos.IsValid() && offAt == "" {
+				rel, _ := filepath.Rel(projectDir, p)
+				offAt = fmt.Sprintf("%s:%d", filepath.ToSlash(rel), fset.Position(offPos).Line)
 			}
 			return nil
 		})
@@ -88,15 +105,79 @@ func restServerWarning(projectDir string) string {
 	switch {
 	case on:
 		return ""
-	case off:
+	case offAt != "":
 		return fmt.Sprintf("api.rest: true, but the server does not serve REST: %s sets `REST: false` in serverkit.ListenerDeps. "+
 			"Set it to `REST: true` (the file is yours; forge never rewrites it).", offAt)
 	default:
-		return "api.rest: true, but nothing under cmd/ or internal/app/ serves REST. " +
+		return "api.rest: true, but nothing under cmd/<bin>/cmd/ or internal/app/ serves REST. " +
 			"In cmd/<bin>/cmd/serve.go, after the services are mounted, add " +
 			"`if rest := serverkit.RESTHandler(srv.Mux, mounted, logger); rest != nil { srv.Handler = rest }` " +
 			"(or `REST: true` in internal/app/providers.go's serverkit.ListenerDeps, in a composition-graph project)."
 	}
+}
+
+// restWiring reads one file: whether it turns REST on, and the position of a
+// ListenerDeps `REST: false`, if any.
+func restWiring(f *ast.File) (on bool, off token.Pos) {
+	isCall := func(e ast.Expr, name string) bool {
+		c, ok := e.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := c.Fun.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == name
+	}
+	isHandler := func(e ast.Expr) bool {
+		sel, ok := e.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "Handler"
+	}
+	restVars := map[string]bool{} // idents a RESTHandler result is bound to
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.CompositeLit:
+			sel, ok := n.Type.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "ListenerDeps" {
+				return true
+			}
+			for _, el := range n.Elts {
+				kv, ok := el.(*ast.KeyValueExpr)
+				if k, isIdent := kv.Key.(*ast.Ident); !ok || !isIdent || k.Name != "REST" {
+					continue
+				}
+				if v, isIdent := kv.Value.(*ast.Ident); isIdent && v.Name == "false" {
+					if !off.IsValid() {
+						off = kv.Pos()
+					}
+				} else {
+					on = true
+				}
+			}
+		case *ast.AssignStmt:
+			for i, rhs := range n.Rhs {
+				if !isCall(rhs, "RESTHandler") || i >= len(n.Lhs) {
+					continue
+				}
+				if isHandler(n.Lhs[i]) {
+					on = true
+				} else if id, ok := n.Lhs[i].(*ast.Ident); ok {
+					restVars[id.Name] = true
+				}
+			}
+		}
+		return true
+	})
+	// A bound result counts once it reaches a server's Handler.
+	ast.Inspect(f, func(n ast.Node) bool {
+		if a, ok := n.(*ast.AssignStmt); ok {
+			for i, rhs := range a.Rhs {
+				if id, isIdent := rhs.(*ast.Ident); isIdent && restVars[id.Name] && i < len(a.Lhs) && isHandler(a.Lhs[i]) {
+					on = true
+				}
+			}
+		}
+		return true
+	})
+	return on, off
 }
 
 // restBufDepWarning: google/api/annotations.proto resolves only when buf.yaml

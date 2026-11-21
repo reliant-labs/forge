@@ -263,6 +263,12 @@ var shippedRules = []rolloutGroup{
 	// no reason, which its recognizer silently ignored (FG-32). Advisory at
 	// any pin; the row lets lint.rules raise it.
 	{IntroducedIn: "v1.9.0", Rules: []string{ruleGoMarkersReasonMissing}},
+	// `forge ci gate`'s flake-check step: a test the change adds or edits
+	// failed one of its three runs (`forge test flakes gate`). Advisory at
+	// any pin — for customers it reports and never fails; the row lets
+	// lint.rules raise it (`flake-check: error`), as forge, control-plane
+	// and reliant do.
+	{IntroducedIn: "v1.9.0", Rules: []string{RuleFlakeCheck}},
 }
 
 // newRules holds new v1.9.0 rules with explicit, owner-approved grace.

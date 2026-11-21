@@ -37,22 +37,27 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/bundle"
+	"github.com/reliant-labs/forge/internal/changesdecl"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/cluster"
 	"github.com/reliant-labs/forge/internal/deploytarget"
 	"github.com/reliant-labs/forge/internal/kclplugin"
 	"github.com/reliant-labs/forge/pkg/deploy"
 	"github.com/reliant-labs/forge/pkg/release"
+	"github.com/reliant-labs/forge/pkg/telemetry"
 )
 
 // envShapeDoc is what the command prints, and what the daemon's
@@ -326,11 +331,11 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		}
 		fallbackNamespace = store.Meta().Name + "-" + envName
 	}
-	mainK := filepath.Join(kclDir, envName, "main.k")
+	shown, mainK := envEntrypoint(projectDir, kclDir, envName)
 	if !envHasDeclaration(projectDir, envName, mainK) {
 		envs, _ := ListEnvs(projectDir)
 		return envShapeDoc{}, fmt.Errorf("environment %q not found: neither %s nor an env document (deploy/envs/%s.yaml) exists (declared environments: %s)",
-			envName, mainK, envName, strings.Join(envs, ", "))
+			envName, shown, envName, strings.Join(envs, ", "))
 	}
 
 	entities, kerr := RenderKCL(ctx, projectDir, envName)
@@ -408,6 +413,18 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 	if splitErr != nil {
 		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, splitErr)
 	}
+	// The project's changes are one declaration (changes.yaml), the same in
+	// every env, so a release declares what each change can be wherever it
+	// ships. An invalid file is the declaration's error, not a missing
+	// feature: a release must never ship a declaration nobody validated.
+	changes, cerr := changesdecl.Load(projectDir)
+	if cerr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, cerr)
+	}
+	shapeTelemetry, telErr := shapeTelemetryOf(envName, entities, release.DefaultTelemetryLimits())
+	if telErr != nil {
+		return envShapeDoc{}, fmt.Errorf("project env %q: %w", envName, telErr)
+	}
 	shape, err := bundle.ProjectShape(bundle.ShapeInput{
 		Kind:              shapeEnvKindOf(entities),
 		Workloads:         withShapeWorkloadUnits(shapeWorkloadsOf(entities), entities, split),
@@ -430,11 +447,13 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		Identity:            shapeIdentityOf(entities),
 		Databases:           shapeDatabasesOf(entities),
 		ExternalDatabases:   shapeExternalDatabasesOf(entities),
+		Telemetry:           shapeTelemetry,
 		Applier:             shapeApplierOf(entities),
 		Units:               split.ShapeUnits(),
 		HostInfra:           len(entities.Infra) > 0,
 		Buckets:             shapeBucketsOf(entities),
 		Preview:             entities.Preview,
+		Changes:             changes.Shape(),
 		Store:               store,
 	})
 	if err != nil {
@@ -809,6 +828,46 @@ func shapeExternalDatabasesOf(e *KCLEntities) []release.ShapeExternalDatabase {
 	return out
 }
 
+// shapeTelemetryOf projects the env's declared telemetry (forge.Telemetry)
+// into what the shape records: its hosted targets, which the Reliant platform
+// collects because forge runs no collector there. It is also where the hosted
+// rules are enforced, because the shape is what reaches the platform: every
+// target passes telemetry.Validate (which carries the hosted rules: every
+// scrape sets allow, no address, only declared ports), and the hosted ones
+// are held to limits (release.HostedTelemetryProblems: sample_limit, pulled
+// targets per env). Every problem is reported at once, each naming its target
+// and field. Nil when the env declares no hosted target, so the shape encodes
+// as it did before the field; such an env's telemetry is forge's own
+// collectors' to check (`forge env render` validates it), not the shape's.
+func shapeTelemetryOf(envName string, e *KCLEntities, limits release.TelemetryLimits) ([]release.ShapeTelemetry, error) {
+	if e == nil || !slices.ContainsFunc(e.Telemetry, func(t telemetry.Target) bool { return t.Runtime == telemetry.RuntimeHosted }) {
+		return nil, nil
+	}
+	if err := checkHostedTelemetry(envName, validateEnvTelemetry(envName, e), e.Telemetry, limits); err != nil {
+		return nil, err
+	}
+	return release.ShapeTelemetryOf(e.Telemetry), nil
+}
+
+// checkHostedTelemetry joins base (telemetry.Validate's verdict, or nil) and
+// the hosted caps' problems over targets into one *telemetry.ValidationError,
+// so every problem is reported at once. Nil when there is none.
+func checkHostedTelemetry(envName string, base error, targets []telemetry.Target, limits release.TelemetryLimits) error {
+	var problems []telemetry.Problem
+	if base != nil {
+		var verr *telemetry.ValidationError
+		if !errors.As(base, &verr) {
+			return base
+		}
+		problems = append(problems, verr.Problems...)
+	}
+	problems = append(problems, release.HostedTelemetryProblems(targets, limits)...)
+	if len(problems) == 0 {
+		return nil
+	}
+	return &telemetry.ValidationError{Env: envName, Problems: problems}
+}
+
 // shapeReleaseHealthOf projects the env's release-health policy. Nil when the
 // env declares none or only the defaults, so the shape encodes as it did
 // before the field.
@@ -1069,6 +1128,12 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 			fmt.Fprintf(w, "    %s: %s as %s via %s/%s on %s\n", x.Name, x.Database, x.Username, emptyAs(x.Namespace, "(no namespace)"), x.Service, emptyAs(x.Cluster, "(no cluster)"))
 		}
 	}
+	if len(doc.Shape.Telemetry) > 0 {
+		fmt.Fprintf(w, "  telemetry: %d hosted target(s) (the platform collects them)\n", len(doc.Shape.Telemetry))
+		for _, t := range doc.Shape.Telemetry {
+			fmt.Fprintf(w, "    %s (%s): %s\n", t.ServiceName, t.Source, strings.Join(t.Signals(), ", "))
+		}
+	}
 	if len(doc.Shape.Alerts) > 0 {
 		user := 0
 		for _, a := range doc.Shape.Alerts {
@@ -1092,6 +1157,14 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 				line += " (public read)"
 			}
 			fmt.Fprintf(w, "    %s\n", line)
+		}
+	}
+	if len(doc.Shape.Changes) > 0 {
+		keys := slices.Sorted(maps.Keys(doc.Shape.Changes))
+		fmt.Fprintf(w, "  changes:   %d declared in %s (who gets which variant is the control plane's)\n", len(keys), changesdecl.FileName)
+		for _, k := range keys {
+			c := doc.Shape.Changes[k]
+			fmt.Fprintf(w, "    %s [%s]: %d variant(s), default %s\n", k, c.Type, len(c.Variants), c.Default)
 		}
 	}
 	fmt.Fprintf(w, "  objects:   %d\n", len(doc.Shape.Objects))

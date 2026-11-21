@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/cigate"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/commitpolicy"
@@ -37,8 +38,11 @@ func newCICmd() *cobra.Command {
 	cmd.AddCommand(newCIVerifyGeneratedCmd())
 	cmd.AddCommand(newCIVerifyTestRunCmd())
 	cmd.AddCommand(newCITestBudgetCmd())
+	cmd.AddCommand(newCIRetryFailedCmd())
+	cmd.AddCommand(newCIVerifyTestRetryCmd())
 	cmd.AddCommand(newCIValidateKCLCmd())
 	cmd.AddCommand(newCIVulnScanCmd())
+	cmd.AddCommand(newCIVulnSBOMCmd())
 	cmd.AddCommand(newCIMigrationSafetyCmd())
 	cmd.AddCommand(newCIRunCmd())
 	cmd.AddCommand(newCISummarizeCmd())
@@ -367,7 +371,8 @@ func newCIVulnScanCmd() *cobra.Command {
 			"high or critical (lower ones are printed, not failed). An advisory with no fixed\n" +
 			"version that cannot reach your code can be accepted under ci.vuln_scan.exemptions\n" +
 			"in forge.yaml — by its GO-… id (govulncheck) or GHSA-… id (npm audit), with a\n" +
-			"reason and an expiry date. Each entry accepts that one advisory and nothing else; an\n" +
+			"reason and an expiry date. Any other advisory id (a CVE) belongs to the SBOM scan,\n" +
+			"`forge ci vuln-sbom`; this command never judges it. Each entry accepts that one advisory and nothing else; an\n" +
 			"expired or incomplete entry fails the gate, and one that matches nothing is reported\n" +
 			"so it can be removed.\n\n" +
 			"The Go scan covers EVERY Go module of the project, not only the one at its root:\n" +
@@ -413,16 +418,28 @@ func newCIVulnScanCmd() *cobra.Command {
 			// not run contributes an error, never a silent absence.
 			var ran, failed []string
 
-			// One exemption list serves both scanners; each entry's ID
-			// says which one it belongs to. An entry neither scanner
-			// reports can accept nothing, and fails the gate the way a
-			// malformed entry does.
+			// One exemption list serves both scanners (and the SBOM
+			// scan); each entry's ID says which one it belongs to. An
+			// entry no scanner could honor fails the gate the way a
+			// malformed entry does; a well-formed CVE entry is the SBOM
+			// scan's, and neither scanner here judges it.
 			exemptions, unroutable := partitionExemptions(ci.VulnScan.Exemptions)
 			for _, m := range unroutable {
 				fmt.Fprintf(os.Stderr, "❌ exemption not honored: %s\n", m)
 			}
 			if len(unroutable) > 0 {
 				failed = append(failed, fmt.Sprintf("%d unusable exemption(s) in forge.yaml", len(unroutable)))
+			}
+
+			// The default selection runs the scanners the project has
+			// something for (NS FG-34): a static site has no Go module, and
+			// demanding govulncheck there failed the scan its npm lane would
+			// have passed. An explicit --go still demands it.
+			if runGo && !flagGo {
+				if modules, _, derr := discoverGoModules(projectDirForKCL(), flagRootModule); derr == nil && len(modules) == 0 {
+					fmt.Fprintln(os.Stderr, "⏭️  govulncheck: the project has no Go module — nothing to scan")
+					runGo = false
+				}
 			}
 
 			if runGo {
@@ -525,19 +542,28 @@ func (u unavailable) Unwrap() error        { return u.err }
 // process failing, output that will not parse — is therefore an explicit
 // error below, never a fall-through.
 func ciRunGovulncheck(ctx context.Context, root string, rootOnly bool, exemptions []config.CIVulnExemption) (string, error) {
-	if _, err := exec.LookPath("govulncheck"); err != nil {
-		return "", unavailable{cliutil.UserErr("forge ci vuln-scan",
-			"govulncheck is not on PATH, so the Go vulnerability gate cannot run — refusing to report a pass it did not verify",
-			"",
-			"install it with `go install golang.org/x/vuln/cmd/govulncheck@latest` (forge's generated .github/workflows/ci.yml installs a pinned version in the vuln-scan job, and scripts/bootstrap.sh installs it locally), then re-run")}
+	bin, err := exec.LookPath("govulncheck")
+	if err != nil {
+		// None on PATH: build the version `forge ci gate` pins into forge's
+		// tool cache, as the gate itself does, rather than refuse.
+		dir, eerr := cigate.NewResolver(root, os.Stderr).Ensure(ctx, cigate.GovulncheckTool())
+		if eerr != nil || dir == "" {
+			return "", unavailable{cliutil.UserErr("forge ci vuln-scan",
+				"govulncheck is not on PATH and the pinned one could not be built, so the Go vulnerability gate cannot run — refusing to report a pass it did not verify",
+				"",
+				fmt.Sprintf("install it with `go install golang.org/x/vuln/cmd/govulncheck@latest`, or run the whole gate with `forge ci gate`, which builds its pinned tools (%v)", eerr))}
+		}
+		bin = filepath.Join(dir, "govulncheck")
 	}
-	return scanGoModules(ctx, root, rootOnly, exemptions, runGovulncheckJSON, os.Stdout, time.Now())
+	run := func(ctx context.Context, dir string) ([]byte, error) { return runGovulncheckJSONWith(ctx, bin, dir) }
+	return scanGoModules(ctx, root, rootOnly, exemptions, run, os.Stdout, time.Now())
 }
 
-// runGovulncheckJSON runs `govulncheck -format json ./...` in one module.
-func runGovulncheckJSON(ctx context.Context, dir string) ([]byte, error) {
+// runGovulncheckJSONWith runs `<bin> -format json ./...` (govulncheck) in
+// one module.
+func runGovulncheckJSONWith(ctx context.Context, bin, dir string) ([]byte, error) {
 	var stdout bytes.Buffer
-	cmd := exec.CommandContext(ctx, "govulncheck", "-format", "json", "./...")
+	cmd := exec.CommandContext(ctx, bin, "-format", "json", "./...")
 	cmd.Dir = dir
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr

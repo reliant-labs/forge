@@ -31,6 +31,8 @@
 // that cannot import them has produced a broken build, not a choice. Moving a
 // project to v2 is `go get connectrpc.com/connect/v2` plus the import in its
 // code; `forge generate` follows.
+//
+//forge:exclude-contract: a value type (Major) and the pure functions that decide it from go.mod; there is no collaborator to substitute
 package connectmajor
 
 import (

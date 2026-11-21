@@ -1,5 +1,7 @@
 // Package staticexport reports what a Next.js App Router frontend contains
-// that a static export (`output: "export"`) cannot serve.
+// that a static export (`output: "export"`) cannot serve — and, for a Vite
+// frontend on a static runtime, where its build disagrees with the deploy
+// (vite.go).
 //
 // WHY. Every static runtime forge binds a frontend to — forge.OnHosted (the
 // control plane's static hosting), forge.OnBucket, forge.OnFirebase —
@@ -63,6 +65,8 @@ const (
 	RuleNextImage      = "static-export-next-image"
 	RuleConfigRoutes   = "static-export-config-routes"
 	RuleTrailingSlash  = "static-export-trailing-slash"
+	// RulePartialPrerender: next.config turns on cacheComponents / ppr.
+	RulePartialPrerender = "static-export-partial-prerender"
 )
 
 // RuleIDs lists every rule this package emits.
@@ -70,7 +74,8 @@ func RuleIDs() []string {
 	return []string{
 		RuleNotExported, RuleDynamicSegment, RuleRouteHandler, RuleMiddleware,
 		RuleServerAction, RuleNextHeaders, RuleDynamicConfig, RuleNextImage,
-		RuleConfigRoutes, RuleTrailingSlash,
+		RuleConfigRoutes, RuleTrailingSlash, RulePartialPrerender,
+		RuleViteOutDir, RuleViteBase,
 	}
 }
 
@@ -79,6 +84,14 @@ type Binding struct {
 	Env string
 	// Runtime is the rendered runtime type: "hosted", "bucket" or "firebase".
 	Runtime string
+	// PublicDir is the directory that env publishes, relative to the
+	// frontend's code: the rendered `public_dir`, which the render resolves
+	// to the type's convention when the env declares none. Read by the Vite
+	// check; "" when unknown.
+	PublicDir string
+	// BasePath is the sub-path that env mounts the frontend under ("/admin"),
+	// "" for the site root.
+	BasePath string
 }
 
 // Frontend is one Next.js frontend whose production build must be a static
@@ -113,6 +126,7 @@ func Check(fe Frontend) ([]finding.Finding, error) {
 	c.checkMiddleware()
 	c.checkSourceConstructs()
 	c.checkNextImage()
+	c.checkPartialPrerender()
 	c.checkConfigRoutes()
 	c.checkTrailingSlash()
 	sort.SliceStable(c.out, func(i, j int) bool {

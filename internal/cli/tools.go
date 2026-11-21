@@ -20,6 +20,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
@@ -139,7 +140,8 @@ Subcommands:
             versions this project's go.mod resolves, and check that every
             frontend declares its TypeScript plugin. Name a tool to install
             just it — including the lint tools 'forge lint' gates with
-            (golangci-lint, buf), at forge's pins.
+            (golangci-lint, buf), at forge's pins, and syft and grype,
+            from sha256-verified release binaries.
   pins      Print the tool versions this forge pins, for CI to read.
 
 Forge scaffolds buf.gen.yaml with 'local:' plugins by default so that
@@ -161,7 +163,7 @@ func newToolsInstallCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install [tool...]",
-		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports), or the named tools (golangci-lint, buf)",
+		Short: "Install codegen tools (protoc-gen-go, protoc-gen-connect-go, goimports), or the named tools (golangci-lint, buf, syft, grype)",
 		Long: `Install the codegen tools forge needs on PATH for the default
 local:-plugin buf.gen.yaml workflow, plus goimports, which formats every Go
 file forge generates. Name tools to install just those, including the lint
@@ -182,6 +184,15 @@ with: one built with an older Go cannot analyze it. 'forge lint' builds that
 same golangci-lint into its own cache when PATH has none, so installing it
 only saves that one-time build — a CI job needs no install step for it.
 
+syft and grype, the SBOM generator and vulnerability scanner, install from
+their upstream release archives into forge's tool cache
+($FORGE_TOOLS_CACHE/release), each archive verified against a sha256
+compiled into this forge before it is extracted; they need no Go toolchain.
+forge fetches them on first use anyway, so naming them here is for a machine
+about to go offline or an image that bakes them in. FORGE_TOOLS_MIRROR
+downloads them from a mirror of github.com (the checksum is still checked).
+A platform with no published binary builds them with 'go install'.
+
 By default, tools already present on PATH are skipped — golangci-lint only
 when it is forge's pin built with a new-enough Go. Use --force to re-install
 them.
@@ -199,7 +210,8 @@ Examples:
   forge tools install --version v1.34.2
   forge tools install --force
   forge tools install golangci-lint
-  forge tools install golangci-lint buf`,
+  forge tools install golangci-lint buf
+  forge tools install syft grype`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			goErr := runToolsInstall(cmd.Context(), version, force, args...)
 			if len(args) > 0 {
@@ -314,11 +326,49 @@ func declaresTSPlugin(path string) (bool, error) {
 // installing it is an optimisation, never a prerequisite.
 var lintTools = []string{"buf", "golangci-lint"}
 
+// fetchedTools are the tools `forge tools install <name>` installs from
+// sha256-verified upstream release archives (internal/toolfetch), by name
+// only. They need no Go toolchain, and forge fetches them on first use
+// anyway, so installing them ahead is for a machine about to go offline or a
+// CI image that wants them baked in.
+func fetchedTools() map[string]toolfetch.Tool {
+	m := map[string]toolfetch.Tool{}
+	for _, t := range toolfetch.Tools() {
+		m[t.Name] = t
+	}
+	return m
+}
+
+// installFetchedTool installs t into forge's tool cache. --force does not
+// apply: an entry is verified against the pinned sha256 before it is
+// published, so there is nothing a reinstall could repair.
+func installFetchedTool(ctx context.Context, t toolfetch.Tool) error {
+	if in, ok := toolfetch.Find(t); ok {
+		fmt.Printf("✅ %-26s %s already installed at %s\n", t.Name, t.Version, in.Path)
+		return nil
+	}
+	fmt.Printf("📦 Installing %-26s %s (%s)\n", t.Name, t.Version, toolfetch.MethodFor(t))
+	path, _, err := toolfetch.Ensure(ctx, t)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ❌ %v\n", err)
+		return fmt.Errorf("install %s: %w", t.Name, err)
+	}
+	fmt.Printf("  ✅ %s %s installed at %s\n", t.Name, t.Version, path)
+	return nil
+}
+
 // runToolsInstall installs the named tools — the required codegen tools when
 // none are named. Returns the first install error (if any) but always tries
 // every tool so users see the full picture.
 func runToolsInstall(ctx context.Context, version string, force bool, names ...string) error {
-	if _, err := exec.LookPath("go"); err != nil {
+	fetched := fetchedTools()
+	needsGo := len(names) == 0
+	for _, n := range names {
+		if _, ok := fetched[n]; !ok {
+			needsGo = true
+		}
+	}
+	if _, err := exec.LookPath("go"); err != nil && needsGo {
 		return fmt.Errorf("'go' not found on PATH — install Go before running '%s tools install'", Name())
 	}
 	known := map[string]func() error{
@@ -349,13 +399,18 @@ func runToolsInstall(ctx context.Context, version string, force bool, names ...s
 		}
 		order = append(order, t.Binary)
 	}
+	var fetchedNames []string
+	for _, t := range toolfetch.Tools() {
+		known[t.Name] = func() error { return installFetchedTool(ctx, t) }
+		fetchedNames = append(fetchedNames, t.Name)
+	}
 	if len(names) == 0 {
 		names = order
 	}
 	for _, n := range names {
 		if known[n] == nil {
 			return cliutil.UserErr("forge tools install", fmt.Sprintf("no installable tool named %q", n), "",
-				"one of: "+strings.Join(append(order, lintTools...), ", "))
+				"one of: "+strings.Join(append(append(order, lintTools...), fetchedNames...), ", "))
 		}
 	}
 

@@ -52,6 +52,10 @@ var verifiedPins sync.Map
 // again, and otherwise returns an ErrRunnerUnusable naming the fix — it never
 // hands an install an executable already known to be broken.
 func VerifyPinnedRunner(ctx context.Context, dir, runner string) error {
+	return verifyPinnedRunner(ctx, output{}, dir, runner)
+}
+
+func verifyPinnedRunner(ctx context.Context, o output, dir, runner string) error {
 	if runner != "pnpm" {
 		return nil
 	}
@@ -72,7 +76,7 @@ func VerifyPinnedRunner(ctx context.Context, dir, runner string) error {
 	diagnosis := probeDiagnosis(argv, got, out, err, pin)
 	if broken := unstartableExecutable(out, err); broken != "" {
 		if pkg := owningPackage(broken, runner, pin); pkg != "" {
-			fmt.Printf("  %s@%s will not start (%s): running its package's install step in %s, once\n", runner, pin, broken, pkg)
+			o.printf("  %s@%s will not start (%s): running its package's install step in %s, once\n", runner, pin, broken, pkg)
 			repairErr := runPackageInstallScripts(ctx, pkg)
 			if repairErr == nil {
 				got, out, err = probeVersion(ctx, dir, argv)

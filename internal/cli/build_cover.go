@@ -13,6 +13,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,8 +25,12 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/reliant-labs/forge/pkg/release"
+
+	"github.com/reliant-labs/forge/internal/buildlog"
 	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/hostlaunch"
+	"github.com/reliant-labs/forge/internal/kclrender"
 )
 
 // TestsEntity is Bundle.tests as the render carries it: only what the env
@@ -168,8 +173,13 @@ func ResolveCoverBinaries(e *KCLEntities, optIn bool) ([]CoverBinary, error) {
 
 // applyCover records the resolved coverage on the entities: each GoBuild
 // workload whose binary is instrumented is marked (WorkloadEntity.CoverBuild),
-// which is what the host build and the host launch read.
-func (e *KCLEntities) applyCover(bins []CoverBinary) {
+// which is what the host build and the host launch read. An image whose
+// binary is NOT instrumented here, but WOULD be in a preview of this env
+// (previewCoverBinaries: the same per-binary resolution, so a binary any
+// workload or the env turned off is never one), is marked for a cover
+// VARIANT: a release build of it pushes the cover stage beside the shared
+// image, for a preview of the release to run (buildReleaseCoverVariant).
+func (e *KCLEntities) applyCover(bins []CoverBinary, optIn bool) {
 	on := map[string]bool{}
 	for _, b := range bins {
 		if b.Enabled {
@@ -180,6 +190,7 @@ func (e *KCLEntities) applyCover(bins []CoverBinary) {
 	if e.Tests != nil {
 		pkgs = e.Tests.CoveragePackages
 	}
+	inPreview := previewCoverBinaries(e, optIn)
 	for i := range e.Workloads {
 		w := &e.Workloads[i]
 		if g := w.GoBuild(); g != nil && on[normalizePGOPackage(g.Cmd)] {
@@ -192,12 +203,201 @@ func (e *KCLEntities) applyCover(bins []CoverBinary) {
 			for k := range d.Coverage {
 				named[normalizePGOPackage(k)] = true
 			}
-			if pkg := dockerWorkloadBinary(*w, d, e.Project, named); pkg != "" && on[pkg] {
+			pkg := dockerWorkloadBinary(*w, d, e.Project, named)
+			switch {
+			case pkg != "" && on[pkg]:
 				d.cover = &workloadCover{packages: pkgs}
 				w.cover = d.cover
+			case pkg != "" && inPreview[pkg]:
+				d.coverVariant = &workloadCover{packages: pkgs}
 			}
 		}
 	}
+}
+
+// previewCoverBinaries is the set of binaries a preview of e instruments:
+// ResolveCoverBinaries over e as a preview (not persistent), so the variant
+// follows exactly the per-binary policy a preview's own build would — the
+// env's declared tests.coverage, else the project's opt-in, and a binary's
+// declared `coverage` on any workload that runs or names it. Binaries whose
+// workloads disagree resolve to none (a preview of e would refuse to render).
+func previewCoverBinaries(e *KCLEntities, optIn bool) map[string]bool {
+	if e == nil {
+		return nil
+	}
+	preview := *e
+	if preview.Preview == nil {
+		preview.Preview = &release.ShapePreview{Of: e.Env}
+	}
+	bins, err := ResolveCoverBinaries(&preview, optIn)
+	if err != nil {
+		return nil
+	}
+	on := map[string]bool{}
+	for _, b := range bins {
+		if b.Enabled {
+			on[b.Package] = true
+		}
+	}
+	return on
+}
+
+// buildReleaseCoverVariant builds and pushes the cover variant of a release
+// image (applyCover marked it) BESIDE the shared one: the same `docker build`
+// with `--target cover`, every tag suffixed `-cover`. It returns the pushed
+// digest, which the cut records as the image's cover variant artifact.
+//
+// It never fails the release: coverage decides no exit code (design §5.3).
+// A Dockerfile without the cover stage, a build that names its own target, a
+// release that pushes nowhere, or a failed cover build is a line on stdout
+// and no variant, and a preview then runs the shared image.
+//
+// The stage is looked for in the Dockerfile the build uses (coverDockerfile),
+// a GitSource pin's included.
+func buildReleaseCoverVariant(ctx context.Context, svcName string, d *DockerBuild, dockerArgs, pushTags []string, alreadyCover bool) (string, error) {
+	if alreadyCover || d == nil || d.coverVariant == nil || len(pushTags) == 0 {
+		return "", nil
+	}
+	dockerfile, derr := coverDockerfile(d)
+	if derr != nil {
+		fmt.Printf("[build] %s: no cover variant for this release — %v\n", svcName, derr)
+		return "", nil
+	}
+	if d.Target != "" || !dockerfileHasCoverStage(dockerfile) {
+		fmt.Printf("[build] %s: no cover variant for this release — %s\n", svcName, coverSkipReason(dockerfile, d))
+		return "", nil
+	}
+	args, err := coverVariantArgs(ctx, svcName, d, dockerArgs)
+	if errors.Is(err, errCoverVariantUntagged) {
+		fmt.Printf("[build] %s: no cover variant for this release — %v\n", svcName, err)
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	fmt.Printf("[build] %s: building the release's cover variant (docker build --target %s)\n", svcName, coverImageStage)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	var endStep func(error)
+	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step("docker build " + svcName + " (cover)")
+	err = cmd.Run()
+	endStep(err)
+	if err != nil {
+		fmt.Printf("[build]   Warning: %s: the cover variant did not build (%v); previews of this release run the shared image\n", svcName, err)
+		return "", nil
+	}
+	var last string
+	for _, t := range pushTags {
+		last = coverTag(t)
+		if err := dockerPush(ctx, last); err != nil {
+			fmt.Printf("[build]   Warning: %s: push %s: %v; previews of this release run the shared image\n", svcName, last, err)
+			return "", nil
+		}
+	}
+	digest, _, err := imageRepoDigest(ctx, last)
+	if err != nil {
+		fmt.Printf("[build]   Warning: %s: could not capture the cover variant's digest (%v); previews of this release run the shared image\n", svcName, err)
+		return "", nil
+	}
+	fmt.Printf("[build] %s: cover variant %s\n", svcName, digest)
+	return digest, nil
+}
+
+// coverSkipReason says why an image gets no cover build.
+func coverSkipReason(dockerfile string, d *DockerBuild) string {
+	if d.Target != "" {
+		return fmt.Sprintf("the build names its own target %q", d.Target)
+	}
+	return fmt.Sprintf("%s has no %#q stage (a new scaffold's Dockerfile does)", dockerfile, coverImageStage)
+}
+
+// errCoverVariantUntagged is coverVariantArgs refusing an argv that tags
+// nothing: the variant would carry the shared image's tags.
+var errCoverVariantUntagged = errors.New("its docker build names no tag to suffix -" + release.CoverVariant + ", so the variant would push over the shared image")
+
+// coverVariantArgs is the shared image's `docker build` argv turned into its
+// cover variant's: `--target cover` and FORGE_COVERPKG (coverImageArgs's
+// rule), and every tag suffixed -cover (coverTag), in each spelling docker
+// accepts: `-t ref`, `--tag ref`, `-t=ref`, `--tag=ref` and `-tref`. An argv
+// that tags nothing is refused: the variant would carry the shared image's
+// tags, and pushing them would overwrite it.
+func coverVariantArgs(ctx context.Context, svcName string, d *DockerBuild, dockerArgs []string) ([]string, error) {
+	variant := *d
+	variant.cover, variant.coverVariant = d.coverVariant, nil
+	extra, err := coverImageArgs(ctx, svcName, &variant)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string{dockerArgs[0]}, extra...)
+	tagged := false
+	for i := 1; i < len(dockerArgs); i++ {
+		a := dockerArgs[i]
+		switch {
+		case (a == "-t" || a == "--tag") && i+1 < len(dockerArgs):
+			i++
+			out = append(out, a, coverTag(dockerArgs[i]))
+			tagged = true
+		case strings.HasPrefix(a, "--tag="), strings.HasPrefix(a, "-t="):
+			flag, ref, _ := strings.Cut(a, "=")
+			out = append(out, flag+"="+coverTag(ref))
+			tagged = true
+		case strings.HasPrefix(a, "-t") && len(a) > 2 && !strings.HasPrefix(a, "--"):
+			out = append(out, "-t"+coverTag(a[2:]))
+			tagged = true
+		default:
+			out = append(out, a)
+		}
+	}
+	if !tagged {
+		return nil, errCoverVariantUntagged
+	}
+	return out, nil
+}
+
+// envRunsVariant is the build variant env runs from a release: a preview
+// instance (forge env preview create marks its directory) runs the cover
+// variant, every other env none — a persistent env runs the shared digests,
+// the bytes staging ran.
+func envRunsVariant(projectDir, env string) string {
+	if _, ok, _ := kclrender.ReadPreviewMarker(filepath.Join(projectDir, "deploy", "kcl", env)); ok {
+		return release.CoverVariant
+	}
+	return ""
+}
+
+// releasePinsForEnv is the image pin set env resolves from rel
+// (release.PinsFor), checked so that no variant digest lands on an env that
+// does not run it (release.CheckPins). A release that merely CARRIES a cover
+// variant promotes to a persistent env on its shared digests; only a cover
+// digest in a persistent env's pins is refused.
+func releasePinsForEnv(projectDir, env string, rel release.Release) (map[string]string, error) {
+	runs := envRunsVariant(projectDir, env)
+	pins := rel.PinsFor(runs)
+	if err := rel.CheckPins(runs, pins); err != nil {
+		return nil, fmt.Errorf("env %s: %w", env, err)
+	}
+	return pins, nil
+}
+
+// promoteTargetPins is the pin set a promotion of env to target is written
+// with: resolveReleaseDigests's refusal of a release that pins nothing, then
+// the env's pins (releasePinsForEnv) — a preview runs the release's cover
+// variant where it has one, every other env its shared digests, and a pin set
+// that would put a cover digest on a persistent env is refused before the
+// promotion is written.
+func promoteTargetPins(projectDir, env string, target release.Release) (map[string]string, error) {
+	if _, err := resolveReleaseDigests(target); err != nil {
+		return nil, err
+	}
+	return releasePinsForEnv(projectDir, env, target)
+}
+
+// coverTag is ref's cover variant tag: `repo:v1.4.0` → `repo:v1.4.0-cover`;
+// an untagged ref gets the tag `cover`.
+func coverTag(ref string) string {
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
+		return ref + "-" + release.CoverVariant
+	}
+	return ref + ":" + release.CoverVariant
 }
 
 // workloadCover is a workload's instrumented build: the env's -coverpkg

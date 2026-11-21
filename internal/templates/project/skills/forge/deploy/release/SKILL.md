@@ -135,3 +135,6 @@ A failed deploy changes nothing to undo: the pre-rollout gate stops a bad
 migration before any workload changes, and a workload that never becomes ready
 leaves the previous ReplicaSet serving. Binding an env to an OLDER release is
 an ordinary promote labelled `direction BEHIND`; see `db/deploy-migrations`.
+
+Every cut also records an SBOM per artifact and, when the machine has the vulnerability
+database, scans it and prints the verdict; `--no-sbom` skips it. `vuln` has the rest.

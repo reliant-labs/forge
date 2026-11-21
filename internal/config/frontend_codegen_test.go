@@ -74,7 +74,8 @@ func TestFrontendAdoptedDetection(t *testing.T) {
 			name: "births generate made inside an adopted frontend do not make it scaffolded",
 			setup: func(t *testing.T, root string) {
 				writeCodegenFile(t, root, ".forge/scaffolded/frontends/web/src/lib/connect.ts.json", "{}\n")
-				writeCodegenFile(t, root, ".forge/scaffolded/frontends/web/src/hooks/chat-service-hooks.test.tsx.json", "{}\n")
+				writeCodegenFile(t, root, ".forge/scaffolded.json",
+					`{"files": {"frontends/web/src/hooks/chat-service-hooks.test.tsx": {}}}`)
 			},
 			adopted: true,
 		},

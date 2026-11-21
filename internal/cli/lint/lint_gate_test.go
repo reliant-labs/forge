@@ -196,6 +196,8 @@ func TestSelectedLanes(t *testing.T) {
 		"three":                   {flags: lintFlags{readOnlyFields: true, conventions: true, computedFields: true}, want: []string{"conventions", "computed-fields", "read-only-fields"}},
 		"exported-vars alone":     {flags: lintFlags{exportedVars: true}, want: []string{"exported-vars"}},
 		"exported-vars runs once": {flags: lintFlags{exportedVars: true, contract: true}, want: []string{"contract"}},
+		"deprecated alias":        {flags: lintFlags{crudFixtures: true}, want: []string{"fixture-drift"}},
+		"alias and its lane":      {flags: lintFlags{crudFixtures: true, fixtureDrift: true}, want: []string{"fixture-drift"}},
 		"non-lane flags are kept": {flags: lintFlags{quiet: true, noFix: true, conventions: true}, want: []string{"conventions"}},
 	} {
 		if got := selectedLanes(tc.flags); !reflect.DeepEqual(got, tc.want) {
@@ -212,6 +214,9 @@ func TestOnlyLane(t *testing.T) {
 	got := onlyLane(lintFlags{conventions: true, contract: true, strict: true, quiet: true}, "conventions")
 	if !got.conventions || got.contract || !got.strict || !got.quiet {
 		t.Errorf("onlyLane(conventions) = %+v; want conventions alone, strict and quiet kept", got)
+	}
+	if got := onlyLane(lintFlags{crudFixtures: true}, "fixture-drift"); !got.fixtureDrift || got.crudFixtures {
+		t.Errorf("onlyLane(fixture-drift) over the alias = %+v; want the canonical flag alone", got)
 	}
 
 	var all lintFlags

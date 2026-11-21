@@ -86,6 +86,14 @@ func generateDescriptor(p *protogen.Plugin, descriptorOut string) error {
 			frag.Services = append(frag.Services, extractService(f, svc))
 		}
 
+		// Entity protos are dead: SQL is the schema language and entities
+		// are projected from the applied db/migrations schema. A message
+		// still carrying the legacy (forge.v1.entity) annotation gets a
+		// one-line migration notice — the annotation is otherwise IGNORED.
+		for _, msg := range f.Messages {
+			noticeLegacyEntityAnnotation(f, msg)
+		}
+
 		// Extract config messages. Walks nested message declarations too
 		// so a component config block declared inside AppConfig (instead
 		// of the conventional top-level declaration) still generates.
@@ -834,6 +842,27 @@ func listFilterOf(f *protogen.Field) *codegen.ListFilterDef {
 		op = fmt.Sprintf("%d", lf.GetOp())
 	}
 	return &codegen.ListFilterDef{Column: lf.GetColumn(), Op: op}
+}
+
+// noticeLegacyEntityAnnotation prints a one-line migration notice for
+// messages still carrying the retired (forge.v1.entity) annotation.
+// The annotation is ignored: entities are projections of the applied
+// db/migrations schema now, and these projects' migrations were already
+// the de-facto truth. The option DEFINITIONS remain in forge/v1/forge.proto
+// (deprecated) so legacy protos keep compiling until a v2 (semver v1).
+func noticeLegacyEntityAnnotation(file *protogen.File, msg *protogen.Message) {
+	opts, ok := msg.Desc.Options().(*descriptorpb.MessageOptions)
+	if !ok || opts == nil {
+		return
+	}
+	if !proto.HasExtension(opts, forgev1.E_Entity) {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"ℹ️  %s: message %s carries the retired (forge.v1.entity) annotation — it is now ignored.\n"+
+			"   SQL is the schema: db/migrations drive the ORM/entity projections.\n"+
+			"   Your migrations are already the truth; delete the annotation (and any proto/db entity files).\n",
+		file.Desc.Path(), msg.Desc.Name())
 }
 
 // configMapValueType names a map field's value kind ("string", "bool"),

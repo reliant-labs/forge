@@ -21,7 +21,11 @@ import "golang.org/x/mod/semver"
 // forgeDevLog merged), 0.13.20 will lack it: raise this to the version that
 // does ship it (check `dist/vite.d.ts` of the published tarball) before the
 // floor reaches 0.13.20.
-const webRuntimeForgeDevLogSince = "0.13.20"
+//
+// That happened: v1.9.0's cut published 0.13.20 from a commit before
+// forgeDevLog merged (#2417), and its dist/vite.d.ts exports no forgeDevLog.
+// So the next publish, 0.13.21, is the first that can ship it.
+const webRuntimeForgeDevLogSince = "0.13.21"
 
 // inlinedDevLogPlugin is the scaffolded copy of the receiver, relative to the
 // frontend root.

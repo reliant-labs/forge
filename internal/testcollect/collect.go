@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/testcapture"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -138,7 +139,6 @@ type Options struct {
 	Kube   Kube
 	// Convert converts a GOCOVERDIR; nil is testreport.ConvertCovdata.
 	Convert func(ctx context.Context, goBin, dir string) ([]testreport.CovdataBuild, error)
-	GoBin   string
 	// ModulePath lets the conversion summary exclude generated files by
 	// their repo path.
 	ModulePath string
@@ -530,7 +530,7 @@ func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult)
 		p := ResetMarker(opts.ProjectRoot, opts.Env, t.Workload)
 		err := os.MkdirAll(filepath.Dir(p), 0o755)
 		if err == nil {
-			err = os.WriteFile(p, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+			err = atomicfile.WriteFile(p, []byte(at.UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
 		}
 		if err != nil {
 			r.Notes = append(r.Notes, "reset time not recorded: "+err.Error())
@@ -676,7 +676,7 @@ func recordLane(opts Options, run string, inputs []testreport.LaneCoverageInput,
 // convert converts the newest build in dir and tallies it, generated code
 // excluded.
 func convert(ctx context.Context, opts Options, dir string) (*testreport.Tally, error) {
-	builds, err := opts.Convert(ctx, opts.GoBin, dir)
+	builds, err := opts.Convert(ctx, "", dir) // "": the go on PATH, like every other forge go call
 	if err != nil {
 		return nil, err
 	}

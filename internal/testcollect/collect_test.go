@@ -520,7 +520,7 @@ func TestCollectExitCodes(t *testing.T) {
 		if exitcode.Of(err) != 2 || doc.ExitCode != 2 || doc.OK {
 			t.Fatalf("err %v doc %+v, want exit 2", err, doc.Head)
 		}
-		if wl := doc.Workloads[1]; wl.State != StateUnreachable || !strings.Contains(wl.Reason, "connection refused") {
+		if wl := doc.Workloads[1]; wl.State != StateUnreachable || !strings.Contains(wl.Reason, "refused") { // POSIX "connection refused", Winsock "actively refused it"
 			t.Errorf("api %+v", wl)
 		}
 		if !strings.Contains(doc.Error, "api could not be reached") {

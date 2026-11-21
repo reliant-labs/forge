@@ -205,7 +205,8 @@ func (c *Client) DialPod(ctx context.Context, namespace, pod string, port int) (
 	return newConn(rwc, fmt.Sprintf("%s/%s:%d", namespace, pod, port)), nil
 }
 
-// podForbiddenHint names the one rule a pod dial needs, when RBAC refused it.
+// podForbiddenHint names the one rule a pod dial needs, when the API server
+// forbade it (a missing Role grant).
 func podForbiddenHint(err error, namespace string) string {
 	if apierrors.IsForbidden(err) || strings.Contains(strings.ToLower(err.Error()), "forbidden") {
 		return fmt.Sprintf("\nfix: the identity needs pods/portforward (get, create) in namespace %s", namespace)

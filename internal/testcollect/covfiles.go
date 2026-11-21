@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/atomicfile"
 )
 
 // The two kinds of file a -cover binary writes (runtime/coverage):
@@ -251,7 +253,7 @@ func (b *build) write(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, metaPrefix+b.hash), b.meta, 0o644); err != nil {
+	if err := atomicfile.WriteFile(filepath.Join(dir, metaPrefix+b.hash), b.meta, 0o644); err != nil {
 		return err
 	}
 	written := map[string][]byte{}
@@ -274,7 +276,7 @@ func (b *build) write(dir string) error {
 			continue // the same file, read from two sources
 		}
 		written[name] = c.data
-		if err := os.WriteFile(filepath.Join(dir, name), c.data, 0o644); err != nil {
+		if err := atomicfile.WriteFile(filepath.Join(dir, name), c.data, 0o644); err != nil {
 			return err
 		}
 	}

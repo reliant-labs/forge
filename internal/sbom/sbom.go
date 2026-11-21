@@ -12,7 +12,12 @@
 //   - a host binary: the file (Go buildinfo lists every linked module);
 //   - a static site, an npm package, a Go module: the lockfile or manifest,
 //     because a bundle carries no package metadata (syft finds nothing in a
-//     built dist/). Dev dependencies are excluded, syft's default.
+//     built dist/). Dev dependencies are excluded, syft's default;
+//   - a source tree (a record's --sbom-source): syft's directory scan of
+//     the lockfiles and manifests in it.
+//
+// An SBOM a pipeline produced itself is not generated here; [Identify]
+// checks that one and names its format.
 //
 // A failure never fails the caller: [Generator.Generate] returns an
 // [release.SBOMStatusUnavailable] ref with the reason, which a reader shows
@@ -65,6 +70,11 @@ const (
 	// KindLockfile is a lockfile or manifest on disk (package-lock.json,
 	// pnpm-lock.yaml, yarn.lock, go.mod).
 	KindLockfile Kind = "lockfile"
+	// KindDir is a source tree: syft's directory scan, which reads the
+	// lockfiles and manifests it finds (dev dependencies excluded). The
+	// tree has no one digest, so its Subject is optional and, when empty,
+	// nothing is cached.
+	KindDir Kind = "dir"
 )
 
 // Target is one artifact to describe.
@@ -194,6 +204,10 @@ func (g *Generator) one(ctx context.Context, bin, generator string, t Target) Re
 		if !release.ValidDigest(subject) {
 			return unavailable(t, sourceFor(t.Kind), fmt.Sprintf("image %s has no digest to describe", t.Ref))
 		}
+	case KindDir:
+		if fi, err := os.Stat(t.Ref); err != nil || !fi.IsDir() {
+			return unavailable(t, sourceFor(t.Kind), fmt.Sprintf("%s is not a directory", t.Ref))
+		}
 	default:
 		return unavailable(t, "", fmt.Sprintf("unknown SBOM target kind %q", t.Kind))
 	}
@@ -248,6 +262,12 @@ func (g *Generator) scan(ctx context.Context, bin string, t Target) ([]byte, str
 			return nil, release.SBOMSourceRegistry, fmt.Errorf("syft could not read %s from its registry: %s%s", t.Ref, oneLine(err.Error()), withNote(note))
 		}
 		return data, release.SBOMSourceRegistry, nil
+	case KindDir:
+		data, err := g.run(ctx, bin, t, "dir:"+t.Ref, nil)
+		if err != nil {
+			return nil, release.SBOMSourceLockfile, fmt.Errorf("syft on %s: %s", t.Ref, oneLine(err.Error()))
+		}
+		return data, release.SBOMSourceLockfile, nil
 	default: // binary, lockfile
 		source := sourceFor(t.Kind)
 		data, err := g.run(ctx, bin, t, "file:"+t.Ref, nil)
@@ -320,7 +340,7 @@ func sourceFor(k Kind) string {
 		return release.SBOMSourceRegistry
 	case KindBinary:
 		return release.SBOMSourceBinary
-	case KindLockfile:
+	case KindLockfile, KindDir:
 		return release.SBOMSourceLockfile
 	}
 	return ""

@@ -127,8 +127,8 @@ var ErrArtifactNotFound = errors.New("artifact not found in release")
 // or one whose SBOM could not be produced at the cut. recorded is false when
 // the artifact already names an SBOM: the first one recorded stands, because
 // it is what every scan since was computed against (release.BackfillSBOMs
-// has the rule). Not a conflict either way: an SBOM is evidence, not
-// identity.
+// has the rule; it does fill the referrer of the SAME SBOM when the record
+// lacks one). Not a conflict either way: an SBOM is evidence, not identity.
 //
 // Like RecordReleaseMigrations it APPENDS the release again, and the newest
 // line for a version is the one releasesLocked keeps.

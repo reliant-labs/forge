@@ -231,6 +231,7 @@ forge fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bo
 forge fix derive-contract	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge frontend	group	allow-version-skew:bool project-dir/C:string
 forge frontend sourcemaps	group	allow-version-skew:bool project-dir/C:string
 forge frontend sourcemaps push	cmd	allow-version-skew:bool base-path:string build-id:string dry-run:bool env:string frontend:string org:string project-dir/C:string project:string
@@ -253,6 +254,7 @@ forge lint fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool
 forge lint fix connect-errors	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge lint fix narrow-deps	cmd	allow-version-skew:bool project-dir/C:string
 forge lint fix operatorkit	cmd	allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
+forge lint fix zod4-forms	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string scope:stringSlice
 forge login	cmd	allow-version-skew:bool endpoint:string no-verify:bool project-dir/C:string token:string
 forge logout	cmd	allow-version-skew:bool endpoint:string project-dir/C:string
 forge machine	group	project-dir/C:string
@@ -437,6 +439,7 @@ forge test capture	cmd	format:string lane:string project-dir/C:string render:str
 forge test coverage	cmd	allow-version-skew:bool by:string commit:string diff:string json:bool lane:string project-dir/C:string run:string
 forge test ingest	cmd	allow-version-skew:bool format:string lane:string project-dir/C:string run:string
 forge test report	cmd	allow-version-skew:bool base:string commit:string format:string gate-json:string json:bool project-dir/C:string upload:bool
+forge test run	cmd	allow-version-skew:bool json:bool project-dir/C:string
 forge test runs	cmd	allow-version-skew:bool branch:string commit:string json:bool limit:int project-dir/C:string
 forge tools	group	allow-version-skew:bool project-dir/C:string
 forge tools install	cmd	allow-version-skew:bool force:bool project-dir/C:string

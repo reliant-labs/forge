@@ -156,6 +156,9 @@ jobs:
       ${{ github.event_name != 'pull_request'
         || contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
     runs-on: ubuntu-latest
+    # ~2 minutes. A bound, so a hang cannot hold main's concurrency group
+    # (cancel-in-progress is off there) for GitHub's 6h default.
+    timeout-minutes: 20
     env:
       # THE shard count. The suite's matrix and the ledger both read it from
       # this job's outputs, so it is set here and nowhere else. Four: each
@@ -578,6 +581,8 @@ jobs:
     # whole job is to say what did NOT run, which is most valuable exactly
     # when something went wrong.
     if: ${{ always() && needs.prepare.result != 'skipped' }}
+    # Seconds of work; bounded for the same reason as prepare.
+    timeout-minutes: 10
     env:
       # ── The skip ratchet ─────────────────────────────────────────────
       # A test that skips is a test that did not run, and this workflow

@@ -1713,11 +1713,9 @@ func stepDescriptorGenerate(ctx *pipelineContext) error {
 
 // stepOpenAPIGenerate is the api.openapi: true projection. Runs
 // protoc-gen-connect-openapi over each proto/services/<svc>/ to emit
-// `openapi/<service>.yaml`. Best-effort: a missing plugin or a single
-// failing service surfaces as a warning so the rest of the pipeline
-// still completes. The hard "plugin not on PATH" case bubbles up as an
-// error because that's an actionable misconfiguration (the user opted
-// in via forge.yaml but didn't install the binary).
+// `openapi/<service>.yaml`. The project opted in via forge.yaml, so a
+// plugin forge cannot provision, or a service whose spec is not written,
+// fails the step rather than warning past it.
 func stepOpenAPIGenerate(ctx *pipelineContext) error {
 	if err := runOpenAPIGenerate(ctx.ProjectDir, ctx.Cfg); err != nil {
 		return fmt.Errorf("openapi generation: %w", err)

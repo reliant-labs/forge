@@ -71,11 +71,21 @@ func GenerateServiceFiles(root, modulePath, serviceName, projectName string) err
 func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName string, mode ScaffoldMode, progress io.Writer) error {
 	servicePackage := naming.ServicePackage(serviceName)
 	svcDir := filepath.Join(root, "internal", "handlers", servicePackage)
+	handlerName := naming.ToPascalCase(serviceName)
+	defaultProtoRel := filepath.Join("proto", "services", servicePackage, "v1", servicePackage+".proto")
+
+	// A proto the project already has for this service, in a layout of its
+	// own, is the service's contract: build service.go against it and write
+	// no second stub (findExistingServiceProto).
+	existing, hasExisting, err := findExistingServiceProto(root, modulePath, handlerName+"Service", defaultProtoRel)
+	if err != nil {
+		return err
+	}
 
 	// Create directories
-	dirs := []string{
-		svcDir,
-		filepath.Join(root, "proto", "services", servicePackage, "v1"),
+	dirs := []string{svcDir}
+	if !hasExisting {
+		dirs = append(dirs, filepath.Join(root, "proto", "services", servicePackage, "v1"))
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
@@ -87,7 +97,6 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	// embeds and constructs the handler protoc-gen-connect-go generates for
 	// it, which is spelled from the service's GoName, not the proto name
 	// ("alphav1connect" → Alphav1connectService → Alphav1ConnectServiceHandler).
-	handlerName := naming.ToPascalCase(serviceName)
 	connectService := naming.ConnectServiceGoName(handlerName + "Service")
 
 	// -- service.go (via service/service.go.tmpl) --
@@ -102,6 +111,11 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 		Methods:             []string{},
 		HasConfig:           codegen.ProjectHasTypedConfig(root),
 		ConnectV2:           connectmajor.DetectOrDefault(root).IsV2(),
+	}
+	if hasExisting {
+		svcData.ProtoImportPath = existing.ImportPath
+		svcData.ProtoConnectPackage = existing.GoPackage + "connect"
+		svcData.ProtoFileSymbol = existing.FileSymbol
 	}
 
 	svcPath := filepath.Join(svcDir, "service.go")
@@ -131,6 +145,12 @@ func GenerateServiceFilesWithMode(root, modulePath, serviceName, projectName str
 	// DB-bound CRUD surface. A second per-RPC file that hardcodes
 	// WantErr for every method goes stale the moment handlers are
 	// implemented and teaches green-means-nothing.
+
+	if hasExisting {
+		fmt.Fprintf(progressOrDiscard(progress), "  ✓ kept: %s already declares %sService, so no proto stub was written and service.go imports gen/%s/v1\n",
+			existing.Rel, handlerName, existing.ImportPath)
+		return nil
+	}
 
 	// -- proto stub --
 	// Historical behavior preserved the proto file even in ScaffoldFail mode

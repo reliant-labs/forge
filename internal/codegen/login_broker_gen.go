@@ -48,6 +48,10 @@ type LoginBrokerTemplateData struct {
 	// trusted_proxy_hops, how many proxies' X-Forwarded-For entries the
 	// broker's rate limits may trust.
 	TrustedProxyHopsField bool
+	// ScopesField reports whether that config declares oidc_scopes, which a
+	// broker keeping sessions server-side asks the issuer for (with
+	// offline_access added). Without it the standard OIDC set is asked for.
+	ScopesField bool
 }
 
 // Go names of the optional broker fields.
@@ -56,6 +60,7 @@ const (
 	loginPolicyConfigField = "IdpLoginPolicy"
 	audienceConfigField    = "JwtAudience"
 	proxyHopsConfigField   = "TrustedProxyHops"
+	scopesConfigField      = "OidcScopes"
 )
 
 // middlewareSessionCookieDecl matches the constant the scaffolded
@@ -152,6 +157,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) (bool, erro
 		LoginPolicyField:                      declares(loginPolicyConfigField),
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
+		ScopesField:                           declares(scopesConfigField),
 	})
 	if err != nil {
 		return false, fmt.Errorf("render app-login-broker.go.tmpl: %w", err)

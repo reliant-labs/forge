@@ -445,6 +445,7 @@ func renderEnvShape(ctx context.Context, errOut io.Writer, projectDir, envName s
 		ReleaseHealth:       shapeReleaseHealthOf(entities),
 		UptimeChecks:        shapeUptimeChecksOf(entities),
 		Identity:            shapeIdentityOf(entities),
+		Identities:          shapeIdentitiesOf(entities),
 		Databases:           shapeDatabasesOf(entities),
 		ExternalDatabases:   shapeExternalDatabasesOf(entities),
 		Telemetry:           shapeTelemetry,
@@ -898,6 +899,24 @@ func shapeIdentityOf(e *KCLEntities) *release.ShapeIdentity {
 	return e.Identity
 }
 
+// shapeIdentitiesOf projects the env's managed identities when it declares
+// several; nil when it declares one (that is shapeIdentityOf's) or none.
+func shapeIdentitiesOf(e *KCLEntities) []release.ShapeIdentity {
+	if e == nil || len(e.Identities) == 0 {
+		return nil
+	}
+	return e.Identities
+}
+
+// AllIdentities is every managed identity the env declares, whichever key the
+// render carried them in (release.Shape.AllIdentities).
+func (e *KCLEntities) AllIdentities() []release.ShapeIdentity {
+	if e == nil {
+		return nil
+	}
+	return release.Shape{Identity: e.Identity, Identities: e.Identities}.AllIdentities()
+}
+
 // shapeApplierOf projects the env's declared applier. Only a DECLARATION is
 // recorded: an env that declares none stays empty, so "undeclared" and "forge
 // applies it on purpose" remain different facts a reader can tell apart.
@@ -1119,8 +1138,8 @@ func writeShapeSummary(w io.Writer, doc envShapeDoc) {
 			fmt.Fprintf(w, "    %s/%s [%s] on %s via %s\n", c.Namespace, c.Name, c.Kind, c.Cluster, c.ConnectedCluster)
 		}
 	}
-	if id := doc.Shape.Identity; id != nil {
-		writeIdentitySummary(w, id)
+	for _, id := range doc.Shape.AllIdentities() {
+		writeIdentitySummary(w, &id)
 	}
 	if len(doc.Shape.ExternalDatabases) > 0 {
 		fmt.Fprintf(w, "  external databases: %d (routes only; forge runs none of them)\n", len(doc.Shape.ExternalDatabases))

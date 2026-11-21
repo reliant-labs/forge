@@ -294,3 +294,51 @@ func TestRenderedTelemetryReachesTheNodeAgent(t *testing.T) {
 		t.Errorf("telemetry-temporal at %d, want right after the group's Service at %d", at, svc)
 	}
 }
+
+// A ManagedDatabase target that asks for a NetworkPolicy gets one of its
+// own, like a Manifests target: right after the objects its record expanded
+// into (grouped by the database's name), with their delivery unit. Unset
+// renders none: a policy selecting the instances would deny every other
+// Postgres caller.
+func TestExtractManifestsManagedDatabasePolicy(t *testing.T) {
+	for _, ask := range []bool{true, false} {
+		doc := telemetryDoc(false)
+		out := doc["output"].(map[string]any)
+		db := map[string]any{
+			"apiVersion": "postgresql.cnpg.io/v1", "kind": "Cluster",
+			"metadata": map[string]any{"name": "db", "namespace": "shop-prod", "labels": map[string]any{
+				AppNameLabel: "db", release.LabelDeliveryUnit: "data", ClusterRoutingLabel: "gke-prod",
+			}},
+		}
+		out["manifests"] = append(out["manifests"].([]any), db)
+		target := map[string]any{
+			"service_name": "db-postgres", "scope": "project", "source": "manageddatabase:db", "attachment": "manageddatabase",
+			"runtime": "cluster", "cluster": "gke-prod", "namespaces": []any{"shop-prod"},
+			"selector": map[string]any{"cnpg.io/cluster": "db"}, "ports": map[string]any{"metrics": 9187},
+			"metrics": []any{map[string]any{"port": 0, "port_name": "metrics", "allow": "cnpg_.*"}},
+		}
+		if ask {
+			target["network_policy"] = true
+		}
+		out["telemetry"] = append(out["telemetry"].([]any), target)
+		objs := extractTelemetryDoc(t, doc)
+		at, np := telemetryPolicy(objs, "db-postgres")
+		if !ask {
+			if np != nil {
+				t.Error("network_policy unset rendered a policy for the database's instances")
+			}
+			continue
+		}
+		group, _ := findObject(objs, "Cluster", "db")
+		if np == nil || at != group+1 {
+			t.Fatalf("db-postgres policy at %d, want right after the database's Cluster at %d", at, group)
+		}
+		labels := np["metadata"].(map[string]any)["labels"].(map[string]any)
+		if labels[release.LabelDeliveryUnit] != "data" || labels[ClusterRoutingLabel] != "gke-prod" {
+			t.Errorf("db-postgres policy labels = %v, want the database's delivery unit and cluster", labels)
+		}
+		if ns, pod := admits(np["spec"].(map[string]any)["ingress"].([]any)[0].(map[string]any)); ns != "forge-observability" || pod != deploy.ObservabilityAgentName {
+			t.Errorf("db-postgres policy admits %s/%s, want the agent", ns, pod)
+		}
+	}
+}

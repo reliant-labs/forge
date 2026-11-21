@@ -17,13 +17,20 @@ import (
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
-// hostIdentity returns the env's managed identity when it runs on the env's
-// own host-run IdP (forge.IdentityOnHost), else nil.
+// hostIdentity returns the env's managed identity that runs on the env's own
+// host-run IdP (forge.IdentityOnHost), else nil. An env may declare several
+// identities (Bundle.identities), but at most ONE on the host IdP: a host-run
+// Zitadel serves one instance per env (its default instance, which answers
+// only to localhost), so two would share an issuer, keys and users. KCL
+// refuses that at render; the others are hosted, which `forge env up` does
+// not converge.
 func hostIdentity(e *KCLEntities) *release.ShapeIdentity {
-	if e == nil || e.Identity == nil || e.Identity.Runtime != release.IdentityRuntimeHost {
-		return nil
+	for _, id := range e.AllIdentities() {
+		if id.Runtime == release.IdentityRuntimeHost {
+			return &id
+		}
 	}
-	return e.Identity
+	return nil
 }
 
 // withoutHostIdentityRefs drops the secret references a host-run identity

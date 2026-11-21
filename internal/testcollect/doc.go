@@ -42,9 +42,11 @@
 // process's counters and records them as that process's baseline, which every
 // later collect subtracts (baseline.go), and records the counter files flushed
 // before it, by source, name and content digest, which every later collect
-// leaves out (fence.go). Both live in .forge/tests/covdata/<env>/.reset/. When
-// a baseline applied, the lane's input is the build's since-reset profile
-// (SinceResetProfile) instead of its raw covdata, which is kept beside it.
+// leaves out (fence.go). Both are one record, .forge/tests/covdata/<env>/.reset/<workload>,
+// published atomically (reset.go). When a baseline applied, or one process
+// left several snapshots, the lane's input is the build's profile combined
+// process by process (CombinedProfile) instead of its raw covdata, which is
+// kept beside it.
 //
 // Collection is best effort per workload: one that cannot be reached is
 // reported, never fatal to the others.

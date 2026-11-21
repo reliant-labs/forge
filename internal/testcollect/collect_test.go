@@ -379,12 +379,12 @@ func TestResetFencesOffEarlierCounters(t *testing.T) {
 // fenceNames reads the counter-file names a workload's reset fence holds.
 func fenceNames(t *testing.T, root, workload string) []string {
 	t.Helper()
-	_, f, err := readFence(ResetMarker(root, "dev", workload))
+	rec, err := readReset(ResetMarker(root, "dev", workload))
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := slices.Clone(f.Excluded)
-	for _, e := range f.Entries {
+	var out []string
+	for _, e := range rec.Fenced {
 		out = append(out, e.Name)
 	}
 	slices.Sort(out)
@@ -472,34 +472,6 @@ func TestResetFenceIsPerSource(t *testing.T) {
 	}
 	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 2 {
 		t.Fatalf("build %+v, want c1's new file and c2's", b)
-	}
-}
-
-// A fence written by the first version (bare names) is still read: a name it
-// lists is left out from any source, with any bytes, and a later reset keeps
-// it while adding entries of the current form.
-func TestLegacyNameOnlyFenceStillFences(t *testing.T) {
-	f := newFixture(t)
-	cover := filepath.Join(f.root, ".forge", "tests", "covdata", "dev", "api")
-	writeFile(t, cover, "covmeta.aa", "M")
-	writeFile(t, cover, "covcounters.aa.1.100", "ANY")
-	writeFile(t, cover, "covcounters.aa.2.200", "KEPT")
-	marker := ResetMarker(f.root, "dev", "api")
-	writeFile(t, filepath.Dir(marker), filepath.Base(marker), `{"schema":"forge.test.collect.reset/v1","reset_at":"2026-11-21T00:00:00Z","excluded":["covcounters.aa.1.100"]}`)
-	target := Target{Workload: "api", Runtime: "host", Host: &HostTarget{Withheld: "PPROF_ADDR binds 0.0.0.0:6060", CoverDir: cover}}
-	doc, err := collectErr(context.Background(), f.options(target))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b := doc.Workloads[0].Build; b == nil || b.CounterFiles != 1 {
-		t.Fatalf("build %+v, want only the file the legacy fence does not name", b)
-	}
-	opts := f.options(target)
-	opts.Reset = true
-	Collect(context.Background(), opts)
-	_, fe, err := readFence(marker)
-	if err != nil || !slices.Equal(fe.Excluded, []string{"covcounters.aa.1.100"}) || len(fe.Entries) != 2 {
-		t.Fatalf("rewritten fence %+v (%v), want the legacy name kept and both files entered", fe, err)
 	}
 }
 
@@ -712,8 +684,8 @@ func TestCollectCluster(t *testing.T) {
 	if !slices.Equal(k.gets, want) {
 		t.Errorf("reset requests %v, want one read of each pod: %v", k.gets, want)
 	}
-	if b, err := readBaseline(BaselineFile(f.root, "dev", "api")); err != nil || len(b) != 2 {
-		t.Errorf("baseline %v (%v), want one process per pod", b, err)
+	if rec, err := readReset(ResetMarker(f.root, "dev", "api")); err != nil || len(rec.Baselines) != 2 {
+		t.Errorf("reset record %+v (%v), want one baseline per pod", rec, err)
 	}
 }
 
@@ -959,8 +931,8 @@ func (l *liveServer) start(t *testing.T) string {
 	return strings.TrimPrefix(srv.URL, "http://")
 }
 
-// sinceResetCounts collects and returns the since-reset profile's count per
-// line (nil when no baseline applied), and the build.
+// sinceResetCounts collects and returns the combined profile's count per
+// line (nil when the covdata was the input as pulled), and the build.
 func sinceResetCounts(t *testing.T, f *fixture, opts Options) (map[int]int64, *Build) {
 	t.Helper()
 	doc, err := collectErr(context.Background(), opts)
@@ -971,10 +943,10 @@ func sinceResetCounts(t *testing.T, f *fixture, opts Options) (map[int]int64, *B
 	if b == nil {
 		t.Fatalf("no build: %+v", doc.Workloads[0])
 	}
-	if b.SinceReset == nil {
+	if b.Profile == "" {
 		return nil, b
 	}
-	data, err := os.ReadFile(filepath.Join(f.run, filepath.FromSlash(b.SinceReset.Profile)))
+	data, err := os.ReadFile(filepath.Join(f.run, filepath.FromSlash(b.Profile)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1025,7 +997,7 @@ func TestResetBaselineCountsOnlyTheDelta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []testreport.LaneCoverageInput{{Path: "covdata/api/" + SinceResetProfile, Format: testreport.CoverageGoProfile}}; !slices.Equal(m.Coverage, want) {
+	if want := []testreport.LaneCoverageInput{{Path: "covdata/api/" + CombinedProfile, Format: testreport.CoverageGoProfile}}; !slices.Equal(m.Coverage, want) {
 		t.Errorf("lane coverage %+v, want only the since-reset profile", m.Coverage)
 	}
 
@@ -1057,9 +1029,9 @@ func TestResetBaselineDoesNotApplyToARestartedProcess(t *testing.T) {
 			Collect(context.Background(), reset)
 
 			live.set(t, "covmeta.aa", "M", tc.after, "10=1 20=4")
-			counts, b := sinceResetCounts(t, f, opts)
-			if counts != nil {
-				t.Fatalf("a baseline was subtracted (%v) from a process started after the reset", counts)
+			_, b := sinceResetCounts(t, f, opts)
+			if b.SinceReset != nil && b.SinceReset.Processes != 0 {
+				t.Fatalf("a baseline was subtracted (%+v) from a process started after the reset", b.SinceReset)
 			}
 			if b.Coverage == nil || b.Coverage.Covered != 2 {
 				t.Errorf("coverage %+v, want the new process counted whole", b.Coverage)
@@ -1103,10 +1075,8 @@ func TestResetConversionFailureRecordsNothing(t *testing.T) {
 	if doc := Collect(context.Background(), opts); doc.Workloads[0].State != StateFailed {
 		t.Fatalf("reset: %+v, want failed", doc.Workloads[0])
 	}
-	for _, p := range []string{BaselineFile(f.root, "dev", "api"), ResetMarker(f.root, "dev", "api")} {
-		if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("a failed reset wrote %s: %v", p, err)
-		}
+	if _, err := os.Stat(ResetMarker(f.root, "dev", "api")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a failed reset wrote its record: %v", err)
 	}
 }
 
@@ -1125,5 +1095,105 @@ func TestSubtractProfiles(t *testing.T) {
 	}
 	if _, err := parseProfile([]byte("a.go:1.1,2.2 1 5\n")); err == nil {
 		t.Error("a profile without a mode line parsed")
+	}
+}
+
+// [B1] One process can leave several cumulative snapshots: here a pull and
+// an exit flush of pid 42, the flush older than the pull. They are never
+// summed: per block the larger count (the newer snapshot's) is kept, the
+// baseline comes off that, and only then are processes summed. A block hit
+// only before the reset stays at zero; a second process (pid 43, no
+// baseline) is counted whole on top.
+func TestResetBaselineWithSeveralSnapshotsOfOneProcess(t *testing.T) {
+	f := newFixture(t)
+	live := &liveServer{}
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.100", "10=5 20=3")
+	cover := filepath.Join(f.root, "flushed")
+	opts := f.options(Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: live.start(t), CoverDir: cover}})
+	opts.Convert = countingConvert
+	reset := opts
+	reset.Reset = true
+	if doc := Collect(context.Background(), reset); doc.Workloads[0].State != StateReset {
+		t.Fatalf("reset: %+v", doc.Workloads[0])
+	}
+
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.300", "10=5 20=6 30=2")
+	writeFile(t, cover, "covmeta.aa", "M")
+	writeFile(t, cover, "covcounters.aa.42.200", "10=5 20=5 30=1") // an older snapshot of pid 42
+	writeFile(t, cover, "covcounters.aa.43.250", "20=1 40=7")      // another process, no baseline
+	counts, b := sinceResetCounts(t, f, opts)
+	if want := map[int]int64{10: 0, 20: 3 + 1, 30: 2, 40: 7}; !maps.Equal(counts, want) {
+		t.Fatalf("combined: %v, want %v (pid 42's newest snapshot less its baseline, plus pid 43 whole)", counts, want)
+	}
+	if b.SinceReset == nil || b.SinceReset.Processes != 1 {
+		t.Errorf("since-reset %+v, want one baselined process", b.SinceReset)
+	}
+}
+
+// Without a reset, two snapshots of one process are still one process: the
+// newer one counts, never the sum.
+func TestSeveralSnapshotsOfOneProcessAreNotSummed(t *testing.T) {
+	f := newFixture(t)
+	cover := filepath.Join(f.root, "flushed")
+	writeFile(t, cover, "covmeta.aa", "M")
+	writeFile(t, cover, "covcounters.aa.42.100", "10=2 20=1")
+	writeFile(t, cover, "covcounters.aa.42.200", "10=3 20=1")
+	opts := f.options(Target{Workload: "api", Runtime: "host", Host: &HostTarget{Withheld: "PPROF_ADDR binds 0.0.0.0:6060", CoverDir: cover}})
+	opts.Convert = countingConvert
+	counts, b := sinceResetCounts(t, f, opts)
+	if want := map[int]int64{10: 3, 20: 1}; !maps.Equal(counts, want) {
+		t.Fatalf("combined: %v, want %v", counts, want)
+	}
+	if b.SinceReset != nil {
+		t.Errorf("since-reset %+v with no reset", b.SinceReset)
+	}
+}
+
+// [B2] A reset publishes its baselines and its fence as one record with one
+// atomic write. When that write fails the reset fails, and the previous
+// record (and so what later collects subtract and leave out) is untouched.
+func TestFailedResetPublicationLeavesThePreviousRecord(t *testing.T) {
+	f := newFixture(t)
+	live := &liveServer{}
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.100", "10=5 20=3")
+	cover := filepath.Join(f.root, "flushed")
+	opts := f.options(Target{Workload: "api", Runtime: "host", Host: &HostTarget{PullAddr: live.start(t), CoverDir: cover}})
+	opts.Convert = countingConvert
+	reset := opts
+	reset.Reset = true
+	if doc := Collect(context.Background(), reset); doc.Workloads[0].State != StateReset {
+		t.Fatalf("first reset: %+v", doc.Workloads[0])
+	}
+	marker := ResetMarker(f.root, "dev", "api")
+	before, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// More counts, and a flushed file the second reset would fence; then
+	// the publication fails.
+	live.set(t, "covmeta.aa", "M", "covcounters.aa.42.200", "10=5 20=6")
+	writeFile(t, cover, "covmeta.aa", "M")
+	writeFile(t, cover, "covcounters.aa.43.150", "30=4")
+	prev := writeResetFile
+	writeResetFile = func(string, []byte, os.FileMode) error { return errors.New("disk full") }
+	doc := Collect(context.Background(), reset)
+	writeResetFile = prev
+	if wl := doc.Workloads[0]; wl.State != StateFailed || !strings.Contains(wl.Reason, "disk full") {
+		t.Fatalf("second reset: %+v, want failed", wl)
+	}
+	after, err := os.ReadFile(marker)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("the record changed after a failed publication (%v):\nbefore %s\nafter  %s", err, before, after)
+	}
+	if _, err := os.Stat(marker + ".baseline.json"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a separate baseline file exists: %v", err)
+	}
+
+	// The first reset still applies: pid 42 less its first baseline, and
+	// pid 43's file, which only the failed reset saw, is collected.
+	counts, _ := sinceResetCounts(t, f, opts)
+	if want := map[int]int64{10: 0, 20: 3, 30: 4}; !maps.Equal(counts, want) {
+		t.Fatalf("after the failed reset: %v, want %v (the first reset's record)", counts, want)
 	}
 }

@@ -119,8 +119,11 @@ type Build struct {
 	// Dir is where its files are, relative to the run directory.
 	Dir   string `json:"dir"`
 	Label string `json:"label,omitempty"`
-	// SinceReset is set when a reset's baseline was subtracted from the
-	// build's counts: its Profile is then the lane's input.
+	// Profile, when set, is the build's counts combined process by process
+	// (a reset's baselines subtracted, a process's snapshots deduplicated),
+	// relative to the run directory: the lane's input instead of Dir.
+	Profile string `json:"profile,omitempty"`
+	// SinceReset is set when a reset's baselines bore on the build.
 	SinceReset *SinceReset `json:"since_reset,omitempty"`
 	// Coverage is the build converted (`go tool covdata textfmt`): covered
 	// over instrumented statements, generated code excluded. Absent when it
@@ -132,9 +135,9 @@ type Build struct {
 type SinceReset struct {
 	// Processes counts the processes whose reset baseline was subtracted.
 	Processes int `json:"processes"`
-	// Profile is the counts since the reset, a Go text profile, relative to
-	// the run directory.
-	Profile string `json:"profile"`
+	// Restarted counts the processes with a baseline that had restarted
+	// since the reset, and were counted whole.
+	Restarted int `json:"restarted,omitempty"`
 }
 
 // WriteText prints the document for a person: one line per workload.

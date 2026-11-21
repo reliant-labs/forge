@@ -3,7 +3,6 @@ package testcollect
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 )
@@ -22,10 +20,21 @@ import (
 // serverkit's /debug/coverage is read-only (a counter-clearing endpoint is a
 // write no auth can protect on a debug listener a web page can reach), so a
 // reset pulls each live process's counters as they stand and records them,
-// per process, as its baseline. Every later collect subtracts the baseline
-// from that process's counts, block by block, clamped at zero. A
-// -covermode=atomic counter only ever grows while its process runs, so what
-// is left is exactly what the process counted since the reset.
+// per process, as its baseline (in the workload's reset record, reset.go).
+// Every later collect subtracts the baseline from that process's counts,
+// block by block, clamped at zero. A -covermode=atomic counter only ever
+// grows while its process runs, so what is left is exactly what the process
+// counted since the reset.
+//
+// One process can leave several snapshots of its counters (a pull, then the
+// file it flushes at exit; a pull of a pod that later exited): each is
+// cumulative since the process started, so they are never summed. A collect
+// keeps, per process and block, the MAXIMUM count across its snapshots,
+// which for monotonic counters is the newest snapshot's, whatever the clocks
+// that named the files or timed the pulls say. It subtracts the process's
+// baseline from that, then sums the processes. Counter files with no process
+// identity (compose: a restarted container reuses pid 1) are summed as they
+// are.
 //
 // A process is (scope, build, pid): the workload's host processes share the
 // scope "host" (a live pull and the file the same process flushes at exit
@@ -42,21 +51,11 @@ import (
 // (fence.go), not by the baseline. Compose has no live pull, so its reset is
 // the fence alone.
 
-// baselineSchema names the baseline file's format.
-const baselineSchema = "forge.test.collect.baseline/v1"
-
-// SinceResetProfile is the file a collect writes, beside a build's covdata,
-// when it subtracted a baseline: the build's counts since the reset, as a Go
-// text profile. It is the lane's coverage input in place of the covdata,
-// which is kept as pulled.
-const SinceResetProfile = "since-reset.out"
-
-// baseline is the baseline file of one workload.
-type baseline struct {
-	Schema    string            `json:"schema"`
-	TakenAt   time.Time         `json:"taken_at"`
-	Processes []baselineProcess `json:"processes"`
-}
+// CombinedProfile is the file a collect writes, beside a build's covdata,
+// when it combined the build's counter files process by process (a baseline
+// applied, or one process left several snapshots): a Go text profile, the
+// lane's coverage input in place of the covdata, which is kept as pulled.
+const CombinedProfile = "combined.out"
 
 // baselineProcess is one process's counts at the reset.
 type baselineProcess struct {
@@ -72,70 +71,10 @@ type processKey struct{ scope, hash, pid string }
 
 func (p baselineProcess) key() processKey { return processKey{p.Scope, p.MetaHash, p.PID} }
 
-// BaselineFile is the baseline of one workload:
-// .forge/tests/covdata/<env>/.reset/<workload>.baseline.json, beside its
-// fence (a workload name has no '.', so the two cannot collide).
-func BaselineFile(projectRoot, env, workload string) string {
-	return ResetMarker(projectRoot, env, workload) + ".baseline.json"
-}
-
 // Scopes a counter file's process is told apart in.
 const hostScope = "host"
 
 func podScope(namespace, pod string) string { return "pod:" + namespace + "/" + pod }
-
-// readBaseline reads a workload's baseline; empty when no reset took one.
-func readBaseline(path string) (map[processKey]baselineProcess, error) {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var f baseline
-	if err := json.Unmarshal(b, &f); err != nil || f.Schema != baselineSchema {
-		return nil, fmt.Errorf("%s is not a %s reset baseline", path, baselineSchema)
-	}
-	out := make(map[processKey]baselineProcess, len(f.Processes))
-	for _, p := range f.Processes {
-		out[p.key()] = p
-	}
-	return out, nil
-}
-
-// writeBaseline records the processes' counts, replacing the baseline of a
-// process seen again and keeping the others (a pod the reset could not reach
-// keeps the baseline an earlier reset took).
-func writeBaseline(path string, at time.Time, taken []baselineProcess) error {
-	prev, err := readBaseline(path)
-	if err != nil {
-		prev = nil // unreadable: replaced by what this reset took
-	}
-	all := map[processKey]baselineProcess{}
-	for k, p := range prev {
-		all[k] = p
-	}
-	for _, p := range taken {
-		all[p.key()] = p
-	}
-	procs := make([]baselineProcess, 0, len(all))
-	for _, p := range all {
-		procs = append(procs, p)
-	}
-	sort.Slice(procs, func(i, j int) bool {
-		a, b := procs[i], procs[j]
-		return a.Scope+"\x00"+a.MetaHash+"\x00"+a.PID < b.Scope+"\x00"+b.MetaHash+"\x00"+b.PID
-	})
-	data, err := json.Marshal(baseline{Schema: baselineSchema, TakenAt: at.UTC(), Processes: procs})
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return atomicfile.WriteFile(path, append(data, '\n'), 0o644)
-}
 
 // counterPID is the pid in a counter file's name.
 func counterPID(name string) string {
@@ -276,60 +215,109 @@ func (p profile) subtract(base profile) {
 	}
 }
 
-// sinceReset is a build's counts since the reset, when a baseline applied to
-// any of its processes: its full profile less each applicable baseline.
-// subtracted counts those processes; restarted names the counter files whose
-// baseline did not apply because the process had restarted.
-func sinceReset(ctx context.Context, opts Options, b *build, dir string, bases map[processKey]baselineProcess) (out []byte, subtracted int, restarted []string, err error) {
-	if len(bases) == 0 {
-		return nil, 0, nil, nil
+// add sums o's counts into p, block by block.
+func (p *profile) add(o profile) { p.merge(o, func(a, b int64) int64 { return a + b }) }
+
+// maxWith keeps, per block, the larger of p's and o's counts.
+func (p *profile) maxWith(o profile) { p.merge(o, func(a, b int64) int64 { return max(a, b) }) }
+
+func (p *profile) merge(o profile, f func(a, b int64) int64) {
+	if p.blocks == nil {
+		p.blocks = map[string]profBlock{}
 	}
-	var apply []profile
+	if p.mode == "" {
+		p.mode = o.mode
+	}
+	for _, k := range o.order {
+		cur, seen := p.blocks[k]
+		if !seen {
+			p.order = append(p.order, k)
+			cur.stmts = o.blocks[k].stmts
+		}
+		cur.count = f(cur.count, o.blocks[k].count)
+		p.blocks[k] = cur
+	}
+}
+
+// combined is a build's profile, combined process by process (the rule at
+// the top of this file).
+type combined struct {
+	profile []byte
+	// subtracted counts the processes whose baseline came off; restarted
+	// names the processes whose baseline did not apply.
+	subtracted int
+	restarted  []string
+}
+
+// combineProcesses combines b's counter files process by process. It
+// returns nil when there is nothing to combine: no baseline applies and no
+// process left more than one snapshot, so the covdata as pulled is the
+// build's coverage.
+func combineProcesses(ctx context.Context, opts Options, b *build, bases map[processKey]baselineProcess) (*combined, error) {
+	groups := map[processKey][]covFile{}
+	var keys []processKey
+	var loose []covFile
+	need := false
 	for _, c := range b.counters {
-		base, ok := bases[processKey{c.scope, b.hash, counterPID(c.name)}]
-		if !ok || c.scope == "" {
+		if c.scope == "" {
+			loose = append(loose, c)
 			continue
 		}
-		bp, err := parseProfile([]byte(base.Profile))
-		if err != nil {
-			return nil, 0, nil, fmt.Errorf("baseline of %s: %w", c.name, err)
+		k := processKey{c.scope, b.hash, counterPID(c.name)}
+		if _, ok := groups[k]; !ok {
+			keys = append(keys, k)
 		}
-		lp, err := processProfile(ctx, opts, b.hash, b.meta, c)
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		live, err := parseProfile(lp)
-		if err != nil {
-			return nil, 0, nil, err
-		}
-		if below(live, bp) {
-			restarted = append(restarted, c.name)
-			continue
-		}
-		apply = append(apply, bp)
+		groups[k] = append(groups[k], c)
+		_, based := bases[k]
+		need = need || based || len(groups[k]) > 1
 	}
-	if len(apply) == 0 {
-		return nil, 0, restarted, nil
+	if !need {
+		return nil, nil
 	}
-	builds, err := opts.Convert(ctx, "", dir)
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		return a.scope+"\x00"+a.pid < b.scope+"\x00"+b.pid
+	})
+	out := &combined{}
+	var total profile
+	for _, k := range keys {
+		var proc profile
+		for _, c := range groups[k] {
+			p, err := parsedProcessProfile(ctx, opts, b, c)
+			if err != nil {
+				return nil, err
+			}
+			proc.maxWith(p)
+		}
+		if base, ok := bases[k]; ok {
+			bp, err := parseProfile([]byte(base.Profile))
+			if err != nil {
+				return nil, fmt.Errorf("baseline of %s pid %s: %w", k.scope, k.pid, err)
+			}
+			if below(proc, bp) {
+				out.restarted = append(out.restarted, k.scope+" pid "+k.pid)
+			} else {
+				proc.subtract(bp)
+				out.subtracted++
+			}
+		}
+		total.add(proc)
+	}
+	for _, c := range loose {
+		p, err := parsedProcessProfile(ctx, opts, b, c)
+		if err != nil {
+			return nil, err
+		}
+		total.add(p)
+	}
+	out.profile = total.bytes()
+	return out, nil
+}
+
+func parsedProcessProfile(ctx context.Context, opts Options, b *build, c covFile) (profile, error) {
+	raw, err := processProfile(ctx, opts, b.hash, b.meta, c)
 	if err != nil {
-		return nil, 0, nil, err
+		return profile{}, err
 	}
-	var full []byte
-	for _, cb := range builds {
-		if cb.MetaHash == b.hash {
-			full = cb.Profile
-		}
-	}
-	if full == nil {
-		return nil, 0, nil, fmt.Errorf("converting the build produced no profile of %s", short(b.hash))
-	}
-	p, err := parseProfile(full)
-	if err != nil {
-		return nil, 0, nil, err
-	}
-	for _, bp := range apply {
-		p.subtract(bp)
-	}
-	return p.bytes(), len(apply), restarted, nil
+	return parseProfile(raw)
 }

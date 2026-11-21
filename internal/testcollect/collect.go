@@ -275,7 +275,8 @@ type pending struct {
 // gatherTarget reads every source of t, fills r and returns its builds,
 // newest first.
 func gatherTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) []*build {
-	fenced, _, err := readFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
+	rec, err := readReset(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload))
+	fenced := rec.fence()
 	if err != nil {
 		r.Notes = append(r.Notes, "reset fence unreadable, so nothing is left out: "+err.Error())
 	}
@@ -504,15 +505,11 @@ func describeDialErr(err error) string {
 // so a reset that saw nothing leaves the next collect as it was.
 func resetTarget(ctx context.Context, opts Options, t Target, r *WorkloadResult) {
 	at := opts.Now()
+	// record publishes the baselines and the fence as one reset record
+	// (reset.go): all of the reset, or, on failure, none of it.
 	record := func(taken []baselineProcess, seen []fenceEntry) bool {
-		if len(taken) > 0 {
-			if err := writeBaseline(BaselineFile(opts.ProjectRoot, opts.Env, t.Workload), at, taken); err != nil {
-				r.State, r.Reason = StateFailed, "reset baseline not recorded, so the counts before the reset would be collected: "+err.Error()
-				return false
-			}
-		}
-		if err := writeFence(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload), at, seen); err != nil {
-			r.State, r.Reason = StateFailed, "reset fence not recorded, so the counters flushed before the reset would be collected: "+err.Error()
+		if err := publishReset(ResetMarker(opts.ProjectRoot, opts.Env, t.Workload), at, seen, taken); err != nil {
+			r.State, r.Reason = StateFailed, "reset not recorded (the previous reset still applies): "+err.Error()
 			return false
 		}
 		return true
@@ -674,29 +671,32 @@ func recordRun(ctx context.Context, opts Options, doc *Document, run string, wri
 			r.Notes = append(r.Notes, fmt.Sprintf("%d older build(s) of this binary kept as %q and never merged: the newest build is the workload's coverage", len(r.Stale), StaleBuildLabel))
 		}
 		input := testreport.LaneCoverageInput{Path: relDir + "/", Format: testreport.CoverageGoCovdata}
-		bases, err := readBaseline(BaselineFile(opts.ProjectRoot, opts.Env, r.Name))
+		rec, err := readReset(ResetMarker(opts.ProjectRoot, opts.Env, r.Name))
 		if err != nil {
-			r.Notes = append(r.Notes, "reset baseline unreadable, so nothing is subtracted: "+err.Error())
+			r.Notes = append(r.Notes, "reset record unreadable, so nothing is subtracted: "+err.Error())
 		}
-		delta, subtracted, restarted, err := sinceReset(ctx, opts, p.builds[0], dir, bases)
-		for _, name := range restarted {
-			r.Notes = append(r.Notes, "process of "+name+" restarted since the reset: counted whole")
-		}
+		comb, err := combineProcesses(ctx, opts, p.builds[0], rec.baselines())
 		var tally *testreport.Tally
 		switch {
 		case err != nil:
 			// The counts since the reset are unknown, and the raw ones would
 			// count the time before it: record no input rather than a wrong one.
-			r.State, r.Reason, r.Build, r.Stale = StateFailed, "subtract the reset baseline: "+err.Error(), nil, nil
+			r.State, r.Reason, r.Build, r.Stale = StateFailed, "combine the build's processes: "+err.Error(), nil, nil
 			continue
-		case delta != nil:
-			if err := atomicfile.WriteFile(filepath.Join(dir, SinceResetProfile), delta, 0o644); err != nil {
+		case comb != nil:
+			if err := atomicfile.WriteFile(filepath.Join(dir, CombinedProfile), comb.profile, 0o644); err != nil {
 				r.State, r.Reason, r.Build, r.Stale = StateFailed, "write coverage into the run: "+err.Error(), nil, nil
 				continue
 			}
-			input = testreport.LaneCoverageInput{Path: relDir + "/" + SinceResetProfile, Format: testreport.CoverageGoProfile}
-			r.Build.SinceReset = &SinceReset{Processes: subtracted, Profile: r.Build.Dir + "/" + SinceResetProfile}
-			tally, err = tallyProfiles(opts, [][]byte{delta})
+			input = testreport.LaneCoverageInput{Path: relDir + "/" + CombinedProfile, Format: testreport.CoverageGoProfile}
+			r.Build.Profile = r.Build.Dir + "/" + CombinedProfile
+			if comb.subtracted > 0 || len(comb.restarted) > 0 {
+				r.Build.SinceReset = &SinceReset{Processes: comb.subtracted, Restarted: len(comb.restarted)}
+			}
+			for _, name := range comb.restarted {
+				r.Notes = append(r.Notes, name+" restarted since the reset: counted whole")
+			}
+			tally, err = tallyProfiles(opts, [][]byte{comb.profile})
 		default:
 			tally, err = convert(ctx, opts, dir)
 		}
@@ -739,9 +739,9 @@ func recordLane(opts Options, run string, inputs []testreport.LaneCoverageInput,
 	for _, in := range inputs {
 		// A workload's input is its covdata directory or its since-reset
 		// profile in it: either replaces whichever an earlier collect listed.
-		dir := strings.TrimSuffix(strings.TrimSuffix(in.Path, SinceResetProfile), "/") + "/"
+		dir := strings.TrimSuffix(strings.TrimSuffix(in.Path, CombinedProfile), "/") + "/"
 		m.Coverage = slices.DeleteFunc(m.Coverage, func(c testreport.LaneCoverageInput) bool {
-			return c.Path == dir || c.Path == dir+SinceResetProfile
+			return c.Path == dir || c.Path == dir+CombinedProfile
 		})
 		m.Coverage = append(m.Coverage, in)
 	}

@@ -3344,7 +3344,9 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	declared := hostWorkloadConfig(cfg, w, secretsLayer, env)
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
-	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
+	// -trimpath first, so -pgo=off merges into the GOFLAGS it pinned.
+	cmd.Env = hostlaunch.WithTrimpath(spec, hostEnv)
+	cmd.Env = hostlaunch.WithPGO(spec, cmd.Env)
 	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
 	// A bare `forge` the process runs (the scaffolded .air.toml's `forge

@@ -2292,7 +2292,9 @@ type goBuildTarget struct {
 	// trimpath strips the build machine's source paths from the binary. Set
 	// for targets that feed a container image, so the image's digest is a
 	// function of the source and not of where it was compiled; the scaffolded
-	// Dockerfile builds with -trimpath for the same reason.
+	// Dockerfile builds with -trimpath for the same reason. Every other
+	// non-debug build gets -trimpath through GOFLAGS instead
+	// (buildGoTarget), where a -trimpath=false opt-out can still reach it.
 	trimpath bool
 	// debug builds the target for a debugger (-gcflags=all=-N -l, symbols
 	// kept, no -trimpath) whatever the run's --debug: a host workload run
@@ -2526,6 +2528,14 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	}
 	for k, v := range t.env {
 		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	// -trimpath merged into the effective GOFLAGS (a GoBuild.env GOFLAGS
+	// included), so every worktree of the project shares the build-cache
+	// entries instead of compiling path-keyed copies (goexec.WithTrimpath).
+	// A debug build passed -trimpath=false on its argv, which beats GOFLAGS,
+	// and a -trimpath=false in GOFLAGS or `go env -w` is an opt-out.
+	if !debug {
+		cmd.Env = goexec.WithTrimpath(cmd.Env)
 	}
 	// Constrained-budget caps last so they bound the compiler even over an
 	// inherited GOMEMLIMIT/GOMAXPROCS. Skipped when empty (unconstrained).
@@ -3423,7 +3433,8 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	cmd.Env = variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v)
+	// -trimpath, as buildGoTarget merges it.
+	cmd.Env = goexec.WithTrimpath(variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v))
 	var endStep func(error)
 	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(svcName + ":" + v.Name + " build")
 

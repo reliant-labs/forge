@@ -482,6 +482,18 @@ jobs:
       - name: Flake gate (new and edited tests, -count=3)
         if: ${{ !cancelled() && matrix.flake == 'true' }}
         run: scripts/ci-changed-tests.sh HEAD^1
+      # The full-mode KCL render tests, ONLY when the entry touches what they
+      # render: the scaffolded KCL templates or config_gen.k's composition-root
+      # emitters (scripts/ci-render-tests.sh lists both, and why). Every one
+      # skips under -short, and main went red three times on 2026-11-21/22
+      # (#2683 and the fixes after it) from a template change only they could
+      # see. A step here, not a job: the -short tier above compiled the same
+      # packages, so it costs the tests' run, ~2 minutes on the ~2% of entries
+      # that trigger it, and nothing on the rest; windows-changed, beside this
+      # job, stays the tier's critical path.
+      - name: KCL render tests (full mode, when a KCL template changed)
+        if: ${{ !cancelled() }}
+        run: scripts/ci-render-tests.sh HEAD^1
       - name: Upload the go test -json stream
         if: ${{ !cancelled() && matrix.args != '' }}
         uses: actions/upload-artifact@v7

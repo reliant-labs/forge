@@ -80,6 +80,11 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, _ *generator.Fi
 			reliantWritten = append(reliantWritten, f.Dest)
 		}
 	}
+	// A project that refreshes its profiles in a workflow of its own gets
+	// no second one, and is told how to say so (generator.PGORefreshNotice).
+	if note := generator.PGORefreshNotice(root, cfg, in); note != "" {
+		fmt.Println(note)
+	}
 	if len(reliantWritten) > 0 {
 		fmt.Print(generator.ReliantCIGuidance(cfg, Name(), reliantWritten))
 	}
@@ -87,11 +92,12 @@ func generateCIWorkflows(root string, cfg *config.ProjectConfig, _ *generator.Fi
 }
 
 // ciInputs gathers what only a live project's KCL can answer: the frontends,
-// and which envs are hosted (release.yml + forge-deploy are scaffolded for
-// those, and deploy.yml leaves them to it).
+// which envs are hosted (release.yml + forge-deploy are scaffolded for
+// those, and deploy.yml leaves them to it), and which of those build a Go
+// binary to profile (pgo-refresh.yml pulls one of them).
 func ciInputs(root string, cfg *config.ProjectConfig) generator.CIInputs {
 	topo := discoverCIHostedEnvs(root)
-	return generator.CIInputs{Frontends: ciFrontends(root, cfg), HostedEnvs: topo.Hosted, MixedEnvs: topo.Mixed}
+	return generator.CIInputs{Frontends: ciFrontends(root, cfg), HostedEnvs: topo.Hosted, MixedEnvs: topo.Mixed, PGOEnvs: topo.PGO}
 }
 
 // ciFrontends is the frontend list CI drives a Node toolchain for:

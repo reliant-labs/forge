@@ -49,6 +49,14 @@ func (e *handoffEnv) advance(d time.Duration) { e.mu.Lock(); e.now = e.now.Add(d
 
 func newHandoffEnv(t *testing.T, redirects ...string) *handoffEnv {
 	t.Helper()
+	return newHandoffEnvOver(t, nil, redirects...)
+}
+
+// newHandoffEnvOver is newHandoffEnv with the session Manager over
+// wrap(store) — a store a test interposes on — when wrap is not nil. The
+// handoff records stay in the in-memory store itself.
+func newHandoffEnvOver(t *testing.T, wrap func(*session.MemoryStore) session.Store, redirects ...string) *handoffEnv {
+	t.Helper()
 	if len(redirects) == 0 {
 		redirects = []string{handoffLoopback, handoffWeb, handoffApp}
 	}
@@ -57,7 +65,11 @@ func newHandoffEnv(t *testing.T, redirects ...string) *handoffEnv {
 	e := &handoffEnv{t: t, z: newFakeZitadel(t), now: fakeEpoch}
 	e.user = e.z.addUser("ada@acme.com", true, "a-long-password")
 	e.store = session.NewMemoryStore()
-	mgr, err := session.NewManager(session.Config{Store: e.store, Now: e.clock, CacheTTL: -1})
+	var sessions session.Store = e.store
+	if wrap != nil {
+		sessions = wrap(e.store)
+	}
+	mgr, err := session.NewManager(session.Config{Store: sessions, Now: e.clock, CacheTTL: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,6 +577,78 @@ func TestHandoffRevokedPrimary(t *testing.T) {
 			t.Fatalf("a code outlived the session that approved it: %d %s", rec.Code, rec.Body)
 		}
 	})
+}
+
+// beforeCreateStore runs hook (once, when armed) just before a session
+// record is inserted: the window between redeem's check of the approving
+// session and the creation of the handed-off one.
+type beforeCreateStore struct {
+	*session.MemoryStore
+	mu   sync.Mutex
+	hook func()
+}
+
+func (s *beforeCreateStore) Create(ctx context.Context, r session.Record) error {
+	s.mu.Lock()
+	hook := s.hook
+	s.hook = nil
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return s.MemoryStore.Create(ctx, r)
+}
+
+// A revocation of the approving session that lands between redeem's check
+// and the creation of the new session still wins: the redeem is refused and
+// leaves no session behind (RC-02).
+func TestHandoffRevocationDuringRedeemWins(t *testing.T) {
+	for name, revoke := range map[string]func(e *handoffEnv, primary string) error{
+		"sign-out": func(e *handoffEnv, primary string) error {
+			_, _, err := e.mgr.Revoke(context.Background(), primary)
+			return err
+		},
+		"sign out everywhere": func(e *handoffEnv, _ string) error {
+			_, err := e.mgr.RevokeSubject(context.Background(), e.user.id)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var racing *beforeCreateStore
+			e := newHandoffEnvOver(t, func(m *session.MemoryStore) session.Store {
+				racing = &beforeCreateStore{MemoryStore: m}
+				return racing
+			})
+			primary := e.signIn()
+			p := newPKCEPair(t)
+			code := e.handoff(primary, handoffLoopback, p)
+			revoked := false
+			racing.mu.Lock()
+			racing.hook = func() {
+				if err := revoke(e, primary); err != nil {
+					t.Errorf("revoke: %v", err)
+				}
+				revoked = true
+			}
+			racing.mu.Unlock()
+			rec := e.redeem(code, p.verifier, handoffLoopback)
+			if !revoked {
+				t.Fatal("the redeem created no session, so the revocation never ran between the check and the create")
+			}
+			if rec.Code != 400 {
+				t.Fatalf("a redeem outlived a revocation of its approver: %d %s", rec.Code, rec.Body)
+			}
+			live, err := e.mgr.List(context.Background(), e.user.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The approver was ada's only session, so any left is the
+			// handed-off one.
+			if len(live) != 0 {
+				t.Fatalf("the handed-off session survived its approver's revocation: %+v", live)
+			}
+		})
+	}
 }
 
 func TestHandoffNeedsAnIssuerSession(t *testing.T) {

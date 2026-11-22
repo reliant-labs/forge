@@ -813,15 +813,13 @@ func (h *HandoffRoutes) HandleRedeem(w http.ResponseWriter, r *http.Request) {
 		spent()
 		return
 	}
-	approver, err := h.cfg.Sessions.InfoByHandle(r.Context(), rec.Primary)
-	if errors.Is(err, session.ErrNoSession) || (err == nil && approver.Subject != rec.Subject) {
-		// The session that approved this was signed out (or revoked) since.
-		spent()
-		return
-	}
-	if err != nil {
+	if live, err := h.approverLive(r.Context(), rec); err != nil {
 		h.revokeQuietly(r.Context(), rec.Refresh)
 		h.unavailable(w, r, err)
+		return
+	} else if !live {
+		// The session that approved this was signed out (or revoked) since.
+		spent()
 		return
 	}
 	tokens := session.Tokens{AccessToken: rec.Access, RefreshToken: rec.Refresh, IDToken: rec.ID,
@@ -834,6 +832,25 @@ func (h *HandoffRoutes) HandleRedeem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.revokeQuietly(r.Context(), rec.Refresh)
 		h.unavailable(w, r, err)
+		return
+	}
+	// The check above and Create are two operations, and the approving
+	// session may be revoked between them (a sign-out, RevokeSubject). So
+	// the approver is read again now that the new session exists: a
+	// revocation that completed before this read is seen here and ends the
+	// new session; one that runs after it finds the new session stored (and
+	// RevokeSubject ends it with the rest). Either way a revocation that
+	// completes before the redeem answers wins. Fails closed.
+	if live, err := h.approverLive(r.Context(), rec); err != nil || !live {
+		if _, _, rerr := h.cfg.Sessions.Revoke(r.Context(), issued.ID); rerr != nil && !errors.Is(rerr, session.ErrNoSession) {
+			h.cfg.Logger.ErrorContext(r.Context(), "handoff: could not end a session whose approver was revoked", "error", rerr)
+		}
+		if err != nil {
+			h.revokeQuietly(r.Context(), rec.Refresh)
+			h.unavailable(w, r, err)
+			return
+		}
+		spent()
 		return
 	}
 	h.redeemByIP.refund(ClientKey(r, h.cfg.TrustedProxyHops))
@@ -851,6 +868,19 @@ func (h *HandoffRoutes) HandleRedeem(w http.ResponseWriter, r *http.Request) {
 		"token_type": "Bearer",
 		"expires_at": issued.ExpiresAt.UTC().Format(time.RFC3339),
 	})
+}
+
+// approverLive reports whether the session that approved rec is still live
+// and still the subject's. An error is the store's, not a refusal.
+func (h *HandoffRoutes) approverLive(ctx context.Context, rec handoffCode) (bool, error) {
+	approver, err := h.cfg.Sessions.InfoByHandle(ctx, rec.Primary)
+	if errors.Is(err, session.ErrNoSession) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return approver.Subject == rec.Subject, nil
 }
 
 // verifierMatches reports whether verifier is an RFC 7636 verifier whose S256

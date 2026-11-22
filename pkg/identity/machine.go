@@ -188,7 +188,7 @@ func (p *run) ensureMachineUser(ctx context.Context, a accountPlan) (string, err
 		if err != nil {
 			return "", objErr("machine user", a.Username, err)
 		}
-		p.logf("created machine user", "username", a.Username, "user_id", out.UserID)
+		p.logf(ctx, "created machine user", "username", a.Username, "user_id", out.UserID)
 		return out.UserID, nil
 	}
 	if cur.Machine == nil {
@@ -386,7 +386,7 @@ func (p *run) ensureMachineKey(ctx context.Context, a accountPlan, userID string
 			drop()
 			return cred{}, objErr("machine key", a.Username, fmt.Errorf("deliver the key (the previous key, if any, is untouched): %w", err))
 		}
-		p.logf("issued and delivered a machine key", "username", a.Username, "key_id", out.KeyID)
+		p.logf(ctx, "issued and delivered a machine key", "username", a.Username, "key_id", out.KeyID)
 		live = append(live, liveCred{ID: out.KeyID, Expires: expires.Format(time.RFC3339)})
 		current = &live[len(live)-1]
 		created = now
@@ -489,7 +489,7 @@ func (p *run) ensureToken(ctx context.Context, a accountPlan, userID string) (cr
 			p.dropCred(ctx, userID, "pats", out.TokenID)
 			return cred{}, objErr("token", a.Username, fmt.Errorf("deliver the token (the previous token, if any, is untouched): %w", err))
 		}
-		p.logf("issued and delivered a token", "username", a.Username, "token_id", out.TokenID)
+		p.logf(ctx, "issued and delivered a token", "username", a.Username, "token_id", out.TokenID)
 		live = append(live, liveCred{ID: out.TokenID, Expires: expires.Format(time.RFC3339)})
 		current = &live[len(live)-1]
 		secret, created = out.Token, now

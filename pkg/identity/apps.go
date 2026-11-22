@@ -254,7 +254,7 @@ func (p *run) ensureApplication(ctx context.Context, a Application, existing []a
 		}
 		out.AppID, out.ClientID, out.ClientSecret = res.AppID, res.ClientID, res.ClientSecret
 		created = true
-		p.logf("created application", "name", a.Name, "client_id", res.ClientID)
+		p.logf(ctx, "created application", "name", a.Name, "client_id", res.ClientID)
 		if a.Kind == AppWeb {
 			if err := p.keepSecret(ctx, a, res.ClientSecret); err != nil {
 				return err

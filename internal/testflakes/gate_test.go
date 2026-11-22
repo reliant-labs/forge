@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,6 +237,20 @@ func TestGateExitCodes(t *testing.T) {
 	}
 	if r.calls[0][0] != "go" || r.calls[0][1] != "test" {
 		t.Errorf("default command = %v", r.calls[0])
+	}
+
+	// The selected tests' command could not start: 2, as before, but marked
+	// so the flake-check step fails it; "no tests" above is not marked.
+	o, _ = gateOpts(t, root, r, git, listOf(root, "internal/a"))
+	o.Runner = func(context.Context, string, []string, []string, io.Writer, io.Writer) (int, error) {
+		return 127, exec.ErrNotFound
+	}
+	if res := Gate(context.Background(), o); res.ExitCode != GateUndetermined || !res.CommandFailed || !strings.Contains(res.Message, "could not run go") {
+		t.Errorf("command could not start: %+v", res)
+	}
+	o, _ = gateOpts(t, root, r, fakeGit(root, "", nil), listOf(root, "internal/a"))
+	if res := Gate(context.Background(), o); res.CommandFailed {
+		t.Errorf("no tests is not a failed command: %+v", res)
 	}
 }
 

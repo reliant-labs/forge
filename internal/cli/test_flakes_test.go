@@ -86,12 +86,13 @@ func TestTestQuarantineCommands(t *testing.T) {
 
 func TestRunTestFlakesJSON(t *testing.T) {
 	root := flakesModule(t)
-	exp := time.Now().Add(-time.Hour).UTC()
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	exp := now.Add(-time.Hour)
 	if _, err := testflakes.QuarantineAdd(root, "example.com/m", testflakes.Entry{Lang: testreport.LangGo, Package: "example.com/m/x", Test: "TestOld", ExpiresAt: exp}, false); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runTestFlakes(t.Context(), &out, testFlakesArgs{root: root, json: true}); err != nil {
+	if err := runTestFlakes(t.Context(), &out, testFlakesArgs{root: root, json: true, now: now}); err != nil {
 		t.Fatal(err)
 	}
 	var doc testreport.Flakes
@@ -107,7 +108,7 @@ func TestRunTestFlakesJSON(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runTestFlakes(t.Context(), &out, testFlakesArgs{root: root}); err != nil || !strings.Contains(out.String(), "OVERDUE") {
+	if err := runTestFlakes(t.Context(), &out, testFlakesArgs{root: root, now: now}); err != nil || !strings.Contains(out.String(), "OVERDUE") {
 		t.Errorf("text: %v\n%s", err, out.String())
 	}
 	if err := runTestFlakes(t.Context(), &out, testFlakesArgs{root: root, states: []string{"bogus"}}); err == nil {
@@ -134,5 +135,34 @@ func TestFlakeGateVerdict(t *testing.T) {
 	}
 	if err := flakeGateVerdict(&out, none, true, root); err != nil {
 		t.Errorf("graded no tests: %v", err)
+	}
+}
+
+// A selected test command that could not start proved nothing: graded, it
+// fails a project that sets flake-check: error and warns one that does not,
+// as a failed test does; a change with no new or edited tests still passes.
+func TestFlakeGateVerdictGradedFailsWhenTheCommandCannotStart(t *testing.T) {
+	notRun := testflakes.GateResult{ExitCode: testflakes.GateUndetermined, CommandFailed: true, Message: "flake gate: could not run go: executable file not found in $PATH"}
+	none := testflakes.GateResult{ExitCode: testflakes.GateUndetermined, Message: "flake gate: no new or edited tests in origin/main..HEAD"}
+
+	gated := t.TempDir()
+	if err := os.WriteFile(filepath.Join(gated, "forge.yaml"), []byte("name: m\nlint:\n  rules:\n    flake-check: error\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	var ec exitCodeError
+	if err := flakeGateVerdict(&out, notRun, true, gated); !errors.As(err, &ec) || ec.code != exitWrong {
+		t.Errorf("graded, flake-check: error, command could not start: %v, want exit %d", err, exitWrong)
+	}
+	if err := flakeGateVerdict(&out, none, true, gated); err != nil {
+		t.Errorf("graded, flake-check: error, no changed tests: %v, want a pass", err)
+	}
+	out.Reset()
+	if err := flakeGateVerdict(&out, notRun, true, t.TempDir()); err != nil || !strings.Contains(out.String(), "warning: flake gate: could not run go") {
+		t.Errorf("graded, advisory, command could not start: %v, want a warning\n%s", err, out.String())
+	}
+	// Ungraded, the exit code is the gate's own, unchanged.
+	if err := flakeGateVerdict(&out, notRun, false, gated); !errors.As(err, &ec) || ec.code != testflakes.GateUndetermined {
+		t.Errorf("ungraded: %v, want exit %d", err, testflakes.GateUndetermined)
 	}
 }

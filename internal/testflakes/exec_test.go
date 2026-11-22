@@ -54,7 +54,8 @@ func TestSecondRunFails(t *testing.T) {
 	res := Gate(context.Background(), GateOptions{
 		Root: root, Base: "HEAD~1", Stdout: out, Stderr: errOut, Getenv: noEnv,
 		Environ: goexec.WithTrimpath(append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")),
-		Begin:   begin(root, "c1", "t1", time.Now()),
+		Now:     func() time.Time { return day0 },
+		Begin:   begin(root, "c1", "t1", day0),
 	})
 	if res.ExitCode != GateFailed {
 		t.Fatalf("exit %d: %s\n%s", res.ExitCode, res.Message, out)

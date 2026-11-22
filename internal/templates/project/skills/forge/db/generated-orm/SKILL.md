@@ -20,6 +20,7 @@ description: What the generated ORM does — Go field types, plain INSERTs with 
 - Every by-key method (`Get…ByID`/`…ByPK`, `Update`, `UpdateMasked`, `Delete…`) answers a missing row with `svcerr.NotFound("<entity>")`, also `errors.Is(err, orm.ErrNoRows)` — return or `svcerr.Wrap` it, never re-derive it. Other repo errors → `Internal`, no SQL on the wire.
 - A delegate or store called with `RunTx(ctx, orm.Serializable, fn)`'s `ctx` joins it (no `FOR UPDATE` helpers; no default level): `service-layer/transactions`.
 - The delegates above are free functions, so forge exports them as INTERFACES: `<Entity>Store` (`<entity>_store_gen.go`) plus a `Store` aggregate. That is what a service's `Deps` field names — **never hand-write an interface plus a passthrough adapter over the ORM**; forge generates both and asserts they match. Depend on the narrowest one that works.
+- A handler whose `Deps` declares `<Entities> db.<Entity>Store` gets generated CRUD ops that persist that entity through the store instead of `db.X(ctx, s.deps.DB, …)`, so its CRUD path can be tested against the harness's double with no database (`service-layer`). Without the field, nothing changes.
 - **To see what a store offers, read the interface, not forge:** `go doc ./internal/db <Entity>Store` prints the full method set, and `forge project shapes --kind store` lists every one with its `file:line`. Not forge's generator source — it describes every project, not your schema; a measured run lost 11 turns there.
 
 ## Diverging from generated CRUD

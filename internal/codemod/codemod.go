@@ -197,6 +197,14 @@ func register(c Codemod) {
 	registry = append(registry, c)
 }
 
+// Register adds a codemod defined outside this package: one whose rewrite
+// needs what only its caller can read. A scaffolded CI workflow is the case:
+// what forge writes there depends on every env's KCL render, which
+// internal/cli does and this package does not. Call it from an init, as the
+// codemods here call register; `forge fix`, upgrade and a playbook's
+// automation reach it exactly like the rest. It panics on a duplicate name.
+func Register(c Codemod) { register(c) }
+
 // All returns every codemod, by release and then name.
 func All() []Codemod {
 	out := append([]Codemod(nil), registry...)

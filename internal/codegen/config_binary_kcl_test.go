@@ -376,8 +376,10 @@ assert_daemon_root_only = _daemon["RELIANT_LOG_LEVEL"] == "debug" and "GRPC_PORT
 	}
 }
 
-// The selector's refusals: a credential no config of THIS process declares,
-// and a process whose command config was not supplied.
+// The selector's refusals: a credential no config of THIS process declares.
+// (Every config here has defaults for all its fields, so an unset instance is
+// not a refusal: it projects as `<Config> {}`. The refusal of an unset config
+// with a required field is TestPerBinaryKCL_UnsetOptionalConfigRendersAsItsDefault's.)
 func TestPerBinaryKCL_ProcessSelectorRefusals(t *testing.T) {
 	if _, err := exec.LookPath("kcl"); err != nil {
 		t.Skip("kcl not on PATH; skipping process-selector refusals")
@@ -392,11 +394,6 @@ func TestPerBinaryKCL_ProcessSelectorRefusals(t *testing.T) {
 			"the worker's credential on the api workload",
 			`_x = config_gen.reliantProcessEnvMap(config_gen.ReliantProcess {reliant_config = config_gen.ReliantConfig {}, api_server_config = config_gen.ApiServerConfig {}}, ["reliant", "server", "api"], ["RELIANT_VAULT_KEY"])`,
 			"config_secrets names [RELIANT_VAULT_KEY], which is not a `sensitive` field of the config(s) a `reliant` process running [server, api] loads. Sensitive fields: [AUTH_API_KEY]",
-		},
-		{
-			"the api process with no api instance",
-			`_x = config_gen.reliantProcessEnvMap(config_gen.ReliantProcess {reliant_config = config_gen.ReliantConfig {}}, ["reliant", "server", "api"], [])`,
-			"this workload runs `reliant server api`, which loads ApiServerConfig",
 		},
 	}
 	for _, c := range cases {

@@ -37,6 +37,8 @@ type fakeZitadel struct {
 	// refusedPassword is a password the issuer's policy refuses although it
 	// meets every rule the broker can see (DOMAIN-ZDLwA, "no symbol").
 	refusedPassword string
+	// failSetEmail makes changing an address fail at the issuer (500).
+	failSetEmail bool
 	// passwordSetFails makes setting a password fail at the issuer (500).
 	passwordSetFails bool
 	// clk is the issuer's clock: passwordChanged is dated by it, and every
@@ -138,6 +140,8 @@ type fakeIntent struct {
 
 type fakeMail struct {
 	userID, kind, link, code string
+	// to is the address the account had when the mail was sent.
+	to string
 }
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
@@ -663,12 +667,17 @@ func (f *fakeZitadel) routes(mux *http.ServeMux) {
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {
+		if f.failSetEmail {
+			zerr(w, 500, "INTERNAL-fake", "the address could not be changed")
+			return
+		}
 		u.email, u.verified, u.emailCode = str(b, "email"), false, f.id("ev")
 		if sub(b, "returnCode") != nil {
 			ok(w, map[string]any{"verificationCode": u.emailCode})
 			return
 		}
-		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode})
+		f.mails = append(f.mails, fakeMail{userID: u.id, kind: "verify", code: u.emailCode, to: u.email,
+			link: f.render(str(sub(b, "sendCode"), "urlTemplate"), u, u.emailCode, "")})
 		ok(w, map[string]any{})
 	}))
 	mux.HandleFunc("POST /v2/users/{id}/email/verify", withUser(func(w http.ResponseWriter, _ *http.Request, u *fakeUser, b map[string]any) {

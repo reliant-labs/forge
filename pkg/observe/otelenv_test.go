@@ -43,8 +43,9 @@ func clearOTelEnv(t *testing.T) {
 func snapshotGlobals(t *testing.T) {
 	t.Helper()
 	tp, mp, prop := otel.GetTracerProvider(), otel.GetMeterProvider(), otel.GetTextMapPropagator()
-	lp, res := otel.GetLoggerProvider(), processResource.Load()
+	lp, res, sampler := otel.GetLoggerProvider(), processResource.Load(), resources.Load()
 	t.Cleanup(func() {
+		resources.Store(sampler)
 		otel.SetTracerProvider(tp)
 		otel.SetMeterProvider(mp)
 		otel.SetTextMapPropagator(prop)

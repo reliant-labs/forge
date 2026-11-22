@@ -36,7 +36,7 @@ func (c CIConfig) EffectiveProvider() string {
 // (release also covers its vendored forge-deploy action, and dependabot is
 // .github/dependabot.yml); under ci.provider reliant, ci and review are
 // .reliant/workflows/ci.yaml and review.yaml.
-var ciWorkflowNames = []string{"build-images", "ci", "dependabot", "deploy", "e2e", "proto-breaking", "release", "review"}
+var ciWorkflowNames = []string{"build-images", "ci", "dependabot", "deploy", "e2e", "pgo-refresh", "proto-breaking", "release", "review"}
 
 // CIWorkflowNames returns the names `ci.workflows` accepts, sorted.
 func CIWorkflowNames() []string { return append([]string(nil), ciWorkflowNames...) }

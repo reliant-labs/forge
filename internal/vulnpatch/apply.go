@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/vulnscan"
@@ -39,6 +40,7 @@ func (p *Plan) Apply(ctx context.Context, run vulnscan.Runner) error {
 		}
 		groups[b.manifest] = append(groups[b.manifest], b)
 	}
+	sort.SliceStable(order, func(i, j int) bool { return groups[order[i]][0].rank < groups[order[j]][0].rank })
 	for _, m := range order {
 		bs := groups[m]
 		cmds, edits, err := applyManifest(ctx, run, bs)
@@ -83,6 +85,9 @@ func (p *Plan) bumpErrors(result int) string {
 // applyManifest bumps every package of one manifest; bs share it.
 func applyManifest(ctx context.Context, run vulnscan.Runner, bs []*plannedBump) (cmds [][]string, edits []string, err error) {
 	first := bs[0]
+	if first.py != nil {
+		return applyPython(ctx, run, bs)
+	}
 	exec := func(name string, args ...string) error {
 		argv := append([]string{name}, args...)
 		cmds = append(cmds, argv)

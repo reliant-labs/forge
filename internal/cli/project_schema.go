@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/schemagen"
+	"github.com/reliant-labs/forge/internal/testcollect"
 	"github.com/reliant-labs/forge/internal/vulnpatch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/testreport"
@@ -65,6 +66,8 @@ func publishedSchemas() map[string]struct {
 		"test-flakes":        testDocumentSchema("test-flakes", testreport.SchemaFlakes, reflect.TypeOf(testreport.Flakes{}), "each test's flake state and events, with host and infra failures kept out of the scores; `forge test flakes --json`"),
 		"test-coverage-view": testDocumentSchema("test-coverage-view", schemaTestCoverageView, reflect.TypeOf(testCoverageDoc{}), "recorded coverage as `forge test coverage --json` shows it: a path or lane filter, the per-package or per-file rollup, diff coverage, and the forge.test.coverage/v1 document they come from"),
 		"test-runs":          testDocumentSchema("test-runs", schemaTestRuns, reflect.TypeOf(testRunsDoc{}), "the local test runs, newest first, with each lane's exit code; `forge test runs --json`"),
+		"test-collect":       testDocumentSchema("test-collect", testcollect.Schema, reflect.TypeOf(testcollect.Document{}), "the coverage `forge test collect <env> --json` pulled from each workload of an env: where from, its build, the stale builds kept apart"),
+		"test-run-result":    testDocumentSchema("test-run-result", schemaTestRunResult, reflect.TypeOf(testRunResultDoc{}), "the Taskfile lanes `forge test run` ran as one run, each with its own exit code, and the lanes they recorded; `forge test run --json`"),
 		"vuln-patch": {
 			spec: SchemaSpec{
 				Name: "vuln-patch", APIVersion: vulnpatch.DocumentSchema, ID: vulnPatchSchemaID,
@@ -153,6 +156,11 @@ func newProjectSchemaCmd() *cobra.Command {
 
   test-coverage-view, test-runs
         forge.test.coverage-view/v1, forge.test.runs/v1: what ` + "`forge test\n        coverage --json`" + ` and ` + "`forge test runs --json`" + ` print.
+  test-collect  forge.test.collect/v1: what ` + "`forge test collect <env> --json`" + `
+        pulled from each workload of an env.
+
+  test-run-result
+        forge.test.run-result/v1: what ` + "`forge test run --json`" + ` prints.
 
   vuln-patch  forge.dev/vuln-patch/v1: the document ` + "`forge vuln patch --json`" + ` prints —
         what was bumped per finding, the verification, and the exit code the

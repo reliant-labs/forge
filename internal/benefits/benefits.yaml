@@ -1927,6 +1927,12 @@ benefits:
         bug_class: >-
           A List filter without `optional` has no presence, so "no filter"
           collapses into "filter by zero" and generated filters no-op
+      - id: crud-table-unowned
+        lane: --crud-ownership
+        bug_class: >-
+          A table served by generated CRUD on an authenticated rpc that never
+          says whose rows it holds: every signed-in caller reads, updates and
+          deletes every other caller's rows
       - id: forgeconv-crud-owner-resolver
         lane: --conventions
         bug_class: >-
@@ -2314,6 +2320,13 @@ benefits:
         bug_class: >-
           A test that fails when real elapsed time passes a bound under 5s,
           measuring how busy the machine was rather than what the code did
+      - id: flake-check
+        lane: forge ci gate
+        bug_class: >-
+          A test the change adds or edits that fails one of three runs (order
+          dependence, leaked state, a timing assumption) merges and surfaces
+          weeks later in someone else's change (`forge test flakes gate`;
+          advisory until `lint.rules: {flake-check: error}`)
       - id: forgeconv-handler-tests-use-tdd
         lane: --tests
         bug_class: >-
@@ -4805,6 +4818,7 @@ benefits:
     evidence:
       - library: pkg/changes
       - library: pkg/changes/openfeature
+      - library: pkg/experimentstats
       - library: pkg/observe
       - path: web-runtime/src/track.ts
       - path: web-runtime/src/changes-store.ts

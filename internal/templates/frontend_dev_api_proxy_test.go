@@ -37,6 +37,11 @@ func TestDevAPIProxy_NextConfig(t *testing.T) {
 				`/^(off|false|0|no)$/i`,
 				`env: { FORGE_DEV_API_PROXY: devApiProxy },`,
 				"{ source: `${devApiProxy}/:path*`, destination: `${apiUpstream}/:path*` }",
+				// Named APIs (Frontend.apis): forge env up's table, one
+				// rewrite each, the prefix stripped.
+				`const devApis = parseDevApis(process.env.FORGE_DEV_APIS);`,
+				"source: `${prefix}/@${name}/:path*`,",
+				"destination: `${target}/:path*`,",
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("next.config.ts (%s) missing %q", output, want)
@@ -62,9 +67,9 @@ func TestDevAPIProxy_NextConfig(t *testing.T) {
 			}
 			// The /_api rewrite sits in the same dev-gated rewrites() as
 			// /_otel — the shape `forge lint --static-export` recognises.
-			gated := regexp.MustCompile(`process\.env\.NODE_ENV === "development"\s*\?\s*\{\s*async rewrites\(\)\s*\{\s*(?:const otel = await devOtelUpstream\(\);\s*)?return \[\s*\.\.\.\(otel \? \[\{ source: "/_otel/:path\*"[^\n]*\n\s*\.\.\.\(devApiProxy\s*\?\s*\[\{ source: ` + "`" + `\$\{devApiProxy\}/:path\*` + "`")
+			gated := regexp.MustCompile(`process\.env\.NODE_ENV === "development"\s*\?\s*\{\s*async rewrites\(\)\s*\{\s*(?:const otel = await devOtelUpstream\(\);\s*)?return \[\s*\.\.\.\(otel \? \[\{ source: "/_otel/:path\*"[^\n]*\n\s*\.\.\.devApiRewrites\(devApiProxy\),\s*\.\.\.\(devApiProxy \&\& apiUpstream\s*\?\s*\[\{ source: ` + "`" + `\$\{devApiProxy\}/:path\*` + "`")
 			if !gated.MatchString(s) {
-				t.Errorf("next.config.ts (%s): the /_api rewrite must live in the dev-gated rewrites() beside /_otel", output)
+				t.Errorf("next.config.ts (%s): the /_api rewrites — named ones first, which /_api's would otherwise match — must live in the dev-gated rewrites() beside /_otel", output)
 			}
 		})
 	}
@@ -121,9 +126,17 @@ func TestDevAPIProxy_ViteConfig(t *testing.T) {
 		`export default defineConfig(({ command, mode }) => {`,
 		`const devApiProxy = command === "serve" && mode !== "test" ? DEV_API_PROXY : "";`,
 		`{ "import.meta.env.FORGE_DEV_API_PROXY": JSON.stringify(devApiProxy) }`,
-		`[devApiProxy]: {`,
+		`proxy: devApiRoutes(devApiProxy),`,
 		`target: API_UPSTREAM,`,
-		`rewrite: (p: string) => p.slice(devApiProxy.length),`,
+		`rewrite: (p: string) => p.slice(prefix.length),`,
+		// Named APIs: forge env up's table, a RegExp key each (so a name
+		// never prefix-matches a longer one) registered BEFORE /_api, an
+		// undeclared name a 404 rather than the default API, and the
+		// client's forwarding headers dropped as at the hosted origin.
+		`const DEV_APIS = parseDevApis(process.env.FORGE_DEV_APIS);`,
+		"routes[`^${named}(?=[/?]|$)`] = {",
+		"bypass: (req) => (req.url?.startsWith(`${prefix}/@`) ? false : undefined),",
+		`proxyReq.removeHeader(h);`,
 		// Vite refuses an unrecognised Host header outright.
 		"process.env.RELIANT_PREVIEW_URL_TEMPLATE",
 		"process.env.FORGE_DEV_ALLOWED_ORIGINS",
@@ -132,6 +145,9 @@ func TestDevAPIProxy_ViteConfig(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("vite.config.ts missing %q", want)
 		}
+	}
+	if named, def := strings.Index(s, "for (const [name, target] of Object.entries(DEV_APIS))"), strings.Index(s, "routes[prefix] = {"); named < 0 || def < 0 || named > def {
+		t.Errorf("vite.config.ts: the named API routes must be registered before /_api's (Vite takes the first matching key)")
 	}
 }
 
@@ -199,7 +215,8 @@ func TestDevAPIProxy_DevSameOriginProdConfigured(t *testing.T) {
 	}
 
 	config := renderTelemetryTmpl(t, "nextjs/next.config.ts.tmpl", telemetryData("static"))
-	decision := constStatement(t, config, "apiUpstream") + "\n" + constStatement(t, config, "devApiProxy")
+	decision := constStatement(t, config, "apiUpstream") + "\n" + functionStatement(t, config, "parseDevApis") + "\n" +
+		constStatement(t, config, "devApis") + "\n" + constStatement(t, config, "devApiProxy")
 	module, err := FrontendTemplates().Get("nextjs/src/lib/api-base.ts")
 	if err != nil {
 		t.Fatalf("read api-base.ts: %v", err)
@@ -239,6 +256,12 @@ func TestDevAPIProxy_DevSameOriginProdConfigured(t *testing.T) {
 			want:       "http://localhost:8085",
 		},
 		{
+			name:       "named APIs alone still proxy through the page's own origin",
+			env:        map[string]string{"NODE_ENV": "development", "FORGE_DEV_APIS": `{"billing":"http://localhost:8090"}`},
+			configured: "http://localhost:8085",
+			want:       preview + "/_api",
+		},
+		{
 			name:       "no upstream to proxy to: the configured URL",
 			env:        map[string]string{"NODE_ENV": "development"},
 			configured: "http://localhost:8085",
@@ -252,6 +275,21 @@ func TestDevAPIProxy_DevSameOriginProdConfigured(t *testing.T) {
 				t.Errorf("api base = %q, want %q (next.config published FORGE_DEV_API_PROXY=%q)", got, tc.want, proxy)
 			}
 		})
+	}
+
+	// Named APIs (Frontend.apis): forge env up's table becomes one rewrite
+	// per name, prefix stripped; a malformed table proxies none.
+	rewrites := evalNextNamedRewrites(t, node, config, decision, map[string]string{
+		"NODE_ENV": "development", "FORGE_DEV_APIS": `{"billing":"http://localhost:8090/","Bad":"http://x","auth":""}`,
+	})
+	if want := `[{"source":"/_api/@billing/:path*","destination":"http://localhost:8090/:path*"}]`; rewrites != want {
+		t.Errorf("named API rewrites = %s, want %s", rewrites, want)
+	}
+	if got := evalNextNamedRewrites(t, node, config, decision, map[string]string{"NODE_ENV": "development", "FORGE_DEV_APIS": "not json"}); got != "[]" {
+		t.Errorf("a malformed FORGE_DEV_APIS must proxy no named API, got %s", got)
+	}
+	if got := runAPIBaseFor(t, node, string(module), "development", "/_api", "/admin", preview, "billing"); got != preview+"/admin/_api/@billing" {
+		t.Errorf("apiBaseFor under next dev = %q, want the page's own origin at /_api/@billing", got)
 	}
 
 	// The module's own NODE_ENV gate: even a production bundle that somehow
@@ -326,11 +364,57 @@ func constStatement(t *testing.T, src, name string) string {
 	return src[start : start+end+1]
 }
 
+// functionStatement lifts `function <name>(…) {…}` out of a rendered config:
+// through the first line that is exactly "}".
+func functionStatement(t *testing.T, src, name string) string {
+	t.Helper()
+	start := strings.Index(src, "function "+name+"(")
+	if start < 0 {
+		t.Fatalf("no `function %s(` in:\n%s", name, src)
+	}
+	end := strings.Index(src[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("unterminated `function %s`", name)
+	}
+	return src[start : start+end+2]
+}
+
+// compileTS strips TypeScript from a snippet so node can run it.
+func compileTS(t *testing.T, src string) string {
+	t.Helper()
+	res := api.Transform(src, api.TransformOptions{Loader: api.LoaderTS})
+	if len(res.Errors) > 0 {
+		t.Fatalf("compile: %v\n%s", res.Errors, src)
+	}
+	return string(res.Code)
+}
+
+// evalNextNamedRewrites runs next.config.ts's decision plus devApiRewrites
+// under node and returns the named API rewrites it computes, as JSON.
+func evalNextNamedRewrites(t *testing.T, node, config, decision string, env map[string]string) string {
+	t.Helper()
+	start := strings.Index(config, "const devApiRewrites = ")
+	end := strings.Index(config[start:], ";\n")
+	if start < 0 || end < 0 {
+		t.Fatalf("no devApiRewrites in next.config.ts:\n%s", config)
+	}
+	script := compileTS(t, decision+"\n"+config[start:start+end+1]) + "\nprocess.stdout.write(JSON.stringify(devApiRewrites(devApiProxy)));"
+	cmd := exec.Command(node, "-e", script)
+	cmd.Env = proxyTestEnv(env)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("evaluating next.config.ts's named rewrites: %v\n%s", err, out)
+	}
+	// A malformed table warns on stderr; the JSON is the last line.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return lines[len(lines)-1]
+}
+
 // evalNextProxyDecision runs next.config.ts's decision statements under
 // node with the given environment and returns the devApiProxy it computes.
 func evalNextProxyDecision(t *testing.T, node, decision string, env map[string]string) string {
 	t.Helper()
-	cmd := exec.Command(node, "-e", decision+"\nprocess.stdout.write(JSON.stringify(devApiProxy));")
+	cmd := exec.Command(node, "-e", compileTS(t, decision)+"\nprocess.stdout.write(JSON.stringify(devApiProxy));")
 	cmd.Env = proxyTestEnv(env)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -375,13 +459,42 @@ func runAPIBase(t *testing.T, node, module, nodeEnv, proxy, basePath, origin, co
 	return string(out)
 }
 
+// runAPIBaseFor is runAPIBase for apiBaseFor(name).
+func runAPIBaseFor(t *testing.T, node, module, nodeEnv, proxy, basePath, origin, name string) string {
+	t.Helper()
+	res := api.Transform(module, api.TransformOptions{
+		Loader: api.LoaderTS,
+		Format: api.FormatCommonJS,
+		Define: map[string]string{
+			"process.env.NODE_ENV":            jsString(nodeEnv),
+			"process.env.FORGE_DEV_API_PROXY": jsString(proxy),
+		},
+	})
+	if len(res.Errors) > 0 {
+		t.Fatalf("compile api-base.ts: %v", res.Errors)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "api-base.js"), string(res.Code))
+	writeFile(t, filepath.Join(dir, "basepath_gen.js"), "exports.BASE_PATH = "+jsString(basePath)+";\n")
+	script := "globalThis.window = { location: { origin: " + jsString(origin) + " } };\n" +
+		"const { apiBaseFor } = require(" + jsString(filepath.Join(dir, "api-base.js")) + ");\n" +
+		"process.stdout.write(apiBaseFor(" + jsString(name) + "));"
+	cmd := exec.Command(node, "-e", script)
+	cmd.Env = proxyTestEnv(nil)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("running api-base.ts: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
 // proxyTestEnv is the parent environment minus anything that would leak
 // into the decision, plus env.
 func proxyTestEnv(env map[string]string) []string {
 	var out []string
 	for _, kv := range os.Environ() {
 		switch strings.SplitN(kv, "=", 2)[0] {
-		case "NODE_ENV", "NEXT_PUBLIC_API_URL", "FORGE_DEV_API_PROXY",
+		case "NODE_ENV", "NEXT_PUBLIC_API_URL", "FORGE_DEV_API_PROXY", "FORGE_DEV_APIS",
 			"RELIANT_PREVIEW_URL_TEMPLATE", "PORT", "FORGE_DEV_ALLOWED_ORIGINS":
 			continue
 		}

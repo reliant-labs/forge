@@ -2,7 +2,6 @@ package resmetrics
 
 import (
 	"context"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +30,7 @@ var resourceMetricNames = []string{
 	"forge.cgroup.pressure.stall_time",
 	"forge.process.file_descriptor.limit",
 	"forge.process.file_descriptor.utilization",
+	"forge.process.handle.count",
 	"forge.process.memory.go_gap",
 	"forge.resource.scope",
 	"forge.system.file_descriptor.count",
@@ -113,9 +113,10 @@ func TestMetricNamesArePinned(t *testing.T) {
 	for _, m := range fullCollection(t) {
 		got[m.Name] = m
 	}
-	want := slices.Clone(resourceMetricNames)
-	if runtime.GOOS != "linux" {
-		// statfs is read on linux only in this phase.
+	// The handle count is windows's, read natively; the fixture is a /proc
+	// tree (TestNativeOnlyFields covers it).
+	want := slices.DeleteFunc(slices.Clone(resourceMetricNames), func(n string) bool { return n == "forge.process.handle.count" })
+	if !volumesSupported {
 		want = slices.DeleteFunc(want, func(n string) bool { return strings.HasPrefix(n, "system.filesystem.") })
 	}
 	for _, name := range want {
@@ -285,5 +286,40 @@ func TestRegisterFollowsGroupsAndFailedReaders(t *testing.T) {
 	}
 	if !slices.Contains(got, "forge.cgroup.memory.working_set") || !slices.Contains(got, "forge.resource.scope") {
 		t.Errorf("cgroup scope lost the container's metrics: %v", got)
+	}
+}
+
+// The fields only a native reader sets: windows's handle count, and a host
+// CPU without iowait or steal (darwin, windows), whose two unknown modes are
+// left out rather than reported as zero.
+func TestNativeOnlyFields(t *testing.T) {
+	f := newFixture(t)
+	s := f.start(Options{})
+	f.writeProc(map[string]string{"stat": "cpu  1600 100 400 10000 50 20 30 10 0 0\nbtime 1700000000\n"})
+	f.advance(time.Minute)
+	snap := s.Latest() // a second sample, so the utilizations exist
+	handles := int64(42)
+	snap.Process.Handles = &handles
+	snap.Host.CPU.NoIOWaitSteal = true
+
+	got := map[string]metricdata.Metrics{}
+	for _, m := range collect(t, s) { // the cached sample: the clock has not moved
+		got[m.Name] = m
+	}
+	if m, ok := got["forge.process.handle.count"]; !ok {
+		t.Error("forge.process.handle.count was not emitted from Handles")
+	} else if d := m.Data.(metricdata.Sum[int64]); len(d.DataPoints) != 1 || d.DataPoints[0].Value != 42 {
+		t.Errorf("forge.process.handle.count = %+v, want 42", d.DataPoints)
+	}
+	for _, name := range []string{"system.cpu.time", "system.cpu.utilization"} {
+		var modes []string
+		for _, set := range attributeSets(got[name].Data) {
+			v, _ := set.Value("cpu.mode")
+			modes = append(modes, v.AsString())
+		}
+		slices.Sort(modes)
+		if want := []string{"idle", "system", "user"}; !slices.Equal(modes, want) {
+			t.Errorf("%s modes = %v, want %v: iowait and steal are unknown here", name, modes, want)
+		}
 	}
 }

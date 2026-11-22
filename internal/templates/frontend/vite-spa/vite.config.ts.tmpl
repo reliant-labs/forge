@@ -11,6 +11,7 @@ import {
 {{- else}}
 import { forgeOtelProxy, forgeRuntimeConfig } from "@reliantlabs/forge-web-runtime/vite";
 {{- end}}
+import type { ProxyOptions } from "vite";
 // `vitest/config` re-exports vite's defineConfig with the `test` block typed.
 // Importing it from "vite" instead type-errors on `test`, and this file is in
 // the tsconfig `include` list.
@@ -132,11 +133,91 @@ const OTEL_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://127.0.0
 // (`define` below), which api-base.ts reads, so the proxy and the transport
 // are one decision. Like /_otel, there is no production equivalent: a built
 // SPA reads the API's URL from the runtime config (config.js), as before.
+//
+// NAMED APIs (KCL Frontend.apis): /_api/@<name>/* -> that workload, with
+// "/_api/@<name>" stripped, exactly as Reliant hosting routes it, so dev URLs
+// equal hosted ones. `forge env up` sets FORGE_DEV_APIS to
+// {"<name>": "<upstream>"}; a name it does not list answers 404 here rather
+// than reaching the default API. Every proxied request loses the client's
+// X-Forwarded-* / Forwarded headers, as it does at the hosted origin, so an
+// API never trusts a forwarding claim the browser made up.
 const API_UPSTREAM = (process.env.VITE_API_URL || "").replace(/\/+$/, "");
+const DEV_APIS = parseDevApis(process.env.FORGE_DEV_APIS);
 const DEV_API_PROXY =
-  API_UPSTREAM !== "" && !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
+  (API_UPSTREAM !== "" || Object.keys(DEV_APIS).length > 0) &&
+  !/^(off|false|0|no)$/i.test(process.env.FORGE_DEV_API_PROXY ?? "")
     ? "/_api"
     : "";
+
+// parseDevApis reads FORGE_DEV_APIS. A malformed value proxies no named API
+// and says so, rather than failing the dev server.
+function parseDevApis(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.warn("[forge] FORGE_DEV_APIS is not a JSON object; named APIs are not proxied");
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [name, url] of Object.entries(parsed)) {
+    if (/^[a-z][a-z0-9-]{0,30}$/.test(name) && typeof url === "string" && url !== "") {
+      out[name] = url.replace(/\/+$/, "");
+    }
+  }
+  return out;
+}
+
+// stripClientForwarded drops the forwarding headers a client sent before the
+// request reaches the API (see NAMED APIs above).
+const stripClientForwarded: ProxyOptions["configure"] = (proxy) => {
+  proxy.on("proxyReq", (proxyReq) => {
+    for (const h of [
+      "forwarded",
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-port",
+      "x-forwarded-proto",
+    ]) {
+      proxyReq.removeHeader(h);
+    }
+  });
+};
+
+// devApiRoutes is the dev server's API proxy table: each named API first (a
+// prefix match on /_api would otherwise take it), then the default API.
+function devApiRoutes(prefix: string): Record<string, ProxyOptions> {
+  if (!prefix) return {};
+  const routes: Record<string, ProxyOptions> = {};
+  for (const [name, target] of Object.entries(DEV_APIS)) {
+    const named = `${prefix}/@${name}`;
+    // A RegExp key ("^…"), so /_api/@billing never also matches /_api/@billing-v2.
+    routes[`^${named}(?=[/?]|$)`] = {
+      target,
+      changeOrigin: true,
+      configure: stripClientForwarded,
+      rewrite: (p: string) => {
+        const rest = p.slice(named.length);
+        return rest.startsWith("/") ? rest : `/${rest}`;
+      },
+    };
+  }
+  if (API_UPSTREAM !== "") {
+    routes[prefix] = {
+      target: API_UPSTREAM,
+      changeOrigin: true,
+      configure: stripClientForwarded,
+      // An undeclared /_api/@<name> is a 404, never the default API.
+      bypass: (req) => (req.url?.startsWith(`${prefix}/@`) ? false : undefined),
+      rewrite: (p: string) => p.slice(prefix.length),
+    };
+  }
+  return routes;
+}
 
 // ── Dev hosts (DEV ONLY) ────────────────────────────────────────────────
 //
@@ -228,17 +309,7 @@ export default defineConfig(({ command, mode }) => {
       // A Reliant workspace preview host (and any FORGE_DEV_ALLOWED_ORIGINS)
       // — see devAllowedHosts above. Vite's port, not PORT: this file pins it.
       allowedHosts: devAllowedHosts(5173),
-      proxy: {
-        ...(devApiProxy
-          ? {
-              [devApiProxy]: {
-                target: API_UPSTREAM,
-                changeOrigin: true,
-                rewrite: (p: string) => p.slice(devApiProxy.length),
-              },
-            }
-          : {}),
-      },
+      proxy: devApiRoutes(devApiProxy),
     },
     // Vitest reads THIS file when a project has no vitest.config.ts. The
     // scaffold ships component tests that mount into the DOM

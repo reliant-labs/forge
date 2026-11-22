@@ -299,6 +299,14 @@ func projectBaselineVersion() string {
 // frontmatter. Every direct subdirectory of migrationSkillsRoot is a
 // migration named for its release.
 //
+// A release may also ship topic playbooks one level down,
+// <release>/<topic>/SKILL.md (migrations/v1.11.0/sbom-vulnerabilities): one
+// per change that has its own detection, so each is offered, automated and
+// recorded on its own. Its ID is "<release>/<topic>" and its version the
+// release. A sub-skill that declares no `detection:` is a section of its
+// release's playbook (migrations/v1.0.0/connect-errors), read through that
+// playbook, and is not listed here.
+//
 // An empty result is a normal, expected answer — forge ships no
 // migrations until a release actually breaks something, and the registry
 // is pruned back down as releases age out of the supported window.
@@ -322,10 +330,11 @@ func loadMigrationMetas() ([]migrationMeta, error) {
 			continue
 		}
 		id := strings.TrimSuffix(rel, "/SKILL.md")
-		// Defence in depth: a nested SKILL.md (a/b/SKILL.md) would
-		// produce an id of "a/b" which is not a valid filesystem-friendly
-		// migration identifier. Skip any non-flat layout.
-		if strings.Contains(id, "/") {
+		// The release is the first segment: "v1.9.0", or "v1.11.0" of the
+		// topic playbook "v1.11.0/sbom-vulnerabilities". Anything nested
+		// deeper is not a playbook layout.
+		release, topic, nested := strings.Cut(id, "/")
+		if nested && (topic == "" || strings.Contains(topic, "/")) {
 			continue
 		}
 
@@ -334,6 +343,10 @@ func loadMigrationMetas() ([]migrationMeta, error) {
 			continue
 		}
 		m := parseMigrationFrontmatter(content)
+		if nested && strings.TrimSpace(m.Detection) == "" {
+			// A section of its release's playbook, not one of its own.
+			continue
+		}
 		m.ID = id
 		m.SkillPath = path.Join(migrationSkillsRoot, id)
 		// The directory name is the canonical version. Frontmatter that
@@ -341,7 +354,7 @@ func loadMigrationMetas() ([]migrationMeta, error) {
 		// version-less (which would make the migration apply to every
 		// baseline that matched detection).
 		if strings.TrimSpace(m.Version) == "" {
-			m.Version = id
+			m.Version = release
 		}
 		out = append(out, m)
 	}

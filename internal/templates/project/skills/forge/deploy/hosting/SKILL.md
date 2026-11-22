@@ -55,6 +55,11 @@ Public Suffix List says about the two hostnames, and no CORS is involved.
   platform's CDN (`Cache-Control` becomes `private`).
 - `/_api` is reserved on hosted sites: with no API it answers 404, not the
   SPA fallback.
+- More backends of the same env go beside it as NAMED APIs
+  (`Frontend.apis = {billing = "billing-api"}`), each at `/_api/@<name>/*`
+  with the same rules, and published in config.js as `apis.<name>`. The
+  control plane must advertise `serves-named-site-apis`, or the deploy is
+  refused. See `frontend/serving`, "Several APIs on one origin".
 - To have the browser call the API's own host instead, set the URL as a
   literal (`API_URL = "https://<api host>"`): a literal is never rewritten,
   and the CORS settings above make it work while the two hosts are same-site.
@@ -132,8 +137,8 @@ client id (`forge-cli-claimable/<project>/<env>`), so it can never pass for a
 
 | Gate | What happens | Clear it |
 |---|---|---|
-| **Billing** — a hosted workload, managed database or static site, and the org has no Reliant Compute plan | The deploy is **queued, not refused**: built, recorded, promoted, held (rollout phase `HELD`). `env deploy` prints waiting-on/why/do/link and **exits 7**; `env status` also exits 7; `--json` carries the same facts | Someone who can manage billing for the org subscribes in Reliant → Settings → Billing (the printed link goes there). Nothing to re-run: the Stripe webhook releases it. Block with `forge env deploy --wait` or `env status <env> --wait`; then `forge env smoke <env>` |
-| **Over the plan ceiling**, **plan unknown**, **spend cap reached** | Refused, not queued (a spend cap is deliberate: it can clear unattended) | Reduce resources, upgrade, retry, or raise the cap |
+| **Billing** — a hosted workload or database, or a second static site, and the org has no pay-as-you-go hosting billing (a machine plan is not it) | The deploy is **queued, not refused**: built, recorded, promoted, held (rollout phase `HELD`). `env deploy` prints waiting-on/why/do/link and **exits 7**; `env status` also exits 7; `--json` carries the same facts | Someone who can manage billing for the org enables it in Reliant → Settings → Billing (the printed link goes there). Nothing to re-run: the Stripe webhook releases it. Block with `forge env deploy --wait` or `env status <env> --wait`; then `forge env smoke <env>` |
+| **Over the ceiling** or **monthly budget**, **billing unknown**, **spend cap reached** | Refused, not queued (a spend cap is deliberate: it can clear unattended) | Reduce resources, retry, or raise the budget or cap |
 
 Exit 7 is a person's turn, not a failure: relay the link to the user, do not
 retry in a loop. A newer deploy to the same env supersedes a queued one. An

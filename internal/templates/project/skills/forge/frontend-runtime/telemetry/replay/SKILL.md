@@ -80,10 +80,15 @@ depth, not permission to record without any consent your product requires.
 
 ## Upgrading from a runtime that imported `@hyperdx/browser`
 
-Nothing to edit. web-runtime 0.13.17 and earlier imported `@hyperdx/browser`
-and forge declared it in every web frontend's `package.json`. The runtime now
-brings `@hyperdx/otel-web` and `rrweb` itself, as dependencies, under npm and
-pnpm's strict layout alike, so the next install after the runtime moves just
-works. The old `@hyperdx/browser` entry is unused from then on and forge leaves
-it where it is: remove it (and the `@hyperdx/otel-web-session-recorder>fflate`
-override, which guarded only its recorder) when you next touch the manifest.
+web-runtime 0.13.18 and earlier imported `@hyperdx/browser`, and forge declared
+it in every web frontend's `package.json`. 0.13.19 through 0.13.x brought
+`@hyperdx/otel-web` and `rrweb` as dependencies of the runtime. From 0.14.0 they
+are its exact optional peers, so a `/node`-only consumer installs neither
+(forge defect ae15c269), and a frontend importing `/telemetry` declares both:
+`forge generate` adds them on the run that raises the runtime to `^0.14`. An
+app that moves to 0.14 without forge runs
+`npm install @hyperdx/otel-web@0.20.0 rrweb@2.1.7` (the versions in the
+runtime's `peerDependencies`). The old `@hyperdx/browser` entry is unused and
+forge leaves it where it is: remove it (and the
+`@hyperdx/otel-web-session-recorder>fflate` override, which guarded only its
+recorder) when you next touch the manifest.

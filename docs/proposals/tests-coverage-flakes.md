@@ -304,8 +304,10 @@ control plane checks again inside `Promote` (capability
 1. **Pull.** serverkit registers `/debug/coverage` on its existing pprof
    listener (`127.0.0.1:6060`, routable from nowhere). The handler calls
    `runtime/coverage.WriteMetaDir` and `WriteCountersDir` into a temp dir and
-   returns a tar. `?reset=1` calls `ClearCounters`, which is valid in atomic
-   mode, so a run can start from zero. A binary built without `-cover` answers 404. `forge test collect <env>` reaches it with a port-forward (cluster),
+   returns a tar. The endpoint is read-only: `forge test collect --reset`
+   starts a run from zero by recording the pulled counters as a per-process
+   baseline that later collects subtract (a counter-clearing endpoint is a
+   write no auth can protect on a listener a web page can reach). A binary built without `-cover` answers 404. `forge test collect <env>` reaches it with a port-forward (cluster),
    `exec` (compose) or localhost (host). The pod keeps running, and a later
    SIGKILL loses nothing that was already pulled.
 2. **Exit flush.** Go writes the counters to `GOCOVERDIR` when `main`
@@ -323,7 +325,7 @@ delete` run `forge test collect` before teardown, best effort, with a
 ```yaml
 test:e2e:
   cmds:
-    - "{{.FORGE}} test collect {{.ENV}} --reset --run {{.RUN}}" # zero the counters
+    - "{{.FORGE}} test collect {{.ENV}} --reset --run {{.RUN}}" # baseline: count from here
     - "{{.FORGE}} test capture --run {{.RUN}} --lane e2e -- go test -tags=e2e -json -count=1 -timeout=20m ./e2e/..."
     - "{{.FORGE}} test collect {{.ENV}} --run {{.RUN}} --lane e2e" # pull, convert with covdata textfmt
 ```

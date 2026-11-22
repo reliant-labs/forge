@@ -1143,12 +1143,16 @@ func RootConfigFieldNames(messages []ConfigMessage, projectDir string) map[strin
 
 // jwtConfigFields are the root-config-shaped fields the scaffolded
 // internal/app/auth.go's JWT validator reads; brokerConfigFields the ones
-// internal/app/login_broker.go reads.
+// internal/app/login_broker.go cannot work without. Environment is not one of
+// them: a process that loads the broker's settings from its own command
+// config already has its tier on another config, and two configs one
+// process loads may not declare the same field (LoginBrokerTemplateData's
+// NoEnvironmentField).
 var (
 	jwtConfigFields = []string{"JwtSigningMethod", "JwtIssuer", "JwtAudience", "JwtJwksUrl", "JwtSecret",
 		"JwtRolesClaim", "JwtJwksSnapshotFile", "JwtJwksSnapshot", "JwtJwksSnapshotMaxAge"}
 	brokerConfigFields = []string{"IdpBase", "IdpHost", "IdpBrokerToken", "IdpBrokerTokenFile",
-		"OidcClientId", "OidcRedirectUri", "IdpLoginUri", "Environment"}
+		"OidcClientId", "OidcRedirectUri", "IdpLoginUri"}
 )
 
 // configDeclaring names the config of the primary binary a scaffold reading

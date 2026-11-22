@@ -10,7 +10,7 @@
       "description": "CPU quota periods in which the cgroup was throttled.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.cpu.throttled_time",
@@ -19,7 +19,7 @@
       "description": "Time the cgroup was throttled by its CPU quota.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.memory.limit",
@@ -28,7 +28,7 @@
       "description": "The cgroup's memory.max; absent when it is max.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.memory.oom_kills",
@@ -37,7 +37,7 @@
       "description": "Processes the kernel killed for the cgroup's memory limit (memory.events oom_kill).",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.memory.working_set",
@@ -46,7 +46,7 @@
       "description": "The cgroup's memory.current minus inactive_file: the kubelet's working set.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.pids.count",
@@ -55,7 +55,7 @@
       "description": "Tasks in the cgroup (pids.current).",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.pids.limit",
@@ -64,7 +64,7 @@
       "description": "The cgroup's pids.max; absent when it is max.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.pressure.avg10",
@@ -89,7 +89,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.cgroup.pressure.stall_time",
@@ -114,7 +114,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.metrics.rejected_attributes",
@@ -143,7 +143,7 @@
       "description": "Soft RLIMIT_NOFILE of the process.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.process.file_descriptor.utilization",
@@ -152,7 +152,16 @@
       "description": "Open file descriptors over the soft limit.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
+    },
+    {
+      "name": "forge.process.handle.count",
+      "type": "updowncounter",
+      "unit": "{handle}",
+      "description": "Open kernel object handles of the process (windows, which has no file descriptors).",
+      "attributes": [],
+      "stability": "experimental",
+      "since": "v1.10.0"
     },
     {
       "name": "forge.process.memory.go_gap",
@@ -161,7 +170,7 @@
       "description": "Resident set size minus the memory the Go runtime has mapped: what cgo, mmap and fragmentation hold. Negative when the runtime has mapped more than is resident.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.resource.scope",
@@ -178,7 +187,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.server.drain.duration",
@@ -209,7 +218,7 @@
       "description": "File handles allocated on the machine.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.system.file_descriptor.limit",
@@ -218,7 +227,7 @@
       "description": "The machine's file handle limit (fs.file-max).",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.system.process.count",
@@ -227,7 +236,7 @@
       "description": "Processes on the machine.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "forge.system.process.limit",
@@ -236,7 +245,7 @@
       "description": "The lower of the kernel's pid_max and threads-max.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "go.config.gogc",
@@ -515,7 +524,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.cpu.time",
@@ -532,7 +541,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.cpu.utilization",
@@ -541,7 +550,7 @@
       "description": "CPU the process used since the previous sample, in cores (above 1 when more than one core is busy).",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.disk.io",
@@ -558,7 +567,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.memory.usage",
@@ -567,7 +576,7 @@
       "description": "Resident set size of the process.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.memory.virtual",
@@ -576,7 +585,7 @@
       "description": "Virtual memory size of the process.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.paging.faults",
@@ -593,7 +602,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.thread.count",
@@ -602,7 +611,7 @@
       "description": "OS threads of the process.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.unix.file_descriptor.count",
@@ -611,7 +620,7 @@
       "description": "Open file descriptors of the process.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "process.uptime",
@@ -620,7 +629,7 @@
       "description": "Time since the process started.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "queue_depth",
@@ -706,7 +715,7 @@
       "description": "Run-queue load average over 15 minutes.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.cpu.load_average.1m",
@@ -715,7 +724,7 @@
       "description": "Run-queue load average over 1 minute.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.cpu.load_average.5m",
@@ -724,7 +733,7 @@
       "description": "Run-queue load average over 5 minutes.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.cpu.logical.count",
@@ -733,7 +742,7 @@
       "description": "Logical CPUs the process may run on, lowered to the cgroup's CPU quota when one is set.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.cpu.time",
@@ -753,7 +762,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.cpu.utilization",
@@ -773,7 +782,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.filesystem.usage",
@@ -798,7 +807,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.filesystem.utilization",
@@ -816,7 +825,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.linux.memory.available",
@@ -825,7 +834,7 @@
       "description": "The kernel's estimate of memory available to a new workload without swapping (MemAvailable).",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.memory.limit",
@@ -834,7 +843,7 @@
       "description": "Memory the process may use: the cgroup's memory.max when set, otherwise the machine's total.",
       "attributes": [],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.memory.usage",
@@ -852,7 +861,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     },
     {
       "name": "system.paging.usage",
@@ -869,7 +878,7 @@
         }
       ],
       "stability": "experimental",
-      "since": "v1.9.0"
+      "since": "v1.10.0"
     }
   ]
 }

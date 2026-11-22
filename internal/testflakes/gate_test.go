@@ -152,7 +152,7 @@ func gateOpts(t *testing.T, root string, r *fakeRunner, git Git, list ListPackag
 }
 
 func TestGateRunsChangedTestsThreeTimesAndRecordsTheRun(t *testing.T) {
-	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n"})
+	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n\nfunc TestNew(t *testing.T) {}\n"})
 	git := fakeGit(root, "internal/a/a_test.go", map[string]string{"internal/a/a_test.go": "+func TestNew(t *testing.T) {\n"})
 	pkg := testModule + "/internal/a"
 	r := &fakeRunner{script: func([]string) (string, int) {

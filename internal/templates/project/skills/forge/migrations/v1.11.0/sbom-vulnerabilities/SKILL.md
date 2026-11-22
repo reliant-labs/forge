@@ -1,7 +1,7 @@
 ---
-name: migrations/v1.10.0/sbom-vulnerabilities
-description: SBOMs and vulnerability scanning in an existing project (forge v1.10.0). Every release cut now records a CycloneDX SBOM per artifact, keeps it in the release and this machine's ledger (and beside the image as an OCI referrer), and scans it with forge's pinned grype; nothing to opt in to. The scaffolded `.github/workflows/build-images.yml` of an older pin still runs anchore/sbom-action and aquasecurity/trivy-action. It is scaffold-once, so the pin bump does not rewrite it. `forge project upgrade` re-renders it with `forge vuln scan` and a cached grype database while it is unedited (`forge fix build-images-vuln-scan`); an edited one gets the steps to replace by hand. Also covers `vuln_gate` (audit by default; an `enforce` warns on v1.10.0 and gates from v1.11.0), `forge vuln exempt` and `vuln.attach_sbom`. Use when build-images.yml still names anchore/sbom-action or aquasecurity/trivy-action.
-version: v1.10.0
+name: migrations/v1.11.0/sbom-vulnerabilities
+description: SBOMs and vulnerability scanning in an existing project (forge v1.10.0; this playbook and its codemod ship in v1.11.0). Every release cut now records a CycloneDX SBOM per artifact, keeps it in the release and this machine's ledger (and beside the image as an OCI referrer), and scans it with forge's pinned grype; nothing to opt in to. The scaffolded `.github/workflows/build-images.yml` of an older pin still runs anchore/sbom-action and aquasecurity/trivy-action. It is scaffold-once, so the pin bump does not rewrite it. `forge project upgrade` re-renders it with `forge vuln scan` and a cached grype database while it is unedited (`forge fix build-images-vuln-scan`); an edited one gets the steps to replace by hand. Also covers `vuln_gate` (audit by default; an `enforce` gates from v1.11.0), `forge vuln exempt` and `vuln.attach_sbom`. Use when build-images.yml still names anchore/sbom-action or aquasecurity/trivy-action.
+version: v1.11.0
 automation: fix:build-images-vuln-scan
 detection: grep -qsE 'anchore/sbom-action|aquasecurity/trivy-action' .github/workflows/build-images.yml
 ---
@@ -12,6 +12,11 @@ From v1.10.0, forge answers "what is in this release, and what is it known to
 be vulnerable to?" for every project, with no setup. The release cut does the
 work, so most of it reaches an existing project with the pin bump alone. The
 one file that does not change by itself is the image workflow forge scaffolded.
+
+This playbook, and the codemod that rewrites that workflow, ship in v1.11.0:
+v1.10.0 was tagged before them. So it lives under v1.11.0, and a project that
+already moved to v1.10.0 is offered it on its way to v1.11.0, like one still on
+an older pin.
 
 ## What changes by itself
 
@@ -55,7 +60,7 @@ The file is scaffold-once: forge never rewrites it on `forge generate`, so movin
 
 ### An unedited build-images.yml
 
-`forge project upgrade --to v1.10.0` (or later) moves the pin and then runs this
+`forge project upgrade --to v1.11.0` (or later) moves the pin and then runs this
 playbook's automation, `forge fix build-images-vuln-scan`. It re-renders the
 file exactly as `forge generate` would write it for the project today, but only
 when the file is byte for byte what an older forge scaffolded for it. To run it
@@ -87,11 +92,11 @@ or edit yours:
    `Attach SBOM to the image (cosign attest)`.
 2. Replace the `Run Trivy vulnerability scanner` step with the steps forge
    writes. Copy them from a render rather than by hand: in a scratch directory,
-   `forge project new demo --service notes` writes a v1.10.0
+   `forge project new demo --service notes` writes a v1.10.0-or-later
    `.github/workflows/build-images.yml` whose `vuln-scan` job has them, from
    `Name today's vulnerability database cache` to
    `Save the vulnerability database`.
-3. Run `forge project upgrade apply v1.10.0/sbom-vulnerabilities` once the file
+3. Run `forge project upgrade apply v1.11.0/sbom-vulnerabilities` once the file
    no longer names either action (the detection then stops matching anyway).
 
 A repository that runs its own scanner can keep it: nothing in forge depends on
@@ -111,10 +116,13 @@ delivery_policy = forge.DeliveryPolicy {
 
 `enforce` is warn-first. It is graded through the `vuln-gate` lint rollout row
 (and a declared `provenance_sbom = forge.Control {mode = "enforce"}` through
-`sbom-required`): new in v1.10.0, gating from **v1.11.0**. While `forge_version`
-is below v1.11.0 an `enforce` is judged as `audit` and prints
-`would block (new in v1.10.0; gates from v1.11.0)`. `lint.rules: {vuln-gate:
-error}` in forge.yaml gates now; `{vuln-gate: warn}` extends the warning. A
+`sbom-required`): new in v1.10.0, gating from **v1.11.0**. So once this upgrade
+moves `forge_version` to v1.11.0, a declared `enforce` refuses promotions. While
+the pin is below v1.11.0, this forge judges an `enforce` as `audit` and prints
+`would block (new in v1.10.0; gates from v1.11.0)`. The v1.10.0 binary itself
+was cut before that row moved, and already gates it at a v1.10.0 pin.
+`lint.rules: {vuln-gate: error}` in forge.yaml gates now; `{vuln-gate: warn}`
+extends the warning past the bump. A
 release an older forge cut, with no SBOMs, is never refused for lacking one.
 
 Before turning `enforce` on for an env, look at what it would block:

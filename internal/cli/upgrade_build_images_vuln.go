@@ -17,8 +17,8 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// `forge fix build-images-vuln-scan`: the mechanical half of the v1.10.0
-// playbook migrations/v1.10.0/sbom-vulnerabilities.
+// `forge fix build-images-vuln-scan`: the mechanical half of the playbook
+// migrations/v1.11.0/sbom-vulnerabilities.
 //
 // From v1.10.0 every release cut records an SBOM per artifact and forge scans
 // it with its own pinned grype, so the scaffolded build-images.yml renders the
@@ -48,6 +48,17 @@ const buildImagesWorkflowPath = ".github/workflows/build-images.yml"
 // buildImagesVulnRelease is the first release whose build-images.yml runs
 // `forge vuln scan`: the version the template's ForgeAtLeast guard names.
 const buildImagesVulnRelease = "v1.10.0"
+
+// sbomPlaybookRelease is the release the playbook and this codemod ship in.
+// v1.10.0 was tagged before both, so the playbook is keyed to v1.11.0: a
+// playbook is offered only to a pin below its release, and keyed to v1.10.0 it
+// would skip every project that already moved there with the old workflow.
+// It is not buildImagesVulnRelease, the first forge with `forge vuln`.
+const sbomPlaybookRelease = "v1.11.0"
+
+// sbomPlaybookID is the playbook's ID, as `forge project upgrade list` prints
+// it and `upgrade apply` takes it.
+const sbomPlaybookID = sbomPlaybookRelease + "/sbom-vulnerabilities"
 
 // preVulnBuildImagesPin is a pin below buildImagesVulnRelease: rendering the
 // current template with it yields the form an older pin gets.
@@ -82,11 +93,11 @@ grype vulnerability database, ` + "`forge vuln db pull`" + ` and ` + "`forge vul
 It rewrites the file only while it is still forge's: byte for byte what an
 older forge scaffolded for this project. A file you edited is left alone, and
 the run lists what to replace by hand. forge.yaml must already pin v1.10.0 or
-later, since CI runs the forge it pins; ` + "`forge project upgrade --to v1.10.0`" + `
+later, since CI runs the forge it pins; ` + "`forge project upgrade --to " + sbomPlaybookRelease + "`" + `
 moves the pin and then runs this. Re-running it changes nothing.
 
 The rest of the story (vuln_gate, forge vuln exempt, vuln.attach_sbom) is the
-migration skill: ` + "`forge skill load migrations/v1.10.0/sbom-vulnerabilities`" + `.`,
+migration skill: ` + "`forge skill load migrations/" + sbomPlaybookID + "`" + `.`,
 		Run: runBuildImagesVulnScan,
 	})
 }
@@ -112,7 +123,7 @@ func runBuildImagesVulnScan(dir string, opts codemod.Options) (codemod.Report, e
 		return rep, nil
 	}
 	handEdit := func(why string) codemod.Report {
-		rep.Next = append(rep.Next, rel+" "+why+", so it was left alone. Replace its pre-v1.10.0 steps by hand (migrations/v1.10.0/sbom-vulnerabilities, \"An edited build-images.yml\"):",
+		rep.Next = append(rep.Next, rel+" "+why+", so it was left alone. Replace its pre-v1.10.0 steps by hand (migrations/"+sbomPlaybookID+", \"An edited build-images.yml\"):",
 			"delete the `Generate SBOM (SPDX JSON)`, `Upload SBOM artifact` and `Attach SBOM to the image (cosign attest)` steps (anchore/sbom-action): every release cut now records an SBOM per artifact",
 			"replace the `Run Trivy vulnerability scanner` step (aquasecurity/trivy-action) with the steps forge writes: restore the grype database cache, `forge vuln db pull`, `forge vuln scan --image \"$IMAGE_REF\"`, save the cache",
 			fmt.Sprintf("or take forge's whole file over yours: `%s project upgrade --check` shows the diff, `%s project upgrade --force %s` writes it", Name(), Name(), rel))
@@ -126,7 +137,7 @@ func runBuildImagesVulnScan(dir string, opts codemod.Options) (codemod.Report, e
 	}
 	if !(templates.BuildImagesWorkflowData{ForgeVersion: cfg.ForgeVersion}).ForgeAtLeast(buildImagesVulnRelease) {
 		rep.Next = append(rep.Next, fmt.Sprintf("forge.yaml pins forge %q, which has no `forge vuln` (it ships in %s) and is what CI installs: `%s project upgrade --to %s` (or later) moves the pin and then runs this",
-			cfg.ForgeVersion, buildImagesVulnRelease, Name(), buildImagesVulnRelease))
+			cfg.ForgeVersion, buildImagesVulnRelease, Name(), sbomPlaybookRelease))
 		return rep, nil
 	}
 	if unrendered := buildImagesUnrendered(dir); len(unrendered) > 0 {

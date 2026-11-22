@@ -15,9 +15,7 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-const sbomPlaybookID = "v1.10.0/sbom-vulnerabilities"
-
-// shippedSBOMPlaybook is the v1.10.0 SBOM playbook as the binary ships it.
+// shippedSBOMPlaybook is the SBOM playbook as the binary ships it.
 func shippedSBOMPlaybook(t *testing.T) migrationMeta {
 	t.Helper()
 	metas, err := loadMigrationMetas()
@@ -37,9 +35,9 @@ func shippedSBOMPlaybook(t *testing.T) migrationMeta {
 // listed as one: its own ID, the release as its version, its codemod as its
 // automation. A sub-skill without a detection (a section of its release's
 // playbook) is not.
-func TestV1100SBOMPlaybook_IsListedWithItsAutomation(t *testing.T) {
+func TestV1110SBOMPlaybook_IsListedWithItsAutomation(t *testing.T) {
 	m := shippedSBOMPlaybook(t)
-	if m.Version != "v1.10.0" || m.SkillPath != "migrations/"+sbomPlaybookID {
+	if m.Version != "v1.11.0" || m.SkillPath != "migrations/"+sbomPlaybookID {
 		t.Errorf("meta = %+v", m)
 	}
 	if len(m.Automation) != 1 || m.Automation[0] != "fix:build-images-vuln-scan" {
@@ -55,7 +53,7 @@ func TestV1100SBOMPlaybook_IsListedWithItsAutomation(t *testing.T) {
 
 // The shipped detection matches a build-images.yml that still runs either
 // action, and nothing else.
-func TestV1100SBOMPlaybook_Detection(t *testing.T) {
+func TestV1110SBOMPlaybook_Detection(t *testing.T) {
 	m := shippedSBOMPlaybook(t)
 	for name, tc := range map[string]struct {
 		body     string // build-images.yml; "" writes none
@@ -66,7 +64,8 @@ func TestV1100SBOMPlaybook_Detection(t *testing.T) {
 		"the anchore SBOM action":    {"      - uses: anchore/sbom-action@v0\n", "v1.9.0", true},
 		"the Trivy action":           {"        uses: aquasecurity/trivy-action@v0.35.0\n", "v1.9.0", true},
 		"forge vuln scan":            {"        run: forge vuln scan --image \"$IMAGE_REF\"\n", "v1.9.0", false},
-		"already at v1.10.0":         {"        uses: aquasecurity/trivy-action@v0.35.0\n", "v1.10.0", false},
+		"at v1.10.0, the old file":   {"        uses: aquasecurity/trivy-action@v0.35.0\n", "v1.10.0", true},
+		"already at v1.11.0":         {"        uses: aquasecurity/trivy-action@v0.35.0\n", "v1.11.0", false},
 		"an unknown baseline (none)": {"        uses: aquasecurity/trivy-action@v0.35.0\n", "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -81,24 +80,64 @@ func TestV1100SBOMPlaybook_Detection(t *testing.T) {
 	}
 }
 
-// `forge project upgrade list` offers the playbook to a v1.9.0 project whose
-// build-images.yml still runs Trivy.
-func TestV1100SBOMPlaybook_UpgradeListSurfacesIt(t *testing.T) {
-	dir := newTestProjectWithVersion(t, "v1.9.0")
-	writeBuildImages(t, dir, []byte("        uses: aquasecurity/trivy-action@v0.35.0\n"))
-	var pending []pendingMigration
-	var err error
-	withCwd(t, dir, func() { pending, err = computePendingMigrations() })
+// `forge project upgrade list` offers the playbook to a project whose
+// build-images.yml still runs Trivy: one on v1.9.0, and one that already
+// moved to v1.10.0, which was tagged before the playbook and its codemod.
+func TestV1110SBOMPlaybook_UpgradeListSurfacesIt(t *testing.T) {
+	for _, pin := range []string{"v1.9.0", "v1.10.0"} {
+		t.Run(pin, func(t *testing.T) {
+			dir := newTestProjectWithVersion(t, pin)
+			writeBuildImages(t, dir, []byte("        uses: aquasecurity/trivy-action@v0.35.0\n"))
+			var pending []pendingMigration
+			var err error
+			withCwd(t, dir, func() { pending, err = computePendingMigrations() })
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := writePendingMigrationsHuman(&out, pending, len(pending)); err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{sbomPlaybookID, "skill load migrations/" + sbomPlaybookID, "upgrade apply " + sbomPlaybookID} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("upgrade list does not show %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+// `forge project upgrade --to v1.11.0` from a v1.10.0 pin crosses both
+// playbooks v1.10.0 was tagged without, and each applies where the project
+// still has the old shape. An upgrade from v1.10.0 to v1.10.0 crosses neither.
+func TestV1110Playbooks_OfferedToAV1100Project(t *testing.T) {
+	metas, err := loadMigrationMetas()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if err := writePendingMigrationsHuman(&out, pending, len(pending)); err != nil {
-		t.Fatal(err)
+	ids := []string{sbomPlaybookID, "v1.11.0/pgo-default-on"}
+	state := migrationsState{Applied: map[string]string{}}
+	always := func(string) bool { return true }
+	evals := evaluatePlaybookMetas(metas, "v1.10.0", "v1.11.0", state, always)
+	for _, id := range ids {
+		var found bool
+		for _, ev := range evals {
+			if ev.Meta.ID == id {
+				found = true
+				if !ev.applies {
+					t.Errorf("%s does not apply from v1.10.0 to v1.11.0: %s", id, ev.reason)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s is not evaluated from v1.10.0 to v1.11.0: %+v", id, evals)
+		}
 	}
-	for _, want := range []string{sbomPlaybookID, "skill load migrations/" + sbomPlaybookID, "upgrade apply " + sbomPlaybookID} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("upgrade list does not show %q:\n%s", want, out.String())
+	for _, ev := range evaluatePlaybookMetas(metas, "v1.11.0", "v1.11.0", state, always) {
+		for _, id := range ids {
+			if ev.Meta.ID == id {
+				t.Errorf("%s is evaluated for a project already at v1.11.0", id)
+			}
 		}
 	}
 }
@@ -256,7 +295,7 @@ func TestBuildImagesVulnScan_LeavesAnEditedFileOrAnOldPinAlone(t *testing.T) {
 		if rep.Changed() || !bytes.Equal(readBuildImages(t, dir), old) {
 			t.Fatalf("rewritten at a v1.9.0 pin, whose CI forge has no forge vuln: %+v", rep)
 		}
-		if next := strings.Join(rep.Next, "\n"); !strings.Contains(next, "upgrade --to v1.10.0") {
+		if next := strings.Join(rep.Next, "\n"); !strings.Contains(next, "upgrade --to "+sbomPlaybookRelease) {
 			t.Errorf("next steps do not say to move the pin:\n%s", next)
 		}
 	})
@@ -281,24 +320,25 @@ func convergeBuildImagesFixture(t *testing.T) (dir string, want []byte) {
 	return dir, want
 }
 
-// `forge project upgrade --to v1.10.0` moves the pin and then runs the
+// `forge project upgrade --to v1.11.0` moves the pin and then runs the
 // playbook's automation, which re-renders the unedited workflow; the playbook
 // then no longer applies.
-func TestUpgradeConverge_V1100MovesAnUneditedBuildImagesToForgeVulnScan(t *testing.T) {
+func TestUpgradeConverge_V1110MovesAnUneditedBuildImagesToForgeVulnScan(t *testing.T) {
 	testkit.Slow(t, "runs the whole upgrade converge")
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fake npm")
 	}
-	dir, want := convergeBuildImagesFixture(t)
+	dir, _ := convergeBuildImagesFixture(t)
+	_, _, want := buildImagesRow(t, dir, sbomPlaybookRelease)
 	fakeUpgradeNPM(t)
 	rec := &recordedSteps{}
-	rep, err := runConverge(t, dir, upgradeOptions{to: "v1.10.0", goRun: noGo, steps: rec.steps(),
+	rep, err := runConverge(t, dir, upgradeOptions{to: sbomPlaybookRelease, goRun: noGo, steps: rec.steps(),
 		metas: []migrationMeta{shippedSBOMPlaybook(t)}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := readBuildImages(t, dir); !bytes.Equal(got, want) {
-		t.Fatalf("build-images.yml is not forge's v1.10.0 render after the upgrade:\n%s", got)
+		t.Fatalf("build-images.yml is not forge's %s render after the upgrade:\n%s", sbomPlaybookRelease, got)
 	}
 	var found bool
 	for _, p := range rep.Playbooks {

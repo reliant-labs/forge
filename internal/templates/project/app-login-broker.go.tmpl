@@ -100,9 +100,11 @@ const SecureSessionCookieName = SessionCookieName
 // list` names the playbook), then point this constant at it.
 const SessionCookieName = "{{.Name}}_session"
 
-// SecureSessionCookieName: see the note above; there is no prefixed name to
-// read until pkg/middleware reads the cookie at all.
-const SecureSessionCookieName = SessionCookieName
+// SecureSessionCookieName is the name the cookie has when it is Secure: the
+// __Host- prefix keeps a sibling site from planting or overwriting it. It is
+// the pair pkg/middleware declares in every current scaffold; read both
+// there, secure name first.
+const SecureSessionCookieName = "__Host-" + SessionCookieName
 {{- end}}
 
 // sessionCookie is the session cookie's name as this deployment sets it:

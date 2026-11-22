@@ -11,12 +11,13 @@ package generator
 // only './telemetry' imports them, and the app that imports it supplies them.
 //
 // So forge declares them in every frontend whose sources import
-// './telemetry': each web scaffold renders them into package.json, and
-// `forge generate` adds them to an existing frontend (scaffolded or adopted)
-// on the run that raises its runtime floor to 0.14, before any install can
-// resolve a runtime without them. Declaring them against an older runtime is
-// harmless: it carries the same exact versions as dependencies, which npm and
-// pnpm dedupe onto the app's copy.
+// './telemetry' AND whose runtime is one that takes them as peers: each web
+// scaffold renders them into package.json, and `forge generate` adds them to
+// an existing frontend (scaffolded or adopted) on the run that raises its
+// runtime floor to 0.14, before any install can resolve a runtime without
+// them. A frontend whose manifest holds its runtime below 0.14 (a disowned
+// manifest, a hand-pinned range) is left alone: that runtime brings its own
+// copies, and a project's chosen version there is not forge's to rewrite.
 
 import (
 	"bytes"
@@ -32,6 +33,7 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
+	"golang.org/x/mod/semver"
 )
 
 // webRuntimeTelemetryEntry is the runtime subpath that imports the SDK.
@@ -121,6 +123,61 @@ func declaredDependencies(text string) map[string]string {
 	return doc.Dependencies
 }
 
+// telemetryPeersSince is the first runtime release that takes the telemetry
+// SDK as optional peers instead of carrying it as dependencies.
+const telemetryPeersSince = "v0.14.0"
+
+// runtimeTakesTelemetryPeers reports whether the runtime the manifest at
+// feDir declares is one that takes the telemetry SDK as peers, so the app
+// must supply it:
+//
+//   - a version range whose floor is 0.14.0 or later: every release it
+//     admits declares the peers;
+//   - a `file:` bridge (a dev forge's local runtime) whose package.json
+//     declares any of them under peerDependencies.
+//
+// Anything else is no: a floor below 0.14 (the older runtime carries the
+// packages itself), no runtime entry, or a specifier this cannot read (a git
+// URL, an npm alias). The manifest is then left as the project wrote it.
+func runtimeTakesTelemetryPeers(feDir, text string) bool {
+	var doc struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal([]byte(text), &doc); err != nil {
+		return false
+	}
+	spec, ok := doc.Dependencies[WebRuntimePackage]
+	if !ok {
+		if spec, ok = doc.DevDependencies[WebRuntimePackage]; !ok {
+			return false
+		}
+	}
+	if path, ok := strings.CutPrefix(spec, "file:"); ok {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(feDir, path)
+		}
+		b, err := os.ReadFile(filepath.Join(path, "package.json"))
+		if err != nil {
+			return false
+		}
+		var runtime struct {
+			PeerDependencies map[string]string `json:"peerDependencies"`
+		}
+		if json.Unmarshal(b, &runtime) != nil {
+			return false
+		}
+		for _, name := range telemetryPeers {
+			if _, ok := runtime.PeerDependencies[name]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	floor, ok := minimumVersion(spec)
+	return ok && semver.Compare(floor, telemetryPeersSince) >= 0
+}
+
 // dependencyValueRe matches name's entry in a manifest, capturing the quoted
 // value. Like webRuntimeDepRe, a package name is unique enough in a
 // package.json that the first match is the entry.
@@ -137,7 +194,8 @@ func dependencyValueRe(name string) *regexp.Regexp {
 //
 // A frontend that never imports './telemetry' (Expo, an adopted app without
 // telemetry) is left alone: the point of the peers being optional is that it
-// installs none of them.
+// installs none of them. So is one whose runtime is older than 0.14
+// (runtimeTakesTelemetryPeers): that runtime still carries the packages.
 func EnsureTelemetryDependencies(projectDir, feRelDir string) bool {
 	feDir := filepath.Join(projectDir, feRelDir)
 	pkgPath := filepath.Join(feDir, "package.json")
@@ -151,6 +209,9 @@ func EnsureTelemetryDependencies(projectDir, feRelDir string) bool {
 		return false
 	}
 	text := string(original)
+	if !runtimeTakesTelemetryPeers(feDir, text) {
+		return false
+	}
 	declared := declaredDependencies(text)
 	specs := telemetryPeerSpecs()
 	names := make([]string, 0, len(specs))
@@ -198,7 +259,7 @@ func EnsureTelemetryDependencies(projectDir, feRelDir string) bool {
 // counterpart for a disowned manifest: one line per peer it would declare or
 // change.
 func telemetryDependencyNotices(feDir, text string) []string {
-	if !frontendImportsTelemetry(feDir) {
+	if !frontendImportsTelemetry(feDir) || !runtimeTakesTelemetryPeers(feDir, text) {
 		return nil
 	}
 	declared := declaredDependencies(text)

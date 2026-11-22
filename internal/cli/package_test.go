@@ -498,3 +498,134 @@ module_path: example.com/testproject
 	}
 	assertSeam("events")
 }
+
+func TestSplitPackagePath(t *testing.T) {
+	tests := []struct {
+		name       string
+		wantPath   string
+		wantLeaf   string
+		wantErrSub string
+	}{
+		{name: "cache", wantPath: "cache", wantLeaf: "cache"},
+		{name: "credentials/vault", wantPath: "credentials/vault", wantLeaf: "vault"},
+		{name: "a/b_2/c3", wantPath: "a/b_2/c3", wantLeaf: "c3"},
+		{name: "Credentials/vault", wantErrSub: `"Credentials" is not`},
+		{name: "credentials/My-Vault", wantErrSub: `"My-Vault" is not`},
+		{name: "credentials//vault", wantErrSub: "is not"},
+		{name: "/vault", wantErrSub: "is not"},
+		{name: "vault/", wantErrSub: "is not"},
+		{name: "../vault", wantErrSub: "is not"},
+		{name: "credentials/2vault", wantErrSub: "is not"},
+		{name: "my-cache", wantErrSub: "must be lowercase"},
+		{name: "credentials/func", wantErrSub: "Go keyword"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, leaf, err := splitPackagePath(tt.name)
+			if tt.wantErrSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Fatalf("splitPackagePath(%q) error = %v, want one containing %q", tt.name, err, tt.wantErrSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("splitPackagePath(%q): %v", tt.name, err)
+			}
+			if path != tt.wantPath || leaf != tt.wantLeaf {
+				t.Errorf("splitPackagePath(%q) = (%q, %q), want (%q, %q)", tt.name, path, leaf, tt.wantPath, tt.wantLeaf)
+			}
+		})
+	}
+}
+
+// A nested name scaffolds internal/<a>/<b>, names the Go package after the last
+// segment, and imports/scopes by the full path — never a flat internal/<b>.
+func TestRunPackageNewNested(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("forge.yaml", []byte("name: testproject\nmodule_path: example.com/testproject\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markServiceProject(t, dir)
+
+	cmd := newTestPackageNewCmd("")
+	if err := cmd.RunE(cmd, []string{"credentials/vault"}); err != nil {
+		t.Fatalf("runPackageNew(credentials/vault): %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join("internal", "vault")); err == nil {
+		t.Errorf("a nested package name also created the flat internal/vault")
+	}
+	pkgDir := filepath.Join("internal", "credentials", "vault")
+	read := func(file string) string {
+		t.Helper()
+		b, err := os.ReadFile(filepath.Join(pkgDir, file))
+		if err != nil {
+			t.Fatalf("%s not written under %s: %v", file, pkgDir, err)
+		}
+		return string(b)
+	}
+	for _, file := range []string{"service.go", "deps.go", "contract_gen.go", "mock_gen.go", "observe_chain.go"} {
+		if !strings.Contains(read(file), "package vault\n") {
+			t.Errorf("%s does not declare `package vault`", file)
+		}
+	}
+	if got := read("observe_chain.go"); !strings.Contains(got, `scope := "example.com/testproject/internal/credentials/vault"`) {
+		t.Errorf("observe_chain.go scope is not the full import path, got:\n%s", got)
+	}
+	assertDiscoveredPackages(t, dir, map[string]string{"credentials/vault": codegen.InternalPackageService})
+}
+
+func TestRunPackageNewNestedDryRun(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("forge.yaml", []byte("name: testproject\nmodule_path: example.com/testproject\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markServiceProject(t, dir)
+
+	cmd := newTestPackageNewCmd("")
+	cmd.Flags().Bool("dry-run", false, "")
+	_ = cmd.Flags().Set("dry-run", "true")
+	out := captureStdout(t, func() {
+		if err := cmd.RunE(cmd, []string{"credentials/vault"}); err != nil {
+			t.Fatalf("runPackageNew(--dry-run credentials/vault): %v", err)
+		}
+	})
+	if !strings.Contains(out, "internal/credentials/vault/service.go") {
+		t.Errorf("dry-run plan does not list internal/credentials/vault/service.go, got:\n%s", out)
+	}
+	if _, err := os.Stat("internal"); err == nil {
+		t.Errorf("--dry-run wrote internal/")
+	}
+}
+
+func TestRunPackageNewNestedRejectsDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("forge.yaml", []byte("name: testproject\nmodule_path: example.com/testproject\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markServiceProject(t, dir)
+
+	cmd := newTestPackageNewCmd("")
+	if err := cmd.RunE(cmd, []string{"credentials/vault"}); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.RunE(cmd, []string{"credentials/vault"})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second scaffold of credentials/vault error = %v, want already exists", err)
+	}
+}

@@ -73,7 +73,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator/contract"
@@ -124,35 +123,50 @@ func extStoreNamesFor(name string) extStoreNames {
 
 // extSeams lists the seams of entities, then every other <stem>_repo_ext.go
 // in dbDir (sorted, so the output does not depend on directory order), with
-// a note for each of those it cannot name.
+// a note for each of those it cannot name. Only seams whose file dbDir lists
+// under exactly that name count: a case-insensitive file system (Windows,
+// macOS) would find Task_repo_ext.go at task_repo_ext.go, and the output must
+// not depend on the host's file system.
 func extSeams(dbDir string, entities []config.PlanEntity) ([]extSeam, []string) {
+	entries, err := os.ReadDir(dbDir)
+	if err != nil {
+		return nil, nil
+	}
+	present := map[string]bool{} // the files dbDir holds, exactly as named
+	for _, e := range entries {
+		if !e.IsDir() {
+			present[e.Name()] = true
+		}
+	}
 	seams := make([]extSeam, 0, len(entities))
 	claimed := map[string]bool{}       // stems the entities' seams own
 	entityNames := map[string]string{} // entity name → its seam's file
 	for _, ent := range entities {
 		s := entitySeam(ent)
-		seams = append(seams, s)
+		if present[s.file()] {
+			seams = append(seams, s)
+		}
 		claimed[s.stem] = true
 		entityNames[ent.Name] = s.file()
 	}
-	entries, err := os.ReadDir(dbDir)
-	if err != nil {
-		return seams, nil
-	}
 	var stems []string
-	for _, e := range entries {
-		file := e.Name()
+	var notes []string
+	for file := range present {
 		stem, ok := strings.CutSuffix(file, repoExtSuffix)
-		if e.IsDir() || !ok || stem == "" || claimed[stem] {
+		if !ok || claimed[stem] {
+			continue
+		}
+		if strings.HasPrefix(file, "_") || strings.HasPrefix(file, ".") {
+			notes = append(notes, fmt.Sprintf("%s: Go ignores a file whose name begins with %q, so its queries get no ext store — rename the file", file, file[:1]))
 			continue
 		}
 		stems = append(stems, stem)
 	}
+	sort.Strings(notes)
 	sort.Strings(stems)
-	var notes []string
 	for _, stem := range stems {
 		s := extSeam{name: naming.GoCamelCase(stem), stem: stem}
-		if !token.IsIdentifier(s.name) || !unicode.IsUpper([]rune(s.name)[0]) {
+		if !token.IsIdentifier(s.name) || !token.IsExported(s.name) {
 			notes = append(notes, fmt.Sprintf("%s: %q is not an exported Go name, so its queries get no ext store — rename the file", s.file(), s.name))
 			continue
 		}
@@ -178,10 +192,12 @@ func (n extStoreNames) declared() []string {
 // must not redeclare.
 func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity, outputs []ormOutput) ([]ormOutput, []string) {
 	generated := map[string]string{} // name → the ORM file declaring it
+	files := map[string]string{}     // lower-cased file name → the ORM file
 	for _, out := range outputs {
 		for _, name := range declaredNames(out.src) {
 			generated[name] = out.file
 		}
+		files[strings.ToLower(out.file)] = out.file
 	}
 	seams, seamNotes := extSeams(dbDir, entities)
 	var project map[string]string // name → "internal/db/x.go:12", read once, lazily
@@ -191,9 +207,6 @@ func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity
 	for _, seam := range seams {
 		extFile := seam.file()
 		path := filepath.Join(dbDir, extFile)
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
 		rel := relDir + "/" + extFile
 		names := extStoreNamesFor(seam.name)
 		set, err := collector.Collect(path)
@@ -222,7 +235,14 @@ func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity
 			notes = append(notes, fmt.Sprintf("%s: no %s for %s's queries — %s", rel, names.iface, seam.name, clash))
 			continue
 		}
+		// Two stems that differ only in case (abc, abC) name two stores, but
+		// their files are one file on a case-insensitive file system.
+		if other, ok := files[strings.ToLower(seam.storeFile())]; ok {
+			notes = append(notes, fmt.Sprintf("%s: no %s for %s's queries — its file %s/%s differs from forge's %s/%s only in case, which Windows and macOS hold as one file; rename the seam", rel, names.iface, seam.name, relDir, seam.storeFile(), relDir, other))
+			continue
+		}
 		out := ormOutput{file: seam.storeFile(), entity: seam.name, src: renderExtStoreFile(pkgName, seam, set)}
+		files[strings.ToLower(out.file)] = out.file
 		// A later seam must not redeclare these either: two stems no entity
 		// owns can camel-case to one name.
 		for _, name := range names.declared() {

@@ -12,6 +12,8 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"go/build"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,12 +86,12 @@ func ciEnvIsHosted(entities *KCLEntities) bool {
 // ciEnvBuildsPGOBinary reports whether `forge pgo pull --env <env>` has a
 // Go binary to write a profile for: ResolvePGOBinaries — the very list pull
 // resolves — holds one with PGO on whose main package is real. A
-// project-relative package (./cmd/<bin>) must be a directory of this
-// checkout, because an image built from the project Dockerfile reads as
-// running ./cmd/<project> whether or not the image is Go (an adopted app).
-// Its presence is the test, not a main.go in it: `forge project new` writes
-// cmd/<bin>/main.go last, after the CI files. A package outside the checkout (a ShellBuild's sibling,
-// an import path) is one the env's pgo names on purpose, so it counts.
+// project-relative package (./cmd/<bin>) must be a Go main package of this
+// checkout (localGoMainPackage): an image built from the project Dockerfile
+// reads as running ./cmd/<project> whether or not the image is Go (an
+// adopted app), and a directory with no Go source in it builds no binary to
+// profile. A package outside the checkout (a ShellBuild's sibling, an import
+// path) is one the env's pgo names on purpose, so it counts.
 func ciEnvBuildsPGOBinary(projectDir string, entities *KCLEntities) bool {
 	bins, err := ResolvePGOBinaries(entities)
 	if err != nil {
@@ -103,11 +105,34 @@ func ciEnvBuildsPGOBinary(projectDir string, entities *KCLEntities) bool {
 		if !local {
 			return true
 		}
-		if fi, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(rel))); err == nil && fi.IsDir() {
+		if localGoMainPackage(filepath.Join(projectDir, filepath.FromSlash(rel))) {
 			return true
 		}
 	}
 	return false
+}
+
+// localGoMainPackage reports whether dir may hold a Go main package, by Go's
+// own package resolution (go/build, the rules `go build` applies). Only
+// proven absence answers false: no directory, a directory with no .go file
+// at all, or a package whose files all declare a name other than main. A
+// directory whose Go files the default build context excludes (a
+// //go:build constraint for another platform) or does not parse still
+// counts, since the build that runs pull may well compile it.
+func localGoMainPackage(dir string) bool {
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+	pkg, err := build.ImportDir(dir, 0)
+	var noGo *build.NoGoError
+	switch {
+	case errors.As(err, &noGo):
+		return pkg != nil && len(pkg.IgnoredGoFiles) > 0
+	case err != nil:
+		return true
+	}
+	return pkg.Name == "main"
 }
 
 var (

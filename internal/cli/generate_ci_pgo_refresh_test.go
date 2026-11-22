@@ -5,6 +5,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -256,6 +257,27 @@ func TestCIEnvBuildsPGOBinary(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "cmd", "shop", "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Directories that exist but build no Go binary (forge#2686 B1), and one
+	// whose main package another platform compiles.
+	for rel, files := range map[string]map[string]string{
+		"cmd/empty":   {},
+		"cmd/assets":  {"README.md": "not Go\n", "index.js": "console.log(1)\n"},
+		"cmd/lib":     {"lib.go": "package lib\n"},
+		"cmd/winonly": {"main.go": "//go:build " + otherGOOS() + "\n\npackage main\n"},
+	} {
+		dir := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for f, body := range files {
+			if err := os.WriteFile(filepath.Join(dir, f), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	goBin := func(pkg string) *KCLEntities {
+		return &KCLEntities{Project: "shop", Env: "prod", Workloads: []WorkloadEntity{clusterWL("api", "x", "ns", pgoGo(pkg, nil))}}
+	}
 	for name, tc := range map[string]struct {
 		e    *KCLEntities
 		want bool
@@ -267,6 +289,10 @@ func TestCIEnvBuildsPGOBinary(t *testing.T) {
 		"a package not in this checkout":                         {&KCLEntities{Project: "shop", Env: "prod", Workloads: []WorkloadEntity{clusterWL("api", "x", "ns", pgoGo("./cmd/gone", nil))}}, false},
 		"a sibling checkout's binary":                            {&KCLEntities{Project: "shop", Env: "prod", Workloads: []WorkloadEntity{clusterWL("api", "x", "ns", pgoGo("../other/cmd/x", nil))}}, true},
 		"an adopted non-Go image (./cmd/<project> is not there)": {&KCLEntities{Project: "nodeapp", Env: "prod", Workloads: []WorkloadEntity{clusterWL("api", "x", "ns", pgoDocker(DockerBuild{}))}}, false},
+		"an empty directory":                                     {goBin("./cmd/empty"), false},
+		"a directory with no Go source":                          {goBin("./cmd/assets"), false},
+		"a Go package that is not main":                          {goBin("./cmd/lib"), false},
+		"a main package another platform builds":                 {goBin("./cmd/winonly"), true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := ciEnvBuildsPGOBinary(root, tc.e); got != tc.want {
@@ -274,4 +300,13 @@ func TestCIEnvBuildsPGOBinary(t *testing.T) {
 			}
 		})
 	}
+}
+
+// otherGOOS is a GOOS the host is not, for a file the default build context
+// excludes by its //go:build constraint.
+func otherGOOS() string {
+	if runtime.GOOS == "windows" {
+		return "linux"
+	}
+	return "windows"
 }

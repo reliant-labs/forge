@@ -60,6 +60,13 @@ anything, counting the tables that run births.
 
 - One table: `COMMENT ON TABLE t IS 'forge:no-entity'` in a migration. No
   store, and no CRUD wiring over it either (a CRUD-named rpc over it is custom).
+  Its queries still get an interface: write them in a `<name>_repo_ext.go` of
+  your own in the ORM package (forge scaffolds none for it), and every
+  `<stem>_repo_ext.go` no entity's seam claims gets a
+  `<GoCamelCase(stem)>ExtStore` in `<stem>_ext_store_gen.go`
+  (`trigger_delivery_repo_ext.go` → `TriggerDeliveryExtStore`), shaped like an
+  entity's (the name an entity of that stem would get, so it survives the
+  table becoming one). One file may span several no-entity tables.
 - Tables a forge library owns are off by default: `audit_log`
   (forge/pkg/audit), `activity_events` (forge/pkg/activity), `alert_instances`
   and `alert_events` (forge/pkg/alerting/pgstore). The library's own store is

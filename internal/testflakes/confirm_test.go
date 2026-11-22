@@ -3,6 +3,7 @@ package testflakes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,13 +52,17 @@ func TestLogDirAttributionAndBlocks(t *testing.T) {
 	if got != want {
 		t.Errorf("failing =\n%s\nwant\n%s", got, want)
 	}
-	if b := rl.block("TestRacy"); !testreport.IsRace(b) {
+	_, out := rl.failures(testModule)
+	block := func(pkg, name string) string {
+		return out[testreport.TestID{Lang: testreport.LangGo, Package: testModule + "/internal/" + pkg, Name: name}]
+	}
+	if b := block("b", "TestRacy"); !testreport.IsRace(b) {
 		t.Errorf("the race report precedes --- FAIL and must be in the block:\n%s", b)
 	}
-	if b := rl.block("TestFlaky"); !strings.Contains(b, "got 1, want 2") {
+	if b := block("a", "TestFlaky"); !strings.Contains(b, "got 1, want 2") {
 		t.Errorf("block = %q", b)
 	}
-	if b := rl.block("TestStream"); !strings.Contains(b, "stream_test.go:9: boom") {
+	if b := block("e", "TestStream"); !strings.Contains(b, "stream_test.go:9: boom") {
 		t.Errorf("json block = %q", b)
 	}
 }
@@ -307,5 +312,130 @@ func TestConfirmNeverFails(t *testing.T) {
 	f.opts.RunID, f.opts.From = "", filepath.Join(t.TempDir(), "missing.json")
 	if doc := RunConfirm(context.Background(), f.opts); doc.ExitCode != 0 {
 		t.Errorf("%+v", doc)
+	}
+}
+
+// Two packages each have a TestNew. Package b's reported a data race;
+// package a's failed plainly and passes its retry. Their output is kept
+// apart, so b's race neither makes a's a race nor goes unseen.
+func TestConfirmKeysFailuresByPackage(t *testing.T) {
+	logs := t.TempDir()
+	write(t, filepath.Join(logs, "unit.log"), strings.Join([]string{
+		"=== RUN   TestNew",
+		"    a_test.go:5: got 1, want 2",
+		"--- FAIL: TestNew (0.01s)",
+		"FAIL",
+		"FAIL\texample.com/m/internal/a\t0.1s",
+		"=== RUN   TestNew",
+		"==================",
+		"WARNING: DATA RACE",
+		"Write at 0x00c000123456 by goroutine 7:",
+		"==================",
+		"    testing.go:1490: race detected during execution of test",
+		"--- FAIL: TestNew (0.02s)",
+		"FAIL",
+		"FAIL\texample.com/m/internal/b\t0.2s",
+		"",
+	}, "\n"))
+	// The JSON form of the same name in two packages.
+	write(t, filepath.Join(logs, "stream.json"),
+		failRun(testModule+"/internal/c", "TestJSON", "WARNING: DATA RACE\n")+
+			failRun(testModule+"/internal/d", "TestJSON", "plain\n"))
+
+	rl := readRunLogs(nil, logs)
+	_, out := rl.failures(testModule)
+	key := func(pkg, name string) testreport.TestID {
+		return testreport.TestID{Lang: testreport.LangGo, Package: testModule + "/internal/" + pkg, Name: name}
+	}
+	if b := out[key("a", "TestNew")]; testreport.IsRace(b) || !strings.Contains(b, "got 1, want 2") {
+		t.Errorf("a's TestNew output = %q", b)
+	}
+	if b := out[key("b", "TestNew")]; !testreport.IsRace(b) || strings.Contains(b, "got 1, want 2") {
+		t.Errorf("b's TestNew output = %q", b)
+	}
+	if testreport.IsRace(out[key("d", "TestJSON")]) || !testreport.IsRace(out[key("c", "TestJSON")]) {
+		t.Errorf("json outputs: c=%q d=%q", out[key("c", "TestJSON")], out[key("d", "TestJSON")])
+	}
+
+	r := &fakeRunner{script: func(argv []string) (string, int) {
+		pkg := testModule + "/" + strings.TrimPrefix(argv[len(argv)-1], "./")
+		var b strings.Builder
+		for _, n := range strings.Split(strings.Trim(argAfter(argv, "-run"), "^()$"), "|") {
+			b.WriteString(passRun(pkg, n))
+		}
+		return b.String() + ev("pass", pkg, "", ""), 0
+	}}
+	f := newConfirmFixture(t, r)
+	for _, d := range []string{"a", "b", "c", "d"} {
+		write(t, filepath.Join(f.root, "internal", d, "x_test.go"), "package x\n")
+	}
+	f.opts.LogsDir = logs
+	doc := RunConfirm(context.Background(), f.opts)
+	verdicts := map[testreport.TestID]testreport.Verdict{}
+	for _, v := range doc.Tests {
+		verdicts[v.Test] = v.Verdict
+	}
+	for id, want := range map[testreport.TestID]testreport.Verdict{
+		key("a", "TestNew"): testreport.VerdictConfirmed, key("b", "TestNew"): testreport.VerdictRaced,
+		key("c", "TestJSON"): testreport.VerdictRaced, key("d", "TestJSON"): testreport.VerdictConfirmed,
+	} {
+		if verdicts[id] != want {
+			t.Errorf("%s: %s, want %s\n%s", id, verdicts[id], want, f.out)
+		}
+	}
+	for _, c := range r.calls {
+		if last := c[len(c)-1]; last == "./internal/b" || last == "./internal/c" {
+			t.Errorf("a race is never retried: %v", c)
+		}
+	}
+}
+
+// Failure output is secret-scrubbed in both files a confirm records: the
+// reruns' stream (results.json) and confirm.json. The credential shapes are
+// assembled at run time, so no literal here looks like a live secret.
+func TestConfirmScrubsWhatItRecords(t *testing.T) {
+	token := "ghp" + "_" + strings.Repeat("a", 26) + "0123"
+	pemLine := func(edge string) string {
+		return strings.Repeat("-", 5) + edge + " RSA " + "PRIVATE " + "KEY" + strings.Repeat("-", 5)
+	}
+	keyBody := "MIIEow" + strings.Repeat("Q", 40)
+	secretOut := "    auth_test.go:9: token " + token + "\n" + pemLine("BEGIN") + "\n" + keyBody + "\n" + pemLine("END") + "\n"
+
+	pkg := testModule + "/internal/a"
+	r := &fakeRunner{script: func([]string) (string, int) {
+		// The rerun fails again, printing the secrets too.
+		return failRun(pkg, "TestFlaky", secretOut) + ev("fail", pkg, "", ""), 1
+	}}
+	f := newConfirmFixture(t, r)
+	// A gate's text log: nothing upstream has scrubbed it.
+	logs := t.TempDir()
+	write(t, filepath.Join(logs, "unit.log"), "=== RUN   TestFlaky\n"+secretOut+"--- FAIL: TestFlaky (0.01s)\nFAIL\nFAIL\t"+pkg+"\t0.1s\n")
+	f.opts.LogsDir = logs
+	doc := RunConfirm(context.Background(), f.opts)
+	if doc.Run == "" {
+		t.Fatalf("nothing recorded:\n%s", f.out)
+	}
+	laneDir := testreport.LaneDir(doc.Run, LaneConfirm)
+	for _, name := range []string{ConfirmFile, testreport.LaneResultsFile} {
+		data, err := os.ReadFile(filepath.Join(laneDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{token, keyBody, pemLine("BEGIN")} {
+			if strings.Contains(string(data), secret) {
+				t.Errorf("%s holds a secret %.12q…", name, secret)
+			}
+		}
+		if !strings.Contains(string(data), "redacted") {
+			t.Errorf("%s: no redaction marker", name)
+		}
+	}
+	// The returned document (what --json prints) is scrubbed too.
+	data, _ := json.Marshal(doc)
+	if strings.Contains(string(data), token) || strings.Contains(string(data), keyBody) {
+		t.Error("the returned document holds a secret")
+	}
+	if strings.Contains(f.out.String(), token) {
+		t.Error("the messages printed a secret")
 	}
 }

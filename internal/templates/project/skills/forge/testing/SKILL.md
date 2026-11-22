@@ -293,7 +293,7 @@ for {
 
 | Rule | Flags | Does not flag |
 |---|---|---|
-| `forge-runtime-caller-path` | a `runtime.Caller` call whose file result is kept in a variable (`_, file, _, ok := runtime.Caller(0)`) and used as anything but text: joined, passed to `filepath.Dir` or a helper, returned, stored in a field | the file discarded (`_`); a file the same function checks with `filepath.IsAbs` (code that uses the path only when it is absolute already copes); a file only displayed (`filepath.Base`, or `fmt` / `log` / `slog` / `errors`) |
+| `forge-runtime-caller-path` | a `runtime.Caller` call whose file result is kept in a variable (`_, file, _, ok := runtime.Caller(0)`) and used as anything but text: joined, passed to `filepath.Dir` or a helper, returned, stored in a field | the file discarded (`_`); a file only displayed (`filepath.Base`, or `fmt` / `log` / `slog` / `errors`) |
 
 A deliberate use is suppressed at its line with the reason
 (`// forge:lint-disable-next-line forge-runtime-caller-path: <why>`). The rule

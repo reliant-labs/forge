@@ -96,7 +96,46 @@ func (x *s) init() {
 	return filepath.Join(filepath.Dir(f), "templates")
 }`, []int{2}},
 
+		{"shadow display does not excuse unused caller", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	{ file := filepath.Base("x"); fmt.Sprint(file) }
+}`, []int{2}},
+		{"shadow guard does not excuse caller", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	{ file := "x"; if filepath.IsAbs(file) { fmt.Sprint(file) } }
+	os.ReadFile(file)
+}`, []int{2}},
+		{"partial guard", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	if filepath.IsAbs(file) { fmt.Sprint(file) }
+	os.ReadFile(file)
+}`, []int{2}},
+		{"ignored guard result", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	filepath.IsAbs(file)
+	os.ReadFile(file)
+}`, []int{2}},
+		{"guard after unsafe use", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	os.ReadFile(file)
+	if !filepath.IsAbs(file) { return }
+}`, []int{2}},
+
 		// ── not flagged ──────────────────────────────────────────────
+		{"shadow path does not taint display", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	fmt.Sprint(file)
+	{ file := "x"; os.ReadFile(file) }
+}`, nil},
+		{"closure parameter shadows display", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	fmt.Sprint(file)
+	func(file string) { os.ReadFile(file) }("x")
+}`, nil},
+		{"closure capture is unsafe", `func f() {
+	_, file, _, _ := runtime.Caller(0)
+	func() { os.ReadFile(file) }()
+}`, []int{2}},
 		{"file discarded", `func line() int {
 	_, _, l, _ := runtime.Caller(1)
 	return l
@@ -111,7 +150,7 @@ func (x *s) init() {
 		return ""
 	}
 	return filepath.Dir(file)
-}`, nil},
+}`, []int{2}},
 		{"base name for display", `func where() string {
 	_, file, line, _ := runtime.Caller(1)
 	return fmt.Sprintf("%s:%d", filepath.Base(file), line)
@@ -166,7 +205,7 @@ func guarded() string {
 	return fp.Dir(f)
 }
 `
-	if g, want := got(t, "x.go", src, 0), []string{RuleID + "@9"}; !slices.Equal(g, want) {
+	if g, want := got(t, "x.go", src, 0), []string{RuleID + "@9", RuleID + "@14"}; !slices.Equal(g, want) {
 		t.Errorf("findings = %v, want %v", g, want)
 	}
 }

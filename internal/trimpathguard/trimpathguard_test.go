@@ -14,8 +14,8 @@
 // static scan, so it fails the same way whether or not the run is trimmed,
 // and runs in `go test -short` in well under a second. It is the analyzer
 // consumers get as `forge lint --caller-paths` (internal/linter/callerpath),
-// run over forge's own tree: code that checks filepath.IsAbs on the path
-// (internal/buildinfo) or only displays it passes there, as here.
+// run over forge's own tree: display-only uses pass, and optional discovery
+// guarded by filepath.IsAbs (internal/buildinfo) needs a reasoned suppression.
 package trimpathguard
 
 import (
@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/linter/callerpath"
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 	"github.com/reliant-labs/forge/internal/repowalk"
 )
 
@@ -62,8 +63,12 @@ func TestNoSourcePathsFromRuntimeCaller(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, f := range callerpath.CheckFile(filepath.ToSlash(rel), src) {
+		res := suppress.Apply(string(src), callerpath.CheckFile(filepath.ToSlash(rel), src))
+		for _, f := range res.Kept {
 			t.Errorf("%s:%d: %s. Fix: %s", f.File, f.Line, f.Message, f.Remediation)
+		}
+		for _, f := range res.Violations {
+			t.Errorf("%s:%d: %s", f.File, f.Line, f.Message)
 		}
 		return nil
 	})

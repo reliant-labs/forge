@@ -26,9 +26,6 @@
 // # WHAT IT DELIBERATELY DOES NOT FLAG
 //
 //   - The file result discarded (`pc, _, line, ok := runtime.Caller(1)`).
-//   - A file result the same function checks with filepath.IsAbs or
-//     path.IsAbs: code that uses the path only when it is absolute already
-//     copes with a trimmed one (forge's own internal/buildinfo does this).
 //   - A file result whose every use is display: the argument of
 //     filepath.Base / path.Base / Ext, or of a call into fmt, log, log/slog
 //     or errors. A caller location in a log line or an error message is
@@ -36,6 +33,10 @@
 //   - Generated files, and files that do not parse (the compiler's to
 //     report). The lane skips testdata/, vendor/, node_modules/, gen/ and
 //     hidden directories.
+//
+// An IsAbs check alone does not prove subsequent uses safe. This syntactic
+// analyzer conservatively flags guarded path uses too; code that uses the
+// path only when absolute can suppress the rule with that explanation.
 //
 // A use the analyzer cannot classify — passed to a helper, returned,
 // stored in a field — is flagged: a function that hands its caller's file
@@ -70,7 +71,8 @@ func RuleIDs() []string { return []string{RuleID} }
 // Fix is the remediation every finding carries.
 const Fix = "resolve paths against the package directory the test runs in instead — " +
 	"filepath.Abs(\"testdata/x\"), or walk up from os.Getwd() to the go.mod — or, where the " +
-	"source path is optional, use it only when filepath.IsAbs reports it absolute. A deliberate " +
+	"source path is optional, use it only when filepath.IsAbs reports it absolute and suppress " +
+	"with that explanation (this analyzer does not prove control flow). A deliberate " +
 	"use: `// forge:lint-disable-next-line " + RuleID + ": <why>` above it"
 
 // CheckFile analyzes one Go source file. A file that does not mention
@@ -81,7 +83,9 @@ func CheckFile(file string, src []byte) []finding.Finding {
 		return nil
 	}
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, file, src, parser.ParseComments|parser.SkipObjectResolution)
+	// Keep parser object resolution: identity, not spelling, distinguishes
+	// this binding from nested locals, parameters and closure captures.
+	f, err := parser.ParseFile(fset, file, src, parser.ParseComments)
 	if err != nil || ast.IsGenerated(f) {
 		return nil
 	}
@@ -167,7 +171,7 @@ func (c *checker) pkgCall(e ast.Expr) (pkgPath, fn string, ok bool) {
 		return "", "", false
 	}
 	x, isIdent := sel.X.(*ast.Ident)
-	if !isIdent {
+	if !isIdent || x.Obj != nil {
 		return "", "", false
 	}
 	for p, name := range c.imp {
@@ -195,7 +199,7 @@ func (c *checker) binding(target ast.Expr, scope ast.Node) {
 		c.report(target.Pos(), "runtime.Caller's file result")
 		return
 	}
-	guarded, display, other := false, 0, 0
+	display, other := 0, 0
 	var stack []ast.Node
 	ast.Inspect(scope, func(n ast.Node) bool {
 		if n == nil {
@@ -204,12 +208,10 @@ func (c *checker) binding(target ast.Expr, scope ast.Node) {
 		}
 		stack = append(stack, n)
 		use, ok := n.(*ast.Ident)
-		if !ok || use.Name != id.Name || use == id || len(stack) < 2 {
+		if !ok || use.Name != id.Name || use.Obj != id.Obj || use == id || len(stack) < 2 {
 			return true
 		}
 		switch c.classify(use, stack[len(stack)-2]) {
-		case useGuard:
-			guarded = true
 		case useDisplay:
 			display++
 		case useOther:
@@ -217,7 +219,7 @@ func (c *checker) binding(target ast.Expr, scope ast.Node) {
 		}
 		return true
 	})
-	if guarded || (display > 0 && other == 0) {
+	if display > 0 && other == 0 {
 		return
 	}
 	c.report(id.Pos(), "`"+id.Name+"`")
@@ -227,7 +229,6 @@ type use int
 
 const (
 	useNone    use = iota // not a read: the name written, a field selector, a declaration
-	useGuard              // filepath.IsAbs(file): the code copes with a trimmed path
 	useDisplay            // text for a human: Base, fmt, log, errors
 	useOther              // anything else: a path built, a helper handed it, returned
 )
@@ -267,8 +268,6 @@ func (c *checker) classify(id *ast.Ident, parent ast.Node) use {
 			break
 		}
 		switch {
-		case (pkg == "path/filepath" || pkg == "path") && fn == "IsAbs":
-			return useGuard
 		case (pkg == "path/filepath" || pkg == "path") && (fn == "Base" || fn == "Ext"):
 			return useDisplay
 		case displayPkgs[pkg]:

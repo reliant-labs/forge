@@ -10,122 +10,101 @@ import (
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
-// The child reads only copies of scripts this process opened: the short tier's
-// cache sees the production input, and no command touches the real git checkout.
-func changedTestsFixture(t *testing.T, mode string, fail bool) (string, error) {
+// scripts/ci-changed-tests.sh is a thin wrapper over `forge test flakes
+// gate`, which finds the changed tests and runs them three times in one
+// `go test` invocation (internal/testflakes' gate tests pin that). What the
+// wrapper owns, and these tests pin, is its contract with ci.yml and
+// scripts/ci-premerge.sh: its arguments become the gate's, the test command
+// is scripts/ci-go-test.sh, and the gate's exit codes become the ones the
+// script always had.
+//
+// The child reads only copies of scripts this process opened: the short
+// tier's cache sees the production input, and no command touches the real
+// git checkout or builds forge.
+func changedTestsFixture(t *testing.T, mode string, env ...string) (out, calls string, err error) {
 	t.Helper()
 	root := t.TempDir()
-	for _, dir := range []string{"bin", "one", "two", "scripts"} {
-		if err := os.Mkdir(filepath.Join(root, dir), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write := func(name, body string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 	body, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-changed-tests.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	write("changed.sh", string(body))
-	helper, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-go-test.sh"))
-	if err != nil {
+	if err := os.WriteFile(filepath.Join(root, "changed.sh"), body, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write("scripts/ci-go-test.sh", string(helper))
-	write("one/one_test.go", "package one\nfunc TestOne(t *testing.T) {}\n")
-	write("two/two_test.go", "package two\nfunc TestTwo(t *testing.T) {}\n")
-	// These are fixture executables, not invocations of git/go against the
-	// checkout. Both changed packages are selected, with different test names.
-	write("bin/git", `#!/usr/bin/env bash
-if [[ "$*" == *--name-only* ]]; then
-  printf 'one/one_test.go\ntwo/two_test.go\n'
-elif [[ "$*" == *one/one_test.go* ]]; then
-  echo '+func TestOne(t *testing.T) {'
-else
-  echo '+func TestTwo(t *testing.T) {'
-fi
-`)
-	// The physical directory, as the real `go list -f {{.Dir}}` prints it and
-	// as the script's own `pwd -P` spells it. $PWD is not that on Windows,
-	// where the temp dir's 8.3 short name (RUNNER~1) survives in it: every
-	// package read as "not a package of this module" and the Windows job
-	// failed these tests on every push.
-	write("bin/go", `#!/usr/bin/env bash
-if [[ "$1" == list ]]; then
-  printf '%s/one\n%s/two\n' "$(pwd -P)" "$(pwd -P)"
-else
-  printf 'TEST %s\n' "$*"
-  [[ "$FIXTURE_FAIL" != 1 ]]
-fi
-`)
-	cmd := exec.Command("bash", "changed.sh", "fixture-base", mode)
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "PATH="+filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"))
-	if fail {
-		cmd.Env = append(cmd.Env, "FIXTURE_FAIL=1")
+	log := filepath.Join(root, "forge-log")
+	args := []string{"changed.sh", "fixture-base"}
+	if mode != "" {
+		args = append(args, mode)
 	}
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	cmd := exec.Command("bash", args...)
+	cmd.Dir = root
+	cmd.Env = append(append(os.Environ(), installStubForge(t, root), "FORGE_LOG="+log), env...)
+	b, err := cmd.CombinedOutput()
+	c, _ := os.ReadFile(log)
+	return string(b), string(c), err
 }
 
-func TestChangedTestsUseOneParallelGoInvocation(t *testing.T) {
+func TestChangedTestsRunTheFlakeGate(t *testing.T) {
 	testkit.Slow(t, "execs bash")
 	t.Parallel()
-	out, err := changedTestsFixture(t, "short", false)
+	out, calls, err := changedTestsFixture(t, "short")
 	if err != nil {
 		t.Fatalf("changed tests: %v\n%s", err, out)
 	}
-	var invocations []string
-	for line := range strings.SplitSeq(out, "\n") {
-		if strings.HasPrefix(line, "TEST ") {
-			invocations = append(invocations, line)
-		}
-	}
-	if len(invocations) != 1 {
-		t.Fatalf("want one go test invocation so Go schedules selected packages together, got %d:\n%s", len(invocations), out)
-	}
-	for _, want := range []string{"-short", "-count=3", "TestOne", "TestTwo", "./one", "./two"} {
-		if !strings.Contains(invocations[0], want) {
-			t.Errorf("missing %q in %s", want, invocations[0])
-		}
-	}
-	if strings.Contains(invocations[0], "-race") {
-		t.Errorf("premerge should reuse the non-race short-tier artifacts: %s", invocations[0])
+	if strings.TrimSpace(calls) != "test flakes gate --base fixture-base -- scripts/ci-go-test.sh" {
+		t.Errorf("want one gate run over the base, through scripts/ci-go-test.sh and without -race; got:\n%s", calls)
 	}
 }
 
-func TestChangedTestsFullRetainsRaceAndRepetition(t *testing.T) {
+func TestChangedTestsFullAddsRace(t *testing.T) {
 	testkit.Slow(t, "execs bash")
 	t.Parallel()
-	out, err := changedTestsFixture(t, "full", false)
+	out, calls, err := changedTestsFixture(t, "full")
 	if err != nil {
 		t.Fatalf("full changed tests: %v\n%s", err, out)
 	}
-	for _, want := range []string{"-short", "-race", "-count=3"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("full mode lost %q:\n%s", want, out)
-		}
+	if strings.TrimSpace(calls) != "test flakes gate --base fixture-base --full -- scripts/ci-go-test.sh" {
+		t.Errorf("full mode must pass --full (-race); got:\n%s", calls)
 	}
 }
 
 func TestChangedTestsPropagateFailure(t *testing.T) {
 	testkit.Slow(t, "execs bash")
 	t.Parallel()
-	out, err := changedTestsFixture(t, "short", true)
+	out, _, err := changedTestsFixture(t, "short", "STUB_EXIT=1", "STUB_STDERR=flake gate: FAILED after 3s")
 	if err == nil {
-		t.Fatalf("failed go test must fail the gate:\n%s", out)
+		t.Fatalf("a failed changed test must fail the gate:\n%s", out)
+	}
+	// The command could not start: a failure, as a missing command always was.
+	out, _, err = changedTestsFixture(t, "short", "STUB_EXIT=2", "STUB_STDERR=flake gate: could not run scripts/ci-go-test.sh: not found")
+	if err == nil {
+		t.Fatalf("a test command that cannot start must fail the gate:\n%s", out)
+	}
+}
+
+// The gate exits 2 when it identifies no changed test; the script always
+// passed such a change, including one whose diff could not be read.
+func TestChangedTestsPassWithNoChangedTests(t *testing.T) {
+	testkit.Slow(t, "execs bash")
+	t.Parallel()
+	out, _, err := changedTestsFixture(t, "short", "STUB_EXIT=2", "STUB_STDERR=flake gate: no new or edited tests in fixture-base..HEAD")
+	if err != nil {
+		t.Fatalf("no changed tests must pass: %v\n%s", err, out)
+	}
+	out, _, err = changedTestsFixture(t, "short", "STUB_EXIT=2", "STUB_STDERR=flake gate: could not identify the changed tests in fixture-base..HEAD: bad revision")
+	if err != nil {
+		t.Fatalf("an unreadable diff passes, as it always did: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "::warning::flake gate: could not identify the changed tests") {
+		t.Errorf("an unreadable diff must be a warning, not a silent pass:\n%s", out)
 	}
 }
 
 func TestChangedTestsRejectInvalidMode(t *testing.T) {
 	testkit.Slow(t, "execs bash")
 	t.Parallel()
-	out, err := changedTestsFixture(t, "typo", false)
-	if err == nil {
-		t.Fatalf("unknown mode must not silently pick test flags:\n%s", out)
+	out, calls, err := changedTestsFixture(t, "typo")
+	if err == nil || calls != "" {
+		t.Fatalf("unknown mode must not silently pick test flags: %v\n%s\n%s", err, out, calls)
 	}
 }

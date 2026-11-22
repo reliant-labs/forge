@@ -439,3 +439,70 @@ func TestConfirmScrubsWhatItRecords(t *testing.T) {
 		t.Error("the messages printed a secret")
 	}
 }
+
+// The (package …) fallback reads a failure's source less the spans other
+// packages' FAIL/ok lines closed. Here the target is the 2nd and 3rd package
+// of one source, behind a 1st whose failure reported a data race: none of
+// the 1st package's output or race report may appear in theirs, and each
+// keeps its own.
+func TestExcludeOthersKeepsEarlierPackagesOut(t *testing.T) {
+	a, b, c := testModule+"/internal/a", testModule+"/internal/b", testModule+"/internal/c"
+	logs := t.TempDir()
+	write(t, filepath.Join(logs, "unit.log"), strings.Join([]string{
+		"=== RUN   TestNew",
+		"    a_test.go:3: from package a",
+		"WARNING: DATA RACE",
+		"    testing.go:1490: race detected during execution of test",
+		"--- FAIL: TestNew (0.02s)",
+		"FAIL",
+		"FAIL\t" + a + "\t0.1s",
+		"=== RUN   TestNew",
+		"    b_test.go:5: from package b",
+		"--- FAIL: TestNew (0.01s)",
+		"FAIL",
+		"FAIL\t" + b + "\t0.1s",
+		"=== RUN   TestNew",
+		"    c_test.go:7: from package c",
+		"--- FAIL: TestNew (0.01s)",
+		"FAIL",
+		"FAIL\t" + c + "\t0.1s",
+		"--- FAIL: TestNew (package " + b + ")",
+		"--- FAIL: TestNew (package " + c + ")",
+		"",
+	}, "\n"))
+	_, out := readRunLogs(nil, logs).failures(testModule)
+	for pkg, own := range map[string]string{b: "from package b", c: "from package c"} {
+		got := out[testreport.TestID{Lang: testreport.LangGo, Package: pkg, Name: "TestNew"}]
+		if testreport.IsRace(got) || strings.Contains(got, "from package a") {
+			t.Errorf("%s's output holds package a's:\n%s", pkg, got)
+		}
+		if !strings.Contains(got, own) {
+			t.Errorf("%s's output lacks its own %q:\n%s", pkg, own, got)
+		}
+	}
+	if got := out[testreport.TestID{Lang: testreport.LangGo, Package: a, Name: "TestNew"}]; !testreport.IsRace(got) {
+		t.Errorf("package a's race report is its own:\n%s", got)
+	}
+}
+
+// excludeOthers' contract over spans directly: whichever span is the
+// target's (first, middle, last, or several), the result is exactly the
+// unclosed records plus the target's spans, in order.
+func TestExcludeOthersSpans(t *testing.T) {
+	recs := make([]logRecord, 12)
+	for i := range recs {
+		recs[i] = logRecord{line: string(rune('a' + i))}
+	}
+	// a b | c d e (A) | f (B) | g h (C) | i (A) | j k l
+	spans := []pkgSpan{{span{2, 5}, "A"}, {span{5, 6}, "B"}, {span{6, 8}, "C"}, {span{8, 9}, "A"}}
+	id := func(p string) string { return p }
+	for pkg, want := range map[string]string{"A": "abcdeijkl", "B": "abfjkl", "C": "abghjkl", "D": "abjkl"} {
+		var got strings.Builder
+		for _, r := range excludeOthers(recs, spans, pkg, id) {
+			got.WriteString(r.line)
+		}
+		if got.String() != want {
+			t.Errorf("%s: %s, want %s", pkg, got.String(), want)
+		}
+	}
+}

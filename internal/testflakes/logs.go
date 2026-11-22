@@ -276,15 +276,17 @@ func (rl runLogs) sources() [][]logRecord {
 	return out
 }
 
-// excludeOthers is recs without the spans another package's line closed.
+// excludeOthers is recs without the spans another package's line closed:
+// the records no package line closed, and pkg's own spans. The cursor
+// advances across every span, so a span is appended only when it is pkg's.
 func excludeOthers(recs []logRecord, spans []pkgSpan, pkg string, qualify func(string) string) []logRecord {
 	var out []logRecord
 	next := 0
 	for _, sp := range spans {
+		out = append(out, recs[next:sp.from]...) // closed by no package line
 		if qualify(sp.pkg) == pkg || sp.pkg == pkg {
-			continue
+			out = append(out, recs[sp.from:sp.to]...)
 		}
-		out = append(out, recs[next:sp.from]...)
 		next = sp.to
 	}
 	return append(out, recs[next:]...)

@@ -640,7 +640,7 @@ PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
   streams into the replacement. So each move-aside first writes
   `StateDir/move.json` (install path, aside name, staged copy; fsynced), and
   every rename goes through `MoveFileEx(MOVEFILE_REPLACE_EXISTING |
-  MOVEFILE_WRITE_THROUGH)`, so the journal and the renames reach the disk in
+MOVEFILE_WRITE_THROUGH)`, so the journal and the renames reach the disk in
   order. The journal is removed once the install path holds a binary again. A
   process killed inside the window leaves it behind. The binary cannot start
   from a missing path, so recovery runs at the next `Boot` of any process that

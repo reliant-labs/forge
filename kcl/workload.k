@@ -228,10 +228,11 @@ schema OnHost:
     The argv is DERIVED in Go (hostlaunch.BuildCmd) from the runner, the
     workload's `build` and its `args` — there is no command here:
 
-      * go-run — `go run <build.cmd> <args>`
+      * go-run — `go run <build.flags> <build.cmd> <args>`
       * binary — `./bin/<output_name> <args>`
       * delve  — `dlv exec --headless … ./bin/<output_name> -- <args>`
-      * air    — `air -c <air_config>`; the air config owns the argv.
+      * air    — `air -c <air_config>`; the air config owns the argv, and
+                 gets build.flags in $FORGE_GO_BUILD_FLAGS.
 
     A workload with an explicit `command` runs `command + args` verbatim
     (a sibling repo's binary, a third-party tool). Env comes from the

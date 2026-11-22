@@ -140,7 +140,10 @@ _api = fw.Workload {
     name = "api"
     kind = "service"
     image = "ghcr.io/acme/shop"
-    build = forge.GoBuild {cmd = "./cmd/shop", output_name = "shop"}
+    # flags: -trimpath lets every worktree share Go's build cache; forge build,
+    # go run and air all pass it, and debug builds stay untrimmed. To keep
+    # absolute source paths, remove it or add "-trimpath=false" after it.
+    build = forge.GoBuild {cmd = "./cmd/shop", output_name = "shop", flags = ["-trimpath"]}
     args = ["server"]
     ports = [fw.Port {name = "http", port = 8080, expose = True}]
     config_secrets = ["DATABASE_URL"]

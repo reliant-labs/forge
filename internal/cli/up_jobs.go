@@ -432,8 +432,7 @@ func runOneHostJob(ctx context.Context, cfg *config.ProjectConfig, j WorkloadEnt
 		}
 		jobSecrets[k] = v
 	}
-	cmd.Env = hostlaunch.WithTrimpath(jobSpec, hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv()))
-	cmd.Env = hostlaunch.WithPGO(jobSpec, cmd.Env)
+	cmd.Env = hostlaunch.WithPGO(jobSpec, hostlaunch.LayerHostEnv(os.Environ(), projectConfigEnv, jobSecrets, j.HostEnv()))
 	cmd.Env = withForgeShimOnPath(cmd.Env, j.Name)
 
 	// What this job gates, for the human reading the log. The raw

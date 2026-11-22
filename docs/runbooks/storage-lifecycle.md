@@ -132,10 +132,12 @@ toolchain, and that toolchain's `$GOROOT/go.env` lacks the `GOFLAGS=-trimpath`
 the workspace image appends to its own. Check with `go env GOFLAGS` in a
 worktree. Anything forge starts with its own GOFLAGS merges `-trimpath` back in
 (`goexec.WithTrimpath`); `internal/goexec`'s `TestGOFLAGSOverridesKeepTrimpath`
-keeps it that way. Since v1.11.0 that covers every non-debug compile forge
-starts — `forge build`'s host binaries and the air / go-run dev loop of
-`forge env up` included — and the scaffolded Taskfile merges it for every task.
-A `go build` or `go test` run outside both still needs `go env -w
+keeps it that way. A project's own builds are trimmed by what it declares:
+since v1.11.0 a scaffolded GoBuild says `flags = ["-trimpath"]`, which
+`forge build`, build variants and the air / go-run dev loop of `forge env up`
+all pass on the command line, and the scaffolded Taskfile merges it into
+GOFLAGS for every task (`forge fix trimpath-default` adds both to an older
+project). A `go build` or `go test` run outside both still needs `go env -w
 GOFLAGS=-trimpath` on a host that is not the workspace image; on 2026-11-22 a
 shared build host without it filled ~100 GiB/h. A `go env GOFLAGS` that says
 `-trimpath` now does not clear a fill already in the window: entries built

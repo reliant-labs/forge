@@ -2293,8 +2293,8 @@ type goBuildTarget struct {
 	// for targets that feed a container image, so the image's digest is a
 	// function of the source and not of where it was compiled; the scaffolded
 	// Dockerfile builds with -trimpath for the same reason. Every other
-	// non-debug build gets -trimpath through GOFLAGS instead
-	// (buildGoTarget), where a -trimpath=false opt-out can still reach it.
+	// build is trimmed when its GoBuild.flags say so: a scaffolded GoBuild
+	// declares flags = ["-trimpath"].
 	trimpath bool
 	// debug builds the target for a debugger (-gcflags=all=-N -l, symbols
 	// kept, no -trimpath) whatever the run's --debug: a host workload run
@@ -2333,11 +2333,11 @@ func resolveGoTargets(buildBinary bool, entities *KCLEntities, cfg *config.Proje
 func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo versionInfo) []string {
 	args := []string{"build", "-o", binaryPath}
 	if debug {
-		// -trimpath=false overrides a -trimpath in GOFLAGS (the Reliant
-		// workspace image makes it the toolchain default): a debugger sets
-		// breakpoints by absolute source path, and a trimmed binary records
-		// only module-relative ones, so every breakpoint would miss.
-		args = append(args, "-gcflags=all=-N -l", "-trimpath=false")
+		// -trimpath=false (appended after the declared flags, below)
+		// overrides a -trimpath in GoBuild.flags or GOFLAGS: a debugger
+		// sets breakpoints by absolute source path, and a trimmed binary
+		// records only module-relative ones, so every breakpoint would miss.
+		args = append(args, "-gcflags=all=-N -l")
 	} else {
 		// Version stamp first; the KCL ldflags follow so a project that
 		// wants to override main.version (e.g. -X main.version=<tag>) wins
@@ -2363,8 +2363,13 @@ func goBuildArgs(t goBuildTarget, binaryPath string, debug bool, versionInfo ver
 	}
 	// A cover build (kcl/schema.k Tests), resolved by buildGoTarget.
 	args = append(args, t.coverFlags...)
-	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env).
+	// Arbitrary extra go-build flags (e.g. ["-cover"] for an e2e env, and
+	// the -trimpath a scaffolded GoBuild declares).
 	args = append(args, t.flags...)
+	if debug {
+		// Last, so it beats a declared -trimpath: the later flag wins.
+		args = append(args, "-trimpath=false")
+	}
 	args = append(args, t.cmd)
 	return args
 }
@@ -2528,14 +2533,6 @@ func buildGoTarget(ctx context.Context, t goBuildTarget, outputDir string, debug
 	}
 	for k, v := range t.env {
 		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	// -trimpath merged into the effective GOFLAGS (a GoBuild.env GOFLAGS
-	// included), so every worktree of the project shares the build-cache
-	// entries instead of compiling path-keyed copies (goexec.WithTrimpath).
-	// A debug build passed -trimpath=false on its argv, which beats GOFLAGS,
-	// and a -trimpath=false in GOFLAGS or `go env -w` is an opt-out.
-	if !debug {
-		cmd.Env = goexec.WithTrimpath(cmd.Env)
 	}
 	// Constrained-budget caps last so they bound the compiler even over an
 	// inherited GOMEMLIMIT/GOMAXPROCS. Skipped when empty (unconstrained).
@@ -3393,7 +3390,7 @@ func buildKCLBuildOnlyVariants(ctx context.Context, e *KCLEntities, outputDir st
 			continue
 		}
 		for _, v := range w.Runtime.BuildOnly.BuildVariants {
-			out = append(out, timedBuild(ctx, func() buildResult { return buildVariant(ctx, w.Name, g.Cmd, v, outputDir) }))
+			out = append(out, timedBuild(ctx, func() buildResult { return buildVariant(ctx, w.Name, g.Cmd, g.Flags, v, outputDir) }))
 		}
 	}
 	return out
@@ -3414,27 +3411,20 @@ func variantBinaryFilename(workload string, v BuildVariant, hostOS string) strin
 // Build union — NOT a ./cmd hardcode). The output name is
 // <service>-<variant> unless v.OutputName overrides it. ldflags and -tags
 // are appended to the go-build args; env_at_build pairs join CGO_ENABLED=0
-// on the subprocess env.
-func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant, outputDir string) buildResult {
+// on the subprocess env. flags are the GoBuild's declared flags (a scaffolded
+// GoBuild says -trimpath), which every variant of it builds with.
+func buildVariant(ctx context.Context, svcName, buildCmd string, flags []string, v BuildVariant, outputDir string) buildResult {
 	start := time.Now()
 	binPath := filepath.Join(outputDir, variantBinaryFilename(svcName, v, runtime.GOOS))
 	fmt.Printf("[build] %s (variant %s): go build %s -> %s\n", svcName, v.Name, buildCmd, binPath)
 
-	args := []string{"build", "-o", binPath}
-	if len(v.Ldflags) > 0 {
-		args = append(args, "-ldflags", strings.Join(v.Ldflags, " "))
-	}
-	if len(v.BuildTags) > 0 {
-		args = append(args, "-tags", strings.Join(v.BuildTags, ","))
-	}
-	args = append(args, buildCmd)
+	args := variantBuildArgs(binPath, buildCmd, flags, v)
 
 	if err := checkBuildStorageFn(outputDir); err != nil {
 		return buildResult{name: svcName + ":" + v.Name, kind: "variant", duration: time.Since(start), err: err}
 	}
 	cmd := goexec.Graceful(exec.CommandContext(ctx, "go", args...))
-	// -trimpath, as buildGoTarget merges it.
-	cmd.Env = goexec.WithTrimpath(variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v))
+	cmd.Env = variantBuildEnv(goexec.Env("CGO_ENABLED=0"), v)
 	var endStep func(error)
 	cmd.Stdout, cmd.Stderr, endStep = buildlog.Step(svcName + ":" + v.Name + " build")
 
@@ -3446,6 +3436,20 @@ func buildVariant(ctx context.Context, svcName, buildCmd string, v BuildVariant,
 		duration: time.Since(start),
 		err:      err,
 	}
+}
+
+// variantBuildArgs is the `go build` argv of one build variant: its ldflags
+// and tags, then the GoBuild's declared flags, then the package.
+func variantBuildArgs(binPath, buildCmd string, flags []string, v BuildVariant) []string {
+	args := []string{"build", "-o", binPath}
+	if len(v.Ldflags) > 0 {
+		args = append(args, "-ldflags", strings.Join(v.Ldflags, " "))
+	}
+	if len(v.BuildTags) > 0 {
+		args = append(args, "-tags", strings.Join(v.BuildTags, ","))
+	}
+	args = append(args, flags...)
+	return append(args, buildCmd)
 }
 
 // variantBuildEnv layers a variant's GOOS/GOARCH and its declared env

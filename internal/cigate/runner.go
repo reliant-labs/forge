@@ -744,6 +744,7 @@ func (s *scheduler) run() {
 		return
 	}
 	s.heavy = newHeavyQueue(s.ctx, s.opt.Slot)
+	s.heavy.ready = s.readyHeavy
 	defer s.heavy.close()
 	// Wake every waiter when the gate is interrupted, so each can record
 	// itself as such instead of waiting for a dependency that never starts.
@@ -810,6 +811,24 @@ func (s *scheduler) startable(i int) bool {
 		}
 	}
 	return true
+}
+
+// readyHeavy is the execution positions of the heavy checks that are not done
+// and may start now. Such a check asks the heavy queue for a slot as soon as
+// its goroutine runs, so a slot that frees waits for the earlier ones rather
+// than going to a later check that happened to ask first. Startability never
+// reverts (a tree-mutating check precedes every reader in execution order), so
+// each position returned does ask, or the gate is interrupted.
+func (s *scheduler) readyHeavy() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []int
+	for j, c := range s.checks {
+		if c.Heavy && !s.done[j] && s.startable(j) {
+			out = append(out, s.pos[j])
+		}
+	}
+	return out
 }
 
 // runCheck waits until check i may start, runs it, and reports whether it
@@ -1052,19 +1071,25 @@ func (s *scheduler) relLog(name string) string {
 type heavyQueue struct {
 	ctx  context.Context
 	slot SlotFunc
+	// ready, when set, names the positions of the heavy checks that may
+	// start now; a taken slot is granted only once each of them earlier than
+	// the chosen request has asked, so which check gets it never depends on
+	// goroutine scheduling.
+	ready func() []int
+	// held, when set, is called each time choose evaluates the waiting
+	// requests and holds the slot back for an earlier ready check that has
+	// not asked yet, with the positions waiting at that moment. Tests wait on
+	// it instead of on the clock.
+	held func(waiting []int)
 
 	mu      sync.Mutex
 	waiting []heavyReq
-	failed  error // set once no slot is coming (the gate was interrupted)
+	asked   map[int]bool // every position that has asked, granted or not
+	failed  error        // set once no slot is coming (the gate was interrupted)
 	wake    chan struct{}
 	closed  chan struct{}
 	once    sync.Once
 }
-
-// grantSettle is how long a freshly taken slot waits for the other checks
-// that became ready at the same moment to queue, before it picks the most
-// urgent one.
-const grantSettle = 20 * time.Millisecond
 
 type heavyReq struct {
 	pos   int
@@ -1078,7 +1103,7 @@ type heavyGrant struct {
 }
 
 func newHeavyQueue(ctx context.Context, slot SlotFunc) *heavyQueue {
-	q := &heavyQueue{ctx: ctx, slot: slot, wake: make(chan struct{}, 1), closed: make(chan struct{})}
+	q := &heavyQueue{ctx: ctx, slot: slot, asked: map[int]bool{}, wake: make(chan struct{}, 1), closed: make(chan struct{})}
 	if slot != nil {
 		go q.serve()
 	}
@@ -1095,6 +1120,7 @@ func (q *heavyQueue) take(pos int, label string) (HeldSlot, error) {
 		return nil, q.failed
 	}
 	q.waiting = append(q.waiting, req)
+	q.asked[pos] = true
 	q.mu.Unlock()
 	select {
 	case q.wake <- struct{}{}:
@@ -1125,17 +1151,27 @@ func (q *heavyQueue) serve() {
 			q.failAll(err)
 			return
 		}
-		// Let the checks that became ready together finish asking. When the
-		// tree-mutating phase ends, every reader wakes at once and races to
-		// take(); a slot that is free right away would otherwise go to
-		// whichever goroutine ran first rather than to the longest path.
-		// Short against any check's run, and only paid once per slot.
-		select {
-		case <-time.After(grantSettle):
-		case <-q.ctx.Done():
+		req, err := q.choose()
+		if err != nil {
 			_ = slot.Release()
-			q.failAll(q.ctx.Err())
+			q.failAll(err)
 			return
+		}
+		slot.SetLabel(req.label)
+		req.grant <- heavyGrant{slot: slot}
+	}
+}
+
+// choose takes the waiting request to grant a held slot to: the earliest in
+// execution order, once every earlier heavy check that may start has asked.
+// When the tree-mutating phase ends, every reader becomes ready at once and
+// races to take(); without the wait the slot would go to whichever goroutine
+// ran first rather than to the longest path.
+func (q *heavyQueue) choose() (heavyReq, error) {
+	for {
+		var ready []int
+		if q.ready != nil {
+			ready = q.ready() // outside q.mu: it takes the scheduler's lock
 		}
 		q.mu.Lock()
 		best := 0
@@ -1144,11 +1180,29 @@ func (q *heavyQueue) serve() {
 				best = k
 			}
 		}
-		req := q.waiting[best]
-		q.waiting = append(q.waiting[:best], q.waiting[best+1:]...)
+		missing := false
+		for _, p := range ready {
+			missing = missing || p < q.waiting[best].pos && !q.asked[p]
+		}
+		if !missing {
+			req := q.waiting[best]
+			q.waiting = append(q.waiting[:best], q.waiting[best+1:]...)
+			q.mu.Unlock()
+			return req, nil
+		}
+		waiting := make([]int, len(q.waiting))
+		for k, r := range q.waiting {
+			waiting[k] = r.pos
+		}
 		q.mu.Unlock()
-		slot.SetLabel(req.label)
-		req.grant <- heavyGrant{slot: slot}
+		if q.held != nil {
+			q.held(waiting)
+		}
+		select {
+		case <-q.wake:
+		case <-q.ctx.Done():
+			return heavyReq{}, q.ctx.Err()
+		}
 	}
 }
 

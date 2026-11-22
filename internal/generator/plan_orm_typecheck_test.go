@@ -148,6 +148,24 @@ func TestGeneratePlanORM_OutputTypeChecks(t *testing.T) {
 				{Name: "amount", Type: "int64", NotNull: true},
 			},
 		},
+		// A TIMESTAMPTZ key column: its store's by-key methods name
+		// time.Time, so the store file imports time (control-plane's
+		// compute_allowance_consumption, keyed by (org_id, period_start)).
+		{
+			Name: "AllowanceConsumption", TableName: "allowance_consumptions",
+			Fields: []config.PlanEntityField{
+				{Name: "org_id", Type: "string", PrimaryKey: true, NotNull: true},
+				{Name: "period_start", Type: "time", PrimaryKey: true, NotNull: true},
+				{Name: "used", Type: "int64", NotNull: true},
+			},
+		},
+		{
+			Name: "Snapshot", TableName: "snapshots",
+			Fields: []config.PlanEntityField{
+				{Name: "taken_at", Type: "time", PrimaryKey: true, NotNull: true},
+				{Name: "label", Type: "string"},
+			},
+		},
 		// Read-only view entities (F12.7): keyed, and keyless.
 		{
 			Name: "ChatsWithActivity", TableName: "chats_with_activity", ReadOnly: true,

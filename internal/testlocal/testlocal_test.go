@@ -424,3 +424,34 @@ func TestIngest(t *testing.T) {
 		t.Fatalf("ingested lane not reported: %+v", rep)
 	}
 }
+
+// A clean run that records no commit is never merged into, or attributed to,
+// another run's commit: the commit is never adopted from a sibling run.
+func TestAssembleRefusesACleanRunWithNoCommit(t *testing.T) {
+	root, g := fxShop(t)
+	fxWriteRun(t, root, fxRun{id: "01NOCOMMIT", created: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC), tree: fxTree,
+		lanes: []fxLane{{name: "integration", results: goJSON("p:TestB:pass")}}})
+	all, _, _ := List(root)
+	byID := map[string]*Run{}
+	for _, r := range all {
+		byID[r.ID] = r
+	}
+	for _, pair := range [][2]string{{"01AAAA", "01NOCOMMIT"}, {"01NOCOMMIT", "01AAAA"}} {
+		a, err := Assemble(context.Background(), Options{ProjectRoot: root, Runs: []*Run{byID[pair[0]], byID[pair[1]]}, Git: g.run, NoDiff: true})
+		var se *SourceError
+		if !errors.As(err, &se) || !strings.Contains(se.Detail, "01NOCOMMIT records no commit") {
+			t.Fatalf("%v merged (commit %q): err %v", pair, func() string {
+				if a == nil {
+					return ""
+				}
+				return a.Commit
+			}(), err)
+		}
+	}
+	// --commit never selects it.
+	for _, r := range CommitRuns(all, fxCommit) {
+		if r.ID == "01NOCOMMIT" {
+			t.Fatal("CommitRuns selected a run that records no commit")
+		}
+	}
+}

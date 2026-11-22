@@ -38,6 +38,39 @@ func TestRun_CancelledContext(t *testing.T) {
 	}
 }
 
+func TestCheckPortable(t *testing.T) {
+	for script, wantErr := range map[string]string{
+		`grep -lqs 'forge.OnHosted' deploy/kcl/*/main.k && ! ls cmd/*/default.pgo`: "",
+		`grep -rqsE --include='*.go' 'a\(' . || rg -q 'b' app`:                     "",
+		`test -f forge.yaml && forge-detect zod3`:                                  "",
+		`grep -Lqs 'x' forge.yaml`:                                                 "unsupported flag -L",
+		`test -f x && grep -qsE 'a(' forge.yaml`:                                   "bad pattern",
+		`rg -q`:                                                                    "missing pattern",
+	} {
+		err := CheckPortable(script)
+		switch {
+		case wantErr == "" && err != nil:
+			t.Errorf("CheckPortable(%q) = %v, want nil", script, err)
+		case wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)):
+			t.Errorf("CheckPortable(%q) = %v, want an error containing %q", script, err, wantErr)
+		}
+	}
+}
+
+// -l prints each matching file once, and nothing for one with no match.
+func TestPortableGrep_FilesWithMatches(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "a.k"), []byte("x = forge.OnHosted {}\ny = forge.OnHosted {}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.k"), []byte("x = forge.OnHost {}\n"), 0o644)
+	var out bytes.Buffer
+	if err := Run(context.Background(), `grep -l 'forge.OnHosted' a.k b.k`, Options{Dir: dir, Stdout: &out, Commands: PortableCommands()}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := out.String(); got != "a.k\n" {
+		t.Errorf("grep -l printed %q, want %q", got, "a.k\n")
+	}
+}
+
 func TestPortableGrep(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "forge.yaml"), []byte("name: x\ndev_target: k3d\n"), 0o644)
@@ -75,6 +108,11 @@ func TestPortableGrep(t *testing.T) {
 		`grep -rqs 'only_in_gen' missing app`:  true,
 		`grep -rqs 'nowhere' missing app`:      false,
 		`grep -qs '^dev_target:' x forge.yaml`: true,
+		// -l (files with matches), as v1.11.0/pgo-default-on's detection
+		// spells it. Unsupported, it exited 2 and the playbook never applied.
+		`grep -lqs 'dev_target' forge.yaml app/serve.go`: true,
+		`grep -lqs 'nowhere' forge.yaml app/serve.go`:    false,
+		`grep -lrs 'only_in_gen' app`:                    true,
 	}
 	for script, want := range cases {
 		got := Run(context.Background(), script, Options{Dir: dir, Commands: PortableCommands()}) == nil

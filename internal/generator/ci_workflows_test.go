@@ -344,6 +344,18 @@ func TestCIWorkflows_HostedEnvsGetReleaseWorkflow(t *testing.T) {
 	if pgo, ok := ciFile(files, ".github/workflows/pgo-refresh.yml").(templates.PGORefreshWorkflowData); !ok || pgo.Env != "prod" {
 		t.Errorf("a hosted project must get pgo-refresh.yml pulling prod: %+v", pgo)
 	}
+	// Every file forge scaffolds can be declined by name in forge.yaml: a
+	// workflow missing from config's closed set made `ci.workflows:
+	// {pgo-refresh: false}`, the opt-out its own header names, a load error.
+	known := map[string]bool{}
+	for _, n := range config.CIWorkflowNames() {
+		known[n] = true
+	}
+	for dest := range dests {
+		if name := CIWorkflowName(dest); !known[name] {
+			t.Errorf("%s is scaffolded as workflow %q, which ci.workflows does not accept (config.ciWorkflowNames)", dest, name)
+		}
+	}
 }
 
 // Some envs hosted: deploy.yml keeps the others, release.yml takes the

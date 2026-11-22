@@ -19,8 +19,10 @@ func TestWriteSiteStarter(t *testing.T) {
 	}{
 		{"nextjs", []string{"package.json", "next.config.ts", "tsconfig.json", "postcss.config.mjs", ".gitignore",
 			"src/app/layout.tsx", "src/app/page.tsx", "src/app/globals.css", "src/app/dev-logging.tsx", "src/app/%5F_forge/log/route.ts"}},
+		// The Vite dev-log receiver comes from the runtime at the current floor;
+		// TestViteSiteStarterFollowsTheRuntimeFloor checks both receiver paths.
 		{"vite-spa", []string{"package.json", "vite.config.ts", "index.html", "tsconfig.json", ".gitignore",
-			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts", "src/lib/devlog-plugin.ts"}},
+			"src/main.tsx", "src/App.tsx", "src/index.css", "src/vite-env.d.ts"}},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			fe, ok := SiteStarterFrontend(tc.kind, "web")
@@ -84,7 +86,8 @@ func TestWriteSiteStarter(t *testing.T) {
 				}
 			}
 			pkg, _ := os.ReadFile(filepath.Join(dir, "package.json"))
-			// The runtime carries the SDK's parts itself.
+			// The SDK's parts are the runtime's telemetry peers (below); the
+			// retired @hyperdx/browser is not.
 			if strings.Contains(string(pkg), `"@hyperdx/browser"`) {
 				t.Fatal("site declares @hyperdx/browser, which the runtime no longer imports")
 			}
@@ -92,7 +95,7 @@ func TestWriteSiteStarter(t *testing.T) {
 			if !strings.Contains(string(pkg), `"@reliantlabs/forge-web-runtime": "`+webRuntimePublishedRange+`"`) {
 				t.Errorf("package.json must declare the web runtime at forge's floor:\n%s", pkg)
 			}
-			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api"} {
+			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api", "@hyperdx/otel-web", "rrweb"} {
 				spec, _ := webruntimepeers.PeerSpec(peer)
 				if !strings.Contains(string(pkg), `"`+peer+`": "`+spec+`"`) {
 					t.Errorf("package.json must declare the runtime's peer %s at %q:\n%s", peer, spec, pkg)

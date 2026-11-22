@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chooseApiBase } from "./api-base";
+import { chooseApiBase, chooseApiBaseFor } from "./api-base";
 import { BASE_PATH } from "./basepath_gen";
 
 const preview = "https://3000-abc123.workspaces.reliantapi.com";
@@ -95,5 +95,61 @@ describe("apiBase", () => {
   it("reads the configured URL when the dev proxy is off", async () => {
     const apiBase = await apiBaseUnder("development", "");
     expect(apiBase("http://localhost:8080")).toBe("http://localhost:8080");
+  });
+});
+
+// Named same-origin APIs (Frontend.apis): /_api/@<name> beside /_api.
+describe("chooseApiBaseFor", () => {
+  it("proxies a named API under the dev proxy path, after an @", () => {
+    expect(
+      chooseApiBaseFor("billing", {
+        devProxyPath: "/_api",
+        origin: preview,
+        basePath: "",
+        configured: "http://localhost:8090",
+      }),
+    ).toBe(`${preview}/_api/@billing`);
+  });
+
+  it("keeps the platform's same-origin path as a path in a build", () => {
+    expect(
+      chooseApiBaseFor("billing", {
+        devProxyPath: "",
+        origin: preview,
+        basePath: "",
+        configured: "/_api/@billing/",
+      }),
+    ).toBe("/_api/@billing");
+  });
+});
+
+describe("apiBaseFor", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function apiBaseForUnder(dev: string, proxy: string, apis?: Record<string, string>) {
+    vi.stubEnv("NODE_ENV", dev);
+    vi.stubEnv("FORGE_DEV_API_PROXY", proxy);
+    vi.stubGlobal("__FORGE_CONFIG__", apis ? { apis } : {});
+    vi.resetModules();
+    return (await import("./api-base")).apiBaseFor;
+  }
+
+  it("goes through this origin under the dev server", async () => {
+    const apiBaseFor = await apiBaseForUnder("development", "/_api");
+    expect(apiBaseFor("billing")).toBe(`${window.location.origin}${BASE_PATH}/_api/@billing`);
+  });
+
+  it("reads config.js's apis in a build", async () => {
+    const apiBaseFor = await apiBaseForUnder("production", "", { billing: "/_api/@billing" });
+    expect(apiBaseFor("billing")).toBe("/_api/@billing");
+  });
+
+  it("refuses a name the environment does not declare", async () => {
+    const apiBaseFor = await apiBaseForUnder("production", "", { billing: "/_api/@billing" });
+    expect(() => apiBaseFor("biling")).toThrow(/no API named "biling"/);
   });
 });

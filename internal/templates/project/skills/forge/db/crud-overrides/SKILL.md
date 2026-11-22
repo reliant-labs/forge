@@ -1,6 +1,6 @@
 ---
 name: crud-overrides
-description: Diverge from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to, what the Update op already does for read-only fields, and the one set-based UPDATE that replaces a List + per-row update loop.
+description: Declared row ownership (`forge:owner=` on a table, through FK paths or user-OR-org, enforced by the generated ops) and diverging from generated CRUD without forking the projection — override op fields in your owned handlers_crud.go, the per-op seams (op.Filters, op.Fetch, op.Persist) a per-caller policy attaches to, what the Update op already does for read-only fields, and the one set-based UPDATE that replaces a List + per-row update loop.
 ---
 
 # Diverging From Generated CRUD
@@ -53,17 +53,103 @@ package calls them — a custom rpc projecting rows keeps its helper even when
 every CRUD rpc of that entity is hand-written. Declare your own function of
 that name and forge stops emitting it.
 
+## Declared ownership: `forge:owner=` on the table
+
+When a table's rows belong to someone, declare whose in the migration and the
+generated ops enforce it. No override to write, none to forget:
+
+```sql
+COMMENT ON TABLE folders  IS 'forge:owner=owner_id';                  -- a column of this table
+COMMENT ON TABLE notes    IS 'forge:owner=folder_id>owner_id';        -- through a FK: notes.folder_id → folders.owner_id
+COMMENT ON TABLE plans    IS 'forge:owner=thread_id>chat_id>user_id'; -- any number of hops
+COMMENT ON TABLE accounts IS 'forge:owner=user:user_id,org:org_id';   -- alternatives: the user OR any of their orgs
+```
+
+The value is a comma-separated list of alternative owners, and a row is the
+caller's when ANY of them matches. Each one is `[<kind>:]<col>[><col>…]`.
+`kind` defaults to `user`. Every column except the last must be a single-column
+FOREIGN KEY, and the next column is read on the table it references. A
+declaration that does not resolve against the applied schema (an unknown
+column, a hop through a column that is not a foreign key) fails `forge
+generate`. A misdeclared owner must never quietly become an unscoped table.
+
+**Who the caller is comes from you.** Forge does not know your org model. The
+service gains a `Owners crud.OwnerResolver` dep, and compose fills it by type
+from a provider in `internal/app/providers.go`. `forge generate` fails, naming
+the missing provider and printing this one, until you add it:
+
+```go
+type OwnersDeps struct{}
+
+func NewOwners(OwnersDeps) (crud.OwnerResolver, error) {
+	return crud.OwnerKinds{
+		"user": func(ctx context.Context) ([]string, error) {
+			claims, err := middleware.GetUser(ctx)
+			if err != nil {
+				return nil, crud.ErrNoCaller
+			}
+			return []string{claims.UserID}, nil
+		},
+		"org": func(ctx context.Context) ([]string, error) { /* the caller's org ids */ },
+	}, nil
+}
+```
+
+In tests, the harness stubs `Owners` with one that errors until you program
+it, so pass `With<Svc>Deps(Deps{Owners: …})`.
+
+A kind the resolver does not know is an Internal error, never an empty scope.
+
+**What each op does** (`forge/pkg/crud`'s `Owned*` helpers):
+
+| op | behavior |
+|---|---|
+| Get | one SELECT with the PK and the owner predicate; another tenant's row is **NotFound**, the same answer as an unknown id |
+| List | the predicate is appended in the query, so `total_count` counts only rows the caller can see |
+| Update | looks up the STORED row under the scope (**NotFound** otherwise), writes it, then looks it up again. If the caller would no longer own the written row it answers **PermissionDenied** and the write rolls back. All of this runs in one SERIALIZABLE transaction |
+| Delete | scoped lookup then delete, in one SERIALIZABLE transaction; outside the scope it answers **NotFound** |
+| Create | inserts, then checks that the caller owns the new row: a plan under someone else's thread is **PermissionDenied** and rolled back. A parent that does not exist gets the same answer, because the path's first FK violation is mapped, so the answer reveals nothing about which ids exist. A direct owner column the row leaves empty is stamped from the caller's one value for the first kind, so the client never sends its own user id |
+| no caller | **Unauthenticated**, before any statement runs. A resolver that was never wired is Internal. Either way the op fails closed, `auth_required: false` rpcs included |
+
+The predicate is nested `IN (SELECT …)` subqueries, one per hop. A
+path follows the reference, not the parent's liveness: a soft-deleted thread
+still owns its plans for scoping purposes.
+
+**Overrides still compose.** The op's `Fetch` / `Persist` / `PersistMasked`
+closures still take trailing `opts ...orm.QueryOption`, and `Filters` still
+runs first. A shim that appends a predicate (below) narrows the declared scope
+further and cannot widen it. Replacing a closure wholesale, without calling the
+generated one, is the escape hatch, and it drops the declared scope with it.
+
+**Tables with no owner.** A table with CRUD on an authenticated rpc and no
+owner declaration is flagged by the `crud-table-unowned` lint (warns in
+v1.11.0, gates from v1.12.0). Answer it by declaring an owner, or by saying why
+the table has none:
+
+```sql
+COMMENT ON TABLE plan_catalog IS 'forge:public: the pricing page lists every plan';
+COMMENT ON TABLE feature_flags IS 'forge:unscoped: admin service only; scoped in its handler';
+```
+
+The reason is required. These markers change no codegen. Forge writes none
+for you, scaffolded tables included.
+
+The column form, `COMMENT ON COLUMN t.c IS 'forge:owner'`, is unchanged. It
+arms the `unscoped_auth` audit and scaffolds a wrapper you finish by hand
+(`auth/authorization`). A table that declares the table form does not get that
+wrapper, because the op already enforces the scope.
+
 ## Where a per-caller policy attaches
 
-Forge enforces no policy of its own, so if rows are restricted to some callers,
-these are the seams that restriction attaches to. What the rule should be is
-yours; these are the mechanics of each op, and the constraints are not obvious
-from the struct:
+Forge enforces no policy beyond a declared `forge:owner=` (above), so for any
+other restriction, these are the seams it attaches to. What the rule should be
+is yours. These are the mechanics of each op, and the constraints are not
+obvious from the struct.
 
 Every request-projecting closure takes a `context.Context`, so the caller's
-claims are reachable from all of them. If a table declares `forge:owner`, forge
-scaffolds these overrides for you — see `auth/authorization`; what follows is
-the mechanics for everything else.
+claims are reachable from all of them. If a table declares the `forge:owner`
+COLUMN marker, forge scaffolds these overrides for you (see
+`auth/authorization`). What follows is the mechanics for everything else.
 
 - **List** — `op.Filters`, signature
   `func(ctx, *Req) ([]orm.QueryOption, error)`. The generated closure is **nil
@@ -80,8 +166,9 @@ the mechanics for everything else.
   a fetch-then-compare. On Update the predicate is evaluated against the
   **stored** row, which is what stops a caller reassigning someone else's row by
   rewriting the owner column in their request.
-- **Anything reachable only via a join** — `orm.QueryOption` is
-  `func(*bun.SelectQuery)` and orm ships no join helper, so drop to raw bun:
+- **Anything reachable only via a join** — declare it as a path
+  (`forge:owner=fk>…>col`, above) when it is ownership. Otherwise
+  `orm.QueryOption` is `func(*bun.SelectQuery)`, so drop to raw bun:
   `q.Where("id IN (SELECT intake_id FROM assignments WHERE provider_id = ?)", claims.UserID)`.
   For anything the op cannot express, hand-roll against `s.deps.DB`.
 - **Create** — `op.Entity`, signature `func(ctx, *Req) (Ent, error)`. Stamp an

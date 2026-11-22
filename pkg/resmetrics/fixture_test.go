@@ -97,7 +97,7 @@ func (f *fixture) removeCgroup(name string) {
 // directories, so they share a device and only the first is reported.
 func (f *fixture) options(o Options) Options {
 	o.procRoot, o.cgroupRoot = f.proc, f.cgroupRoot
-	o.volumes = []volume{{role: "cwd", path: f.t.TempDir()}, {role: "tmp", path: f.t.TempDir()}}
+	o.Volumes = []Volume{{Role: VolumeCwd, Path: f.t.TempDir()}, {Role: VolumeTmp, Path: f.t.TempDir()}}
 	o.now = func() time.Time { return f.now }
 	return o
 }

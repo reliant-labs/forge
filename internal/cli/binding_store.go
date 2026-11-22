@@ -761,6 +761,17 @@ func (l machineReleaseLedger) List(_ context.Context) ([]release.Release, error)
 
 func (l machineReleaseLedger) Location() string { return l.store.Dir() }
 
+// PutTestReport and RecordTests make the machine ledger a releaseTestsRecorder
+// (release_tests_evidence.go): it fills a release's test evidence itself,
+// where a control plane fills it server-side.
+func (l machineReleaseLedger) PutTestReport(data []byte) (string, error) {
+	return l.store.PutTestReport(data)
+}
+
+func (l machineReleaseLedger) RecordTests(_ context.Context, version string, ref release.TestsRef) (bool, error) {
+	return l.store.RecordReleaseTests(version, ref)
+}
+
 // ─── The machine ledger: the new records ─────────────────────────────────────
 
 // machineRecordStore implements bundleRecorder and sessionReporter against

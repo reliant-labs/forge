@@ -76,6 +76,11 @@ type siteStarterData struct {
 	Connect  string
 	Protobuf string
 	OTelAPI  string
+	// HyperDXOtelWeb and RRWeb are the exact optional peers
+	// '@reliantlabs/forge-web-runtime/telemetry' imports; the starter's
+	// otel_gen.ts imports it, so the site declares them.
+	HyperDXOtelWeb string
+	RRWeb          string
 	// DevLogFromRuntime: see templates.FrontendTemplateData. Vite only.
 	DevLogFromRuntime bool
 }
@@ -106,6 +111,8 @@ func writeSiteStarter(dir, projectName string, fe SiteFrontend, runtimeFloor str
 		Connect:         webRuntimePeer("@connectrpc/connect"),
 		Protobuf:        webRuntimePeer("@bufbuild/protobuf"),
 		OTelAPI:         webRuntimePeer("@opentelemetry/api"),
+		HyperDXOtelWeb:  webRuntimePeer("@hyperdx/otel-web"),
+		RRWeb:           webRuntimePeer("rrweb"),
 
 		DevLogFromRuntime: fe.Type == "vite" && viteDevLogFromRuntime(runtimeFloor),
 	}

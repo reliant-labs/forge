@@ -300,6 +300,10 @@ list` prints, what `forge project upgrade apply <id>` takes, and what
 lands in `.forge/migrations.json`. One skill covers everything that
 release broke — do not create a directory per individual change.
 
+A change with its own detection may be a topic playbook,
+`migrations/<version>/<topic>/SKILL.md`, id `<version>/<topic>`; a sub-skill
+without `detection:` is a section of its release's playbook.
+
 ### Telling the agent what to do: commit trailers
 
 A change a consumer's agent must act on carries an `Agent-Instructions:` (and,
@@ -310,7 +314,9 @@ renders it into CHANGELOG.md and upgrade shows it. The contract:
 ### A breaking change registers its codemod, and upgrade runs it
 
 A PR that breaks a consumer (the API-diff gate names it with `API-BREAK:
-codemod=<name>`) ships the `forge fix <name>` codemod in `internal/codemod`.
+codemod=<name>`) ships the `forge fix <name>` codemod in `internal/codemod`
+(or registers it from `internal/cli` with `codemod.Register` when it needs a
+KCL render).
 `forge project upgrade` then runs it when the range crosses the release, by
 one of two declarations — the registration is incomplete without one, and
 `TestEveryRegisteredCodemodIsReachableFromUpgrade` fails otherwise:

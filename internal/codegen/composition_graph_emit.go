@@ -1198,7 +1198,9 @@ func writeSessionsMigration(projectDir string) error {
 	body := "-- forge:backward-compatible — a new table no older release reads.\n" +
 		"-- Server-side sign-in sessions (forge/pkg/session.SchemaSQL): the browser's cookie\n" +
 		"-- holds an opaque id; each row holds that session's tokens, sealed under a key\n" +
-		"-- derived from the id, so a copy of this table signs no one in.\n\n" + session.SchemaSQL
+		"-- derived from the id, so a copy of this table signs no one in.\n" +
+		"-- This migration is YOURS from birth: forge writes it once and never rewrites\n" +
+		"-- it. Evolve the table with a NEW migration.\n\n" + session.SchemaSQL
 	path := filepath.Join(dir, version+"_create_auth_sessions.up.sql")
 	if err := atomicfile.WriteFile(path, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)

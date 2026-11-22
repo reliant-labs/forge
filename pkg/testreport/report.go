@@ -120,10 +120,26 @@ type FlakeSignal struct {
 
 // Upload is the result of an upload.
 type Upload struct {
-	// Status is "ok", "skipped" or "failed".
+	// Status is "ok" (every part requested of every lane run went up),
+	// "partial" (runs were recorded, but a part of one was omitted; Omitted
+	// says which), "skipped" or "failed".
 	Status string `json:"status"`
 	URL    string `json:"url,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Omitted are the parts a recorded lane run was sent without, each
+	// with its reason; nil when none was. A pointer so Upload stays
+	// comparable.
+	Omitted *[]UploadOmission `json:"omitted,omitempty"`
+}
+
+// UploadOmission is one document a recorded lane run was uploaded without.
+type UploadOmission struct {
+	// Run is the local run's id; Lane the lane.
+	Run  string `json:"run"`
+	Lane Lane   `json:"lane"`
+	// Part is the omitted part: "coverage".
+	Part   string `json:"part"`
+	Reason string `json:"reason"`
 }
 
 // ReportInput is what [NewReport] summarises.

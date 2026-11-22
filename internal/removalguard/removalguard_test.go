@@ -393,6 +393,15 @@ var removals = []removal{
 				Paths:   []string{"forge.yaml", "internal/cli/ci_vuln_exempt_test.go"},
 			},
 			{
+				Name: "a reliant package path in a captured CI log's expected failures",
+				Reason: "internal/testflakes attributes failures in a real `gh run view --log-failed` capture of " +
+					"reliant (testdata/log-failed.txt); reliant has its own `internal/authz` package, and the " +
+					"capture and its test name the failing test by that import path. That is reliant's code, " +
+					"not the removed forge feature. Scoped to that import path in the capture and its test.",
+				Token: regexp.MustCompile(`github\.com/reliant-labs/reliant/internal/authz\b`),
+				Paths: []string{"internal/testflakes/confirm_test.go", "internal/testflakes/testdata/log-failed.txt"},
+			},
+			{
 				Name:   "HTTP 401 Unauthorized",
 				Reason: "`unauthorized` / `Unauthorized` / `http.StatusUnauthorized` / the `network:unauthorized` event are the HTTP 401 status — a wire-level authentication outcome, unrelated to the removed feature.",
 				Token:  regexp.MustCompile(`(?i)unauthoriz(ed|ation)?`),

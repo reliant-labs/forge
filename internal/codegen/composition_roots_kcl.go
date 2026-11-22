@@ -42,10 +42,78 @@ import (
 type RootsEnv struct {
 	ConfigType, EnvMap string
 	Argv               bool
+	// Process is set when a project keeps a project-global AppConfig (the
+	// root config, ConfigType/EnvMap) beside configs bound to its primary
+	// binary: a root's process loads both, so its env is built from two
+	// instances, and workloadEnvMap takes the binary's as a third argument.
+	Process *RootsProcess
 }
+
+// RootsProcess is the primary binary's own configs beside a project-global
+// AppConfig: the KCL type of the instance they are projected from — the
+// binary's process bundle when it binds config per command, else its root
+// config — the lambda that projects it, whether that lambda takes argv, and
+// the member the per-env config.k declares the instance under.
+type RootsProcess struct {
+	ConfigType, EnvMap, Instance string
+	Argv                         bool
+}
+
+// rootsProcessEnvMap is the module-private lambda config_gen.k composes a
+// root's env through when RootsEnv.Process is set.
+const rootsProcessEnvMap = "_rootsProcessEnvMap"
 
 // appConfigRootsEnv is the single-AppConfig project's.
 var appConfigRootsEnv = RootsEnv{ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"}
+
+// graphRootsKCL is the ROOTS block of a composition-graph project's config
+// module, which every env file the scaffold writes calls into
+// (config_gen.root_of, config_gen.workloadEnvMap), so it is never left out:
+// nil roots (generate did not read the graph) is defaultRoot; a root whose
+// reach generate could not read is fill(root); and a graph with no root at
+// all is RootsUnavailableKCL, so an env that names one fails its render
+// saying why instead of on a missing symbol.
+func graphRootsKCL(roots []GraphRoot, env RootsEnv, defaultRoot GraphRoot, fill func(GraphRoot) GraphRoot) string {
+	if roots == nil {
+		roots = []GraphRoot{defaultRoot}
+	}
+	if len(roots) == 0 {
+		return RootsUnavailableKCL("the composition graph has no root (a //forge:root struct in internal/app) for a workload to run")
+	}
+	filled := make([]GraphRoot, 0, len(roots))
+	for _, r := range roots {
+		if r.Config == nil {
+			r = fill(r)
+		}
+		filled = append(filled, r)
+	}
+	return RootsKCLFor(filled, env)
+}
+
+// RootsUnavailableKCL is the ROOTS block of a composition-graph project whose
+// roots' env cannot be projected, for the reason given: root_of and
+// workloadEnvMap are still declared, and each fails the render with that
+// reason when called. An env that calls neither renders as before.
+func RootsUnavailableKCL(reason string) string {
+	q := strconv.Quote(reason)
+	return fmt.Sprintf(`
+# ---------------------------------------------------------------------------
+# ROOTS are not projected: %s.
+# root_of and workloadEnvMap fail the render with that reason when called.
+# ---------------------------------------------------------------------------
+ROOTS: {str: any} = {}
+
+root_of = lambda name: str -> {str:} {
+    assert False, "config_gen.root_of(\"${name}\"): " + %s
+    {}
+}
+
+workloadEnvMap = lambda c: any, w: any -> {str: str | forge.SecretRef} {
+    assert False, "config_gen.workloadEnvMap(workload '${w.name}'): " + %s
+    {}
+}
+`, reason, q, q)
+}
 
 // RootsKCL renders the ROOTS block appended to config_gen.k, or "" when the
 // roots' reach is unknown (no root config message) or there are none.
@@ -66,6 +134,14 @@ func RootsKCLFor(roots []GraphRoot, env RootsEnv) string {
 	sorted := append([]GraphRoot(nil), roots...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	data := rootsKCLData{ConfigType: env.ConfigType, EnvMap: env.EnvMap, Argv: env.Argv}
+	if env.Process != nil {
+		// Every call goes through the composing lambda, which takes the
+		// binary's instance and argv and hands the root config's half to
+		// env.EnvMap.
+		data.Process = env.Process
+		data.RootEnvMap, data.RootSensitive = env.EnvMap, KCLAllSensitiveName(env.ConfigType)
+		data.EnvMap, data.Argv = rootsProcessEnvMap, true
+	}
 	for _, r := range sorted {
 		v := rootKCLView{Name: strconv.Quote(r.Name), Args: kclStringList(r.Args)}
 		var env, secrets, required, families []string
@@ -126,6 +202,11 @@ type rootsKCLData struct {
 	ConfigType, EnvMap string
 	Argv               bool
 	Families           bool
+	// Process, RootEnvMap and RootSensitive are set for RootsEnv.Process:
+	// the binary's instance, and the root config's own lambda and list of
+	// sensitive env vars, which split a root's config_secrets between them.
+	Process                   *RootsProcess
+	RootEnvMap, RootSensitive string
 }
 
 type rootKCLView struct{ Name, Args, Env, Secrets, Required, Families string }
@@ -150,7 +231,16 @@ func DefaultServerRoot(fields []ConfigField) GraphRoot {
 // per command: the default `server` reaches every field of its root config
 // and of each other config a process running `server` loads.
 func DefaultServerRootLoads(rootFields []ConfigField, perBinary []BinaryConfigFields, binary, rootMessage string) GraphRoot {
-	r := DefaultServerRoot(rootFields)
+	return rootReachingAll(GraphRoot{Name: "server", Args: []string{"server"}}, rootFields, perBinary, binary, rootMessage)
+}
+
+// rootReachingAll is r reaching every field of its root config (rootFields,
+// the message rootMessage) and of each other config of binary that a process
+// running r.Args loads: what generate takes a root to reach when it could
+// not read the root's reach off the graph — the default `server` of a
+// narrowed run, or a root of a project with no root config message on disk.
+func rootReachingAll(r GraphRoot, rootFields []ConfigField, perBinary []BinaryConfigFields, binary, rootMessage string) GraphRoot {
+	r.Config, r.Loads = DefaultServerRoot(rootFields).Config, nil
 	for _, bc := range perBinary {
 		if bc.Binary != binary || bc.MessageName == rootMessage {
 			continue

@@ -32,6 +32,7 @@ forge.yaml.
 | `forge lint --tracing` | a Go module | `forge-tracing-log-without-ctx` (`slog.Info` with a ctx in scope; `--fix` rewrites to `InfoContext`), `forge-tracing-raw-http-client` (an `http.Client` with no traced transport) and the other tracing rules (`observability/tracing-lint`) |
 | `forge lint --time-bucketing` | a Go module, and `db/migrations` to read column types | two-argument `date_trunc` over a `TIMESTAMPTZ` (a warning; does not fail the run) |
 | `forge lint --slow-tests` | a Go module | a test that execs a tool (`git`, `go`, `docker`, …) or dials the network without `testkit.Slow` or a `testing.Short()` skip |
+| `forge lint --caller-paths` | a Go module | `forge-runtime-caller-path`: code that finds testdata or the repo root from `runtime.Caller`'s file, which is not a file on disk under `-trimpath` |
 | `go test -short -json ./... \| forge ci test-budget` | a Go module | unmarked tests over the fast-tier budget (2s) |
 | `go test -json ./... \| forge ci verify-test-run` | a Go module | packages that skipped so much their pass proves nothing |
 

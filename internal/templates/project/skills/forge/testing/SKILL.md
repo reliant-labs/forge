@@ -262,6 +262,44 @@ time.Sleep(100 * time.Millisecond)
 The rules warn in a project pinned below the release after the one that ships
 them, then gate.
 
+## Find testdata from the package directory, never from runtime.Caller
+
+`-trimpath` is forge's default build mode (the scaffolded Taskfile adds it to
+`GOFLAGS`), and under it `runtime.Caller` reports a module-relative path such as
+`example.com/app/internal/x/x_test.go`, not a file on disk. So a test that finds
+its testdata or the repository root from its own source path passes in a plain
+`go test` and fails in a trimmed one. `go test` runs each test in its package's
+source directory, so resolve paths against that instead:
+
+```go
+fixture, err := filepath.Abs("testdata/orders.json") // the package dir is the cwd
+
+// The module root: walk up from the cwd to the go.mod.
+root, _ := os.Getwd()
+for {
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+		break
+	}
+	parent := filepath.Dir(root)
+	if parent == root {
+		t.Fatal("no go.mod above the package directory")
+	}
+	root = parent
+}
+```
+
+`forge lint` flags the other shape (the `caller-paths` lane, also
+`forge lint --caller-paths` alone), in every `.go` file:
+
+| Rule | Flags | Does not flag |
+|---|---|---|
+| `forge-runtime-caller-path` | a `runtime.Caller` call whose file result is kept in a variable (`_, file, _, ok := runtime.Caller(0)`) and used as anything but text: joined, passed to `filepath.Dir` or a helper, returned, stored in a field | the file discarded (`_`); a file the same function checks with `filepath.IsAbs` (code that uses the path only when it is absolute already copes); a file only displayed (`filepath.Base`, or `fmt` / `log` / `slog` / `errors`) |
+
+A deliberate use is suppressed at its line with the reason
+(`// forge:lint-disable-next-line forge-runtime-caller-path: <why>`). The rule
+warns in a project pinned below v1.12.0, then gates; `lint.rules` raises or
+lowers it like any rule.
+
 ## Don't hand-roll what forge already provides
 
 Before you stand up your own test infra, reach for the capabilities forge ships — agents routinely reinvent these:

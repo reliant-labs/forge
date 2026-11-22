@@ -10,10 +10,19 @@ import "os"
 //     runs. The app cannot pass it in: the whole point is that a supervisor
 //     marks the install as its own without the app's cooperation, and the
 //     marker can only refuse a swap, never grant one.
+//   - KUBERNETES_SERVICE_HOST is the kubelet's mark on every container it
+//     starts. Like FORGE_MANAGED_BY it only ever refuses a swap: in a pod the
+//     image is the unit of upgrade, never the binary.
 //   - exec(2) replaces this process with the new binary, which must start
 //     with the same environment, as forgedelegate.Exec does. It is passed
 //     through, never consulted.
 
 func lookupManagedByEnv() (string, bool) { return os.LookupEnv(ManagedByEnv) }
+
+// KubernetesServiceHostEnv is set by the kubelet in every container of a
+// pod; [Detect] refuses to replace a binary that sees it.
+const KubernetesServiceHostEnv = "KUBERNETES_SERVICE_HOST"
+
+func lookupKubernetesEnv() (string, bool) { return os.LookupEnv(KubernetesServiceHostEnv) }
 
 func processEnv() []string { return os.Environ() }

@@ -131,13 +131,14 @@ type Updater struct {
 	mu      sync.Mutex
 	pending *Staged
 
-	// Seams for tests: the binary being replaced, the clock, how to back it
-	// up, and how to exec or exit.
-	exePath  string
-	now      func() time.Time
-	backupFn func(src, dir, label string, now time.Time) (string, error)
-	execFn   func(path string, argv, env []string) error
-	exitFn   func(code int)
+	// Seams for tests: the binary being replaced, what Detect consults, the
+	// clock, how to back it up, and how to exec or exit.
+	exePath   string
+	detectEnv detectEnv
+	now       func() time.Time
+	backupFn  func(src, dir, label string, now time.Time) (string, error)
+	execFn    func(path string, argv, env []string) error
+	exitFn    func(code int)
 }
 
 // DefaultStateDir is ~/.<binary>/upgrade.
@@ -220,7 +221,7 @@ func New(cfg Config) (*Updater, error) {
 		cfg.Logger.Warn("selfupdate: INSECURE: release signatures are not verified (Config.InsecureAllowUnsigned); a tampered release would be installed",
 			"binary", cfg.Binary)
 	}
-	return &Updater{cfg: cfg, log: cfg.Logger, now: time.Now, backupFn: backupBinary, execFn: execBinary, exitFn: os.Exit}, nil
+	return &Updater{cfg: cfg, log: cfg.Logger, detectEnv: defaultDetectEnv(), now: time.Now, backupFn: backupBinary, execFn: execBinary, exitFn: os.Exit}, nil
 }
 
 // Check asks the Source for the channel's release and decides what to do.
@@ -250,7 +251,7 @@ func (u *Updater) Check(ctx context.Context) (Release, Decision, error) {
 
 // detect runs Detect against the binary this Updater replaces.
 func (u *Updater) detect() (Install, error) {
-	return Detect(DetectOptions{Path: u.exePath, Managed: u.cfg.Managed})
+	return detect(DetectOptions{Path: u.exePath, Managed: u.cfg.Managed}, u.detectEnv)
 }
 
 // requireSelfOwned refuses an install something else owns.

@@ -34,8 +34,9 @@
 // [Detect] refuses installs something else owns: a managed-by stamp, at
 // build time (-X …/selfupdate.managedBy=<owner>), in a <binary>.managed-by
 // file beside it or in FORGE_MANAGED_BY (authoritative), an app bundle or AppImage, a package
-// manager, the app's own managed predicate (a cloud pod), or a directory this
-// user cannot write. Heuristics only ever refuse; they never grant.
+// manager, the app's own managed predicate, a Kubernetes pod or a container
+// (the image is the unit), or a directory this user cannot write. Heuristics
+// only ever refuse; they never grant.
 //
 // # Signatures
 //
@@ -44,6 +45,13 @@
 // The keyless Sigstore verifier is in the sigstore subpackage. [GitHubSource]
 // and [ManifestSource] (a signed channel manifest such as reliant's
 // daemon-channels.json) find the target release.
+//
+// # Opting in
+//
+// The autoupdate subpackage is the default-off wiring for a long-lived
+// binary: Boot, a periodic Check/Prepare/Request loop, confirmation on the
+// app's readiness, and ExecPending after its shutdown. A pkg/serverkit
+// server hands one to Server.SelfUpdate.
 //
 // Windows: staging works; the swap does not yet ([ErrUnsupported]).
 package selfupdate

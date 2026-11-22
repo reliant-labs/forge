@@ -4691,9 +4691,10 @@ benefits:
       pgo status` shows each binary's file, source and age. A hosted env's
       profiles are pulled through the control plane (sign-in required). Tune or
       opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo`
-      in KCL. A hosted project gets `.github/workflows/pgo-refresh.yml` (an
-      existing one on its next `forge generate`), which pulls weekly and opens a
-      pull request when the env's profiles changed a binary's file.
+      in KCL. A project whose hosted env builds a Go binary gets
+      `.github/workflows/pgo-refresh.yml` (an existing one on its next `forge
+      generate`), which pulls weekly and opens a pull request when the env's
+      profiles changed a binary's file.
     why: >-
       Go applies PGO per main package, so a binary that runs as server, worker
       and cron gets one profile merging all of them, weighted by CPU. A missing

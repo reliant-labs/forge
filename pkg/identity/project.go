@@ -113,7 +113,7 @@ func (p *run) applyProject(ctx context.Context) error {
 			return objErr("project", want.Name, errors.New("the instance created it but returned no id"))
 		}
 		p.projectID = out.ID
-		p.logf("created project", "name", want.Name, "id", out.ID)
+		p.logf(ctx, "created project", "name", want.Name, "id", out.ID)
 		return nil
 	}
 	if cur.Name == want.Name && cur.ProjectRoleAssertion && cur.ProjectRoleCheck == want.MustHoldRole && cur.HasProjectCheck == want.ProjectCheck {

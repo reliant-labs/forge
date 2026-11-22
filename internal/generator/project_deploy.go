@@ -125,6 +125,12 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 		if e.env != codegen.DevEnvName {
 			g.hostedEnvs = append(g.hostedEnvs, e.env)
+			// The cloud template binds `_api`, which runs the project's
+			// own binary (./cmd/<bin>): a Go binary `forge pgo pull` can
+			// profile. The frontend-only one runs none.
+			if e.template == "kcl/cloud/main.k.tmpl" {
+				g.pgoEnvs = append(g.pgoEnvs, e.env)
+			}
 		}
 		// THE SHARED BASE the deployed envs bind through
 		// (deploy/kcl/base/env.k): written once, with the first env that

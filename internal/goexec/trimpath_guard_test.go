@@ -33,9 +33,12 @@ var goflagsExempt = map[string]string{
 	// same environment, so a -trimpath the file layer sets is carried over, and
 	// adding one would change the user's own test run that a retry must repeat.
 	"internal/testretry/run.go:Run": "pins the effective GOFLAGS go itself reported (file layer included), so it drops nothing",
-	// The dev loop's own binaries keep their paths (WithTrimpath: "not for everything").
-	"internal/hostlaunch/hostlaunch.go:WithPGO":   "the env of a go run / air binary a developer runs and debugs, which keeps absolute paths on purpose",
-	"internal/hostlaunch/pgo_test.go:TestWithPGO": "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
+	// Merges, not overrides: every caller applies hostlaunch.WithTrimpath
+	// first, which pins the effective GOFLAGS (-trimpath merged) into env,
+	// and WithPGO appends -pgo=off to that value.
+	"internal/hostlaunch/hostlaunch.go:WithPGO":             "appends -pgo=off to the GOFLAGS hostlaunch.WithTrimpath pinned before it",
+	"internal/hostlaunch/pgo_test.go:TestWithPGO":           "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
+	"internal/hostlaunch/trimpath_test.go:TestWithTrimpath": "inputs to WithTrimpath and a stub of the goexec merge; never handed to go",
 }
 
 // TestGOFLAGSOverridesKeepTrimpath pins that a child environment which SETS
@@ -153,7 +156,7 @@ func scanGOFLAGS(body *ast.BlockStmt) (sets []token.Pos, merges bool) {
 				sets = append(sets, n.Pos())
 			}
 		case *ast.CallExpr:
-			if pkg, name := selectorOf(n.Fun); pkg == "goexec" && (name == "WithTrimpath" || name == "CheckEnv") {
+			if pkg, name := selectorOf(n.Fun); pkg == "goexec" && (name == "WithTrimpath" || name == "WithTrimpathPinned" || name == "CheckEnv") {
 				merges = true
 			}
 		}

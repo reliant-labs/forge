@@ -127,3 +127,33 @@ func TestWithTrimpath_MergesIntoTheEffectiveGOFLAGS(t *testing.T) {
 		})
 	}
 }
+
+// TestWithTrimpathPinned_AlwaysWritesTheEffectiveGOFLAGS: unlike WithTrimpath,
+// a file-layer value that already decides -trimpath is copied into env, so a
+// GOFLAGS appended later (hostlaunch.WithPGO's -pgo=off) cannot hide it — a
+// `go env -w GOFLAGS=-trimpath=false` opt-out survives.
+func TestWithTrimpathPinned_AlwaysWritesTheEffectiveGOFLAGS(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		env       []string
+		fileFlags string
+		want      []string
+	}{
+		{"nothing set anywhere", []string{"HOME=/h"}, "", []string{"HOME=/h", "GOFLAGS=-trimpath"}},
+		{"file opt-out is pinned into env", []string{"HOME=/h"}, "-trimpath=false", []string{"HOME=/h", "GOFLAGS=-trimpath=false"}},
+		{"file -trimpath is pinned into env", []string{"HOME=/h"}, "-trimpath -tags=x", []string{"HOME=/h", "GOFLAGS=-trimpath -tags=x"}},
+		{"env opt-out wins over the file", []string{"GOFLAGS=-trimpath=false"}, "-trimpath", []string{"GOFLAGS=-trimpath=false"}},
+		{"env flags merge", []string{"GOFLAGS=-mod=vendor", "A=1"}, "-tags=ignored", []string{"A=1", "GOFLAGS=-mod=vendor -trimpath"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := append([]string(nil), tc.env...)
+			got := withTrimpathPinned(tc.env, func() string { return tc.fileFlags })
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("withTrimpathPinned(%q, file=%q) = %q, want %q", tc.env, tc.fileFlags, got, tc.want)
+			}
+			if !reflect.DeepEqual(tc.env, base) {
+				t.Errorf("env was mutated: %q, was %q", tc.env, base)
+			}
+		})
+	}
+}

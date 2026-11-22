@@ -43,6 +43,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/reliant-labs/forge/internal/envutil"
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // Defaults pinned by the runner dispatch. Exported so tests and CLI
@@ -407,14 +408,7 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 // -pgo=off. GOFLAGS the environment already carries is kept, and a -pgo in
 // it is the user's choice and wins. env is not modified.
 func WithPGO(spec RunnerSpec, env []string) []string {
-	var compiles bool
-	switch strings.TrimSpace(spec.Runner) {
-	case "air":
-		compiles = true
-	case "", "go-run":
-		compiles = len(spec.Command) == 0 // a spec.command runs verbatim
-	}
-	if !spec.PGOOff || !compiles {
+	if !spec.PGOOff || !compilesOnLaunch(spec) {
 		return env
 	}
 	const key = "GOFLAGS="
@@ -433,6 +427,40 @@ func WithPGO(spec RunnerSpec, env []string) []string {
 		}
 	}
 	return append(out, key+strings.TrimSpace(flags+" -pgo=off"))
+}
+
+// WithTrimpath returns env with -trimpath merged into GOFLAGS when spec's
+// runner compiles the binary on launch — go-run, or air, whose `go build`
+// inherits the environment — the same runners WithPGO serves. Without it each
+// worktree's dev loop compiles every package of the module into its own
+// path-keyed build-cache entries (goexec.WithTrimpath says why). The effective
+// GOFLAGS (env's, else `go env -w` / go.env) is written into env either way
+// (goexec.WithTrimpathPinned), so WithPGO, applied after this, cannot hide a
+// -trimpath=false opt-out. A debug build is not affected: the scaffolded
+// air-debug.toml passes -trimpath=false on its command line, which beats
+// GOFLAGS, and the binary and delve runners execute what `forge build`
+// compiled. env is not modified.
+func WithTrimpath(spec RunnerSpec, env []string) []string {
+	if !compilesOnLaunch(spec) {
+		return env
+	}
+	return trimpathGOFLAGS(env)
+}
+
+// trimpathGOFLAGS is goexec.WithTrimpathPinned, a var so a test answers
+// without asking the go toolchain for its file-layer GOFLAGS.
+var trimpathGOFLAGS = goexec.WithTrimpathPinned
+
+// compilesOnLaunch reports whether spec's runner runs `go build` itself:
+// air always, go-run unless a spec.command runs verbatim.
+func compilesOnLaunch(spec RunnerSpec) bool {
+	switch strings.TrimSpace(spec.Runner) {
+	case "air":
+		return true
+	case "", "go-run":
+		return len(spec.Command) == 0
+	}
+	return false
 }
 
 // GoBuildFlagsEnv is the variable the scaffolded .air.toml's `go build`

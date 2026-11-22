@@ -268,7 +268,7 @@ Every archive ships beside `<archive>.cdx.json` (`forge_linux_amd64.tar.gz.cdx.j
 …): a CycloneDX 1.6 SBOM of the binary inside it, listing every Go module it links.
 `release-forge.sh` makes them before the bookkeeping commit with
 `forge vuln sbom --file <binary> --artifact <archive> --release vX.Y.Z`, the generator a
-forge release cut uses for a host binary (forge's pinned, sha256-verified syft). The
+`forge env build --release` uses for a host binary (forge's pinned, sha256-verified syft). The
 forge that runs it is the release's own build for the release machine, taken from the
 archives just built, so the machine's installed forge does not matter;
 `FORGE_RELEASE_SBOM_FORGE` names another. `gh release create` attaches them with the

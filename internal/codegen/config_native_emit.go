@@ -90,16 +90,21 @@ func GenerateConfigNativeShared(fields []ConfigField, projectName, projectDir, k
 
 // GenerateConfigNativeSharedRoots is GenerateConfigNativeShared for a
 // composition-graph project: the module also carries ROOTS and the lambdas
-// that bind a workload to a root (RootsKCL). nil roots is the plain module.
+// that bind a workload to a root (RootsKCL). nil roots is the plain module,
+// or, in a graph-mode project, the default `server` root.
 func GenerateConfigNativeSharedRoots(fields []ConfigField, roots []GraphRoot, projectName, projectDir, kclDirAbs string, cs *checksums.FileChecksums) error {
 	body, err := GenerateConfigKCL(fields, projectName)
 	if err != nil {
 		return fmt.Errorf("generate config module: %w", err)
 	}
-	if roots == nil && GraphComposition(projectDir) {
-		roots = []GraphRoot{DefaultServerRoot(fields)}
+	if roots != nil || GraphComposition(projectDir) {
+		// A root whose reach generate could not read (no config proto on
+		// disk to read it against) reaches the whole AppConfig, as the
+		// default `server` does.
+		fill := func(r GraphRoot) GraphRoot { return rootReachingAll(r, fields, nil, "", "") }
+		body += graphRootsKCL(roots, appConfigRootsEnv, DefaultServerRoot(fields), fill)
 	}
-	return writeConfigNativeShared(body+RootsKCL(roots), projectDir, kclDirAbs, cs)
+	return writeConfigNativeShared(body, projectDir, kclDirAbs, cs)
 }
 
 // GenerateConfigNativeSharedPerBinary is the per-binary form of
@@ -125,34 +130,51 @@ func GenerateConfigNativeSharedPerBinaryRoots(rootFields []ConfigField, perBinar
 		return fmt.Errorf("generate per-binary config module: %w", err)
 	}
 	if GraphComposition(projectDir) {
-		if env, defaultRoot, ok := perBinaryRootsEnv(projectDir, rootFields, perBinary); ok {
-			if roots == nil {
-				roots = []GraphRoot{defaultRoot}
-			}
-			body += RootsKCLFor(roots, env)
+		p := perBinaryRootsEnv(projectDir, rootFields, perBinary)
+		if p.unavailable != "" {
+			body += RootsUnavailableKCL(p.unavailable)
+		} else {
+			body += graphRootsKCL(roots, p.env, p.defaultRoot, p.fill)
 		}
 	}
 	return writeConfigNativeShared(body, projectDir, kclDirAbs, cs)
 }
 
+// rootsProjection is how a per-binary project's config module projects its
+// roots: through env, with defaultRoot when generate did not read the graph,
+// and fill for a root whose reach it could not read. unavailable, when set,
+// is why no root's env can be projected at all.
+type rootsProjection struct {
+	env         RootsEnv
+	defaultRoot GraphRoot
+	fill        func(GraphRoot) GraphRoot
+	unavailable string
+}
+
 // perBinaryRootsEnv is how a per-binary project projects a root's process
-// env, and its default `server` root: through appConfigEnvMap when the
-// project keeps an AppConfig and binds no config to the primary binary;
-// through the primary binary's process selector when it binds config per
-// command; through its root config's own lambda when that is all it binds.
-// ok is false when no one lambda is a root's env: no primary binary, or a
-// project-global AppConfig beside configs bound to the primary binary.
-func perBinaryRootsEnv(projectDir string, rootFields []ConfigField, perBinary []BinaryConfigFields) (env RootsEnv, defaultRoot GraphRoot, ok bool) {
-	treeDir := primaryCmdTreeDir(projectDir)
-	if treeDir == "" {
-		return RootsEnv{}, GraphRoot{}, false
-	}
-	binary := filepath.Base(filepath.Dir(treeDir))
+// env, and its default `server` root, in each shape its configs take:
+//
+//   - a project-global AppConfig and no config bound to the primary binary
+//     (or no primary binary): through appConfigEnvMap;
+//   - an AppConfig beside configs bound to the primary binary: the root's
+//     process loads both, so through appConfigEnvMap AND the binary's process
+//     selector (it binds config per command) or its root config's lambda,
+//     the binary's instance a third argument of workloadEnvMap;
+//   - no AppConfig, the primary binary binding config per command: through
+//     its process selector, which takes the root's args;
+//   - no AppConfig, the primary binary binding only a root config: through
+//     that config's own lambda.
+//
+// With neither an AppConfig nor a config bound to the primary binary there is
+// no config a root's process loads, which generate refuses for the Go loader
+// too; the projection is unavailable and says so.
+func perBinaryRootsEnv(projectDir string, rootFields []ConfigField, perBinary []BinaryConfigFields) rootsProjection {
+	binary := primaryBinaryName(projectDir)
 	var root *BinaryConfigFields
 	bound := false
 	for i := range perBinary {
 		bc := &perBinary[i]
-		if bc.Binary != binary {
+		if binary == "" || bc.Binary != binary {
 			continue
 		}
 		bound = true
@@ -160,20 +182,64 @@ func perBinaryRootsEnv(projectDir string, rootFields []ConfigField, perBinary []
 			root = bc
 		}
 	}
-	switch {
-	case len(rootFields) > 0 && !bound:
-		return appConfigRootsEnv, DefaultServerRoot(rootFields), true
-	case len(rootFields) > 0 || root == nil:
-		return RootsEnv{}, GraphRoot{}, false
-	}
-	defaultRoot = DefaultServerRootLoads(root.Fields, perBinary, binary, root.MessageName)
+	var selector *ProcessSelector
 	for _, ps := range ProcessSelectorsFrom(perBinary) {
-		if ps.Binary == binary {
-			return RootsEnv{ConfigType: ps.SchemaName(), EnvMap: ps.LambdaName(), Argv: true}, defaultRoot, true
+		if binary != "" && ps.Binary == binary {
+			selector = &ps
+			break
 		}
 	}
-	schema, lambda := KCLConfigName(root.MessageName)
-	return RootsEnv{ConfigType: schema, EnvMap: lambda}, defaultRoot, true
+	rootMessage := ""
+	if root != nil {
+		rootMessage = root.MessageName
+	}
+	if len(rootFields) > 0 {
+		// The project-global AppConfig is the root config (config.Config
+		// aliases it), and every config bound to the primary binary is one
+		// more config its processes load.
+		rootMessage = "AppConfig"
+	}
+	p := rootsProjection{fill: func(r GraphRoot) GraphRoot {
+		fields := rootFields
+		if len(fields) == 0 && root != nil {
+			fields = root.Fields
+		}
+		return rootReachingAll(r, fields, perBinary, binary, rootMessage)
+	}}
+	switch {
+	case len(rootFields) > 0 && !bound:
+		p.env, p.defaultRoot = appConfigRootsEnv, DefaultServerRoot(rootFields)
+	case len(rootFields) > 0:
+		p.env = appConfigRootsEnv
+		if selector != nil {
+			p.env.Process = &RootsProcess{ConfigType: selector.SchemaName(), EnvMap: selector.LambdaName(),
+				Instance: naming.ToSnakeCase(selector.SchemaName()), Argv: true}
+		} else {
+			schema, lambda := KCLConfigName(root.MessageName)
+			p.env.Process = &RootsProcess{ConfigType: schema, EnvMap: lambda, Instance: InstanceName(root.MessageName)}
+		}
+		p.defaultRoot = DefaultServerRootLoads(rootFields, perBinary, binary, rootMessage)
+	case selector != nil:
+		p.env = RootsEnv{ConfigType: selector.SchemaName(), EnvMap: selector.LambdaName(), Argv: true}
+		var fields []ConfigField
+		if root != nil {
+			fields = root.Fields
+		}
+		p.defaultRoot = DefaultServerRootLoads(fields, perBinary, binary, rootMessage)
+	case root != nil:
+		schema, lambda := KCLConfigName(root.MessageName)
+		p.env = RootsEnv{ConfigType: schema, EnvMap: lambda}
+		p.defaultRoot = DefaultServerRootLoads(root.Fields, perBinary, binary, rootMessage)
+	default:
+		target := "the primary binary"
+		if binary != "" {
+			target = fmt.Sprintf("the primary binary %q", binary)
+		}
+		p.unavailable = fmt.Sprintf("no config is loaded by a root's process: the project declares no root AppConfig, and no config is bound to %s. "+
+			"Declare an unannotated AppConfig in the config proto, or bind a root config to the primary binary with "+
+			"`option (forge.v1.binary_config) = {binary: \"<bin>\"};` (no `command`)", target)
+	}
+	return p
 }
 
 // writeConfigNativeShared writes the generated config module to

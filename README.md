@@ -22,6 +22,9 @@ claude mcp add forge -- npx -y @reliantlabs/forge mcp   # Claude Code
 codex mcp add forge -- npx -y @reliantlabs/forge mcp    # Codex
 # Cursor, VS Code and Gemini CLI: see Use as an MCP server below
 
+# Let it search the docs too: a public, read-only MCP server, no account
+claude mcp add --transport http reliant-docs https://docs.reliantlabs.io/mcp
+
 # Not sure where to start? forge start prints the one next command for this directory
 forge start
 ```

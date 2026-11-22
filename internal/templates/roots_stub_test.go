@@ -3,41 +3,27 @@ package templates_test
 import (
 	"testing"
 
-	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // serverRootStub is the ROOTS block `forge generate` appends to a graph-mode
-// project's config_gen.k, rendered from the same template
-// (project/config-roots.k.tmpl) for the default `server` root reaching
-// PORT and the given credentials (the first one required). The config_gen.k
-// stubs the env renders import carry it, as a generated module does.
+// project's config_gen.k, for the default `server` root reaching PORT and the
+// given credentials (the first one required). The config_gen.k stubs the env
+// renders import carry it, as a generated module does.
+//
+// It renders through codegen.RootsKCL — the function generate calls — rather
+// than handing project/config-roots.k.tmpl a data struct of its own: a
+// hand-built struct missed every field the template later grew (.Process,
+// #2683), and each such miss failed every scaffold render test at once.
 func serverRootStub(t *testing.T, secrets ...string) string {
 	t.Helper()
-	q := func(ss []string) string {
-		out := "["
-		for i, s := range ss {
-			if i > 0 {
-				out += ", "
-			}
-			out += `"` + s + `"`
-		}
-		return out + "]"
+	leaves := []codegen.ConfigLeaf{{Path: "port", EnvVar: "PORT", Type: "int32"}}
+	for i, s := range secrets {
+		leaves = append(leaves, codegen.ConfigLeaf{Path: s, EnvVar: s, Sensitive: true, Required: i == 0, Type: "string"})
 	}
-	required := []string{}
-	if len(secrets) > 0 {
-		required = secrets[:1]
+	out := codegen.RootsKCL([]codegen.GraphRoot{{Name: "server", Args: []string{"server"}, Config: leaves}})
+	if out == "" {
+		t.Fatal("codegen.RootsKCL rendered no ROOTS block for the default server root")
 	}
-	type view struct{ Name, Args, Env, Secrets, Required, Families string }
-	out, err := templates.ProjectTemplates().Render("config-roots.k.tmpl", struct {
-		Roots              []view
-		ConfigType, EnvMap string
-		Argv               bool
-		Families           bool
-	}{Roots: []view{{
-		Name: `"server"`, Args: `["server"]`, Env: `["PORT"]`, Secrets: q(secrets), Required: q(required),
-	}}, ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
+	return out
 }

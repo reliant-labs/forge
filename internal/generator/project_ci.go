@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
 	"github.com/reliant-labs/forge/internal/templates"
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
 
 // githubOwnerFromModulePath extracts the GitHub owner segment from a Go
@@ -73,7 +74,13 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	// `forge generate` discovers the same fact from the render (ciInputs); a
 	// project being born has no generated config to render with yet, so the
 	// scaffold states what it just wrote.
-	in := CIInputs{Frontends: frontends, HostedEnvs: g.hostedEnvs, PGOEnvs: g.pgoEnvs}
+	//
+	// Its buf is stated the same way: Generate just wrote go.mod from
+	// forge's template, which requires no buf and has no go.sum beside it
+	// yet, so the project runs forge's pin. Asking the module graph
+	// (toolpin.BufFor) would exec `go list -m` to learn that.
+	forgeBuf := toolpin.ForgeBuf()
+	in := CIInputs{Frontends: frontends, HostedEnvs: g.hostedEnvs, PGOEnvs: g.pgoEnvs, Buf: &forgeBuf}
 	for _, f := range CIWorkflowsFor(g.Path, cfg, in) {
 		content, err := f.Render()
 		if err != nil {

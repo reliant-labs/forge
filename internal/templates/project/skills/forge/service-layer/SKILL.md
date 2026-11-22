@@ -129,7 +129,10 @@ too: every such exported function of that file becomes a method of
 `db.<Entity>ExtStore` (`<entity>_ext_store_gen.go`, regenerated from the ext file
 each run, so it never goes stale). Name it in Deps like the CRUD store — forge
 wires it (`db.NewStore(infra.ORM).<Entities>Ext()`) and mocks it — instead of
-hand-writing an interface plus a passthrough adapter over your own queries:
+hand-writing an interface plus a passthrough adapter over your own queries.
+Queries over `forge:no-entity` tables get the same: put them in a
+`<name>_repo_ext.go` of your own in the ORM package and name
+`db.<Name>ExtStore` (`trigger_delivery_repo_ext.go` → `db.TriggerDeliveryExtStore`):
 
 ```go
 type Deps struct {

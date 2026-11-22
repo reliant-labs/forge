@@ -49,11 +49,29 @@ package generator
 // line naming its declaration, rather than a generate that stops compiling
 // (plan_orm_collisions.go). So does an entity named <Entity>Ext, whose own
 // store is <Entity>ExtStore in the same file name.
+//
+// ── Seams no entity owns ──────────────────────────────────────────────────
+//
+// A `forge:no-entity` table has no entity, so forge scaffolds it no seam; its
+// queries still need a home, and the ORM package is where they run. A
+// project writes them in a <name>_repo_ext.go of its own — reliant's
+// trigger_delivery_repo_ext.go over trigger_delivery_inbox, attention_repo_ext.go
+// over two attention_* tables — and with no interface to name, every consumer
+// hand-wrote an adapter again. So every <stem>_repo_ext.go in the ORM package
+// that no entity's seam claims gets an ext store too, named
+// naming.GoCamelCase(stem): the name an entity of that stem would have, so a
+// table that later becomes an entity keeps the store its consumers named. It
+// has no <Name>Store beside it (there is no CRUD); everything else — the
+// collection, the notes, the yielding to a declared name — is the entity
+// seam's. A stem whose name is not an exported Go identifier, or is an
+// entity's name under a different file, is named in an ℹ️ line and skipped.
 
 import (
 	"fmt"
+	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -61,20 +79,31 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// entityRepoExtFile is ent's scaffold-once custom-query seam.
-func entityRepoExtFile(ent config.PlanEntity) string {
-	return naming.ToSnakeCase(ent.Name) + "_repo_ext.go"
+// repoExtSuffix ends every custom-query seam's file name.
+const repoExtSuffix = "_repo_ext.go"
+
+// extSeam is one <stem>_repo_ext.go an ext store is rendered from.
+type extSeam struct {
+	name   string // the store's base name: Plan, of PlanExtStore
+	stem   string // the file's: plan, of plan_repo_ext.go
+	entity bool   // an entity's seam (beside <name>Store), not one no entity owns
 }
 
-// entityExtStoreFile is ent's ext store file. It ends in _store_gen.go, so
-// the ORM sweep reclaims it, the collision check treats it as forge's, and
-// compose's store seam (codegen.parseStoreSeam) wires a `<pkg>.<Entity>ExtStore`
+// file is the seam's own file name.
+func (s extSeam) file() string { return s.stem + repoExtSuffix }
+
+// storeFile is the seam's ext store file. It ends in _store_gen.go, so the
+// ORM sweep reclaims it, the collision check treats it as forge's, and
+// compose's store seam (codegen.parseStoreSeam) wires a `<pkg>.<Name>ExtStore`
 // Deps field through its Store accessor exactly as it wires <Entity>Store.
-func entityExtStoreFile(ent config.PlanEntity) string {
-	return naming.ToSnakeCase(ent.Name) + "_ext_store_gen.go"
+func (s extSeam) storeFile() string { return s.stem + "_ext_store_gen.go" }
+
+// entitySeam is ent's scaffold-once custom-query seam.
+func entitySeam(ent config.PlanEntity) extSeam {
+	return extSeam{name: ent.Name, stem: naming.ToSnakeCase(ent.Name), entity: true}
 }
 
-// extStoreNames are the identifiers an entity's ext store declares.
+// extStoreNames are the identifiers a seam's ext store declares.
 type extStoreNames struct {
 	iface    string // PlanExtStore
 	adapter  string // planExtStore
@@ -82,14 +111,72 @@ type extStoreNames struct {
 	accessor string // PlansExt, a method of Store
 }
 
-func extStoreNamesFor(ent config.PlanEntity) extStoreNames {
-	iface := ent.Name + "ExtStore"
+func extStoreNamesFor(name string) extStoreNames {
+	iface := name + "ExtStore"
 	return extStoreNames{
 		iface:    iface,
 		adapter:  lowerFirst(iface),
 		ctor:     "New" + iface,
-		accessor: naming.Pluralize(ent.Name) + "Ext",
+		accessor: naming.Pluralize(name) + "Ext",
 	}
+}
+
+// extSeams lists the seams of entities, then every other <stem>_repo_ext.go
+// in dbDir (sorted, so the output does not depend on directory order), with
+// a note for each of those it cannot name. Only seams whose file dbDir lists
+// under exactly that name count: a case-insensitive file system (Windows,
+// macOS) would find Task_repo_ext.go at task_repo_ext.go, and the output must
+// not depend on the host's file system.
+func extSeams(dbDir string, entities []config.PlanEntity) ([]extSeam, []string) {
+	entries, err := os.ReadDir(dbDir)
+	if err != nil {
+		return nil, nil
+	}
+	present := map[string]bool{} // the files dbDir holds, exactly as named
+	for _, e := range entries {
+		if !e.IsDir() {
+			present[e.Name()] = true
+		}
+	}
+	seams := make([]extSeam, 0, len(entities))
+	claimed := map[string]bool{}       // stems the entities' seams own
+	entityNames := map[string]string{} // entity name → its seam's file
+	for _, ent := range entities {
+		s := entitySeam(ent)
+		if present[s.file()] {
+			seams = append(seams, s)
+		}
+		claimed[s.stem] = true
+		entityNames[ent.Name] = s.file()
+	}
+	var stems []string
+	var notes []string
+	for file := range present {
+		stem, ok := strings.CutSuffix(file, repoExtSuffix)
+		if !ok || claimed[stem] {
+			continue
+		}
+		if strings.HasPrefix(file, "_") || strings.HasPrefix(file, ".") {
+			notes = append(notes, fmt.Sprintf("%s: Go ignores a file whose name begins with %q, so its queries get no ext store — rename the file", file, file[:1]))
+			continue
+		}
+		stems = append(stems, stem)
+	}
+	sort.Strings(notes)
+	sort.Strings(stems)
+	for _, stem := range stems {
+		s := extSeam{name: naming.GoCamelCase(stem), stem: stem}
+		if !token.IsIdentifier(s.name) || !token.IsExported(s.name) {
+			notes = append(notes, fmt.Sprintf("%s: %q is not an exported Go name, so its queries get no ext store — rename the file", s.file(), s.name))
+			continue
+		}
+		if seam, ok := entityNames[s.name]; ok {
+			notes = append(notes, fmt.Sprintf("%s: no %sExtStore — %s is an entity, whose seam is %s", s.file(), s.name, s.name, seam))
+			continue
+		}
+		seams = append(seams, s)
+	}
+	return seams, notes
 }
 
 // declared lists the names as checkORMNameCollisions' declarations spell
@@ -98,29 +185,30 @@ func (n extStoreNames) declared() []string {
 	return []string{n.iface, n.adapter, n.ctor, storeMethodKey(n.accessor)}
 }
 
-// renderExtStores renders the ext store of every entity whose
-// <entity>_repo_ext.go in dbDir holds a collectable query, and the ℹ️ notes
-// for what it left out. outputs are the ORM's other renders this run, whose
-// names an ext store must not redeclare.
+// renderExtStores renders the ext store of every seam in dbDir — each
+// entity's <entity>_repo_ext.go, and each <stem>_repo_ext.go no entity owns —
+// that holds a collectable query, and the ℹ️ notes for what it left out.
+// outputs are the ORM's other renders this run, whose names an ext store
+// must not redeclare.
 func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity, outputs []ormOutput) ([]ormOutput, []string) {
 	generated := map[string]string{} // name → the ORM file declaring it
+	files := map[string]string{}     // lower-cased file name → the ORM file
 	for _, out := range outputs {
 		for _, name := range declaredNames(out.src) {
 			generated[name] = out.file
 		}
+		files[strings.ToLower(out.file)] = out.file
 	}
+	seams, seamNotes := extSeams(dbDir, entities)
 	var project map[string]string // name → "internal/db/x.go:12", read once, lazily
 	var collector contract.ExtQueryCollector
 	var exts []ormOutput
 	var notes []string
-	for _, ent := range entities {
-		extFile := entityRepoExtFile(ent)
+	for _, seam := range seams {
+		extFile := seam.file()
 		path := filepath.Join(dbDir, extFile)
-		if _, err := os.Stat(path); err != nil {
-			continue
-		}
 		rel := relDir + "/" + extFile
-		names := extStoreNamesFor(ent)
+		names := extStoreNamesFor(seam.name)
 		set, err := collector.Collect(path)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("%s %s, so there is no %s for it", rel, strings.ReplaceAll(strings.TrimPrefix(err.Error(), path+": "), path, rel), names.iface))
@@ -144,10 +232,26 @@ func renderExtStores(dbDir, relDir, pkgName string, entities []config.PlanEntity
 			project = projectDeclarations(dbDir, relDir)
 		}
 		if clash := extStoreClash(names, generated, project, relDir); clash != "" {
-			notes = append(notes, fmt.Sprintf("%s: no %s for %s's queries — %s", rel, names.iface, ent.Name, clash))
+			notes = append(notes, fmt.Sprintf("%s: no %s for %s's queries — %s", rel, names.iface, seam.name, clash))
 			continue
 		}
-		exts = append(exts, ormOutput{file: entityExtStoreFile(ent), entity: ent.Name, src: renderEntityExtStoreFile(pkgName, ent, set)})
+		// Two stems that differ only in case (abc, abC) name two stores, but
+		// their files are one file on a case-insensitive file system.
+		if other, ok := files[strings.ToLower(seam.storeFile())]; ok {
+			notes = append(notes, fmt.Sprintf("%s: no %s for %s's queries — its file %s/%s differs from forge's %s/%s only in case, which Windows and macOS hold as one file; rename the seam", rel, names.iface, seam.name, relDir, seam.storeFile(), relDir, other))
+			continue
+		}
+		out := ormOutput{file: seam.storeFile(), entity: seam.name, src: renderExtStoreFile(pkgName, seam, set)}
+		files[strings.ToLower(out.file)] = out.file
+		// A later seam must not redeclare these either: two stems no entity
+		// owns can camel-case to one name.
+		for _, name := range names.declared() {
+			generated[name] = out.file
+		}
+		exts = append(exts, out)
+	}
+	for _, note := range seamNotes {
+		notes = append(notes, relDir+"/"+note)
 	}
 	return exts, notes
 }
@@ -166,12 +270,12 @@ func extStoreClash(names extStoreNames, generated, project map[string]string, re
 	return ""
 }
 
-// renderEntityExtStoreFile is ent's <entity>_ext_store_gen.go: the interface
-// over set's queries, the adapter forwarding to them, its constructor, and
-// the aggregate's accessor.
-func renderEntityExtStoreFile(pkgName string, ent config.PlanEntity, set contract.ExtQuerySet) []byte {
-	n := extStoreNamesFor(ent)
-	extFile := entityRepoExtFile(ent)
+// renderExtStoreFile is seam's <stem>_ext_store_gen.go: the interface over
+// set's queries, the adapter forwarding to them, its constructor, and the
+// aggregate's accessor.
+func renderExtStoreFile(pkgName string, seam extSeam, set contract.ExtQuerySet) []byte {
+	n := extStoreNamesFor(seam.name)
+	extFile := seam.file()
 	orm := set.ORMName
 
 	var b strings.Builder
@@ -198,8 +302,14 @@ func renderEntityExtStoreFile(pkgName string, ent config.PlanEntity, set contrac
 	fmt.Fprintf(&b, "// func(ctx context.Context, db %s.Context, …) there — with the handle bound,\n", orm)
 	b.WriteString("// so a service can declare it as a Deps field (forge wires and mocks it)\n")
 	b.WriteString("// instead of hand-writing a passthrough adapter. It follows that file: add,\n")
-	fmt.Fprintf(&b, "// change or remove a query there and re-run forge generate. %s's generated\n", ent.Name)
-	fmt.Fprintf(&b, "// CRUD is %sStore.\n", ent.Name)
+	if seam.entity {
+		fmt.Fprintf(&b, "// change or remove a query there and re-run forge generate. %s's generated\n", seam.name)
+		fmt.Fprintf(&b, "// CRUD is %sStore.\n", seam.name)
+	} else {
+		b.WriteString("// change or remove a query there and re-run forge generate. No entity owns\n")
+		b.WriteString("// the file (its tables are forge:no-entity, or several), so there is no\n")
+		b.WriteString("// generated CRUD beside it.\n")
+	}
 	fmt.Fprintf(&b, "type %s interface {\n", n.iface)
 	for _, q := range set.Queries {
 		for _, l := range q.Doc {
@@ -216,7 +326,7 @@ func renderEntityExtStoreFile(pkgName string, ent config.PlanEntity, set contrac
 	fmt.Fprintf(&b, "// %s forwards each %s method to the package function of\n", n.adapter, n.iface)
 	b.WriteString("// the same name, passing the handle it holds.\n")
 	fmt.Fprintf(&b, "type %s struct{ db %s.Context }\n\n", n.adapter, orm)
-	fmt.Fprintf(&b, "// %s returns %s's ext store bound to db: the *orm.Client for\n", n.ctor, ent.Name)
+	fmt.Fprintf(&b, "// %s returns %s's ext store bound to db: the *orm.Client for\n", n.ctor, seam.name)
 	b.WriteString("// ordinary use, or a transaction handle to scope every call to it.\n")
 	fmt.Fprintf(&b, "func %s(db %s.Context) %s { return %s{db: db} }\n\n", n.ctor, orm, n.iface, n.adapter)
 	for _, q := range set.Queries {
@@ -224,7 +334,7 @@ func renderEntityExtStoreFile(pkgName string, ent config.PlanEntity, set contrac
 	}
 	fmt.Fprintf(&b, "func (s %s) WithTx(tx %s.Context) %s { return %s{db: tx} }\n\n", n.adapter, orm, n.iface, n.adapter)
 	fmt.Fprintf(&b, "var _ %s = %s{}\n\n", n.iface, n.adapter)
-	fmt.Fprintf(&b, "// %s returns %s's ext store, bound to the aggregate's handle.\n", n.accessor, ent.Name)
+	fmt.Fprintf(&b, "// %s returns %s's ext store, bound to the aggregate's handle.\n", n.accessor, seam.name)
 	fmt.Fprintf(&b, "func (s Store) %s() %s { return %s{db: s.db} }\n", n.accessor, n.iface, n.adapter)
 	return formatStoreSource(b.String())
 }

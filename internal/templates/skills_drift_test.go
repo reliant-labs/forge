@@ -81,6 +81,9 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		// Per-entity interface over the hand-written <entity>_repo_ext.go
 		// queries (internal/generator/plan_orm_ext_store_gen.go).
 		"<entity>_ext_store_gen.go": {},
+		// The same, over a <stem>_repo_ext.go no entity owns (a
+		// forge:no-entity table's queries).
+		"<stem>_ext_store_gen.go": {},
 		// The Tier-1 renames: every hash-guarded file now says _gen in its
 		// NAME, so a reader can tell it is un-editable without opening it.
 		"orm_shared_gen.go":  {},

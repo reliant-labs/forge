@@ -1073,8 +1073,9 @@ func (a *AccountRoutes) credentialsOf(ctx context.Context, subject string) (acco
 // links and the passkey named, that THIS broker serves under policy p: a
 // password only where passwords are offered, passkeys only where passkeys
 // are, a link only to a provider p declares, and a magic link to the
-// account's verified address where p offers magic links. A credential the
-// policy does not serve is no way in, however it is stored.
+// account's verified address where p offers magic links AND its mail
+// reaches someone (a paused or absent mailer sends no link). A credential
+// the policy does not serve is no way in, however it is stored.
 func (cr accountCredentials) usableWithout(p LoginPolicy, links []IDPLink, passkey string) int {
 	n := 0
 	if cr.password && (!p.Present || p.Offers(MethodPassword)) {
@@ -1096,7 +1097,7 @@ func (cr accountCredentials) usableWithout(p LoginPolicy, links []IDPLink, passk
 			n++
 		}
 	}
-	if p.Present && p.Offers(MethodMagicLink) && cr.emailVerified {
+	if p.Present && p.Offers(MethodMagicLink) && p.MailDelivers() && cr.emailVerified {
 		n++
 	}
 	return n

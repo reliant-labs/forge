@@ -588,6 +588,28 @@ func TestAccount_OnlyUsableCredentialsCountAsTheOneThatRemains(t *testing.T) {
 	}
 }
 
+// A magic link the instance cannot deliver is no way in: under a paused or
+// absent mailer, the only passkey stays, even beside a verified address and
+// a policy that offers magic links.
+func TestAccount_AnUndeliverableMagicLinkDoesNotCount(t *testing.T) {
+	for _, mail := range []string{MailNone, MailPaused} {
+		t.Run(mail, func(t *testing.T) {
+			p := policyWith(SignupOpen, []string{MethodPasskey, MethodMagicLink})
+			p.Mail = mail
+			h := newAccountHarness(t, p)
+			u := h.z.addUser("ada@acme.com", true, "")
+			h.z.mu.Lock()
+			h.z.users[u.id].passkeys = []Passkey{{ID: "pk-1"}}
+			h.z.mu.Unlock()
+			status, body := h.signIn(u).do(http.MethodDelete, "/auth/account/passkeys/pk-1", nil)
+			want(t, status, body, 409, CodeLastCredential)
+			if len(h.z.user(u.id).passkeys) != 1 {
+				t.Fatal("the only passkey was removed though no magic link can be delivered")
+			}
+		})
+	}
+}
+
 // Two removals that start together are serialized on the account: each
 // counts what the other left. The issuer hook holds every credential read
 // until a second one arrives (or 300ms pass), which is exactly the

@@ -27,7 +27,7 @@
 # A RELEASE NEVER PUSHES TO THE BRANCH. The tag goes on a commit that is
 # already on origin/<branch> and whose full CI is green; the bookkeeping
 # (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json, npm/server.json,
-# gemini-extension.json) is committed on top
+# gemini-extension.json, the plugins/reliant-forge manifests) is committed on top
 # of that commit, pushed to release/vX.Y.Z, and lands through a pull request
 # and the merge queue like any other change. main is protected by a ruleset
 # that only the merge queue may satisfy, so a direct push would need a bypass
@@ -536,6 +536,16 @@ MCP_SERVER_JSON="npm/server.json"
 # Gemini's extension metadata follows the same forge/npm release version.
 GEMINI_MANIFEST="gemini-extension.json"
 [ -f "$GEMINI_MANIFEST" ] && TOUCHED+=("$GEMINI_MANIFEST")
+# So do the reliant-forge plugin's manifests (Claude Code, Codex, Cursor): a
+# plugin marketplace offers its users a new copy only when the version moves.
+PLUGIN_MANIFESTS=(
+  "plugins/reliant-forge/.claude-plugin/plugin.json"
+  "plugins/reliant-forge/.codex-plugin/plugin.json"
+  "plugins/reliant-forge/.cursor-plugin/plugin.json"
+)
+for f in "${PLUGIN_MANIFESTS[@]}"; do
+  [ -f "$f" ] && TOUCHED+=("$f")
+done
 # The web runtime's bookkeeping (step 8c): its manifests' versions and the
 # scaffold floor that names it.
 WR_MANIFEST="web-runtime/package.json"
@@ -667,6 +677,17 @@ if [ -f "$GEMINI_MANIFEST" ]; then
   fi
   cat "$BACKUP_DIR/gemini-extension.json.new" >"$GEMINI_MANIFEST"
 fi
+# The plugin manifests' top-level version, the one their marketplaces compare.
+for f in "${PLUGIN_MANIFESTS[@]}"; do
+  [ -f "$f" ] || continue
+  echo "→ syncing $f to ${VERSION#v}"
+  sed -e 's/^  "version": ".*"/  "version": "'"${VERSION#v}"'"/' "$f" >"$BACKUP_DIR/plugin.json.new"
+  if ! grep -q "^  \"version\": \"${VERSION#v}\"" "$BACKUP_DIR/plugin.json.new"; then
+    echo "error: could not set the version in $f (expected a two-space-indented \"version\" line)" >&2
+    exit 1
+  fi
+  cat "$BACKUP_DIR/plugin.json.new" >"$f"
+done
 
 # ── 7b. CHANGELOG.md ────────────────────────────────────────────────
 # Written only here, from the merged PR titles since the previous tag. The
@@ -756,7 +777,8 @@ go build ./...
 # Built before the bookkeeping commit exists, so a build failure leaves no
 # commit or tag behind. The stamped commit is the tagged one (HEAD here); the
 # bookkeeping commit changes only VERSION, NEXT_VERSION, npm/package.json,
-# npm/server.json, gemini-extension.json and CHANGELOG.md, so the compiled source
+# npm/server.json, gemini-extension.json, the plugins/reliant-forge manifests and
+# CHANGELOG.md, so the compiled source
 # is the tagged source.
 ASSETS_DIR="$BACKUP_DIR/assets"
 echo "→ building release archives"

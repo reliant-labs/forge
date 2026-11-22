@@ -232,6 +232,7 @@ var actingUserScopes = []Scope{
 	ScopeMCPConnector,
 	// An MCP client's OAuth token acts for the person who authorized it.
 	ScopeMCPOAuth,
+	ScopeMCPForge,
 	// A wake is billed to, and authorized as, the person who owns the
 	// daemon; the consumer resolves ownership from the acting user.
 	ScopeDaemonResume,
@@ -285,10 +286,11 @@ type Grant struct {
 	ActingUserID string
 	// Resource, when set, confines the token to one resource.
 	Resource *Resource
-	// ClientID is the OAuth client an mcp:oauth token was issued to, and
-	// Audience the resource it was issued for (an RFC 8707 resource URI: the
-	// MCP server's canonical URL). Both are set exactly on an mcp:oauth token
-	// and on nothing else (validateOAuthClient).
+	// ClientID is the OAuth client an MCP client's token (mcp:oauth or
+	// mcp:forge, OAuthClientScopes) was issued to, and Audience the resource
+	// it was issued for (an RFC 8707 resource URI: the MCP server's canonical
+	// URL). Both are set exactly on such a token and on nothing else
+	// (validateOAuthClient).
 	ClientID string
 	Audience string
 	// Ephemeral marks a token tied to a session's lifetime (a desktop
@@ -378,9 +380,10 @@ func (g Grant) Admissible() Set {
 		// otherwise resolve to it, and the control plane would then refuse
 		// that credential on every RPC.
 		//
-		// mcp:oauth is a whole credential too: an MCP client's token for one
-		// resource, which no wildcard is (validateOAuthClient).
-		if personOnly(scope) || RegistryOnly(scope) || scope == ScopeMCPOAuth {
+		// An MCP client's token (mcp:oauth, mcp:forge) is a whole credential
+		// too: a token for one resource, which no wildcard is
+		// (validateOAuthClient).
+		if personOnly(scope) || RegistryOnly(scope) || IsOAuthClientScope(scope) {
 			continue
 		}
 		probe := Grant{OrgID: "probe", Name: "probe", ActingUserID: g.ActingUserID,
@@ -409,37 +412,65 @@ func KnownScopes(raw []string) Set {
 	return out
 }
 
-// validateOAuthClient holds an MCP client's OAuth token to its shape: mcp:oauth
-// is its only scope, it names its client and an absolute audience URI, acts as
-// a person, and is neither bound nor ephemeral. A client id or an audience on
-// any other token is refused: a consumer that checks the audience must never
-// find one on a token that would also pass a check that ignores it.
+// OAuthClientScopes are the scopes of an MCP client's OAuth token: each is a
+// whole credential, the token's only scope, naming its client and the one
+// resource it was issued for (validateOAuthClient).
+var OAuthClientScopes = []Scope{ScopeMCPOAuth, ScopeMCPForge}
+
+// IsOAuthClientScope reports whether scope is one of OAuthClientScopes.
+func IsOAuthClientScope(scope Scope) bool {
+	for _, s := range OAuthClientScopes {
+		if s == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// oauthClientScope is the OAuth client scope g holds, or "" when it holds none.
+func (g Grant) oauthClientScope() Scope {
+	for _, s := range OAuthClientScopes {
+		if g.Scopes.Has(s) {
+			return s
+		}
+	}
+	return ""
+}
+
+// validateOAuthClient holds an MCP client's OAuth token (mcp:oauth or
+// mcp:forge) to its shape: that scope is its only scope, it names its client
+// and an absolute audience URI, acts as a person, and is neither bound nor
+// ephemeral. A client id or an audience on any other token is refused: a
+// consumer that checks the audience must never find one on a token that would
+// also pass a check that ignores it.
 func (g Grant) validateOAuthClient() error {
-	if !g.Scopes.Has(ScopeMCPOAuth) {
+	scope := g.oauthClientScope()
+	if scope == "" {
 		if g.ClientID != "" || g.Audience != "" {
-			return fmt.Errorf("%w: a client id or audience belongs only on an %s token", ErrInvalidGrant, ScopeMCPOAuth)
+			return fmt.Errorf("%w: a client id or audience belongs only on an MCP client's token (%s, %s)",
+				ErrInvalidGrant, ScopeMCPOAuth, ScopeMCPForge)
 		}
 		return nil
 	}
 	if len(g.Scopes) != 1 {
-		return fmt.Errorf("%w: %s is a token's only scope", ErrInvalidGrant, ScopeMCPOAuth)
+		return fmt.Errorf("%w: %s is a token's only scope", ErrInvalidGrant, scope)
 	}
 	if strings.TrimSpace(g.ClientID) == "" {
-		return fmt.Errorf("%w: an %s token names the client it was issued to", ErrInvalidGrant, ScopeMCPOAuth)
+		return fmt.Errorf("%w: an %s token names the client it was issued to", ErrInvalidGrant, scope)
 	}
 	if !ValidAudience(g.Audience) {
-		return fmt.Errorf("%w: an %s token's audience must be an absolute http(s) URI with no fragment", ErrInvalidGrant, ScopeMCPOAuth)
+		return fmt.Errorf("%w: an %s token's audience must be an absolute http(s) URI with no fragment", ErrInvalidGrant, scope)
 	}
 	if g.Resource != nil {
-		return fmt.Errorf("%w: an %s token is confined by its audience, never bound", ErrInvalidGrant, ScopeMCPOAuth)
+		return fmt.Errorf("%w: an %s token is confined by its audience, never bound", ErrInvalidGrant, scope)
 	}
 	if g.Ephemeral {
-		return fmt.Errorf("%w: an %s token is not ephemeral", ErrInvalidGrant, ScopeMCPOAuth)
+		return fmt.Errorf("%w: an %s token is not ephemeral", ErrInvalidGrant, scope)
 	}
 	return nil
 }
 
-// ValidAudience reports whether aud is a resource URI an mcp:oauth token may be
+// ValidAudience reports whether aud is a resource URI an MCP client's token may be
 // issued for (RFC 8707 section 2): absolute, http or https, with a host, no
 // userinfo and no fragment.
 func ValidAudience(aud string) bool {
@@ -553,7 +584,7 @@ type Principal struct {
 	Resource  *Resource
 	Ephemeral bool
 	ExpiresAt *time.Time
-	// ClientID and Audience are an mcp:oauth token's client and resource
+	// ClientID and Audience are an MCP client's token's client and resource
 	// (Grant.ClientID, Grant.Audience); empty on every other token.
 	ClientID string
 	Audience string
@@ -565,8 +596,19 @@ type Principal struct {
 // MCP server checks this, with its own canonical URL, before anything else;
 // a token for another resource (or no resource) is refused, never narrowed.
 func (p *Principal) IsMCPOAuthFor(resource string) bool {
+	return p.isOAuthClientFor(ScopeMCPOAuth, resource)
+}
+
+// IsMCPForgeFor is IsMCPOAuthFor for the hosted Reliant Forge MCP server's
+// token (mcp:forge): the same shape, a different scope, so neither server
+// accepts the other's token.
+func (p *Principal) IsMCPForgeFor(resource string) bool {
+	return p.isOAuthClientFor(ScopeMCPForge, resource)
+}
+
+func (p *Principal) isOAuthClientFor(scope Scope, resource string) bool {
 	return p != nil && resource != "" && !p.AllScopes && p.Resource == nil &&
-		p.Scopes.Has(ScopeMCPOAuth) && len(p.Scopes) == 1 &&
+		p.Scopes.Has(scope) && len(p.Scopes) == 1 &&
 		p.ClientID != "" && p.ActingUserID != "" && p.Audience == resource
 }
 

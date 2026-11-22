@@ -764,7 +764,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	got := daemon.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s) || RegistryOnly(s) || s == ScopeMCPOAuth
+		elsewhere := (bound && rule.required && rule.kind != ResourceDaemon) || personOnly(s) || RegistryOnly(s) || IsOAuthClientScope(s)
 		if got.Has(s) == elsewhere {
 			t.Errorf("daemon wildcard holds %s = %v; it must hold every scope that does not require a %s binding",
 				s, got.Has(s), rule.kind)
@@ -772,7 +772,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	}
 	// The two that bind elsewhere, by name, so the exclusion cannot grow
 	// silently.
-	if got.Has(ScopeProxyPort) || got.Has(ScopeMCPConnector) || got.Has(ScopeMCPOAuth) {
+	if got.Has(ScopeProxyPort) || got.Has(ScopeMCPConnector) || got.Has(ScopeMCPOAuth) || got.Has(ScopeMCPForge) {
 		t.Fatalf("a daemon wildcard resolved to a port share, connector credential or MCP client token: %s", got)
 	}
 	// The person-only scopes, by name, for the same reason.
@@ -785,7 +785,7 @@ func TestAdmissible_DaemonCarriesEveryScope(t *testing.T) {
 	unbound := Grant{ActingUserID: "user"}.Admissible()
 	for _, s := range AllScopes {
 		rule, bound := scopeResourceRules[s]
-		if unbound.Has(s) == ((bound && rule.required) || personOnly(s) || RegistryOnly(s) || s == ScopeMCPOAuth) {
+		if unbound.Has(s) == ((bound && rule.required) || personOnly(s) || RegistryOnly(s) || IsOAuthClientScope(s)) {
 			t.Errorf("unbound wildcard holds %s = %v", s, unbound.Has(s))
 		}
 	}

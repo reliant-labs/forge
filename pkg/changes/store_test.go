@@ -65,11 +65,14 @@ func testStore(t *testing.T, path string, tick chan time.Time) (*Store, *syncBuf
 	return s, logs
 }
 
-// polled makes the poll loop run one full reload: the second send on the
-// unbuffered tick is received only once the loop is back from the first.
-func polled(tick chan time.Time) {
-	tick <- time.Time{}
-	tick <- time.Time{}
+// polled runs one full reload, as a poll tick does, and returns only once
+// nothing is reading the file. It calls reload directly rather than ticking
+// the loop: the second of two sends on the unbuffered tick returned while the
+// loop was starting a SECOND reload, and on Windows that read made the test's
+// next rename fail with "Access is denied". The loop itself is driven by
+// TestStoreClose and the real-ticker test below.
+func polled(s *Store) {
+	s.reload()
 }
 
 func banner(s *Store) string {
@@ -89,7 +92,7 @@ func TestStoreFileAppearsLater(t *testing.T) {
 	}
 
 	writeFile(t, path, everyoneSnapshot(3, "blue"))
-	polled(tick)
+	polled(s)
 	if banner(s) != "blue" || s.Revision() != 3 {
 		t.Fatalf("after the file appeared: %q at revision %d, want blue at 3", banner(s), s.Revision())
 	}
@@ -105,7 +108,7 @@ func TestStoreFileRewritten(t *testing.T) {
 	}
 
 	writeFile(t, path, everyoneSnapshot(2, "green"))
-	polled(tick)
+	polled(s)
 	if banner(s) != "green" || s.Revision() != 2 {
 		t.Fatalf("rewritten: %q at revision %d, want green at 2", banner(s), s.Revision())
 	}
@@ -118,8 +121,8 @@ func TestStoreInvalidRewriteKeepsLastGood(t *testing.T) {
 	s, logs := testStore(t, path, tick)
 
 	writeFile(t, path, `{"schema":"forge.changes/v9","revision":2,"changes":{}}`)
-	polled(tick)
-	polled(tick)
+	polled(s)
+	polled(s)
 	if banner(s) != "blue" || s.Revision() != 1 {
 		t.Fatalf("after an invalid rewrite: %q at revision %d, want the last good blue at 1", banner(s), s.Revision())
 	}
@@ -128,13 +131,13 @@ func TestStoreInvalidRewriteKeepsLastGood(t *testing.T) {
 	}
 
 	writeFile(t, path, `not json`)
-	polled(tick)
+	polled(s)
 	if n := strings.Count(logs.String(), "cannot parse"); n != 2 {
 		t.Fatalf("a second, different error warned %d times in all, want 2:\n%s", n, logs.String())
 	}
 
 	writeFile(t, path, everyoneSnapshot(3, "green"))
-	polled(tick)
+	polled(s)
 	if banner(s) != "green" || s.Revision() != 3 {
 		t.Fatalf("after a good rewrite: %q at revision %d, want green at 3", banner(s), s.Revision())
 	}
@@ -149,7 +152,7 @@ func TestStoreFileRemovedIsEmpty(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	polled(tick)
+	polled(s)
 	if banner(s) != "code-default" || s.Revision() != 0 {
 		t.Fatalf("file removed: %q at revision %d, want the code default at 0", banner(s), s.Revision())
 	}

@@ -36,6 +36,7 @@ type HMACValidator struct {
 	audience      string
 	resolver      UserResolver
 	rolesClaim    string
+	requireExpiry bool
 }
 
 // HMACValidatorConfig configures an [HMACValidator].
@@ -64,6 +65,14 @@ type HMACValidatorConfig struct {
 
 	// RolesClaim names the claim roles are read from; see [JWTConfig.RolesClaim].
 	RolesClaim string
+
+	// RequireExpiry refuses a token with no exp claim (jwt.WithExpirationRequired).
+	// An exp that is present is enforced either way, with the 5s leeway every
+	// validator allows. Off by default so v1 validators keep accepting what they
+	// accepted; set it for any issuer that always stamps exp (every OIDC
+	// provider does), so a correctly signed token without one is not valid
+	// forever.
+	RequireExpiry bool
 }
 
 // NewHMACValidator constructs a validator for HMAC-signed JWTs.
@@ -88,6 +97,7 @@ func NewHMACValidator(cfg HMACValidatorConfig) (*HMACValidator, error) {
 		audience:      cfg.Audience,
 		resolver:      cfg.Resolver,
 		rolesClaim:    cfg.RolesClaim,
+		requireExpiry: cfg.RequireExpiry,
 	}, nil
 }
 
@@ -95,7 +105,7 @@ func NewHMACValidator(cfg HMACValidatorConfig) (*HMACValidator, error) {
 func (v *HMACValidator) ValidateToken(tokenString string) (*Claims, error) {
 	return validateJWTWith(tokenString, v.signingMethod, func(*jwt.Token) (interface{}, error) {
 		return v.secret, nil
-	}, v.issuer, v.audience, v.resolver, v.rolesClaim)
+	}, v.issuer, v.audience, v.resolver, v.rolesClaim, v.requireExpiry)
 }
 
 // JWKSValidator validates JWTs whose signing key comes from a JWKS endpoint
@@ -111,6 +121,7 @@ type JWKSValidator struct {
 	audience      string
 	resolver      UserResolver
 	rolesClaim    string
+	requireExpiry bool
 }
 
 // JWKSValidatorConfig configures a [JWKSValidator].
@@ -132,6 +143,14 @@ type JWKSValidatorConfig struct {
 
 	// RolesClaim names the claim roles are read from; see [JWTConfig.RolesClaim].
 	RolesClaim string
+
+	// RequireExpiry refuses a token with no exp claim (jwt.WithExpirationRequired).
+	// An exp that is present is enforced either way, with the 5s leeway every
+	// validator allows. Off by default so v1 validators keep accepting what they
+	// accepted; set it for any issuer that always stamps exp (every OIDC
+	// provider does), so a correctly signed token without one is not valid
+	// forever.
+	RequireExpiry bool
 }
 
 // NewJWKSValidator constructs a validator that delegates key resolution to
@@ -150,12 +169,13 @@ func NewJWKSValidator(cfg JWKSValidatorConfig) (*JWKSValidator, error) {
 		audience:      cfg.Audience,
 		resolver:      cfg.Resolver,
 		rolesClaim:    cfg.RolesClaim,
+		requireExpiry: cfg.RequireExpiry,
 	}, nil
 }
 
 // ValidateToken implements [TokenValidator].
 func (v *JWKSValidator) ValidateToken(tokenString string) (*Claims, error) {
-	return validateJWTWith(tokenString, v.signingMethod, v.keyFunc, v.issuer, v.audience, v.resolver, v.rolesClaim)
+	return validateJWTWith(tokenString, v.signingMethod, v.keyFunc, v.issuer, v.audience, v.resolver, v.rolesClaim, v.requireExpiry)
 }
 
 // MultiValidator tries each underlying validator in order and returns the
@@ -203,10 +223,13 @@ func (m *MultiValidator) ValidateToken(tokenString string) (*Claims, error) {
 // TokenValidator implementation. Keeping it in one place ensures parser
 // options (leeway, issuer, audience), claims extraction, and UserResolver
 // dispatch stay consistent across validators.
-func validateJWTWith(tokenString, signingMethod string, keyFunc jwt.Keyfunc, issuer, audience string, resolver UserResolver, rolesClaim string) (*Claims, error) {
+func validateJWTWith(tokenString, signingMethod string, keyFunc jwt.Keyfunc, issuer, audience string, resolver UserResolver, rolesClaim string, requireExpiry bool) (*Claims, error) {
 	parserOpts := []jwt.ParserOption{
 		jwt.WithValidMethods([]string{signingMethod}),
 		jwt.WithLeeway(5 * time.Second),
+	}
+	if requireExpiry {
+		parserOpts = append(parserOpts, jwt.WithExpirationRequired())
 	}
 	if issuer != "" {
 		parserOpts = append(parserOpts, jwt.WithIssuer(issuer))

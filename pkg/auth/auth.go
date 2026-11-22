@@ -192,6 +192,14 @@ type JWTConfig struct {
 	// Audience is unset). Set it to read exactly one claim: a flat array, a
 	// space or comma separated string, or a Zitadel-shaped role map.
 	RolesClaim string
+
+	// RequireExpiry refuses a token with no exp claim (jwt.WithExpirationRequired).
+	// An exp that is present is enforced either way, with the 5s leeway every
+	// validator allows. Off by default so v1 validators keep accepting what they
+	// accepted; set it for any issuer that always stamps exp (every OIDC
+	// provider does), so a correctly signed token without one is not valid
+	// forever.
+	RequireExpiry bool
 }
 
 // EffectiveSigningMethod returns SigningMethod or the "RS256" default.
@@ -545,6 +553,9 @@ func (v *Validator) verifyJWT(tokenString string) (*Claims, error) {
 	parserOpts := []jwt.ParserOption{
 		jwt.WithValidMethods([]string{signingMethod}),
 		jwt.WithLeeway(5 * time.Second),
+	}
+	if v.cfg.JWT.RequireExpiry {
+		parserOpts = append(parserOpts, jwt.WithExpirationRequired())
 	}
 	if v.cfg.JWT.Issuer != "" {
 		parserOpts = append(parserOpts, jwt.WithIssuer(v.cfg.JWT.Issuer))

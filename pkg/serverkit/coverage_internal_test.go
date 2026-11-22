@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -19,12 +20,13 @@ import (
 type fakeCoverage struct {
 	instrumented bool
 	countersErr  error
-	clearErr     error
-	cleared      int
+	// reads counts the calls that read the process's coverage.
+	reads int
 }
 
 func (f *fakeCoverage) Instrumented() bool { return f.instrumented }
 func (f *fakeCoverage) WriteMetaDir(dir string) error {
+	f.reads++
 	return os.WriteFile(filepath.Join(dir, "covmeta.abc123"), []byte("meta"), 0o644)
 }
 func (f *fakeCoverage) WriteCountersDir(dir string) error {
@@ -33,18 +35,18 @@ func (f *fakeCoverage) WriteCountersDir(dir string) error {
 	}
 	return os.WriteFile(filepath.Join(dir, "covcounters.abc123.42.1700000000"), []byte("counters"), 0o644)
 }
-func (f *fakeCoverage) ClearCounters() error {
-	if f.clearErr != nil {
-		return f.clearErr
-	}
-	f.cleared++
-	return nil
-}
 
-func serveCoverage(t *testing.T, rt coverageRuntime, method, target string) *httptest.ResponseRecorder {
+// serveCoverage sends one request as a local tool does: to a loopback Host,
+// with no browser headers. header adds name, value pairs.
+func serveCoverage(t *testing.T, rt coverageRuntime, method, target string, header ...string) *httptest.ResponseRecorder {
 	t.Helper()
+	req := httptest.NewRequest(method, target, nil)
+	req.Host = "127.0.0.1:6060"
+	for i := 0; i+1 < len(header); i += 2 {
+		req.Header.Set(header[i], header[i+1])
+	}
 	rec := httptest.NewRecorder()
-	coverageHandler{rt: rt}.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	coverageHandler{rt: rt}.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -81,22 +83,21 @@ func TestCoverageHandler_ServesMetaAndCountersAsTar(t *testing.T) {
 	if files["covmeta.abc123"] != "meta" || files["covcounters.abc123.42.1700000000"] != "counters" || len(files) != 2 {
 		t.Errorf("tar holds %v, want exactly the meta and counter files GOCOVERDIR would", files)
 	}
-	if rt.cleared != 0 {
-		t.Error("a plain pull cleared the counters")
-	}
+
 }
 
-func TestCoverageHandler_ResetClearsAfterSnapshot(t *testing.T) {
-	rt := &fakeCoverage{instrumented: true}
-	rec := serveCoverage(t, rt, http.MethodGet, CoveragePath+"?reset=1")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body)
-	}
-	if rt.cleared != 1 {
-		t.Errorf("ClearCounters called %d times, want 1", rt.cleared)
-	}
-	if files := untar(t, rec.Body.Bytes()); files["covcounters.abc123.42.1700000000"] == "" {
-		t.Errorf("reset returned no counters: the pull before the reset must not be lost; got %v", files)
+// [B1] The endpoint is read-only, structurally: the slice of
+// runtime/coverage it can call reads and never writes, so no request can
+// change the process's counters, whoever sends it. A reset is the client's
+// baseline (forge test collect --reset).
+func TestCoverageRuntimeCannotChangeCounters(t *testing.T) {
+	typ := reflect.TypeFor[coverageRuntime]()
+	for i := range typ.NumMethod() {
+		switch m := typ.Method(i).Name; m {
+		case "Instrumented", "WriteMetaDir", "WriteCountersDir":
+		default:
+			t.Errorf("coverageRuntime has %s: the endpoint must not be able to change the counters (no auth can make that safe on a debug listener a web page can reach)", m)
+		}
 	}
 }
 
@@ -118,11 +119,55 @@ func TestCoverageHandler_NonAtomicModeIsAConflict(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "atomic") {
 		t.Fatalf("status %d body %q, want 409 naming -covermode=atomic", rec.Code, rec.Body)
 	}
+}
 
-	clearErr := errors.New("ClearCounters invoked for program built with -covermode=count (please use -covermode=atomic)")
-	rec = serveCoverage(t, &fakeCoverage{instrumented: true, clearErr: clearErr}, http.MethodGet, CoveragePath+"?reset=1")
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "reset") {
-		t.Fatalf("status %d body %q, want 409 for a reset Go refused", rec.Code, rec.Body)
+// [B1] Every request that is not a plain read from a local tool is refused
+// before the counters are read: a POST or a ?reset (the forms a reset once
+// took) is 405 and resets nothing, and anything browser-originated is 403.
+func TestCoverageHandler_RequestPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		target string
+		host   string
+		header []string
+		code   int
+		says   string
+	}{
+		{name: "POST is 405 and names the client-side reset", method: http.MethodPost, target: CoveragePath, code: http.StatusMethodNotAllowed, says: "forge test collect"},
+		{name: "POST with the old reset header is 405", method: http.MethodPost, target: CoveragePath, header: []string{"X-Forge-Coverage-Reset", "1"}, code: http.StatusMethodNotAllowed},
+		{name: "GET ?reset=1 is 405", method: http.MethodGet, target: CoveragePath + "?reset=1", code: http.StatusMethodNotAllowed, says: "read-only"},
+		{name: "GET ?reset with any value is 405", method: http.MethodGet, target: CoveragePath + "?reset=true", code: http.StatusMethodNotAllowed},
+		{name: "a read with Origin: 403", method: http.MethodGet, target: CoveragePath, header: []string{"Origin", "http://localhost:3000"}, code: http.StatusForbidden, says: "Origin"},
+		{name: "a cross-site read: 403", method: http.MethodGet, target: CoveragePath, header: []string{"Sec-Fetch-Site", "cross-site"}, code: http.StatusForbidden, says: "Sec-Fetch-Site"},
+		{name: "a read from another localhost port (same-site): 403", method: http.MethodGet, target: CoveragePath, header: []string{"Sec-Fetch-Site", "same-site"}, code: http.StatusForbidden},
+		{name: "a read from a rebound Host: 403", method: http.MethodGet, target: CoveragePath, host: "rebind.evil.example", code: http.StatusForbidden, says: "Host"},
+		{name: "a typed-in navigation (Sec-Fetch-Site none) reads", method: http.MethodGet, target: CoveragePath, header: []string{"Sec-Fetch-Site", "none"}, code: http.StatusOK},
+		{name: "a read from localhost reads", method: http.MethodGet, target: CoveragePath, host: "localhost:6060", code: http.StatusOK},
+		{name: "a read from [::1] reads", method: http.MethodGet, target: CoveragePath, host: "[::1]:6060", code: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &fakeCoverage{instrumented: true}
+			req := httptest.NewRequest(tc.method, tc.target, nil)
+			req.Host = "127.0.0.1:6060"
+			if tc.host != "" {
+				req.Host = tc.host
+			}
+			for i := 0; i+1 < len(tc.header); i += 2 {
+				req.Header.Set(tc.header[i], tc.header[i+1])
+			}
+			rec := httptest.NewRecorder()
+			coverageHandler{rt: rt}.ServeHTTP(rec, req)
+			if rec.Code != tc.code {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.code, rec.Body)
+			}
+			if tc.says != "" && !strings.Contains(rec.Body.String(), tc.says) {
+				t.Errorf("body %q does not name %q", rec.Body, tc.says)
+			}
+			if tc.code != http.StatusOK && (rt.reads != 0 || strings.Contains(rec.Header().Get("Content-Type"), "tar")) {
+				t.Error("a refused request read the counters")
+			}
+		})
 	}
 }
 

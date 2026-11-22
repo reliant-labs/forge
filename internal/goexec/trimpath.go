@@ -32,30 +32,51 @@ func CheckEnv(extra ...string) []string {
 // one commit, two worktrees: the second compiled 267 packages and cached 0 of
 // 73 test packages; with -trimpath, 0 compiles and 58 of 73 cached.
 //
-// # Not for everything
+// # Not for a project's own builds
 //
-// A binary someone runs or debugs keeps its paths: delve needs absolute ones
-// (forge debug passes -trimpath=false), and the dev loop's stack traces stay
-// clickable. So this is opt-in per call site, for checks only.
+// This is for the go commands forge runs on its OWN behalf, to check code.
+// A project's builds — `forge build`, the go-run and air dev loop, build
+// variants — are trimmed by what the project declares: a scaffolded GoBuild
+// says `flags = ["-trimpath"]`, which every go build forge runs from it
+// carries on its command line, where the project can see and change it. A
+// debug build appends -trimpath=false after those flags, since delve sets
+// breakpoints by absolute source path.
 func WithTrimpath(env []string) []string {
 	return withTrimpath(env, goEnvFileFlags)
 }
 
 func withTrimpath(env []string, fileFlags func() string) []string {
-	flags := ""
-	set := false
-	for _, kv := range env {
-		if key, val, ok := strings.Cut(kv, "="); ok && isGOFLAGSKey(key) {
-			flags, set = val, true // the last assignment wins, as it does for exec
-		}
-	}
-	// cmd/go treats an empty GOFLAGS as unset and reads the file layer.
-	if !set || strings.TrimSpace(flags) == "" {
-		flags = fileFlags()
-	}
+	flags := effectiveGOFLAGS(env, fileFlags)
 	if mentionsTrimpath(flags) {
 		return env
 	}
+	return replaceGOFLAGS(env, strings.TrimSpace(flags+" -trimpath"))
+}
+
+// effectiveGOFLAGS is the GOFLAGS a go command started with env reads: env's
+// own (the last assignment, as exec resolves it) when non-empty, else the file
+// layer — cmd/go treats an empty GOFLAGS as unset.
+func effectiveGOFLAGS(env []string, fileFlags func() string) string {
+	if flags := lastGOFLAGS(env); strings.TrimSpace(flags) != "" {
+		return flags
+	}
+	return fileFlags()
+}
+
+// lastGOFLAGS is env's last GOFLAGS assignment, "" when it has none.
+func lastGOFLAGS(env []string) string {
+	flags := ""
+	for _, kv := range env {
+		if key, val, ok := strings.Cut(kv, "="); ok && isGOFLAGSKey(key) {
+			flags = val
+		}
+	}
+	return flags
+}
+
+// replaceGOFLAGS returns env with every GOFLAGS assignment dropped and
+// GOFLAGS=flags appended.
+func replaceGOFLAGS(env []string, flags string) []string {
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		if key, _, ok := strings.Cut(kv, "="); ok && isGOFLAGSKey(key) {
@@ -63,7 +84,7 @@ func withTrimpath(env []string, fileFlags func() string) []string {
 		}
 		out = append(out, kv)
 	}
-	return append(out, "GOFLAGS="+strings.TrimSpace(flags+" -trimpath"))
+	return append(out, "GOFLAGS="+flags)
 }
 
 // mentionsTrimpath reports whether a GOFLAGS value sets -trimpath either way.

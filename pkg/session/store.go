@@ -101,6 +101,8 @@ type MemoryStore struct {
 	locks map[string]*sync.Mutex
 	// handoffs holds HandoffStore records (handoff.go).
 	handoffs map[string]Handoff
+	// subjectLocks serializes LockSubject per subject (subject_lock.go).
+	subjectLocks sync.Map
 }
 
 // NewMemoryStore returns an empty MemoryStore.

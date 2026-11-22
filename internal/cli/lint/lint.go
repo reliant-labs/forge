@@ -67,6 +67,7 @@ type lintFlags struct {
 	graph             bool
 	slowTests         bool
 	testWaits         bool
+	callerPaths       bool
 	protoFormat       bool
 	telemetry         bool
 	generatedDrift    bool
@@ -402,6 +403,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.configReach, "config-reach", false, "Flag config fields that no binary and no frontend loads — with per-binary configs, an unbound config message generates but is never loaded (warnings only)")
 	cmd.Flags().BoolVar(&flags.slowTests, "slow-tests", false, "Fail on a Go test that does slow work without being marked slow — execs go/forge/kcl/node/npm/git/docker/…, drives containers, or dials an external host, with no testkit.Slow(t, why) or testing.Short() guard on its path — so it runs in the blocking -short tier, and a file its child process reads is invisible to the test cache")
 	cmd.Flags().BoolVar(&flags.testWaits, "test-waits", false, "Fail on a Go test that waits on the wall clock where it should wait on an event — a time.Sleep before the test goes on, an event wait that fails the test after a deadline under 5s (select on time.After, testify Eventually, a poll bounded by time.Now().Add), or an upper bound asserted on real elapsed time — the shapes that flake on a loaded machine. Runs in every forge lint; the fix is testkit.Eventually / testkit.Receive")
+	cmd.Flags().BoolVar(&flags.callerPaths, "caller-paths", false, "Fail on Go code that builds a filesystem path from the source file runtime.Caller reports — _, file, _, _ := runtime.Caller(0), then filepath.Dir(file) to find testdata or the repository root. Under -trimpath, forge's default build mode, that file is module-relative, not on disk, so the code passes untrimmed and fails trimmed. A use checked with filepath.IsAbs, or only displayed (filepath.Base, fmt, log, errors), passes. Runs in every forge lint; the fix is to resolve paths against the package directory (filepath.Abs(\"testdata/x\"), or walk up to the go.mod)")
 	cmd.Flags().BoolVar(&flags.protoFormat, "proto-format", false, "Fail on a .proto that buf format would rewrite — the scaffolded pre-commit buf-format hook's own check (buf format -d over the buf workspace), so lint and the commit hook cannot disagree. Runs in every forge lint; with --fix, writes buf's output")
 	cmd.Flags().BoolVar(&flags.telemetry, "telemetry", false, "Judge declared telemetry (forge.Telemetry) per env, with the KCL file:line: FAILS on a declared dashboard series whose metric no scrape of its system keeps (allow minus deny; a histogram x counts as x_bucket/_sum/_count); WARNS on a metrics scrape with no allow, a rate/increase over a name no counters or _total/_count/_sum marks as a counter, and a scrape that raises sample_limit or keeps every name without drop_labels. Runs in every forge lint")
 	cmd.Flags().BoolVar(&flags.strict, "strict", false, "Escalate advisory findings to errors so they fail the build / CI: RPCs missing a (forge.v1.method) auth-posture annotation, contract refusals in a tree with no forge.yaml, and an advisory lane's own could-not-run report (the typed-config guardrail when golangci-lint never reported). Not needed for a gating lane that could NOT run: that always fails, unless --allow-skip accepts it")
@@ -1202,36 +1204,76 @@ const bufMissingReason = "buf is not on PATH, so the buf lint lane cannot run"
 // else forge's pin built into the tool cache, so a fresh machine's lint runs
 // the lanes instead of failing them. ok is false only when no buf is
 // available at all.
+//
+// When the declared pin cannot be installed (offline, say) and PATH has some
+// other buf, buf lint still runs PATH's, with a note that its verdict may
+// differ from CI's. The proto-format lane refuses instead (resolveLintBuf's
+// standIn): another release's formatting is not a finding about the protos.
 func lintBufBinary(ctx context.Context) (string, bool) {
-	pathBuf, pathErr := lintBufLookPath("buf")
-	if pathErr == nil && !lintBufDeclared(".") {
-		return pathBuf, true
+	b, ok := resolveLintBuf(ctx, ".")
+	if ok && b.standIn != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  buf lint: buf %s, which go.mod pins, could not be installed (%v); running %s instead, whose verdict may differ from CI's\n",
+			b.pin.Bare(), b.standIn, b.bin)
 	}
-	dir, err := lintBufEnsure(ctx, ".")
+	return b.bin, ok
+}
+
+// lintBuf is the buf a buf lane runs, and whether it is the project's pin.
+type lintBuf struct {
+	bin string
+	// pin is the buf the project runs (go.mod's, else forge's).
+	pin toolpin.Buf
+	// standIn is set when bin is PATH's buf running in place of a pin go.mod
+	// declares that could not be installed: why the pin could not be had.
+	// nil when bin is the pin, or the project declares none.
+	standIn error
+}
+
+// resolveLintBuf resolves the buf the buf lanes run from root (see
+// lintBufBinary). ok is false only when no buf is available at all.
+func resolveLintBuf(ctx context.Context, root string) (lintBuf, bool) {
+	pin := lintBufPin(root)
+	pathBuf, pathErr := lintBufLookPath("buf")
+	if pathErr == nil && !pin.Declared() {
+		return lintBuf{bin: pathBuf, pin: pin}, true
+	}
+	dir, err := lintBufEnsure(ctx, root, pin)
 	switch {
 	case err == nil && dir == "" && pathErr == nil:
-		return pathBuf, true // the buf on PATH is the pin
+		return lintBuf{bin: pathBuf, pin: pin}, true // the buf on PATH is the pin
 	case err == nil && dir != "":
 		bin := filepath.Join(dir, "buf")
 		if runtime.GOOS == "windows" {
 			bin += ".exe"
 		}
-		return bin, true
+		return lintBuf{bin: bin, pin: pin}, true
 	case pathErr == nil:
-		// The pin could not be built (offline, say): PATH's buf still runs
-		// the lanes, and the note says its verdict may differ from CI's.
-		fmt.Fprintf(os.Stderr, "⚠️  buf lint/format: the buf go.mod pins could not be installed (%v); running %s instead, whose formatting may differ from CI's\n", err, pathBuf)
-		return pathBuf, true
+		// The pin could not be installed (offline, say): err says why.
+		return lintBuf{bin: pathBuf, pin: pin, standIn: err}, true
 	}
-	return "", false
+	return lintBuf{pin: pin}, false
 }
 
 // The seams lintBufBinary resolves buf through, replaced by its tests.
 var (
 	lintBufLookPath = exec.LookPath
-	lintBufDeclared = func(root string) bool { return toolpin.BufFor(root).Declared() }
-	lintBufEnsure   = func(ctx context.Context, root string) (string, error) {
-		return cigate.NewResolver(root, os.Stderr).Ensure(ctx, cigate.BufTool(root))
+	lintBufPin      = toolpin.BufFor
+	// lintBufEnsure resolves pin as the gate does: "" when PATH's buf is
+	// it, else its tool-cache directory, built on first use.
+	lintBufEnsure = func(ctx context.Context, root string, pin toolpin.Buf) (string, error) {
+		t := cigate.BufTool(root)
+		t.Version = pin.Version
+		return cigate.NewResolver(root, os.Stderr).Ensure(ctx, t)
+	}
+	// lintBufVersion is the release a buf binary reports, "" when it
+	// reports none (only the refusal's message reads it).
+	lintBufVersion = func(ctx context.Context, bin string) string {
+		out, err := exec.CommandContext(ctx, bin, "--version").Output()
+		if err != nil {
+			return ""
+		}
+		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+		return strings.TrimPrefix(strings.TrimSpace(first), "v")
 	}
 )
 

@@ -39,9 +39,9 @@ func newCITestBudgetCmd() *cobra.Command {
 			"  testkit.Slow(t, \"builds the forge binary\")      // forge/pkg/testkit\n" +
 			"  if testing.Short() { t.Skip(\"builds the forge binary\") }\n\n" +
 			"Under -short a marked test skips, so every test that RAN in a -short run claims\n" +
-			"to be fast. One over budget is a slow test nobody marked. `forge lint\n" +
-			"--slow-tests` flags slow work it can recognize in source; this catches the rest,\n" +
-			"whatever made the test slow.\n\n" +
+			"to be fast. One over budget is a slow test nobody marked.\n" +
+			"`forge lint --slow-tests` flags slow work it can recognize in source; this\n" +
+			"catches the rest, whatever made the test slow.\n\n" +
 			"FEED IT A -short RUN. forge cannot see the flags a stream was made with. A test\n" +
 			"whose own body checks testing.Short or calls testkit.Slow is reported as MARKED:\n" +
 			"either it is still slow under -short (its bypass leaves slow work behind), or the\n" +

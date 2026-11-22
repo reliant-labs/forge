@@ -2320,6 +2320,13 @@ benefits:
         bug_class: >-
           A test that fails when real elapsed time passes a bound under 5s,
           measuring how busy the machine was rather than what the code did
+      - id: forge-runtime-caller-path
+        lane: --caller-paths
+        bug_class: >-
+          A test that finds its testdata or the repository root from the
+          source file `runtime.Caller` reports: under `-trimpath`, forge's
+          default build mode, that path is module-relative, not on disk, so
+          the test passes untrimmed and fails trimmed
       - id: flake-check
         lane: forge ci gate
         bug_class: >-

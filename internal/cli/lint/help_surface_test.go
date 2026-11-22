@@ -56,6 +56,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// this is the one named, reasoned way to accept it may not. Hidden,
 		// the only way past a missing toolchain would be to drop the gate.
 		"allow-skip",
+		// Gating, and about the user's own code: a test that finds its
+		// testdata from runtime.Caller's file passes untrimmed and fails
+		// under -trimpath, forge's default build mode. The lane runs in
+		// every forge lint; the flag runs it alone while cleaning up.
+		"caller-paths",
 		// Report-only: the dry run of the auto-fix default, and what CI gets
 		// without asking. Visible because the CI behaviour is otherwise a
 		// surprise an author only meets on a red build.

@@ -122,9 +122,9 @@ further and cannot widen it. Replacing a closure wholesale, without calling the
 generated one, is the escape hatch, and it drops the declared scope with it.
 
 **Tables with no owner.** A table with CRUD on an authenticated rpc and no
-owner declaration is flagged by the `crud-table-unowned` lint (it warns for one
-release, then gates). Answer it by declaring an owner, or by saying why the
-table has none:
+owner declaration is flagged by the `crud-table-unowned` lint (warns in
+v1.11.0, gates from v1.12.0). Answer it by declaring an owner, or by saying why
+the table has none:
 
 ```sql
 COMMENT ON TABLE plan_catalog IS 'forge:public: the pricing page lists every plan';

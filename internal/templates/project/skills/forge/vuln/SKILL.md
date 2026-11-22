@@ -300,3 +300,5 @@ holds). `forge vuln scan --image <ref@sha256:…>` scans an image of that env yo
 - Bumping vulnerable dependencies: `vuln/patch`.
 - How the cut and its ledger work: `deploy/release`, `deploy/offline-ledger`.
 - The scaffolded workflows, including the scan job: `ci`; the local gate: `ci/gate`.
+- A project scaffolded before v1.10.0, whose build-images.yml still runs the
+  anchore SBOM action and Trivy: `migrations/v1.11.0/sbom-vulnerabilities`.

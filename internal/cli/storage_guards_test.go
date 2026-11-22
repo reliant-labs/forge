@@ -29,7 +29,9 @@ func TestStorageReserveBlocksDirectBuildLanes(t *testing.T) {
 		"go": func() buildResult {
 			return buildGoTarget(ctx, goBuildTarget{cmd: "./cmd/test", outputName: "test"}, "bin", false, "", versionInfo{}, buildMemoryCaps{})
 		},
-		"variant":  func() buildResult { return buildVariant(ctx, "test", "./cmd/test", BuildVariant{Name: "debug"}, "bin") },
+		"variant": func() buildResult {
+			return buildVariant(ctx, "test", "./cmd/test", nil, BuildVariant{Name: "debug"}, "bin")
+		},
 		"frontend": func() buildResult { return buildFrontend(ctx, config.FrontendConfig{Name: "web"}, buildMemoryCaps{}) },
 		"project Docker": func() buildResult {
 			return dockerBuildProject(ctx, cfg, dockerImageTags{}, "", versionInfo{}, nil, projectImageGuard{})

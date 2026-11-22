@@ -988,6 +988,15 @@ _profiling_env = lambda w: any, env: {str:} -> {str:str} {
         | ({FORGE_PROFILES_HEAP_INTERVAL = _p.heap_interval} if _p and not _env_set(env, "FORGE_PROFILES_HEAP_INTERVAL") else {})
 }
 
+# FORGE_OBSERVE_RESOURCE_METRICS for w: its own `resource_metrics`, else the
+# env's ObservabilitySignals.resource_metrics, else nothing (the runtime's
+# "auto"). Never over the workload's own env.
+_resource_metrics_env = lambda w: any, b: Bundle, env: {str:} -> {str:str} {
+    _env_mode = b.observability.signals.resource_metrics if b.observability and b.observability.signals else ""
+    _mode = w.resource_metrics if w.resource_metrics else _env_mode
+    {FORGE_OBSERVE_RESOURCE_METRICS = _mode} if _mode and not _env_set(env, "FORGE_OBSERVE_RESOURCE_METRICS") else {}
+}
+
 # A project-relative path the one way the PGO rules compare it: surrounding
 # space trimmed, empty and `.` segments dropped ("./", "." and "" are the
 # root; "./Dockerfile" is "Dockerfile"); an absolute path as it is.
@@ -1055,6 +1064,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
         | (_obs_env(rt, bundle, _set) if _runs else {}) \
         | _tel \
         | (_profiling_env(w, _env) if _runs else {}) \
+        | (_resource_metrics_env(w, bundle, _env) if _runs else {}) \
         | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
@@ -3674,6 +3684,41 @@ _runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
         {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in _runtime_config_declared(f, bundle)}
 }
 
+# The workload a Frontend.apis entry names: a string is the name itself.
+_api_target = lambda v: str | WorkloadURL -> str {
+    v if typeof(v) == "str" else v.name
+}
+
+# A frontend's named same-origin APIs as {name: workload}, every target
+# checked against THE TRUST RULE (kcl/schema.k Frontend.apis): a workload
+# this env's Bundle declares — not a frontend, not infra, never a URL — and,
+# for an OnHosted frontend, one the platform runs, since it is the platform
+# that routes /_api/@<name> to it.
+_frontend_apis = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    assert not f.apis or f.type in ["nextjs", "vite"], \
+        "Frontend '${f.name}'.apis: named same-origin APIs are paths on the page's own origin, and a ${f.type} frontend has no page origin. Give it the backends' URLs in its config instead"
+    _workloads = [w.name for w in bundle.workloads]
+    _bad = [k + " -> " + _api_target(v) for k, v in f.apis if _api_target(v) not in _workloads]
+    assert len(_bad) == 0, \
+        "Frontend '${f.name}'.apis names a workload this environment does not declare: " + ", ".join(_bad) \
+        + ". The session cookie reaches every named API, so each must be a workload of this env's Bundle (declared: " \
+        + ", ".join(_workloads) + "). Call a backend elsewhere by a literal URL in runtime_config instead."
+    {k: (_require_hosted_url_target(_api_target(v), "Frontend '" + f.name + "'.apis." + k, bundle) if _frontend_hosted(f) else _api_target(v)) for k, v in f.apis}
+}
+
+# A frontend's named APIs RESOLVED to each workload's own URL, for the
+# config.js forge writes itself. Empty for an OnHosted frontend (the control
+# plane writes `/_api/@<name>`). A dev server (OnHost) proxies the
+# same-origin paths, so its URLs are best effort: `forge env up` resolves
+# each upstream again after it assigns undeclared host ports.
+_frontend_api_urls = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    _apis = _frontend_apis(f, bundle)
+    _where = lambda k: str -> str { "Frontend '" + f.name + "'.apis." + k }
+    _dev = {k: wurl_lib.resolve(w, bundle, "localhost") for k, w in _apis} if f.runtime.type == "host" else {}
+    {} if _frontend_hosted(f) else \
+        ({k: u for k, u in _dev if u} if f.runtime.type == "host" else {k: _require_workload_url(w, _where(k), bundle) for k, w in _apis})
+}
+
 # output.frontends[].runtime: {type, ...} — the dispatch key. Only the
 # fields the runtime's consumer reads; optional ones project as null.
 _render_frontend_runtime = lambda rt: any -> any {
@@ -3705,6 +3750,10 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     # entries after it, so the "bundle" key would shadow the Bundle.
     _rc = _runtime_config_resolved(f, bundle)
     _rc_spec = _runtime_config_spec(f, bundle)
+    # Named same-origin APIs (Frontend.apis): rendered only when declared,
+    # so every other frontend renders byte-identically.
+    _apis = _frontend_apis(f, bundle)
+    _api_urls = _frontend_api_urls(f, bundle)
     {
         "name": f.name
         if f.release_dependencies is not Undefined:
@@ -3736,7 +3785,8 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    } | ({"routes": f.routes} if f.routes else {}) \
+    } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
+      | ({"routes": f.routes} if f.routes else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }

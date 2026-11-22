@@ -52,7 +52,7 @@ if the root exists:
     billing = fw.Workload {
         name = "billing"
         kind = "service"
-        build = forge.GoBuild {cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}"}
+        build = forge.GoBuild {cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}", flags = ["-trimpath"]}
         ports = [fw.Port {name = "http", port = 8080, expose = True}]
     } | config_gen.root_of("billing")
 {{- else}} `args = ["server"]` runs
@@ -131,7 +131,7 @@ import forge.workloads as fw
 #
 #     billing = fw.Workload {
 #         name = "billing"
-#         build = forge.GoBuild {cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}"}
+#         build = forge.GoBuild {cmd = "./cmd/{{.ProjectName}}", output_name = "{{.ProjectName}}", flags = ["-trimpath"]}
 #         args = ["billing"]
 #         ports = [fw.Port {name = "http", port = 8080, expose = True}]
 #         config_secrets = ["DATABASE_URL"]

@@ -112,6 +112,13 @@ func TokenIdentity(token string) string {
 // as-is rather than wrapping it in a generic auth failure.
 var ErrNoCredential = errors.New("no control-plane credential")
 
+// NoAccountHint is the last line of the signed-out ErrNoCredential message:
+// the no-account deploy, named generically because this package knows
+// neither the command nor the env. A caller that does know them (a deploy of
+// one env) replaces this line with a concrete one.
+const NoAccountHint = "no account? `forge env deploy <env> --claimable` publishes a deploy anyone can claim within 72h; " +
+	"give the claim link it prints to your user"
+
 // helperTimeout bounds one run of the credential helper. A helper usually
 // answers from its own cache in milliseconds; when it has to mint it makes
 // one round trip. Anything slower is broken, and a hung helper must not hang
@@ -216,9 +223,8 @@ func ResolveCredential(flagToken string, ep Endpoint) (Credential, error) {
 			"    --token <token>        explicit, wins over everything (one-off / debugging)\n"+
 			"    export %s=<token>      for CI — a pipeline has no browser\n"+
 			"    %s        for a human — opens a browser and stores the credential\n"+
-			"no account? `forge env deploy <env> --claimable` publishes a deploy anyone can claim within 72h; "+
-			"give the claim link it prints to your user",
-		ErrNoCredential, ep.URL, tokenEnv, loginHint(ep))
+			"%s",
+		ErrNoCredential, ep.URL, tokenEnv, loginHint(ep), NoAccountHint)
 }
 
 // helperFailure words a helper that produced no token. A helper's REFUSAL is

@@ -13,8 +13,12 @@
 // wrote it, so the gate and the commit hook cannot disagree.
 //
 // It runs the hook's own command — `buf format -d` over the whole workspace,
-// with the buf the buf lint lane runs (PATH's, else forge's pin) — and reports
-// each file buf would rewrite with buf's diff. `--fix` writes buf's output
+// with the buf the project pins (resolveLintBuf: go.mod's pin, from PATH when
+// it is that release, else forge's tool cache; with no pin declared, PATH's,
+// else forge's) — and reports each file buf would rewrite with buf's diff.
+// When go.mod's pin cannot be installed and PATH has another release, the
+// lane refuses with one finding rather than report that release's formatting
+// as diffs (protoFormatPinRefusal). `--fix` writes buf's output
 // instead (`buf format -w --path <file>` per pending file). A project with no
 // buf.yaml has nothing for buf to format, and the lane is silently absent.
 //
@@ -52,11 +56,15 @@ func collectProtoFormatJSON(ctx context.Context, root string, keep func(rel stri
 	if !fileExists(filepath.Join(root, "buf.yaml")) {
 		return nil, false, nil
 	}
-	bin, ok := lintBufBinary(ctx)
+	b, ok := resolveLintBuf(ctx, root)
 	if !ok {
 		return []lintJSONFinding{{Severity: lintSevWarning, Rule: ruleBufLintUnavailable,
 			Message: "buf is not on PATH, so the proto-format lane cannot run", FixHint: bufMissingFix()}}, false, nil
 	}
+	if b.standIn != nil {
+		return []lintJSONFinding{protoFormatPinRefusal(ctx, b)}, false, nil
+	}
+	bin := b.bin
 	pending, err := bufFormatPending(ctx, bin, root)
 	if err != nil {
 		return []lintJSONFinding{{Severity: lintSevError, Rule: ruleProtoFormat,
@@ -88,6 +96,31 @@ func collectProtoFormatJSON(ctx context.Context, root string, keep func(rel stri
 		})
 	}
 	return fs, len(fs) > 0, nil
+}
+
+// protoFormatPinRefusal is the lane's one finding when the buf go.mod pins
+// could not be installed and PATH has another release. Two buf releases
+// format the same proto differently (multi-line option literals, say), so
+// running PATH's buf would report its own formatting as a diff in every proto
+// the pinned buf left as it is: reliant, pinning 1.57.0 on a machine with
+// 1.71.0, got 29 such findings, and `forge project upgrade` 29 needs_human
+// items, for a tree the pin reports clean. The lane did not run, so it says
+// that once, as a `-unavailable` gap (lint.allow_skip governs it), instead.
+func protoFormatPinRefusal(ctx context.Context, b lintBuf) lintJSONFinding {
+	have := lintBufVersion(ctx, b.bin)
+	if have == "" {
+		have = "of unknown version"
+	}
+	return lintJSONFinding{
+		Severity: lintSevWarning,
+		Rule:     ruleBufLintUnavailable,
+		Message: fmt.Sprintf("the proto-format lane did not run: the buf on PATH (%s) is %s, but go.mod pins buf %s, "+
+			"which could not be installed (%v); another buf release formats protos differently, so its diffs would not be this project's",
+			b.bin, have, b.pin.Bare(), b.standIn),
+		FixHint: fmt.Sprintf("put buf %s where forge finds it: re-run with the Go module proxy reachable (forge builds the pin into its tool cache), "+
+			"or `go install %s@%s` into a directory ahead of %s on PATH, then re-run `forge lint --proto-format`",
+			b.pin.Bare(), bufModulePath, b.pin.Version, filepath.Dir(b.bin)),
+	}
 }
 
 // bufFormatPending runs `buf format -d` from root — the pre-commit hook's

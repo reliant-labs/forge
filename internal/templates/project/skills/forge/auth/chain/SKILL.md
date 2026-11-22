@@ -70,3 +70,7 @@ return s.listPublic(ctx)                 // anonymous — the normal case here
 Two ways to get this wrong. `middleware.GetUser(ctx)` returns a `CodeUnauthenticated` **error** (it does not panic), so calling it here 401s every anonymous caller and defeats the annotation. And `claims, _ := ClaimsFromContext(ctx)` followed by `claims.UserID` **nil-panics** on every anonymous call — check `ok`.
 
 To personalize for callers who DO present a token, validate it in the handler, or keep the RPC authenticated and add a separate public one. Not `AnonymousOK: true`: that makes auth non-gating service-wide, so `auth_required: true` gates nothing.
+
+## Tokens must carry `exp`
+
+The scaffolded `SetupAuth` sets `auth.JWTConfig.RequireExpiry`: a correctly signed token with no `exp` is refused, and a past one always is, beyond a 5s leeway. A composed chain sets the same field on `JWKSValidatorConfig` / `HMACValidatorConfig`. It is off by default only so validators built before it keep accepting what they did; a `SetupAuth` scaffolded earlier adds `RequireExpiry: true`.

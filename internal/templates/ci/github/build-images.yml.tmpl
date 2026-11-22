@@ -120,8 +120,10 @@ jobs:
   the command). The vuln verbs and the SBOM at the cut ship in v1.10.0
   (v1.9.0 was tagged before them): a project pinned to v1.10.0 or later gets the
   forge scan and no SBOM action; an older pin keeps the anchore SBOM action
-  and the Trivy scan its forge cannot replace. Moving forge_version past
-  v1.10.0 and regenerating switches it over.
+  and the Trivy scan its forge cannot replace. This file is scaffold-once, so
+  moving forge_version past v1.10.0 does not rewrite it: `forge project
+  upgrade` does, through the v1.11.0 playbook's codemod (`forge fix
+  build-images-vuln-scan`), while the file is still the scaffold's.
 */}}
 {{- if .ForgeAtLeast "v1.10.0"}}
       #

@@ -37,7 +37,7 @@ const (
 	RegisterPath       = "POST /auth/register"
 	LogoutPath         = "POST /auth/logout"
 	SessionPath        = "GET /auth/session"
-	PasswordPolicyPath = "GET /auth/password-policy"
+	PasswordPolicyPath = "GET /auth/password-policy" //nolint:gosec // G101: a route pattern, not a credential
 	OptionsPath        = "GET /auth/options"
 	ForgotPath         = "POST /auth/forgot"
 	ResetPath          = "POST /auth/reset"
@@ -71,6 +71,24 @@ const (
 	HandoffAuthorizePath = devidp.HandoffAuthorizePath
 	HandoffConsentPath   = devidp.HandoffConsentPath
 	HandoffRedeemPath    = devidp.HandoffRedeemPath
+)
+
+// The account-settings routes (devidp.AccountRoutes), mounted only with
+// server-side sessions (WithSessions): see mountAccount. Each needs the
+// session COOKIE; the ones that change how the account is reached also need
+// a credential proved recently (ReauthPath).
+const (
+	AccountPath                     = devidp.AccountPath
+	AccountEmailPath                = devidp.AccountEmailPath
+	AccountEmailConfirmPath         = devidp.AccountEmailConfirmPath
+	AccountPasswordPath             = devidp.AccountPasswordPath
+	AccountLinkStartPath            = devidp.AccountLinkStartPath
+	AccountUnlinkPath               = devidp.AccountUnlinkPath
+	AccountPasskeyRemovePath        = devidp.AccountPasskeyRemovePath
+	AccountSessionsPath             = devidp.AccountSessionsPath
+	AccountSessionRevokePath        = devidp.AccountSessionRevokePath
+	AccountSessionsRevokeOthersPath = devidp.AccountSessionsRevokeOthersPath
+	ReauthPath                      = devidp.ReauthPath
 )
 
 // SessionCookieName holds the session: an opaque server-side session id
@@ -111,9 +129,11 @@ const SecureSessionCookieName = SessionCookieName
 // list` names the playbook), then point this constant at it.
 const SessionCookieName = "{{.Name}}_session"
 
-// SecureSessionCookieName: see the note above; there is no prefixed name to
-// read until pkg/middleware reads the cookie at all.
-const SecureSessionCookieName = SessionCookieName
+// SecureSessionCookieName is the name the cookie has when it is Secure: the
+// __Host- prefix keeps a sibling site from planting or overwriting it. It is
+// the pair pkg/middleware declares in every current scaffold; read both
+// there, secure name first.
+const SecureSessionCookieName = "__Host-" + SessionCookieName
 {{- end}}
 
 // sessionCookie is the session cookie's name as this deployment sets it:
@@ -160,6 +180,20 @@ func RequireUpstreamTokens() BrokerOption {
 func WithSessions(m *session.Manager) BrokerOption {
 	return func(b *loginBroker) { b.sessions = m }
 }
+{{- if .NoEnvironmentField}}
+
+// WithDevelopment tells the broker this process is local development, which
+// your config does not say beside the broker's settings: pass the same
+// decision the rest of the process makes (your tier helper, or
+// config.ModeOf on the config that carries the mode). true marks a new
+// account's address verified without mail, serves sign-up, and sets the
+// session cookie without Secure (plain http) by its plain name — which the
+// auth interceptor must then read too. Unset or false is a deployed
+// environment, the safe default. NEVER pass true outside local development.
+func WithDevelopment(dev bool) BrokerOption {
+	return func(b *loginBroker) { b.devMode = dev }
+}
+{{- end}}
 
 // RegisterLoginBroker mounts the native sign-in API.
 func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Config"}}, logger *slog.Logger, opts ...BrokerOption) {
@@ -215,6 +249,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 		// proxy saw (trusted_proxy_hops; 0 is the connection's peer).
 		proxyHops: int(cfg.TrustedProxyHops),
 {{- end}}
+{{- if not .NoEnvironmentField}}
 		// Marks a new account's address verified without a mail round trip.
 		// A dev stack has no mail server, so an unverified address strands
 		// the account behind a step nothing can deliver.
@@ -234,6 +269,16 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 		// Secure cookies everywhere except local development, where the
 		// dev server is plain http and a Secure cookie would be dropped.
 		secureCookie: cfg.Environment != "development",
+{{- else}}
+		// Your config declares no environment field beside these settings
+		// (the process's tier lives elsewhere: another config, or your own
+		// code), so this broker cannot tell local development from a
+		// deployed environment by itself. It runs as DEPLOYED — a Secure
+		// __Host- cookie, no development shortcuts, sign-up only as the
+		// policy or auth_self_signup allows — unless the caller passes
+		// WithDevelopment(true). The three settings below follow from it,
+		// after the options.
+{{- end}}
 		appBase:      appBaseFrom(cfg.IdpLoginUri),
 
 		forgotByAddress: newAttemptLimiter(3, time.Hour),
@@ -243,6 +288,15 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 	for _, opt := range opts {
 		opt(broker)
 	}
+{{- if .NoEnvironmentField}}
+	// Public sign-up: on in local development, OFF in every deployed
+	// environment unless its config opts in. See the RegisterPath mount
+	// below before turning it on.
+	broker.legacySelfSignup = broker.devMode{{if .SelfSignupField}} || cfg.AuthSelfSignup{{end}}
+	// Secure cookies everywhere except local development, where the dev
+	// server is plain http and a Secure cookie would be dropped.
+	broker.secureCookie = !broker.devMode
+{{- end}}
 	if broker.sessions != nil {
 		// A session can outlive its access token only with a refresh
 		// token, which the issuer grants for offline_access.
@@ -274,6 +328,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 	// (a desktop app or sibling host signing in from this session) is not
 	// served. `forge skill load auth/handoff` has the adoption steps.
 {{- end}}
+	broker.mountAccount(mux)
 	mux.Handle(LoginPath, http.HandlerFunc(broker.handleLogin))
 	mux.Handle(LogoutPath, http.HandlerFunc(broker.handleLogout))
 	mux.Handle(SessionPath, http.HandlerFunc(broker.handleSession))
@@ -363,6 +418,9 @@ type loginBroker struct {
 	// policy.
 	policy  devidp.LoginPolicy
 	methods *devidp.SignInRoutes
+	// account serves the account settings (mountAccount); nil without
+	// server-side sessions.
+	account *devidp.AccountRoutes
 
 	// upstreamTokens takes a social provider's tokens (WithUpstreamTokens);
 	// nil drops them.
@@ -484,7 +542,9 @@ func (b *loginBroker) mountSignInMethods(mux *devidp.GuardedMux, cfg *config.{{o
 	}
 	if len(b.policy.Social) > 0 {
 		mux.Handle(SocialStartPath, http.HandlerFunc(methods.HandleSocialStart))
-		mux.Handle(SocialCallbackPath, http.HandlerFunc(methods.HandleSocialCallback))
+		// The account page's "connect Google" returns here too; the
+		// account routes take those callbacks (socialCallback).
+		mux.Handle(SocialCallbackPath, b.socialCallback(http.HandlerFunc(methods.HandleSocialCallback)))
 	}
 	// Invitations (owners, declared members, `forge cloud identity invite`)
 	// and address verification work under every signup mode.
@@ -557,6 +617,83 @@ func (b *loginBroker) mountHandoff(mux *devidp.GuardedMux, redirects string) {
 	mux.Handle(HandoffRedeemPath, http.HandlerFunc(routes.HandleRedeem))
 }
 {{- end}}
+
+// mountAccount mounts the account settings: the profile and sessions page,
+// changing the address and password, connecting and disconnecting social
+// accounts, removing passkeys, and re-authentication (devidp.AccountRoutes,
+// tested in forge against a fake issuer). Only WITH server-side sessions: the
+// routes read the subject and the time of the last proof from the session
+// record, which a cookie holding an access token does not have.
+//
+// Drop a line to stop serving a route. The routes need the session COOKIE
+// (sessionID): a bearer token, an API key or a token cookie is refused.
+func (b *loginBroker) mountAccount(mux *devidp.GuardedMux) {
+	if b.sessions == nil {
+		return
+	}
+	account, err := devidp.NewAccountRoutes(devidp.AccountRoutesConfig{
+		Client:           b.client,
+		Sessions:         b.sessions,
+		SessionID:        b.sessionID,
+		Policy:           b.policy,
+		AppBase:          b.appBase,
+		CookiePrefix:     "{{.Name}}",
+		SecureCookie:     b.secureCookie,
+		Logger:           b.logger,
+		TrustedProxyHops: b.proxyHops,
+		// A dev stack has no mail: an address change's confirm link is
+		// logged instead of mailed, as forgot-password's is.
+		DevMode:        b.devMode,
+		PasswordPolicy: b.passwordPolicy,
+		RejectPassword: b.writePasswordRejection,
+		// A connected `pass_tokens` provider hands its tokens too (Event
+		// devidp.UpstreamEventLink).
+		UpstreamTokens:        b.upstreamTokens,
+		RequireUpstreamTokens: b.requireUpstreamTokens,
+	})
+	if err != nil {
+		b.logger.Warn("the account settings routes are not served", "error", err)
+		return
+	}
+	b.account = account
+	mux.Handle(AccountPath, http.HandlerFunc(account.HandleAccount))
+	mux.Handle(ReauthPath, http.HandlerFunc(account.HandleReauth))
+	mux.Handle(AccountEmailPath, http.HandlerFunc(account.HandleEmailChange))
+	mux.Handle(AccountEmailConfirmPath, http.HandlerFunc(account.HandleEmailConfirm))
+	mux.Handle(AccountPasswordPath, http.HandlerFunc(account.HandlePasswordChange))
+	mux.Handle(AccountSessionsPath, http.HandlerFunc(account.HandleSessions))
+	mux.Handle(AccountSessionRevokePath, http.HandlerFunc(account.HandleSessionRevoke))
+	mux.Handle(AccountSessionsRevokeOthersPath, http.HandlerFunc(account.HandleRevokeOthers))
+	// Disconnecting and removing work whatever the policy offers now: a
+	// link or passkey made under an earlier policy stays removable.
+	mux.Handle(AccountUnlinkPath, http.HandlerFunc(account.HandleUnlink))
+	mux.Handle(AccountPasskeyRemovePath, http.HandlerFunc(account.HandlePasskeyRemove))
+	if len(b.policy.Social) > 0 {
+		mux.Handle(AccountLinkStartPath, http.HandlerFunc(account.HandleLinkStart))
+	}
+}
+
+// socialCallback hands a social callback to the account routes when one of
+// their links is in flight in this browser, else to next (the sign-in).
+func (b *loginBroker) socialCallback(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if b.account != nil {
+			b.account.SocialCallback(next).ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// sessionID is the server-side session id the request's session COOKIE
+// holds, "" when it holds none (no cookie, or an access-token cookie).
+func (b *loginBroker) sessionID(r *http.Request) string {
+	c, err := r.Cookie(b.sessionCookie())
+	if err != nil || !session.IsID(c.Value) {
+		return ""
+	}
+	return c.Value
+}
 
 // identity is the ONLY thing the browser learns about the session: who is
 // signed in, for rendering. Never a token.
@@ -935,6 +1072,7 @@ func (b *loginBroker) revokeAtIssuer(ctx context.Context, tokens session.Tokens)
 
 // clearSessionCookie tells the browser to forget the session cookie.
 func (b *loginBroker) clearSessionCookie(w http.ResponseWriter) {
+	//nolint:gosec // G124: HttpOnly and SameSite are set, and Secure is off only in local development (plain http)
 	http.SetCookie(w, &http.Cookie{
 		Name:     b.sessionCookie(),
 		Value:    "",
@@ -994,6 +1132,7 @@ func (b *loginBroker) endPreviousSession(r *http.Request) {
 
 // writeSessionCookie sets the session cookie to value for maxAge seconds.
 func (b *loginBroker) writeSessionCookie(w http.ResponseWriter, value string, maxAge int) {
+	//nolint:gosec // G124: HttpOnly and SameSite are set, and Secure is off only in local development (plain http)
 	http.SetCookie(w, &http.Cookie{
 		// Host-only: no Domain, ever, so the cookie goes to this host
 		// alone; __Host- prefixed when Secure (sessionCookie).

@@ -346,6 +346,8 @@ func TestMergeDeclaredFirstDeclarationWins(t *testing.T) {
 func TestIsBuiltinMetric(t *testing.T) {
 	for name, want := range map[string]bool{
 		"rpc.server.calls": true, "go.memory.used": true, "forge.metrics.rejected_attributes": true,
+		"process.cpu.time": true, "system.memory.usage": true, "forge.process.memory.go_gap": true,
+		"processor.jobs": false, "systems.count": false, "process.": false,
 		"orders_created": false, "rpcx.thing": false, "k8s.container.ready": false, "": false, "go": false,
 	} {
 		if got := IsBuiltinMetric(name); got != want {

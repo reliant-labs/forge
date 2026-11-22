@@ -33,8 +33,9 @@ var goflagsExempt = map[string]string{
 	// same environment, so a -trimpath the file layer sets is carried over, and
 	// adding one would change the user's own test run that a retry must repeat.
 	"internal/testretry/run.go:Run": "pins the effective GOFLAGS go itself reported (file layer included), so it drops nothing",
-	// The dev loop's own binaries keep their paths (WithTrimpath: "not for everything").
-	"internal/hostlaunch/hostlaunch.go:WithPGO":   "the env of a go run / air binary a developer runs and debugs, which keeps absolute paths on purpose",
+	// -pgo=off for a go-run / air build whose GoBuild disables PGO; that
+	// build's -trimpath is declared in GoBuild.flags, on its command line.
+	"internal/hostlaunch/hostlaunch.go:WithPGO":   "a dev-loop build trims by its declared GoBuild.flags (command line), not GOFLAGS",
 	"internal/hostlaunch/pgo_test.go:TestWithPGO": "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
 }
 

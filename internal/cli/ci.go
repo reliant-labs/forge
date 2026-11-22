@@ -210,10 +210,10 @@ func newCIValidateKCLCmd() *cobra.Command {
 		Short: "Validate that every environment renders manifests kubectl will accept",
 		Long: "Renders each environment's deploy/kcl/<env>/main.k through the embedded KCL\n" +
 			"runtime and asserts the result is DEPLOYABLE, not merely that it evaluates.\n\n" +
-			"An env's applied stream is `output.manifests`, EXPANDED exactly as `forge env\n" +
-			"deploy` expands it: every Cluster-bound forge.dev Workload record is rendered\n" +
-			"through pkg/deploy.RenderWorkloads (Full profile), per (cluster, namespace)\n" +
-			"set. A record that does not render fails here. Every expanded object must\n" +
+			"An env's applied stream is `output.manifests`, EXPANDED exactly as\n" +
+			"`forge env deploy` expands it: every Cluster-bound forge.dev Workload record\n" +
+			"is rendered through pkg/deploy.RenderWorkloads (Full profile), per (cluster,\n" +
+			"namespace) set. A record that does not render fails here. Every expanded object must\n" +
 			"carry apiVersion + kind, and no top-level key but `output` may hide k8s\n" +
 			"objects no deploy would ever apply.\n\n" +
 			"Hosting is PER WORKLOAD. The env's hosted part (forge.OnHosted workloads,\n" +

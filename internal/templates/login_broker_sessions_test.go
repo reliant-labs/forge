@@ -229,3 +229,39 @@ func TestNoSessionsKeepsTheTokenCookie(t *testing.T) {
 		t.Fatalf("the rendered broker does not keep sessions server-side:\n%s", out)
 	}
 }
+
+// The account settings (devidp.AccountRoutes) are mounted only WITH
+// server-side sessions, read the session cookie alone, and take the social
+// callbacks of the links they began.
+func TestLoginBrokerScaffoldMountsAccountSettingsWithSessionsOnly(t *testing.T) {
+	src := renderBroker(t, brokerData(map[string]any{"ScopesField": true, "LoginPolicyField": true}))
+	at := strings.Index(src, "func (b *loginBroker) mountAccount(")
+	if at < 0 {
+		t.Fatal("the broker has no mountAccount")
+	}
+	body := src[at : at+strings.Index(src[at:], "\n}\n")]
+	if !strings.Contains(body, "if b.sessions == nil {\n\t\treturn\n\t}") {
+		t.Error("mountAccount does not return early without server-side sessions")
+	}
+	for _, r := range []string{"AccountPath", "ReauthPath", "AccountEmailPath", "AccountEmailConfirmPath", "AccountPasswordPath",
+		"AccountSessionsPath", "AccountSessionRevokePath", "AccountSessionsRevokeOthersPath", "AccountUnlinkPath",
+		"AccountPasskeyRemovePath", "AccountLinkStartPath"} {
+		if strings.Count(src, "mux.Handle("+r+",") != 1 || !strings.Contains(body, "mux.Handle("+r+",") {
+			t.Errorf("%s is not mounted exactly once, in mountAccount", r)
+		}
+		if !strings.Contains(src, "= devidp."+r) {
+			t.Errorf("the broker does not declare %s from devidp", r)
+		}
+	}
+	for _, want := range []string{
+		"broker.mountSignInMethods(mux, cfg)\n\tbroker.mountAccount(mux)",
+		"SessionID:        b.sessionID,",
+		"mux.Handle(SocialCallbackPath, b.socialCallback(http.HandlerFunc(methods.HandleSocialCallback)))",
+		// The cookie alone, and only a session id in it.
+		"c, err := r.Cookie(b.sessionCookie())\n\tif err != nil || !session.IsID(c.Value) {",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("the broker lacks %q", want)
+		}
+	}
+}

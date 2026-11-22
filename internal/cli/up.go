@@ -550,7 +550,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 // derive it from. Either form signals only processes carrying forge's own
 // ownership markers.
 func newEnvDownCmd() *cobra.Command {
-	var all bool
+	var all, collect bool
 	cmd := &cobra.Command{
 		Use:   "down [environment]",
 		Short: "Stop Forge host processes for an environment (or --all: across projects)",
@@ -607,10 +607,11 @@ refreshes is discarded after 24h regardless.`,
 			if len(args) == 0 {
 				return errors.New("name the environment to stop (e.g. `forge env down dev`), or pass --all for every forge stack on this machine")
 			}
-			return runUpStop(args[0])
+			return runUpStopCollecting(args[0], collect)
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "Stop every forge stack running on this machine, across all projects (the only way to reach a stack whose project directory is gone)")
+	cmd.Flags().BoolVar(&collect, "collect", false, "First pull the env's coverage (as forge test collect does) into the active test run, or a new one; FORGE_TEST_RUN set does this too. Best effort: never fails the teardown")
 	return cmd
 }
 
@@ -1078,6 +1079,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// resolveEphemeralHostPorts.
 	apiBaseURL := resolveEphemeralHostPorts(entities)
 	resolveEphemeralFrontendPorts(cfg, entities)
+	// Named same-origin APIs (Frontend.apis) are proxied by each dev server
+	// to the ports just settled, so dev URLs equal hosted ones.
+	resolveDevAPIUpstreams(entities)
 
 	// Build the per-env secret provider ONCE for this run (dotenv reads
 	// the file now; external/none are cheap no-ops). Reused for both the
@@ -3342,12 +3346,43 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
 	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
+	var dropped []string
+	cmd.Env, dropped = hostlaunch.WithGoBuildFlags(spec, cmd.Env)
+	reportAirBuildFlags(w.Name, spec, dropped)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
 	// A bare `forge` the process runs (the scaffolded .air.toml's `forge
 	// storage check`) is the forge running this env.
 	cmd.Env = withForgeShimOnPath(cmd.Env, w.Name)
 
 	return cmd, w.Name, nil
+}
+
+// reportAirBuildFlags names the declared build flags an air workload's build
+// does not get: those its air config cannot receive because it does not
+// expand $FORGE_GO_BUILD_FLAGS, and dropped, the ones WithGoBuildFlags left
+// out because they contain whitespace. An air config whose own command
+// already decides -trimpath (the scaffolded .air-debug.toml says
+// -trimpath=false) is not told about a -trimpath it overrides anyway.
+func reportAirBuildFlags(name string, spec hostlaunch.RunnerSpec, dropped []string) {
+	if strings.TrimSpace(spec.Runner) != "air" || len(spec.GoBuildFlags) == 0 {
+		return
+	}
+	if len(dropped) > 0 {
+		fmt.Printf("[up] host %s: air does not get %q: $%s is split on spaces, so a flag containing one cannot pass through it (go-run and forge build pass it whole)\n",
+			name, dropped, hostlaunch.GoBuildFlagsEnv)
+	}
+	if spec.AirExpandsBuildFlags() {
+		return
+	}
+	cmd := spec.AirBuildCmd()
+	missing := slices.DeleteFunc(slices.Clone(spec.GoBuildFlags), func(f string) bool {
+		return strings.Contains(cmd, "-trimpath") && strings.HasPrefix(strings.TrimLeft(f, "-"), "trimpath")
+	})
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Printf("[up] host %s: its air config does not build with $%s, so it does not get %v (from the build's GoBuild.flags, or a cover build); add it to the config's `go build`, as a new scaffold's .air.toml does (`forge fix trimpath-default` adds it)\n",
+		name, hostlaunch.GoBuildFlagsEnv, missing)
 }
 
 // hostRunnerSpec is the hostlaunch input for a host workload: its runtime
@@ -3364,6 +3399,13 @@ func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
 	}
 	if g := w.GoBuild(); g != nil {
 		spec.GoPkg, spec.OutputName = g.Cmd, g.OutputName
+		// The GoBuild's declared flags (a scaffolded GoBuild says
+		// -trimpath) are the flags of every go build forge runs from it:
+		// go-run's `go run` and air's `go build` too, not only `forge
+		// build`. The binary and delve runners run what forge build made.
+		if spec.CompilesOnLaunch() {
+			spec.GoBuildFlags = slices.Clone(g.Flags)
+		}
 		// The env refuses workloads that disagree on a binary's PGO
 		// (ResolvePGOBinaries), so this workload's own declaration is the
 		// binary's.
@@ -3738,6 +3780,16 @@ func buildFrontendCmd(ctx context.Context, fe FrontendEntity, env string, parent
 			envFileMap = map[string]string{}
 		}
 		envFileMap[frontendAPIURLEnvVar(fe.Type)] = apiBaseURL
+	}
+	// The named same-origin APIs' upstreams (resolveDevAPIUpstreams), which
+	// the scaffolded dev server proxies at /_api/@<name>. Lowest layer too:
+	// the frontend's KCL env_vars outrank it, and so does the shell with
+	// FORGE_ENV_OVERRIDE=FORGE_DEV_APIS.
+	if v := devAPIsEnvValue(fe.DevAPIUpstreams); v != "" {
+		if envFileMap == nil {
+			envFileMap = map[string]string{}
+		}
+		envFileMap[devAPIsEnvVar] = v
 	}
 	// EffectiveEnvVars folds the typed `config` block (mock/api_url/otel/
 	// environment) into the KCL env stream, explicit env_vars winning on a
@@ -4274,11 +4326,16 @@ func trackedStack(projectID, env string) []trackedProc {
 // matches no recorded stack — so `forge env down dev` from the wrong directory
 // printed "no tracked stack for env=dev" and exited 0 while the stack it meant
 // to stop kept running. A teardown that cannot fail is not a teardown.
-func runUpStop(env string) error {
+func runUpStop(env string) error { return runUpStopCollecting(env, false) }
+
+// runUpStopCollecting is runUpStop, collecting the env's coverage first when
+// collect (--collect) or an active test run asks (test_collect_teardown.go).
+func runUpStopCollecting(env string, collect bool) error {
 	projectDir, err := requireStackProjectDir("forge env down")
 	if err != nil {
 		return err
 	}
+	collectBeforeTeardown(context.Background(), projectDir, env, collect, nil, os.Stdout)
 	projectID := projectIDForDir(projectDir)
 	return stopEnv(env, projectDir, envDownSteps{
 		hosts: func() (stackStop, error) { return stopStack(projectID, env) },

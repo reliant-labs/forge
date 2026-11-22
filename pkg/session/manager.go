@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -688,6 +689,53 @@ func (m *Manager) RevokeSubject(ctx context.Context, subject string) (int64, err
 	n, err := m.cfg.Store.DeleteSubject(ctx, subject)
 	if err != nil {
 		return n, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	return n, nil
+}
+
+// RevokeOthers ends every session of subject except the one id names — "sign
+// out my other devices", or what a password change does — and returns how
+// many it ended. id must be a live session of subject's; otherwise nothing is
+// ended and it returns ErrNoSession, so a caller cannot sign out someone
+// else's sessions by naming its own. Like RevokeSubject, the ended sessions'
+// tokens are not revoked at the issuer: nobody holds the ids they are sealed
+// under any more.
+func (m *Manager) RevokeOthers(ctx context.Context, subject, id string) (int64, error) {
+	k, err := deriveKeys(id)
+	if err != nil {
+		return 0, ErrNoSession
+	}
+	keep, err := m.cfg.Store.Get(ctx, k.lookup)
+	if errors.Is(err, ErrNoSession) {
+		return 0, ErrNoSession
+	}
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if keep.Subject != subject || keep.expired(m.cfg.Now()) {
+		return 0, ErrNoSession
+	}
+	recs, err := m.cfg.Store.ListSubject(ctx, subject)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	done := m.revoking(func(c map[string]cacheEntry) {
+		for key, e := range c {
+			if e.subject == subject && key != string(k.lookup) {
+				delete(c, key)
+			}
+		}
+	})
+	defer done()
+	var n int64
+	for _, r := range recs {
+		if bytes.Equal(r.Key, k.lookup) {
+			continue
+		}
+		if err := m.cfg.Store.Delete(ctx, r.Key); err != nil {
+			return n, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+		n++
 	}
 	return n, nil
 }

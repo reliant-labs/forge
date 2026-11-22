@@ -10,6 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/configproto"
 	"github.com/reliant-labs/forge/internal/connectmajor"
 	"github.com/reliant-labs/forge/internal/contractsrc"
 	"github.com/reliant-labs/forge/internal/depsurface"
@@ -57,7 +58,11 @@ func generateAuthSetup(modulePath string, projectDir string) error {
 // purpose, or declares no config the broker could read. Agents and people
 // take a ✅ line as proof the file exists.
 func generateLoginBroker(modulePath, projectDir string) error {
-	projectName := filepath.Base(projectDir)
+	// forge.yaml's name — the one pkg/middleware's SessionCookieName was
+	// scaffolded from — never the directory: generate usually runs with
+	// projectDir ".", whose base is ".", and a worktree's directory is a
+	// branch name rather than the product.
+	projectName := configproto.ProjectName(projectDir, modulePath)
 	wrote, err := codegen.GenerateLoginBroker(modulePath, projectName, projectDir)
 	if err != nil {
 		return err

@@ -8,26 +8,31 @@
 //
 // ── Adding a rule ────────────────────────────────────────────────────────
 //
-// For a new rule introduced in NEXT_VERSION v1.10.0 that needs a warning
-// window, add an explicit, reasoned opt-in to `newRules`:
+// A new rule ships in the release NEXT_VERSION names. Give it a warning window
+// with an explicit, reasoned opt-in to `newRules` (NEXT_VERSION v1.11.0 here):
 //
-//	{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
 //
 // Until is exclusive: it becomes the effective GatesFrom used by lint and
-// upgrade reports. This exception is for v1.10.0 introductions only; it does
-// not reopen any window closed in #2410 or move with NEXT_VERSION.
+// upgrade reports, and it is always the minor after IntroducedIn. A grace
+// row's IntroducedIn is NEXT_VERSION, or a release already cut whose tag
+// really carries the rule (TestGraceRowsNameAReleaseThatCarriesTheirRule);
+// it never reopens a window closed in #2410 (none before v1.10.0).
 //
-// The cohort was approved as v1.9.0 introductions gating from v1.10.0. Tag
-// v1.9.0 was cut at a commit before every one of them merged, so none shipped
-// in v1.9.0, and as declared they would have gated on arrival in v1.10.0. The
-// owner moved the whole cohort one release (2026-11-21, "Move whole cohort"):
-// they ship in v1.10.0, warn through it, and gate from v1.11.0.
+// A rule whose commit missed the tag its row names ships in the next release,
+// so its row moves to NEXT_VERSION and it warns through that release before it
+// gates. The owner decided this for the cohort first declared as v1.9.0
+// (2026-11-21, forge#2638, "Move whole cohort": tag v1.9.0 predates every one
+// of them, so they ship in v1.10.0 and gate from v1.11.0), and the rule holds
+// for every row since: crud-table-unowned was declared v1.10.0, missed that
+// tag, and ships in v1.11.0.
 
 package lint
 
 import (
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/linter/callerpath"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
@@ -41,7 +46,7 @@ type rolloutGroup struct {
 	Rules        []string
 }
 
-// rolloutGrace explicitly grants a warning window to newly introduced v1.9.0 rules.
+// rolloutGrace explicitly grants a warning window to a newly introduced rule.
 // Until is the first release that gates; Reason records why the rule needs grace.
 type rolloutGrace struct {
 	Until  string
@@ -277,7 +282,8 @@ var shippedRules = []rolloutGroup{
 	{IntroducedIn: "v1.9.0", Rules: []string{RuleFlakeCheck}},
 }
 
-// newRules holds new v1.10.0 rules with explicit, owner-approved grace.
+// newRules holds the rules introduced with explicit grace, each row keyed to
+// the release that really ships it.
 var newRules = []rolloutGroup{
 	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
 	// what it collects. Only the uncollected dashboard series is an error;
@@ -320,8 +326,13 @@ var newRules = []rolloutGroup{
 	},
 	// forge lint --crud-ownership: a table served by generated CRUD on an
 	// authenticated rpc that declares no owner (forge:owner=, a forge:owner
-	// column) and no forge:public / forge:unscoped reason.
-	{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
+	// column) and no forge:public / forge:unscoped reason. Declared v1.10.0,
+	// but #2461 merged after that tag, so it ships in v1.11.0.
+	// forge lint --caller-paths: a source path from runtime.Caller used to
+	// locate files, which -trimpath (forge's default build mode from
+	// v1.11.0) makes module-relative.
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing tests that find testdata or the repository root from runtime.Caller's file pass in an untrimmed build; warn for a release so each can resolve paths against the package directory (or check filepath.IsAbs) before the rule gates"}, Rules: []string{callerpath.RuleID}},
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

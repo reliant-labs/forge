@@ -795,7 +795,9 @@ func dispatchReleaseDeploy(ctx context.Context, envName string, f deployCmdFlags
 	// read at different moments from different places.
 	projectDir := projectDirForKCL()
 	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, &f); err != nil {
-		return err
+		// As runDeployEverything: the one --json document, for a failure
+		// before any other was written.
+		return refuseDeployReported(newDeployReport(envName, f.jsonOut), err)
 	}
 	// First of all: a release whose hosted part does not fit the plan is
 	// refused before the ledger is even opened, with nothing written.

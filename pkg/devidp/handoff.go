@@ -91,15 +91,14 @@ const (
 )
 
 // Error codes the handoff routes answer with, beside CodeNotSignedIn,
-// CodeRateLimited and CodeCrossSite.
+// CodeRateLimited, CodeCrossSite and CodeReauthRequired (account.go), which
+// a handoff answers when the signed-in session cannot hand off (it predates
+// handoffs, or the issuer no longer honours its sign-in): sign in again and
+// approve once more.
 const (
 	// CodeHandoffInvalid: the request, code, redirect or verifier was not
 	// accepted. One code for every cause a client cannot fix by retrying.
 	CodeHandoffInvalid = "handoff_invalid"
-	// CodeReauthRequired: the signed-in session cannot hand off (it predates
-	// handoffs, or the issuer no longer honours its sign-in). Sign in again
-	// and approve once more.
-	CodeReauthRequired = "reauth_required"
 )
 
 // Redirect kinds, as the authorize answer and redeem name them.

@@ -113,7 +113,17 @@
 //	FORGE_OBSERVE_RESOURCE_INTERVAL  max age of a sample, a Go duration (15s; at least 1s)
 //
 // off starts no sampler. OTEL_SDK_DISABLED and OTEL_METRICS_EXPORTER=none
-// govern export only and leave /metrics as it is.
+// govern export only and leave /metrics as it is. A deployed workload gets
+// FORGE_OBSERVE_RESOURCE_METRICS from its KCL `resource_metrics`, or from the
+// env's ObservabilitySignals.resource_metrics (skill observability/resources).
+//
+// The readers cover linux, darwin and windows; each platform reports what it
+// can measure and leaves the rest out (windows reports open handles in place
+// of fds; the resmetrics package doc lists the gaps). Resources returns the
+// sampler Setup started, so a binary that projects the same numbers into its
+// own protocol — a heartbeat, a status page — reads Resources().Latest() or
+// Subscribe instead of starting a second one; it is nil when the switch is
+// off.
 //
 // The readers cover linux, darwin and windows; each platform reports what it
 // can measure and leaves the rest out (windows reports open handles in place

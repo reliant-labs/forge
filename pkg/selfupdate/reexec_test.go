@@ -26,6 +26,9 @@ import (
 func TestReexecEndToEnd(t *testing.T) {
 	testkit.Slow(t, "go-builds testdata/reexec five times and runs the binaries it builds",
 		testkit.Inputs("pkg/selfupdate/**"))
+	if _, _, reason, ok := inContainer(); ok {
+		t.Skip("needs a host outside a container: Detect refuses every swap " + reason)
+	}
 	t.Parallel()
 
 	bins := t.TempDir()

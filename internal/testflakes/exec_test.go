@@ -70,3 +70,67 @@ func TestSecondRunFails(t *testing.T) {
 		t.Errorf("lane = %+v %v", m, err)
 	}
 }
+
+// reliant's dogfood (forge report 3f924301): an edit inside a test whose body
+// embeds a shell script in a raw string. git labels the hunk with the nearest
+// preceding unindented line, the script's `esac`, not the test's func line, so
+// selecting by hunk header ran nothing. The edit still selects its test.
+func TestFindChangedTestsEditBelowRawStringShellScript(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	src := func(msg string) string {
+		return strings.ReplaceAll(`package a
+
+import "testing"
+
+func TestBefore(t *testing.T) {}
+
+func TestShardScript(t *testing.T) {
+	const script = BT#!/bin/sh
+case "$1" in
+  a) echo a ;;
+esac
+BT
+	if script == "" {
+		t.Fatal("`+msg+`")
+	}
+}
+`, "BT", "`")
+	}
+	root := newModule(t, map[string]string{
+		// The default funcname rule, whatever diff driver the machine's
+		// global attributes give *.go.
+		".gitattributes":       "*.go diff\n",
+		"internal/a/a_test.go": src("empty"),
+	})
+	gitIn := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = root
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitIn("init", "-q")
+	gitIn("add", ".")
+	gitIn("commit", "-q", "-m", "base")
+	write(t, filepath.Join(root, "internal/a/a_test.go"), src("no script"))
+	gitIn("commit", "-q", "-am", "edit the test below the script")
+
+	ctx := context.Background()
+	diff, err := ExecGit(ctx, root, "diff", "-U0", "HEAD~1", "HEAD", "--", "internal/a/a_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "@@ esac") {
+		t.Fatalf("the premise: git must label the hunk with the script's esac line:\n%s", diff)
+	}
+	got, err := FindChangedTests(ctx, ChangedOptions{
+		Root: root, Base: "HEAD~1", Git: ExecGit, List: listOf(root, "internal/a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Packages) != 1 || strings.Join(got.Packages[0].Names, ",") != "TestShardScript" {
+		t.Errorf("packages = %+v, want internal/a=TestShardScript", got.Packages)
+	}
+}

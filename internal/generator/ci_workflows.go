@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -83,6 +84,13 @@ type CIInputs struct {
 	// release.yml stage always deploys client-side (a control plane never
 	// converges a cluster half) and carries the kubeconfig step.
 	MixedEnvs []string
+	// PGOEnvs is the subset of HostedEnvs that build a Go binary `forge pgo
+	// pull --env <env>` writes a profile for: the binaries pull itself
+	// resolves from the env's render (internal/cli ResolvePGOBinaries), PGO
+	// on, main package in this checkout. pgo-refresh.yml pulls the last of
+	// them in promotion order, and a project with none — a hosted env that
+	// only serves a static site — gets no pgo-refresh.yml.
+	PGOEnvs []string
 }
 
 // CIWorkflowDataFor returns what the scaffolded ci.yml renders with: which lints,
@@ -320,17 +328,8 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 				}},
 			)
 		}
-		if len(hostedEnvs) > 0 {
-			data := templates.ReleaseWorkflowData{
-				ProjectName: cfg.Name,
-				BuildEnv:    hostedEnvs[0].Name,
-				Stages:      templates.ReleaseStages(hostedEnvs, mixed),
-			}
-			files = append(files,
-				CIWorkflowFile{"release.yml.tmpl", ".github/workflows/release.yml", data},
-				CIWorkflowFile{"forge-deploy-action.yml.tmpl", ForgeDeployActionPath, data},
-			)
-		}
+		files = append(files, hostedReleaseFiles(cfg.Name, hostedEnvs, mixed)...)
+		files = append(files, pgoRefreshFiles(root, cfg.Name, hostedEnvs, in)...)
 		if hasE2E {
 			files = append(files, CIWorkflowFile{"e2e.yml.tmpl", ".github/workflows/e2e.yml", templates.E2EWorkflowData{
 				ProjectName:  cfg.Name,
@@ -349,6 +348,135 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 		RunsProtocGenGo: hasServices,
 	}})
 	return files
+}
+
+// hostedReleaseFiles are the files a project with hosted envs (in promotion
+// order) gets beyond ci.yml: release.yml and the vendored forge-deploy action
+// it calls. None without a hosted env.
+func hostedReleaseFiles(project string, hostedEnvs []templates.DeployEnv, mixed map[string]bool) []CIWorkflowFile {
+	if len(hostedEnvs) == 0 {
+		return nil
+	}
+	data := templates.ReleaseWorkflowData{
+		ProjectName: project,
+		BuildEnv:    hostedEnvs[0].Name,
+		Stages:      templates.ReleaseStages(hostedEnvs, mixed),
+	}
+	return []CIWorkflowFile{
+		{"release.yml.tmpl", ".github/workflows/release.yml", data},
+		{"forge-deploy-action.yml.tmpl", ForgeDeployActionPath, data},
+	}
+}
+
+// PGORefreshPath is where the scaffolded PGO refresh workflow lands.
+const PGORefreshPath = ".github/workflows/pgo-refresh.yml"
+
+// pgoRefreshFiles is pgo-refresh.yml, for a project that can use it. The
+// platform stores a hosted env's profiles, so a hosted project can keep its
+// committed default.pgo current with the env real traffic reaches. The
+// workflow runs `forge pgo pull --env <env>`, which writes a profile only for
+// the Go binaries that env builds, so it is born only where one does
+// (pgoRefreshEnv), and never where the project already keeps its profiles
+// current another way (PGORefreshDeclaredElsewhere).
+func pgoRefreshFiles(root, project string, hostedEnvs []templates.DeployEnv, in CIInputs) []CIWorkflowFile {
+	env := pgoRefreshEnv(hostedEnvs, in)
+	if env == "" || PGORefreshDeclaredElsewhere(root) != "" {
+		return nil
+	}
+	return []CIWorkflowFile{{"pgo-refresh.yml.tmpl", PGORefreshPath, templates.PGORefreshWorkflowData{
+		ProjectName: project,
+		Env:         env,
+	}}}
+}
+
+// pgoRefreshEnv is the env pgo-refresh.yml pulls: the last hosted env in
+// promotion order that builds a Go binary to profile (CIInputs.PGOEnvs), or
+// "" when none does. A hosted env with no Go binary (a static site) has no
+// profile to pull, so `forge pgo pull --env <it>` would do nothing every week.
+func pgoRefreshEnv(hostedEnvs []templates.DeployEnv, in CIInputs) string {
+	builds := map[string]bool{}
+	for _, e := range in.PGOEnvs {
+		builds[e] = true
+	}
+	for i := len(hostedEnvs) - 1; i >= 0; i-- {
+		if builds[hostedEnvs[i].Name] {
+			return hostedEnvs[i].Name
+		}
+	}
+	return ""
+}
+
+// pgoPullLine matches a `forge pgo pull` invocation (`reliant forge pgo pull`
+// included) on a line that is not a YAML comment.
+var pgoPullLine = regexp.MustCompile(`^\s*(?:[^#\s].*)?\bforge\s+pgo\s+pull\b`)
+
+// PGORefreshDeclaredElsewhere names the project file that already keeps the
+// committed default.pgo profiles current, or "" when there is none. forge
+// scaffolds no pgo-refresh.yml beside one: two weekly jobs would open two
+// pull requests for the same profile.
+//
+// It recognizes exactly two shapes, on purpose — a broader guess would turn
+// off a workflow the project never replaced:
+//
+//   - a Reliant workflow named pgo-refresh (.reliant/workflows/pgo-refresh.yaml
+//     or .yml), whatever it runs: the name is the declaration, so one that
+//     calls a script (control-plane's scripts/pgo-refresh.sh) counts;
+//   - a workflow file directly under .github/workflows/ or
+//     .reliant/workflows/ (.yml or .yaml), other than pgo-refresh.yml itself,
+//     with an uncommented line that runs `forge pgo pull`.
+//
+// Scripts a workflow calls are not read. Anything else declines the workflow
+// with `ci.workflows: {pgo-refresh: false}`.
+func PGORefreshDeclaredElsewhere(root string) string {
+	for _, name := range []string{"pgo-refresh.yaml", "pgo-refresh.yml"} {
+		rel := reliantWorkflowDir + name
+		if fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err == nil && !fi.IsDir() {
+			return rel
+		}
+	}
+	for _, dir := range []string{".github/workflows/", reliantWorkflowDir} {
+		entries, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(dir)))
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			rel := dir + e.Name()
+			if e.IsDir() || rel == PGORefreshPath || !(strings.HasSuffix(rel, ".yml") || strings.HasSuffix(rel, ".yaml")) {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if pgoPullLine.MatchString(line) {
+					return rel
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// PGORefreshNotice is the line `forge generate` prints when this project
+// would be given pgo-refresh.yml but already refreshes its profiles another
+// way (PGORefreshDeclaredElsewhere), naming the file and the forge.yaml key
+// that says so. "" when there is nothing to say: the workflow is declined,
+// on disk, deleted by the user (the birth ledger records it), or the project
+// has no Go binary for it to profile anyway.
+func PGORefreshNotice(root string, cfg *config.ProjectConfig, in CIInputs) string {
+	if cfg == nil || !cfg.IsServiceKind() || cfg.CI.EffectiveProvider() != config.CIProviderGitHub || !cfg.CI.WorkflowEnabled("pgo-refresh") {
+		return ""
+	}
+	if len(in.PGOEnvs) == 0 || onDisk(root, filepath.FromSlash(PGORefreshPath)) || !checksums.ScaffoldMayBeBorn(root, PGORefreshPath) {
+		return ""
+	}
+	by := PGORefreshDeclaredElsewhere(root)
+	if by == "" {
+		return ""
+	}
+	return fmt.Sprintf("  ⏭️  %s not scaffolded: %s already refreshes default.pgo. Say so in forge.yaml to silence this: ci.workflows: {pgo-refresh: false}",
+		PGORefreshPath, by)
 }
 
 // ForeignCIWorkflow reports whether relPath, a CI file forge would scaffold,

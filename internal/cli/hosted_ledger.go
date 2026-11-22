@@ -1198,6 +1198,10 @@ func (s *hostedStore) Cut(ctx context.Context, r release.Release) (bool, error) 
 		// recorded through their own RPC, never inside this document.
 		doc := r.WithoutSBOMs()
 		doc.Migrations = nil
+		// Test evidence too: the control plane binds a release's commit
+		// report itself, and an older one's strict decoder predates the
+		// field (release.TestOlderDecoderIgnoresTests).
+		doc.Tests = nil
 		// A file artifact's size is left out of the document for the same
 		// reason: a server pinned to a forge that predates the field would
 		// refuse the whole cut. It is informational (the hash is the

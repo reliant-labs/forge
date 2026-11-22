@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/kclrender"
+	deployv1alpha1 "github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // loadFrontendRuntimeConfig renders each frontend's runtime config
@@ -119,18 +120,34 @@ func renderFrontendRuntimeDocs(projectDir, envName string) (map[string]string, e
 // deployment.environment.name and reads from config.js first — a build
 // variable (a deprecated fallback there) would freeze one environment's name
 // into a promoted bundle.
-func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]string {
+//
+// A frontend with named same-origin APIs (Frontend.apis) gets them as the
+// document's `apis` object, each resolved to its workload's own URL: nothing
+// forge publishes to serves the /_api/@<name> route, so the browser calls
+// each backend where it is. (Under `forge env up` the dev server proxies the
+// route and src/lib/api-base.ts prefers it.)
+func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]any {
 	if entities == nil {
 		return nil
 	}
-	out := map[string]map[string]string{}
+	out := map[string]map[string]any{}
 	for _, f := range entities.Frontends {
+		var overlay map[string]any
 		switch {
 		case len(f.RuntimeConfig) > 0:
-			out[f.Name] = f.RuntimeConfig
+			overlay = make(map[string]any, len(f.RuntimeConfig)+1)
+			for k, v := range f.RuntimeConfig {
+				overlay[k] = v
+			}
 		case f.Runtime.Type != FrontendRuntimeHosted && frontendStaticDir(f.Type) != "":
-			out[f.Name] = map[string]string{}
+			overlay = map[string]any{}
+		default:
+			continue
 		}
+		if len(f.APIURLs) > 0 {
+			overlay[deployv1alpha1.RuntimeConfigAPIsKey] = f.APIURLs
+		}
+		out[f.Name] = overlay
 	}
 	return out
 }
@@ -148,7 +165,7 @@ func frontendRuntimeOverlays(entities *KCLEntities) map[string]map[string]string
 // declaration a silent no-op, and the bundle would read undefined. A web
 // frontend frontendRuntimeOverlays lists with no keys at all gets one too,
 // holding ENVIRONMENT alone.
-func renderFrontendRuntimeDocsWith(projectDir, envName string, overlays map[string]map[string]string) (map[string]string, error) {
+func renderFrontendRuntimeDocsWith(projectDir, envName string, overlays map[string]map[string]any) (map[string]string, error) {
 	out := map[string]string{}
 	typed, err := renderTypedFrontendRuntimeValues(projectDir, envName)
 	if err != nil {

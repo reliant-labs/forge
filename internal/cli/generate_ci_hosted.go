@@ -12,6 +12,11 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"go/build"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -23,6 +28,10 @@ type ciHostedTopology struct {
 	// machine (envAppliesLocally — the same test dispatchHostedDeploy uses
 	// to decide a deploy is not hosted-only).
 	Mixed []string
+	// PGO is the subset of Hosted that builds a Go binary `forge pgo pull
+	// --env <env>` writes a profile for (ciEnvBuildsPGOBinary): the envs
+	// pgo-refresh.yml may pull (generator.CIInputs.PGOEnvs).
+	PGO []string
 	// Unrendered are the envs that failed to render, in ListEnvs' order.
 	// Discovery cannot classify them, so they are in neither list above —
 	// which a caller must not report as "not hosted".
@@ -60,6 +69,9 @@ func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 		if forgeAppliesItselfLocally(entities) {
 			out.Mixed = append(out.Mixed, env)
 		}
+		if ciEnvBuildsPGOBinary(projectDir, entities) {
+			out.PGO = append(out.PGO, env)
+		}
 	}
 	ciHostedCache[projectDir] = out
 	return out
@@ -69,6 +81,58 @@ func discoverCIHostedEnvs(projectDir string) ciHostedTopology {
 // is testable from a literal entity.
 func ciEnvIsHosted(entities *KCLEntities) bool {
 	return entities.ControlPlane != nil && !isLocalControlPlaneEnv(entities) && entities.HasHosted()
+}
+
+// ciEnvBuildsPGOBinary reports whether `forge pgo pull --env <env>` has a
+// Go binary to write a profile for: ResolvePGOBinaries — the very list pull
+// resolves — holds one with PGO on whose main package is real. A
+// project-relative package (./cmd/<bin>) must be a Go main package of this
+// checkout (localGoMainPackage): an image built from the project Dockerfile
+// reads as running ./cmd/<project> whether or not the image is Go (an
+// adopted app), and a directory with no Go source in it builds no binary to
+// profile. A package outside the checkout (a ShellBuild's sibling, an import
+// path) is one the env's pgo names on purpose, so it counts.
+func ciEnvBuildsPGOBinary(projectDir string, entities *KCLEntities) bool {
+	bins, err := ResolvePGOBinaries(entities)
+	if err != nil {
+		return false // the render already refused such an env
+	}
+	for _, b := range bins {
+		if !b.PGO.Enabled {
+			continue
+		}
+		rel, local := strings.CutPrefix(b.Package, "./")
+		if !local {
+			return true
+		}
+		if localGoMainPackage(filepath.Join(projectDir, filepath.FromSlash(rel))) {
+			return true
+		}
+	}
+	return false
+}
+
+// localGoMainPackage reports whether dir may hold a Go main package, by Go's
+// own package resolution (go/build, the rules `go build` applies). Only
+// proven absence answers false: no directory, a directory with no .go file
+// at all, or a package whose files all declare a name other than main. A
+// directory whose Go files the default build context excludes (a
+// //go:build constraint for another platform) or does not parse still
+// counts, since the build that runs pull may well compile it.
+func localGoMainPackage(dir string) bool {
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return false
+	}
+	pkg, err := build.ImportDir(dir, 0)
+	var noGo *build.NoGoError
+	switch {
+	case errors.As(err, &noGo):
+		return pkg != nil && len(pkg.IgnoredGoFiles) > 0
+	case err != nil:
+		return true
+	}
+	return pkg.Name == "main"
 }
 
 var (

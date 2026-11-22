@@ -35,16 +35,11 @@ type Options struct {
 	NoDiff bool
 	// Lane, when set, keeps only that lane's results and coverage.
 	Lane string
-	// IncludeGenerated counts generated files; Include and Exclude are
-	// MergeOptions' globs.
-	IncludeGenerated bool
-	Include, Exclude []string
 	// Git runs git; nil is [ExecGit].
 	Git Git
-	// Covdata converts a GOCOVERDIR; nil is [testreport.ConvertCovdata]
-	// with GoBin.
+	// Covdata converts a GOCOVERDIR; nil is [testreport.ConvertCovdata],
+	// which runs the go on PATH (goBin is always "").
 	Covdata func(ctx context.Context, goBin, dir string) ([]testreport.CovdataBuild, error)
-	GoBin   string
 }
 
 // Assembly is what a set of runs adds up to: the inputs of a
@@ -106,10 +101,10 @@ func Assemble(ctx context.Context, opts Options) (*Assembly, error) {
 	}
 	first := opts.Runs[0]
 	a := &Assembly{Commit: first.Commit, Tree: first.TreeHash, Dirty: first.Dirty, Project: first.Project}
+	// The commit is the first run's and never adopted from another: the
+	// runs share it (sameSource), and a clean run that records none is
+	// refused rather than attributed to a commit it cannot be shown to be of.
 	for _, r := range opts.Runs {
-		if a.Commit == "" {
-			a.Commit = r.Commit
-		}
 		if a.Tree == "" {
 			a.Tree = r.TreeHash
 		}
@@ -159,15 +154,12 @@ func Assemble(ctx context.Context, opts Options) (*Assembly, error) {
 	if len(docs) > 0 {
 		cov, err := testreport.Merge(docs, testreport.MergeOptions{
 			ModulePath: repo.modulePath, ModuleDir: repo.moduleDir,
-			IncludeGenerated: opts.IncludeGenerated, Include: opts.Include, Exclude: opts.Exclude,
 		})
 		if err != nil {
 			return nil, err
 		}
 		repo.fillBlobs(cov)
-		if !opts.IncludeGenerated {
-			repo.markGenerated(cov)
-		}
+		repo.markGenerated(cov)
 		a.Coverage = cov
 	}
 
@@ -187,6 +179,10 @@ func sameSource(runs []*Run) error {
 			return &SourceError{Detail: fmt.Sprintf("run %s is on a dirty tree and run %s is not; a dirty run never joins a commit's report", dirtyOf(r0, r).ID, cleanOf(r0, r).ID)}
 		case r.TreeHash != "" && r0.TreeHash != "" && r.TreeHash != r0.TreeHash:
 			return &SourceError{Detail: fmt.Sprintf("run %s is on tree %s, run %s on tree %s", r0.ID, short(r0.TreeHash), r.ID, short(r.TreeHash))}
+		case !r0.Dirty && r.Commit == "" && r0.Commit == "":
+			return &SourceError{Detail: fmt.Sprintf("clean runs %s and %s record no commit, so they cannot be shown to be the same source", r0.ID, r.ID)}
+		case !r0.Dirty && (r.Commit == "" || r0.Commit == ""):
+			return &SourceError{Detail: fmt.Sprintf("clean run %s records no commit, so it cannot be shown to be the same source as run %s", noCommitOf(r0, r).ID, withCommitOf(r0, r).ID)}
 		case r0.Dirty && (r.TreeHash == "" || r0.TreeHash == ""):
 			return &SourceError{Detail: fmt.Sprintf("dirty runs %s and %s have no recorded tree, so they cannot be shown to be the same source", r0.ID, r.ID)}
 		case !r0.Dirty && r.Commit != r0.Commit:
@@ -194,6 +190,20 @@ func sameSource(runs []*Run) error {
 		}
 	}
 	return nil
+}
+
+func noCommitOf(a, b *Run) *Run {
+	if a.Commit == "" {
+		return a
+	}
+	return b
+}
+
+func withCommitOf(a, b *Run) *Run {
+	if a.Commit == "" {
+		return b
+	}
+	return a
 }
 
 func dirtyOf(a, b *Run) *Run {
@@ -276,7 +286,7 @@ func readCoverage(ctx context.Context, opts Options, l *Lane, sourceKey string, 
 	for _, in := range l.CoverageInputs() {
 		p := filepath.Join(l.Dir, filepath.FromSlash(strings.TrimSuffix(in.Path, "/")))
 		if in.Format == testreport.CoverageGoCovdata {
-			builds, err := opts.Covdata(ctx, opts.GoBin, p)
+			builds, err := opts.Covdata(ctx, "", p)
 			if err != nil {
 				notes = append(notes, fmt.Sprintf("lane %s: covdata in %s not converted: %v", l.Lane, in.Path, err))
 				continue

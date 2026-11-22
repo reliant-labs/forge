@@ -532,14 +532,21 @@ func dbPanels(width int) []Panel {
 
 func buildProcess(in Input, p Process) Dashboard {
 	d := Dashboard{ID: ProcessDashboardID(p.Name), Title: in.Project + ": " + p.Name,
-		Description: "The " + processKind(p) + " " + p.Name + ". Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares; runtime and logs always.",
+		Description: "The " + processKind(p) + " " + p.Name + ". Panels are chosen by what it does: RPC health if it serves RPCs, worker runs if it runs workers, saturation against the limits it declares, the host it runs on when no node agent reports it; runtime, its resource use and logs always.",
 		Group:       GroupServices, Tags: []string{processKind(p)}, Filters: commonFilters()}
 	for _, old := range p.Replaces {
 		if id := ProcessDashboardID(old); id != d.ID {
 			d.Replaces = append(d.Replaces, id)
 		}
 	}
-	d.Sections = []Section{{ID: "runtime", Title: "Runtime"}, {ID: "workload", Title: "Workload saturation"}, {ID: "logs", Title: "Logs"}}
+	d.Sections = []Section{{ID: "runtime", Title: "Runtime"}}
+	if !p.NonGo {
+		d.Sections = append(d.Sections, Section{ID: "resources", Title: "Process resources"})
+		if !p.NodeMetadata {
+			d.Sections = append(d.Sections, Section{ID: "host", Title: "Host"})
+		}
+	}
+	d.Sections = append(d.Sections, Section{ID: "workload", Title: "Workload saturation"}, Section{ID: "logs", Title: "Logs"})
 	if p.runsWork() {
 		d.Sections = append([]Section{{ID: "runs", Title: "Worker runs"}}, d.Sections...)
 	}
@@ -569,6 +576,20 @@ func buildProcess(in Input, p Process) Dashboard {
 		for _, panel := range runtimePanels() {
 			panel.Section = "runtime"
 			d.Panels = append(d.Panels, panel)
+		}
+		for _, panel := range processResourcePanels() {
+			panel.Section = "resources"
+			d.Panels = append(d.Panels, panel)
+		}
+		// A host or compose process has no node agent: the host group of its
+		// own resource metrics is the only view of the machine it runs on. A
+		// cluster or hosted process reports its container's cgroup instead,
+		// and the workload saturation panels draw the node's view.
+		if !p.NodeMetadata {
+			for _, panel := range hostResourcePanels() {
+				panel.Section = "host"
+				d.Panels = append(d.Panels, panel)
+			}
 		}
 	}
 	d.Panels = append(d.Panels,
@@ -654,6 +675,53 @@ func runtimePanels() []Panel {
 		{ID: "go-memory", Title: "Go memory used", Kind: KindLine, Signal: Metrics, Series: []Series{{Label: "used", Agg: AggSum, Field: "go.memory.used", MetricType: "sum"}, {Label: "gc goal", Agg: AggAvg, Field: "go.memory.gc.goal", MetricType: "sum"}}, Unit: UnitBytes, Width: 12, Height: 7},
 		{ID: "go-goroutines", Title: "Goroutines", Kind: KindLine, Signal: Metrics, Series: []Series{{Label: "goroutines", Agg: AggSum, Field: "go.goroutine.count", MetricType: "sum"}}, Unit: UnitCount, Width: 12, Height: 7},
 		{ID: "go-alloc", Title: "Heap allocation", Description: "Bytes allocated to the heap per time bucket: the rate the garbage collector has to keep up with.", Kind: KindLine, Signal: Metrics, Series: []Series{{Label: "allocated", Agg: AggSum, Field: "go.memory.allocated", MetricType: "sum"}}, Unit: UnitBytes, Width: 24, Height: 7},
+	}
+}
+
+// processResourcePanels are the process group of the resource metrics every
+// forge binary reports (pkg/resmetrics through observe.Setup): CPU, resident
+// memory, open files against their limit, and threads. Each line is the
+// average over the process's instances, with the worst beside it where the
+// worst is what fails first.
+func processResourcePanels() []Panel {
+	gauge := func(label string, agg Agg, name string) Series {
+		return Series{Label: label, Agg: agg, Field: name, MetricType: "gauge"}
+	}
+	sum := func(label string, agg Agg, name string) Series {
+		return Series{Label: label, Agg: agg, Field: name, MetricType: "sum"}
+	}
+	return []Panel{
+		{ID: "process-cpu", Title: "Process CPU", Description: "CPU cores the process used (process.cpu.utilization); above 1 when more than one core is busy.", Kind: KindLine, Signal: Metrics,
+			Series: []Series{gauge("cores", AggAvg, "process.cpu.utilization"), gauge("busiest instance", AggMax, "process.cpu.utilization")}, Unit: UnitNone, Width: 12, Height: 7},
+		{ID: "process-memory", Title: "Resident memory", Description: "Resident set size (process.memory.usage), and the share of it outside the Go runtime's mapped memory: cgo, mmap and fragmentation (forge.process.memory.go_gap).", Kind: KindLine, Signal: Metrics,
+			Series: []Series{sum("rss", AggAvg, "process.memory.usage"), sum("largest instance", AggMax, "process.memory.usage"), gauge("outside the Go runtime", AggAvg, "forge.process.memory.go_gap")}, Unit: UnitBytes, Width: 12, Height: 7},
+		{ID: "process-fds", Title: "Open files against the limit", Description: "Open file descriptors over the soft RLIMIT_NOFILE, for the fullest instance (unix; at 100% accept and open fail with EMFILE).", Kind: KindLine, Signal: Metrics,
+			Series: []Series{gauge("of limit", AggMax, "forge.process.file_descriptor.utilization")}, Unit: UnitPercent, Width: 12, Height: 7},
+		{ID: "process-threads", Title: "OS threads and handles", Description: "OS threads of the process (process.thread.count), and on windows its open kernel handles (forge.process.handle.count).", Kind: KindLine, Signal: Metrics,
+			Series: []Series{sum("threads", AggMax, "process.thread.count"), sum("handles", AggMax, "forge.process.handle.count")}, Unit: UnitCount, Width: 12, Height: 7},
+	}
+}
+
+// hostResourcePanels are the host group of the same metrics, for a process
+// that runs straight on a machine (forge.OnHost, compose): CPU by mode,
+// memory by state, load against the CPU count, and how full its volumes are.
+func hostResourcePanels() []Panel {
+	gauge := func(label string, agg Agg, name string) Series {
+		return Series{Label: label, Agg: agg, Field: name, MetricType: "gauge"}
+	}
+	sum := func(label string, agg Agg, name string) Series {
+		return Series{Label: label, Agg: agg, Field: name, MetricType: "sum"}
+	}
+	return []Panel{
+		{ID: "host-cpu", Title: "Host CPU", Description: "Share of the machine's CPU time in each busy mode (system.cpu.utilization); darwin and windows report no iowait or steal.", Kind: KindLine, Signal: Metrics,
+			Where:  []Predicate{{Field: "metric.attr.cpu.mode", Op: OpNeq, Value: "idle"}},
+			Series: []Series{gauge("busy", AggAvg, "system.cpu.utilization")}, GroupBy: []string{"metric.attr.cpu.mode"}, Unit: UnitPercent, Width: 12, Height: 7},
+		{ID: "host-memory", Title: "Host memory", Description: "The machine's memory by state (system.memory.usage): used, cached (reclaimable) and free.", Kind: KindLine, Signal: Metrics,
+			Series: []Series{sum("bytes", AggAvg, "system.memory.usage")}, GroupBy: []string{"metric.attr.system.memory.state"}, Unit: UnitBytes, Width: 12, Height: 7},
+		{ID: "host-load", Title: "Host load", Description: "The 1-minute run-queue load average against the logical CPU count: above the count, work waits for a CPU (linux, darwin).", Kind: KindLine, Signal: Metrics,
+			Series: []Series{gauge("load 1m", AggAvg, "system.cpu.load_average.1m"), sum("cpus", AggAvg, "system.cpu.logical.count")}, Unit: UnitNone, Width: 12, Height: 7},
+		{ID: "host-disk", Title: "Volumes in use", Description: "How full each volume the process writes to is, by role (cwd, tmp, data), for the fullest instance.", Kind: KindLine, Signal: Metrics,
+			Series: []Series{gauge("used", AggMax, "system.filesystem.utilization")}, GroupBy: []string{"metric.attr.forge.filesystem.role"}, Unit: UnitPercent, Width: 12, Height: 7},
 	}
 }
 

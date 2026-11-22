@@ -77,8 +77,19 @@ func TestTypePinsCoverEveryPeer(t *testing.T) {
 		pins[p] = true
 	}
 	for _, peer := range decodePeers() {
+		if untypedPeers[peer] {
+			if pins[peer] {
+				t.Errorf("peer %q is untyped (no app-facing types) but is in TypePins()", peer)
+			}
+			continue
+		}
 		if !pins[peer] {
 			t.Errorf("peer %q is not in TypePins() — tsc would see two copies of its types", peer)
+		}
+	}
+	for name := range untypedPeers {
+		if _, ok := PeerSpec(name); !ok {
+			t.Errorf("untypedPeers names %q, which the runtime no longer declares as a peer", name)
 		}
 	}
 	for _, extra := range extraTypeOnlyPins {

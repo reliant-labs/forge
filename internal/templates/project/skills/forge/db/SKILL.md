@@ -66,6 +66,26 @@ The columns ARE the declaration. The generators read these off the introspected 
 | text columns | spanned by the generated list `search` filter |
 | `GENERATED ALWAYS AS (…) STORED` | derived column: postgres maintains it, the ORM excludes it from writes, and the seeder skips it |
 
+## Whose rows: `forge:owner=`
+
+A table whose rows belong to someone says so in its migration, and the
+generated CRUD ops enforce it themselves. Reads and writes are scoped to the
+caller, another tenant's row answers NotFound, and a missing caller is denied:
+
+```sql
+COMMENT ON TABLE notes    IS 'forge:owner=folder_id>owner_id';       -- through a foreign key
+COMMENT ON TABLE accounts IS 'forge:owner=user:user_id,org:org_id';  -- the user OR their orgs
+```
+
+The caller's identity and orgs come from the `crud.OwnerResolver` your `internal/app/providers.go` provides.
+A table with authenticated CRUD and no owner declares `forge:public: <why>` or
+`forge:unscoped: <why>`, or the `crud-table-unowned` lint flags it. Forge
+writes neither for you: a table `forge scaffold` births without a
+`// forge:owner` field declares nothing about its owner, and the scaffold says
+so, so the decision is yours to write in a new migration. The full
+grammar, every op's behavior and how overrides compose are in
+`db/crud-overrides`.
+
 ## Just write postgres
 
 forge is postgres-pinned. Your tests **and** forge's shadow introspection apply `db/migrations/*.up.sql` **verbatim** to a real ephemeral postgres (no Docker — a cached embedded-postgres binary, or a server via `FORGE_TEST_POSTGRES_URL`). There is no portability subset to honor: anything postgres accepts works — `::type` casts, schema-qualified names, `JSONB`, native arrays, generated/identity columns.
@@ -183,6 +203,7 @@ The deploy migrate job is declared per database: `db/deploy-migrations`.
 | birthing one named entity, the birth markers, the proto → SQL column mapping | `db/birth` |
 | write policy (ownership, `forge:immutable`, `forge:version`), append-only tables, two FK routes to one parent, CHECKs mirroring a Go set, derived values, status-lifecycle CHECKs | `db/constraints` |
 | what the generated ORM does, overriding generated CRUD, where custom queries go | `db/generated-orm` |
+| declared row ownership (`forge:owner=`), per-caller scoping of generated CRUD | `db/crud-overrides` |
 | which tables get a store, naming, keys | `db/store` |
 | destructive changes, `//forge:no-orm`, ORM field types | `db/orm-and-safety` |
 | what a migration measurably locks, rewrites and scans on a real postgres (`forge db analyze`), and which captured queries no index serves (`forge db analyze queries`) | `db/analyze` |

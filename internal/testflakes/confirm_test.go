@@ -3,6 +3,7 @@ package testflakes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,13 +52,17 @@ func TestLogDirAttributionAndBlocks(t *testing.T) {
 	if got != want {
 		t.Errorf("failing =\n%s\nwant\n%s", got, want)
 	}
-	if b := rl.block("TestRacy"); !testreport.IsRace(b) {
+	_, out := rl.failures(testModule)
+	block := func(pkg, name string) string {
+		return out[testreport.TestID{Lang: testreport.LangGo, Package: testModule + "/internal/" + pkg, Name: name}]
+	}
+	if b := block("b", "TestRacy"); !testreport.IsRace(b) {
 		t.Errorf("the race report precedes --- FAIL and must be in the block:\n%s", b)
 	}
-	if b := rl.block("TestFlaky"); !strings.Contains(b, "got 1, want 2") {
+	if b := block("a", "TestFlaky"); !strings.Contains(b, "got 1, want 2") {
 		t.Errorf("block = %q", b)
 	}
-	if b := rl.block("TestStream"); !strings.Contains(b, "stream_test.go:9: boom") {
+	if b := block("e", "TestStream"); !strings.Contains(b, "stream_test.go:9: boom") {
 		t.Errorf("json block = %q", b)
 	}
 }
@@ -195,13 +200,61 @@ func TestConfirmCorrelatesAndBoundsReruns(t *testing.T) {
 	if len(doc.Infra) != 1 || len(doc.Infra[0].Members) != 3 || !strings.HasPrefix(doc.Infra[0].Reason, "package:") {
 		t.Fatalf("infra = %+v", doc.Infra)
 	}
+	// The results file is not a recorded run's, so the failures' tree is
+	// unknown: the two reruns that pass are inconclusive too, not flakes.
 	c := doc.Counts
-	if c.Correlated != 3 || c.Confirmed != 2 || c.Inconclusive != 1 {
-		t.Errorf("counts = %+v\n%s", c, f.out)
+	if c.Correlated != 3 || c.Confirmed != 0 || c.Inconclusive != 3 || len(doc.Suggested) != 0 {
+		t.Errorf("counts = %+v, suggested %v\n%s", c, doc.Suggested, f.out)
 	}
 	for _, call := range r.calls {
 		if strings.HasSuffix(call[len(call)-1], "internal/x") {
 			t.Errorf("a correlated group must not be rerun: %v", call)
+		}
+	}
+}
+
+// A pass on retry confirms a flake only when the failure's tree is known
+// and is the tree the retry ran on. Here the source commit's tree cannot be
+// read (the commit is not in this clone): the pass is inconclusive, nothing
+// is suggested for quarantine, and the record holds no flake.
+func TestConfirmNeedsTheFailuresTree(t *testing.T) {
+	r := &fakeRunner{script: func(argv []string) (string, int) {
+		switch argv[len(argv)-1] {
+		case "./internal/a":
+			return passRun(testModule+"/internal/a", "TestFlaky") + ev("pass", testModule+"/internal/a", "", ""), 0
+		case "./internal/e":
+			return failRun(testModule+"/internal/e", "TestStream", "boom again\n") + ev("fail", testModule+"/internal/e", "", ""), 1
+		}
+		return "", 1
+	}}
+	f := newConfirmFixture(t, r)
+	f.opts.LogsDir, f.opts.SHA = "testdata/gate-logs", "missingcommit"
+	f.opts.Git = func(_ context.Context, _ string, args ...string) (string, error) {
+		if args[0] == "rev-parse" && args[1] == "missingcommit^{tree}" {
+			return "", errors.New("fatal: not a valid object name")
+		}
+		return "tree1", nil
+	}
+	doc := RunConfirm(context.Background(), f.opts)
+	if doc.Source.Tree != "" || doc.Tree != "tree1" {
+		t.Fatalf("source tree %q, rerun tree %q", doc.Source.Tree, doc.Tree)
+	}
+	for _, v := range doc.Tests {
+		if v.Test.Name == "TestFlaky" && (v.Verdict != testreport.VerdictInconclusive || !strings.Contains(v.Reason, "tree is unknown")) {
+			t.Errorf("TestFlaky: %s (%s), want inconclusive", v.Verdict, v.Reason)
+		}
+	}
+	if doc.Counts.Confirmed != 0 || len(doc.Suggested) != 0 {
+		t.Errorf("counts %+v, suggested %v", doc.Counts, doc.Suggested)
+	}
+	stored, err := ReadConfirm(testreport.LaneDir(doc.Run, LaneConfirm))
+	if err != nil || stored.Counts.Confirmed != 0 {
+		t.Fatalf("confirm.json: %v %+v", err, stored)
+	}
+	flakes, _ := ComputeFlakes(FlakesOptions{Root: f.root, Now: f.clock.Add(time.Hour)})
+	for _, ft := range flakes.Tests {
+		if ft.ID.Name == "TestFlaky" {
+			t.Errorf("a pass on an unproven tree made TestFlaky a flake: %+v", ft)
 		}
 	}
 }
@@ -259,5 +312,197 @@ func TestConfirmNeverFails(t *testing.T) {
 	f.opts.RunID, f.opts.From = "", filepath.Join(t.TempDir(), "missing.json")
 	if doc := RunConfirm(context.Background(), f.opts); doc.ExitCode != 0 {
 		t.Errorf("%+v", doc)
+	}
+}
+
+// Two packages each have a TestNew. Package b's reported a data race;
+// package a's failed plainly and passes its retry. Their output is kept
+// apart, so b's race neither makes a's a race nor goes unseen.
+func TestConfirmKeysFailuresByPackage(t *testing.T) {
+	logs := t.TempDir()
+	write(t, filepath.Join(logs, "unit.log"), strings.Join([]string{
+		"=== RUN   TestNew",
+		"    a_test.go:5: got 1, want 2",
+		"--- FAIL: TestNew (0.01s)",
+		"FAIL",
+		"FAIL\texample.com/m/internal/a\t0.1s",
+		"=== RUN   TestNew",
+		"==================",
+		"WARNING: DATA RACE",
+		"Write at 0x00c000123456 by goroutine 7:",
+		"==================",
+		"    testing.go:1490: race detected during execution of test",
+		"--- FAIL: TestNew (0.02s)",
+		"FAIL",
+		"FAIL\texample.com/m/internal/b\t0.2s",
+		"",
+	}, "\n"))
+	// The JSON form of the same name in two packages.
+	write(t, filepath.Join(logs, "stream.json"),
+		failRun(testModule+"/internal/c", "TestJSON", "WARNING: DATA RACE\n")+
+			failRun(testModule+"/internal/d", "TestJSON", "plain\n"))
+
+	rl := readRunLogs(nil, logs)
+	_, out := rl.failures(testModule)
+	key := func(pkg, name string) testreport.TestID {
+		return testreport.TestID{Lang: testreport.LangGo, Package: testModule + "/internal/" + pkg, Name: name}
+	}
+	if b := out[key("a", "TestNew")]; testreport.IsRace(b) || !strings.Contains(b, "got 1, want 2") {
+		t.Errorf("a's TestNew output = %q", b)
+	}
+	if b := out[key("b", "TestNew")]; !testreport.IsRace(b) || strings.Contains(b, "got 1, want 2") {
+		t.Errorf("b's TestNew output = %q", b)
+	}
+	if testreport.IsRace(out[key("d", "TestJSON")]) || !testreport.IsRace(out[key("c", "TestJSON")]) {
+		t.Errorf("json outputs: c=%q d=%q", out[key("c", "TestJSON")], out[key("d", "TestJSON")])
+	}
+
+	r := &fakeRunner{script: func(argv []string) (string, int) {
+		pkg := testModule + "/" + strings.TrimPrefix(argv[len(argv)-1], "./")
+		var b strings.Builder
+		for _, n := range strings.Split(strings.Trim(argAfter(argv, "-run"), "^()$"), "|") {
+			b.WriteString(passRun(pkg, n))
+		}
+		return b.String() + ev("pass", pkg, "", ""), 0
+	}}
+	f := newConfirmFixture(t, r)
+	for _, d := range []string{"a", "b", "c", "d"} {
+		write(t, filepath.Join(f.root, "internal", d, "x_test.go"), "package x\n")
+	}
+	f.opts.LogsDir = logs
+	doc := RunConfirm(context.Background(), f.opts)
+	verdicts := map[testreport.TestID]testreport.Verdict{}
+	for _, v := range doc.Tests {
+		verdicts[v.Test] = v.Verdict
+	}
+	for id, want := range map[testreport.TestID]testreport.Verdict{
+		key("a", "TestNew"): testreport.VerdictConfirmed, key("b", "TestNew"): testreport.VerdictRaced,
+		key("c", "TestJSON"): testreport.VerdictRaced, key("d", "TestJSON"): testreport.VerdictConfirmed,
+	} {
+		if verdicts[id] != want {
+			t.Errorf("%s: %s, want %s\n%s", id, verdicts[id], want, f.out)
+		}
+	}
+	for _, c := range r.calls {
+		if last := c[len(c)-1]; last == "./internal/b" || last == "./internal/c" {
+			t.Errorf("a race is never retried: %v", c)
+		}
+	}
+}
+
+// Failure output is secret-scrubbed in both files a confirm records: the
+// reruns' stream (results.json) and confirm.json. The credential shapes are
+// assembled at run time, so no literal here looks like a live secret.
+func TestConfirmScrubsWhatItRecords(t *testing.T) {
+	token := "ghp" + "_" + strings.Repeat("a", 26) + "0123"
+	pemLine := func(edge string) string {
+		return strings.Repeat("-", 5) + edge + " RSA " + "PRIVATE " + "KEY" + strings.Repeat("-", 5)
+	}
+	keyBody := "MIIEow" + strings.Repeat("Q", 40)
+	secretOut := "    auth_test.go:9: token " + token + "\n" + pemLine("BEGIN") + "\n" + keyBody + "\n" + pemLine("END") + "\n"
+
+	pkg := testModule + "/internal/a"
+	r := &fakeRunner{script: func([]string) (string, int) {
+		// The rerun fails again, printing the secrets too.
+		return failRun(pkg, "TestFlaky", secretOut) + ev("fail", pkg, "", ""), 1
+	}}
+	f := newConfirmFixture(t, r)
+	// A gate's text log: nothing upstream has scrubbed it.
+	logs := t.TempDir()
+	write(t, filepath.Join(logs, "unit.log"), "=== RUN   TestFlaky\n"+secretOut+"--- FAIL: TestFlaky (0.01s)\nFAIL\nFAIL\t"+pkg+"\t0.1s\n")
+	f.opts.LogsDir = logs
+	doc := RunConfirm(context.Background(), f.opts)
+	if doc.Run == "" {
+		t.Fatalf("nothing recorded:\n%s", f.out)
+	}
+	laneDir := testreport.LaneDir(doc.Run, LaneConfirm)
+	for _, name := range []string{ConfirmFile, testreport.LaneResultsFile} {
+		data, err := os.ReadFile(filepath.Join(laneDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{token, keyBody, pemLine("BEGIN")} {
+			if strings.Contains(string(data), secret) {
+				t.Errorf("%s holds a secret %.12q…", name, secret)
+			}
+		}
+		if !strings.Contains(string(data), "redacted") {
+			t.Errorf("%s: no redaction marker", name)
+		}
+	}
+	// The returned document (what --json prints) is scrubbed too.
+	data, _ := json.Marshal(doc)
+	if strings.Contains(string(data), token) || strings.Contains(string(data), keyBody) {
+		t.Error("the returned document holds a secret")
+	}
+	if strings.Contains(f.out.String(), token) {
+		t.Error("the messages printed a secret")
+	}
+}
+
+// The (package …) fallback reads a failure's source less the spans other
+// packages' FAIL/ok lines closed. Here the target is the 2nd and 3rd package
+// of one source, behind a 1st whose failure reported a data race: none of
+// the 1st package's output or race report may appear in theirs, and each
+// keeps its own.
+func TestExcludeOthersKeepsEarlierPackagesOut(t *testing.T) {
+	a, b, c := testModule+"/internal/a", testModule+"/internal/b", testModule+"/internal/c"
+	logs := t.TempDir()
+	write(t, filepath.Join(logs, "unit.log"), strings.Join([]string{
+		"=== RUN   TestNew",
+		"    a_test.go:3: from package a",
+		"WARNING: DATA RACE",
+		"    testing.go:1490: race detected during execution of test",
+		"--- FAIL: TestNew (0.02s)",
+		"FAIL",
+		"FAIL\t" + a + "\t0.1s",
+		"=== RUN   TestNew",
+		"    b_test.go:5: from package b",
+		"--- FAIL: TestNew (0.01s)",
+		"FAIL",
+		"FAIL\t" + b + "\t0.1s",
+		"=== RUN   TestNew",
+		"    c_test.go:7: from package c",
+		"--- FAIL: TestNew (0.01s)",
+		"FAIL",
+		"FAIL\t" + c + "\t0.1s",
+		"--- FAIL: TestNew (package " + b + ")",
+		"--- FAIL: TestNew (package " + c + ")",
+		"",
+	}, "\n"))
+	_, out := readRunLogs(nil, logs).failures(testModule)
+	for pkg, own := range map[string]string{b: "from package b", c: "from package c"} {
+		got := out[testreport.TestID{Lang: testreport.LangGo, Package: pkg, Name: "TestNew"}]
+		if testreport.IsRace(got) || strings.Contains(got, "from package a") {
+			t.Errorf("%s's output holds package a's:\n%s", pkg, got)
+		}
+		if !strings.Contains(got, own) {
+			t.Errorf("%s's output lacks its own %q:\n%s", pkg, own, got)
+		}
+	}
+	if got := out[testreport.TestID{Lang: testreport.LangGo, Package: a, Name: "TestNew"}]; !testreport.IsRace(got) {
+		t.Errorf("package a's race report is its own:\n%s", got)
+	}
+}
+
+// excludeOthers' contract over spans directly: whichever span is the
+// target's (first, middle, last, or several), the result is exactly the
+// unclosed records plus the target's spans, in order.
+func TestExcludeOthersSpans(t *testing.T) {
+	recs := make([]logRecord, 12)
+	for i := range recs {
+		recs[i] = logRecord{line: string(rune('a' + i))}
+	}
+	// a b | c d e (A) | f (B) | g h (C) | i (A) | j k l
+	spans := []pkgSpan{{span{2, 5}, "A"}, {span{5, 6}, "B"}, {span{6, 8}, "C"}, {span{8, 9}, "A"}}
+	id := func(p string) string { return p }
+	for pkg, want := range map[string]string{"A": "abcdeijkl", "B": "abfjkl", "C": "abghjkl", "D": "abjkl"} {
+		var got strings.Builder
+		for _, r := range excludeOthers(recs, spans, pkg, id) {
+			got.WriteString(r.line)
+		}
+		if got.String() != want {
+			t.Errorf("%s: %s, want %s", pkg, got.String(), want)
+		}
 	}
 }

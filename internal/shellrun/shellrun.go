@@ -98,9 +98,53 @@ func Run(ctx context.Context, script string, opts Options) error {
 	return runErr
 }
 
+// CheckPortable reports the first grep or rg command in script that
+// PortableCommands cannot run as written: a flag they do not implement, or a
+// pattern that does not compile. Run would exit 2 for it, and a migration
+// detection that exits 2 reads as "does not apply", silently, in every
+// project — so a script meant for Run is checked before it ships. Words are
+// expanded literally (no environment, no globbing).
+func CheckPortable(script string) error {
+	file, err := syntax.NewParser().Parse(strings.NewReader(script), "")
+	if err != nil {
+		return fmt.Errorf("parse shell script: %w", err)
+	}
+	var first error
+	syntax.Walk(file, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if first != nil || !ok || len(call.Args) == 0 {
+			return first == nil
+		}
+		fields := make([]string, len(call.Args))
+		for i, w := range call.Args {
+			if fields[i], err = expand.Literal(nil, w); err != nil {
+				return true // a word only a live shell can expand: nothing to check
+			}
+		}
+		var args []string
+		switch fields[0] {
+		case "grep":
+			args = fields[1:]
+		case "rg":
+			args = append([]string{"-r", "-E"}, fields[1:]...)
+		default:
+			return true
+		}
+		var msg strings.Builder
+		o, ok := parseGrepArgs(args, &msg)
+		if !ok {
+			first = fmt.Errorf("%s: %s", strings.Join(fields, " "), strings.TrimSpace(msg.String()))
+		} else if _, cerr := o.compile(); cerr != nil {
+			first = fmt.Errorf("%s: bad pattern: %w", strings.Join(fields, " "), cerr)
+		}
+		return first == nil
+	})
+	return first
+}
+
 // PortableCommands returns in-process grep and rg (minimal)
 // implementations for scripts that must run where those tools are absent.
-// Supported: -q -i -s -n -F -E -r -e PATTERN, --include/--exclude/
+// Supported: -q -i -s -n -l -F -E -r -e PATTERN, --include/--exclude/
 // --exclude-dir, then FILE... (directories need -r). Without -E or -F a
 // grep pattern is a POSIX basic regular expression, as GNU grep reads it.
 func PortableCommands() map[string]CommandFunc {
@@ -158,8 +202,10 @@ func basicToRE2(bre string) string {
 // grepOpts is a parsed grep command line.
 type grepOpts struct {
 	quiet, fold, fixed, extended, recursive bool
-	patterns                                []string
-	filter                                  treeFilter
+	// listFiles is -l: print each matching file's name, not its lines.
+	listFiles bool
+	patterns  []string
+	filter    treeFilter
 	// files are the operands after the flags and the pattern.
 	files []string
 }
@@ -210,6 +256,8 @@ func parseGrepArgs(args []string, stderr io.Writer) (grepOpts, bool) {
 					o.fixed = true
 				case 'E':
 					o.extended = true
+				case 'l':
+					o.listFiles = true
 				case 'n', 's':
 				case 'r', 'R':
 					o.recursive = true
@@ -270,7 +318,13 @@ func portableGrep(_ context.Context, dir string, args []string, stdin io.Reader,
 		for _, line := range strings.Split(string(data), "\n") {
 			if re.MatchString(line) {
 				matched = true
-				if !quiet {
+				switch {
+				case quiet:
+				case o.listFiles:
+					// -l names a matching file once, then reads no further.
+					fmt.Fprintln(stdout, name)
+					return
+				default:
 					fmt.Fprintf(stdout, "%s:%s\n", name, line)
 				}
 			}

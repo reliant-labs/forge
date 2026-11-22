@@ -200,14 +200,21 @@ type confirmer struct {
 }
 
 func (c *confirmer) say(format string, a ...any) {
-	msg := fmt.Sprintf(format, a...)
+	msg := scrubText(fmt.Sprintf(format, a...))
 	c.doc.Messages = append(c.doc.Messages, msg)
 	fmt.Fprintf(c.o.Stdout, "forge test flakes confirm: %s\n", msg)
 }
 
 // RunConfirm reads the red run, reruns its failing tests and records the
-// outcome. It always returns a document with exit code 0.
+// outcome. It always returns a document with exit code 0, secret-scrubbed
+// like everything forge records of a test run.
 func RunConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
+	doc := runConfirm(ctx, o)
+	scrubDoc(doc)
+	return doc
+}
+
+func runConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
 	o.defaults()
 	doc := &Confirm{Head: testreport.Head{Schema: SchemaConfirm, OK: true}, Tests: []ConfirmedTest{}, Failures: []testreport.Case{}, Messages: []string{}}
 	c := &confirmer{o: o, doc: doc}
@@ -251,6 +258,11 @@ func RunConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
 		}
 		*v = c.judge(f, results)
 	}
+	laneDir := ""
+	if len(rerun) > 0 {
+		laneDir = c.record(ctx, stream, laneExit)
+	}
+	c.requireSameTree(rerun, verdicts)
 	for _, f := range failures {
 		v := verdicts[f.ID]
 		doc.Tests = append(doc.Tests, *v)
@@ -266,16 +278,83 @@ func RunConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
 			doc.Suggested = append(doc.Suggested, quarantineSuggestion(t.Test, ""))
 		}
 	}
-	if len(rerun) > 0 {
-		c.record(ctx, stream, laneExit)
+	if laneDir != "" {
+		c.writeDoc(laneDir)
 	}
 	return doc
 }
 
-// stored is a failure as the document keeps it: output bounded.
+// requireSameTree keeps "failed, then passed on retry" a confirmed flake
+// only when the failure's tree and the reruns' tree are both known and
+// equal. A pass on another snapshot, or on one nobody can name (the
+// source commit is not in this clone, its metadata could not be read, the
+// reruns were not recorded), proves nothing about the failure: it could be
+// a real regression the checkout no longer has. Those are inconclusive.
+func (c *confirmer) requireSameTree(rerun []testreport.Case, verdicts map[testreport.TestID]*ConfirmedTest) {
+	src, ran := c.doc.Source.Tree, c.doc.Tree
+	if src != "" && src == ran {
+		return
+	}
+	reason := "passed on retry, but the failure's tree is unknown, so the retry proves nothing"
+	switch {
+	case src != "" && ran != "":
+		reason = fmt.Sprintf("passed on retry on tree %s, but the failure came from tree %s", short(ran), short(src))
+	case src != "":
+		reason = "passed on retry, but the retry's tree is unknown (not recorded), so it proves nothing"
+	}
+	downgraded := 0
+	for _, f := range rerun {
+		v := verdicts[f.ID]
+		if v == nil || v.Verdict != testreport.VerdictConfirmed {
+			continue
+		}
+		v.Verdict, v.Reason = testreport.VerdictInconclusive, reason
+		downgraded++
+	}
+	if downgraded > 0 {
+		c.say("%d test(s) passed on retry, but not on the failure's tree: inconclusive, not flakes (%s; rerun from a checkout of %s)", downgraded, reason, orNone(c.doc.Source.Commit))
+	}
+}
+
+// stored is a failure as the document keeps it: secret-scrubbed, then
+// bounded (scrubbing first, so a cut never splits a private key block the
+// scrubber would have removed whole).
 func stored(f testreport.Case) testreport.Case {
-	f.Output, f.OutputTruncated = boundOutput(f.Output)
+	f.Output, f.OutputTruncated = boundOutput(scrubText(f.Output))
+	f.SkipReason = scrubText(f.SkipReason)
 	return f
+}
+
+// scrubText is text as forge records it: the secret shapes `forge test
+// capture` scrubs from a lane's stream, redacted. One Scrubber per text, so
+// a private key block spanning its lines is dropped whole.
+func scrubText(text string) string {
+	var s testcapture.Scrubber
+	return s.Text(text)
+}
+
+// scrubDoc scrubs every free-text field of the document in place: the
+// failures' output, the source as named, the verdicts' reasons, the
+// messages and the suggestions. A failure's output is what a test printed,
+// and a test can print a credential as easily as a log can; confirm.json is
+// recorded and may be uploaded, so it is held to capture's rule.
+func scrubDoc(doc *Confirm) {
+	doc.Error = scrubText(doc.Error)
+	doc.Source.Ref = scrubText(doc.Source.Ref)
+	doc.Source.URL = scrubText(doc.Source.URL)
+	for i := range doc.Failures {
+		doc.Failures[i].Output = scrubText(doc.Failures[i].Output)
+		doc.Failures[i].SkipReason = scrubText(doc.Failures[i].SkipReason)
+	}
+	for i := range doc.Tests {
+		doc.Tests[i].Reason = scrubText(doc.Tests[i].Reason)
+	}
+	for i := range doc.Messages {
+		doc.Messages[i] = scrubText(doc.Messages[i])
+	}
+	for i := range doc.Suggested {
+		doc.Suggested[i] = scrubText(doc.Suggested[i])
+	}
 }
 
 func displayName(id testreport.TestID) string {
@@ -657,31 +736,36 @@ func rerunOf(r *testreport.Results, id testreport.TestID) (*testreport.Case, *te
 	return top, pkg
 }
 
-// record writes the reruns as lane confirm of a new run, with the document
-// beside them.
-func (c *confirmer) record(ctx context.Context, stream []byte, exit int) {
+// record writes the reruns as lane confirm of a new run and returns the
+// lane's directory ("" when nothing was recorded); writeDoc puts the
+// document beside them once the verdicts are final.
+func (c *confirmer) record(ctx context.Context, stream []byte, exit int) string {
 	o := c.o
 	runDir, recording, warnings := openRun(ctx, o.Begin)
 	for _, w := range warnings {
 		fmt.Fprintf(o.Stderr, "forge test flakes confirm: warning: %s\n", w)
 	}
 	if !recording {
-		return
+		return ""
 	}
 	now := o.Now()
 	cmd := []string{"forge", "test", "flakes", "confirm", "--" + c.doc.Source.Kind, c.doc.Source.Ref}
 	laneDir, err := recordLane(runDir, laneRun{Lane: LaneConfirm, Command: cmd, StartedAt: now, FinishedAt: now, ExitCode: exit, Stream: stream})
 	if err != nil {
 		fmt.Fprintf(o.Stderr, "forge test flakes confirm: warning: %v\n", err)
-		return
+		return ""
 	}
 	c.doc.Run = runDir
 	if m, err := testreport.ReadRunManifest(runDir); err == nil {
 		c.doc.Commit, c.doc.Tree = m.Commit, m.TreeHash
-		if src := c.doc.Source.Tree; src != "" && m.TreeHash != "" && src != m.TreeHash {
-			c.say("the reruns ran on tree %s, but the failures came from tree %s: recorded, but they confirm nothing for the record (rerun from a checkout of %s)", short(m.TreeHash), short(src), orNone(c.doc.Source.Commit))
-		}
 	}
+	return laneDir
+}
+
+// writeDoc writes the document into the confirm lane's directory.
+func (c *confirmer) writeDoc(laneDir string) {
+	o := c.o
+	scrubDoc(c.doc)
 	data, err := json.MarshalIndent(c.doc, "", "  ")
 	if err == nil {
 		err = atomicfile.WriteFile(filepath.Join(laneDir, ConfirmFile), append(data, '\n'), 0o644)

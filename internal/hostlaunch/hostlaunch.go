@@ -99,8 +99,9 @@ type RunnerSpec struct {
 	PGOOff bool
 	// GoBuildFlags are extra `go build` flags for the runners that compile
 	// on launch: go-run puts them on its `go run`, and air's scaffolded
-	// config expands $FORGE_GO_BUILD_FLAGS (see WithCoverage). Today they
-	// are a cover build's -cover -covermode=atomic -coverpkg=….
+	// config expands $FORGE_GO_BUILD_FLAGS (see WithGoBuildFlags). They are
+	// the workload's GoBuild.flags (a scaffolded GoBuild declares
+	// -trimpath), then a cover build's -cover -covermode=atomic -coverpkg=….
 	GoBuildFlags []string
 	// CoverDir is the GOCOVERDIR an instrumented binary writes its coverage
 	// to; empty when the binary is not instrumented. See WithCoverage.
@@ -163,6 +164,13 @@ func (s RunnerSpec) AirRunsArgs() bool {
 // so flags forge passes reach its `go build`. false when the config cannot
 // be read: nothing proves they do.
 func (s RunnerSpec) AirExpandsBuildFlags() bool {
+	return strings.Contains(s.AirBuildCmd(), GoBuildFlagsEnv)
+}
+
+// AirBuildCmd is the build command of the air config this spec launches with
+// on this OS ([build.windows] cmd on Windows when set, else [build] cmd), or
+// "" when the config cannot be read.
+func (s RunnerSpec) AirBuildCmd() string {
 	cfg, _ := s.airPaths()
 	var doc struct {
 		Build struct {
@@ -173,13 +181,12 @@ func (s RunnerSpec) AirExpandsBuildFlags() bool {
 		} `toml:"build"`
 	}
 	if _, err := toml.DecodeFile(cfg, &doc); err != nil {
-		return false
+		return ""
 	}
-	cmd := doc.Build.Cmd
 	if runtime.GOOS == "windows" && doc.Build.Windows.Cmd != "" {
-		cmd = doc.Build.Windows.Cmd
+		return doc.Build.Windows.Cmd
 	}
-	return strings.Contains(cmd, GoBuildFlagsEnv)
+	return doc.Build.Cmd
 }
 
 // airPaths resolves the air config this spec launches with, and the
@@ -407,14 +414,7 @@ func buildCmdFor(ctx context.Context, goos, name string, spec RunnerSpec) (*exec
 // -pgo=off. GOFLAGS the environment already carries is kept, and a -pgo in
 // it is the user's choice and wins. env is not modified.
 func WithPGO(spec RunnerSpec, env []string) []string {
-	var compiles bool
-	switch strings.TrimSpace(spec.Runner) {
-	case "air":
-		compiles = true
-	case "", "go-run":
-		compiles = len(spec.Command) == 0 // a spec.command runs verbatim
-	}
-	if !spec.PGOOff || !compiles {
+	if !spec.PGOOff || !spec.CompilesOnLaunch() {
 		return env
 	}
 	const key = "GOFLAGS="
@@ -435,19 +435,65 @@ func WithPGO(spec RunnerSpec, env []string) []string {
 	return append(out, key+strings.TrimSpace(flags+" -pgo=off"))
 }
 
+// CompilesOnLaunch reports whether s's runner runs `go build` itself: air
+// always, go-run unless a spec.command runs verbatim. The binary and delve
+// runners execute what `forge build` compiled.
+func (s RunnerSpec) CompilesOnLaunch() bool {
+	switch strings.TrimSpace(s.Runner) {
+	case "air":
+		return true
+	case "", "go-run":
+		return len(s.Command) == 0
+	}
+	return false
+}
+
 // GoBuildFlagsEnv is the variable the scaffolded .air.toml's `go build`
 // expands, so `forge env up` can pass build flags through air: air hands its
 // environment to its build command. An air config that does not expand it
 // builds as it always did.
 const GoBuildFlagsEnv = "FORGE_GO_BUILD_FLAGS"
 
+// WithGoBuildFlags returns env with FORGE_GO_BUILD_FLAGS=spec.GoBuildFlags
+// for the air runner, whose config owns its `go build` argv and expands that
+// variable (the scaffolded .air.toml does), so the GoBuild's declared flags
+// (a scaffolded `-trimpath`) and a cover build's flags reach air's build the
+// way go-run carries them on its argv (BuildCmd). A FORGE_GO_BUILD_FLAGS env
+// already carries is the user's and wins. env is not modified.
+//
+// The variable is split on whitespace (sh word splitting; the scaffolded
+// PowerShell form splits on spaces), so a flag that itself contains
+// whitespace (`-ldflags=-s -w`) cannot pass through it intact. Such flags
+// are left out and returned in dropped, so the caller can name them: go-run
+// and `forge build` still pass them whole.
+func WithGoBuildFlags(spec RunnerSpec, env []string) (out, dropped []string) {
+	if strings.TrimSpace(spec.Runner) != "air" || len(spec.GoBuildFlags) == 0 {
+		return env, nil
+	}
+	if slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, GoBuildFlagsEnv+"=") }) {
+		return env, nil
+	}
+	var pass []string
+	for _, f := range spec.GoBuildFlags {
+		if strings.ContainsAny(f, " \t\n") {
+			dropped = append(dropped, f)
+			continue
+		}
+		pass = append(pass, f)
+	}
+	if len(pass) == 0 {
+		return env, dropped
+	}
+	return append(slices.Clone(env), GoBuildFlagsEnv+"="+strings.Join(pass, " ")), dropped
+}
+
 // WithCoverage returns env with what an instrumented (`-cover`) binary
-// needs: GOCOVERDIR=spec.CoverDir, where Go writes its counters at exit, and
-// for air, FORGE_GO_BUILD_FLAGS=spec.GoBuildFlags so its build is the cover
-// build. go-run carries the flags on its argv (BuildCmd), and binary/delve
-// run what `forge build` compiled with them. A spec.command runs verbatim and
-// gets nothing. A GOCOVERDIR or FORGE_GO_BUILD_FLAGS env already carries is
-// the user's and wins. env is not modified.
+// needs: GOCOVERDIR=spec.CoverDir, where Go writes its counters at exit. The
+// cover build flags themselves are in spec.GoBuildFlags: go-run carries them
+// on its argv (BuildCmd), air gets them from WithGoBuildFlags, and
+// binary/delve run what `forge build` compiled with them. A spec.command runs
+// verbatim and gets nothing. A GOCOVERDIR env already carries is the user's
+// and wins. env is not modified.
 func WithCoverage(spec RunnerSpec, env []string) []string {
 	if spec.CoverDir == "" {
 		return env
@@ -456,17 +502,10 @@ func WithCoverage(spec RunnerSpec, env []string) []string {
 	if runner != "air" && len(spec.Command) > 0 {
 		return env
 	}
-	out := slices.Clone(env)
-	has := func(key string) bool {
-		return slices.ContainsFunc(out, func(kv string) bool { return strings.HasPrefix(kv, key+"=") })
+	if slices.ContainsFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "GOCOVERDIR=") }) {
+		return env
 	}
-	if !has("GOCOVERDIR") {
-		out = append(out, "GOCOVERDIR="+spec.CoverDir)
-	}
-	if runner == "air" && len(spec.GoBuildFlags) > 0 && !has(GoBuildFlagsEnv) {
-		out = append(out, GoBuildFlagsEnv+"="+strings.Join(spec.GoBuildFlags, " "))
-	}
-	return out
+	return append(slices.Clone(env), "GOCOVERDIR="+spec.CoverDir)
 }
 
 func runnerOrDefault(r string) string {

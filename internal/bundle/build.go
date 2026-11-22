@@ -351,9 +351,8 @@ func Build(ctx context.Context, in BuildInput) (Bundle, error) {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 	// Before composition or publication, like the placement prerequisites:
-	// a recording backend that converges one identity per env must never be
-	// handed a bundle declaring several (Limit would strip them silently).
-	if err := in.Reader.CheckIdentities(shape); err != nil {
+	// what the recording backend cannot honour is refused, never stripped.
+	if err := checkReaderHonours(in.Reader, shape, docs); err != nil {
 		return Bundle{}, fmt.Errorf("bundle %s/%s: %w", in.Project, in.Env, err)
 	}
 
@@ -726,4 +725,18 @@ func docDeadlineSeconds(doc parsedDoc) int {
 		return int(n)
 	}
 	return 0
+}
+
+// checkReaderHonours refuses what the recording backend would record and not
+// act on:
+//
+//   - a backend that converges one identity per env must never be handed a
+//     bundle declaring several (Limit would strip them silently);
+//   - a backend that does not route named same-origin APIs would publish a
+//     site whose /_api/@<name> calls 404.
+func checkReaderHonours(r *release.BundleReader, shape release.Shape, docs []parsedDoc) error {
+	if err := r.CheckIdentities(shape); err != nil {
+		return err
+	}
+	return r.CheckNamedSiteAPIs(staticSitesWithNamedAPIs(docs))
 }

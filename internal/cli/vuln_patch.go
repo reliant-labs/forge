@@ -5,7 +5,7 @@ package cli
 // pull request. The patcher is internal/vulnpatch; this file is the input
 // (an env's findings, or a scan of a directory), flags, output and exit codes.
 //
-//	forge vuln patch <env|dir> [<advisory-id>...] [--ecosystem go|npm|pnpm|yarn|docker]
+//	forge vuln patch <env|dir> [<advisory-id>...] [--ecosystem go|npm|pnpm|yarn|pip|poetry|uv|docker]
 //	                 [--allow-major] [--verify[=<cmd>]] [--pr | --no-pr]
 //	                 [--branch <name>] [--json]
 //
@@ -67,7 +67,8 @@ type vulnPatchDeps struct {
 	// (machineLedgerPatchFindings), or the control plane's findings for an
 	// env that records there (hostedPatchFindings).
 	findingsFor func(ctx context.Context, deps vulnPatchDeps, projectDir string, env vulnEnv) (patchFindings, error)
-	// exec runs go, npm, pnpm, yarn, the verify command, git and gh.
+	// exec runs go, npm, pnpm, yarn, pip-compile, poetry, uv, the verify
+	// command, git and gh.
 	exec vulnscan.Runner
 }
 
@@ -88,6 +89,13 @@ its major version, with the ecosystem's own tool so lockfiles stay consistent:
   npm    npm install <pkg>@<fix> (direct), or an "overrides" entry (transitive)
   pnpm   pnpm update <pkg>@<fix>, or "pnpm.overrides"
   yarn   yarn up <pkg>@<fix> (yarn upgrade on yarn 1), or "resolutions"
+  pip    the <pkg>==<fix> pin rewritten in requirements*.txt; a compiled file
+         (a pip-compile or uv pip compile header, or a sibling .in) is
+         recompiled with --upgrade-package <pkg>==<fix>, its .in pin raised
+         first when it pins <pkg> directly
+  poetry poetry update <pkg> when pyproject.toml's range admits the fix (or
+         <pkg> is transitive), else poetry add <pkg>@^<fix>
+  uv     uv lock --upgrade-package <pkg>==<fix>
   docker an OS package (deb, apk, rpm): the FROM of the Dockerfile whose final
          stage built the image moves to the newest tag of its minor
          (alpine:3.19.1 -> alpine:3.19.4), else to its tag's newest digest
@@ -101,14 +109,18 @@ a fix that no exemption covers is patched; named ids (a CVE finds its GHSA) are
 patched whatever their exemption.
 
 Nothing is guessed. A finding the tree cannot be tied to one manifest (or to
-one Dockerfile), a Python package, or a fix only in a new major is reported as
-skipped with the reason: the vuln-patch workflow's agent picks those up.
---allow-major takes a major bump; for a base image or the Go toolchain, a new
-minor (alpine 3.20, Go 1.23) already counts as one.
+one Dockerfile), a range in pyproject.toml or a .in the fix lies outside, or a
+fix only in a new major is reported as skipped with the reason: the
+vuln-patch workflow's agent picks those up. --allow-major takes a major bump;
+for a base image or the Go toolchain, a new minor (alpine 3.20, Go 1.23)
+already counts as one.
 
 --verify runs the project's gate after the bump (vuln.patch.verify in
 forge.yaml, else ` + "`task test:short`" + ` when the Taskfile has it, else go build and go test
--short, else the package manager's test script; --verify=<cmd> runs <cmd>),
+-short, else the package manager's test script, else uv run or poetry run
+pytest -q for a uv or poetry project that uses pytest; --verify=<cmd> runs
+<cmd>; a project pinned only by requirements files has no default, so name
+its gate in vuln.patch.verify or with --verify=<cmd>),
 then rescans each changed manifest's directory, and rebuilds each changed
 Dockerfile (docker build --pull --no-cache, the project as context) and rescans
 its image: a finding still reported is still_present. With no docker, a
@@ -127,7 +139,7 @@ with --pr, or a named advisory whose fix needs --allow-major), nothing changed.`
 			return runVulnPatch(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), deps, args[0], args[1:], opts)
 		},
 	}
-	cmd.Flags().StringSliceVar(&opts.ecosystems, "ecosystem", nil, "patch only these ecosystems: go, npm, pnpm, yarn, docker (repeatable, or comma-separated)")
+	cmd.Flags().StringSliceVar(&opts.ecosystems, "ecosystem", nil, "patch only these ecosystems: go, npm, pnpm, yarn, pip, poetry, uv, docker (repeatable, or comma-separated)")
 	cmd.Flags().BoolVar(&opts.allowMajor, "allow-major", false, "take a fix in a new major version when no fix is in the installed one")
 	cmd.Flags().Var((*optionalString)(&opts.verify), "verify", "after the bump, run the project's gate (or --verify=CMD) and rescan the changed manifests")
 	cmd.Flags().Lookup("verify").NoOptDefVal = verifyGate

@@ -447,6 +447,48 @@ func TestListAndRevokeHandleAreScopedToTheSubject(t *testing.T) {
 	}
 }
 
+func TestRevokeOthersKeepsTheNamedSessionAndOnlyThatSubjects(t *testing.T) {
+	clk := newClock()
+	is := newIssuer(clk)
+	m := newTestManager(t, NewMemoryStore(), clk, is, nil)
+	ctx := context.Background()
+	current := mustCreate(t, m, is.mint(), "u1")
+	other := mustCreate(t, m, is.mint(), "u1")
+	another := mustCreate(t, m, is.mint(), "u1")
+	theirs := mustCreate(t, m, is.mint(), "u2")
+	// Warm the cache, so the revocation must evict, not merely delete.
+	for _, s := range []Issued{current, other, another, theirs} {
+		if _, err := m.AccessToken(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := m.RevokeOthers(ctx, "u1", theirs.ID); !errors.Is(err, ErrNoSession) {
+		t.Errorf("naming another subject's session: %v, want ErrNoSession", err)
+	}
+	if _, err := m.RevokeOthers(ctx, "u1", "fs_not-an-id"); !errors.Is(err, ErrNoSession) {
+		t.Errorf("malformed id: %v, want ErrNoSession", err)
+	}
+	if list, _ := m.List(ctx, "u1"); len(list) != 3 {
+		t.Fatalf("a refused RevokeOthers ended sessions: %d left", len(list))
+	}
+	n, err := m.RevokeOthers(ctx, "u1", current.ID)
+	if err != nil || n != 2 {
+		t.Fatalf("RevokeOthers = %d, %v; want 2", n, err)
+	}
+	for _, s := range []Issued{other, another} {
+		if _, err := m.AccessToken(ctx, s.ID); !errors.Is(err, ErrNoSession) {
+			t.Errorf("another session of u1 still accepted: %v", err)
+		}
+	}
+	if _, err := m.AccessToken(ctx, current.ID); err != nil {
+		t.Errorf("the kept session: %v", err)
+	}
+	if _, err := m.AccessToken(ctx, theirs.ID); err != nil {
+		t.Errorf("u2's session: %v", err)
+	}
+}
+
 func TestSweepAndRun(t *testing.T) {
 	clk := newClock()
 	store := NewMemoryStore()

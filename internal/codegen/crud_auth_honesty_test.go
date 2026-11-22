@@ -206,6 +206,27 @@ func TestCRUDShim_AdvertisesOnlyCapabilitiesTheDelegateHas(t *testing.T) {
 	}
 }
 
+// ownershipSeam is the caller-shaped surface pkg/crud exports for a table
+// that declares `forge:owner=` (pkg/crud/ownership.go). None of it
+// authenticates: it CONSUMES the application's OwnerResolver, and the
+// scaffolded header says exactly that (TestCRUDShim_HeaderNamesTheOwnershipSeam).
+// A new caller-shaped symbol still trips the test below.
+var ownershipSeam = map[string]bool{"CallerOwners": true, "ErrNoCaller": true}
+
+// TestCRUDShim_HeaderNamesTheOwnershipSeam pins the other half of the
+// ownershipSeam exception: the header every handler author reads must say
+// that the op scopes owner-declared tables through the app's resolver, and
+// that every other table is still theirs to scope.
+func TestCRUDShim_HeaderNamesTheOwnershipSeam(t *testing.T) {
+	h := crudShimHeader(CRUDTemplateData{Module: "example.com/x"})
+	flat := strings.Join(strings.Fields(strings.ReplaceAll(h, "//", " ")), " ")
+	for _, want := range []string{"`forge:owner=`", "crud.OwnerResolver", "For every other table"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the shim header must name %q:\n%s", want, h)
+		}
+	}
+}
+
 // TestCRUDShim_ClaimsNoAuthCapability is the tripwire: the delegate
 // exports nothing that could authenticate, so no capability may be
 // advertised in those terms. It also fails in the other direction — if
@@ -217,7 +238,7 @@ func TestCRUDShim_ClaimsNoAuthCapability(t *testing.T) {
 
 	var authy []string
 	for sym := range surface {
-		if looksAuthShaped(sym) {
+		if looksAuthShaped(sym) && !ownershipSeam[sym] {
 			authy = append(authy, sym)
 		}
 	}

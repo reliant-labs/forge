@@ -11,6 +11,7 @@ import (
 	"golang.org/x/mod/module"
 	modzip "golang.org/x/mod/zip"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
@@ -39,7 +40,9 @@ func TestRealGoBump(t *testing.T) {
 	if !strings.HasPrefix(proxyURL, "/") {
 		proxyURL = "/" + proxyURL
 	}
-	env := []string{"GOPROXY=file://" + proxyURL, "GOSUMDB=off", "GOFLAGS=-mod=mod -modcacherw", "GOWORK=off", "GOTOOLCHAIN=local", "GOMODCACHE=" + t.TempDir()}
+	// The verify step builds the t.TempDir() module: -trimpath keeps that
+	// build out of the shared cache's per-path entries.
+	env := goexec.WithTrimpath([]string{"GOPROXY=file://" + proxyURL, "GOSUMDB=off", "GOFLAGS=-mod=mod -modcacherw", "GOWORK=off", "GOTOOLCHAIN=local", "GOMODCACHE=" + t.TempDir()})
 	run := func(ctx context.Context, c vulnscan.Command) error {
 		c.Env = append(os.Environ(), env...)
 		return vulnscan.Exec(ctx, c)

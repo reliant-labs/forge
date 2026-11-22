@@ -1927,6 +1927,12 @@ benefits:
         bug_class: >-
           A List filter without `optional` has no presence, so "no filter"
           collapses into "filter by zero" and generated filters no-op
+      - id: crud-table-unowned
+        lane: --crud-ownership
+        bug_class: >-
+          A table served by generated CRUD on an authenticated rpc that never
+          says whose rows it holds: every signed-in caller reads, updates and
+          deletes every other caller's rows
       - id: forgeconv-crud-owner-resolver
         lane: --conventions
         bug_class: >-
@@ -2314,6 +2320,13 @@ benefits:
         bug_class: >-
           A test that fails when real elapsed time passes a bound under 5s,
           measuring how busy the machine was rather than what the code did
+      - id: forge-runtime-caller-path
+        lane: --caller-paths
+        bug_class: >-
+          A test that finds its testdata or the repository root from the
+          source file `runtime.Caller` reports: under `-trimpath`, forge's
+          default build mode, that path is module-relative, not on disk, so
+          the test passes untrimmed and fails trimmed
       - id: flake-check
         lane: forge ci gate
         bug_class: >-
@@ -4678,7 +4691,10 @@ benefits:
       pgo status` shows each binary's file, source and age. A hosted env's
       profiles are pulled through the control plane (sign-in required). Tune or
       opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo`
-      in KCL.
+      in KCL. A project whose hosted env builds a Go binary gets
+      `.github/workflows/pgo-refresh.yml` (an existing one on its next `forge
+      generate`), which pulls weekly and opens a pull request when the env's
+      profiles changed a binary's file.
     why: >-
       Go applies PGO per main package, so a binary that runs as server, worker
       and cron gets one profile merging all of them, weighted by CPU. A missing
@@ -4690,6 +4706,7 @@ benefits:
       - library: pkg/profilequery
       - skill: observability/profiles
       - path: pkg/observe/PROFILES.md
+      - path: internal/templates/ci/github/pgo-refresh.yml.tmpl
       - external: control-plane:internal/handlers/observability/rpc_export_pgo_profile.go
 
   - id: alerts-as-code
@@ -4809,6 +4826,7 @@ benefits:
     evidence:
       - library: pkg/changes
       - library: pkg/changes/openfeature
+      - library: pkg/experimentstats
       - library: pkg/observe
       - path: web-runtime/src/track.ts
       - path: web-runtime/src/changes-store.ts

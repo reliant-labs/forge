@@ -8,20 +8,31 @@
 //
 // ── Adding a rule ────────────────────────────────────────────────────────
 //
-// For a new rule introduced in NEXT_VERSION v1.9.0 that needs a warning
-// window, add an explicit, reasoned opt-in to `newRules`:
+// A new rule ships in the release NEXT_VERSION names. Give it a warning window
+// with an explicit, reasoned opt-in to `newRules` (NEXT_VERSION v1.11.0 here):
 //
-//	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
+//	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Give projects time to fix existing findings"}, Rules: []string{"my-new-rule"}},
 //
 // Until is exclusive: it becomes the effective GatesFrom used by lint and
-// upgrade reports. This exception is for v1.9.0 introductions only; it does
-// not reopen any window closed in #2410 or move with NEXT_VERSION.
+// upgrade reports, and it is always the minor after IntroducedIn. A grace
+// row's IntroducedIn is NEXT_VERSION, or a release already cut whose tag
+// really carries the rule (TestGraceRowsNameAReleaseThatCarriesTheirRule);
+// it never reopens a window closed in #2410 (none before v1.10.0).
+//
+// A rule whose commit missed the tag its row names ships in the next release,
+// so its row moves to NEXT_VERSION and it warns through that release before it
+// gates. The owner decided this for the cohort first declared as v1.9.0
+// (2026-11-21, forge#2638, "Move whole cohort": tag v1.9.0 predates every one
+// of them, so they ship in v1.10.0 and gate from v1.11.0), and the rule holds
+// for every row since: crud-table-unowned was declared v1.10.0, missed that
+// tag, and ships in v1.11.0.
 
 package lint
 
 import (
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/linter/callerpath"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
@@ -35,7 +46,7 @@ type rolloutGroup struct {
 	Rules        []string
 }
 
-// rolloutGrace explicitly grants a warning window to newly introduced v1.9.0 rules.
+// rolloutGrace explicitly grants a warning window to a newly introduced rule.
 // Until is the first release that gates; Reason records why the rule needs grace.
 type rolloutGrace struct {
 	Until  string
@@ -271,24 +282,25 @@ var shippedRules = []rolloutGroup{
 	{IntroducedIn: "v1.9.0", Rules: []string{RuleFlakeCheck}},
 }
 
-// newRules holds new v1.9.0 rules with explicit, owner-approved grace.
+// newRules holds the rules introduced with explicit grace, each row keyed to
+// the release that really ships it.
 var newRules = []rolloutGroup{
 	// forge lint --telemetry: declared telemetry (forge.Telemetry) judged for
 	// what it collects. Only the uncollected dashboard series is an error;
 	// the other three are advisory at any pin, and the row is what lets
 	// lint.rules raise them.
-	{IntroducedIn: "v1.9.0", Grace: &rolloutGrace{Until: "v1.10.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
+	{IntroducedIn: "v1.10.0", Grace: &rolloutGrace{Until: "v1.11.0", Reason: "A project that already declares telemetry may have dashboards naming series nothing collects; warn for a release before telemetry-dashboard-metric-uncollected gates"}, Rules: []string{
 		ruleTelemetryScrapeUnbounded, ruleTelemetryMetricUncollected, ruleTelemetryRateOnGauge, ruleTelemetryHighCardinality,
 	}},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "CI that relied on implicit installs needs time to add an explicit install step"},
 		Fix:          "forge lint --install",
 		Rules:        []string{ruleFrontendNoInstall},
 	},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "Give existing Vite sites time to align build output and base paths with their deployment"},
 		Rules:        []string{staticexport.RuleViteOutDir, staticexport.RuleViteBase},
 	},
 	// The vulnerability gate made real (rollout_grade.go): an env's declared
@@ -298,20 +310,29 @@ var newRules = []rolloutGroup{
 	// artifacts have no SBOM. Both are the approved SBOM design's warn-first
 	// rollout (forge#2468 §1.8).
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
 		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
 	},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},
 		Rules:        []string{staticexport.RulePartialPrerender},
 	},
 	{
-		IntroducedIn: "v1.9.0",
-		Grace:        &rolloutGrace{Until: "v1.10.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
+		IntroducedIn: "v1.10.0",
+		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "Give projects time to review and index newly diagnosed query shapes"},
 		Rules:        dbanalyze.QueryRuleIDs(),
 	},
+	// forge lint --crud-ownership: a table served by generated CRUD on an
+	// authenticated rpc that declares no owner (forge:owner=, a forge:owner
+	// column) and no forge:public / forge:unscoped reason. Declared v1.10.0,
+	// but #2461 merged after that tag, so it ships in v1.11.0.
+	// forge lint --caller-paths: a source path from runtime.Caller used to
+	// locate files, which -trimpath (forge's default build mode from
+	// v1.11.0) makes module-relative.
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing tests that find testdata or the repository root from runtime.Caller's file pass in an untrimmed build; warn for a release so each can resolve paths against the package directory (or check filepath.IsAbs) before the rule gates"}, Rules: []string{callerpath.RuleID}},
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

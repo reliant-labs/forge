@@ -13,8 +13,10 @@ import (
 // The runtime's package.json is the public module map. Never search dist
 // chunks or other entrypoints for evidence that a symbol is exported here.
 type webRuntimeManifest struct {
-	Version, Main, Types string
-	Exports              map[string]json.RawMessage
+	Version string                     `json:"version"`
+	Main    string                     `json:"main"`
+	Types   string                     `json:"types"`
+	Exports map[string]json.RawMessage `json:"exports"`
 }
 
 type webRuntimeEntry struct{ js, declarations string }

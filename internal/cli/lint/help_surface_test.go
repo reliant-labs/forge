@@ -56,6 +56,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// this is the one named, reasoned way to accept it may not. Hidden,
 		// the only way past a missing toolchain would be to drop the gate.
 		"allow-skip",
+		// Gating, and about the user's own code: a test that finds its
+		// testdata from runtime.Caller's file passes untrimmed and fails
+		// under -trimpath, forge's default build mode. The lane runs in
+		// every forge lint; the flag runs it alone while cleaning up.
+		"caller-paths",
 		// Report-only: the dry run of the auto-fix default, and what CI gets
 		// without asking. Visible because the CI behaviour is otherwise a
 		// surprise an author only meets on a red build.
@@ -101,6 +106,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// a postgres foreign-key violation naming a constraint, never the
 		// proto line that caused it.
 		"create-nullability",
+		// Visible: a continuous rule about the user's own schema, and the
+		// one place a table served by authenticated generated CRUD that
+		// never said whose rows it holds is named before a caller reads
+		// another caller's rows.
+		"crud-ownership",
 		// Visible: a continuous rule about the user's own schema, and the only
 		// place a credential column the read-only role is refused surfaces by
 		// name. Left hidden, a project would learn forge_ro cannot read a

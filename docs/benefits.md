@@ -1811,6 +1811,7 @@ _Enforced · Forge, on any infrastructure_
 | `forgeconv-guarded-field-written`      | A scaffolded edit page whose `update_mask` still names a `forge:guards` column writes it raw and bypasses the rpc that owns it                                                                  | `--guarded-fields`     |
 | `forgeconv-create-request-nullability` | An entity field and its `Create<Entity>Request` field disagree on `optional`, silently dropping write presence                                                                                  | `--create-nullability` |
 | `forgeconv-list-filter-optional`       | A List filter without `optional` has no presence, so "no filter" collapses into "filter by zero" and generated filters no-op                                                                    | `--conventions`        |
+| `crud-table-unowned`                   | A table served by generated CRUD on an authenticated rpc that never says whose rows it holds: every signed-in caller reads, updates and deletes every other caller's rows                       | `--crud-ownership`     |
 | `forgeconv-crud-owner-resolver`        | An owner-scoping wrapper takes its owner from a different principal than its siblings (a `tenant_id` column scoped by a user id): compiles, runs, returns nothing or someone else's rows        | `--conventions`        |
 | `forge-column-markers`                 | A misspelled or misplaced `forge:` marker in a `COMMENT ON` statement does nothing and postgres stores it verbatim (`forge:immutible`)                                                          | `--column-markers`     |
 | `forge-identity-subject-unreadable`    | A `forge:identity-subject` column the read-only role cannot read, so the console never draws the identity link                                                                                  | `--column-markers`     |
@@ -1933,17 +1934,18 @@ _Enforced · Forge, on any infrastructure_
 
 - source [`internal/cli/lint/lint_rules.go`](../internal/cli/lint/lint_rules.go)
 
-| Rule                                 | Bug class it prevents                                                                                                                                                                                                                                                                      | Lane            |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
-| `forge-slow-test-unmarked`           | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`  |
-| `forge-slow-test-inputs`             | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`  |
-| `forge-test-fixed-sleep`             | A test that sleeps a fixed time and then asserts, guessing how long the work takes: on a loaded machine the guess is short and the test flakes (`testkit.Eventually` / `testkit.Receive` wait for the event)                                                                               | `--test-waits`  |
-| `forge-test-tight-deadline`          | An event wait that fails the test after a deadline under 5s (a select on `time.After`, testify `Eventually`, a poll bounded by `time.Now().Add`), which a busy machine overruns                                                                                                            | `--test-waits`  |
-| `forge-test-wall-clock-bound`        | A test that fails when real elapsed time passes a bound under 5s, measuring how busy the machine was rather than what the code did                                                                                                                                                         | `--test-waits`  |
-| `flake-check`                        | A test the change adds or edits that fails one of three runs (order dependence, leaked state, a timing assumption) merges and surfaces weeks later in someone else's change (`forge test flakes gate`; advisory until `lint.rules: {flake-check: error}`)                                  | `forge ci gate` |
-| `forgeconv-handler-tests-use-tdd`    | Hand-rolled `{name, call}` tables instead of `tdd.RunRPCCases` (codemod: `forge project migrate tdd`)                                                                                                                                                                                      | `--tests`       |
-| `forgeconv-frontend-hook-tests`      | A generated hooks file with no sibling test                                                                                                                                                                                                                                                | `--tests`       |
-| `forgeconv-frontend-hook-test-shape` | A hook test whose assertions can never pass (a query-shaped test on a mutation hook, or the reverse)                                                                                                                                                                                       | `--conventions` |
+| Rule                                 | Bug class it prevents                                                                                                                                                                                                                                                                      | Lane             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------- |
+| `forge-slow-test-unmarked`           | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`   |
+| `forge-slow-test-inputs`             | A test that execs `go`, `forge`, `kcl`, `node`, `npm`, `git` or `docker`, drives containers or dials an external host without `testkit.Slow` runs in the blocking `-short` tier, and a file its child process reads is invisible to Go's test cache, so a stale PASS replays after an edit | `--slow-tests`   |
+| `forge-test-fixed-sleep`             | A test that sleeps a fixed time and then asserts, guessing how long the work takes: on a loaded machine the guess is short and the test flakes (`testkit.Eventually` / `testkit.Receive` wait for the event)                                                                               | `--test-waits`   |
+| `forge-test-tight-deadline`          | An event wait that fails the test after a deadline under 5s (a select on `time.After`, testify `Eventually`, a poll bounded by `time.Now().Add`), which a busy machine overruns                                                                                                            | `--test-waits`   |
+| `forge-test-wall-clock-bound`        | A test that fails when real elapsed time passes a bound under 5s, measuring how busy the machine was rather than what the code did                                                                                                                                                         | `--test-waits`   |
+| `forge-runtime-caller-path`          | A test that finds its testdata or the repository root from the source file `runtime.Caller` reports: under `-trimpath`, forge's default build mode, that path is module-relative, not on disk, so the test passes untrimmed and fails trimmed                                              | `--caller-paths` |
+| `flake-check`                        | A test the change adds or edits that fails one of three runs (order dependence, leaked state, a timing assumption) merges and surfaces weeks later in someone else's change (`forge test flakes gate`; advisory until `lint.rules: {flake-check: error}`)                                  | `forge ci gate`  |
+| `forgeconv-handler-tests-use-tdd`    | Hand-rolled `{name, call}` tables instead of `tdd.RunRPCCases` (codemod: `forge project migrate tdd`)                                                                                                                                                                                      | `--tests`        |
+| `forgeconv-frontend-hook-tests`      | A generated hooks file with no sibling test                                                                                                                                                                                                                                                | `--tests`        |
+| `forgeconv-frontend-hook-test-shape` | A hook test whose assertions can never pass (a query-shaped test on a mutation hook, or the reverse)                                                                                                                                                                                       | `--conventions`  |
 
 <a id="lint-rules-frontends"></a>
 
@@ -3947,7 +3949,7 @@ _Enforced · Forge, on any infrastructure_
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge pgo pull --env prod`, commit `cmd/*/default.pgo`, rebuild; `forge pgo status` shows each binary's file, source and age. A hosted env's profiles are pulled through the control plane (sign-in required). Tune or opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo` in KCL.
+**Use:** `forge pgo pull --env prod`, commit `cmd/*/default.pgo`, rebuild; `forge pgo status` shows each binary's file, source and age. A hosted env's profiles are pulled through the control plane (sign-in required). Tune or opt out per build with `forge.PGO` on `GoBuild.pgo` / `DockerBuild.pgo` in KCL. A project whose hosted env builds a Go binary gets `.github/workflows/pgo-refresh.yml` (an existing one on its next `forge generate`), which pulls weekly and opens a pull request when the env's profiles changed a binary's file.
 
 **Why:** Go applies PGO per main package, so a binary that runs as server, worker and cron gets one profile merging all of them, weighted by CPU. A missing source, too little data or an older control plane leaves the committed file untouched and the build unaffected.
 
@@ -3958,6 +3960,7 @@ _Enforced · Forge, on any infrastructure_
 - library [`pkg/profilequery`](../pkg/profilequery)
 - skill `observability/profiles` (`forge skill load observability/profiles`)
 - source [`pkg/observe/PROFILES.md`](../pkg/observe/PROFILES.md)
+- source [`internal/templates/ci/github/pgo-refresh.yml.tmpl`](../internal/templates/ci/github/pgo-refresh.yml.tmpl)
 - `internal/handlers/observability/rpc_export_pgo_profile.go` in the control-plane repo
 
 <a id="alerts-as-code"></a>
@@ -4065,6 +4068,7 @@ _In progress · Reliant hosting_
 
 - library [`pkg/changes`](../pkg/changes)
 - library [`pkg/changes/openfeature`](../pkg/changes/openfeature)
+- library [`pkg/experimentstats`](../pkg/experimentstats)
 - library [`pkg/observe`](../pkg/observe)
 - source [`web-runtime/src/track.ts`](../web-runtime/src/track.ts)
 - source [`web-runtime/src/changes-store.ts`](../web-runtime/src/changes-store.ts)

@@ -52,6 +52,11 @@ func TestRenderEntityMigrationFromProto_OwnerMarker(t *testing.T) {
 	if !strings.Contains(self.UpSQL, "COMMENT ON COLUMN tenants.id IS 'forge:owner';") {
 		t.Errorf("an owner marker on the managed id field must declare the key column:\n%s", self.UpSQL)
 	}
+	for _, m := range []EntityFromProtoMigration{mig, self} {
+		if strings.Contains(m.UpSQL, "Ownership: not declared") || strings.Contains(strings.Join(m.Notes, "\n"), "whose rows it holds is not declared") {
+			t.Errorf("a birth that declared its owner must not ask for one:\n%s\nnotes: %v", m.UpSQL, m.Notes)
+		}
+	}
 
 	// The applied schema reads the declaration back: this, not the proto,
 	// is what the CRUD generator sees.
@@ -78,5 +83,44 @@ func TestRenderEntityMigrationFromProto_OwnerMarker(t *testing.T) {
 	}
 	if owners["agent_runs"] != "tenant_id" || owners["tenants"] != "id" {
 		t.Errorf("applied owner columns = %v, want agent_runs.tenant_id and tenants.id", owners)
+	}
+}
+
+// A birth with no owner field declares NOTHING about whose rows the table
+// holds: no owner, and no forge:public / forge:unscoped exemption either.
+// An exemption forge wrote would answer the crud-table-unowned lint on the
+// author's behalf, so the gate would never ask them. The birth asks instead:
+// a note at scaffold time and a SQL comment beside the table, neither of
+// which spells a marker.
+func TestRenderEntityMigrationFromProto_OwnerlessBirthDeclaresNoExemption(t *testing.T) {
+	plain := hardeningSpec()
+	plain.AppendOnly = false
+	for name, spec := range map[string]EntityFromProtoSpec{"plain": plain, "append-only": hardeningSpec()} {
+		t.Run(name, func(t *testing.T) {
+			mig := RenderEntityMigrationFromProto(spec)
+			for _, marker := range []string{schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic, schemadef.TableMarkerOwner} {
+				if strings.Contains(mig.UpSQL, marker) {
+					t.Errorf("an ownerless birth must not declare %s for its author:\n%s", marker, mig.UpSQL)
+				}
+			}
+			if !strings.Contains(mig.UpSQL, "-- Ownership: not declared.") {
+				t.Errorf("the birth must say, beside the table, that ownership is undeclared:\n%s", mig.UpSQL)
+			}
+			notes := strings.Join(mig.Notes, "\n")
+			for _, want := range []string{
+				"table audit_logs: whose rows it holds is not declared",
+				"COMMENT ON TABLE audit_logs IS 'forge:owner=<column>'",
+				"'forge:unscoped: <why>'",
+				"'forge:public: <why>'",
+				"forge lint --crud-ownership",
+			} {
+				if !strings.Contains(notes, want) {
+					t.Errorf("the scaffold note must name %q; notes:\n%s", want, notes)
+				}
+			}
+			if strings.Contains(notes, "TODO") {
+				t.Errorf("the ownership note is a decision, not a TODO field (it would count as one):\n%s", notes)
+			}
+		})
 	}
 }

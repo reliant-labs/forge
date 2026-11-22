@@ -102,7 +102,10 @@ func TestProcessPanelsStayBoundedAndScoped(t *testing.T) {
 		if !strings.HasPrefix(d.ID, "process-") {
 			continue
 		}
-		if len(d.Panels) > 20 {
+		// 24: RPC health (7), database (2), runtime (3), process resources
+		// (4), workload saturation or the host (3 or 4), logs (2), whatever
+		// the RPC count. Per-RPC tiles would blow far past it.
+		if len(d.Panels) > 24 {
 			t.Fatalf("RPC inventory expanded %s to %d tiles", d.ID, len(d.Panels))
 		}
 		runtime := 0

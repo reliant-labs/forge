@@ -327,6 +327,28 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		}()
 	}
 
+	// The self-updater, beside the workers: started once the listener is
+	// bound, so the readiness it confirms a new binary on is real. Its
+	// shutdown is the same stop a signal causes, so an upgrade drains
+	// exactly as a rollout does. It is never a component failure: a
+	// release that cannot be fetched must not take the server down.
+	selfUpdateDone := make(chan struct{})
+	selfUpdateCtx, selfUpdateCancel := context.WithCancel(runCtx)
+	defer selfUpdateCancel()
+	if srv.SelfUpdate != nil {
+		ready := func(ctx context.Context) error {
+			return readyNow(ctx, drainer, srv.ReadyChecks, cfg.ReadinessTimeout)
+		}
+		go func() {
+			defer close(selfUpdateDone)
+			if suErr := srv.SelfUpdate.Serve(selfUpdateCtx, ready, stop); suErr != nil && !errors.Is(suErr, context.Canceled) {
+				logger.ErrorContext(ctx, "self-update stopped", "error", suErr)
+			}
+		}()
+	} else {
+		close(selfUpdateDone)
+	}
+
 	var runErr error
 	select {
 	case err := <-errCh:
@@ -380,6 +402,11 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 	mark := time.Now()
 
 	workerCancel()
+	selfUpdateCancel()
+	if srv.SelfUpdate != nil && !waitDone(shutdownCtx, selfUpdateDone) {
+		logger.ErrorContext(ctx, "self-update did not stop within the shutdown budget",
+			"shutdown_timeout", drainer.shutdownTimeout())
+	}
 	if len(srv.Workers) > 0 && !waitWithin(shutdownCtx, &workerWg) {
 		logger.ErrorContext(ctx, "workers did not drain within the shutdown budget",
 			"shutdown_timeout", drainer.shutdownTimeout())
@@ -440,7 +467,35 @@ func Run(ctx context.Context, cfg Config, srv Server) error {
 		runErr = componentFailure
 	}
 	componentMu.Unlock()
+
+	// The swap, last: everything above has drained, closed and flushed, so
+	// the new binary starts from durable state only. On success this never
+	// returns (the process is the new binary, same pid, or it exited for
+	// its supervisor); on failure the old binary is back on disk and Run
+	// reports why, so the process exits non-zero and a supervisor restarts
+	// the binary that still works.
+	if srv.SelfUpdate != nil {
+		if suErr := srv.SelfUpdate.ExecPending(); suErr != nil {
+			logger.ErrorContext(ctx, "self-update: starting the new binary failed; the previous binary is back", "error", suErr)
+			runErr = errors.Join(runErr, fmt.Errorf("self-update: %w", suErr))
+		}
+	}
 	return runErr
+}
+
+// waitDone is waitWithin for a channel that closes when its goroutine ends.
+func waitDone(ctx context.Context, done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 // waitWithin blocks until wg drains or ctx expires, reporting whether the

@@ -13,6 +13,7 @@ const (
 	SchemaCoverage = "forge.test.coverage/v1"
 	SchemaReport   = "forge.test.report/v1"
 	SchemaFlakes   = "forge.test.flakes/v1"
+	SchemaDiff     = "forge.test.diff/v1"
 )
 
 // Head is the head every forge --json document starts with: the schema name,

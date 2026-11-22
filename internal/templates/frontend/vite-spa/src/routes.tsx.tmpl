@@ -211,7 +211,8 @@ const signInRoute = createRoute({
     // issuer replaces `error` with the provider's own (access_denied, …), so
     // the broker marks its failure URL social=failed (devidp.SocialFailurePath).
     const signInParams = new URLSearchParams(window.location.search);
-    const socialFailed = signInParams.get("social") === "failed" || signInParams.get("error") === "social";
+    const socialFailed =
+      signInParams.get("social") === "failed" || signInParams.get("error") === "social";
     // What a password must contain. Only shown when signing up.
     const policy = usePasswordPolicy();
     // Whether the typed password misses a rule the policy states. Drawn red

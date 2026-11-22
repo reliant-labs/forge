@@ -15,6 +15,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 )
@@ -23,13 +24,14 @@ type vulnSBOMOptions struct {
 	release  string
 	artifact string
 	format   string
+	file     string
 }
 
 func newVulnSBOMCmd(deps vulnDeps) *cobra.Command {
 	var opts vulnSBOMOptions
 	cmd := &cobra.Command{
-		Use:   "sbom <env>",
-		Short: "Print the SBOM a release recorded for one artifact",
+		Use:   "sbom <env> | --file <path>",
+		Short: "Print the SBOM a release recorded for one artifact, or generate one for a file",
 		Long: `Print the SBOM (CycloneDX JSON, as forge stored it at the cut) of one artifact of
 the release an env runs, or of --release. The bytes come from this machine's
 ledger, verified against the digest the release records. For an env whose
@@ -39,25 +41,96 @@ another machine, the OCI referrer beside the image, verified against that
 digest and kept in this machine's ledger for the next read.
 
 --artifact names the artifact; it may be left out when only one artifact has an
-SBOM. --format spdx converts to SPDX JSON with syft (installed on first use).`,
-		Args: cobra.ExactArgs(1),
+SBOM. --format spdx converts to SPDX JSON with syft (installed on first use).
+
+--file <path> takes no env: it generates the SBOM of one file, a binary (Go
+buildinfo lists every linked module) or a lockfile, with forge's pinned syft
+and the same invocation a release cut uses for a host binary, and prints it.
+Nothing is recorded. The document names the artifact --artifact (default: the
+file's name), never the path on this machine, and carries --release as its
+version. Use it for binaries your own pipeline publishes; forge's own releases
+attach one per archive this way. A file syft cannot describe exits 2.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if opts.file != "" {
+				if len(args) != 0 {
+					return fmt.Errorf("--file generates an SBOM of a file and reads no env: drop %q", args[0])
+				}
+				return nil
+			}
+			return cobra.ExactArgs(1)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.file != "" {
+				return runVulnSBOMFile(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), deps, opts)
+			}
 			return runVulnSBOM(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), deps, args[0], opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.release, "release", "", "read this release instead of the one the env runs")
-	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "the artifact whose SBOM to print")
+	cmd.Flags().StringVar(&opts.release, "release", "", "read this release instead of the one the env runs (with --file: the version the SBOM records)")
+	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "the artifact whose SBOM to print (with --file: the name the SBOM records)")
 	cmd.Flags().StringVar(&opts.format, "format", "cyclonedx", "cyclonedx (as stored) or spdx (converted with syft)")
+	cmd.Flags().StringVar(&opts.file, "file", "", "generate the SBOM of this binary or lockfile with forge's pinned syft, instead of reading a release")
 	return cmd
+}
+
+func sbomFormat(opts vulnSBOMOptions) (string, error) {
+	format := strings.ToLower(strings.TrimSpace(opts.format))
+	if format != "cyclonedx" && format != "spdx" {
+		return "", fmt.Errorf("--format %q (expected cyclonedx or spdx)", opts.format)
+	}
+	return format, nil
+}
+
+// runVulnSBOMFile generates the SBOM of opts.file with the generator the
+// release cut uses (internal/sbom, KindBinary): forge's pinned syft, the
+// pinned CycloneDX version, the document checked, and the artifact's name in
+// place of this machine's path. The SBOM cache is shared with the cut, so a
+// file described before (a retried release) runs no syft.
+func runVulnSBOMFile(ctx context.Context, out, errOut io.Writer, deps vulnDeps, opts vulnSBOMOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	format, err := sbomFormat(opts)
+	if err != nil {
+		return err
+	}
+	fi, err := os.Stat(opts.file)
+	switch {
+	case err != nil:
+		return fmt.Errorf("--file %s: %w", opts.file, err)
+	case fi.IsDir():
+		return fmt.Errorf("--file %s is a directory: name one file (`forge vuln scan <dir>` scans a tree)", opts.file)
+	}
+	name := strings.TrimSpace(opts.artifact)
+	if name == "" {
+		name = filepath.Base(opts.file)
+	}
+	gen := &sbom.Generator{
+		Tool: func(ctx context.Context) (string, string, error) {
+			return deps.tool(ctx, toolfetch.Syft, true)
+		},
+		Runner:  deps.sbomRunner,
+		Timeout: sbom.DefaultTimeout,
+	}
+	if deps.sbomCache != nil {
+		if dir := deps.sbomCache(); dir != "" {
+			gen.Cache = &sbom.Cache{Dir: dir}
+		}
+	}
+	res := gen.Generate(ctx, []sbom.Target{{Name: name, Kind: sbom.KindBinary, Ref: opts.file, Version: strings.TrimSpace(opts.release)}})[0]
+	if !res.Ref.HasSBOM() {
+		return undeterminedf("no SBOM for %s: %s", opts.file, res.Ref.Reason)
+	}
+	return writeSBOM(ctx, out, errOut, deps, res.Bytes, format)
 }
 
 func runVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, envName string, opts vulnSBOMOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	format := strings.ToLower(strings.TrimSpace(opts.format))
-	if format != "cyclonedx" && format != "spdx" {
-		return fmt.Errorf("--format %q (expected cyclonedx or spdx)", opts.format)
+	format, err := sbomFormat(opts)
+	if err != nil {
+		return err
 	}
 	projectDir := deps.projectDir()
 	env, err := deps.resolveEnv(ctx, projectDir, envName)

@@ -172,6 +172,19 @@ type blockKey struct{ sl, sc, el, ec int }
 
 func (b Block) key() blockKey { return blockKey{b.StartLine, b.StartCol, b.EndLine, b.EndCol} }
 
+// Diff is the forge.test.diff/v1 document: the line ranges Commit adds or
+// changes against Base (`git diff -U0 <base> <commit>`), which diff coverage
+// needs and a server without a checkout cannot compute. Paths and line
+// numbers only, never source.
+type Diff struct {
+	Head
+	// Base and Commit are full commit shas.
+	Base   string `json:"base"`
+	Commit string `json:"commit"`
+	// Files are the changed files, by path.
+	Files []ChangedFile `json:"files"`
+}
+
 // ChangedFile is one file's changed line ranges in a diff.
 type ChangedFile struct {
 	// Path is repo-relative.

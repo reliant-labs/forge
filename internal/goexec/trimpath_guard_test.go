@@ -21,14 +21,21 @@ import (
 // "<repo-relative file>:<func>".
 var goflagsExempt = map[string]string{
 	// Fake shell programs on a private PATH: no go toolchain runs under it.
-	"internal/cli/generate_buf_preflight_test.go:preflightProject":                         "the env drives stub programs, never a go build",
-	"internal/cli/generate_buf_preflight_test.go:TestPreflightBufTemplate_Flags":           "a GOFLAGS value the preflight parses, never handed to go",
-	"internal/cli/ci_verify_scratch_test.go:TestVerifyScratch_FingerprintsLikeTheCheckout": "a stubbed environ the fingerprint reads, never handed to go",
-	"internal/cli/lint/contract_inprocess_test.go:TestAnalysisEnvKeepsTrimpath":            "inputs to analysisEnv, asserting it merges -trimpath; never handed to go",
-	"internal/kclprojects/gomod.go:downloadEnv":                                            "the env of `go mod download`, which fetches a module and builds nothing",
-	"internal/kclprojects/kclprojects_test.go:TestDownloadEnvLeavesTheModuleOut":           "inputs to downloadEnv, asserting it drops -mod; never handed to go",
-	// The dev loop's own binaries keep their paths (WithTrimpath: "not for everything").
-	"internal/hostlaunch/hostlaunch.go:WithPGO":   "the env of a go run / air binary a developer runs and debugs, which keeps absolute paths on purpose",
+	"internal/cli/generate_buf_preflight_test.go:preflightProject":                            "the env drives stub programs, never a go build",
+	"internal/cli/generate_buf_preflight_test.go:TestPreflightBufTemplate_Flags":              "a GOFLAGS value the preflight parses, never handed to go",
+	"internal/cli/ci_verify_scratch_test.go:TestVerifyScratch_FingerprintsLikeTheCheckout":    "a stubbed environ the fingerprint reads, never handed to go",
+	"internal/cli/lint/contract_inprocess_test.go:TestAnalysisEnvKeepsTrimpath":               "inputs to analysisEnv, asserting it merges -trimpath; never handed to go",
+	"internal/kclprojects/gomod.go:downloadEnv":                                               "the env of `go mod download`, which fetches a module and builds nothing",
+	"internal/kclprojects/kclprojects_test.go:TestDownloadEnvLeavesTheModuleOut":              "inputs to downloadEnv, asserting it drops -mod; never handed to go",
+	"internal/cli/build_variant_env_test.go:TestVariantBuildEnv_DeclaredEnvWinsInStableOrder": "inputs to variantBuildEnv, asserting where a declared GOFLAGS lands; never handed to go",
+	"internal/vulnpatch/gostdlib_test.go:TestRealToolchainEdit":                               "the env of `go mod edit -toolchain`, which rewrites go.mod and builds nothing",
+	// Pins, not overrides: the value is what `go env GOFLAGS` reported for this
+	// same environment, so a -trimpath the file layer sets is carried over, and
+	// adding one would change the user's own test run that a retry must repeat.
+	"internal/testretry/run.go:Run": "pins the effective GOFLAGS go itself reported (file layer included), so it drops nothing",
+	// -pgo=off for a go-run / air build whose GoBuild disables PGO; that
+	// build's -trimpath is declared in GoBuild.flags, on its command line.
+	"internal/hostlaunch/hostlaunch.go:WithPGO":   "a dev-loop build trims by its declared GoBuild.flags (command line), not GOFLAGS",
 	"internal/hostlaunch/pgo_test.go:TestWithPGO": "inputs to WithPGO, asserting it merges -pgo=off; never handed to go",
 }
 

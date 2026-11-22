@@ -220,7 +220,7 @@ func validateSnapshotFrontend(s release.Snapshot, f snapshotFrontend) error {
 func captureSnapshotFrontends(ctx context.Context, s *release.Snapshot, base *release.Snapshot, e *KCLEntities, projectDir, env string) error {
 	return captureSnapshotFrontendsWith(ctx, s, base, e, projectDir, env, renderFrontendRuntimeDocsWith)
 }
-func captureSnapshotFrontendsWith(_ context.Context, s *release.Snapshot, base *release.Snapshot, e *KCLEntities, projectDir, env string, render func(string, string, map[string]map[string]string) (map[string]string, error)) error {
+func captureSnapshotFrontendsWith(_ context.Context, s *release.Snapshot, base *release.Snapshot, e *KCLEntities, projectDir, env string, render func(string, string, map[string]map[string]any) (map[string]string, error)) error {
 	if s == nil {
 		return fmt.Errorf("missing frontend snapshot")
 	}

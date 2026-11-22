@@ -87,6 +87,60 @@ func TestFindChangedTests(t *testing.T) {
 	}
 }
 
+// Each changed line range is mapped onto the Test/Fuzz declaration it falls
+// in, from the parsed file: an edit inside a subtest whose hunk header names
+// something else (here a raw string's unindented line), and a pure deletion
+// inside a test body, still select that test. A helper edit selects nothing,
+// and an edit to TestMain selects every test of the package.
+func TestFindChangedTestsMapsLinesOntoDeclarations(t *testing.T) {
+	a := "package a\n\nimport \"testing\"\n\n" + // 1-4
+		"func helper() int { return 1 }\n\n" + // 5-6
+		"func TestOuter(t *testing.T) {\n" + // 7
+		"\tconst golden = `\n" + // 8
+		"unindented: yes\n" + // 9
+		"`\n" + // 10
+		"\tt.Run(\"sub\", func(t *testing.T) {\n" + // 11
+		"\t\tif helper() != 1 {\n" + // 12
+		"\t\t\tt.Fatal(golden)\n" + // 13
+		"\t\t}\n" + // 14
+		"\t})\n" + // 15
+		"}\n\n" + // 16-17
+		"func TestOther(t *testing.T) {\n" + // 18
+		"\t_ = helper()\n" + // 19
+		"}\n" // 20
+	b := "package b\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\n" + // 1-7
+		"func TestMain(m *testing.M) {\n" + // 8
+		"\tos.Exit(m.Run())\n" + // 9
+		"}\n\n" + // 10-11
+		"func TestB1(t *testing.T) {}\n\n" + // 12-13
+		"func FuzzB2(f *testing.F) {}\n" // 14
+	c := "package c\n\nimport \"testing\"\n\nfunc helper() {}\n\nfunc TestC(t *testing.T) {}\n"
+	root := newModule(t, map[string]string{"internal/a/a_test.go": a, "internal/b/b_test.go": b, "internal/c/c_test.go": c})
+	diffs := map[string]string{
+		// line 13, in TestOuter's subtest; git labels it with line 9.
+		"internal/a/a_test.go": "@@ -13 +13 @@ unindented: yes\n-\t\t\tt.Fatal(\"x\")\n+\t\t\tt.Fatal(golden)\n" +
+			// a deletion after line 19, inside TestOther.
+			"@@ -21 +19,0 @@ func TestOther(t *testing.T) {\n-\t_ = 2\n",
+		"internal/b/b_test.go": "@@ -9 +9 @@ func TestMain(m *testing.M) {\n-\tm.Run()\n+\tos.Exit(m.Run())\n",
+		"internal/c/c_test.go": "@@ -5 +5 @@ import \"testing\"\n-func helper() { _ = 1 }\n+func helper() {}\n",
+	}
+	got, err := FindChangedTests(context.Background(), ChangedOptions{
+		Root: root, Base: "origin/main",
+		Git:  fakeGit(root, "internal/a/a_test.go\ninternal/b/b_test.go\ninternal/c/c_test.go", diffs),
+		List: listOf(root, "internal/a", "internal/b", "internal/c"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pkgs []string
+	for _, p := range got.Packages {
+		pkgs = append(pkgs, p.Rel+"="+strings.Join(p.Names, ","))
+	}
+	if want := "internal/a=TestOther,TestOuter internal/b=FuzzB2,TestB1"; strings.Join(pkgs, " ") != want {
+		t.Errorf("packages = %v, want %s", pkgs, want)
+	}
+}
+
 func gateOpts(t *testing.T, root string, r *fakeRunner, git Git, list ListPackages) (GateOptions, *bytes.Buffer) {
 	out := &bytes.Buffer{}
 	clock := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
@@ -98,7 +152,7 @@ func gateOpts(t *testing.T, root string, r *fakeRunner, git Git, list ListPackag
 }
 
 func TestGateRunsChangedTestsThreeTimesAndRecordsTheRun(t *testing.T) {
-	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n"})
+	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n\nfunc TestNew(t *testing.T) {}\n"})
 	git := fakeGit(root, "internal/a/a_test.go", map[string]string{"internal/a/a_test.go": "+func TestNew(t *testing.T) {\n"})
 	pkg := testModule + "/internal/a"
 	r := &fakeRunner{script: func([]string) (string, int) {

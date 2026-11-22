@@ -12,7 +12,7 @@ A project with a database keeps sessions **server-side** (`forge/pkg/session`). 
 - **A copy of the table signs no one in.** Rows are keyed by a hash of the id, and the tokens are sealed (AES-GCM) under a second key derived from the id. There is no key to configure; the cost is that only a request carrying the cookie can use its tokens.
 - **The interceptor resolves the id** (`Authenticator.UseSessions` in `NewUserAuth`): the id becomes its access token, which `SetupAuth`'s validator checks like any bearer token. The claims carry `auth.CredentialSession`, and `claims.IsSession()` is how a handler tells a browser session from a bearer token or an API key.
 - **An outage is not a sign-out.** A store or issuer that cannot be reached answers 503 on `/auth/session` and an error on RPCs, and the session survives. While its access token is still valid it keeps working.
-- **For an account page**, `(*session.Manager).List(ctx, subject)` lists a person's sessions, `RevokeHandle` signs one out, `RevokeSubject` signs out all of them, and `Info(ctx, id).ProvedAt` says when a credential was last proved.
+- **For an account page**, `(*session.Manager).List(ctx, subject)` lists a person's sessions, `RevokeHandle` signs one out, `RevokeSubject` signs out all of them, and `Info(ctx, id).ProvedAt` says when a credential was last proved. `RevokeOthers` signs out every session but one. The broker serves all of it as account settings routes: `auth/account`.
 
 A project with no database, or a `providers.go` scaffolded before this, keeps the older shape: the cookie holds the access token and ends when it expires. `RegisterLoginBroker`'s sessions are an option (`WithSessions`), so both shapes compile.
 

@@ -15,9 +15,11 @@ import (
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
-// The --upload values. A bare --upload is uploadOn.
+// The --upload values. A bare --upload is uploadOn; no flag at all is
+// uploadAuto, where forge.yaml's tests.upload decides (on in CI by default).
 const (
-	uploadOff      = ""
+	uploadAuto     = ""
+	uploadOff      = "off"
 	uploadOn       = "on"
 	uploadRequired = "required"
 )
@@ -94,6 +96,14 @@ Exit codes (coverage never decides one):
      skipped (verify-test-run's zero-evidence rule), or runs from different trees
   4  --upload=required and the report could not be uploaded
 
+Upload records each clean-tree lane run on the project's control plane: its
+results file, its coverage (repo paths, git blob ids and counts, never
+source) and the diff's changed lines. It is on in CI, never for a dirty tree,
+and on a clean local tree only with --upload or forge.yaml's
+tests.upload: always (tests.upload: never turns it off). A control plane that
+does not record test runs yet, or an upload that fails, is one line on stderr
+and changes no exit code, unless --upload=required.
+
 --gate-json writes the same gate document ` + "`forge ci verify-test-run --gate-json`" + `
 writes, with its zero-evidence and mass-skip checks, so a deploy's tests gate
 keeps its meaning.`,
@@ -113,7 +123,7 @@ keeps its meaning.`,
 	cmd.Flags().StringVar(&o.gateJSON, "gate-json", "", "Also write the verdict to `FILE` as a gate document (verify-test-run's shape), for `forge gate record` or `forge env deploy --gate`")
 	cmd.Flags().StringVar(&o.format, "format", "text", "Output: text, json (forge.test.report/v1), lcov, cobertura or html")
 	cmd.Flags().BoolVar(&o.asJSON, "json", false, "Same as --format json")
-	cmd.Flags().Var(uploadFlag{&o.upload}, "upload", "Upload the report to the control plane (--upload=required: exit 4 when it cannot be uploaded)")
+	cmd.Flags().Var(uploadFlag{&o.upload}, "upload", "Record the report's clean-tree lane runs on the control plane (default: in CI, or with tests.upload: always; --upload=required: exit 4 when they cannot be recorded; --upload=false: never)")
 	cmd.Flags().Lookup("upload").NoOptDefVal = "true"
 	return cmd
 }
@@ -195,18 +205,13 @@ func runTestReport(cmd *cobra.Command, o testReportOptions) error {
 		rep.Error = fmt.Sprintf("zero evidence: every test skipped in %s, so its pass proves nothing", strings.Join(zero, ", "))
 		rep.OK = false
 	}
-	if o.upload != uploadOff {
-		// There is no control plane to send it to yet. Say so once,
-		// and keep the run's own verdict unless the caller required it.
-		rep.Upload = &testreport.Upload{Status: "skipped", Error: "no control plane records test runs yet; the report stays local"}
-		fmt.Fprintln(errOut, "forge test report: --upload: no control plane records test runs yet; the report stays in .forge/tests/")
-		if o.upload == uploadRequired && rep.ExitCode != exitWrong {
-			rep.ExitCode = exitRefused
-			rep.Error = "upload required, and no control plane records test runs yet"
-			rep.OK = false
-		}
+	if err := applyTestUpload(ctx, errOut, rep, o.upload, testUploadInput{root: root, runs: runs, a: a}); err != nil {
+		return err
 	}
 	rep.Suggested = reportSuggestions(rep, a, o)
+	// A release on this machine's ledger cut at this commit gets the test
+	// evidence it lacks (release_tests_evidence.go). Report-only.
+	backfillReleaseTests(ctx, root, rep.Commit, rep.Dirty, errOut)
 
 	if o.gateJSON != "" {
 		if err := writeTestRunGate(o.gateJSON, an, started); err != nil {

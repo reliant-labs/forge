@@ -289,6 +289,7 @@ func TestWithHostCover(t *testing.T) {
 				t.Errorf("go-run argv %v lacks the cover flags", cmd.Args)
 			}
 		case "air":
+			env, _ = hostlaunch.WithGoBuildFlags(spec, env)
 			if !slices.Contains(env, "FORGE_GO_BUILD_FLAGS=-cover -covermode=atomic -coverpkg=./internal/...") {
 				t.Errorf("air env %v lacks FORGE_GO_BUILD_FLAGS", env)
 			}
@@ -338,7 +339,7 @@ func TestCoverBuildFlags_RealBuild(t *testing.T) {
 	bin := filepath.Join(dir, "shop")
 	build := exec.Command("go", append(append([]string{"build"}, flags...), "-o", bin, "./cmd/shop")...)
 	build.Dir = dir
-	build.Env = goexec.Env("GOFLAGS=-mod=mod", "GOWORK=off")
+	build.Env = goexec.WithTrimpath(goexec.Env("GOFLAGS=-mod=mod", "GOWORK=off"))
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build %v: %v\n%s", flags, err, out)
 	}

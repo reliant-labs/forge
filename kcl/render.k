@@ -988,6 +988,15 @@ _profiling_env = lambda w: any, env: {str:} -> {str:str} {
         | ({FORGE_PROFILES_HEAP_INTERVAL = _p.heap_interval} if _p and not _env_set(env, "FORGE_PROFILES_HEAP_INTERVAL") else {})
 }
 
+# FORGE_OBSERVE_RESOURCE_METRICS for w: its own `resource_metrics`, else the
+# env's ObservabilitySignals.resource_metrics, else nothing (the runtime's
+# "auto"). Never over the workload's own env.
+_resource_metrics_env = lambda w: any, b: Bundle, env: {str:} -> {str:str} {
+    _env_mode = b.observability.signals.resource_metrics if b.observability and b.observability.signals else ""
+    _mode = w.resource_metrics if w.resource_metrics else _env_mode
+    {FORGE_OBSERVE_RESOURCE_METRICS = _mode} if _mode and not _env_set(env, "FORGE_OBSERVE_RESOURCE_METRICS") else {}
+}
+
 # A project-relative path the one way the PGO rules compare it: surrounding
 # space trimmed, empty and `.` segments dropped ("./", "." and "" are the
 # root; "./Dockerfile" is "Dockerfile"); an absolute path as it is.
@@ -1055,6 +1064,7 @@ _derived_env = lambda w: any, rt: any, bundle: Bundle -> {str:} {
         | (_obs_env(rt, bundle, _set) if _runs else {}) \
         | _tel \
         | (_profiling_env(w, _env) if _runs else {}) \
+        | (_resource_metrics_env(w, bundle, _env) if _runs else {}) \
         | (_pgo_env(w, bundle, _env) if _runs else {}) \
         | ({OTEL_EXPORTER_OTLP_HEADERS_FILE = CONTROL_PLANE_OTLP_DIR + "/" + CONTROL_PLANE_OTLP_FILE} if _cps_wires(w, rt, bundle) else {}) \
         | ({GOMEMLIMIT = _gml} if _gml else {})
@@ -1268,6 +1278,11 @@ _idn_bundle_errors_of = lambda l: str, id: any, workloads: [any], infra: [any], 
         # workload is handed it.
         [len(_readers) == 0, \
             "${_readers} read a secret that ${l}.social names as an OAuth client secret. Only the identity reconciler reads it (it is stored in the identity provider), so drop it from the workload's env"]
+        # pass_tokens is dev-only until the hosted control plane carries it
+        # into the login policy it delivers: on a hosted instance the hook
+        # would silently never run.
+        [True if _idn_rt(id) != "hosted" or all s in id.social { not s.pass_tokens } else False, \
+            "${l}.social ${[s.type for s in id.social if s.pass_tokens]} set pass_tokens, which works only on forge.IdentityOnHost for now: the hosted control plane does not yet deliver it to the login broker, so the upstream-tokens hook would never run. Drop pass_tokens from this env"]
         [True if not id.share_with or id.share_with != env else False, \
             "${l}.share_with '${id.share_with}' is this env itself: share_with names ANOTHER env of the same project that owns the instance"]
         [len(_bad_apps) == 0, \
@@ -1638,6 +1653,9 @@ _render_identity = lambda b: Bundle, _id: any -> any {
                 "client_id_secret": s.client_id.name if typeof(s.client_id) != "str" else None
                 "client_secret_secret": s.client_secret.name
                 "scopes": s.scopes
+                # Only when on, so a shape without it is unchanged.
+                if s.pass_tokens:
+                    "pass_tokens": True
             } for s in _id.social]
         if _id.email:
             "email": {
@@ -2726,12 +2744,19 @@ _tel_otlp = lambda t: Telemetry, svc: str, rt: str, b: Bundle -> any {
     } if _o else None
 }
 
-_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle -> any {
+# origin is "default" for a target forge renders with no declaration of the
+# project's (a ManagedDatabase's default and its operator's): collected like
+# any other, but a deploy does not warn that it goes uncollected on a control
+# plane that does not collect hosted telemetry yet (pkg/telemetry
+# OriginDefault). Absent for a declared target.
+_tel_target = lambda t: Telemetry, svc: str, source: str, attachment: str, rt: str, cluster: str, namespaces: [str], selector: {str:str}, address: str, ports: {str:int}, b: Bundle, origin: str = "" -> any {
     {
         "service_name": svc
         "scope": t.scope
         "source": source
         "attachment": attachment
+        if origin:
+            "origin": origin
         "runtime": rt
         "cluster": cluster
         "namespaces": namespaces
@@ -2833,7 +2858,7 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
     _tel_target(t, t.service_name or managed_database_service_name(db.name), "manageddatabase:${db.name}", "manageddatabase", _p.runtime, \
         "" if _hosted else (_p.cluster or ""), \
         [_p.namespace] if not _hosted and _p.namespace else [], \
-        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b)
+        {"cnpg.io/cluster": db.name}, "", MANAGED_DATABASE_PORTS, b, "" if db.telemetry else "default")
 }
 
 # Every Telemetry the env declares, beside its resolved service name:
@@ -2860,7 +2885,7 @@ _tel_cnpg_operators = lambda b: Bundle -> [any] {
         "svc": CNPG_OPERATOR_SERVICE if len(_clusters) == 1 else CNPG_OPERATOR_SERVICE + "-" + regex.replace(c.lower(), r"[^-a-z0-9_.]", "-").strip("-_.")
     } for c in _clusters]
     [_tel_target(cnpg_operator_telemetry(o.cluster, o.svc, _tel_ships(b, "metrics"), _tel_ships(b, "logs")), o.svc, "manageddatabase-operator:${o.cluster}", "manageddatabase", "cluster", \
-        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b) for o in _named if o.svc not in _taken]
+        o.cluster, [], {"app.kubernetes.io/name": "cloudnative-pg"}, "", {}, b, "default") for o in _named if o.svc not in _taken]
 }
 
 _render_telemetry = lambda b: Bundle -> [any] {
@@ -3659,6 +3684,41 @@ _runtime_config_resolved = lambda f: Frontend, bundle: Bundle -> {str:str} {
         {k: (v if typeof(v) == "str" else _require_workload_url(v.name, "Frontend '" + f.name + "'.runtime_config." + k, bundle)) for k, v in _runtime_config_declared(f, bundle)}
 }
 
+# The workload a Frontend.apis entry names: a string is the name itself.
+_api_target = lambda v: str | WorkloadURL -> str {
+    v if typeof(v) == "str" else v.name
+}
+
+# A frontend's named same-origin APIs as {name: workload}, every target
+# checked against THE TRUST RULE (kcl/schema.k Frontend.apis): a workload
+# this env's Bundle declares — not a frontend, not infra, never a URL — and,
+# for an OnHosted frontend, one the platform runs, since it is the platform
+# that routes /_api/@<name> to it.
+_frontend_apis = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    assert not f.apis or f.type in ["nextjs", "vite"], \
+        "Frontend '${f.name}'.apis: named same-origin APIs are paths on the page's own origin, and a ${f.type} frontend has no page origin. Give it the backends' URLs in its config instead"
+    _workloads = [w.name for w in bundle.workloads]
+    _bad = [k + " -> " + _api_target(v) for k, v in f.apis if _api_target(v) not in _workloads]
+    assert len(_bad) == 0, \
+        "Frontend '${f.name}'.apis names a workload this environment does not declare: " + ", ".join(_bad) \
+        + ". The session cookie reaches every named API, so each must be a workload of this env's Bundle (declared: " \
+        + ", ".join(_workloads) + "). Call a backend elsewhere by a literal URL in runtime_config instead."
+    {k: (_require_hosted_url_target(_api_target(v), "Frontend '" + f.name + "'.apis." + k, bundle) if _frontend_hosted(f) else _api_target(v)) for k, v in f.apis}
+}
+
+# A frontend's named APIs RESOLVED to each workload's own URL, for the
+# config.js forge writes itself. Empty for an OnHosted frontend (the control
+# plane writes `/_api/@<name>`). A dev server (OnHost) proxies the
+# same-origin paths, so its URLs are best effort: `forge env up` resolves
+# each upstream again after it assigns undeclared host ports.
+_frontend_api_urls = lambda f: Frontend, bundle: Bundle -> {str:str} {
+    _apis = _frontend_apis(f, bundle)
+    _where = lambda k: str -> str { "Frontend '" + f.name + "'.apis." + k }
+    _dev = {k: wurl_lib.resolve(w, bundle, "localhost") for k, w in _apis} if f.runtime.type == "host" else {}
+    {} if _frontend_hosted(f) else \
+        ({k: u for k, u in _dev if u} if f.runtime.type == "host" else {k: _require_workload_url(w, _where(k), bundle) for k, w in _apis})
+}
+
 # output.frontends[].runtime: {type, ...} — the dispatch key. Only the
 # fields the runtime's consumer reads; optional ones project as null.
 _render_frontend_runtime = lambda rt: any -> any {
@@ -3690,6 +3750,10 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
     # entries after it, so the "bundle" key would shadow the Bundle.
     _rc = _runtime_config_resolved(f, bundle)
     _rc_spec = _runtime_config_spec(f, bundle)
+    # Named same-origin APIs (Frontend.apis): rendered only when declared,
+    # so every other frontend renders byte-identically.
+    _apis = _frontend_apis(f, bundle)
+    _api_urls = _frontend_api_urls(f, bundle)
     {
         "name": f.name
         if f.release_dependencies is not Undefined:
@@ -3721,7 +3785,8 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         # as the StaticSite spec's runtimeConfig.
         "runtime_config": _rc
         "runtime_config_spec": _rc_spec
-    } | ({"routes": f.routes} if f.routes else {}) \
+    } | ({"apis": _apis, "api_urls": _api_urls} if f.apis else {}) \
+      | ({"routes": f.routes} if f.routes else {}) \
       | ({"telemetry": _render_browser_telemetry(f.telemetry)} if f.telemetry else {}) \
       | ({"sourcemaps": f.telemetry.sourcemaps} if f.telemetry and f.telemetry.sourcemaps != "publish" else {})
 }

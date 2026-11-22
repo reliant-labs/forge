@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
+	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/shellrun"
 )
 
@@ -29,6 +32,8 @@ func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 	switch name {
 	case "pre-zod4-forms":
 		return projectHasPreZod4Frontend, true
+	case "pgo-refresh-due":
+		return projectMayGetPGORefresh, true
 	}
 	return nil, false
 }
@@ -53,6 +58,33 @@ func migrationDetectionCommands() map[string]shellrun.CommandFunc {
 		return 1
 	}
 	return cmds
+}
+
+// projectMayGetPGORefresh reports whether .github/workflows/pgo-refresh.yml
+// is, or may still become, the project's — what the v1.11.0 pgo-default-on
+// playbook explains. It is not when forge.yaml declines it (ci.workflows,
+// ci.provider, features.ci, a non-service kind), when the user deleted it
+// (the birth ledger records it) or disowned it, when the project refreshes
+// its profiles in a workflow of its own (generator.PGORefreshDeclaredElsewhere),
+// or when no cmd/<bin> holds a Go file. Which env builds which binary takes a
+// KCL render, which a detection does not pay for: `forge generate` renders,
+// and writes the file only where a hosted env builds a Go binary. A forge.yaml
+// that does not load leaves the decision to the file checks.
+func projectMayGetPGORefresh(projectRoot string) bool {
+	if cfg, err := config.LoadProjectDir(projectRoot); err == nil && cfg != nil {
+		if !cfg.Features.CIEnabled() || !cfg.IsServiceKind() || cfg.CI.EffectiveProvider() != config.CIProviderGitHub || !cfg.CI.WorkflowEnabled("pgo-refresh") {
+			return false
+		}
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, filepath.FromSlash(generator.PGORefreshPath))); err != nil &&
+		!checksums.ScaffoldMayBeBorn(projectRoot, generator.PGORefreshPath) {
+		return false
+	}
+	if generator.PGORefreshDeclaredElsewhere(projectRoot) != "" {
+		return false
+	}
+	gofiles, _ := filepath.Glob(filepath.Join(projectRoot, "cmd", "*", "*.go"))
+	return len(gofiles) > 0
 }
 
 // projectHasPreZod4Frontend reports whether any frontend of the project

@@ -108,7 +108,7 @@ func MigrateWorkloadStanza(modulePath, projectName string) string {
 	fmt.Fprintf(&b, "    name = %q\n", MigrateWorkloadName)
 	fmt.Fprintf(&b, "    kind = %q\n", WorkloadKindJob)
 	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
-	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
+	writeBuild(&b, projectGoBuild(projectName))
 	fmt.Fprintf(&b, "    args = %s\n", kclStringList(MigrateArgs()))
 	b.WriteString("    before = [fw.BEFORE_ALL]\n")
 	b.WriteString("    config_secrets = [\"DATABASE_URL\"]\n")
@@ -183,8 +183,33 @@ func githubOwnerFromModulePath(modulePath string) string {
 	return rest[:slash]
 }
 
+// goBuild is a scaffolded GoBuild literal. It declares -trimpath in its
+// flags, which every go build forge runs from it carries (`forge build`, the
+// go-run and air dev loop, build variants): without it Go keys each package
+// on its absolute directory, so every worktree of the project compiles its
+// own copy of the module into the build cache. It stays on one line, the
+// shape the KCL scanners read (kclmigrate's buildFieldRe); goBuildComment
+// explains the flag on the lines above it.
 func goBuild(cmd, outputName string) string {
-	return fmt.Sprintf("forge.GoBuild {cmd = %q, output_name = %q}", cmd, outputName)
+	return fmt.Sprintf("forge.GoBuild {cmd = %q, output_name = %q, flags = [%q]}", cmd, outputName, TrimpathFlag)
+}
+
+// TrimpathFlag is the build flag a scaffolded GoBuild declares.
+const TrimpathFlag = "-trimpath"
+
+// goBuildComment is written above every scaffolded `build = forge.GoBuild
+// {…}` line, at the field's indentation, so the flag it declares says why
+// and how to opt out where it is declared.
+const goBuildComment = "" +
+	"    # flags: -trimpath lets every worktree share Go's build cache; forge build,\n" +
+	"    # go run and air all pass it, and debug builds stay untrimmed. To keep\n" +
+	"    # absolute source paths, remove it or add \"-trimpath=false\" after it.\n"
+
+// writeBuild writes a workload literal's `build = <build>` field with
+// goBuildComment above it.
+func writeBuild(b *strings.Builder, build string) {
+	b.WriteString(goBuildComment)
+	fmt.Fprintf(b, "    build = %s\n", build)
 }
 
 // ProjectBinaryRuns reports whether a workload declared with build command
@@ -256,9 +281,9 @@ func WorkloadStanza(modulePath, projectName string, c config.ComponentConfig) st
 	// callers never declare one (RunByGraphRoot).
 	if c.EffectiveKind() == config.ComponentKindBinary {
 		binPkg := naming.ServicePackage(c.Name)
-		fmt.Fprintf(&b, "    build = %s\n", goBuild("./cmd/"+binPkg, binPkg))
+		writeBuild(&b, goBuild("./cmd/"+binPkg, binPkg))
 	} else {
-		fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
+		writeBuild(&b, projectGoBuild(projectName))
 		fmt.Fprintf(&b, "    args = %s\n", kclStringList([]string{componentSubcommand(c)}))
 	}
 	if kind == WorkloadKindOperator {

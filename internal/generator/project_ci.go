@@ -73,7 +73,7 @@ func (g *ProjectGenerator) generateCIFiles() error {
 	// `forge generate` discovers the same fact from the render (ciInputs); a
 	// project being born has no generated config to render with yet, so the
 	// scaffold states what it just wrote.
-	in := CIInputs{Frontends: frontends, HostedEnvs: g.hostedEnvs}
+	in := CIInputs{Frontends: frontends, HostedEnvs: g.hostedEnvs, PGOEnvs: g.pgoEnvs}
 	for _, f := range CIWorkflowsFor(g.Path, cfg, in) {
 		content, err := f.Render()
 		if err != nil {

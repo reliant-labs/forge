@@ -25,6 +25,20 @@ func TestParseQuarantineTarget(t *testing.T) {
 		{in: "github.com/other/mod/x:TestX", err: "not in module"},
 		{in: "../escape:TestX", err: "outside the module"},
 		{in: "TestNoPackage", err: "want go:"},
+		// Every spelling of the package is reduced to its module-relative
+		// directory, cleaned, and refused when it climbs out of the module
+		// (and so the entry's file out of ci/quarantine/go/).
+		{in: "go:example.com/m/pkg/../../../outside:TestX", err: "outside the module"},
+		{in: "go:example.com/m/../../../../victim:TestX", err: "outside the module"},
+		{in: "example.com/m/..:TestX", err: "outside the module"},
+		{in: "./a/../../victim:TestX", err: "outside the module"},
+		{in: "a/../../victim:TestX", err: "outside the module"},
+		{in: "/etc/victim:TestX", err: "absolute path"},
+		{in: "example.com/m/./x:TestX", pkg: "example.com/m/x", name: "TestX"},
+		{in: "go:example.com/m/a/../b:TestX", pkg: "example.com/m/b", name: "TestX"},
+		{in: "example.com/m/a/..:TestX", pkg: "example.com/m", name: "TestX"},
+		{in: "example.com/m//x:TestX", err: "not a directory inside the module"},
+		{in: `./internal\x:TestX`, err: "not a directory inside the module"},
 	}
 	for _, c := range cases {
 		id, err := ParseQuarantineTarget(c.in, testModule)
@@ -41,6 +55,52 @@ func TestParseQuarantineTarget(t *testing.T) {
 		if id.Lang != testreport.LangGo || id.Package != c.pkg || id.Name != c.name {
 			t.Errorf("%s: got %+v", c.in, id)
 		}
+	}
+}
+
+// EntryPath never names a file outside ci/quarantine/go/, whatever id it is
+// handed: QuarantineAdd and QuarantineRemove join it to the project root.
+func TestEntryPathStaysInTheQuarantineDir(t *testing.T) {
+	bad := []testreport.TestID{
+		{Lang: testreport.LangGo, Package: testModule + "/../../outside", Name: "TestX"},
+		{Lang: testreport.LangGo, Package: testModule + "/a/../../b", Name: "TestX"},
+		{Lang: testreport.LangGo, Package: testModule + "/x", Name: "TestX/../../../../outside"},
+		{Lang: testreport.LangGo, Package: testModule + "/x", Name: ".."},
+		{Lang: testreport.LangGo, Package: testModule + "/x", Name: `TestX\..\y`},
+		{Lang: testreport.Lang("../../x"), Package: testModule + "/x", Name: "TestX"},
+	}
+	for _, id := range bad {
+		if p, err := EntryPath(id, testModule); err == nil {
+			t.Errorf("%+v: path %q, want refused", id, p)
+		}
+	}
+	root := newModule(t, nil)
+	e := Entry{Lang: testreport.LangGo, Package: testModule + "/../../outside", Test: "TestX"}
+	if _, err := QuarantineAdd(root, testModule, e, false); err == nil {
+		t.Fatal("QuarantineAdd wrote an entry outside ci/quarantine")
+	}
+	// Module-qualified traversal, through add and remove, never touches a
+	// file outside ci/quarantine/go/: a victim where the escape would land
+	// stays as it was, and nothing is created beside it.
+	victim := filepath.Join(root, "victim", "TestX.yaml")
+	write(t, victim, "keep me\n")
+	for _, id := range []testreport.TestID{
+		{Lang: testreport.LangGo, Package: testModule + "/../../../../victim", Name: "TestX"},
+		{Lang: testreport.LangGo, Package: testModule + "/x/../../../../victim", Name: "TestX"},
+	} {
+		if _, err := QuarantineAdd(root, testModule, Entry{Lang: id.Lang, Package: id.Package, Test: id.Name}, true); err == nil {
+			t.Errorf("add %s: want refused", id)
+		}
+		if _, err := QuarantineRemove(root, testModule, id); err == nil {
+			t.Errorf("remove %s: want refused", id)
+		}
+	}
+	if data, err := os.ReadFile(victim); err != nil || string(data) != "keep me\n" {
+		t.Errorf("the file outside ci/quarantine changed: %q %v", data, err)
+	}
+	p, err := EntryPath(testreport.TestID{Lang: testreport.LangGo, Package: testModule + "/internal/a", Name: "TestA"}, testModule)
+	if err != nil || p != "ci/quarantine/go/internal/a/TestA.yaml" {
+		t.Errorf("path = %q, %v", p, err)
 	}
 }
 

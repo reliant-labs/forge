@@ -689,6 +689,23 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter-ter. CRUD-ownership — a table served by forge-generated
+		// CRUD on an authenticated rpc must say whose rows it holds
+		// (forge:owner=), or why nobody owns them (forge:public /
+		// forge:unscoped with a reason). Gates through the warn-first
+		// rollout (lint_crud_ownership.go). Reads migration text and the
+		// generated ops files, so it needs no shadow postgres.
+		{
+			name:      "crud-ownership lint",
+			gates:     true,
+			scope:     scopeByFile,
+			shouldRun: crudOwnershipShouldRun,
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectCRUDOwnershipJSON(rc.cwd, rc.cfg)
+				return fs, len(fs) > 0, err
+			},
+		},
+
 		// 13d-quinquies. ShellBuild-tokens — flags a retired forge
 		// substitution token (${TARGETARCH}, ${IMAGE}, …) left in a
 		// ShellBuild cmd. GATES, unlike its advisory neighbours, because
@@ -762,6 +779,27 @@ func lintPipeline() []linterStep {
 			},
 			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
 				return collectTestWaitsJSON(rc.cwd)
+			},
+		},
+
+		// 13d-ter-ter. Caller paths — Go code that builds a filesystem path
+		// from the source file runtime.Caller reports, which -trimpath
+		// (forge's default build mode) makes module-relative: found by an
+		// untrimmed run, missing in a trimmed one. Syntactic, a parse per
+		// file that mentions runtime.Caller, so it runs in the full sweep.
+		// GATES, through the warn-first rollout (lint_caller_paths.go).
+		{
+			name:  "caller-paths lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg != nil && !rc.cfg.HasGoModule() {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectCallerPathsJSON(rc.cwd)
 			},
 		},
 

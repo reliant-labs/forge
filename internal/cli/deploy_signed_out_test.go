@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +54,10 @@ func TestSignedOutDeploy_NamesTheNoAccountDeploy(t *testing.T) {
 
 	declared := signedOutStaticSite()
 	declared.ControlPlane.Claimable = true
+	declaredHint := `env "prod" is declared for an anonymous deploy (control_plane = forge.ControlPlane {claimable = True}): ` +
+		"deploy it with " + claimable + " (a live URL plus a 72-hour claim link for your user)"
+	declaredTooBig := &KCLEntities{ControlPlane: &ControlPlaneEntity{Claimable: true},
+		Workloads: []WorkloadEntity{signedOutService("a"), signedOutService("b")}}
 	twoServices := &KCLEntities{ControlPlane: &ControlPlaneEntity{},
 		Workloads: []WorkloadEntity{signedOutService("a"), signedOutService("b")}}
 	cluster := signedOutStaticSite()
@@ -61,16 +66,19 @@ func TestSignedOutDeploy_NamesTheNoAccountDeploy(t *testing.T) {
 	cases := []struct {
 		name     string
 		e        *KCLEntities
-		wantHint bool
+		wantHint string // "" when no line names the no-account deploy
 		wantNext []string
 	}{
-		{"one static site", signedOutStaticSite(), true, []string{claimable, login}},
+		{"one static site", signedOutStaticSite(), hint, []string{claimable, login}},
 		{"one service", &KCLEntities{ControlPlane: &ControlPlaneEntity{},
-			Workloads: []WorkloadEntity{signedOutService("api")}}, true, []string{claimable, login}},
-		{"declared claimable: signing in moves nothing", declared, true, []string{claimable}},
-		{"two services do not fit", twoServices, false, []string{login}},
-		{"a part applied from this machine", cluster, false, []string{login}},
-		{"no render", nil, false, []string{login}},
+			Workloads: []WorkloadEntity{signedOutService("api")}}, hint, []string{claimable, login}},
+		{"declared claimable: signing in moves nothing", declared, declaredHint, []string{claimable}},
+		// Signing in is refused for a declared env whatever its shape, so
+		// --claimable stays the one action; it says what does not fit.
+		{"declared claimable, over the plan", declaredTooBig, declaredHint, []string{claimable}},
+		{"two services do not fit", twoServices, "", []string{login}},
+		{"a part applied from this machine", cluster, "", []string{login}},
+		{"no render", nil, "", []string{login}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,8 +87,12 @@ func TestSignedOutDeploy_NamesTheNoAccountDeploy(t *testing.T) {
 			if strings.Contains(msg, cloud.NoAccountHint) {
 				t.Errorf("the generic no-account line survived:\n%s", msg)
 			}
-			if got := strings.HasSuffix(msg, "\n"+hint); got != tc.wantHint {
-				t.Errorf("ends in the no-account line = %v, want %v:\n%s", got, tc.wantHint, msg)
+			if tc.wantHint == "" {
+				if strings.Contains(msg, "--claimable") {
+					t.Errorf("names --claimable for an env that cannot deploy that way:\n%s", msg)
+				}
+			} else if !strings.HasSuffix(msg, "\n"+tc.wantHint) {
+				t.Errorf("does not end in %q:\n%s", tc.wantHint, msg)
 			}
 			if !strings.HasPrefix(msg, "no control-plane credential for https://cp.example.com\n") {
 				t.Errorf("the resolver's own text was not kept:\n%s", msg)
@@ -112,6 +124,47 @@ func TestSignedOutDeploy_NamesTheNoAccountDeploy(t *testing.T) {
 				if got.Error != msg {
 					t.Errorf("%s: error = %q, want the text output's %q", name, got.Error, msg)
 				}
+			}
+		})
+	}
+}
+
+// TestRunHostedDeploy_SignedOutNamesTheNoAccountDeploy: the hosted publish
+// stage's own credential site (runHostedDeploy) words a missing credential
+// through signedOutDeploy for every env, a declared-claimable one included —
+// it once returned its own sentence there, with no next_actions.
+func TestRunHostedDeploy_SignedOutNamesTheNoAccountDeploy(t *testing.T) {
+	isolatedCredentials(t)
+	t.Setenv(cloudcred.HelperEnv, "")
+	stubShapeManifests(t, "")
+	claimable := fmt.Sprintf("%s env deploy prod --claimable", Name())
+
+	for _, tc := range []struct {
+		name     string
+		declared bool
+		wantNext []string
+		wantLine string
+	}{
+		{"declared claimable", true, []string{claimable},
+			"is declared for an anonymous deploy (control_plane = forge.ControlPlane {claimable = True}): deploy it with " + claimable},
+		{"undeclared env that fits the plan", false, []string{claimable, loginThenDeploy("prod")},
+			"or deploy with no account: " + claimable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			site := signedOutStaticSite()
+			site.ControlPlane = &ControlPlaneEntity{Type: "control_plane", Endpoint: "https://cp.invalid", Claimable: tc.declared}
+			var err error
+			captureStdout(t, func() { err = runHostedDeploy(context.Background(), "prod", site, hostedGroupOf(), deployOptions{}) })
+			if !errors.Is(err, cloud.ErrNoCredential) {
+				t.Fatalf("runHostedDeploy = %v; want it to stop at the missing credential", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantLine) {
+				t.Errorf("error does not carry %q:\n%s", tc.wantLine, err)
+			}
+			facts := errorFactsOf(err)
+			if facts.ErrorReason != ReasonNoControlPlaneCredential || !slices.Equal(facts.NextActions, tc.wantNext) {
+				t.Errorf("error_reason %q, next_actions %q; want %q, %q",
+					facts.ErrorReason, facts.NextActions, ReasonNoControlPlaneCredential, tc.wantNext)
 			}
 		})
 	}

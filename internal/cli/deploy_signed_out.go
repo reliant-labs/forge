@@ -58,21 +58,27 @@ func signedOutDeploy(env string, e *KCLEntities, err error) error {
 	if err == nil || errors.As(err, &already) || errorFactsOf(err).ErrorReason != ReasonNoControlPlaneCredential {
 		return err
 	}
+	claimable := fmt.Sprintf("%s env deploy %s --claimable", Name(), env)
+	if declaresClaimable(e) {
+		// The env declares itself anonymous: a signed-in deploy of it is
+		// refused (refuseClaimableEnvSignedIn), so signing in moves nothing
+		// and --claimable is the one way forward whatever the shape —
+		// `--claimable` itself says what does not fit the plan.
+		return &signedOutDeployError{
+			err: err,
+			hint: fmt.Sprintf("env %q is declared for an anonymous deploy (control_plane = forge.ControlPlane {claimable = True}): "+
+				"deploy it with %s (a live URL plus a 72-hour claim link for your user)", env, claimable),
+			next: []string{claimable},
+		}
+	}
 	login := loginThenDeploy(env)
 	if !claimableCouldDeploy(env, e) {
 		return &signedOutDeployError{err: err, next: []string{login}}
 	}
-	claimable := fmt.Sprintf("%s env deploy %s --claimable", Name(), env)
-	next := []string{claimable, login}
-	if declaresClaimable(e) {
-		// The env declares itself anonymous: a signed-in deploy of it is
-		// refused (refuseClaimableEnvSignedIn), so signing in moves nothing.
-		next = []string{claimable}
-	}
 	return &signedOutDeployError{
 		err:  err,
 		hint: fmt.Sprintf("or deploy with no account: %s (a live URL plus a 72-hour claim link for your user)", claimable),
-		next: next,
+		next: []string{claimable, login},
 	}
 }
 

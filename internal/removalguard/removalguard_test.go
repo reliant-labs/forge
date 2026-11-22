@@ -372,6 +372,25 @@ var removals = []removal{
 				},
 			},
 			{
+				Name: "the sign-in handoff's authorization endpoint",
+				Reason: "`HandoffAuthorizePath` (GET /auth/handoff/authorize) is the sign-in handoff's " +
+					"counterpart of the OAuth 2.0 authorization endpoint above: the consent page reads " +
+					"the pending handoff from it before the signed-in person approves a NEW session for a " +
+					"desktop app or sibling host (PKCE one-time codes). That is authentication — handing a " +
+					"proven identity on — not a policy hook deciding what a caller may do.\n" +
+					"Scoped by token to that one route constant and by path to the handoff's own files " +
+					"(pkg/devidp's handoff, the scaffolded broker that mounts it, its template test and " +
+					"skill), so an `AuthorizeHook` or a role check in these files still fails.",
+				Token: regexp.MustCompile(`\bHandoffAuthorizePath\b`),
+				Paths: []string{
+					"pkg/devidp/handoff.go",
+					"pkg/devidp/handoff_test.go",
+					"internal/templates/project/app-login-broker.go.tmpl",
+					"internal/templates/login_broker_handoff_test.go",
+					"internal/templates/project/skills/forge/auth/handoff/SKILL.md",
+				},
+			},
+			{
 				Name:   "AuthN/AuthZ as security-review vocabulary",
 				Reason: "The generic code-review skill teaches reviewers to look for MISSING authorization in the user's application — which owns that policy now — under the standard AuthN/AuthZ shorthand. The removed forge feature was always spelled `authz` (package and identifier), never `AuthZ`.",
 				Token:  regexp.MustCompile(`AuthZ`),
@@ -2997,6 +3016,9 @@ func TestExternalProtocolAndReplacementAllowancesStayNarrow(t *testing.T) {
 		{"tenancy", "internal/templates/project/skills/forge/db/SKILL.md", "X-Tenant-Id: acme", true},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "Kubernetes RBAC", false},
 		{"authorization", "internal/templates/project/skills/forge/deploy/openbao/SKILL.md", "AuthorizeHook", true},
+		{"authorization", "pkg/devidp/handoff.go", `HandoffAuthorizePath = "GET /auth/handoff/authorize"`, false},
+		{"authorization", "pkg/devidp/handoff.go", "AuthorizeHook", true},
+		{"authorization", "pkg/devidp/account.go", "HandoffAuthorizePath", true},
 		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "cut-release.sh", false},
 		{"the raw-curl cut-release CI job and `forge reconcile`", "docs/design/per-workload-placement.md", "DEPLOY_TOKEN", true},
 		{"the seeder's column-name domain heuristics", "pkg/deploy/observability_line_resource_test.go", "stringValue", false},

@@ -39,6 +39,9 @@ stays real at every tier.
   It takes `testing.TB`, so a benchmark gets the same database a test does.
   A template unused for a day (`FORGE_TEST_TEMPLATE_TTL`) is dropped by the next
   run, so a long-lived shared server does not keep one per migration edit.
+  `FORGE_TEST_POSTGRES_DIR=/dev/shm` (an absolute path; a relative one is
+  ignored) moves the embedded server's data, pool state and logs out of
+  os.TempDir(), e.g. onto tmpfs, without moving `t.TempDir()` the way `TMPDIR` would.
   A test's own database is named after the process that made it, so one a
   crashed run left behind is dropped by the next run that reaches the server,
   and never one whose process is still running.

@@ -61,12 +61,17 @@ rule. The golangci-lint passes over files behind your build tags roll out the
 same way, under the key `golangci-build-tags`.
 
 Adding a rule to forge? Add it to `gradableRules` and declare its introduction
-release in the rollout table. The v1.10.0 warning window is opt-in for newly
-introduced rules: `Grace` names v1.11.0 as the first release that gates and
-records why the rule needs grace. (That cohort was first declared as v1.9.0
-rules gating from v1.10.0; tag v1.9.0 predates all of them, so they ship in
-v1.10.0 and warn through it.) Rules whose windows were closed in #2410
-stay closed. `TestRolloutRowsAreWellFormed` checks these restrictions.
+release in the rollout table: `NEXT_VERSION` for a rule no tag carries yet.
+A warning window is opt-in: `Grace` names the minor after the introduction
+release as the first release that gates, and records why the rule needs grace.
+A rule whose commit missed the tag its row names ships in the next release,
+so its row moves to `NEXT_VERSION` and it warns through that release (owner,
+forge#2638). The cohort first declared as v1.9.0 missed that tag, so it ships
+in v1.10.0 and gates from v1.11.0; `crud-table-unowned`, declared v1.10.0,
+missed that tag, so it ships in v1.11.0 and gates from v1.12.0. Rules whose
+windows were closed in #2410 stay closed. `TestRolloutRowsAreWellFormed`
+checks these restrictions, and `TestGraceRowsNameAReleaseThatCarriesTheirRule`
+proves each released row's tag carries its rule.
 
 ## Switching a whole lane off: `lint.lanes`
 

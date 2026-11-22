@@ -319,7 +319,41 @@ func (c *Client) finish(ctx context.Context, cfg FlowConfig, flow Flow, s Sessio
 	if err != nil {
 		return Tokens{}, err
 	}
+	tokens.IssuerSession = s
 	reportSignIn(ctx, tokens, method)
+	return tokens, nil
+}
+
+// ReissueTokens mints a FRESH token set from an issuer session a sign-in
+// already finalized once: it begins a new auth request for cfg's client,
+// finalizes it with s and redeems the code with PKCE held here. The new set
+// is independent of the first — its own refresh token, rotated and revoked
+// on its own — which is how a sign-in handoff gives another client a session
+// without sharing a refresh token. It is not a sign-in (no credential is
+// checked, no auth_signed_in is recorded): the caller must already hold s
+// from a session it trusts. An issuer that no longer honours s (ended,
+// expired, its checks too old) answers 4xx; the person signs in again.
+func (c *Client) ReissueTokens(ctx context.Context, cfg FlowConfig, s Session) (Tokens, error) {
+	if s.ID == "" || s.Token == "" {
+		return Tokens{}, fmt.Errorf("an issuer session is required")
+	}
+	flow, err := c.BeginFlow(ctx, cfg)
+	if err != nil {
+		return Tokens{}, err
+	}
+	callback, err := c.FinalizeAuthRequest(ctx, flow.AuthRequestID, s)
+	if err != nil {
+		return Tokens{}, err
+	}
+	code, err := codeFromCallback(callback)
+	if err != nil {
+		return Tokens{}, err
+	}
+	tokens, err := c.RedeemCode(ctx, cfg, code, flow.PKCE)
+	if err != nil {
+		return Tokens{}, err
+	}
+	tokens.IssuerSession = s
 	return tokens, nil
 }
 

@@ -167,7 +167,7 @@ func TestLibraryTables_MatchTheLibrariesSchemas(t *testing.T) {
 	for table, cols := range ddlColumns(t, activity.SchemaSQL) {
 		want[table] = cols
 	}
-	for table, cols := range ddlColumns(t, session.SchemaSQL) {
+	for table, cols := range ddlColumns(t, session.SchemaSQL+session.HandoffSchemaSQL) {
 		want[table] = cols
 	}
 	alerting, err := pgstore.SchemaSQL("")

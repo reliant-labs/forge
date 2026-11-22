@@ -28,11 +28,20 @@ func serverRootStub(t *testing.T, secrets ...string) string {
 		required = secrets[:1]
 	}
 	type view struct{ Name, Args, Env, Secrets, Required, Families string }
+	// process mirrors codegen.RootsProcess: the template reads it only when
+	// Process is set (a binary binding config per process), which the
+	// default `server` root of these stubs never is.
+	type process struct {
+		ConfigType, EnvMap, Instance string
+		Argv                         bool
+	}
 	out, err := templates.ProjectTemplates().Render("config-roots.k.tmpl", struct {
-		Roots              []view
-		ConfigType, EnvMap string
-		Argv               bool
-		Families           bool
+		Roots                     []view
+		ConfigType, EnvMap        string
+		Argv                      bool
+		Families                  bool
+		Process                   *process
+		RootEnvMap, RootSensitive string
 	}{Roots: []view{{
 		Name: `"server"`, Args: `["server"]`, Env: `["PORT"]`, Secrets: q(secrets), Required: q(required),
 	}}, ConfigType: "AppConfig", EnvMap: "appConfigEnvMap"})

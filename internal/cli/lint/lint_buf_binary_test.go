@@ -7,7 +7,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/toolpin"
 )
+
+// testBufPin is a go.mod pin of buf v1.57.0 (reliant's), or forge's own pin
+// for a project that declares none.
+func testBufPin(declared bool) toolpin.Buf {
+	if declared {
+		return toolpin.Buf{Version: "v1.57.0", Source: toolpin.FromGoMod}
+	}
+	return toolpin.ForgeBuf()
+}
 
 // lintBufBinary runs the buf the project pins, as forge generate and the gate
 // do. It used to take PATH's buf first, so a local `forge lint --proto-format`
@@ -36,16 +47,16 @@ func TestLintBufBinary_RunsTheProjectsPin(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ensured := false
-			oldLook, oldDecl, oldEnsure := lintBufLookPath, lintBufDeclared, lintBufEnsure
-			t.Cleanup(func() { lintBufLookPath, lintBufDeclared, lintBufEnsure = oldLook, oldDecl, oldEnsure })
+			oldLook, oldPin, oldEnsure := lintBufLookPath, lintBufPin, lintBufEnsure
+			t.Cleanup(func() { lintBufLookPath, lintBufPin, lintBufEnsure = oldLook, oldPin, oldEnsure })
 			lintBufLookPath = func(string) (string, error) {
 				if tc.onPath {
 					return "/usr/bin/buf", nil
 				}
 				return "", exec.ErrNotFound
 			}
-			lintBufDeclared = func(string) bool { return tc.declared }
-			lintBufEnsure = func(context.Context, string) (string, error) {
+			lintBufPin = func(string) toolpin.Buf { return testBufPin(tc.declared) }
+			lintBufEnsure = func(context.Context, string, toolpin.Buf) (string, error) {
 				ensured = true
 				return tc.ensureDir, tc.ensureErr
 			}

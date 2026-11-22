@@ -351,7 +351,7 @@ func (r *Reconciler) ImportUsers(ctx context.Context, spec Spec, users []ImportU
 			return results, err
 		}
 		res := imp.row(ctx, u)
-		p.c.log.Info("identity: import", "user_id", res.ID, "outcome", string(res.Outcome), "reason", res.Reason, "dry_run", o.DryRun)
+		p.c.log.InfoContext(ctx, "identity: import", "user_id", res.ID, "outcome", string(res.Outcome), "reason", res.Reason, "dry_run", o.DryRun)
 		results = append(results, res)
 	}
 	return results, nil

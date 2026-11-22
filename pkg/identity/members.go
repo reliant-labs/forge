@@ -313,7 +313,7 @@ func (p *run) adoptPending(ctx context.Context, email string, h humanUser) error
 	if _, err := dc.AdoptPendingAccount(ctx, h.UserID); err != nil {
 		return objErr("user", email, fmt.Errorf("adopt the pending account: %w", err))
 	}
-	p.logf("adopted an unverified, credential-less account for a declared address; marked it verified", "user_id", h.UserID)
+	p.logf(ctx, "adopted an unverified, credential-less account for a declared address; marked it verified", "user_id", h.UserID)
 	return nil
 }
 
@@ -348,7 +348,7 @@ func (p *run) supersedeUnproven(ctx context.Context, email string, h humanUser) 
 	}, nil, idem); err != nil {
 		return objErr("user", h.UserID, fmt.Errorf("move the superseded account's address: %w", err))
 	}
-	p.logf("superseded an unverified account holding unproven credentials", "user_id", h.UserID)
+	p.logf(ctx, "superseded an unverified account holding unproven credentials", "user_id", h.UserID)
 	return nil
 }
 
@@ -384,7 +384,7 @@ func (p *run) ensureHuman(ctx context.Context, email string) (string, error) {
 		}
 		uid = out.UserID
 		p.createdHumans[email] = true
-		p.logf("created user", "user_id", uid)
+		p.logf(ctx, "created user", "user_id", uid)
 	}
 	p.users[email] = uid
 	return uid, nil

@@ -12,7 +12,7 @@ import (
 // A detection runs in forge's in-process shell (runDetection), where grep and
 // rg are portable built-ins. One they cannot run exits 2, and that reads as
 // "this project does not have the old shape" for every project, so the
-// playbook is never listed. v1.10.0/pgo-default-on's `grep -lqs` was one.
+// playbook is never listed. v1.11.0/pgo-default-on's `grep -lqs` was one.
 func TestShippedPlaybookDetectionsRunInProcess(t *testing.T) {
 	metas, err := loadMigrationMetas()
 	if err != nil {
@@ -33,22 +33,24 @@ func TestShippedPlaybookDetectionsRunInProcess(t *testing.T) {
 	}
 }
 
-// v1.10.0/pgo-default-on applies to a project with a hosted env, no committed
+// v1.11.0/pgo-default-on applies to a project with a hosted env, no committed
 // default.pgo and no opt-out. Its detection exited 2 in process until the
-// portable grep learned -l, so it applied to none.
-func TestV1100PGOPlaybook_Detection(t *testing.T) {
+// portable grep learned -l, so it applied to none. pgo-refresh.yml first ships
+// in v1.11.0 (v1.10.0 was tagged before it), so a project already pinned at
+// v1.10.0 is offered it too, and one at v1.11.0 is not.
+func TestV1110PGOPlaybook_Detection(t *testing.T) {
 	var m migrationMeta
 	metas, err := loadMigrationMetas()
 	if err != nil {
 		t.Fatalf("loadMigrationMetas: %v", err)
 	}
 	for _, c := range metas {
-		if c.ID == "v1.10.0/pgo-default-on" {
+		if c.ID == "v1.11.0/pgo-default-on" {
 			m = c
 		}
 	}
 	if m.ID == "" {
-		t.Fatal("no shipped playbook v1.10.0/pgo-default-on")
+		t.Fatal("no shipped playbook v1.11.0/pgo-default-on")
 	}
 	const hosted = "app = forge.OnHosted {}\n"
 	for name, tc := range map[string]struct {
@@ -71,8 +73,13 @@ func TestV1100PGOPlaybook_Detection(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if got := migrationApplies(m, "v1.9.0", dir); got != tc.want {
-				t.Errorf("applies = %v, want %v", got, tc.want)
+			for _, baseline := range []string{"v1.9.0", "v1.10.0"} {
+				if got := migrationApplies(m, baseline, dir); got != tc.want {
+					t.Errorf("at %s: applies = %v, want %v", baseline, got, tc.want)
+				}
+			}
+			if migrationApplies(m, "v1.11.0", dir) {
+				t.Error("applies at v1.11.0, a pin that already crossed its release")
 			}
 		})
 	}

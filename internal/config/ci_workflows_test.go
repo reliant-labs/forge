@@ -17,7 +17,7 @@ func TestCIWorkflows_LoadAndDefault(t *testing.T) {
 	}
 }
 
-// The v1.10.0 pgo-default-on playbook and pgo-refresh.yml's own header name
+// The v1.11.0 pgo-default-on playbook and pgo-refresh.yml's own header name
 // this opt-out; it was a load error ("no workflow named pgo-refresh").
 func TestCIWorkflows_PGORefreshCanBeDeclined(t *testing.T) {
 	in := "name: demo\nmodule_path: github.com/example/demo\nci:\n  workflows:\n    pgo-refresh: false\n"

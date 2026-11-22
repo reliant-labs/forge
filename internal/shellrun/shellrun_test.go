@@ -108,7 +108,7 @@ func TestPortableGrep(t *testing.T) {
 		`grep -rqs 'only_in_gen' missing app`:  true,
 		`grep -rqs 'nowhere' missing app`:      false,
 		`grep -qs '^dev_target:' x forge.yaml`: true,
-		// -l (files with matches), as v1.10.0/pgo-default-on's detection
+		// -l (files with matches), as v1.11.0/pgo-default-on's detection
 		// spells it. Unsupported, it exited 2 and the playbook never applied.
 		`grep -lqs 'dev_target' forge.yaml app/serve.go`: true,
 		`grep -lqs 'nowhere' forge.yaml app/serve.go`:    false,

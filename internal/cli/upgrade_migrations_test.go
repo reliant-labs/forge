@@ -28,7 +28,7 @@ func TestLoadMigrationMetas_RegistryIsWellFormed(t *testing.T) {
 			t.Errorf("migration %q: SkillPath = %q, want %q", m.ID, m.SkillPath, "migrations/"+m.ID)
 		}
 		// The directory name IS the release version — the first segment
-		// of a topic playbook's ID (v1.10.0/sbom-vulnerabilities). The CLI
+		// of a topic playbook's ID (v1.11.0/sbom-vulnerabilities). The CLI
 		// prints and records the directory; the frontmatter is what an
 		// agent reads. If they disagree, one of the two is lying.
 		if release, _, _ := strings.Cut(m.ID, "/"); m.Version != release {

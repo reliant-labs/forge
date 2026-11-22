@@ -1,16 +1,16 @@
 ---
-name: migrations/v1.10.0/pgo-default-on
-description: Profile-guided builds turn on by themselves wherever an env has CPU profiles (forge v1.10.0). A hosted project gets `.github/workflows/pgo-refresh.yml` on its next `forge generate` (new projects at `forge project new`). Every Monday it runs `forge pgo pull --env <prod>` and opens a pull request with each Go binary's cmd/<bin>/default.pgo when the env's profiles changed it, and does nothing where there are none. It needs a FORGE_OBS_TOKEN secret with deploy:read,obs:read. An existing project's profile collection is not changed. Hosted envs scaffolded since v1.10.0 declare profiles on. Use when a deploy/kcl/<env>/main.k binds forge.OnHosted and no cmd/<bin>/default.pgo is committed yet.
-version: v1.10.0
+name: migrations/v1.11.0/pgo-default-on
+description: Profile-guided builds turn on by themselves wherever an env has CPU profiles (forge v1.11.0). A hosted project gets `.github/workflows/pgo-refresh.yml` on its next `forge generate` (new projects at `forge project new`). Every Monday it runs `forge pgo pull --env <prod>` and opens a pull request with each Go binary's cmd/<bin>/default.pgo when the env's profiles changed it, and does nothing where there are none. It needs a FORGE_OBS_TOKEN secret with deploy:read,obs:read. An existing project's profile collection is not changed. Hosted envs scaffolded since v1.10.0 declare profiles on. Use when a deploy/kcl/<env>/main.k binds forge.OnHosted and no cmd/<bin>/default.pgo is committed yet.
+version: v1.11.0
 detection: grep -lqs 'forge.OnHosted' deploy/kcl/*/main.k && ! grep -qs 'pgo-refresh: false' forge.yaml && ! ls cmd/*/default.pgo >/dev/null 2>&1
 ---
 
-# Profile-guided builds turn on where profiles exist (v1.10.0)
+# Profile-guided builds turn on where profiles exist (v1.11.0)
 
 Since v1.8.0, forge has built every Go binary with its committed
 `cmd/<bin>/default.pgo` (Go's default `-pgo=auto`), and
 `forge pgo pull --env prod` writes that file from the env's CPU profiles.
-Nothing ran the pull for you. v1.10.0 adds a workflow that does, and it is
+Nothing ran the pull for you. v1.11.0 adds a workflow that does, and it is
 written into your project by itself.
 
 ## What changes by itself

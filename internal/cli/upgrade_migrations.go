@@ -300,7 +300,7 @@ func projectBaselineVersion() string {
 // migration named for its release.
 //
 // A release may also ship topic playbooks one level down,
-// <release>/<topic>/SKILL.md (migrations/v1.10.0/sbom-vulnerabilities): one
+// <release>/<topic>/SKILL.md (migrations/v1.11.0/sbom-vulnerabilities): one
 // per change that has its own detection, so each is offered, automated and
 // recorded on its own. Its ID is "<release>/<topic>" and its version the
 // release. A sub-skill that declares no `detection:` is a section of its
@@ -330,8 +330,8 @@ func loadMigrationMetas() ([]migrationMeta, error) {
 			continue
 		}
 		id := strings.TrimSuffix(rel, "/SKILL.md")
-		// The release is the first segment: "v1.9.0", or "v1.10.0" of the
-		// topic playbook "v1.10.0/sbom-vulnerabilities". Anything nested
+		// The release is the first segment: "v1.9.0", or "v1.11.0" of the
+		// topic playbook "v1.11.0/sbom-vulnerabilities". Anything nested
 		// deeper is not a playbook layout.
 		release, topic, nested := strings.Cut(id, "/")
 		if nested && (topic == "" || strings.Contains(topic, "/")) {

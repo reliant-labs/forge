@@ -138,7 +138,7 @@ func APIWorkloadStanza(modulePath, projectName string, extraSecrets ...string) s
 	fmt.Fprintf(&b, "    name = %q\n", APIWorkloadName)
 	fmt.Fprintf(&b, "    kind = %q\n", WorkloadKindService)
 	fmt.Fprintf(&b, "    image = %q\n", ScaffoldImageRef(modulePath, projectName))
-	fmt.Fprintf(&b, "    build = %s\n", projectGoBuild(projectName))
+	writeBuild(&b, projectGoBuild(projectName))
 	fmt.Fprintf(&b, "    args = %s\n", kclStringList([]string{ServerSubcommand}))
 	// The composition graph's default root: config_gen.workloadEnvMap gives
 	// the API exactly the config `server` reaches.

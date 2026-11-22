@@ -844,6 +844,27 @@ func RenderEntityMigrationFromProto(spec EntityFromProtoSpec) EntityFromProtoMig
 		}
 	}
 
+	// No owner marked: the birth declares NOTHING about whose rows these
+	// are. Not an owner, and not an exemption either: only the author knows
+	// whether the rows belong to a caller, to nobody (`forge:public`), or
+	// are scoped some other way (`forge:unscoped`), and an exemption forge
+	// wrote for them would answer the `crud-table-unowned` lint on their
+	// behalf, so the gate would never ask. The lint asks instead, the
+	// scaffold's note says so at birth, and this comment says it where the
+	// author reads the table.
+	if len(owners) == 0 {
+		// The SQL comment names no marker spelling: migration-text lanes
+		// read every forge:* token, and an example would read as one.
+		b.WriteString("\n-- Ownership: not declared. Say whose rows these are (an owner declaration on\n")
+		b.WriteString("-- the table, which scopes every generated CRUD op to the caller) or why no caller\n")
+		b.WriteString("-- owns them, in a new migration; until then the crud-table-unowned lint flags this\n")
+		b.WriteString("-- table (see the forge `db/crud-overrides` skill).\n")
+		notes = append(notes, fmt.Sprintf("table %s: whose rows it holds is not declared. In a new migration, declare the owner "+
+			"(COMMENT ON TABLE %s IS '%s=<column>') or why no caller owns them ('%s: <why>' or '%s: <why>'); "+
+			"until you do, the crud-table-unowned lint (`forge lint --crud-ownership`) flags it while authenticated CRUD serves it",
+			spec.Table, spec.Table, schemadef.TableMarkerOwner, schemadef.TableMarkerUnscoped, schemadef.TableMarkerPublic))
+	}
+
 	// forge:append-only — the STORAGE half of the marker (the wire half omits
 	// the Update/Delete RPCs): a trigger that rejects every UPDATE/DELETE so
 	// no bug or compromised caller can rewrite or erase a ledger row. LOUD

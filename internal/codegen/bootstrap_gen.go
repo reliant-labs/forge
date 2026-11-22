@@ -545,6 +545,13 @@ type BootstrapTestServiceData struct {
 	// in a mock_gen.go: NewTest<Svc> installs that mock, and no stub is
 	// synthesized for them (see harness_mocks.go).
 	AutoMocks []DepsAutoMock
+	// StoreDefaults lists the Deps fields typed as a generated
+	// <Entity>Store that the handler's CRUD ops persist through
+	// (crud_store_deps.go). NewTest<Svc> defaults each to the real store
+	// over the test database instead of a double, so the CRUD tests keep
+	// running against postgres; a test injects a double through
+	// With<Svc>Deps and no database is made for it.
+	StoreDefaults []DepsStoreDefault
 	// UnresolvedStubs lists Deps fields whose type is a cross-package
 	// selector forge couldn't resolve (alias not in imports, package
 	// can't load, type isn't an interface). The template emits a
@@ -628,6 +635,10 @@ type DepsFuncDefault struct {
 type DepsAutoStub struct {
 	// FieldName is the Deps field name as declared (e.g. "Repo").
 	FieldName string
+	// RealStore marks a field NewTest<Svc> defaults to the real generated
+	// store (StoreDefaults) rather than this stub. The stub is still
+	// emitted, for a test to inject.
+	RealStore bool
 	// StubType is the exported Go identifier of the synthesized stub
 	// struct: "Stub" + the Deps field name (StubRepo). It is exported so
 	// the external <pkg>_test package — where the scaffolded tests live —
@@ -726,6 +737,8 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		handlerDirs[i] = res.Dir
 	}
 	depsTypes := newTypesResolver(projectDir, depsSelectorImports(handlerDirs))
+	ormCfg := ProjectORMPackage(projectDir)
+	ormImport := ormImportPathFor(modulePath, ormCfg)
 
 	var testSvcs []BootstrapTestServiceData
 	anyServiceHasDB := false
@@ -751,6 +764,8 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 		// (package failed to load, alias not in imports, type isn't
 		// an interface) so the template can emit a TODO comment.
 		autoStubs, autoMocks, unresolvedStubs := computeDepsDoubles(handlerDir, depsTypes)
+		storeDefaults := computeStoreDefaults(handlerDir, ormImport, ormCfg)
+		markRealStores(storeDefaults, autoStubs, autoMocks)
 		// Func-typed required deps: fill Clock/IDGen with real defaults
 		// (time.Now / ulid), TODO the rest — the harness half of the
 		// Clock/IDGen fix. A func value can't be interface-auto-stubbed.
@@ -796,6 +811,7 @@ func GenerateBootstrapTesting(in BootstrapTestingGenInput) error {
 			VarName:                pkg, // overwritten below if there's a cross-role collision
 			AutoStubs:              autoStubs,
 			AutoMocks:              autoMocks,
+			StoreDefaults:          storeDefaults,
 			UnresolvedStubs:        unresolvedStubs,
 			FuncDefaults:           funcDefaults,
 			FuncTodos:              funcTodos,
@@ -1129,12 +1145,19 @@ type componentTestHelperData struct {
 	FuncTodos       []UnresolvedAutoStub
 	UnfilledDeps    []UnresolvedAutoStub
 	ExtraImports    []ExtraImport
+	StoreDefaults   []DepsStoreDefault
 
 	// ConnectV2 renders the connect-go v2 wiring (connectrpc.com/connect/v2):
 	// the project's go.mod selects it (internal/connectmajor). False, the zero
 	// value, keeps every v1 render byte for byte.
 	ConnectV2 bool
 }
+
+// TestDB is whether the harness carries a test database (WithDB, the lazily
+// made default, NewMigratedTestDB): when Deps takes one (HasDB) or a store
+// default is built over one (StoreDefaults). HasDB alone decides whether
+// Deps.DB is filled.
+func (d componentTestHelperData) TestDB() bool { return d.HasDB || len(d.StoreDefaults) > 0 }
 
 // componentTestHelperFile is the file name emitted into each component dir.
 // The `_test.go` suffix is load-bearing — see writeComponentTestHelpers.
@@ -1173,6 +1196,7 @@ func writeComponentTestHelpers(data bootstrapTestingTemplateData, projectDir str
 			FuncDefaults:           svc.FuncDefaults,
 			FuncTodos:              svc.FuncTodos,
 			UnfilledDeps:           svc.UnfilledDeps,
+			StoreDefaults:          svc.StoreDefaults,
 		}
 		dir := filepath.Join(projectDir, "internal", "handlers", filepath.FromSlash(svc.ImportPath))
 		d.setConfigImport(dir, projectDir)
@@ -1410,6 +1434,23 @@ func reconcileAutoStubAliases(services []BootstrapTestServiceData, packages []Bo
 				used[newAlias] = imp.Path
 			}
 		}
+		// A store default's ORM import collides the same way; its one
+		// reference is its Qual.
+		for j := range services[i].StoreDefaults {
+			sd := &services[i].StoreDefaults[j]
+			for k := range sd.ExtraImports {
+				imp := &sd.ExtraImports[k]
+				existing, taken := used[imp.Alias]
+				if !taken || pathHasSuffix(existing, imp.Path) {
+					used[imp.Alias] = imp.Path
+					continue
+				}
+				newAlias := uniqueStubAlias(imp.Alias, imp.Path, used)
+				sd.Qual = newAlias
+				imp.Alias = newAlias
+				used[newAlias] = imp.Path
+			}
+		}
 		// A foreign mock's import collides the same way; its one
 		// reference is the qualified MockType.
 		for j := range services[i].AutoMocks {
@@ -1518,6 +1559,14 @@ func mergeExtraImports(services []BootstrapTestServiceData) []ExtraImport {
 		// package's import.
 		for _, mock := range s.AutoMocks {
 			for _, imp := range mock.ExtraImports {
+				if _, ok := seen[imp.Path]; ok {
+					continue
+				}
+				seen[imp.Path] = imp.Alias
+			}
+		}
+		for _, sd := range s.StoreDefaults {
+			for _, imp := range sd.ExtraImports {
 				if _, ok := seen[imp.Path]; ok {
 					continue
 				}

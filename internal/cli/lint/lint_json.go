@@ -402,6 +402,8 @@ func collectSingleLinterJSON(
 		return reportBySeverity(collectClosedSetsJSON(cwd, cfg))
 	case flags.dbGrants:
 		return reportBySeverity(collectDBGrantsJSON(cwd, cfg))
+	case flags.crudOwnership:
+		return reportBySeverity(collectCRUDOwnershipJSON(cwd, cfg))
 	case flags.fixtureDrift || flags.crudFixtures:
 		return reportUngated(collectFixtureDriftJSON(cwd, cfg))
 	case flags.timeBucketing:
@@ -441,6 +443,8 @@ func collectSingleLinterJSON(
 		return report(collectSlowTestsJSON(ctx, paths))
 	case flags.testWaits:
 		return report(collectTestWaitsJSON(cwd))
+	case flags.callerPaths:
+		return report(collectCallerPathsJSON(cwd))
 	case flags.protoFormat:
 		// `forge lint --proto-format --fix` writes buf's output (--json
 		// refuses --fix, so it stays detect-only).

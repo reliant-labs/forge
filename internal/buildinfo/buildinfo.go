@@ -138,6 +138,7 @@ func DiscoverDevForgeRootFromSource() string {
 	if ovSet {
 		return ov
 	}
+	// forge:lint-disable-next-line forge-runtime-caller-path: optional local dev checkout discovery; the IsAbs guard below rejects trimmed paths and leaves discovery disabled.
 	_, file, _, ok := runtime.Caller(0)
 	if !ok || file == "" || !filepath.IsAbs(file) {
 		return ""

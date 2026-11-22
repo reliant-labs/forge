@@ -372,6 +372,9 @@ func renderProcessSelector(ps ProcessSelector) string {
 	b.WriteString("# config_secrets names the sensitive fields the workload reads, across both\n")
 	b.WriteString("# configs; each is routed to the config that declares it.\n")
 	b.WriteString("#\n")
+	fmt.Fprintf(&b, "# A config with no required field may be left unset on the %s:\n", schema)
+	b.WriteString("# it then projects as its defaults, `<Config> {}`.\n")
+	b.WriteString("#\n")
 	fmt.Fprintf(&b, "#     env = config_gen.%s(appcfg.%s, (w.command or []) + (w.args or []), w.config_secrets) | w.env\n",
 		lambda, naming.ToSnakeCase(schema))
 	fmt.Fprintf(&b, "%s = lambda p: %s, argv: [str], config_secrets: [str] -> {str: str | forge.SecretRef} {\n", lambda, schema)
@@ -412,20 +415,32 @@ func renderProcessSelector(ps ProcessSelector) string {
 	b.WriteString("    assert all _n in config_secrets { _n in _root_sensitive or _n in _sub_sensitive or _n in _cmd_sensitive }, \\\n")
 	fmt.Fprintf(&b, "        \"%s: config_secrets names ${[_n for _n in config_secrets if _n not in _root_sensitive and _n not in _sub_sensitive and _n not in _cmd_sensitive]}, which is not a `sensitive` field of the config(s) a `%s` process running ${_path} loads. Sensitive fields: ${sorted(_root_sensitive + _sub_sensitive + _cmd_sensitive)}.\"\n", lambda, ps.Binary)
 
+	// A config whose schema has a required member must be set on the bundle
+	// for a process that loads it: the assert names the instance. One with
+	// none is optional (see configNeedsInstance), and an unset instance
+	// projects as its default `<Msg> {}`.
 	rootEnv := "{}"
 	if ps.Root != nil {
 		inst := InstanceName(ps.Root.MessageName)
 		_, rootLambda := KCLConfigName(ps.Root.MessageName)
-		fmt.Fprintf(&b, "    assert p.%s not in [None, Undefined], \"%s: every `%s` process loads %s — set `%s` on the %s.\"\n",
-			inst, lambda, ps.Binary, ps.Root.MessageName, inst, schema)
-		rootEnv = fmt.Sprintf("%s(p.%s, [_n for _n in config_secrets if _n in _root_sensitive])", rootLambda, inst)
+		if configNeedsInstance(ps.Root.Fields) {
+			fmt.Fprintf(&b, "    assert p.%s not in [None, Undefined], \"%s: every `%s` process loads %s — set `%s` on the %s.\"\n",
+				inst, lambda, ps.Binary, ps.Root.MessageName, inst, schema)
+		}
+		rootEnv = fmt.Sprintf("%s(%s, [_n for _n in config_secrets if _n in _root_sensitive])", rootLambda, instanceOrDefault(*ps.Root))
 	}
 	for _, c := range ps.Subtrees {
+		if !configNeedsInstance(c.Fields) {
+			continue
+		}
 		inst := InstanceName(c.MessageName)
 		fmt.Fprintf(&b, "    assert not _in_%s or p.%s not in [None, Undefined], \"%s: this workload runs `%s ${' '.join(_path)}`, at or below %s, which loads %s — set `%s` on the %s.\"\n",
 			inst, inst, lambda, ps.Binary, subtreeList(ps.Binary, c.Subtrees), c.MessageName, inst, schema)
 	}
 	for _, c := range ps.Commands {
+		if !configNeedsInstance(c.Fields) {
+			continue
+		}
 		inst := InstanceName(c.MessageName)
 		fmt.Fprintf(&b, "    assert _cmd != %q or p.%s not in [None, Undefined], \"%s: this workload runs `%s`, which loads %s — set `%s` on the %s.\"\n",
 			inst, inst, lambda, process(c), c.MessageName, inst, schema)
@@ -435,15 +450,15 @@ func renderProcessSelector(ps ProcessSelector) string {
 	for _, c := range ps.Subtrees {
 		inst := InstanceName(c.MessageName)
 		_, subLambda := KCLConfigName(c.MessageName)
-		fmt.Fprintf(&b, " | (%s(p.%s, [_n for _n in config_secrets if _n in %s]) if _in_%s else {})",
-			subLambda, inst, KCLAllSensitiveName(c.MessageName), inst)
+		fmt.Fprintf(&b, " | (%s(%s, [_n for _n in config_secrets if _n in %s]) if _in_%s else {})",
+			subLambda, instanceOrDefault(c), KCLAllSensitiveName(c.MessageName), inst)
 	}
 	b.WriteString("\n")
 	b.WriteString("    _cmd_env = ")
 	for _, c := range ps.Commands {
 		inst := InstanceName(c.MessageName)
 		_, cmdLambda := KCLConfigName(c.MessageName)
-		fmt.Fprintf(&b, "%s(p.%s, [_n for _n in config_secrets if _n in _cmd_sensitive]) if _cmd == %q else ", cmdLambda, inst, inst)
+		fmt.Fprintf(&b, "%s(%s, [_n for _n in config_secrets if _n in _cmd_sensitive]) if _cmd == %q else ", cmdLambda, instanceOrDefault(c), inst)
 	}
 	b.WriteString("{}\n")
 	// Root first, then the subtree configs, then the command config. Their
@@ -453,6 +468,44 @@ func renderProcessSelector(ps ProcessSelector) string {
 	b.WriteString("    _root_env | _sub_env | _cmd_env\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// configNeedsInstance reports whether the KCL schema projected from fields
+// has a member with no default, so that `<Msg> {}` is not a valid instance
+// and a process bundle must carry one. It reads the decision the schema
+// emitter makes for each member (renderConfigSchemaFields): a sensitive
+// field always defaults to its secret backend, an env family to `{}`, a
+// composed block to its own `{}` (its leaves are in fields too), and a
+// scalar has a default unless it is `required` with no default_value.
+//
+// It is what keeps adding a config a compatible change (obs 08a23d1c). Every
+// env's config.k bundle predates a config added later and cannot set it, so
+// asserting every loaded instance is set made a new config whose fields are
+// all optional fail every existing env's render. An unset optional instance
+// projects as `<Msg> {}`, which is lossless: an empty value is unset to the
+// runtime loader, and a default projects as the value the loader would
+// default to.
+func configNeedsInstance(fields []ConfigField) bool {
+	for _, f := range fields {
+		if f.MessageType != "" || f.EnvPrefix != "" || f.Sensitive {
+			continue
+		}
+		if _, ok := kclConfigDefaultLiteral(f); !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// instanceOrDefault is the KCL expression a selector projects a config from:
+// the bundle's instance, or, for a config that needs none, the instance when
+// set and `<Msg> {}` otherwise.
+func instanceOrDefault(bc BinaryConfigFields) string {
+	inst := "p." + InstanceName(bc.MessageName)
+	if configNeedsInstance(bc.Fields) {
+		return inst
+	}
+	return fmt.Sprintf("(%s if %s not in [None, Undefined] else %s {})", inst, inst, bc.MessageName)
 }
 
 // kclPathList renders command paths as a KCL list of string lists.

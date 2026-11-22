@@ -30,6 +30,15 @@ COMMENT ON CONSTRAINT grants_kind ON grants IS 'forge:closed-set accesstoken.All
 	if err := os.WriteFile(filepath.Join(mig, "20260101000000_base.up.sql"), []byte(base), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// A near-miss name is refused naming the constraint that IS out of step,
+	// not as though the CHECK were already in step.
+	err := newClosedSetMigration(context.Background(), "kind", "typo", mig, "", false)
+	if err == nil || !strings.Contains(err.Error(), "which are grants_kind (on grants)") {
+		t.Fatalf("an unknown name must list the out-of-step constraints: %v", err)
+	}
+	if written, _ := filepath.Glob(filepath.Join(mig, "*_typo.up.sql")); len(written) != 0 {
+		t.Fatalf("a refused name wrote %v", written)
+	}
 	if err := newClosedSetMigration(context.Background(), "grants_kind", "grants_kind_closed_set", mig, "", false); err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +71,8 @@ COMMENT ON CONSTRAINT grants_kind ON grants IS 'forge:closed-set accesstoken.All
 		}
 	}
 
-	err := newClosedSetMigration(context.Background(), "grants_kind", "again", mig, "", false)
-	if err == nil || !strings.Contains(err.Error(), "has no closed-set finding") {
+	err = newClosedSetMigration(context.Background(), "grants_kind", "again", mig, "", false)
+	if err == nil || !strings.Contains(err.Error(), "no forge:closed-set CHECK there is out of step") {
 		t.Fatalf("an in-step CHECK has nothing to write: %v", err)
 	}
 }

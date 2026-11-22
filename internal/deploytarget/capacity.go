@@ -192,10 +192,10 @@ func (e *CapacityRefusedError) Error() string {
 		// would point at the wrong limit.
 		b.WriteString("\n  found:    the organization's static-site limit (every environment's site counts as one)")
 	case e.Verdict.HasComputePlan:
-		fmt.Fprintf(&b, "\n  found:    a compute plan with a ceiling of %dm CPU, %s memory, %d GiB storage",
+		fmt.Fprintf(&b, "\n  found:    hosting billing with a ceiling of %dm CPU, %s memory, %d GiB storage",
 			e.Verdict.CeilingCPU, gibString(e.Verdict.CeilingMemory), e.Verdict.CeilingStorage)
 	default:
-		b.WriteString("\n  found:    no active compute plan")
+		b.WriteString("\n  found:    no hosting billing (pay-as-you-go hosting, not a machine plan)")
 	}
 	if e.Verdict.Fix != "" {
 		fmt.Fprintf(&b, "\n  fix:      %s", e.Verdict.Fix)

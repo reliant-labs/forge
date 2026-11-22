@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
 
 // The browser-telemetry scaffold contract: forge injects and initialises the
@@ -175,9 +177,11 @@ func TestTelemetryDevProxyContract(t *testing.T) {
 	})
 }
 
-// TestTelemetryDependencies: the scaffolds declare no SDK (the runtime carries
-// @hyperdx/otel-web and rrweb as its own dependencies) and not the eight
-// @opentelemetry/* packages the retired ./otel wiring needed.
+// TestTelemetryDependencies: the web scaffolds declare the SDK parts
+// ./telemetry imports (@hyperdx/otel-web and rrweb, the runtime's exact
+// optional peers since 0.14.0, forge defect ae15c269) at exactly the runtime's
+// specifiers, never @hyperdx/browser, and not the eight @opentelemetry/*
+// packages the retired ./otel wiring needed.
 func TestTelemetryDependencies(t *testing.T) {
 	for _, tmpl := range []string{
 		"nextjs/package.json.tmpl",
@@ -185,8 +189,17 @@ func TestTelemetryDependencies(t *testing.T) {
 	} {
 		s := renderTelemetryTmpl(t, tmpl, telemetryData("static"))
 
-		if strings.Contains(s, "@hyperdx/") {
-			t.Errorf("%s: the scaffold must not declare the HyperDX SDK; the runtime carries it:\n%s", tmpl, s)
+		if strings.Contains(s, "@hyperdx/browser") {
+			t.Errorf("%s: the scaffold must not declare @hyperdx/browser; nothing imports it:\n%s", tmpl, s)
+		}
+		for _, peer := range []string{"@hyperdx/otel-web", "rrweb"} {
+			spec, ok := webruntimepeers.PeerSpec(peer)
+			if !ok {
+				t.Fatalf("the runtime no longer declares %s as a peer", peer)
+			}
+			if !strings.Contains(s, `"`+peer+`": "`+spec+`"`) {
+				t.Errorf("%s: must declare the runtime's telemetry peer %s at exactly %q:\n%s", tmpl, peer, spec, s)
+			}
 		}
 		if !strings.Contains(s, `"@opentelemetry/api"`) {
 			t.Errorf("%s: @opentelemetry/api is the runtime's required peer", tmpl)

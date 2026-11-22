@@ -7,8 +7,12 @@ description: Browser telemetry in forge frontends — the HyperDX SDK forge scaf
 
 Forge scaffolds, injects and initialises the **HyperDX browser SDK** in Next.js
 and Vite frontends: `@hyperdx/otel-web`, which `@reliantlabs/forge-web-runtime`
-carries as its own dependency and drives itself, with session replay recorded
-by the runtime's own rrweb recorder. The app declares neither. It captures
+drives itself, with session replay recorded by the runtime's own rrweb
+recorder. Both are the runtime's exact optional peers (from 0.14.0), so the app
+declares them at the runtime's versions: every web scaffold does, and
+`forge generate` adds them to any frontend whose sources import
+`@reliantlabs/forge-web-runtime/telemetry`. A consumer that never imports it
+(Expo, an Electron main process on `/node`) installs neither. It captures
 uncaught errors and unhandled rejections, `console.*`, fetch/XHR spans, document
 load, long tasks and web vitals, and ships them as OTLP to ClickStack. There is
 no Sentry SDK and no Sentry-protocol adapter. React Native frontends get
@@ -45,7 +49,8 @@ ad-blocker to list.
 |---|---|---|
 | `next dev` | a dev-only `rewrites()` in `next.config.ts` to the runtime's loopback relay (`startOtelRelay`) | `OTEL_EXPORTER_OTLP_ENDPOINT`, default `http://127.0.0.1:4318` |
 | `vite` | the runtime's `forgeOtelProxy()` plugin in `vite.config.ts` | same; the `/_otel` prefix is stripped |
-| deployed | **the ingress** | a collector's OTLP/HTTP port |
+| deployed on `forge.OnHosted` | **the platform**, on the site's own origin; forge writes `OTEL_ENDPOINT = "/_otel"` into its runtime config unless you declare one | the platform's ingest |
+| deployed anywhere else | **your ingress** | a collector's OTLP/HTTP port |
 
 Both dev proxies come from `@reliantlabs/forge-web-runtime` and forward only a
 same-origin page's `POST /v1/{traces,logs,metrics}` up to 8 MiB (403 for a
@@ -55,9 +60,13 @@ above the cap, none of them sent upstream), with only its `content-type` and
 
 A Next.js frontend builds as a **static export** (`output: static`), which has no
 server, so `rewrites` do not exist in the built site; a built Vite SPA is plain
-files. In a deployed environment the ingress must route `<basePath>/_otel/*` to
-the collector. Until it does, leave the frontend's `otel_endpoint` unset and the
-production bundle sends nothing, rather than POSTing to a 404.
+files. So browser telemetry in a deployed environment is **on by default on
+Reliant hosting** (`forge.OnHosted`), where the platform answers `/_otel`, and
+**off by default everywhere else**: there the ingress must route
+`<basePath>/_otel/*` to the collector, and until it does, leave the frontend's
+`otel_endpoint` unset and the production bundle sends nothing, rather than
+POSTing to a 404. On any runtime, `otel_endpoint = "off"`, or the env's
+`observability.signals.browser = False`, turns it off.
 
 ## Turning it on, and the knobs
 

@@ -89,8 +89,8 @@ type UpstreamGrant struct {
 	// ProviderUserID and ProviderUserName are the user at the provider.
 	ProviderUserID   string
 	ProviderUserName string
-	// Event is UpstreamEventSignIn, UpstreamEventSignUp or
-	// UpstreamEventInviteAccept.
+	// Event is UpstreamEventSignIn, UpstreamEventSignUp,
+	// UpstreamEventInviteAccept or UpstreamEventLink.
 	Event  string
 	Tokens UpstreamTokens
 }
@@ -107,24 +107,30 @@ func (g UpstreamGrant) LogValue() slog.Value {
 // reports false when the sign-in must be refused: RequireUpstreamTokens, and
 // the hook failed or no access token came back.
 func (r *SignInRoutes) handUpstreamTokens(ctx context.Context, social LoginPolicySocial, res IDPResult, subject, event string) bool {
-	if !social.PassTokens || r.cfg.UpstreamTokens == nil {
+	return handUpstreamTokens(ctx, r.cfg.Logger, r.cfg.UpstreamTokens, r.cfg.RequireUpstreamTokens, social, res, subject, event)
+}
+
+// handUpstreamTokens is SignInRoutes.handUpstreamTokens for any caller with
+// a hook (the account routes' social link too).
+func handUpstreamTokens(ctx context.Context, logger *slog.Logger, hook func(context.Context, UpstreamGrant) error, strict bool,
+	social LoginPolicySocial, res IDPResult, subject, event string) bool {
+	if !social.PassTokens || hook == nil {
 		return true
 	}
-	strict := r.cfg.RequireUpstreamTokens
 	if res.Upstream == nil || res.Upstream.AccessToken == "" {
-		r.cfg.Logger.WarnContext(ctx, "social sign-in: the issuer reported no provider access token",
+		logger.WarnContext(ctx, "social sign-in: the issuer reported no provider access token",
 			"user_id", subject, "provider", social.Type, "required", strict)
 		return !strict
 	}
 	tokens := *res.Upstream
 	tokens.Scopes = strings.Fields(social.Scopes)
-	err := r.cfg.UpstreamTokens(ctx, UpstreamGrant{
+	err := hook(ctx, UpstreamGrant{
 		Subject: subject, Provider: social.Type, IdPID: res.Link.IdPID,
 		ProviderUserID: res.Link.UserID, ProviderUserName: res.Link.UserName,
 		Event: event, Tokens: tokens,
 	})
 	if err != nil {
-		r.cfg.Logger.ErrorContext(ctx, "social sign-in: the app did not take the provider's tokens",
+		logger.ErrorContext(ctx, "social sign-in: the app did not take the provider's tokens",
 			"user_id", subject, "provider", social.Type, "required", strict, "error", err)
 		return !strict
 	}

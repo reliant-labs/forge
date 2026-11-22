@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/semver"
 )
 
 // TestTemplatesOnlyImportPublishedWebRuntimeExports is the guard that would
@@ -126,12 +128,20 @@ func hookRuntimeImports(t *testing.T) []string {
 // Keep the known published API requirement covered in offline/short gates too.
 // The registry test above checks every template import as the API evolves.
 func TestHookRuntimeExportFloor(t *testing.T) {
-	if !specSatisfiesFloor(webRuntimePublishedRange, "0.13.5") {
+	// atLeast orders minimums across minors: specSatisfiesFloor refuses a
+	// different 0.x minor (a compatibility line), but a ^0.14 floor still
+	// ships every export 0.13.5 introduced.
+	atLeast := func(spec, version string) bool {
+		got, ok := minimumVersion(spec)
+		want, _ := minimumVersion(version)
+		return ok && semver.Compare(got, want) >= 0
+	}
+	if !atLeast(webRuntimePublishedRange, "0.13.5") {
 		t.Fatalf("runtime floor %s predates createMutationCall/createServiceMutations (0.13.5)", webRuntimePublishedRange)
 	}
 	decision := decideWebRuntimeDependency("")
 	for _, old := range []string{"0.13.3", "^0.13.3", "~0.13.4"} {
-		if got := reconcileSpec(old, decision); !specSatisfiesFloor(got, "0.13.5") {
+		if got := reconcileSpec(old, decision); !atLeast(got, "0.13.5") {
 			t.Errorf("old consumer %s remains incompatible after reconciliation: %s", old, got)
 		}
 	}

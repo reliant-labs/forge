@@ -59,6 +59,7 @@ package generator
 import (
 	"fmt"
 	"go/format"
+	"slices"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
@@ -151,17 +152,61 @@ func renderEntityStoreFile(pkgName string, ent config.PlanEntity) []byte {
 	writeORMGeneratedHeader(&b, "the APPLIED schema (db/migrations) — the CRUD delegates of "+naming.ToSnakeCase(ent.Name)+"_orm_gen.go beside it.")
 	fmt.Fprintf(&b, "package %s\n\n", pkgName)
 	// crud is imported for UpdateOption, which only a store with an Update
-	// names; context only by a store with a method.
-	if storesWrite([]config.PlanEntity{ent}) {
-		b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/crud\"\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
-	} else {
-		b.WriteString("import (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\n")
+	// names; context only by a store with a method. The by-key methods name
+	// each key column's Go type, so a TIMESTAMPTZ key column (a composite
+	// key's period_start) needs time.
+	std, third := storeKeyImports(ent)
+	b.WriteString("import (\n\t\"context\"\n")
+	for _, spec := range std {
+		b.WriteString("\t" + spec + "\n")
 	}
+	b.WriteString("\n")
+	if storesWrite([]config.PlanEntity{ent}) {
+		b.WriteString("\t\"github.com/reliant-labs/forge/pkg/crud\"\n")
+	}
+	b.WriteString("\t\"github.com/reliant-labs/forge/pkg/orm\"\n")
+	for _, spec := range third {
+		b.WriteString("\t" + spec + "\n")
+	}
+	b.WriteString(")\n\n")
 	writeEntityStore(&b, ent)
 	plural := naming.Pluralize(ent.Name)
 	fmt.Fprintf(&b, "// %s returns the %s store, bound to the aggregate's handle.\n", plural, ent.Name)
 	fmt.Fprintf(&b, "func (s Store) %s() %sStore { return %s{db: s.db} }\n", plural, ent.Name, lowerFirst(ent.Name)+"Store")
 	return formatStoreSource(b.String())
+}
+
+// storeKeyImports is the import specs the primary-key column types of ent
+// need in its store file, split into the standard library group and the
+// rest, as writeORMImports splits them. The store's signatures name no other
+// column type: every non-key value travels inside the entity struct.
+func storeKeyImports(ent config.PlanEntity) (std, third []string) {
+	add := func(spec string) {
+		if spec == "" || slices.Contains(std, spec) || slices.Contains(third, spec) {
+			return
+		}
+		p := spec[strings.Index(spec, `"`)+1:]
+		if first, _, _ := strings.Cut(p, "/"); strings.Contains(first, ".") {
+			third = append(third, spec)
+		} else {
+			std = append(std, spec)
+		}
+	}
+	for _, f := range resolveORMFields(ent) {
+		if !f.isPK {
+			continue
+		}
+		// The key params are typed by goType, the column's projected type,
+		// never a forge:go-type override, so only the projected types'
+		// packages are named here.
+		if strings.Contains(f.goType, "time.Time") {
+			add(`"time"`)
+		}
+		if strings.Contains(f.goType, "json.RawMessage") {
+			add(`"encoding/json"`)
+		}
+	}
+	return std, third
 }
 
 func formatStoreSource(src string) []byte {

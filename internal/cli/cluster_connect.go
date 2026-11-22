@@ -104,7 +104,7 @@ ADDRESS — the API server the control plane dials, from its own pods:
 
   default        the context's cluster.server and CA. On a GKE context, the
                  cluster's PUBLIC endpoint and CA from GKE (gcloud describe).
-  --address      an https://host[:port] override, port 443 or 6443. Use it when
+  --address      an ` + "`https://host[:port]`" + ` override, port 443 or 6443. Use it when
                  the control plane reaches the cluster at another address than
                  your kubeconfig does.
   --ca-file      a PEM bundle for the API server's certificate, over the CA
@@ -236,7 +236,7 @@ func newClusterConnectCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&kubeContext, "context", "", "kubectl context addressing the cluster (required)")
-	cmd.Flags().StringVar(&address, "address", "", "https://host[:port] the control plane dials, port 443 or 6443 (default: the context's server; on GKE the cluster's public endpoint)")
+	cmd.Flags().StringVar(&address, "address", "", "`https://host[:port]` the control plane dials, port 443 or 6443 (default: the context's server; on GKE the cluster's public endpoint)")
 	cmd.Flags().StringVar(&caFile, "ca-file", "", "PEM file for the API server's certificate authority (default: read from the context, or GKE)")
 	cmd.Flags().StringVar(&envName, "env", "", "Environment whose binding this is, and whose control plane to talk to (required)")
 	cmd.Flags().StringVar(&token, "token", "", "Credential to use, ahead of the env var and the credentials file")

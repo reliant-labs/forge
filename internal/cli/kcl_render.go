@@ -1443,6 +1443,23 @@ type FrontendEntity struct {
 	// wire shape, references KEPT. The hosted provider publishes it as
 	// spec.runtimeConfig.
 	RuntimeConfigSpec map[string]deployv1alpha1.RuntimeConfigValue `json:"runtime_config_spec,omitempty"`
+	// APIs are the frontend's NAMED same-origin APIs (kcl/schema.k
+	// Frontend.apis): name -> the workload of this env that
+	// <site>/_api/@<name>/* reaches, prefix stripped. The hosted provider
+	// publishes them as the StaticSite spec's apis; `forge env up`'s dev
+	// server proxies the same paths. Empty when the frontend declares none.
+	APIs map[string]string `json:"apis,omitempty"`
+	// APIURLs are the same APIs resolved to each workload's own URL, for the
+	// config.js forge writes itself (an own bucket, Firebase). Empty on a
+	// hosted env, where the control plane publishes `/_api/@<name>`. For a
+	// dev server it holds only what render could resolve: `forge env up`
+	// resolves each upstream again after it assigns host ports
+	// (DevAPIUpstreams).
+	APIURLs map[string]string `json:"api_urls,omitempty"`
+	// DevAPIUpstreams is what `forge env up` hands this frontend's dev
+	// server as FORGE_DEV_APIS: name -> the upstream /_api/@<name>/* is
+	// proxied to. Computed after host ports are assigned; never rendered.
+	DevAPIUpstreams map[string]string `json:"-"`
 
 	// The three fields below are what forge learns AFTER the render, on the
 	// way to a build, and are never rendered. frontendBuildIdentityEnv hands

@@ -35,6 +35,7 @@ func TestGitHubSourceTokenNeverReachesAssetDownloads(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.exePath = installed(t, script("echo 1.0.0"))
+	u.detectEnv.container = nil
 	rel, _, err := u.Check(context.Background())
 	if err != nil {
 		t.Fatal(err)

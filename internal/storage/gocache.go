@@ -724,9 +724,11 @@ type BudgetUnreachableError struct {
 	// age of the oldest running build plus its margin when that is longer), in bytes.
 	Estimated, Budget, Young uint64
 	Floor                    time.Duration
-	// Trimpath is whether the go command already builds with -trimpath
+	// Trimpath is whether the go command builds with -trimpath now
 	// (goFlagsTrimpath), when that is known. Then the usual cause of a fast
-	// fill is ruled out and the message does not send the reader after it.
+	// fill is ruled out for builds from here on — not for the entries already
+	// in the window, which builds from before the setting may have written —
+	// and the message says both.
 	Trimpath, TrimpathKnown bool
 }
 
@@ -736,8 +738,13 @@ func (e *BudgetUnreachableError) Error() string {
 		"worktree's packages again: run `go env GOFLAGS` in a worktree (a go.mod toolchain line that switches to a " +
 		"downloaded toolchain drops a -trimpath set in $GOROOT/go.env)"
 	if e.TrimpathKnown && e.Trimpath {
-		cause = "Builds already use -trimpath, so the fill is real work: many distinct commits built at once " +
-			"(one per worktree), `go run pkg@version` executables and test variants"
+		// GOFLAGS is read NOW, so it says nothing about the builds that
+		// filled the window: a cache filled before -trimpath was set (go env
+		// -w, a Taskfile, a forge upgrade) is still path-keyed copies.
+		cause = "Builds now use -trimpath (`go env GOFLAGS`), but that covers only builds started since it was set: " +
+			"entries written before it are path-keyed copies, one per worktree, until they age out. A fill that " +
+			"continues with -trimpath on is real work: many distinct commits built at once (one per worktree), " +
+			"`go run pkg@version` executables and test variants"
 	}
 	return fmt.Sprintf("%s is over its budget and no trim can reach it: ~%.1f GiB against %.1f GiB, of which ~%.1f GiB "+
 		"was used in the last %s (~%.0f GiB/h). Entries that young may belong to a running build, so they are never "+

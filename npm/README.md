@@ -1,7 +1,59 @@
 # @reliantlabs/forge
 
-The [forge](https://github.com/reliant-labs/forge) CLI and MCP server, runnable
-without a Go toolchain.
+Guardrails for apps in any agent harness. Deploy with no account: a live URL plus a claim link.
+
+[Forge](https://github.com/reliant-labs/forge) is guardrails for apps. It is an
+open-source (Apache-2.0) framework, CLI and MCP server that supercharges any
+agent harness: Claude Code, Codex, Cursor, a harness you wrote, or CI. It
+scaffolds Go services, React frontends and SQL migrations into the right places,
+lints for your architecture and for unsafe migrations, tests against a real
+Postgres, and builds each release once and promotes it by digest. Use it piece
+by piece in any repo, in any language, with no rewrite. Deploy with no account:
+in a Vite or Next.js app, or an app with its own Dockerfile, run
+`npx -y @reliantlabs/forge@latest env deploy prod --claimable` to get a live URL
+and a claim link that is good for 72 hours.
+
+This package runs forge without a Go toolchain.
+
+## Deploy with your agent
+
+```sh
+# No account: a live URL plus a 72-hour claim link
+npx -y @reliantlabs/forge@latest env deploy prod --claimable
+```
+
+Or give your agent the MCP server, whose `deploy_claimable` tool does the same:
+
+```sh
+claude mcp add forge -- npx -y @reliantlabs/forge mcp   # Claude Code
+codex mcp add forge -- npx -y @reliantlabs/forge mcp    # Codex
+gemini extensions install https://github.com/reliant-labs/forge   # Gemini CLI
+```
+
+Cursor: add this to `.cursor/mcp.json` (or `~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "forge": { "command": "npx", "args": ["-y", "@reliantlabs/forge", "mcp"] }
+  }
+}
+```
+
+Then ask:
+
+```text
+Deploy this app with Reliant Forge. Run
+`npx -y @reliantlabs/forge@latest env deploy prod --claimable` (or call the forge
+MCP server's deploy_claimable tool), then give me the live URL and the claim link.
+```
+
+The claim link expires in 72 hours: treat it like a password. Opening it signs
+you up free and makes the deploy yours. It fits one static site, or one service
+with one database; the limits are in
+[docs/mcp.md](https://github.com/reliant-labs/forge/blob/main/docs/mcp.md#deploying-with-no-account).
+
+## In the repo you are in
 
 Forge helps the repo you are in today, in any language, with no rewrite:
 `forge lint` catches unsafe SQL migrations (and, in a Go module, cut traces and

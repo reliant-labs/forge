@@ -48,6 +48,7 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 		ConstructorName   string
 		Fallible          bool
 		HasDB             bool
+		TestDB            bool
 		HasLogger         bool
 		ConfigImport      string
 		ConfigImportAlias string
@@ -70,9 +71,10 @@ func TestComponentTestHelpersTemplate_MinimalService(t *testing.T) {
 			FieldName, Expr      string
 			NeedsTime, NeedsULID bool
 		}
-		FuncTodos    []struct{ FieldName, TypeExpr string }
-		UnfilledDeps []struct{ FieldName, TypeExpr string }
-		ExtraImports []struct{ Alias, Path string }
+		FuncTodos     []struct{ FieldName, TypeExpr string }
+		UnfilledDeps  []struct{ FieldName, TypeExpr string }
+		StoreDefaults []struct{ FieldName, TypeExpr string }
+		ExtraImports  []struct{ Alias, Path string }
 	}{
 		Module:                 "example.com/myproject",
 		Package:                "order",
@@ -519,6 +521,7 @@ func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
 		ConstructorType   string
 		Fallible          bool
 		HasDB             bool
+		TestDB            bool
 		HasLogger         bool
 		ConfigImport      string
 		ConfigImportAlias string
@@ -538,9 +541,10 @@ func TestComponentTestHelpersTemplate_PackageContractName(t *testing.T) {
 			FieldName, Expr      string
 			NeedsTime, NeedsULID bool
 		}
-		FuncTodos    []struct{ FieldName, TypeExpr string }
-		UnfilledDeps []struct{ FieldName, TypeExpr string }
-		ExtraImports []struct{ Alias, Path string }
+		FuncTodos     []struct{ FieldName, TypeExpr string }
+		UnfilledDeps  []struct{ FieldName, TypeExpr string }
+		StoreDefaults []struct{ FieldName, TypeExpr string }
+		ExtraImports  []struct{ Alias, Path string }
 	}{
 		Module:          "example.com/myproject",
 		Package:         "keywrap",

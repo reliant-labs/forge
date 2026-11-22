@@ -93,3 +93,28 @@ func TestRenderRefusesUnresolvedWorkloadURL(t *testing.T) {
 		t.Fatalf("rendered env = %v", env)
 	}
 }
+
+// TestRuntimeConfigJSWithAPIs pins the document of a site with named APIs:
+// the flat values plus an `apis` object, byte-stable, and identical to
+// RuntimeConfigJS when there are none.
+func TestRuntimeConfigJSWithAPIs(t *testing.T) {
+	apis := SameOriginSiteAPIs(map[string]v1alpha1.WorkloadURLRef{"billing": {Name: "billing-api"}, "auth": {Name: "auth"}})
+	got, err := RuntimeConfigJSWithAPIs(map[string]string{"API_URL": SiteAPIPath}, apis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `window.__FORGE_CONFIG__ = {"API_URL":"/_api","apis":{"auth":"/_api/@auth","billing":"/_api/@billing"}};` + "\n"
+	if got != want {
+		t.Fatalf("doc =\n%s\nwant\n%s", got, want)
+	}
+	plain, _ := RuntimeConfigJS(map[string]string{"A": "1"})
+	if same, _ := RuntimeConfigJSWithAPIs(map[string]string{"A": "1"}, nil); same != plain {
+		t.Errorf("no apis: %q, want RuntimeConfigJS's %q", same, plain)
+	}
+	if _, err := RuntimeConfigJSWithAPIs(map[string]string{"apis": "x"}, apis); err == nil {
+		t.Error("a values key \"apis\" beside named APIs was accepted")
+	}
+	if NamedSiteAPIPath("billing") != "/_api/@billing" {
+		t.Errorf("NamedSiteAPIPath = %q", NamedSiteAPIPath("billing"))
+	}
+}

@@ -36,7 +36,7 @@ func snapshotFrontendFixture(t *testing.T, names ...string) (release.Snapshot, *
 }
 func captureFrontendFixture(t *testing.T, s *release.Snapshot, base *release.Snapshot, e *KCLEntities) {
 	t.Helper()
-	if err := captureSnapshotFrontendsWith(context.Background(), s, base, e, "unused", "prod", func(string, string, map[string]map[string]string) (map[string]string, error) {
+	if err := captureSnapshotFrontendsWith(context.Background(), s, base, e, "unused", "prod", func(string, string, map[string]map[string]any) (map[string]string, error) {
 		m := map[string]string{}
 		for _, f := range e.Frontends {
 			m[f.Name] = "FROZEN_CONFIG_" + f.Name
@@ -98,7 +98,7 @@ func TestSnapshotFrontendCarryUsesBaseAndDoesNotRender(t *testing.T) {
 	candidate.Assets = nil
 	candidate.Selected = nil
 	e.Frontends[0].Runtime.Firebase.Project = "current"
-	if err := captureSnapshotFrontendsWith(context.Background(), &candidate, &base, e, "unused", "prod", func(string, string, map[string]map[string]string) (map[string]string, error) {
+	if err := captureSnapshotFrontendsWith(context.Background(), &candidate, &base, e, "unused", "prod", func(string, string, map[string]map[string]any) (map[string]string, error) {
 		t.Fatal("carried config re-rendered")
 		return nil, nil
 	}); err != nil {
@@ -145,7 +145,7 @@ func TestSnapshotFrontendRejectsUnpinnedOrCorrupt(t *testing.T) {
 			case "private-env":
 				e.Frontends[0].EnvVars = []KCLEnvVar{{Name: "TOKEN", SecretRef: "secret"}}
 			}
-			err := captureSnapshotFrontendsWith(context.Background(), &s, nil, e, "unused", "prod", func(string, string, map[string]map[string]string) (map[string]string, error) {
+			err := captureSnapshotFrontendsWith(context.Background(), &s, nil, e, "unused", "prod", func(string, string, map[string]map[string]any) (map[string]string, error) {
 				return map[string]string{}, nil
 			})
 			if mode == "override" || mode == "wrong-commit" || mode == "bundle" || mode == "private-env" {

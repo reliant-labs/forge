@@ -143,6 +143,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			ConstructorName string
 			Fallible        bool
 			HasDB           bool
+			TestDB          bool
 			HasLogger       bool
 			HasMigrationsFS bool
 			NeedsTime       bool
@@ -169,6 +170,7 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			FuncDefaults    []funcDefault
 			FuncTodos       []unresolvedStub
 			UnfilledDeps    []unresolvedStub
+			StoreDefaults   []unresolvedStub
 
 			ExtraImports []extraImport
 

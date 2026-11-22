@@ -59,11 +59,24 @@ only the `.pb.go` / `_pb.ts` stubs, while the descriptors, schema-driven ORM,
 mocks, frontend hooks and CRUD wiring come from forge's post-buf passes (it runs
 `buf generate` internally).
 
-## No Backwards Compatibility
+## Backwards compatibility: internal vs published protos
 
-Proto files in Forge projects are not published APIs with external consumers.
-Edit freely — add, rename, remove fields, RPCs and messages. Mark removed fields
-as `reserved`; never reuse field numbers.
+Whether a change is safe depends on who consumes the proto, not on forge.
+
+- **Internal protos** — every client is built and deployed from this repo in
+  the same release (your own frontend, your own services). Edit freely: add,
+  rename and remove fields, RPCs and messages. Still mark removed fields
+  `reserved` and never reuse a field number, because a client from the previous
+  release may be live during a rollout.
+- **Published protos** — anything a client you do not redeploy calls: a mobile
+  app, a CLI or daemon users upgrade on their own schedule, an SDK, another
+  team's service, a public API. These follow the project's compatibility
+  contract (often a `buf breaking` gate in CI). Never remove or renumber a field
+  or RPC in one step: add the new shape beside the old, mark the old one
+  `[deprecated = true]`, and remove it only when the contract allows, with its
+  tag and name `reserved`. Load `proto-breaking` for the flow.
+
+If you cannot tell which kind a proto is, treat it as published and ask.
 
 ## Annotation Reference
 

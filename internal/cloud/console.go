@@ -133,6 +133,14 @@ func (c Console) Release(version, env string) string {
 	return c.link("/releases/"+url.PathEscape(version), envQuery(env))
 }
 
+// Tests is the project's Tests overview.
+func (c Console) Tests() string { return c.link("/tests", nil) }
+
+// TestRun is one recorded test run's page, by the control plane's run id.
+func (c Console) TestRun(id string) string {
+	return c.link("/tests/runs/"+url.PathEscape(id), nil)
+}
+
 // Environment is one environment's page.
 func (c Console) Environment(env string) string {
 	return c.link("/environments/"+url.PathEscape(env), nil)

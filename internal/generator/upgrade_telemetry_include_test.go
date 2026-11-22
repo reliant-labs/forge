@@ -46,8 +46,7 @@ func TestUpgradeBringsTheTelemetryIncludeToTheCollectorFile(t *testing.T) {
 		}
 	}
 	older := strings.Replace(strings.Join(lines, "\n"),
-		"[memory_limiter, transform, transform/telemetry_identity, transform/telemetry_logs, batch]",
-		"[memory_limiter, transform, batch]", 1)
+		"        - transform/telemetry_identity\n        - transform/telemetry_logs\n", "", 1)
 
 	find := func(results []UpgradeResult) UpgradeResult {
 		for _, r := range results {

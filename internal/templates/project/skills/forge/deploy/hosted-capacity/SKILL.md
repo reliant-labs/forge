@@ -18,10 +18,14 @@ answer arrive in seconds instead of after a build.
 
 A deploy that only needs **billing the org has not set up** is ACCEPTED and
 QUEUED, not refused. Anything hosted that runs compute — a workload, a job, a
-managed database or an image build — needs a Reliant Compute plan. Static sites
-run no compute: each person gets one free (up to 1 GiB stored), counted across
-every org they own with no plan, and a second one (another env's site counts)
-needs the plan too. When the org has no plan and the deploy needs one:
+managed database or an image build — needs the org's **hosting billing**:
+pay-as-you-go hosting, enabled in Reliant → Settings → Billing by accepting its
+rates and a monthly budget. Hosting billing is not a machine plan. The plans
+that pay for Reliant cloud machines (where agents run) include no hosting, and
+hosting needs no machine plan. Static sites run no compute: each person gets one
+free (up to 1 GiB stored), counted across every org they own without hosting
+billing, and a second one (another env's site counts) needs hosting billing
+too. When the org has no hosting billing and the deploy needs it:
 
 - the pre-flight prints `Capacity: this deploy will be QUEUED on billing — …`
   and the deploy continues: built, pushed, release cut, bundle recorded,
@@ -33,12 +37,17 @@ needs the plan too. When the org has no plan and the deploy needs one:
 
 ```
 Error: deploy to prod is QUEUED, not failed: release 20261006.101500-abc is recorded and waits on billing.
-  why   this runs compute (1 workload, 1 database) and the organization has no active compute plan
-  do    Subscribe to a Reliant Compute plan in Reliant → Settings → Billing (an org admin can). …
+  why   this runs hosted compute (1 workload, 1 database) and the organization has no active hosting billing agreement
+  do    … in Reliant → Settings → Billing (an org admin can). …
   open  https://forge.reliantlabs.io/forge/env/prod?forgeProject=acme
   then  nothing to re-run: it deploys on its own once that is done. To block until it is live: forge env status prod --wait
   (exit 7: queued on a person, not a failure)
 ```
+
+The `why` and `do` lines are the control plane's own words, printed as sent;
+the wire code is still `NO_COMPUTE_PLAN`, and some control planes still word the
+fix as "a Reliant Compute plan". Whatever the wording, it means hosting
+billing, not a machine plan.
 
 - it goes live **by itself** once billing is set up — the billing webhook wakes
   the control plane; nothing is re-run. A newer deploy to the env replaces a
@@ -55,12 +64,12 @@ exits 7 with the same block rather than reporting drift.
 
 | Code | Meaning | Fix |
 |---|---|---|
-| `NO_COMPUTE_PLAN` | The deploy runs compute — a workload, job, managed database or image build — and the org has no active compute plan. A deploy of static sites alone does not get it, unless the control plane cannot inspect the bundle (then it assumes one workload). **Queued** (above) on a current control plane; refused by one that predates queueing | Subscribe to a compute plan in billing settings |
-| `STATIC_FREE_TIER_EXCEEDED` | No compute plan, static sites only, but past the free tier: more than one static site across the orgs its owner owns without a plan (every env's site counts), or more than 1 GiB stored. **Queued** like `NO_COMPUTE_PLAN` | Subscribe to a compute plan, or delete another env's static site |
-| `EXCEEDS_CEILING` | The plan's CPU/memory/storage ceiling is below the demand | Reduce resources or upgrade |
+| `NO_COMPUTE_PLAN` | The deploy runs compute — a workload, job, managed database or image build — and the org has no hosting billing (the code's name predates pay-as-you-go hosting; a machine plan does not clear it). A deploy of static sites alone does not get it, unless the control plane cannot inspect the bundle (then it assumes one workload). **Queued** (above) on a current control plane; refused by one that predates queueing | Enable pay-as-you-go hosting in billing settings |
+| `STATIC_FREE_TIER_EXCEEDED` | No hosting billing, static sites only, but past the free tier: more than one static site across the orgs its owner owns without hosting billing (every env's site counts), or more than 1 GiB stored. **Queued** like `NO_COMPUTE_PLAN` | Enable pay-as-you-go hosting, or delete another env's static site |
+| `EXCEEDS_CEILING` | The demand is above the org's hosting ceiling (CPU/memory/storage), or its monthly hosting budget is reached | Reduce resources, or raise the budget or ceiling |
 | `STATIC_SITE_LIMIT_REACHED` | The org has billing and the deploy would take it past its live static-site limit: 100 by default, every environment's site counting as one. A soft cap. Refused, never queued | Delete a site or environment you no longer need, or ask support for a higher limit (the fix line says how) |
 | `SPEND_CAP_REACHED` | The org's spend cap is reached | Raise the cap |
-| `PLAN_UNKNOWN` | The plan could not be determined | Retry; it is never read as "no plan" |
+| `PLAN_UNKNOWN` | The org's hosting billing could not be determined | Retry; it is never read as "no billing" |
 
 A static release has a size cap too, checked when the bundle is recorded or
 promoted (the pre-flight cannot see sizes): 1 GiB stored for the free site

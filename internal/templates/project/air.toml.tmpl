@@ -7,10 +7,11 @@ tmp_dir = "tmp"
   # overridden in [build.windows] below: air stops the running .exe before
   # building there (a running .exe cannot be replaced), so it builds in place.
   #
-  # $FORGE_GO_BUILD_FLAGS is how `forge env up` builds the server for test
-  # coverage (-cover -covermode=atomic -coverpkg=…) in a local or preview env
-  # (kcl/schema.k Tests): unset, it expands to nothing, so bare `air` builds
-  # as before.
+  # $FORGE_GO_BUILD_FLAGS is how `forge env up` hands this build the
+  # workload's declared GoBuild.flags (deploy/kcl: the scaffolded -trimpath,
+  # so every worktree shares one Go build cache) and, for test coverage in a
+  # local or preview env, -cover -covermode=atomic -coverpkg=… (kcl/schema.k
+  # Tests). Unset, it expands to nothing, so bare `air` builds as before.
   cmd = "forge storage check ./tmp && CGO_ENABLED=0 go build $FORGE_GO_BUILD_FLAGS -buildvcs=false -o ./tmp/{{.Name}}.tmp ./cmd/{{.Name}} && mv ./tmp/{{.Name}}.tmp ./tmp/{{.Name}}"
   delay = 1000
   # exclude_dir entries are root-relative: the bare "node_modules" only

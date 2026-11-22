@@ -103,6 +103,12 @@ func run{{.Package | pascalCase}}(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("construct {{.Name}}: %w", err)
 	}
 
+	// SELF-UPDATE, off. A binary your users run on their own machines can
+	// replace itself with newer signed releases: build an
+	// autoupdate.Updater (forge/pkg/selfupdate/autoupdate), run its Serve
+	// beside svc.Run and call its ExecPending last. See
+	// `forge skill load binaries/selfupdate`.
+
 	logger.Info("{{.Name}} starting")
 	if err := svc.Run(ctx); err != nil {
 		logger.Error("{{.Name}} run error", "error", err)

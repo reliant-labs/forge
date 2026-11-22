@@ -53,7 +53,9 @@ One binary, one profile: a binary that runs as several workloads (a modular
 monolith serving as server, worker and cron) gets the CPU of all of them,
 merged. The workloads come from the rendered env; ` + "`pgo.services`" + ` overrides them.
 
-Config is read from --env's KCL (default prod): ` + "`pgo = forge.PGO {from_env, since,\nmin_weight, services, enabled}`" + ` on a GoBuild, or DockerBuild.pgo keyed by binary.
+Config is read from --env's KCL (default prod):
+` + "`pgo = forge.PGO {from_env, since, min_weight, services, enabled}`" + ` on a GoBuild,
+or DockerBuild.pgo keyed by binary.
 A ShellBuild's binaries are pulled only when its ` + "`pgo`" + ` names them (forge.ShellPGO,
 keyed by package relative to its cwd), which also says where the profile goes
 (` + "`out`" + `, e.g. a sibling checkout's ../reliant/cmd/reliant/default.pgo) and whose

@@ -203,6 +203,9 @@ func newTestUpdater(t *testing.T, exe string, srv *fakeRelease, mutate func(*Con
 		t.Fatalf("New: %v", err)
 	}
 	u.exePath = exe
+	// The host running the tests may itself be a container; the container
+	// probe has its own tests.
+	u.detectEnv.container = nil
 	return u
 }
 

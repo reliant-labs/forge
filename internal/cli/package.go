@@ -28,6 +28,28 @@ import (
 // validGoPackageName matches a valid Go package name: lowercase letters, digits, underscores.
 var validGoPackageName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// splitPackagePath validates a `package new` name and splits it into the
+// module-relative path under internal/ and the Go package name. A flat name
+// ("cache") is its own path and leaf; a nested one ("credentials/vault") is a
+// "/"-separated path whose every segment is a valid package name and whose
+// last segment is the Go package name.
+func splitPackagePath(name string) (importPath, leaf string, err error) {
+	segments := strings.Split(name, "/")
+	for _, seg := range segments {
+		if !validGoPackageName.MatchString(seg) {
+			if len(segments) > 1 {
+				return "", "", fmt.Errorf("invalid package name %q: every /-separated segment (%q is not) must be lowercase, start with a letter, and contain only letters, digits, and underscores", name, seg)
+			}
+			return "", "", fmt.Errorf("invalid package name %q: must be lowercase, start with a letter, and contain only letters, digits, and underscores", name)
+		}
+	}
+	leaf = segments[len(segments)-1]
+	if cmdutil.GoKeywords[leaf] {
+		return "", "", fmt.Errorf("%q is a Go keyword", leaf)
+	}
+	return name, leaf, nil
+}
+
 // validPackageKinds lists the supported --kind values.
 var validPackageKinds = map[string]bool{
 	"eventbus": true,
@@ -100,6 +122,7 @@ add methods to the service type, run 'forge generate' again.
 Example:
   forge package new cache
   forge package new notifications
+  forge package new credentials/vault          # nested: internal/credentials/vault, package vault
   forge package new events --kind eventbus
   forge package new stripe-adapter --type adapter --base-url
   forge package new pubsub --type adapter --dry-run`,
@@ -181,7 +204,13 @@ func packageTypeForCommand(cmd *cobra.Command) (string, error) {
 }
 
 func runPackageNew(cmd *cobra.Command, args []string) error {
+	// name is the module-relative path under internal/ ("cache", or
+	// "credentials/vault" for a nested package); leaf is the Go package name.
 	name := args[0]
+	name, leaf, err := splitPackagePath(name)
+	if err != nil {
+		return err
+	}
 
 	kind, _ := cmd.Flags().GetString("kind")
 	kind = strings.TrimSpace(kind)
@@ -216,20 +245,12 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--base-url applies only to --type=adapter (a %s package takes its settings as a config block you declare)", pkgType)
 	}
 	if wantBaseURL && baseURLEnv == "" {
-		baseURLEnv = strings.ToUpper(name) + "_BASE_URL"
+		baseURLEnv = strings.ToUpper(leaf) + "_BASE_URL"
 	}
 	if baseURLEnv != "" && !validEnvVarName.MatchString(baseURLEnv) {
 		return fmt.Errorf("--base-url-env=%s: an env var name is upper-case letters, digits and underscores, starting with a letter", baseURLEnv)
 	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
-
-	// Validate name is a valid Go package name
-	if !validGoPackageName.MatchString(name) {
-		return fmt.Errorf("invalid package name %q: must be lowercase, start with a letter, and contain only letters, digits, and underscores", name)
-	}
-	if cmdutil.GoKeywords[name] {
-		return fmt.Errorf("%q is a Go keyword", name)
-	}
 
 	root, err := projectRoot()
 	if err != nil {
@@ -240,7 +261,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// internal/<name>/ holds a contract — a contract.go or a
 	// `//forge:contract` type — which is what both the bootstrap codegen and
 	// every reporter discover it from.
-	pkgDir := filepath.Join(root, "internal", name)
+	pkgDir := filepath.Join(root, "internal", filepath.FromSlash(name))
 	if dirExists(pkgDir) {
 		if pkgType == "adapter" && fileExists(filepath.Join(pkgDir, "adapter.go")) && codegen.HasOutboundIODirective(pkgDir) {
 			fmt.Printf("Adapter %q already exists at %s; leaving its owned files and config unchanged.\n", name, pkgDir)
@@ -259,10 +280,9 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Creating internal package '%s'...\n", name)
 	}
 
-	// Template data. ImportPath mirrors Name for now because `forge package
-	// new` only accepts flat names (validGoPackageName rejects "/"). When
-	// nested-path support lands, ImportPath should carry the full
-	// module-relative path under internal/ (e.g. "mcp/database").
+	// Template data. Name is the Go package name (the last path segment);
+	// ImportPath is the full module-relative path under internal/ (e.g.
+	// "credentials/vault"), which equals Name for a flat package.
 	//
 	// Flavor identifies the scaffold shape: the --kind when given, else the
 	// --type ("service" for the default empty-interface scaffold). The owned
@@ -291,7 +311,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 		ConfigBlock  string
 		ConfigEnvVar string
 	}{
-		Name:       name,
+		Name:       leaf,
 		ImportPath: name,
 		Module:     cfg.ModulePath,
 		Flavor:     flavor,
@@ -309,7 +329,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// named for one would be configuration nothing reads. The proto edit runs
 	// first because its outcome decides which Deps shape the templates render.
 	if baseURLEnv != "" {
-		block, err := ensureAdapterConfigBlock(root, name, baseURLEnv, dryRun)
+		block, err := ensureAdapterConfigBlock(root, name, leaf, baseURLEnv, dryRun)
 		if err != nil {
 			return err
 		}
@@ -398,7 +418,7 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 	// trusted it edited contract.go and never opened adapter.go, cache.go
 	// or observe_chain.go, which is where the scaffold's best guidance
 	// lives.
-	printScaffoldedPackageSummary(pkgDir, name, pkgType)
+	printScaffoldedPackageSummary(pkgDir, name, leaf, pkgType)
 	// Every caller ends with a generate run unless --no-generate skipped it;
 	// only then is "run generate first" still advice the user needs.
 	if noGenerate, _ := cmd.Flags().GetBool("no-generate"); data.ConfigBlock != "" && noGenerate {
@@ -421,19 +441,19 @@ func runPackageNew(cmd *cobra.Command, args []string) error {
 // A project with no AppConfig must declare its config composition explicitly
 // before scaffolding an adapter. Refuse before creating its package rather
 // than emitting the scalar Deps field forge-config-deps rejects.
-func ensureAdapterConfigBlock(root, name, envVar string, dryRun bool) (block string, err error) {
+func ensureAdapterConfigBlock(root, importPath, name, envVar string, dryRun bool) (block string, err error) {
 	block = naming.ToPascalCase(name) + "Config"
 	spec := scaffold.ConfigBlockSpec{
 		Message: block,
 		Field:   name,
 		Doc: []string{
-			fmt.Sprintf("%s configures the %s adapter (internal/%s), composed on", block, name, name),
+			fmt.Sprintf("%s configures the %s adapter (internal/%s), composed on", block, name, importPath),
 			fmt.Sprintf("%s as %#q. internal/app/compose.go hands it to the adapter as", scaffold.ConfigRootMessage, name),
 			"Deps.Cfg, so each leaf reaches the adapter from its env var, a --config",
 			"file, or deploy/kcl/<env>/config.k. Add the adapter's other settings here",
 			"as leaves: account IDs, timeouts, and API keys with `sensitive: true`.",
 		},
-		FieldDoc: fmt.Sprintf("Configuration of the %s adapter (internal/%s).", name, name),
+		FieldDoc: fmt.Sprintf("Configuration of the %s adapter (internal/%s).", name, importPath),
 		Leaves: []scaffold.ConfigBlockLeaf{{
 			Type:        "string",
 			Name:        "base_url",
@@ -550,7 +570,7 @@ var packageFileRoles = map[string]string{
 // The list is read off DISK rather than from a hardcoded set, so a template
 // added to a scaffold tree shows up here automatically instead of being
 // silently under-reported — the exact failure this replaced.
-func printScaffoldedPackageSummary(pkgDir, name, pkgType string) {
+func printScaffoldedPackageSummary(pkgDir, name, leaf, pkgType string) {
 	noun := "Internal package"
 	if pkgType == "adapter" {
 		noun = "Adapter"
@@ -584,8 +604,8 @@ func printScaffoldedPackageSummary(pkgDir, name, pkgType string) {
 	// calls New. Say so here rather than at the end of the first lint run.
 	if _, statErr := os.Stat(filepath.Join(pkgDir, "observe_chain.go")); statErr == nil {
 		fmt.Printf("\n   Wherever you construct it by hand (providers.go, a *_wire.go, another binary) call\n")
-		fmt.Printf("   %s.NewInstrumented(deps) — New's signature, returned already traced. compose.go is wired by\n", name)
-		fmt.Printf("   `forge generate`; a bare %s.New(...) elsewhere is reported by `forge lint --tracing` (--fix rewrites it).\n", name)
+		fmt.Printf("   %s.NewInstrumented(deps) — New's signature, returned already traced. compose.go is wired by\n", leaf)
+		fmt.Printf("   `forge generate`; a bare %s.New(...) elsewhere is reported by `forge lint --tracing` (--fix rewrites it).\n", leaf)
 	}
 
 	// The next step differs by shape: an adapter arrives with a working

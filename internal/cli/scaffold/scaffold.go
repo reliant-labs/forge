@@ -1161,7 +1161,10 @@ func newPackageCmd(f *factory.Factory) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "package <name>",
 		Short: "Scaffold a new internal package (alias for 'forge package new')",
-		Long: `Scaffold a new internal package under internal/<name>/.
+		Long: `Scaffold a new internal package under internal/<name>/. A name may be a
+/-separated path (credentials/vault): the package lands in
+internal/credentials/vault, is named after the last segment, and is imported,
+scoped and wired by its full path.
 
 The --type flag picks the scaffold shape:
 
@@ -1185,6 +1188,7 @@ writes nothing.
 
 Example:
   forge scaffold package cache
+  forge scaffold package credentials/vault     # nested: internal/credentials/vault, package vault
   forge scaffold package events --kind eventbus
   forge scaffold package stripe-adapter --type adapter --base-url
   forge scaffold package pubsub --type adapter --dry-run`,

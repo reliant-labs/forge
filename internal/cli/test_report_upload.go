@@ -26,6 +26,8 @@ import (
 	"regexp"
 	"strings"
 
+	"golang.org/x/mod/modfile"
+
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
@@ -78,17 +80,19 @@ func testUploadWanted(flag, configured string, inCI bool) (want bool, why string
 // makes a required upload that did not happen exit 4. A failed test still
 // exits 1: the run's own verdict outranks the upload.
 func applyTestUpload(ctx context.Context, errOut io.Writer, rep *testreport.Report, flag string, in testUploadInput) error {
-	configured, err := testsUploadConfig()
+	tests, err := testsConfig()
 	if err != nil {
 		return err
 	}
-	want, why := testUploadWanted(flag, configured, testUploadInCI())
+	want, why := testUploadWanted(flag, tests.Upload, testUploadInCI())
 	switch {
 	case want:
 		in.project = hostedProjectName()
 		if in.project == "" {
 			in.project = rep.Project
 		}
+		in.flakePolicy = testFlakePolicyWire(tests.Flakes)
+		in.goModule = testGoModule(in.root)
 		up := uploadTestReport(ctx, in)
 		rep.Upload = &up.Upload
 		// One warning per omitted part: the run is recorded, but not
@@ -115,16 +119,30 @@ func applyTestUpload(ctx context.Context, errOut io.Writer, rep *testreport.Repo
 	return nil
 }
 
-// testsUploadConfig is forge.yaml's tests.upload; "" outside a project.
-func testsUploadConfig() (string, error) {
+// testsConfig is forge.yaml's tests block; zero outside a project.
+func testsConfig() (config.TestsConfig, error) {
 	cfg, err := loadProjectConfig()
 	switch {
 	case errors.Is(err, ErrProjectConfigNotFound):
-		return "", nil
+		return config.TestsConfig{}, nil
 	case err != nil:
-		return "", err
+		return config.TestsConfig{}, err
 	}
-	return cfg.Tests.Upload, nil
+	return cfg.Tests, nil
+}
+
+// testGoModule is the module path of root's go.mod, "" when it has none (or
+// one too long for RecordTestRun).
+func testGoModule(root string) string {
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	mod := modfile.ModulePath(data)
+	if len(mod) > maxTestGoModule {
+		return ""
+	}
+	return mod
 }
 
 // testUpload is an upload's outcome: the report's `upload` field, and each
@@ -163,8 +181,11 @@ type testUploadRun struct {
 type testUploadInput struct {
 	root    string
 	project string
-	runs    []*testlocal.Run
-	a       *testlocal.Assembly
+	// flakePolicy and goModule go on every lane run's request when set.
+	flakePolicy *wireTestFlakePolicy
+	goModule    string
+	runs        []*testlocal.Run
+	a           *testlocal.Assembly
 }
 
 // uploadTestReport records each lane run of in.runs on the control plane and
@@ -363,6 +384,7 @@ func testUploadRequest(ctx context.Context, in testUploadInput, r *testlocal.Run
 	req := &wireRecordTestRunRequest{
 		Project: in.project, GitCommit: commit, TreeHash: tree, Lane: l.Lane,
 		Source: testSourceLocal, ExitCode: l.ExitCode, ForgeVersion: r.ForgeVersion,
+		FlakePolicy: in.flakePolicy, GoModule: in.goModule,
 	}
 	if len(r.Branch) <= 256 {
 		req.Branch = r.Branch

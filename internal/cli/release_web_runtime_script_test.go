@@ -60,6 +60,14 @@ func wrFixtureFloor(v string) string {
 	return "package generator\n\nconst webRuntimePublishedRange = \"^" + v + "\"\n"
 }
 
+// wrPublishedList is the record of the runtime versions npm serves, and
+// wrFixturePublished a fixture's: a header, then versions out of lexical order
+// (0.9.0 sorts after 0.13.0 as text), which the release keeps in semver order.
+const (
+	wrPublishedList    = "internal/generator/webruntime_published_versions.txt"
+	wrFixturePublished = "# written by the release\n0.9.0\n0.13.0\n"
+)
+
 // writeFiles writes rel → content under root.
 func writeFiles(t *testing.T, root string, files map[string]string) {
 	t.Helper()
@@ -634,6 +642,7 @@ func addWebRuntimeToForgeFixture(t *testing.T, repo string) {
 		"web-runtime/package-lock.json":             wrFixtureLock("0.13.0"),
 		"web-runtime/src/index.ts":                  "export const one = 1;\n",
 		"internal/generator/frontend_webruntime.go": wrFixtureFloor("0.13.0"),
+		wrPublishedList:                             wrFixturePublished,
 	})
 	tagWebRuntime(t, repo, "0.13.0")
 	commitAndPush(t, repo, "fix(web-runtime): a fix", map[string]string{"web-runtime/src/index.ts": "export const one = 2;\n"})
@@ -667,6 +676,11 @@ func TestReleaseForgeScript_PublishesTheWebRuntimeFirst(t *testing.T) {
 	}
 	if v := bookkeepingFile(t, origin, "v0.2.0", "internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.13.1"`) {
 		t.Errorf("the bookkeeping did not raise the scaffold floor to ^0.13.1:\n%s", v)
+	}
+	// The floor's version is recorded as published, in the same commit, so the
+	// -short TestWebRuntimeFloorIsAPublishedVersion accepts it.
+	if v, want := bookkeepingFile(t, origin, "v0.2.0", wrPublishedList), wrFixturePublished+"0.13.1\n"; v != want {
+		t.Errorf("the bookkeeping did not record 0.13.1 as published, in order and under the list's header:\n%s\nwant:\n%s", v, want)
 	}
 	if !strings.Contains(out, "web runtime: @reliantlabs/forge-web-runtime 0.13.1") {
 		t.Errorf("the release did not report the runtime it shipped:\n%s", out)

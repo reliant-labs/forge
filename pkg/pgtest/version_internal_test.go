@@ -86,6 +86,35 @@ func TestInstanceRootPerVersion(t *testing.T) {
 	}
 }
 
+// TestInstanceRootDir: FORGE_TEST_POSTGRES_DIR moves the root when it is an
+// absolute path; unset, blank or relative keeps os.TempDir().
+func TestInstanceRootDir(t *testing.T) {
+	tmpDefault := filepath.Join(os.TempDir(), "forge-pgtest")
+	tmp16 := filepath.Join(os.TempDir(), "forge-pgtest-16.9.0")
+	abs := t.TempDir()
+	cases := []struct {
+		name, env    string
+		def, version string
+	}{
+		{"unset", "", tmpDefault, tmp16},
+		{"whitespace", "  \t", tmpDefault, tmp16},
+		{"relative", "shm/pg", tmpDefault, tmp16},
+		{"absolute", abs, filepath.Join(abs, "forge-pgtest"), filepath.Join(abs, "forge-pgtest-16.9.0")},
+		{"absolute, padded and unclean", " " + abs + "/x/../ ", filepath.Join(abs, "forge-pgtest"), filepath.Join(abs, "forge-pgtest-16.9.0")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv(EnvDir, c.env)
+			if got := instanceRootFor(DefaultVersion); got != c.def {
+				t.Errorf("default root = %s, want %s", got, c.def)
+			}
+			if got := instanceRootFor("16.9.0"); got != c.version {
+				t.Errorf("16 root = %s, want %s", got, c.version)
+			}
+		})
+	}
+}
+
 const versionHelperEnv = "PGTEST_VERSION_HELPER"
 
 // TestEmbeddedServerRunsTheDeclaredMajor boots the embedded server in a child

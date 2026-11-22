@@ -47,6 +47,19 @@ import (
 // version for one run, over forge.yaml's database.postgres_version.
 const EnvVersion = "FORGE_TEST_POSTGRES_VERSION"
 
+// EnvDir names the env var that moves the embedded server's runtime root.
+// Set to an ABSOLUTE path, it replaces os.TempDir() as the parent of the
+// forge-pgtest[-<version>] root, so the shared server's data directories,
+// pool state, leases and boot logs live under it — /dev/shm, say, to keep
+// them on tmpfs (the server runs with fsync=off, so RAM-backed storage loses
+// nothing a test needs) without moving every other temp file the way TMPDIR
+// would. The directory is created if missing. Each distinct value is its own
+// pool: processes with different values run separate servers. Empty or
+// whitespace is unset, and a relative path is ignored (os.TempDir() is
+// used), because a test binary runs in its package's directory and a
+// relative root would give every package a server of its own.
+const EnvDir = "FORGE_TEST_POSTGRES_DIR"
+
 // DefaultVersion is the postgres the embedded server runs when nothing
 // declares one: embedded-postgres's own default.
 const DefaultVersion = string(embeddedpostgres.V18)
@@ -174,19 +187,32 @@ func declaredInForgeYAML(dir string) (version, file string) {
 }
 
 // instanceRoot is the directory this process's embedded servers, pool state
-// and lock live under. The default version keeps the historical
-// os.TempDir()/forge-pgtest, so a process on an older forge still shares (and
-// never reaps) the same server. Every other version gets a root of its own,
-// which an older forge's reaper never scans.
+// and lock live under: <base>/forge-pgtest[-<version>], where <base> is
+// os.TempDir() unless FORGE_TEST_POSTGRES_DIR (EnvDir) names another. The
+// default version keeps the historical name forge-pgtest, so a process on an
+// older forge still shares (and never reaps) the same server. Every other
+// version gets a root of its own, which an older forge's reaper never scans.
 func instanceRoot() string {
 	return instanceRootFor(serverVersion().version)
 }
 
 func instanceRootFor(version string) string {
+	base := instanceBase()
 	if version == "" || version == DefaultVersion {
-		return filepath.Join(os.TempDir(), "forge-pgtest")
+		return filepath.Join(base, "forge-pgtest")
 	}
-	return filepath.Join(os.TempDir(), "forge-pgtest-"+version)
+	return filepath.Join(base, "forge-pgtest-"+version)
+}
+
+// instanceBase is the parent of instanceRoot: EnvDir when it is an absolute
+// path, else os.TempDir(). A relative value is ignored rather than resolved:
+// a test binary runs in its package's directory, so it would give every
+// package a server of its own instead of one shared by the run.
+func instanceBase() string {
+	if dir := strings.TrimSpace(os.Getenv(EnvDir)); dir != "" && filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	return os.TempDir()
 }
 
 // checkExternalVersion fails when a version is declared and the external

@@ -32,15 +32,21 @@
 #             never has to touch it; one may raise it to declare a version the
 #             titles do not say.
 #   range     the scaffold floor at the commit (webRuntimePublishedRange) must
-#             be a caret range the result satisfies, because forge's release
-#             ships the generator of exactly this commit. So the PR making a
-#             breaking runtime change raises it (and package.json's version)
-#             to the new minor (major from 1.0); the release refuses otherwise.
+#             be ^X.Y.Z with X.Y.Z at most the result; a floor above it names
+#             a version this release does not make, and is refused. A floor in
+#             the PREVIOUS caret window (^0.13.21 for a breaking 0.14.0) is
+#             expected and only noted: a pull request never raises the floor
+#             to an unpublished version (TestWebRuntimeFloorIsAPublishedVersion
+#             fails it), so a breaking runtime change lands with no generator
+#             code that needs it, the forge released from this commit
+#             scaffolds the previous window its code works with, and the
+#             bookkeeping raises the floor once npm serves the new version.
 #
 # After a publish, forge's release bookkeeping (scripts/release-forge.sh, the
 # release/vX.Y.Z pull request) writes the version into web-runtime/package.json
-# and webRuntimePublishedRange, so the floor only ever names a published
-# version.
+# and webRuntimePublishedRange, and records it in
+# internal/generator/webruntime_published_versions.txt, so the floor only ever
+# names a published version. That is the only writer of the floor.
 #
 # WHO RUNS IT. Every forge release, before its tag: scripts/release-forge.sh
 # calls it for the commit it releases and stops the release if it fails. And
@@ -317,14 +323,15 @@ else
   R_VERSION="$NEXT"; R_TAG="$TAG_PREFIX$NEXT"
 fi
 
-# The scaffold floor at the commit must be an npm caret range that the version
-# this commit releases SATISFIES. forge's release builds its archives and tags
-# this very commit, so its generator scaffolds exactly this range: a floor
-# above the version names one npm lacks, and a floor in an older caret window
-# (^0.13.0 for a breaking 0.14.0, ^1.x for 2.0.0) resolves only runtimes
-# older than the one the generated code needs. The bookkeeping that later
-# raises the floor does not reach the released binary, so refuse it here,
-# before anything is published.
+# The scaffold floor at the commit must be ^X.Y.Z, at or below the version
+# this commit releases. forge's release builds its archives and tags this very
+# commit, so its generator scaffolds exactly this range: a floor above the
+# version names one this release does not make, so refuse it here, before
+# anything is published. A floor in an OLDER caret window (^0.13.21 for a
+# breaking 0.14.0, ^1.x for 2.0.0) is the policy, not a defect: the floor names
+# only published versions (TestWebRuntimeFloorIsAPublishedVersion), so the
+# commit's generated code works with the previous window, and the bookkeeping
+# raises the floor to this version after it is published.
 caret_satisfies() { # $1 version, $2 the X.Y.Z of a ^X.Y.Z range
   local vmaj vmin vpat fmaj fmin fpat
   IFS=. read -r vmaj vmin vpat <<<"$1"; IFS=. read -r fmaj fmin fpat <<<"$2"
@@ -334,15 +341,17 @@ caret_satisfies() { # $1 version, $2 the X.Y.Z of a ^X.Y.Z range
   else [ "$1" = "$2" ]
   fi
 }
-FLOOR="$(git show "$COMMIT:$FLOOR_FILE" 2>/dev/null | sed -n 's/^const webRuntimePublishedRange = "^\([0-9.]*\)".*/\1/p' | head -n 1)"
-if [ -n "$FLOOR" ] && ! [[ "$FLOOR" =~ $SEMVER_RE ]]; then
-  fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, not ^X.Y.Z"
+FLOOR_SPEC="$(git show "$COMMIT:$FLOOR_FILE" 2>/dev/null | sed -n 's/^const webRuntimePublishedRange = "\([^"]*\)".*/\1/p' | head -n 1)"
+FLOOR="${FLOOR_SPEC#^}"
+if [ -n "$FLOOR_SPEC" ] && { [ "$FLOOR_SPEC" = "$FLOOR" ] || ! [[ "$FLOOR" =~ $SEMVER_RE ]]; }; then
+  fail "$FLOOR_FILE at $COMMIT declares $FLOOR_SPEC, not ^X.Y.Z"
 fi
 if [ -n "$FLOOR" ] && ! ver_ge "$R_VERSION" "$FLOOR"; then
-  fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, above the $R_VERSION this commit releases; lower it, or raise $PKG_DIR/package.json's version to declare $FLOOR"
+  fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, above the $R_VERSION this commit releases. The floor names only published versions (internal/generator/webruntime_published_versions.txt), and only the release bookkeeping raises it: lower it to the newest published version"
 fi
 if [ -n "$FLOOR" ] && ! caret_satisfies "$R_VERSION" "$FLOOR"; then
-  fail "$FLOOR_FILE at $COMMIT declares ^$FLOOR, which does not admit the $R_VERSION this commit releases (a ${R_BUMP} bump): a forge released from it would scaffold a range that cannot install the runtime its generated code needs. In the pull request that makes the breaking change, raise webRuntimePublishedRange to ^$R_VERSION and $PKG_DIR/package.json's version to $R_VERSION"
+  echo "note: $FLOOR_FILE at ${COMMIT:0:12} declares ^$FLOOR, the caret window before the $R_VERSION this commit releases (a ${R_BUMP} bump)."
+  echo "      A forge released from this commit scaffolds ^$FLOOR; forge's release bookkeeping raises the floor to ^$R_VERSION once npm serves it."
 fi
 
 # ── Superseded: a LATER commit already released a version at least this one ──
@@ -353,7 +362,8 @@ fi
 # pin moved. A release from a descendant ships everything this commit's runtime does, so
 # when one is at or above the computed version and inside this commit's caret floor, it
 # IS this commit's runtime: nothing is published (npm's latest never moves back), and in
-# a release npm must serve it.
+# a release npm must serve it. "This commit's caret window" is the computed
+# version's: the floor may still name the window before it (above).
 verify_served_version() { bash "$SCRIPT_DIR/verify-npm-published.sh" --name "$R_PACKAGE" --version "$1"; }
 SUPER_VERSION="" SUPER_COMMIT=""
 if [ "$R_CHANGED" = true ]; then
@@ -363,7 +373,7 @@ if [ "$R_CHANGED" = true ]; then
     [ "$target" != "$COMMIT" ] || continue
     git merge-base --is-ancestor "$COMMIT" "$target" 2>/dev/null || continue
     ver_ge "$v" "$R_VERSION" || continue
-    caret_satisfies "$v" "${FLOOR:-$R_VERSION}" || continue
+    caret_satisfies "$v" "$R_VERSION" || continue
     if [ -z "$SUPER_VERSION" ] || ! ver_ge "$SUPER_VERSION" "$v"; then SUPER_VERSION="$v"; SUPER_COMMIT="$target"; fi
   done < <(git for-each-ref --format='%(refname) %(*objectname)%(objectname)' "$NS/tags/" | awk '{print $1, substr($2, 1, 40)}')
 fi

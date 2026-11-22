@@ -57,12 +57,14 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // not bridged to a local checkout. It must name a PUBLISHED version, because
 // `forge generate` raises every consumer to it. forge's release bookkeeping
 // (scripts/release-forge.sh) writes it, with web-runtime/package.json's
-// version, after scripts/release-web-runtime.sh has published that version:
-// pull requests do not bump it, except the one making a breaking runtime
-// change, which raises it to the new minor (major from 1.0) because a forge
-// release ships this range from the commit it tags; release-web-runtime.sh
-// refuses a range the computed version does not satisfy.
-// TestWebRuntimePublishedRangeTracksPackage
+// version, after scripts/release-web-runtime.sh has published that version,
+// and records the version in webruntime_published_versions.txt.
+// Pull requests never bump it, a breaking runtime change included: that change
+// lands with no generator code that needs it, is released with the previous
+// floor, and once npm serves the new minor (major from 1.0) the bookkeeping
+// raises the floor, after which generator code may use the new API.
+// TestWebRuntimeFloorIsAPublishedVersion fails a floor that recorded list
+// does not name, and TestWebRuntimePublishedRangeTracksPackage
 // holds its major.minor to package.json's. Generated service-hooks require
 // createMutationCall/createServiceMutations, first published in 0.13.5, and
 // the auth context imports identifyUser (#2065), first published in 0.13.11,

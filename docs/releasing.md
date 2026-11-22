@@ -35,11 +35,19 @@ nothing otherwise. The bump keeps `^` ranges working: before 1.0, a breaking cha
 the minor and anything else the patch; from 1.0, breaking → major, `feat` → minor, else
 patch. `web-runtime/package.json`'s version is a floor: raise it in a pull request only
 to declare a version the titles do not say (it is published even when nothing else
-changed). Because a forge release ships the generator of the very commit it tags, the
-scaffold floor `webRuntimePublishedRange` at that commit must be a `^` range the computed
-version satisfies: the pull request that makes a breaking runtime change raises it, and
-`package.json`'s version, to the new minor (major from 1.0), or the release refuses
-before publishing anything. The script pushes the `web-runtime/vX.Y.Z`
+changed). The scaffold floor `webRuntimePublishedRange` names only versions npm
+serves, because `forge generate` raises every consumer to it: **raise
+`webRuntimePublishedRange` only after npm serves that version; the release bookkeeping
+does it.** `internal/generator/webruntime_published_versions.txt` lists every published
+version, is written by the release, never by hand, and the `-short` test
+`TestWebRuntimeFloorIsAPublishedVersion` fails a floor it does not list (npm has never
+served 0.12.1 or 0.13.0, so "at most the newest" is not enough). A breaking runtime
+change therefore lands in two steps: first the runtime change, with no generator code
+that needs it; the release publishes the new minor (major from 1.0) from a commit whose
+floor is still the previous window, which `release-web-runtime.sh` notes rather than
+refuses, and its bookkeeping raises the floor. Then a pull request uses the new API. A
+floor above the computed version, or not `^X.Y.Z`, is refused before anything is
+published. The script pushes the `web-runtime/vX.Y.Z`
 tag, whose `release-web-runtime.yml` run publishes it (npm trusted publishing), and
 returns only once npm serves it. `--plan` prints the decision; `--dry-run` also
 validates the package.
@@ -56,7 +64,10 @@ Two callers run it, so nobody has to:
   serves it; at a hand cut it publishes. If it cannot, the release stops before forge's
   tag: a forge whose runtime is not on npm is not released. The bookkeeping pull request
   then writes the version into `web-runtime/package.json` and the scaffold floor
-  `webRuntimePublishedRange`, so forge never scaffolds a range npm cannot meet.
+  `webRuntimePublishedRange`, and adds it to
+  `internal/generator/webruntime_published_versions.txt`, so forge never scaffolds a
+  range npm cannot meet. This bookkeeping is the only writer of the floor and the list;
+  the train's cut publishes the runtime but raises neither.
 
 A tag whose publish failed (`release-web-runtime.yml` red) is reported on every re-run
 until npm serves it. Re-run that workflow run; never move or delete the tag.

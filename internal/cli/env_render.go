@@ -1318,7 +1318,8 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 	}
 	fmt.Fprintf(w, "\nhost (run on this machine by `forge env up`):\n")
 	for _, h := range hosts {
-		cmd, err := hostlaunch.BuildCmd(context.Background(), h.Name, hostRunnerSpec(h))
+		spec := hostRunnerSpec(h)
+		cmd, err := hostlaunch.BuildCmd(context.Background(), h.Name, spec)
 		if err != nil {
 			fmt.Fprintf(w, "  %s: %v\n", h.Name, err)
 			continue
@@ -1328,6 +1329,10 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 		dir := ""
 		if cmd.Dir != "" && cmd.Dir != projectDirForKCL() {
 			dir = "  (in " + cmd.Dir + ")"
+		}
+		// air's argv is its config's: name the declared flags it builds with.
+		if env, _ := hostlaunch.WithGoBuildFlags(spec, nil); len(env) > 0 {
+			dir += "  (" + env[0] + ")"
 		}
 		fmt.Fprintf(w, "  %s (%s): %s%s\n", h.Name, h.Kind, strings.Join(cmd.Args, " "), dir)
 	}

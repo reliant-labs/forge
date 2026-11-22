@@ -32,30 +32,17 @@ func CheckEnv(extra ...string) []string {
 // one commit, two worktrees: the second compiled 267 packages and cached 0 of
 // 73 test packages; with -trimpath, 0 compiles and 58 of 73 cached.
 //
-// # Where it applies
+// # Not for a project's own builds
 //
-// Every go command forge starts to compile a project: the checks above, and
-// since v1.11.0 `forge build`'s host binaries and the air / go-run dev loop of
-// `forge env up` (WithTrimpathPinned) too. A trimmed binary's panic traces
-// name module-relative paths (github.com/acme/app/internal/x/x.go:12), the
-// same form forge's error stacks report anyway (pkg/svcerr). The exception is
-// a binary someone debugs: delve sets breakpoints by absolute source path, so
-// every debug build passes -trimpath=false on its command line, which beats
-// GOFLAGS (forge debug, the delve runner, the scaffolded air-debug.toml and
-// VS Code launch configs).
+// This is for the go commands forge runs on its OWN behalf, to check code.
+// A project's builds — `forge build`, the go-run and air dev loop, build
+// variants — are trimmed by what the project declares: a scaffolded GoBuild
+// says `flags = ["-trimpath"]`, which every go build forge runs from it
+// carries on its command line, where the project can see and change it. A
+// debug build appends -trimpath=false after those flags, since delve sets
+// breakpoints by absolute source path.
 func WithTrimpath(env []string) []string {
 	return withTrimpath(env, goEnvFileFlags)
-}
-
-// WithTrimpathPinned is WithTrimpath for an environment that something
-// else will add to GOFLAGS after it (hostlaunch.WithPGO appends -pgo=off):
-// GOFLAGS is always written into env, with -trimpath merged in unless the
-// effective value already says -trimpath either way. WithTrimpath leaves a
-// file-layer-only value (`go env -w`, go.env) where it is, and a later
-// GOFLAGS=-pgo=off would then hide it from cmd/go — a -trimpath=false
-// opt-out included. env itself is not modified.
-func WithTrimpathPinned(env []string) []string {
-	return withTrimpathPinned(env, goEnvFileFlags)
 }
 
 func withTrimpath(env []string, fileFlags func() string) []string {
@@ -64,14 +51,6 @@ func withTrimpath(env []string, fileFlags func() string) []string {
 		return env
 	}
 	return replaceGOFLAGS(env, strings.TrimSpace(flags+" -trimpath"))
-}
-
-func withTrimpathPinned(env []string, fileFlags func() string) []string {
-	flags := effectiveGOFLAGS(env, fileFlags)
-	if !mentionsTrimpath(flags) {
-		flags += " -trimpath"
-	}
-	return replaceGOFLAGS(env, strings.TrimSpace(flags))
 }
 
 // effectiveGOFLAGS is the GOFLAGS a go command started with env reads: env's

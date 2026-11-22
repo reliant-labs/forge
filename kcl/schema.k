@@ -3402,7 +3402,18 @@ schema GoBuild(Build):
     `./cmd` anywhere in forge's Go. goos/goarch cross-compile;
     ldflags/tags/flags are passed through to `go build` verbatim;
     env is build-time process env (e.g. {"CGO_ENABLED": "0"}). `pgo` is
-    the binary's profile-guided optimization (see PGO)."""
+    the binary's profile-guided optimization (see PGO).
+
+    `flags` are the flags of every go build forge runs from this build:
+    `forge build`, each BuildOnly variant, and the host runners that compile
+    on launch — go-run's `go run`, and air's `go build` through
+    $FORGE_GO_BUILD_FLAGS, which the scaffolded .air.toml expands (a flag
+    containing whitespace cannot pass through that variable and is named
+    instead). A scaffolded GoBuild declares `flags = ["-trimpath"]`, so
+    every worktree shares one Go build cache instead of compiling its own
+    path-keyed copy. A debug build (forge build --debug, the delve runner)
+    adds -trimpath=false after them, so source paths stay absolute for the
+    debugger. To opt out, drop -trimpath or add "-trimpath=false" after it."""
     type: str = "go"
     cmd: str
     goos: str = ""

@@ -612,12 +612,12 @@ func withHostCover(ctx context.Context, spec *hostlaunch.RunnerSpec, w WorkloadE
 			if err != nil {
 				return fmt.Errorf("host workload %s: %w", w.Name, err)
 			}
-			spec.GoBuildFlags = mergeCoverFlags(flags, userFlags, userEnv)
+			// After the declared flags (hostRunnerSpec), which go-run and
+			// air carry as well.
+			spec.GoBuildFlags = append(spec.GoBuildFlags, mergeCoverFlags(flags, userFlags, userEnv)...)
 		}
-		if r == "air" && !spec.AirExpandsBuildFlags() {
-			fmt.Printf("[up] host %s: not instrumented for coverage — its air config does not build with $%s (add it to its `go build`; a new scaffold's .air.toml does)\n",
-				w.Name, hostlaunch.GoBuildFlagsEnv)
-		}
+		// An air config that does not expand $FORGE_GO_BUILD_FLAGS builds
+		// uninstrumented: reportAirBuildFlags names the flags it misses.
 	}
 	dir := coverDir(projectDir, env, w.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

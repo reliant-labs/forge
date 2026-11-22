@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -33,6 +34,13 @@ type pluginMarketplace struct {
 		Source      json.RawMessage `json:"source"`
 	} `json:"plugins"`
 }
+
+var (
+	// exactPin is the npm package at an exact final version.
+	exactPin = regexp.MustCompile(`@reliantlabs/forge@[0-9]+\.[0-9]+\.[0-9]+\b`)
+	// anyLaunch is any npx launch of the package, pinned or not.
+	anyLaunch = regexp.MustCompile("npx -y @reliantlabs/forge[^\\s`\"']*")
+)
 
 func readMarketplace(t *testing.T, rel string) pluginMarketplace {
 	t.Helper()
@@ -107,7 +115,13 @@ func TestReliantForgePlugin(t *testing.T) {
 		}
 	}
 
-	// One server, started the way every other listing starts it.
+	// One server, started the way every other listing starts it, but at an
+	// exact version: Anthropic's directory refuses an unpinned launcher. The
+	// release moves the pin to each final version (npm gets no prerelease).
+	pin := pkg.Version
+	if strings.Contains(pin, "-") {
+		pin = "" // a prerelease's bookkeeping leaves the last final pin
+	}
 	var mcpConfig struct {
 		MCPServers map[string]struct {
 			Command string   `json:"command"`
@@ -116,9 +130,30 @@ func TestReliantForgePlugin(t *testing.T) {
 	}
 	readJSON(t, pluginDir+"/.mcp.json", &mcpConfig)
 	forge, ok := mcpConfig.MCPServers["forge"]
+	args := strings.Join(forge.Args, " ")
 	if len(mcpConfig.MCPServers) != 1 || !ok || forge.Command != "npx" ||
-		strings.Join(forge.Args, " ") != "-y "+pkg.Name+" mcp" {
-		t.Errorf("%s/.mcp.json = %+v, want the one server forge: npx -y %s mcp", pluginDir, mcpConfig.MCPServers, pkg.Name)
+		!exactPin.MatchString(args) || pin != "" && args != "-y "+pkg.Name+"@"+pin+" mcp" {
+		t.Errorf("%s/.mcp.json = %+v, want the one server forge: npx -y %s@%s mcp", pluginDir, mcpConfig.MCPServers, pkg.Name, pkg.Version)
+	}
+	// Every command the plugin's files name runs that same pinned package.
+	pinned := exactPin.FindString(args)
+	err := filepath.WalkDir(filepath.Dir(repoFile(t, pluginDir+"/.mcp.json")), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) == ".png" {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, use := range anyLaunch.FindAllString(string(data), -1) {
+			if use != "npx -y "+pinned {
+				t.Errorf("%s runs %q; every launch in the plugin is %q, which the release moves", path, use, "npx -y "+pinned)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	skill, err := os.ReadFile(repoFile(t, pluginDir+"/skills/deploy/SKILL.md"))
@@ -185,34 +220,64 @@ func TestPluginManifestsReleaseVersionSync(t *testing.T) {
 	sync := block("# The npm shim's version IS", "# ── 7b. CHANGELOG.md")
 
 	const manifest = "{\n  \"name\": \"reliant-forge\",\n  \"version\": \"1.3.0\",\n  \"author\": {\n    \"version\": \"keep\"\n  }\n}\n"
-	root := t.TempDir()
-	check := ""
-	for _, rel := range pluginManifests {
-		path := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		check += `[[ " ${TOUCHED[*]} " == *" ` + rel + ` "* ]]` + "\n"
-	}
-	cmd := exec.Command("bash", "-c", "set -euo pipefail\nVERSION_FILES=()\nNEXT_FILE=NEXT_VERSION\n"+setup+`
+	const skill = "Run `npx -y @reliantlabs/forge@1.3.0 env deploy prod --claimable`.\nThe server: @reliantlabs/forge@1.3.0 mcp. Not the web runtime: @reliantlabs/forge-web-runtime@1.3.0.\n"
+	pinnedFiles := []string{pluginDir + "/.mcp.json", pluginDir + "/skills/deploy/SKILL.md"}
+	for _, tc := range []struct {
+		name, version, skill    string
+		wantManifest, wantSkill string
+		wantFailure             bool
+	}{
+		{"final", "v1.6.0", skill, "1.6.0", strings.ReplaceAll(skill, "forge@1.3.0", "forge@1.6.0"), false},
+		{"prerelease keeps the pin", "v1.6.0-rc.1", skill, "1.6.0-rc.1", skill, false},
+		{"unpinned", "v1.6.0", strings.Replace(skill, "forge@1.3.0 env", "forge@latest env", 1), "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			check := ""
+			write := func(rel, body string) {
+				t.Helper()
+				path := filepath.Join(root, rel)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				check += `[[ " ${TOUCHED[*]} " == *" ` + rel + ` "* ]]` + "\n"
+			}
+			for _, rel := range pluginManifests {
+				write(rel, manifest)
+			}
+			for _, rel := range pinnedFiles {
+				write(rel, tc.skill)
+			}
+			cmd := exec.Command("bash", "-c", "set -euo pipefail\nVERSION_FILES=()\nNEXT_FILE=NEXT_VERSION\n"+setup+`
 trap 'rm -rf "$BACKUP_DIR"' EXIT
 `+check+sync)
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "VERSION=v1.6.0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bookkeeping failed: %v\n%s", err, out)
-	}
-	want := strings.Replace(manifest, "1.3.0", "1.6.0", 1)
-	for _, rel := range pluginManifests {
-		got, err := os.ReadFile(filepath.Join(root, rel))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != want {
-			t.Errorf("%s = %s, want %s", rel, got, want)
-		}
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "VERSION="+tc.version)
+			out, err := cmd.CombinedOutput()
+			if (err != nil) != tc.wantFailure {
+				t.Fatalf("failure=%v, want %v:\n%s", err, tc.wantFailure, out)
+			}
+			if tc.wantFailure {
+				return
+			}
+			for rel, want := range map[string]string{
+				pluginManifests[0]: strings.Replace(manifest, "1.3.0", tc.wantManifest, 1),
+				pluginManifests[1]: strings.Replace(manifest, "1.3.0", tc.wantManifest, 1),
+				pluginManifests[2]: strings.Replace(manifest, "1.3.0", tc.wantManifest, 1),
+				pinnedFiles[0]:     tc.wantSkill,
+				pinnedFiles[1]:     tc.wantSkill,
+			} {
+				got, err := os.ReadFile(filepath.Join(root, rel))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != want {
+					t.Errorf("%s = %s, want %s", rel, got, want)
+				}
+			}
+		})
 	}
 }

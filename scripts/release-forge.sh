@@ -546,6 +546,16 @@ PLUGIN_MANIFESTS=(
 for f in "${PLUGIN_MANIFESTS[@]}"; do
   [ -f "$f" ] && TOUCHED+=("$f")
 done
+# The plugin runs the npm package at an exact version (npx
+# @reliantlabs/forge@X.Y.Z: Anthropic's directory refuses an unpinned
+# launcher), and its skill and README name the same one.
+PLUGIN_PINNED=()
+if [ -d plugins/reliant-forge ]; then
+  while IFS= read -r f; do
+    PLUGIN_PINNED+=("$f")
+  done < <(grep -rlF '@reliantlabs/forge@' plugins/reliant-forge || true)
+fi
+TOUCHED+=(${PLUGIN_PINNED[@]+"${PLUGIN_PINNED[@]}"})
 # The web runtime's bookkeeping (step 8c): its manifests' versions and the
 # scaffold floor that names it.
 WR_MANIFEST="web-runtime/package.json"
@@ -688,6 +698,26 @@ for f in "${PLUGIN_MANIFESTS[@]}"; do
   fi
   cat "$BACKUP_DIR/plugin.json.new" >"$f"
 done
+# The pin moves only to a version npm will serve: release-npm.yml never
+# publishes a prerelease.
+case "${VERSION#v}" in
+  *-*)
+    if [ "${#PLUGIN_PINNED[@]}" -gt 0 ]; then
+      echo "→ ${VERSION} is a prerelease, which npm does not get; the plugin keeps its pin"
+    fi
+    ;;
+  *)
+    for f in ${PLUGIN_PINNED[@]+"${PLUGIN_PINNED[@]}"}; do
+      echo "→ pinning @reliantlabs/forge@${VERSION#v} in $f"
+      sed -E 's#@reliantlabs/forge@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?#@reliantlabs/forge@'"${VERSION#v}"'#g' "$f" >"$BACKUP_DIR/plugin-pin.new"
+      if [ "$(grep -oF '@reliantlabs/forge@' "$BACKUP_DIR/plugin-pin.new" | wc -l)" != "$(grep -oF "@reliantlabs/forge@${VERSION#v}" "$BACKUP_DIR/plugin-pin.new" | wc -l)" ]; then
+        echo "error: $f runs @reliantlabs/forge at something other than an exact version (e.g. @latest); pin it, the release moves the pin" >&2
+        exit 1
+      fi
+      cat "$BACKUP_DIR/plugin-pin.new" >"$f"
+    done
+    ;;
+esac
 
 # ── 7b. CHANGELOG.md ────────────────────────────────────────────────
 # Written only here, from the merged PR titles since the previous tag. The

@@ -6,9 +6,9 @@ description: Deploy, publish or host this app with Reliant Forge, with or withou
 # Deploy with Reliant Forge
 
 Forge is an open-source framework and CLI that puts guardrails on any app and
-deploys it with no account: `npx -y @reliantlabs/forge@latest env deploy prod --claimable`.
+deploys it with no account: `npx -y @reliantlabs/forge@1.10.0 env deploy prod --claimable`.
 
-This plugin runs the Forge MCP server (`npx -y @reliantlabs/forge mcp`). Prefer
+This plugin runs the Forge MCP server (`npx -y @reliantlabs/forge@1.10.0 mcp`). Prefer
 its tools. Every step also works as a shell command, with nothing installed.
 
 ## Pick the path
@@ -25,7 +25,7 @@ Call the `deploy_claimable` tool. Pass `dir` when the app is not in the
 working directory. Without the MCP server, run:
 
 ```bash
-npx -y @reliantlabs/forge@latest env deploy prod --claimable
+npx -y @reliantlabs/forge@1.10.0 env deploy prod --claimable
 ```
 
 It deploys:
@@ -55,13 +55,13 @@ Never write the claim link into a commit, a file in the repo or a log.
 ## Signed in: deploy to the account
 
 ```bash
-npx -y @reliantlabs/forge@latest env deploy prod
+npx -y @reliantlabs/forge@1.10.0 env deploy prod
 ```
 
 Then prove the release is good:
 
 ```bash
-npx -y @reliantlabs/forge@latest obs check prod --wait --json
+npx -y @reliantlabs/forge@1.10.0 obs check prod --wait --json
 ```
 
 Branch on its exit code:
@@ -89,7 +89,7 @@ exact next command. The common ones:
   lists each item and its fix. Re-check with `--plan-only` after fixing, or
   deploy to an account.
 - Not a Vite, Next.js or Dockerfile app: start a site with
-  `npx -y @reliantlabs/forge@latest project new <name> --kind site`, or add a
+  `npx -y @reliantlabs/forge@1.10.0 project new <name> --kind site`, or add a
   Dockerfile.
 
 ## Rules
@@ -101,6 +101,6 @@ exact next command. The common ones:
 ## Learn more
 
 - `skill_load` with `deploy`, `deploy/static-site` or `deploy/hosting` (or
-  `npx -y @reliantlabs/forge@latest skill load deploy`): the full guides.
+  `npx -y @reliantlabs/forge@1.10.0 skill load deploy`): the full guides.
 - Deploying with no account: https://docs.reliantlabs.io/forge/deploy-without-an-account
 - Reliant Labs: https://reliantlabs.io

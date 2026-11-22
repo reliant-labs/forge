@@ -139,7 +139,9 @@ func goVersionFromGoMod(projectDir string) string {
 // The returned value is clamped to defaultGoVersion when lower, since forge's
 // generated code (pkg/orm and friends) requires that minimum.
 func (g *ProjectGenerator) resolveGoVersion() string {
-	v := detectGoVersion()
+	// Detect only when there is no usable override: detecting execs
+	// `go env GOVERSION`, and Generate resolves the version several times.
+	v := ""
 	if g.GoVersionOverride != "" {
 		ov := g.GoVersionOverride
 		parts := strings.SplitN(ov, ".", 3)
@@ -151,6 +153,9 @@ func (g *ProjectGenerator) resolveGoVersion() string {
 		} else {
 			fmt.Fprintf(os.Stderr, "⚠️  Invalid --go-version %q. Using detected version instead.\n", g.GoVersionOverride)
 		}
+	}
+	if v == "" {
+		v = detectGoVersion()
 	}
 	if compareGoVersion(v, defaultGoVersion) < 0 {
 		fmt.Fprintf(os.Stderr, "ℹ️  Go version %s is below the forge minimum %s; pinning go.work/go.mod to %s. The Go toolchain (GOTOOLCHAIN=auto) will fetch the required compiler at build time.\n", v, defaultGoVersion, defaultGoVersion)

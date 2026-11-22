@@ -91,6 +91,10 @@ type CIInputs struct {
 	// them in promotion order, and a project with none — a hosted env that
 	// only serves a static site — gets no pgo-refresh.yml.
 	PGOEnvs []string
+	// Buf, when set, is the buf the project pins, stated by a caller that
+	// knows it without asking the module graph. Nil resolves it from root's
+	// go.mod (toolpin.BufFor), which execs `go list -m`.
+	Buf *toolpin.Buf
 }
 
 // CIWorkflowDataFor returns what the scaffolded ci.yml renders with: which lints,
@@ -250,11 +254,17 @@ func ciWorkflowsAll(root string, cfg *config.ProjectConfig, in CIInputs) []CIWor
 		firstFrontendPath, firstFrontendName = frontends[0].Path, frontends[0].Name
 	}
 
+	// The buf this project pins (go.mod's, else forge's): the one the gate
+	// holds PATH to and `forge generate` runs.
+	buf := in.Buf
+	if buf == nil {
+		b := toolpin.BufFor(root)
+		buf = &b
+	}
+
 	ci := templates.CIWorkflowData{
-		ProjectName: cfg.Name,
-		// The buf this project pins (go.mod's, else forge's): the one the
-		// gate holds PATH to and `forge generate` runs.
-		BufVersion:   toolpin.BufFor(root).Bare(),
+		ProjectName:  cfg.Name,
+		BufVersion:   buf.Bare(),
 		HasFrontends: hasFrontends,
 		Frontends:    frontends,
 		HasServices:  hasServices,

@@ -84,6 +84,7 @@ existing one, and closes an open one whose test left those states.
 			// that block lands only the flag does.
 			return runTestFlakes(cmd.Context(), cmd.OutOrStdout(), testFlakesArgs{
 				root: testRoot(), states: states, issues: issues, dryRun: dry, repo: repo, json: jsonOut, all: includeHealth,
+				now: time.Now(),
 			})
 		},
 	}
@@ -108,7 +109,8 @@ type testFlakesArgs struct {
 	all          bool
 	gh           testflakes.GH
 	issuesStdout io.Writer
-	// now is the clock the states are computed at; zero is time.Now.
+	// now is the clock the states are computed at: the command passes the
+	// wall clock, a test a fixed one its record's dates are relative to.
 	now time.Time
 }
 
@@ -126,9 +128,6 @@ func runTestFlakes(ctx context.Context, out io.Writer, a testFlakesArgs) error {
 		want = allFlakeStates
 	}
 	now := a.now
-	if now.IsZero() {
-		now = time.Now()
-	}
 	// Issues need every state, healthy included, to see a test leave one.
 	doc, warnings := testflakes.ComputeFlakes(testflakes.FlakesOptions{Root: a.root, Now: now, States: allFlakeStates})
 	for _, w := range warnings {

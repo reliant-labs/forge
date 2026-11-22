@@ -40,7 +40,9 @@ func prepareHostedProjectForWrite(ctx context.Context, projectDir, env string, f
 	}
 	cred, err := cloud.ResolveCredential("", ep)
 	if err != nil {
-		return err
+		// The first credential a signed-out deploy needs: it names the
+		// no-account deploy when the env could take one.
+		return signedOutDeploy(env, entities, err)
 	}
 	if cred.Kind != "human" {
 		return nil

@@ -102,7 +102,8 @@ func (c *Client) postForm(ctx context.Context, path string, form url.Values) ([]
 // the token's own exp claim (read, not verified: it only schedules the next
 // refresh), else unknown, which a session treats as due in minutes.
 func SessionTokens(t Tokens, now time.Time) session.Tokens {
-	out := session.Tokens{AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, IDToken: t.IDToken}
+	out := session.Tokens{AccessToken: t.AccessToken, RefreshToken: t.RefreshToken, IDToken: t.IDToken,
+		IssuerSessionID: t.IssuerSession.ID, IssuerSessionToken: t.IssuerSession.Token}
 	switch {
 	case t.ExpiresIn > 0:
 		out.Expiry = now.Add(time.Duration(t.ExpiresIn) * time.Second)

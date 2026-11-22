@@ -2,6 +2,7 @@ package generator
 
 import (
 	"bytes"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -261,5 +262,184 @@ func FirstTask(ctx stdctx.Context, db forgeorm.Context) (*Task, error) { return 
 	}
 	if bytes.Contains([]byte(src), []byte("\"github.com/reliant-labs/forge/pkg/orm\"\n\t\"github.com/reliant-labs/forge/pkg/orm\"")) {
 		t.Errorf("orm imported twice:\n%s", src)
+	}
+}
+
+// triggerDeliveryQueries is a seam no entity owns: the queries of a
+// forge:no-entity table (reliant's trigger_delivery_repo_ext.go over
+// trigger_delivery_inbox), which forge never scaffolds a seam for.
+const triggerDeliveryQueries = `package db
+
+import (
+	"context"
+
+	"github.com/reliant-labs/forge/pkg/orm"
+)
+
+// ClaimTriggerDeliveries leases up to limit pending deliveries.
+func ClaimTriggerDeliveries(ctx context.Context, db orm.Context, limit int) ([]string, error) {
+	return nil, nil
+}
+
+func ackTriggerDelivery(ctx context.Context, db orm.Context, id string) error { return nil }
+`
+
+func triggerDeliveryExtStorePath(root string) string {
+	return filepath.Join(root, "internal", "db", "trigger_delivery_ext_store_gen.go")
+}
+
+// forge#2439's gap: a forge:no-entity table has no entity, so its queries'
+// _repo_ext.go got no ext store, and each consumer hand-wrote an adapter
+// (reliant's triggerowner.Stores). A seam no entity owns now gets the same
+// store as an entity's, named as the entity of that stem would be, without a
+// CRUD store to point at.
+func TestExtStore_BindsASeamNoEntityOwns(t *testing.T) {
+	root := t.TempDir()
+	writeDBFile(t, root, "trigger_delivery_repo_ext.go", triggerDeliveryQueries)
+	generateTask(t, root)
+
+	src := readGenFile(t, triggerDeliveryExtStorePath(root))
+	if _, err := parser.ParseFile(token.NewFileSet(), "", src, 0); err != nil {
+		t.Fatalf("ext store does not parse: %v\n%s", err, src)
+	}
+	for _, want := range []string{
+		"// Source: the exported query functions of trigger_delivery_repo_ext.go beside it.",
+		"type TriggerDeliveryExtStore interface {",
+		"\t// ClaimTriggerDeliveries leases up to limit pending deliveries.\n\tClaimTriggerDeliveries(ctx context.Context, limit int) ([]string, error)",
+		"// generated CRUD beside it.",
+		"func NewTriggerDeliveryExtStore(db orm.Context) TriggerDeliveryExtStore {\n\treturn triggerDeliveryExtStore{db: db}\n}",
+		"return ClaimTriggerDeliveries(ctx, s.db, limit)",
+		// The line shape compose's store seam (codegen.storeAccessorRE) wires
+		// a db.TriggerDeliveryExtStore Deps field through.
+		"func (s Store) TriggerDeliveriesExt() TriggerDeliveryExtStore {\n\treturn triggerDeliveryExtStore{db: s.db}\n}",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("ext store missing %q\n%s", want, src)
+		}
+	}
+	for _, unwanted := range []string{"ackTriggerDelivery", "TriggerDeliveryStore."} {
+		if strings.Contains(src, unwanted) {
+			t.Errorf("ext store must not mention %q:\n%s", unwanted, src)
+		}
+	}
+	generateTask(t, root)
+	if again := readGenFile(t, triggerDeliveryExtStorePath(root)); again != src {
+		t.Errorf("a second generate changed the ext store:\n--- first\n%s\n--- second\n%s", src, again)
+	}
+
+	// The file leaves; its ext store goes with it.
+	if err := os.Remove(filepath.Join(root, "internal", "db", "trigger_delivery_repo_ext.go")); err != nil {
+		t.Fatal(err)
+	}
+	generateTask(t, root)
+	if _, err := os.Stat(triggerDeliveryExtStorePath(root)); !os.IsNotExist(err) {
+		t.Fatalf("the seam is gone; its ext store must be removed, stat err = %v", err)
+	}
+}
+
+// A seam no entity owns changes nothing about an entity's: the entity's ext
+// store is byte-identical with and without it beside.
+func TestExtStore_SeamNoEntityOwnsLeavesEntitiesAlone(t *testing.T) {
+	alone := t.TempDir()
+	writeDBFile(t, alone, "task_repo_ext.go", taskExtQueries)
+	generateTask(t, alone)
+
+	beside := t.TempDir()
+	writeDBFile(t, beside, "task_repo_ext.go", taskExtQueries)
+	writeDBFile(t, beside, "trigger_delivery_repo_ext.go", triggerDeliveryQueries)
+	generateTask(t, beside)
+
+	for _, file := range []string{"task_ext_store_gen.go", "task_store_gen.go", "store_gen.go", "task_orm_gen.go"} {
+		a := readGenFile(t, filepath.Join(alone, "internal", "db", file))
+		b := readGenFile(t, filepath.Join(beside, "internal", "db", file))
+		if a != b {
+			t.Errorf("%s changed when a seam no entity owns sat beside it", file)
+		}
+	}
+}
+
+// seamQuery is a seam holding one collectable query, Q<suffix>.
+const seamQuery = "package db\n\nimport (\n\t\"context\"\n\n\t\"github.com/reliant-labs/forge/pkg/orm\"\n)\n\nfunc Q%s(ctx context.Context, db orm.Context) error { return nil }\n"
+
+// writeSeams writes each file as a seam holding one query of its own.
+func writeSeams(t *testing.T, root string, files ...string) {
+	t.Helper()
+	for i, file := range files {
+		writeDBFile(t, root, file, strings.Replace(seamQuery, "%s", string(rune('A'+i)), 1))
+	}
+}
+
+// What a seam no entity owns cannot be named after is skipped and said: a
+// stem that is no exported Go name, one that camel-cases to an entity's name
+// under another file, and a second stem that camel-cases to a name the first
+// already took. Task_repo_ext.go is not Task's seam on any file system: a
+// case-insensitive one (Windows, macOS) finds it at task_repo_ext.go, so the
+// seam is the file the directory lists, not the one a stat finds.
+func TestExtStore_SeamsNoEntityOwnsThatCannotBeNamed(t *testing.T) {
+	root := t.TempDir()
+	writeSeams(t, root, "2fa_repo_ext.go", "my-thing_repo_ext.go", "Task_repo_ext.go", "abC_repo_ext.go", "ab_c_repo_ext.go")
+	dbDir := filepath.Join(root, "internal", "db")
+	exts, notes := renderExtStores(dbDir, "internal/db", "db", []config.PlanEntity{taskPlanEntity()}, nil)
+	if len(exts) != 1 || exts[0].file != "abC_ext_store_gen.go" {
+		var files []string
+		for _, e := range exts {
+			files = append(files, e.file)
+		}
+		t.Fatalf("want only abC's ext store, got %q (notes %q)", files, notes)
+	}
+	joined := strings.Join(notes, "\n")
+	for _, want := range []string{
+		`internal/db/2fa_repo_ext.go: "2Fa" is not an exported Go name`,
+		`internal/db/my-thing_repo_ext.go: "My-thing" is not an exported Go name`,
+		"internal/db/Task_repo_ext.go: no TaskExtStore — Task is an entity, whose seam is task_repo_ext.go",
+		"internal/db/ab_c_repo_ext.go: no AbCExtStore for AbC's queries — AbCExtStore is already declared by forge's internal/db/abC_ext_store_gen.go",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("notes missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// A seam Go never compiles — its name begins with "_" or "." — gets no ext
+// store, which would forward to functions the package does not have, and no
+// panic for a stem that camel-cases to nothing (_repo_ext.go, __repo_ext.go).
+func TestExtStore_SeamsGoIgnoresGetNoStore(t *testing.T) {
+	root := t.TempDir()
+	files := []string{"_repo_ext.go", "__repo_ext.go", "_x_repo_ext.go", ".y_repo_ext.go"}
+	writeSeams(t, root, files...)
+	exts, notes := renderExtStores(filepath.Join(root, "internal", "db"), "internal/db", "db", []config.PlanEntity{taskPlanEntity()}, nil)
+	if len(exts) != 0 {
+		t.Fatalf("a file Go ignores must get no ext store, got %q (notes %q)", exts[0].file, notes)
+	}
+	joined := strings.Join(notes, "\n")
+	for _, file := range files {
+		want := fmt.Sprintf("internal/db/%s: Go ignores a file whose name begins with %q", file, file[:1])
+		if !strings.Contains(joined, want) {
+			t.Errorf("notes missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// Two seams whose stems differ only in case name two stores, but their
+// files would be one file on a case-insensitive file system: the second is
+// skipped and said, so a checkout on Windows or macOS gets the same tree.
+func TestExtStore_SeamsDifferingOnlyInCase(t *testing.T) {
+	root := t.TempDir()
+	writeSeams(t, root, "abc_repo_ext.go", "abC_repo_ext.go")
+	dbDir := filepath.Join(root, "internal", "db")
+	if entries, err := os.ReadDir(dbDir); err != nil || len(entries) != 2 {
+		t.Skipf("this file system holds abc_repo_ext.go and abC_repo_ext.go as one file (%d entries, err %v), so the fixture cannot exist here", len(entries), err)
+	}
+	exts, notes := renderExtStores(dbDir, "internal/db", "db", nil, nil)
+	if len(exts) != 1 || exts[0].file != "abC_ext_store_gen.go" {
+		var files []string
+		for _, e := range exts {
+			files = append(files, e.file)
+		}
+		t.Fatalf("want only abC's ext store, got %q (notes %q)", files, notes)
+	}
+	want := "internal/db/abc_repo_ext.go: no AbcExtStore for Abc's queries — its file internal/db/abc_ext_store_gen.go differs from forge's internal/db/abC_ext_store_gen.go only in case"
+	if !strings.Contains(strings.Join(notes, "\n"), want) {
+		t.Errorf("notes missing %q:\n%s", want, notes)
 	}
 }

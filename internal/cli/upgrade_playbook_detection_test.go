@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/shellrun"
 )
 
@@ -53,16 +54,28 @@ func TestV1110PGOPlaybook_Detection(t *testing.T) {
 		t.Fatal("no shipped playbook v1.11.0/pgo-default-on")
 	}
 	const hosted = "app = forge.OnHosted {}\n"
+	const goMain = "package main\n\nfunc main() {}\n"
+	birth := checksums.ScaffoldEntryPath(".github/workflows/pgo-refresh.yml")
 	for name, tc := range map[string]struct {
 		files map[string]string
 		want  bool
 	}{
-		"a hosted env":           {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n"}, true},
-		"no hosted env":          {map[string]string{"deploy/kcl/prod/main.k": "app = forge.OnCluster {}\n", "forge.yaml": "name: x\n"}, false},
-		"declined in forge.yaml": {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\nci:\n  workflows:\n    pgo-refresh: false\n"}, false},
-		"a committed profile":    {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n", "cmd/x/default.pgo": "pgo"}, false},
+		"a hosted env":           {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n", "cmd/x/main.go": goMain}, true},
+		"no hosted env":          {map[string]string{"deploy/kcl/prod/main.k": "app = forge.OnCluster {}\n", "forge.yaml": "name: x\n", "cmd/x/main.go": goMain}, false},
+		"declined in forge.yaml": {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\nci:\n  workflows:\n    pgo-refresh: false\n", "cmd/x/main.go": goMain}, false},
+		"declined in flow style": {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\nci: {workflows: {pgo-refresh: false}}\n", "cmd/x/main.go": goMain}, false},
+		"a committed profile":    {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n", "cmd/x/default.pgo": "pgo", "cmd/x/main.go": goMain}, false},
+		// reliant: a hosted static site and no cmd/<bin> Go file at the
+		// project root would not get the file.
+		"no Go binary": {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n"}, false},
+		// reliant and control-plane deleted it and committed the record.
+		"deleted after birth": {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n", "cmd/x/main.go": goMain, birth: "{}\n"}, false},
+		// control-plane refreshes profiles in a Reliant workflow.
+		"refreshed by a Reliant workflow": {map[string]string{"deploy/kcl/prod/main.k": hosted, "forge.yaml": "name: x\n", "cmd/x/main.go": goMain, ".reliant/workflows/pgo-refresh.yaml": "name: pgo-refresh\n"}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
+			checksums.ResetScaffoldLedgerCache()
+			t.Cleanup(checksums.ResetScaffoldLedgerCache)
 			dir := t.TempDir()
 			for rel, body := range tc.files {
 				p := filepath.Join(dir, rel)

@@ -289,6 +289,7 @@ func TestWithHostCover(t *testing.T) {
 				t.Errorf("go-run argv %v lacks the cover flags", cmd.Args)
 			}
 		case "air":
+			env, _ = hostlaunch.WithGoBuildFlags(spec, env)
 			if !slices.Contains(env, "FORGE_GO_BUILD_FLAGS=-cover -covermode=atomic -coverpkg=./internal/...") {
 				t.Errorf("air env %v lacks FORGE_GO_BUILD_FLAGS", env)
 			}

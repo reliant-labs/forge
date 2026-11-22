@@ -86,8 +86,7 @@ func TestWriteSiteStarter(t *testing.T) {
 				}
 			}
 			pkg, _ := os.ReadFile(filepath.Join(dir, "package.json"))
-			// The SDK's parts are the runtime's telemetry peers (below); the
-			// retired @hyperdx/browser is not.
+			// The runtime carries the SDK's parts itself.
 			if strings.Contains(string(pkg), `"@hyperdx/browser"`) {
 				t.Fatal("site declares @hyperdx/browser, which the runtime no longer imports")
 			}
@@ -95,7 +94,7 @@ func TestWriteSiteStarter(t *testing.T) {
 			if !strings.Contains(string(pkg), `"@reliantlabs/forge-web-runtime": "`+webRuntimePublishedRange+`"`) {
 				t.Errorf("package.json must declare the web runtime at forge's floor:\n%s", pkg)
 			}
-			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api", "@hyperdx/otel-web", "rrweb"} {
+			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api"} {
 				spec, _ := webruntimepeers.PeerSpec(peer)
 				if !strings.Contains(string(pkg), `"`+peer+`": "`+spec+`"`) {
 					t.Errorf("package.json must declare the runtime's peer %s at %q:\n%s", peer, spec, pkg)

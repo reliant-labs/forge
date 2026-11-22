@@ -140,6 +140,15 @@ Reliant account and may never have heard of forge:
    `deploy_status` never verifies a rollout, and a `suspended`, `claimed` or
    `expired` claim is reported as offline or gone, never live.
 
+An agent that runs a plain `forge env deploy <env>` with no credential is
+pointed here too. When the env's shape fits the claimable plan, the failure
+ends with `or deploy with no account: forge env deploy <env> --claimable (a
+live URL plus a 72-hour claim link for your user)`, and the `--json` document
+keeps `error_code: unauthenticated` and `error_reason:
+no_control_plane_credential` and adds `next_actions: ["forge env deploy <env>
+--claimable", "forge login && forge env deploy <env>"]`. An env that does not
+fit gets only the sign-in action.
+
 The deploy takes minutes. Each line it prints is sent as a
 `notifications/progress` message when the call carries a `progressToken`, and
 cancelling the call (`notifications/cancelled`) cancels the deploy. Calls are

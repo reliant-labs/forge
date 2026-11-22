@@ -4,7 +4,8 @@ package pgtest
 //
 // The pool used to record its users as bare pids in its state file and prune
 // the ones kill(pid, 0) called dead. That is only meaningful between
-// processes in ONE pid namespace, and the pool lives in os.TempDir(), which
+// processes in ONE pid namespace, and the pool lives in os.TempDir() (or
+// FORGE_TEST_POSTGRES_DIR), which
 // processes in different pid namespaces share: reliant runs credential-free
 // gates (pr-fix, pr-regen) in a pid namespace of their own over the host's
 // /tmp, beside host-namespace gates (pr-review's verify-generated). Neither

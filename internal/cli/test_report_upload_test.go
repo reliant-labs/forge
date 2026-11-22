@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -119,7 +120,7 @@ func trReport(t *testing.T, args ...string) (testreport.Report, int) {
 	out, code := trRun(t, newTestReportCmd(), append([]string{"--json"}, args...)...)
 	var rep testreport.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
-		t.Fatalf("not one JSON document: %v\n%s", err, out)
+		t.Fatalf("not one JSON document (exit %d): %v\n%s", code, err, out)
 	}
 	return rep, code
 }
@@ -382,6 +383,58 @@ func TestTestReportUploadWithoutCoverageIsPartial(t *testing.T) {
 			}
 			if n := strings.Count(errOut.String(), "warning: lane unit of run 01RUN was uploaded without its coverage"); n != 1 {
 				t.Fatalf("%d warnings naming the lane, want 1:\n%s", n, errOut.String())
+			}
+		})
+	}
+}
+
+// The upload carries forge.yaml's tests.flakes (control-plane#3434's
+// flake_policy) and the root go.mod's module path when the project has them,
+// and neither field otherwise.
+func TestTestReportUploadCarriesFlakePolicyAndGoModule(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		forgeYML string // "" writes no forge.yaml
+		noGoMod  bool
+		policy   map[string]any // nil: no flakePolicy sent
+		module   string         // "": no goModule sent
+	}{
+		{"issues and pr", "name: shop\nmodule_path: example.com/m\ntests:\n  flakes:\n    issues: true\n    quarantine: pr\n", false,
+			map[string]any{"issues": true, "quarantine": "TEST_QUARANTINE_MODE_PR"}, "example.com/m"},
+		{"suggest only", "name: shop\nmodule_path: example.com/m\ntests:\n  flakes:\n    quarantine: suggest\n", false,
+			map[string]any{"quarantine": "TEST_QUARANTINE_MODE_SUGGEST"}, "example.com/m"},
+		{"no tests.flakes", "name: shop\nmodule_path: example.com/m\n", false, nil, "example.com/m"},
+		{"no forge.yaml and no go.mod", "", true, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeTestsService{features: []string{hostedTestFeatureResults}}
+			root := trUploadProject(t, trStream("pass"), 0, fake, nil)
+			if tc.forgeYML != "" {
+				trWrite(t, filepath.Join(root, "forge.yaml"), tc.forgeYML)
+			}
+			if tc.noGoMod {
+				if err := os.Remove(filepath.Join(root, "go.mod")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rep, code := trReport(t, "--upload")
+			if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadOK {
+				t.Fatalf("exit %d upload %+v", code, rep.Upload)
+			}
+			b := fake.recorded()[0]
+			got, sent := b["flakePolicy"]
+			switch {
+			case tc.policy == nil && sent:
+				t.Errorf("flakePolicy sent with none configured: %v", got)
+			case tc.policy != nil && !reflect.DeepEqual(got, tc.policy):
+				t.Errorf("flakePolicy = %v, want %v", got, tc.policy)
+			}
+			mod, sent := b["goModule"]
+			switch {
+			case tc.module == "" && sent:
+				t.Errorf("goModule sent with no go.mod: %v", mod)
+			case tc.module != "" && mod != tc.module:
+				t.Errorf("goModule = %v, want %s", mod, tc.module)
 			}
 		})
 	}

@@ -58,15 +58,6 @@ const callbackPath = "/callback"
 
 // Run performs the flow and returns the token.
 func (l LoopbackLogin) Run(ctx context.Context) (*Token, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("oauth2: start callback listener: %w", err)
-	}
-	// Normally already closed by srv.Shutdown below; this covers the paths
-	// that return before the server starts.
-	defer func() { _ = listener.Close() }()
-
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", listener.Addr().(*net.TCPAddr).Port, callbackPath)
 	verifier, err := NewVerifier()
 	if err != nil {
 		return nil, err
@@ -75,10 +66,16 @@ func (l LoopbackLogin) Run(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
+	cb, err := startLoopback(callbackPath, state, l.SuccessHTML)
+	if err != nil {
+		return nil, err
+	}
+	defer cb.close()
+
 	authorizeURL, err := AuthRequest{
 		Endpoint:    l.AuthorizeEndpoint,
 		ClientID:    l.ClientID,
-		RedirectURI: redirectURI,
+		RedirectURI: cb.redirectURI,
 		Scopes:      l.Scopes,
 		State:       state,
 		Challenge:   verifier.Challenge(),
@@ -87,92 +84,115 @@ func (l LoopbackLogin) Run(ctx context.Context) (*Token, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	type result struct {
-		code string
-		err  error
-	}
-	results := make(chan result, 1)
-	deliver := func(r result) {
-		select {
-		case results <- r:
-		default: // a second callback after the first is ignored
-		}
-	}
-	successHTML := l.SuccessHTML
-	if successHTML == "" {
-		successHTML = defaultSuccessHTML
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		// State FIRST: until it matches, nothing in this request came from
-		// the flow this process started. Any local process can hit the
-		// listener.
-		if err := CompareState(state, q.Get("state")); err != nil {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
-			deliver(result{err: fmt.Errorf("login callback rejected: %w", err)})
-			return
-		}
-		if code := q.Get("error"); code != "" {
-			msg := q.Get("error_description")
-			writeCallbackPage(w, http.StatusBadRequest, "Login failed", msg)
-			deliver(result{err: &Error{Code: code, Description: msg}})
-			return
-		}
-		code := q.Get("code")
-		if code == "" {
-			http.Error(w, "no code in callback", http.StatusBadRequest)
-			deliver(result{err: errors.New("oauth2: login callback carried no code")})
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, successHTML)
-		deliver(result{code: code})
-	})
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = srv.Serve(listener) }()
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}()
-
 	if l.Out != nil {
 		fmt.Fprintf(l.Out, "Opening your browser to log in.\nIf it does not open, visit:\n    %s\n\n", authorizeURL)
 	}
 	if l.OpenURL != nil {
 		_ = l.OpenURL(authorizeURL)
 	}
+	code, err := cb.wait(ctx, l.Timeout)
+	if err != nil {
+		return nil, err
+	}
+	return (&Exchanger{Client: l.HTTPClient}).Exchange(ctx, TokenRequest{
+		Endpoint:    l.TokenEndpoint,
+		ClientID:    l.ClientID,
+		RedirectURI: cb.redirectURI,
+		Code:        code,
+		Verifier:    verifier,
+	})
+}
 
-	timeout := l.Timeout
+// loopbackCallback is a native app's redirect target (RFC 8252 §7.3): a
+// listener on 127.0.0.1 at a port the OS picks, serving one path, that
+// delivers the first callback whose state matches. LoopbackLogin and
+// HandoffLogin share it, so the two cannot drift on the checks that matter.
+type loopbackCallback struct {
+	redirectURI string
+	results     chan callbackResult
+	srv         *http.Server
+	listener    net.Listener
+}
+
+type callbackResult struct {
+	code string
+	err  error
+}
+
+func startLoopback(path, state, successHTML string) (*loopbackCallback, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: start callback listener: %w", err)
+	}
+	cb := &loopbackCallback{
+		redirectURI: fmt.Sprintf("http://127.0.0.1:%d%s", listener.Addr().(*net.TCPAddr).Port, path),
+		results:     make(chan callbackResult, 1),
+		listener:    listener,
+	}
+	deliver := func(r callbackResult) {
+		select {
+		case cb.results <- r:
+		default: // a second callback after the first is ignored
+		}
+	}
+	if successHTML == "" {
+		successHTML = defaultSuccessHTML
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		// State FIRST: until it matches, nothing in this request came from
+		// the flow this process started. Any local process can hit the
+		// listener.
+		if err := CompareState(state, q.Get("state")); err != nil {
+			http.Error(w, "state mismatch", http.StatusBadRequest)
+			deliver(callbackResult{err: fmt.Errorf("login callback rejected: %w", err)})
+			return
+		}
+		if code := q.Get("error"); code != "" {
+			msg := q.Get("error_description")
+			writeCallbackPage(w, http.StatusBadRequest, "Login failed", msg)
+			deliver(callbackResult{err: &Error{Code: code, Description: msg}})
+			return
+		}
+		code := q.Get("code")
+		if code == "" {
+			http.Error(w, "no code in callback", http.StatusBadRequest)
+			deliver(callbackResult{err: errors.New("oauth2: login callback carried no code")})
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, successHTML)
+		deliver(callbackResult{code: code})
+	})
+	cb.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = cb.srv.Serve(listener) }()
+	return cb, nil
+}
+
+// wait returns the code the browser brought back, or an error after timeout
+// (0 is 5 minutes) or when ctx ends.
+func (cb *loopbackCallback) wait(ctx context.Context, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-
-	var code string
 	select {
-	case res := <-results:
-		if res.err != nil {
-			return nil, res.err
-		}
-		code = res.code
+	case res := <-cb.results:
+		return res.code, res.err
 	case <-timer.C:
-		return nil, fmt.Errorf("oauth2: timed out after %s waiting for the browser to return", timeout)
+		return "", fmt.Errorf("oauth2: timed out after %s waiting for the browser to return", timeout)
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return "", ctx.Err()
 	}
+}
 
-	return (&Exchanger{Client: l.HTTPClient}).Exchange(ctx, TokenRequest{
-		Endpoint:    l.TokenEndpoint,
-		ClientID:    l.ClientID,
-		RedirectURI: redirectURI,
-		Code:        code,
-		Verifier:    verifier,
-	})
+func (cb *loopbackCallback) close() {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cb.srv.Shutdown(shutdownCtx)
+	_ = cb.listener.Close()
 }
 
 func writeCallbackPage(w http.ResponseWriter, status int, title, body string) {

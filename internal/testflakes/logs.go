@@ -141,15 +141,41 @@ func splitLines(data []byte) []string {
 // unique, by the three attribution rules. module qualifies a package printed
 // relative to the module (`./internal/x` style names some gates print).
 func (rl runLogs) failing(module string) []testreport.TestID {
-	seen := map[testreport.TestID]bool{}
-	add := func(pkg, test string) {
-		id := testreport.TestID{Lang: testreport.LangGo, Package: pkg, Name: test}
-		seen[id] = true
-	}
-	for _, ev := range rl.events {
-		if ev.Action == "fail" && ev.Test != "" && !strings.Contains(ev.Test, "/") {
-			add(ev.Package, ev.Test)
+	ids, _ := rl.failures(module)
+	return ids
+}
+
+// span is a half-open range of one source's records.
+type span struct{ from, to int }
+
+// pkgSpan is the records a package's `FAIL <pkg>` or `ok <pkg>` line
+// closes: what `go test` printed for that package.
+type pkgSpan struct {
+	span
+	pkg string
+}
+
+// failures is failing, with each failure's output: what the logs printed
+// for THAT package's test, never another package's test of the same name
+// (two packages each have a TestNew; a race in one must not make the other
+// a race). Output is collected where the failure was attributed:
+//
+//   - a `--- FAIL` attributed by the `FAIL <pkg>` line after it reads the
+//     records since the previous package line of its source;
+//   - an annotation (`::error::FAIL <pkg> <Test>`) reads the records since
+//     the previous package or annotation line, and falls back, like a
+//     `(package <pkg>)` suffix, to its whole source less the records other
+//     packages' `FAIL`/`ok` lines closed;
+//   - a `go test -json` stream's events are keyed by package and test.
+func (rl runLogs) failures(module string) ([]testreport.TestID, map[testreport.TestID]string) {
+	out := map[testreport.TestID]*strings.Builder{}
+	add := func(id testreport.TestID, text string) {
+		b := out[id]
+		if b == nil {
+			b = &strings.Builder{}
+			out[id] = b
 		}
+		b.WriteString(text)
 	}
 	qualify := func(p string) string {
 		if module != "" && p != module && !strings.HasPrefix(p, module+"/") && !strings.Contains(strings.SplitN(p, "/", 2)[0], ".") {
@@ -157,41 +183,113 @@ func (rl runLogs) failing(module string) []testreport.TestID {
 		}
 		return p
 	}
-	cur := ""
-	pending := map[string]bool{}
-	for _, r := range rl.records {
-		if r.src != cur {
-			pending, cur = map[string]bool{}, r.src
-		}
-		line := r.line
-		switch {
-		case annotationRe.MatchString(line):
-			w := strings.Fields(line)
-			add(qualify(w[1]), w[2])
-			delete(pending, w[2])
-		case dashFailRe.MatchString(line):
-			w := strings.Fields(line)
-			if m := packageNoteRe.FindString(line); m != "" {
-				add(qualify(m[len("(package "):len(m)-1]), w[2])
-			} else {
-				pending[w[2]] = true
-			}
-		case failPkgRe.MatchString(line):
-			f := strings.Split(line, "\t")
-			for n := range pending {
-				add(f[1], n)
-			}
-			pending = map[string]bool{}
-		case strings.HasPrefix(line, "ok  \t"):
-			pending = map[string]bool{}
+	goID := func(pkg, test string) testreport.TestID {
+		return testreport.TestID{Lang: testreport.LangGo, Package: pkg, Name: test}
+	}
+	for _, ev := range rl.events {
+		if ev.Action == "fail" && ev.Test != "" && !strings.Contains(ev.Test, "/") {
+			add(goID(ev.Package, ev.Test), "")
 		}
 	}
-	out := make([]testreport.TestID, 0, len(seen))
-	for id := range seen {
-		out = append(out, id)
+	for _, recs := range rl.sources() {
+		type whole struct {
+			id   testreport.TestID
+			near span
+		}
+		var (
+			spans   []pkgSpan
+			wholes  []whole
+			pending = map[string]bool{}
+			segFrom = 0 // after the last package line
+			annFrom = 0 // after the last package or annotation line
+		)
+		for i, r := range recs {
+			line := r.line
+			switch {
+			case annotationRe.MatchString(line):
+				w := strings.Fields(line)
+				wholes = append(wholes, whole{goID(qualify(w[1]), w[2]), span{annFrom, i + 1}})
+				delete(pending, w[2])
+				annFrom = i + 1
+			case dashFailRe.MatchString(line):
+				w := strings.Fields(line)
+				if m := packageNoteRe.FindString(line); m != "" {
+					wholes = append(wholes, whole{id: goID(qualify(m[len("(package "):len(m)-1]), w[2])})
+				} else {
+					pending[w[2]] = true
+				}
+			case failPkgRe.MatchString(line):
+				pkg := strings.Split(line, "\t")[1]
+				for n := range pending {
+					add(goID(pkg, n), blockOf(recs[segFrom:i+1], n))
+				}
+				pending = map[string]bool{}
+				spans = append(spans, pkgSpan{span{segFrom, i + 1}, pkg})
+				segFrom, annFrom = i+1, i+1
+			case strings.HasPrefix(line, "ok  \t"):
+				pending = map[string]bool{}
+				spans = append(spans, pkgSpan{span{segFrom, i + 1}, strings.Split(line, "\t")[1]})
+				segFrom, annFrom = i+1, i+1
+			}
+		}
+		for _, w := range wholes {
+			if w.near.to > w.near.from {
+				if b := blockOf(recs[w.near.from:w.near.to], w.id.Name); b != "" {
+					add(w.id, b)
+					continue
+				}
+			}
+			add(w.id, blockOf(excludeOthers(recs, spans, w.id.Package, qualify), w.id.Name))
+		}
 	}
-	sortIDs(out)
+	for _, ev := range rl.events {
+		if ev.Action != "output" || ev.Test == "" {
+			continue
+		}
+		top, _, _ := strings.Cut(ev.Test, "/")
+		if b := out[goID(ev.Package, top)]; b != nil {
+			b.WriteString(ev.Output)
+		}
+	}
+	ids := make([]testreport.TestID, 0, len(out))
+	texts := make(map[testreport.TestID]string, len(out))
+	for id, b := range out {
+		ids = append(ids, id)
+		texts[id] = b.String()
+	}
+	sortIDs(ids)
+	return ids, texts
+}
+
+// sources splits the records into their sources, in order: the unit within
+// which a `--- FAIL` may be attributed to a later `FAIL <pkg>` line.
+func (rl runLogs) sources() [][]logRecord {
+	var out [][]logRecord
+	for i := 0; i < len(rl.records); {
+		j := i + 1
+		for j < len(rl.records) && rl.records[j].src == rl.records[i].src {
+			j++
+		}
+		out = append(out, rl.records[i:j])
+		i = j
+	}
 	return out
+}
+
+// excludeOthers is recs without the spans another package's line closed:
+// the records no package line closed, and pkg's own spans. The cursor
+// advances across every span, so a span is appended only when it is pkg's.
+func excludeOthers(recs []logRecord, spans []pkgSpan, pkg string, qualify func(string) string) []logRecord {
+	var out []logRecord
+	next := 0
+	for _, sp := range spans {
+		out = append(out, recs[next:sp.from]...) // closed by no package line
+		if qualify(sp.pkg) == pkg || sp.pkg == pkg {
+			out = append(out, recs[sp.from:sp.to]...)
+		}
+		next = sp.to
+	}
+	return append(out, recs[next:]...)
 }
 
 var (
@@ -199,15 +297,14 @@ var (
 	blockEndRe        = regexp.MustCompile(`^(--- |=== |FAIL|ok  |PASS)`)
 )
 
-// block is everything the run printed for test's failure: from its `=== RUN`
+// blockOf is everything recs printed for test's failure: from its `=== RUN`
 // (go test prints a race report and the "race detected" line BEFORE `---
-// FAIL`), through `--- FAIL`, to the next test or summary; then the JSON
-// streams' output for it and its subtests.
-func (rl runLogs) block(test string) string {
+// FAIL`), through `--- FAIL`, to the next test or summary.
+func blockOf(recs []logRecord, test string) string {
 	var b strings.Builder
 	var buf strings.Builder
 	collecting, on := false, false
-	for _, r := range rl.records {
+	for _, r := range recs {
 		line := r.line
 		if line == "=== RUN   "+test {
 			buf.Reset()
@@ -236,11 +333,6 @@ func (rl runLogs) block(test string) string {
 		if on {
 			b.WriteString(line)
 			b.WriteByte('\n')
-		}
-	}
-	for _, ev := range rl.events {
-		if ev.Action == "output" && (ev.Test == test || strings.HasPrefix(ev.Test, test+"/")) {
-			b.WriteString(ev.Output)
 		}
 	}
 	return b.String()
@@ -276,10 +368,10 @@ func boundOutput(s string) (string, bool) {
 // logFailures are a red run's failing tests as cases, each carrying the full
 // failure output (classification reads all of it) and its signature.
 func logFailures(rl runLogs, module string) []testreport.Case {
-	ids := rl.failing(module)
+	ids, outputs := rl.failures(module)
 	out := make([]testreport.Case, 0, len(ids))
 	for _, id := range ids {
-		output := rl.block(id.Name)
+		output := outputs[id]
 		out = append(out, testreport.Case{
 			ID: id, Status: testreport.StatusFail, Attempts: 1, FailedAttempts: 1,
 			Output: output, Signature: testreport.FailureSignature(output),

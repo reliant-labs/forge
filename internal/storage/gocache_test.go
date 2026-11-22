@@ -848,14 +848,17 @@ func TestGoCacheRemovesLeastRecentlyUsedFirst(t *testing.T) {
 
 // The budget message points at -trimpath only when the go command might be
 // missing it: on 2026-10-30 GOFLAGS had it, and the hint sent readers the
-// wrong way.
+// wrong way. With it set, the message still says the young entries may
+// predate the setting: on 2026-11-22 `go env -w GOFLAGS=-trimpath` was set
+// minutes before a trim, and "the fill is real work" misdiagnosed a cache
+// that untrimmed builds had filled.
 func TestBudgetUnreachableHintFollowsTrimpath(t *testing.T) {
 	e := &BudgetUnreachableError{Cache: "c", Estimated: 3 * GiB, Budget: GiB, Young: 2 * GiB, Floor: goCacheMinFloor}
 	if !strings.Contains(e.Error(), "builds without -trimpath") {
 		t.Fatalf("unknown GOFLAGS must keep the hint: %v", e)
 	}
 	e.Trimpath, e.TrimpathKnown = true, true
-	if msg := e.Error(); strings.Contains(msg, "without -trimpath") || !strings.Contains(msg, "already use -trimpath") {
+	if msg := e.Error(); strings.Contains(msg, "without -trimpath") || !strings.Contains(msg, "now use -trimpath") || !strings.Contains(msg, "written before it are path-keyed") {
 		t.Fatalf("with -trimpath set the hint must not blame it: %v", msg)
 	}
 }

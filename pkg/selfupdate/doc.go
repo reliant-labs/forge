@@ -57,8 +57,9 @@
 // [Detect] refuses installs something else owns: a managed-by stamp, at
 // build time (-X …/selfupdate.managedBy=<owner>), in a <binary>.managed-by
 // file beside it or in FORGE_MANAGED_BY (authoritative), an app bundle or AppImage, a package
-// manager, the app's own managed predicate (a cloud pod), or a directory this
-// user cannot write. Heuristics only ever refuse; they never grant.
+// manager, the app's own managed predicate, a Kubernetes pod or a container
+// (the image is the unit), or a directory this user cannot write. Heuristics
+// only ever refuse; they never grant.
 //
 // # Signatures
 //
@@ -70,4 +71,11 @@
 //
 // Targets that are neither unix nor Windows stage but do not swap
 // ([ErrUnsupported]).
+//
+// # Opting in
+//
+// The autoupdate subpackage is the default-off wiring for a long-lived
+// binary: Boot, a periodic Check/Prepare/Request loop, confirmation on the
+// app's readiness, and ExecPending after its shutdown. A pkg/serverkit
+// server hands one to Server.SelfUpdate.
 package selfupdate

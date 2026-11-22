@@ -251,6 +251,10 @@ func CIWorkflowAbsenceReason(relPath string) string {
 	case ".github/workflows/release.yml", ForgeDeployActionPath:
 		return "it builds once and deploys that release through HOSTED environments, and this project declares none: " +
 			"an env needs forge.ControlPlane in its KCL and a workload or database the platform runs (forge.OnHosted)"
+	case PGORefreshPath:
+		return "it refreshes the committed default.pgo of the Go binaries a hosted env builds, and this project has none to profile " +
+			"(no hosted env builds a Go main package of this checkout), or already refreshes them in a workflow of its own " +
+			"(a .reliant/workflows/pgo-refresh.yaml, or a workflow that runs `forge pgo pull`)"
 	case ".github/workflows/build-images.yml":
 		return "it builds and deploys service images, which only a service-kind project has"
 	case ".github/workflows/deploy.yml":

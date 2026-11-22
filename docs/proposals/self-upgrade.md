@@ -1,10 +1,10 @@
 # Proposal: self-upgrading long-lived binaries (`forge/pkg/selfupdate`)
 
 **Status:** approved by the owner 2026-11-19. F1 (`forge/pkg/selfupdate` core)
-is implemented, and so is F2's verification half (the Sigstore verifier and the
-channel-manifest source); where their API differs from the sketch in §3, §10
-and §11 say how and why. F2's Windows swap, F3 and the reliant phases have not
-landed.
+is implemented, and so are F2's verification half (the Sigstore verifier and the
+channel-manifest source) and F3 (the opt-in wiring and serverkit hook); where
+their API differs from the sketch in §3, §10, §11 and §12 say how and why.
+F2's Windows swap and the reliant phases have not landed.
 **Date:** 2026-11-19
 **Scope:** forge (new package `pkg/selfupdate`, opt-in hook in `pkg/serverkit`),
 reliant (first consumer, release pipeline), control-plane (signal source only).
@@ -654,3 +654,49 @@ MOVEFILE_WRITE_THROUGH)`, so the journal and the renames reach the disk in
   image, and `TestReexecEndToEndWindows` does a real swap, confirm and
   watchdog revert on Windows. Other non-unix targets still return
   `ErrUnsupported`.
+
+## 12. F3 implementation notes (opt-in and serverkit)
+
+- **`pkg/selfupdate/autoupdate`** is the opt-in wiring: `New(Options{Settings,
+Binary, Current, …})` runs `Boot`, validates the `Settings` and builds the
+  `selfupdate.Updater` with a Sigstore verifier; `(*Updater).Serve(ctx, ready,
+shutdown)` confirms a swapped binary once `ready` passes, then checks two
+  minutes after start and every `Interval` (default 6h, floor 1m, jittered by
+  a tenth), stages and applies; `ExecPending` is the last act. It is its own
+  package because it imports `selfupdate/sigstore` (which imports
+  `selfupdate`) and so cannot live in the core.
+- **`Settings`** are plain values: `Enabled` (default false), `Source` (an
+  https manifest URL or a GitHub `owner/name`), `Channel`, `Interval`,
+  `SignerRepository` + `SignerWorkflow` (the certificate identity is that
+  workflow at a semver release tag; `SignerIdentity` overrides it),
+  `PredicateType` (default the `…/attestations/release-assets/v1` convention
+  forge and reliant use), `Bundle`, and `InsecureAllowUnsigned` (refused with
+  a signer, required without one). Off, `New` validates nothing else and the
+  Updater only confirms, so turning it off never strands a pending revert.
+  Enabled, the default `Policy` applies every newer release: opting in means
+  applying.
+- **serverkit: `Server.SelfUpdate SelfUpdater`, not `*selfupdate.Updater`.**
+  The interface (`Serve`, `ExecPending`) is declared in serverkit, so
+  serverkit imports neither selfupdate nor sigstore and every server that
+  does not opt in links neither. `Run` starts `Serve` after the listener
+  binds with `ready` = the `/readyz` verdict (gate plus every `ReadyCheck`)
+  and `shutdown` = the same stop a signal causes; the drain is serverkit's
+  own graceful shutdown, so `Options.Drainer` stays nil there. `Run` calls
+  `ExecPending` after the telemetry flush and returns its error (old binary
+  restored) so the process exits non-zero for its supervisor.
+- **No `forge.yaml` or KCL block.** `forge.yaml` is global-only (binaries are
+  discovered from `cmd/`), and KCL renders env only into the runtimes forge
+  runs (host, compose, cluster, hosted), which are exactly where a binary
+  must not replace itself. The machines that self-update are users', reached
+  only by the binary's own typed config (flag, env, config file): the user's
+  choice (`enabled`, `channel`, `interval`) is a block in the app's config
+  proto, and the publisher's facts (source, signer) are constants or
+  build-time config defaults. The `binaries/selfupdate` skill shows both. No
+  scaffold field was added: every project would otherwise link sigstore-go
+  for a feature few use; `cmd-binary.go.tmpl` carries a three-line pointer.
+- **`Detect` refuses pods and containers** (`Managed`, owner `kubernetes` or
+  `container`): `KUBERNETES_SERVICE_HOST` set (read in `env.go`, the
+  package's one environment file), or `/.dockerenv` / `/run/.containerenv`.
+  That makes §3's "a pod cannot reach the swap path even if opted in by
+  mistake" hold for every consumer, not only one that passes a `Managed`
+  predicate. Stamps still win (they name the real owner).

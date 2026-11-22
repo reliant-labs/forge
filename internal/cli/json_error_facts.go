@@ -54,14 +54,29 @@ type jsonErrorFacts struct {
 	UnavailableComponent string `json:"unavailable_component,omitempty"`
 	// NextActions are the exact commands that move past the failure, best
 	// first, for an agent to run rather than parse out of `error`. Set by
-	// the claimable path today.
+	// the claimable path, and by a signed-out hosted deploy
+	// (deploy_signed_out.go).
 	NextActions []string `json:"next_actions,omitempty"`
 }
 
-// errorFactsOf reads err's structure. The control plane's own answer wins
-// over forge's classification: a credential helper's denial wrapped in
-// ErrNoCredential still says scope_missing when the server said so.
+// nextActioner is an error that names the commands that move past it.
+type nextActioner interface{ NextActions() []string }
+
+// errorFactsOf reads err's structure, and the commands it names
+// (nextActioner) when its structure names none.
 func errorFactsOf(err error) jsonErrorFacts {
+	facts := errorStructureOf(err)
+	var na nextActioner
+	if len(facts.NextActions) == 0 && errors.As(err, &na) {
+		facts.NextActions = na.NextActions()
+	}
+	return facts
+}
+
+// errorStructureOf is errorFactsOf's classification. The control plane's own
+// answer wins over forge's: a credential helper's denial wrapped in
+// ErrNoCredential still says scope_missing when the server said so.
+func errorStructureOf(err error) jsonErrorFacts {
 	if err == nil {
 		return jsonErrorFacts{}
 	}

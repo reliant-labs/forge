@@ -527,6 +527,18 @@ message AppConfig {
     description: "Serve public sign-up (POST /auth/register) in a deployed environment; development always serves it. OFF by default, so a deployed app is invite-only until it opts in. A self-registered account's email is UNVERIFIED — the person typed it, and is signed in before proving it — so before setting this, make every invitation, membership or record the app binds to a user BY EMAIL require the address verified (devidp.User.EmailVerified via FindUserByID); otherwise registering someone else's address claims what was waiting for them. The sign-in screen offers \"Create an account\" only when this deployment serves it (GET /auth/options)."
   }];
 
+  // ── Sign-in handoff: an explicit allowlist, empty (off) by default ─────
+  //
+  // Where a signed-in session here may hand a NEW session to: a desktop app
+  // (loopback or private-use redirect) or a sibling host (https). Exact
+  // URIs only; the broker refuses the whole list if one entry is not.
+
+  string handoff_redirects = 51 [(forge.v1.config) = {
+    env_var: "HANDOFF_REDIRECTS"
+    flag: "handoff-redirects"
+    description: "Comma-separated allowlist of the redirect URIs a sign-in handoff may send a one-time code to (POST /auth/handoff/start). Each entry is EXACT: https://<sibling host>/<path> (redeems into a session cookie on that host), http://127.0.0.1/<path> or http://[::1]/<path> (a desktop app's loopback listener; any port matches, RFC 8252), or a private-use scheme with a dot (com.example.app:/cb). Wildcards, fragments, queries, http off loopback and 'localhost' are refused, and one bad entry turns the handoff off (logged at ERROR). EMPTY (the default) serves no handoff routes. Needs server-side sessions and the auth_handoffs table."
+  }];
+
   // ── Roles and key fallback for the token validator ────────────────────
 
   string jwt_roles_claim = 42 [(forge.v1.config) = {
@@ -558,7 +570,7 @@ message AppConfig {
 
   // FIELD NUMBERS ARE NOT IN DECLARATION ORDER: fields are grouped by topic,
   // so the last field above is not the highest number. The highest number
-  // forge scaffolds is 50: give a new field 51 or above (and keep counting up
+  // forge scaffolds is 51: give a new field 52 or above (and keep counting up
   // from the highest one this message holds), never "the last line's + 1".
   //
   // NOTE: there is intentionally NO `service_name` config field. The OTel

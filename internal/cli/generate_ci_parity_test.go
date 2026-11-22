@@ -59,6 +59,7 @@ func TestCIWorkflows_NewAndGenerateRenderIdentically(t *testing.T) {
 			}
 
 			cfg := loadAdvisoryConfig(t, dir)
+			composeRootLikeProjectNew(t, dir, cfg)
 			// `forge generate` discovers which envs are hosted by RENDERING
 			// them, and a project's envs import the config projection the
 			// generate run inside `forge project new` already wrote. Give

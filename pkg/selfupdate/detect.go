@@ -42,7 +42,8 @@ const (
 	Bundle
 	// PackageManager: Homebrew, dpkg, rpm, pacman, snap or nix installed it.
 	PackageManager
-	// Managed: the app's own predicate says something else runs it (a pod).
+	// Managed: something else runs it and replaces it: the app's own
+	// predicate, a Kubernetes pod or a container (the image is the unit).
 	Managed
 	// ReadOnly: this user cannot write the binary's directory.
 	ReadOnly
@@ -118,19 +119,25 @@ type DetectOptions struct {
 // Detect resolves the binary and says who may replace it. It refuses on any
 // signal and grants only when none fires.
 func Detect(opts DetectOptions) (Install, error) {
-	return detect(opts, detectEnv{
+	return detect(opts, defaultDetectEnv())
+}
+
+func defaultDetectEnv() detectEnv {
+	return detectEnv{
 		stamp:     managedBy,
 		lookupEnv: lookupManagedByEnv,
 		runOwner:  queryPackageOwner,
-	})
+		container: inContainer,
+	}
 }
 
-// detectEnv is Detect's seams: the build stamp, the environment and the
-// package-manager query, so tests need neither.
+// detectEnv is Detect's seams: the build stamp, the environment, the
+// package-manager query and the container probe, so tests need none of them.
 type detectEnv struct {
 	stamp     string
 	lookupEnv func() (string, bool)
 	runOwner  func(path string) (owner, hint string, ok bool)
+	container func() (owner, hint, reason string, ok bool)
 }
 
 func detect(opts DetectOptions, env detectEnv) (Install, error) {
@@ -170,7 +177,16 @@ func detect(opts DetectOptions, env detectEnv) (Install, error) {
 			return refuse(in, Managed, owner, "", "the app reports a managed host"), nil
 		}
 	}
-	// 3. Path heuristics.
+	// 3. A pod or a container: its image is the unit of upgrade, and the
+	// platform that runs it rolls a new one. A binary that replaced itself
+	// there would be undone by the next restart, and would make the running
+	// pod disagree with the image it reports.
+	if env.container != nil {
+		if owner, hint, reason, ok := env.container(); ok {
+			return refuse(in, Managed, owner, hint, reason), nil
+		}
+	}
+	// 4. Path heuristics.
 	slash := filepath.ToSlash(resolved)
 	if reason, ok := bundlePath(slash); ok {
 		return refuse(in, Bundle, "app bundle", "", reason), nil
@@ -183,7 +199,7 @@ func detect(opts DetectOptions, env detectEnv) (Install, error) {
 			return refuse(in, PackageManager, owner, hint, "the system package database owns "+resolved), nil
 		}
 	}
-	// 4. Writability: the swap renames in the directory, so the directory
+	// 5. Writability: the swap renames in the directory, so the directory
 	// must be writable, not just the file.
 	if err := probeWritable(filepath.Dir(resolved)); err != nil {
 		return refuse(in, ReadOnly, "", "", "cannot write "+filepath.Dir(resolved)+": "+err.Error()), nil
@@ -212,6 +228,27 @@ func readStampFile(path string) (string, bool) {
 	}
 	// An empty stamp file still says "not yours".
 	return "unnamed owner", true
+}
+
+// containerMarkers are the files container engines create in every
+// container: Docker's and Podman's.
+var containerMarkers = []string{"/.dockerenv", "/run/.containerenv"}
+
+// inContainer reports a Kubernetes pod (the kubelet sets
+// KUBERNETES_SERVICE_HOST in every container it starts) or a Docker or
+// Podman container (their marker files).
+func inContainer() (owner, hint, reason string, ok bool) {
+	if v, set := lookupKubernetesEnv(); set && strings.TrimSpace(v) != "" {
+		return "kubernetes", "roll the workload to an image with the new release",
+			"running in a Kubernetes pod (" + KubernetesServiceHostEnv + " is set): the image is the unit of upgrade", true
+	}
+	for _, m := range containerMarkers {
+		if _, err := os.Stat(m); err == nil {
+			return "container", "pull and run an image with the new release",
+				"running in a container (" + m + " exists): the image is the unit of upgrade", true
+		}
+	}
+	return "", "", "", false
 }
 
 // bundlePath matches a binary inside a macOS .app, an Electron resources

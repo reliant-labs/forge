@@ -211,6 +211,9 @@ func SetupAuth(cfg *config.{{or .AuthConfigType "Config"}}) (*auth.Authenticator
 			JWKSSnapshot:  snapshot,
 			Secret:        cfg.JwtSecret,
 			RolesClaim:    cfg.JwtRolesClaim,
+			// A token with no exp is refused: every OIDC issuer stamps one,
+			// and a correctly signed token without it would be valid forever.
+			RequireExpiry: true,
 		},
 	})
 	if err != nil {

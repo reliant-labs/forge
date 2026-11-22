@@ -244,6 +244,13 @@ with `build_variants` (per-variant `goos`/`goarch`, `ldflags`, `env`,
 `output_name`), recorded with its sha256 in the release. Load
 `binaries/shipping`.
 
+### Binaries that update themselves
+
+A binary users run on their own machines can opt in to replacing itself with
+newer signed releases (`forge/pkg/selfupdate/autoupdate`, off by default;
+package-manager and container installs are refused). Load
+`binaries/selfupdate`.
+
 ## Common patterns
 
 A binary's body is `Runner.Run(ctx)` — the placeholder blocks on `<-ctx.Done()`; you replace it with one of these shapes. `Run` owns its own listen/shutdown or loop, propagating cancellation from the ctx the cobra adapter wires SIGINT/SIGTERM into.

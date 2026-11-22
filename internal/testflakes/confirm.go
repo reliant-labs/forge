@@ -200,14 +200,21 @@ type confirmer struct {
 }
 
 func (c *confirmer) say(format string, a ...any) {
-	msg := fmt.Sprintf(format, a...)
+	msg := scrubText(fmt.Sprintf(format, a...))
 	c.doc.Messages = append(c.doc.Messages, msg)
 	fmt.Fprintf(c.o.Stdout, "forge test flakes confirm: %s\n", msg)
 }
 
 // RunConfirm reads the red run, reruns its failing tests and records the
-// outcome. It always returns a document with exit code 0.
+// outcome. It always returns a document with exit code 0, secret-scrubbed
+// like everything forge records of a test run.
 func RunConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
+	doc := runConfirm(ctx, o)
+	scrubDoc(doc)
+	return doc
+}
+
+func runConfirm(ctx context.Context, o ConfirmOptions) *Confirm {
 	o.defaults()
 	doc := &Confirm{Head: testreport.Head{Schema: SchemaConfirm, OK: true}, Tests: []ConfirmedTest{}, Failures: []testreport.Case{}, Messages: []string{}}
 	c := &confirmer{o: o, doc: doc}
@@ -309,10 +316,45 @@ func (c *confirmer) requireSameTree(rerun []testreport.Case, verdicts map[testre
 	}
 }
 
-// stored is a failure as the document keeps it: output bounded.
+// stored is a failure as the document keeps it: secret-scrubbed, then
+// bounded (scrubbing first, so a cut never splits a private key block the
+// scrubber would have removed whole).
 func stored(f testreport.Case) testreport.Case {
-	f.Output, f.OutputTruncated = boundOutput(f.Output)
+	f.Output, f.OutputTruncated = boundOutput(scrubText(f.Output))
+	f.SkipReason = scrubText(f.SkipReason)
 	return f
+}
+
+// scrubText is text as forge records it: the secret shapes `forge test
+// capture` scrubs from a lane's stream, redacted. One Scrubber per text, so
+// a private key block spanning its lines is dropped whole.
+func scrubText(text string) string {
+	var s testcapture.Scrubber
+	return s.Text(text)
+}
+
+// scrubDoc scrubs every free-text field of the document in place: the
+// failures' output, the source as named, the verdicts' reasons, the
+// messages and the suggestions. A failure's output is what a test printed,
+// and a test can print a credential as easily as a log can; confirm.json is
+// recorded and may be uploaded, so it is held to capture's rule.
+func scrubDoc(doc *Confirm) {
+	doc.Error = scrubText(doc.Error)
+	doc.Source.Ref = scrubText(doc.Source.Ref)
+	doc.Source.URL = scrubText(doc.Source.URL)
+	for i := range doc.Failures {
+		doc.Failures[i].Output = scrubText(doc.Failures[i].Output)
+		doc.Failures[i].SkipReason = scrubText(doc.Failures[i].SkipReason)
+	}
+	for i := range doc.Tests {
+		doc.Tests[i].Reason = scrubText(doc.Tests[i].Reason)
+	}
+	for i := range doc.Messages {
+		doc.Messages[i] = scrubText(doc.Messages[i])
+	}
+	for i := range doc.Suggested {
+		doc.Suggested[i] = scrubText(doc.Suggested[i])
+	}
 }
 
 func displayName(id testreport.TestID) string {
@@ -723,6 +765,7 @@ func (c *confirmer) record(ctx context.Context, stream []byte, exit int) string 
 // writeDoc writes the document into the confirm lane's directory.
 func (c *confirmer) writeDoc(laneDir string) {
 	o := c.o
+	scrubDoc(c.doc)
 	data, err := json.MarshalIndent(c.doc, "", "  ")
 	if err == nil {
 		err = atomicfile.WriteFile(filepath.Join(laneDir, ConfirmFile), append(data, '\n'), 0o644)

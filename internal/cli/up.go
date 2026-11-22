@@ -3346,12 +3346,43 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	reportEnvConflicts(w.Name, envConflicts)
 	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
 	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
+	var dropped []string
+	cmd.Env, dropped = hostlaunch.WithGoBuildFlags(spec, cmd.Env)
+	reportAirBuildFlags(w.Name, spec, dropped)
 	cmd.Env = forceHostBindPorts(cmd.Env, w.Name, envVars)
 	// A bare `forge` the process runs (the scaffolded .air.toml's `forge
 	// storage check`) is the forge running this env.
 	cmd.Env = withForgeShimOnPath(cmd.Env, w.Name)
 
 	return cmd, w.Name, nil
+}
+
+// reportAirBuildFlags names the declared build flags an air workload's build
+// does not get: those its air config cannot receive because it does not
+// expand $FORGE_GO_BUILD_FLAGS, and dropped, the ones WithGoBuildFlags left
+// out because they contain whitespace. An air config whose own command
+// already decides -trimpath (the scaffolded .air-debug.toml says
+// -trimpath=false) is not told about a -trimpath it overrides anyway.
+func reportAirBuildFlags(name string, spec hostlaunch.RunnerSpec, dropped []string) {
+	if strings.TrimSpace(spec.Runner) != "air" || len(spec.GoBuildFlags) == 0 {
+		return
+	}
+	if len(dropped) > 0 {
+		fmt.Printf("[up] host %s: air does not get %q: $%s is split on spaces, so a flag containing one cannot pass through it (go-run and forge build pass it whole)\n",
+			name, dropped, hostlaunch.GoBuildFlagsEnv)
+	}
+	if spec.AirExpandsBuildFlags() {
+		return
+	}
+	cmd := spec.AirBuildCmd()
+	missing := slices.DeleteFunc(slices.Clone(spec.GoBuildFlags), func(f string) bool {
+		return strings.Contains(cmd, "-trimpath") && strings.HasPrefix(strings.TrimLeft(f, "-"), "trimpath")
+	})
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Printf("[up] host %s: its air config does not build with $%s, so it does not get %v (from the build's GoBuild.flags, or a cover build); add it to the config's `go build`, as a new scaffold's .air.toml does (`forge fix trimpath-default` adds it)\n",
+		name, hostlaunch.GoBuildFlagsEnv, missing)
 }
 
 // hostRunnerSpec is the hostlaunch input for a host workload: its runtime
@@ -3368,6 +3399,13 @@ func hostRunnerSpec(w WorkloadEntity) hostlaunch.RunnerSpec {
 	}
 	if g := w.GoBuild(); g != nil {
 		spec.GoPkg, spec.OutputName = g.Cmd, g.OutputName
+		// The GoBuild's declared flags (a scaffolded GoBuild says
+		// -trimpath) are the flags of every go build forge runs from it:
+		// go-run's `go run` and air's `go build` too, not only `forge
+		// build`. The binary and delve runners run what forge build made.
+		if spec.CompilesOnLaunch() {
+			spec.GoBuildFlags = slices.Clone(g.Flags)
+		}
 		// The env refuses workloads that disagree on a binary's PGO
 		// (ResolvePGOBinaries), so this workload's own declaration is the
 		// binary's.

@@ -17,6 +17,8 @@ import (
 	"compress/gzip"
 	"context"
 	"time"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 const (
@@ -125,7 +127,47 @@ type wireRecordTestRunRequest struct {
 	Results      *wireTestUploadPart `json:"results"`
 	Coverage     *wireTestUploadPart `json:"coverage,omitempty"`
 	Diff         *wireTestUploadPart `json:"diff,omitempty"`
+	// FlakePolicy (field 19, control-plane#3434) is forge.yaml's
+	// tests.flakes, which the daily flake sweep acts on; omitted when the
+	// project sets none, which the control plane reads as the default (no
+	// issue, no pull request). GoModule (field 20) is the root go.mod's
+	// module path, which a flake issue's title and a quarantine entry name
+	// packages relative to. A control plane that predates either ignores it:
+	// Connect's JSON codec discards unknown fields.
+	FlakePolicy *wireTestFlakePolicy `json:"flakePolicy,omitempty"`
+	GoModule    string               `json:"goModule,omitempty"`
 }
+
+// wireTestFlakePolicy is TestFlakePolicy.
+type wireTestFlakePolicy struct {
+	Issues     bool   `json:"issues,omitempty"`
+	Quarantine string `json:"quarantine,omitempty"`
+}
+
+// The TestQuarantineMode values.
+const (
+	testQuarantineSuggest = "TEST_QUARANTINE_MODE_SUGGEST"
+	testQuarantinePR      = "TEST_QUARANTINE_MODE_PR"
+)
+
+// testFlakePolicyWire is forge.yaml's tests.flakes as TestFlakePolicy; nil
+// when it sets nothing.
+func testFlakePolicyWire(f config.TestsFlakesConfig) *wireTestFlakePolicy {
+	p := &wireTestFlakePolicy{Issues: f.Issues}
+	switch f.Quarantine {
+	case config.TestsQuarantinePR:
+		p.Quarantine = testQuarantinePR
+	case config.TestsQuarantineSuggest:
+		p.Quarantine = testQuarantineSuggest
+	}
+	if !p.Issues && p.Quarantine == "" {
+		return nil
+	}
+	return p
+}
+
+// maxTestGoModule is RecordTestRunRequest.go_module's limit.
+const maxTestGoModule = 512
 
 // parts are the request's documents, as sent.
 func (r *wireRecordTestRunRequest) parts() []*wireTestUploadPart {

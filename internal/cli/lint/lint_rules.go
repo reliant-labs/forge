@@ -51,6 +51,7 @@ import (
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/contractcheck"
 	"github.com/reliant-labs/forge/internal/lint/secrets"
+	"github.com/reliant-labs/forge/internal/linter/callerpath"
 	"github.com/reliant-labs/forge/internal/linter/finding"
 	"github.com/reliant-labs/forge/internal/linter/migrationlint"
 	"github.com/reliant-labs/forge/internal/linter/slowtest"
@@ -155,6 +156,8 @@ func gradableRules() []string {
 		slowtest.RuleUnmarked, slowtest.RuleInputs,
 		// test waits
 		testwait.RuleFixedSleep, testwait.RuleTightDeadline, testwait.RuleWallClockBound,
+		// caller paths (runtime.Caller's file under -trimpath)
+		callerpath.RuleID,
 		// the flake gate (`forge ci gate`'s flake-check step)
 		RuleFlakeCheck,
 		// golangci-lint's build-tag passes (rolled out as one unit)

@@ -84,6 +84,7 @@ existing one, and closes an open one whose test left those states.
 			// that block lands only the flag does.
 			return runTestFlakes(cmd.Context(), cmd.OutOrStdout(), testFlakesArgs{
 				root: testRoot(), states: states, issues: issues, dryRun: dry, repo: repo, json: jsonOut, all: includeHealth,
+				now: time.Now(),
 			})
 		},
 	}
@@ -108,6 +109,9 @@ type testFlakesArgs struct {
 	all          bool
 	gh           testflakes.GH
 	issuesStdout io.Writer
+	// now is the clock the states are computed at: the command passes the
+	// wall clock, a test a fixed one its record's dates are relative to.
+	now time.Time
 }
 
 var allFlakeStates = []testreport.State{
@@ -123,7 +127,7 @@ func runTestFlakes(ctx context.Context, out io.Writer, a testFlakesArgs) error {
 	if a.all && len(want) == 0 {
 		want = allFlakeStates
 	}
-	now := time.Now()
+	now := a.now
 	// Issues need every state, healthy included, to see a test leave one.
 	doc, warnings := testflakes.ComputeFlakes(testflakes.FlakesOptions{Root: a.root, Now: now, States: allFlakeStates})
 	for _, w := range warnings {
@@ -331,8 +335,11 @@ func flakeGateVerdict(w io.Writer, res testflakes.GateResult, graded bool, root 
 		}
 		return exitCodeError{code: res.ExitCode, msg: res.Message, verdict: true}
 	}
-	switch res.ExitCode {
-	case testflakes.GatePassed, testflakes.GateUndetermined:
+	// No changed test to run passes; a selected test command that could not
+	// start is a failure, graded like one: the gate proved nothing.
+	switch {
+	case res.ExitCode == testflakes.GatePassed,
+		res.ExitCode == testflakes.GateUndetermined && !res.CommandFailed:
 		fmt.Fprintln(w, res.Message)
 		return nil
 	}

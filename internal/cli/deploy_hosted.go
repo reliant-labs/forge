@@ -178,11 +178,9 @@ func runHostedDeploy(ctx context.Context, envName string, entities *KCLEntities,
 	}
 	cred, err := cloud.ResolveCredential("", ep)
 	if err != nil {
-		if declaresClaimable(entities) && errors.Is(err, cloud.ErrNoCredential) {
-			return fmt.Errorf("env %q is declared for an anonymous deploy (control_plane = forge.ControlPlane {claimable = True}): "+
-				"deploy it with %s env deploy %s --claimable", envName, Name(), envName)
-		}
-		return fmt.Errorf("env %q deploys to the control plane at %s: %w", envName, ep.URL, err)
+		// A missing credential names the way forward in text and in
+		// next_actions; an env declared claimable gets --claimable alone.
+		return signedOutDeploy(envName, entities, fmt.Errorf("env %q deploys to the control plane at %s: %w", envName, ep.URL, err))
 	}
 	if err := refuseClaimableEnvSignedIn(envName, entities, cred); err != nil {
 		return err

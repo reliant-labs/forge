@@ -54,20 +54,25 @@ const sessionsTable = "auth_sessions"
 type PostgresStore struct {
 	db    *sql.DB
 	table string
+	// handoffs is the auth_handoffs table (HandoffSchemaSQL), schema-qualified
+	// like table.
+	handoffs string
 }
 
 // PostgresOption configures a [PostgresStore].
 type PostgresOption func(*PostgresStore)
 
-// WithSchema names the schema auth_sessions lives in, so every statement
-// says "<schema>".auth_sessions rather than resolving the bare name through
-// the connection's search_path, which a transaction-pooling proxy can leave
-// pointing anywhere. Empty leaves it unqualified.
+// WithSchema names the schema auth_sessions (and auth_handoffs) live in, so
+// every statement says "<schema>".auth_sessions rather than resolving the
+// bare name through the connection's search_path, which a
+// transaction-pooling proxy can leave pointing anywhere. Empty leaves them
+// unqualified.
 func WithSchema(schema string) PostgresOption {
 	return func(s *PostgresStore) {
-		s.table = sessionsTable
+		s.table, s.handoffs = sessionsTable, handoffsTable
 		if schema != "" {
-			s.table = `"` + strings.ReplaceAll(schema, `"`, `""`) + `".` + sessionsTable
+			q := `"` + strings.ReplaceAll(schema, `"`, `""`) + `".`
+			s.table, s.handoffs = q+sessionsTable, q+handoffsTable
 		}
 	}
 }
@@ -75,7 +80,7 @@ func WithSchema(schema string) PostgresOption {
 // NewPostgresStore returns a PostgresStore over db. The table must exist
 // ([SchemaSQL]).
 func NewPostgresStore(db *sql.DB, opts ...PostgresOption) *PostgresStore {
-	s := &PostgresStore{db: db, table: sessionsTable}
+	s := &PostgresStore{db: db, table: sessionsTable, handoffs: handoffsTable}
 	for _, o := range opts {
 		o(s)
 	}

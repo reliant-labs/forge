@@ -61,7 +61,7 @@ func TestWriteSessionsMigration(t *testing.T) {
 	}
 	body, _ := os.ReadFile(filepath.Join(migDir, entries[0].Name()))
 	if !strings.HasPrefix(string(body), "-- forge:backward-compatible") || !strings.Contains(string(body), session.SchemaSQL) ||
-		!strings.Contains(string(body), "YOURS from birth") {
+		!strings.Contains(string(body), "YOURS from birth") || !strings.Contains(string(body), session.HandoffSchemaSQL) {
 		t.Errorf("migration body:\n%s", body)
 	}
 	// A migration that already creates the table — forge's or the

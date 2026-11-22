@@ -3,6 +3,7 @@ package accesstoken
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -229,6 +230,8 @@ var actingUserScopes = []Scope{
 	ScopeDaemonConnect,
 	ScopeLLMInvoke,
 	ScopeMCPConnector,
+	// An MCP client's OAuth token acts for the person who authorized it.
+	ScopeMCPOAuth,
 	// A wake is billed to, and authorized as, the person who owns the
 	// daemon; the consumer resolves ownership from the acting user.
 	ScopeDaemonResume,
@@ -282,6 +285,12 @@ type Grant struct {
 	ActingUserID string
 	// Resource, when set, confines the token to one resource.
 	Resource *Resource
+	// ClientID is the OAuth client an mcp:oauth token was issued to, and
+	// Audience the resource it was issued for (an RFC 8707 resource URI: the
+	// MCP server's canonical URL). Both are set exactly on an mcp:oauth token
+	// and on nothing else (validateOAuthClient).
+	ClientID string
+	Audience string
 	// Ephemeral marks a token tied to a session's lifetime (a desktop
 	// daemon's run), revoked when that session ends. It must be bound and
 	// must expire: an ephemeral token that outlives everything is a
@@ -329,6 +338,10 @@ func (g Grant) Validate(now time.Time) error {
 		return err
 	}
 
+	if err := g.validateOAuthClient(); err != nil {
+		return err
+	}
+
 	if g.Ephemeral {
 		if g.Resource == nil {
 			return fmt.Errorf("%w: an ephemeral token must be bound to a resource", ErrInvalidGrant)
@@ -364,7 +377,10 @@ func (g Grant) Admissible() Set {
 		// scope" (see registryOnlyScopes): an org automation wildcard would
 		// otherwise resolve to it, and the control plane would then refuse
 		// that credential on every RPC.
-		if personOnly(scope) || RegistryOnly(scope) {
+		//
+		// mcp:oauth is a whole credential too: an MCP client's token for one
+		// resource, which no wildcard is (validateOAuthClient).
+		if personOnly(scope) || RegistryOnly(scope) || scope == ScopeMCPOAuth {
 			continue
 		}
 		probe := Grant{OrgID: "probe", Name: "probe", ActingUserID: g.ActingUserID,
@@ -391,6 +407,50 @@ func KnownScopes(raw []string) Set {
 		}
 	}
 	return out
+}
+
+// validateOAuthClient holds an MCP client's OAuth token to its shape: mcp:oauth
+// is its only scope, it names its client and an absolute audience URI, acts as
+// a person, and is neither bound nor ephemeral. A client id or an audience on
+// any other token is refused: a consumer that checks the audience must never
+// find one on a token that would also pass a check that ignores it.
+func (g Grant) validateOAuthClient() error {
+	if !g.Scopes.Has(ScopeMCPOAuth) {
+		if g.ClientID != "" || g.Audience != "" {
+			return fmt.Errorf("%w: a client id or audience belongs only on an %s token", ErrInvalidGrant, ScopeMCPOAuth)
+		}
+		return nil
+	}
+	if len(g.Scopes) != 1 {
+		return fmt.Errorf("%w: %s is a token's only scope", ErrInvalidGrant, ScopeMCPOAuth)
+	}
+	if strings.TrimSpace(g.ClientID) == "" {
+		return fmt.Errorf("%w: an %s token names the client it was issued to", ErrInvalidGrant, ScopeMCPOAuth)
+	}
+	if !ValidAudience(g.Audience) {
+		return fmt.Errorf("%w: an %s token's audience must be an absolute http(s) URI with no fragment", ErrInvalidGrant, ScopeMCPOAuth)
+	}
+	if g.Resource != nil {
+		return fmt.Errorf("%w: an %s token is confined by its audience, never bound", ErrInvalidGrant, ScopeMCPOAuth)
+	}
+	if g.Ephemeral {
+		return fmt.Errorf("%w: an %s token is not ephemeral", ErrInvalidGrant, ScopeMCPOAuth)
+	}
+	return nil
+}
+
+// ValidAudience reports whether aud is a resource URI an mcp:oauth token may be
+// issued for (RFC 8707 section 2): absolute, http or https, with a host, no
+// userinfo and no fragment.
+func ValidAudience(aud string) bool {
+	if aud == "" || strings.TrimSpace(aud) != aud {
+		return false
+	}
+	u, err := url.Parse(aud)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || strings.Contains(aud, "#") {
+		return false
+	}
+	return u.Scheme == "https" || u.Scheme == "http"
 }
 
 // validateRegistryOnly holds a registry-only credential to its promise (see
@@ -493,6 +553,21 @@ type Principal struct {
 	Resource  *Resource
 	Ephemeral bool
 	ExpiresAt *time.Time
+	// ClientID and Audience are an mcp:oauth token's client and resource
+	// (Grant.ClientID, Grant.Audience); empty on every other token.
+	ClientID string
+	Audience string
+}
+
+// IsMCPOAuthFor reports whether p is an MCP client's OAuth token issued for
+// exactly this resource: it holds mcp:oauth, names its client and its acting
+// user, carries no binding and no wildcard, and its audience is resource. An
+// MCP server checks this, with its own canonical URL, before anything else;
+// a token for another resource (or no resource) is refused, never narrowed.
+func (p *Principal) IsMCPOAuthFor(resource string) bool {
+	return p != nil && resource != "" && !p.AllScopes && p.Resource == nil &&
+		p.Scopes.Has(ScopeMCPOAuth) && len(p.Scopes) == 1 &&
+		p.ClientID != "" && p.ActingUserID != "" && p.Audience == resource
 }
 
 // BoundTo reports whether the token is bound to exactly this resource.

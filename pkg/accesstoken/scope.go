@@ -105,6 +105,15 @@ const (
 	// one connector grant. Always bound to a connector resource.
 	ScopeMCPConnector Scope = "mcp:connector"
 
+	// ScopeMCPOAuth is a third-party MCP client's OAuth access token, issued by
+	// an authorization server for one MCP resource (RFC 8707). It reaches that
+	// MCP server, and nothing else, as its acting user: the server confines it
+	// further to the connector grants that person consented to for its client.
+	// It is always the token's only scope, names the client it was issued to
+	// (Grant.ClientID) and the resource it is for (Grant.Audience), and is
+	// never bound to a resource: the audience is its confinement.
+	ScopeMCPOAuth Scope = "mcp:oauth"
+
 	// ScopeDaemonResume resolves and wakes ONE suspended daemon on its acting
 	// user's behalf, so a run nobody is watching (a scheduled trigger) can
 	// reach the machine it was told to run on. Always bound to that daemon
@@ -349,6 +358,7 @@ var AllScopes = []Scope{
 	ScopeLLMInvoke,
 	ScopeProxyPort,
 	ScopeMCPConnector,
+	ScopeMCPOAuth,
 	ScopeDaemonResume,
 	ScopeDaemonManage,
 	ScopeSecretRead,

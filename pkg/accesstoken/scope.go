@@ -114,6 +114,22 @@ const (
 	// never bound to a resource: the audience is its confinement.
 	ScopeMCPOAuth Scope = "mcp:oauth"
 
+	// ScopeMCPForge is the OAuth access token of an MCP client connected to
+	// the hosted Reliant Forge MCP server: the mcp:oauth shape (the token's
+	// only scope, naming its client and its RFC 8707 audience, acting as a
+	// person, never bound, never ephemeral), for a server whose tools call
+	// the control plane AS that person. It carries no product scope itself.
+	// A control plane admits it only on the procedures the hosted forge tools
+	// call (MCPForgeProcedures) and, per call, only with the one scope that
+	// procedure needs AND the person holds right now. So it can never do more
+	// than both its person and the hosted tools can, and nothing at all
+	// outside the tools' calls.
+	//
+	// A sibling of mcp:oauth, not a widening of it: an mcp:oauth token is
+	// refused by every control-plane procedure but a wake, and must stay
+	// so for every MCP server that is not the forge one.
+	ScopeMCPForge Scope = "mcp:forge"
+
 	// ScopeDaemonResume resolves and wakes ONE suspended daemon on its acting
 	// user's behalf, so a run nobody is watching (a scheduled trigger) can
 	// reach the machine it was told to run on. Always bound to that daemon
@@ -389,6 +405,7 @@ var AllScopes = []Scope{
 	ScopeVulnRead,
 	ScopeTestsRead,
 	ScopeTestsWrite,
+	ScopeMCPForge,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an

@@ -32,6 +32,7 @@ type member struct {
 	// typ is a field's type, or a method's (first) result.
 	typ    *lazy
 	method bool
+	result func(int) *typ // method results beyond the first
 }
 
 // lazy resolves a type on first use: field types are only resolved when a
@@ -480,7 +481,11 @@ func (s *scanner) namedType(td *typeDecl) *typ {
 		p := s.pkgOf(td.file)
 		methods = map[string]*member{}
 		for _, fd := range p.methodDecls(spec.Name.Name) {
-			methods[fd.Name.Name] = &member{method: true, typ: &lazy{f: func() *typ { return s.funcResult(fd, p.files[fd]) }}}
+			methods[fd.Name.Name] = &member{
+				method: true,
+				typ:    &lazy{f: func() *typ { return s.funcResult(fd, p.files[fd]) }},
+				result: func(index int) *typ { return s.funcResultAt(fd, p.files[fd], index) },
+			}
 		}
 	}
 	switch u := spec.Type.(type) {
@@ -522,27 +527,44 @@ var basicTypes = map[string]bool{
 // text/template takes from a method, and what a call yields. A generic
 // function, or one returning nothing, is OPEN.
 func (s *scanner) funcResult(fd *ast.FuncDecl, gf *goFile) *typ {
+	return s.funcResultAt(fd, gf, 0)
+}
+
+// funcResultAt counts result positions, including grouped named results.
+func (s *scanner) funcResultAt(fd *ast.FuncDecl, gf *goFile, index int) *typ {
 	ft := fd.Type
-	if gf == nil || ft.TypeParams != nil || ft.Results == nil || len(ft.Results.List) == 0 {
+	if gf == nil || ft.TypeParams != nil || ft.Results == nil {
 		return open
 	}
-	return s.resolveType(ft.Results.List[0].Type, scope{file: gf})
+	for _, field := range ft.Results.List {
+		n := len(field.Names)
+		if n == 0 {
+			n = 1
+		}
+		if index < n {
+			return s.resolveType(field.Type, scope{file: gf})
+		}
+		index -= n
+	}
+	return open
 }
 
 // ---------------------------------------------------------------------------
 // Values: what type an expression at a call site has.
 
 const (
-	defExpr  = iota // the def's type is expr's type
-	defType         // the def's type is the type expression expr
-	defRange        // the def is a range value over expr
-	defOpen         // a def the resolver does not follow
+	defExpr   = iota // the def's type is expr's type
+	defType          // the def's type is the type expression expr
+	defRange         // the def is a range value over expr
+	defOpen          // a def the resolver does not follow
+	defResult        // the indexed result of a multi-value call
 )
 
 type def struct {
 	from, to token.Pos // visible from the end of its statement to its scope's end
 	kind     int
 	expr     ast.Expr
+	result   int // zero-based result position for defResult
 }
 
 type funcDefs struct {
@@ -639,13 +661,36 @@ func (b *defsBuilder) assign(n *ast.AssignStmt) {
 		switch {
 		case len(n.Lhs) == len(n.Rhs):
 			b.add(id, n.End(), end, defExpr, n.Rhs[i])
-		case len(n.Rhs) == 1 && i == 0:
-			// v, err := f(); v, ok := x.(T); v, ok := m[k]: the first is
-			// what the expression alone yields.
-			b.add(id, n.End(), end, defExpr, n.Rhs[0])
+		case len(n.Rhs) == 1:
+			b.multiValue(id, n.End(), end, n.Rhs[0], i)
 		default:
 			b.add(id, n.End(), end, defOpen, nil)
 		}
+	}
+}
+
+// multiValue preserves the result position instead of treating every variable
+// as the call's first result. Comma-ok expressions only resolve their first value.
+func (b *defsBuilder) multiValue(id *ast.Ident, from, to token.Pos, expr ast.Expr, index int) {
+	if id == nil || id.Name == "_" {
+		return
+	}
+	callExpr := expr
+	for {
+		p, ok := callExpr.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		callExpr = p.X
+	}
+	if _, ok := callExpr.(*ast.CallExpr); ok {
+		b.fd.byName[id.Name] = append(b.fd.byName[id.Name], def{
+			from: from, to: to, kind: defResult, expr: callExpr, result: index,
+		})
+	} else if index == 0 {
+		b.add(id, from, to, defExpr, expr)
+	} else {
+		b.add(id, from, to, defOpen, nil)
 	}
 }
 
@@ -666,6 +711,8 @@ func (b *defsBuilder) decl(n *ast.DeclStmt) {
 				b.add(id, vs.End(), end, defType, vs.Type)
 			case len(vs.Values) == len(vs.Names):
 				b.add(id, vs.End(), end, defExpr, vs.Values[i])
+			case len(vs.Values) == 1:
+				b.multiValue(id, vs.End(), end, vs.Values[0], i)
 			default:
 				b.add(id, vs.End(), end, defOpen, nil)
 			}
@@ -727,6 +774,10 @@ func (s *scanner) valueType(e ast.Expr, sc scope) *typ {
 			switch d.kind {
 			case defExpr:
 				return s.valueType(d.expr, sc)
+			case defResult:
+				if call, ok := d.expr.(*ast.CallExpr); ok {
+					return s.callResultAt(call, sc, d.result)
+				}
 			case defType:
 				return s.resolveType(d.expr, sc)
 			case defRange:
@@ -770,24 +821,31 @@ func (s *scanner) valueType(e ast.Expr, sc scope) *typ {
 // result, or the type of a conversion to a module type. Anything else — a
 // builtin, a func value, a function outside the module — is OPEN.
 func (s *scanner) callType(call *ast.CallExpr, sc scope) *typ {
+	return s.callResultAt(call, sc, 0)
+}
+
+func (s *scanner) callResultAt(call *ast.CallExpr, sc scope, index int) *typ {
 	fromPkg := func(p *goPkg, name string) *typ {
 		if fds := p.funcDecls(name); len(fds) == 1 {
-			return s.funcResult(fds[0], p.files[fds[0]])
+			return s.funcResultAt(fds[0], p.files[fds[0]], index)
 		}
-		if tds := p.typeDecls(name); len(tds) == 1 && len(call.Args) == 1 {
+		if tds := p.typeDecls(name); len(tds) == 1 && len(call.Args) == 1 && index == 0 {
 			return s.namedType(tds[0])
 		}
 		return open
 	}
 	switch f := call.Fun.(type) {
 	case *ast.ParenExpr:
-		return s.callType(&ast.CallExpr{Fun: f.X, Args: call.Args}, sc)
+		return s.callResultAt(&ast.CallExpr{Fun: f.X, Args: call.Args}, sc, index)
 	case *ast.Ident:
 		if _, local := s.lookup(f.Name, f.Pos(), sc); local {
 			return open
 		}
 		if td, _ := localType(sc.fn, sc.file, f.Name); td != nil {
-			return s.namedType(td)
+			if index == 0 {
+				return s.namedType(td)
+			}
+			return open
 		}
 		return fromPkg(s.pkgOf(sc.file), f.Name)
 	case *ast.SelectorExpr:
@@ -804,7 +862,12 @@ func (s *scanner) callType(call *ast.CallExpr, sc scope) *typ {
 		}
 		base := s.valueType(f.X, sc)
 		if m, ok := base.members[f.Sel.Name]; ok && m.method {
-			return m.typ.get()
+			if m.result != nil {
+				return m.result(index)
+			}
+			if index == 0 {
+				return m.typ.get()
+			}
 		}
 	}
 	return open

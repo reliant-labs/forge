@@ -210,6 +210,15 @@ dev = config_gen.workloadEnvMap(appcfg.app_config, _api)
 _p = appcfg.demo_process | {serve_config = config_gen.ServeConfig {greeting = "hello"}}
 full = config_gen.workloadEnvMap(appcfg.app_config, _api | {config_secrets = ["DATABASE_URL", "SERVE_TOKEN"]}, _p)
 unbound = config_gen.workloadEnvMap(appcfg.app_config, _worker)
+# Workload overrides win over composed secrets, for bound and unbound workloads.
+_plain = {SERVE_TOKEN = "local-token", DATABASE_URL = "local-db"}
+_ref = {SERVE_TOKEN = {name = "custom-token", key = "token"}, DATABASE_URL = {name = "custom-db", key = "url"}}
+_bound = _api | {config_secrets = ["DATABASE_URL", "SERVE_TOKEN"]}
+_unbound = {name = "custom", args = ["server"], config_secrets = ["DATABASE_URL", "SERVE_TOKEN"]}
+bound_plain = config_gen.workloadEnvMap(appcfg.app_config, _bound | {env = _plain}, _p) | _plain
+bound_ref = config_gen.workloadEnvMap(appcfg.app_config, _bound | {env = _ref}, _p) | _ref
+unbound_plain = config_gen.workloadEnvMap(appcfg.app_config, _unbound | {env = _plain}, _p) | _plain
+unbound_ref = config_gen.workloadEnvMap(appcfg.app_config, _unbound | {env = _ref}, _p) | _ref
 `
 	for name, body := range map[string]string{
 		"kcl.mod":    "[package]\nname = \"roots_proof\"\n",
@@ -256,6 +265,19 @@ unbound = config_gen.workloadEnvMap(appcfg.app_config, _worker)
 	}
 	if k := keys(got["unbound"]); k != "PORT" {
 		t.Errorf("a workload running no command config gets AppConfig's env alone: %s", k)
+	}
+	for _, name := range []string{"bound_plain", "unbound_plain"} {
+		if got[name]["SERVE_TOKEN"] != "local-token" || got[name]["DATABASE_URL"] != "local-db" {
+			t.Errorf("%s did not preserve plain workload overrides: %#v", name, got[name])
+		}
+	}
+	for _, name := range []string{"bound_ref", "unbound_ref"} {
+		for key, want := range map[string]string{"SERVE_TOKEN": "custom-token", "DATABASE_URL": "custom-db"} {
+			ref, ok := got[name][key].(map[string]any)
+			if !ok || ref["name"] != want {
+				t.Errorf("%s %s = %#v, want workload secret %s", name, key, got[name][key], want)
+			}
+		}
 	}
 }
 

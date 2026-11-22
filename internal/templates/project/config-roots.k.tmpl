@@ -97,6 +97,8 @@ rootEnvMap = lambda c: {{.ConfigType}}, w: any{{if .Process}}, p: {{.Process.Con
 # replaced either way.
 {{- if .Process}}
 #
+# In this composed projection, omit every key explicitly set by the workload,
+# including secret references: its own env must win for sensitive values too.
 # The binary's own configs come from p, the env's `appcfg.{{.Process.Instance}}`:
 #
 #     config_gen.workloadEnvMap(appcfg.app_config, w, appcfg.{{.Process.Instance}})
@@ -107,5 +109,5 @@ rootEnvMap = lambda c: {{.ConfigType}}, w: any{{if .Process}}, p: {{.Process.Con
 workloadEnvMap = lambda c: {{.ConfigType}}, w: any{{if .Process}}, p: {{.Process.ConfigType}} = {{.Process.ConfigType}} {}{{end}} -> {str: str | forge.SecretRef} {
     _all = rootEnvMap(c, w{{if .Process}}, p{{end}}) if w.root else {{.EnvMap}}(c, {{if .Process}}p, {{end}}{{if .Argv}}(w.command or []) + (w.args or []), {{end}}w.config_secrets or [])
     _own = w.env or {}
-    {_k: _v for _k, _v in _all if _k not in _own or typeof(_v) != "str"}
+    {_k: _v for _k, _v in _all if _k not in _own{{if not .Process}} or typeof(_v) != "str"{{end}}}
 }

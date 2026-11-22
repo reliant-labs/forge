@@ -87,10 +87,10 @@
 //
 // A new rule goes in gradableRules (TestEveryEmittedRuleIsGradable) and in
 // lint_rollout_table.go (TestEveryGradableRuleDeclaresItsRollout). Declare
-// IntroducedIn as the release it ships in. The owner-approved v1.10.0 grace
-// window (the cohort first declared as v1.9.0, which missed that tag)
-// requires an explicit Grace marker; the table guard rejects other grace
-// declarations.
+// IntroducedIn as the release it ships in: NEXT_VERSION, until a tag carries
+// it. A warning window requires an explicit Grace marker that gates from the
+// minor after IntroducedIn; the table guard rejects any other grace
+// declaration (lint_rollout_table.go).
 
 package lint
 

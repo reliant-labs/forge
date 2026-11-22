@@ -201,16 +201,21 @@ func TestCRUDOwnership_GeneratedOpsAreReadFromTheOpsFile(t *testing.T) {
 }
 
 // Warn-first: a project pinned to the release that ships the rule sees a
-// warning carrying the gate date; the next release gates.
+// warning carrying the gate date; the next release gates. The rule missed tag
+// v1.10.0 (#2461 merged after it), so the release that ships it is v1.11.0,
+// or a v1.10.x patch cut before it (forge#2638).
 func TestCRUDOwnership_RollsOutWarnFirst(t *testing.T) {
 	f := lintJSONFinding{File: "db/migrations/0001_birth.up.sql", Line: 2, Severity: lintSevError, Rule: ruleCRUDTableUnowned, Message: "m"}
-	got, gated := gradeProjectLane(pinnedCfg("v1.10.0", nil), []lintJSONFinding{f}, true)
-	if len(got) != 1 || got[0].Severity != lintSevWarning || gated || got[0].Grace == nil || got[0].Grace.GatesFrom != "v1.11.0" {
-		t.Fatalf("pinned v1.10.0: %+v gated=%v, want a warning gating from v1.11.0", got, gated)
+	for _, pin := range []string{"v1.10.0", "v1.10.1", "v1.11.0", "v1.11.3"} {
+		got, gated := gradeProjectLane(pinnedCfg(pin, nil), []lintJSONFinding{f}, true)
+		if len(got) != 1 || got[0].Severity != lintSevWarning || gated || got[0].Grace == nil ||
+			got[0].Grace.IntroducedIn != "v1.11.0" || got[0].Grace.GatesFrom != "v1.12.0" {
+			t.Fatalf("pinned %s: %+v gated=%v, want a warning new in v1.11.0, gating from v1.12.0", pin, got, gated)
+		}
 	}
-	got, gated = gradeProjectLane(pinnedCfg("v1.11.0", nil), []lintJSONFinding{f}, true)
+	got, gated := gradeProjectLane(pinnedCfg("v1.12.0", nil), []lintJSONFinding{f}, true)
 	if len(got) != 1 || got[0].Severity != lintSevError || !gated {
-		t.Fatalf("pinned v1.11.0: %+v gated=%v, want an error", got, gated)
+		t.Fatalf("pinned v1.12.0: %+v gated=%v, want an error", got, gated)
 	}
 }
 

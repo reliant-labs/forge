@@ -12,11 +12,18 @@ var day0 = time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 
 func addRun(t *testing.T, root, commit, tree string, at time.Time, lane, stream string, exit int) string {
 	t.Helper()
-	return addRunCmd(t, root, commit, tree, at, lane, []string{"go", "test", "-json", "./..."}, stream, exit)
+	return addRunCmd(t, root, runAt{commit, tree, at}, lane, []string{"go", "test", "-json", "./..."}, stream, exit)
 }
 
-func addRunCmd(t *testing.T, root, commit, tree string, at time.Time, lane string, cmd []string, stream string, exit int) string {
+// runAt is the checkout a recorded run tested, and when.
+type runAt struct {
+	commit, tree string
+	at           time.Time
+}
+
+func addRunCmd(t *testing.T, root string, ra runAt, lane string, cmd []string, stream string, exit int) string {
 	t.Helper()
+	commit, tree, at := ra.commit, ra.tree, ra.at
 	dir, ok, warnings := openRun(context.Background(), begin(root, commit, tree, at))
 	if !ok {
 		t.Fatalf("no run: %v", warnings)
@@ -125,11 +132,11 @@ func TestRemovalNeedsACompleteRunOrTheSource(t *testing.T) {
 		// A retry pass in the unit lane: suspected.
 		addRun(t, root, "c1", "t1", day0, "unit", failRun(pkg, "TestFlaky", "boom\n")+passRun(pkg, "TestFlaky")+passRun(pkg, "TestOther")+end, 0)
 		// Later subsets of the package that leave TestFlaky out.
-		addRunCmd(t, root, "c2", "t2", day0.Add(time.Hour), "flake-gate",
+		addRunCmd(t, root, runAt{"c2", "t2", day0.Add(time.Hour)}, "flake-gate",
 			[]string{"go", "test", "-json", "-count=3", "-run", "^(TestOther)$", "./internal/a"}, passRun(pkg, "TestOther")+end, 0)
-		addRunCmd(t, root, "c3", "t3", day0.Add(2*time.Hour), "unit",
+		addRunCmd(t, root, runAt{"c3", "t3", day0.Add(2 * time.Hour)}, "unit",
 			[]string{"go", "test", "-json", "-run=^TestOther$", "./..."}, passRun(pkg, "TestOther")+end, 0)
-		addRunCmd(t, root, "c4", "t4", day0.Add(3*time.Hour), "unit",
+		addRunCmd(t, root, runAt{"c4", "t4", day0.Add(3 * time.Hour)}, "unit",
 			[]string{"go", "test", "-json", "-skip", "^(TestFlaky)$", "./..."}, passRun(pkg, "TestOther")+end, 0)
 	}
 	now := day0.Add(24 * time.Hour)
@@ -150,7 +157,7 @@ func TestRemovalNeedsACompleteRunOrTheSource(t *testing.T) {
 		t.Errorf("only filtered runs omit it: %q, want suspected", got)
 	}
 	// A -skip of the quarantine, which does not match it, keeps a run complete.
-	addRunCmd(t, bare, "c5", "t5", day0.Add(4*time.Hour), "unit",
+	addRunCmd(t, bare, runAt{"c5", "t5", day0.Add(4 * time.Hour)}, "unit",
 		[]string{"go", "test", "-json", "-skip", "^(TestQuarantinedElsewhere)$", "./..."}, passRun(pkg, "TestOther")+end, 0)
 	doc, _ = ComputeFlakes(FlakesOptions{Root: bare, Now: now})
 	if got := stateOf(doc, "TestFlaky"); got != testreport.StateRemoved {

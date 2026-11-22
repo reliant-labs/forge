@@ -455,13 +455,22 @@ func TestRescaffold_EveryScaffoldedFileIsReemittable(t *testing.T) {
 			// re-evaluates.
 			memoizeKCLRenders(t)
 			root, cfg := scaffoldForRescaffold(t, shape)
+			// The composition root is the bootstrap generate's, not the
+			// scaffold lane's (generate re-composes it), so it is not one of
+			// the files under test; the CI step needs it on disk all the same.
+			composed := filepath.ToSlash(filepath.Join("cmd", cfg.Name, "main.go"))
+			_, scaffolded := os.Stat(filepath.Join(root, filepath.FromSlash(composed)))
+			composeRootLikeProjectNew(t, root, cfg)
 			var files []string
 			_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 				if err != nil || !d.Type().IsRegular() {
 					return err
 				}
 				rel, _ := filepath.Rel(root, p)
-				if rel = filepath.ToSlash(rel); !skip(rel) {
+				if rel = filepath.ToSlash(rel); rel == composed && scaffolded != nil {
+					return nil
+				}
+				if !skip(rel) {
 					files = append(files, rel)
 				}
 				return nil

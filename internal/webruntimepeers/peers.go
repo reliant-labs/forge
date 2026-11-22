@@ -412,35 +412,11 @@ func merged(extra ...[]string) []string {
 	return out
 }
 
-// untypedPeers are runtime peers whose types never cross into app code, so
-// they get no tsconfig `paths` pin.
-//
-// @hyperdx/otel-web and rrweb: the runtime loads each with a lazy import()
-// inside ./telemetry, and no published declaration file names either (the
-// app's tsc never reads their types through the runtime). A pin would only
-// cost: an app that never imports ./telemetry (Expo, an adopted app without
-// telemetry) does not install them, so its pin would name a directory that is
-// not there. They stay in BundlerDedupe, where a missing package costs
-// nothing and a second copy would load the SDK twice.
-var untypedPeers = map[string]bool{
-	"@hyperdx/otel-web": true,
-	"rrweb":             true,
-}
-
-// TypePins is the set for TypeScript `paths` pinning: every runtime peer whose
-// types reach app code (all but untypedPeers) plus the transitive
-// type-identity packages. Two copies of any of these makes tsc report two
-// nominally-distinct versions of the same type — the TS2322 "Type Transport
-// is not assignable to type Transport" failure.
-func TypePins() []string {
-	var out []string
-	for _, name := range merged(extraTypeOnlyPins) {
-		if !untypedPeers[name] {
-			out = append(out, name)
-		}
-	}
-	return out
-}
+// TypePins is the set for TypeScript `paths` pinning: every runtime peer plus
+// the transitive type-identity packages. Two copies of any of these makes tsc
+// report two nominally-distinct versions of the same type — the TS2322
+// "Type Transport is not assignable to type Transport" failure.
+func TypePins() []string { return merged(extraTypeOnlyPins) }
 
 // BundlerDedupe is the set for a bundler's dedupe/alias list: every runtime
 // peer plus the runtime-only pairings. Two copies here ship the library twice

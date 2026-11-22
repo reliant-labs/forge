@@ -461,9 +461,8 @@ func generateReactNativeFrontend(cfg *config.ProjectConfig, projectDir string, f
 
 // reconcileFrontendDependencies keeps a web frontend's package.json declaring
 // what forge's generated code imports: the web-runtime range raised to the
-// floor this forge generates against, and the browser-telemetry SDK that
-// '@reliantlabs/forge-web-runtime/telemetry' imports, which a frontend
-// importing it must declare (the runtime's exact optional peers).
+// floor this forge generates against, and the browser-telemetry SDK
+// otel_gen.ts imports.
 //
 // ADOPTED frontends are reconciled too. They used to get a notice instead,
 // on the reasoning that an adopted app's manifest is its own. But the floor
@@ -483,7 +482,6 @@ func reconcileFrontendDependencies(projectDir, feDir string, fe config.FrontendC
 		return
 	}
 	generator.EnsureWebRuntimeDependency(projectDir, feDir, fe.Name)
-	generator.EnsureTelemetryDependencies(projectDir, feDir)
 }
 
 // frontendManifestDisowned reports whether the project disowned the

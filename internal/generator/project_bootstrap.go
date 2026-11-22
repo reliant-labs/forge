@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/naming"
 	"github.com/reliant-labs/forge/internal/templates"
 
@@ -20,32 +21,6 @@ import (
 // The `_test.go` suffix is the fix — see writeComponentTestHelpers in
 // internal/codegen.
 func (g *ProjectGenerator) generateBootstrapTesting() error {
-	type autoStub struct {
-		FieldName          string
-		StubType           string
-		InterfaceQualified string
-		Methods            []struct {
-			Name            string
-			Params          string
-			Results         string
-			ReturnStatement string
-		}
-	}
-	type unresolvedStub struct {
-		FieldName string
-		TypeExpr  string
-	}
-	// funcDefault / funcTodo mirror codegen.DepsFuncDefault /
-	// UnresolvedAutoStub for the Clock/IDGen func-seam harness fill. Always
-	// empty at initial scaffold time — the service has no func-typed Deps
-	// yet; the post-codegen GenerateBootstrapTesting pass derives them from
-	// the on-disk Deps once handlers/<svc>/service.go grows such a field.
-	type funcDefault struct {
-		FieldName string
-		Expr      string
-		NeedsTime bool
-		NeedsULID bool
-	}
 	type bootstrapTestService struct {
 		Name                   string
 		Package                string
@@ -66,17 +41,6 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 		// the canonical `New`, and the post-codegen GenerateBootstrapTesting
 		// pass re-renders with whatever the author's marker says.
 		ConstructorName string
-		// AutoStubs is always empty at the project-scaffold step; the
-		// service has no Deps fields beyond the bare-Deps pair at this
-		// point. The post-codegen GenerateBootstrapTesting pass populates
-		// it once handlers/<svc>/service.go exists.
-		AutoStubs       []autoStub
-		UnresolvedStubs []unresolvedStub
-		// FuncDefaults / FuncTodos: the Clock/IDGen func-seam harness fill.
-		// Empty at scaffold time (see funcDefault doc); the template ranges
-		// over them so the fields must exist.
-		FuncDefaults []funcDefault
-		FuncTodos    []unresolvedStub
 	}
 
 	var services []bootstrapTestService
@@ -110,22 +74,9 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 				MountMethod:            mountMethod,
 				Alias:                  pkg,
 				VarName:                lowerFirstRune(fieldName),
-				// Spelled out rather than taken from
-				// codegen.DefaultConstructorName: generator is upstream of
-				// codegen in the build graph (see extraImport below).
-				ConstructorName: "New",
+				ConstructorName:        codegen.DefaultConstructorName,
 			},
 		}
-	}
-
-	// extraImport mirrors codegen.ExtraImport. We can't pull the codegen
-	// type directly (the generator package is upstream of codegen in the
-	// build graph), but the template only reads .Alias / .Path so a
-	// structurally-identical local type works. The initial-scaffold
-	// pass never has cross-package auto-stubs, so this stays nil here.
-	type extraImport struct {
-		Alias string
-		Path  string
 	}
 
 	// One helper file per service, in that service's own directory and
@@ -141,6 +92,9 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 			IsService bool
 
 			ConstructorName string
+			// ConstructorType is read only for an internal package's
+			// helper; a service's is empty, as codegen's is.
+			ConstructorType string
 			Fallible        bool
 			HasDB           bool
 			TestDB          bool
@@ -161,18 +115,19 @@ func (g *ProjectGenerator) generateBootstrapTesting() error {
 
 			// The template ranges over these stub/func-seam slices. They
 			// are always empty at initial-scaffold time (the service has no
-			// Deps fields beyond the bare pair yet), but the fields must
-			// exist for the template to execute — the post-codegen
-			// GenerateBootstrapTesting pass populates them for real.
-			AutoStubs       []autoStub
-			AutoMocks       []autoStub
-			UnresolvedStubs []unresolvedStub
-			FuncDefaults    []funcDefault
-			FuncTodos       []unresolvedStub
-			UnfilledDeps    []unresolvedStub
-			StoreDefaults   []unresolvedStub
+			// Deps fields beyond the bare pair yet), and the post-codegen
+			// GenerateBootstrapTesting pass populates them for real. Their
+			// element types are codegen's own, so every field the template
+			// reads exists here too (internal/tmplfields checks it).
+			AutoStubs       []codegen.DepsAutoStub
+			AutoMocks       []codegen.DepsAutoMock
+			UnresolvedStubs []codegen.UnresolvedAutoStub
+			FuncDefaults    []codegen.DepsFuncDefault
+			FuncTodos       []codegen.UnresolvedAutoStub
+			UnfilledDeps    []codegen.UnresolvedAutoStub
+			StoreDefaults   []codegen.DepsStoreDefault
 
-			ExtraImports []extraImport
+			ExtraImports []codegen.ExtraImport
 
 			// ConnectV2 renders the connect-go v2 harness — the major
 			// this scaffold targets, as forge generate will read it back

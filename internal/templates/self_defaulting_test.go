@@ -22,14 +22,17 @@ func TestRenderDoesNotKnowAboutFrontends(t *testing.T) {
 	// A payload from a different domain, structurally unrelated to frontends.
 	type unrelatedPayload struct{ Name string }
 
-	out, err := ServiceTemplates().Render("service.go.tmpl", unrelatedPayload{Name: "widget"})
+	// It names a template whose only field it has, so the render must
+	// succeed and carry the payload through as given. (It used to render
+	// service.go.tmpl, which this payload cannot satisfy, and tolerate the
+	// error; internal/tmplfields checks every call site's data now.)
+	out, err := ProjectTemplates().Render("middleware.go.tmpl", unrelatedPayload{Name: "widget"})
 	if err != nil {
-		// A missing template is fine for this test's purpose — what matters
-		// is that Render did not panic or mangle a payload it knows nothing
-		// about. Only a type-assertion regression would misbehave here.
-		t.Logf("render returned %v (acceptable: the assertion under test is that Render stayed generic)", err)
+		t.Fatalf("render with a payload Render knows nothing about: %v", err)
 	}
-	_ = out
+	if !strings.Contains(string(out), `"widget_session"`) {
+		t.Errorf("the payload did not pass through Render untouched; rendered:\n%s", out)
+	}
 
 	// The frontend payload completes itself through the interface, and the
 	// completion is visible in the rendered output.

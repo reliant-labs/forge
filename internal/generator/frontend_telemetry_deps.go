@@ -30,10 +30,11 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
-	"golang.org/x/mod/semver"
 )
 
 // webRuntimeTelemetryEntry is the runtime subpath that imports the SDK.

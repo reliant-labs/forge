@@ -32,6 +32,7 @@ package lint
 import (
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/linter/callerpath"
 	"github.com/reliant-labs/forge/internal/linter/staticexport"
 	"github.com/reliant-labs/forge/internal/linter/testwait"
 	"github.com/reliant-labs/forge/pkg/dbanalyze"
@@ -327,6 +328,10 @@ var newRules = []rolloutGroup{
 	// authenticated rpc that declares no owner (forge:owner=, a forge:owner
 	// column) and no forge:public / forge:unscoped reason. Declared v1.10.0,
 	// but #2461 merged after that tag, so it ships in v1.11.0.
+	// forge lint --caller-paths: a source path from runtime.Caller used to
+	// locate files, which -trimpath (forge's default build mode from
+	// v1.11.0) makes module-relative.
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing tests that find testdata or the repository root from runtime.Caller's file pass in an untrimmed build; warn for a release so each can resolve paths against the package directory (or check filepath.IsAbs) before the rule gates"}, Rules: []string{callerpath.RuleID}},
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
 }
 

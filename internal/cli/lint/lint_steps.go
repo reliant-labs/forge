@@ -782,6 +782,27 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter-ter. Caller paths — Go code that builds a filesystem path
+		// from the source file runtime.Caller reports, which -trimpath
+		// (forge's default build mode) makes module-relative: found by an
+		// untrimmed run, missing in a trimmed one. Syntactic, a parse per
+		// file that mentions runtime.Caller, so it runs in the full sweep.
+		// GATES, through the warn-first rollout (lint_caller_paths.go).
+		{
+			name:  "caller-paths lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				if rc.cfg != nil && !rc.cfg.HasGoModule() {
+					return false, ""
+				}
+				return rc.cwd != "", ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectCallerPathsJSON(rc.cwd)
+			},
+		},
+
 		// 13d-quater. Create-nullability — a field's `optional` label must
 		// agree between an entity message and its Create<Entity>Request.
 		// The Create request is the one envelope that FLATTENS the entity,

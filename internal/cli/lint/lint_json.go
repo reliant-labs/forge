@@ -443,6 +443,8 @@ func collectSingleLinterJSON(
 		return report(collectSlowTestsJSON(ctx, paths))
 	case flags.testWaits:
 		return report(collectTestWaitsJSON(cwd))
+	case flags.callerPaths:
+		return report(collectCallerPathsJSON(cwd))
 	case flags.protoFormat:
 		// `forge lint --proto-format --fix` writes buf's output (--json
 		// refuses --fix, so it stays detect-only).

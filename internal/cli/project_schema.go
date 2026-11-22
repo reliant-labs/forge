@@ -155,7 +155,8 @@ func newProjectSchemaCmd() *cobra.Command {
         pkg/testreport types forge and the control plane write them with.
 
   test-coverage-view, test-runs
-        forge.test.coverage-view/v1, forge.test.runs/v1: what ` + "`forge test\n        coverage --json`" + ` and ` + "`forge test runs --json`" + ` print.
+        forge.test.coverage-view/v1, forge.test.runs/v1: what
+        ` + "`forge test coverage --json`" + ` and ` + "`forge test runs --json`" + ` print.
   test-collect  forge.test.collect/v1: what ` + "`forge test collect <env> --json`" + `
         pulled from each workload of an env.
 

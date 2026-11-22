@@ -40,7 +40,7 @@ func newTestCollectCmd() *cobra.Command {
 builds forge makes for local, ephemeral and preview envs) into a run, as the
 lane's go-covdata input:
 
-  host     GET http://127.0.0.1:<pprof port>/debug/coverage, plus what earlier
+  host     GET ` + "`http://127.0.0.1:<pprof port>/debug/coverage`" + `, plus what earlier
            processes flushed to .forge/tests/covdata/<env>/<workload>/
   compose  docker cp of the container's GOCOVERDIR (compose binds pprof on
            0.0.0.0, so the pull endpoint is withheld): what its process

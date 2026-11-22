@@ -138,9 +138,13 @@ func ParseQuarantineTarget(arg, module string) (testreport.TestID, error) {
 }
 
 // importPath turns a package given as an import path or a module-relative
-// directory into the import path.
+// directory into the import path. Every form is reduced to its
+// module-relative directory, which is then normalised and validated the
+// same way: a traversal out of the module, an absolute path or a backslash
+// is refused, whichever spelling carried it.
 func importPath(pkg, module string) (string, error) {
 	pkg = strings.TrimSuffix(strings.TrimSpace(pkg), "/")
+	var rel string
 	switch {
 	case pkg == "" || pkg == "." || pkg == "./" || pkg == RootPackageDir:
 		if module == "" {
@@ -150,27 +154,48 @@ func importPath(pkg, module string) (string, error) {
 	case module != "" && pkg == module:
 		return pkg, nil
 	case module != "" && strings.HasPrefix(pkg, module+"/"):
-		if err := checkPackageDir(strings.TrimPrefix(pkg, module+"/")); err != nil {
-			return "", fmt.Errorf("package %s: %w", pkg, err)
-		}
-		return pkg, nil
+		rel = strings.TrimPrefix(pkg, module+"/")
 	case strings.HasPrefix(pkg, "./"):
-		pkg = strings.TrimPrefix(pkg, "./")
+		rel = strings.TrimPrefix(pkg, "./")
+	case strings.HasPrefix(pkg, "/"):
+		return "", fmt.Errorf("package %s: an absolute path is not a directory inside the module", pkg)
 	case strings.Contains(strings.SplitN(pkg, "/", 2)[0], ".") && !strings.HasPrefix(pkg, "."):
 		// A host-qualified import path of another module.
 		return "", fmt.Errorf("package %s is not in module %s", pkg, module)
+	default:
+		rel = pkg
 	}
 	if module == "" {
 		return "", fmt.Errorf("package %s: no go.mod to resolve it against", pkg)
 	}
-	clean := path.Clean(pkg)
-	if strings.HasPrefix(clean, "../") || clean == ".." {
-		return "", fmt.Errorf("package %s is outside the module", pkg)
-	}
-	if err := checkPackageDir(clean); err != nil {
+	clean, err := cleanPackageDir(rel)
+	if err != nil {
 		return "", fmt.Errorf("package %s: %w", pkg, err)
 	}
+	if clean == "." {
+		return module, nil
+	}
 	return module + "/" + clean, nil
+}
+
+// cleanPackageDir normalises a module-relative package directory and
+// refuses one that leaves the module: absolute, a backslash, or a `..`
+// that climbs above the module root once cleaned.
+func cleanPackageDir(rel string) (string, error) {
+	if rel == "" || strings.HasPrefix(rel, "/") || strings.Contains(rel, `\`) {
+		return "", fmt.Errorf("%q is not a directory inside the module", rel)
+	}
+	clean := path.Clean(rel)
+	if clean == ".." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) {
+		return "", fmt.Errorf("%q is outside the module", rel)
+	}
+	if clean == "." {
+		return clean, nil
+	}
+	if err := checkPackageDir(clean); err != nil {
+		return "", err
+	}
+	return clean, nil
 }
 
 // checkPackageDir refuses a module-relative package directory that is not
@@ -212,6 +237,24 @@ func EntryPath(id testreport.TestID, module string) (string, error) {
 		return "", fmt.Errorf("test %s: only Go tests can be quarantined today", id)
 	}
 	return path.Join(QuarantineDir, string(id.Lang), dir, id.Name+".yaml"), nil
+}
+
+// entryFile is id's entry as a path to write or remove: EntryPath, joined to
+// root, and then proven to lie inside root's ci/quarantine/<lang>/ after
+// cleaning. EntryPath already refuses every escape it knows of; this is the
+// check that does not depend on knowing them.
+func entryFile(root, module string, id testreport.TestID) (rel, abs string, err error) {
+	rel, err = EntryPath(id, module)
+	if err != nil {
+		return "", "", err
+	}
+	base := filepath.Clean(filepath.Join(root, filepath.FromSlash(QuarantineDir), string(id.Lang)))
+	abs = filepath.Clean(filepath.Join(root, filepath.FromSlash(rel)))
+	inside, rerr := filepath.Rel(base, abs)
+	if rerr != nil || inside == "." || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) || filepath.IsAbs(inside) {
+		return "", "", fmt.Errorf("test %s: its entry %s would not be inside %s", id, rel, path.Join(QuarantineDir, string(id.Lang)))
+	}
+	return rel, abs, nil
 }
 
 // QuarantineList reads every entry under root's ci/quarantine/, sorted by
@@ -346,12 +389,11 @@ type AddResult struct {
 // QuarantineAdd writes e's file under root. An entry already there is left
 // alone (a test is never quarantined twice) unless force is set.
 func QuarantineAdd(root, module string, e Entry, force bool) (AddResult, error) {
-	rel, err := EntryPath(e.ID(), module)
+	rel, abs, err := entryFile(root, module, e.ID())
 	if err != nil {
 		return AddResult{}, err
 	}
 	e.Path = rel
-	abs := filepath.Join(root, filepath.FromSlash(rel))
 	_, statErr := os.Stat(abs)
 	existed := statErr == nil
 	if existed && !force {
@@ -404,11 +446,10 @@ var ErrNotQuarantined = errors.New("not quarantined")
 // QuarantineRemove deletes id's entry, and the package directories it leaves
 // empty (never ci/quarantine/<lang> itself). It returns the removed path.
 func QuarantineRemove(root, module string, id testreport.TestID) (string, error) {
-	rel, err := EntryPath(id, module)
+	rel, abs, err := entryFile(root, module, id)
 	if err != nil {
 		return "", err
 	}
-	abs := filepath.Join(root, filepath.FromSlash(rel))
 	if err := os.Remove(abs); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return rel, fmt.Errorf("%s: %w (no %s)", id, ErrNotQuarantined, rel)

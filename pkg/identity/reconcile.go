@@ -259,7 +259,9 @@ func (p *run) dry() bool { return p.o.DryRun }
 // write reports whether a write may be performed (it may not in a dry run).
 func (p *run) write() bool { return !p.o.DryRun }
 
-func (p *run) logf(msg string, args ...any) { p.c.log.Info("identity: "+msg, args...) }
+func (p *run) logf(ctx context.Context, msg string, args ...any) {
+	p.c.log.InfoContext(ctx, "identity: "+msg, args...)
+}
 
 // requiresKeys reports whether the spec generates credentials that must be
 // remembered.

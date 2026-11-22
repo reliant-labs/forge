@@ -96,6 +96,7 @@ forge vuln list prod --kev --json | jq '.findings[].id'
 forge vuln show prod CVE-2026-1234           # one advisory (a CVE finds its GHSA alias) or one package
 forge vuln sbom prod --artifact api > api.cdx.json
 forge vuln sbom prod --artifact api --format spdx   # converted with syft
+forge vuln sbom --file dist/mycli --artifact mycli_linux_amd64.tar.gz --release v1.2.0 > mycli_linux_amd64.tar.gz.cdx.json
 forge vuln scan                              # a directory (default .): a source tree or build output
 forge vuln scan --image ghcr.io/acme/api@sha256:…   # an image, by digest only
 forge vuln scan sbom.json                    # an SBOM another tool made (CycloneDX or SPDX JSON)
@@ -116,6 +117,13 @@ forge vuln patch prod --verify               # bump what prod's findings name to
   `--deployed` reads the release the **ledger** says the env runs, not the digests
   in its cluster: `forge env status` is the drift check.
 - `--image` refuses a tag: a scan must describe bytes, not a pointer that moves.
+- `sbom --file <path>` reads no env and records nothing: it generates the SBOM of
+  one binary or lockfile with the cut's own generator (pinned syft, CycloneDX 1.6,
+  `--artifact` as the subject instead of your machine's path, `--release` as its
+  version), for binaries your own pipeline publishes. forge's own releases attach
+  one per archive this way (`<archive>.cdx.json` on each GitHub release), and scan
+  the binaries once with `forge vuln scan <dir>` as an audit that never fails the
+  release.
 - Counted findings: the default gate counts **only findings with a fix** (grype
   `fix.state == fixed`) toward blocking; `not-fixed` and `wont-fix` are listed,
   never gating. A CPE-based match is lower confidence and says so. A finding with

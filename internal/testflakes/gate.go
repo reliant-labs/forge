@@ -106,6 +106,11 @@ type GateResult struct {
 	// RetryPassed those of them that also passed one: flakes.
 	Failed      []testreport.TestID
 	RetryPassed []testreport.TestID
+	// CommandFailed says the selected tests' command could not start (no
+	// `go`, an unexecutable wrapper). ExitCode is then GateUndetermined, as
+	// it always was, but the gate did not run what it selected: the
+	// flake-check step fails it rather than passing it as "no tests".
+	CommandFailed bool
 }
 
 // GateFlags are the `go test` flags the gate passes before -run: -short
@@ -201,6 +206,7 @@ func Gate(ctx context.Context, o GateOptions) GateResult {
 	switch {
 	case startErr != nil:
 		res.ExitCode, res.Message = GateUndetermined, fmt.Sprintf("flake gate: could not run %s: %v", o.Command[0], startErr)
+		res.CommandFailed = true
 	case code == 0:
 		res.ExitCode = GatePassed
 		res.Message = fmt.Sprintf("flake gate: selected tests passed %s in %s (%d packages)", passedOf(o.CPU), elapsed, len(pkgs))

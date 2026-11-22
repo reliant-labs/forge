@@ -1,8 +1,8 @@
 ---
 name: migrations/v1.11.0/pgo-default-on
-description: Profile-guided builds turn on by themselves wherever an env has CPU profiles (forge v1.11.0). A hosted project gets `.github/workflows/pgo-refresh.yml` on its next `forge generate` (new projects at `forge project new`). Every Monday it runs `forge pgo pull --env <prod>` and opens a pull request with each Go binary's cmd/<bin>/default.pgo when the env's profiles changed it, and does nothing where there are none. It needs a FORGE_OBS_TOKEN secret with deploy:read,obs:read. An existing project's profile collection is not changed. Hosted envs scaffolded since v1.10.0 declare profiles on. Use when a deploy/kcl/<env>/main.k binds forge.OnHosted and no cmd/<bin>/default.pgo is committed yet.
+description: Profile-guided builds turn on by themselves wherever an env has CPU profiles (forge v1.11.0). A project whose hosted env builds a Go binary gets `.github/workflows/pgo-refresh.yml` on its next `forge generate` (new projects at `forge project new`). Every Monday it runs `forge pgo pull --env <prod>` and opens a pull request with each Go binary's cmd/<bin>/default.pgo when the env's profiles changed it, and does nothing where there are none. It needs a FORGE_OBS_TOKEN secret with deploy:read,obs:read. An existing project's profile collection is not changed. Hosted envs scaffolded since v1.10.0 declare profiles on. Use when a deploy/kcl/<env>/main.k binds forge.OnHosted and no cmd/<bin>/default.pgo is committed yet.
 version: v1.11.0
-detection: grep -lqs 'forge.OnHosted' deploy/kcl/*/main.k && ! grep -qs 'pgo-refresh: false' forge.yaml && ! ls cmd/*/default.pgo >/dev/null 2>&1
+detection: grep -lqs 'forge.OnHosted' deploy/kcl/*/main.k && ! grep -qs 'pgo-refresh: false' forge.yaml && ! ls cmd/*/default.pgo >/dev/null 2>&1 && forge-detect pgo-refresh-due
 ---
 
 # Profile-guided builds turn on where profiles exist (v1.11.0)
@@ -16,10 +16,13 @@ written into your project by itself.
 ## What changes by itself
 
 **`.github/workflows/pgo-refresh.yml` appears on your next `forge generate`**
-when the project has a hosted env (`ci.provider: github`). It is a
-scaffold-once file like `release.yml`: once written it is yours, forge never
-rewrites it, and a deleted one stays deleted. Every Monday it pulls the last
-hosted env in promotion order. Then:
+when a hosted env builds a Go binary (`ci.provider: github`): one whose
+workloads run a `cmd/<bin>` main package of this checkout, the binaries
+`forge pgo pull` writes profiles for. A hosted env that only serves a static
+site gets none. It is a scaffold-once file like `release.yml`: once written it
+is yours, forge never rewrites it, and a deleted one stays deleted (the birth
+record under `.forge/scaffolded/` remembers it, so commit that). Every Monday
+it pulls the last hosted env in promotion order that builds a Go binary. Then:
 
 - If the env has profiles and a binary's profile changed, it opens (or
   updates) one pull request with the new `default.pgo`. Merging that PR turns
@@ -67,4 +70,9 @@ like logs and traces.
 
 To decline the workflow, set `ci.workflows: {pgo-refresh: false}` in
 forge.yaml before running `forge generate`, or delete the file afterwards.
+A project that already refreshes its profiles is not given a second job: a
+Reliant workflow named `.reliant/workflows/pgo-refresh.yaml`, or a workflow
+under `.github/workflows/` or `.reliant/workflows/` that runs `forge pgo pull`,
+counts, and `forge generate` names it in one line until forge.yaml says
+`ci.workflows: {pgo-refresh: false}`.
 More: `forge skill load observability/profiles`.

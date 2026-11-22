@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ type LocalRun struct {
 	testreport.RunRecord
 	Lane   string
 	Branch string
+	// Command is the lane's command as capture recorded it: what tells a
+	// complete package run from a filtered one (completeFor).
+	Command []string
 }
 
 // LoadRecord reads every captured lane of every run under root's
@@ -70,7 +74,7 @@ func LoadRecord(root string) ([]LocalRun, []string) {
 				at = m.CreatedAt
 			}
 			if res := readLaneResults(runDir, lane, lm); res != nil {
-				out = append(out, LocalRun{RunRecord: testreport.RunRecord{ID: m.ID, Commit: m.Commit, Tree: m.TreeHash, At: at, Results: res}, Lane: lane, Branch: m.Branch})
+				out = append(out, LocalRun{RunRecord: testreport.RunRecord{ID: m.ID, Commit: m.Commit, Tree: m.TreeHash, At: at, Results: res}, Lane: lane, Branch: m.Branch, Command: lm.Command})
 			}
 			if lane != LaneConfirm {
 				continue
@@ -179,7 +183,9 @@ func ComputeFlakes(o FlakesOptions) (*testreport.Flakes, []string) {
 		ids[id] = true
 	}
 
-	ran, latest := runsOfTests(runs)
+	ran := runsOfTests(runs)
+	module, _ := ModulePath(o.Root)
+	src := sourceIndex{root: o.Root, module: module}
 	keep := map[testreport.State]bool{}
 	for _, s := range o.States {
 		keep[s] = true
@@ -188,7 +194,7 @@ func ComputeFlakes(o FlakesOptions) (*testreport.Flakes, []string) {
 	for id := range ids {
 		evs := byTest[id]
 		q, isQ := quarantined[id]
-		st := testreport.FlakeState(testreport.History{Events: evs, Quarantined: isQ, Absent: absent(id, runs, latest)}, o.Now)
+		st := testreport.FlakeState(testreport.History{Events: evs, Quarantined: isQ, Absent: absent(id, runs, src)}, o.Now)
 		switch {
 		case len(keep) > 0 && !keep[st.State]:
 			continue
@@ -275,16 +281,12 @@ func quarantineSuggestion(id testreport.TestID, issue string) string {
 }
 
 // runsOfTests counts, per top-level test, the runs it ran in (not skipped):
-// the flake rate's n. latest is, per lane, the newest run of it.
-func runsOfTests(runs []LocalRun) (map[testreport.TestID]int, map[string]LocalRun) {
+// the flake rate's n.
+func runsOfTests(runs []LocalRun) map[testreport.TestID]int {
 	ran := map[testreport.TestID]int{}
-	latest := map[string]LocalRun{}
 	for _, r := range runs {
 		if strings.HasSuffix(r.ID, ":source") {
 			continue // a red run's failures, already counted where they ran
-		}
-		if cur, ok := latest[r.Lane]; !ok || !r.At.Before(cur.At) {
-			latest[r.Lane] = r
 		}
 		seen := map[testreport.TestID]bool{}
 		for _, c := range r.Results.Leaves() {
@@ -297,14 +299,36 @@ func runsOfTests(runs []LocalRun) (map[testreport.TestID]int, map[string]LocalRu
 			ran[id]++
 		}
 	}
-	return ran, latest
+	return ran
 }
 
-// absent reports a test the newest run of a lane it ran in tested its
-// package without it: deleted, as the policy asks.
-func absent(id testreport.TestID, runs []LocalRun, latest map[string]LocalRun) bool {
+// absent reports a suspected or flaky test as deleted (the policy's
+// outcome, state removed). Not running in a run is evidence only when the
+// run would have run it, so the evidence is, in order:
+//
+//   - the source, when it can be read: the test's package directory in this
+//     module, and its `func <Test>(` in a *_test.go there. A test that is
+//     still declared is never removed, whatever a run left out;
+//   - otherwise the newest COMPLETE run of each lane it ran in (completeFor:
+//     a unit or integration lane whose command filters nothing that could
+//     select this test away) that tested its package without it.
+//
+// The flake gate and confirm lanes run chosen tests only, and a lane run with
+// -run, or with a -skip that matches the test, ran a subset: none of them
+// shows a test is gone.
+func absent(id testreport.TestID, runs []LocalRun, src sourceIndex) bool {
+	if declared, known := src.declares(id); known {
+		return !declared
+	}
 	lanes := map[string]bool{}
+	latest := map[string]LocalRun{}
 	for _, r := range runs {
+		if !completeFor(r, id) {
+			continue
+		}
+		if cur, ok := latest[r.Lane]; !ok || !r.At.Before(cur.At) {
+			latest[r.Lane] = r
+		}
 		for _, c := range r.Results.Cases {
 			if c.ID.TopLevel() == id {
 				lanes[r.Lane] = true
@@ -316,10 +340,7 @@ func absent(id testreport.TestID, runs []LocalRun, latest map[string]LocalRun) b
 		return false
 	}
 	for lane := range lanes {
-		l, ok := latest[lane]
-		if !ok {
-			return false
-		}
+		l := latest[lane]
 		ranPkg, ranTest := false, false
 		for _, p := range l.Results.Packages {
 			if p.Lang == id.Lang && p.Path == id.Package && !p.NoTestFiles {
@@ -337,4 +358,83 @@ func absent(id testreport.TestID, runs []LocalRun, latest map[string]LocalRun) b
 		}
 	}
 	return true
+}
+
+// completeLanes are the lanes whose runs are whole package runs: the
+// project's own suites, never the flake gate's or confirm's chosen tests.
+var completeLanes = map[string]bool{string(testreport.LaneUnit): true, string(testreport.LaneIntegration): true}
+
+// completeFor reports whether run r would have run test id had it existed:
+// a complete lane, with no -run filter and no -skip that matches the test
+// (the quarantine's skip-regex matches only quarantined tests, so a run that
+// skipped the quarantine is still complete for every other test). A
+// -skip that does not compile is taken to match.
+func completeFor(r LocalRun, id testreport.TestID) bool {
+	if !completeLanes[r.Lane] || strings.HasSuffix(r.ID, ":source") || r.Results == nil {
+		return false
+	}
+	for i := 0; i < len(r.Command); i++ {
+		name, val, hasVal := strings.Cut(strings.TrimLeft(r.Command[i], "-"), "=")
+		if !strings.HasPrefix(r.Command[i], "-") {
+			continue
+		}
+		name = strings.TrimPrefix(name, "test.")
+		switch name {
+		case "run":
+			return false
+		case "skip":
+			if !hasVal {
+				if i+1 >= len(r.Command) {
+					return false
+				}
+				i++
+				val = r.Command[i]
+			}
+			top, _, _ := strings.Cut(val, "/")
+			re, err := regexp.Compile(top)
+			if err != nil || re.MatchString(id.Name) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// sourceIndex reads whether a Go test is still declared in the module's
+// source at root.
+type sourceIndex struct {
+	root, module string
+}
+
+// declares reports whether id's `func <Test>(` is in a *_test.go of its
+// package directory; known is false when the source cannot say (no go.mod,
+// a package of another module, an unreadable directory).
+func (s sourceIndex) declares(id testreport.TestID) (declared, known bool) {
+	if id.Lang != testreport.LangGo || id.Name == "" || s.module == "" {
+		return false, false
+	}
+	rel, ok := relPackage(id.Package, s.module)
+	if !ok {
+		return false, false
+	}
+	dir := filepath.Join(s.root, filepath.FromSlash(rel))
+	if _, err := os.Stat(dir); err != nil {
+		// The package directory is gone with its tests.
+		return false, os.IsNotExist(err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
+	if err != nil {
+		return false, false
+	}
+	decl := regexp.MustCompile(`(?m)^func ` + regexp.QuoteMeta(id.Name) + `\(`)
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return false, false
+		}
+		if decl.Match(data) {
+			return true, true
+		}
+	}
+	return false, true
 }

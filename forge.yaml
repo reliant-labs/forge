@@ -85,6 +85,21 @@ lint:
   frontend:
     no_important: warn
     no_inline_styles: warn
+  rules:
+    # The owner's policy for this repo: a test the change adds or edits that
+    # fails one of its three runs blocks (`forge test flakes gate`; forge
+    # ci gate's flake-check step). For customers the step only warns.
+    flake-check: error
+# forge records its own test runs (scripts/ci-test-shard.sh and the flake
+# gate through `forge test capture`) and acts on its flakes as the owner's
+# policy says: flaky = delete immediately, so a suspected flake files an
+# issue and opens a quarantine PR rather than only suggesting one. Upload is
+# left at its default until the hosted step (Tests D1b).
+tests:
+  coverage: true
+  flakes:
+    issues: true
+    quarantine: pr
 contracts:
   exclude:
     - "internal/naming" # Pure stateless string-case utilities; mocking adds no value.

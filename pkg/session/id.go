@@ -99,6 +99,16 @@ type Tokens struct {
 	// Expiry is when AccessToken expires. The zero time is treated as
 	// "already due for a refresh".
 	Expiry time.Time
+	// IssuerSessionID and IssuerSessionToken are the identity provider's
+	// own session the tokens were issued from (a Zitadel v2 session), when
+	// the sign-in had one. The token is a bearer credential for that
+	// session: with it the broker can finalize a further authorization
+	// request for the same person, which is how a sign-in handoff gives
+	// another client tokens of its own (forge/pkg/devidp's HandoffRoutes).
+	// Both are sealed with the rest; a refresh that returns none keeps
+	// them. Optional.
+	IssuerSessionID    string
+	IssuerSessionToken string
 }
 
 const redacted = "[REDACTED]"
@@ -118,6 +128,12 @@ type sealedTokens struct {
 	Refresh string `json:"r,omitempty"`
 	ID      string `json:"i,omitempty"`
 	Expiry  int64  `json:"e"` // unix milliseconds; 0 for the zero time
+	// The issuer's session, and the channel the session was created
+	// through (Meta.Channel). Added later, so omitted when empty: a row
+	// sealed before them opens with both empty.
+	IssuerSessionID    string `json:"si,omitempty"`
+	IssuerSessionToken string `json:"st,omitempty"`
+	Channel            string `json:"c,omitempty"`
 }
 
 // sealVersion is the first byte of every sealed blob.
@@ -129,12 +145,16 @@ var errCorrupt = errors.New("session: the stored tokens cannot be opened")
 
 // seal encrypts t under k.seal, with the lookup key as additional data so a
 // sealed blob moved onto another row does not open there.
-func seal(k keys, t Tokens) ([]byte, error) {
+func seal(k keys, t Tokens) ([]byte, error) { return sealWith(k, t, "") }
+
+// sealWith is seal, recording the session's channel beside the tokens.
+func sealWith(k keys, t Tokens, channel string) ([]byte, error) {
 	var exp int64
 	if !t.Expiry.IsZero() {
 		exp = t.Expiry.UnixMilli()
 	}
-	plain, err := json.Marshal(sealedTokens{Access: t.AccessToken, Refresh: t.RefreshToken, ID: t.IDToken, Expiry: exp})
+	plain, err := json.Marshal(sealedTokens{Access: t.AccessToken, Refresh: t.RefreshToken, ID: t.IDToken, Expiry: exp,
+		IssuerSessionID: t.IssuerSessionID, IssuerSessionToken: t.IssuerSessionToken, Channel: channel})
 	if err != nil {
 		return nil, err
 	}
@@ -154,27 +174,34 @@ func seal(k keys, t Tokens) ([]byte, error) {
 
 // open reverses seal.
 func open(k keys, blob []byte) (Tokens, error) {
+	t, _, err := openWith(k, blob)
+	return t, err
+}
+
+// openWith reverses sealWith: the tokens and the session's channel.
+func openWith(k keys, blob []byte) (Tokens, string, error) {
 	gcm, err := newGCM(k.seal)
 	if err != nil {
-		return Tokens{}, err
+		return Tokens{}, "", err
 	}
 	if len(blob) < 1+gcm.NonceSize() || blob[0] != sealVersion {
-		return Tokens{}, errCorrupt
+		return Tokens{}, "", errCorrupt
 	}
 	nonce := blob[1 : 1+gcm.NonceSize()]
 	plain, err := gcm.Open(nil, nonce, blob[1+gcm.NonceSize():], k.lookup)
 	if err != nil {
-		return Tokens{}, errCorrupt
+		return Tokens{}, "", errCorrupt
 	}
 	var s sealedTokens
 	if err := json.Unmarshal(plain, &s); err != nil {
-		return Tokens{}, errCorrupt
+		return Tokens{}, "", errCorrupt
 	}
-	t := Tokens{AccessToken: s.Access, RefreshToken: s.Refresh, IDToken: s.ID}
+	t := Tokens{AccessToken: s.Access, RefreshToken: s.Refresh, IDToken: s.ID,
+		IssuerSessionID: s.IssuerSessionID, IssuerSessionToken: s.IssuerSessionToken}
 	if s.Expiry != 0 {
 		t.Expiry = time.UnixMilli(s.Expiry)
 	}
-	return t, nil
+	return t, s.Channel, nil
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {

@@ -405,7 +405,9 @@ func evalPath(p string) string {
 // Other formats name them absolutely (made relative to the repository) or
 // relative to whatever directory their tool ran in: the project root, or a
 // frontend under it. A relative path that names no file of the source is
-// matched by its unique suffix.
+// matched by its unique suffix. An absolute path under another checkout's
+// root (a run recorded in a CI snapshot and reported from the runner's own
+// checkout, as Istanbul JSON records them) is relocated: see relocate.
 func (v *repoView) fixPaths(d *testreport.Coverage) {
 	if v.top == "" {
 		return
@@ -423,6 +425,8 @@ func (v *repoView) fixPaths(d *testreport.Coverage) {
 				p = rest
 			} else if rest, ok := strings.CutPrefix(p, filepath.ToSlash(v.top)+"/"); ok {
 				p = rest
+			} else if m := v.relocate(p); m != "" {
+				p = m
 			}
 		default:
 			p = path.Join(v.projectRel, p)
@@ -439,6 +443,24 @@ func (v *repoView) fixPaths(d *testreport.Coverage) {
 			f.Package = path.Dir(p)
 		}
 	}
+}
+
+// relocate maps an absolute path recorded under another root onto this
+// repository: the longest trailing part of it that names a file of the
+// source (/ci/snap/frontends/web/src/a.ts → frontends/web/src/a.ts, never a
+// shorter src/a.ts). "" when no trailing part does, or there is no source
+// listing to check against.
+func (v *repoView) relocate(p string) string {
+	if v.blobs == nil {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(filepath.ToSlash(p), "/"), "/")
+	for i := 1; i < len(parts); i++ {
+		if c := strings.Join(parts[i:], "/"); v.blobs[c] != "" {
+			return c
+		}
+	}
+	return ""
 }
 
 func (v *repoView) uniqueSuffix(p string) string {

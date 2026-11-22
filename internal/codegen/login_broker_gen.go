@@ -55,6 +55,10 @@ type LoginBrokerTemplateData struct {
 	// broker keeping sessions server-side asks the issuer for (with
 	// offline_access added). Without it the standard OIDC set is asked for.
 	ScopesField bool
+	// HandoffRedirectsField reports whether that config declares
+	// handoff_redirects, the allowlist that turns the sign-in handoff
+	// on. Without it the broker serves no handoff and still compiles.
+	HandoffRedirectsField bool
 	// NoEnvironmentField reports that config declares no environment, which
 	// the broker otherwise reads to tell local development (exactly
 	// "development") from a deployed environment. A process that loads the
@@ -72,6 +76,7 @@ const (
 	audienceConfigField    = "JwtAudience"
 	proxyHopsConfigField   = "TrustedProxyHops"
 	scopesConfigField      = "OidcScopes"
+	handoffConfigField     = "HandoffRedirects"
 	environmentConfigField = "Environment"
 )
 
@@ -207,6 +212,7 @@ func GenerateLoginBroker(modulePath, projectName, projectDir string) (bool, erro
 		AudienceField:                         declares(audienceConfigField),
 		TrustedProxyHopsField:                 declares(proxyHopsConfigField),
 		ScopesField:                           declares(scopesConfigField),
+		HandoffRedirectsField:                 declares(handoffConfigField),
 		NoEnvironmentField:                    !declares(environmentConfigField),
 	})
 	if err != nil {

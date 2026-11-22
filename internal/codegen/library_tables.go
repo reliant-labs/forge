@@ -56,6 +56,11 @@ var libraryTables = []libraryTable{
 		columns: []string{"id_hash", "subject", "sealed", "user_agent", "issuer_session", "created_at", "proved_at", "last_seen_at", "refreshed_at", "idle_expires_at", "expires_at"},
 	},
 	{
+		name:    "auth_handoffs",
+		library: "github.com/reliant-labs/forge/pkg/session",
+		columns: []string{"key_hash", "sealed", "created_at", "expires_at"},
+	},
+	{
 		name:    "alert_events",
 		library: "github.com/reliant-labs/forge/pkg/alerting/pgstore",
 		columns: []string{"id", "owner", "env", "rule", "fingerprint", "labels", "transition", "value", "at", "why"},

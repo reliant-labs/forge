@@ -1,8 +1,8 @@
 # PGO refresh — keep each Go binary's profile current with how {{.Env}} runs it.
 #
-# Scaffolded by forge for a project with hosted environments. Yours from now
-# on: edit freely, or turn it off with `ci.workflows: {pgo-refresh: false}` in
-# forge.yaml.
+# Scaffolded by forge because the hosted env {{.Env}} builds a Go binary. Yours
+# from now on: edit freely, or turn it off with `ci.workflows: {pgo-refresh:
+# false}` in forge.yaml. A deleted copy stays deleted.
 #
 # Every `go build ./cmd/<bin>` reads the committed cmd/<bin>/default.pgo (Go's
 # default -pgo=auto), so the compiler inlines and devirtualizes the call sites

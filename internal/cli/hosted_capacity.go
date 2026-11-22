@@ -121,7 +121,10 @@ func hostedCapacityPreflightForEnv(ctx context.Context, projectDir, envName stri
 	if withBuilds {
 		builds = hostedBuildCount(entities)
 	}
-	return hostedCapacityPreflight(ctx, envName, entities, builds, out)
+	capacity, err := hostedCapacityPreflight(ctx, envName, entities, builds, out)
+	// Every caller is a deploy, and this is where a signed-out --dry-run or
+	// --plan first needs the credential: it names the no-account deploy.
+	return capacity, signedOutDeploy(envName, entities, err)
 }
 
 func entitiesOrEmpty(e *KCLEntities) *KCLEntities {

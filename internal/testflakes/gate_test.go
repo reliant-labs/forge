@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,7 +154,7 @@ func gateOpts(t *testing.T, root string, r *fakeRunner, git Git, list ListPackag
 }
 
 func TestGateRunsChangedTestsThreeTimesAndRecordsTheRun(t *testing.T) {
-	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n"})
+	root := newModule(t, map[string]string{"internal/a/a_test.go": "package a\n\nfunc TestNew(t *testing.T) {}\n"})
 	git := fakeGit(root, "internal/a/a_test.go", map[string]string{"internal/a/a_test.go": "+func TestNew(t *testing.T) {\n"})
 	pkg := testModule + "/internal/a"
 	r := &fakeRunner{script: func([]string) (string, int) {
@@ -235,6 +237,20 @@ func TestGateExitCodes(t *testing.T) {
 	}
 	if r.calls[0][0] != "go" || r.calls[0][1] != "test" {
 		t.Errorf("default command = %v", r.calls[0])
+	}
+
+	// The selected tests' command could not start: 2, as before, but marked
+	// so the flake-check step fails it; "no tests" above is not marked.
+	o, _ = gateOpts(t, root, r, git, listOf(root, "internal/a"))
+	o.Runner = func(context.Context, string, []string, []string, io.Writer, io.Writer) (int, error) {
+		return 127, exec.ErrNotFound
+	}
+	if res := Gate(context.Background(), o); res.ExitCode != GateUndetermined || !res.CommandFailed || !strings.Contains(res.Message, "could not run go") {
+		t.Errorf("command could not start: %+v", res)
+	}
+	o, _ = gateOpts(t, root, r, fakeGit(root, "", nil), listOf(root, "internal/a"))
+	if res := Gate(context.Background(), o); res.CommandFailed {
+		t.Errorf("no tests is not a failed command: %+v", res)
 	}
 }
 

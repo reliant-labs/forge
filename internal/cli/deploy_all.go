@@ -60,7 +60,9 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 	}
 
 	if err := prepareHostedProjectForWrite(ctx, projectDir, envName, &f); err != nil {
-		return err
+		// No document has been written yet, and a --json caller needs one
+		// for exactly this failure (a signed-out deploy's next_actions).
+		return refuseDeployReported(newDeployReport(envName, f.jsonOut), err)
 	}
 
 	// The capacity pre-flight, before the build: a no-plan org must learn it

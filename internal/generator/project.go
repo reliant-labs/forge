@@ -118,6 +118,9 @@ type ProjectGenerator struct {
 	// forge control plane, so the CI scaffolded beside them is the hosted
 	// pipeline (generateCIFiles) without rendering a half-born project.
 	hostedEnvs []string
+	// pgoEnvs are the hostedEnvs whose workloads run a Go binary of the
+	// project (CIInputs.PGOEnvs), recorded beside them for the same reason.
+	pgoEnvs []string
 
 	// ConnectMajor is the explicit choice for a new service scaffold, before
 	// its go.mod exists. Zero keeps the choice in the project's own go.mod.

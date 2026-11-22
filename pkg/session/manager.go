@@ -170,9 +170,28 @@ type Meta struct {
 	// list of sessions. Optional.
 	UserAgent string
 	// IssuerSession is the identity provider's own session reference, when
-	// the sign-in has one. Optional.
+	// the sign-in has one. Optional. It is stored in the clear: a reference
+	// only, never the issuer session's token (that travels sealed, in
+	// Tokens.IssuerSessionToken).
 	IssuerSession string
+	// ProvedAt is when the person last proved a credential for this
+	// session. Zero (the usual case) is now: the session is being created
+	// by a sign-in. A session created from ANOTHER session's approval (a
+	// handoff) passes that session's ProvedAt instead, so an action that
+	// demands a recent proof is not satisfied by a click. A time after now
+	// is read as now.
+	ProvedAt time.Time
+	// Channel names how the session was created when it was not by a
+	// sign-in of its own: [ChannelHandoff] for one a signed-in session
+	// handed to another client. "" is a sign-in. It is sealed with the
+	// tokens, so [Manager.Info] reports it and [Manager.List] cannot.
+	Channel string
 }
+
+// ChannelHandoff is the [Meta.Channel] of a session created by a sign-in
+// handoff: another client's session approved it, so no credential was proved
+// for it here.
+const ChannelHandoff = "handoff"
 
 // Issued is a session [Manager.Create] made.
 type Issued struct {
@@ -201,6 +220,9 @@ type Info struct {
 	ProvedAt   time.Time
 	LastSeenAt time.Time
 	ExpiresAt  time.Time
+	// Channel is the session's Meta.Channel ("" for a sign-in). Only
+	// [Manager.Info] and [Manager.Open], which hold the id, can read it.
+	Channel string
 }
 
 func infoOf(r Record) Info {
@@ -232,9 +254,13 @@ func (m *Manager) Create(ctx context.Context, tokens Tokens, meta Meta) (Issued,
 	if tokens.Expiry.IsZero() {
 		tokens.Expiry = now.Add(unknownExpiry)
 	}
-	sealed, err := seal(k, tokens)
+	sealed, err := sealWith(k, tokens, meta.Channel)
 	if err != nil {
 		return Issued{}, err
+	}
+	proved := now
+	if !meta.ProvedAt.IsZero() && meta.ProvedAt.Before(now) {
+		proved = meta.ProvedAt
 	}
 	ua := meta.UserAgent
 	if len(ua) > userAgentMax {
@@ -243,7 +269,7 @@ func (m *Manager) Create(ctx context.Context, tokens Tokens, meta Meta) (Issued,
 	expires := now.Add(m.cfg.Lifetime)
 	since := m.epoch()
 	rec := Record{Key: k.lookup, Subject: meta.Subject, Sealed: sealed, UserAgent: ua, IssuerSession: meta.IssuerSession,
-		CreatedAt: now, ProvedAt: now, LastSeenAt: now, RefreshedAt: now,
+		CreatedAt: now, ProvedAt: proved, LastSeenAt: now, RefreshedAt: now,
 		IdleExpiresAt: m.idleFrom(now, expires), ExpiresAt: expires}
 	if err := m.cfg.Store.Create(ctx, rec); err != nil {
 		return Issued{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
@@ -404,7 +430,7 @@ func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 		if r.expired(now) {
 			return ErrNoSession
 		}
-		t, err := open(k, r.Sealed)
+		t, channel, err := openWith(k, r.Sealed)
 		if err != nil {
 			return err
 		}
@@ -433,7 +459,11 @@ func (m *Manager) doRefresh(ctx context.Context, k keys) (string, error) {
 		if next.Expiry.IsZero() {
 			next.Expiry = now.Add(unknownExpiry)
 		}
-		sealed, err := seal(k, next)
+		if next.IssuerSessionID == "" {
+			// A refresh does not touch the issuer's session: keep it.
+			next.IssuerSessionID, next.IssuerSessionToken = t.IssuerSessionID, t.IssuerSessionToken
+		}
+		sealed, err := sealWith(k, next, channel)
 		if err != nil {
 			return err
 		}
@@ -490,8 +520,69 @@ func (m *Manager) Info(ctx context.Context, id string) (Info, error) {
 	if rec.expired(m.cfg.Now()) {
 		return Info{}, ErrNoSession
 	}
+	info := infoOf(rec)
+	if _, channel, err := openWith(k, rec.Sealed); err == nil {
+		info.Channel = channel
+	}
+	return info, nil
+}
+
+// Open returns the tokens session id holds, as stored — without renewing
+// them, so the access token may be expired — and its Info, or ErrNoSession.
+// It is for a server-side step that needs more of the session than its access
+// token: a sign-in handoff reads the issuer session it was created from.
+// Never send what it returns to a client.
+func (m *Manager) Open(ctx context.Context, id string) (Tokens, Info, error) {
+	k, err := deriveKeys(id)
+	if err != nil {
+		return Tokens{}, Info{}, ErrNoSession
+	}
+	rec, err := m.cfg.Store.Get(ctx, k.lookup)
+	if errors.Is(err, ErrNoSession) {
+		return Tokens{}, Info{}, ErrNoSession
+	}
+	if err != nil {
+		return Tokens{}, Info{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if rec.expired(m.cfg.Now()) {
+		return Tokens{}, Info{}, ErrNoSession
+	}
+	t, channel, err := openWith(k, rec.Sealed)
+	if err != nil {
+		return Tokens{}, Info{}, ErrNoSession
+	}
+	info := infoOf(rec)
+	info.Channel = channel
+	return t, info, nil
+}
+
+// InfoByHandle describes the live session handle names (Info.Handle), or
+// ErrNoSession. A handle is not a credential, so this reveals no token: it is
+// how a step that holds only a handle — a pending handoff naming the session
+// that approved it — checks that session was not revoked since. Channel is
+// left empty (it is sealed under the id).
+func (m *Manager) InfoByHandle(ctx context.Context, handle string) (Info, error) {
+	key, err := hex.DecodeString(handle)
+	if err != nil || len(key) != 32 {
+		return Info{}, ErrNoSession
+	}
+	rec, err := m.cfg.Store.Get(ctx, key)
+	if errors.Is(err, ErrNoSession) {
+		return Info{}, ErrNoSession
+	}
+	if err != nil {
+		return Info{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+	}
+	if rec.expired(m.cfg.Now()) {
+		return Info{}, ErrNoSession
+	}
 	return infoOf(rec), nil
 }
+
+// Store is the [Store] the Manager was built over, for a caller that keeps
+// related state beside the sessions: a sign-in handoff's one-time codes live
+// in the same store when it also implements [HandoffStore].
+func (m *Manager) Store() Store { return m.cfg.Store }
 
 // MarkProved records that the person behind session id just proved a
 // credential again (re-entered a password, used a passkey): ProvedAt becomes

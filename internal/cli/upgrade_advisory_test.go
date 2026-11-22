@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/codegen"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 )
@@ -45,7 +46,25 @@ func scaffoldAdvisoryProject(t *testing.T) string {
 			t.Fatalf("generatePerEnvDeployConfig: %v", err)
 		}
 	})
+	composeRootLikeProjectNew(t, dir, cfg)
 	return dir
+}
+
+// composeRootLikeProjectNew writes cmd/<project>/main.go, the composition
+// root `forge project new`'s bootstrap generate composes for a service
+// project (the cmd command groups step), into a fixture built from the
+// scaffold lane alone. The CI step reads it: pgo-refresh.yml is born only
+// where a hosted env builds a Go main package of the checkout (forge#2686),
+// and the scaffold lane plans it because that generate run composes this
+// root. Write-if-absent, like the step it stands in for.
+func composeRootLikeProjectNew(t *testing.T, dir string, cfg *config.ProjectConfig) {
+	t.Helper()
+	if !cfg.IsServiceKind() {
+		return
+	}
+	if err := codegen.GenerateCmdMainRoot(dir, cfg.Name, nil); err != nil {
+		t.Fatalf("compose cmd/%s/main.go: %v", cfg.Name, err)
+	}
 }
 
 // loadAdvisoryConfig reads the scaffolded forge.yaml back through the

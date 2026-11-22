@@ -238,7 +238,11 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   unchanged package replays main's result, which works because `test-short-warm` runs the
   same command in the same environment, and `scripts/ci-normalize-mtimes.sh` stamps every
   tracked file with a content-derived mtime (Go's test cache keys files on mtime, not
-  content).
+  content). When the change touches the KCL templates or the composition-root emitters,
+  the same job also runs the full-mode KCL render tests of `internal/templates` and
+  `internal/codegen` (`scripts/ci-render-tests.sh`, ~2 minutes; nothing otherwise): they
+  skip under `-short`, and main went red three times on 2026-11-21/22 from a change only
+  they could see. A new render test that guards those paths goes in its `tests` list.
 - **Checks** — `forge ci verify-generated`, `forge ci validate-kcl`, the pre-commit hooks
   (go-vet-mod skipped), and the Go and npm dependency-license allowlists.
 - **golangci-lint (changed packages)** (owner, 2026-11-08; #1947) — its own job, beside

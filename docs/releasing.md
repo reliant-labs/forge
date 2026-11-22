@@ -148,13 +148,15 @@ What it does, in order:
    with the prettier the pre-commit hook pins;
 4. syncs `VERSION` and `internal/buildinfo/VERSION` — which must stay
    byte-identical, since `buildinfo` embeds a copy;
-5. builds the module and the release archives;
+5. builds the module and the release archives, and an SBOM of each archive's
+   binary (below);
 6. commits the bookkeeping, tags `vX.Y.Z` at the commit `main` already has, and
    pushes the tag and `release/vX.Y.Z` in a single atomic `git push` — never
    `main`;
 7. opens the `chore: release vX.Y.Z` pull request from `release/vX.Y.Z`, non-draft,
    and stops there: pr-review reviews its head and queues it on a pass;
-8. creates the GitHub release (`gh release create`) with that section as its notes.
+8. creates the GitHub release (`gh release create`) with that section as its notes,
+   then scans the published binaries for known vulnerabilities once (below).
 
 `--dry-run` runs every validation and every file edit in the private worktree,
 prints the plan, then removes it — no commit, no tag, no push, no pull request.
@@ -259,6 +261,29 @@ Re-run either channel for an existing release by hand:
 gh workflow run update-forge-formula.yml --repo reliant-labs/homebrew-reliant -f version=X.Y.Z
 gh workflow run release-npm.yml --repo reliant-labs/forge -f version=X.Y.Z -f dry_run=false
 ```
+
+### SBOMs and the vulnerability scan
+
+Every archive ships beside `<archive>.cdx.json` (`forge_linux_amd64.tar.gz.cdx.json`,
+…): a CycloneDX 1.6 SBOM of the binary inside it, listing every Go module it links.
+`release-forge.sh` makes them before the bookkeeping commit with
+`forge vuln sbom --file <binary> --artifact <archive> --release vX.Y.Z`, the generator a
+forge release cut uses for a host binary (forge's pinned, sha256-verified syft). The
+forge that runs it is the release's own build for the release machine, taken from the
+archives just built, so the machine's installed forge does not matter;
+`FORGE_RELEASE_SBOM_FORGE` names another. `gh release create` attaches them with the
+archives. `checksums.txt` keeps listing the archives alone (installers and
+`release-attest.yml` check exactly that set), and the attestation does not cover the
+SBOMs.
+
+After the GitHub release is out, the script scans the published binaries once with
+grype (`forge vuln scan` over the directory holding them, so the shared database loads
+once) and prints the summary, judged by the default `vuln_gate`. It is an audit: a
+blocking finding, a timeout (`FORGE_RELEASE_VULN_TIMEOUT`, default 900s) or a scan that
+cannot run is a warning and never fails or holds the release. Fix a finding in a later
+release (`forge vuln patch`). An SBOM that cannot be generated is a warning too: that
+archive ships without one, and the run names it. A dry run makes neither: rc-train
+dry-runs every release before it cuts it.
 
 ### Signed release assets
 

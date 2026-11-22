@@ -7,6 +7,7 @@ package cli
 //	forge vuln list <env> [--release v] [--severity s] [--fixable] [--kev] [--include-exempt] [--json]
 //	forge vuln show <env> <advisory-id | package> [--json]
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
+//	forge vuln sbom --file <path> [--artifact name] [--release v] [--format cyclonedx|spdx]
 //	forge vuln db status|pull|import <file>
 //	forge vuln exempt <env> <advisory-id> --reason "<why>" --expires YYYY-MM-DD
 //
@@ -42,6 +43,7 @@ import (
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
+	"github.com/reliant-labs/forge/internal/sbom"
 	"github.com/reliant-labs/forge/internal/toolfetch"
 	"github.com/reliant-labs/forge/internal/vulnscan"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -69,6 +71,11 @@ type vulnDeps struct {
 	// hostedClient reaches the control plane that keeps a hosted env's
 	// ledger (vuln_hosted.go).
 	hostedClient func(ctx context.Context, env vulnEnv) (cloudCaller, error)
+	// sbomRunner runs syft for `vuln sbom --file`; nil execs it.
+	sbomRunner sbom.Runner
+	// sbomCache is the SBOM cache's directory for `vuln sbom --file`; nil
+	// or "" caches nothing.
+	sbomCache func() string
 }
 
 func defaultVulnDeps() vulnDeps {
@@ -81,6 +88,7 @@ func defaultVulnDeps() vulnDeps {
 		projectDir:    projectDirForKCL,
 		now:           time.Now,
 		hostedClient:  hostedVulnClient,
+		sbomCache:     sbomCacheDir,
 	}
 }
 

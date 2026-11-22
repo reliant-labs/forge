@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -400,6 +401,78 @@ func TestVulnSBOM(t *testing.T) {
 	out, _, code = h.exec("sbom", "prod", "--format", "spdx")
 	if code != 0 || !strings.Contains(out, "SPDX-2.3") {
 		t.Errorf("spdx: exit %d\n%s", code, out)
+	}
+}
+
+// fakeSyftScan is a syft that answers `scan file:<path>` with a CycloneDX 1.6
+// document naming the --source-name and --source-version it was given.
+type fakeSyftScan struct {
+	mu   sync.Mutex
+	args [][]string
+	fail bool
+}
+
+func (f *fakeSyftScan) Run(_ context.Context, bin string, args, _ []string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.args = append(f.args, append([]string{bin}, args...))
+	if f.fail {
+		return nil, errors.New("syft: cataloging failed")
+	}
+	flag := func(name string) string {
+		for i, a := range args {
+			if a == name && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	return fmt.Appendf(nil, `{"bomFormat":"CycloneDX","specVersion":"1.6","metadata":{"component":{"name":%q,"version":%q}}}`,
+		flag("--source-name"), flag("--source-version")), nil
+}
+
+// `vuln sbom --file` generates a file's SBOM with the cut's generator, names
+// the artifact rather than the path, reads no env, and exits 2 when syft
+// cannot describe the file.
+func TestVulnSBOMFile(t *testing.T) {
+	t.Parallel()
+	h := newVulnHarness(t)
+	syft := &fakeSyftScan{}
+	h.deps.sbomRunner = syft
+	h.deps.resolveEnv = func(context.Context, string, string) (vulnEnv, error) {
+		t.Error("vuln sbom --file read an env")
+		return vulnEnv{}, errors.New("no env")
+	}
+	bin := filepath.Join(t.TempDir(), "forge")
+	if err := os.WriteFile(bin, []byte("a binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, stderr, code := h.exec("sbom", "--file", bin, "--artifact", "forge_linux_amd64.tar.gz", "--release", "v1.2.3")
+	if code != 0 {
+		t.Fatalf("sbom --file: exit %d\n%s", code, stderr)
+	}
+	if !strings.Contains(out, `"name":"forge_linux_amd64.tar.gz"`) || !strings.Contains(out, `"version":"v1.2.3"`) {
+		t.Errorf("the SBOM does not name the artifact and release:\n%s", out)
+	}
+	got := strings.Join(syft.args[0], " ")
+	if want := "/fake/syft scan file:" + bin + " -o cyclonedx-json@1.6 -q --source-name forge_linux_amd64.tar.gz --source-version v1.2.3"; got != want {
+		t.Errorf("syft ran as\n  %s\nwant\n  %s", got, want)
+	}
+
+	// The name defaults to the file's.
+	if out, _, code = h.exec("sbom", "--file", bin); code != 0 || !strings.Contains(out, `"name":"forge"`) {
+		t.Errorf("sbom --file without --artifact: exit %d\n%s", code, out)
+	}
+	if _, stderr, code := h.exec("sbom", "prod", "--file", bin); code == 0 || !strings.Contains(stderr, "reads no env") {
+		t.Errorf("sbom <env> --file: want a refusal, got exit %d %s", code, stderr)
+	}
+	if _, _, code := h.exec("sbom", "--file", filepath.Dir(bin)); code == 0 {
+		t.Errorf("sbom --file <dir>: want a refusal")
+	}
+	syft.fail = true
+	if _, stderr, code := h.exec("sbom", "--file", bin); code != exitUndetermined || !strings.Contains(stderr, "cataloging failed") {
+		t.Errorf("a file syft cannot describe: exit %d %s, want %d", code, stderr, exitUndetermined)
 	}
 }
 

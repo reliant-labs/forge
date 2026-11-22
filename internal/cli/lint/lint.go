@@ -1202,36 +1202,76 @@ const bufMissingReason = "buf is not on PATH, so the buf lint lane cannot run"
 // else forge's pin built into the tool cache, so a fresh machine's lint runs
 // the lanes instead of failing them. ok is false only when no buf is
 // available at all.
+//
+// When the declared pin cannot be installed (offline, say) and PATH has some
+// other buf, buf lint still runs PATH's, with a note that its verdict may
+// differ from CI's. The proto-format lane refuses instead (resolveLintBuf's
+// standIn): another release's formatting is not a finding about the protos.
 func lintBufBinary(ctx context.Context) (string, bool) {
-	pathBuf, pathErr := lintBufLookPath("buf")
-	if pathErr == nil && !lintBufDeclared(".") {
-		return pathBuf, true
+	b, ok := resolveLintBuf(ctx, ".")
+	if ok && b.standIn != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  buf lint: buf %s, which go.mod pins, could not be installed (%v); running %s instead, whose verdict may differ from CI's\n",
+			b.pin.Bare(), b.standIn, b.bin)
 	}
-	dir, err := lintBufEnsure(ctx, ".")
+	return b.bin, ok
+}
+
+// lintBuf is the buf a buf lane runs, and whether it is the project's pin.
+type lintBuf struct {
+	bin string
+	// pin is the buf the project runs (go.mod's, else forge's).
+	pin toolpin.Buf
+	// standIn is set when bin is PATH's buf running in place of a pin go.mod
+	// declares that could not be installed: why the pin could not be had.
+	// nil when bin is the pin, or the project declares none.
+	standIn error
+}
+
+// resolveLintBuf resolves the buf the buf lanes run from root (see
+// lintBufBinary). ok is false only when no buf is available at all.
+func resolveLintBuf(ctx context.Context, root string) (lintBuf, bool) {
+	pin := lintBufPin(root)
+	pathBuf, pathErr := lintBufLookPath("buf")
+	if pathErr == nil && !pin.Declared() {
+		return lintBuf{bin: pathBuf, pin: pin}, true
+	}
+	dir, err := lintBufEnsure(ctx, root, pin)
 	switch {
 	case err == nil && dir == "" && pathErr == nil:
-		return pathBuf, true // the buf on PATH is the pin
+		return lintBuf{bin: pathBuf, pin: pin}, true // the buf on PATH is the pin
 	case err == nil && dir != "":
 		bin := filepath.Join(dir, "buf")
 		if runtime.GOOS == "windows" {
 			bin += ".exe"
 		}
-		return bin, true
+		return lintBuf{bin: bin, pin: pin}, true
 	case pathErr == nil:
-		// The pin could not be built (offline, say): PATH's buf still runs
-		// the lanes, and the note says its verdict may differ from CI's.
-		fmt.Fprintf(os.Stderr, "⚠️  buf lint/format: the buf go.mod pins could not be installed (%v); running %s instead, whose formatting may differ from CI's\n", err, pathBuf)
-		return pathBuf, true
+		// The pin could not be installed (offline, say): err says why.
+		return lintBuf{bin: pathBuf, pin: pin, standIn: err}, true
 	}
-	return "", false
+	return lintBuf{pin: pin}, false
 }
 
 // The seams lintBufBinary resolves buf through, replaced by its tests.
 var (
 	lintBufLookPath = exec.LookPath
-	lintBufDeclared = func(root string) bool { return toolpin.BufFor(root).Declared() }
-	lintBufEnsure   = func(ctx context.Context, root string) (string, error) {
-		return cigate.NewResolver(root, os.Stderr).Ensure(ctx, cigate.BufTool(root))
+	lintBufPin      = toolpin.BufFor
+	// lintBufEnsure resolves pin as the gate does: "" when PATH's buf is
+	// it, else its tool-cache directory, built on first use.
+	lintBufEnsure = func(ctx context.Context, root string, pin toolpin.Buf) (string, error) {
+		t := cigate.BufTool(root)
+		t.Version = pin.Version
+		return cigate.NewResolver(root, os.Stderr).Ensure(ctx, t)
+	}
+	// lintBufVersion is the release a buf binary reports, "" when it
+	// reports none (only the refusal's message reads it).
+	lintBufVersion = func(ctx context.Context, bin string) string {
+		out, err := exec.CommandContext(ctx, bin, "--version").Output()
+		if err != nil {
+			return ""
+		}
+		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+		return strings.TrimPrefix(strings.TrimSpace(first), "v")
 	}
 )
 

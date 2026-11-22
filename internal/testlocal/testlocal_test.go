@@ -294,6 +294,46 @@ func TestNonGoPathsBecomeRepoRelative(t *testing.T) {
 	}
 }
 
+func TestIstanbulRecordedUnderAnotherCheckoutRelocates(t *testing.T) {
+	// Vitest wrote Istanbul JSON in a CI snapshot (/ci/snap), whose absolute
+	// paths name a checkout that is not this one; the run was then reported
+	// from the runner's own checkout of the same commit.
+	root := t.TempDir()
+	src := "export const a = 1\n"
+	if err := os.MkdirAll(filepath.Join(root, "frontends/web/src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "frontends/web/src/a.ts"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fxWriteRun(t, root, fxRun{id: "01X", created: time.Now(), commit: fxCommit, tree: fxTree, lanes: []fxLane{{name: "web", format: testreport.LaneFormatJUnit,
+		results: `<testsuites><testsuite name="s"><testcase classname="t" name="ok"/></testsuite></testsuites>`}}})
+	ldir := filepath.Join(testreport.RunsRoot(root), "01X", "web")
+	foreign := "/ci/snap/frontends/web/src/a.ts"
+	istanbul := `{"` + foreign + `":{"path":"` + foreign + `","statementMap":{"0":{"start":{"line":1,"column":0},"end":{"line":1,"column":18}}},"fnMap":{},"branchMap":{},"s":{"0":3},"f":{},"b":{}}}`
+	if err := os.WriteFile(filepath.Join(ldir, "coverage-final.json"), []byte(istanbul), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &fakeGit{top: root, blobs: map[string]string{
+		"frontends/web/src/a.ts": testreport.GitBlobID([]byte(src)),
+		// A shorter path that is also a suffix of the recorded one: the
+		// longest suffix naming a file of the source wins.
+		"src/a.ts": testreport.GitBlobID([]byte("other\n")),
+	}}
+	runs, _, _ := List(root)
+	a, err := Assemble(context.Background(), Options{ProjectRoot: root, Runs: runs, Git: g.run, NoDiff: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Coverage.Files) != 1 {
+		t.Fatalf("files: %+v", a.Coverage.Files)
+	}
+	f := a.Coverage.Files[0]
+	if f.Path != "frontends/web/src/a.ts" || f.BlobID != testreport.GitBlobID([]byte(src)) {
+		t.Fatalf("a file recorded under another checkout root: %+v", f)
+	}
+}
+
 func TestExports(t *testing.T) {
 	root, g := fxShop(t)
 	runs, _, _ := List(root)

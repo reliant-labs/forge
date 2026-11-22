@@ -73,21 +73,6 @@ func copyToTemp(src, dir, pattern string) (string, error) {
 	return out.Name(), nil
 }
 
-// replaceWithCopy puts a copy of src at dst by copy-to-sibling then rename:
-// atomic, and a running dst keeps its old inode.
-func replaceWithCopy(src, dst string) error {
-	dir := filepath.Dir(dst)
-	tmp, err := copyToTemp(src, dir, "."+filepath.Base(dst)+".new-*")
-	if err != nil {
-		return fmt.Errorf("copy %s beside %s: %w", src, dst, err)
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("rename over %s: %w", dst, err)
-	}
-	return syncDir(dir)
-}
-
 // backupBinary copies src into dir under a NEW name
 // (<base>.<label>.<unixnano>) and returns it. It never removes or overwrites a
 // file, so an earlier rollback image survives whatever happens here;

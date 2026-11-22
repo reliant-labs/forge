@@ -14,6 +14,12 @@ import (
 // one exec'd in place.
 func swapSupported() bool { return true }
 
+// runningImageLocked: unix renames over a running binary, whose image keeps
+// its old inode, so nothing is moved aside.
+const runningImageLocked = false
+
+func hostRename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
+
 // execBinary replaces this process with the binary at path, as
 // forgedelegate.Exec does: same pid, stdio and signal disposition. It returns
 // only on failure.

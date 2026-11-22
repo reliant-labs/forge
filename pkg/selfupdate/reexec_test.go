@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -175,18 +174,6 @@ func TestReexecEndToEnd(t *testing.T) {
 			t.Fatal("v1 is not back in place")
 		}
 	})
-}
-
-type bootLine struct{ pid, version, swapped, reverted string }
-
-var bootRE = regexp.MustCompile(`(?m)^boot pid=(\d+) version=(\S+) swapped=(\S+) reverted=(\S*)$`)
-
-func bootLines(out string) []bootLine {
-	var lines []bootLine
-	for _, m := range bootRE.FindAllStringSubmatch(out, -1) {
-		lines = append(lines, bootLine{pid: m[1], version: m[2], swapped: m[3], reverted: m[4]})
-	}
-	return lines
 }
 
 func samePID(t *testing.T, boots []bootLine, out string) {

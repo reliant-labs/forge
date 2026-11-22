@@ -49,12 +49,13 @@ type Pending struct {
 }
 
 // bootEnv is Boot's seams: which binary is running, how to exec, whether a
-// pid is alive.
+// pid is alive, and how to put a file at the install path.
 type bootEnv struct {
 	exe   string
 	pid   int
 	exec  func(path string, argv, env []string) error
 	alive func(pid int) bool
+	fs    swapFS
 }
 
 // Boot is the first call in main. After a swap it starts the revert
@@ -70,6 +71,7 @@ func Boot(opts BootOptions) *Pending {
 }
 
 func boot(opts BootOptions, env bootEnv) *Pending {
+	env.fs = env.fs.orHost()
 	p := &Pending{log: opts.Logger, env: env}
 	if p.log == nil {
 		p.log = slog.Default()
@@ -84,7 +86,9 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 		p.dir = dir
 	}
 	if _, err := os.Stat(statePath(p.dir)); err != nil {
-		return p // never swapped here
+		if _, jerr := os.Stat(journalPath(p.dir)); jerr != nil {
+			return p // never swapped here
+		}
 	}
 	exe, err := filepath.EvalSymlinks(env.exe)
 	if err != nil {
@@ -97,6 +101,18 @@ func boot(opts BootOptions, env bootEnv) *Pending {
 	var revertNow string
 	var watch time.Duration
 	err = withLock(ctx, p.dir, func() error {
+		// Windows: a process that died between renaming its install aside
+		// and moving the new binary in left the install path missing. This
+		// start runs the image set aside, started by hand: put its own
+		// install back. Unrelated binaries cannot authorize journal paths.
+		if restored, err := recoverMove(env.fs, p.dir, exe); err != nil {
+			p.log.Error("selfupdate: boot: recover an interrupted swap", "err", err)
+		} else if restored != "" {
+			p.log.Warn("selfupdate: boot: restored an install an interrupted swap left missing", "path", restored)
+		}
+		// Windows: the images earlier swaps renamed aside, now that the
+		// processes that ran them have exited.
+		sweepAside(env.fs, exe)
 		st, err := loadState(p.dir)
 		if err != nil {
 			return err
@@ -225,6 +241,9 @@ func (p *Pending) confirm() error {
 		}
 		// Proven good: only its own rollback image is worth keeping.
 		pruneBackups(filepath.Join(p.dir, "previous"), map[string]bool{rec.Previous: true})
+		// The process that swapped this binary in has long exited, so the
+		// image it set aside (Windows) is no longer running.
+		sweepAside(p.env.fs, rec.Path)
 		if safeName(rec.ToVersion) {
 			_ = os.RemoveAll(filepath.Join(p.dir, "staged", rec.ToVersion))
 		}
@@ -272,7 +291,9 @@ func (p *Pending) revert(reason string) {
 			return errors.New("swap is " + rec.Phase)
 		}
 		st.markFailed(rec.ToVersion, reason, now)
-		if err := replaceWithCopy(rec.Previous, rec.Path); err != nil {
+		// On Windows rec.Path is this process's running image: it is moved
+		// aside, as at the swap.
+		if err := p.env.fs.replaceWithCopy(rec.Previous, rec.Path, now, journalPath(p.dir)); err != nil {
 			rec.Phase, rec.Reason, rec.UpdatedAt = "revert_failed", reason+"; revert failed: "+err.Error(), now
 			return errors.Join(err, saveState(p.dir, st))
 		}

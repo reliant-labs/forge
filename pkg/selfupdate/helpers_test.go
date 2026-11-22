@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -216,4 +217,41 @@ func readJSONState(t *testing.T, dir string) stateFile {
 		t.Fatal(err)
 	}
 	return st
+}
+
+// execRecorder stands in for exec(2).
+type execRecorder struct {
+	mu    sync.Mutex
+	paths []string
+	ch    chan string
+}
+
+func newExecRecorder() *execRecorder { return &execRecorder{ch: make(chan string, 4)} }
+
+func (r *execRecorder) exec(path string, _, _ []string) error {
+	r.mu.Lock()
+	r.paths = append(r.paths, path)
+	r.mu.Unlock()
+	r.ch <- path
+	return nil
+}
+
+func (r *execRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.paths)
+}
+
+func allAlive(int) bool { return true }
+
+type bootLine struct{ pid, version, swapped, reverted string }
+
+var bootRE = regexp.MustCompile(`(?m)^boot pid=(\d+) version=(\S+) swapped=(\S+) reverted=(\S*)$`)
+
+func bootLines(out string) []bootLine {
+	var lines []bootLine
+	for _, m := range bootRE.FindAllStringSubmatch(out, -1) {
+		lines = append(lines, bootLine{pid: m[1], version: m[2], swapped: m[3], reverted: m[4]})
+	}
+	return lines
 }

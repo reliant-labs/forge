@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -32,34 +31,9 @@ func swapped(t *testing.T, confirmWithin time.Duration) (u *Updater, exe string,
 	return u, exe, oldBin, newBin
 }
 
-// execRecorder stands in for exec(2).
-type execRecorder struct {
-	mu    sync.Mutex
-	paths []string
-	ch    chan string
-}
-
-func newExecRecorder() *execRecorder { return &execRecorder{ch: make(chan string, 4)} }
-
-func (r *execRecorder) exec(path string, _, _ []string) error {
-	r.mu.Lock()
-	r.paths = append(r.paths, path)
-	r.mu.Unlock()
-	r.ch <- path
-	return nil
-}
-
-func (r *execRecorder) count() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.paths)
-}
-
 func bootAs(u *Updater, exe string, pid int, rec *execRecorder, alive func(int) bool) *Pending {
 	return boot(BootOptions{StateDir: u.cfg.StateDir, Logger: testkit.DiscardLogger()}, bootEnv{exe: exe, pid: pid, exec: rec.exec, alive: alive})
 }
-
-func allAlive(int) bool { return true }
 
 func TestBootWithNoSwapIsInert(t *testing.T) {
 	t.Parallel()
@@ -249,7 +223,7 @@ func TestBootIgnoresAnotherBinaryAndNoticesAReplacement(t *testing.T) {
 	}
 
 	// Someone reinstalled the binary by hand after the swap.
-	if err := replaceWithCopy(other, exe); err != nil {
+	if err := hostFS.replaceWithCopy(other, exe, fixedNow, journalPath(u.cfg.StateDir)); err != nil {
 		t.Fatal(err)
 	}
 	if p := bootAs(u, exe, 1, rec, allAlive); p.Swapped || rec.count() != 0 {

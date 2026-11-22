@@ -20,6 +20,29 @@
 //     StateDir/state.json and execs it with the same argv, environment and
 //     pid.
 //
+// # Windows
+//
+// A running .exe can be renamed but neither replaced nor removed, and there
+// is no exec(2). So the swap renames the running binary aside to
+// <name>.old-<unixnano>.exe in its own directory, moves the staged one into
+// place, starts it as a new process with the same argv, environment,
+// working directory and stdio, and exits: under [ExecInPlace] the pid
+// changes and this process's children are orphaned. A revert (the watchdog,
+// the boot-loop guard) goes through the same rename. [Boot] and
+// [Pending.Confirm] remove the images set aside once no process runs them.
+//
+// The window that remains: the instant between the two renames (each
+// written through to disk), when the install path is missing. Windows has
+// no call that closes it: ReplaceFile performs the same two renames, reports
+// the same half-done state (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) and does not
+// support write-through. So the move is first recorded in StateDir/move.json,
+// and a process killed inside the window leaves that journal behind. The
+// binary itself cannot start from a missing path; the next [Boot] that does
+// run from the image set aside, <name>.old-<ns>.exe, started by hand with
+// the same state directory, renames its own image back. Recovery rejects
+// journal paths outside that install directory or unrelated to that binary.
+// Renaming that file back by hand does the same.
+//
 // # Confirm and revert
 //
 // [Boot] runs first in main. After a swap it starts a watchdog: the app calls
@@ -46,12 +69,13 @@
 // and [ManifestSource] (a signed channel manifest such as reliant's
 // daemon-channels.json) find the target release.
 //
+// Targets that are neither unix nor Windows stage but do not swap
+// ([ErrUnsupported]).
+//
 // # Opting in
 //
 // The autoupdate subpackage is the default-off wiring for a long-lived
 // binary: Boot, a periodic Check/Prepare/Request loop, confirmation on the
 // app's readiness, and ExecPending after its shutdown. A pkg/serverkit
 // server hands one to Server.SelfUpdate.
-//
-// Windows: staging works; the swap does not yet ([ErrUnsupported]).
 package selfupdate

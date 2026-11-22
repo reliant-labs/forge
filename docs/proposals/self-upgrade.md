@@ -612,7 +612,48 @@ PredicateType, TrustedRoot, TUFCachePath})` returns a `selfupdate.Verifier`
   bundle (a manifest pointing at another release's files fails the replay
   rule), and `Updater.Check` never moves backwards, so a held-back manifest can
   delay an upgrade but never install anything. An unknown schema is refused.
-- **Windows swap** is still `ErrUnsupported`.
+- **Windows swap** (`platform_windows.go`, `swap.go`, `spawn.go`). The running
+  `.exe` is renamed aside to `<stem>.old-<unixnano><ext>` (`reliant.exe` becomes
+  `reliant.old-<ns>.exe`; never `.exe.old`, so it stays an `.exe`, and never an
+  existing name, which may be another instance's running image), the staged
+  binary is copied beside it and renamed into place, `state.json` records the
+  swap, and "exec" starts the new binary with the same argv, environment,
+  working directory and stdio (`exec.Cmd.Start`, not `forgedelegate.Exec`'s
+  wait-and-relay: a supervisor would otherwise see the old pid forever) and
+  exits 0. So `ExecInPlace` on Windows is spawn-and-exit, with a new pid and
+  orphaned children; `ExitForSupervisor` swaps the same way and exits 75. If
+  the new binary cannot take the install's name, the running image is renamed
+  back, so the install path is never empty. Revert (watchdog and boot-loop
+  guard) and the exec-failure rollback use the same rename, because on Windows
+  the file at the install path is then the running image. The boot-loop guard
+  asks `OpenProcess`/`GetExitCodeProcess` whether a recorded pid still runs
+  (access denied counts as alive). `Boot` and `Confirm` remove the images set
+  aside once nothing runs them: the new process's `Boot` can race the old
+  process's exit, and a later start or the confirmation retries.
+- **The window between the two renames.** Renaming the running image aside and
+  renaming the new binary into place are two operations, and the install path
+  is missing between them. Windows has no single call that closes this:
+  `ReplaceFileW` performs the same two renames internally, documents the same
+  half-done state (`ERROR_UNABLE_TO_MOVE_REPLACEMENT_2`: the replaced file
+  renamed away, the replacement not moved in) and does not support
+  `REPLACEFILE_WRITE_THROUGH`. It also merges the replaced file's ACLs and
+  streams into the replacement. So each move-aside first writes
+  `StateDir/move.json` (install path, aside name, staged copy; fsynced), and
+  every rename goes through `MoveFileEx(MOVEFILE_REPLACE_EXISTING |
+MOVEFILE_WRITE_THROUGH)`, so the journal and the renames reach the disk in
+  order. The journal is removed once the install path holds a binary again. A
+  process killed inside the window leaves it behind. The binary cannot start
+  from a missing path, so recovery runs at the next `Boot` of any process that
+  can start with the same state directory (another binary sharing it, or the
+  aside image started by hand): under the state lock, it renames the aside
+  image back. `state.json` is written only after a move completes, so it still
+  describes the restored binary. Renaming the `.old-<ns>.exe` back by hand
+  does the same. The file
+  operations are a seam (`swapFS`), so the Windows path is unit-tested on every
+  platform against a fake that refuses to replace or remove a locked running
+  image, and `TestReexecEndToEndWindows` does a real swap, confirm and
+  watchdog revert on Windows. Other non-unix targets still return
+  `ErrUnsupported`.
 
 ## 12. F3 implementation notes (opt-in and serverkit)
 

@@ -20,7 +20,10 @@ type SwapMode int
 
 const (
 	// ExecInPlace execs the new binary in this process: same pid, so
-	// systemd, launchd and a parent like Electron see no restart. Unix only.
+	// systemd, launchd and a parent like Electron see no restart. Windows has
+	// no exec(2): there the new binary starts as a new process with the same
+	// argv, environment, working directory and stdio, and this one exits, so
+	// the pid changes and this process's children are orphaned.
 	ExecInPlace SwapMode = iota
 	// ExitForSupervisor swaps the binary, then exits with [ExitCodeRestart]
 	// for a supervisor to start the new one.
@@ -132,9 +135,10 @@ type Updater struct {
 	pending *Staged
 
 	// Seams for tests: the binary being replaced, what Detect consults, the
-	// clock, how to back it up, and how to exec or exit.
+	// clock, how to back it up, how to install it, and how to exec or exit.
 	exePath   string
 	detectEnv detectEnv
+	fs        swapFS
 	now       func() time.Time
 	backupFn  func(src, dir, label string, now time.Time) (string, error)
 	execFn    func(path string, argv, env []string) error
@@ -213,9 +217,6 @@ func New(cfg Config) (*Updater, error) {
 	}
 	if cfg.MaxDownloadBytes <= 0 {
 		cfg.MaxDownloadBytes = DefaultMaxDownload
-	}
-	if cfg.SwapMode == ExecInPlace && runtime.GOOS == "windows" {
-		cfg.Logger.Warn("selfupdate: exec in place is not available on windows; swaps are not supported yet", "binary", cfg.Binary)
 	}
 	if cfg.InsecureAllowUnsigned {
 		cfg.Logger.Warn("selfupdate: INSECURE: release signatures are not verified (Config.InsecureAllowUnsigned); a tampered release would be installed",

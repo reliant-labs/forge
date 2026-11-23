@@ -492,6 +492,10 @@ type FrontendConfig struct {
 	// component library lives, relative to the frontend directory. "" means
 	// DefaultComponentsDir. Read it through ComponentsDirRel.
 	ComponentsDir string
+	// ImportedHooks are the package.json `forge.imported_hooks` entries: buf
+	// modules outside the project's proto/ tree whose allowlisted services
+	// get React Query hooks in this frontend (frontend_codegen.go).
+	ImportedHooks []ImportedHooks
 	// CodegenProblems are the reasons the frontend's package.json forge block
 	// could not be honoured (an unknown key, an escaping components_dir).
 	// generate refuses to run while any is present.

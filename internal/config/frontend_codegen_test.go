@@ -165,6 +165,7 @@ func TestFrontendPackageForgeBlockDefaults(t *testing.T) {
 func TestFrontendPackageForgeBlockProblems(t *testing.T) {
 	for _, tc := range []struct{ name, block, want string }{
 		{"misspelt key", `{"route": ["none"]}`, `unknown field "route"`},
+		{"known keys are named", `{"route": ["none"]}`, "known keys: routes, hooks, components_dir, imported_hooks"},
 		{"escaping components_dir", `{"components_dir": "../shared/ui"}`, "inside the frontend directory"},
 		{"absolute components_dir", `{"components_dir": "/abs/ui"}`, "inside the frontend directory"},
 		{"components_dir naming the frontend itself", `{"components_dir": "."}`, "frontend directory itself"},
@@ -213,5 +214,77 @@ func TestFrontendComponentsDir(t *testing.T) {
 	}
 	if got := FrontendComponentsDir(t.TempDir()); got != DefaultComponentsDir {
 		t.Errorf("no manifest: FrontendComponentsDir = %q", got)
+	}
+}
+
+// TestFrontendPackageForgeImportedHooks: an imported_hooks entry resolves its
+// proto_root against the FRONTEND directory into a project-relative buf
+// module, and keeps a services allowlist that may span several packages of
+// the module.
+func TestFrontendPackageForgeImportedHooks(t *testing.T) {
+	root := t.TempDir()
+	writeCodegenFile(t, root, "proto-vendor/other/buf.yaml", "version: v2\n")
+	viteFrontend(t, root, "web", `{"forge": {"imported_hooks": [{
+  "proto_root": "../../proto-vendor/other/",
+  "gen_dir": "./other/",
+  "services": ["other.v1.FooService", "billing.v1.BarService", "other.v1.FooService"]
+}]}}`)
+	fe := discovered(t, root, "web")
+	if len(fe.CodegenProblems) != 0 {
+		t.Fatalf("CodegenProblems = %v", fe.CodegenProblems)
+	}
+	want := []ImportedHooks{{
+		ProtoRoot: "proto-vendor/other",
+		GenDir:    "other",
+		Services:  []string{"other.v1.FooService", "billing.v1.BarService"},
+	}}
+	if !reflect.DeepEqual(fe.ImportedHooks, want) {
+		t.Fatalf("ImportedHooks = %#v, want %#v", fe.ImportedHooks, want)
+	}
+	imp := fe.ImportedHooks[0]
+	if !imp.WantsService("billing.v1.BarService") || imp.WantsService("BarService") || imp.WantsService("other.v1.BazService") {
+		t.Error("WantsService matches exactly the fully-qualified allowlist")
+	}
+	if got := imp.UnknownServices(map[string]bool{"other.v1.FooService": true}); !reflect.DeepEqual(got, []string{"billing.v1.BarService"}) {
+		t.Errorf("UnknownServices = %v", got)
+	}
+	if fe.Hooks != nil {
+		t.Errorf("imported_hooks leaves the own-service allowlist alone; Hooks = %#v", fe.Hooks)
+	}
+}
+
+// TestFrontendPackageForgeImportedHooksProblems: every imported_hooks entry
+// forge cannot honour is a problem generate refuses on.
+func TestFrontendPackageForgeImportedHooksProblems(t *testing.T) {
+	entry := func(protoRoot, genDir, services string) string {
+		return `{"imported_hooks": [{"proto_root": "` + protoRoot + `", "gen_dir": "` + genDir + `", "services": ` + services + `}]}`
+	}
+	ok := `["other.v1.FooService"]`
+	for _, tc := range []struct{ name, block, want string }{
+		{"proto_root escapes the project", entry("../../../elsewhere", "other", ok), "outside the project root"},
+		{"absolute proto_root", entry("/abs/proto", "other", ok), "relative to the frontend directory"},
+		{"missing proto_root dir", entry("../../nope", "other", ok), "is not a directory"},
+		{"proto_root without buf.yaml", entry("../../proto-vendor/nobuf", "other", ok), "has no buf.yaml"},
+		{"no proto_root", entry("", "other", ok), "proto_root: required"},
+		{"no gen_dir", entry("../../proto-vendor/other", "", ok), "gen_dir: required"},
+		{"escaping gen_dir", entry("../../proto-vendor/other", "../other", ok), "inside src/gen/"},
+		{"empty services", entry("../../proto-vendor/other", "other", `[]`), "services: required"},
+		{"missing services", `{"imported_hooks": [{"proto_root": "../../proto-vendor/other", "gen_dir": "other"}]}`, "services: required"},
+		{"short service name", entry("../../proto-vendor/other", "other", `["FooService"]`), "not a fully-qualified service name"},
+		{"unknown entry key", `{"imported_hooks": [{"proto_dir": "x"}]}`, `unknown field "proto_dir"`},
+		{"duplicate gen_dir", `{"imported_hooks": [
+			{"proto_root": "../../proto-vendor/other", "gen_dir": "other", "services": ["a.v1.A"]},
+			{"proto_root": "../../proto-vendor/other", "gen_dir": "other/", "services": ["b.v1.B"]}]}`, "also imported_hooks[0]'s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeCodegenFile(t, root, "proto-vendor/other/buf.yaml", "version: v2\n")
+			writeCodegenFile(t, root, "proto-vendor/nobuf/a.proto", "syntax = \"proto3\";\n")
+			viteFrontend(t, root, "web", `{"forge": `+tc.block+`}`)
+			fe := discovered(t, root, "web")
+			if len(fe.CodegenProblems) != 1 || !strings.Contains(fe.CodegenProblems[0], tc.want) {
+				t.Fatalf("CodegenProblems = %v, want one containing %q", fe.CodegenProblems, tc.want)
+			}
+		})
 	}
 }

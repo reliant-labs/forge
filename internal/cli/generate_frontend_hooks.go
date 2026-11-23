@@ -147,13 +147,23 @@ func serviceProtoSourcePath(projectDir, protoFile string) string {
 // comment marker applied: `// forge:mutation` first, so that
 // `// forge:query-scope` is checked against the rpc's final kind.
 func serviceHookData(svc codegen.ServiceDef, projectDir string) (codegen.FrontendHookTemplateData, error) {
+	data, err := hookDataWithMarkers(svc, serviceProtoSourcePath(projectDir, svc.ProtoFile))
+	if err != nil {
+		return data, err
+	}
+	applyUnwiredStubs(&data, projectDir, svc.Name)
+	return data, nil
+}
+
+// hookDataWithMarkers is svc's hook template data with the comment markers
+// of its proto source, protoPath, applied.
+func hookDataWithMarkers(svc codegen.ServiceDef, protoPath string) (codegen.FrontendHookTemplateData, error) {
 	data := codegen.ServiceDefToHookData(svc)
-	markers := scanRPCHookMarkers(serviceProtoSourcePath(projectDir, svc.ProtoFile))
+	markers := scanRPCHookMarkers(protoPath)
 	applyMutationMarkers(&data, markers.Mutation)
 	if err := codegen.ApplyQueryScopes(&data, svc, markers.QueryScope); err != nil {
 		return data, fmt.Errorf("%s: %w", svc.ProtoFile, err)
 	}
-	applyUnwiredStubs(&data, projectDir, svc.Name)
 	return data, nil
 }
 
@@ -237,14 +247,9 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 		return nil
 	}
 
-	tmplContent, err := templates.FrontendTemplates().Get("hooks.ts.tmpl")
+	tmpl, err := parseHooksTemplate()
 	if err != nil {
-		return fmt.Errorf("read hooks template: %w", err)
-	}
-
-	tmpl, err := template.New("hooks.ts.tmpl").Funcs(templates.FuncMap()).Parse(string(tmplContent))
-	if err != nil {
-		return fmt.Errorf("parse hooks template: %w", err)
+		return err
 	}
 
 	if cfg.IsFrontendWorkspacesEnabled() {
@@ -252,7 +257,7 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 	}
 
 	for _, fe := range cfg.Frontends {
-		if !strings.EqualFold(fe.Type, "nextjs") && !strings.EqualFold(fe.Type, "react-native") && !strings.EqualFold(fe.Type, "vite-spa") {
+		if !isHookFrontendType(fe.Type) {
 			continue
 		}
 
@@ -354,6 +359,26 @@ func generateFrontendHooks(cfg *config.ProjectConfig, services []codegen.Service
 	}
 
 	return nil
+}
+
+// parseHooksTemplate parses hooks.ts.tmpl, the template every service's
+// hooks file renders from.
+func parseHooksTemplate() (*template.Template, error) {
+	tmplContent, err := templates.FrontendTemplates().Get("hooks.ts.tmpl")
+	if err != nil {
+		return nil, fmt.Errorf("read hooks template: %w", err)
+	}
+	tmpl, err := template.New("hooks.ts.tmpl").Funcs(templates.FuncMap()).Parse(string(tmplContent))
+	if err != nil {
+		return nil, fmt.Errorf("parse hooks template: %w", err)
+	}
+	return tmpl, nil
+}
+
+// isHookFrontendType reports whether a frontend of type t gets generated
+// hooks: the React frontends, web and native.
+func isHookFrontendType(t string) bool {
+	return strings.EqualFold(t, "nextjs") || strings.EqualFold(t, "react-native") || strings.EqualFold(t, "vite-spa")
 }
 
 // qualifiedServiceName is svc's fully-qualified proto name

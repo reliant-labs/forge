@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -28,12 +29,41 @@ import (
 //	"forge": {
 //	  "routes": ["none"],                       // CRUD-page allowlist, like KCL routes
 //	  "hooks": ["ChatService", "ProjectService"], // services that get React Query hooks
-//	  "components_dir": "src/components/forge-ui" // where forge's component library lives
+//	  "components_dir": "src/components/forge-ui", // where forge's component library lives
+//	  "imported_hooks": [{                      // hooks for another repo's proto module
+//	    "proto_root": "../../proto-vendor/controlplane",
+//	    "gen_dir": "controlplane",
+//	    "services": ["controlplane.v1.BillingService"]
+//	  }]
 //	}
 //
 // npm ignores unknown top-level keys, and "forge" is the name tools already
 // use for their own block (prettier, eslintConfig, jest), so the file stays
 // a valid manifest for every package manager.
+//
+// # Imported proto modules
+//
+// `hooks` names services of the project's own proto/ tree. A frontend that
+// also calls services whose contract lives in ANOTHER repository — vendored
+// into this one as a buf module of its own, deliberately outside the
+// project's buf.yaml so the project's lint and breaking checks never judge
+// it — declares one `imported_hooks` entry per such module:
+//
+//   - proto_root: the buf module's directory (it holds a buf.yaml), relative
+//     to the frontend's directory and inside the project root.
+//   - gen_dir: where the app's own buf template writes that module's TS
+//     messages, under the frontend's src/gen/. The hooks import
+//     `@/gen/<gen_dir>/<proto path>_pb`; forge does not generate those
+//     messages.
+//   - services: the fully-qualified services that get hooks. Required: an
+//     imported module may declare dozens the app never calls.
+//
+// The hooks land in src/hooks/<gen_dir>/, outside the src/hooks/index.ts
+// barrel, and their query keys are rooted at the fully-qualified service name,
+// so a project service of the same short name collides with neither. The
+// hooks call `connectClient(Service)` like every other hook: routing an
+// imported service to the origin that serves it is the app's own
+// src/lib/connect.ts.
 //
 // # Adopted frontends
 //
@@ -57,9 +87,53 @@ const DefaultComponentsDir = "src/components/ui"
 // a misspelt knob ("route") silently ignored would produce exactly the
 // frontend its author asked forge not to produce, with nothing saying why.
 type frontendPackageForge struct {
-	Routes        []string  `json:"routes"`
-	Hooks         *[]string `json:"hooks"`
-	ComponentsDir string    `json:"components_dir"`
+	Routes        []string               `json:"routes"`
+	Hooks         *[]string              `json:"hooks"`
+	ComponentsDir string                 `json:"components_dir"`
+	ImportedHooks []packageImportedHooks `json:"imported_hooks"`
+}
+
+// packageImportedHooks is one `imported_hooks` entry as package.json states
+// it. resolveImportedHooks validates it into an ImportedHooks.
+type packageImportedHooks struct {
+	ProtoRoot string   `json:"proto_root"`
+	GenDir    string   `json:"gen_dir"`
+	Services  []string `json:"services"`
+}
+
+// ImportedHooks is one package.json `forge.imported_hooks` entry, validated:
+// the services of a buf module outside the project's own proto/ tree that get
+// generated React Query hooks in this frontend.
+type ImportedHooks struct {
+	// ProtoRoot is the buf module's directory, relative to the project root
+	// (slash-separated, cleaned). package.json states it relative to the
+	// frontend.
+	ProtoRoot string
+	// GenDir is where the app generates the module's TS messages, relative
+	// to the frontend's src/gen/ (cleaned). It also names the hooks'
+	// directory, src/hooks/<GenDir>/.
+	GenDir string
+	// Services are the fully-qualified service names that get hooks.
+	Services []string
+}
+
+// WantsService reports whether the entry allowlists the fully-qualified
+// service name.
+func (h ImportedHooks) WantsService(fullName string) bool {
+	return slices.Contains(h.Services, fullName)
+}
+
+// UnknownServices returns the allowlisted names known does not contain,
+// sorted.
+func (h ImportedHooks) UnknownServices(known map[string]bool) []string {
+	var out []string
+	for _, s := range h.Services {
+		if !known[s] {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // readFrontendPackageForge reads the forge block from feDir/package.json.
@@ -83,7 +157,8 @@ func readFrontendPackageForge(feDir string) (frontendPackageForge, bool, error) 
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&block); err != nil {
-		return block, true, fmt.Errorf("package.json %q block: %w (known keys: routes, hooks, components_dir)", PackageForgeKey, err)
+		return block, true, fmt.Errorf("package.json %q block: %w (known keys: routes, hooks, components_dir, imported_hooks; "+
+			"an imported_hooks entry knows proto_root, gen_dir, services)", PackageForgeKey, err)
 	}
 	if block.ComponentsDir != "" {
 		clean, err := cleanComponentsDir(block.ComponentsDir)
@@ -106,6 +181,99 @@ func cleanComponentsDir(dir string) (string, error) {
 		return "", fmt.Errorf("%q must be a path inside the frontend directory, relative to it", dir)
 	}
 	return d, nil
+}
+
+// resolveImportedHooks validates the package.json imported_hooks entries of
+// the frontend at feRel (project-relative, "." for a root frontend) into
+// ImportedHooks, returning one problem per thing it cannot honour. An entry
+// with a problem is dropped; generate refuses to run while any is reported.
+func resolveImportedHooks(projectDir, feRel string, entries []packageImportedHooks) ([]ImportedHooks, []string) {
+	var out []ImportedHooks
+	var problems []string
+	genDirs := map[string]int{}
+	for i, e := range entries {
+		where := fmt.Sprintf("package.json %s.imported_hooks[%d]", PackageForgeKey, i)
+		var bad []string
+		protoRoot, err := resolveImportedProtoRoot(projectDir, feRel, e.ProtoRoot)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s.proto_root: %v", where, err))
+		}
+		genDir, err := cleanImportedGenDir(e.GenDir)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s.gen_dir: %v", where, err))
+		} else if prev, dup := genDirs[genDir]; dup {
+			bad = append(bad, fmt.Sprintf("%s.gen_dir: %q is also imported_hooks[%d]'s; each module needs its own (it names the hooks directory src/hooks/%s/)", where, genDir, prev, genDir))
+		} else {
+			genDirs[genDir] = i
+		}
+		services, err := cleanImportedServices(e.Services)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s.services: %v", where, err))
+		}
+		if len(bad) > 0 {
+			problems = append(problems, bad...)
+			continue
+		}
+		out = append(out, ImportedHooks{ProtoRoot: protoRoot, GenDir: genDir, Services: services})
+	}
+	return out, problems
+}
+
+// resolveImportedProtoRoot resolves an imported_hooks proto_root, stated
+// relative to the frontend at feRel, to a project-relative directory that
+// exists, lies inside the project root and holds a buf.yaml.
+func resolveImportedProtoRoot(projectDir, feRel, protoRoot string) (string, error) {
+	raw := strings.TrimSpace(protoRoot)
+	if raw == "" {
+		return "", fmt.Errorf("required: the directory of the buf module (its buf.yaml), relative to the frontend")
+	}
+	if filepath.IsAbs(raw) || path.IsAbs(filepath.ToSlash(raw)) {
+		return "", fmt.Errorf("%q must be relative to the frontend directory", protoRoot)
+	}
+	rel := path.Clean(path.Join(filepath.ToSlash(feRel), filepath.ToSlash(raw)))
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("%q resolves outside the project root (%s)", protoRoot, rel)
+	}
+	abs := filepath.Join(projectDir, filepath.FromSlash(rel))
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("%q (%s) is not a directory", protoRoot, rel)
+	}
+	if _, err := os.Stat(filepath.Join(abs, "buf.yaml")); err != nil {
+		return "", fmt.Errorf("%q (%s) has no buf.yaml: name the buf module's own directory", protoRoot, rel)
+	}
+	return rel, nil
+}
+
+// cleanImportedGenDir validates an imported_hooks gen_dir: a relative path
+// inside the frontend's src/gen/, naming a directory under it.
+func cleanImportedGenDir(dir string) (string, error) {
+	d := path.Clean(filepath.ToSlash(strings.TrimSpace(dir)))
+	if d == "." || d == "" {
+		return "", fmt.Errorf("required: the directory under src/gen/ the app generates this module's TS messages into")
+	}
+	if path.IsAbs(d) || filepath.IsAbs(dir) || d == ".." || strings.HasPrefix(d, "../") {
+		return "", fmt.Errorf("%q must be a path inside src/gen/, relative to it", dir)
+	}
+	return d, nil
+}
+
+// cleanImportedServices validates an imported_hooks services allowlist:
+// non-empty, every entry fully qualified. Duplicates are dropped.
+func cleanImportedServices(services []string) ([]string, error) {
+	if len(services) == 0 {
+		return nil, fmt.Errorf("required: the fully-qualified services that get hooks (an imported module may declare many the app never calls)")
+	}
+	var out []string
+	for _, s := range services {
+		s = strings.TrimSpace(s)
+		if !strings.Contains(s, ".") || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+			return nil, fmt.Errorf("%q is not a fully-qualified service name (<package>.<Service>, e.g. other.v1.FooService)", s)
+		}
+		if !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // attachFrontendDiskFacts fills the fields of fe that only its directory can
@@ -132,6 +300,9 @@ func attachFrontendDiskFacts(projectDir, feRel string, fe *FrontendConfig) {
 			fe.Hooks = append([]string{}, (*block.Hooks)...)
 		}
 		fe.ComponentsDir = block.ComponentsDir
+		imported, problems := resolveImportedHooks(projectDir, feRel, block.ImportedHooks)
+		fe.ImportedHooks = imported
+		fe.CodegenProblems = append(fe.CodegenProblems, problems...)
 	}
 	if fe.Adopted && len(fe.Routes) == 0 {
 		fe.Routes = []string{RoutesNone}

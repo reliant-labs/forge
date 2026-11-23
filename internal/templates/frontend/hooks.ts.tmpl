@@ -83,7 +83,7 @@ import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from
 {{end -}}
 {{- end}}
 const client = connectClient({{.ServiceRef}});
-const keys = serviceKeys("{{.ServiceNameCamel}}");
+const keys = serviceKeys("{{.QueryKeyRoot}}");
 
 /**
  * {{.ServiceNameCamel}}Keys — the query-key factory for {{.ServiceName}}.

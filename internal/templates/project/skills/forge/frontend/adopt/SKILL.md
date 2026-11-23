@@ -118,3 +118,36 @@ forge's component library lives, relative to the frontend. An unknown key, or a
 Route every service your app does not send to the default origin in
 `connectClient()` (`src/lib/connect.ts` shows how): the generated hooks only
 ever call that function.
+
+### Hooks for another repository's services (`imported_hooks`)
+
+`hooks` names services of this project's own `proto/`. A frontend that also
+calls services whose contract is vendored from another repository — a buf
+module with its own `buf.yaml`, kept out of the project's `buf.yaml` so the
+project's lint and breaking checks never judge it — declares one entry per
+module:
+
+```json
+"forge": {
+  "imported_hooks": [{
+    "proto_root": "../../proto-vendor/controlplane",
+    "gen_dir": "controlplane",
+    "services": ["controlplane.v1.BillingService", "observability_billing.v1.ObservabilityBillingService"]
+  }]
+}
+```
+
+- `proto_root`: the buf module's directory, relative to the frontend, inside
+  the project root, holding a `buf.yaml`.
+- `gen_dir`: where the app's OWN buf template writes that module's TS
+  messages, under `src/gen/`. forge does not generate them; the hooks import
+  `@/gen/<gen_dir>/<proto path>_pb`, so a missing one is a tsc error.
+- `services`: required, fully-qualified, any package of the module.
+
+The hooks land in `src/hooks/<gen_dir>/<svc>-service-hooks_gen.ts` (plus a
+scaffold-once starter test), are NOT re-exported by `src/hooks/index.ts`, and
+root their query keys at the fully-qualified name, so a project service of the
+same short name collides with neither. Import them from their module. The
+module's services are read in memory: they never enter `gen/forge_descriptor/`,
+so no handler, mock or mount is generated for them. Not supported with
+frontend workspaces.

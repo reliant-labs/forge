@@ -316,7 +316,9 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	for i := range comps {
 		c := &comps[i]
 		n := componentNode(in.ModulePath, c)
-		_, n.Optional = FindOptionalComponentMarker(filepath.Join(in.ProjectDir, filepath.FromSlash(c.compRoleRoot), filepath.FromSlash(c.compImportLeaf)))
+		// A component's optionality is its package's marker, never a
+		// provider func's: provider nodes carry their own (graphProvider).
+		n.Optional = componentOptional(in.ProjectDir, c)
 		m.compNode[c.FieldName] = n
 		if err := add(n); err != nil {
 			return nil, err

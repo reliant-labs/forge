@@ -306,7 +306,6 @@ var (
 	standbyDirectiveRE  = regexp.MustCompile(`^//\s*forge:standby\b`)
 	audienceDirectiveRE = regexp.MustCompile(`^//\s*forge:audience\s+([a-z][a-z0-9_-]*)\s*$`)
 	rootOnlyDirectiveRE = regexp.MustCompile(`^//\s*forge:root-only\b(.*)$`)
-	optionalComponentRE = regexp.MustCompile(`^//\s*forge:optional-component(?::.*)?$`)
 	rootOnlyNameRE      = regexp.MustCompile(`^[A-Za-z][\w-]*$`)
 )
 
@@ -345,6 +344,28 @@ func hasDirective(doc *ast.CommentGroup, re *regexp.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// providerOptionalDirective reads `//forge:optional-component: <why>` on the
+// doc of a provider func — the New<X> that constructs node X, the only func
+// whose doc the caller passes. The marker is the whole comment line and must
+// carry a reason. It never reaches a component node: a component's
+// optionality is its package's marker alone (FindOptionalComponentMarker).
+func providerOptionalDirective(doc *ast.CommentGroup) (bool, error) {
+	if doc == nil {
+		return false, nil
+	}
+	for _, c := range doc.List {
+		reason, ok := parseReasonedDirective(c.Text, directiveOptionalComponent)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(reason) == "" {
+			return false, fmt.Errorf("%q: //forge:optional-component says why the node may be absent: //forge:optional-component: <why>", strings.TrimSpace(c.Text))
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // audienceDirective is the `//forge:audience <name>` argument, or "".
@@ -436,6 +457,10 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 			if st == nil {
 				continue
 			}
+			optional, oerr := providerOptionalDirective(fd.Doc)
+			if oerr != nil {
+				return nil, nil, nil, fmt.Errorf("%s:%d: New%s: %w", rel, fset.Position(fd.Pos()).Line, x, oerr)
+			}
 			rootOnly, rerr := rootOnlyDirective(fd.Doc)
 			if rerr != nil {
 				return nil, nil, nil, fmt.Errorf("%s:%d: New%s: %w", rel, fset.Position(fd.Pos()).Line, x, rerr)
@@ -454,7 +479,7 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 				Standby:  hasDirective(fd.Doc, standbyDirectiveRE),
 				Audience: audienceDirective(fd.Doc),
 				RootOnly: rootOnly,
-				Optional: hasDirective(fd.Doc, optionalComponentRE),
+				Optional: optional,
 			})
 		}
 	}

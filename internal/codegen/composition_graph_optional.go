@@ -23,12 +23,22 @@ package codegen
 import (
 	"fmt"
 	"go/types"
+	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // GraphRuleOptionalComponent is a consumer field, not marked
 // `// forge:optional-dep`, that an optional component fills.
 const GraphRuleOptionalComponent = "forge-graph-optional-component"
+
+// componentOptional reports the `//forge:optional-component: <why>` marker of
+// c's own package. A bare marker (no reason) does not count; forge lint's
+// go-markers lane reports it.
+func componentOptional(projectDir string, c *BuildComponent) bool {
+	m, ok := FindOptionalComponentMarker(filepath.Join(projectDir, filepath.FromSlash(c.compRoleRoot), filepath.FromSlash(c.compImportLeaf)))
+	return ok && strings.TrimSpace(m.Reason) != ""
+}
 
 // checkOptionalNilable refuses an optional node whose value cannot be nil,
 // and makes the lifecycle literal of every optional one nil-checked.

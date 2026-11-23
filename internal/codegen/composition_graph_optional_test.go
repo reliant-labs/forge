@@ -1,6 +1,7 @@
 package codegen
 
 import (
+	"fmt"
 	"go/token"
 	"go/types"
 	"os"
@@ -94,5 +95,95 @@ func TestOptionalComponentDirectiveIsRead(t *testing.T) {
 	m, ok := FindOptionalComponentMarker(dir)
 	if !ok || m.Reason != "nil without a control plane" {
 		t.Fatalf("marker = %+v, %v", m, ok)
+	}
+}
+
+// writeProject writes files (project-relative path → content) under a temp dir.
+func writeOptionalProject(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for rel, content := range files {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+const optionalProviderFile = `package app
+
+type OrgMoveDeps struct{}
+
+// NewOrgMove is a provider of the same name as the component.
+//
+%s
+func NewOrgMove(d OrgMoveDeps) (*int, error) { return nil, nil }
+
+// NewOther is provider-shaped, and its marker opts in only node Other.
+//
+//forge:optional-component: other is absent self-hosted
+func NewOther(d OtherDeps) (*int, error) { return nil, nil }
+
+type OtherDeps struct{}
+`
+
+// [B1] A component's optionality is its package marker; a same-name
+// provider marked differently never overrides it, in either direction.
+func TestOptionalComponentPackageMarkerIsNotOverriddenByProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name, pkgDoc, providerDoc string
+		want                      bool
+	}{
+		{"package marked, provider unmarked", "//forge:optional-component: nil without a control plane\n", "// plain doc", true},
+		{"package unmarked, provider marked", "", "//forge:optional-component: provider says so", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeOptionalProject(t, map[string]string{
+				"internal/orgmove/doc.go":   tc.pkgDoc + "package orgmove\n",
+				"internal/app/providers.go": fmt.Sprintf(optionalProviderFile, tc.providerDoc),
+			})
+			c := &BuildComponent{FieldName: "OrgMove", compRoleRoot: "internal", compImportLeaf: "orgmove"}
+			if got := componentOptional(dir, c); got != tc.want {
+				t.Fatalf("component optional = %v, want %v", got, tc.want)
+			}
+			providers, _, _, err := discoverAppDeclsAndGroups(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range providers {
+				if p.Name == "OrgMove" && p.Optional != !tc.want {
+					t.Fatalf("provider OrgMove optional = %v; its own doc decides it", p.Optional)
+				}
+			}
+		})
+	}
+}
+
+// [B1] A provider-only marker opts in exactly the node its New<X> builds,
+// needs a reason, and a bare one is an error naming the func.
+func TestOptionalComponentProviderOnlyMarker(t *testing.T) {
+	dir := writeOptionalProject(t, map[string]string{
+		"internal/app/providers.go": fmt.Sprintf(optionalProviderFile, "// plain doc"),
+	})
+	providers, _, _, err := discoverAppDeclsAndGroups(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, p := range providers {
+		got[p.Name] = p.Optional
+	}
+	if !got["Other"] || got["OrgMove"] {
+		t.Fatalf("optional providers = %v, want Other only", got)
+	}
+	dir = writeOptionalProject(t, map[string]string{
+		"internal/app/providers.go": fmt.Sprintf(optionalProviderFile, "//forge:optional-component"),
+	})
+	if _, _, _, err := discoverAppDeclsAndGroups(dir); err == nil || !strings.Contains(err.Error(), "NewOrgMove") || !strings.Contains(err.Error(), "<why>") {
+		t.Fatalf("a bare provider marker must be refused naming the func, got %v", err)
 	}
 }

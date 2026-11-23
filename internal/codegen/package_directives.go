@@ -70,6 +70,15 @@ const (
 	directiveExternalComponent2 = "forge:provided"
 	directiveNotAComponent      = "forge:not-a-component"
 
+	// directiveOptionalComponent declares a component that some deployments
+	// do not have: its constructor may return a nil value with a nil error
+	// (a control-plane client when self-hosted). The graph then treats a nil
+	// node as absent rather than as a construction failure, and `forge lint
+	// --graph` requires every consumer's Deps field of its type to be
+	// `// forge:optional-dep` (forge-graph-optional-component). On a
+	// provider func in internal/app it goes on the func's doc.
+	directiveOptionalComponent = "forge:optional-component"
+
 	// directiveServiceMarker / directiveContractMarker sit on an INTERFACE's
 	// doc (or inline) comment and declare it the package's Service contract
 	// under a NON-canonical name. They free the friction the strict
@@ -386,6 +395,12 @@ func ParseNotAComponentComment(raw string) (reason string, ok bool) {
 // declarations that disagree.
 func FindExcludeContractMarkers(dir string) []ReasonedMarker {
 	return findReasonedDirectives(dir, directiveExcludeContract)
+}
+
+// FindOptionalComponentMarker returns the package's
+// `//forge:optional-component: <why>` marker (see directiveOptionalComponent).
+func FindOptionalComponentMarker(dir string) (ReasonedMarker, bool) {
+	return findReasonedDirective(dir, directiveOptionalComponent)
 }
 
 // FindNotAComponentMarkers returns every `//forge:not-a-component` marker in

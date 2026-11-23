@@ -220,6 +220,11 @@ type graphNode struct {
 	Standby      bool
 	AuthAudience string
 	RootOnly     []string
+	// Optional is `//forge:optional-component: <why>` on the component's
+	// package or the provider's func: its constructor may return nil with a
+	// nil error, meaning "not in this deployment". Every consumer field of
+	// its type must be `// forge:optional-dep` (forge-graph-optional-component).
+	Optional bool
 }
 
 // graphRoot is one root: a struct in internal/app whose fields select the
@@ -287,6 +292,9 @@ type graphProvider struct {
 	// reaches it — a root-specific variant (the worker's privileged daemon
 	// router) can never be handed to a process it was not built for.
 	RootOnly []string
+	// Optional is `//forge:optional-component: <why>` on the provider func
+	// (graphNode.Optional).
+	Optional bool
 }
 
 // rootDirectiveRE matches `//forge:root` with an optional name and options.
@@ -298,6 +306,7 @@ var (
 	standbyDirectiveRE  = regexp.MustCompile(`^//\s*forge:standby\b`)
 	audienceDirectiveRE = regexp.MustCompile(`^//\s*forge:audience\s+([a-z][a-z0-9_-]*)\s*$`)
 	rootOnlyDirectiveRE = regexp.MustCompile(`^//\s*forge:root-only\b(.*)$`)
+	optionalComponentRE = regexp.MustCompile(`^//\s*forge:optional-component(?::.*)?$`)
 	rootOnlyNameRE      = regexp.MustCompile(`^[A-Za-z][\w-]*$`)
 )
 
@@ -445,6 +454,7 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 				Standby:  hasDirective(fd.Doc, standbyDirectiveRE),
 				Audience: audienceDirective(fd.Doc),
 				RootOnly: rootOnly,
+				Optional: hasDirective(fd.Doc, optionalComponentRE),
 			})
 		}
 	}

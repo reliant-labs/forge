@@ -31,6 +31,17 @@ The graph itself — providers, `compose.go`, roots and commands, each root's co
 
 A project scaffolded before the graph keeps its `Infra`/`OpenInfra` + `NewComponents` composition, and forge generates for it exactly as before, until it migrates: `forge fix composition-graph` converts what forge scaffolded, or lists (writing nothing) each shape of yours it cannot; `migrations/v1.0.0/composition-graph` is the rest of the path.
 
+## A component some deployments do not have
+
+A component that is absent in some deployments (a control-plane client when self-hosted) declares it: `//forge:optional-component: <why>` in its package (doc.go), or on a provider func's doc in `internal/app`. Its constructor then returns a pointer or an interface, and `nil, nil` when it is not deployed:
+
+- the graph memoizes the nil as the node's value; a nil error is no construction failure;
+- supervision skips a nil node's Run, Drain, Close and Ready;
+- an observed (`// forge:constructor`) component's compose.go constructor returns the nil instead of wrapping it;
+- every consumer Deps field it fills must be `// forge:optional-dep`, and the consumer checks the nil: `forge lint --graph` reports `forge-graph-optional-component` otherwise (a warning in v1.11.0, an error from v1.12.0).
+
+A struct-valued optional component is a generate error: a struct cannot be nil.
+
 ## Pinning a root's start and stop order
 
 `graph_gen.go` emits, per root, `Plan<Root>() graphkit.Plan`: every node `Build<Root>` constructs, in order, with the lifecycle methods its type has (the probe listener first for a root with no API listener). `Plan.Stop()` is the order `Run<Root>` stops the supervised nodes — the root's first field first — so a unit test pins it without constructing a database or a broker:

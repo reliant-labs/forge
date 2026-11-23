@@ -316,6 +316,7 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	for i := range comps {
 		c := &comps[i]
 		n := componentNode(in.ModulePath, c)
+		_, n.Optional = FindOptionalComponentMarker(filepath.Join(in.ProjectDir, filepath.FromSlash(c.compRoleRoot), filepath.FromSlash(c.compImportLeaf)))
 		m.compNode[c.FieldName] = n
 		if err := add(n); err != nil {
 			return nil, err
@@ -358,6 +359,9 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 			"Fix: check the network or GOPROXY (`go mod download` shows the failure on its own), then run `forge generate` again", m.u.fetchErr, graphLoadAttempts)
 	}
 	m.u.typeNodes(m.nodes)
+	if err := m.checkOptionalNilable(); err != nil {
+		return nil, err
+	}
 	for _, n := range m.nodes {
 		if n.Kind == nodeRoutes || n.Kind == nodeOperators {
 			continue
@@ -464,7 +468,7 @@ func addGraphProviderNodes(providers []graphProvider, add func(*graphNode) error
 			Deps: p.Deps, DepsKeys: p.DepsKeys, DepsFound: true,
 			SrcImports: p.Imports, Pos: p.Pos,
 			File: p.File, Line: p.Line, Standby: p.Standby, AuthAudience: p.Audience,
-			RootOnly: p.RootOnly,
+			RootOnly: p.RootOnly, Optional: p.Optional,
 		}
 		if err := add(n); err != nil {
 			return err

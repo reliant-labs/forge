@@ -23,6 +23,11 @@ func writeFrontendSource(t *testing.T, projectDir, feName, rel, body string) {
 
 const telemetryImport = `import { initBrowserTelemetry } from "@reliantlabs/forge-web-runtime/telemetry";` + "\n"
 
+// peersRuntimeRange is the first runtime range that takes the telemetry SDK as
+// peers. The scaffold floor stays below it until npm serves that runtime (the
+// release bookkeeping raises it), so these tests name it rather than the floor.
+var peersRuntimeRange = "^" + strings.TrimPrefix(telemetryPeersSince, "v")
+
 // runtimeEntry is a manifest "dependencies" entry for the runtime at spec.
 func runtimeEntry(spec string) string {
 	return "\n    \"" + WebRuntimePackage + "\": \"" + spec + "\""
@@ -115,7 +120,7 @@ func TestEnsureTelemetryDependencies_DeclaresTheRuntimesExactPeers(t *testing.T)
 	} {
 		t.Run(name, func(t *testing.T) {
 			projectDir := filepath.Join(t.TempDir(), "app")
-			deps := runtimeEntry(webRuntimePublishedRange)
+			deps := runtimeEntry(peersRuntimeRange)
 			if extra != "" {
 				deps += "," + extra
 			}
@@ -180,7 +185,7 @@ func TestEnsureTelemetryDependencies_LeavesAFrontendWithoutTelemetryAlone(t *tes
 // A disowned manifest gets notices instead of edits.
 func TestFrontendDependencyNotices_NameMissingTelemetryPeers(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "app")
-	writeFrontendManifest(t, projectDir, "web", "\n    \""+WebRuntimePackage+"\": \""+webRuntimePublishedRange+"\"")
+	writeFrontendManifest(t, projectDir, "web", "\n    \""+WebRuntimePackage+"\": \""+peersRuntimeRange+"\"")
 	writeFrontendSource(t, projectDir, "web", "src/lib/otel_gen.ts", telemetryImport)
 	notices := strings.Join(FrontendDependencyNotices(projectDir, filepath.Join("frontends", "web")), "\n")
 	for _, name := range []string{"@hyperdx/otel-web", "rrweb"} {

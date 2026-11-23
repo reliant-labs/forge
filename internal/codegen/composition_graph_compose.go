@@ -406,7 +406,10 @@ func fixGraphComposeImports(out string, needImport map[string]string, r *graphRe
 			known[p] = true
 		}
 	}
-	for _, imp := range file.Imports {
+	// DeleteNamedImport shrinks file.Imports in place, so range over a copy:
+	// ranging the live slice reads shifted and nil'd specs and panics when
+	// several imports go at once.
+	for _, imp := range append([]*ast.ImportSpec(nil), file.Imports...) {
 		p := strings.Trim(imp.Path.Value, `"`)
 		if !known[p] {
 			continue

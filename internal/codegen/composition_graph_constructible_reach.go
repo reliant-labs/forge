@@ -43,7 +43,7 @@ func (m *graphModel) checkConstructorReach(declared []graphRoot, draft string) e
 	}
 	var bad []unconstructibleComponent
 	for _, p := range m.constructorProblems {
-		if n := m.constructorNode(p); n != nil && reached[n.Name] {
+		if n := m.constructorNode(p); n != nil && (reached[n.Name] || harnessConstructs(p)) {
 			bad = append(bad, p)
 		}
 	}
@@ -51,6 +51,17 @@ func (m *graphModel) checkConstructorReach(declared []graphRoot, draft string) e
 		return unconstructibleError(bad)
 	}
 	return nil
+}
+
+// harnessConstructs reports whether the generated test harness constructs
+// the component whether or not a root reaches it: every service and internal
+// package gets a helpers_gen_test.go calling New(Deps{…}). Leaving such a
+// component out of the graph only moved the failure to a test file that does
+// not compile (forge reports 894df25b, d4def0e4), so it is refused here with
+// the markers that fix it. Workers and operators get no harness, so an
+// unreached one is still left out.
+func harnessConstructs(p unconstructibleComponent) bool {
+	return p.RoleRoot == "internal" || p.RoleRoot == "internal/handlers"
 }
 
 // validateReachedConstructors is the final constructor check, over the graph

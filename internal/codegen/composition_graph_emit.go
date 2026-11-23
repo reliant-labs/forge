@@ -960,13 +960,46 @@ func graphCycleError(cycle []string) error {
 // project no longer has.
 func staleGraphMethods(compose string, byName map[string]*graphNode) []string {
 	var out []string
-	for _, x := range composeMethodNames(compose) {
+	names := composeMethodNames(compose)
+	have := map[string]bool{}
+	for _, x := range names {
+		have[x] = true
+	}
+	for _, x := range names {
 		if _, ok := byName[x]; !ok {
-			out = append(out, fmt.Sprintf("internal/app/compose.go: new%s constructs a node the project no longer has — delete the method", x))
+			msg := fmt.Sprintf("internal/app/compose.go: new%s constructs a node the project no longer has — delete the method", x)
+			if n := renamedGraphNode(x, byName, have); n != nil {
+				msg = fmt.Sprintf("internal/app/compose.go: new%s constructs a node the project no longer has — %s is now node %s: rename the method to new%s (or delete it and let generate write one)", x, n.Comp.ImportPath, n.Name, n.Name)
+			}
+			out = append(out, msg)
 		}
 	}
 	sort.Strings(out)
 	return out
+}
+
+// renamedGraphNode is the component node a stale
+// new<X> most likely meant — a component with no compose.go method whose
+// package leaf, or node name suffix, is <X> case-insensitively (a nested
+// package's node is <Parent><Leaf>, so newAutomationtokens meant
+// newCredentialsAutomationtokens). nil unless exactly one matches.
+func renamedGraphNode(x string, byName map[string]*graphNode, have map[string]bool) *graphNode {
+	lx := strings.ToLower(x)
+	var hit *graphNode
+	for name, n := range byName {
+		if have[name] || n.Kind != nodeComponent || n.Comp == nil {
+			continue
+		}
+		leaf := strings.ToLower(n.Comp.ImportPath[strings.LastIndex(n.Comp.ImportPath, "/")+1:])
+		if leaf != lx && !strings.HasSuffix(strings.ToLower(name), lx) {
+			continue
+		}
+		if hit != nil {
+			return nil
+		}
+		hit = n
+	}
+	return hit
 }
 
 // renderGoTemplate renders a project template and gofmts it.

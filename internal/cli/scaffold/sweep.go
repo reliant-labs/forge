@@ -117,6 +117,7 @@ With a NOUN it scaffolds exactly that one thing, no marker required:
   forge scaffold adapter <name>                   an outbound adapter (HTTP/queue/storage gateway)
   forge scaffold library <name>                   a library-shaped package (no contract.go; pre-excluded)
   forge scaffold handler-file <svc> <name>        an additional RPC-group file in handlers/<svc>/
+  forge scaffold variant <pkg> <Name> [--root R]  one more configuration of internal/<pkg>, as its own type
   forge scaffold rpc <svc> <Name>                 a custom RPC: pb-through *Service stub when the RPC is in the proto; signed stub + proto snippet otherwise
 
 Everything written is scaffold-once and yours from birth — re-running

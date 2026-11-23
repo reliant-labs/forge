@@ -309,6 +309,7 @@ func graphProblemsError(problems []graphProblem) error {
 			fmt.Fprintf(&b, "      write the key yourself in compose.go's new%s — `%s: %s,` — and forge keeps your choice.\n", p.Node, p.Field, p.Candidates[0])
 		}
 		b.WriteString("\n  (If new<Node> does not exist yet, write the whole method: forge then fills only the keys it is missing.)\n")
+		b.WriteString("  If both are configurations of one component that different consumers need, give each its own type: `forge scaffold variant <pkg> <Name> [--root <root>]` writes the wrapper type and its provider, and a consumer takes a field of the variant's very type (`forge skill load architecture/graph-checks`).\n")
 	}
 	if len(missing) > 0 {
 		b.WriteString("\nMISSING — no node produces the type, and it is not a graph input, config block or scalar. forge will NOT emit a nil for a required dependency: it would pass validateDeps and nil-deref at runtime.\n\n")

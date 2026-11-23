@@ -443,6 +443,7 @@ func generateFrontendFiles(root, modulePath, projectName, frontendName string, a
 	// the scaffold flow runs `npm install` straight after generating, and the
 	// bridge only takes effect if npm sees it on that first install.
 	EnsureWebRuntimeDependency(root, filepath.Join("frontends", frontendName), frontendName)
+	EnsureTelemetryDependencies(root, filepath.Join("frontends", frontendName))
 	EnsureDevWebRuntimeLink(root)
 
 	return nil

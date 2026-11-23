@@ -184,20 +184,35 @@ describe("the published surface", () => {
     }
   });
 
-  it("carries the SDK parts as exact dependencies, and keeps @opentelemetry/api a required peer", () => {
-    // @hyperdx/otel-web and rrweb are DEPENDENCIES, not peers: an app that
-    // installed an earlier runtime declares @hyperdx/browser, not these, and
-    // an optional peer it does not declare would fail to resolve on its next
-    // install. EXACT, not a range: both are 0.x/2.x internals the runtime
-    // drives below their public surface (tracer names, the replay wire
-    // shape HyperDX's player reads).
-    const deps = (pkg as unknown as { dependencies?: Record<string, string> })
-      .dependencies;
+  it("declares the SDK parts as exact OPTIONAL peers, carries no dependency, and keeps @opentelemetry/api a required peer", () => {
+    // @hyperdx/otel-web and rrweb are OPTIONAL PEERS, not dependencies.
+    // Until 0.14.0 they were dependencies, and npm installs every dependency
+    // into every consumer whether or not an entry it imports reaches it: an
+    // Electron main process that imports only ./node shipped about 90 MB of
+    // browser packages (forge defect ae15c269). The app that imports
+    // ./telemetry declares them itself: every forge web scaffold does, and
+    // `forge generate` adds them to a frontend whose sources import it.
+    // EXACT, not a range: both are 0.x/2.x internals the runtime drives
+    // below their public surface (tracer names, the replay wire shape
+    // HyperDX's player reads). devDependencies at the same version are what
+    // this package builds and tests against.
+    const manifest = pkg as unknown as {
+      dependencies?: Record<string, string>;
+      devDependencies: Record<string, string>;
+    };
+    expect(
+      manifest.dependencies ?? {},
+      "the runtime installs nothing of its own into a consumer: what an entry imports is a peer",
+    ).toEqual({});
     for (const name of ["@hyperdx/otel-web", "rrweb"]) {
-      expect(deps?.[name], `${name} must be a dependency`).toMatch(
+      expect(pkg.peerDependencies[name], `${name} must be a peer`).toMatch(
         /^\d+\.\d+\.\d+$/,
       );
-      expect(pkg.peerDependencies[name]).toBeUndefined();
+      expect(
+        pkg.peerDependenciesMeta?.[name]?.optional,
+        `${name} must be an OPTIONAL peer: only ./telemetry imports it`,
+      ).toBe(true);
+      expect(manifest.devDependencies[name]).toBe(pkg.peerDependencies[name]);
     }
     // The runtime no longer imports @hyperdx/browser at all.
     expect(pkg.peerDependencies["@hyperdx/browser"]).toBeUndefined();

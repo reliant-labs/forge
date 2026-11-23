@@ -72,6 +72,16 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // analytics consent is withdrawn (#2159); a compatible latest release is
 // insufficient when a lockfile retains the floor.
 //
+// 0.14.0 is such a breaking change: @hyperdx/otel-web and rrweb moved from the
+// runtime's dependencies to exact optional peers (forge defect ae15c269), so
+// an app importing './telemetry' must declare them. web-runtime/package.json
+// declares 0.14.0 while this floor stays ^0.13.21, the newest version npm
+// serves (TestWebRuntimeFloorIsAPublishedVersion); the release that publishes
+// 0.14.0 raises it. The generate run that then raises a frontend to ^0.14
+// declares them (EnsureTelemetryDependencies, which is inert for a ^0.13
+// manifest), and a ^0.13 project that never regenerates keeps the runtime
+// carrying them.
+//
 // The bookkeeping lands AFTER the release tag, so a released binary carries
 // the previous floor (v1.8.0 scaffolds ^0.13.17; its commit published
 // 0.13.19), and a pin of an untagged commit can generate code that only the
@@ -388,12 +398,13 @@ func jsonString(s string) string {
 	return string(b)
 }
 
-// The HyperDX browser SDK is no longer an app dependency. web-runtime 0.13
+// The HyperDX browser SDK is not @hyperdx/browser any more. web-runtime 0.13.18
 // and earlier imported @hyperdx/browser and declared it an optional peer, so
-// forge added it to every web frontend's package.json. The runtime now
-// carries the SDK's parts (@hyperdx/otel-web, rrweb) as its own dependencies,
-// so nothing is added; a project that declares @hyperdx/browser keeps it,
-// unused, until it removes it (the telemetry skill, "Upgrading").
+// forge added it to every web frontend's package.json; a project that
+// declares it keeps it, unused, until it removes it (the telemetry skill,
+// "Upgrading"). What './telemetry' imports now, @hyperdx/otel-web and rrweb,
+// the app declares itself: EnsureTelemetryDependencies
+// (frontend_telemetry_deps.go).
 
 // FrontendDependencyNotices is the read-only counterpart of
 // EnsureWebRuntimeDependency, for a
@@ -431,12 +442,13 @@ func FrontendDependencyNotices(projectDir, feRelDir string) []string {
 			}
 		}
 	}
-	return out
+	return append(out, telemetryDependencyNotices(feDir, text)...)
 }
 
 // SyncFrontendLock brings the lockfile that governs feRelDir's package.json
-// back in step with the dependency range forge manages there
-// (WebRuntimePackage).
+// back in step with the dependency ranges forge manages there
+// (WebRuntimePackage, and the telemetry peers EnsureTelemetryDependencies
+// declares).
 //
 // The Ensure* functions above rewrite those ranges in package.json and nothing
 // else, so a project with a lockfile is left with one that records the OLD
@@ -457,7 +469,7 @@ func SyncFrontendLock(projectDir, feRelDir string) error {
 	if !ok {
 		return nil
 	}
-	managed := []string{WebRuntimePackage}
+	managed := append([]string{WebRuntimePackage}, telemetryPeers...)
 	drift, err := frontenddeps.LockDrift(lock, manifestDir, managed...)
 	if err != nil {
 		return fmt.Errorf("%s: compare package.json with %s: %w", feRelDir, lock.File, err)

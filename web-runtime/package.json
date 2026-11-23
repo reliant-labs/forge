@@ -1,6 +1,6 @@
 {
   "name": "@reliantlabs/forge-web-runtime",
-  "version": "0.13.21",
+  "version": "0.14.0",
   "description": "The forge frontend runtime: Connect interceptor stack, session, error boundary, toast queue, <Resource> container, W3C trace propagation and the HyperDX browser SDK wiring (errors, console, network, traces) and a session-replay recorder that encodes off the main thread (replay off by default). The web twin of forge/pkg.",
   "license": "Apache-2.0",
   "//repository note": "REQUIRED for `npm publish --provenance`, not decoration. npm cross-checks this against the repository in the signed provenance statement and rejects the publish with a 422 if they disagree — an absent field reads as \"\" and fails that comparison. `directory` names the subdirectory this package lives in, so the provenance points at the real source. Omitting this is what made the first 0.3.1 publish fail AFTER the tarball had been signed and written to the sigstore transparency log.",
@@ -114,18 +114,15 @@
     "test": "vitest run",
     "test:browser": "node --test scripts/browser-telemetry-smoke.mjs"
   },
-  "// dependencies note": "@hyperdx/otel-web (errors, traces, web vitals, the RUM session) and rrweb (session replay) are DEPENDENCIES, exact-pinned, imported only by the './telemetry' subpath and lazily, so each is its own chunk and rrweb loads only when replay runs. They are not peers on purpose: an app that installed an earlier runtime declares @hyperdx/browser, not these, and an optional peer it does not declare would fail to resolve on its next install. As dependencies they come with the runtime under npm and pnpm's strict layout alike, and a consumer that never imports './telemetry' (React Native, Node) never bundles them. The runtime drives @hyperdx/otel-web with its own port of @hyperdx/browser's wrapper (src/sdk-client.ts) and records replay itself (src/replay-recorder.ts); @hyperdx/browser is no longer used.",
-  "dependencies": {
-    "@hyperdx/otel-web": "0.20.0",
-    "rrweb": "2.1.7"
-  },
-  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @tanstack/react-query is imported only by './service-hooks' and './transport-scope'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
+  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer (and every dependency) for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @tanstack/react-query is imported only by './service-hooks' and './transport-scope'. @hyperdx/otel-web (errors, traces, web vitals, the RUM session) and rrweb (session replay) are imported only by './telemetry', each through a lazy import() of its own chunk; they were DEPENDENCIES until 0.14.0, which put about 90 MB of browser packages into every './node' consumer's install (forge defect ae15c269). They are EXACT, because the runtime drives both below their public surface (tracer names, the replay wire shape HyperDX's player reads), and every forge web scaffold declares them at exactly these versions; `forge generate` adds them to any frontend whose sources import './telemetry'. 0.14.0 is a minor, not a patch, so a project on ^0.13 that never regenerates keeps the runtime that carries them. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
   "peerDependencies": {
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
+    "@hyperdx/otel-web": "0.20.0",
     "@opentelemetry/api": "^1.9.0",
     "@tanstack/react-query": "^5.62.0",
-    "react": "^18.3.0 || ^19.0.0"
+    "react": "^18.3.0 || ^19.0.0",
+    "rrweb": "2.1.7"
   },
   "peerDependenciesMeta": {
     "@bufbuild/protobuf": {
@@ -134,10 +131,16 @@
     "@connectrpc/connect": {
       "optional": true
     },
+    "@hyperdx/otel-web": {
+      "optional": true
+    },
     "@tanstack/react-query": {
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "rrweb": {
       "optional": true
     }
   },
@@ -145,6 +148,7 @@
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",
     "@connectrpc/connect-web": "^2.3.0",
+    "@hyperdx/otel-web": "0.20.0",
     "@opentelemetry/api": "^1.9.0",
     "@tanstack/react-query": "^5.62.0",
     "@types/node": "^22.14.0",
@@ -157,6 +161,7 @@
     "playwright": "1.58.0",
     "react": "^19.1.0",
     "react-dom": "^19.3.0",
+    "rrweb": "2.1.7",
     "typescript": "^5.8.0",
     "vitest": "^4.1.11"
   },

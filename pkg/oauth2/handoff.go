@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/reliant-labs/forge/pkg/observe"
 )
 
 // HandoffLogin runs a desktop or CLI app's side of a forge login broker's
@@ -98,7 +100,7 @@ func (l HandoffLogin) Run(ctx context.Context) (*HandoffSession, error) {
 
 	client := l.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = observe.NewHTTPClient(observe.HTTPClientOptions{Timeout: 30 * time.Second})
 	}
 	var started struct {
 		AuthorizeURL string `json:"authorize_url"`

@@ -1,9 +1,15 @@
 package cli
 
 import (
+	"errors"
+	"maps"
+	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // TestGenerateCacheImportedProtoRoots reads proto roots from every manifest
@@ -54,5 +60,34 @@ func TestGenerateCacheImportedProtoRoots(t *testing.T) {
 	}
 	if _, ok := fp.files["proto-vendor/other/README.md"]; ok {
 		t.Errorf("a file buf does not read must not be recorded; keys: %v", keysOf(fp.files))
+	}
+}
+
+// TestImportedProtoRootSymlinkEscapeIsNeverRead: a proto_root that escapes
+// the project through a symlink (forge#2707 review) is recorded as escaping
+// by the cache, which reads nothing under it, and refused by extraction
+// before buf runs — the same check, config.ImportedProtoRootDir, in both.
+func TestImportedProtoRootSymlinkEscapeIsNeverRead(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlinks need privileges on Windows")
+	}
+	root, outside := t.TempDir(), t.TempDir()
+	writeTreeFileT(t, filepath.Join(outside, "buf.yaml"), "version: v2\n")
+	writeTreeFileT(t, filepath.Join(outside, "a", "x.proto"), "syntax = \"proto3\";\n")
+	writeTreeFileT(t, filepath.Join(root, "proto-vendor", ".keep"), "")
+	if err := os.Symlink(outside, filepath.Join(root, "proto-vendor", "escaping")); err != nil {
+		t.Fatal(err)
+	}
+
+	fp := &generateFingerprint{files: map[string]string{}}
+	if err := fp.addProtoModule(root, "proto-vendor/escaping"); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"proto-vendor/escaping/": "escapes the project"}; !maps.Equal(fp.files, want) {
+		t.Fatalf("an escaping root must be recorded as such and never walked; files = %v", fp.files)
+	}
+
+	if _, err := extractImportedServices(root, "proto-vendor/escaping"); !errors.Is(err, config.ErrImportedProtoRootEscapes) {
+		t.Fatalf("extraction must refuse an escaping root before buf runs, got %v", err)
 	}
 }

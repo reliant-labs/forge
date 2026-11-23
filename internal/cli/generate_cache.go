@@ -524,10 +524,18 @@ func protoModuleInput(name string) bool {
 // keyed by its project-relative path.
 func (fp *generateFingerprint) addProtoModule(root, dir string) error {
 	dir = filepath.ToSlash(filepath.Clean(dir))
+	// The containment check config validation and buf extraction apply:
+	// a root that escapes the project through a symlink is recorded as
+	// such and never read — generate refuses it, so nothing under it is an
+	// input, and walking it could mean walking any tree on the machine.
+	abs, err := config.ImportedProtoRootDir(root, dir)
+	if errors.Is(err, config.ErrImportedProtoRootEscapes) {
+		fp.files[dir+"/"] = "escapes the project"
+		return nil
+	}
 	if err := fp.addFile(root, path.Join(dir, "buf.yaml")); err != nil {
 		return err
 	}
-	abs, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(dir)))
 	if err != nil {
 		fp.files[dir+"/"] = "absent"
 		return nil

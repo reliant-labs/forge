@@ -181,7 +181,13 @@ func importedProtoSourcePath(projectDir string, imp config.ImportedHooks, protoF
 // protoRoot (project-relative) with the descriptor pass, in memory: nothing is
 // written into the project. Services come in proto-path order.
 func extractImportedServices(projectDir, protoRoot string) ([]codegen.ServiceDef, error) {
-	bufDir := filepath.Join(projectDir, filepath.FromSlash(protoRoot))
+	// Config validation already refused an escaping root; checked again
+	// here, at the moment buf would read it, with the same check the
+	// generate cache uses, so extraction and fingerprint share one boundary.
+	bufDir, err := config.ImportedProtoRootDir(projectDir, protoRoot)
+	if err != nil {
+		return nil, err
+	}
 	fmt.Printf("🔨 Running protoc-gen-forge (mode=descriptor) over %s (imported proto module, for frontend hooks)...\n", protoRoot)
 	work, err := stageDescriptorFragments(bufDir, projectDir, nil, true, os.Stdout)
 	if err != nil {

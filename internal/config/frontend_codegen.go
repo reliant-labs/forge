@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -221,20 +222,52 @@ func resolveImportedHooks(projectDir, feRel string, entries []packageImportedHoo
 
 // resolveImportedProtoRoot resolves an imported_hooks proto_root, stated
 // relative to the frontend at feRel, to a project-relative directory that
-// exists, lies inside the project root and holds a buf.yaml.
+// exists, lies inside the project root (after symlinks: ImportedProtoRootDir)
+// and holds a buf.yaml.
 func resolveImportedProtoRoot(projectDir, feRel, protoRoot string) (string, error) {
 	rel, err := importedProtoRootPath(feRel, protoRoot)
 	if err != nil {
 		return "", err
 	}
-	abs := filepath.Join(projectDir, filepath.FromSlash(rel))
-	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+	abs, err := ImportedProtoRootDir(projectDir, rel)
+	if errors.Is(err, ErrImportedProtoRootEscapes) {
+		return "", fmt.Errorf("%q (%s): %w", protoRoot, rel, err)
+	}
+	if fi, statErr := os.Stat(abs); err != nil || statErr != nil || !fi.IsDir() {
 		return "", fmt.Errorf("%q (%s) is not a directory", protoRoot, rel)
 	}
 	if _, err := os.Stat(filepath.Join(abs, "buf.yaml")); err != nil {
 		return "", fmt.Errorf("%q (%s) has no buf.yaml: name the buf module's own directory", protoRoot, rel)
 	}
 	return rel, nil
+}
+
+// ErrImportedProtoRootEscapes is ImportedProtoRootDir's verdict on a
+// proto_root that is inside the project by its path but resolves, through a
+// symlink, to a directory outside it.
+var ErrImportedProtoRootEscapes = errors.New("resolves through a symlink to a directory outside the project root; vendor the module inside the project")
+
+// ImportedProtoRootDir is the one containment check for an imported module:
+// it resolves the project-relative proto_root rel (as importedProtoRootPath
+// returns it) through every symlink and returns the real directory, or
+// ErrImportedProtoRootEscapes when that directory is not under the project's
+// own real root. Config validation, buf extraction and the generate cache
+// each call it, so none of them reads a module the others would refuse. Any
+// other error (nothing at rel) is the filesystem's, unwrapped.
+func ImportedProtoRootDir(projectDir, rel string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(filepath.Join(projectDir, filepath.FromSlash(rel)))
+	if err != nil {
+		return "", err
+	}
+	inside, err := filepath.Rel(realRoot, real)
+	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+		return "", ErrImportedProtoRootEscapes
+	}
+	return real, nil
 }
 
 // importedProtoRootPath is resolveImportedProtoRoot's lexical half: the

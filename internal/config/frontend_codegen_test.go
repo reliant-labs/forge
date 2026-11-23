@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -286,5 +287,39 @@ func TestFrontendPackageForgeImportedHooksProblems(t *testing.T) {
 				t.Fatalf("CodegenProblems = %v, want one containing %q", fe.CodegenProblems, tc.want)
 			}
 		})
+	}
+}
+
+// TestFrontendPackageForgeImportedHooksSymlinkEscape: a proto_root whose
+// path is inside the project but which is a symlink to a directory outside
+// it is a problem (forge#2707 review), while a symlink that stays inside the
+// project is honoured.
+func TestFrontendPackageForgeImportedHooksSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory symlinks need privileges on Windows")
+	}
+	root, outside := t.TempDir(), t.TempDir()
+	writeCodegenFile(t, outside, "buf.yaml", "version: v2\n")
+	writeCodegenFile(t, root, "proto-vendor/inside/buf.yaml", "version: v2\n")
+	if err := os.Symlink(outside, filepath.Join(root, "proto-vendor", "escaping")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "proto-vendor", "inside"), filepath.Join(root, "proto-vendor", "linked")); err != nil {
+		t.Fatal(err)
+	}
+	block := func(protoRoot string) string {
+		return `{"forge": {"imported_hooks": [{"proto_root": "` + protoRoot + `", "gen_dir": "other", "services": ["other.v1.FooService"]}]}}`
+	}
+
+	viteFrontend(t, root, "web", block("../../proto-vendor/escaping"))
+	fe := discovered(t, root, "web")
+	if len(fe.CodegenProblems) != 1 || !strings.Contains(fe.CodegenProblems[0], "outside the project root") || len(fe.ImportedHooks) != 0 {
+		t.Fatalf("an escaping symlinked proto_root must be one problem and no entry; problems %v, entries %v", fe.CodegenProblems, fe.ImportedHooks)
+	}
+
+	viteFrontend(t, root, "admin", block("../../proto-vendor/linked"))
+	fe = discovered(t, root, "admin")
+	if len(fe.CodegenProblems) != 0 || len(fe.ImportedHooks) != 1 || fe.ImportedHooks[0].ProtoRoot != "proto-vendor/linked" {
+		t.Fatalf("a symlink inside the project is honoured; problems %v, entries %v", fe.CodegenProblems, fe.ImportedHooks)
 	}
 }

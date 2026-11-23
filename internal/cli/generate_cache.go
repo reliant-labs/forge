@@ -32,6 +32,11 @@ package cli
 //     the generating-build record) — and, as a catch-all for the next input
 //     nobody named, every other gitignored FILE git lists outside a wholly
 //     ignored directory;
+//   - every imported proto module a frontend's package.json
+//     `forge.imported_hooks` names: each buf.yaml, buf.lock and .proto under
+//     its proto_root, read from disk whatever git thinks of them — a vendored
+//     module is typically outside the buf workspace and often in a wholly
+//     ignored directory, which the catch-all above collapses away;
 //   - the outputs the recorded run wrote, by path — so a deleted or edited
 //     generated file forces a run even when git ignores it — and every file
 //     under the output directories external tools declare (gen/, a frontend's
@@ -104,6 +109,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/checksums"
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/shadowdb"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
@@ -340,6 +346,11 @@ func fingerprintGenerate(root string, snap *workTreeSnapshot, outputs, outputDir
 			return nil, err
 		}
 	}
+	for _, dir := range generateCacheImportedProtoRoots(root, snap) {
+		if err := fp.addProtoModule(root, dir); err != nil {
+			return nil, err
+		}
+	}
 	for _, rel := range outputs {
 		if err := fp.addFile(root, rel); err != nil {
 			return nil, err
@@ -467,6 +478,87 @@ func (fp *generateFingerprint) addDir(root, dir string) error {
 			return err
 		}
 		return fp.addFile(root, rel)
+	})
+}
+
+// generateCacheImportedProtoRoots lists, project-relative and sorted, the
+// proto_root of every imported_hooks entry of every package.json in the work
+// tree (generateImportedFrontendHooks extracts each one's services with buf).
+// Every package.json is asked, not only the frontends config resolves: a
+// manifest that names no imported_hooks contributes nothing, and asking every
+// one costs a read of each, where resolving frontends here would mean loading
+// the project's whole config before the cache may answer.
+func generateCacheImportedProtoRoots(root string, snap *workTreeSnapshot) []string {
+	set := map[string]bool{}
+	for rel := range snap.files {
+		if path.Base(rel) != "package.json" || strings.Contains(rel, "node_modules/") {
+			continue
+		}
+		for _, dir := range config.ImportedProtoRoots(root, path.Dir(rel)) {
+			set[dir] = true
+		}
+	}
+	out := make([]string, 0, len(set))
+	for dir := range set {
+		out = append(out, dir)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// protoModuleInput reports whether a file of an imported buf module is one
+// buf reads to build it: its configuration, its lockfile, or a proto.
+func protoModuleInput(name string) bool {
+	switch name {
+	case "buf.yaml", "buf.lock", "buf.work.yaml":
+		return true
+	}
+	return path.Ext(name) == ".proto"
+}
+
+// addProtoModule records the buf inputs under a project-relative module
+// directory by walking the disk, so a file git ignores — or a directory git
+// collapses away whole — is covered. The module's buf.yaml is recorded
+// present or absent, and a missing directory as absent: either appearing
+// later is a change. A proto_root that is a symlink is read through it, and
+// keyed by its project-relative path.
+func (fp *generateFingerprint) addProtoModule(root, dir string) error {
+	dir = filepath.ToSlash(filepath.Clean(dir))
+	if err := fp.addFile(root, path.Join(dir, "buf.yaml")); err != nil {
+		return err
+	}
+	abs, err := filepath.EvalSymlinks(filepath.Join(root, filepath.FromSlash(dir)))
+	if err != nil {
+		fp.files[dir+"/"] = "absent"
+		return nil
+	}
+	return filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != abs && (d.Name() == "node_modules" || d.Name() == ".git") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !protoModuleInput(d.Name()) {
+			return nil
+		}
+		sub, err := filepath.Rel(abs, p)
+		if err != nil {
+			return err
+		}
+		rel := path.Join(dir, filepath.ToSlash(sub))
+		if _, done := fp.files[rel]; done {
+			return nil
+		}
+		id, err := pathIdentity(p)
+		if err != nil {
+			return err
+		}
+		fp.files[rel] = id
+		return nil
 	})
 }
 

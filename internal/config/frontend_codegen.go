@@ -223,6 +223,24 @@ func resolveImportedHooks(projectDir, feRel string, entries []packageImportedHoo
 // relative to the frontend at feRel, to a project-relative directory that
 // exists, lies inside the project root and holds a buf.yaml.
 func resolveImportedProtoRoot(projectDir, feRel, protoRoot string) (string, error) {
+	rel, err := importedProtoRootPath(feRel, protoRoot)
+	if err != nil {
+		return "", err
+	}
+	abs := filepath.Join(projectDir, filepath.FromSlash(rel))
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("%q (%s) is not a directory", protoRoot, rel)
+	}
+	if _, err := os.Stat(filepath.Join(abs, "buf.yaml")); err != nil {
+		return "", fmt.Errorf("%q (%s) has no buf.yaml: name the buf module's own directory", protoRoot, rel)
+	}
+	return rel, nil
+}
+
+// importedProtoRootPath is resolveImportedProtoRoot's lexical half: the
+// project-relative path a proto_root names, without asking the disk whether
+// a module is there.
+func importedProtoRootPath(feRel, protoRoot string) (string, error) {
 	raw := strings.TrimSpace(protoRoot)
 	if raw == "" {
 		return "", fmt.Errorf("required: the directory of the buf module (its buf.yaml), relative to the frontend")
@@ -234,14 +252,32 @@ func resolveImportedProtoRoot(projectDir, feRel, protoRoot string) (string, erro
 	if rel == ".." || strings.HasPrefix(rel, "../") {
 		return "", fmt.Errorf("%q resolves outside the project root (%s)", protoRoot, rel)
 	}
-	abs := filepath.Join(projectDir, filepath.FromSlash(rel))
-	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("%q (%s) is not a directory", protoRoot, rel)
-	}
-	if _, err := os.Stat(filepath.Join(abs, "buf.yaml")); err != nil {
-		return "", fmt.Errorf("%q (%s) has no buf.yaml: name the buf module's own directory", protoRoot, rel)
-	}
 	return rel, nil
+}
+
+// ImportedProtoRoots returns the project-relative proto_root of every
+// imported_hooks entry in the package.json of the directory at feRel
+// (slash-separated, "." for the project root), whether or not a module is
+// there yet. It is what the generate cache fingerprints: an imported module
+// usually lives outside the project's buf workspace, often in a gitignored
+// vendor directory, so its files are in no listing the cache already reads.
+// An unreadable block, or an entry that names no path inside the project,
+// contributes nothing: generate reports those, and the package.json itself is
+// fingerprinted, so fixing it is a change.
+func ImportedProtoRoots(projectDir, feRel string) []string {
+	block, found, err := readFrontendPackageForge(filepath.Join(projectDir, filepath.FromSlash(feRel)))
+	if !found || err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range block.ImportedHooks {
+		rel, err := importedProtoRootPath(feRel, e.ProtoRoot)
+		if err != nil || slices.Contains(out, rel) {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out
 }
 
 // cleanImportedGenDir validates an imported_hooks gen_dir: a relative path

@@ -107,7 +107,7 @@ func DetectConstructorType(dir string) (string, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
 			continue
 		}
-		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.SkipObjectResolution)
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, entry.Name()), nil, parser.ParseComments|parser.SkipObjectResolution) // comments: IsComponentConstructor reads // forge:constructor from fn.Doc
 		if perr != nil {
 			continue
 		}
@@ -149,7 +149,7 @@ func DetectFallibleConstructor(dir string) (bool, error) {
 		}
 
 		path := filepath.Join(dir, entry.Name())
-		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution) // IsComponentConstructor reads fn.Doc
 		if err != nil {
 			continue // skip unparseable files
 		}

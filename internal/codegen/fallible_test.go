@@ -274,3 +274,35 @@ func New() {
 		t.Error("expected false when New has no return values")
 	}
 }
+
+// A `//forge:constructor` func with another name returning a non-Service
+// contract interface: the node type is that interface, never a pointer to it
+// (*connectorgrant.Store does not compile).
+func TestDetectConstructorType_MarkedConstructorReturningInterface(t *testing.T) {
+	dir := t.TempDir()
+	src := "package connectorgrant\n\n//forge:contract\ntype Store interface{ Get() }\n\ntype Deps struct{}\n\n//forge:constructor\nfunc NewSQLStore(deps Deps) Store { return nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "contract.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DetectConstructorType(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Store" {
+		t.Fatalf("DetectConstructorType = %q, want Store", got)
+	}
+	if ft := qualifyConstructorType(got, "connectorgrant", "Store"); ft != "connectorgrant.Store" {
+		t.Fatalf("node type = %q, want connectorgrant.Store", ft)
+	}
+}
+
+func TestDetectFallibleConstructor_MarkedConstructor(t *testing.T) {
+	dir := t.TempDir()
+	src := "package foo\n\ntype Deps struct{}\ntype Service interface{}\n\n//forge:constructor\nfunc Open(deps Deps) (Service, error) { return nil, nil }\n"
+	if err := os.WriteFile(filepath.Join(dir, "service.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := DetectFallibleConstructor(dir); err != nil || !got {
+		t.Fatalf("DetectFallibleConstructor = %v, %v; want true", got, err)
+	}
+}

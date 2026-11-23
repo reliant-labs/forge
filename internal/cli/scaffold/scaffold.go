@@ -124,6 +124,7 @@ func addNounCmds(cmd *cobra.Command, f *factory.Factory) {
 	cmd.AddCommand(newBinaryCmd(f))
 	cmd.AddCommand(newLibraryCmd(f))
 	cmd.AddCommand(newHandlerFileCmd(f))
+	cmd.AddCommand(newVariantCmd(f))
 	cmd.AddCommand(newRPCCmd(f))
 	cmd.AddCommand(newEntityCmd(f))
 }

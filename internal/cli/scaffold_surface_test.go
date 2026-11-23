@@ -54,6 +54,7 @@ var scaffoldNouns = []string{
 	"rpc",
 	"scenario",
 	"service",
+	"variant",
 	"webhook",
 	"worker",
 }

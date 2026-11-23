@@ -152,3 +152,12 @@ func TestRootOnlyDirective(t *testing.T) {
 		}
 	}
 }
+
+// The AMBIGUOUS error names the variant idiom: two configurations of one
+// component are two types, and the scaffold writes the second.
+func TestGraphProblemsError_AmbiguousNamesTheVariantScaffold(t *testing.T) {
+	err := graphProblemsError([]graphProblem{{Node: "Handler", Field: "Router", Type: "p.Router", Candidates: []string{"g.APIRouter()", "g.WorkerRouter()"}}})
+	if !strings.Contains(err.Error(), "forge scaffold variant") {
+		t.Fatalf("ambiguity error does not name the variant scaffold:\n%v", err)
+	}
+}

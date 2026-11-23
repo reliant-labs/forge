@@ -1,5 +1,10 @@
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { Code, createClient, type Transport } from "@connectrpc/connect";
+import {
+  Code,
+  createClient,
+  type Interceptor,
+  type Transport,
+} from "@connectrpc/connect";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 import type { DescService } from "@bufbuild/protobuf";
 import { emitAuthExpired } from "@/lib/events";
@@ -44,6 +49,20 @@ function apiBaseUrl(): string {
   return apiBase((import.meta.env.VITE_API_URL as string | undefined) ?? DEV_API_URL);
 }
 {{end}}
+// serviceInterceptors is yours to fill: interceptors for ONE service's calls,
+// keyed by its fully-qualified proto name (the generated descriptor's
+// `typeName`) — a header every call of that service carries, a scheduler or
+// quota guard in front of it. Each list runs only for that service's RPCs,
+// inside error-normalize, so what it throws reaches callers typed. A single
+// call's headers or context values are the call site's instead: the
+// generated hooks' `callOptions`, which an interceptor here can read back
+// through `req.contextValues`. Empty, it adds nothing.
+//
+//   const serviceInterceptors: Record<string, Interceptor[]> = {
+//     [ReportService.typeName]: [reportQuotaGuard],
+//   };
+const serviceInterceptors: Record<string, Interceptor[]> = {};
+
 // The forge frontend runtime owns the interceptor stack: brand headers, W3C
 // traceparent propagation (so backend spans join the same trace — always on,
 // no collector required), and typed error normalization. It ships as
@@ -63,6 +82,7 @@ function apiBaseUrl(): string {
 // re-checks the session, and RouteGuard returns a signed-out user to sign-in
 // with a returnTo — instead of leaving every list on an error panel.
 const interceptors = buildRuntimeInterceptors({
+  serviceInterceptors,
   onError: (err) => {
     if (err.code === Code.Unauthenticated) emitAuthExpired();
   },

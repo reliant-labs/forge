@@ -23,6 +23,7 @@ export {
   authInterceptor,
   buildRuntimeInterceptors,
   errorNormalizeInterceptor,
+  forService,
   headerInterceptor,
   interactionContextInterceptor,
   retryInterceptor,
@@ -30,6 +31,7 @@ export {
   traceInterceptor,
   type RpcSpanOptions,
   type RuntimeInterceptorConfig,
+  type ServiceRef,
 } from "./interceptors.js";
 
 /**

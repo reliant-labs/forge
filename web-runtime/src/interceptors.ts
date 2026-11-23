@@ -17,7 +17,11 @@
 // createConnectTransport by the app's own connect module. Order (outermost
 // first):
 //
-//   error-normalize → auth → brand headers → rpc span → traceparent
+//   error-normalize → [per-service] → auth → brand headers → rpc span →
+//   traceparent
+//
+// [per-service] is the app's own: RuntimeInterceptorConfig.serviceInterceptors,
+// each list scoped to one service by forService (below), absent when unset.
 //
 // error-normalize is outermost so every caller sees a typed
 // ConnectClientError instead of a raw ConnectError. The rpc span stage
@@ -80,6 +84,67 @@ export interface RuntimeInterceptorConfig {
    * `rpcForensics: false` turns it off page-wide as well.
    */
   rpcForensics?: boolean;
+  /**
+   * Interceptors for ONE service's calls, keyed by the service's
+   * fully-qualified proto name (`DescService.typeName`, e.g.
+   * "obs.v1.ObservabilityService"). Each list runs, in order, only for that
+   * service's RPCs, as `forService(name, ...list)`; other services' calls
+   * pass straight through. They sit directly inside error-normalize, ahead
+   * of auth, the rpc span and traceparent: what they throw reaches callers
+   * as a ConnectClientError, a header they set is on the wire, and time a
+   * stage spends waiting (a scheduler, a quota guard) is not counted in the
+   * RPC's span.
+   */
+  serviceInterceptors?: Readonly<Record<string, readonly Interceptor[]>>;
+}
+
+/**
+ * A service an interceptor is scoped to: its fully-qualified proto name, or
+ * its descriptor (anything with a `typeName`, as generated `*Service`
+ * descriptors have).
+ */
+export type ServiceRef = string | { readonly typeName: string };
+
+/**
+ * forService scopes interceptors to the RPCs of the named service(s): for
+ * those calls it runs them, in order (the first outermost), and for every
+ * other call it is a pass-through. It is plain Connect, so the result goes
+ * anywhere an Interceptor does:
+ *
+ *   createConnectTransport({
+ *     baseUrl,
+ *     interceptors: [
+ *       ...buildRuntimeInterceptors(),
+ *       forService(ObservabilityService, pollHeader, quotaGuard),
+ *     ],
+ *   });
+ *
+ * Prefer RuntimeInterceptorConfig.serviceInterceptors when the chain comes
+ * from buildRuntimeInterceptors: it places them inside error-normalize and
+ * ahead of the rpc span, which an interceptor appended at the end is not.
+ */
+export function forService(
+  services: ServiceRef | readonly ServiceRef[],
+  ...interceptors: Interceptor[]
+): Interceptor {
+  const list: readonly ServiceRef[] = Array.isArray(services)
+    ? services
+    : [services as ServiceRef];
+  const names = new Set(
+    list.map((s) => (typeof s === "string" ? s : s.typeName)),
+  );
+  return (next) => {
+    const scoped = interceptors.reduceRight<typeof next>(
+      (inner, interceptor) => interceptor(inner),
+      next,
+    );
+    return (req) => {
+      const service = (req as Partial<UnaryRequest>).service?.typeName;
+      return service !== undefined && names.has(service)
+        ? scoped(req)
+        : next(req);
+    };
+  };
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -259,12 +324,18 @@ export function retryInterceptor(cfg: RuntimeInterceptorConfig): Interceptor {
  *
  * retryInterceptor is deliberately NOT included — React Query is the single
  * retry owner (see the retry-ownership note at the top of this file).
+ *
+ * `cfg.serviceInterceptors` adds one forService stage per service, directly
+ * inside error-normalize (RuntimeInterceptorConfig.serviceInterceptors).
  */
 export function buildRuntimeInterceptors(
   cfg: RuntimeInterceptorConfig = {},
 ): Interceptor[] {
   return [
     errorNormalizeInterceptor(cfg),
+    ...Object.entries(cfg.serviceInterceptors ?? {})
+      .filter(([, list]) => list.length > 0)
+      .map(([service, list]) => forService(service, ...list)),
     authInterceptor(cfg),
     headerInterceptor(cfg),
     ...(cfg.rpcSpans === false

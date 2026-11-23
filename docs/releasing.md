@@ -43,9 +43,16 @@ version, is written by the release, never by hand, and the `-short` test
 `TestWebRuntimeFloorIsAPublishedVersion` fails a floor it does not list (npm has never
 served 0.12.1 or 0.13.0, so "at most the newest" is not enough). A breaking runtime
 change therefore lands in two steps: first the runtime change, with no generator code
-that needs it; the release publishes the new minor (major from 1.0) from a commit whose
-floor is still the previous window, which `release-web-runtime.sh` notes rather than
-refuses, and its bookkeeping raises the floor. Then a pull request uses the new API. A
+that needs it, declaring the new minor (major from 1.0) as `web-runtime/package.json`'s
+version (forge's own release refuses a `!` title within v1, so the runtime's manifest
+is what says the change breaks; the release judges that, not the floor); the release
+publishes it from a commit whose floor is still the previous window, which
+`release-web-runtime.sh` notes rather than refuses, and its bookkeeping raises the
+floor. Until then `TestWebRuntimePublishedRangeTracksPackage` lets the floor lag a
+`package.json` version npm does not serve yet, never exceed it. Generator code that is
+gated on the runtime the manifest declares (inert below the new version) may land in
+the first step; code that needs the new API unconditionally waits for the second, a
+pull request after the bookkeeping. A
 floor above the computed version, or not `^X.Y.Z`, is refused before anything is
 published. The script pushes the `web-runtime/vX.Y.Z`
 tag, whose `release-web-runtime.yml` run publishes it (npm trusted publishing), and

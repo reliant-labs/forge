@@ -36,8 +36,10 @@ that does wire one, from its `AuthProvider` (see `auth/frontend`).
 ## Interceptors for one service
 
 `serviceInterceptors` scopes interceptors to ONE service's RPCs, keyed by its
-fully-qualified proto name (the generated descriptor's `typeName`). The
-scaffolded `connect.ts` passes an empty map you fill:
+fully-qualified proto name (the generated descriptor's `typeName`). Add it to
+the `buildRuntimeInterceptors` call in your `connect.ts` (its comment shows
+where); it needs a runtime newer than 0.13.21, the first that exports
+`forService`:
 
 ```ts
 const serviceInterceptors: Record<string, Interceptor[]> = {

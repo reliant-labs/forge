@@ -813,13 +813,19 @@ if [ -f "$WR_MANIFEST" ]; then
         inroot && /^    \}/ { inroot = 0 }
         { print }' "$WR_LOCK" >"$BACKUP_DIR/wr-lock.new" && cat "$BACKUP_DIR/wr-lock.new" >"$WR_LOCK"
     fi
-    if [ -f "$WR_FLOOR_FILE" ]; then
-      sed -i.bak -e 's/^const webRuntimePublishedRange = ".*"/const webRuntimePublishedRange = "^'"$WEB_RUNTIME_VERSION"'"/' "$WR_FLOOR_FILE" && rm -f "$WR_FLOOR_FILE.bak"
-      grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE" || {
-        echo "error: could not set webRuntimePublishedRange in $WR_FLOOR_FILE to ^$WEB_RUNTIME_VERSION" >&2
-        exit 1
-      }
-    fi
+  fi
+  # The floor is synced on its own, not only when the manifest moved: a
+  # breaking runtime change declares its version in package.json ahead of npm
+  # while the floor stays on the newest published version, so when the release
+  # publishes exactly that declared version the manifest already matches and
+  # only the floor is behind. Idempotent when the floor already names it.
+  if [ -f "$WR_FLOOR_FILE" ] && ! grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE"; then
+    echo "→ raising the scaffold floor to ^$WEB_RUNTIME_VERSION"
+    sed -i.bak -e 's/^const webRuntimePublishedRange = ".*"/const webRuntimePublishedRange = "^'"$WEB_RUNTIME_VERSION"'"/' "$WR_FLOOR_FILE" && rm -f "$WR_FLOOR_FILE.bak"
+    grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE" || {
+      echo "error: could not set webRuntimePublishedRange in $WR_FLOOR_FILE to ^$WEB_RUNTIME_VERSION" >&2
+      exit 1
+    }
   fi
   # Record the version as published, beside the floor that now names it, on
   # every release (idempotent): the list is how a -short test knows what npm

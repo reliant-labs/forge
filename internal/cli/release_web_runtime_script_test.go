@@ -753,6 +753,41 @@ func TestReleaseForgeScript_ABreakingRuntimeRaisesTheFloorInTheBookkeeping(t *te
 			t.Errorf("the bookkeeping did not record 0.14.0 as published:\n%s\nwant:\n%s", v, want)
 		}
 	})
+	// The path forge itself takes (its release refuses a `!` title within v1):
+	// the pull request declares 0.14.0 in package.json and its lock, the floor
+	// stays on the published ^0.13.0, and the release publishes exactly the
+	// declared version. The manifests already match it, so only the floor is
+	// behind, and the bookkeeping must still raise it.
+	t.Run("version declared in package.json", func(t *testing.T) {
+		repo := newForgeFixtureRepo(t)
+		addWebRuntimeToForgeFixture(t, repo)
+		commitAndPush(t, repo, "fix(web-runtime): telemetry packages are optional peers", map[string]string{
+			"web-runtime/src/index.ts":      "export {};\n",
+			"web-runtime/package.json":      wrFixtureManifest("0.14.0"),
+			"web-runtime/package-lock.json": wrFixtureLock("0.14.0"),
+		})
+		stubDir, _ := webRuntimeStubs(t)
+		out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH")}, "v0.2.0")
+		if err != nil {
+			t.Fatalf("release failed: %v\n%s", err, out)
+		}
+		origin := fixtureOrigin(t, repo)
+		if got, tagged := gitOut(t, origin, "rev-parse", "web-runtime/v0.14.0^{commit}"), gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); got != tagged {
+			t.Errorf("web-runtime/v0.14.0 is on %s, want forge's released commit %s", got, tagged)
+		}
+		if v := gitOut(t, origin, "show", "v0.2.0:internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.13.0"`) {
+			t.Errorf("the released generator does not keep the published ^0.13.0:\n%s", v)
+		}
+		if v := bookkeepingFile(t, origin, "v0.2.0", "internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.14.0"`) {
+			t.Errorf("the bookkeeping did not raise the floor to ^0.14.0 when package.json already declared it:\n%s", v)
+		}
+		if v := bookkeepingFile(t, origin, "v0.2.0", "web-runtime/package.json"); !strings.Contains(v, `"version": "0.14.0"`) {
+			t.Errorf("the bookkeeping changed web-runtime/package.json's declared 0.14.0:\n%s", v)
+		}
+		if v, want := bookkeepingFile(t, origin, "v0.2.0", wrPublishedList), wrFixturePublished+"0.14.0\n"; v != want {
+			t.Errorf("the bookkeeping did not record 0.14.0 as published:\n%s\nwant:\n%s", v, want)
+		}
+	})
 	t.Run("floor above the release", func(t *testing.T) {
 		repo := newForgeFixtureRepo(t)
 		addWebRuntimeToForgeFixture(t, repo)

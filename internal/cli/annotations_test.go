@@ -590,6 +590,9 @@ func TestAnnotations_GoMarkerNamesMatchRecognizers(t *testing.T) {
 		"forge:no-capture":       true,
 		"forge:exclude-contract": true, "forge:external-component": true,
 		"forge:not-a-component": true, "forge:outbound-io": true,
+		// Recognized by codegen.FindOptionalComponentMarker, pinned in
+		// composition_graph_optional_test.go.
+		"forge:optional-component": true,
 		"forge:resolves-caller": true, "forge:contract": true,
 		"forge:provided": true, "forge:placeholder": true,
 		// Lint-suppression directive: read by the analyzer, not by codegen,

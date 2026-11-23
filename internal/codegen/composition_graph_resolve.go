@@ -17,6 +17,9 @@
 //     //forge:root-only node is offered only to a field of its very type).
 //     Two or more is an AMBIGUITY — a generate error until compose.go's
 //     owned expression picks one. Names never resolve;
+//     4c. an orm.Context field no producer matches: the project's ORM
+//     client — the *orm.Client node (g.DB()), else the one node whose value
+//     has `ORM() *orm.Client` (g.Database().ORM());
 //  5. a scalar: the config field of that name, else its zero value (with a
 //     hint that configuration belongs in a block);
 //  6. an optional (`forge:optional-dep`) field with no producer: nil;
@@ -193,6 +196,18 @@ func (r *graphResolver) resolve(n *graphNode, df DepsField) (resolved, *graphPro
 		return resolved{}, &graphProblem{Node: n.Name, Field: df.Name, Type: df.Type, Candidates: names}
 	}
 
+	// 4c. The ORM seam: an orm.Context field no node produces by type is
+	// filled from the one node that holds the project's ORM client — a
+	// *orm.Client node (g.DB()), else a node whose value exposes it through
+	// `ORM() *orm.Client` (g.Database().ORM()). An explicit producer of
+	// orm.Context (step 4) wins; two holders resolve nothing here and
+	// fall through to MISSING, settled by compose.go's owned expression.
+	if !df.Optional && r.isORMContext(want, df.Type, imports) {
+		if expr, ok := r.ormContextExpr(n); ok {
+			return resolved{Expr: expr, Comment: "the project's ORM client"}, nil
+		}
+	}
+
 	// 5. Scalars are configuration.
 	if zeroValueLiteral(df.Type) != "nil" {
 		if field, ok := matchScalarConfigField(df, r.configFields); ok {
@@ -282,6 +297,52 @@ func (r *graphResolver) ormProducer(self *graphNode) *graphNode {
 		}
 	}
 	return found
+}
+
+const ormClientType = "*github.com/reliant-labs/forge/pkg/orm.Client"
+
+// isORMContext reports whether a Deps field is forge's orm.Context.
+func (r *graphResolver) isORMContext(want types.Type, written string, imports map[string]string) bool {
+	if want != nil && want != types.Typ[types.Invalid] {
+		return types.TypeString(want, nil) == "github.com/reliant-labs/forge/pkg/orm.Context"
+	}
+	return canonicalType(written, imports) == "github.com/reliant-labs/forge/pkg/orm.Context"
+}
+
+// ormContextExpr returns the expression for the project's ORM client: the
+// one *orm.Client node, else the one node whose value has an
+// `ORM() *orm.Client` method. More than one candidate at a tier is no answer.
+func (r *graphResolver) ormContextExpr(self *graphNode) (string, bool) {
+	if c := r.ormProducer(self); c != nil {
+		return "g." + c.Name + "()", true
+	}
+	var found *graphNode
+	for _, c := range r.nodes {
+		if c.Name == self.Name {
+			continue
+		}
+		t, ok := r.u.produced[c.Name]
+		if !ok || t == nil {
+			continue
+		}
+		obj, _, _ := types.LookupFieldOrMethod(t, true, nil, "ORM")
+		fn, isFunc := obj.(*types.Func)
+		if !isFunc || !fn.Exported() {
+			continue
+		}
+		sig := fn.Type().(*types.Signature)
+		if sig.Params().Len() != 0 || sig.Results().Len() != 1 || types.TypeString(sig.Results().At(0).Type(), nil) != ormClientType {
+			continue
+		}
+		if found != nil {
+			return "", false
+		}
+		found = c
+	}
+	if found == nil {
+		return "", false
+	}
+	return "g." + found.Name + "().ORM()", true
 }
 
 // graphProblemsError renders every unresolvable key as one generate error.

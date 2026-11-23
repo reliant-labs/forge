@@ -17,8 +17,8 @@ const interceptors = buildRuntimeInterceptors({
 });
 ```
 
-The chain (outermost → innermost): **error-normalize → auth → brand
-headers → rpc span → traceparent**. There is no retry layer in it: the app's React Query
+The chain (outermost → innermost): **error-normalize → [per-service] → auth →
+brand headers → rpc span → traceparent**. There is no retry layer in it: the app's React Query
 client is the single retry owner, because it knows reads from writes — it
 retries transient READ failures and never a mutation. Each React Query retry
 re-runs the queryFn, so every attempt goes through the whole chain again
@@ -32,6 +32,35 @@ They sign in natively: the session is an HttpOnly cookie the browser attaches
 to same-origin requests itself, so there is no token in JavaScript to hand
 over and the auth interceptor simply adds no header. React Native is the tree
 that does wire one, from its `AuthProvider` (see `auth/frontend`).
+
+## Interceptors for one service
+
+`serviceInterceptors` scopes interceptors to ONE service's RPCs, keyed by its
+fully-qualified proto name (the generated descriptor's `typeName`). Add it to
+the `buildRuntimeInterceptors` call in your `connect.ts` (its comment shows
+where); it needs a runtime newer than 0.13.21, the first that exports
+`forService`:
+
+```ts
+const serviceInterceptors: Record<string, Interceptor[]> = {
+  [ReportService.typeName]: [quotaGuard, pollHeader],
+};
+const interceptors = buildRuntimeInterceptors({ serviceInterceptors, onError });
+```
+
+Each list runs in order, only for that service, directly inside
+error-normalize and ahead of auth, the rpc span and traceparent: what it throws
+reaches callers as a `ConnectClientError` (and `onError`), a header it sets is
+on the wire, and time it spends waiting (a scheduler, a quota guard) is outside
+the RPC's span. Other services' calls pass straight through. `forService(svc,
+...interceptors)` is the same scoping as a plain Connect `Interceptor`, for a
+chain you assemble yourself (`svc` is a name, a descriptor, or a list of them).
+
+What ONE call carries is the call site's: the generated hooks' `callOptions`
+(`proto/hooks`). A call site marks a read (`meta: { poll: true }`, `callOptions:
+({ meta }) => ({ contextValues: createContextValues().set(pollKey, meta?.poll
+=== true) })`) and the service's interceptor reads `req.contextValues.get(pollKey)`
+and sets the header, so neither the hooks nor the transport are wrapped.
 
 ## Full-stack tracing (always on)
 

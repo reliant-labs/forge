@@ -48,6 +48,20 @@ function apiBaseUrl(): string {
 }
 {{- end}}
 
+// Interceptors for ONE service's calls (a header every call of that service
+// carries, a scheduler or quota guard in front of it) go in
+// buildRuntimeInterceptors' `serviceInterceptors`, keyed by the service's
+// fully-qualified proto name (the generated descriptor's `typeName`). Each
+// list runs only for that service's RPCs, inside error-normalize, so what it
+// throws reaches callers typed. It needs @reliantlabs/forge-web-runtime newer
+// than 0.13.21, the first release that exports forService:
+//
+//   serviceInterceptors: { [ReportService.typeName]: [reportQuotaGuard] },
+//
+// One call's headers or context values are the call site's instead: the
+// generated hooks' `callOptions`, which such an interceptor reads back
+// through `req.contextValues`.
+//
 // The forge frontend runtime owns the interceptor stack: brand headers, W3C
 // traceparent propagation (so backend spans join the same trace — always on,
 // no collector required), and typed error normalization. It ships as

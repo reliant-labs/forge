@@ -1158,3 +1158,189 @@ describe("createMutationCall + createServiceMutations", () => {
     void (() => mutations.deleteOrder({ id: "x" }));
   });
 });
+
+describe("callOptions — per-call Connect options on every generated call", () => {
+  // A generated file's call: the third parameter is what a file at least as
+  // new as this runtime declares (`client.<m>(req, { ...callOptions, signal })`).
+  type Recorded = { req: unknown; signal?: AbortSignal; opts?: object };
+  function recordingCall() {
+    const calls: Recorded[] = [];
+    const call = (
+      req: unknown,
+      signal?: AbortSignal,
+      callOptions?: object,
+    ): Promise<{ id: string; nextPageToken?: string }> => {
+      calls.push({ req, signal, opts: callOptions });
+      return Promise.resolve({ id: "r" });
+    };
+    return { calls, call };
+  }
+  const keys = serviceKeys("orderService");
+  const getOrderKey = keys.query("getOrder", GetOrderRequestSchema, "order");
+  type QueryFn = (ctx: Record<string, unknown>) => Promise<unknown>;
+
+  it("are transport metadata: never in the key, never handed to React Query", async () => {
+    const { calls, call } = recordingCall();
+    const getOrder = createQueryOptions(getOrderKey, call);
+    const opts = getOrder(
+      { id: "a" },
+      { staleTime: 5, callOptions: { headers: { "Forge-Panel": "d/p" } } },
+    );
+
+    expect(opts.queryKey).toEqual(getOrder({ id: "a" }).queryKey);
+    expect(opts).not.toHaveProperty("callOptions");
+    expect(opts.staleTime).toBe(5);
+
+    const signal = new AbortController().signal;
+    await (opts.queryFn as QueryFn)({ signal });
+    expect(calls[0]?.signal).toBe(signal);
+    expect(calls[0]?.opts).toEqual({ headers: { "Forge-Panel": "d/p" } });
+  });
+
+  it("without callOptions, calls exactly as before: (req, signal)", async () => {
+    const call = vi.fn(async () => ({ id: "r" }));
+    const signal = new AbortController().signal;
+    await (
+      createQueryOptions(getOrderKey, call)({ id: "a" }).queryFn as QueryFn
+    )({ signal });
+    expect(call.mock.calls[0]).toEqual([{ id: "a" }, signal]);
+  });
+
+  it("the function form reads React Query's context — meta included — on every fetch", async () => {
+    const { calls, call } = recordingCall();
+    const getOrder = createQueryOptions(getOrderKey, call);
+    const seen: unknown[] = [];
+    const client = new QueryClient();
+
+    await client.fetchQuery(
+      getOrder(
+        { id: "a" },
+        {
+          meta: { poll: true },
+          callOptions: (ctx) => {
+            seen.push(ctx.meta, ctx.queryKey);
+            return { headers: { "Forge-Poll": ctx.meta?.poll ? "1" : "0" } };
+          },
+        },
+      ),
+    );
+
+    expect(seen).toEqual([{ poll: true }, getOrder({ id: "a" }).queryKey]);
+    expect(calls[0]?.opts).toEqual({ headers: { "Forge-Poll": "1" } });
+    client.clear();
+  });
+
+  it("combine the caller's signal with React Query's: either aborts, neither replaces the other", async () => {
+    for (const which of ["query", "caller"] as const) {
+      const { calls, call } = recordingCall();
+      const query = new AbortController();
+      const caller = new AbortController();
+      await (
+        createQueryOptions(getOrderKey, call)(
+          { id: "a" },
+          { callOptions: { signal: caller.signal, timeoutMs: 50 } },
+        ).queryFn as QueryFn
+      )({ signal: query.signal });
+
+      const sent = calls[0]?.signal;
+      expect(calls[0]?.opts).toEqual({ timeoutMs: 50 });
+      expect(sent?.aborted).toBe(false);
+      (which === "query" ? query : caller).abort(which);
+      expect(sent?.aborted, which).toBe(true);
+      expect(sent?.reason, which).toBe(which);
+    }
+  });
+
+  it("reach every page of an infinite read, whose function form sees the page", async () => {
+    const { calls, call } = recordingCall();
+    const listOrders = createInfiniteQueryOptions(
+      keys.infinite("listOrders", ListOrdersRequestSchema, "order"),
+      call,
+    );
+    const opts = listOrders(
+      { pageSize: 2n },
+      {
+        callOptions: ({ pageParam }) => ({
+          headers: { "x-page": pageParam || "first" },
+        }),
+      },
+    );
+    expect(opts).not.toHaveProperty("callOptions");
+    const queryFn = opts.queryFn as QueryFn;
+    await queryFn({ pageParam: "", signal: undefined });
+    await queryFn({ pageParam: "p2", signal: undefined });
+    expect(calls.map((c) => c.opts)).toEqual([
+      { headers: { "x-page": "first" } },
+      { headers: { "x-page": "p2" } },
+    ]);
+  });
+
+  it("reach a mutation hook's writes, static or from each mutate's variables", async () => {
+    const { calls, call } = recordingCall();
+    const useCreateOrder = createMutationHook(keys.entity("order"), call);
+    type MutationFn = (vars: unknown) => Promise<unknown>;
+
+    useCreateOrder({ callOptions: { headers: { "x-static": "1" } } });
+    expect(captured.mutation).not.toHaveProperty("callOptions");
+    await (captured.mutation?.mutationFn as MutationFn)({ id: "a" });
+
+    useCreateOrder({
+      callOptions: (vars) => ({ headers: { "x-id": String(vars.id) } }),
+    });
+    await (captured.mutation?.mutationFn as MutationFn)({ id: "b" });
+
+    expect(calls.map((c) => c.opts)).toEqual([
+      { headers: { "x-static": "1" } },
+      { headers: { "x-id": "b" } },
+    ]);
+  });
+
+  it("without callOptions, a mutation hook calls (req) exactly as before", async () => {
+    const call = vi.fn(async () => ({ id: "r" }));
+    createMutationHook(keys.entity("order"), call)();
+    await (captured.mutation?.mutationFn as (v: unknown) => Promise<unknown>)({
+      id: "a",
+    });
+    expect(call.mock.calls[0]).toEqual([{ id: "a" }]);
+  });
+
+  it("reach an imperative write, its signal combined with the option's", async () => {
+    const { calls, call } = recordingCall();
+    const mutations = createServiceMutations({
+      createOrder: createMutationCall(keys.entity("order"), call),
+    })(new QueryClient());
+    const own = new AbortController();
+    const inOptions = new AbortController();
+
+    await mutations.createOrder(
+      { id: "a" },
+      {
+        signal: own.signal,
+        callOptions: { signal: inOptions.signal, headers: { "x-w": "1" } },
+      },
+    );
+
+    expect(calls[0]?.opts).toEqual({ headers: { "x-w": "1" } });
+    inOptions.abort("opt");
+    expect(calls[0]?.signal?.aborted).toBe(true);
+  });
+
+  it("warn once when a generated file predates them, instead of dropping them silently", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // An older generated file: (req, signal) => client.<m>(req, { signal }).
+      const old = vi.fn((_req: unknown, _signal?: AbortSignal) =>
+        Promise.resolve({ id: "r" }),
+      );
+      const getOrder = createQueryOptions(getOrderKey, old);
+      const queryFn = getOrder({ id: "a" }, { callOptions: { timeoutMs: 1 } })
+        .queryFn as QueryFn;
+      await queryFn({});
+      await queryFn({});
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("forge generate");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

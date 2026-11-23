@@ -54,6 +54,7 @@ import {
   type DataTag,
   type InfiniteData,
   type QueryClient,
+  type QueryFunctionContext,
   type UseInfiniteQueryOptions,
   type UseInfiniteQueryResult,
   type UseMutationOptions,
@@ -63,6 +64,7 @@ import {
 } from "@tanstack/react-query";
 
 import type { ConnectClientError } from "./errors.js";
+import type { CallOptions } from "@connectrpc/connect";
 
 /**
  * A generated query key. The tuple is [service, entity?, method,
@@ -252,11 +254,142 @@ export function serviceKeys(service: string): ServiceKeyBuilders {
  * How a generated file calls one rpc. `signal` is React Query's: a query
  * that is unmounted or superseded (a new key while typing) aborts its
  * request instead of letting it land on a cache entry nobody reads.
+ *
+ * `callOptions` is the caller's per-call Connect options (headers,
+ * contextValues, timeoutMs, onHeader, onTrailer), already resolved, with any
+ * signal of the caller's folded into `signal`. The builders below pass it
+ * only when a caller set `callOptions`, so a call without them is exactly
+ * `call(req, signal)`. A generated file forwards it to the client as
+ * `client.<method>(req, { ...callOptions, signal })`.
  */
 export type ServiceCall<Schema extends DescMessage, Response> = (
   req: MessageInitShape<Schema>,
   signal?: AbortSignal,
+  callOptions?: Omit<CallOptions, "signal">,
 ) => Promise<Response>;
+
+/**
+ * Per-call transport options for a generated read: Connect's own
+ * `CallOptions`, or a function of React Query's QueryFunctionContext that
+ * returns them, called on every fetch.
+ *
+ * They are transport metadata, NOT part of the query key: two reads of one
+ * request share one cache entry whatever headers each would send, and the
+ * options of the observer that triggers a fetch are the ones sent. The
+ * function form reads the query's `meta` (and key, and signal) at fetch
+ * time, which is how a call site tells a transport interceptor what kind of
+ * read this is without a header of its own:
+ *
+ *   const pollKey = createContextKey(false);
+ *   useGetChart(req, {
+ *     refetchInterval: 15_000,
+ *     meta: { poll: true },
+ *     callOptions: ({ meta }) => ({
+ *       contextValues: createContextValues().set(pollKey, meta?.poll === true),
+ *     }),
+ *   });
+ *
+ * A `signal` given here is combined with React Query's: either one aborts
+ * the call, and the caller's never replaces React Query's.
+ */
+export type ServiceQueryCallOptions =
+  | CallOptions
+  | ((
+      context: QueryFunctionContext<ServiceQueryKey>,
+    ) => CallOptions | undefined);
+
+/**
+ * ServiceQueryCallOptions for a paged read: the function form also sees the
+ * page being fetched (`context.pageParam`, "" for the first page).
+ */
+export type ServiceInfiniteQueryCallOptions =
+  | CallOptions
+  | ((
+      context: QueryFunctionContext<ServiceQueryKey, string>,
+    ) => CallOptions | undefined);
+
+/**
+ * Per-call transport options for a generated write: Connect's own
+ * `CallOptions`, or a function of the mutation's variables (the request)
+ * that returns them, called on every `mutate`.
+ */
+export type ServiceWriteCallOptions<Schema extends DescMessage> =
+  | CallOptions
+  | ((variables: MessageInitShape<Schema>) => CallOptions | undefined);
+
+/**
+ * anySignal is an AbortSignal that aborts when either input does, with that
+ * input's reason. The caller's signal joins React Query's rather than
+ * replacing it, so an unmounted or superseded query still aborts.
+ */
+function anySignal(
+  a: AbortSignal | undefined,
+  b: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (!a || a === b) return b;
+  if (!b) return a;
+  const any = (AbortSignal as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof any === "function") return any.call(AbortSignal, [a, b]);
+  const controller = new AbortController();
+  for (const s of [a, b]) {
+    if (s.aborted) {
+      controller.abort(s.reason);
+      return controller.signal;
+    }
+  }
+  const abort = (s: AbortSignal) => () => controller.abort(s.reason);
+  a.addEventListener("abort", abort(a), { once: true });
+  b.addEventListener("abort", abort(b), { once: true });
+  return controller.signal;
+}
+
+// The calls already warned about by warnIfCallOptionsDropped: once each.
+const warnedCalls = new WeakSet<object>();
+
+/**
+ * A generated file older than this runtime calls `client.<method>(req, {
+ * signal })` and never sees a third argument, so callOptions given to its
+ * hooks would be dropped without a word: headers an interceptor or the server
+ * relies on simply would not be sent. The new files declare the third
+ * parameter, so `call.length` tells the two apart.
+ */
+function warnIfCallOptionsDropped(call: (...args: never[]) => unknown): void {
+  if (call.length >= 3 || warnedCalls.has(call)) return;
+  warnedCalls.add(call);
+  console.warn(
+    "@reliantlabs/forge-web-runtime: callOptions were given to a generated " +
+      "service hook whose file predates them, so they are not sent. Run " +
+      "`forge generate` to regenerate the hooks.",
+  );
+}
+
+/**
+ * invokeCall makes one call with the caller's resolved CallOptions, if any:
+ * their signal combined with React Query's, the rest passed through. With
+ * none it is `call(req, signal)`, exactly as before callOptions existed.
+ */
+function invokeCall<Schema extends DescMessage, Response>(
+  call: ServiceCall<Schema, Response>,
+  req: MessageInitShape<Schema>,
+  signal: AbortSignal | undefined,
+  callOptions: CallOptions | undefined,
+): Promise<Response> {
+  if (callOptions === undefined) return call(req, signal);
+  warnIfCallOptionsDropped(call);
+  const { signal: callerSignal, ...rest } = callOptions;
+  return call(req, anySignal(signal, callerSignal), rest);
+}
+
+/** Resolves a static-or-function callOptions against its argument. */
+function resolveCallOptions<Arg>(
+  callOptions:
+    | CallOptions
+    | ((arg: Arg) => CallOptions | undefined)
+    | undefined,
+  arg: Arg,
+): CallOptions | undefined {
+  return typeof callOptions === "function" ? callOptions(arg) : callOptions;
+}
 
 /**
  * The options a generated read takes — its hook (`useGetOrder(req,
@@ -271,13 +404,20 @@ export type ServiceCall<Schema extends DescMessage, Response> = (
  * `data: View` — no useMemo over `data`, and React Query re-runs the mapping
  * only when the response changes (or when `select` itself does, so hoist it
  * or wrap it in useCallback when it is expensive).
+ *
+ * `callOptions` is the one option that is not React Query's: per-call
+ * Connect options (headers, contextValues, timeoutMs) for the fetch, never
+ * part of the key (ServiceQueryCallOptions).
  */
 export type ServiceQueryInput<Response, TData = Response> = Partial<
   Omit<
     UseQueryOptions<Response, ConnectClientError, TData, ServiceQueryKey>,
     "queryKey" | "queryFn"
   >
->;
+> & {
+  /** Per-call Connect options for the fetch; not part of the query key. */
+  callOptions?: ServiceQueryCallOptions;
+};
 
 /**
  * What a query-options builder returns: TanStack's `queryOptions(...)`
@@ -334,6 +474,8 @@ export type ServiceQueryHook<Schema extends DescMessage, Response> = <
  * `getNextPageParam` defaults to the response's `nextPageToken` (empty means
  * last page) and may be overridden; everything else (`select`,
  * `placeholderData`, `staleTime`, `enabled`, `maxPages`, …) passes through.
+ * `callOptions` is per-call Connect options for every page's fetch
+ * (ServiceInfiniteQueryCallOptions), never part of the key.
  */
 export type ServiceInfiniteQueryInput<Response, TData> = Partial<
   Omit<
@@ -346,7 +488,10 @@ export type ServiceInfiniteQueryInput<Response, TData> = Partial<
     >,
     "queryKey" | "queryFn" | "initialPageParam"
   >
->;
+> & {
+  /** Per-call Connect options for each page's fetch; not part of the key. */
+  callOptions?: ServiceInfiniteQueryCallOptions;
+};
 
 /**
  * What an infinite query-options builder returns: TanStack's
@@ -430,6 +575,10 @@ export type ServiceInvalidation = false | ((queryClient: QueryClient) => void);
  *     invalidate: false,
  *     onSuccess: (res) => queryClient.setQueryData(key, res),
  *   });
+ *
+ * `callOptions` sends per-call Connect options (headers, contextValues,
+ * timeoutMs, a signal) with each write: static, or a function of the
+ * variables passed to `mutate` (ServiceWriteCallOptions).
  */
 export type ServiceMutationHookOptions<
   Schema extends DescMessage,
@@ -445,6 +594,8 @@ export type ServiceMutationHookOptions<
 > & {
   /** Replaces (a function) or skips (`false`) the success invalidation. */
   invalidate?: ServiceInvalidation;
+  /** Per-call Connect options for each write. */
+  callOptions?: ServiceWriteCallOptions<Schema>;
 };
 
 /**
@@ -503,6 +654,8 @@ export type ServiceMutationHook<Schema extends DescMessage, Response> = <
  *
  * The caller's options are spread BEFORE the key and the fetch: a caller may
  * set anything else, never the two that make this read this read.
+ * `callOptions` is taken out of them and resolved in the fetch, so it
+ * reaches the transport and never React Query or the key.
  */
 export function createQueryOptions<Schema extends DescMessage, Response>(
   keyFor: (req: MessageInitShape<Schema>) => ServiceQueryKey,
@@ -511,12 +664,20 @@ export function createQueryOptions<Schema extends DescMessage, Response>(
   return <TData = Response>(
     req: MessageInitShape<Schema>,
     options?: ServiceQueryInput<Response, TData>,
-  ): ServiceQueryOptions<Response, TData> =>
-    queryOptions<Response, ConnectClientError, TData, ServiceQueryKey>({
-      ...options,
+  ): ServiceQueryOptions<Response, TData> => {
+    const { callOptions, ...rest } = options ?? {};
+    return queryOptions<Response, ConnectClientError, TData, ServiceQueryKey>({
+      ...rest,
       queryKey: keyFor(req),
-      queryFn: ({ signal }) => call(req, signal),
+      queryFn: (context) =>
+        invokeCall(
+          call,
+          req,
+          context.signal,
+          resolveCallOptions(callOptions, context),
+        ),
     }) as ServiceQueryOptions<Response, TData>;
+  };
 }
 
 /**
@@ -559,8 +720,9 @@ export function createInfiniteQueryOptions<
   return <TData = InfiniteData<Response, string>>(
     req: PageRequest<Schema>,
     options?: ServiceInfiniteQueryInput<Response, TData>,
-  ): ServiceInfiniteQueryOptions<Response, TData> =>
-    infiniteQueryOptions<
+  ): ServiceInfiniteQueryOptions<Response, TData> => {
+    const { callOptions, ...rest } = options ?? {};
+    return infiniteQueryOptions<
       Response,
       ConnectClientError,
       TData,
@@ -568,20 +730,23 @@ export function createInfiniteQueryOptions<
       string
     >({
       getNextPageParam: (last) => last.nextPageToken || undefined,
-      ...options,
+      ...rest,
       queryKey: keyFor(req),
-      queryFn: ({ pageParam, signal }) =>
-        call(
-          (pageParam === ""
+      queryFn: (context) =>
+        invokeCall(
+          call,
+          (context.pageParam === ""
             ? req
             : {
                 ...req,
-                pageToken: pageParam,
+                pageToken: context.pageParam,
               }) as unknown as MessageInitShape<Schema>,
-          signal,
+          context.signal,
+          resolveCallOptions(callOptions, context),
         ),
       initialPageParam: "",
     }) as ServiceInfiniteQueryOptions<Response, TData>;
+  };
 }
 
 /**
@@ -613,24 +778,30 @@ export function createInfiniteQueryHook<
  * ADDS behaviour rather than silently disabling the cache refresh (which a
  * plain `...options` spread over a default onSuccess would do). The refresh
  * itself changes only through `invalidate`: a function replaces it, `false`
- * skips it (ServiceMutationHookOptions).
+ * skips it (ServiceMutationHookOptions). `callOptions` is resolved against
+ * each `mutate`'s variables and sent with that write.
  */
 export function createMutationHook<Schema extends DescMessage, Response>(
   invalidateKey: ServiceQueryKey,
-  call: (req: MessageInitShape<Schema>) => Promise<Response>,
+  call: ServiceCall<Schema, Response>,
 ): ServiceMutationHook<Schema, Response> {
   return <TContext = unknown>(
     options?: ServiceMutationHookOptions<Schema, Response, TContext>,
   ) => {
     const queryClient = useQueryClient();
-    const { onSuccess, invalidate, ...rest } = options ?? {};
+    const { onSuccess, invalidate, callOptions, ...rest } = options ?? {};
     return useMutation<
       Response,
       ConnectClientError,
       MessageInitShape<Schema>,
       TContext
     >({
-      mutationFn: (req: MessageInitShape<Schema>) => call(req),
+      mutationFn: (req: MessageInitShape<Schema>) => {
+        const resolved = resolveCallOptions(callOptions, req);
+        return resolved === undefined
+          ? call(req)
+          : invokeCall(call, req, undefined, resolved);
+      },
       onSuccess: (...args) => {
         invalidateAfterWrite(queryClient, invalidateKey, invalidate);
         onSuccess?.(...args);
@@ -656,6 +827,11 @@ export interface ServiceMutationCallOptions {
    * AFTER the server write succeeded; it does not roll back or retry it.
    */
   invalidate?: ServiceInvalidation;
+  /**
+   * Per-call Connect options for this write (headers, contextValues,
+   * timeoutMs). A signal in them is combined with `signal`: either aborts.
+   */
+  callOptions?: CallOptions;
 }
 
 /**
@@ -702,7 +878,12 @@ export function createMutationCall<Schema extends DescMessage, Response>(
   call: ServiceCall<Schema, Response>,
 ): ServiceMutationDefinition<Schema, Response> {
   return (queryClient) => async (req, options) => {
-    const response = await call(req, options?.signal);
+    const response = await invokeCall(
+      call,
+      req,
+      options?.signal,
+      options?.callOptions,
+    );
     invalidateAfterWrite(queryClient, invalidateKey, options?.invalidate);
     return response;
   };

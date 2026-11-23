@@ -29,6 +29,14 @@
 // and `.retryable` are all reachable at the call site, and `userMessage(err)`
 // renders it. Branch on `.reason`, never on message text.
 //
+// Every read, infinite read and write also takes `callOptions`: Connect's
+// per-call options (headers, contextValues, timeoutMs), or a function
+// returning them — of React Query's query context for a read (so `meta` can
+// decide them), of the variables for a write. They are not part of the query
+// key, and a signal in them joins React Query's rather than replacing it.
+// Behaviour for ALL of one service's calls belongs in a transport
+// interceptor instead: `serviceInterceptors` in src/lib/connect.ts.
+//
 // Error toasts are NOT emitted here. They belong to ONE app-wide chokepoint:
 // a MutationCache onError on the app's QueryClient, which a forge-scaffolded
 // frontend installs in src/lib/query-client.ts (pages rendering an error
@@ -69,8 +77,12 @@ import { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "{{$
 {{end -}}
 import { connectClient } from "../transport";
 
-{{range .TypeImports -}}
+{{/* The type group is alphabetized (eslint import/order): @connectrpc sorts before or after the API package by name. */ -}}
+{{if and (or .HasQueries .HasMutations) (not (lt .APIPackage "@connectrpc/connect"))}}import type { CallOptions } from "@connectrpc/connect";
+{{end}}{{range .TypeImports -}}
 import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "{{$.APIPackage}}/{{.ImportPath}}";
+{{end -}}
+{{if and (or .HasQueries .HasMutations) (lt .APIPackage "@connectrpc/connect")}}import type { CallOptions } from "@connectrpc/connect";
 {{end -}}
 {{- else}}
 {{range .SchemaImports -}}
@@ -80,6 +92,8 @@ import { connectClient } from "@/lib/connect";
 
 {{range .TypeImports -}}
 import type { {{range $i, $s := .Symbols}}{{if $i}}, {{end}}{{$s}}{{end}} } from "@/gen/{{.ImportPath}}";
+{{end -}}
+{{if or .HasQueries .HasMutations}}import type { CallOptions } from "@connectrpc/connect";
 {{end -}}
 {{- end}}
 const client = connectClient({{.ServiceRef}});
@@ -156,12 +170,14 @@ export const {{.ServiceNameCamel}}Queries = {
 {{- if .IsQuery}}
   {{.NameCamel}}: createQueryOptions<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
     {{$.ServiceNameCamel}}Keys.{{.NameCamel}},
-    (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+    (req, signal?: AbortSignal, options?: CallOptions) =>
+      client.{{.ClientMethod}}(req, { ...options, signal }),
   ),
 {{- if .Paged}}
   {{.NameCamel}}Infinite: createInfiniteQueryOptions<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
     {{$.ServiceNameCamel}}Keys.{{.NameCamel}}Infinite,
-    (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+    (req, signal?: AbortSignal, options?: CallOptions) =>
+      client.{{.ClientMethod}}(req, { ...options, signal }),
   ),
 {{- end}}
 {{- end}}
@@ -191,7 +207,8 @@ export const {{.ServiceNameCamel}}Mutations = createServiceMutations({
 {{- if not .IsQuery}}
   {{.NameCamel}}: createMutationCall<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
     {{$.ServiceNameCamel}}Keys.{{if .EntityScope}}{{.EntityScope}}{{else}}all{{end}},
-    (req, signal) => client.{{.ClientMethod}}(req, { signal }),
+    (req, signal?: AbortSignal, options?: CallOptions) =>
+      client.{{.ClientMethod}}(req, { ...options, signal }),
   ),
 {{- end}}
 {{- end}}
@@ -214,7 +231,8 @@ export const use{{.Name}}Infinite = createInfiniteQueryHook<typeof {{.InputSchem
 {{- else}}
 export const use{{.Name}} = createMutationHook<typeof {{.InputSchemaRef}}, {{.OutputTypeRef}}>(
   {{$.ServiceNameCamel}}Keys.{{if .EntityScope}}{{.EntityScope}}{{else}}all{{end}},
-  (req) => client.{{.ClientMethod}}(req),
+  (req, signal?: AbortSignal, options?: CallOptions) =>
+    client.{{.ClientMethod}}(req, { ...options, signal }),
 );
 {{- end}}
 {{end -}}

@@ -72,3 +72,17 @@ invalidation for that call only; omitted keeps the old default. It runs only
 after RPC success and is not awaited (like the default refetch). Handle async
 failures inside it; a synchronous throw rejects after the server has already
 written, without rollback or retry. Keep non-cache product effects outside it.
+
+**Per-call transport options are `callOptions`.** Every read, infinite read,
+`<svc>Queries.<rpc>` and write (hook or `<svc>Mutations`) takes Connect's
+`CallOptions` (headers, `contextValues`, `timeoutMs`): `useGetTask(req, {
+callOptions: { headers: { "X-Panel": id } } })`. A read may pass a function of
+React Query's query context instead, called on every fetch, so `meta` decides
+them: `callOptions: ({ meta }) => ({ contextValues: createContextValues().set(pollKey,
+meta?.poll === true) })`; a write's function gets the `mutate` variables. They
+are not part of the query key, and a `signal` in them joins React Query's
+abort signal rather than replacing it. Behaviour for every call of ONE service
+(a header, a quota guard, a scheduler) is a transport interceptor, not a
+wrapper around the hooks: `serviceInterceptors` in `src/lib/connect.ts`
+(`frontend-runtime/transport`), which reads a call site's mark back with
+`req.contextValues.get(pollKey)`.

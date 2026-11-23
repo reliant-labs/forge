@@ -59,7 +59,7 @@ func TestGenerateFrontendHooks_MutationsMirrorTheHooks(t *testing.T) {
 		hookKeys[m[1]] = m[2]
 	}
 	callKeys := map[string]string{}
-	for _, m := range regexp.MustCompile(`\n  (\w+): createMutationCall<[^>]*>\(\s*(taskServiceKeys\.\w+),\s*\(req, signal\) => client\.(\w+)\(req, \{ signal \}\),`).FindAllStringSubmatch(s, -1) {
+	for _, m := range regexp.MustCompile(`\n  (\w+): createMutationCall<[^>]*>\(\s*(taskServiceKeys\.\w+),\s*\(req, signal\?: AbortSignal, options\?: CallOptions\) =>\s*client\.(\w+)\(req, \{ \.\.\.options, signal \}\),`).FindAllStringSubmatch(s, -1) {
 		if m[1] != m[3] {
 			t.Errorf("%s calls client.%s", m[1], m[3])
 		}

@@ -49,56 +49,13 @@ func runDescriptorGenerate(projectDir string, out io.Writer) error {
 	// A staging dir an older forge left inside gen/.
 	_ = os.RemoveAll(filepath.Join(projectDir, "gen", descriptorStageDir))
 
-	forgeCmd, err := forgeExecCommand()
-	if err != nil {
-		return fmt.Errorf("resolve forge binary: %w", err)
-	}
-
 	_, _ = fmt.Fprintln(out, "🔨 Running protoc-gen-forge (mode=descriptor) to extract proto metadata...")
 
-	pluginArgs := slices.Concat(forgeCmd, []string{"protoc-gen-forge"})
-	quoted := make([]string, len(pluginArgs))
-	for i, a := range pluginArgs {
-		quoted[i] = fmt.Sprintf("%q", a)
-	}
-	pluginCmd := "[" + strings.Join(quoted, ", ") + "]"
-
-	work, err := os.MkdirTemp("", "forge-descriptor-")
+	work, err := stageDescriptorFragments(projectDir, projectDir, protoPaths, false, out)
 	if err != nil {
-		return fmt.Errorf("descriptor staging dir: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(work) }()
-	descConfig := descriptorBufTemplate(pluginCmd, filepath.Join(work, "out"), work)
-	template := filepath.Join(work, "buf.gen.descriptor.yaml")
-	if err := atomicfile.WriteFile(template, []byte(descConfig), 0o644); err != nil {
-		return fmt.Errorf("failed to write descriptor buf config: %w", err)
-	}
-
-	args := bufGenerateArgs("--template", template)
-	for _, p := range protoPaths {
-		args = append(args, "--path", p)
-	}
-
-	cmd := exec.Command("buf", args...)
-	cmd.Dir = projectDir
-	if err := withPinnedTools(cmd, projectDir); err != nil {
 		return err
 	}
-	cmd.Stdout = out
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("descriptor generation failed: %w", err)
-	}
-
-	// Post-condition: proto files exist, so the plugin must have run, and
-	// every plugin invocation creates the staging dir even when it stages
-	// nothing. A missing one means the self-invoked plugin silently never
-	// executed — fail loudly instead of letting downstream codegen quietly
-	// emit nothing.
-	if _, err := os.Stat(filepath.Join(work, descriptorStageDir)); err != nil {
-		return fmt.Errorf("buf generate reported success but protoc-gen-forge (invoked as %s) did not run: no descriptor fragments were staged", pluginCmd)
-	}
+	defer func() { _ = os.RemoveAll(work) }()
 
 	// Each plugin process staged one fragment per proto; write them out as
 	// gen/forge_descriptor/ now that buf has finished. This step is what
@@ -109,6 +66,81 @@ func runDescriptorGenerate(projectDir string, out io.Writer) error {
 
 	_, _ = fmt.Fprintln(out, "  ✅ "+codegen.DescriptorDir+"/ generated")
 	return nil
+}
+
+// stageDescriptorFragments runs `buf generate` in bufDir — a buf workspace or
+// module root, whose own buf.yaml governs the run — with protoc-gen-forge in
+// descriptor mode over paths (nil: every proto buf finds there), staging one
+// fragment per proto in a private temporary directory it returns. The caller
+// removes that directory. Pinned tools are resolved for projectDir.
+//
+// foreign marks a module this project does not author: its protos need not
+// declare a go_package (the Go plugin harness refuses a file without one), so
+// buf's managed mode supplies a placeholder. The descriptor records no Go
+// import path, so the placeholder reaches nothing. The project's own run
+// keeps its protos' go_package as written.
+//
+// It is the half of descriptor extraction that writes nothing in the
+// project: runDescriptorGenerate merges the fragments into
+// gen/forge_descriptor/, and extractImportedServices (the hooks of an
+// imported proto module) reads them in memory, so another repository's
+// services never reach the project's own descriptor.
+func stageDescriptorFragments(bufDir, projectDir string, paths []string, foreign bool, out io.Writer) (string, error) {
+	forgeCmd, err := forgeExecCommand()
+	if err != nil {
+		return "", fmt.Errorf("resolve forge binary: %w", err)
+	}
+
+	pluginArgs := slices.Concat(forgeCmd, []string{"protoc-gen-forge"})
+	quoted := make([]string, len(pluginArgs))
+	for i, a := range pluginArgs {
+		quoted[i] = fmt.Sprintf("%q", a)
+	}
+	pluginCmd := "[" + strings.Join(quoted, ", ") + "]"
+
+	work, err := os.MkdirTemp("", "forge-descriptor-")
+	if err != nil {
+		return "", fmt.Errorf("descriptor staging dir: %w", err)
+	}
+	fail := func(err error) (string, error) {
+		_ = os.RemoveAll(work)
+		return "", err
+	}
+	descConfig := descriptorBufTemplate(pluginCmd, filepath.Join(work, "out"), work)
+	if foreign {
+		descConfig += foreignGoPackageManaged
+	}
+	template := filepath.Join(work, "buf.gen.descriptor.yaml")
+	if err := atomicfile.WriteFile(template, []byte(descConfig), 0o644); err != nil {
+		return fail(fmt.Errorf("failed to write descriptor buf config: %w", err))
+	}
+
+	args := bufGenerateArgs("--template", template)
+	for _, p := range paths {
+		args = append(args, "--path", p)
+	}
+
+	cmd := exec.Command("buf", args...)
+	cmd.Dir = bufDir
+	if err := withPinnedTools(cmd, projectDir); err != nil {
+		return fail(err)
+	}
+	cmd.Stdout = out
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fail(fmt.Errorf("descriptor generation failed: %w", err))
+	}
+
+	// Post-condition: proto files exist, so the plugin must have run, and
+	// every plugin invocation creates the staging dir even when it stages
+	// nothing. A missing one means the self-invoked plugin silently never
+	// executed — fail loudly instead of letting downstream codegen quietly
+	// emit nothing.
+	if _, err := os.Stat(filepath.Join(work, descriptorStageDir)); err != nil {
+		return fail(fmt.Errorf("buf generate reported success but protoc-gen-forge (invoked as %s) did not run: no descriptor fragments were staged", pluginCmd))
+	}
+	return work, nil
 }
 
 // descriptorBufTemplate is the throwaway buf.gen.descriptor.yaml that runs
@@ -128,6 +160,15 @@ plugins:
       - descriptor_out=%s
 `, pluginCmd, out, descriptorOut)
 }
+
+// foreignGoPackageManaged is appended to the descriptor template for a module
+// the project does not author (stageDescriptorFragments' foreign).
+const foreignGoPackageManaged = `managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: forge.invalid/imported
+`
 
 // buildDescriptorOnDemand is the extractor codegen.LoadDescriptor runs when a
 // reader finds the descriptor missing or stale (registered by Execute).

@@ -159,34 +159,9 @@ func stageDescriptorFragment(stageDir string, frag descriptorFragment) error {
 // (no staging dir).
 func MergeDescriptorFragments(descriptorOut, projectDir string) error {
 	stageDir := filepath.Join(descriptorOut, descriptorStageDir)
-	entries, err := os.ReadDir(stageDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read descriptor stage dir: %w", err)
-	}
-
-	parts := map[string]codegen.DescriptorPart{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(stageDir, e.Name()))
-		if err != nil {
-			return fmt.Errorf("read descriptor fragment %s: %w", e.Name(), err)
-		}
-		var frag descriptorFragment
-		if err := json.Unmarshal(data, &frag); err != nil {
-			return fmt.Errorf("parse descriptor fragment %s: %w", e.Name(), err)
-		}
-		if frag.File == "" {
-			return fmt.Errorf("descriptor fragment %s names no proto file", e.Name())
-		}
-		part := parts[frag.File]
-		part.Services = append(part.Services, frag.Services...)
-		part.Configs = append(part.Configs, frag.Configs...)
-		parts[frag.File] = part
+	parts, err := readDescriptorFragments(descriptorOut)
+	if err != nil || parts == nil {
+		return err
 	}
 
 	if err := codegen.WriteDescriptor(projectDir, parts); err != nil {
@@ -197,6 +172,44 @@ func MergeDescriptorFragments(descriptorOut, projectDir string) error {
 	// for correctness because the next run starts with rm -rf.
 	_ = os.RemoveAll(stageDir)
 	return nil
+}
+
+// readDescriptorFragments reads the fragments staged under
+// <descriptorOut>/<descriptorStageDir>/ into one part per proto file, keyed by
+// its module-relative path. nil, nil when no plugin process ran (no staging
+// dir).
+func readDescriptorFragments(descriptorOut string) (map[string]codegen.DescriptorPart, error) {
+	stageDir := filepath.Join(descriptorOut, descriptorStageDir)
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read descriptor stage dir: %w", err)
+	}
+
+	parts := map[string]codegen.DescriptorPart{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(stageDir, e.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("read descriptor fragment %s: %w", e.Name(), err)
+		}
+		var frag descriptorFragment
+		if err := json.Unmarshal(data, &frag); err != nil {
+			return nil, fmt.Errorf("parse descriptor fragment %s: %w", e.Name(), err)
+		}
+		if frag.File == "" {
+			return nil, fmt.Errorf("descriptor fragment %s names no proto file", e.Name())
+		}
+		part := parts[frag.File]
+		part.Services = append(part.Services, frag.Services...)
+		part.Configs = append(part.Configs, frag.Configs...)
+		parts[frag.File] = part
+	}
+	return parts, nil
 }
 
 // applyMethodOptions copies the proto-level (forge.v1.method) annotations

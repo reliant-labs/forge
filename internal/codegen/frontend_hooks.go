@@ -60,6 +60,38 @@ type FrontendHookTemplateData struct {
 	// (tsImportPlan): ServiceName unless another module the file imports
 	// declares the same name.
 	ServiceRef string
+	// KeyRoot is the first element of every query key the file builds.
+	// Empty means ServiceNameCamel (read it through QueryKeyRoot). The hooks
+	// of an imported proto module set it to the fully-qualified service name,
+	// so they cannot share a cache with a project service of the same short
+	// name.
+	KeyRoot string
+}
+
+// QueryKeyRoot is the root of the service's query keys: KeyRoot, or
+// ServiceNameCamel when it is unset.
+func (d FrontendHookTemplateData) QueryKeyRoot() string {
+	if d.KeyRoot != "" {
+		return d.KeyRoot
+	}
+	return d.ServiceNameCamel
+}
+
+// PrefixImportPaths roots every proto import of the file under dir: the
+// hooks of an imported proto module import `@/gen/<dir>/<proto path>_pb`,
+// where the app generates that module's messages.
+func (d *FrontendHookTemplateData) PrefixImportPaths(dir string) {
+	dir = strings.Trim(dir, "/")
+	if dir == "" {
+		return
+	}
+	d.ImportPath = dir + "/" + d.ImportPath
+	for i := range d.SchemaImports {
+		d.SchemaImports[i].ImportPath = dir + "/" + d.SchemaImports[i].ImportPath
+	}
+	for i := range d.TypeImports {
+		d.TypeImports[i].ImportPath = dir + "/" + d.TypeImports[i].ImportPath
+	}
 }
 
 // HookImportGroup is one TS import statement: a list of symbols (sorted,

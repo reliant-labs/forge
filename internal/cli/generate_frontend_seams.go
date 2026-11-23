@@ -124,6 +124,9 @@ func ensureAdoptedFrontendSeams(cfg *config.ProjectConfig, services []codegen.Se
 
 // frontendGetsHooks reports whether generate writes any hook module into fe.
 func frontendGetsHooks(fe config.FrontendConfig, services []codegen.ServiceDef) bool {
+	if len(fe.ImportedHooks) > 0 {
+		return true // imported-module hooks call @/lib/connect too
+	}
 	for _, svc := range services {
 		if fe.WantsHooksFor(svc.Name, qualifiedServiceName(svc)) && len(svc.Methods) > 0 {
 			return true

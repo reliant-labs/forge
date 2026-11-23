@@ -478,7 +478,7 @@ func generateSteps() []GenStep {
 		// Opt-in descriptor producers run before their frontend consumers.
 		// Legacy hooks remain late: they may compile the complete Go tree.
 		{Name: generateInputHooksStep, Gate: hasGenerateInputHooks, GateReason: "no generate.hooks with phase: input", Run: stepGenerateInputHooks, Tag: "tools", Writes: writesGenerateInputHooks},
-		{Name: "frontend hooks", Gate: gateFrontendHasServices, GateReason: "no services or no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
+		{Name: "frontend hooks", Gate: gateFrontendHooks, GateReason: "no services and no package.json forge.imported_hooks, no frontends, or features.frontend=false", Run: stepFrontendHooks, Tag: "frontend"},
 		{Name: "service mocks", Gate: gateCodegenHasServices, GateReason: "no Connect services defined or features.codegen=false", Run: stepServiceMocks, Tag: "codegen"},
 		{Name: "internal package contracts", Gate: and(gateContractsEnabled, hasGoModule), GateReason: "features.contracts=false, or " + noGoModuleReason, Run: stepInternalContracts, Tag: "codegen"},
 		// Auth is owned code now (internal/app/auth.go's SetupAuth),
@@ -1113,6 +1113,15 @@ func gateFrontendHasFrontends(ctx *pipelineContext) bool {
 
 func gateFrontendHasServices(ctx *pipelineContext) bool {
 	return and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML, hasServices)(ctx)
+}
+
+// gateFrontendHooks gates the frontend hooks step: the project's own
+// services, or a frontend's package.json forge.imported_hooks — a frontend
+// with no service of the project's own still calls the imported module's.
+func gateFrontendHooks(ctx *pipelineContext) bool {
+	return and(feature(config.FeaturesConfig.FrontendEnabled), hasForgeYAML, func(c *pipelineContext) bool {
+		return c.HasServices || hasImportedHooks(c.Cfg)
+	})(ctx)
 }
 
 func gateCodegenHasServices(ctx *pipelineContext) bool {
@@ -1991,11 +2000,19 @@ func announceUnmanagedServices(unmanaged []codegen.ServiceDef) {
 // Emit React Query hooks for each Connect-driven service. Requires
 // services to be parsed (gate ensures HasServices).
 func stepFrontendHooks(ctx *pipelineContext) error {
-	if len(ctx.Services) == 0 {
+	imported := hasImportedHooks(ctx.Cfg)
+	if len(ctx.Services) == 0 && !imported {
 		return nil
 	}
 	if err := ctx.warnOrFail("frontend hooks generation", generateFrontendHooks(ctx.Cfg, ctx.Services, ctx.ProjectDir, ctx.Checksums)); err != nil {
 		return err
+	}
+	// package.json forge.imported_hooks: the services of a buf module
+	// outside proto/, read in memory (generate_frontend_hooks_imported.go).
+	if imported {
+		if err := ctx.warnOrFail("frontend hooks generation (imported proto modules)", generateImportedFrontendHooks(ctx.Cfg, ctx.ProjectDir, ctx.Checksums)); err != nil {
+			return err
+		}
 	}
 	// The hooks import owned seams (@/lib/connect, @/lib/test-utils) that a
 	// frontend forge did not scaffold never had. See generate_frontend_seams.go.

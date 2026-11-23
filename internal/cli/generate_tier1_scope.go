@@ -156,14 +156,15 @@ var tier1OwnerRegistry = []tier1OwnerEntry{
 	{suffix: "_orm_gen.go", gate: gateORMHasServices},
 
 	// frontends/<name>/src/hooks/*-hooks.ts is emitted by
-	// stepFrontendHooks. Gated on frontend feature + HasServices
-	// (no services → no proto → nothing to hook).
-	{glob: "frontends/*/src/hooks/*-hooks.ts", gate: gateFrontendHasServices},
+	// stepFrontendHooks. Gated on frontend feature + HasServices or a
+	// package.json forge.imported_hooks (nothing to hook otherwise).
+	{glob: "frontends/*/src/hooks/*-hooks.ts", gate: gateFrontendHooks},
+	{glob: "frontends/*/src/hooks/*/*-hooks_gen.ts", gate: gateFrontendHooks},
 
 	// packages/hooks/src/generated/*-hooks.ts is the same emitter's
 	// workspace-mode output (cfg.IsFrontendWorkspacesEnabled()) — one
 	// shared file per service instead of one per frontend. Same gate.
-	{glob: "packages/hooks/src/generated/*-hooks.ts", gate: gateFrontendHasServices},
+	{glob: "packages/hooks/src/generated/*-hooks.ts", gate: gateFrontendHooks},
 
 	// internal/<pkg>/mock_gen.go is emitted by stepInternalContracts
 	// (gateContractsEnabled). When features.contracts=false the emitter

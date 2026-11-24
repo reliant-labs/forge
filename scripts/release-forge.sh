@@ -833,7 +833,7 @@ if [ -f "$WR_MANIFEST" ]; then
   if [ -f "$WR_FLOOR_FILE" ]; then
     if ! grep -qx "$(printf '%s' "$WEB_RUNTIME_VERSION" | sed 's/\./\\./g')" "$WR_PUBLISHED" 2>/dev/null; then
       echo "→ recording $WEB_RUNTIME_VERSION in $WR_PUBLISHED"
-      {
+      if ! {
         if [ -f "$WR_PUBLISHED" ]; then
           grep '^#' "$WR_PUBLISHED" || true
         else
@@ -841,10 +841,10 @@ if [ -f "$WR_MANIFEST" ]; then
           echo "# semver order. WRITTEN BY THE RELEASE, NEVER BY HAND (scripts/release-forge.sh)."
         fi
         { [ -f "$WR_PUBLISHED" ] && grep -v '^#' "$WR_PUBLISHED" | sed '/^[[:space:]]*$/d'; echo "$WEB_RUNTIME_VERSION"; } | sort -V -u
-      } >"$BACKUP_DIR/wr-published.new" && cat "$BACKUP_DIR/wr-published.new" >"$WR_PUBLISHED" || {
+      } >"$BACKUP_DIR/wr-published.new" || ! cat "$BACKUP_DIR/wr-published.new" >"$WR_PUBLISHED"; then
         echo "error: could not record $WEB_RUNTIME_VERSION in $WR_PUBLISHED" >&2
         exit 1
-      }
+      fi
     fi
     grep -qx "$(printf '%s' "$WEB_RUNTIME_VERSION" | sed 's/\./\\./g')" "$WR_PUBLISHED" || {
       echo "error: $WR_PUBLISHED does not list $WEB_RUNTIME_VERSION after recording it" >&2

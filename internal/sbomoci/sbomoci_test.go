@@ -27,8 +27,18 @@ import (
 
 // TestMain gives every registry client in these tests a transport that does
 // not retry: a refused request must fail at once, not back off.
+//
+// The transport is a private clone, never http.DefaultTransport: every
+// ocitest.Registry is an httptest.Server, and httptest.Server.Close calls
+// http.DefaultTransport.CloseIdleConnections(). With the tests running in
+// parallel, one test's cleanup then broke another's pooled connection
+// mid-request ("http: CloseIdleConnections called"; #2739 and
+// control-plane#3573).
 func TestMain(m *testing.M) {
-	registryHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	registryHTTPClient = &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	}
 	os.Exit(m.Run())
 }
 

@@ -532,7 +532,6 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	writeOverridesSummary(errOut, appliedOverrides)
 	writeChartSummary(errOut, charts)
 	writeHostedAndHostSummary(errOut, envName, entities)
-	writeFixturesSummary(errOut, entities)
 
 	// The write report runs in the deferred close, so the fail-on-write
 	// verdict has to be taken after it — hence the sentinel here and the
@@ -1288,6 +1287,8 @@ func writeHostedAndHostSummary(w io.Writer, envName string, e *KCLEntities) {
 	if e == nil {
 		return
 	}
+	// Last, after both sections: which frontends serve fixtures in this env.
+	defer writeFixturesSummary(w, e)
 	if e.HasHosted() {
 		fmt.Fprintf(w, "\nhosted (published to the control plane, not applied):\n")
 		hosted, err := buildHostedGroup(envName, e)

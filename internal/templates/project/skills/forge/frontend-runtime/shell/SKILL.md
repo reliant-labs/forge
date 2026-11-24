@@ -56,6 +56,7 @@ can read. `useSession()` therefore reports the identity and no `claims`.
   prop, plus any JWT claims decodable from a bearer token when one is supplied.
   ```ts
   const { userId, email, name, claims, isAuthenticated, isLoading } = useSession();
+  const signedIn = useSignedIn(); // useSession().isAuthenticated, for chrome that needs nothing else
   ```
 - **`RuntimeErrorBoundary`** — a React error boundary with a designed
   fallback. Next's `app/error.tsx` / `app/global-error.tsx` catch route
@@ -70,6 +71,32 @@ can read. `useSession()` therefore reports the identity and no `claims`.
   draws them with your own component. The QueryClient's mutation-error
   chokepoint already emits `toast:show`; this host is what makes those toasts
   actually appear.
+
+## A fixed session: demos, previews and tests
+
+A bundle that must carry no auth code (a public demo, a guarded preview, a
+screenshot harness, a component test) still renders a shell that asks who is
+signed in. Give it `fixedSession(user)` instead of an adapter over your auth
+module:
+
+```tsx
+import { fixedSession, SessionProvider } from "@reliantlabs/forge-web-runtime/session";
+
+// Module scope: the result is frozen and its getToken never changes identity.
+const VISITOR = fixedSession({ id: "demo", email: "demo@example.com", name: "Demo" });
+
+<SessionProvider auth={VISITOR}>{shell}</SessionProvider>;
+```
+
+It is signed in as `user`, never loading, and `getToken` resolves null, so
+`useSession().claims` is null; `fixedSession(user, { token })` hands out a token
+for something that never reaches a real server (a mock transport). It decides
+what to show, never what is allowed. `RuntimeShell auth={VISITOR}` takes it too.
+
+`./session` is the subpath whose import closure is `react` alone: a demo chunk
+imports the session API from it without pulling in the barrel. The barrel
+exports the same names from the same module, so a provider mounted through one
+is the context the other reads.
 
 ## Route guarding (render-gate only)
 

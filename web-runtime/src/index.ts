@@ -114,14 +114,21 @@ export {
 /** The React end of an interaction: endAfterPaint() on the first ready commit. */
 export { useInteractionEnd } from "./interaction-hooks.js";
 
-/** Session: the signed-in user, derived from the app's auth state and JWT claims. */
+/**
+ * Session: the signed-in user, derived from the app's auth state and JWT
+ * claims. Also published as the "./session" subpath, which imports only react.
+ */
 export {
   decodeJwt,
+  fixedSession,
   SessionProvider,
   useSession,
+  useSignedIn,
+  type FixedSessionOptions,
   type JwtClaims,
   type Session,
   type SessionAuth,
+  type SessionUser,
 } from "./session.js";
 
 /** The app-shell provider set: session + error boundary + toast host in one. */

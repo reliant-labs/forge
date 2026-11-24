@@ -103,6 +103,7 @@ const transport = createFixtureTransport({
 - It is Connect's own `createRouterTransport`: requests and responses really serialize (a fixture that cannot travel fails here) and your interceptors (`interceptors: [...]`) run.
 - Dispatch: `readOnly` guard, then the method's route or scenario handler (latest layer wins; within one layer a route beats a scenario handler), then `defaults`, then `Unimplemented`. `readOnly` has no name heuristic: an unannotated read is refused, and the fix is the proto annotation.
 - In the project's tests, `expect(await checkFixturePack(shopPack, { services: [TraceService] })).toEqual([])` calls every handler once and names the method of each output with a misspelled field, a wrong value type, another message type or a failed serialization, plus every `data` entry that does not decode.
+- The signed-in user of such a bundle is a **fixed session**, not your auth module: mount `<SessionProvider auth={fixedSession(APP_USER)}>` from `@reliantlabs/forge-web-runtime/session` (react is its only import), with `APP_USER` the same user the pack's current-user rpc answers, so the shell and the data agree. Signed in, never loading, `getToken` resolves null. Depth: `frontend-runtime/shell`.
 
 Live data that degrades to sample data is still `createMockTransport` (`/mock-transport`):
 

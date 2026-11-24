@@ -184,6 +184,7 @@ Examples:
   ` + Name() + ` env render dev --list                       # one line per object (kind/name/cluster)
   ` + Name() + ` env render prod --count                     # objects per cluster, and per kind on each
   ` + Name() + ` env render dev --json | jq .telemetry         # the env's declared telemetry, normalized
+  ` + Name() + ` env render demo --json | jq .frontends        # each frontend's runtime config (config.js), fixtures included
   ` + Name() + ` env render dev --cluster k3d-cp-daemon      # only what that cluster receives
   ` + Name() + ` env render prod --kind Deployment,Job       # only those kinds
   ` + Name() + ` env render prod --target workspace-proxy    # only that app's objects
@@ -217,7 +218,7 @@ Examples:
 	cmd.Flags().StringVar(&nameFilter, "name", "", "Print only objects with this metadata.name")
 	cmd.Flags().StringArrayVar(&targets, "target", nil, "Print only the named application's objects (the app.kubernetes.io/name group forge env deploy --target selects; repeatable)")
 	cmd.Flags().BoolVar(&list, "list", false, "Print one line per object (cluster, kind, namespace, name) instead of the YAML stream")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "Print one JSON document ("+envRenderJSONSchema+") instead of the YAML stream: the objects --list shows, and the env's declared telemetry (forge.Telemetry), normalized")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Print one JSON document ("+envRenderJSONSchema+") instead of the YAML stream: the objects --list shows, the env's declared telemetry (forge.Telemetry), normalized, and each frontend's runtime config document (fixtures included)")
 	cmd.Flags().BoolVar(&count, "count", false, "Print how many objects land on each cluster (and per kind on each), instead of the YAML stream")
 	cmd.Flags().BoolVar(&noDigest, "no-digest", false, "Render image references as the mutable :tag even when a build state captured an immutable digest (matches forge env deploy --no-digest)")
 	cmd.Flags().BoolVar(&failOnWrite, "fail-on-write", false, "Exit non-zero if any file in the project changed while rendering (the render is not guaranteed side-effect-free — see the command description)")
@@ -531,6 +532,7 @@ func renderEnvTo(cmd *cobra.Command, out io.Writer, envName string, opts envRend
 	writeOverridesSummary(errOut, appliedOverrides)
 	writeChartSummary(errOut, charts)
 	writeHostedAndHostSummary(errOut, envName, entities)
+	writeFixturesSummary(errOut, entities)
 
 	// The write report runs in the deferred close, so the fail-on-write
 	// verdict has to be taken after it — hence the sentinel here and the

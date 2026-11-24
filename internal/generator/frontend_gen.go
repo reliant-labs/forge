@@ -405,8 +405,8 @@ func generateFrontendFiles(root, modulePath, projectName, frontendName string, a
 	}
 
 	// Emit the mock/scenario surface the scaffolded src/lib/connect.ts
-	// references — statically under Vite ESM, and as a literal require()
-	// (which webpack resolves at build time) under Next.js. Without it the
+	// references — through a literal import() under both Vite and Next.js,
+	// which the bundler resolves at build time into a lazy chunk. Without it the
 	// tree the scaffold hands back does not typecheck and does not build,
 	// and `forge scaffold frontend` has no generate pass behind it to
 	// fill the gap. Entity fixtures arrive on the next `forge generate`;

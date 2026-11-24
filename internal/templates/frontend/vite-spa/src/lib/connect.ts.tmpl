@@ -1,12 +1,14 @@
 import { createConnectTransport } from "@connectrpc/connect-web";
 import { Code, createClient, type Transport } from "@connectrpc/connect";
 import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
-import type { DescService } from "@bufbuild/protobuf";
 import { emitAuthExpired } from "@/lib/events";
-import { createMockTransport } from "@/lib/mock-transport_gen";
+import { lazyTransport, runtimeFixtures } from "@/lib/fixtures";
 {{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
 {{end}}import { apiBase } from "./api-base";
 import { DEV_API_URL } from "./apiurl_gen";
+
+import type { MockTransportOptions } from "@/lib/mock-transport_gen";
+import type { DescService } from "@bufbuild/protobuf";
 {{if .HasTypedConfig}}
 // The API origin comes from the typed config module, which reads it at
 // RUNTIME from the KCL-rendered config.js. Reading import.meta.env.VITE_API_URL
@@ -95,6 +97,22 @@ const interceptors = buildRuntimeInterceptors({
 const fetchWithSession: typeof globalThis.fetch = (input, init) =>
   fetch(input, { ...init, credentials: "include" });
 
+// The generated mock transport (src/lib/mock-transport_gen.ts, re-rendered
+// with entity fixtures by every `forge generate`), loaded on the first RPC.
+// A literal import(), which Vite resolves at build time and splits into a
+// lazy chunk with the engine and the fixtures, so a build serving the live
+// backend never downloads them — which matters now that one release can
+// serve either, chosen per environment at runtime. (An older try/require
+// pattern was broken in browser ESM and silently kept mock mode off; import()
+// is ESM's own.)
+function mockTransport(fallback?: Transport, options?: MockTransportOptions): Transport {
+  return lazyTransport(() =>
+    import("@/lib/mock-transport_gen").then(({ createMockTransport }) =>
+      createMockTransport(fallback, options),
+    ),
+  );
+}
+
 function buildTransport(): Transport {
   // VITE_MOCK_API has three modes:
   //   "true"   — pure mock. All RPCs hit the mock transport (scenarios +
@@ -106,14 +124,8 @@ function buildTransport(): Transport {
   //              forwarded to the real Connect transport. Use for LLM /
   //              Chrome MCP debugging where you want to stub one endpoint
   //              and exercise the rest of the stack for real.
-  //   anything else (default) — real backend, real auth.
-  //
-  // The mock transport is generated at src/lib/mock-transport_gen.ts by the
-  // frontend scaffold, and re-rendered with entity fixtures by every
-  // `forge generate` — so this static import resolves from the moment the
-  // frontend exists, which Vite's ESM pipeline requires (the older
-  // try/require pattern was broken in browser ESM and silently kept mock
-  // mode off).
+  //   anything else (default) — real backend, real auth, unless the
+  //              environment's runtime config names fixtures (below).
 {{- if .HasMockAPI}}
   const mode = loadConfig().MOCK_API;
 {{- else}}
@@ -121,15 +133,32 @@ function buildTransport(): Transport {
 {{- end}}
   const baseUrl = apiBaseUrl();
   if (mode === "true") {
-    return createMockTransport();
+    return mockTransport();
   }
+
+  // Fixture data this ENVIRONMENT declares (forge.Fixtures on the frontend in
+  // deploy/kcl/<env>/main.k), read from the runtime config at load time
+  // (src/lib/fixtures.ts). It is not a build mode: the same release serves
+  // live data wherever the env names no fixtures, so a demo env is promoted
+  // from prod's release by digest. Every RPC is answered by the mock
+  // transport from the named scenario; read-only (the default) answers only
+  // rpcs declaring `idempotency_level = NO_SIDE_EFFECTS` and refuses the rest.
+  const fixtures = runtimeFixtures();
+  if (fixtures) {
+    return mockTransport(undefined, {
+      scenario: fixtures.scenario,
+      readOnly: fixtures.readOnly,
+      readOnlyMessage: "This is sample data: changes are not saved.",
+    });
+  }
+
   if (mode === "hybrid") {
     const real = createConnectTransport({
       baseUrl,
       interceptors,
       fetch: fetchWithSession,
     });
-    return createMockTransport(real);
+    return mockTransport(real);
   }
 
   return createConnectTransport({

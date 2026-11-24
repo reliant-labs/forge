@@ -4,10 +4,12 @@ import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 
 {{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
 {{end}}import { emitAuthExpired } from "@/lib/events";
+import { lazyTransport, runtimeFixtures } from "@/lib/fixtures";
 
 import { apiBase } from "./api-base";
 import { DEV_API_URL } from "./apiurl_gen";
 
+import type { MockTransportOptions } from "@/lib/mock-transport_gen";
 import type { DescService } from "@bufbuild/protobuf";
 {{if .HasTypedConfig}}
 // The API origin comes from the typed config module, which reads it at
@@ -99,6 +101,19 @@ const interceptors = buildRuntimeInterceptors({
 const fetchWithSession: typeof globalThis.fetch = (input, init) =>
   fetch(input, { ...init, credentials: "include" });
 
+// The generated mock transport (src/lib/mock-transport_gen.ts), loaded on the
+// first RPC. import(), not require(): webpack splits the mock transport, its
+// engine and its fixtures into a lazy chunk, so a build serving the live
+// backend never downloads them — which matters now that one release can serve
+// either, chosen per environment at runtime.
+function mockTransport(fallback?: Transport, options?: MockTransportOptions): Transport {
+  return lazyTransport(() =>
+    import("@/lib/mock-transport_gen").then(({ createMockTransport }) =>
+      createMockTransport(fallback, options),
+    ),
+  );
+}
+
 function buildTransport(): Transport {
   // MOCK_API has three modes:
   //   "true"   — pure mock. All RPCs hit the mock transport. No backend
@@ -106,7 +121,8 @@ function buildTransport(): Transport {
   //   "hybrid" — scenarios overlay a real backend. Unmatched RPCs (when
   //              the active scenario has passthrough:true) forward to the
   //              real transport. Use for LLM / Chrome MCP debugging.
-  //   anything else (default) — real backend, real auth.
+  //   anything else (default) — real backend, real auth, unless the
+  //              environment's runtime config names fixtures (below).
 {{- if .HasMockAPI}}
   const mode = loadConfig().MOCK_API;
 {{- else}}
@@ -115,10 +131,23 @@ function buildTransport(): Transport {
   const baseUrl = apiBaseUrl();
 
   if (mode === "true") {
-    // Dynamic require to avoid bundling mock data in production builds.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createMockTransport } = require("@/lib/mock-transport_gen");
-    return createMockTransport();
+    return mockTransport();
+  }
+
+  // Fixture data this ENVIRONMENT declares (forge.Fixtures on the frontend in
+  // deploy/kcl/<env>/main.k), read from the runtime config at load time
+  // (src/lib/fixtures.ts). It is not a build mode: the same release serves
+  // live data wherever the env names no fixtures, so a demo env is promoted
+  // from prod's release by digest. Every RPC is answered by the mock
+  // transport from the named scenario; read-only (the default) answers only
+  // rpcs declaring `idempotency_level = NO_SIDE_EFFECTS` and refuses the rest.
+  const fixtures = runtimeFixtures();
+  if (fixtures) {
+    return mockTransport(undefined, {
+      scenario: fixtures.scenario,
+      readOnly: fixtures.readOnly,
+      readOnlyMessage: "This is sample data: changes are not saved.",
+    });
   }
 
   // Real-backend modes require a concrete base URL. Failing here (loud,
@@ -148,9 +177,7 @@ function buildTransport(): Transport {
       interceptors,
       fetch: fetchWithSession,
     });
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createMockTransport } = require("@/lib/mock-transport_gen");
-    return createMockTransport(real);
+    return mockTransport(real);
   }
 
   return createConnectTransport({

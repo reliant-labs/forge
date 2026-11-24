@@ -207,9 +207,11 @@ func TestMockTransport_BindsTransportVariableNotCastAtReturn(t *testing.T) {
 	// tests. What the PROJECT file must still do is expose the same
 	// entry point with the same signature, since connect.ts (scaffold-once,
 	// never rewritten) calls it as `createMockTransport()` and
-	// `createMockTransport(real)`.
-	if !strings.Contains(got, "export function createMockTransport(fallback?: Transport): Transport {") {
-		t.Errorf("expected the createMockTransport(fallback?) entry point connect.ts calls. Got:\n%s", got)
+	// `createMockTransport(real)` — and, since forge.Fixtures, as
+	// `createMockTransport(undefined, {scenario, readOnly})`, so the options
+	// parameter is optional and comes second.
+	if !strings.Contains(got, "export function createMockTransport(fallback?: Transport, options: MockTransportOptions = {}): Transport {") {
+		t.Errorf("expected the createMockTransport(fallback?, options?) entry point connect.ts calls. Got:\n%s", got)
 	}
 
 	// The engine must arrive through the SUBPATH, never the barrel: the
@@ -547,8 +549,8 @@ func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
 	for _, want := range []string{
 		`import * as scenarios from "../mocks/scenarios/index_gen"`,
 		`resolveActiveScenario(scenarios)`,
-		`export function createMockTransport(fallback?: Transport): Transport`,
-		`scenario: active,`,
+		`export function createMockTransport(fallback?: Transport, options: MockTransportOptions = {}): Transport`,
+		`scenario: options.scenario === undefined ? active : namedScenario(options.scenario),`,
 		`fallback,`,
 		`export const activeScenario = active`,
 	} {

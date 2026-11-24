@@ -4813,6 +4813,56 @@ schema BrowserTelemetry:
         not service_name or regex.match(service_name, "^[A-Za-z0-9][A-Za-z0-9._-]*$"), \
             "BrowserTelemetry.service_name must be a service name: letters, digits, '.', '_' and '-', starting with a letter or digit"
 
+schema Fixtures:
+    """The fixture pack a frontend serves in THIS environment instead of its
+    backend: every RPC is answered in the browser by the frontend's mock
+    transport, from one named scenario.
+
+        forge.Frontend {
+            name = "web"
+            fixtures = forge.Fixtures {scenario = "shop"}
+        }
+
+    It is RUNTIME config, not build config. forge renders it into the
+    frontend's runtime config document (config.js, read as
+    window.__FORGE_CONFIG__) as two keys:
+
+        FIXTURES_SCENARIO   = "<scenario>"
+        FIXTURES_READ_ONLY  = "true" | "false"
+
+    so one release digest serves live data in an env that declares no
+    fixtures and the fixture pack in one that does: a demo or preview env
+    is `forge env new demo --from prod` plus this field, and is promoted
+    from prod's release by digest, with no second build.
+
+    The scaffolded src/lib/connect.ts reads the two keys and, only then,
+    loads the generated mock transport (src/lib/mock-transport_gen.ts) in a
+    lazy chunk, so a live env's main chunk carries no fixture code. An app
+    with a transport layer of its own reads the same keys
+    (src/lib/fixtures.ts shows how). forge cannot see from the env whether
+    the frontend's code consumes them: a frontend whose connect.ts predates
+    this field ignores them and keeps calling its backend.
+
+    Not a mode: the build-time `mock_api` (FrontendConfig.mock, or MOCK_API
+    in deploy/kcl/<env>/config.k) stays the development switch, and the
+    two are not combined on one frontend.
+    """
+    # The scenario that answers: the `name` of a scenario under the
+    # frontend's src/mocks/scenarios/ (`forge scaffold scenario <name>`).
+    # Lowercase kebab-case, the shape `forge scaffold scenario` accepts.
+    # "default" is the generated scenario every frontend has.
+    scenario: str
+    # Refuse every RPC that is not a read: only an rpc that declares
+    # `option idempotency_level = NO_SIDE_EFFECTS;` is answered, everything
+    # else fails PermissionDenied before any fixture sees it. True by
+    # default, so a fixture env fails closed; set False only for a sandbox
+    # whose writes may land in the browser's in-memory fixture store.
+    read_only: bool = True
+
+    check:
+        regex.match(scenario, "^[a-z][a-z0-9]*(-[a-z0-9]+)*$") and len(scenario) <= 64, \
+            "Fixtures.scenario '${scenario}' must be a scenario name: lowercase kebab-case starting with a letter (e.g. \"shop\", \"empty-account\"), at most 64 characters, the name `forge scaffold scenario <name>` gives src/mocks/scenarios/<name>.ts"
+
 schema Frontend:
     """A web or mobile frontend: a dev server, or a static build forge
     publishes. WHERE it runs is its `runtime`, chosen per frontend exactly
@@ -5000,6 +5050,18 @@ schema Frontend:
     # itself (the dev server's public/, a Firebase or own-bucket deploy).
     runtime_config: {str:str | WorkloadURL} = {}
 
+    # The fixture pack this env serves instead of the backend (see
+    # Fixtures). Rendered into the runtime config above as FIXTURES_SCENARIO
+    # and FIXTURES_READ_ONLY, so the same release serves live data where it
+    # is unset:
+    #
+    #     fixtures = forge.Fixtures {scenario = "shop"}   # read_only = True
+    #
+    # Only for a web frontend (nextjs, vite) on a runtime that serves a
+    # runtime config document: not for `rn`, and not for forge.BuildOnly,
+    # whose output is assembled into another frontend's site.
+    fixtures?: Fixtures
+
     # NAMED same-origin APIs, beside the default one API_URL reaches at
     # /_api. Each key is a name; each value names a WORKLOAD of this env (its
     # name as a string, or a forge.WorkloadURL — never a URL):
@@ -5039,6 +5101,12 @@ schema Frontend:
         all k, _v in runtime_config { regex.match(k, "^[A-Za-z_$][A-Za-z0-9_$]*$") }, \
             "Frontend '${name}'.runtime_config keys must be JavaScript identifiers (e.g. API_URL): the bundle reads each as window.__FORGE_CONFIG__.<KEY>"
         len(runtime_config) <= 128, "Frontend '${name}'.runtime_config allows at most 128 entries"
+        not fixtures or type in ["nextjs", "vite"], \
+            "Frontend '${name}'.fixtures is for a web frontend (nextjs, vite): a ${type} frontend has no runtime config document to carry it"
+        not fixtures or not any k in ["FIXTURES_SCENARIO", "FIXTURES_READ_ONLY"] { k in runtime_config }, \
+            "Frontend '${name}'.runtime_config sets FIXTURES_SCENARIO or FIXTURES_READ_ONLY, which Frontend.fixtures publishes: drop the runtime_config entry and declare it in `fixtures`"
+        not fixtures or not config or config.mock == "off", \
+            "Frontend '${name}' declares both fixtures and config.mock = \"${config.mock if config else ''}\": mock is the build-time development switch, fixtures the per-env runtime one. Keep one: fixtures, for an env promoted from another env's release"
         path or source, \
             "Frontend needs a source of code: `path` for a directory in this repo, or `source = forge.GitSource { ... }` for a pinned checkout of another repo"
         not (path and source), \

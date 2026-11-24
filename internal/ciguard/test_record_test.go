@@ -301,3 +301,50 @@ printf '%s\n' '{"Action":"pass","Package":"fixture/package","Test":"TestCheap","
 		}
 	}
 }
+
+// TestVulnSBOMStepPullsTheDatabaseFirst pins the build job's SBOM scan:
+// while vuln-gate does not gate (forge.yaml's lint.rules sets it to warn),
+// `forge ci vuln-sbom` never downloads the
+// vulnerability database, and with none on disk it exits 78 and scans
+// nothing (a SKIP every push). So the step runs `forge vuln db pull` before
+// it, into $FORGE_VULN_DB_DIR under the runner's temp directory, fresh each
+// run, and deletes it afterwards.
+func TestVulnSBOMStepPullsTheDatabaseFirst(t *testing.T) {
+	raw, err := os.ReadFile(ciWorkflow)
+	if err != nil {
+		t.Fatalf("read %s: %v", ciWorkflow, err)
+	}
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string            `yaml:"run"`
+				Env map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciWorkflow, err)
+	}
+	found := 0
+	for name, j := range wf.Jobs {
+		for _, s := range j.Steps {
+			scan := strings.Index(s.Run, "forge ci vuln-sbom")
+			if scan < 0 {
+				continue
+			}
+			found++
+			if pull := strings.Index(s.Run, "forge vuln db pull"); pull < 0 || pull > scan {
+				t.Errorf("job %s runs forge ci vuln-sbom without `forge vuln db pull` before it: with no database it exits 78 and scans nothing", name)
+			}
+			if !strings.HasPrefix(s.Env["FORGE_VULN_DB_DIR"], "${{ runner.temp }}/") {
+				t.Errorf("job %s: FORGE_VULN_DB_DIR = %q, want a directory under ${{ runner.temp }}", name, s.Env["FORGE_VULN_DB_DIR"])
+			}
+			if !strings.Contains(s.Run, `rm -rf "$FORGE_VULN_DB_DIR"`) {
+				t.Errorf("job %s must delete the ~3.4 GB database after the scan", name)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatalf("no %s step runs forge ci vuln-sbom — this guard would inspect nothing", ciWorkflow)
+	}
+}

@@ -139,8 +139,8 @@ const services: readonly AnyServiceDefaults[] = serviceModules();
 export interface MockTransportOptions {
   /**
    * Answer from this scenario (its `name`) instead of the one `?scenario=`
-   * selected. An unknown name falls back to the `default` scenario, with a
-   * console warning naming it.
+   * selected. An unknown name falls back to the `default` scenario (never to
+   * the one `?scenario=` names), with a console warning naming it.
    */
   scenario?: string;
   /** Refuse every RPC that is not `idempotency_level = NO_SIDE_EFFECTS`. */
@@ -176,11 +176,18 @@ export function createMockTransport(fallback?: Transport, options: MockTransport
 }
 
 // The scenario an environment names, resolved (and its setup() run) once.
+//
+// The name is checked against the registry HERE, before the resolver sees it:
+// an unknown one warns and resolves `{ name: null }`, which the engine
+// documents as "the default scenario, and do not read ?scenario=". So the
+// fallback is the default the warning names, never a scenario the URL picks,
+// and it does not lean on how the resolver treats a name it cannot find.
 function namedScenario(name: string): ReturnType<typeof resolveActiveScenario> {
-  if (!scenarios.byName(name)) {
-    console.warn(`[mock-transport] no scenario named "${name}" in src/mocks/scenarios/; answering from "default"`);
+  if (scenarios.byName(name)) {
+    return resolveActiveScenario(scenarios, { name });
   }
-  return resolveActiveScenario(scenarios, { name });
+  console.warn(`[mock-transport] no scenario named "${name}" in src/mocks/scenarios/; answering from "default"`);
+  return resolveActiveScenario(scenarios, { name: null });
 }
 
 // Re-export the active scenario so tests + dev tools can introspect it.

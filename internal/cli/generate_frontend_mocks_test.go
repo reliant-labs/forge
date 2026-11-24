@@ -586,6 +586,38 @@ func TestMockTransport_NoEntities_EmitsScenarioCapableTransport(t *testing.T) {
 	}
 }
 
+// An env's forge.Fixtures names a scenario at runtime, and a name the frontend
+// has no scenario for must answer from `default`, as the warning says: never
+// from the scenario `?scenario=` names, and never by handing the unknown name
+// to the resolver. So the generated transport checks the registry first and,
+// on a miss, resolves `{ name: null }` — the engine's documented "default, and
+// the URL is not read" (web-runtime mock-transport.test.ts, "an explicit null
+// or unknown name is the default").
+func TestMockTransport_UnknownFixtureScenarioFallsBackToDefault(t *testing.T) {
+	got := renderMockTransport(t, nil)
+	start := strings.Index(got, "function namedScenario(")
+	if start < 0 {
+		t.Fatalf("no namedScenario in the generated transport. Got:\n%s", got)
+	}
+	body := got[start:]
+	if end := strings.Index(body, "\n}\n"); end > 0 {
+		body = body[:end]
+	}
+	check := strings.Index(body, "if (scenarios.byName(name)) {")
+	known := strings.Index(body, "return resolveActiveScenario(scenarios, { name });")
+	warn := strings.Index(body, `answering from "default"`)
+	fallback := strings.Index(body, "return resolveActiveScenario(scenarios, { name: null });")
+	if check < 0 || known < 0 || warn < 0 || fallback < 0 {
+		t.Fatalf("namedScenario must check the registry, resolve a known name, and warn then resolve { name: null } for an unknown one. Got:\n%s", body)
+	}
+	if !(check < known && known < warn && warn < fallback) {
+		t.Errorf("namedScenario must resolve the name only inside the registry check, and fall back after warning. Got:\n%s", body)
+	}
+	if strings.Count(body, "resolveActiveScenario(") != 2 {
+		t.Errorf("namedScenario must resolve exactly two ways (the known name, or null). Got:\n%s", body)
+	}
+}
+
 // The per-entity registries gather their modules with import.meta.glob under
 // vitest. A Next app loads no Vite types, so tsc failed them with TS2339
 // ("Property 'glob' does not exist on type 'ImportMeta'") until each file

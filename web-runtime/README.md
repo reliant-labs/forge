@@ -785,6 +785,44 @@ accept. It is a subpath of its own, outside the barrel, so an app that
 lazy-loads it for a demo keeps it out of its main bundle. The
 `frontend/mock-mode` skill has the recipe.
 
+## Transport scopes (`/transport-scope`)
+
+A `TransportScope` gives a subtree its own transport and its own React Query
+cache, so part of a page (a sample app in a tour, a preview panel) reads a
+fixture transport while the rest stays live:
+
+```tsx
+import {
+  createTransportScope,
+  TransportScopeProvider,
+} from "@reliantlabs/forge-web-runtime/transport-scope";
+
+const scope = createTransportScope({ id: "sample", transport, readOnly: true });
+
+<TransportScopeProvider scope={scope}>{children}</TransportScopeProvider>;
+```
+
+The scope's QueryClient carries its transport. React context cannot be read
+inside a `queryFn` or `mutationFn`, but TanStack Query passes them the
+QueryClient they run on as `context.client`, and `scopedClient(Svc, fallback)`
+turns that into the scope's client, or `fallback` on any other QueryClient. So
+hooks, `scope.queryClient.fetchQuery(...)` outside React and
+`<service>Mutations(scope.queryClient)` all reach the scope's transport. The
+`/service-hooks` builders pass that context to a generated call as its optional
+last argument; hook files generated before it ignore it and keep calling the
+module client. The scope id is never part of a query key: each scope owns its
+QueryClient, so its cache is isolated by construction. `useClient`,
+`useTransport` and `useTransportScope` read the nearest scope in hand-written
+hooks; `clientFor(Svc, transport)` is memoized per transport;
+`transportOf(queryClient)` returns a scope client's transport. `readOnly` is a
+flag for the app's UI, and the runtime enforces nothing with it.
+
+Reads need `@tanstack/react-query` **5.66.0** or later (`context.client` on a
+`queryFn`); on an older one they fall back to the module client. Mutation hooks
+take the client from their own `useQueryClient()` where TanStack before 5.89.0
+passes no mutation context. Like `/service-hooks`, the subpath imports React
+Query, an optional peer, so it stays out of the barrel.
+
 ## Money and basis points
 
 The web counterpart of `forge/pkg/money`. An amount is an integer count of

@@ -133,3 +133,27 @@ rpc GetOrCreateCart(GetOrCreateCartRequest) returns (GetOrCreateCartResponse);
 ```
 
 - Anything else: `// forge:lint-disable-next-line <rule>: <why>` above the rpc.
+
+## A fixture subtree: TransportScope
+
+When only PART of a signed-in page reads fixtures (a sample app in a product tour, a preview panel) and the rest stays live, give that subtree its own transport and its own query cache with `@reliantlabs/forge-web-runtime/transport-scope`. Never route by request content instead (an interceptor that recognises sample ids): the first request it misses goes to the real backend.
+
+```tsx
+import { createTransportScope, TransportScopeProvider, useClient } from "@reliantlabs/forge-web-runtime/transport-scope";
+
+const sampleScope = createTransportScope({
+  id: "sample",                                         // for logs; never part of a query key
+  transport: createFixtureTransport({ pack: shopPack, readOnly: true }),
+  readOnly: true,                                       // a flag YOUR UI reads; the runtime enforces nothing with it
+});
+
+<TransportScopeProvider scope={sampleScope}>             {/* mounts sampleScope.queryClient + the scope */}
+  <ConsolePages />
+</TransportScopeProvider>
+```
+
+- **The scope's QueryClient carries its transport.** React context cannot be read in a `queryFn`, so a generated hook resolves its client from the QueryClient it runs on (`context.client`): `const clientOf = scopedClient(Svc, connectClient(Svc))`, then `clientOf(ctx).method(...)`. Reads, `sampleScope.queryClient.fetchQuery(svcQueries.getX(req))` outside React, mutation hooks and `svcMutations(sampleScope.queryClient)` all go to the scope's transport. Hook files resolve it once a forge that emits `scopedClient` regenerates them (`forge generate`); a file generated earlier keeps calling the module client.
+- **Each scope owns its QueryClient**, created for it unless you pass `queryClient` (never the app's). The cache is isolated by construction, so `xServiceKeys.*` stay module constants and `invalidateQueries({ queryKey: xServiceKeys.all })` works inside and outside the scope. Call `sampleScope.queryClient.clear()` when the subtree goes away for good.
+- **Hand-written calls** take the scope with hooks: `useClient(Svc, moduleClient)` and `useTransport(moduleTransport)` return the nearest scope's, else the fallback; `useTransportScope()` returns the scope or null. Outside React, `clientFor(Svc, transport)` is memoized per transport and `transportOf(queryClient)` names a scope client's transport.
+- Do not mount another `QueryClientProvider` inside a scope: hooks below it would leave the scope.
+- Needs TanStack Query **5.66.0** for reads (`context.client` on a `queryFn`). Mutation hooks fall back to their own `useQueryClient()` where TanStack before 5.89.0 passes no mutation context. On an older TanStack a read falls back to the module client.

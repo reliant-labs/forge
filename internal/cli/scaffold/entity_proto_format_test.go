@@ -65,8 +65,16 @@ func TestCRUDRPCReadsDeclareNoSideEffects(t *testing.T) {
 	const option = "option idempotency_level = NO_SIDE_EFFECTS;"
 	want := map[string]bool{"CreateCounter": false, "GetCounter": true, "UpdateCounter": false, "DeleteCounter": false, "ListCounters": true}
 	for _, p := range buildEntityCRUDRPCPieces("Counter") {
-		if got := strings.Contains(p.text, option); got != want[p.name] {
+		got := strings.Contains(p.text, option)
+		if got != want[p.name] {
 			t.Errorf("%s: declares NO_SIDE_EFFECTS = %v, want %v:\n%s", p.name, got, want[p.name], p.text)
+		}
+		// Lint-clean as born: the lint's own classifiers agree.
+		if codegen.ReadVerb(p.name) != "" && !got {
+			t.Errorf("%s: forge lint --idempotency reads it as a read, but it is born without NO_SIDE_EFFECTS", p.name)
+		}
+		if codegen.WriteVerb(p.name) != "" && got {
+			t.Errorf("%s: forge lint --idempotency reads it as a write, but it is born declaring NO_SIDE_EFFECTS", p.name)
 		}
 	}
 }

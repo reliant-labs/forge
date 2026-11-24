@@ -31,16 +31,18 @@
 //
 // codegen.ReadVerb and codegen.WriteVerb (internal/codegen/rpc_verbs.go),
 // which `forge scaffold rpc` reads too. The first word decides, as a whole
-// word, after one leading Batch or Bulk. Read verbs are exactly the names
-// forge ALREADY treats as reads — the hook generator's Get, List, Search,
-// Find, Check, Has, Is, Count, Exists and the activity interceptor's
-// BatchGet, Watch, Query, Describe — so the rule is "if forge treats it as a
-// read, the proto says so". A name that is no verb at all (Health, Version)
-// is not judged: declaring NO_SIDE_EFFECTS on it is the documented way to
-// make it a read, not something to demand. Write verbs are verbs whose every
-// reading changes state (Create, Update, Delete, Set, Start, Cancel, Send,
-// …); none a pure read may plausibly use (Validate, Preview, Export,
-// Resolve, Sync, Refresh) is on the list.
+// word; no Batch or Bulk prefix is stripped. Read verbs are exactly the
+// names forge ALREADY treats as reads, by those classifiers' own rules — the
+// hook generator's Get, List, Search, Find, Check, Has, Is, Count, Exists
+// and the activity interceptor's BatchGet, Watch, Query, Describe — so the
+// rule is "if forge treats it as a read, the proto says so". A name that is
+// no verb at all (Health, Version) is not judged: declaring NO_SIDE_EFFECTS
+// on it is the documented way to make it a read, not something to demand.
+// Write verbs are only those whose contract always changes state: Add,
+// Archive, Cancel, Create, Delete, Grant, Insert, Move, Patch, Purge,
+// Remove, Rename, Replace, Restore, Revoke, Send, Set, Update, Upsert. A
+// verb a read-only rpc can open with (Run, Execute, Ensure, Start, Sync,
+// Export, Preview) is not judged.
 //
 // ── Escape hatches ───────────────────────────────────────────────────────
 //

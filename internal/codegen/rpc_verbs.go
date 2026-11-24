@@ -6,8 +6,10 @@
 // prints the declaration in the snippet it hands the author).
 //
 // The first word of the name decides, matched as a whole word (CheckIn
-// starts with "Check"; Checkout does not), after one leading Batch or Bulk
-// (BatchGetOrders reads, BulkDeleteOrders writes).
+// starts with "Check"; Checkout does not). No Batch or Bulk prefix is
+// stripped: the only batch form forge reads is the activity interceptor's
+// BatchGet, so BatchSearch, BatchUpdate and BulkGet are judged on their own
+// first word, exactly as the hook generator judges them.
 
 package codegen
 
@@ -19,76 +21,56 @@ import (
 	"github.com/reliant-labs/forge/pkg/activity"
 )
 
-// rpcWriteVerbs are the rpc-name verbs whose every reading changes state.
-// Sorted. Verbs a pure read may plausibly use stay out — Validate, Preview,
-// Export, Render, Resolve, Sync, Refresh, Generate, Verify — because a read
-// verb on this list would make a correct NO_SIDE_EFFECTS a lint finding,
-// while a write verb missing from it only leaves one case to review.
+// rpcWriteVerbs are the rpc-name verbs whose contract ALWAYS changes state:
+// the CRUD writes and the verbs that name a definite change to a record or
+// a grant. Sorted.
+//
+// The list is deliberately short. A verb that a read-only rpc can honestly
+// open with — Run (RunSavedQuery), Execute, Ensure, Start (StartPreview),
+// Check, Sync, Refresh, Export, Validate, Preview, Resolve, Generate — is
+// not judged, because rule 2 of the lint then calls a correct
+// NO_SIDE_EFFECTS wrong. A write verb missing here only leaves that rpc to
+// review; a read-capable verb here makes a correct declaration a finding.
 var rpcWriteVerbs = []string{
-	"Abort", "Accept", "Ack", "Acknowledge", "Activate", "Add", "Allocate", "Append",
-	"Apply", "Approve", "Archive", "Assign", "Attach", "Ban", "Block", "Bump",
-	"Cancel", "Charge", "Claim", "Clear", "Close", "Commit", "Complete", "Confirm",
-	"Create", "Deactivate", "Decline", "Decrement", "Delete", "Deploy", "Deprovision",
-	"Destroy", "Detach", "Disable", "Disconnect", "Dismiss", "Drop", "Edit", "Enable",
-	"Enqueue", "Ensure", "Evict", "Execute", "Expire", "Finish", "Fork", "Grant",
-	"Import", "Increment", "Insert", "Install", "Invite", "Invoke", "Join", "Kill",
-	"Leave", "Link", "Lock", "Logout", "Mark", "Merge", "Move", "Mute", "Patch",
-	"Pause", "Pin", "Post", "Promote", "Provision", "Publish", "Purge", "Push", "Put",
-	"Reassign", "Record", "Redeem", "Refund", "Register", "Reject", "Release",
-	"Remove", "Rename", "Reorder", "Replace", "Reply", "Reserve", "Reset", "Restart",
-	"Restore", "Resume", "Retry", "Revoke", "Rollback", "Rotate", "Run", "Save",
-	"Schedule", "Send", "Set", "Share", "Spawn", "Start", "Stop", "Submit",
-	"Subscribe", "Suspend", "Terminate", "Toggle", "Transfer", "Trigger", "Unarchive",
-	"Unassign", "Unban", "Unblock", "Uninstall", "Unlink", "Unlock", "Unmute", "Unpin",
-	"Unregister", "Unset", "Unshare", "Unsubscribe", "Update", "Upload", "Upsert",
-	"Write",
+	"Add", "Archive", "Cancel", "Create", "Delete", "Grant", "Insert", "Move",
+	"Patch", "Purge", "Remove", "Rename", "Replace", "Restore", "Revoke", "Send",
+	"Set", "Update", "Upsert",
 }
 
 // WriteVerbs returns the write verbs WriteVerb recognizes, sorted.
 func WriteVerbs() []string { return append([]string(nil), rpcWriteVerbs...) }
 
-// rpcBatchPrefixes may open an rpc name ahead of its verb.
-var rpcBatchPrefixes = []string{"Batch", "Bulk"}
-
 // ReadVerb is the read verb an rpc name opens with, or "" when it opens with
 // none forge treats as a read.
 //
-// The read verbs are exactly the names forge ALREADY treats as reads: the
-// hook generator's (IsQueryMethodName: Get, List, Search, Find, Check, Has,
-// Is, Count, Exists) and the activity interceptor's
+// It is exactly the union of the two classifiers forge already runs on rpc
+// names, with their own rules and nothing added: the hook generator's
+// (IsQueryMethodName: Get, List, Search, Find, Check, Has, Is, Count,
+// Exists, whole word) and the activity interceptor's
 // (activity.IsMutatingName: BatchGet, Get, List, Watch, Search, Query,
 // Count, Describe). So asking every rpc ReadVerb names to declare
-// NO_SIDE_EFFECTS can never ask it of a name forge itself would classify as
-// a write.
+// NO_SIDE_EFFECTS never asks it of a name forge itself treats as a write.
 func ReadVerb(name string) string {
-	for _, n := range []string{cutBatch(name), name} {
-		if !IsQueryMethodName(n) && activity.IsMutatingName(n) {
-			continue
-		}
-		return leadingWord(n)
+	switch {
+	case IsQueryMethodName(name):
+		return leadingWord(name)
+	case activity.IsMutatingName(name):
+		return ""
+	case strings.HasPrefix(name, "BatchGet"):
+		return "BatchGet"
+	default:
+		return leadingWord(name)
 	}
-	return ""
 }
 
 // WriteVerb is the write verb (rpcWriteVerbs) an rpc name opens with, or "".
 func WriteVerb(name string) string {
-	n := cutBatch(name)
 	for _, v := range rpcWriteVerbs {
-		if rest, ok := strings.CutPrefix(n, v); ok && (rest == "" || startsWord(rest)) {
+		if rest, ok := strings.CutPrefix(name, v); ok && (rest == "" || startsWord(rest)) {
 			return v
 		}
 	}
 	return ""
-}
-
-// cutBatch strips one leading Batch or Bulk word.
-func cutBatch(name string) string {
-	for _, p := range rpcBatchPrefixes {
-		if rest, ok := strings.CutPrefix(name, p); ok && startsWord(rest) {
-			return rest
-		}
-	}
-	return name
 }
 
 // startsWord reports whether s begins a new PascalCase word.

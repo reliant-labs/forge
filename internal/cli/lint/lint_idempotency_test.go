@@ -22,7 +22,12 @@ func TestIdempotencyFindingsFor(t *testing.T) {
 		{name: "read with the option", rpc: idempotencyRPC{Name: "GetOrder", NoSideEffects: true}},
 		{name: "hook-generator read verb", rpc: idempotencyRPC{Name: "HasAccess"}, want: ruleIdempotencyReadUndeclared, msg: "(Has)"},
 		{name: "activity read verb", rpc: idempotencyRPC{Name: "DescribeCluster"}, want: ruleIdempotencyReadUndeclared, msg: "(Describe)"},
-		{name: "batch read", rpc: idempotencyRPC{Name: "BatchGetOrders"}, want: ruleIdempotencyReadUndeclared, msg: "(Get)"},
+		{name: "batch read", rpc: idempotencyRPC{Name: "BatchGetOrders"}, want: ruleIdempotencyReadUndeclared, msg: "(BatchGet)"},
+		// Only BatchGet is a batch read, as in the hook generator and the
+		// activity interceptor; no other Batch/Bulk prefix is stripped.
+		{name: "BatchSearch is not judged", rpc: idempotencyRPC{Name: "BatchSearchOrders"}},
+		{name: "BulkGet is not judged", rpc: idempotencyRPC{Name: "BulkGetOrders"}},
+		{name: "BatchUpdate declaring NO_SIDE_EFFECTS is not judged", rpc: idempotencyRPC{Name: "BatchUpdateOrders", NoSideEffects: true}},
 		{name: "server-streaming read", rpc: idempotencyRPC{Name: "WatchOrders"}, want: ruleIdempotencyReadUndeclared, msg: "(Watch)"},
 		{name: "client-streaming read is not judged", rpc: idempotencyRPC{Name: "ListOrders", ClientStreaming: true}},
 		{name: "whole-word match: Checkout is no read", rpc: idempotencyRPC{Name: "CheckoutCart"}},
@@ -33,7 +38,12 @@ func TestIdempotencyFindingsFor(t *testing.T) {
 		{name: "read-named write without a reason", rpc: idempotencyRPC{Name: "GetOrCreateSession", Mutation: true}, want: ruleIdempotencyReadUndeclared, msg: "with no reason"},
 		{name: "bare forge:mutation on a write is not judged", rpc: idempotencyRPC{Name: "PlaceOrder", Mutation: true}},
 		{name: "write declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "CreateOrder", NoSideEffects: true}, want: ruleIdempotencyWriteAsRead, msg: "named as a write (Create)"},
-		{name: "bulk write declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "BulkDeleteOrders", NoSideEffects: true}, want: ruleIdempotencyWriteAsRead, msg: "(Delete)"},
+		{name: "revoke declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "RevokeKey", NoSideEffects: true}, want: ruleIdempotencyWriteAsRead, msg: "(Revoke)"},
+		// Verbs a read-only rpc can open with are not judged.
+		{name: "RunSavedQuery declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "RunSavedQuery", NoSideEffects: true}},
+		{name: "ExecuteQuery declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "ExecuteQuery", NoSideEffects: true}},
+		{name: "EnsureFresh declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "EnsureFresh", NoSideEffects: true}},
+		{name: "StartPreview declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "StartPreview", NoSideEffects: true}},
 		{name: "streaming write declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "SendMessages", ClientStreaming: true, NoSideEffects: true}, want: ruleIdempotencyWriteAsRead, msg: "(Send)"},
 		{name: "write without the option", rpc: idempotencyRPC{Name: "CreateOrder"}},
 		{name: "whole-word match: Settings is no write", rpc: idempotencyRPC{Name: "SettingsSummary", NoSideEffects: true}},
@@ -81,8 +91,11 @@ service ShopService {
   rpc CreateOrder(GetOrderRequest) returns (GetOrderResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
-  // forge:lint-disable-next-line forge-idempotency-write-marked-read: replays a stored query, writes nothing
   rpc RunSavedQuery(GetOrderRequest) returns (GetOrderResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // forge:lint-disable-next-line forge-idempotency-write-marked-read: renders the mail it would send; sends nothing
+  rpc SendTestPreview(GetOrderRequest) returns (GetOrderResponse) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
   rpc WatchOrders(GetOrderRequest) returns (stream GetOrderResponse);
@@ -128,6 +141,7 @@ func TestCollectIdempotencyFindings(t *testing.T) {
 		{Name: "CountOrders"},
 		{Name: "CreateOrder", NoSideEffects: true},
 		{Name: "RunSavedQuery", NoSideEffects: true},
+		{Name: "SendTestPreview", NoSideEffects: true},
 		{Name: "WatchOrders", ServerStreaming: true},
 		{Name: "SearchOrders", ClientStreaming: true},
 	})
@@ -141,7 +155,7 @@ func TestCollectIdempotencyFindings(t *testing.T) {
 			t.Errorf("finding file = %q, want the proto relative to the project root", f.File)
 		}
 		rpc := ""
-		for _, name := range []string{"ListOrders", "FindAndHoldSeat", "CreateOrder", "WatchOrders", "GetOrCreateCart", "CountOrders", "RunSavedQuery", "SearchOrders"} {
+		for _, name := range []string{"ListOrders", "FindAndHoldSeat", "CreateOrder", "WatchOrders", "GetOrCreateCart", "CountOrders", "RunSavedQuery", "SendTestPreview", "SearchOrders"} {
 			if strings.Contains(f.Message, "ShopService."+name+" ") {
 				rpc = name
 			}
@@ -152,7 +166,7 @@ func TestCollectIdempotencyFindings(t *testing.T) {
 		"ListOrders":      ruleIdempotencyReadUndeclared + "@9",
 		"FindAndHoldSeat": ruleIdempotencyReadUndeclared + "@13", // forge:mutation with no reason
 		"CreateOrder":     ruleIdempotencyWriteAsRead + "@15",
-		"WatchOrders":     ruleIdempotencyReadUndeclared + "@22",
+		"WatchOrders":     ruleIdempotencyReadUndeclared + "@25",
 	}
 	if len(got) != len(want) {
 		t.Errorf("got findings %v, want %v", got, want)

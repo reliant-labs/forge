@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -87,11 +88,11 @@ func configFieldsOf(messages []ConfigMessage) []ConfigField {
 
 func TestPerBinaryRoots_AppConfigBesideACommandConfigKeepsWorkloadEnvMap(t *testing.T) {
 	src, _ := perBinaryConfigModule(t, appConfigBesideCommandMessages(), "demo", nil)
+	wantRootList(t, src, "server", "env", "PORT", "GREETING")
+	wantRootList(t, src, "server", "secrets", "DATABASE_URL", "SERVE_TOKEN")
+	wantRootList(t, src, "server", "required_secrets", "DATABASE_URL")
 	for _, want := range []string{
 		`"server" = Root {`,
-		`env = ["PORT", "GREETING"]`,
-		`secrets = ["DATABASE_URL", "SERVE_TOKEN"]`,
-		`required_secrets = ["DATABASE_URL"]`,
 		"root_of = lambda name: str",
 		"_rootsProcessEnvMap = lambda c: AppConfig, p: DemoProcess, argv: [str], config_secrets: [str]",
 		"_root_secrets = [_n for _n in config_secrets if _n in APP_CONFIG_SENSITIVE_ENV]",
@@ -114,11 +115,11 @@ func TestPerBinaryRoots_AppConfigBesideABinaryRootConfig(t *testing.T) {
 	messages := appConfigBesideCommandMessages()
 	messages[1].Command = nil
 	src, _ := perBinaryConfigModule(t, messages, "demo", nil)
+	wantRootList(t, src, "server", "env", "PORT", "GREETING")
 	for _, want := range []string{
 		"workloadEnvMap = lambda c: AppConfig, w: any, p: ServeConfig = ServeConfig {}",
 		"appConfigEnvMap(c, _root_secrets) | serveConfigEnvMap(p, [_n for _n in config_secrets if _n not in _root_secrets])",
 		"config_gen.workloadEnvMap(appcfg.app_config, w, appcfg.serve_config)",
-		`env = ["PORT", "GREETING"]`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("config_gen.k lacks %q", want)
@@ -135,31 +136,33 @@ func TestPerBinaryRoots_EveryShapeDeclaresWorkloadEnvMap(t *testing.T) {
 	otherBinary := appConfigBesideCommandMessages()
 	otherBinary[1].Binary = "admin"
 	for name, tc := range map[string]struct {
-		messages []ConfigMessage
-		bin      string
-		want     []string
+		messages  []ConfigMessage
+		bin       string
+		want      []string
+		serverEnv []string // ROOTS["server"].env, when ROOTS is projected
 	}{
 		"AppConfig and no primary binary": {otherBinary, "", []string{
 			"workloadEnvMap = lambda c: AppConfig, w: any ->",
 			"rootEnvMap(c, w) if w.root else appConfigEnvMap(c, w.config_secrets or [])",
-		}},
+		}, nil},
 		"AppConfig and a config bound to another binary": {otherBinary, "demo", []string{
 			"workloadEnvMap = lambda c: AppConfig, w: any ->",
-			`env = ["PORT"]`,
-		}},
+		}, []string{"PORT"}},
 		"only a command config": {commandOnly, "demo", []string{
 			"workloadEnvMap = lambda c: DemoProcess, w: any ->",
-			`env = ["GREETING"]`,
-		}},
+		}, []string{"GREETING"}},
 		"no config a root's process loads": {otherBinary[1:], "demo", []string{
 			"ROOTS are not projected: no config is loaded by a root's process",
 			"workloadEnvMap = lambda c: any, w: any ->",
 			"root_of = lambda name: str ->",
 			"Declare an unannotated AppConfig",
-		}},
+		}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			src, _ := perBinaryConfigModule(t, tc.messages, tc.bin, nil)
+			if tc.serverEnv != nil {
+				wantRootList(t, src, "server", "env", tc.serverEnv...)
+			}
 			for _, want := range tc.want {
 				if !strings.Contains(src, want) {
 					t.Errorf("config_gen.k lacks %q:\n%s", want, src)
@@ -176,14 +179,18 @@ func TestGraphRootsKCL_FillsAnUnknownReach(t *testing.T) {
 		{Name: "server", Args: []string{"server"}},
 		{Name: "worker", Args: []string{"worker"}},
 	})
-	for _, want := range []string{
-		`env = ["PORT", "GREETING"]`, // server: AppConfig + the `server` command config
-		`env = ["PORT"]`,             // worker: AppConfig alone
-		"workloadEnvMap = lambda",
-	} {
-		if !strings.Contains(src, want) {
-			t.Errorf("config_gen.k lacks %q", want)
-		}
+	wantRootList(t, src, "server", "env", "PORT", "GREETING") // AppConfig + the `server` command config
+	wantRootList(t, src, "worker", "env", "PORT")             // AppConfig alone
+	if !strings.Contains(src, "workloadEnvMap = lambda") {
+		t.Errorf("config_gen.k lacks %q", "workloadEnvMap = lambda")
+	}
+}
+
+// wantRootList fails t unless ROOTS[root].<member> in src lists exactly want.
+func wantRootList(t *testing.T, src, root, member string, want ...string) {
+	t.Helper()
+	if got := rootListEntries(t, src, root, member); !slices.Equal(got, want) {
+		t.Errorf("ROOTS[%s].%s = %v, want %v", root, member, got, want)
 	}
 }
 

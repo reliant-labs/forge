@@ -27,7 +27,7 @@
 # A RELEASE NEVER PUSHES TO THE BRANCH. The tag goes on a commit that is
 # already on origin/<branch> and whose full CI is green; the bookkeeping
 # (VERSION, NEXT_VERSION, CHANGELOG.md, npm/package.json, npm/server.json,
-# gemini-extension.json) is committed on top
+# gemini-extension.json, the plugins/reliant-forge manifests) is committed on top
 # of that commit, pushed to release/vX.Y.Z, and lands through a pull request
 # and the merge queue like any other change. main is protected by a ruleset
 # that only the merge queue may satisfy, so a direct push would need a bypass
@@ -539,6 +539,26 @@ MCP_SERVER_JSON="npm/server.json"
 # Gemini's extension metadata follows the same forge/npm release version.
 GEMINI_MANIFEST="gemini-extension.json"
 [ -f "$GEMINI_MANIFEST" ] && TOUCHED+=("$GEMINI_MANIFEST")
+# So do the reliant-forge plugin's manifests (Claude Code, Codex, Cursor): a
+# plugin marketplace offers its users a new copy only when the version moves.
+PLUGIN_MANIFESTS=(
+  "plugins/reliant-forge/.claude-plugin/plugin.json"
+  "plugins/reliant-forge/.codex-plugin/plugin.json"
+  "plugins/reliant-forge/.cursor-plugin/plugin.json"
+)
+for f in "${PLUGIN_MANIFESTS[@]}"; do
+  [ -f "$f" ] && TOUCHED+=("$f")
+done
+# The plugin runs the npm package at an exact version (npx
+# @reliantlabs/forge@X.Y.Z: Anthropic's directory refuses an unpinned
+# launcher), and its skill and README name the same one.
+PLUGIN_PINNED=()
+if [ -d plugins/reliant-forge ]; then
+  while IFS= read -r f; do
+    PLUGIN_PINNED+=("$f")
+  done < <(grep -rlF '@reliantlabs/forge@' plugins/reliant-forge || true)
+fi
+TOUCHED+=(${PLUGIN_PINNED[@]+"${PLUGIN_PINNED[@]}"})
 # The web runtime's bookkeeping (step 8c): its manifests' versions and the
 # scaffold floor that names it.
 WR_MANIFEST="web-runtime/package.json"
@@ -675,6 +695,37 @@ if [ -f "$GEMINI_MANIFEST" ]; then
   fi
   cat "$BACKUP_DIR/gemini-extension.json.new" >"$GEMINI_MANIFEST"
 fi
+# The plugin manifests' top-level version, the one their marketplaces compare.
+for f in "${PLUGIN_MANIFESTS[@]}"; do
+  [ -f "$f" ] || continue
+  echo "→ syncing $f to ${VERSION#v}"
+  sed -e 's/^  "version": ".*"/  "version": "'"${VERSION#v}"'"/' "$f" >"$BACKUP_DIR/plugin.json.new"
+  if ! grep -q "^  \"version\": \"${VERSION#v}\"" "$BACKUP_DIR/plugin.json.new"; then
+    echo "error: could not set the version in $f (expected a two-space-indented \"version\" line)" >&2
+    exit 1
+  fi
+  cat "$BACKUP_DIR/plugin.json.new" >"$f"
+done
+# The pin moves only to a version npm will serve: release-npm.yml never
+# publishes a prerelease.
+case "${VERSION#v}" in
+  *-*)
+    if [ "${#PLUGIN_PINNED[@]}" -gt 0 ]; then
+      echo "→ ${VERSION} is a prerelease, which npm does not get; the plugin keeps its pin"
+    fi
+    ;;
+  *)
+    for f in ${PLUGIN_PINNED[@]+"${PLUGIN_PINNED[@]}"}; do
+      echo "→ pinning @reliantlabs/forge@${VERSION#v} in $f"
+      sed -E 's#@reliantlabs/forge@[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?#@reliantlabs/forge@'"${VERSION#v}"'#g' "$f" >"$BACKUP_DIR/plugin-pin.new"
+      if [ "$(grep -oF '@reliantlabs/forge@' "$BACKUP_DIR/plugin-pin.new" | wc -l)" != "$(grep -oF "@reliantlabs/forge@${VERSION#v}" "$BACKUP_DIR/plugin-pin.new" | wc -l)" ]; then
+        echo "error: $f runs @reliantlabs/forge at something other than an exact version (e.g. @latest); pin it, the release moves the pin" >&2
+        exit 1
+      fi
+      cat "$BACKUP_DIR/plugin-pin.new" >"$f"
+    done
+    ;;
+esac
 
 # ── 7b. CHANGELOG.md ────────────────────────────────────────────────
 # Written only here, from the merged PR titles since the previous tag. The
@@ -764,7 +815,8 @@ go build ./...
 # Built before the bookkeeping commit exists, so a build failure leaves no
 # commit or tag behind. The stamped commit is the tagged one (HEAD here); the
 # bookkeeping commit changes only VERSION, NEXT_VERSION, npm/package.json,
-# npm/server.json, gemini-extension.json and CHANGELOG.md, so the compiled source
+# npm/server.json, gemini-extension.json, the plugins/reliant-forge manifests and
+# CHANGELOG.md, so the compiled source
 # is the tagged source.
 ASSETS_DIR="$BACKUP_DIR/assets"
 echo "→ building release archives"

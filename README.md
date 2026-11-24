@@ -21,6 +21,7 @@ npx -y @reliantlabs/forge@latest env deploy prod --claimable
 claude mcp add forge -- npx -y @reliantlabs/forge mcp   # Claude Code
 codex mcp add forge -- npx -y @reliantlabs/forge mcp    # Codex
 # Cursor, VS Code and Gemini CLI: see Use as an MCP server below
+# Or the reliant-forge plugin, the MCP server plus a deploy skill: see The reliant-forge plugin below
 
 # Let it search the docs too: a public, read-only MCP server, no account
 claude mcp add --transport http reliant-docs https://docs.reliantlabs.io/mcp
@@ -267,6 +268,22 @@ gemini extensions install https://github.com/reliant-labs/forge
 account and returns its URL plus a claim link that is good for 72 hours. The
 other tools introspect the project, read the skill catalog, and run `lint` and
 `generate`. Every tool, and the config for Codex: [docs/mcp.md](docs/mcp.md).
+
+### The reliant-forge plugin
+
+[`plugins/reliant-forge`](plugins/reliant-forge) bundles the MCP server with a
+deploy skill, so "deploy this" uses Forge: a claimable deploy with no account,
+or a deploy to your account followed by `forge obs check`. This repository is
+its marketplace. In Claude Code:
+
+```text
+/plugin marketplace add reliant-labs/forge
+/plugin install reliant-forge@reliant-labs
+```
+
+In Codex, run `codex plugin marketplace add reliant-labs/forge`, then install
+Reliant Forge from the plugin directory. Cursor reads the same plugin
+(`.cursor-plugin/marketplace.json`).
 
 ## Opinionated, never a wall
 

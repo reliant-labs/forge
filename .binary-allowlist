@@ -10,3 +10,8 @@ docs/images/*.png
 # fixture; pkg/testreport/coverage_test.go says how each one was made.
 pkg/testreport/testdata/cover/cov*/covmeta.*
 pkg/testreport/testdata/cover/cov*/covcounters.*
+
+# The reliant-forge agent plugin's directory logo (the reliantlabs.io touch
+# icon), which the Claude Code, Codex and Cursor manifests reference by path;
+# the marketplaces read it from this repository.
+plugins/reliant-forge/assets/*.png

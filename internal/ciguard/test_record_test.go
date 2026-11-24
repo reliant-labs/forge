@@ -244,3 +244,60 @@ func TestUploadNeverDecides(t *testing.T) {
 		})
 	}
 }
+
+// TestShardsSkipQuarantinedTests proves both shard scripts pass `go test`
+// the -skip pattern `forge test quarantine skip-regex go` prints, so a
+// ci/quarantine/ entry (forge.yaml's tests.flakes.quarantine: pr writes them)
+// takes effect, and pass no -skip at all when it prints nothing, so the
+// command, and the test cache key, is unchanged with an empty list.
+func TestShardsSkipQuarantinedTests(t *testing.T) {
+	testkit.Slow(t, "execs bash")
+	for _, tc := range []struct {
+		script string
+		args   []string
+	}{
+		{script: "ci-test-shard.sh", args: []string{"0", "1"}},
+		{script: "ci-test-full-shard.sh", args: []string{"unit", "0", "1"}},
+	} {
+		for _, quarantined := range []string{"^(TestFlaky)$", ""} {
+			t.Run(tc.script+"/"+map[bool]string{true: "quarantined", false: "empty"}[quarantined != ""], func(t *testing.T) {
+				root := t.TempDir()
+				if err := os.Mkdir(filepath.Join(root, "scripts"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				for name, content := range map[string]string{
+					"scripts/" + tc.script:        readText(t, filepath.Join("..", "..", "scripts", tc.script)),
+					"scripts/ci-go-test.sh":       readText(t, filepath.Join("..", "..", "scripts", "ci-go-test.sh")),
+					"scripts/ci-test-packages.sh": "#!/usr/bin/env bash\necho fixture/package\n",
+					"go": `#!/usr/bin/env bash
+echo "$*" >>"$(dirname "$0")/go-args"
+printf '%s\n' '{"Action":"pass","Package":"fixture/package","Test":"TestCheap","Elapsed":0.01}' '{"Action":"pass","Package":"fixture/package","Elapsed":0.01}'
+`,
+				} {
+					if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cmd := exec.Command("bash", append([]string{"scripts/" + tc.script}, tc.args...)...)
+				cmd.Dir = root
+				cmd.Env = append(os.Environ(), "PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
+					"CI_TEST_JSON="+filepath.Join(root, "events.json"), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"),
+					installStubForge(t, root), "FORGE_LOG="+filepath.Join(root, "forge-log"), "STUB_RUN="+filepath.Join(root, "run"),
+					"STUB_STDOUT="+quarantined)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("%s: %v\n%s", tc.script, err, out)
+				}
+				if calls := readText(t, filepath.Join(root, "forge-log")); !strings.Contains(calls, "test quarantine skip-regex go\n") {
+					t.Errorf("%s must ask forge for the quarantine's -skip pattern, got:\n%s", tc.script, calls)
+				}
+				args := readText(t, filepath.Join(root, "go-args"))
+				switch {
+				case quarantined != "" && !strings.Contains(args, " -skip "+quarantined+" fixture/package"):
+					t.Errorf("go test must skip the quarantined tests (-skip %s):\n%s", quarantined, args)
+				case quarantined == "" && strings.Contains(args, "-skip"):
+					t.Errorf("an empty quarantine must add no -skip:\n%s", args)
+				}
+			})
+		}
+	}
+}

@@ -110,10 +110,16 @@ esac
 rec="$lane-race"
 run=$("$here/ci-forge.sh" test begin)
 mkdir -p "$run/$rec"
+# QUARANTINE, as in scripts/ci-test-shard.sh: skip what ci/quarantine/ names.
+skip=()
+if q=$("$here/ci-forge.sh" test quarantine skip-regex go) && [[ -n "$q" ]]; then
+  skip=(-skip "$q")
+  echo "skipping quarantined tests: $q"
+fi
 status=0
 started=$SECONDS
 "$here/ci-forge.sh" test capture --run "$run" --lane "$rec" --render raw -- \
-  "$here/ci-go-test.sh" -race -count=1 -json -covermode=atomic -coverprofile="$run/$rec/cover.out" -timeout "$timeout" "${args[@]}" >"$json" || status=$?
+  "$here/ci-go-test.sh" -race -count=1 -json -covermode=atomic -coverprofile="$run/$rec/cover.out" -timeout "$timeout" ${skip[@]+"${skip[@]}"} "${args[@]}" >"$json" || status=$?
 elapsed=$((SECONDS - started))
 echo "$lane shard $((i + 1))/$n: ${elapsed}s wall (compile, link and tests)"
 

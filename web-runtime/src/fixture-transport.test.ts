@@ -327,7 +327,7 @@ describe("fixture packs", () => {
 describe("checkFixturePack", () => {
   const services = [TelemetryService];
 
-  it("finds nothing wrong with a sound pack", async () => {
+  it("finds nothing wrong with valid fixtures", async () => {
     const pack = defineFixturePack({
       name: "sound",
       data: {

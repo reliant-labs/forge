@@ -143,6 +143,12 @@ transports serve nothing else, so an undeclared read errors in a demo.
 declaring it. A read-named rpc that writes says why: `// forge:mutation: <why>`
 above it (`frontend/mock-mode`).
 
+A read whose response carries a secret or a per-call value (an access token, a
+presigned URL, an OAuth state, an invite or claim link, a one-time code, a
+challenge) does not declare it: Connect may send a NO_SIDE_EFFECTS rpc as an HTTP
+GET, which caches and proxies store and replay. Mark it `// forge:mutation: <why>`
+instead (`forge-idempotency-secret-response-marked-read`; `frontend/mock-mode`).
+
 ### No schema annotations
 
 There is no proto-side schema declaration: entities are projections of the

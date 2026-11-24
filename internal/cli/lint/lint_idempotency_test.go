@@ -48,6 +48,17 @@ func TestIdempotencyFindingsFor(t *testing.T) {
 		{name: "write without the option", rpc: idempotencyRPC{Name: "CreateOrder"}},
 		{name: "whole-word match: Settings is no write", rpc: idempotencyRPC{Name: "SettingsSummary", NoSideEffects: true}},
 		{name: "forge:mutation and NO_SIDE_EFFECTS contradict", rpc: idempotencyRPC{Name: "FindAndHoldSeat", Mutation: true, MutationReason: "holds a seat", NoSideEffects: true}, want: ruleIdempotencyWriteAsRead, msg: "says both"},
+		// A response carrying a secret or a per-call value: rule 3.
+		{name: "secret read declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "GetUploadURL", NoSideEffects: true, SecretField: "upload_url", SecretWhy: "is named as a URL minted for this call"}, want: ruleIdempotencySecretResponse, msg: "carries `upload_url`"},
+		{name: "secret read without the option replaces rule 1", rpc: idempotencyRPC{Name: "GetAccessToken", SecretField: "access_token", SecretWhy: "is named as a credential"}, want: ruleIdempotencySecretResponse, msg: "must not declare"},
+		{name: "secret noun-named rpc declaring NO_SIDE_EFFECTS", rpc: idempotencyRPC{Name: "SessionChallenge", NoSideEffects: true, SecretField: "challenge", SecretWhy: "is named as a one-use value"}, want: ruleIdempotencySecretResponse, msg: "declares idempotency_level"},
+		{name: "secret read marked forge:mutation with a reason", rpc: idempotencyRPC{Name: "GetUploadURL", Mutation: true, MutationReason: "issues a fresh URL", SecretField: "upload_url"}},
+		{name: "secret read marked forge:mutation without a reason is rule 1's", rpc: idempotencyRPC{Name: "GetUploadURL", Mutation: true, SecretField: "upload_url"}, want: ruleIdempotencyReadUndeclared, msg: "with no reason"},
+		{name: "secret write declaring NO_SIDE_EFFECTS is rule 2's alone", rpc: idempotencyRPC{Name: "CreateInvite", NoSideEffects: true, SecretField: "invite_url"}, want: ruleIdempotencyWriteAsRead, msg: "(Create)"},
+		{name: "secret noun-named rpc without the option is not judged", rpc: idempotencyRPC{Name: "SessionChallenge", SecretField: "challenge"}},
+		// Connect sends only a unary rpc as GET.
+		{name: "secret server-streaming read is rule 1's", rpc: idempotencyRPC{Name: "WatchTokens", ServerStreaming: true, SecretField: "token"}, want: ruleIdempotencyReadUndeclared, msg: "(Watch)"},
+		{name: "secret server-streaming read may declare it", rpc: idempotencyRPC{Name: "WatchTokens", ServerStreaming: true, NoSideEffects: true, SecretField: "token"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.rpc.Service = "OrderService"
@@ -107,16 +118,24 @@ service ShopService {
 // descriptor carrying methods (what forge generate compiles from it).
 func writeIdempotencyProject(t *testing.T, methods []codegen.Method) string {
 	t.Helper()
+	return writeIdempotencyProjectWith(t, idempotencyFixtureProto, methods, nil)
+}
+
+// writeIdempotencyProjectWith is writeIdempotencyProject over a given proto
+// source and deep schema.
+func writeIdempotencyProjectWith(t *testing.T, src string, methods []codegen.Method, schemas map[string][]codegen.SchemaFieldDef) string {
+	t.Helper()
 	root := t.TempDir()
 	pdir := filepath.Join(root, "proto", "services", "shop", "v1")
 	if err := os.MkdirAll(pdir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(pdir, "shop.proto"), []byte(idempotencyFixtureProto), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(pdir, "shop.proto"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	desc := codegen.ForgeDescriptor{Services: []codegen.ServiceDef{{
 		Name: "ShopService", Package: "shop.v1", ProtoFile: "services/shop/v1/shop.proto", Methods: methods,
+		Schemas: schemas,
 	}}}
 	b, err := json.Marshal(desc)
 	if err != nil {
@@ -192,5 +211,68 @@ func TestCollectIdempotencyFindingsNoDescriptor(t *testing.T) {
 	}
 	if len(fs) != 0 {
 		t.Errorf("want no findings with no descriptor and no protos, got %+v", fs)
+	}
+}
+
+const idempotencySecretFixtureProto = `syntax = "proto3";
+
+package shop.v1;
+
+service ShopService {
+  rpc GetUploadURL(GetUploadURLRequest) returns (GetUploadURLResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  // forge:mutation: issues a fresh claim link on each call
+  rpc GetClaimLink(GetClaimLinkRequest) returns (GetClaimLinkResponse);
+  // forge:lint-disable-next-line forge-idempotency-secret-response-marked-read: a public, unsigned artifact URL
+  rpc GetRelease(GetReleaseRequest) returns (GetReleaseResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // forge:lint-disable-next-line forge-idempotency-secret-response-marked-read: the token is a public key id
+  rpc GetKeyID(GetKeyIDRequest) returns (GetKeyIDResponse);
+  rpc ListOrders(ListOrdersRequest) returns (ListOrdersResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+`
+
+// The rule reads each rpc's response through the descriptor's deep schema,
+// takes rule 1's place on a read-named rpc, and honours forge:mutation and
+// the lint-disable directive.
+func TestCollectIdempotencyFindingsSecretResponse(t *testing.T) {
+	root := writeIdempotencyProjectWith(t, idempotencySecretFixtureProto, []codegen.Method{
+		{Name: "GetUploadURL", NoSideEffects: true, OutputTypeFQ: "shop.v1.GetUploadURLResponse"},
+		{Name: "GetSession", OutputTypeFQ: "shop.v1.GetSessionResponse"},
+		{Name: "GetClaimLink", OutputTypeFQ: "shop.v1.GetClaimLinkResponse"},
+		{Name: "GetRelease", NoSideEffects: true, OutputTypeFQ: "shop.v1.GetReleaseResponse"},
+		{Name: "GetKeyID", OutputTypeFQ: "shop.v1.GetKeyIDResponse"},
+		{Name: "ListOrders", NoSideEffects: true, OutputTypeFQ: "shop.v1.ListOrdersResponse"},
+	}, map[string][]codegen.SchemaFieldDef{
+		"shop.v1.GetUploadURLResponse": {{Name: "upload_url", Kind: "string"}},
+		"shop.v1.GetSessionResponse":   {{Name: "session", Kind: "message", TypeName: "shop.v1.Session"}},
+		"shop.v1.Session":              {{Name: "user_id", Kind: "string"}, {Name: "access_token", Kind: "string"}},
+		"shop.v1.GetClaimLinkResponse": {{Name: "claim_url", Kind: "string"}},
+		"shop.v1.GetReleaseResponse":   {{Name: "download_url", Kind: "string"}},
+		"shop.v1.GetKeyIDResponse":     {{Name: "token", Kind: "string"}},
+		"shop.v1.ListOrdersResponse":   {{Name: "next_page_token", Kind: "string"}},
+	})
+	fs, err := collectIdempotencyFindings(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range fs {
+		got = append(got, f.Rule+"@"+itoa(f.Line))
+		if f.Rule == ruleIdempotencySecretResponse && f.Line == 9 && !strings.Contains(f.Message, "`session.access_token`") {
+			t.Errorf("GetSession finding %q does not name the nested field", f.Message)
+		}
+	}
+	want := []string{
+		ruleIdempotencySecretResponse + "@6", // GetUploadURL declares the option
+		ruleIdempotencySecretResponse + "@9", // GetSession: rule 3 in rule 1's place
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("got findings %v, want %v", got, want)
 	}
 }

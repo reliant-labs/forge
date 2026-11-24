@@ -452,6 +452,9 @@ func extractMessageSchema(sd *codegen.ServiceDef, msg *protogen.Message) {
 		fd.Generated = fieldGeneratedExpr(f)
 		fd.Guards = fieldGuardTargets(f)
 		fd.RequestOption = fieldHasRequestOptionMarker(f)
+		if opts, ok := f.Desc.Options().(*descriptorpb.FieldOptions); ok {
+			fd.Redacted = opts.GetDebugRedact()
+		}
 		fields = append(fields, fd)
 	}
 	sd.Schemas[fq] = fields

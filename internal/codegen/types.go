@@ -359,6 +359,12 @@ type SchemaFieldDef struct {
 	// only (the descriptor path carries the facet itself, on
 	// MessageFieldDef.Filter).
 	FilterFacet bool `json:"filter_facet,omitempty"`
+	// Redacted reports protobuf's own `[debug_redact = true]` field option:
+	// the author declared the value sensitive. `forge lint --idempotency`
+	// reads it on response messages (a read whose response carries one must
+	// not declare NO_SIDE_EFFECTS). Read off the compiled descriptor only.
+	// `json:",omitempty"` keeps old descriptors parseable.
+	Redacted bool `json:"redacted,omitempty"`
 }
 
 // IsInputEmpty returns true if the input type is google.protobuf.Empty.

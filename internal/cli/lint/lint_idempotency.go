@@ -26,6 +26,19 @@
 //   - forge-idempotency-write-marked-read: an rpc named as a write, or
 //     marked `// forge:mutation`, that declares NO_SIDE_EFFECTS. It becomes a
 //     cacheable GET and a fixture transport serves it as a read. Any shape.
+//   - forge-idempotency-secret-response-marked-read: a unary rpc whose
+//     response carries a secret or a value minted for the call (an access
+//     token, a presigned URL, an OAuth state, an invite or claim link, a
+//     checkout URL, a one-time code, a nonce, a challenge;
+//     lint_idempotency_secret.go) that declares NO_SIDE_EFFECTS, or that
+//     rule 1 would otherwise ask to declare it. Connect may send a
+//     NO_SIDE_EFFECTS unary rpc as an HTTP GET, which caches and proxies
+//     store and replay, so the next caller would get the same credential.
+//     On a read-named rpc this finding replaces rule 1's: the fix is
+//     `// forge:mutation: <why>` (or the lint-disable below), never the
+//     option. A write-named or forge:mutation rpc declaring the option is
+//     rule 2's, whose fix (delete it) settles this too. Streaming rpcs are
+//     never sent as GET, so the rule judges unary ones only.
 //
 // ── What a name says ─────────────────────────────────────────────────────
 //
@@ -55,7 +68,9 @@
 // The same marker makes its generated hook a useMutation, so one fact is
 // declared once. A bare `forge:mutation` on a read-named rpc is still a
 // finding: the reason is what a reviewer reads. The generic
-// `// forge:lint-disable-next-line <rule>: <why>` works on either rule.
+// `// forge:lint-disable-next-line <rule>: <why>` works on every rule; on
+// the secret-response rule it says why the field is neither a secret nor
+// a per-call value.
 //
 // ── Source of truth ──────────────────────────────────────────────────────
 //
@@ -91,9 +106,10 @@ import (
 const (
 	ruleIdempotencyReadUndeclared = "forge-idempotency-read-undeclared"
 	ruleIdempotencyWriteAsRead    = "forge-idempotency-write-marked-read"
+	ruleIdempotencySecretResponse = "forge-idempotency-secret-response-marked-read"
 )
 
-// noSideEffectsOption is the declaration both rules are about.
+// noSideEffectsOption is the declaration the rules are about.
 const noSideEffectsOption = "option idempotency_level = NO_SIDE_EFFECTS;"
 
 // idempotencyRPC is what the rules read about one rpc.
@@ -104,9 +120,16 @@ type idempotencyRPC struct {
 	// rpc keyword's line in it (0 when the source could not be read).
 	File string
 	Line int
-	// ClientStreaming / NoSideEffects are the compiled descriptor's.
+	// ClientStreaming / ServerStreaming / NoSideEffects are the compiled
+	// descriptor's.
 	ClientStreaming bool
+	ServerStreaming bool
 	NoSideEffects   bool
+	// SecretField is the dotted path of the response's shallowest
+	// secret-shaped field and SecretWhy what marks it
+	// (secretResponseField); "" when the response carries none.
+	SecretField string
+	SecretWhy   string
 	// Mutation / MutationReason: a `// forge:mutation` marker and its prose.
 	Mutation       bool
 	MutationReason string
@@ -123,6 +146,9 @@ func idempotencyFindingsFor(rpcs []idempotencyRPC) []finding.Finding {
 	}
 	for _, r := range rpcs {
 		rpc := r.Service + "." + r.Name
+		// Connect sends only a unary rpc as GET.
+		secret := r.SecretField != "" && !r.ClientStreaming && !r.ServerStreaming
+		carries := fmt.Sprintf("`%s`, which %s", r.SecretField, r.SecretWhy)
 		if r.NoSideEffects {
 			switch verb := codegen.WriteVerb(r.Name); {
 			case r.Mutation:
@@ -133,6 +159,10 @@ func idempotencyFindingsFor(rpcs []idempotencyRPC) []finding.Finding {
 				add(r, ruleIdempotencyWriteAsRead,
 					fmt.Sprintf("rpc %s is named as a write (%s) but declares idempotency_level = NO_SIDE_EFFECTS: Connect clients may send it as a cacheable HTTP GET and retry it, and a read-only fixture transport serves it as a read", rpc, verb),
 					"delete the option (IDEMPOTENT says a repeat is safe without saying it reads); if the rpc truly only reads, rename it, or say why on the line above: `// forge:lint-disable-next-line "+ruleIdempotencyWriteAsRead+": <why>`")
+			case secret:
+				add(r, ruleIdempotencySecretResponse,
+					fmt.Sprintf("rpc %s declares idempotency_level = NO_SIDE_EFFECTS but its response carries %s: Connect clients may send it as an HTTP GET, which browser caches, CDNs and proxies may store and replay, handing the same secret or per-call value to the next caller", rpc, carries),
+					secretResponseFix(r))
 			}
 			continue
 		}
@@ -150,6 +180,10 @@ func idempotencyFindingsFor(rpcs []idempotencyRPC) []finding.Finding {
 			add(r, ruleIdempotencyReadUndeclared,
 				fmt.Sprintf("rpc %s is named as a read (%s) and marked `// %s` with no reason: say why a %s rpc writes", rpc, verb, codegen.ProtoMarkerMutation, verb),
 				fmt.Sprintf("write the reason after the marker: `// %s: <what it writes>`", codegen.ProtoMarkerMutation))
+		case secret:
+			add(r, ruleIdempotencySecretResponse,
+				fmt.Sprintf("rpc %s is named as a read (%s) but its response carries %s: it must not declare %#q, because Connect clients may then send it as an HTTP GET that browser caches, CDNs and proxies store and replay", rpc, verb, carries, noSideEffectsOption),
+				secretResponseFix(r))
 		default:
 			add(r, ruleIdempotencyReadUndeclared,
 				fmt.Sprintf("rpc %s is named as a read (%s) but does not declare %#q: a read-only fixture transport refuses it, and clients cannot cache or retry it as a read", rpc, verb, noSideEffectsOption),
@@ -157,6 +191,15 @@ func idempotencyFindingsFor(rpcs []idempotencyRPC) []finding.Finding {
 		}
 	}
 	return out
+}
+
+// secretResponseFix is the remediation of a secret-response finding.
+func secretResponseFix(r idempotencyRPC) string {
+	fix := fmt.Sprintf("say that each call mints a new value: `// %s: <what each call issues>` above the rpc (its generated hook becomes a useMutation)", codegen.ProtoMarkerMutation)
+	if r.NoSideEffects {
+		fix = "delete the option, and " + fix
+	}
+	return fix + "; if the field is neither a secret nor a per-call value, say why on the line above: `// forge:lint-disable-next-line " + ruleIdempotencySecretResponse + ": <why>`"
 }
 
 // collectIdempotencyFindings reads the declared services and their proto
@@ -185,10 +228,13 @@ func collectIdempotencyFindings(root string) ([]finding.Finding, error) {
 			markers[file] = m
 		}
 		for _, meth := range svc.Methods {
+			secretField, secretWhy := secretResponseField(svc.Schemas, meth.OutputTypeFQ)
 			rpcs = append(rpcs, idempotencyRPC{
 				Service: svc.Name, Name: meth.Name, File: file, Line: m.Lines[meth.Name],
-				ClientStreaming: meth.ClientStreaming, NoSideEffects: meth.NoSideEffects,
-				Mutation: m.Mutation[meth.Name], MutationReason: m.MutationReason[meth.Name],
+				ClientStreaming: meth.ClientStreaming, ServerStreaming: meth.ServerStreaming,
+				NoSideEffects: meth.NoSideEffects,
+				Mutation:      m.Mutation[meth.Name], MutationReason: m.MutationReason[meth.Name],
+				SecretField: secretField, SecretWhy: secretWhy,
 			})
 		}
 	}

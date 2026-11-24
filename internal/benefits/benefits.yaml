@@ -1945,6 +1945,12 @@ benefits:
           A write rpc declaring `NO_SIDE_EFFECTS`: Connect clients may send it
           as a cacheable GET and retry it, and a fixture transport serves it
           as a read
+      - id: forge-idempotency-secret-response-marked-read
+        lane: --idempotency
+        bug_class: >-
+          A read declaring `NO_SIDE_EFFECTS` whose response carries a token, a
+          presigned URL, a one-time link or a challenge: Connect may send it as
+          an HTTP GET that caches and proxies replay to the next caller
       - id: forgeconv-crud-owner-resolver
         lane: --conventions
         bug_class: >-

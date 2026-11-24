@@ -144,8 +144,9 @@ message LLMChatResponse {
 
 	// ── frontend: the TS the generated pages and hooks reference ──
 	webDir := filepath.Join(projectDir, "frontends", "web")
+	// CallOptions and cancellation reach the correctly cased RPC method.
 	expect("alphav1connect hooks", read("frontends", "web", "src", "hooks", "alphav1connect-service-hooks_gen.ts"),
-		"client.lLMChat(req)")
+		"client.lLMChat(req, { ...options, signal })")
 	prebuildWebRuntimeE2E(t)
 	runCmdTimeout(t, webDir, 5*time.Minute,
 		"pnpm", "install", "--no-frozen-lockfile", "--prefer-offline")

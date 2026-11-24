@@ -99,10 +99,11 @@ func TestE2EComponentsKCLDeclaredFromSources(t *testing.T) {
 	// `server`, mounts every service on one Connect mux and runs under air.
 	// So the dev render carries one API line, and the migrate job — which
 	// dev/main.k binds straight out of workloads.k (`wl.migrate`) — is what
-	// proves workloads.k itself was read from the clean tree.
+	// proves workloads.k itself was read from the clean tree. Both launch
+	// paths must also carry the scaffold's declared GoBuild.flags (-trimpath).
 	for _, want := range []string{
-		"api (service): air -c .air.toml",
-		"migrate (job): go run ./cmd/multiapp db migrate up",
+		"api (service): air -c .air.toml  (FORGE_GO_BUILD_FLAGS=-trimpath)",
+		"migrate (job): go run -trimpath ./cmd/multiapp db migrate up",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dev KCL render from a clean tree did not bind %q — the workload did not lower:\n%s", want, out)

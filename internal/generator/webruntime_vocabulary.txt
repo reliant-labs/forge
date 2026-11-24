@@ -10,6 +10,7 @@
 AnyServiceDefaults
 BASE_PATH
 MockEntityDescriptor
+ServiceCallContext
 String
 a
 active
@@ -23,7 +24,6 @@ build
 byName
 cfg
 className
-client
 console
 consoleCapture
 const
@@ -103,6 +103,7 @@ rpcForensics
 run
 runtime
 scenario
+scopedClient
 service
 serviceDefaults
 serviceKeys

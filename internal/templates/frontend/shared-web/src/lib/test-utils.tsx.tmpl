@@ -159,9 +159,9 @@ export function renderWithTransport(
   ui: ReactElement,
   { transport, queryClient, ...renderOptions }: RenderWithTransportOptions,
 ): RenderResult & { queryClient: QueryClient } {
-  // Swap the live binding before render so module-level
-  // `const client = connectClient(Service)` in generated hooks resolves
-  // calls through the mock. connect.ts exposes `transport` as a Proxy
+  // Swap the live binding before render so the module-level
+  // `connectClient(Service)` generated hooks fall back to (outside a
+  // TransportScopeProvider) resolves calls through the mock. connect.ts exposes `transport` as a Proxy
   // delegating to the active reference, so existing clients pick up the
   // swap without rebuild.
   setTransport(transport);

@@ -63,9 +63,11 @@ If `forge.yaml` is absent, adopt the existing app in place before deploying:
 - **Vite or Next.js static site (no server):**
 
   ```bash
-  npx -y @reliantlabs/forge@1.10.0 project new --in-place --kind site --name <name> --dry-run
   npx -y @reliantlabs/forge@1.10.0 project new --in-place --kind site --name <name>
   ```
+
+  Static-site adoption does not support `--dry-run`. Review the files it adds
+  before deploying.
 
 - **App with its own Dockerfile (including an app that needs a server):**
 
@@ -75,8 +77,9 @@ If `forge.yaml` is absent, adopt the existing app in place before deploying:
   ```
 
 Replace `<name>` with the project's name (lowercase, digits and hyphens).
-Review the dry-run output before writing. Adoption adds `forge.yaml` and
-`deploy/kcl/` and appends Forge's block to `.gitignore`; tell the user what
+For a Dockerfile app, review the dry-run output before running the second
+command. Adoption adds `forge.yaml` and `deploy/kcl/` and appends Forge's block
+to `.gitignore`; tell the user what
 changed. Review the generated assumptions, prod hosting bindings and required
 secrets before deploying. For a server app without a Dockerfile, load
 `adopt/deploy` with `skill_load` for the prerequisites; do not adopt it as a

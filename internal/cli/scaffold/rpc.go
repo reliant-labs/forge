@@ -635,7 +635,13 @@ func buildRPCProtoSnippet(rpcName string, mode rpcStreamMode) string {
 		rpcLine = fmt.Sprintf("  rpc %s(%s) returns (%s);", rpcName, reqType, respType)
 	}
 
-	if mode == rpcUnary && activity.IsMutatingName(rpcName) {
+	if (mode == rpcUnary || mode == rpcServerStream) && codegen.ReadVerb(rpcName) != "" {
+		// A read must declare it, or forge lint --idempotency flags it and
+		// read-only fixture transports refuse it: carry the option too.
+		rpcLine = strings.TrimSuffix(rpcLine, ";") + " {\n" +
+			"    option idempotency_level = NO_SIDE_EFFECTS;\n" +
+			"  }"
+	} else if mode == rpcUnary && activity.IsMutatingName(rpcName) {
 		// A mutating rpc must declare the activity it records, or forge lint
 		// fails: carry the option in the snippet, not as a later surprise.
 		rpcLine = strings.TrimSuffix(rpcLine, ";") + " {\n" +

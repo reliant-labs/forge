@@ -58,6 +58,19 @@ func TestEnsureProtoImportSortsIntoPlace(t *testing.T) {
 	}
 }
 
+// The CRUD reads are born declaring NO_SIDE_EFFECTS (read-only fixture
+// transports serve nothing else, and forge lint --idempotency asks it of
+// every read); the writes never are (it would make them cacheable GETs).
+func TestCRUDRPCReadsDeclareNoSideEffects(t *testing.T) {
+	const option = "option idempotency_level = NO_SIDE_EFFECTS;"
+	want := map[string]bool{"CreateCounter": false, "GetCounter": true, "UpdateCounter": false, "DeleteCounter": false, "ListCounters": true}
+	for _, p := range buildEntityCRUDRPCPieces("Counter") {
+		if got := strings.Contains(p.text, option); got != want[p.name] {
+			t.Errorf("%s: declares NO_SIDE_EFFECTS = %v, want %v:\n%s", p.name, got, want[p.name], p.text)
+		}
+	}
+}
+
 func TestCRUDRPCOneFieldOptionLiteralIsOneLine(t *testing.T) {
 	for _, p := range buildEntityCRUDRPCPieces("Counter") {
 		if strings.Contains(p.text, "{\n      auth_required: true\n    };") {

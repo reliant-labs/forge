@@ -462,12 +462,34 @@ func TestBuildRPCHandlerStub_ExportedMethodIsDocumented(t *testing.T) {
 }
 
 // A mutating unary rpc's snippet carries its activity declaration, which
-// forge lint requires; a read-named one stays a one-line rpc.
+// forge lint requires; a read-named one needs none.
 func TestBuildRPCProtoSnippet_DeclaresActivityForMutations(t *testing.T) {
 	if got := buildRPCProtoSnippet("ArchiveProduct", rpcUnary); !strings.Contains(got, "option (forge.v1.method) = { activity:") {
 		t.Errorf("mutating snippet lacks the activity option:\n%s", got)
 	}
-	if got := buildRPCProtoSnippet("GetProductStats", rpcUnary); strings.Contains(got, "activity") || !strings.Contains(got, "returns (GetProductStatsResponse);") {
+	if got := buildRPCProtoSnippet("GetProductStats", rpcUnary); strings.Contains(got, "activity") {
 		t.Errorf("a read rpc needs no activity:\n%s", got)
+	}
+}
+
+// A read-named unary or server-streaming rpc's snippet declares
+// NO_SIDE_EFFECTS, which forge lint --idempotency asks of every read; a
+// write, a client stream and a name that is no read verb do not.
+func TestBuildRPCProtoSnippet_DeclaresNoSideEffectsForReads(t *testing.T) {
+	const option = "option idempotency_level = NO_SIDE_EFFECTS;"
+	for _, c := range []struct {
+		name string
+		mode rpcStreamMode
+		want bool
+	}{
+		{"GetProductStats", rpcUnary, true},
+		{"WatchOrders", rpcServerStream, true},
+		{"ListOrders", rpcClientStream, false},
+		{"ArchiveProduct", rpcUnary, false},
+		{"Foo", rpcUnary, false},
+	} {
+		if got := strings.Contains(buildRPCProtoSnippet(c.name, c.mode), option); got != c.want {
+			t.Errorf("%s (%v): declares NO_SIDE_EFFECTS = %v, want %v", c.name, c.mode, got, c.want)
+		}
 	}
 }

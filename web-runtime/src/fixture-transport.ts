@@ -498,7 +498,7 @@ function serviceImpl(
           guard();
           const answer = comp.answers.get(key);
           if (answer?.kind === "route") {
-            yield* answer.impl(req, ctx) as AsyncIterable<unknown>;
+            yield* asStream(answer.impl(req, ctx));
             return;
           }
           const handler = answer ? answer.handler : comp.defaults.get(key);
@@ -528,7 +528,7 @@ function serviceImpl(
           guard();
           const answer = comp.answers.get(key);
           if (answer?.kind === "route") {
-            yield* answer.impl(reqs, ctx) as AsyncIterable<unknown>;
+            yield* asStream(answer.impl(reqs, ctx));
             return;
           }
           const handler = answer ? answer.handler : comp.defaults.get(key);

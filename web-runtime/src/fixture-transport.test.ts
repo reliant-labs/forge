@@ -114,6 +114,41 @@ describe("createFixtureTransport: routes", () => {
     ]);
   });
 
+  it("serves promised server and bidi streams from async routes", async () => {
+    const transport = createFixtureTransport({
+      routes: (router) =>
+        router.service(TelemetryService, {
+          // Connect's types require a direct iterable; tolerate promised ones
+          // from JavaScript handlers too.
+          // @ts-expect-error deliberately exercise a promised iterable
+          async watch(req) {
+            return (async function* () {
+              yield { id: `${req.projectId}-1` };
+              yield { id: `${req.projectId}-2` };
+            })();
+          },
+          // @ts-expect-error deliberately exercise a promised iterable
+          async chat(reqs) {
+            return (async function* () {
+              for await (const req of reqs) yield { id: req.projectId };
+            })();
+          },
+        }),
+    });
+    const c = client(transport);
+    expect((await drain(c.watch({ projectId: "p" }))).map((e) => e.id)).toEqual(
+      ["p-1", "p-2"],
+    );
+    async function* requests() {
+      yield { projectId: "first" };
+      yield { projectId: "second" };
+    }
+    expect((await drain(c.chat(requests()))).map((e) => e.id)).toEqual([
+      "first",
+      "second",
+    ]);
+  });
+
   it("runs the caller's interceptors on every call", async () => {
     const calls: string[] = [];
     const tag: Interceptor = (next) => async (req) => {

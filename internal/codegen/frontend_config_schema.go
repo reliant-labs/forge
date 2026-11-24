@@ -33,7 +33,7 @@ const (
 // declares a config message: src/lib/otel_gen.ts (the browser telemetry
 // knobs KCL's render.k derives from a frontend's `telemetry` block, and the
 // API origin it propagates traces to), shared-web's native-login.ts (the API
-// URL), shared-web's fixtures.ts (the fixture pack render.k derives from a
+// URL), shared-web's fixtures.ts (the fixture dataset render.k derives from a
 // frontend's `fixtures`), and the ENVIRONMENT every rendered document
 // carries. They are valid `runtime_config` keys for every frontend.
 //

@@ -93,7 +93,7 @@ const isPureMock = () => mockMode() === "true";
 //
 // Fixtures an environment declares (forge.Fixtures, read from the runtime
 // config by src/lib/fixtures.ts) are pure mock too: src/lib/connect.ts answers
-// every RPC from the fixture pack, and no backend answers /auth/session.
+// every RPC from the fixture dataset, and no backend answers /auth/session.
 const isPureMock = () => mockMode() === "true" || runtimeFixtures() !== null;
 {{- end}}
 

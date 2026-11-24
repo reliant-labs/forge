@@ -4814,7 +4814,7 @@ schema BrowserTelemetry:
             "BrowserTelemetry.service_name must be a service name: letters, digits, '.', '_' and '-', starting with a letter or digit"
 
 schema Fixtures:
-    """The fixture pack a frontend serves in THIS environment instead of its
+    """The fixture dataset a frontend serves in THIS environment instead of its
     backend: every RPC is answered in the browser by the frontend's mock
     transport, from one named scenario.
 
@@ -4831,7 +4831,7 @@ schema Fixtures:
         FIXTURES_READ_ONLY  = "true" | "false"
 
     so one release digest serves live data in an env that declares no
-    fixtures and the fixture pack in one that does: a demo or preview env
+    fixtures and the fixture dataset in one that does: a demo or preview env
     is `forge env new demo --from prod` plus this field, and is promoted
     from prod's release by digest, with no second build.
 
@@ -5050,7 +5050,7 @@ schema Frontend:
     # itself (the dev server's public/, a Firebase or own-bucket deploy).
     runtime_config: {str:str | WorkloadURL} = {}
 
-    # The fixture pack this env serves instead of the backend (see
+    # The fixture dataset this env serves instead of the backend (see
     # Fixtures). Rendered into the runtime config above as FIXTURES_SCENARIO
     # and FIXTURES_READ_ONLY, so the same release serves live data where it
     # is unset:

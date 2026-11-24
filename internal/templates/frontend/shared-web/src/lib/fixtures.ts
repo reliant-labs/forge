@@ -1,6 +1,6 @@
 // Fixture data declared per environment, read at RUNTIME.
 //
-// An env serves a fixture pack instead of the backend by declaring it on the
+// An env serves a fixture dataset instead of the backend by declaring it on the
 // frontend in deploy/kcl/<env>/main.k:
 //
 //   fixtures = forge.Fixtures { scenario = "shop" }   // read_only = True
@@ -12,7 +12,7 @@
 //   FIXTURES_READ_ONLY  "true", or "false" when the env set read_only = False
 //
 // Nothing here reads a build variable, so one release digest serves live data
-// in prod and the fixture pack in a demo env promoted from it by digest.
+// in prod and the fixture dataset in a demo env promoted from it by digest.
 // src/lib/connect.ts swaps the transport; src/lib/auth/session-provider.ts
 // signs the UI in as the fixture user, since no backend answers /auth/session.
 import type { Transport } from "@connectrpc/connect";

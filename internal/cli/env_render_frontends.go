@@ -60,7 +60,7 @@ func frontendFixtures(f FrontendEntity) (scenario string, readOnly, ok bool) {
 }
 
 // writeFixturesSummary names, on stderr beside the render summary, every
-// frontend this env serves a fixture pack instead of its backend. It is the
+// frontend this env serves a fixture dataset instead of its backend. It is the
 // one per-env fact that changes what a promoted release DOES, so it is worth
 // a line even when the frontend renders no object.
 func writeFixturesSummary(w io.Writer, e *KCLEntities) {

@@ -31,7 +31,7 @@ skill should teach instead of what it teaches today.
   the browser, and zustand's `persist` rewrites the whole blob on every set, so
   the last tab to write wins. A reload, or a new tab, then restores another
   tab's selection over the URL.
-- The scaffold's `src/lib/search-schemas.ts` gives typed *reads*
+- The scaffold's `src/lib/search-schemas.ts` gives typed _reads_
   (`useTypedSearchParams`). Writing the URL is still up to each page: whether a
   change is a push or a replace, how a default stays out of the URL, how a param
   survives a navigation that does not name it, and what an empty URL starts

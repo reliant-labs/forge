@@ -125,9 +125,10 @@ permissions:
 #   test-short-warm   the whole -short tier, then the guards (full mode, -p 1);
 #                     saves the build cache test-short restores and the
 #                     module cache
-#   build             the release build, go-licenses, govulncheck, the
-#                     ClickHouse integration tests (pkg/obsquery, pkg/alerting)
-#                     and the other container-backed integration tests
+#   build             the release build, go-licenses, govulncheck, the SBOM
+#                     vulnerability scan (forge ci vuln-sbom), the ClickHouse
+#                     integration tests (pkg/obsquery, pkg/alerting) and the
+#                     other container-backed integration tests
 #   windows           native Windows: build, vet, -short tests, smoke
 #
 # FEWER JOBS. The org runs at most 20 jobs at once across every repository,
@@ -600,9 +601,25 @@ jobs:
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-full.json
         run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
+      # Recorded as lane integration-storage (forge test capture), with its
+      # coverage, like every other lane test-upload.yml sends.
       - name: Local registry maintenance integration
         if: ${{ matrix.args == 'unit 0 2' }}
-        run: go test -race -tags=integration -count=1 -timeout=5m ./internal/storage
+        run: |
+          run=$(scripts/ci-forge.sh test begin)
+          mkdir -p "$run/integration-storage"
+          scripts/ci-forge.sh test capture --run "$run" --lane integration-storage -- \
+            scripts/ci-go-test.sh -race -tags=integration -count=1 -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
+      # Main only: the runs the steps above recorded, for test-upload.yml.
+      - name: Keep the recorded test runs (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
       - name: Save the embedded postgres archives (main only)
@@ -674,6 +691,16 @@ jobs:
         env:
           CI_TEST_JSON: ${{ runner.temp }}/test-full.json
         run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
+      # Main only: the run the shard recorded, for test-upload.yml.
+      - name: Keep the recorded test runs (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
       - name: Save the embedded postgres archives (main only)
@@ -749,6 +776,18 @@ jobs:
           [[ -n "$packages" ]] || { echo '::error::no guard packages to test'; exit 1; }
           mapfile -t pkgs <<<"$packages"
           go test -p 1 -count=1 -timeout 30m "${pkgs[@]}"
+      # Main only: the runs the -short tier and the flake gate recorded, for
+      # test-upload.yml. The guards are not recorded: they test the repository's
+      # shape, not code a coverage report would credit.
+      - name: Keep the recorded test runs (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
       - name: Save the embedded postgres archives (main only)
@@ -1091,6 +1130,43 @@ jobs:
       - name: Go vulnerability check
         if: ${{ !cancelled() }}
         run: forge ci vuln-scan --go
+      # The SBOM scan, forge dogfooding the gate step it ships (`forge ci
+      # vuln-sbom`, the `vuln-sbom` step of a project's `task ci`): forge's
+      # pinned syft describes every lockfile and manifest in the tree (go.mod,
+      # web-runtime's package-lock.json, ...) and its pinned grype scans that
+      # against the shared vulnerability database, judged by the default
+      # vuln_gate rule (block KEV-listed advisories and fixable criticals,
+      # warn at high), ci.vuln_scan.exemptions applied. govulncheck above
+      # answers "does forge CALL vulnerable Go code"; this one answers "what
+      # does the tree depend on that is known vulnerable", npm included.
+      #
+      # Graded through the vuln-gate lint rollout row: below the release it
+      # gates from (forge.yaml's forge_version), a blocking finding is printed
+      # and exits 0, and a scan that cannot run exits 78, a SKIP, reported
+      # here as a warning. `lint.rules: {vuln-gate: error}` in forge.yaml
+      # makes both fail this step.
+      #
+      # NO DATABASE CACHE, on purpose. The download is ~200 MB, but the
+      # database unpacks to ~3.4 GB (measured 2026-11-23), and a daily entry
+      # of it would take a large share of the repository's 10 GB cache budget
+      # this file plans around ("Build-cache note"), evicting the Go build
+      # scopes the merge tier restores. This job runs only on a push to main,
+      # so the download costs one fetch per push and no budget. The unpacked
+      # database is deleted after the scan: the container integration steps
+      # below need the runner's disk for their images.
+      - name: SBOM vulnerability scan (forge ci vuln-sbom)
+        if: ${{ !cancelled() }}
+        env:
+          FORGE_VULN_DB_DIR: ${{ runner.temp }}/vulndb
+        run: |
+          rc=0
+          forge ci vuln-sbom || rc=$?
+          rm -rf "$FORGE_VULN_DB_DIR"
+          if [ "$rc" -eq 78 ]; then
+            echo "::warning title=SBOM vulnerability scan skipped::forge ci vuln-sbom could not scan (no scanner or database); not gating below the vuln-gate rollout"
+            exit 0
+          fi
+          exit "$rc"
       # Both integration steps below boot pkg/pgtest's embedded postgres
       # (pkg/alerting's end-to-end tests, pkg/alerting/pgstore, the db squash
       # and `why` tests). Until this restore they fetched the archive from
@@ -1113,9 +1189,17 @@ jobs:
       # cache scope holds no -race artifacts to start from.
       # internal/ciguard's TestIntegrationPackagesRunOnMain holds this step to
       # the push-to-main tier.
+      #
+      # Both integration steps are recorded (forge test capture, this
+      # checkout's forge), as lanes integration-clickhouse and integration,
+      # with their coverage; test-upload.yml sends main's.
       - name: ClickHouse integration (pkg/obsquery, pkg/alerting)
         if: ${{ !cancelled() }}
-        run: go test -tags=integration -count=1 -timeout=20m ./pkg/obsquery ./pkg/alerting
+        run: |
+          run=$(scripts/ci-forge.sh test begin)
+          mkdir -p "$run/integration-clickhouse"
+          scripts/ci-forge.sh test capture --run "$run" --lane integration-clickhouse -- \
+            scripts/ci-go-test.sh -tags=integration -count=1 -json -coverprofile="$run/integration-clickhouse/cover.out" -timeout=20m ./pkg/obsquery ./pkg/alerting
       # The rest of forge's `integration`-tagged tests, which no lane ran
       # either until decision 17 of the 2026-11-10 triage: db squash against
       # real Postgres containers, OpenBao (the secret-store writer, and the
@@ -1139,9 +1223,22 @@ jobs:
         run: |
           KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.25.2 use -p path 1.37.0)"
           export KUBEBUILDER_ASSETS
-          go test -tags=integration -count=1 -timeout=25m \
+          run=$(scripts/ci-forge.sh test begin)
+          mkdir -p "$run/integration"
+          scripts/ci-forge.sh test capture --run "$run" --lane integration -- \
+            scripts/ci-go-test.sh -tags=integration -count=1 -json -coverprofile="$run/integration/cover.out" -timeout=25m \
             -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
             ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
+      # Main only: the runs the integration steps recorded, for test-upload.yml.
+      - name: Keep the recorded test runs (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
       # Main only (this job runs nowhere else): keeps any archive this job had
       # to fetch, so the next run does not (see embedded-postgres-cache's
       # header).
@@ -1390,6 +1487,25 @@ jobs:
       - name: Full npm license inventory (on failure)
         if: ${{ !cancelled() && steps.npm-licenses.outcome == 'failure' }}
         run: ./scripts/check-npm-licenses.sh --list web-runtime
+      # web-runtime's Vitest suite (~1,000 tests, ~15s), recorded as lane
+      # frontend with its coverage (scripts/ci-web-runtime-test.sh). Until
+      # this step it ran only when the package was released. The install
+      # above built dist/, which some of the tests load.
+      - name: web-runtime tests (Vitest, lane frontend)
+        if: ${{ !cancelled() }}
+        # The forge `Install forge` put on PATH records the lane (the same
+        # source scripts/ci-forge.sh would relink); with none, it builds one.
+        run: CI_FORGE="$(command -v forge || true)" scripts/ci-web-runtime-test.sh
+      # Main only: the run the step above recorded, for test-upload.yml.
+      - name: Keep the recorded test runs (main only)
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
       - name: Save the Go caches (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/save-go-caches

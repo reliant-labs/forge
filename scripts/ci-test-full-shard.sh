@@ -26,6 +26,15 @@
 # test-full.json); the console gets package lines, build errors and the output
 # of every failed test, and $GITHUB_STEP_SUMMARY the slowest tests, which is
 # the data to rebalance the shards from.
+#
+# RECORD. As scripts/ci-test-shard.sh does for the -short tier, the run goes
+# through `forge test capture` (this checkout's forge, scripts/ci-forge.sh)
+# into .forge/tests/runs/<run>/<lane>-race/: the -json stream as results.json
+# and the lane's coverage (-covermode=atomic, which -race needs anyway) as
+# cover.out. Capture execs the same command, prints the stream unchanged
+# (--render raw) and exits with its status. The lane names are unit-race and
+# cli-race; on main, ci.yml keeps the run as a test-runs-* artifact, and
+# test-upload.yml sends it to the control plane (scripts/ci-test-upload.sh). FORGE_TESTS=off records nothing.
 set -euo pipefail
 
 json=${CI_TEST_JSON:-test-full.json}
@@ -61,7 +70,9 @@ case "$lane" in
     ;;
   cli)
     pkg=$("$here/ci-test-packages.sh" cli)
-    listed=$("$here/ci-go-test.sh" -race -list '.*' "$pkg") || {
+    # -cover -covermode=atomic: the run below is a cover build, and listing
+    # with the same build flags is what lets it reuse this binary.
+    listed=$("$here/ci-go-test.sh" -race -cover -covermode=atomic -list '.*' "$pkg") || {
       printf '%s\n' "$listed"
       echo "::error::cannot list $pkg's tests (does it compile?)"
       exit 1
@@ -93,9 +104,16 @@ case "$lane" in
     ;;
 esac
 
+# The run to record into, and its lane directory, which -coverprofile writes
+# into: made here, so a run recorded nowhere (FORGE_TESTS=off) still has a
+# place for the profile. Before the clock: building forge is setup.
+rec="$lane-race"
+run=$("$here/ci-forge.sh" test begin)
+mkdir -p "$run/$rec"
 status=0
 started=$SECONDS
-"$here/ci-go-test.sh" -race -count=1 -json -timeout "$timeout" "${args[@]}" >"$json" || status=$?
+"$here/ci-forge.sh" test capture --run "$run" --lane "$rec" --render raw -- \
+  "$here/ci-go-test.sh" -race -count=1 -json -covermode=atomic -coverprofile="$run/$rec/cover.out" -timeout "$timeout" "${args[@]}" >"$json" || status=$?
 elapsed=$((SECONDS - started))
 echo "$lane shard $((i + 1))/$n: ${elapsed}s wall (compile, link and tests)"
 

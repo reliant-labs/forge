@@ -292,9 +292,8 @@ func TestPlan_ExtraChecks(t *testing.T) {
 	}
 
 	for name, bad := range map[string]config.CIGateCheck{
-		"no name":           {Command: []string{"x"}},
-		"no command":        {Name: "x"},
-		"collides w/ forge": {Name: "golangci-lint", Command: []string{"x"}},
+		"no name":    {Command: []string{"x"}},
+		"no command": {Name: "x"},
 	} {
 		in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{bad}
 		if _, err := Plan(in); err == nil {
@@ -304,6 +303,58 @@ func TestPlan_ExtraChecks(t *testing.T) {
 	in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{{Name: "dup", Command: []string{"x"}}, {Name: "dup", Command: []string{"y"}}}
 	if _, err := Plan(in); err == nil {
 		t.Error("duplicate extra names must be rejected: CI_SKIP could not tell them apart")
+	}
+	// An explicit replacement frees forge's name for an extra check; a row
+	// taken over by name and then replaced explicitly has two replacements,
+	// which is still an error.
+	in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{
+		{Name: "lint-go", Command: []string{"x"}, Replaces: "golangci-lint"},
+		{Name: "golangci-lint", Command: []string{"y"}},
+	}
+	if _, err := Plan(in); err != nil {
+		t.Errorf("an explicit replacement frees the name for an extra check: %v", err)
+	}
+	in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{
+		{Name: "golangci-lint", Command: []string{"y"}},
+		{Name: "lint-go", Command: []string{"x"}, Replaces: "golangci-lint"},
+	}
+	if _, err := Plan(in); err == nil {
+		t.Error("a row taken over by name, then replaced explicitly, must be rejected")
+	}
+}
+
+// An extra check named like one of forge's own rows takes that row over, as
+// `replaces:` would, with a warning. A row a later forge adds (lint-<frontend>
+// once frontends/web is discovered) must never turn a project's existing extra
+// check of that name into a config error that stops the whole gate.
+func TestPlan_ExtraCheckNamedLikeForgesRowTakesItOver(t *testing.T) {
+	testkit.Slow(t, "execs go")
+	in := serviceInput(t)
+	in.Cfg = &config.ProjectConfig{}
+	in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{
+		{Name: "lint-web", Dir: "frontends/web", Command: []string{"npm", "run", "lint"}},
+	}
+	var warnings []string
+	in.Warn = func(msg string) { warnings = append(warnings, msg) }
+	all, err := Plan(in)
+	if err != nil {
+		t.Fatalf("an extra check named like forge's row must not be a config error: %v", err)
+	}
+	n := 0
+	for _, c := range all {
+		if c.Name == "lint-web" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("lint-web planned %d times, want once (the project's check in forge's row)", n)
+	}
+	c := find(t, all, "lint-web")
+	if strings.Join(c.Argv, " ") != "npm run lint" || c.Lane != LaneChecks || c.Group != GroupStatic {
+		t.Errorf("lint-web should be the project's check in forge's lane and group: %+v", c)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "replaces: lint-web") {
+		t.Errorf("warnings = %q, want one naming `replaces: lint-web`", warnings)
 	}
 }
 

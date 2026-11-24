@@ -7,7 +7,11 @@
 // app's auth module — the app owns which provider it uses and may rename or
 // delete that file, so the dependency points app → runtime, never back.
 // Mount <SessionProvider auth={useAuth()}> inside your auth provider; read it
-// with useSession().
+// with useSession(). A bundle with no auth code at all (a demo, a preview, a
+// test) mounts <SessionProvider auth={fixedSession(user)}> instead.
+//
+// Also published as the "./session" subpath, so such a bundle can import the
+// session API without the barrel. Keep this module's imports to react alone.
 import {
   createContext,
   useContext,
@@ -18,6 +22,13 @@ import {
   type ReactNode,
 } from "react";
 
+/** The signed-in user, as the auth state hands it in. Presentation only. */
+export interface SessionUser {
+  id: string;
+  email?: string;
+  name?: string;
+}
+
 /**
  * The auth surface the session needs, and nothing more. Your app's auth
  * context value satisfies it structurally — pass `useAuth()` straight in.
@@ -25,7 +36,7 @@ import {
  * delete src/lib/auth/* without breaking a forge-owned file.
  */
 export interface SessionAuth {
-  user: { id: string; email?: string; name?: string } | null;
+  user: SessionUser | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   getToken: () => Promise<string | null>;
@@ -130,4 +141,51 @@ export function SessionProvider({
 /** Current session — the signed-in user. Always defined (empty when logged out). */
 export function useSession(): Session {
   return useContext(SessionContext);
+}
+
+/**
+ * Whether someone is signed in: `useSession().isAuthenticated`, for the
+ * components that need nothing else (a shell choosing its signed-in chrome, a
+ * keyboard-shortcut scope). False while the session is still loading, and
+ * outside a SessionProvider.
+ */
+export function useSignedIn(): boolean {
+  return useContext(SessionContext).isAuthenticated;
+}
+
+export interface FixedSessionOptions {
+  /**
+   * The token getToken resolves to. Default null: a fixed session is not a
+   * credential, and with no token no claims are decoded. Pass one only when
+   * something that never reaches a real server (a mock transport) reads it.
+   */
+  token?: string | null;
+}
+
+/**
+ * fixedSession is a SessionAuth whose user never changes: signed in as `user`,
+ * never loading, and getToken resolving `opts.token` (null by default). It is
+ * the session of a bundle that must carry no auth code at all: a public demo,
+ * a guarded preview, a test, or a scaffold's mock mode.
+ *
+ *   <SessionProvider auth={fixedSession({ id: "demo", email: "demo@example.com" })}>
+ *
+ * It decides what to SHOW, never what is ALLOWED: nothing it returns is a
+ * credential, and a backend must not accept it as one.
+ *
+ * The result is frozen and its getToken is one function for its lifetime, so
+ * build it once (at module scope, or in useMemo/useState) and SessionProvider
+ * resolves the token once instead of on every render.
+ */
+export function fixedSession(
+  user: SessionUser,
+  opts: FixedSessionOptions = {},
+): SessionAuth {
+  const token = opts.token ?? null;
+  return Object.freeze({
+    user: Object.freeze({ ...user }),
+    isAuthenticated: true,
+    isLoading: false,
+    getToken: () => Promise.resolve(token),
+  });
 }

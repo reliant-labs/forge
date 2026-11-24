@@ -124,6 +124,7 @@ describe("the published surface", () => {
       "./otel-proxy",
       "./package.json",
       "./service-hooks",
+      "./session",
       "./telemetry",
       "./transport-scope",
       "./vite",
@@ -411,6 +412,67 @@ describe("the published surface", () => {
     // The barrel still re-exports it, so every existing import keeps working.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     expect(barrel.includes("installDevLogging")).toBe(true);
+  });
+
+  it("publishes the session API from ./session, which imports only react", async () => {
+    // A bundle that must carry no auth code (a public demo, a preview) still
+    // renders a shell that asks who is signed in. ./session gives it the
+    // session port and fixedSession without the barrel, whose closure holds
+    // the interceptors, telemetry seams and every optional peer.
+    const session = readFileSync(join(pkgDir, "dist", "session.d.ts"), "utf8");
+    for (const symbol of [
+      "decodeJwt",
+      "fixedSession",
+      "SessionProvider",
+      "useSession",
+      "useSignedIn",
+    ]) {
+      expect(
+        new RegExp(`export declare function ${symbol}\\b`).test(session),
+        `./session must export ${symbol}`,
+      ).toBe(true);
+    }
+    for (const type of [
+      "FixedSessionOptions",
+      "JwtClaims",
+      "Session",
+      "SessionAuth",
+      "SessionUser",
+    ]) {
+      expect(
+        new RegExp(`export interface ${type}\\b`).test(session),
+        `./session must export the ${type} type`,
+      ).toBe(true);
+    }
+    const { bare } = importClosure("session.js");
+    expect([...bare].sort(), "./session must import react alone").toEqual([
+      "react",
+    ]);
+
+    // Resolved by package name, through the exports map, as a consumer would.
+    const viaSubpath = (await import(
+      "@reliantlabs/forge-web-runtime/session"
+    )) as Record<string, unknown>;
+    expect(viaSubpath.fixedSession).toBeTypeOf("function");
+
+    // The barrel re-exports the same module, not a copy: a SessionProvider
+    // mounted from one entry point is the context useSession() reads from the
+    // other, and the barrel's existing names keep working.
+    const barrel = readFileSync(join(pkgDir, "dist", "index.js"), "utf8");
+    const reexport =
+      /export\s*\{([^}]*)\}\s*from\s*["']\.\/session\.js["']/.exec(barrel);
+    expect(reexport, "index.js must re-export ./session.js").not.toBeNull();
+    for (const symbol of [
+      "decodeJwt",
+      "fixedSession",
+      "SessionProvider",
+      "useSession",
+      "useSignedIn",
+    ]) {
+      expect(reexport?.[1], `barrel must re-export ${symbol}`).toMatch(
+        new RegExp(`\\b${symbol}\\b`),
+      );
+    }
   });
 
   it("publishes the dev-server plugins from ./vite, and keeps it off the browser half", () => {

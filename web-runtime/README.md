@@ -823,6 +823,36 @@ take the client from their own `useQueryClient()` where TanStack before 5.89.0
 passes no mutation context. Like `/service-hooks`, the subpath imports React
 Query, an optional peer, so it stays out of the barrel.
 
+## The session (`/session`)
+
+`SessionProvider({ auth })` turns the app's auth state into the session
+`useSession()` reads (and `useSignedIn()`, its `isAuthenticated` alone).
+`auth` is a structural `SessionAuth` prop: the runtime never imports the
+app's auth module. A bundle with no auth code at all (a public demo, a
+preview, a test, a scaffold's mock mode) passes a fixed one:
+
+```tsx
+import {
+  fixedSession,
+  SessionProvider,
+} from "@reliantlabs/forge-web-runtime/session";
+
+// Once, at module scope: the result is frozen and its getToken never changes.
+const DEMO = fixedSession({
+  id: "demo",
+  email: "demo@example.com",
+  name: "Demo",
+});
+
+<SessionProvider auth={DEMO}>{app}</SessionProvider>;
+```
+
+`fixedSession(user, { token? })` is signed in as `user`, never loading, and its
+`getToken` resolves `token` (null by default). It decides what to show, never
+what is allowed: no backend accepts it as a credential. The barrel exports the
+same names from the same module; `/session` is the entry point whose import
+closure is `react` alone, for a bundle that must not carry the barrel.
+
 ## Money and basis points
 
 The web counterpart of `forge/pkg/money`. An amount is an integer count of

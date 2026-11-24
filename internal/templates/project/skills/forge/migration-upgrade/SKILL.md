@@ -390,7 +390,9 @@ grep would read it differently — the detection asks forge instead:
 `internal/cli/upgrade_migration_detectors.go` (exit 0: the old shape is
 there). `pre-zod4-forms` is one: it reads each frontend's zod range with the
 same semver parser generate writes pages from, so the playbook is offered to
-exactly the frontends generate still writes zod 3 for.
+exactly the frontends generate still writes zod 3 for. `trimpath-default` is
+another: it is `forge fix trimpath-default`'s own decision, so the v1.11.0
+playbook applies exactly while its codemod has something to do or say.
 
 A migration with no detection applies to NOTHING — it cannot demonstrate
 any project needs it, so it stays out of every worklist rather than

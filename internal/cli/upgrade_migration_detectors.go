@@ -34,6 +34,10 @@ func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 		return projectHasPreZod4Frontend, true
 	case "pgo-refresh-due":
 		return projectMayGetPGORefresh, true
+	case "trimpath-default":
+		// The codemod's own decision, so the playbook is offered exactly
+		// where `forge fix trimpath-default` has something to do or say.
+		return projectNeedsTrimpathDefault, true
 	}
 	return nil, false
 }

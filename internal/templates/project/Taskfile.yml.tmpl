@@ -31,18 +31,7 @@ version: "3"
 # └─────────────────────────────────────────────────────────┘
 
 env:
-  # GOFLAGS gets -trimpath, merged into whatever GOFLAGS you already use (from
-  # the environment, `go env -w` or the toolchain's go.env). Without it Go
-  # hashes each package's ABSOLUTE directory into its build-cache key, so every
-  # worktree and scratch copy of this module (forge ci verify-generated
-  # regenerates in a fresh one every run) compiles the whole module again and
-  # re-runs every test instead of reusing what a sibling already built.
-  # Measured: a second worktree of one commit compiled 267 packages and cached
-  # 0 of 73 test packages without it; 0 and 58 with it. A GOFLAGS already in
-  # your environment wins over this block (Task never overrides one), and
-  # -trimpath=false in it, or in `go env -w GOFLAGS`, opts out.
-  GOFLAGS:
-    sh: 'f="$(go env GOFLAGS 2>/dev/null)"; case " $f " in *" -trimpath"*|*" --trimpath"*) echo "$f" ;; *) echo "${f:+$f }-trimpath" ;; esac'
+{{taskfileTrimpathGOFLAGS}}
 
 vars:
   GEN_DIR: gen

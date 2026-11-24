@@ -1,4 +1,6 @@
-{{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
+{{if ne .Platform "react-native"}}import { fixedSession } from "@reliantlabs/forge-web-runtime";
+
+{{end}}{{if .HasTypedConfig}}import { loadConfig } from "@/lib/config_gen";
 
 {{end}}import type { AuthProvider, AuthUser } from "./provider";
 
@@ -99,12 +101,25 @@ export function isMockMode(): boolean {
 // A stand-in session for mock mode, where nothing reaches the network. It is
 // not a credential and no server accepts it — it exists so scaffolded UI has
 // a user to render while the mock transport answers.
+{{- if eq .Platform "react-native"}}
 const MOCK_USER: AuthUser = {
   id: "mock-user-1",
   email: "dev@localhost",
   name: "Dev User",
 };
 const MOCK_TOKEN = "mock-token-dev";
+{{- else}}
+//
+// It is forge-web-runtime's fixedSession, the session a demo or preview
+// bundle mounts: signed in as this user, never loading, its token read only
+// by the mock transport.
+const MOCK_TOKEN = "mock-token-dev";
+const MOCK_SESSION = fixedSession(
+  { id: "mock-user-1", email: "dev@localhost", name: "Dev User" },
+  { token: MOCK_TOKEN },
+);
+const MOCK_USER: AuthUser | null = MOCK_SESSION.user;
+{{- end}}
 
 export function createSessionAuthProvider(): AuthProvider {
   // The session this provider can offer at all. Null against a real backend.

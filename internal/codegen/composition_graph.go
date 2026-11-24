@@ -220,6 +220,11 @@ type graphNode struct {
 	Standby      bool
 	AuthAudience string
 	RootOnly     []string
+	// Optional is `//forge:optional-component: <why>` on the component's
+	// package or the provider's func: its constructor may return nil with a
+	// nil error, meaning "not in this deployment". Every consumer field of
+	// its type must be `// forge:optional-dep` (forge-graph-optional-component).
+	Optional bool
 }
 
 // graphRoot is one root: a struct in internal/app whose fields select the
@@ -287,6 +292,9 @@ type graphProvider struct {
 	// reaches it — a root-specific variant (the worker's privileged daemon
 	// router) can never be handed to a process it was not built for.
 	RootOnly []string
+	// Optional is `//forge:optional-component: <why>` on the provider func
+	// (graphNode.Optional).
+	Optional bool
 }
 
 // rootDirectiveRE matches `//forge:root` with an optional name and options.
@@ -336,6 +344,28 @@ func hasDirective(doc *ast.CommentGroup, re *regexp.Regexp) bool {
 		}
 	}
 	return false
+}
+
+// providerOptionalDirective reads `//forge:optional-component: <why>` on the
+// doc of a provider func — the New<X> that constructs node X, the only func
+// whose doc the caller passes. The marker is the whole comment line and must
+// carry a reason. It never reaches a component node: a component's
+// optionality is its package's marker alone (FindOptionalComponentMarker).
+func providerOptionalDirective(doc *ast.CommentGroup) (bool, error) {
+	if doc == nil {
+		return false, nil
+	}
+	for _, c := range doc.List {
+		reason, ok := parseReasonedDirective(c.Text, directiveOptionalComponent)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(reason) == "" {
+			return false, fmt.Errorf("%q: //forge:optional-component says why the node may be absent: //forge:optional-component: <why>", strings.TrimSpace(c.Text))
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // audienceDirective is the `//forge:audience <name>` argument, or "".
@@ -427,6 +457,10 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 			if st == nil {
 				continue
 			}
+			optional, oerr := providerOptionalDirective(fd.Doc)
+			if oerr != nil {
+				return nil, nil, nil, fmt.Errorf("%s:%d: New%s: %w", rel, fset.Position(fd.Pos()).Line, x, oerr)
+			}
 			rootOnly, rerr := rootOnlyDirective(fd.Doc)
 			if rerr != nil {
 				return nil, nil, nil, fmt.Errorf("%s:%d: New%s: %w", rel, fset.Position(fd.Pos()).Line, x, rerr)
@@ -445,6 +479,7 @@ func discoverAppDeclsAndGroups(projectDir string) (providers []graphProvider, ro
 				Standby:  hasDirective(fd.Doc, standbyDirectiveRE),
 				Audience: audienceDirective(fd.Doc),
 				RootOnly: rootOnly,
+				Optional: optional,
 			})
 		}
 	}

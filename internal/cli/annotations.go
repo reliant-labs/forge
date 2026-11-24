@@ -575,6 +575,13 @@ func markerSpecs() []MarkerSpec {
 			Example:   "//forge:not-a-component: CLI-only — built by `reliant login`\npackage cliauth",
 		},
 		{
+			Name:      "forge:optional-component",
+			AppliesTo: "package",
+			Effect:    "Declares a component some deployments do not have: its constructor may return a nil value with a nil error (a control-plane client on a self-hosted install), and the composition graph treats that nil as absent rather than as a failure. Supervision skips a nil node's Run/Drain/Close/Ready, an observed component's compose.go constructor returns the nil instead of wrapping it, and every consumer Deps field it fills must be `// forge:optional-dep` (`forge lint --graph`'s forge-graph-optional-component). The constructor must return a pointer or an interface; `forge generate` refuses one whose value cannot be nil. REQUIRES a reason (`forge:optional-component: <why>`); a bare marker does not count and is a `forge lint` error.",
+			Placement: "package doc comment, or a free-standing comment in any of the package's .go files; for a provider func in internal/app, on that New<X> func's doc comment",
+			Example:   "//forge:optional-component: absent when self-hosted — no control plane to call\npackage controlplane",
+		},
+		{
 			Name:      "forge:outbound-io",
 			AppliesTo: "package",
 			Effect:    "Asserts the package is an outbound boundary — it talks OUT to a third-party system and must not serve inbound RPCs. `forge lint` enforces that with forgeconv-outbound-io-no-rpc.",

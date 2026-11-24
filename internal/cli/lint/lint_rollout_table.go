@@ -332,6 +332,9 @@ var newRules = []rolloutGroup{
 	// locate files, which -trimpath (forge's default build mode from
 	// v1.11.0) makes module-relative.
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing tests that find testdata or the repository root from runtime.Caller's file pass in an untrimmed build; warn for a release so each can resolve paths against the package directory (or check filepath.IsAbs) before the rule gates"}, Rules: []string{callerpath.RuleID}},
+	// forge lint --graph: a consumer field an optional component
+	// (//forge:optional-component) fills must be // forge:optional-dep.
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "The optional-component marker is new; a project adopting it marks its consumers' fields optional during the release before the rule gates"}, Rules: []string{"forge-graph-optional-component"}},
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
 	// forge lint --idempotency: an rpc's idempotency_level must agree with
 	// its name (lint_idempotency.go).

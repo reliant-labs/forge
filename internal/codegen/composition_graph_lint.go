@@ -75,6 +75,7 @@ func LintGraph(projectDir string) (findings []GraphFinding, graphMode bool, err 
 	}
 	findings = append(findings, m.unreachableFindings()...)
 	findings = append(findings, m.audienceFindings()...)
+	findings = append(findings, m.optionalComponentFindings()...)
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File

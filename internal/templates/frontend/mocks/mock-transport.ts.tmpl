@@ -27,8 +27,11 @@
 //
 // The engine arrives through the "/mock-transport" SUBPATH, never the
 // barrel: a production bundle must be able to shake the fixtures and the
-// engine out entirely, which is why connect.ts reaches this module through
-// a dynamic `require()` gated on the mock-mode env var.
+// engine out entirely, which is why the scaffolded connect.ts reaches this
+// module only through a lazy `import()`: when mock_api asks for it, or when
+// the environment's runtime config names fixtures (forge.Fixtures:
+// FIXTURES_SCENARIO / FIXTURES_READ_ONLY). A frontend scaffolded before
+// fixtures existed reaches it through a `require()` gated on mock_api.
 {{- if or .Entities .ServiceDefaults }}
 // import.meta.glob (the vitest branch below) is typed by Vite's ImportMeta
 // augmentation, which a Next app does not load: reference it, and only it
@@ -132,6 +135,20 @@ function serviceModules(): AnyServiceDefaults[] {
 const services: readonly AnyServiceDefaults[] = serviceModules();
 {{- end }}
 
+/** What an environment's fixtures choose (forge.Fixtures, read by connect.ts). */
+export interface MockTransportOptions {
+  /**
+   * Answer from this scenario (its `name`) instead of the one `?scenario=`
+   * selected. An unknown name falls back to the `default` scenario (never to
+   * the one `?scenario=` names), with a console warning naming it.
+   */
+  scenario?: string;
+  /** Refuse every RPC that is not `idempotency_level = NO_SIDE_EFFECTS`. */
+  readOnly?: boolean;
+  /** The PermissionDenied message a refused write carries. */
+  readOnlyMessage?: string;
+}
+
 /**
  * Create the mock transport.
  *
@@ -140,10 +157,14 @@ const services: readonly AnyServiceDefaults[] = serviceModules();
  *   scenario handler is forwarded to this fallback instead of falling
  *   through to the per-entity fixtures. Wire this up from `connect.ts`
  *   when `VITE_MOCK_API=hybrid` / `NEXT_PUBLIC_MOCK_API=hybrid`.
+ * @param options - The scenario and write policy an environment's
+ *   `fixtures` declare; connect.ts passes them from the runtime config.
  */
-export function createMockTransport(fallback?: Transport): Transport {
+export function createMockTransport(fallback?: Transport, options: MockTransportOptions = {}): Transport {
   return createEngineTransport({
-    scenario: active,
+    scenario: options.scenario === undefined ? active : namedScenario(options.scenario),
+    readOnly: options.readOnly,
+    readOnlyMessage: options.readOnlyMessage,
 {{- if .Entities }}
     entities,
 {{- end }}
@@ -152,6 +173,21 @@ export function createMockTransport(fallback?: Transport): Transport {
 {{- end }}
     fallback,
   });
+}
+
+// The scenario an environment names, resolved (and its setup() run) once.
+//
+// The name is checked against the registry HERE, before the resolver sees it:
+// an unknown one warns and resolves `{ name: null }`, which the engine
+// documents as "the default scenario, and do not read ?scenario=". So the
+// fallback is the default the warning names, never a scenario the URL picks,
+// and it does not lean on how the resolver treats a name it cannot find.
+function namedScenario(name: string): ReturnType<typeof resolveActiveScenario> {
+  if (scenarios.byName(name)) {
+    return resolveActiveScenario(scenarios, { name });
+  }
+  console.warn(`[mock-transport] no scenario named "${name}" in src/mocks/scenarios/; answering from "default"`);
+  return resolveActiveScenario(scenarios, { name: null });
 }
 
 // Re-export the active scenario so tests + dev tools can introspect it.

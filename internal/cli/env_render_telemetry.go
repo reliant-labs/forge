@@ -112,6 +112,9 @@ type envRenderDocument struct {
 	Objects   []envRenderDocObject `json:"objects"`
 	// Telemetry is [] when the env declares none.
 	Telemetry []telemetry.Target `json:"telemetry"`
+	// Frontends is each frontend's runtime and runtime config document
+	// (env_render_frontends.go). [] when the env declares none.
+	Frontends []envRenderDocFrontend `json:"frontends"`
 }
 
 // envRenderDocObject is one rendered object, as the --list row shows it.
@@ -134,6 +137,7 @@ func writeRenderedJSON(w io.Writer, project, envName, namespace string, clusters
 		Clusters:  append([]string{}, clusters...),
 		Objects:   make([]envRenderDocObject, 0, len(objects)),
 		Telemetry: []telemetry.Target{},
+		Frontends: renderDocFrontends(entities),
 	}
 	for _, o := range objects {
 		doc.Objects = append(doc.Objects, envRenderDocObject{

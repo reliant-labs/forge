@@ -100,6 +100,11 @@ func TestFrontendRuntimeKeysMatchTheGeneratedReaders(t *testing.T) {
 	for _, m := range direct.FindAllStringSubmatch(read("internal/templates/frontend/shared-web/src/lib/auth/native-login.ts.tmpl"), -1) {
 		found[m[1]] = true
 	}
+	// shared-web's fixtures.ts: the keys render.k's _fixtures_runtime_config
+	// derives from Frontend.fixtures.
+	for _, m := range regexp.MustCompile(`\bcfg\?\.([A-Z][A-Z0-9_]*)\b`).FindAllStringSubmatch(read("internal/templates/frontend/shared-web/src/lib/fixtures.ts"), -1) {
+		found[m[1]] = true
+	}
 	// render.k's _telemetry_runtime_config lambda: the keys KCL adds to a
 	// frontend's runtime_config on its own.
 	renderK := read("kcl/render.k")

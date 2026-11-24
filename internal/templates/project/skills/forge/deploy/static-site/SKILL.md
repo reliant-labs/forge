@@ -257,6 +257,52 @@ one. Only a workload of the same env may be named. See `frontend/serving`,
 Secrets do not belong in a static site: everything in `config.js` is public.
 A value that must stay secret belongs on a service (`forge secret set`).
 
+### A demo or preview env on fixtures, promoted by digest
+
+A frontend that calls an API can run a whole env on sample data instead:
+a public demo, a sales sandbox, a preview of prod's release with nothing
+behind it. Fixtures are runtime config like the rest of this section, so the
+env serves **prod's release, by digest**, with no second build:
+
+```bash
+forge env new demo --from prod --bind web=hosted
+```
+
+```kcl
+# deploy/kcl/demo/main.k — the frontend as prod declares it, plus:
+fixtures = forge.Fixtures { scenario = "shop" }   # read_only = True
+```
+
+```bash
+forge env render demo --json | jq '.frontends[].runtime_config'   # FIXTURES_SCENARIO, FIXTURES_READ_ONLY
+forge env deploy demo v1.8.2                     # the release prod runs; nothing is rebuilt
+```
+
+- forge renders `fixtures` into the frontend's runtime config as
+  `FIXTURES_SCENARIO = "shop"` and `FIXTURES_READ_ONLY = "true"`. The
+  scaffolded `src/lib/connect.ts` sees them and answers every RPC from the
+  generated mock transport with that scenario; a live env's bundle never
+  downloads it (a lazy chunk). The scaffolded session is the fixture user,
+  since nothing answers `/auth/session`.
+- `read_only` defaults to `True`: only an rpc declaring
+  `option idempotency_level = NO_SIDE_EFFECTS;` answers, and every other one
+  fails `PermissionDenied`. Set `read_only = False` only for a sandbox whose
+  writes may land in the browser's in-memory store.
+- The scenario is `src/mocks/scenarios/<name>.ts` (`forge scaffold scenario
+  <name>`; `frontend/mock-mode`). An unknown name answers from `default`,
+  with a console warning.
+- Drop what the demo does not run: prod's backend workloads, and any
+  `runtime_config` `forge.WorkloadURL` naming one (render refuses a reference
+  to a workload the env does not declare). A demo of a hosted site is a
+  second hosted site, so it needs billing (above).
+- forge cannot see from the env whether the frontend's code reads the keys.
+  A frontend scaffolded before forge.Fixtures, or one with a transport layer
+  of its own, reads `window.__FORGE_CONFIG__.FIXTURES_SCENARIO` itself; the
+  scaffolded `src/lib/fixtures.ts` shows how. Until it does, the env serves
+  the live build, calling whatever API its runtime config names.
+- `fixtures` is for a web frontend (`nextjs`, `vite`), not on
+  `forge.BuildOnly`, and not beside the build-time `config.mock`.
+
 ## Growing a backend
 
 A site has no Go module, so `forge scaffold service` (and every other scaffold

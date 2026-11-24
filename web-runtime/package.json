@@ -84,6 +84,10 @@
       "types": "./dist/telemetry.d.ts",
       "default": "./dist/telemetry.js"
     },
+    "./transport-scope": {
+      "types": "./dist/transport-scope.d.ts",
+      "default": "./dist/transport-scope.js"
+    },
     "./vite": {
       "types": "./dist/vite.d.ts",
       "default": "./dist/vite.js"
@@ -115,7 +119,7 @@
     "@hyperdx/otel-web": "0.20.0",
     "rrweb": "2.1.7"
   },
-  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @tanstack/react-query is imported only by './service-hooks'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
+  "// peerDependencies note": "@opentelemetry/api is the one REQUIRED peer: trace.ts propagates traceparent on every RPC from the barrel, and the './node' entry builds its spans on it. Every other peer is OPTIONAL because some entry point never imports it, and npm installs a non-optional peer for every consumer whether or not it is reached: react, @connectrpc/connect and @bufbuild/protobuf are imported by the barrel and the browser subpaths, which every forge frontend scaffold (Next.js, Vite, Expo) declares as its own direct dependencies, while a './node'-only consumer (an Electron main process, a Node CLI) imports none of them. @tanstack/react-query is imported only by './service-hooks' and './transport-scope'. src/published-surface.test.ts holds the rule: a peer the './node' import closure does not reach must be optional.",
   "peerDependencies": {
     "@bufbuild/protobuf": "^2.5.0",
     "@connectrpc/connect": "^2.0.0",

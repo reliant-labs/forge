@@ -126,6 +126,7 @@ describe("the published surface", () => {
       "./service-hooks",
       "./session",
       "./telemetry",
+      "./transport-scope",
       "./vite",
     ]);
 
@@ -149,6 +150,8 @@ describe("the published surface", () => {
     //     imports for interceptors and errors alone; anchoring React Query
     //     there would make a non-React consumer resolve a package it never
     //     declared.
+    //   - transport-scope imports @tanstack/react-query too (it mounts a
+    //     scope's QueryClient), for the same reason.
     //   - node is the Node / Electron-main telemetry entry. It imports
     //     node:async_hooks, node:crypto and node:os, which a browser bundle
     //     cannot resolve.
@@ -171,6 +174,7 @@ describe("the published surface", () => {
       "./otel-proxy",
       "./telemetry",
       "./service-hooks",
+      "./transport-scope",
       "./vite",
     ]) {
       expect(
@@ -314,16 +318,56 @@ describe("the published surface", () => {
     }
   });
 
-  it("declares @tanstack/react-query an optional peer, reachable only via ./service-hooks", () => {
-    // Same rule as the OTel SDKs: the ONLY module that imports React Query is
-    // the ./service-hooks subpath. A consumer that imports the barrel for
-    // interceptors and errors must not be told it is missing a dependency it
-    // will never resolve.
+  it("declares @tanstack/react-query an optional peer, reachable only via ./service-hooks and ./transport-scope", () => {
+    // Same rule as the OTel SDKs: the ONLY modules that import React Query
+    // are the ./service-hooks and ./transport-scope subpaths. A consumer that
+    // imports the barrel for interceptors and errors must not be told it is
+    // missing a dependency it will never resolve.
     expect(pkg.peerDependencies["@tanstack/react-query"]).toBeDefined();
     expect(
       pkg.peerDependenciesMeta?.["@tanstack/react-query"]?.optional,
-      "@tanstack/react-query must be an OPTIONAL peer — only ./service-hooks imports it",
+      "@tanstack/react-query must be an OPTIONAL peer — only ./service-hooks and ./transport-scope import it",
     ).toBe(true);
+    const importers = distFiles
+      .filter((f) => f.endsWith(".js"))
+      .filter((f) =>
+        /from\s*["']@tanstack\/react-query["']/.test(
+          readFileSync(join(pkgDir, "dist", f), "utf8"),
+        ),
+      )
+      .sort();
+    expect(importers).toEqual(["service-hooks.js", "transport-scope.js"]);
+  });
+
+  it("publishes ./transport-scope with its API, importing only its peers", () => {
+    // A generated hook file (forge generate) imports scopedClient from here;
+    // an app mounts TransportScopeProvider. Dropping a name breaks them.
+    const dts = readFileSync(
+      join(pkgDir, "dist", "transport-scope.d.ts"),
+      "utf8",
+    );
+    for (const symbol of [
+      "createTransportScope",
+      "TransportScopeProvider",
+      "useTransportScope",
+      "useTransport",
+      "useClient",
+      "clientFor",
+      "transportOf",
+      "scopedClient",
+    ]) {
+      expect(
+        new RegExp(`export declare function ${symbol}\\b`).test(dts),
+        `./transport-scope must export ${symbol}`,
+      ).toBe(true);
+    }
+    expect(dts).toMatch(/export interface TransportScope\b/);
+    const { bare } = importClosure("transport-scope.js");
+    expect([...bare].sort()).toEqual([
+      "@connectrpc/connect",
+      "@tanstack/react-query",
+      "react",
+    ]);
   });
 
   it("keeps the base-path helpers IN the barrel", () => {

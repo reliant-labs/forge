@@ -209,7 +209,7 @@ func TestCacheRefusesAWritableAncestor(t *testing.T) {
 		mode os.FileMode
 		ok   bool
 	}{{0o777, false}, {0o777 | os.ModeSticky, true}, {0o755, true}} {
-		parent := t.TempDir()
+		parent := trustedTempDir(t)
 		if err := os.Chmod(parent, c.mode); err != nil {
 			t.Fatal(err)
 		}
@@ -234,8 +234,8 @@ func TestCacheRootThroughASymlink(t *testing.T) {
 	tool := fakeTool(archive, nil)
 	rel := newRelease(t)
 	rel.serve(tool, "linux", "amd64", archive)
-	real := t.TempDir()
-	link := filepath.Join(t.TempDir(), "cache")
+	real := trustedTempDir(t)
+	link := filepath.Join(trustedTempDir(t), "cache")
 	if err := os.Symlink(real, link); err != nil {
 		t.Skipf("cannot create a symlink here: %v", err)
 	}
@@ -312,10 +312,11 @@ func withGrant(sd winSecurity, sid string, mask uint32) winSecurity {
 // Windows they mean nothing and must decide nothing.
 func windowsHost(t *testing.T, rel *release, parent string, override func(path string) (winSecurity, bool)) *Fetcher {
 	t.Helper()
-	f := rel.fetcher(t, "linux")
+	// Not rel.fetcher: owners and modes decide nothing here, so these run
+	// on a host whose temporary directory a Unix cache could not live in.
+	f := testFetcher(filepath.Join(parent, "release"), rel.srv.URL, "linux")
 	f.hostOS = "windows"
 	f.owner++
-	f.CacheDir = filepath.Join(parent, "release")
 	f.acl = aclSource{user: testUserSID, read: func(path string) (winSecurity, error) {
 		if sd, ok := override(path); ok {
 			return sd, nil

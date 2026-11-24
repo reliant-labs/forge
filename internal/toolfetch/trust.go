@@ -94,6 +94,21 @@ func (f *Fetcher) checkAncestor(path string, info fs.FileInfo) error {
 	return nil
 }
 
+// CheckCache reports whether f would trust dir as its cache, applying the
+// rules Ensure and Find apply, without creating or installing anything. It
+// returns nil, an error wrapping ErrUntrustedCache that names the path at
+// fault, or the error resolving dir.
+//
+// Tests that install into a fresh temporary directory call it first: on a
+// host whose own ancestry of that directory forge refuses (a Linux user
+// namespace, where / belongs to the unmapped overflow uid; a /tmp without
+// the sticky bit) nothing can be installed there, and the test skips
+// naming the host's path instead of failing.
+func (f *Fetcher) CheckCache(dir string) error {
+	_, err := f.trustedKindDir(dir)
+	return err
+}
+
 // trustedKindDir resolves the release kind directory to its real path and
 // verifies the whole chain above it. The returned path contains no link, so
 // every entry path built on it is checked component by component.

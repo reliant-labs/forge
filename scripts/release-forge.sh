@@ -86,7 +86,10 @@
 # one. If it cannot, this release STOPS before its tag: a forge whose runtime
 # is not on npm is not released. The bookkeeping then writes that version into
 # web-runtime/package.json and forge's scaffold floor (webRuntimePublishedRange),
-# so the floor only ever names a published version.
+# and adds it to internal/generator/webruntime_published_versions.txt, so the
+# floor only ever names a published version. This is the ONLY place the floor
+# rises: a breaking runtime change is released with the previous floor, and the
+# bookkeeping raises it once npm serves the new minor.
 #
 # CHANGELOG.md is written HERE and nowhere else. This script builds the new
 # `## [vX.Y.Z] - <date>` section from the squash commits (the merged PR titles)
@@ -541,9 +544,14 @@ GEMINI_MANIFEST="gemini-extension.json"
 WR_MANIFEST="web-runtime/package.json"
 WR_LOCK="web-runtime/package-lock.json"
 WR_FLOOR_FILE="internal/generator/frontend_webruntime.go"
+# The versions npm serves, which the floor must name one of
+# (TestWebRuntimeFloorIsAPublishedVersion). Staged whenever the floor exists,
+# also when it is missing (this run creates it).
+WR_PUBLISHED="internal/generator/webruntime_published_versions.txt"
 for f in "$WR_MANIFEST" "$WR_LOCK" "$WR_FLOOR_FILE"; do
   [ -f "$f" ] && TOUCHED+=("$f")
 done
+[ -f "$WR_FLOOR_FILE" ] && TOUCHED+=("$WR_PUBLISHED")
 
 # The checkout lock is flock(1) on a file in this worktree's git dir: the kernel
 # arbitrates it, and drops it when its holder dies, however it dies. There is no
@@ -805,13 +813,43 @@ if [ -f "$WR_MANIFEST" ]; then
         inroot && /^    \}/ { inroot = 0 }
         { print }' "$WR_LOCK" >"$BACKUP_DIR/wr-lock.new" && cat "$BACKUP_DIR/wr-lock.new" >"$WR_LOCK"
     fi
-    if [ -f "$WR_FLOOR_FILE" ]; then
-      sed -i.bak -e 's/^const webRuntimePublishedRange = ".*"/const webRuntimePublishedRange = "^'"$WEB_RUNTIME_VERSION"'"/' "$WR_FLOOR_FILE" && rm -f "$WR_FLOOR_FILE.bak"
-      grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE" || {
-        echo "error: could not set webRuntimePublishedRange in $WR_FLOOR_FILE to ^$WEB_RUNTIME_VERSION" >&2
+  fi
+  # The floor is synced on its own, not only when the manifest moved: a
+  # breaking runtime change declares its version in package.json ahead of npm
+  # while the floor stays on the newest published version, so when the release
+  # publishes exactly that declared version the manifest already matches and
+  # only the floor is behind. Idempotent when the floor already names it.
+  if [ -f "$WR_FLOOR_FILE" ] && ! grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE"; then
+    echo "→ raising the scaffold floor to ^$WEB_RUNTIME_VERSION"
+    sed -i.bak -e 's/^const webRuntimePublishedRange = ".*"/const webRuntimePublishedRange = "^'"$WEB_RUNTIME_VERSION"'"/' "$WR_FLOOR_FILE" && rm -f "$WR_FLOOR_FILE.bak"
+    grep -q "^const webRuntimePublishedRange = \"^$WEB_RUNTIME_VERSION\"" "$WR_FLOOR_FILE" || {
+      echo "error: could not set webRuntimePublishedRange in $WR_FLOOR_FILE to ^$WEB_RUNTIME_VERSION" >&2
+      exit 1
+    }
+  fi
+  # Record the version as published, beside the floor that now names it, on
+  # every release (idempotent): the list is how a -short test knows what npm
+  # serves. Comments stay on top; the versions are kept `sort -V -u`.
+  if [ -f "$WR_FLOOR_FILE" ]; then
+    if ! grep -qx "$(printf '%s' "$WEB_RUNTIME_VERSION" | sed 's/\./\\./g')" "$WR_PUBLISHED" 2>/dev/null; then
+      echo "→ recording $WEB_RUNTIME_VERSION in $WR_PUBLISHED"
+      if ! {
+        if [ -f "$WR_PUBLISHED" ]; then
+          grep '^#' "$WR_PUBLISHED" || true
+        else
+          echo "# Every @reliantlabs/forge-web-runtime version npm serves, one per line, in"
+          echo "# semver order. WRITTEN BY THE RELEASE, NEVER BY HAND (scripts/release-forge.sh)."
+        fi
+        { [ -f "$WR_PUBLISHED" ] && grep -v '^#' "$WR_PUBLISHED" | sed '/^[[:space:]]*$/d'; echo "$WEB_RUNTIME_VERSION"; } | sort -V -u
+      } >"$BACKUP_DIR/wr-published.new" || ! cat "$BACKUP_DIR/wr-published.new" >"$WR_PUBLISHED"; then
+        echo "error: could not record $WEB_RUNTIME_VERSION in $WR_PUBLISHED" >&2
         exit 1
-      }
+      fi
     fi
+    grep -qx "$(printf '%s' "$WEB_RUNTIME_VERSION" | sed 's/\./\\./g')" "$WR_PUBLISHED" || {
+      echo "error: $WR_PUBLISHED does not list $WEB_RUNTIME_VERSION after recording it" >&2
+      exit 1
+    }
   fi
 fi
 

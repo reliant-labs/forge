@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/webruntimepeers"
 )
@@ -216,6 +218,14 @@ func TestEnsureWebRuntimeDependency_EmptyDependenciesObject(t *testing.T) {
 
 // TestWebRuntimePublishedRangeTracksPackage keeps the release specifier from
 // silently drifting away from the version web-runtime actually declares.
+//
+// The floor names only published versions (TestWebRuntimeFloorIsAPublishedVersion),
+// so it may lag package.json while package.json declares a version npm does
+// not serve yet: the first step of a breaking runtime change raises
+// package.json to the new minor (major from 1.0), the release publishes it,
+// and its bookkeeping raises the floor. So the floor never exceeds
+// package.json's version, and once that version is published (the release
+// bookkeeping writes both) its major.minor is the floor's.
 func TestWebRuntimePublishedRangeTracksPackage(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "web-runtime", "package.json"))
 	if err != nil {
@@ -238,8 +248,23 @@ func TestWebRuntimePublishedRangeTracksPackage(t *testing.T) {
 		}
 		return parts[0] + "." + parts[1]
 	}
+	floor := strings.TrimPrefix(webRuntimePublishedRange, "^")
+	if semver.Compare("v"+floor, "v"+doc.Version) > 0 {
+		t.Fatalf("webRuntimePublishedRange %q is above web-runtime version %q: the floor names a version this tree does not make",
+			webRuntimePublishedRange, doc.Version)
+	}
+	published := false
+	for _, v := range readPublishedWebRuntimeVersions(t) {
+		published = published || v == doc.Version
+	}
+	if !published {
+		// Declared ahead of npm: the floor stays on the newest published
+		// version until the release bookkeeping raises it.
+		return
+	}
 	if got, want := majorMinor(webRuntimePublishedRange), majorMinor(doc.Version); got != want {
-		t.Errorf("webRuntimePublishedRange %q does not track web-runtime version %q",
+		t.Errorf("webRuntimePublishedRange %q does not track web-runtime version %q, which npm serves: "+
+			"the release bookkeeping (scripts/release-forge.sh) writes both",
 			webRuntimePublishedRange, doc.Version)
 	}
 }

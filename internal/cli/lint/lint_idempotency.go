@@ -148,7 +148,7 @@ func idempotencyFindingsFor(rpcs []idempotencyRPC) []finding.Finding {
 		rpc := r.Service + "." + r.Name
 		// Connect sends only a unary rpc as GET.
 		secret := r.SecretField != "" && !r.ClientStreaming && !r.ServerStreaming
-		carries := fmt.Sprintf("`%s`, which %s", r.SecretField, r.SecretWhy)
+		carries := fmt.Sprintf("%#q, which %s", r.SecretField, r.SecretWhy)
 		if r.NoSideEffects {
 			switch verb := codegen.WriteVerb(r.Name); {
 			case r.Mutation:

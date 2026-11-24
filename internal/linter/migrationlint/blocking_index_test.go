@@ -34,7 +34,18 @@ func TestBlockingIndexBuild(t *testing.T) {
 		{"created, a function call, then indexed", "CREATE TABLE products (id text);\nSELECT backfill_products();\nCREATE INDEX i ON products (id);", 1},
 		{"created, row-free DDL, then indexed", "CREATE TABLE products (id text);\nALTER TABLE products ADD COLUMN name text;\nCOMMENT ON TABLE products IS 'x';\nCREATE INDEX i ON products (name);", 0},
 		{"indexed before the file creates it", "CREATE INDEX i ON products (name);\nCREATE TABLE IF NOT EXISTS products (id text, name text);", 1},
-		{"CREATE TABLE IF NOT EXISTS proves nothing", "CREATE TABLE IF NOT EXISTS products (id text);\nCREATE INDEX i ON products (id);", 1},
+		{"CREATE TABLE IF NOT EXISTS proves nothing for a plain index", "CREATE TABLE IF NOT EXISTS products (id text);\nCREATE INDEX i ON products (id);", 1},
+		// The re-runnable shape migratekit's MissingMigrationError
+		// recommends: wherever the table is new the index is built empty,
+		// and wherever an earlier run of the file created the table it
+		// created the index too, so the build is a no-op.
+		{"IF NOT EXISTS table, then IF NOT EXISTS index", "CREATE TABLE IF NOT EXISTS products (id text, name text);\nCREATE INDEX IF NOT EXISTS i ON products (id);\nCREATE UNIQUE INDEX IF NOT EXISTS j ON products (name);", 0},
+		{"IF NOT EXISTS table, schema-qualified", "create table if not exists controlplane.llm_step_keys (id text);\ncreate index if not exists i on controlplane.llm_step_keys (id);", 0},
+		{"IF NOT EXISTS index on a table only an IF NOT EXISTS of another table names", "CREATE TABLE IF NOT EXISTS orders (id text);\nCREATE INDEX IF NOT EXISTS i ON products (id);", 1},
+		{"IF NOT EXISTS table, filled, then IF NOT EXISTS index", "CREATE TABLE IF NOT EXISTS products (id text);\nINSERT INTO products VALUES ('a');\nCREATE INDEX IF NOT EXISTS i ON products (id);", 1},
+		{"a plain index on an IF NOT EXISTS table ends other proofs", "CREATE TABLE orders (id text);\nCREATE TABLE IF NOT EXISTS products (id text);\nCREATE INDEX i ON products (id);\nCREATE INDEX j ON orders (id);", 2},
+		{"IF NOT EXISTS after a plain CREATE TABLE keeps the stronger proof", "CREATE TABLE products (id text);\nCREATE TABLE IF NOT EXISTS products (id text);\nCREATE INDEX i ON products (id);", 0},
+		{"IF NOT EXISTS CTAS creates it full", "CREATE TABLE IF NOT EXISTS products AS SELECT * FROM old_products;\nCREATE INDEX IF NOT EXISTS i ON products (id);", 1},
 		{"CREATE TABLE AS creates it full", "CREATE TABLE products AS SELECT * FROM old_products;\nCREATE INDEX i ON products (id);", 1},
 		{"CTAS with named columns is not a plain table", "CREATE TABLE products (id) AS SELECT * FROM old_products;\nCREATE INDEX i ON products (id);", 1},
 		{"partition creation does not prove an empty relation", "CREATE TABLE products_child PARTITION OF products FOR VALUES IN (1);\nCREATE INDEX i ON products_child (id);", 1},

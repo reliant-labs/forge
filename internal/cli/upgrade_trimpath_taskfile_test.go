@@ -180,14 +180,29 @@ func TestTaskfileTrimpath_LeavesAlone(t *testing.T) {
 		"--trimpath=false, an opt-out": {
 			in: "version: '3'\nenv:\n  GOFLAGS: --trimpath=false\n",
 		},
-		"GOFLAGS from a script of the project's that adds -trimpath": {
+		"GOFLAGS from a sh: that names -trimpath": {
+			in: "version: '3'\nenv:\n  GOFLAGS:\n    sh: echo \"$(go env GOFLAGS) -trimpath\"\n",
+		},
+		"GOFLAGS from a script of the project's whose code adds -trimpath": {
 			in:     "version: '3'\nenv:\n  GOFLAGS:\n    sh: scripts/goflags.sh\n",
 			script: "#!/bin/sh\necho \"$(go env GOFLAGS) -trimpath\"\n",
+		},
+		"GOFLAGS from a script that names -trimpath only after a # on a code line": {
+			in:     "version: '3'\nenv:\n  GOFLAGS:\n    sh: scripts/goflags.sh\n",
+			script: "#!/bin/sh\necho -mod=mod # not -trimpath yet\n",
+			next:   "whose output forge cannot read",
+		},
+		// pr-review forge#2685 [B1]: a script that mentions -trimpath only in
+		// a comment, and yields flags without it, must not pass.
+		"GOFLAGS from a script that mentions -trimpath only in a comment": {
+			in:     "version: '3'\nenv:\n  GOFLAGS:\n    sh: scripts/goflags.sh\n",
+			script: "#!/bin/sh\n# TODO: add -trimpath\necho -mod=mod\n",
+			next:   "whose output forge cannot read",
 		},
 		"GOFLAGS from a script that does not": {
 			in:     "version: '3'\nenv:\n  GOFLAGS:\n    sh: scripts/goflags.sh\n",
 			script: "#!/bin/sh\necho -mod=mod\n",
-			next:   "Merge -trimpath into it by hand",
+			next:   "whose output forge cannot read",
 		},
 		"a comment says trimpath, GOFLAGS does not": {
 			in:   "version: '3'\nenv:\n  # we build with -trimpath\n  GOFLAGS: -mod=mod\ntasks:\n  b:\n    cmds: [go build -trimpath ./...]\n",

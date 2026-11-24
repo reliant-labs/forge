@@ -113,8 +113,14 @@ func planTaskfileTrimpath(dir, rel string, src []byte) (out []byte, rewrite stri
 	}
 	if env, ok := before["env"].(map[string]any); ok {
 		if v, set := env["GOFLAGS"]; set {
-			if taskfileGOFLAGSSaysTrimpath(dir, v) {
+			switch taskfileGOFLAGSTrimpath(dir, v) {
+			case goflagsSaysTrimpath:
 				return nil, "", nil
+			case goflagsFromCommand:
+				sh, _ := v.(map[string]any)["sh"].(string)
+				return nil, "", []string{fmt.Sprintf("%s sets GOFLAGS in its top-level `env:` from a command (`sh: %s`) whose output forge cannot read without running it, so forge left it alone. "+
+					"Make sure the flags it yields include -trimpath (`%s skill load %s` has forge's entry, which keeps the machine's own GOFLAGS), "+
+					"or -trimpath=false to keep paths on purpose; naming -trimpath in the `sh:` line itself is what marks this step done", rel, strings.TrimSpace(sh), Name(), trimpathPlaybookSkill)}
 			}
 			return nil, "", []string{fmt.Sprintf("%s already sets GOFLAGS in its top-level `env:`, without -trimpath, so forge left your value alone. "+
 				"Merge -trimpath into it by hand (append ` -trimpath` to the flags it yields; `%s skill load %s` has forge's entry, which keeps the machine's own GOFLAGS), "+
@@ -194,37 +200,77 @@ func planTaskfileTrimpath(dir, rel string, src []byte) (out []byte, rewrite stri
 	return []byte(edited), fmt.Sprintf("%s: GOFLAGS with -trimpath, as %s (worktrees of this module now share Go build-cache entries)", rel, where), nil
 }
 
-// taskfileGOFLAGSSaysTrimpath reports whether a Taskfile env's own GOFLAGS
-// value decides -trimpath, on or off: a plain value carrying the flag, a
-// `sh:` command that names it, or a `sh:` that runs a script of the project's
-// that names it. Text elsewhere in the Taskfile is no evidence (a comment, a
-// task's own command); what forge cannot read is the manual step.
-func taskfileGOFLAGSSaysTrimpath(dir string, v any) bool {
+// goflagsTrimpath is what a Taskfile env's own GOFLAGS value says about
+// -trimpath, as far as forge can tell without running anything.
+type goflagsTrimpath int
+
+const (
+	goflagsLacksTrimpath goflagsTrimpath = iota // a value forge can read, without the flag
+	goflagsSaysTrimpath                         // the value decides -trimpath, on or off
+	goflagsFromCommand                          // a `sh:` whose output forge cannot read
+)
+
+// taskfileGOFLAGSTrimpath judges a Taskfile env's own GOFLAGS value, without
+// running anything:
+//
+//   - a plain value decides -trimpath when it carries the flag;
+//   - a `sh:` decides it when its code names the flag: the command itself
+//     (forge's own entry does), or the code of the project script it runs
+//     (control-plane's scripts/lib/goflags.sh), comments stripped, so a
+//     script that mentions -trimpath only in a comment proves nothing.
+//
+// Any other `sh:` yields flags forge cannot know without running it: a
+// manual step, never a pass. Text elsewhere in the Taskfile is no evidence
+// either (a comment, a task's own command).
+func taskfileGOFLAGSTrimpath(dir string, v any) goflagsTrimpath {
 	switch v := v.(type) {
 	case string:
 		for _, f := range strings.Fields(v) {
 			f = "-" + strings.TrimLeft(f, "-") // -trimpath and --trimpath alike
 			if f == "-trimpath" || strings.HasPrefix(f, "-trimpath=") {
-				return true
+				return goflagsSaysTrimpath
 			}
 		}
 	case map[string]any:
 		sh, _ := v["sh"].(string)
-		if strings.Contains(sh, "-trimpath") {
-			return true
+		if strings.TrimSpace(sh) == "" {
+			return goflagsLacksTrimpath
+		}
+		if strings.Contains(shellCode(sh), "-trimpath") {
+			return goflagsSaysTrimpath
 		}
 		fields := strings.Fields(sh)
-		if len(fields) == 0 {
-			return false
-		}
 		script := filepath.Clean(filepath.FromSlash(fields[0]))
-		if filepath.IsAbs(script) || script == ".." || strings.HasPrefix(script, ".."+string(filepath.Separator)) {
-			return false
+		if !filepath.IsAbs(script) && script != ".." && !strings.HasPrefix(script, ".."+string(filepath.Separator)) {
+			b, err := os.ReadFile(filepath.Join(dir, script)) //nolint:gosec // a script of the project's, named by its Taskfile
+			if err == nil && strings.Contains(shellCode(string(b)), "-trimpath") {
+				return goflagsSaysTrimpath
+			}
 		}
-		b, err := os.ReadFile(filepath.Join(dir, script)) //nolint:gosec // a script of the project's, named by its Taskfile
-		return err == nil && bytes.Contains(b, []byte("-trimpath"))
+		return goflagsFromCommand
 	}
-	return false
+	return goflagsLacksTrimpath
+}
+
+// shellCode is src with its shell comments removed: whole-line comments, and
+// a `#` that starts a word (after a blank) through the end of its line. A `#`
+// inside a word, such as ${var#pattern}, is code and stays.
+func shellCode(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, "#") {
+			continue
+		}
+		for i := 1; i < len(line); i++ {
+			if line[i] == '#' && (line[i-1] == ' ' || line[i-1] == '\t') {
+				line = line[:i]
+				break
+			}
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // taskfileTrimpathEntry is forge's GOFLAGS entry re-indented for a map

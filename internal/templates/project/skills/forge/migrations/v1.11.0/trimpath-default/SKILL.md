@@ -135,6 +135,7 @@ and the edit to make by hand. The playbook stays pending until it is made.
 | .air.toml | a `[build.windows] cmd` you edited | split `$env:FORGE_GO_BUILD_FLAGS` into arguments and pass them to `go build`, as above |
 | .air.toml | a `[build] cmd` whose `go build` forge cannot find | pass `$FORGE_GO_BUILD_FLAGS` to that `go build` |
 | Taskfile.yml | GOFLAGS already set in `env:`, without -trimpath | append `-trimpath` to the flags it yields, or use forge's entry above |
+| Taskfile.yml | GOFLAGS from a `sh:` whose code does not name -trimpath (neither the command nor, outside comments, the project script it runs) | make sure its output includes `-trimpath`; forge cannot read a command's output without running it, so the step stays listed until that code names the flag (forge's entry above does) |
 | Taskfile.yml | flow style, an alias, invalid YAML | add forge's entry to the top-level `env:` |
 
 ## Opting out

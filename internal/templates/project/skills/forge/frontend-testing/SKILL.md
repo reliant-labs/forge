@@ -133,6 +133,7 @@ describe("ui-store", () => {
   ```
 
   Assert on what the override says, not on default values: they are stable for a given request and forge version, not a contract.
+- A page test that should exercise the wire too (serialization, the app's interceptors), or that reuses the app's demo or preview data: render over `createFixtureTransport` (`@reliantlabs/forge-web-runtime/fixture-transport`, see `frontend/mock-mode`) with typed `routes: (router) => router.service(Svc, {...})`, the same scenario handlers, or the app's fixture `pack` and a fixed `now`. Guard that pack with `checkFixturePack(pack, { services })` in one test, so a handler that drifts from the proto fails by method name.
 - Coverage target: utilities + stores + page integrations. **NOT** 100% coverage; aim for behavioral coverage of the four states (loading / error / empty / success) per page.
 
 ## File layout

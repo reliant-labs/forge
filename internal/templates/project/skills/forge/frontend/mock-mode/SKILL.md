@@ -1,6 +1,6 @@
 ---
 name: frontend/mock-mode
-description: Connect RPC clients in a forge frontend and opt-in mock mode — the generated transport in src/lib/connect.ts, mock_api ("", "true", "hybrid") and the signed-in user each gives, the mock banner, where the mock pipeline lives (fixtures, service defaults, scenarios), dispatch order, generated defaults for every service (vendored ones too), and overriding an RPC with forge scaffold scenario + mockService/patch.
+description: Connect RPC clients in a forge frontend and opt-in mock mode — the generated transport in src/lib/connect.ts, mock_api ("", "true", "hybrid") and the signed-in user each gives, the mock banner, where the mock pipeline lives (fixtures, service defaults, scenarios), dispatch order, generated defaults for every service (vendored ones too), overriding an RPC with forge scaffold scenario + mockService/patch, and fixture packs on the fixture transport (createFixtureTransport) for demos, previews and tests.
 ---
 
 # Connect RPC clients + mock mode
@@ -71,22 +71,49 @@ export default defineScenario({
 - `mockValue(Schema, { seed })` builds one message; `serviceDefaults(Svc, { now })` pins "recent" for a screenshot or a test.
 - A key-string handler (`"pkg.v1.Svc/Method": (req) => ...`) still works; `mockService` is the typed spelling, and the only typed one for a vendored service.
 
-## A mock transport in production: demos and previews
+## Fixture data in production: demos and previews
 
-The build-time `mock_api` is for development. To run a page on mocks in a PRODUCTION bundle (a public demo host, a sandbox preview), build the transport yourself, behind your own runtime switch, and import the engine only from that page's lazy chunk:
+The build-time `mock_api` is for development. To run the real app on sample data in a PRODUCTION bundle (a public demo, a hosted preview, a screenshot harness), serve a **fixture pack** through the fixture transport, behind your own runtime switch, imported only from a lazy chunk:
 
 ```ts
-import { createMockTransport, resolveActiveScenario } from "@reliantlabs/forge-web-runtime/mock-transport";
+import { createFixtureTransport, defineFixturePack, fixtureJson } from "@reliantlabs/forge-web-runtime/fixture-transport";
+import tracesJson from "./data/traces.json";
 
-const scenario = resolveActiveScenario(scenarios, { name: "demo" }); // the app chooses; ?scenario= is not read
+export const shopPack = defineFixturePack({
+  name: "shop",
+  idPrefix: "sample.",                       // ids the pack mints: ctx.id("t1") is "sample.t1"
+  extends: [basePack],                       // later layers win, per method
+  data: { traces: fixtureJson(ListTracesResponseSchema, tracesJson) }, // strict fromJson: an unknown field fails the load
+  routes: (router, ctx) => router.service(TraceService, {           // standard typed ServiceImpls
+    listTraces: () => ctx.data.traces,
+    async *watch() { yield { id: ctx.id("e1"), observedAt: timestampFromMs(ctx.now()) }; },
+  }),
+  scenario: demoScenario,                    // an existing createMockTransport scenario still works
+  defaults: [TraceService],                  // descriptor-derived answers for the rest
+});
+
+const transport = createFixtureTransport({
+  pack: shopPack,
+  readOnly: true,                            // only `idempotency_level = NO_SIDE_EFFECTS` passes
+  readOnlyMessage: "Sample data is read-only",
+  now: () => loadedAt,                       // a test passes a fixed instant: one pack, two clocks
+});
+```
+
+- It is Connect's own `createRouterTransport`: requests and responses really serialize (a fixture that cannot travel fails here) and your interceptors (`interceptors: [...]`) run.
+- Dispatch: `readOnly` guard, then the method's route or scenario handler (latest layer wins; within one layer a route beats a scenario handler), then `defaults`, then `Unimplemented`. `readOnly` has no name heuristic: an unannotated read is refused, and the fix is the proto annotation.
+- In the project's tests, `expect(await checkFixturePack(shopPack, { services: [TraceService] })).toEqual([])` calls every handler once and names the method of each output with a misspelled field, a wrong value type, another message type or a failed serialization, plus every `data` entry that does not decode.
+
+Live data that degrades to sample data is still `createMockTransport` (`/mock-transport`):
+
+```ts
 const transport = createMockTransport({
-  scenario: { ...scenario, passthrough: liveUrl ? "first" : false },
-  fallback: liveUrl ? createConnectTransport({ baseUrl: liveUrl }) : undefined,
-  readOnly: true,                // refuse anything not `idempotency_level = NO_SIDE_EFFECTS`
-  passthroughTimeoutMs: 4000,    // "first": the backend's deadline before the scenario answers
+  scenario: { ...scenario, passthrough: "first" },
+  fallback: createConnectTransport({ baseUrl: liveUrl }),
+  readOnly: true,
+  passthroughTimeoutMs: 4000,                // the backend's deadline before the scenario answers
   onPassthroughFallback: () => showSampleDataBanner(),
 });
 ```
 
-- `readOnly` refuses every non-read with `PermissionDenied` BEFORE any handler, fixture or backend sees it. `true` reads the proto's idempotency; pass a function for a contract that does not annotate it.
-- `passthrough: "first"` sends EVERY RPC to `fallback` first and answers from the scenario, then the fixtures, only when it fails or times out — live data that degrades to sample data, not to an error page. The deadline is enforced by the mock transport, not left to `fallback`. A server stream is read to its end within the deadline, then replayed, so a stream that fails midway still falls back; a stream that never ends always ends up on the mock. A caller's own abort is never masked. Swapping mocks for a real endpoint is then config, not code.
+`passthrough: "first"` sends EVERY RPC to `fallback` first and answers from the scenario, then the fixtures, only when it fails or times out. The deadline is enforced by the mock transport. A server stream is read to its end within the deadline, then replayed, so a stream that fails midway still falls back. A caller's own abort is never masked.

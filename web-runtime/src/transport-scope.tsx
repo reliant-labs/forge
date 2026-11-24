@@ -9,7 +9,7 @@
 // `connectClient` in the owned src/lib/connect.ts, and its generated hooks
 // build their clients at module scope. That is right for an app, and it
 // leaves no way to point PART of the tree somewhere else: a sample app in a
-// product tour that reads a fixture pack while the person's own chats and
+// product tour that reads fixture data while the person's own chats and
 // projects beside it stay live, a preview panel, a storybook-like gallery
 // inside the app. Routing by request content (an interceptor that recognises
 // "sample" ids) is the alternative, and it fails open: the first request it

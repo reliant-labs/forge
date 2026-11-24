@@ -71,6 +71,53 @@ export default defineScenario({
 - `mockValue(Schema, { seed })` builds one message; `serviceDefaults(Svc, { now })` pins "recent" for a screenshot or a test.
 - A key-string handler (`"pkg.v1.Svc/Method": (req) => ...`) still works; `mockService` is the typed spelling, and the only typed one for a vendored service.
 
+## Fixtures per env: a demo or preview env promoted by digest
+
+`mock_api` is BUILD-time sugar for development. A deployed env that should
+serve sample data declares it as RUNTIME config on the frontend instead, so it
+runs the same release digest as prod:
+
+```bash
+forge env new demo --from prod
+```
+
+```kcl
+# deploy/kcl/demo/main.k, on the frontend
+fixtures = forge.Fixtures { scenario = "shop" }   # read_only = True
+```
+
+`forge env deploy demo <prod's release>` then ships prod's bytes, and
+`forge env render demo --json | jq '.frontends'` shows what reaches the browser:
+
+| Runtime config key | Value |
+|---|---|
+| `FIXTURES_SCENARIO` | the scenario name (`src/mocks/scenarios/<name>.ts`) |
+| `FIXTURES_READ_ONLY` | `"true"`, or `"false"` when `read_only = False`; anything but `"false"` is read-only |
+
+- The scaffolded `src/lib/connect.ts` reads them through `src/lib/fixtures.ts`
+  (`runtimeFixtures()`) and answers every RPC from the generated
+  `createMockTransport(undefined, { scenario, readOnly })`, loaded lazily, so a
+  live env's main chunk carries no fixture code. The scenario wins over
+  `?scenario=`; dispatch below it is unchanged (scenario → fixtures → service
+  defaults).
+- Read-only is the default and fails closed: only rpcs declaring
+  `option idempotency_level = NO_SIDE_EFFECTS;` answer, the rest fail
+  `PermissionDenied`. Annotate your read rpcs (`forge lint --idempotency`,
+  below), or a read-only demo renders their errors.
+- `src/lib/auth/session-provider.ts` signs the UI in as the fixture user, as
+  `mock_api = "true"` does. No mock banner is drawn: label sample data in your
+  own UI.
+- `mock_api` stays and means what it did: `"true"` is roughly fixtures with the
+  `?scenario=` (or `default`) scenario and writes allowed, `"hybrid"` the
+  scenario over the real backend. The schema refuses `fixtures` beside
+  `config.mock`.
+- A frontend whose `connect.ts` predates forge.Fixtures ignores the keys.
+  Port the branch from a fresh scaffold, or read
+  `window.__FORGE_CONFIG__.FIXTURES_SCENARIO` in your own transport layer.
+- A bundle that must not contain the live app's code at all (no sign-in, no
+  API client) is still a second build target: that is the escape hatch, not
+  the default.
+
 ## Fixture data in production: demos and previews
 
 The build-time `mock_api` is for development. To run the real app on sample data in a PRODUCTION bundle (a public demo, a hosted preview, a screenshot harness), serve a **fixture pack** through the fixture transport, behind your own runtime switch, imported only from a lazy chunk:

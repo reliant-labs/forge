@@ -33,8 +33,9 @@ const (
 // declares a config message: src/lib/otel_gen.ts (the browser telemetry
 // knobs KCL's render.k derives from a frontend's `telemetry` block, and the
 // API origin it propagates traces to), shared-web's native-login.ts (the API
-// URL), and the ENVIRONMENT every rendered document carries. They are valid
-// `runtime_config` keys for every frontend.
+// URL), shared-web's fixtures.ts (the fixture dataset render.k derives from a
+// frontend's `fixtures`), and the ENVIRONMENT every rendered document
+// carries. They are valid `runtime_config` keys for every frontend.
 //
 // TestFrontendRuntimeKeysMatchTheGeneratedReaders pins this list against the
 // templates that read them, so a reader added there without a key added here
@@ -44,6 +45,8 @@ var FrontendRuntimeKeys = []string{
 	"API_URL",
 	"CONSOLE_CAPTURE",
 	"ENVIRONMENT",
+	"FIXTURES_READ_ONLY",
+	"FIXTURES_SCENARIO",
 	"IDENTIFY_USER",
 	"OTEL_ENDPOINT",
 	"OTEL_REPLAY",

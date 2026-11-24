@@ -86,6 +86,8 @@ push
 query
 read
 readFile
+readOnly
+readOnlyMessage
 registry
 replay
 replaySampleRate
@@ -115,6 +117,7 @@ signal
 sort
 span
 trace
+transport
 type
 update
 value

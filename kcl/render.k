@@ -3534,6 +3534,7 @@ _frontend_violations = lambda f: Frontend -> [str] {
         + (["listen_ports: a frontend's dev server binds Frontend.port; set that"] if _host and _rt.listen_ports is not Undefined else []) \
         + (["delve_port: a frontend's dev server is not a Go process"] if _host and _rt.delve_port != 2345 else []) \
         + (["build_variants: a frontend has one build"] if _t == "build-only" and _rt.build_variants else []) \
+        + (["fixtures: a build-only frontend serves no config.js of its own; its output is assembled into another frontend's site, so declare fixtures on that frontend"] if _t == "build-only" and f.fixtures else []) \
         + (["bundle: the dev server assembles nothing; bundle dirs are assembled into a PUBLISHED site"] if _host and f.bundle else []) \
         + (["cache_control: forge sets Cache-Control only where it publishes the build itself (forge.OnBucket object headers, forge.OnFirebase firebase.json headers); ${'the platform sets the headers' if _t == 'hosted' else 'nothing here serves the build'}"] \
             if f.cache_control and _t not in ["bucket", "firebase"] else []) \
@@ -3558,10 +3559,31 @@ _frontend_violations = lambda f: Frontend -> [str] {
 _runtime_config_declared = lambda f: Frontend, bundle: Bundle -> {str:str | WorkloadURL} {
     # What forge derives from the frontend's own declarations comes FIRST, so
     # an author's runtime_config entry for the same key always wins.
-    _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config
+    _merged = _telemetry_runtime_config(f, bundle) | _env_scoped_runtime_config(f) | f.runtime_config | _fixtures_runtime_config(f)
     (_merged | {OTEL_ENDPOINT = "off"} | ({OTEL_REPLAY = "false"} if "OTEL_REPLAY" in _merged else {}) \
         | ({ANALYTICS_MODE = "off"} if "ANALYTICS_MODE" in _merged else {})) \
         if _obs_browser_off(bundle) else _merged
+}
+
+# A frontend's `fixtures` (kcl/schema.k Fixtures) as runtime config keys.
+# Two flat string keys, like every other key forge derives, because the
+# document is a flat {str: str} map on every runtime: a hosted StaticSite
+# spec carries each value as a literal, and config.js assigns them to
+# window.__FORGE_CONFIG__ unparsed.
+#
+#   FIXTURES_SCENARIO   the scenario name; its presence is what turns
+#                       fixtures on
+#   FIXTURES_READ_ONLY  always rendered, "true" unless read_only = False.
+#                       The browser keeps writes refused unless it reads
+#                       exactly "false", so a missing key fails closed too.
+#
+# Merged LAST in _runtime_config_declared: the schema refuses a
+# runtime_config entry for either key beside `fixtures`, so nothing can
+# shadow them, and they are the same on every runtime (OnHosted publishes
+# them in the spec, every other runtime writes them into config.js).
+_fixtures_runtime_config = lambda f: Frontend -> {str:str} {
+    _x = f.fixtures
+    {FIXTURES_SCENARIO = _x.scenario, FIXTURES_READ_ONLY = "true" if _x.read_only else "false"} if _x else {}
 }
 
 # The keys whose value differs per environment that a web frontend's

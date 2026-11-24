@@ -3,7 +3,7 @@
 **Status:** proposal, not implemented. Written for owner review. Nothing here has
 landed in forge.
 **Date:** 2026-11-24
-**Issue:** (filed with this proposal)
+**Issue:** forge#2723
 **Scope:** forge `web-runtime/` (new router-neutral module), the `frontend/state`
 skill, and the Next.js and Vite frontend scaffolds. First consumer: reliant
 `frontends/web/src/lib/urlState/`.
@@ -57,7 +57,7 @@ as written. They import nothing from the app or the router.
    copies into the tab so the tab keeps it. `set()` writes both. It listens to
    no `storage` event, so a tab that has its own value never moves because of
    another tab. Keys are a function, so they can be scoped per user and org.
-4. **The rule, in one function:** `fillEmptyUrl({ named, default, write })`.
+4. **The rule, in one function** (reliant's `fillScope`, generalised):
    If the URL names the state, use it and record it as the tab default. If it
    names nothing, take the default and write it into the URL with a replace, so
    what is on screen is always in the URL and can be shared.

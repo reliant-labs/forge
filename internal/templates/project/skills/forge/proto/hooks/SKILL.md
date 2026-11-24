@@ -12,8 +12,8 @@ Every rpc gets a hook; how it is classified and keyed is decided by the proto.
 `option idempotency_level = NO_SIDE_EFFECTS;`, else when its name opens with a
 read verb (Get, List, Search, Find, Check, Has, Is, Count, Exists). Declare it
 on every read named as a noun (`Health`, `Version`) instead of hand-building
-its query key; `IDEMPOTENT` does not make a read. `// forge:mutation` forces a
-mutation. Mutation hooks infer `onMutate`'s return as `onError`'s `context`,
+its query key; `IDEMPOTENT` does not make a read. `// forge:mutation: <why>`
+forces a mutation (`forge lint --idempotency` reads the same marker). Mutation hooks infer `onMutate`'s return as `onError`'s `context`,
 so an optimistic rollback needs no cast. A query hook's `select` sets its
 `data` type, as in useQuery: `useGetTask(req, { select: toView })` — no
 `useMemo` over `data`. A flip leaves the owned starter test's row stale:

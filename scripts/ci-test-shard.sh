@@ -61,10 +61,24 @@ echo "::endgroup::"
 run=$(scripts/ci-forge.sh test begin)
 mkdir -p "$run/unit"
 
+# QUARANTINE. forge.yaml's tests.flakes.quarantine: pr opens a pull request
+# that writes a ci/quarantine/ entry for a confirmed flake; the lanes skip
+# what the list names (`forge test quarantine skip-regex go`, empty when it
+# names nothing, so the command is unchanged then, and test-short-warm, which
+# runs this script on the same tree, skips the same tests). Entries expire
+# after 48h and stay applied, reported overdue, until the test is deleted or
+# rewritten (owner: flaky = delete). The flake gate does not skip them: a
+# change that edits a quarantined test is fixing it.
+skip=()
+if q=$(scripts/ci-forge.sh test quarantine skip-regex go) && [[ -n "$q" ]]; then
+  skip=(-skip "$q")
+  echo "skipping quarantined tests: $q"
+fi
+
 status=0
 started=$SECONDS
 scripts/ci-forge.sh test capture --run "$run" --lane unit --render raw -- \
-  scripts/ci-go-test.sh -short -json -covermode=atomic -coverprofile="$run/unit/cover.out" -timeout "$timeout" "${pkgs[@]}" >"$json" || status=$?
+  scripts/ci-go-test.sh -short -json -covermode=atomic -coverprofile="$run/unit/cover.out" -timeout "$timeout" ${skip[@]+"${skip[@]}"} "${pkgs[@]}" >"$json" || status=$?
 elapsed=$((SECONDS - started))
 echo "shard $i/$n: ${elapsed}s wall (compile, link and tests; includes any cache replay)"
 # Observe the test-command budget, leaving setup/artifact headroom within 5m.

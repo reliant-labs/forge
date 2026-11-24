@@ -359,18 +359,29 @@ type crudProtoPiece struct {
 
 // buildEntityCRUDRPCPieces renders the five CRUD rpc blocks, one piece
 // per verb.
+//
+// The two reads declare protobuf's `option idempotency_level =
+// NO_SIDE_EFFECTS;`: read-only fixture transports serve only rpcs that do,
+// connect-es may send them as GETs, and `forge lint --idempotency` asks it
+// of every read, so an entity is born lint-clean and demo-ready.
 func buildEntityCRUDRPCPieces(entity string) []crudProtoPiece {
 	plural := naming.Pluralize(entity)
 	var pieces []crudProtoPiece
-	for _, op := range []struct{ verb, name, opts string }{
-		{"Create", "Create" + entity, "idempotency_key: true"},
-		{"Get", "Get" + entity, ""},
-		{"Update", "Update" + entity, "idempotency_key: true"},
-		{"Delete", "Delete" + entity, "idempotency_key: true"},
-		{"List", "List" + plural, ""},
+	for _, op := range []struct {
+		verb, name, opts string
+		read             bool
+	}{
+		{"Create", "Create" + entity, "idempotency_key: true", false},
+		{"Get", "Get" + entity, "", true},
+		{"Update", "Update" + entity, "idempotency_key: true", false},
+		{"Delete", "Delete" + entity, "idempotency_key: true", false},
+		{"List", "List" + plural, "", true},
 	} {
 		var b strings.Builder
 		fmt.Fprintf(&b, "  rpc %s(%sRequest) returns (%sResponse) {\n", op.name, op.name, op.name)
+		if op.read {
+			b.WriteString("    option idempotency_level = NO_SIDE_EFFECTS;\n")
+		}
 		// `buf format`'s shapes: a one-field literal stays on one line, a
 		// longer one takes a line per field.
 		if op.opts == "" {

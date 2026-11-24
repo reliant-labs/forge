@@ -1933,6 +1933,18 @@ benefits:
           A table served by generated CRUD on an authenticated rpc that never
           says whose rows it holds: every signed-in caller reads, updates and
           deletes every other caller's rows
+      - id: forge-idempotency-read-undeclared
+        lane: --idempotency
+        bug_class: >-
+          A read rpc that never declares `idempotency_level = NO_SIDE_EFFECTS`:
+          every read-only fixture or demo transport refuses it, so the page
+          that calls it shows an error
+      - id: forge-idempotency-write-marked-read
+        lane: --idempotency
+        bug_class: >-
+          A write rpc declaring `NO_SIDE_EFFECTS`: Connect clients may send it
+          as a cacheable GET and retry it, and a fixture transport serves it
+          as a read
       - id: forgeconv-crud-owner-resolver
         lane: --conventions
         bug_class: >-

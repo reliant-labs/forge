@@ -163,7 +163,26 @@ func memberOf(archive []byte, isZip bool, name string) []byte {
 func noGo(string) (string, error) { return "", errors.New("not found") }
 
 func (r *release) fetcher(t *testing.T, goos string) *Fetcher {
-	return testFetcher(t.TempDir(), r.srv.URL, goos)
+	t.Helper()
+	return testFetcher(trustedTempDir(t), r.srv.URL, goos)
+}
+
+// trustedTempDir is t.TempDir() when this host's own ancestry of it is one
+// forge trusts as a tool cache, and skips the test otherwise. The directory
+// is fresh, so a refusal is the host's doing, not the test's: in a Linux user
+// namespace / is owned by the unmapped overflow uid, and forge is right to
+// refuse an owner it cannot tell from any other user (trust.go). The rules
+// themselves are proven host-independently by TestCheckAncestorRules, so a
+// regression that refused every cache would fail there, not skip here.
+func trustedTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := New().CheckCache(dir); errors.Is(err, ErrUntrustedCache) {
+		t.Skipf("this host's temporary directory cannot hold a tool cache, so nothing can be installed into it: %v", err)
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // testFetcher is New's Fetcher pointed at cache, base and goos/amd64, with
@@ -399,7 +418,7 @@ func TestEnsureConcurrentInstallsConverge(t *testing.T) {
 	tool := fakeTool(archive, nil)
 	rel := newRelease(t)
 	rel.serve(tool, "linux", "amd64", archive)
-	cache := t.TempDir()
+	cache := trustedTempDir(t)
 
 	const n = 8
 	var wg sync.WaitGroup
@@ -439,7 +458,7 @@ func TestMirrorReplacesGitHub(t *testing.T) {
 
 	// New reads the mirror; the trailing "/" is trimmed.
 	f := New()
-	f.CacheDir, f.GOOS, f.GOARCH, f.LookPath, f.Log = t.TempDir(), "linux", "amd64", noGo, io.Discard
+	f.CacheDir, f.GOOS, f.GOARCH, f.LookPath, f.Log = trustedTempDir(t), "linux", "amd64", noGo, io.Discard
 	if want := rel.srv.URL + "/acme/faketool/releases/download/v1.2.3/faketool_1.2.3_linux_amd64.tar.gz"; f.URL(tool) != want {
 		t.Errorf("URL = %s, want %s", f.URL(tool), want)
 	}

@@ -438,6 +438,11 @@ func TestCutJudgesNothingWhenThePolicySaysOff(t *testing.T) {
 
 func runCIVulnSBOMForTest(t *testing.T, h *vulnHarness, pin string) (string, string, int) {
 	t.Helper()
+	return runCIVulnSBOMPullForTest(t, h, pin, false)
+}
+
+func runCIVulnSBOMPullForTest(t *testing.T, h *vulnHarness, pin string, pull bool) (string, string, int) {
+	t.Helper()
 	prev := vulnSBOMSyft
 	vulnSBOMSyft = func(_ context.Context, bin string, args []string) ([]byte, error) {
 		if bin != "/fake/syft" || args[0] != "scan" || !strings.HasPrefix(args[1], "dir:") {
@@ -448,7 +453,7 @@ func runCIVulnSBOMForTest(t *testing.T, h *vulnHarness, pin string) (string, str
 	t.Cleanup(func() { vulnSBOMSyft = prev })
 	var out, errOut bytes.Buffer
 	cfg := &config.ProjectConfig{Name: "demo", ForgeVersion: pin}
-	err := runCIVulnSBOM(context.Background(), &out, &errOut, h.deps, cfg, t.TempDir(), false)
+	err := runCIVulnSBOM(context.Background(), &out, &errOut, h.deps, cfg, t.TempDir(), false, pull)
 	code := 0
 	var ec *exitCodeError
 	var ecv exitCodeError
@@ -492,6 +497,24 @@ func TestCIVulnSBOMSkipsCleanlyWithoutADatabaseWhileItWarns(t *testing.T) {
 	}
 }
 
+// --pull is what a fresh CI runner needs: with no database on disk and a rule
+// that does not gate, the step fetches and scans instead of skipping, and
+// the skip names the flag.
+func TestCIVulnSBOMPullScansWithoutADatabaseWhileItWarns(t *testing.T) {
+	h := newVulnHarness(t) // no database file on disk
+	_, errOut, code := runCIVulnSBOMForTest(t, h, warningPin)
+	if code != cigate.VulnSBOMAllowedSkipExit || !strings.Contains(errOut, "forge ci vuln-sbom --pull") {
+		t.Fatalf("without --pull: exit %d, want the skip naming --pull: %s", code, errOut)
+	}
+	out, errOut, code := runCIVulnSBOMPullForTest(t, h, warningPin, true)
+	if code != 0 || !strings.Contains(out, "would block: CVE-2026-4738") {
+		t.Fatalf("with --pull: exit %d\n%s\n%s", code, out, errOut)
+	}
+	if h.scans == 0 {
+		t.Error("--pull did not scan")
+	}
+}
+
 // The SBOM scan honors every well-formed ci.vuln_scan.exemptions entry,
 // whatever its namespace (a CVE included), and refuses the malformed ones the
 // shared contract refuses.
@@ -527,7 +550,7 @@ func runCIVulnSBOMWith(t *testing.T, h *vulnHarness, pin string, ex []config.CIV
 	cfg := &config.ProjectConfig{Name: "demo", ForgeVersion: pin}
 	cfg.CI.VulnScan.Exemptions = ex
 	var out, errOut bytes.Buffer
-	err := runCIVulnSBOM(context.Background(), &out, &errOut, h.deps, cfg, t.TempDir(), false)
+	err := runCIVulnSBOM(context.Background(), &out, &errOut, h.deps, cfg, t.TempDir(), false, false)
 	var ec *exitCodeError
 	var ecv exitCodeError
 	switch {

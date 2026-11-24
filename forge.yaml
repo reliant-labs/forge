@@ -79,6 +79,15 @@ ci:
           api/types/versions; forge never performs plugin privilege
           validation.
         expires: "2026-12-31"
+# `forge vuln patch --verify` (and the vuln-patch workflow's verify step)
+# runs this after bumping a vulnerable dependency: go build plus the -short
+# tier for a Go bump, web-runtime's npm ci, typecheck and Vitest suite for an
+# npm one (the script says how it tells them apart). The patcher's default,
+# `task test:short`, never runs web-runtime's tests. ci.yml's build job scans
+# the tree with `forge ci vuln-sbom` on every push to main.
+vuln:
+  patch:
+    verify: scripts/vuln-patch-verify.sh
 k8s:
   kcl_dir: ""
 lint:

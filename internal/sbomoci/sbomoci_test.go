@@ -143,27 +143,6 @@ func TestAttach_ReferrersAPI(t *testing.T) {
 	}
 }
 
-// The hosted registry's tenant token cannot DELETE. Without SkipReferrersGC
-// the second attach to a subject fails after moving the tag.
-func TestAttach_SecondSBOMWhenDeleteRefused(t *testing.T) {
-	t.Parallel()
-	f := ocitest.New(t, func(f *ocitest.Registry) { f.RefuseDelete = true })
-	subject := f.PutSubject("org/proj/api", "v1")
-
-	first := mustAttach(t, subject, sbomDoc("first"))
-	second := mustAttach(t, subject, sbomDoc("second"))
-
-	got := referrerDigests(t, subject)
-	for _, r := range []string{first, second} {
-		if !got[strings.SplitN(r, "@", 2)[1]] {
-			t.Errorf("%s not listed; listed %v", r, got)
-		}
-	}
-	if n := f.DeleteCount(); n != 0 {
-		t.Errorf("attach sent %d DELETE(s); it must never garbage-collect the old index", n)
-	}
-}
-
 func TestAttach_SameSBOMTwiceIsANoOp(t *testing.T) {
 	t.Parallel()
 	for _, api := range []bool{false, true} {

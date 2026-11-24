@@ -72,6 +72,10 @@
       "types": "./dist/mock-transport.d.ts",
       "default": "./dist/mock-transport.js"
     },
+    "./session": {
+      "types": "./dist/session.d.ts",
+      "default": "./dist/session.js"
+    },
     "./service-hooks": {
       "types": "./dist/service-hooks.d.ts",
       "default": "./dist/service-hooks.js"

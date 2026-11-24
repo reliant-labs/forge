@@ -1140,10 +1140,11 @@ jobs:
       # answers "does forge CALL vulnerable Go code"; this one answers "what
       # does the tree depend on that is known vulnerable", npm included.
       #
-      # Graded through the vuln-gate lint rollout row: below the release it
-      # gates from (forge.yaml's forge_version), a blocking finding is printed
-      # and exits 0, and a scan that cannot run exits 78, a SKIP, reported
-      # here as a warning. `lint.rules: {vuln-gate: error}` in forge.yaml
+      # It reports and does not block: forge.yaml sets `lint.rules:
+      # {vuln-gate: warn}` (in forge's own repo the rollout cannot read the pin
+      # as a release, so the rule would otherwise gate). So a blocking finding
+      # is printed as "graded audit" and exits 0, and a scan that cannot run
+      # exits 78, a SKIP, reported here as a warning. `vuln-gate: error`
       # makes both fail this step.
       #
       # NO DATABASE CACHE, on purpose. The download is ~200 MB, but the
@@ -1151,19 +1152,31 @@ jobs:
       # of it would take a large share of the repository's 10 GB cache budget
       # this file plans around ("Build-cache note"), evicting the Go build
       # scopes the merge tier restores. This job runs only on a push to main,
-      # so the download costs one fetch per push and no budget. The unpacked
-      # database is deleted after the scan: the container integration steps
-      # below need the runner's disk for their images.
-      - name: SBOM vulnerability scan (forge ci vuln-sbom)
+      # so the download costs one fetch per push and no budget.
+      #
+      # `forge vuln db pull` FIRST, into a fresh directory under RUNNER_TEMP
+      # ($FORGE_VULN_DB_DIR, the vuln/database skill's knob): while vuln-gate
+      # does not gate, `forge ci vuln-sbom` never downloads the database
+      # itself, and with none on disk it exits 78 and scans nothing. A pull
+      # that fails is a warning, as a scan that cannot run is (neither blocks
+      # main, like the SKIP it replaces). The unpacked database is deleted
+      # whatever happened: the container integration steps below need the
+      # runner's disk for their images.
+      - name: SBOM vulnerability scan (forge vuln db pull, forge ci vuln-sbom)
         if: ${{ !cancelled() }}
         env:
           FORGE_VULN_DB_DIR: ${{ runner.temp }}/vulndb
         run: |
+          rm -rf "$FORGE_VULN_DB_DIR"
+          trap 'rm -rf "$FORGE_VULN_DB_DIR"' EXIT
+          if ! forge vuln db pull; then
+            echo "::warning title=SBOM vulnerability scan skipped::forge vuln db pull failed; nothing was scanned"
+            exit 0
+          fi
           rc=0
           forge ci vuln-sbom || rc=$?
-          rm -rf "$FORGE_VULN_DB_DIR"
           if [ "$rc" -eq 78 ]; then
-            echo "::warning title=SBOM vulnerability scan skipped::forge ci vuln-sbom could not scan (no scanner or database); not gating below the vuln-gate rollout"
+            echo "::warning title=SBOM vulnerability scan skipped::forge ci vuln-sbom could not scan (exit 78: no scanner or database) after the pull; not gating below the vuln-gate rollout"
             exit 0
           fi
           exit "$rc"

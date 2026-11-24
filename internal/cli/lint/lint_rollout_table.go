@@ -336,6 +336,9 @@ var newRules = []rolloutGroup{
 	// forge lint --idempotency: an rpc's idempotency_level must agree with
 	// its name (lint_idempotency.go).
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Most existing protos declare no idempotency_level on their reads, forge's own entity scaffold included before this release; warn for a release so each read can declare NO_SIDE_EFFECTS (and each read-named write forge:mutation with a reason) before the rules gate"}, Rules: []string{ruleIdempotencyReadUndeclared, ruleIdempotencyWriteAsRead}},
+	// forge lint --idempotency: a read whose response carries a secret or a
+	// per-call value never declares NO_SIDE_EFFECTS (lint_idempotency_secret.go).
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Reads that return a token, a presigned URL or a one-time link already declare NO_SIDE_EFFECTS in existing protos, some because forge-idempotency-read-undeclared asked them to; warn for a release so each can move to forge:mutation with a reason before the rule gates"}, Rules: []string{ruleIdempotencySecretResponse}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

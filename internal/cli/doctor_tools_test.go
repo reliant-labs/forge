@@ -440,34 +440,48 @@ func TestFetchedToolChecks(t *testing.T) {
 
 	// Every Fetcher starts from New: it records the uid the cache must
 	// belong to.
-	fetcher := func(goos string, look func(string) (string, error)) *toolfetch.Fetcher {
+	fetcher := func(t *testing.T, goos string, look func(string) (string, error)) *toolfetch.Fetcher {
 		f := toolfetch.New()
 		f.CacheDir, f.GOOS, f.GOARCH, f.LookPath, f.Log = t.TempDir(), goos, "amd64", look, io.Discard
 		return f
 	}
-	installed := fetcher("plan9", hasGo)
-	installed.GoInstall = func(_ context.Context, _, gobin string) error {
-		return os.WriteFile(filepath.Join(gobin, "faketool"), []byte("x"), 0o755)
-	}
-	if _, err := installed.Ensure(context.Background(), tool); err != nil {
-		t.Fatal(err)
+	installed := func(t *testing.T) *toolfetch.Fetcher {
+		f := fetcher(t, "plan9", hasGo)
+		// A fresh temporary directory that forge refuses as a cache is the
+		// host's doing (a user namespace, where / is owned by the unmapped
+		// overflow uid), and forge is right to refuse it: nothing can be
+		// installed there, so this case skips rather than fails.
+		if err := f.CheckCache(f.CacheDir); errors.Is(err, toolfetch.ErrUntrustedCache) {
+			t.Skipf("this host's temporary directory cannot hold a tool cache: %v", err)
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		f.GoInstall = func(_ context.Context, _, gobin string) error {
+			return os.WriteFile(filepath.Join(gobin, "faketool"), []byte("x"), 0o755)
+		}
+		if _, err := f.Ensure(context.Background(), tool); err != nil {
+			t.Fatal(err)
+		}
+		return f
 	}
 
 	cases := []struct {
 		name   string
-		f      *toolfetch.Fetcher
+		f      func(t *testing.T) *toolfetch.Fetcher
 		status doctor.Status
 		msg    string
 	}{
 		{"installed", installed, doctor.StatusPass, "installed"},
-		{"release", fetcher("linux", noGo), doctor.StatusPass, "fetches the sha256-verified release on first use"},
-		{"go install", fetcher("plan9", hasGo), doctor.StatusPass, "go install on first use"},
-		{"unavailable", fetcher("plan9", noGo), doctor.StatusWarn, "cannot be installed here"},
+		{"release", func(t *testing.T) *toolfetch.Fetcher { return fetcher(t, "linux", noGo) }, doctor.StatusPass, "fetches the sha256-verified release on first use"},
+		{"go install", func(t *testing.T) *toolfetch.Fetcher { return fetcher(t, "plan9", hasGo) }, doctor.StatusPass, "go install on first use"},
+		{"unavailable", func(t *testing.T) *toolfetch.Fetcher { return fetcher(t, "plan9", noGo) }, doctor.StatusWarn, "cannot be installed here"},
 	}
 	for _, c := range cases {
-		got := fetchedToolChecks(c.f, []toolfetch.Tool{tool})
-		if len(got) != 1 || got[0].Name != "tool: faketool" || got[0].Status != c.status || !strings.Contains(got[0].Message, c.msg) {
-			t.Errorf("%s: got %+v, want status %s with %q", c.name, got, c.status, c.msg)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			got := fetchedToolChecks(c.f(t), []toolfetch.Tool{tool})
+			if len(got) != 1 || got[0].Name != "tool: faketool" || got[0].Status != c.status || !strings.Contains(got[0].Message, c.msg) {
+				t.Errorf("got %+v, want status %s with %q", got, c.status, c.msg)
+			}
+		})
 	}
 }

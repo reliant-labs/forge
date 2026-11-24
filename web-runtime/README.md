@@ -772,6 +772,19 @@ Metro with `unstable_enablePackageExports` off, and `expo/tsconfig.base` sets
 build output, reached the old way. Delete it and mobile breaks while web keeps
 working.
 
+## Fixture transport (`/fixture-transport`)
+
+`createFixtureTransport` serves a fixture pack (`defineFixturePack`: typed
+`routes`, an existing mock-transport `scenario`, descriptor-derived
+`defaults`, strict-JSON `data`, composed with `extends`) through Connect's
+own `createRouterTransport`, so every answer is serialized and the caller's
+interceptors run. `readOnly: true` refuses every RPC whose proto does not
+declare `idempotency_level = NO_SIDE_EFFECTS`. `checkFixturePack` is the
+test-side check: it names each handler whose output the proto would not
+accept. It is a subpath of its own, outside the barrel, so an app that
+lazy-loads it for a demo keeps it out of its main bundle. The
+`frontend/mock-mode` skill has the recipe.
+
 ## Money and basis points
 
 The web counterpart of `forge/pkg/money`. An amount is an integer count of

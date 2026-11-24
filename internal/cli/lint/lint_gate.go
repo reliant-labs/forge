@@ -239,6 +239,7 @@ func lintLaneFlags(f *lintFlags) []lintLaneFlag {
 		{name: "closed-sets", on: &f.closedSets},
 		{name: "db-grants", on: &f.dbGrants},
 		{name: "crud-ownership", on: &f.crudOwnership},
+		{name: "idempotency", on: &f.idempotency},
 		{name: "fixture-drift", on: &f.fixtureDrift},
 		{name: "fixture-drift", on: &f.crudFixtures}, // the deprecated --crud-fixtures alias
 		{name: "time-bucketing", on: &f.timeBucketing},

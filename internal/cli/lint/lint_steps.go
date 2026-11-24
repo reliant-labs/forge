@@ -706,6 +706,24 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 13d-ter-quater. Idempotency — an rpc's idempotency_level must
+		// agree with its name: a read declares NO_SIDE_EFFECTS (read-only
+		// fixture transports refuse everything else), a write never does
+		// (it would become a cacheable GET). Reads the forge descriptor and
+		// the proto sources, so it runs in the full sweep. Gates through
+		// the warn-first rollout (lint_idempotency.go).
+		{
+			name:  "idempotency lint",
+			gates: true,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return dirExists(protoDirDefault) && rc.cwd != "", ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				return collectIdempotencyJSON(rc.cwd)
+			},
+		},
+
 		// 13d-quinquies. ShellBuild-tokens — flags a retired forge
 		// substitution token (${TARGETARCH}, ${IMAGE}, …) left in a
 		// ShellBuild cmd. GATES, unlike its advisory neighbours, because

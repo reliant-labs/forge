@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -41,23 +40,11 @@ import (
 // no way to know about. The marker is the author's explicit override.
 //
 // The marker NAME comes from codegen.KnownProtoMarkers (proto_markers.go) so
-// this pass and `forge lint --proto-markers` share one vocabulary. The PATTERN
-// stays this package's own: scanRPCHookMarkers does its own comment-block
-// attachment walk and hands this expression an already-isolated comment, so it
-// needs no `//` prefix and no full-line anchor — unlike the entity-birth and
-// descriptor recognizers. Only the spelling is shared, not the scanning.
-var mutationMarkerRE = regexp.MustCompile(regexp.QuoteMeta(codegen.ProtoMarkerMutation) + `\b`)
-
-// rpcDeclRE matches a proto `rpc <Name>(` service-method declaration and
-// captures the method name.
-var rpcDeclRE = regexp.MustCompile(`^\s*rpc\s+([A-Za-z_]\w*)\s*\(`)
-
-// queryScopeMarkerRE matches `forge:query-scope [<Entity>]` (see
-// codegen.ProtoMarkerQueryScope) and captures the entity. A hyphen or word
-// character right after the token is a different, longer token, so it never
-// matches; a bare marker captures "" for ApplyQueryScopes to refuse.
-var queryScopeMarkerRE = regexp.MustCompile(regexp.QuoteMeta(codegen.ProtoMarkerQueryScope) +
-	`(?:[ \t]+([A-Za-z_]\w*))?(?:[^\w-]|$)`)
+// this pass and `forge lint --proto-markers` share one vocabulary, and the
+// attachment walk is codegen.ScanRPCCommentMarkers, shared with
+// `forge lint --idempotency` so the two can never disagree about which rpc a
+// marker labels.
+var mutationMarkerRE = codegen.ProtoMarkerMutationRE
 
 // rpcHookMarkers is what an rpc's comments tell the hook generator.
 type rpcHookMarkers struct {
@@ -70,61 +57,20 @@ type rpcHookMarkers struct {
 
 // scanRPCHookMarkers scans a service's proto source for the rpc comment
 // markers the hook generator reads: `// forge:mutation` and
-// `// forge:query-scope <Entity>`.
-//
-// A marker attaches like a protoc leading doc-comment: it counts when it
-// appears in the contiguous comment block directly above the `rpc` line, or
-// as a trailing comment on the `rpc` line itself. A blank (non-comment) line
-// between a comment and the rpc breaks the attachment, matching how protoc
-// associates leading comments — so a marker can't leak onto an unrelated RPC
-// further down the file.
+// `// forge:query-scope <Entity>`, attached as codegen.ScanRPCCommentMarkers
+// attaches them (the comment block directly above the rpc, or trailing on
+// its line).
 //
 // A missing or unreadable proto file is NOT an error: hooks still generate
 // with the heuristic query/mutation classification. (Unit-test ServiceDefs,
 // for one, point at proto paths with no file on disk.)
 func scanRPCHookMarkers(protoPath string) rpcHookMarkers {
-	out := rpcHookMarkers{Mutation: map[string]bool{}, QueryScope: map[string]string{}}
 	content, err := os.ReadFile(protoPath)
 	if err != nil {
-		return out
+		return rpcHookMarkers{Mutation: map[string]bool{}, QueryScope: map[string]string{}}
 	}
-	pendingMutation := false
-	pendingScope, havePendingScope := "", false
-	reset := func() { pendingMutation, pendingScope, havePendingScope = false, "", false }
-	for _, line := range strings.Split(string(content), "\n") {
-		if m := rpcDeclRE.FindStringSubmatch(line); m != nil {
-			// Marker in the attached comment block above, or trailing on the
-			// rpc line itself.
-			if pendingMutation || mutationMarkerRE.MatchString(line) {
-				out.Mutation[m[1]] = true
-			}
-			if sm := queryScopeMarkerRE.FindStringSubmatch(line); sm != nil {
-				out.QueryScope[m[1]] = sm[1]
-			} else if havePendingScope {
-				out.QueryScope[m[1]] = pendingScope
-			}
-			reset()
-			continue
-		}
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(trimmed, "//"),
-			strings.HasPrefix(trimmed, "/*"),
-			strings.HasPrefix(trimmed, "*"):
-			// Comment line within (or opening) the block above the rpc.
-			if mutationMarkerRE.MatchString(trimmed) {
-				pendingMutation = true
-			}
-			if sm := queryScopeMarkerRE.FindStringSubmatch(trimmed); sm != nil {
-				pendingScope, havePendingScope = sm[1], true
-			}
-		default:
-			// A blank line breaks leading-comment attachment, and any
-			// other statement resets it too.
-			reset()
-		}
-	}
-	return out
+	m := codegen.ScanRPCCommentMarkers(string(content))
+	return rpcHookMarkers{Mutation: m.Mutation, QueryScope: m.QueryScope}
 }
 
 // serviceProtoSourcePath is the .proto file on disk that declares a service.

@@ -191,6 +191,13 @@ func isQueryMethod(name string) bool {
 	return false
 }
 
+// IsQueryMethodName reports whether an rpc name opens with one of the read
+// verbs the hook generator classifies as a useQuery by name alone
+// (isQueryMethod; whole-word match). `forge lint --idempotency` reads it so
+// the rpcs it asks to declare NO_SIDE_EFFECTS include every rpc this
+// generator already treats as a read.
+func IsQueryMethodName(name string) bool { return isQueryMethod(name) }
+
 // isQueryRPC decides whether m's generated hook is a useQuery.
 //
 // The proto's own declaration comes first: `option idempotency_level =

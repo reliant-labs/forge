@@ -12,7 +12,8 @@ import (
 // $FORGE_LOG; answers `test begin` with $STUB_RUN (default
 // ./.forge/tests/runs/stub); runs a `test capture … -- <command>` command
 // as capture does (unchanged, its exit status its own); and answers anything
-// else with $STUB_STDERR on stderr and exit status $STUB_EXIT (default 0).
+// else with $STUB_STDOUT on stdout, $STUB_STDERR on stderr and exit status
+// $STUB_EXIT (default 0).
 const stubForge = `#!/usr/bin/env bash
 [ -n "$FORGE_LOG" ] && echo "$*" >>"$FORGE_LOG"
 if [ "$1 $2" = "test begin" ]; then
@@ -24,6 +25,7 @@ if [ "$1 $2" = "test capture" ]; then
   shift
   exec "$@"
 fi
+[ -n "$STUB_STDOUT" ] && echo "$STUB_STDOUT"
 [ -n "$STUB_STDERR" ] && echo "$STUB_STDERR" >&2
 exit "${STUB_EXIT:-0}"
 `

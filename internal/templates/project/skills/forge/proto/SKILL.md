@@ -136,6 +136,13 @@ an authenticated caller may then do is handler logic against
 `middleware.GetUser(ctx)`, checked against the row's own owner column (`auth`,
 and `db` for where that column comes from).
 
+**Every read declares `option idempotency_level = NO_SIDE_EFFECTS;`** (protobuf's
+own option, inside the rpc body; scaffolded Get/List carry it). Read-only fixture
+transports serve nothing else, so an undeclared read errors in a demo.
+`forge lint --idempotency` flags a read-named rpc without it and a write
+declaring it. A read-named rpc that writes says why: `// forge:mutation: <why>`
+above it (`frontend/mock-mode`).
+
 ### No schema annotations
 
 There is no proto-side schema declaration: entities are projections of the

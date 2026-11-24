@@ -79,6 +79,16 @@ ci:
           api/types/versions; forge never performs plugin privilege
           validation.
         expires: "2026-12-31"
+# `forge vuln patch --verify` (and the vuln-patch workflow's verify step)
+# runs this after bumping a vulnerable dependency: go build plus the -short
+# tier for a Go bump, web-runtime's npm ci, typecheck and Vitest suite for an
+# npm one (the script says how it tells them apart). The patcher's default,
+# `task test:short`, never runs web-runtime's tests. ci.yml's build job scans
+# the tree with `forge ci vuln-sbom` on every push to main (lint.rules below
+# keeps that scan from gating).
+vuln:
+  patch:
+    verify: scripts/vuln-patch-verify.sh
 k8s:
   kcl_dir: ""
 lint:
@@ -90,6 +100,14 @@ lint:
     # fails one of its three runs blocks (`forge test flakes gate`; forge
     # ci gate's flake-check step). For customers the step only warns.
     flake-check: error
+    # `forge ci vuln-sbom` (ci.yml's build job, on main) reports and does not
+    # block. In forge's own repo the rollout cannot read the pin as a release
+    # (the module IS forge), so without this dial the rule would gate: a KEV
+    # or fixable-critical dependency, or a scan that could not run (exit 77),
+    # would turn main red. govulncheck, which knows what forge calls, is
+    # main's vulnerability gate; whether this one gates too is the owner's
+    # call (`error`).
+    vuln-gate: warn
 # forge records its own test runs (scripts/ci-test-shard.sh and the flake
 # gate through `forge test capture`) and acts on its flakes as the owner's
 # policy says: flaky = delete immediately, so a suspected flake files an

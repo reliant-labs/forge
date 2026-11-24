@@ -64,6 +64,10 @@
       "types": "./dist/otel-proxy.d.ts",
       "default": "./dist/otel-proxy.js"
     },
+    "./fixture-transport": {
+      "types": "./dist/fixture-transport.d.ts",
+      "default": "./dist/fixture-transport.js"
+    },
     "./mock-transport": {
       "types": "./dist/mock-transport.d.ts",
       "default": "./dist/mock-transport.js"
@@ -139,6 +143,7 @@
     "@types/react": "^19.1.0",
     "@types/react-18": "npm:@types/react@~18.3.0",
     "@types/react-dom": "^19.3.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "0.28.2",
     "jsdom": "^26.1.0",
     "playwright": "1.58.0",

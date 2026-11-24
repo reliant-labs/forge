@@ -1029,6 +1029,12 @@ var removals = []removal{
 		},
 		Allowances: []allowance{
 			{
+				Name:   "web-runtime fixture data packs",
+				Reason: "FixturePack is a live collection of typed sample RPC data, not an installable scaffold pack or a reference to internal/packs.",
+				Token:  regexp.MustCompile(`\b(?:[Aa]|[Tt]he) fixture pack\b`),
+				Paths:  []string{"web-runtime/README.md", "web-runtime/src/fixture-transport.ts"},
+			},
+			{
 				Name:   "the removed-key registry",
 				Reason: "This table is the MECHANISM that tells a user a forge.yaml key is gone: it must name `packs`, `pack_overrides` and `features.packs` to match them and print the migration message. Deleting these names would silently accept a retired key instead of rejecting it. File-wide because the registry's prose and its keys are inseparable.",
 				Paths:  []string{"internal/config/validate.go"},

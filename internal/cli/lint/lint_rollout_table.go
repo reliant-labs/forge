@@ -333,6 +333,9 @@ var newRules = []rolloutGroup{
 	// v1.11.0) makes module-relative.
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing tests that find testdata or the repository root from runtime.Caller's file pass in an untrimmed build; warn for a release so each can resolve paths against the package directory (or check filepath.IsAbs) before the rule gates"}, Rules: []string{callerpath.RuleID}},
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
+	// forge lint --idempotency: an rpc's idempotency_level must agree with
+	// its name (lint_idempotency.go).
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Most existing protos declare no idempotency_level on their reads, forge's own entity scaffold included before this release; warn for a release so each read can declare NO_SIDE_EFFECTS (and each read-named write forge:mutation with a reason) before the rules gate"}, Rules: []string{ruleIdempotencyReadUndeclared, ruleIdempotencyWriteAsRead}},
 }
 
 // rolloutLinkFixture is a grace row linked into a test build of the forge

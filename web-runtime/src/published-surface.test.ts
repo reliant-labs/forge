@@ -117,6 +117,7 @@ describe("the published surface", () => {
       "./auth/firebase",
       "./auth/supabase",
       "./devlog",
+      "./fixture-transport",
       "./interceptors",
       "./mock-transport",
       "./node",
@@ -134,6 +135,9 @@ describe("the published surface", () => {
     //     in, and a production bundle has to be able to shake it out
     //     entirely. A barrel re-export would anchor it in every import of
     //     this package.
+    //   - fixture-transport is the same for demos and previews: an app
+    //     lazy-loads it into a demo chunk, and its main bundle must not
+    //     carry it.
     //   - telemetry imports @hyperdx/otel-web and rrweb (lazily, each its
     //     own chunk). Re-exported from the barrel, every frontend, React
     //     Native included, would bundle the SDK for nothing. The barrel
@@ -160,6 +164,7 @@ describe("the published surface", () => {
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     for (const forbidden of [
       "./auth/",
+      "./fixture-transport",
       "./mock-transport",
       "./node",
       "./otel-proxy",

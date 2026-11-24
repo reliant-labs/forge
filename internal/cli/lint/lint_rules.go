@@ -131,6 +131,8 @@ func gradableRules() []string {
 		// schema markers
 		"forge-column-markers", ruleIdentitySubjectUnreadable, "forge-closed-set", dbGrantsRule, dbGrantsUnverifiedRule,
 		ruleCRUDTableUnowned,
+		// rpc idempotency declarations vs names
+		ruleIdempotencyReadUndeclared, ruleIdempotencyWriteAsRead,
 		"forge-proto-markers", "forge-proto-options", ruleGoMarkers, ruleGoMarkersReasonMissing, "forge-vendored-proto-drift",
 		// proto formatting (the pre-commit buf-format hook's check)
 		ruleProtoFormat,

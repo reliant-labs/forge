@@ -27,7 +27,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"golang.org/x/mod/semver"
@@ -113,46 +112,64 @@ func frontendImportsTelemetry(feDir string) bool {
 	return found
 }
 
-// declaredDependencies returns the manifest's top-level "dependencies".
-func declaredDependencies(text string) map[string]string {
-	var doc struct {
-		Dependencies map[string]string `json:"dependencies"`
+// The two top-level install scopes a manifest declares packages in.
+const (
+	sectionDependencies    = "dependencies"
+	sectionDevDependencies = "devDependencies"
+)
+
+// manifestScopes is a manifest's two top-level install scopes.
+type manifestScopes struct {
+	Dependencies    map[string]string `json:"dependencies"`
+	DevDependencies map[string]string `json:"devDependencies"`
+}
+
+func (m manifestScopes) section(name string) map[string]string {
+	if name == sectionDevDependencies {
+		return m.DevDependencies
 	}
-	if err := json.Unmarshal([]byte(text), &doc); err != nil {
-		return nil
-	}
-	return doc.Dependencies
+	return m.Dependencies
 }
 
 // telemetryPeersSince is the first runtime release that takes the telemetry
 // SDK as optional peers instead of carrying it as dependencies.
 const telemetryPeersSince = "v0.14.0"
 
-// runtimeTakesTelemetryPeers reports whether the runtime the manifest at
-// feDir declares is one that takes the telemetry SDK as peers, so the app
-// must supply it:
+// telemetryPeerTarget is what a frontend's manifest must declare for the
+// runtime it resolves: each telemetry peer at the specifier THAT runtime
+// declares, in the install scope the runtime itself is declared in, so the
+// peers install exactly when the runtime does.
+type telemetryPeerTarget struct {
+	section string            // sectionDependencies or sectionDevDependencies
+	specs   map[string]string // peer name → the runtime's specifier for it
+}
+
+// telemetryPeerTargetFor decides the target for the manifest text at feDir,
+// and false when the runtime it declares does not take the telemetry SDK as
+// peers, so the app need not supply it:
 //
 //   - a version range whose floor is 0.14.0 or later: every release it
-//     admits declares the peers;
-//   - a `file:` bridge (a dev forge's local runtime) whose package.json
-//     declares any of them under peerDependencies.
+//     admits declares the peers, at the versions the checked-in runtime
+//     declares (webruntimepeers);
+//   - a `file:` bridge (a dev forge's local runtime): exactly the telemetry
+//     peers that runtime's own package.json declares, at its versions, so the
+//     manifest matches the runtime it links rather than the checked-in one.
 //
 // Anything else is no: a floor below 0.14 (the older runtime carries the
 // packages itself), no runtime entry, or a specifier this cannot read (a git
 // URL, an npm alias). The manifest is then left as the project wrote it.
-func runtimeTakesTelemetryPeers(feDir, text string) bool {
-	var doc struct {
-		Dependencies    map[string]string `json:"dependencies"`
-		DevDependencies map[string]string `json:"devDependencies"`
-	}
+func telemetryPeerTargetFor(feDir, text string) (telemetryPeerTarget, bool) {
+	var doc manifestScopes
 	if err := json.Unmarshal([]byte(text), &doc); err != nil {
-		return false
+		return telemetryPeerTarget{}, false
 	}
+	section := sectionDependencies
 	spec, ok := doc.Dependencies[WebRuntimePackage]
 	if !ok {
 		if spec, ok = doc.DevDependencies[WebRuntimePackage]; !ok {
-			return false
+			return telemetryPeerTarget{}, false
 		}
+		section = sectionDevDependencies
 	}
 	if path, ok := strings.CutPrefix(spec, "file:"); ok {
 		if !filepath.IsAbs(path) {
@@ -160,30 +177,71 @@ func runtimeTakesTelemetryPeers(feDir, text string) bool {
 		}
 		b, err := os.ReadFile(filepath.Join(path, "package.json"))
 		if err != nil {
-			return false
+			return telemetryPeerTarget{}, false
 		}
 		var runtime struct {
 			PeerDependencies map[string]string `json:"peerDependencies"`
 		}
 		if json.Unmarshal(b, &runtime) != nil {
-			return false
+			return telemetryPeerTarget{}, false
 		}
+		specs := map[string]string{}
 		for _, name := range telemetryPeers {
-			if _, ok := runtime.PeerDependencies[name]; ok {
-				return true
+			if s, ok := runtime.PeerDependencies[name]; ok && s != "" {
+				specs[name] = s
 			}
 		}
-		return false
+		return telemetryPeerTarget{section: section, specs: specs}, len(specs) > 0
 	}
 	floor, ok := minimumVersion(spec)
-	return ok && semver.Compare(floor, telemetryPeersSince) >= 0
+	if !ok || semver.Compare(floor, telemetryPeersSince) < 0 {
+		return telemetryPeerTarget{}, false
+	}
+	specs := telemetryPeerSpecs()
+	return telemetryPeerTarget{section: section, specs: specs}, len(specs) > 0
 }
 
-// dependencyValueRe matches name's entry in a manifest, capturing the quoted
-// value. Like webRuntimeDepRe, a package name is unique enough in a
-// package.json that the first match is the entry.
-func dependencyValueRe(name string) *regexp.Regexp {
-	return regexp.MustCompile(`"` + regexp.QuoteMeta(name) + `"\s*:\s*("[^"]*")`)
+// declaredPeer is where a manifest already declares a peer, if anywhere: the
+// runtime's own scope first, then the other one, so a peer the project put in
+// the other scope is reconciled where it is rather than declared twice.
+func declaredPeer(doc manifestScopes, target telemetryPeerTarget, name string) (section, current string, found bool) {
+	other := sectionDevDependencies
+	if target.section == sectionDevDependencies {
+		other = sectionDependencies
+	}
+	for _, s := range []string{target.section, other} {
+		if v, ok := doc.section(s)[name]; ok {
+			return s, v, true
+		}
+	}
+	return "", "", false
+}
+
+// sectionOpenRe matches the opening brace of the top-level object key.
+func sectionOpenRe(key string) *regexp.Regexp {
+	return regexp.MustCompile(`"` + regexp.QuoteMeta(key) + `"\s*:\s*\{`)
+}
+
+// replaceInSection replaces the value of name's entry inside the object key
+// with spec, and false when that entry is not where this splice can reach.
+// A manifest's dependency objects are flat string maps, so the object ends
+// at its first closing brace.
+func replaceInSection(text, key, name, spec string) (string, bool) {
+	open := sectionOpenRe(key).FindStringIndex(text)
+	if open == nil {
+		return text, false
+	}
+	end := strings.IndexByte(text[open[1]:], '}')
+	if end < 0 {
+		return text, false
+	}
+	body := text[open[1] : open[1]+end]
+	at := regexp.MustCompile(`"` + regexp.QuoteMeta(name) + `"\s*:\s*("[^"]*")`).FindStringSubmatchIndex(body)
+	if at == nil {
+		return text, false
+	}
+	base := open[1]
+	return text[:base+at[2]] + jsonString(spec) + text[base+at[3]:], true
 }
 
 // EnsureTelemetryDependencies declares the telemetry peers in
@@ -210,31 +268,28 @@ func EnsureTelemetryDependencies(projectDir, feRelDir string) bool {
 		return false
 	}
 	text := string(original)
-	if !runtimeTakesTelemetryPeers(feDir, text) {
+	target, ok := telemetryPeerTargetFor(feDir, text)
+	if !ok {
 		return false
 	}
-	declared := declaredDependencies(text)
-	specs := telemetryPeerSpecs()
-	names := make([]string, 0, len(specs))
-	for name := range specs {
-		names = append(names, name)
+	var doc manifestScopes
+	if err := json.Unmarshal(original, &doc); err != nil {
+		return false
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		spec := specs[name]
-		current, found := declared[name]
+	for _, name := range sortedKeys(target.specs) {
+		spec := target.specs[name]
+		section, current, found := declaredPeer(doc, target, name)
 		switch {
 		case found && wantTelemetryPeer(current, spec) == current:
 			continue
 		case found:
-			re := dependencyValueRe(name)
-			at := re.FindStringSubmatchIndex(text)
-			if at == nil {
+			replaced, spliced := replaceInSection(text, section, name, spec)
+			if !spliced {
 				continue // declared somewhere this splice cannot reach; leave it
 			}
-			text = text[:at[2]] + jsonString(spec) + text[at[3]:]
+			text = replaced
 		default:
-			text, err = insertDependency(text, name, spec)
+			text, err = insertIntoObject(text, sectionOpenRe(target.section), target.section, name, spec)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not declare %s in %s: %v\n", name, pkgPath, err)
 				return false
@@ -260,24 +315,29 @@ func EnsureTelemetryDependencies(projectDir, feRelDir string) bool {
 // counterpart for a disowned manifest: one line per peer it would declare or
 // change.
 func telemetryDependencyNotices(feDir, text string) []string {
-	if !frontendImportsTelemetry(feDir) || !runtimeTakesTelemetryPeers(feDir, text) {
+	if !frontendImportsTelemetry(feDir) {
 		return nil
 	}
-	declared := declaredDependencies(text)
-	specs := telemetryPeerSpecs()
-	names := make([]string, 0, len(specs))
-	for name := range specs {
-		names = append(names, name)
+	target, ok := telemetryPeerTargetFor(feDir, text)
+	if !ok {
+		return nil
 	}
-	sort.Strings(names)
+	var doc manifestScopes
+	if err := json.Unmarshal([]byte(text), &doc); err != nil {
+		return nil
+	}
+	install := "npm install"
+	if target.section == sectionDevDependencies {
+		install = "npm install --save-dev"
+	}
 	var out []string
-	for _, name := range names {
-		spec := specs[name]
-		current, found := declared[name]
+	for _, name := range sortedKeys(target.specs) {
+		spec := target.specs[name]
+		_, current, found := declaredPeer(doc, target, name)
 		switch {
 		case !found:
-			out = append(out, fmt.Sprintf("this frontend imports %s, whose peer %s package.json does not declare — `npm install %s@%s`",
-				webRuntimeTelemetryEntry, name, name, spec))
+			out = append(out, fmt.Sprintf("this frontend imports %s, whose peer %s package.json does not declare — `%s %s@%s`",
+				webRuntimeTelemetryEntry, name, install, name, spec))
 		case wantTelemetryPeer(current, spec) != current:
 			out = append(out, fmt.Sprintf("package.json declares %s %s; %s requires exactly %s — `npm install %s@%s`",
 				name, current, WebRuntimePackage, spec, name, spec))

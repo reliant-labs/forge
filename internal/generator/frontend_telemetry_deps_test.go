@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,5 +194,151 @@ func TestFrontendDependencyNotices_NameMissingTelemetryPeers(t *testing.T) {
 		if !strings.Contains(notices, "npm install "+name+"@"+spec) {
 			t.Errorf("no notice asks for %s@%s:\n%s", name, spec, notices)
 		}
+	}
+}
+
+// writeManifest writes frontends/web/package.json verbatim.
+func writeManifest(t *testing.T, projectDir, body string) string {
+	t.Helper()
+	p := filepath.Join(projectDir, "frontends", "web", "package.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// readScopes is the manifest's two install scopes.
+func readScopes(t *testing.T, path string) manifestScopes {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc manifestScopes
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("manifest is not valid JSON after reconcile: %v\n%s", err, raw)
+	}
+	return doc
+}
+
+// pr-review forge#2713 [B1]: a runtime declared in devDependencies gets its
+// peers in devDependencies, so they install exactly when it does, and a peer
+// the project already declares in the other scope is reconciled where it is,
+// never declared twice.
+func TestEnsureTelemetryDependencies_PeersFollowTheRuntimesScope(t *testing.T) {
+	feRel := filepath.Join("frontends", "web")
+	otel, _ := webruntimepeers.PeerSpec("@hyperdx/otel-web")
+	rrweb, _ := webruntimepeers.PeerSpec("rrweb")
+	for name, tc := range map[string]struct {
+		manifest      string
+		wantDeps      map[string]string // the telemetry peers dependencies must hold
+		wantDevDeps   map[string]string // … and devDependencies
+		wantInstall   string            // the notice's install command for a missing peer
+		noticeMissing bool
+	}{
+		"runtime in devDependencies": {
+			manifest: `{
+  "name": "web",
+  "dependencies": {
+    "react": "^19.1.0"
+  },
+  "devDependencies": {
+    "` + WebRuntimePackage + `": "` + peersRuntimeRange + `"
+  }
+}
+`,
+			wantDeps:      map[string]string{},
+			wantDevDeps:   map[string]string{"@hyperdx/otel-web": otel, "rrweb": rrweb},
+			wantInstall:   "npm install --save-dev",
+			noticeMissing: true,
+		},
+		"runtime in devDependencies, a stale peer in dependencies": {
+			manifest: `{
+  "name": "web",
+  "dependencies": {
+    "rrweb": "2.0.0"
+  },
+  "devDependencies": {
+    "` + WebRuntimePackage + `": "` + peersRuntimeRange + `",
+    "@hyperdx/otel-web": "0.1.0"
+  }
+}
+`,
+			wantDeps:    map[string]string{"rrweb": rrweb},
+			wantDevDeps: map[string]string{"@hyperdx/otel-web": otel},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projectDir := filepath.Join(t.TempDir(), "app")
+			manifest := writeManifest(t, projectDir, tc.manifest)
+			writeFrontendSource(t, projectDir, "web", "src/lib/otel_gen.ts", telemetryImport)
+			if tc.noticeMissing {
+				notices := strings.Join(FrontendDependencyNotices(projectDir, feRel), "\n")
+				if !strings.Contains(notices, tc.wantInstall+" rrweb@"+rrweb) {
+					t.Errorf("notices = %q, want %q", notices, tc.wantInstall+" rrweb@"+rrweb)
+				}
+			}
+			if !EnsureTelemetryDependencies(projectDir, feRel) {
+				t.Fatal("changed = false, want the peers reconciled")
+			}
+			got := readScopes(t, manifest)
+			for _, peer := range telemetryPeers {
+				if got.Dependencies[peer] != tc.wantDeps[peer] {
+					t.Errorf("dependencies[%s] = %q, want %q", peer, got.Dependencies[peer], tc.wantDeps[peer])
+				}
+				if got.DevDependencies[peer] != tc.wantDevDeps[peer] {
+					t.Errorf("devDependencies[%s] = %q, want %q", peer, got.DevDependencies[peer], tc.wantDevDeps[peer])
+				}
+			}
+			if EnsureTelemetryDependencies(projectDir, feRel) {
+				t.Error("second run rewrote the manifest")
+			}
+		})
+	}
+}
+
+// pr-review forge#2713 [B2]: a `file:` bridge's peers come from the linked
+// runtime's own package.json, not the checked-in one: only the peers it
+// declares, at its versions.
+func TestEnsureTelemetryDependencies_FileBridgeUsesTheLinkedRuntimesPeers(t *testing.T) {
+	feRel := filepath.Join("frontends", "web")
+	for name, tc := range map[string]struct {
+		peers string            // the linked runtime's peerDependencies
+		want  map[string]string // what the app must declare afterwards
+	}{
+		"partial peer set":   {peers: `{"rrweb":"2.1.9"}`, want: map[string]string{"rrweb": "2.1.9"}},
+		"different versions": {peers: `{"rrweb":"2.1.9","@hyperdx/otel-web":"0.21.0"}`, want: map[string]string{"rrweb": "2.1.9", "@hyperdx/otel-web": "0.21.0"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			projectDir := filepath.Join(t.TempDir(), "app")
+			rt := filepath.Join(projectDir, "runtime")
+			if err := os.MkdirAll(rt, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(rt, "package.json"), []byte(`{"name":"`+WebRuntimePackage+`","version":"0.14.0","peerDependencies":`+tc.peers+`}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			manifest := writeFrontendManifest(t, projectDir, "web", runtimeEntry("file:../../runtime")+",\n    \"rrweb\": \"2.0.0\"")
+			writeFrontendSource(t, projectDir, "web", "src/lib/otel_gen.ts", telemetryImport)
+			if !EnsureTelemetryDependencies(projectDir, feRel) {
+				t.Fatal("changed = false, want the linked runtime's peers declared")
+			}
+			got := readDeps(t, manifest)
+			for _, peer := range telemetryPeers {
+				if got[peer] != tc.want[peer] {
+					t.Errorf("%s = %q, want %q", peer, got[peer], tc.want[peer])
+				}
+			}
+			if notices := FrontendDependencyNotices(projectDir, feRel); len(notices) != 0 {
+				for _, n := range notices {
+					if strings.Contains(n, "otel-web") || strings.Contains(n, "rrweb") {
+						t.Errorf("a reconciled manifest still gets a notice: %s", n)
+					}
+				}
+			}
+		})
 	}
 }

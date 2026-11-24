@@ -366,9 +366,15 @@ func currentWebRuntimeSpec(text string) (string, bool) {
 // insertDependency adds name@spec to the top-level "dependencies" object,
 // matching the surrounding indentation.
 func insertDependency(text, name, spec string) (string, error) {
-	loc := dependenciesOpenRe.FindStringIndex(text)
+	return insertIntoObject(text, dependenciesOpenRe, "dependencies", name, spec)
+}
+
+// insertIntoObject adds name@spec to the object whose opening brace openRe
+// matches (key names it in the error), matching the surrounding indentation.
+func insertIntoObject(text string, openRe *regexp.Regexp, key, name, spec string) (string, error) {
+	loc := openRe.FindStringIndex(text)
 	if loc == nil {
-		return "", fmt.Errorf(`no "dependencies" object`)
+		return "", fmt.Errorf("no %q object", key)
 	}
 	lineStart := strings.LastIndexByte(text[:loc[0]], '\n') + 1
 	keyIndent := text[lineStart:loc[0]]

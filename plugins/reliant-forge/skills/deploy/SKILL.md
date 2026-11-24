@@ -54,6 +54,42 @@ Never write the claim link into a commit, a file in the repo or a log.
 
 ## Signed in: deploy to the account
 
+First check for `forge.yaml` in the app's directory. Ordinary `env deploy`
+does **not** adopt an app automatically. This also applies when switching here
+from `claimable_signed_in`.
+
+If `forge.yaml` is absent, adopt the existing app in place before deploying:
+
+- **Vite or Next.js static site (no server):**
+
+  ```bash
+  npx -y @reliantlabs/forge@1.10.0 project new --in-place --kind site --name <name> --dry-run
+  npx -y @reliantlabs/forge@1.10.0 project new --in-place --kind site --name <name>
+  ```
+
+- **App with its own Dockerfile (including an app that needs a server):**
+
+  ```bash
+  npx -y @reliantlabs/forge@1.10.0 project new --in-place --kind app --name <name> --dry-run
+  npx -y @reliantlabs/forge@1.10.0 project new --in-place --kind app --name <name>
+  ```
+
+Replace `<name>` with the project's name (lowercase, digits and hyphens).
+Review the dry-run output before writing. Adoption adds `forge.yaml` and
+`deploy/kcl/` and appends Forge's block to `.gitignore`; tell the user what
+changed. Review the generated assumptions, prod hosting bindings and required
+secrets before deploying. For a server app without a Dockerfile, load
+`adopt/deploy` with `skill_load` for the prerequisites; do not adopt it as a
+static site.
+
+If `forge.yaml` already exists, skip adoption and preserve the project's
+configuration. Check that `deploy/kcl/prod/main.k` exists and declares the
+intended target; do not overwrite an existing project's environments. Use
+`skill_load` with `deploy` if prod still needs configuring.
+
+Once the project and prod environment are configured, deploy from the app's
+directory:
+
 ```bash
 npx -y @reliantlabs/forge@1.10.0 env deploy prod
 ```

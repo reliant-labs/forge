@@ -143,24 +143,11 @@ transports serve nothing else, so an undeclared read errors in a demo.
 declaring it. A read-named rpc that writes says why: `// forge:mutation: <why>`
 above it (`frontend/mock-mode`).
 
-**A read whose response carries a secret or a per-call value does not declare
-it.** NO_SIDE_EFFECTS lets Connect send a unary rpc as an HTTP GET, and a browser
-cache, CDN or proxy may store that GET and replay it to the next caller. So an rpc
-returning an access token, a presigned or upload URL, an OAuth state, an invite,
-claim or checkout link, a one-time code, a nonce or a challenge says that each call
-mints a new one instead: `// forge:mutation: issues a fresh upload URL` above it.
-`forge lint --idempotency` flags one that declares the option
-(`forge-idempotency-secret-response-marked-read`), judging string and bytes fields
-by name (token, secret, password, credential, nonce, challenge, otp, one_time,
-oauth_state, api_key; a signed, presigned, upload, download, export, management,
-checkout, portal, authorize, reset, invite, claim or magic url or link) and any `[debug_redact = true]` field,
-at any depth of the response. `page_token`, `next_page_token` and `cursor` are
-positions, not secrets, and never fire, nor do masked or hashed forms
-(`masked_api_key`). A `// forge:secret` field is skipped too: the marker says
-reads never return it, so it also settles a write-only field of a shared message
-for every rpc that returns the message. Any other field the rule misreads takes
-`// forge:lint-disable-next-line forge-idempotency-secret-response-marked-read: <why>`
-above the rpc.
+A read whose response carries a secret or a per-call value (an access token, a
+presigned URL, an OAuth state, an invite or claim link, a one-time code, a
+challenge) does not declare it: Connect may send a NO_SIDE_EFFECTS rpc as an HTTP
+GET, which caches and proxies store and replay. Mark it `// forge:mutation: <why>`
+instead (`forge-idempotency-secret-response-marked-read`; `frontend/mock-mode`).
 
 ### No schema annotations
 

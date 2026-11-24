@@ -60,7 +60,7 @@ var vulnSBOMSyft = func(ctx context.Context, bin string, args []string) ([]byte,
 var vulnSBOMDeps = defaultVulnDeps
 
 func newCIVulnSBOMCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, pull bool
 	cmd := &cobra.Command{
 		Use:   "vuln-sbom [dir]",
 		Short: "Scan the source tree's lockfiles (syft, then grype), graded through the vuln-gate rollout",
@@ -75,7 +75,11 @@ rollout row: while this project's forge pin is below the release the rule gates
 from, a blocking finding is reported and exits 0, and a machine with no scanner or
 database is an allowed SKIP (exit 78). From that release (or with lint.rules:
 {vuln-gate: error}) a blocking finding exits 1 and a scan that cannot run exits 77,
-a SKIP that fails the gate.`,
+a SKIP that fails the gate.
+
+While the rule does not gate, the step never downloads the database: a machine
+without one skips. --pull downloads it first (~200 MB, into $FORGE_VULN_DB_DIR
+when set), which is what a fresh CI runner needs; a gating rule always fetches.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := projectDirForKCL()
@@ -86,10 +90,11 @@ a SKIP that fails the gate.`,
 			if err != nil {
 				cfg = nil
 			}
-			return runCIVulnSBOM(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), vulnSBOMDeps(), cfg, dir, asJSON)
+			return runCIVulnSBOM(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), vulnSBOMDeps(), cfg, dir, asJSON, pull)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the forge.dev/vuln-list/v1 document")
+	cmd.Flags().BoolVar(&pull, "pull", false, "download the vulnerability database when it is missing or old, even while vuln-gate does not gate (a fresh CI runner)")
 	return cmd
 }
 
@@ -105,7 +110,7 @@ func vulnSBOMCouldNotRun(errOut io.Writer, g lint.RuleGrade, why string) error {
 	return exitCodeError{code: cigate.VulnSBOMAllowedSkipExit, msg: msg}
 }
 
-func runCIVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, cfg *config.ProjectConfig, dir string, asJSON bool) error {
+func runCIVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, cfg *config.ProjectConfig, dir string, asJSON, pull bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -122,8 +127,8 @@ func runCIVulnSBOM(ctx context.Context, out, errOut io.Writer, deps vulnDeps, cf
 	if err != nil {
 		return vulnSBOMCouldNotRun(errOut, grade, err.Error())
 	}
-	if !grade.Gates && !db.OnDisk() {
-		return vulnSBOMCouldNotRun(errOut, grade, "no vulnerability database on this machine (`forge vuln db pull` downloads it, ~200 MB once)")
+	if !grade.Gates && !pull && !db.OnDisk() {
+		return vulnSBOMCouldNotRun(errOut, grade, "no vulnerability database on this machine (`forge vuln db pull` downloads it, ~200 MB once; `forge ci vuln-sbom --pull` downloads it and scans)")
 	}
 	if _, err := db.Ensure(ctx, vulnscan.EnsureOptions{Fetch: true}); err != nil {
 		return vulnSBOMCouldNotRun(errOut, grade, err.Error())

@@ -279,6 +279,10 @@ finding is printed and exits 0 and a machine with no scanner or database is an a
 SKIP (exit 78); from it, a blocking finding exits 1 and a scan that cannot run exits 77,
 a SKIP that fails the gate unless `CI_SKIP=vuln-sbom` names it.
 
+Below the row it never downloads the database, so on a fresh CI runner it skips and
+scans nothing. `forge ci vuln-sbom --pull` downloads it first (into `$FORGE_VULN_DB_DIR`
+when set; point that at the runner's temp directory or a cached one, `vuln/database`).
+
 ## Control-plane envs
 
 An env that declares `forge.ControlPlane` keeps its releases there, and **the control

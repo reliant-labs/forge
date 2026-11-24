@@ -420,15 +420,30 @@ func TestExtStore_SeamsGoIgnoresGetNoStore(t *testing.T) {
 	}
 }
 
+// caseInsensitiveFS reports whether dir's file system folds case: a file
+// written as "Probe" is then also found as "probe".
+func caseInsensitiveFS(t *testing.T, dir string) bool {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "Probe"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(filepath.Join(dir, "Probe"))
+	_, err := os.Stat(filepath.Join(dir, "probe"))
+	return err == nil
+}
+
 // Two seams whose stems differ only in case name two stores, but their
 // files would be one file on a case-insensitive file system: the second is
 // skipped and said, so a checkout on Windows or macOS gets the same tree.
 func TestExtStore_SeamsDifferingOnlyInCase(t *testing.T) {
 	root := t.TempDir()
+	if caseInsensitiveFS(t, root) {
+		t.Skip("this file system holds abc_repo_ext.go and abC_repo_ext.go as one file, so the fixture cannot exist here")
+	}
 	writeSeams(t, root, "abc_repo_ext.go", "abC_repo_ext.go")
 	dbDir := filepath.Join(root, "internal", "db")
 	if entries, err := os.ReadDir(dbDir); err != nil || len(entries) != 2 {
-		t.Skipf("this file system holds abc_repo_ext.go and abC_repo_ext.go as one file (%d entries, err %v), so the fixture cannot exist here", len(entries), err)
+		t.Fatalf("want both seams in %s on a case-sensitive file system, got %d entries (err %v)", dbDir, len(entries), err)
 	}
 	exts, notes := renderExtStores(dbDir, "internal/db", "db", nil, nil)
 	if len(exts) != 1 || exts[0].file != "abC_ext_store_gen.go" {

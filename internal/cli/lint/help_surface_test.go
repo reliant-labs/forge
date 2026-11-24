@@ -147,6 +147,11 @@ func TestLintHelpSurface(t *testing.T) {
 		// symptom is a user's save returning a 500 from the raw CHECK.
 		"guarded-fields",
 		"help-dev",
+		// Visible: a continuous rule about the user's own protos, and the
+		// one place a read without NO_SIDE_EFFECTS (refused by every
+		// read-only fixture transport) or a write declaring it (a cacheable
+		// GET) is named before a demo page errors or a client caches a write.
+		"idempotency",
 		// Visible: lint never installs a frontend's dependencies on its own,
 		// and a lane that could not run for want of them names this flag as
 		// the fix — a hint pointing at a hidden flag is no hint.

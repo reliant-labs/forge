@@ -90,3 +90,18 @@ const transport = createMockTransport({
 
 - `readOnly` refuses every non-read with `PermissionDenied` BEFORE any handler, fixture or backend sees it. `true` reads the proto's idempotency; pass a function for a contract that does not annotate it.
 - `passthrough: "first"` sends EVERY RPC to `fallback` first and answers from the scenario, then the fixtures, only when it fails or times out — live data that degrades to sample data, not to an error page. The deadline is enforced by the mock transport, not left to `fallback`. A server stream is read to its end within the deadline, then replayed, so a stream that fails midway still falls back; a stream that never ends always ends up on the mock. A caller's own abort is never masked. Swapping mocks for a real endpoint is then config, not code.
+
+### Reads declare it in the proto; `forge lint --idempotency` keeps it true
+
+`readOnly: true` takes the proto at its word, with no name heuristic: an rpc is a read only if it declares `option idempotency_level = NO_SIDE_EFFECTS;`. Everything else is refused (fail closed), so a demo page that calls an undeclared read shows an error, and a write wrongly declared a read reaches the fixtures (and becomes a cacheable GET in production).
+
+- Declare it in the body of every read: `rpc GetOrder(GetOrderRequest) returns (GetOrderResponse) { option idempotency_level = NO_SIDE_EFFECTS; }`. `forge scaffold entity` writes it on Get and List; `forge scaffold rpc` on a read-named rpc.
+- `forge lint --idempotency` (part of every `forge lint`; warns for one release, then gates) flags a read-named unary or server-streaming rpc without it (`forge-idempotency-read-undeclared`; read verbs are the ones forge already treats as reads: Get, List, Search, Find, Check, Has, Is, Count, Exists, Watch, Query, Describe, BatchGet) and a write-named rpc (Create, Update, Delete, Set, Add, Remove, Upsert, Insert, Patch, Replace, Cancel, Send, Grant, Revoke, Archive, Restore, Purge, Move, Rename) or a `// forge:mutation` one that declares it (`forge-idempotency-write-marked-read`). A noun name (`Health`) is not judged.
+- A read-named rpc that really writes says so, with the reason, which also makes its generated hook a useMutation:
+
+```proto
+// forge:mutation: creates the cart on first call
+rpc GetOrCreateCart(GetOrCreateCartRequest) returns (GetOrCreateCartResponse);
+```
+
+- Anything else: `// forge:lint-disable-next-line <rule>: <why>` above the rpc.

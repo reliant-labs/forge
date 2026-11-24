@@ -64,6 +64,10 @@
       "types": "./dist/otel-proxy.d.ts",
       "default": "./dist/otel-proxy.js"
     },
+    "./fixture-transport": {
+      "types": "./dist/fixture-transport.d.ts",
+      "default": "./dist/fixture-transport.js"
+    },
     "./mock-transport": {
       "types": "./dist/mock-transport.d.ts",
       "default": "./dist/mock-transport.js"

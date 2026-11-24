@@ -95,6 +95,7 @@ resolveActiveScenario
 responseSchema
 root
 route
+routes
 rpc
 rpcForensics
 run

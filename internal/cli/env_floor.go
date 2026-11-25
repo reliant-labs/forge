@@ -19,6 +19,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -56,9 +57,20 @@ func (f *floorFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&f.json, "json", false, "Print one machine-readable document")
 }
 
+// requireReason refuses, before any request, a reason the ledger would: none,
+// or one over release.MaxFloorReasonBytes or not UTF-8. A control plane judges
+// the same bound (release.Floor.Validate, and a schema CHECK), but one released
+// before it named the field answers only "the fields in this request cannot be
+// combined" (control-plane#3742), so the length is said here, with the count.
 func (f *floorFlags) requireReason(verb string) error {
 	if strings.TrimSpace(f.reason) == "" {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s needs --reason \"<why>\": it is recorded with the change", verb)}
+	}
+	if n := len(f.reason); n > release.MaxFloorReasonBytes {
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s: --reason is %d bytes, over the %d-byte limit a rollback floor's reason has; shorten it (link to a longer rationale instead)", verb, n, release.MaxFloorReasonBytes)}
+	}
+	if !utf8.ValidString(f.reason) {
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s: --reason is not valid UTF-8", verb)}
 	}
 	return nil
 }

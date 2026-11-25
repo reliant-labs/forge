@@ -54,7 +54,14 @@ type fakeTestsService struct {
 	exchanges      [][]string
 	// bearers are the bearers RecordTestRun was called with, in order.
 	bearers []string
+	// exchange is how AccessTokenService/ExchangeFederatedToken answers:
+	// "ok" mints rlat_oidc-minted, "refuse" is FailedPrecondition with
+	// trOIDCRemedy, and "" is not served (404 unimplemented, an older
+	// control plane).
+	exchange string
 }
+
+const trOIDCRemedy = "install the Reliant GitHub App on acme/shop, then link it in Organization settings"
 
 func (f *fakeTestsService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -109,6 +116,15 @@ func (f *fakeTestsService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"runId": "tr-1", "ingestState": "TEST_RUN_INGEST_STATE_INGESTED"})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]any{"runId": "tr-1", "created": true, "ingestState": "TEST_RUN_INGEST_STATE_PENDING"})
+		}
+	case "/controlplane.v1.AccessTokenService/ExchangeFederatedToken":
+		switch f.exchange {
+		case "ok":
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "rlat_oidc-minted", "expiresAt": "2999-01-01T00:00:00Z", "scopes": []string{"tests:write"}})
+		case "refuse":
+			connectErr(http.StatusBadRequest, cloud.CodeFailedPrecondition, trOIDCRemedy)
+		default:
+			connectErr(http.StatusNotFound, cloud.CodeUnimplemented, "no "+r.URL.Path)
 		}
 	default:
 		connectErr(http.StatusNotFound, cloud.CodeUnimplemented, "no "+r.URL.Path)
@@ -609,5 +625,111 @@ func TestTestReportUploadGzipsALargeResultsFile(t *testing.T) {
 	}
 	if _, doc := gunzipPart(t, b, "results"); doc == nil || len(doc) != big.Len() {
 		t.Fatalf("results part decodes to %d bytes, want %d", len(doc), big.Len())
+	}
+}
+
+// trOIDCJob makes this process a GitHub Actions job granted `id-token: write`
+// with no FORGE_CONTROL_PLANE_TOKEN: the upload's only credential is the job's
+// OIDC token ("idtok-job"), exchanged on fake's control plane.
+func trOIDCJob(t *testing.T) {
+	t.Helper()
+	tokens := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": "idtok-job"})
+	}))
+	t.Cleanup(tokens.Close)
+	t.Setenv(cloud.DefaultTokenEnv, "")
+	t.Setenv(cloud.CIOIDCEnv, "")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", tokens.URL+"/?api-version=2.0")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "actions-request-bearer")
+}
+
+// In a GitHub Actions job with no secret, the upload is authorized by the
+// job's own identity, and neither token reaches the report.
+func TestTestReportUploadWithGitHubOIDC(t *testing.T) {
+	fake := &fakeTestsService{features: []string{hostedTestFeatureResults}, exchange: "ok"}
+	trUploadProject(t, trStream("pass"), 0, fake, nil)
+	trOIDCJob(t)
+	out, code := trRun(t, newTestReportCmd(), "--json", "--upload=required")
+	if code != exitOK {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	fake.mu.Lock()
+	bearers, exchanges := append([]string(nil), fake.bearers...), len(fake.exchanges)
+	fake.mu.Unlock()
+	if want := []string{"rlat_oidc-minted"}; !reflect.DeepEqual(bearers, want) {
+		t.Fatalf("RecordTestRun bearers %v, want the minted token %v", bearers, want)
+	}
+	if exchanges != 0 {
+		t.Fatalf("the CI-identity token was traded through ExchangeToken (%d exchanges)", exchanges)
+	}
+	for _, secret := range []string{"rlat_oidc-minted", "idtok-job", "actions-request-bearer"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("the report carries %q:\n%s", secret, out)
+		}
+	}
+}
+
+// A control plane that refuses the exchange, or predates it, leaves the upload
+// skipped and green; --upload=required makes that exit 4, naming the remedy.
+func TestTestReportUploadRefusedOIDCExchange(t *testing.T) {
+	for _, exchange := range []string{"", "refuse"} {
+		t.Run("exchange="+exchange, func(t *testing.T) {
+			fake := &fakeTestsService{features: []string{hostedTestFeatureResults}, exchange: exchange}
+			trUploadProject(t, trStream("pass"), 0, fake, nil)
+			trOIDCJob(t)
+			rep, code := trReport(t, "--upload")
+			if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadSkipped {
+				t.Fatalf("exit %d upload %+v", code, rep.Upload)
+			}
+			rep, code = trReport(t, "--upload=required")
+			if code != exitRefused || rep.ExitCode != exitRefused {
+				t.Fatalf("--upload=required exited %d (document %d): %+v", code, rep.ExitCode, rep.Upload)
+			}
+			if exchange == "refuse" && !strings.Contains(rep.Upload.Error, trOIDCRemedy) {
+				t.Fatalf("the skip does not name the control plane's remedy: %s", rep.Upload.Error)
+			}
+			if len(fake.recorded()) != 0 {
+				t.Fatal("a refused exchange still recorded a run")
+			}
+		})
+	}
+}
+
+// In CI the job's own identity outranks a login file a runner happens to hold
+// (on a self-hosted runner, a person's): the OIDC token is exchanged and
+// presented as it is, and the session is neither used nor elevated. A refused
+// exchange does not fall back to that login either.
+func TestTestReportUploadOIDCBeatsARunnersLogin(t *testing.T) {
+	for _, exchange := range []string{"ok", "refuse"} {
+		t.Run("exchange="+exchange, func(t *testing.T) {
+			fake := &fakeTestsService{
+				features:       []string{hostedTestFeatureResults},
+				exchange:       exchange,
+				exchangeGrants: map[string]string{"rlat_session": "rlat_tests_write"},
+			}
+			trUploadProject(t, trStream("pass"), 0, fake, nil)
+			signInAs(t, "rlat_session")
+			trOIDCJob(t)
+			rep, code := trReport(t, "--upload=required")
+			fake.mu.Lock()
+			bearers, exchanges := append([]string(nil), fake.bearers...), len(fake.exchanges)
+			fake.mu.Unlock()
+			if exchanges != 0 {
+				t.Fatalf("the runner's login was elevated (%d exchanges)", exchanges)
+			}
+			if exchange == "refuse" {
+				if code != exitRefused || len(bearers) != 0 {
+					t.Fatalf("a refused exchange fell back to the login: exit %d bearers %v", code, bearers)
+				}
+				return
+			}
+			if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadOK {
+				t.Fatalf("exit %d upload %+v", code, rep.Upload)
+			}
+			if want := []string{"rlat_oidc-minted"}; !reflect.DeepEqual(bearers, want) {
+				t.Fatalf("RecordTestRun bearers %v, want the job's token %v", bearers, want)
+			}
+		})
 	}
 }

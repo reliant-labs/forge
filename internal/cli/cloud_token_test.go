@@ -82,7 +82,7 @@ func TestCloudTokenCreate_ExpiryIsSent(t *testing.T) {
 // resource is sent, so an older control plane sees the request it accepts.
 func TestCloudTokenCreate_BindEnvSendsTheResource(t *testing.T) {
 	t.Parallel()
-	caller := &recordingCaller{resp: `{"token":{"id":"tok_1","name":"app","scopes":["changes:read"]},"secret":"x"}`}
+	caller := &recordingCaller{resp: `{"token":{"id":"tok_1","name":"app","scopes":["changes:read"],"resource":{"kind":"environment","id":"env-123"}},"secret":"x"}`}
 	var out bytes.Buffer
 	if err := runCloudTokenCreateBound(context.Background(), caller, "app", []string{"changes:read"}, 0, " env-123 ", false, &out); err != nil {
 		t.Fatal(err)
@@ -101,6 +101,47 @@ func TestCloudTokenCreate_BindEnvSendsTheResource(t *testing.T) {
 	}
 	if _, has := unbound.req["resource"]; has {
 		t.Error("no --bind-env must send no resource")
+	}
+}
+
+// Both output modes must withhold success and the secret unless the server
+// confirms the exact binding, including when an old server ignores resource.
+func TestCloudTokenCreate_BindEnvRequiresReturnedBinding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, resource string
+		matches        bool
+	}{
+		{name: "absent", resource: `null`},
+		{name: "wrong kind", resource: `{"kind":"project","id":"env-123"}`},
+		{name: "wrong id", resource: `{"kind":"environment","id":"env-other"}`},
+		{name: "matching", resource: `{"kind":"environment","id":"env-123"}`, matches: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, jsonOut := range []bool{false, true} {
+				caller := &recordingCaller{resp: `{"token":{"id":"tok_1","resource":` + tc.resource + `},"secret":"rlat_private"}`}
+				var out bytes.Buffer
+				err := runCloudTokenCreateBound(context.Background(), caller, "app", []string{"changes:read"}, 0, " env-123 ", jsonOut, &out)
+				if tc.matches {
+					if err != nil || !strings.Contains(out.String(), "rlat_private") {
+						t.Fatalf("json=%v: matching binding: err=%v, output=%s", jsonOut, err, &out)
+					}
+					if jsonOut {
+						var doc cloudTokenCreateDocument
+						if err := json.Unmarshal(out.Bytes(), &doc); err != nil || doc.Token.Resource == nil || doc.Token.Resource.ID != "env-123" {
+							t.Fatalf("returned binding missing from JSON: %s (%v)", &out, err)
+						}
+					}
+					continue
+				}
+				if err == nil || !strings.Contains(err.Error(), "Revoke token \"tok_1\"") || !strings.Contains(err.Error(), "resource bindings") {
+					t.Fatalf("json=%v: expected actionable binding refusal, got %v", jsonOut, err)
+				}
+				if out.Len() != 0 || strings.Contains(err.Error(), "rlat_private") {
+					t.Fatalf("json=%v: refusal exposed output or secret", jsonOut)
+				}
+			}
+		})
 	}
 }
 

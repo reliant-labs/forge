@@ -58,6 +58,10 @@ type wireAccessToken struct {
 	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt    *time.Time `json:"lastUsedAt,omitempty"`
 	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	Resource      *struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	} `json:"resource,omitempty"`
 }
 
 func newCloudTokenCmd() *cobra.Command {
@@ -274,6 +278,14 @@ func runCloudTokenCreateBound(ctx context.Context, client cloudCaller, name stri
 	}
 	if err := client.Call(ctx, procCreateToken, req, &resp); err != nil {
 		return tokenAdminRefusal("mint", fmt.Errorf("create token %q: %w", name, err))
+	}
+	// Older servers may accept but ignore resource. Never expose the secret
+	// or claim confinement unless the minted token confirms the exact binding.
+	if env := strings.TrimSpace(bindEnv); env != "" {
+		resource := resp.Token.Resource
+		if resource == nil || resource.Kind != string(accesstoken.ResourceEnvironment) || resource.ID != env {
+			return fmt.Errorf("create token %q: server did not confirm the requested environment binding %q; secret withheld. Revoke token %q (cloud token revoke) in the same organization, then use a control plane that stores and returns resource bindings before retrying", name, env, resp.Token.ID)
+		}
 	}
 	if jsonOut {
 		doc := cloudTokenCreateDocument{Token: resp.Token, Secret: resp.Secret}

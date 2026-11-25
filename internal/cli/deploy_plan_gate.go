@@ -204,6 +204,40 @@ func detailSuffix(detail string) string {
 	return " — " + detail
 }
 
+// describeChangeWarning is one running Change the deploy stops, as one line:
+//
+//	change hero-copy (experiment, run r_1) uses variant v4, which this release no longer declares: deploying stops it (everyone gets the default).
+//
+// Worded by forge from the structured fields, so every control plane reads
+// alike; the server's Detail is the fallback for a warning naming neither an
+// undeclared variant nor an undeclared key (a newer server's new reason).
+func describeChangeWarning(w release.PlanChangeWarning) string {
+	const stops = ": deploying stops it (everyone gets the default)."
+	subject := "change " + emptyAs(w.Key, w.ChangeID)
+	var about []string
+	if w.Mode != "" {
+		about = append(about, w.Mode)
+	}
+	if w.RunID != "" {
+		about = append(about, "run "+w.RunID)
+	}
+	if len(about) > 0 {
+		subject += " (" + strings.Join(about, ", ") + ")"
+	}
+	switch {
+	case w.KeyUndeclared:
+		return subject + " is running, but this release no longer declares change " + emptyAs(w.Key, w.ChangeID) + stops
+	case len(w.UndeclaredVariants) == 1:
+		return subject + " uses variant " + w.UndeclaredVariants[0] + ", which this release no longer declares" + stops
+	case len(w.UndeclaredVariants) > 1:
+		return subject + " uses variants " + strings.Join(w.UndeclaredVariants, ", ") + ", which this release no longer declares" + stops
+	case w.Detail != "":
+		return subject + ": " + w.Detail
+	default:
+		return subject + " is running" + stops
+	}
+}
+
 // ─── Rendering (§8.6) ────────────────────────────────────────────────────────
 
 // renderDeployPlan prints the plan's §8.6 sections, in the doc's order.
@@ -256,7 +290,14 @@ func renderDeployPlan(out io.Writer, env string, plan release.Plan) {
 		}
 	}
 
-	if shown == 0 && len(plan.Findings) == 0 {
+	if len(plan.ChangeWarnings) > 0 {
+		fmt.Fprintf(out, "\n  running changes this deploy stops\n")
+		for _, w := range plan.ChangeWarnings {
+			fmt.Fprintf(out, "    [%s] %s\n", release.ClassWarn, describeChangeWarning(w))
+		}
+	}
+
+	if shown == 0 && len(plan.Findings) == 0 && len(plan.ChangeWarnings) == 0 {
 		fmt.Fprintf(out, "\n  no changes found\n")
 	}
 	if stops := plan.StopCodes(); len(stops) > 0 {

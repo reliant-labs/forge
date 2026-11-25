@@ -587,7 +587,7 @@ func gateJudgeIdentity() string {
 
 func frontendDirs(ci templates.CIWorkflowData) []string {
 	var paths []string
-	for _, fe := range ci.Frontends {
+	for _, fe := range ci.FrontendDirs() {
 		paths = append(paths, fe.Path)
 	}
 	sort.Strings(paths)

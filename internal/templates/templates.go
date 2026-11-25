@@ -502,6 +502,33 @@ func (f FrontendCIConfig) FrozenInstall() string {
 	return "pnpm install --frozen-lockfile"
 }
 
+// UniqueFrontendDirs keeps the first frontend of each directory, in order.
+//
+// Two declared frontends may share one directory (a web and a desktop
+// frontend built from the same package.json), and everything that works on
+// the directory — an install, a lint, a build, a Taskfile loop — must run
+// there once: twice is wasted work at best, and two concurrent installs into
+// one node_modules at worst.
+func UniqueFrontendDirs(fes []FrontendCIConfig) []FrontendCIConfig {
+	seen := make(map[string]bool, len(fes))
+	out := make([]FrontendCIConfig, 0, len(fes))
+	for _, fe := range fes {
+		if seen[fe.Path] {
+			continue
+		}
+		seen[fe.Path] = true
+		out = append(out, fe)
+	}
+	return out
+}
+
+// FrontendDirs is Frontends with one entry per directory
+// (UniqueFrontendDirs): what per-directory steps — installs, lockfile cache
+// keys — range over.
+func (d CIWorkflowData) FrontendDirs() []FrontendCIConfig {
+	return UniqueFrontendDirs(d.Frontends)
+}
+
 // DeployEnv represents a single deploy environment (e.g. staging, prod).
 type DeployEnv struct {
 	Name       string // "staging", "preprod", "prod"

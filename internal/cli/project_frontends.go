@@ -24,7 +24,8 @@ func newProjectFrontendsCmd() *cobra.Command {
 		Use:   "frontends",
 		Short: "Print the directories of this project's in-repo frontends, one per line (what task and the CI gate loop over)",
 		Long: `Print the project-relative directory of every frontend in this repository,
-one per line, sorted by name.
+one per line, sorted by frontend name. A directory two frontends share is
+printed once, at its first frontend's place.
 
 The list is the one ` + "`forge ci gate`" + ` and the scaffolded workflows use: each
 frontend a forge.Frontend declaration in deploy/kcl/<env>/main.k names (any
@@ -36,7 +37,8 @@ Scripts loop over it rather than globbing frontends/*:
 
   for dir in $(forge project frontends); do (cd "$dir" && npm test); done
 
---json prints [{"name","path"}] instead.
+--json prints [{"name","path"}] instead, one row per frontend, so a shared
+directory appears under each name.
 --with-package-manager prints manager:path rows using forge's install/CI
 resolver, including the declared manager's own lockfile when several exist.`,
 		Args: cobra.NoArgs,
@@ -71,7 +73,11 @@ resolver, including the declared manager's own lockfile when several exist.`,
 				enc.SetIndent("", "  ")
 				return enc.Encode(rows)
 			}
-			for _, fe := range fes {
+			// One line per directory: two frontends declared on one path
+			// (a web and a desktop build of one package.json) are one
+			// directory to install, build or test, and a loop over this
+			// list must reach it once. --json keeps every frontend.
+			for _, fe := range templates.UniqueFrontendDirs(fes) {
 				line := fe.Path
 				if withManager {
 					line = fe.PM() + ":" + fe.Path

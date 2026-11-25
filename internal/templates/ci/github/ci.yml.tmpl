@@ -437,10 +437,10 @@ jobs:
           node-version-file: "{{(index .Frontends 0).Path}}/package.json"
           cache: "{{(index .Frontends 0).PM}}"
           cache-dependency-path: |
-{{- range .Frontends}}
+{{- range .FrontendDirs}}
             {{.Path}}/{{.Lockfile}}
 {{- end}}
-{{- range .Frontends}}
+{{- range .FrontendDirs}}
       # The lockfile-exact install is the workflow's job, not the
       # Taskfile's: the workflow owns how the environment is PREPARED,
       # Taskfile.yml owns what the lane IS. The gate's deps row sees

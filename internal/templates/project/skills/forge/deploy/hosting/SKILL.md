@@ -98,10 +98,12 @@ forge env deploy prod --claimable
 forge gets an anonymous identity from the control plane, deploys as it, and
 exits **0** with the live URL and a `claim` block: the claim link, when the
 deploy goes offline (72h; then deleted 7 days later) and an instruction for you.
-**Give the claim link to your user and tell them it expires.** Opening it signs
-them up for free and makes the deploy theirs, with nothing to copy. Treat the
-link like a password (whoever claims first owns the deploy) and never post it
-publicly. `forge env status <env> --claimable` prints it again; `--json` carries
+**Show the claim link to your user and tell them it expires.** Opening it signs
+them up for free and makes the deploy theirs, with nothing to copy. It is a
+one-time link (whoever claims first owns the deploy), so it goes in your reply
+to the user who asked for the deploy and nowhere else: never in a commit, a
+repo file, a log, an issue or anywhere public.
+`forge env status <env> --claimable` prints it again; `--json` carries
 it as `claim` (`state`, `published`, `last_attempt`, `url`, `api_url`,
 `claim_url`, `expires_at`, `purge_after`, `agent_instructions`). A site whose
 `API_URL` references its hosted backend also prints `API: <site>/_api`

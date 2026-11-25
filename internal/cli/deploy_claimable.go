@@ -1155,7 +1155,8 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 	published := cl.Published()
 	instr := fmt.Sprintf("Give claim_url to your user and tell them it expires at %s. "+
 		"Opening it signs them up for free and makes this deploy theirs. "+
-		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
+		"It is a one-time link for your user: whoever claims it first owns the deploy, so show it only to them, "+
+		"never in a commit, a log, an issue or anywhere public. "+
 		"To see it again: %s env status %s --claimable",
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
 	// The newest attempt's cause (it is reset on every attempt): set while a
@@ -1203,7 +1204,8 @@ func nothingPublishedInstructions(env string, cl *credentials.Claimable) string 
 func claimRequiredInstructions(env string, cl *credentials.Claimable) string {
 	return fmt.Sprintf("Nothing is deployed yet: the platform publishes this deploy's content only once the deploy is "+
 		"claimed. Claim to unlock: give claim_url to your user and tell them it expires at %s; opening it signs them up "+
-		"for free and makes this deploy theirs. Treat the link like a password: whoever claims it first owns the deploy. "+
+		"for free and makes this deploy theirs. It is a one-time link for your user: whoever claims it first owns the "+
+		"deploy, so show it only to them, never in a commit, a log, an issue or anywhere public. "+
 		"Once claimed, they sign in on this machine and deploy: %s",
 		cl.ExpiresAt.UTC().Format(time.RFC3339), loginThenDeploy(env))
 }
@@ -1221,7 +1223,8 @@ func claimContentRefusal(env, claimURL string, deployErr error) *claimableRefusa
 	b.WriteString(claimToUnlockNote + "\n")
 	fmt.Fprintf(&b, "\n  Claim:  %s\n\n", claimURL)
 	b.WriteString("  FOR AN AGENT: give the claim link above to your user. Opening it signs them up for free and makes\n")
-	b.WriteString("  this deploy theirs. Treat it like a password: whoever claims it first owns the deploy.\n")
+	b.WriteString("  this deploy theirs. It is a one-time link for your user: whoever claims it first owns the\n")
+	b.WriteString("  deploy, so show it only to them, never in a commit, a log, an issue or anywhere public.\n")
 	fmt.Fprintf(&b, "  fix: give the claim link to your user; once claimed, they sign in on this machine and deploy: %s",
 		loginThenDeploy(env))
 	r := &claimableRefusal{
@@ -1333,9 +1336,10 @@ func printClaimRequired(w io.Writer, env string, c *deployClaimJSON) {
 	fmt.Fprintf(w, "\n  Claim:  %s\n", c.ClaimURL)
 	fmt.Fprintf(w, "\n  FOR AN AGENT: give the claim link above to your user and tell them it expires in %s\n",
 		formatLifetime(c.ExpiresAt.Sub(now)))
-	fmt.Fprintf(w, "  (%s). Opening it signs them up for free and makes this deploy theirs. Treat the\n",
+	fmt.Fprintf(w, "  (%s). Opening it signs them up for free and makes this deploy theirs. It is a\n",
 		c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"))
-	fmt.Fprintf(w, "  link like a password: whoever claims it first owns the deploy.\n")
+	fmt.Fprintf(w, "  one-time link for your user: whoever claims it first owns the deploy, so show it\n")
+	fmt.Fprintf(w, "  only to them, never in a commit, a log, an issue or anywhere public.\n")
 	fmt.Fprintf(w, "  Once claimed, they sign in on this machine and deploy: %s\n", loginThenDeploy(env))
 }
 
@@ -1362,8 +1366,9 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 	fmt.Fprintf(w, "\n  Claim:  %s\n", c.ClaimURL)
 	fmt.Fprintf(w, "\n  FOR AN AGENT: give the claim link above to your user and tell them it expires in %s.\n", formatLifetime(left))
 	fmt.Fprintf(w, "  Opening it signs them up for free and makes this site theirs.\n")
-	fmt.Fprintf(w, "  Treat the link like a password: whoever claims it first owns the site. Do not\n")
-	fmt.Fprintf(w, "  post it anywhere public. To see it again: %s env status %s --claimable\n", Name(), env)
+	fmt.Fprintf(w, "  It is a one-time link for your user: whoever claims it first owns the site, so show\n")
+	fmt.Fprintf(w, "  it only to them, never in a commit, a log, an issue or anywhere public.\n")
+	fmt.Fprintf(w, "  To see it again: %s env status %s --claimable\n", Name(), env)
 	if c.NoOutboundInternet {
 		fmt.Fprintf(w, "\n  NO OUTBOUND INTERNET until claimed: this backend serves requests and uses its own\n")
 		fmt.Fprintf(w, "  database, but every call out of it (a payment, an LLM, a webhook, an outside DNS\n")

@@ -31,9 +31,10 @@ Then ask your agent:
 Deploy this app with Reliant Forge, then give me the live URL and the claim link.
 ```
 
-The claim link is good for 72 hours; treat it like a password. Opening it signs
-you up free and makes the deploy yours. An unclaimed deploy fits one static
-site, or one service with one database:
+The claim link is a one-time link for you, good for 72 hours: whoever opens it
+first signs up free and owns the deploy, so keep it out of commits, issues and
+public places. An unclaimed deploy fits one static site, or one service with
+one database:
 [Deploying with no account](../../docs/mcp.md#deploying-with-no-account).
 
 ## What it runs, fetches and sends

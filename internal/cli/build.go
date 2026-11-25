@@ -757,6 +757,11 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	if err != nil {
 		return err
 	}
+	// A pushed image with no declared destination would push a bare tag,
+	// which docker sends to Docker Hub. Refused before anything is built.
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		return err
+	}
 
 	// --plan stops HERE: the build set is fully resolved by the same
 	// discovery every real build runs, and nothing has been written, built
@@ -2970,7 +2975,11 @@ func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) docke
 			out.push = append(out.push, refs...)
 		}
 	}
-	add(repository, push)
+	// A repository with no registry host is never pushed: docker would send
+	// it to docker.io/library, which no forge declaration names. A pushing
+	// build refuses that case up front (refuseUndeclaredPushes); this keeps
+	// every other path from pushing one implicitly.
+	add(repository, push && registryHost(repository) != "")
 	for _, mirror := range k3dMirrorRepositories(repository) {
 		add(mirror, false)
 	}

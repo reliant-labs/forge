@@ -475,3 +475,53 @@ func hasRegistryBoundWorkload(e *KCLEntities) bool {
 	}
 	return false
 }
+
+// refuseUndeclaredPushes refuses a pushing build that would push an image no
+// workload declares a destination for.
+//
+// The build joins an artifact to its declared repository by the reference's
+// last path segment (repositoryFor), and falls back to the BARE artifact name
+// when nothing matches. A bare name has no registry host, and `docker push
+// <name>:<tag>` sends it to docker.io/library — never what a forge project
+// declared, and a credential error that blamed the platform login. The common
+// way to get here is renaming forge.yaml `name`: the project image is named
+// after the project, while the workloads still declare an image ending in the
+// old name (obs a9767ccb).
+func refuseUndeclaredPushes(cfg *config.ProjectConfig, targets buildTargetSet, opts buildOptions) error {
+	if !opts.push || !opts.pushPlan.push || !opts.buildDocker {
+		return nil
+	}
+	type artifact struct{ name, what string }
+	var pushed []artifact
+	if len(targets.goTargets) > 0 && !targets.skipProjectDocker {
+		pushed = append(pushed, artifact{cfg.Name, fmt.Sprintf("the project image %q (named by forge.yaml `name`)", cfg.Name)})
+	}
+	for _, fe := range targets.dockerFrontends {
+		pushed = append(pushed, artifact{fe.Name, fmt.Sprintf("the frontend image %q", fe.Name)})
+	}
+	for _, a := range pushed {
+		if registryHost(opts.pushPlan.repositoryFor(a.name)) != "" {
+			continue
+		}
+		var declared []string
+		for _, d := range opts.pushPlan.destinations {
+			if !d.mirror {
+				declared = append(declared, fmt.Sprintf("%s (workload %q)", d.repository, d.workload))
+			}
+		}
+		return cliutil.UserErr(fmt.Sprintf("forge env build %s --push", opts.pushPlan.env),
+			fmt.Sprintf("%s has no declared destination in env %q: a build pushes each image to the declared reference whose last path segment is the image's name, and this env declares %s. "+
+				"Pushing the bare tag %q would send it to Docker Hub, so nothing was built or pushed", a.what, opts.pushPlan.env, emptyListOr(declared, "no pushable image"), a.name),
+			"",
+			fmt.Sprintf("make the image's last path segment %q on the workload that runs it (`image` in deploy/kcl/workloads.k, or the env's main.k), "+
+				"or set forge.yaml `name` back to the name that image ends in", a.name))
+	}
+	return nil
+}
+
+func emptyListOr(items []string, empty string) string {
+	if len(items) == 0 {
+		return empty
+	}
+	return strings.Join(items, ", ")
+}

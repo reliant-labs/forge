@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -458,5 +459,48 @@ func TestBuildCmd_LocalBuildTagsTheDeclaredReference(t *testing.T) {
 	}
 	if !strings.Contains(out, `Image:    registry.example/prod/pt (declared by workload "pt"; tagged locally, not pushed)`) {
 		t.Errorf("the build header should name the declared reference the image is tagged under; plan output:\n%s", out)
+	}
+}
+
+// A bare repository is never pushed: docker would send it to Docker Hub
+// (obs a9767ccb).
+func TestImageTagSet_NeverPushesABareRepository(t *testing.T) {
+	got := imageTagSet("greeter-demo", "t1", true, false)
+	if len(got.push) != 0 {
+		t.Errorf("pushed %v — a bare name goes to docker.io/library", got.push)
+	}
+	if !containsStr(got.local, "greeter-demo:t1") {
+		t.Errorf("local tags = %v, want the bare name still tagged", got.local)
+	}
+}
+
+// Renaming forge.yaml `name` left the project image (named after the project)
+// with no declared destination; the pushing build refuses before building,
+// naming what the env does declare, instead of pushing the bare tag.
+func TestRefuseUndeclaredPushes_RenamedProject(t *testing.T) {
+	cfg := &config.ProjectConfig{Name: "greeter-demo"}
+	targets := buildTargetSet{goTargets: []goBuildTarget{{}}}
+	opts := buildOptions{push: true, buildDocker: true, pushPlan: pushPlan{push: true, env: "prod", destinations: []imageDestination{
+		{repository: "registry.reliantapi.com/acme/greeter-demo/hello", workload: "api"},
+	}}}
+	err := refuseUndeclaredPushes(cfg, targets, opts)
+	if err == nil {
+		t.Fatal("a push with no declared destination for the project image was allowed")
+	}
+	for _, want := range []string{`"greeter-demo"`, "registry.reliantapi.com/acme/greeter-demo/hello", `"api"`, "Docker Hub", "forge.yaml `name`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v\nwant it to mention %s", err, want)
+		}
+	}
+	// Declared under the project's name: allowed.
+	opts.pushPlan.destinations[0].repository = "registry.reliantapi.com/acme/greeter-demo/greeter-demo"
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		t.Errorf("declared destination refused: %v", err)
+	}
+	// Not pushing (forge env up's local build): nothing to refuse.
+	opts.pushPlan.destinations[0].repository = "registry.reliantapi.com/acme/greeter-demo/hello"
+	opts.push = false
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		t.Errorf("a non-pushing build was refused: %v", err)
 	}
 }

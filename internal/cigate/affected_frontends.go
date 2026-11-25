@@ -30,9 +30,10 @@ func FrontendTestName(fe string) string { return "test-" + fe }
 // none, which is what these rows are for.
 //
 // The row runs the frontend's test:related script with the changed files
-// under the frontend when it declares one; otherwise — or when no changed
-// file is under it (a rule claimed a file elsewhere for it) — the whole
-// `test` script, as `task test` runs it.
+// under the frontend when it declares one and every such file is a source
+// module (relatableSource); otherwise — a config file, manifest or lockfile
+// changed, or no changed file is under it (a rule claimed a file elsewhere
+// for it) — the whole `test` script, as `task test` runs it.
 func WithFrontendTests(checks []Check, a Affected, root string, frontends []templates.FrontendCIConfig) []Check {
 	if a.Full || len(a.Frontends) == 0 {
 		return checks
@@ -60,7 +61,7 @@ func WithFrontendTests(checks []Check, a Affected, root string, frontends []temp
 		if !ok || taken[FrontendTestName(name)] {
 			continue // Plan rejects an unknown frontend; a project row of this name wins
 		}
-		rows = append(rows, frontendTest(root, fe, changedUnder(root, a.Changed, fe.Path)))
+		rows = append(rows, frontendTest(root, fe, changedUnder(a.Changed, fe.Path)))
 	}
 	out := make([]Check, 0, len(checks)+len(rows))
 	out = append(out, checks[:at+1]...)
@@ -68,7 +69,7 @@ func WithFrontendTests(checks []Check, a Affected, root string, frontends []temp
 	return append(out, checks[at+1:]...)
 }
 
-func frontendTest(root string, fe templates.FrontendCIConfig, files []string) Check {
+func frontendTest(root string, fe templates.FrontendCIConfig, changed []string) Check {
 	c := Check{
 		Name:   FrontendTestName(fe.Name),
 		Lane:   LaneTest,
@@ -89,18 +90,40 @@ func frontendTest(root string, fe templates.FrontendCIConfig, files []string) Ch
 	if frontenddeps.PackageManager(filepath.Join(root, fe.Path), "") == "npm" {
 		sep = []string{"--"}
 	}
+	// Only source modules can be related to tests. A changed config file,
+	// manifest or lockfile can change every test while relating to none, so
+	// one among the changes runs the whole suite. A deleted source file is
+	// not passed (it has no tests of its own to relate; its importers are
+	// related through the files that changed with it, or the suite runs).
+	nonSource := ""
+	var related []string
+	for _, f := range changed {
+		if !relatableSource(f) {
+			if nonSource == "" {
+				nonSource = f
+			}
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, fe.Path, filepath.FromSlash(f))); err == nil {
+			related = append(related, f)
+		}
+	}
 	switch {
-	case scripts[RelatedScript] != "" && len(files) > 0:
-		c.Argv = feRunAt(root, fe, append(append([]string{RelatedScript}, sep...), files...)...)
-		c.Note = fmt.Sprintf("affected mode: tests related to %d changed file(s)", len(files))
+	case scripts[RelatedScript] != "" && nonSource == "" && len(related) > 0:
+		c.Argv = feRunAt(root, fe, append(append([]string{RelatedScript}, sep...), related...)...)
+		c.Note = fmt.Sprintf("affected mode: tests related to %d changed file(s)", len(related))
 	case scripts["test"] != "":
 		// The same command `task test` runs for this frontend.
 		c.Argv = feRunAt(root, fe, append(append([]string{"test"}, sep...), "--passWithNoTests")...)
 		switch {
-		case len(files) == 0:
-			c.Note = "affected mode: selected by ci.gate.affected_rules with no changed file under " + fe.Path + " — whole suite"
-		default:
+		case scripts[RelatedScript] == "" && len(changed) > 0:
 			c.Note = "affected mode: whole suite (package.json declares no " + RelatedScript + " script)"
+		case nonSource != "":
+			c.Note = "affected mode: whole suite — " + nonSource + " is not a source module, so no related-test selection covers it"
+		case len(changed) > 0:
+			c.Note = "affected mode: whole suite — only deleted files changed under " + fe.Path
+		default:
+			c.Note = "affected mode: selected by ci.gate.affected_rules with no changed file under " + fe.Path + " — whole suite"
 		}
 	default:
 		c.NotApplicable = "package.json declares no test or " + RelatedScript + " script"
@@ -108,24 +131,59 @@ func frontendTest(root string, fe templates.FrontendCIConfig, files []string) Ch
 	return c
 }
 
-// changedUnder returns the changed files under dir that still exist,
-// relative to dir. A deleted file has no tests of its own to relate; the
-// tests that imported it fail to compile in the whole suite instead.
-func changedUnder(root string, changed []string, dir string) []string {
+// sourceExts are the extensions of the modules a frontend's test runner can
+// relate tests to. Anything else (JSON, YAML, HTML, a lockfile, .env, an
+// asset) runs the whole suite: forge cannot know which tests read it.
+var sourceExts = map[string]bool{
+	".ts": true, ".tsx": true, ".mts": true, ".cts": true,
+	".js": true, ".jsx": true, ".mjs": true, ".cjs": true,
+	".vue": true, ".svelte": true, ".astro": true,
+	".css": true, ".scss": true, ".sass": true, ".less": true,
+}
+
+// rootConfigPrefixes are base-name prefixes of the tool configs a frontend
+// keeps in its root (vite.config.ts, vitest.setup.ts, jest.config.js): a
+// file directly in the frontend root that starts with one is config, whatever
+// its extension.
+var rootConfigPrefixes = []string{"vite.", "vitest.", "jest.", "playwright.", "cypress.", "tsconfig", "next.", "svelte.", "astro.", "nuxt."}
+
+// relatableSource reports whether rel (relative to the frontend) is a source
+// module whose tests a test:related script can find. It is deliberately
+// generic and conservative — it reads no tool's config: a source extension,
+// not a `*.config.*` file anywhere, and not a tool's file in the frontend
+// root. A wrong "no" costs a whole-suite run; a wrong "yes" would pass a
+// config change as tested.
+func relatableSource(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	base := path.Base(rel)
+	if !sourceExts[strings.ToLower(path.Ext(base))] {
+		return false
+	}
+	if strings.Contains(base, ".config.") || strings.HasPrefix(base, ".") {
+		return false
+	}
+	if !strings.Contains(rel, "/") {
+		for _, p := range rootConfigPrefixes {
+			if strings.HasPrefix(base, p) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// changedUnder returns the changed files under dir — deleted ones too —
+// relative to dir.
+func changedUnder(changed []string, dir string) []string {
 	prefix := strings.TrimSuffix(path.Clean(filepath.ToSlash(dir)), "/") + "/"
 	if prefix == "./" {
 		prefix = "" // a frontend at the project root
 	}
 	var out []string
 	for _, f := range changed {
-		f = filepath.ToSlash(f)
-		if !strings.HasPrefix(f, prefix) {
-			continue
+		if f = filepath.ToSlash(f); strings.HasPrefix(f, prefix) {
+			out = append(out, strings.TrimPrefix(f, prefix))
 		}
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(f))); err != nil {
-			continue
-		}
-		out = append(out, strings.TrimPrefix(f, prefix))
 	}
 	return out
 }

@@ -61,6 +61,21 @@ ci:
   script as `task test` runs it. forge reads no test runner's config: the script
   is the frontend's word for which tests a file reaches. A vitest frontend
   declares `"test:related": "vitest related --run --passWithNoTests"`.
+- `test:related` only ever gets source modules. If **any** changed file under
+  the frontend is not one, the row runs the whole `test` script and its note
+  names the file. A related-test lookup follows imports, and a config file,
+  manifest or lockfile changes every test while being imported by none, so
+  passing it would select nothing and look green. The rule is generic, and it
+  reads no tool's config. A file counts as source when:
+  - its extension is `.ts .tsx .mts .cts .js .jsx .mjs .cjs .vue .svelte
+    .astro .css .scss .sass .less`; JSON, YAML, HTML, `.env` and assets are not;
+  - it is not a `*.config.*` file anywhere, and not a dotfile;
+  - it is not a tool's file directly in the frontend root (`vite.*`,
+    `vitest.*`, `jest.*`, `playwright.*`, `cypress.*`, `next.*`, `svelte.*`,
+    `astro.*`, `nuxt.*`, `tsconfig*`).
+
+  `package.json`, lockfiles, `.npmrc` and `tsconfig*.json` therefore always run
+  the whole suite. A deleted source file is not passed to `test:related`.
 - `full: true` cannot also select packages or frontends; a rule that selects
   nothing is an error (a path no test reads belongs in `affected_ignore`). A
   rule naming a frontend the project does not have fails the plan.

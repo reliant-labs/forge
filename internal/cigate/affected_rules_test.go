@@ -81,6 +81,69 @@ func TestAffectedRules_ClaimedFrontendPathRunsItsRelatedTests(t *testing.T) {
 	}
 }
 
+// Only source modules go to test:related: a changed config file, manifest or
+// lockfile can change every test while relating to none, so any one of them
+// under the frontend runs the whole suite.
+func TestAffectedRules_NonSourceChangeRunsTheWholeSuite(t *testing.T) {
+	scripts := map[string]string{"test": "vitest run", RelatedScript: "vitest related --run --passWithNoTests"}
+	for _, tc := range []struct {
+		name    string
+		changed []string
+		related string // the argv suffix of a related run; "" means the whole suite
+		note    string
+	}{
+		{"source only", []string{"src/App.tsx", "src/lib/util.ts", "src/styles/app.css"}, "run test:related -- src/App.tsx src/lib/util.ts src/styles/app.css", ""},
+		{"test runner config", []string{"vitest.config.ts"}, "", "vitest.config.ts is not a source module"},
+		{"build config", []string{"vite.config.ts"}, "", "vite.config.ts"},
+		{"a *.config.* anywhere", []string{"src/tailwind.config.js"}, "", "src/tailwind.config.js"},
+		{"a setup file in the root", []string{"vitest.setup.ts"}, "", "vitest.setup.ts"},
+		{"tsconfig", []string{"tsconfig.app.json"}, "", "tsconfig.app.json"},
+		{"package.json", []string{"package.json"}, "", "package.json"},
+		{"lockfile", []string{"package-lock.json"}, "", "package-lock.json"},
+		{"pnpm lockfile", []string{"pnpm-lock.yaml"}, "", "pnpm-lock.yaml"},
+		{".npmrc", []string{".npmrc"}, "", ".npmrc"},
+		{"a dotfile config with a source extension", []string{".eslintrc.cjs"}, "", ".eslintrc.cjs"},
+		{"a JSON fixture under src", []string{"src/data.json"}, "", "src/data.json"},
+		{"mixed source and config", []string{"src/App.tsx", "vitest.config.ts"}, "", "vitest.config.ts"},
+		{"mixed source and lockfile", []string{"src/App.tsx", "package-lock.json"}, "", "package-lock.json"},
+		// A source file named like a tool but not in the root is source.
+		{"vite.ts under src", []string{"src/vite.ts"}, "run test:related -- src/vite.ts", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var files []string
+			for _, f := range tc.changed {
+				files = append(files, "frontends/web/"+f)
+			}
+			root := webRoot(t, scripts)
+			for _, f := range files {
+				if _, err := os.Stat(filepath.Join(root, f)); err != nil { // keep the fixture's package.json
+					write(t, root, f, "x")
+				}
+			}
+			a := affectedWith(t, root, fakeGit{branch: "f", changed: files},
+				rule{Paths: []string{"frontends/web/**"}, Frontends: []string{"web"}})
+			if a.Full {
+				t.Fatalf("full suite: %s", a.Reason)
+			}
+			fe := find(t, WithFrontendTests(unitAndDeps(), a, root, []templates.FrontendCIConfig{webFE}), "test-web")
+			argv := strings.Join(fe.Argv, " ")
+			if tc.related != "" {
+				if !strings.HasSuffix(argv, tc.related) {
+					t.Errorf("argv = %q, want a related run ending %q", argv, tc.related)
+				}
+				return
+			}
+			// A pnpm lockfile makes pnpm the manager, which takes no `--`.
+			if !strings.Contains(argv, "run test") || !strings.HasSuffix(argv, "--passWithNoTests") || strings.Contains(argv, RelatedScript) {
+				t.Errorf("argv = %q, want the whole suite", argv)
+			}
+			if !strings.Contains(fe.Note, "whole suite") || !strings.Contains(fe.Note, tc.note) {
+				t.Errorf("note = %q, want it to name %q", fe.Note, tc.note)
+			}
+		})
+	}
+}
+
 func TestAffectedRules_FrontendWithoutRelatedScriptRunsItsWholeSuite(t *testing.T) {
 	root := webRoot(t, map[string]string{"test": "vitest run"}, "frontends/web/src/App.tsx")
 	a := affectedWith(t, root, fakeGit{branch: "f", changed: []string{"frontends/web/src/App.tsx"}},

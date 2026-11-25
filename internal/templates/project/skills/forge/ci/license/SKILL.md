@@ -44,7 +44,9 @@ module listed twice is a forge.yaml load error at its line. An entry past its
 date with a reason that still holds) or removed, the same rule as
 `ci.vuln_scan.exemptions`. go-licenses matches `--ignore` as a prefix, so an
 exception for `example.com/a` also covers `example.com/a-b` and
-`example.com/a/v2`; the row's note names each module the project requires that
-an entry reaches that way. The check covers Go dependencies only.
+`example.com/a/v2`, which are other modules. An entry that reaches a module the
+project requires that way FAILS the row, naming each such module: give each its
+own exception (with its own reason), or remove the entry. Packages below the
+module path (`example.com/a/sub`) are the entry's own. The check covers Go dependencies only.
 
 npm dependencies have no license check yet.

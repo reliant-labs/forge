@@ -2599,10 +2599,6 @@ _Enforced · Forge, on any infrastructure_
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | `license-check` | A dependency under a forbidden or restricted license (AGPL, GPL) entering the import graph unnoticed (warn-first until `lint.rules: {license-check: error}` or its `gates_from` release) | `forge ci gate` |
 
-| Rule            | Bug class it prevents                                                                                                                                                                    | Lane            |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| `license-check` | A dependency under a forbidden or restricted license (AGPL, GPL) entering the import graph unnoticed (warn-first until `lint.rules: {license-check: error}` or its `gates_from` release) | `forge ci gate` |
-
 <a id="signed-forge-releases"></a>
 
 ### Signed, verified forge installs

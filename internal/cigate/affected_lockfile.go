@@ -10,7 +10,7 @@ import (
 	"github.com/reliant-labs/forge/internal/templates"
 )
 
-// LockfileName is the affected-mode row proving frontend fe's lockfile still
+// LockfileCheckName is the affected-mode row proving frontend fe's lockfile still
 // installs: lockfile-<name>.
 func LockfileCheckName(fe string) string { return "lockfile-" + fe }
 

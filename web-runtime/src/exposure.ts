@@ -26,8 +26,10 @@
 //
 // A provider that knows more says so in the options: the measured `run` (part
 // of the dedupe key, since a new run is a new assignment), the `unit` that
-// stays together, the `reason` and the config `revision`. Forge Changes
-// (changes-store.ts) passes all four.
+// stays together, the `reason`, the config `revision`, and for an account
+// unit the `account` assigned (also part of the dedupe key, and carried only
+// in the tiers that carry the user and org ids). Forge Changes
+// (changes-store.ts) passes all of them.
 //
 // An evaluation that failed (an OpenFeature `errorCode`) is no exposure. A
 // variant is a name: an object-valued flag with no variant name is recorded
@@ -35,7 +37,11 @@
 //
 // Dependency-free apart from track.ts, like it: an app's flag provider calls
 // the hook whether or not the SDK is installed.
-import { recordProductEvent, stampedTelemetryUser } from "./track.js";
+import {
+  recordProductEvent,
+  stampableTelemetryId,
+  stampedTelemetryUser,
+} from "./track.js";
 
 /** The product event an exposure is recorded as. */
 export const FLAG_EVALUATED_EVENT = "flag_evaluated";
@@ -64,6 +70,13 @@ export interface ExposureOptions {
   reason?: string;
   /** The revision of the flag configuration that decided it. */
   revision?: number;
+  /**
+   * The account the variant was assigned to, when the unit is "account": the
+   * id the provider hashed. An experiment readout counts an account by it on
+   * an event that names no org. Part of the dedupe key; carried only in the
+   * `identified` and `full` tiers, like the user and org ids.
+   */
+  account?: string;
 }
 
 let seen = new Set<string>();
@@ -114,8 +127,9 @@ export function trackExposure(
       return;
     }
     const run = optional(options?.run);
+    const account = stampableTelemetryId(optional(options?.account));
     const day = new Date().toISOString().slice(0, 10);
-    const mark = `${stampedTelemetryUser()}\u0000${key}\u0000${name}\u0000${run}\u0000${day}`;
+    const mark = `${stampedTelemetryUser()}\u0000${key}\u0000${name}\u0000${run}\u0000${account}\u0000${day}`;
     if (seen.has(mark)) {
       return;
     }
@@ -143,6 +157,9 @@ export function trackExposure(
       revision >= 0
     ) {
       props.revision = String(revision);
+    }
+    if (account !== "") {
+      props.account = account;
     }
     recordProductEvent(FLAG_EVALUATED_EVENT, props);
   } catch {

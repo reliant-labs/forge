@@ -111,8 +111,11 @@ never measured.
 
 Every evaluation through a store records the product event `flag_evaluated` —
 the same event `trackExposure` and other flag providers record — with
-`flag`, `variant`, `provider=forge`, `run`, `unit`, `reason` and `revision`.
-Only results a readout or a dashboard can use: enrolled ones (`rollout`,
+`flag`, `variant`, `provider=forge`, `run`, `unit`, `reason` and `revision`,
+plus `account` (the `account` attribute the change hashed) when its unit is
+`account`: a user or visitor id is a column of every event, an account id is
+not, so a readout counts an account-unit run by it on an event that names no
+org (in the browser, only in the tiers that carry ids). Only results a readout or a dashboard can use: enrolled ones (`rollout`,
 `experiment`, the unit's assignment, recorded before the app acts on it) plus
 `preview` and `everyone`. Once per unit, change, run and variant per day per
 process. Readouts count only enrolled rows of the run, by assigned unit. In

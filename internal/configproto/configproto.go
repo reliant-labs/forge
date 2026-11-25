@@ -253,13 +253,20 @@ func (l Layout) OtherLayouts(projectDir string) []Layout {
 
 // RenamedFrom reports the layout this project's config was scaffolded under
 // when forge.yaml's name no longer matches it: l (the layout of today's name)
-// holds no .proto file, and exactly one other project-unique layout exists.
-func (l Layout) RenamedFrom(projectDir string) (Layout, bool) {
-	if l.HasProtos(projectDir) {
+// holds no .proto file, exactly one other project-unique layout exists, AND
+// the project's own generated config (pkg/config/config_gen.go) still imports
+// that layout's Go package under module. The import is what makes the other
+// layout THIS project's former config rather than one vendored beside it.
+func (l Layout) RenamedFrom(projectDir, module string) (Layout, bool) {
+	if l.HasProtos(projectDir) || module == "" {
 		return Layout{}, false
 	}
 	others := l.OtherLayouts(projectDir)
 	if len(others) != 1 {
+		return Layout{}, false
+	}
+	gen, err := os.ReadFile(filepath.Join(projectDir, "pkg", "config", "config_gen.go"))
+	if err != nil || !strings.Contains(string(gen), strconv.Quote(others[0].GoImportPath(module))) {
 		return Layout{}, false
 	}
 	return others[0], true

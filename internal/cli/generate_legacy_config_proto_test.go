@@ -57,6 +57,13 @@ func TestStepLegacyConfigProto_RefusesAHalfFinishedRename(t *testing.T) {
 	writeLegacyTestFile(t, dir, "proto/services/order/v1/order.proto", "syntax = \"proto3\";\npackage services.order.v1;\n")
 	ctx := &pipelineContext{ProjectDir: dir}
 
+	// Another project's config layout, vendored beside a project with no
+	// config of its own, is not a rename: nothing of this project imports it.
+	if err := stepLegacyConfigProto(ctx); err != nil {
+		t.Fatalf("a vendored config layout was taken for a rename: %v", err)
+	}
+
+	writeLegacyTestFile(t, dir, "pkg/config/config_gen.go", "package config\n\nimport configv1 \"example.com/shop/gen/shop/config/v1\"\n")
 	err := stepLegacyConfigProto(ctx)
 	if err == nil {
 		t.Fatal("a config proto left at the old name's layout was not refused")

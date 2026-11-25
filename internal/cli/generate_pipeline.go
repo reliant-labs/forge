@@ -1556,8 +1556,9 @@ func stepLegacyConfigProto(ctx *pipelineContext) error {
 	files := configproto.LegacyFiles(ctx.ProjectDir)
 	layout := configproto.ForProject(ctx.ProjectDir)
 	if len(files) == 0 {
-		if old, ok := layout.RenamedFrom(ctx.ProjectDir); ok {
-			return renamedConfigProtoErr(layout, old, configproto.ModulePath(ctx.ProjectDir))
+		module := configproto.ModulePath(ctx.ProjectDir)
+		if old, ok := layout.RenamedFrom(ctx.ProjectDir, module); ok {
+			return renamedConfigProtoErr(layout, old, module)
 		}
 		return nil
 	}

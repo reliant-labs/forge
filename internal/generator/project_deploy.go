@@ -116,6 +116,11 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		if err != nil {
 			return fmt.Errorf("render deploy template %s for %s: %w", e.template, e.env, err)
 		}
+		// Persist the explicit opt-in; missing managed identity is not proof
+		// that a project's RPCs should be public (it may use an external IdP).
+		if e.env == codegen.DevEnvName && g.AuthNone {
+			content = append([]byte(codegen.AuthNoneDeclaration+"\n"), content...)
+		}
 		destPath := filepath.Join(deployDir, e.env, "main.k")
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 			return err

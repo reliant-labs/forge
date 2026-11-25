@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/reliant-labs/forge/internal/config"
 )
@@ -38,22 +39,30 @@ func ProjectDeclaresIdentity(projectDir string) bool {
 	return devEnvMentionsIDP.Match(b)
 }
 
-// ProjectHasNoSignIn reports whether the project at projectDir is one nobody
-// signs in to: people reach it through a browser (it has a frontend) and it
-// declares no identity (ProjectDeclaresIdentity is false). That is the
-// project `forge project new --auth-mode none` writes.
-//
-// In such a project nothing issues the credential a browser would present,
-// so an rpc that requires one answers 401 to every caller its frontend has.
-// `forge scaffold` therefore births its CRUD rpcs `auth_required: false`
-// there, and `forge lint` warns about an rpc that still requires a caller.
-//
-// A project with no frontend is NOT one: its rpcs take a bearer token from
-// an issuer it trusts, or an API key, so requiring a caller is still
-// satisfiable. It errs toward NO, inheriting ProjectDeclaresIdentity's lean
-// toward yes, because a NO keeps the fail-closed default.
+// AuthNoneDeclaration records the explicit project-new choice in the owned
+// dev main.k. Absence of managed identity alone says nothing about external
+// issuers or custom validators and must never authorize public RPC scaffolding.
+// Remove this declaration when adding sign-in to an initially public project.
+const AuthNoneDeclaration = "# forge:auth-mode none"
+
+// ProjectHasNoSignIn requires an explicit no-sign-in declaration, a frontend,
+// and no managed identity. Unmarked existing projects retain fail-closed CRUD
+// defaults even when their authentication is entirely external to forge.
 func ProjectHasNoSignIn(projectDir string) bool {
 	if ProjectDeclaresIdentity(projectDir) {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(projectDir, "deploy", "kcl", DevEnvName, "main.k"))
+	if err != nil {
+		return false
+	}
+	declared := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == AuthNoneDeclaration {
+			declared = true
+		}
+	}
+	if !declared {
 		return false
 	}
 	if len(config.DiscoverInRepoFrontends(projectDir)) > 0 {

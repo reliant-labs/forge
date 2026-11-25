@@ -35,15 +35,22 @@ func TestCompleteEntityCRUDProto_NoSignInBirthsPublicRPCs(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		identity bool
+		unmarked bool
 		want     string
 	}{
 		{name: "no sign-in", identity: false, want: "auth_required: false"},
 		{name: "identity declared", identity: true, want: "auth_required: true"},
+		{name: "external issuer", unmarked: true, want: "auth_required: true"},
+		{name: "custom validator", unmarked: true, want: "auth_required: true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := scaffoldEntityProject(t)
 			writeProjectFile(t, root, "frontends/web/next.config.ts", "export default {};\n")
-			writeProjectFile(t, root, "deploy/kcl/dev/main.k", "# the dev env: no identity provider\nfrontends = []\n")
+			dev := "frontends = []\n"
+			if !tc.unmarked {
+				dev = codegen.AuthNoneDeclaration + "\n" + dev
+			}
+			writeProjectFile(t, root, "deploy/kcl/dev/main.k", dev)
 			if tc.identity {
 				writeProjectFile(t, root, codegen.IdentityKCLRelPath, "IDENTITY = 1\n")
 			}
@@ -65,10 +72,11 @@ func TestCompleteEntityCRUDProto_NoSignInBirthsPublicRPCs(t *testing.T) {
 			if n := strings.Count(got, tc.want); n != 5 {
 				t.Errorf("%d of the five CRUD rpcs declare %q, want all five:\n%s", n, tc.want, got)
 			}
-			if res.Public == tc.identity {
-				t.Errorf("result Public = %v with identity = %v", res.Public, tc.identity)
+			wantPublic := !tc.identity && !tc.unmarked
+			if res.Public != wantPublic {
+				t.Errorf("result Public = %v, want %v", res.Public, wantPublic)
 			}
-			if note := res.publicNote(); (note != "") != !tc.identity {
+			if note := res.publicNote(); (note != "") != wantPublic {
 				t.Errorf("publicNote = %q with identity = %v", note, tc.identity)
 			}
 		})

@@ -7,13 +7,14 @@ import (
 )
 
 // TestProjectHasNoSignIn pins which projects forge treats as nobody-signs-in
-// (`forge project new --auth-mode none`): a frontend AND no identity. Every
+// (`forge project new --auth-mode none`): an explicit declaration, a frontend
+// AND no managed identity. Every
 // doubt answers NO, because NO keeps the fail-closed default — a project with
 // no frontend (its rpcs take tokens or API keys), one whose dev env still runs
 // an IdP, and one whose dev env cannot be read.
 func TestProjectHasNoSignIn(t *testing.T) {
 	t.Parallel()
-	const noIDP = "# the dev identity provider, the IdP\nfrontends = []\n"
+	const noIDP = AuthNoneDeclaration + "\nfrontends = []\n"
 	for _, tc := range []struct {
 		name  string
 		files map[string]string
@@ -25,6 +26,14 @@ func TestProjectHasNoSignIn(t *testing.T) {
 		{name: "a vite frontend, no identity", files: map[string]string{
 			"frontends/app/vite.config.ts": "", "deploy/kcl/dev/main.k": noIDP,
 		}, want: true},
+		{name: "external issuer without managed identity", files: map[string]string{
+			"frontends/web/next.config.ts": "", "deploy/kcl/dev/main.k": "frontends = []\n",
+			"deploy/kcl/config.k": "jwt_issuer = \"https://issuer.example\"\n",
+		}, want: false},
+		{name: "custom validator without managed identity", files: map[string]string{
+			"frontends/web/next.config.ts": "", "deploy/kcl/dev/main.k": "frontends = []\n",
+			"internal/app/auth.go": "package app\n// custom validator\n",
+		}, want: false},
 		{name: "identity.k declared", files: map[string]string{
 			"frontends/web/next.config.ts": "", "deploy/kcl/dev/main.k": noIDP, IdentityKCLRelPath: "X = 1\n",
 		}, want: false},

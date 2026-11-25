@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v1.11.0] - 2026-11-25
 
+### Lint rollout: v1.10.0 gated a cohort on arrival; v1.11.0 restores warn-first
+
+forge v1.10.0 was cut from a commit made before the rollout-table fix (#2638), so it shipped the old rows. Projects that pin **v1.10.0** therefore saw these lint rules **gate immediately**, with no warn-only release first:
+telemetry (`telemetry-scrape-unbounded`, `telemetry-dashboard-metric-uncollected`, `telemetry-rate-on-gauge`, `telemetry-high-cardinality-risk`), Vite static export (`static-export-vite-out-dir`, `static-export-vite-base`), `forge-frontend-no-install`, `static-export-partial-prerender`, db-analyze (`db-analyze-query-no-usable-index`, `db-analyze-query-large-seqscan`), `vuln-gate` and `sbom-required`.
+
+**v1.11.0 restores warn-first for projects that skipped v1.10.0.** A project moving from v1.9.x or earlier straight to v1.11.0 sees these rules warn at v1.11.0 and gate from its next pin. A project already on v1.10.0 keeps them gating at v1.11.0; to soften one meanwhile, set `lint.rules: {<rule>: warn}`. `crud-table-unowned`, which first ships in v1.11.0, warns through v1.11.x and gates from v1.12.0 (#2675). The `sbom-vulnerabilities` and `pgo-default-on` upgrade playbooks also first ship in v1.11.0 (#2674), so `forge project upgrade --to v1.11.0` offers them to v1.10.0 projects.
+
 ### Added
 
 - **pgo:** hosted projects refresh each binary's default.pgo weekly from the env's profiles ([#2641](https://github.com/reliant-labs/forge/pull/2641))

@@ -289,10 +289,21 @@ func refuseClaimableFlags(envName string, f deployCmdFlags) error {
 func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFlags) error {
 	report := newDeployReport(envName, f.jsonOut)
 	out := progressWriter(f.jsonOut)
+	// What a refusal reports (claimable_telemetry.go): the deploy's shape once
+	// the env rendered, the step that refused when the error does not say,
+	// and whether the control plane already answered the start (it counts
+	// what it refused there itself).
+	var (
+		shape       cloud.DeployShape
+		stage       string
+		serverHeard bool
+	)
 	err := func() error {
+		stage = refusedInvalidFlags
 		if err := refuseClaimableFlags(envName, f); err != nil {
 			return err
 		}
+		stage = ""
 		adopted, err := adoptBeforeClaimableDeploy(ctx, out)
 		if err != nil {
 			return err
@@ -303,6 +314,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		// From here every control-plane call names the deploy's shape.
+		shape = claimableShapeOf(entities)
+		defer cloud.DeclareDeployShape(shape)()
 		if entities == nil || !entities.HasHosted() || entities.ControlPlane == nil {
 			return fmt.Errorf("env %q publishes nothing to a hosted control plane, so there is nothing to deploy with --claimable.\n"+
 				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), then: %s env deploy %s --claimable", envName, Name(), envName)
@@ -331,9 +345,11 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
 			return claimableIneligibleError(envName, limits.limits, reasons)
 		}
+		stage = refusedUnmergedMigrations
 		if err := claimableMigrationNote(out, projectDir, entities); err != nil {
 			return err
 		}
+		stage = ""
 		project := hostedProjectName()
 		if project == "" {
 			return fmt.Errorf("--claimable needs the project's name: set `name` in forge.yaml, then: %s env deploy %s --claimable", Name(), envName)
@@ -344,10 +360,12 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err := requireClaimableAvailable(answer, ep, envName, entities, storedErr != nil); err != nil {
 			return err
 		}
+		serverHeard = true
 		session, err := obtainClaimable(ctx, out, ep, project, envName)
 		if err != nil {
 			return err
 		}
+		serverHeard = false
 		restore := cloud.UseClaimableCredential(ep, session.cred.Token, session.cred.ExpiresAt)
 		defer restore()
 		compute := needsCompute(entities)
@@ -428,6 +446,17 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 	}()
 	if err == nil {
 		return nil
+	}
+	if !f.promote.planOnly && !serverHeard && !errors.Is(err, context.Canceled) {
+		// Refused before the control plane recorded a deploy attempt: it
+		// never hears of this one, so forge counts it. After the attempt
+		// opened, the attempt's own close records the failure.
+		if opened, phase := deployAttemptFrom(ctx).progress(); !opened {
+			if phase == "build" {
+				stage = refusedBuild
+			}
+			trackClaimableRefused(claimableRefusedReason(err, stage), shape)
+		}
 	}
 	// A refusal raised on this path owes a --json caller its envelope. An error
 	// from inside the deploy keeps the deploy's own reporting.

@@ -29,7 +29,7 @@ func TestClientHeaderValue(t *testing.T) {
 		{"reliant", map[string]string{"RELIANT_AGENT_SHELL": "1", "CLAUDECODE": "1"}, true, "harness=reliant; ci=true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := clientHeaderValue(func(k string) string { return tc.env[k] }, tc.ci)
+			got := clientHeaderValue(func(k string) string { return tc.env[k] }, tc.ci, DeployShape{})
 			if got != tc.want {
 				t.Fatalf("clientHeaderValue = %q, want %q", got, tc.want)
 			}
@@ -41,9 +41,54 @@ func TestClientHeaderValue(t *testing.T) {
 // thread id, a path someone exported) must never reach the wire.
 func TestClientHeaderValue_CarriesNoEnvValues(t *testing.T) {
 	env := map[string]string{"CODEX_SESSION_ID": "/home/alice/.codex/sess-42"}
-	got := clientHeaderValue(func(k string) string { return env[k] }, false)
+	got := clientHeaderValue(func(k string) string { return env[k] }, false, DeployShape{})
 	if !regexp.MustCompile(`^harness=[a-z]+; ci=(true|false)$`).MatchString(got) {
 		t.Fatalf("clientHeaderValue = %q: want only fixed vocabulary", got)
+	}
+}
+
+// A claimable deploy's declared shape adds template= and auth=; with none
+// declared the header is exactly the two-key form.
+func TestClientHeaderValue_DeployShape(t *testing.T) {
+	none := func(string) string { return "" }
+	for _, tc := range []struct {
+		name  string
+		shape DeployShape
+		want  string
+	}{
+		{"undeclared", DeployShape{}, "harness=none; ci=false"},
+		{"vite, no auth", DeployShape{Template: TemplateVite, Auth: AuthNone}, "harness=none; ci=false; template=vite; auth=none"},
+		{"forge-native, managed", DeployShape{Template: TemplateForgeNative, Auth: AuthManaged}, "harness=none; ci=false; template=forge-native; auth=managed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clientHeaderValue(none, false, tc.shape); got != tc.want {
+				t.Fatalf("clientHeaderValue = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// DeclareDeployShape reaches ClientHeaderValue until restored, and never lets
+// a value outside the vocabulary onto the wire.
+func TestDeclareDeployShape(t *testing.T) {
+	t.Setenv("RELIANT_AGENT_SHELL", "")
+	t.Setenv("CLAUDECODE", "")
+	buildinfo.SetCI(false)
+	t.Cleanup(buildinfo.ClearCI)
+	before := ClientHeaderValue()
+	restore := DeclareDeployShape(DeployShape{Template: "/home/alice/app", Auth: "zitadel"})
+	got := ClientHeaderValue()
+	if !regexp.MustCompile(`^harness=[a-z]+; ci=false; template=other; auth=other$`).MatchString(got) {
+		t.Fatalf("ClientHeaderValue = %q: want free text normalized to other", got)
+	}
+	restore()
+	if got := ClientHeaderValue(); got != before {
+		t.Fatalf("after restore ClientHeaderValue = %q, want %q", got, before)
+	}
+	restore = DeclareDeployShape(DeployShape{Template: TemplateDockerfileApp, Auth: AuthManaged})
+	defer restore()
+	if got := ClientHeaderValue(); got != before+"; template=dockerfile-app; auth=managed" {
+		t.Fatalf("ClientHeaderValue = %q", got)
 	}
 }
 

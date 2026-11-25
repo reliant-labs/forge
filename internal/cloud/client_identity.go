@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sync"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/pkg/observe/cliev"
@@ -14,11 +15,90 @@ import (
 // control plane records it on a claimable deploy, so the agent channel's
 // funnel can be broken down by the agent that drove it.
 //
+// A claimable deploy also names its shape, once forge has rendered the env
+// (DeclareDeployShape): "harness=claude; ci=false; template=vite; auth=none".
+// Every other run sends the first two keys only. A control plane that does
+// not know a key ignores it.
+//
 // PRIVACY. The value is built only from fixed vocabularies: an agent name from
-// buildinfo.DetectAgent ("none" when no agent is detected) and a boolean. It
-// never carries an environment variable's value, a path, a hostname or a user
-// name, so it is safe on an unauthenticated request.
+// buildinfo.DetectAgent ("none" when no agent is detected), a boolean, and on
+// a claimable deploy one of the Template* and Auth* constants. It never
+// carries an environment variable's value, a path, a hostname, a project,
+// workload or user name, so it is safe on an unauthenticated request.
 const ClientHeader = "X-Forge-Client"
+
+// The template= vocabulary: what kind of app a claimable deploy ships.
+const (
+	// TemplateForgeNative: the env deploys a server or worker forge builds
+	// from Go (forge.GoBuild), with or without a frontend.
+	TemplateForgeNative = "forge-native"
+	// TemplateDockerfileApp: the env deploys a workload built from the
+	// user's own Dockerfile, or a prebuilt image (an adopted app), and no
+	// server forge builds from Go.
+	TemplateDockerfileApp = "dockerfile-app"
+	// TemplateNextjsStatic: a static site only, a Next.js export.
+	TemplateNextjsStatic = "nextjs-static"
+	// TemplateVite: a static site only, a Vite build.
+	TemplateVite = "vite"
+	// TemplateOther: anything else (an Expo app, a shell build, a mix).
+	TemplateOther = "other"
+)
+
+// The auth= vocabulary: how the deployed app signs its users in.
+const (
+	// AuthManaged: the env declares a forge.ManagedIdentity.
+	AuthManaged = "managed"
+	// AuthNone: it declares none.
+	AuthNone = "none"
+)
+
+// DeployShape is what a claimable deploy says about itself in ClientHeader:
+// one Template* and one Auth* constant.
+type DeployShape struct {
+	Template string
+	Auth     string
+}
+
+// declaredShape is the shape this process's claimable deploy declared; the
+// zero value (every other run) adds nothing to the header.
+var declaredShape struct {
+	mu    sync.Mutex
+	shape DeployShape
+}
+
+// DeclareDeployShape makes every control-plane call this process sends until
+// restore runs name the deploy's shape in ClientHeader. A value outside its
+// vocabulary is sent as "other", so the header never carries free text.
+func DeclareDeployShape(s DeployShape) (restore func()) {
+	s = DeployShape{
+		Template: inVocabulary(s.Template, TemplateForgeNative, TemplateDockerfileApp, TemplateNextjsStatic, TemplateVite, TemplateOther),
+		Auth:     inVocabulary(s.Auth, AuthManaged, AuthNone),
+	}
+	declaredShape.mu.Lock()
+	prev := declaredShape.shape
+	declaredShape.shape = s
+	declaredShape.mu.Unlock()
+	return func() {
+		declaredShape.mu.Lock()
+		declaredShape.shape = prev
+		declaredShape.mu.Unlock()
+	}
+}
+
+func currentDeployShape() DeployShape {
+	declaredShape.mu.Lock()
+	defer declaredShape.mu.Unlock()
+	return declaredShape.shape
+}
+
+func inVocabulary(v string, allowed ...string) string {
+	for _, a := range allowed {
+		if v == a {
+			return v
+		}
+	}
+	return "other" // the control plane's word for a value outside the vocabulary
+}
 
 // HarnessNone is the harness reported when no coding agent is detected.
 const HarnessNone = "none"
@@ -32,10 +112,10 @@ func UserAgent() string {
 
 // ClientHeaderValue is this process's X-Forge-Client value.
 func ClientHeaderValue() string {
-	return clientHeaderValue(os.Getenv, buildinfo.IsCI())
+	return clientHeaderValue(os.Getenv, buildinfo.IsCI(), currentDeployShape())
 }
 
-func clientHeaderValue(getenv func(string) string, ci bool) string {
+func clientHeaderValue(getenv func(string) string, ci bool, shape DeployShape) string {
 	harness, _ := buildinfo.DetectAgent(getenv)
 	if harness == "" {
 		harness = HarnessNone
@@ -44,7 +124,11 @@ func clientHeaderValue(getenv func(string) string, ci bool) string {
 	if ci {
 		ciValue = "true"
 	}
-	return "harness=" + harness + "; ci=" + ciValue
+	v := "harness=" + harness + "; ci=" + ciValue
+	if shape.Template != "" {
+		v += "; template=" + shape.Template + "; auth=" + shape.Auth
+	}
+	return v
 }
 
 // setClientIdentity stamps the headers that identify this client on a request

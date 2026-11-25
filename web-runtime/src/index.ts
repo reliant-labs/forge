@@ -340,7 +340,10 @@ export {
  * site pointing at the app); the runtime reads them on arrival and emits one
  * `user_identified` event at first sign-in. Consent-gated like track().
  * `getAttribution()` is the captured record (to stamp on a site's own events);
- * the storage keys are exported so a site that withdraws consent can erase them.
+ * `visitorId()` is the anonymous id product events carry as `visitor.id`
+ * (only in the `full` tier; "" below it), which a Forge Changes `visitor` unit
+ * evaluates on; the storage keys are exported so a site that withdraws consent
+ * can erase them.
  */
 export {
   ATTRIBUTION_STORAGE_KEY,
@@ -348,6 +351,7 @@ export {
   UTM_PARAMS,
   VISITOR_ID_STORAGE_KEY,
   getAttribution,
+  visitorId,
   withAttribution,
   type AppClient,
   type Attribution,

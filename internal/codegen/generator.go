@@ -159,7 +159,7 @@ func (d ServiceTemplateData) messageImports(imps []foreignImport) []foreignImpor
 // or client-streaming one, and neither of a bidirectional one (both ride
 // its per-rpc stream type). Importing a package no signature names would
 // not compile.
-func (d ServiceTemplateData) StubImports() []foreignImport {
+func (d ServiceTemplateData) StubImports() []GoImport {
 	var imps []foreignImport
 	for _, m := range d.Methods {
 		bidi := m.ClientStreaming && m.ServerStreaming
@@ -176,7 +176,7 @@ func (d ServiceTemplateData) StubImports() []foreignImport {
 // TestImports is what the scaffold test of these methods imports for the
 // messages it names: a unary rpc's cases name both, a streaming rpc's
 // case only the request it sends, and a bidirectional one's nothing.
-func (d ServiceTemplateData) TestImports() []foreignImport {
+func (d ServiceTemplateData) TestImports() []GoImport {
 	var imps []foreignImport
 	for _, m := range d.Methods {
 		switch {
@@ -428,12 +428,17 @@ func ServiceRowFuncName(svcName string) string {
 	return ServiceRowPrefix + fieldName
 }
 
-// foreignImport records one non-`pb` protobuf package the mock must import,
-// with the alias used to qualify its message types.
-type foreignImport struct {
+// GoImport is one import a generated file writes, always as a NAMED import
+// (`Alias "Path"`): the message types it brings are qualified with Alias,
+// so the imported package's own clause never has to match it.
+type GoImport struct {
 	Alias string // e.g. "reliantv1"
 	Path  string // e.g. "github.com/proj/gen/reliant/v1"
 }
+
+// foreignImport records one non-`pb` protobuf package the mock must import,
+// with the alias used to qualify its message types.
+type foreignImport = GoImport
 
 // GoPackageForProtoFile derives the generated Go import path for a proto
 // file under the buf module root. The buf module root is "proto/", and the
@@ -507,7 +512,11 @@ func (r *mockTypeResolver) qualify(msgType, fqType, protoFile string) string {
 }
 
 // qualifyWithImport is qualify plus the import the reference needs: the
-// zero foreignImport for the service's own `pb` package.
+// zero foreignImport for the service's own `pb` package. Every emitter writes
+// the import with this alias explicitly (the stub and test templates, and
+// astutil.AddNamedImport when a stub is appended), so the qualifier and the
+// import agree whatever package clause a go_package `;name` suffix gives the
+// generated package.
 func (r *mockTypeResolver) qualifyWithImport(msgType, fqType, protoFile string) (string, foreignImport) {
 	ref := r.qualify(msgType, fqType, protoFile)
 	alias, _, _ := strings.Cut(ref, ".")

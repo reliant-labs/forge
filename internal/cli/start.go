@@ -39,6 +39,7 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"regexp"
@@ -47,6 +48,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/reliant-labs/forge/internal/benefits"
+	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	entityscaffold "github.com/reliant-labs/forge/internal/scaffold"
 )
@@ -90,12 +92,32 @@ with 'forge project new --in-place --kind site', an app with an API with
 This command PRINTS. It creates nothing and changes nothing.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := cmd.OutOrStdout().Write(rewriteForgeCommands([]byte(startRouter), cmdutil.Name()))
-			return err
+			if err := writeStartRouter(cmd.OutOrStdout()); err != nil {
+				return err
+			}
+			warnForgeOnPath(cmd.Context(), cmd.ErrOrStderr())
+			return nil
 		},
 	}
 	cmd.AddCommand(newStartAppCmd())
 	return cmd
+}
+
+// writeStartRouter prints the router with the forge that is running named in
+// its heading, so an agent whose PATH resolves an older forge than the one it
+// installed sees which one answered before following any row. The heading
+// carries it so the router's line budget pays nothing for it.
+func writeStartRouter(w io.Writer) error {
+	router := rewriteForgeCommands([]byte(startRouter), cmdutil.Name())
+	heading, rest, _ := bytes.Cut(router, []byte("\n"))
+	_, err := fmt.Fprintf(w, "%s (%s)\n%s", heading, startVersionLabel(), rest)
+	return err
+}
+
+// startVersionLabel names the running forge for the router's heading:
+// "forge v1.10.0", or "reliant forge v1.10.0" when embedded.
+func startVersionLabel() string {
+	return Name() + " " + buildinfo.Current().Version
 }
 
 // newStartAppCmd builds `forge start app`, the greenfield brief. The brief

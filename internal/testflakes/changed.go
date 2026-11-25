@@ -83,8 +83,15 @@ func (c ChangedTests) Names() []string {
 }
 
 // RunRegex is the `-run` value selecting every name: `^(TestA|TestB)$`.
+// Large selections (notably edits to TestMain) run all tests in the selected
+// packages instead. This is extra coverage, never an omission, and keeps one
+// argument below Linux's per-argument limit and Windows' command-line limit.
 func (c ChangedTests) RunRegex() string {
-	return "^(" + strings.Join(c.Names(), "|") + ")$"
+	run := "^(" + strings.Join(c.Names(), "|") + ")$"
+	if len(run) > 8192 {
+		return "^(Test|Fuzz)"
+	}
+	return run
 }
 
 // ChangedOptions configures FindChangedTests.

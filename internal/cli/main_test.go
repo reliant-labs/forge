@@ -50,6 +50,10 @@ func TestMain(m *testing.M) {
 	}
 	// No test hands its command to another forge: see pinDelegationDisabled.
 	pinDelegationDisabled = true
+	// Nor does `forge version` or `forge start` run the forges on the
+	// developer's PATH: what they report is not the test's input.
+	// version_path_shadow_test.go sets a scan of its own.
+	forgeOnPathScan = nil
 	// Nor does a merge driver a test writes reach the forge on the
 	// developer's PATH when its own binary is gone: the launcher clause
 	// names an entry point no machine has. A test of the clause sets its own.

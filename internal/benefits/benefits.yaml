@@ -3242,6 +3242,13 @@ benefits:
     evidence:
       - path: internal/cigate/license.go
       - command: ci gate
+    rules:
+      - id: license-check
+        lane: forge ci gate
+        bug_class: >-
+          A dependency under a forbidden or restricted license (AGPL, GPL)
+          entering the import graph unnoticed (warn-first until
+          `lint.rules: {license-check: error}` or its `gates_from` release)
 
   - id: signed-forge-releases
     category: security

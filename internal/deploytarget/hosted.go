@@ -1560,11 +1560,7 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 	// Charging that to the readiness budget would spend the (default 5m)
 	// timeout before any workload was looked at, so the apply budget is at
 	// least HostedApplyBudget.
-	floor := p.ApplyBudget
-	if floor <= 0 {
-		floor = HostedApplyBudget
-	}
-	applyBudget := max(policy.Timeout, floor)
+	applyBudget := p.applyWaitBudget(policy.Timeout)
 	applyDeadline := time.Now().Add(applyBudget)
 	for {
 		if !applied {
@@ -1684,6 +1680,16 @@ func (p HostedProvider) wait(ctx context.Context, c HostedCaller, envName, envID
 		case <-time.After(interval):
 		}
 	}
+}
+
+// applyWaitBudget allows the platform's apply phase at least its own budget,
+// independently of the readiness timeout.
+func (p HostedProvider) applyWaitBudget(readinessTimeout time.Duration) time.Duration {
+	floor := p.ApplyBudget
+	if floor <= 0 {
+		floor = HostedApplyBudget
+	}
+	return max(readinessTimeout, floor)
 }
 
 // rolloutSuperseded ends a wait whose promotion was replaced by a newer one:

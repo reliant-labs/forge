@@ -6,6 +6,11 @@ and one or more named variants. The control plane decides who gets which variant
 (Everyone, a stable percentage, or a split between variants). This repo decides what
 a change _can_ be: its key, its value type, its variants and its default.
 
+Changes are in **beta** until platform delivery, the readout and the Experiments
+screen have all shipped. The declaration below, the evaluation SDKs and typed
+accessors are released; until the platform delivers an environment's policy to
+an app, every accessor returns the declared default.
+
 You write that once, in `changes.yaml` at the project root. forge ships it in every
 environment's release and generates typed accessors for your code. The design is in
 [proposals/changes.md](proposals/changes.md), and the evaluation model is in

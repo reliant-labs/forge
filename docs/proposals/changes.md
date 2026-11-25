@@ -1,6 +1,6 @@
 # Changes: one model for remote config, gradual rollouts and A/B tests
 
-**Status:** direction approved by the owner on 2026-11-20 (the "Settled" list
+**Status:** beta. Direction approved by the owner on 2026-11-20 (the "Settled" list
 below). Everything else here is **proposed**; the open owner decisions are
 collected in [section 8](#8-open-owner-decisions) and each says what it blocks.
 **Date:** 2026-11-20
@@ -8,6 +8,41 @@ collected in [section 8](#8-open-owner-decisions) and each says what it blocks.
 with), [start-anywhere.md](start-anywhere.md) (declarations in `forge.yaml`, use
 piece by piece), `docs/benefits.md` (`controlled-rollouts-and-experiments`,
 status in-progress).
+
+## Where it stands (2026-11-25)
+
+The owner approved finishing Changes, labelled **beta** until delivery, the
+readout and the UI ship. Most of [section 9](#9-rollout-plan) has merged.
+Merged is not released, so each row says which final tag carries it.
+
+| Slice                             | State                                                                                                                                                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wave 1, evaluation core           | Released: forge #2462 (forge v1.10.0, web-runtime v0.13.21).                                                                                                                                                      |
+| 1. Declaration and shape          | Released: forge #2483 (v1.10.0), as `changes.yaml` ([../changes.md](../changes.md)).                                                                                                                              |
+| 2. ChangesService, scopes, ledger | Released: forge #2465 (v1.10.0), control-plane #3146 (v1.31.0).                                                                                                                                                   |
+| 3. Static-site delivery           | Released: control-plane #3154 (v1.31.0). Live: reliantlabs.io serves `/_forge/changes.json`.                                                                                                                      |
+| 4. Evaluation events              | Released: `flag_evaluated` with `run`, `unit`, `reason`, `revision` (forge #2470). The `account` prop for the account unit is not.                                                                                |
+| 5. Readout                        | Released: forge #2471 (v1.10.0), control-plane #3153 (v1.31.0).                                                                                                                                                   |
+| 6. UI                             | Experiments page released (reliant #3082, v1.27.0) but hidden from prod's nav: control-plane #3555 (`CHANGES_UI` on) is in no final tag. No delivery indicator yet.                                               |
+| 7. Agent tools and approvals      | Released: reliant #3082 (v1.27.0), control-plane #3146.                                                                                                                                                           |
+| 8. Backend delivery, OpenFeature  | OpenFeature and typed accessors released (forge v1.10.0). Hosted backends: the ConfigMap file merged (control-plane #3154), but it reaches a hosted app only with control-plane #3588, in no final tag. No fetch. |
+| Dogfood: landing-page hero test   | Live (landing-page #162): `hero-copy`, unit `visitor`, a 5% experiment.                                                                                                                                           |
+| Dogfood: a signed-in Reliant ramp | Not started.                                                                                                                                                                                                      |
+
+What the released code already does for each [open decision](#8-open-owner-decisions).
+These are de facto choices for the owner to ratify, not decisions this document
+makes:
+
+| #   | What the code does                                                                                                                                                                                                                                       |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | A project-root `changes.yaml`, one declaration for every env, no KCL needed: close to (a), in its own file instead of `forge.yaml`. Released, so changing it now is a deprecation.                                                                       |
+| 2   | (a) for hosted backends: a ConfigMap mounted as the file `FORGE_CHANGES_FILE` names. The non-hosted half, (b) an authenticated fetch, is not built: `GetChangesSnapshot` exists, but there is no SDK fetch source, platform token or egress allow. Open. |
+| 3   | A person, enforced by the control plane: a console browser session, or a one-time code emailed to the person the credential acts for (`step_up_code`). A token or CLI login acting for a person is refused. Stop, end run and ramp down never wait.      |
+| 4   | (a), per app: `/forge/p/<app>/experiments`.                                                                                                                                                                                                              |
+| 5   | (a): `changes:write` and `changes:launch`, grantable per environment.                                                                                                                                                                                    |
+| 6   | Between (b) and (c): the promote is allowed and the snapshot delivers that change off and reports a problem, but the change record is not stopped, nothing is written to its trail, and the deploy plan does not warn. Open.                             |
+| 7   | (a): OpenFeature providers in Go and the browser over the dependency-free core.                                                                                                                                                                          |
+| 8   | (a): no approval unless the environment is protected or named `prod`/`production`.                                                                                                                                                                       |
 
 ## Summary
 

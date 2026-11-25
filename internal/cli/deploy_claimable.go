@@ -155,10 +155,10 @@ type deployClaimJSON struct {
 	// is known.
 	LastAttempt *claimAttemptJSON `json:"last_attempt,omitempty"`
 	// ClaimRequired is set when the newest deploy was refused until the
-	// deploy is claimed, and says why: "credential_fields" (pages with
-	// sign-in forms) or "content". The claim link is then the way forward,
-	// so agent_instructions says to give it out although nothing is
-	// published.
+	// deploy is claimed, and says why (the control plane's
+	// x-forge-claim-required value, e.g. "content"). The claim link is then
+	// the way forward, so agent_instructions says to give it out even when
+	// nothing is published.
 	ClaimRequired string `json:"claim_required,omitempty"`
 	// URL is the deploy's live address; empty when it has none yet.
 	URL string `json:"url,omitempty"`
@@ -227,6 +227,10 @@ type claimableRefusal struct {
 	// emitted is true when the deploy's own --json document already carries
 	// this outcome, so it must not be written a second time.
 	emitted bool
+	// platformErr is the platform error this refusal renders, when there is
+	// one: Unwrap returns it, so its reason and headers stay readable
+	// (cloud.ClaimRequiredOf).
+	platformErr error
 	// next are the exact commands that move past this refusal, best first
 	// (the --json `next_actions`). msg ends with the first of them, so an
 	// agent reading only the text has the command too.
@@ -241,6 +245,7 @@ type claimableThrottleFacts struct {
 
 func (e *claimableRefusal) Error() string { return e.msg }
 func (e *claimableRefusal) ExitCode() int { return e.exit }
+func (e *claimableRefusal) Unwrap() error { return e.platformErr }
 
 // refuseClaimableFlags rejects the flag combinations that make no sense for a
 // deploy that creates an anonymous account: anything that previews, scopes, or
@@ -366,24 +371,42 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			session.refreshURL(ctx)
 			return session.document(compute)
 		}
+		// A content-scan refusal at publish (the follow-through) is
+		// translated before the promotion's document is written, so that
+		// document carries the refusal's exit code and claim.
+		inner.refusal = func(err error) (*deployClaimJSON, error) {
+			r := claimableContentRefusalOf(envName, session.cred.Claimable.ClaimURL, err)
+			if r == nil {
+				return nil, nil
+			}
+			r.emitted = f.jsonOut
+			if _, ok := cloud.ClaimRequiredOf(err); !ok {
+				return nil, r
+			}
+			session.recordAttempt(err)
+			return session.document(compute), r
+		}
 		docsBefore := jsonDocumentsWritten.Load()
 		deployErr := runDeployEverything(ctx, envName, inner)
 		session.recordAttempt(deployErr)
 		if deployErr != nil {
-			if _, ok := cloud.ClaimRequiredOf(deployErr); ok {
-				// The way forward is the claim link: say so, with the link,
-				// and give a --json caller the claim beside the refusal
-				// unless the deploy already wrote its one document.
-				r := claimContentRefusal(envName, session.cred.Claimable.ClaimURL, deployErr)
-				r.emitted = jsonDocumentsWritten.Load() != docsBefore
-				if f.jsonOut && !r.emitted {
-					report.setClaim(session.document(compute))
-				}
-				noteDeployClaim(ctx, session.document(compute))
-				return r
+			var r *claimableRefusal
+			if !errors.As(deployErr, &r) {
+				// Refused before the promotion (RecordBundle, at the build):
+				// no document has been written yet.
+				r = claimableContentRefusalOf(envName, session.cred.Claimable.ClaimURL, deployErr)
 			}
-			if r := claimableScanRefusal(envName, deployErr); r != nil {
-				r.emitted = jsonDocumentsWritten.Load() != docsBefore
+			if r != nil {
+				r.emitted = r.emitted || jsonDocumentsWritten.Load() != docsBefore
+				if _, ok := cloud.ClaimRequiredOf(deployErr); ok {
+					// The way forward is the claim link: give a --json
+					// caller the claim beside the refusal, unless the
+					// deploy already wrote its one document.
+					if f.jsonOut && !r.emitted {
+						report.setClaim(session.document(compute))
+					}
+					noteDeployClaim(ctx, session.document(compute))
+				}
 				return r
 			}
 			return claimableDeployError(envName, deployErr)
@@ -1118,10 +1141,10 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
 		"To see it again: %s env status %s --claimable",
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
-	claimRequired := ""
-	if !published {
-		claimRequired = cl.LastAttemptClaimRequired
-	}
+	// The newest attempt's cause (it is reset on every attempt): set while a
+	// claim is what the deploy waits on, whether or not an earlier release
+	// published.
+	claimRequired := cl.LastAttemptClaimRequired
 	switch {
 	case claimRequired != "" && claimableState(state):
 		instr = claimRequiredInstructions(env, cl)
@@ -1186,12 +1209,21 @@ func claimContentRefusal(env, claimURL string, deployErr error) *claimableRefusa
 		loginThenDeploy(env))
 	r := &claimableRefusal{
 		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableContentRefused,
-		msg: b.String(), next: []string{loginThenDeploy(env)},
+		msg: b.String(), next: []string{loginThenDeploy(env)}, platformErr: deployErr,
 	}
 	if ce != nil && ce.Code != "" {
 		r.code = ce.Code
 	}
 	return r
+}
+
+// claimableContentRefusalOf is the claimable path's rendering of a content
+// scan refusal of the upload, or nil when err is none.
+func claimableContentRefusalOf(env, claimURL string, err error) *claimableRefusal {
+	if _, ok := cloud.ClaimRequiredOf(err); ok {
+		return claimContentRefusal(env, claimURL, err)
+	}
+	return claimableScanRefusal(env, err)
 }
 
 // claimableScanRefusal renders the platform content scan's other answers to
@@ -1216,13 +1248,13 @@ func claimableScanRefusal(env string, deployErr error) *claimableRefusal {
 	switch {
 	case ce.HasReason(cloud.ReasonClaimableScanUnavailable):
 		return &claimableRefusal{
-			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeUnavailable), reason: ce.Reason, next: []string{retry},
+			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeUnavailable), reason: ce.Reason, next: []string{retry}, platformErr: deployErr,
 			msg: fmt.Sprintf("the platform's content scan could not judge this anonymous deploy's upload right now. Nothing was published.\n"+
 				"  platform: %s%s\n  fix: retry in a few minutes: %s", emptyAs(ce.Message, "the scan is unavailable"), evidence, retry),
 		}
 	case ce.HasReason(cloud.ReasonClaimableContentRefused):
 		return &claimableRefusal{
-			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeFailedPrecondition), reason: ce.Reason, next: []string{loginThenDeploy(env)},
+			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeFailedPrecondition), reason: ce.Reason, next: []string{loginThenDeploy(env)}, platformErr: deployErr,
 			msg: fmt.Sprintf("the platform's content scan refused this anonymous deploy's upload, and claiming would not change that. "+
 				"Nothing was published.\n  platform: %s%s\n"+
 				"  An organization's own deploys are not scanned this way.\n  fix: deploy it to your own account: %s",

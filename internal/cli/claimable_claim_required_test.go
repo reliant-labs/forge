@@ -175,3 +175,55 @@ func TestClaimableDeploy_ScanRefusalExits4WithItsEnvelope(t *testing.T) {
 		})
 	}
 }
+
+// A claim-required refusal AFTER the promotion is written (the content scan at
+// publish) reaches the deploy's own --json document: one document, whose
+// exit_code is the process's and whose claim carries the link and the cause,
+// so MCP's deploy_claimable can relay them.
+func TestClaimableDeploy_ClaimRequiredAtPublishIsInTheOneDocument(t *testing.T) {
+	testkit.Slow(t, "renders KCL and runs the whole CLI")
+	for _, proc := range []string{procRecordBundle, "controlplane.v1.DeployService/Promote"} {
+		t.Run(proc, func(t *testing.T) {
+			fake, _ := claimableFixture(t)
+			fake.refuseBundle, fake.refuseProc = cloud.ClaimRequiredContent, proc
+			if proc == procRecordBundle {
+				fake.refuseFromCall = 2 // the build records it once; refuse the next
+			}
+			out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--no-wait", "--json")
+			if err == nil || exitCodeForError(err) != exitRefused {
+				t.Fatalf("want exit 4; err=%v\n%s", err, out)
+			}
+			if n := strings.Count(out, "\n{\n") + boolInt(strings.HasPrefix(out, "{")); n != 1 {
+				t.Fatalf("stdout carries %d JSON documents, want 1:\n%s", n, out)
+			}
+			doc := decodeClaimDoc(t, out)
+			claim, _ := doc["claim"].(map[string]any)
+			if doc["exit_code"] != float64(exitRefused) || doc["error_reason"] != cloud.ReasonClaimableContentRefused || claim == nil ||
+				claim["claim_url"] != "https://app.reliant.dev/claim#rcl_9f3KQe" || claim["claim_required"] != cloud.ClaimRequiredContent {
+				t.Fatalf("doc = %v", doc)
+			}
+			res := &claimableDeployResult{Env: "hosted"}
+			fillClaim(res, decodeClaimJSON(t, claim))
+			if res.ClaimURL == "" || res.ClaimRequired == "" {
+				t.Fatalf("MCP result lacks the claim: %+v", res)
+			}
+		})
+	}
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func decodeClaimJSON(t *testing.T, m map[string]any) *deployClaimJSON {
+	t.Helper()
+	b, _ := json.Marshal(m)
+	var c deployClaimJSON
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	return &c
+}

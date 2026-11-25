@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -26,6 +27,31 @@ type MethodTemplateData struct {
 	// explicitly opts out. It carries into CRUDMethodTemplateData, where
 	// it selects the handler comment's wording. It gates nothing.
 	AuthRequired bool
+	// InputGoType / OutputGoType are the qualified Go types of the request
+	// and response ("pb.GetItemRequest", "controlplanev1.GetRolloutRequest",
+	// "emptypb.Empty"), and InputImport / OutputImport the import each
+	// needs. A message declared in an imported proto file lives in that
+	// file's generated package, not the service's `pb`. Empty means the
+	// service's own package (InputRef, StubImports).
+	InputGoType, OutputGoType string
+	InputImport, OutputImport foreignImport
+}
+
+// InputRef is the qualified Go type of the request message the stub and
+// scaffold test name: InputGoType, else the service's own `pb` package.
+func (m MethodTemplateData) InputRef() string {
+	if m.InputGoType != "" {
+		return m.InputGoType
+	}
+	return "pb." + m.InputGoName()
+}
+
+// OutputRef — see InputRef.
+func (m MethodTemplateData) OutputRef() string {
+	if m.OutputGoType != "" {
+		return m.OutputGoType
+	}
+	return "pb." + m.OutputGoName()
 }
 
 // GoName is the method protoc-gen-connect-go declares for this RPC on the
@@ -101,18 +127,67 @@ func (d ServiceTemplateData) HasStreamingMethods() bool {
 	return false
 }
 
-// NamesPbMessages reports whether a connect-go v2 handler file for these
-// methods names a pb message type. A bidirectional v2 handler names none —
-// both directions ride its per-rpc stream type — so a file holding only
-// bidi stubs must not import pb (an unused import does not compile). The v1
-// signatures name the messages for every shape.
-func (d ServiceTemplateData) NamesPbMessages() bool {
+// pbImport is the service's own generated package, imported as `pb`.
+func (d ServiceTemplateData) pbImport() foreignImport {
+	return foreignImport{Alias: "pb", Path: d.Module + "/gen/" + d.ProtoPackage + "/v1"}
+}
+
+// messageImports is the de-duplicated, ordered set of imports for the
+// messages named, the zero foreignImport standing for the service's `pb`.
+func (d ServiceTemplateData) messageImports(imps []foreignImport) []foreignImport {
+	var out []foreignImport
+	seen := map[string]bool{}
+	for _, imp := range imps {
+		if imp.Path == "" {
+			imp = d.pbImport()
+		}
+		if seen[imp.Path] {
+			continue
+		}
+		seen[imp.Path] = true
+		out = append(out, imp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// StubImports is what a handler stub file for these methods imports for
+// the messages its signatures name — the service's `pb` for its own
+// messages, and the declaring package of a message from an imported proto
+// file. A v1 signature names both messages of every shape; a v2 one names
+// the request of a unary or server-streaming rpc, the response of a unary
+// or client-streaming one, and neither of a bidirectional one (both ride
+// its per-rpc stream type). Importing a package no signature names would
+// not compile.
+func (d ServiceTemplateData) StubImports() []foreignImport {
+	var imps []foreignImport
 	for _, m := range d.Methods {
-		if !(m.ClientStreaming && m.ServerStreaming) {
-			return true
+		bidi := m.ClientStreaming && m.ServerStreaming
+		if !d.ConnectV2 || (!bidi && !m.ClientStreaming) {
+			imps = append(imps, m.InputImport)
+		}
+		if !d.ConnectV2 || (!bidi && !m.ServerStreaming) {
+			imps = append(imps, m.OutputImport)
 		}
 	}
-	return false
+	return d.messageImports(imps)
+}
+
+// TestImports is what the scaffold test of these methods imports for the
+// messages it names: a unary rpc's cases name both, a streaming rpc's
+// case only the request it sends, and a bidirectional one's nothing.
+func (d ServiceTemplateData) TestImports() []foreignImport {
+	var imps []foreignImport
+	for _, m := range d.Methods {
+		switch {
+		case m.ClientStreaming && m.ServerStreaming:
+		case m.ClientStreaming || m.ServerStreaming:
+			imps = append(imps, m.InputImport)
+		default:
+			imps = append(imps, m.InputImport, m.OutputImport)
+		}
+	}
+	return d.messageImports(imps)
 }
 
 // connectV2For reports whether svc's emitted files target connect-go v2:
@@ -200,7 +275,10 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 	)
 
 	var methods []MethodTemplateData
+	res := newMockTypeResolver(svc)
 	for _, m := range svc.Methods {
+		inType, inImp := res.qualifyWithImport(m.InputType, m.InputTypeFQ, m.InputProtoFile)
+		outType, outImp := res.qualifyWithImport(m.OutputType, m.OutputTypeFQ, m.OutputProtoFile)
 		methods = append(methods, MethodTemplateData{
 			Name:            m.Name,
 			InputType:       m.InputType,
@@ -208,6 +286,10 @@ func mapServiceDefToTemplateData(svc ServiceDef, projectDir ...string) ServiceTe
 			ClientStreaming: m.ClientStreaming,
 			ServerStreaming: m.ServerStreaming,
 			AuthRequired:    m.AuthRequired,
+			InputGoType:     inType,
+			OutputGoType:    outType,
+			InputImport:     inImp,
+			OutputImport:    outImp,
 		})
 	}
 
@@ -422,6 +504,25 @@ func (r *mockTypeResolver) qualify(msgType, fqType, protoFile string) string {
 		r.imports = append(r.imports, foreignImport{Alias: alias, Path: goPkg})
 	}
 	return alias + "." + short
+}
+
+// qualifyWithImport is qualify plus the import the reference needs: the
+// zero foreignImport for the service's own `pb` package.
+func (r *mockTypeResolver) qualifyWithImport(msgType, fqType, protoFile string) (string, foreignImport) {
+	ref := r.qualify(msgType, fqType, protoFile)
+	alias, _, _ := strings.Cut(ref, ".")
+	switch alias {
+	case "pb":
+		return ref, foreignImport{}
+	case "emptypb":
+		return ref, foreignImport{Alias: "emptypb", Path: "google.golang.org/protobuf/types/known/emptypb"}
+	}
+	for path, a := range r.aliases {
+		if a == alias {
+			return ref, foreignImport{Alias: alias, Path: path}
+		}
+	}
+	return ref, foreignImport{}
 }
 
 // mockImportAlias builds a deterministic, collision-free import alias for a

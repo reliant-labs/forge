@@ -71,11 +71,26 @@ forge's tests fail a scope with no row, a sensitive scope in a bundle, and a sta
 
 A store's scope column can declare `forge:closed-set accesstoken.AllScopes` on its CHECK, and `forge lint` keeps the two equal (`db/closed-sets`). That works and keeps working, but every new scope then costs each store a widening migration and a validate migration before a row can name it, and a `bundle:<name>` entry cannot be stored at all.
 
-The alternative is a FORMAT check, since the write path (`NewSet`, or `ParseScope` plus `ParseBundleRef`) already refuses an unknown entry:
+The alternative is a FORMAT check, since the write path (`NewSet`, or `ParseScope` plus `ParseBundleRef`) already refuses an unknown entry. It replaces the closed-set CHECK in one ALTER, `NOT VALID`, with `VALIDATE CONSTRAINT` in the next migration:
 
 ```sql
-ALTER TABLE access_tokens ADD CONSTRAINT access_tokens_scopes_format
-    CHECK (array_to_string(scopes, ',') ~ '^(bundle:)?[a-z:]+(,(bundle:)?[a-z:]+)*$') NOT VALID;
+ALTER TABLE access_tokens
+    DROP CONSTRAINT access_tokens_scopes,
+    ADD CONSTRAINT access_tokens_scopes CHECK (
+        cardinality(scopes) > 0
+        AND string_to_array(array_to_string(scopes, ',', ''), ',') = scopes
+        AND array_to_string(scopes, ',') ~ '^[a-z]+(:[a-z]+)*(,[a-z]+(:[a-z]+)*)*$'
+    ) NOT VALID;
+COMMENT ON CONSTRAINT access_tokens_scopes ON access_tokens IS
+    'format check: every element matches ^[a-z]+(:[a-z]+)*$; the vocabulary is the write path''s';
 ```
+
+A CHECK cannot unnest an array, so it judges the comma-joined string, and each part closes a gap the regex alone leaves:
+
+- `cardinality(scopes) > 0`: a token with no scope authenticates and can do nothing.
+- The round trip: the joined string splits back to the same array only when no element contains a comma and none is NULL (the third argument joins NULL as `''`, which splits back as `''`, not NULL; the two-argument form drops it silently). So the pieces the regex sees ARE the elements. Without it, `{"deploy:read,obs:read"}` and `{deploy:read,NULL}` both pass.
+- The regex: every piece is lower-case words joined by colons. `deploy:config:read` and `bundle:admin` pass; `''`, `Deploy:read`, `a::b` and `not:a-scope` do not.
+
+The COMMENT is required. postgres drops the `forge:closed-set` declaration with the old constraint, and with no new comment `forge lint --closed-sets` reports the declaration lost. A comment without the marker tells it the closed set was retired on purpose.
 
 Then the read path must be tolerant (`ResolveStored`), because the database no longer stops a newer binary's scope from reaching an older one.

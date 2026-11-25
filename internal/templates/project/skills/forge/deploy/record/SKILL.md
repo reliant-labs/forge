@@ -163,9 +163,13 @@ Record digests whenever you have them: they are what ran.
 
 ## Recipes
 
-Each one installs forge with the release installer (no Go toolchain), records,
-then judges. Put them AFTER the step that deploys, so a failed deploy records
-nothing.
+Each one installs an exact version of forge from npm (no Go toolchain; the
+package checks the binary against the release's signed checksums), records,
+then judges. Set `FORGE_VERSION` to the release you run locally (`forge
+version`, without the `v`): the `<version>` placeholder makes npm refuse
+rather than install whatever is newest, so a new version of forge never changes a
+pipeline you did not touch. Put them AFTER the step that deploys, so a failed
+deploy records nothing.
 
 ### GitHub Actions — a step
 
@@ -175,12 +179,11 @@ nothing.
     runs-on: ubuntu-latest
     env:
       FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+      FORGE_VERSION: "<version>"      # the exact version of forge, e.g. 1.10.0
     steps:
       - uses: actions/checkout@v4     # for deploy/envs/prod.yaml (or forge.yaml's name)
       - name: Install forge
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        run: npm install -g "@reliantlabs/forge@${FORGE_VERSION}"
       - name: Record the deploy
         run: |
           forge release record --env prod --version "${{ github.ref_name }}" \
@@ -204,15 +207,13 @@ inputs:
   version:   {description: Version label deployed., required: true}
   workloads: {description: "Space-separated name=ref@sha256:… pairs; empty for version-only.", required: false, default: ""}
   check:     {description: Run forge obs check --wait after recording., required: false, default: "true"}
-  forge-version: {description: "Version of the forge CLI to install (default: latest).", required: false, default: ""}
+  forge-version: {description: "Exact version of the forge CLI, e.g. 1.10.0.", required: true}
 runs:
   using: composite
   steps:
     - shell: bash
       env: {FORGE_VERSION: "${{ inputs.forge-version }}"}
-      run: |
-        curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      run: npm install -g "@reliantlabs/forge@${FORGE_VERSION:?set the forge-version input}"
     - shell: bash
       env: {ENV: "${{ inputs.env }}", VERSION: "${{ inputs.version }}", WORKLOADS: "${{ inputs.workloads }}"}
       run: |
@@ -235,6 +236,7 @@ and use it:
           env: prod
           version: ${{ github.ref_name }}
           workloads: api=ghcr.io/acme/api@${{ needs.deploy.outputs.digest }}
+          forge-version: "<version>"  # the exact version of forge, e.g. 1.10.0
 ```
 
 ### GitLab CI
@@ -243,13 +245,13 @@ and use it:
 record:
   stage: .post                        # after your deploy stage
   needs: [deploy]
-  image: debian:stable-slim
+  image: node:22-bookworm-slim
   variables:
     FORGE_CONTROL_PLANE_TOKEN: $FORGE_CONTROL_PLANE_TOKEN   # masked CI/CD variable
+    FORGE_VERSION: "<version>"                              # the exact version of forge, e.g. 1.10.0
   script:
-    - apt-get update -qq && apt-get install -y -qq curl ca-certificates git >/dev/null
-    - curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
-    - export PATH="$HOME/.local/bin:$PATH"
+    - apt-get update -qq && apt-get install -y -qq git >/dev/null
+    - npm install -g "@reliantlabs/forge@${FORGE_VERSION}"
     - forge release record --env prod --version "$CI_COMMIT_TAG" --workload api --image "$CI_REGISTRY_IMAGE/api@$API_DIGEST"
     - forge obs check prod --release "$CI_COMMIT_TAG" --wait
   rules:
@@ -268,9 +270,10 @@ steps:
     command: ./scripts/deploy.sh
   - label: ":memo: record"
     depends_on: deploy
+    env:
+      FORGE_VERSION: "<version>"      # the exact version of forge, e.g. 1.10.0
     command: |
-      curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh
-      export PATH="$$HOME/.local/bin:$$PATH"
+      npm install -g "@reliantlabs/forge@$$FORGE_VERSION"   # the agent needs Node
       forge release record --env prod --version "$$BUILDKITE_TAG" \
         --workload api --image "$$(buildkite-agent meta-data get api-image)"
       forge obs check prod --release "$$BUILDKITE_TAG" --wait

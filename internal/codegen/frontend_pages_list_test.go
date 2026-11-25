@@ -174,7 +174,7 @@ func TestListPage_RendersServerSideResource(t *testing.T) {
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
 		`import { Resource, type ResourceColumn`,
 		`const resource = useQueryResource(query);`,
-		`<Resource<Order>`,
+		`<Resource<OrderEntity>`,
 		`status={resource.status}`,
 		`data={resource.status === "success" ? resource.data.orders : undefined}`,
 		// Enum filter imported + rendered by the installed <FilterBar>, in a
@@ -238,7 +238,7 @@ func TestViteSpaListPage_ServerSideResource(t *testing.T) {
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
 		`import { Resource, type ResourceColumn`,
 		`const resource = useQueryResource(query);`,
-		`<Resource<Order>`,
+		`<Resource<OrderEntity>`,
 		// Enum filter imported + rendered by the installed <FilterBar>.
 		`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
 		`{ value: String(OrderStatus.SHIPPED), label: "Shipped" }`,
@@ -337,7 +337,7 @@ func TestListPage_DegradesWithoutFilters(t *testing.T) {
 	out := renderPageTemplate(t, "pages", "list-page.tsx.tmpl", page)
 	for _, want := range []string{
 		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
-		`<Resource<Widget>`,
+		`<Resource<WidgetEntity>`,
 		`onNextPage={() => setCursor((c) => [...c, nextToken])}`,
 	} {
 		if !strings.Contains(out, want) {

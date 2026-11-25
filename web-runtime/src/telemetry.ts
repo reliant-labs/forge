@@ -773,6 +773,18 @@ export function initBrowserTelemetry(
     setTelemetrySink(null);
     return Promise.resolve(false);
   }
+  if (opaqueOrigin()) {
+    // A sandboxed document (an unclaimed preview on reliantpreview.dev is
+    // served with a CSP sandbox and no allow-same-origin) has no cookies and
+    // no storage: the SDK throws reading its session cookie at init. Its own
+    // /_otel is cross-origin to it too, and the same-origin ingest refuses
+    // an opaque origin by design. Off, said once, never a failure.
+    setTelemetrySink(null);
+    console.info(
+      "[telemetry] off: this page runs in an opaque origin (a sandboxed document), which keeps no session and cannot reach its same-origin ingest",
+    );
+    return Promise.resolve(false);
+  }
   // Before the SDK loads, so a click or an error while it does is not lost.
   const clicks =
     config.clickCapture === false
@@ -1982,6 +1994,19 @@ function keepRumSession(): RumSessionStore | null {
     return rum;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether this document runs in an opaque origin: a CSP or iframe sandbox
+ * without allow-same-origin, a data: URL. `window.origin` is "null" there
+ * while `location.origin` still names the URL's host.
+ */
+function opaqueOrigin(): boolean {
+  try {
+    return window.origin === "null";
+  } catch {
+    return false;
   }
 }
 

@@ -334,8 +334,22 @@ func TestRPCTransportCarriesTheSessionCookie(t *testing.T) {
 					kind, rel, body)
 			}
 		}
-		if !regexp.MustCompile(`fetchWithSession[^=]*=[^;]*credentials:\s*"include"`).MatchString(src) {
-			t.Errorf("%s: %s has no fetchWithSession that sends credentials: \"include\"", kind, rel)
+		if !regexp.MustCompile(`fetchWithSession[^=]*=[^;]*credentials:\s*apiCredentials\(input\)`).MatchString(src) {
+			t.Errorf("%s: %s has no fetchWithSession that sends credentials: apiCredentials(input)", kind, rel)
+		}
+
+		// apiCredentials must answer "include" for an API on another origin
+		// (the cookie is otherwise dropped) and "same-origin" for the page's
+		// own (an opaque-origin preview is refused a wildcard CORS grant on a
+		// credentialed request). api-base.test.ts runs the cases; this pins
+		// that both answers are still in the code the transport calls.
+		baseTmpl, ok := tree["src/lib/api-base.ts"]
+		if !ok {
+			t.Fatalf("%s: no src/lib/api-base.ts in the composed tree", kind)
+		}
+		base := stripCommentsKeepingStrings(renderFrontend(t, baseTmpl, kind))
+		if !regexp.MustCompile(`origin === pageOrigin \? "same-origin" : "include"`).MatchString(base) {
+			t.Errorf("%s: src/lib/api-base.ts credentialsFor no longer sends \"include\" to another origin and \"same-origin\" to its own", kind)
 		}
 	}
 }

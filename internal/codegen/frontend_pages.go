@@ -1992,6 +1992,12 @@ func PascalToKebab(s string) string {
 // has a List RPC but no Get RPC.
 func (p PageTemplateData) EmitsDetailPage() bool { return p.HasGet }
 
+// EntityTypeLocal is the name a page binds the entity's message type to
+// (`import type { Link as LinkEntity }`), so no entity name can collide with
+// an identifier the page imports for itself — next/link's Link, a React hook,
+// a component (naming.EntityTypeLocalSuffix).
+func (p PageTemplateData) EntityTypeLocal() string { return naming.EntityTypeLocal(p.EntityName) }
+
 // EmitsEditPage reports whether the edit page can be scaffolded. The page loads
 // the record through the entity's Get hook before it renders the form, so an
 // entity served by an Update RPC but no Get RPC has nothing to load from — the

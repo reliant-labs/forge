@@ -72,7 +72,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`import { Resource, type ResourceColumn, type ResourceSort } from "@reliantlabs/forge-web-runtime";`,
 		`import { OrderStatus } from "@/gen/services/order/v1/order_pb";`,
 		`const resource = useQueryResource(query);`,
-		`<Resource<Order>`,
+		`<Resource<OrderEntity>`,
 		`status={resource.status}`,
 		`data={resource.status === "success" ? resource.data.orders : undefined}`,
 		// Filters passed SERVER-SIDE to the List RPC.

@@ -41,6 +41,12 @@ type promoteOptions struct {
 	// Claim, set only by `deploy --claimable`, resolves the document's `claim`
 	// object once the deploy is live (its URL is not known before).
 	Claim func() *deployClaimJSON
+	// Refusal, set only by `deploy --claimable`, translates a refusal of the
+	// follow-through into the claimable path's own error, with the `claim`
+	// object when claiming lifts it (deployCmdFlags.refusal). It runs before
+	// the document is stamped, so the document's exit_code and claim agree
+	// with the error the process exits on.
+	Refusal func(error) (*deployClaimJSON, error)
 	// Promoted, set only by `deploy --claimable`, is called once the
 	// promotion is recorded, before the follow-through: the release is
 	// published then, whatever its rollout goes on to do.
@@ -465,6 +471,11 @@ func runPromote(ctx context.Context, version, env string, opts promoteOptions) e
 	}
 	if opts.Claim != nil && writeErr == nil {
 		plan.Claim = opts.Claim()
+	}
+	if opts.Refusal != nil && writeErr != nil {
+		if claim, translated := opts.Refusal(writeErr); translated != nil {
+			writeErr, plan.Claim = translated, claim
+		}
 	}
 	plan.stamp(writeErr)
 	if opts.JSON {

@@ -104,9 +104,12 @@ type claimableDeployResult struct {
 	// the URL is not proven to answer, and the tool never calls it live.
 	RolloutVerified bool   `json:"rollout_verified"`
 	URL             string `json:"url,omitempty"`
-	ClaimURL        string `json:"claim_url,omitempty"`
-	ExpiresAt       string `json:"expires_at,omitempty"`
-	PurgeAfter      string `json:"purge_after,omitempty"`
+	// APIURL is where the app's API answers on the site's own host
+	// (<site origin>/_api), when the platform serves it there.
+	APIURL     string `json:"api_url,omitempty"`
+	ClaimURL   string `json:"claim_url,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
+	PurgeAfter string `json:"purge_after,omitempty"`
 	// Limits is the claimable plan, to relay; NoOutboundInternet is true when
 	// the deploy runs a service.
 	Limits             string `json:"limits"`
@@ -363,7 +366,7 @@ func (r *mcpRunner) deployStatus(ctx context.Context, in deployStatusInput) (*cl
 }
 
 func fillClaim(res *claimableDeployResult, c *deployClaimJSON) {
-	res.State, res.URL, res.ClaimURL = c.State, c.URL, c.ClaimURL
+	res.State, res.URL, res.APIURL, res.ClaimURL = c.State, c.URL, c.APIURL, c.ClaimURL
 	res.ExpiresAt, res.PurgeAfter = rfc3339OrEmpty(c.ExpiresAt), rfc3339OrEmpty(c.PurgeAfter)
 	res.NoOutboundInternet = c.NoOutboundInternet
 	res.NothingDeployed = !c.Published
@@ -431,6 +434,10 @@ func claimNextSteps(res *claimableDeployResult) string {
 			fmt.Fprintf(&b, "The deploy's address is %s, but its rollout is not verified: the control plane accepted it "+
 				"and it may still be starting. Do not tell your user it is live until that URL answers: fetch it, or "+
 				"call deploy_claimable again without no_wait, which waits until the rollout is healthy. ", res.URL)
+		}
+		if res.APIURL != "" {
+			fmt.Fprintf(&b, "Its API answers on the same host at %s (Connect paths go under it, e.g. %s/<package>.<Service>/<Method>). ",
+				res.APIURL, res.APIURL)
 		}
 	}
 	fmt.Fprintf(&b, "Give them the claim link %s and tell them it expires at %s: opening it signs them up for free and "+

@@ -214,6 +214,7 @@ func writeHostedStatus(ctx context.Context, w io.Writer, envName string, e *KCLE
 	}
 	if urls := deploytarget.FormatHostedURLs("  ", st.Workloads); urls != "" {
 		fmt.Fprintf(w, "\nhosted (%s):\n%s", envName, urls)
+		fmt.Fprint(w, formatSiteAPIURLs("  ", hostedSiteAPIURLs(e, st.Workloads)))
 	}
 	var printed bool
 	for _, ws := range st.Workloads {

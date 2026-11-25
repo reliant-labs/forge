@@ -156,6 +156,11 @@ type deployClaimJSON struct {
 	LastAttempt *claimAttemptJSON `json:"last_attempt,omitempty"`
 	// URL is the deploy's live address; empty when it has none yet.
 	URL string `json:"url,omitempty"`
+	// APIURL is where the deploy's API answers on the site's own host
+	// (<site origin>/_api): set when the env's hosted site points API_URL
+	// at its hosted backend, which the platform then serves there. Empty
+	// otherwise, and while URL is.
+	APIURL string `json:"api_url,omitempty"`
 	// ClaimURL is the link a human opens to own the deploy. Sensitive: whoever
 	// opens it first owns the deploy.
 	ClaimURL string `json:"claim_url"`
@@ -358,7 +363,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			// Asked for only once the deploy succeeded: its document says so.
 			session.recordAttempt(nil)
 			session.refreshURL(ctx)
-			return session.document(compute)
+			doc := session.document(compute)
+			doc.APIURL = claimSiteAPIURL(entities, doc.URL)
+			return doc
 		}
 		deployErr := runDeployEverything(ctx, envName, inner)
 		session.recordAttempt(deployErr)
@@ -366,6 +373,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			return claimableDeployError(envName, deployErr)
 		}
 		doc := session.document(compute)
+		doc.APIURL = claimSiteAPIURL(entities, doc.URL)
 		doc.ConsoleURL = deployConsole(ep.URL, project).Home(envName)
 		noteDeployClaim(ctx, doc)
 		if !f.jsonOut {
@@ -1172,6 +1180,9 @@ func printClaimBlock(w io.Writer, env string, c *deployClaimJSON) {
 	if c.State == "live" || c.State == "suspended" {
 		if c.URL != "" {
 			fmt.Fprintf(w, "\n✓ Live:   %s\n", c.URL)
+			if c.APIURL != "" {
+				fmt.Fprintf(w, "  API:    %s\n", c.APIURL)
+			}
 		}
 	}
 	left := c.ExpiresAt.Sub(now)
@@ -1262,6 +1273,7 @@ func runClaimableStatus(ctx context.Context, env string, jsonOut bool) error {
 		stored = session.cred
 	}
 	doc := claimDocument(env, stored, now, needsCompute(entities))
+	doc.APIURL = claimSiteAPIURL(entities, doc.URL)
 	if isClaimedError(perr) {
 		doc.State = "claimed"
 	}

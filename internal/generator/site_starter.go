@@ -48,15 +48,22 @@ func SiteStarterKindNames() []string { return []string{"nextjs", "vite-spa"} }
 
 // siteStarterReused are files a site starter shares with the app frontend
 // of the same framework, rendered from the app tree rather than copied into
-// the site's: the dev-server half of browser log forwarding and the
-// Tailwind PostCSS wiring. One file, so a fix to it reaches both.
+// the site's: the dev-server half of browser log forwarding, the Tailwind
+// PostCSS wiring, and the icon, favicon.ico and robots.txt a fresh site
+// serves instead of 404s. One file, so a fix to it reaches both.
 var siteStarterReused = map[string][]struct{ from, to string }{
 	"vite": {
 		{from: "vite-spa/" + inlinedDevLogPlugin, to: inlinedDevLogPlugin},
+		{from: "vite-spa/public/icon.svg", to: "public/icon.svg"},
+		{from: "shared-web/public/favicon.ico", to: "public/favicon.ico"},
+		{from: "shared-web/public/robots.txt", to: "public/robots.txt"},
 	},
 	"nextjs": {
 		{from: "nextjs/src/app/%5F_forge/log/route.ts", to: "src/app/%5F_forge/log/route.ts"},
 		{from: "nextjs/postcss.config.mjs", to: "postcss.config.mjs"},
+		{from: "nextjs/src/app/icon.svg", to: "src/app/icon.svg"},
+		{from: "shared-web/public/favicon.ico", to: "public/favicon.ico"},
+		{from: "shared-web/public/robots.txt", to: "public/robots.txt"},
 	},
 }
 

@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{.FrontendName}} | {{.ProjectName}}</title>
     <!--
+      public/icon.svg is the tab icon; public/favicon.ico is the same mark for
+      clients that ask for /favicon.ico without reading this tag. Both are
+      yours: replace the files to rebrand.
+    -->
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%icon.svg" />
+    <!--
       Runtime configuration for THIS environment: config.js assigns
       window.__FORGE_CONFIG__, which src/lib/config_gen.ts reads. It has to
       be a plain, blocking, classic <script> in <head> so the global exists

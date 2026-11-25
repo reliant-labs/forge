@@ -258,6 +258,22 @@ jobs:
         # Without the pass-through the key would go silently dead the moment
         # the test command moved out of this workflow.
         run: task test
+      # The lanes above ran through `forge test capture`, which recorded their
+      # results and coverage under .forge/tests/runs/. This summarises the run
+      # and uploads it to the project's control plane (results, coverage counts
+      # and changed line ranges; never source), whose Tests pages show it with
+      # merged coverage and flaky tests. The upload needs a repository secret,
+      # FORGE_CONTROL_PLANE_TOKEN, holding a token with tests:write: a person
+      # signed in to the web app mints it under Settings → API tokens (Reliant
+      # cloud: https://forge.reliantlabs.io/settings/tokens), then stores it
+      # with `gh secret set FORGE_CONTROL_PLANE_TOKEN`. Without it (no secret
+      # yet, or a fork's pull request) the upload is one line on stderr. This
+      # step never fails the job: the test step above is the verdict.
+      - name: Report test results
+        if: ${{ !cancelled() }}
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: task test:report -- --upload || echo "forge test report exited $? (the test step above is the verdict)"
 
   # The integration lane, for repos that have one (`//go:build integration`
   # test files). PRs only: a push to main already merged something that passed
@@ -285,6 +301,22 @@ jobs:
         run: docker info > /dev/null
       - name: Integration tests
         run: task test:integration
+      # The lanes above ran through `forge test capture`, which recorded their
+      # results and coverage under .forge/tests/runs/. This summarises the run
+      # and uploads it to the project's control plane (results, coverage counts
+      # and changed line ranges; never source), whose Tests pages show it with
+      # merged coverage and flaky tests. The upload needs a repository secret,
+      # FORGE_CONTROL_PLANE_TOKEN, holding a token with tests:write: a person
+      # signed in to the web app mints it under Settings → API tokens (Reliant
+      # cloud: https://forge.reliantlabs.io/settings/tokens), then stores it
+      # with `gh secret set FORGE_CONTROL_PLANE_TOKEN`. Without it (no secret
+      # yet, or a fork's pull request) the upload is one line on stderr. This
+      # step never fails the job: the test step above is the verdict.
+      - name: Report test results
+        if: ${{ !cancelled() }}
+        env:
+          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
+        run: task test:report -- --upload || echo "forge test report exited $? (the test step above is the verdict)"
 
   # Built only after `checks` passes: an image build on a PR that already
   # failed lint is minutes spent learning nothing.

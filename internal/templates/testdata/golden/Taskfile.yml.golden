@@ -10,6 +10,7 @@ version: "3"
 # │   task test:integration  `integration`-tagged tests     │
 # │   task test:e2e          End-to-end tests               │
 # │   task test:all          Unit + frontend + integration  │
+# │   task test:report       Recorded results + coverage    │
 # │   task ci                The whole PR gate, locally     │
 # │   task ci:checks         Static + build lane of it      │
 # │                                                         │
@@ -150,7 +151,14 @@ tasks:
     # about a frontend. An unmatched pattern fails in `go test` itself, so a
     # scoped run can never quietly widen into a whole-module run that still
     # reports success.
+    #
+    # Every lane is RECORDED: see "Test runs are recorded" above test:report.
     desc: Run Go unit tests and every frontend's tests (excludes integration + e2e)
+    vars:
+      # RUN is this run's directory, .forge/tests/runs/<id>/ (`forge test
+      # begin`; the one FORGE_TEST_RUN names when `forge test run` set it).
+      RUN:
+        sh: "{{.FORGE}} test begin"
     cmds:
       # Integration and e2e tests are guarded by the `integration` and `e2e`
       # build tags respectively, so they are physically excluded from this
@@ -161,8 +169,14 @@ tasks:
       # waits. It is not 30s because the born CRUD tests boot an embedded
       # postgres on first use: a cold boot alone can eat most of a 30s budget,
       # so the tighter bound failed the suite for being slow rather than wrong.
-      - "{{.SLOT}} go test {{.GOTESTRACE}} -count=1 -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
+      #
+      # `forge test capture` runs the `go test` after `--` unchanged and exits
+      # with its exit status. It reads -json and prints it as the text `go test`
+      # prints (raw when you pass -json yourself: `task test -- -json ./...`),
+      # and records the results and -coverprofile in the run.
+      - "{{.SLOT}} {{.FORGE}} test capture --run \"{{.RUN}}\" --lane unit{{if contains \"-json\" .CLI_ARGS}} --render raw{{end}} -- go test {{.GOTESTRACE}} -count=1 -json -covermode=atomic -coverprofile=\"{{.RUN}}/unit/cover.out\" -timeout 120s {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
       - task: test:frontend
+        vars: { RUN: "{{.RUN}}" }
 
   test:short:
     # The inner loop: run this after each edit, scoped to the packages you
@@ -196,6 +210,22 @@ tasks:
 
   test:frontend:
     desc: Run every frontend's tests
+    vars:
+      # The run `task test` hands down, else a run of its own.
+      RUN:
+        sh: '[ -n "{{.RUN}}" ] && echo "{{.RUN}}" || {{.FORGE}} test begin'
+      # Each Vitest frontend is recorded as lane frontend-<dir>: its JSON
+      # report, and its coverage when @vitest/coverage-v8 is installed (the
+      # scaffold declares it). A frontend on another runner runs unrecorded.
+      CAPTURE: >-
+        if [ -x node_modules/.bin/vitest ]; then
+        lane="frontend-${PWD##*/}"; report="{{.RUN}}/.$lane-vitest.json";
+        set -- {{.FORGE}} test capture --run "{{.RUN}}" --lane "$lane" --results "$report" -- "$@"
+        --reporter=default --reporter=json --outputFile.json="$report";
+        if [ -d node_modules/@vitest/coverage-v8 ]; then
+        set -- "$@" --coverage.enabled --coverage.provider=v8 --coverage.clean=false
+        --coverage.reporter=json --coverage.reporter=text-summary --coverage.reportsDirectory="{{.RUN}}/$lane";
+        fi; fi
     cmds:
       # A scoped run (`task test -- ./some/pkg/...`) selected Go packages,
       # which says nothing about any frontend — running the JS suites anyway
@@ -207,7 +237,8 @@ tasks:
       - task: frontends
         if: '[ -z "{{.CLI_ARGS}}" ]'
         vars:
-          SCRIPT: '{{.SLOT}} $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests'
+          LABEL: $PM test
+          SCRIPT: '{ set -- $PM test $([ "$PM" != npm ] || printf %s --) --passWithNoTests; {{.CAPTURE}}; {{.SLOT}} "$@"; }'
 
   frontends:
     # Runs SCRIPT in every frontend of this project in turn, stopping at the
@@ -222,6 +253,8 @@ tasks:
     # `forge scaffold frontend` would go untested while the suite stayed
     # green) and never globbed from frontends/* (which skipped every frontend
     # declared anywhere else). A backend-only project runs nothing.
+    #
+    # LABEL, when set, is what the `==>` line prints instead of SCRIPT.
     #
     # SCRIPT names the package manager as $PM, which is the one that owns
     # each frontend. `project frontends --with-package-manager` uses forge's
@@ -242,7 +275,7 @@ tasks:
             PM="${frontend%%:*}"
             dir="${frontend#*:}"
             export PM
-            echo "==> {{.SCRIPT}} ($dir, $PM)"
+            echo "==> {{.LABEL | default .SCRIPT}} ($dir, $PM)"
             (cd "$dir" && {{.SCRIPT}}) || exit 1
             ran=$((ran + 1))
           done
@@ -250,22 +283,48 @@ tasks:
 
   test:integration:
     desc: Run integration tests (uses -tags=integration; may require docker compose)
+    vars:
+      RUN:
+        sh: "{{.FORGE}} test begin"
     cmds:
       # Integration tests are guarded by the `integration` build tag and are
       # therefore excluded from `task test`. They typically need a real
       # database / running infra (see docker-compose.yml). -timeout=10m gives
-      # heavy DB-backed scenarios room while still surfacing hangs.
-      - "{{.SLOT}} go test {{.GOTESTRACE}} -tags=integration -count=1 -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
+      # heavy DB-backed scenarios room while still surfacing hangs. Recorded
+      # as lane `integration`, like `task test`'s unit lane.
+      - "{{.SLOT}} {{.FORGE}} test capture --run \"{{.RUN}}\" --lane integration{{if contains \"-json\" .CLI_ARGS}} --render raw{{end}} -- go test {{.GOTESTRACE}} -tags=integration -count=1 -json -covermode=atomic -coverprofile=\"{{.RUN}}/integration/cover.out\" -timeout=10m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
 
   test:e2e:
     # `--` args replace the default `./e2e/...`, same as `task test`, so
     # `task test:e2e -- ./e2e/users/...` targets one service's suite. Every
     # lane accepts them for the same reason: a target that ACCEPTS arguments
     # and ignores them reports success for a run the caller never asked for.
-    # Already verbose (-v) — e2e failures are unreadable without it.
+    # Already verbose (-v) — e2e failures are unreadable without it. Recorded
+    # as lane `e2e` (results only: the code under test runs in the stack, not
+    # in this test process, so a -coverprofile here would measure nothing).
     desc: Run end-to-end tests (requires docker compose; uses -tags=e2e)
+    vars:
+      RUN:
+        sh: "{{.FORGE}} test begin"
     cmds:
-      - go test -tags=e2e -v -count=1 -timeout=20m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}
+      - "{{.FORGE}} test capture --run \"{{.RUN}}\" --lane e2e{{if contains \"-json\" .CLI_ARGS}} --render raw{{end}} -- go test -tags=e2e -v -count=1 -json -timeout=20m {{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./e2e/...{{end}}"
+
+  test:report:
+    # Test runs are recorded. `task test`, `test:integration` and `test:e2e`
+    # run their commands through `forge test capture`, which changes nothing
+    # about how the tests run or what they exit with, and records each lane
+    # under .forge/tests/runs/<id>/ (gitignored): the results, the coverage,
+    # the command and its exit status. FORGE_TESTS=off records nothing.
+    #
+    # This summarises them: results, coverage merged across lanes, diff
+    # coverage against your base. `task test:report -- --upload` also sends
+    # the clean-tree runs to the project's control plane (no source: results,
+    # coverage counts and changed line ranges), with your `forge login` or a
+    # FORGE_CONTROL_PLANE_TOKEN holding tests:write. CI uploads by default;
+    # without a credential that is one line on stderr, never a failure.
+    desc: "Summarise the recorded test runs (results, merged coverage); -- --upload sends them to the control plane"
+    cmds:
+      - "{{.FORGE}} test report {{.CLI_ARGS}}"
 
   test:all:
     # The full-suite gate. `task test` (unit + frontend) is what the CI test

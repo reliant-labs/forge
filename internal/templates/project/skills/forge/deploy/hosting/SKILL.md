@@ -106,8 +106,8 @@ it as `claim` (`state`, `published`, `last_attempt`, `url`, `api_url`,
 `claim_url`, `expires_at`, `purge_after`, `agent_instructions`). A site whose
 `API_URL` references its hosted backend also prints `API: <site>/_api`
 (`api_url`): the backend's address on the site's own host. Signed in,
-`forge env status <env>` prints the same line under the site's URL
-(`hosted_api_urls` in `--json`).
+`forge env deploy <env>` and `forge env status <env>` print the same line under
+the site's URL (`hosted_api_urls` in status `--json`).
 
 The claim and its 72h clock start with the **first attempt**, not the first
 success, and a redeploy does not extend them. So `state: "live"` means only that

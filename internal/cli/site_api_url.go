@@ -1,20 +1,10 @@
 package cli
 
 import (
-	"fmt"
-	"net/url"
 	"sort"
-	"strings"
 
 	"github.com/reliant-labs/forge/internal/deploytarget"
-	"github.com/reliant-labs/forge/pkg/deploy"
 )
-
-// siteAPIRuntimeKey is the runtime_config key whose workload reference the
-// platform serves at a hosted site's /_api (control-plane
-// internal/operators/staticsite sameOriginAPI): the key forge's generated
-// frontend client reads its API base from.
-const siteAPIRuntimeKey = "API_URL"
 
 // siteAPIFrontends names the env's hosted frontends whose API the platform
 // serves on the site's own origin: a frontend bound to forge.OnHosted whose
@@ -38,7 +28,7 @@ func siteAPIFrontends(e *KCLEntities) []string {
 		if !frontendIsHosted(f) {
 			continue
 		}
-		ref, ok := f.RuntimeConfigSpec[siteAPIRuntimeKey]
+		ref, ok := f.RuntimeConfigSpec[deploytarget.SiteAPIRuntimeKey]
 		if !ok || ref.WorkloadURL == nil || !hostedWorkloads[ref.WorkloadURL.Name] {
 			continue
 		}
@@ -46,17 +36,6 @@ func siteAPIFrontends(e *KCLEntities) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// siteAPIURL is the same-origin API address of a hosted site at siteURL: its
-// origin plus /_api (deploy.SiteAPIPath), which the platform routes at the
-// host root whatever the site's base path. "" when siteURL has no host.
-func siteAPIURL(siteURL string) string {
-	u, err := url.Parse(siteURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
-	}
-	return u.Scheme + "://" + u.Host + deploy.SiteAPIPath
 }
 
 // hostedSiteAPIURLs maps each hosted site of the env that serves its API
@@ -76,7 +55,7 @@ func hostedSiteAPIURLs(e *KCLEntities, ws []deploytarget.HostedWorkloadStatus) m
 		if !serves[w.Name] || deploytarget.HostedTier(w.Tier) != deploytarget.HostedTierStatic {
 			continue
 		}
-		api := siteAPIURL(w.URL)
+		api := deploytarget.SiteAPIURL(w.URL)
 		if api == "" {
 			continue
 		}
@@ -88,30 +67,6 @@ func hostedSiteAPIURLs(e *KCLEntities, ws []deploytarget.HostedWorkloadStatus) m
 	return out
 }
 
-// formatSiteAPIURLs renders the API addresses hostedSiteAPIURLs found, below
-// the hosted URL lines: "API: <url>" for one site, "API (<site>): <url>" per
-// site when there are several. "" for none.
-func formatSiteAPIURLs(indent string, apis map[string]string) string {
-	if len(apis) == 0 {
-		return ""
-	}
-	if len(apis) == 1 {
-		for _, api := range apis {
-			return indent + "API: " + api + "\n"
-		}
-	}
-	sites := make([]string, 0, len(apis))
-	for s := range apis {
-		sites = append(sites, s)
-	}
-	sort.Strings(sites)
-	var b strings.Builder
-	for _, s := range sites {
-		fmt.Fprintf(&b, "%sAPI (%s): %s\n", indent, s, apis[s])
-	}
-	return b.String()
-}
-
 // claimSiteAPIURL is the API address a claimable deploy's text and --json
 // name beside its live URL: the site's /_api, when the env serves its API
 // same-origin from one hosted site. The claim's URL is the static site's
@@ -121,5 +76,5 @@ func claimSiteAPIURL(e *KCLEntities, siteURL string) string {
 	if len(siteAPIFrontends(e)) != 1 {
 		return ""
 	}
-	return siteAPIURL(siteURL)
+	return deploytarget.SiteAPIURL(siteURL)
 }

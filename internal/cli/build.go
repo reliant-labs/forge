@@ -129,6 +129,12 @@ type buildOptions struct {
 	// noSBOM is --no-sbom: cut the release without generating SBOMs
 	// (build_sbom.go). Each artifact records why it has none.
 	noSBOM bool
+	// checkForgeBridge: refuse, before any build, a project image that cannot
+	// compile against the go.work-bridged forge the host compiles against
+	// (build_forge_bridge.go). Set by `forge env build` and `forge env
+	// deploy`; the dev loop and the compile-only `forge build` keep their
+	// behaviour.
+	checkForgeBridge bool
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
@@ -756,6 +762,16 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	projectTag, err := resolveProjectImageTag(cfg, entities, targets, opts, resolvedTag)
 	if err != nil {
 		return err
+	}
+
+	// A project image that would compile a different forge than the host
+	// does is refused before anything is built — and by --plan, which
+	// preflights what the real build would fail on.
+	if opts.checkForgeBridge && opts.buildDocker && len(targets.goTargets) > 0 && !targets.skipProjectDocker {
+		dir := projectDirForKCL()
+		if err := refuseUnbuildableForgeBridge(dir, projectImageCompilesGo(filepath.Join(dir, "Dockerfile"))); err != nil {
+			return err
+		}
 	}
 
 	// --plan stops HERE: the build set is fully resolved by the same

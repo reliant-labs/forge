@@ -2233,6 +2233,12 @@ benefits:
           A login broker that mounts `POST /auth/register` unconditionally:
           outside development an unverified address gets a signed-in account,
           which opens email-bound invitations to takeover (advisory)
+      - id: forge-auth-required-no-sign-in
+        lane: ""
+        bug_class: >-
+          An rpc that requires a signed-in caller in a project nobody can sign
+          in to (`--auth-mode none`): it answers 401 to every browser caller
+          (advisory)
       - id: forgeconv-identity-methods
         lane: ""
         bug_class: >-

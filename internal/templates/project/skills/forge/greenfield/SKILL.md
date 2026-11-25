@@ -46,7 +46,7 @@ deployment unit, not a domain entity, so forge never invents a service from its 
 | `--mod` | Go module path (`github.com/acme/my-app`). Defaults to the project name; set it to the path you will publish under |
 | `--service <name>` | repeatable or comma-separated. Name after a domain entity, never after the binary |
 | `--frontend <name>` | repeatable or comma-separated Next.js frontends |
-| `--auth-mode none` | no sign-in: no identity, dev IdP or sign-in pages; an rpc is public only if `auth_required: false`, which `forge scaffold` writes on entity rpcs |
+| `--auth-mode none` | no sign-in: no identity, dev IdP or sign-in pages; entity rpcs are born `auth_required: false` |
 | `--in-place` | scaffold into the current directory; takes no positional name |
 | `--kind site` | `--in-place` only: adopts the Vite or Next.js app at the directory root as a frontend-only project — writes `forge.yaml` and the `deploy/kcl` envs, no Go (`deploy/static-site`) |
 | `--name` | names an `--in-place` project whose directory is a worktree or branch name rather than the product |

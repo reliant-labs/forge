@@ -573,6 +573,12 @@ func resolveProjectImageTag(cfg *config.ProjectConfig, entities *KCLEntities, ta
 	if err := checkExplicitTagAgainstPins(entities, opts, cfg.Name, projectImageBuilt); err != nil {
 		return "", err
 	}
+	// A pushed image with no declared destination would push a bare tag,
+	// which docker sends to Docker Hub. Refused here, before anything is
+	// built, beside the other refusal about what this build tags.
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		return "", err
+	}
 	projectTag := buildTagFor(opts, imagePinFor(entities, cfg.Name), resolvedTag)
 	if projectImageBuilt && projectTag != resolvedTag {
 		fmt.Printf("[build]   %s image tag: %s (pinned by its declared image)\n", cfg.Name, projectTag)
@@ -2970,7 +2976,11 @@ func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) docke
 			out.push = append(out.push, refs...)
 		}
 	}
-	add(repository, push)
+	// A repository with no registry host is never pushed: docker would send
+	// it to docker.io/library, which no forge declaration names. A pushing
+	// build refuses that case up front (refuseUndeclaredPushes); this keeps
+	// every other path from pushing one implicitly.
+	add(repository, push && registryHost(repository) != "")
 	for _, mirror := range k3dMirrorRepositories(repository) {
 		add(mirror, false)
 	}

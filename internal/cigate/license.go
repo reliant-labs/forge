@@ -1,14 +1,33 @@
 package cigate
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
-// licenseCheckArgv is the go-licenses invocation for the project at root.
+// licensePlan is the license-check row as the project's policy
+// (forge.yaml ci.license) shapes it.
+type licensePlan struct {
+	// argv is the go-licenses invocation.
+	argv []string
+	// expired names the exceptions past their review date. Any makes the
+	// row FAIL without running: an expired entry fails the gate, as an
+	// expired ci.vuln_scan.exemptions entry does.
+	expired []string
+	// note names the required modules an exception also exempts, because
+	// go-licenses matches --ignore as a prefix.
+	note string
+}
+
+// planLicenseCheck is the go-licenses invocation for the project at root.
 //
 // go-licenses looks up a license for every package it loads, the project's
 // own included, and the project's own code is not what a license check is
@@ -16,12 +35,76 @@ import (
 // logged "Failed to find license" and the check then passed anyway, which
 // teaches people to ignore its output. --ignore exempts the project's own
 // modules; the dependencies they import are still checked.
-func licenseCheckArgv(root string) []string {
-	argv := []string{"go-licenses", "check", "./...", "--disallowed_types=forbidden,restricted"}
-	for _, prefix := range licenseIgnores(root) {
+//
+// With no ci.license policy the argv is the blocklist forge has always run
+// (`--disallowed_types=forbidden,restricted`). ci.license.allowed replaces it
+// with `--allowed_licenses` (go-licenses refuses the two together), and each
+// live ci.license.exceptions entry adds one more --ignore. An expired entry
+// adds none: the row fails naming it. now decides expiry, so a test need not
+// wait for a date.
+func planLicenseCheck(root string, policy config.CILicenseConfig, now time.Time) licensePlan {
+	argv := []string{"go-licenses", "check", "./..."}
+	if len(policy.Allowed) > 0 {
+		names := make([]string, 0, len(policy.Allowed))
+		for _, n := range policy.Allowed {
+			names = append(names, strings.TrimSpace(n))
+		}
+		argv = append(argv, "--allowed_licenses="+strings.Join(names, ","))
+	} else {
+		argv = append(argv, "--disallowed_types=forbidden,restricted")
+	}
+	own, deps := projectModules(root)
+	isOwn := map[string]bool{}
+	for _, m := range own {
+		isOwn[m] = true
+	}
+	ignored := map[string]bool{}
+	for _, prefix := range licenseIgnoresOf(own, deps) {
+		ignored[prefix] = true
 		argv = append(argv, "--ignore", prefix)
 	}
-	return argv
+
+	var plan licensePlan
+	var reach []string
+	for _, ex := range policy.Exceptions {
+		mod := strings.TrimSpace(ex.Module)
+		if mod == "" {
+			continue
+		}
+		if ex.Expired(now) {
+			plan.expired = append(plan.expired, fmt.Sprintf("%s (expired %s)", mod, strings.TrimSpace(ex.Expires)))
+			continue
+		}
+		if !ignored[mod] {
+			ignored[mod] = true
+			argv = append(argv, "--ignore", mod)
+		}
+		for _, d := range sortedKeys(deps) {
+			if d != mod && !isOwn[d] && strings.HasPrefix(d, mod) {
+				reach = append(reach, fmt.Sprintf("%s also exempts %s", mod, d))
+			}
+		}
+	}
+	plan.argv = argv
+	if len(reach) > 0 {
+		plan.note = "go-licenses matches ci.license.exceptions by prefix: " + strings.Join(reach, "; ")
+	}
+	return plan
+}
+
+// expiredLicenseNote is the FAIL note of a row with expired exceptions.
+func expiredLicenseNote(expired []string) string {
+	return "ci.license.exceptions past their review date: " + strings.Join(expired, ", ") +
+		" — re-review each (is its license still what the reason says?) and either extend `expires` with a fresh reason or remove the entry"
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // licenseIgnores returns the --ignore prefixes that exempt the project's own
@@ -37,8 +120,14 @@ func licenseCheckArgv(root string) []string {
 // ("example.com/app/"), and a package at the module root, if there is one, is
 // checked like a dependency.
 func licenseIgnores(root string) []string {
-	var own []string
-	deps := map[string]bool{}
+	return licenseIgnoresOf(projectModules(root))
+}
+
+// projectModules reads the project's own modules — the module at root, and
+// every module a go.work at root uses from inside the project tree — and
+// the module paths they require.
+func projectModules(root string) (own []string, deps map[string]bool) {
+	deps = map[string]bool{}
 	addModule := func(dir string) {
 		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 		if err != nil {
@@ -67,7 +156,11 @@ func licenseIgnores(root string) []string {
 			}
 		}
 	}
+	return own, deps
+}
 
+// licenseIgnoresOf is licenseIgnores over modules already read.
+func licenseIgnoresOf(own []string, deps map[string]bool) []string {
 	isOwn := map[string]bool{}
 	for _, m := range own {
 		isOwn[m] = true

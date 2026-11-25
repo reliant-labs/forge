@@ -30,7 +30,7 @@ import (
 //   - generate, build, lint and the frontend typecheck are green on the result.
 func TestE2EProjectNewAuthModeNone(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
-	requireTool(t, "go", "git", "node", "npm", "golangci-lint")
+	requireTool(t, "go", "git", "node", "npm", "buf", "golangci-lint")
 	forgeBin := buildforgeBinary(t)
 	contractlintDir := buildContractlintBinary(t)
 	dir := t.TempDir()
@@ -80,7 +80,9 @@ func TestE2EProjectNewAuthModeNone(t *testing.T) {
 			"    };\n"+
 			"  }\n"+
 			"  rpc PurgePosts(PurgePostsRequest) returns (PurgePostsResponse) {\n"+
-			"    option (forge.v1.method) = {activity: {none: \"fixture: an operator purge\"}};\n"+
+			"    option (forge.v1.method) = {\n"+
+			"      activity: {none: \"fixture: an operator purge\"}\n"+
+			"    };\n"+
 			"  }", 1)
 	proto += `
 // forge:entity
@@ -100,6 +102,9 @@ message PurgePostsResponse {}
 	if err := os.WriteFile(protoPath, []byte(proto), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// This test authors custom RPCs, so format that input with the same buf
+	// the lint lane uses; aggregate-option layout varies across buf versions.
+	runCmd(t, projectDir, "buf", "format", "-w")
 
 	scaffoldOut := runCmdKeep(t, projectDir, forgeBin, "scaffold")
 	if !strings.Contains(scaffoldOut, "born public (auth_required: false)") {

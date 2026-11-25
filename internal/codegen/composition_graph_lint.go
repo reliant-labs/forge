@@ -202,8 +202,8 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 // <pkg>.New with that configuration). The graph identifies a node by its Go
 // type, so a component with no default configuration — only variants — is
 // taken by no consumer and drew no edge, and the variants' providers call its
-// constructor themselves. Require a resolved call to that constructor in
-// the provider body as well as the embed; a nil or supplied Service in the
+// constructor themselves. Require a resolved constructor result flowing into
+// the returned embed; a discarded call or a nil or supplied Service in the
 // same wrapper shape is not evidence. The reach check must count it: otherwise the
 // idiom the graph-checks skill documents could not retire the
 // //forge:provided marker it replaces.
@@ -230,7 +230,7 @@ func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
 				// Use the loaded function identity, not the import spelling:
 				// aliases work and a local lookalike New cannot prove reach.
 				pkg := k[:strings.LastIndex(k, ".")]
-				if calls[pkg+"."+component.Comp.compConstructor] {
+				if calls[k+"="+pkg+"."+component.Comp.compConstructor] {
 					wrapped[k] = true
 				}
 			}
@@ -251,10 +251,10 @@ func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
 	return out
 }
 
-// providerConstructorCalls records resolved package functions called in the
-// provider body. A type shape alone is not construction evidence. Do not count
-// closures: declaring a function that could construct a service never calls it.
-// Missing syntax/type information deliberately leaves the component pending.
+// providerConstructorCalls records only constructors whose result flows into
+// an embedded field of the returned wrapper. This deliberately recognizes a
+// small, straight-line subset (including scaffolded error guards), not arbitrary
+// provider control flow. Unknown flow leaves the component pending.
 func (m *graphModel) providerConstructorCalls(name string) map[string]bool {
 	out := map[string]bool{}
 	if m.u.app == nil || m.u.app.TypesInfo == nil {
@@ -266,30 +266,132 @@ func (m *graphModel) providerConstructorCalls(name string) map[string]bool {
 			if !ok || fd.Recv != nil || fd.Name.Name != "New"+name || fd.Body == nil {
 				continue
 			}
-			ast.Inspect(fd.Body, func(node ast.Node) bool {
-				if _, closure := node.(*ast.FuncLit); closure {
-					return false
-				}
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
-				}
-				var id *ast.Ident
-				switch fun := call.Fun.(type) {
-				case *ast.SelectorExpr:
-					id = fun.Sel
-				case *ast.Ident:
-					id = fun
-				}
-				fn, ok := m.u.app.TypesInfo.Uses[id].(*types.Func)
-				if ok && fn.Pkg() != nil {
-					out[fn.Pkg().Path()+"."+fn.Name()] = true
-				}
-				return true
-			})
+			return returnedVariantConstructors(fd.Body, name, m.u.produced[name], m.u.app.TypesInfo)
 		}
 	}
 	return out
+}
+
+// returnedVariantConstructors follows constructor results through local
+// assignments into a returned literal. Reject unsupported control flow rather
+// than treating a discarded call (or an overwritten local) as reach evidence.
+func returnedVariantConstructors(body *ast.BlockStmt, name string, produced types.Type, info *types.Info) map[string]bool {
+	locals := map[string]string{}
+	constructor := func(expr ast.Expr) string {
+		if id, ok := expr.(*ast.Ident); ok {
+			return locals[id.Name]
+		}
+		call, ok := expr.(*ast.CallExpr)
+		if !ok {
+			return ""
+		}
+		var id *ast.Ident
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			id = fun.Sel
+		case *ast.Ident:
+			id = fun
+		}
+		fn, ok := info.Uses[id].(*types.Func)
+		if !ok || fn.Pkg() == nil {
+			return ""
+		}
+		return fn.Pkg().Path() + "." + fn.Name()
+	}
+	for _, stmt := range body.List {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			values := make([]string, len(s.Lhs))
+			for i, rhs := range s.Rhs {
+				values[i] = constructor(rhs)
+			}
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok { // A field mutation can change the returned value.
+					return nil
+				}
+				locals[id.Name] = values[i]
+			}
+		case *ast.IfStmt:
+			// The scaffold's error guard may exit without a wrapper. Any
+			// other branch needs control-flow analysis we do not claim here.
+			if !variantErrorGuard(s) {
+				return nil
+			}
+		case *ast.ReturnStmt:
+			if len(s.Results) == 0 {
+				return nil
+			}
+			expr := s.Results[0]
+			if addr, ok := expr.(*ast.UnaryExpr); ok {
+				expr = addr.X
+			}
+			lit, ok := expr.(*ast.CompositeLit)
+			if !ok {
+				return nil
+			}
+			id, ok := lit.Type.(*ast.Ident)
+			if !ok || id.Name != name {
+				return nil
+			}
+			t := types.Unalias(produced)
+			if p, ok := t.(*types.Pointer); ok {
+				t = p.Elem()
+			}
+			st, ok := t.Underlying().(*types.Struct)
+			if !ok {
+				return nil
+			}
+			out := map[string]bool{}
+			for i, elt := range lit.Elts {
+				fieldIndex, value := i, elt
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					key, ok := kv.Key.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					fieldIndex = st.NumFields()
+					for j := 0; j < st.NumFields(); j++ {
+						if st.Field(j).Name() == key.Name {
+							fieldIndex = j
+							break
+						}
+					}
+					value = kv.Value
+				}
+				if fieldIndex < st.NumFields() && st.Field(fieldIndex).Embedded() {
+					if fn := constructor(value); fn != "" {
+						out[namedTypeKey(st.Field(fieldIndex).Type())+"="+fn] = true
+					}
+				}
+			}
+			return out
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+func variantErrorGuard(s *ast.IfStmt) bool {
+	if s.Init != nil || s.Else != nil || len(s.Body.List) != 1 {
+		return false
+	}
+	cond, ok := s.Cond.(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	_, leftIdent := cond.X.(*ast.Ident)
+	right, rightIdent := cond.Y.(*ast.Ident)
+	if !leftIdent || !rightIdent || right.Name != "nil" {
+		return false
+	}
+	r, ok := s.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(r.Results) == 0 {
+		return false
+	}
+	id, ok := r.Results[0].(*ast.Ident)
+	return ok && id.Name == "nil"
 }
 
 // embeddedTypeKeys is the namedTypeKey of every field t's struct embeds,

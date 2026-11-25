@@ -282,6 +282,11 @@ func TestLintGraph_PackageReachedThroughItsVariant(t *testing.T) {
 	for _, body := range []string{
 		"return &RecordOnlyChecks{}",
 		"return &RecordOnlyChecks{Service: supplied}",
+		"workflowcheck.New(); return &RecordOnlyChecks{}",
+		"svc, err := workflowcheck.New(); _ = svc; _ = err; return &RecordOnlyChecks{}",
+		"svc, err := workflowcheck.New(); svc = supplied; return &RecordOnlyChecks{Service: svc}, err",
+		"svc, err := workflowcheck.New(); return &RecordOnlyChecks{Service: supplied}, err",
+		"if enabled { workflowcheck.New() }; return &RecordOnlyChecks{}",
 		"f := func() { workflowcheck.New() }; _ = f",
 	} {
 		setProvider(body, wcPkg)
@@ -299,12 +304,18 @@ func TestLintGraph_PackageReachedThroughItsVariant(t *testing.T) {
 
 	// The server root takes the variant, whose body calls the real constructor
 	// (even with a different import alias).
-	setProvider("svc, err := checks.New(checks.Deps{}); if err != nil { return nil, err }; return &RecordOnlyChecks{Service: svc}, nil", wcPkg)
-	if got := rulesOf(m.unreachableFindings()); got != base {
-		t.Fatalf("a package a reached variant wraps is reached: %s", got)
-	}
-	if w := m.unbuiltWarning(); w != "" {
-		t.Fatalf("generate must not warn about a package a reached variant constructs: %q", w)
+	for _, body := range []string{
+		"svc, err := checks.New(checks.Deps{}); if err != nil { return nil, err }; return &RecordOnlyChecks{Service: svc}, nil",
+		"return &RecordOnlyChecks{Service: checks.New()}",
+		"svc := checks.New(); alias := svc; return &RecordOnlyChecks{alias}",
+	} {
+		setProvider(body, wcPkg)
+		if got := rulesOf(m.unreachableFindings()); got != base {
+			t.Fatalf("provider %q wraps a constructed service: %s", body, got)
+		}
+		if w := m.unbuiltWarning(); w != "" {
+			t.Fatalf("generate must not warn about a package a reached variant constructs: %q", w)
+		}
 	}
 
 	// A wrapper that NAMES the Service in a field, rather than embedding

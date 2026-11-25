@@ -73,7 +73,8 @@ keyed by change key:
 The control plane uses this to refuse launching or ramping a variant that the env's
 current release does not declare. The field is the `shape-changes` bundle feature, so
 forge sends it only to a control plane that decodes it. `forge env shape <env>` lists
-the declared changes.
+the declared changes. A deploy whose release no longer declares a variant a running
+change uses stops that change; `forge env deploy`'s plan says so first.
 
 **Go** (projects with a `go.mod`): `internal/changes/changes_gen.go` has one constant
 and one accessor per change:

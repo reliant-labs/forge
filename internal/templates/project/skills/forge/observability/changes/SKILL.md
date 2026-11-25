@@ -85,6 +85,17 @@ snapshot) and the variant each sees. It applies under every mode but `off`, so
 your team keeps its variant while an experiment runs, and a previewed unit is
 never measured.
 
+## Deploying a release that drops a variant
+
+A deploy whose release no longer declares a variant a running change
+delivers, or the change's whole key, goes through, and the control plane
+stops that change (everyone gets the default) and records why. The plan
+`forge env deploy` prints says so first, under `running changes this deploy
+stops`, as a `[warn]` line naming the change, its run and the variant; `--json`
+carries it as `deploy_plan.change_warnings`. It is a warning only: no
+acknowledgement, no exit code. To keep the change running, keep the variant
+declared in `changes.yaml` until the change ends.
+
 ## What gets recorded
 
 Every evaluation through a store records the product event `flag_evaluated` —

@@ -86,3 +86,13 @@ abort signal rather than replacing it. Behaviour for every call of ONE service
 wrapper around the hooks: `serviceInterceptors` in `src/lib/connect.ts`
 (`frontend-runtime/transport`), which reads a call site's mark back with
 `req.contextValues.get(pollKey)`.
+
+**A hook resolves its client from the QueryClient it runs on.** Each hook file
+holds `const clientOf = scopedClient(Svc, connectClient(Svc))`, and every call
+is `clientOf(context).<rpc>(...)`: under a `TransportScopeProvider`
+(`@reliantlabs/forge-web-runtime/transport-scope`) that is the scope's
+transport, anywhere else the app's `connectClient`. So a subtree with its own
+transport (a sample app, a preview) uses the same hooks, `<svc>Queries` and
+`<svc>Mutations(scope.queryClient)` unchanged (`frontend/mock-mode`, "A fixture
+subtree"). Do not mount a second `QueryClientProvider` to swap transports: the
+QueryClient is what carries the scope.

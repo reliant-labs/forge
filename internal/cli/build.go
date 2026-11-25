@@ -767,7 +767,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
-	if err := preflightRealBuild(ctx, entities, opts, targets.light()); err != nil {
+	if err := preflightRealBuild(ctx, entities, opts, lightBuild(targets, entities)); err != nil {
 		return err
 	}
 	// A cut of this version that pushed every image and was interrupted
@@ -1153,11 +1153,23 @@ type buildTargetSet struct {
 	cfgArchForDocker  string
 }
 
-// light reports a set that runs no go build and no image build of its own —
-// frontends built with their package manager only, such as a static site.
-// Shell, external and variant builds check the full reserve themselves.
-func (t buildTargetSet) light() bool {
-	return len(t.goTargets) == 0 && len(t.dockerFrontends) == 0
+// lightBuild reports a build that runs no go build and no image build of any
+// kind — frontends built with their package manager only, such as a static
+// site. Conservative by construction: the target set must hold no go target
+// and no docker frontend, AND the env must declare no workload with a build
+// at all, since ShellBuild, external, remote-docker and variant lanes are
+// derived from workloads rather than held in the target set. No render (nil)
+// is not light.
+func lightBuild(t buildTargetSet, e *KCLEntities) bool {
+	if e == nil || len(t.goTargets) > 0 || len(t.dockerFrontends) > 0 {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if w.Build.Type != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveBuildTargetSet applies the framework / --target / skipFrontends

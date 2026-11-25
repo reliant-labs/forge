@@ -94,8 +94,8 @@ func TestStorageReserveBlocksEnvUpBeforeSideEffects(t *testing.T) {
 }
 
 // A build with no go build and no image build (a static site) is admitted
-// under the light reserve; any go or image build under the full one
-// (obs 4dea8e9e).
+// under the light reserve; a go, image, shell, external, remote or variant
+// build under the full one (obs 4dea8e9e).
 func TestPreflightAdmitsALightBuildUnderTheLightReserve(t *testing.T) {
 	heavyErr, lightErr := errors.New("heavy reserve"), errors.New("light reserve")
 	old, oldLight := checkBuildStorageFn, checkLightBuildStorageFn
@@ -104,20 +104,34 @@ func TestPreflightAdmitsALightBuildUnderTheLightReserve(t *testing.T) {
 	t.Cleanup(func() { checkBuildStorageFn, checkLightBuildStorageFn = old, oldLight })
 
 	site := buildTargetSet{frontends: []config.FrontendConfig{{Name: "web"}}}
-	if !site.light() {
-		t.Fatal("a frontend-only target set is not light")
+	siteEnv := &KCLEntities{Frontends: []FrontendEntity{{Name: "web"}}}
+	if !lightBuild(site, siteEnv) {
+		t.Fatal("a frontend-only build is not light")
 	}
-	if err := preflightRealBuild(context.Background(), nil, buildOptions{}, site.light()); !errors.Is(err, lightErr) {
+	if err := preflightRealBuild(context.Background(), siteEnv, buildOptions{}, lightBuild(site, siteEnv)); !errors.Is(err, lightErr) {
 		t.Errorf("site preflight = %v, want the light reserve", err)
 	}
-	for name, heavy := range map[string]buildTargetSet{
-		"go":              {goTargets: []goBuildTarget{{}}},
-		"docker frontend": {dockerFrontends: []config.FrontendConfig{{Name: "web"}}},
-	} {
-		if heavy.light() {
-			t.Errorf("%s target set reads as light", name)
+	if lightBuild(site, nil) {
+		t.Error("a build with no render reads as light")
+	}
+	heavy := map[string]struct {
+		t buildTargetSet
+		e *KCLEntities
+	}{
+		"go":              {buildTargetSet{goTargets: []goBuildTarget{{}}}, siteEnv},
+		"docker frontend": {buildTargetSet{dockerFrontends: []config.FrontendConfig{{Name: "web"}}}, siteEnv},
+	}
+	for _, typ := range []string{"go", "docker", "shell", "remote"} {
+		heavy[typ+" workload"] = struct {
+			t buildTargetSet
+			e *KCLEntities
+		}{site, &KCLEntities{Workloads: []WorkloadEntity{{Name: "w", Build: BuildConfigEntity{Type: typ}}}}}
+	}
+	for name, h := range heavy {
+		if lightBuild(h.t, h.e) {
+			t.Errorf("%s build reads as light", name)
 		}
-		if err := preflightRealBuild(context.Background(), nil, buildOptions{}, heavy.light()); !errors.Is(err, heavyErr) {
+		if err := preflightRealBuild(context.Background(), h.e, buildOptions{}, lightBuild(h.t, h.e)); !errors.Is(err, heavyErr) {
 			t.Errorf("%s preflight = %v, want the full reserve", name, err)
 		}
 	}

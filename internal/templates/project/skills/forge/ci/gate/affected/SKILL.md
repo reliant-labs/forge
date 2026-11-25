@@ -126,9 +126,13 @@ On a branch in affected mode, when a frontend's `package.json`, its lockfile (th
 nearest one, a workspace root's included) or a pnpm `pnpm-workspace.yaml`
 changed, the gate adds a `lockfile-<name>` row just before `deps-<name>`. It asks
 the frontend's own package manager whether a frozen install still accepts the
-lockfile, without touching `node_modules`: `pnpm install --frozen-lockfile
---lockfile-only`, `npm ci --dry-run`, `yarn install --immutable
---mode=skip-build` (berry) or `yarn install --frozen-lockfile` (classic). The
+lockfile, without touching the checkout's `node_modules`: `pnpm install
+--frozen-lockfile --lockfile-only`, `npm ci --dry-run --offline` (no registry
+requests), or an isolated Yarn install in a disposable workspace copy:
+`yarn install --immutable --mode=skip-build` (berry, scripts disabled) or
+`yarn install --frozen-lockfile --ignore-scripts` (classic). Yarn may fetch
+packages, but its install output is removed with the copy. This validates
+manifest/lock consistency, not offline package availability. The
 tests run against whatever `node_modules` is on disk, so without this row a
 hand-edited lockfile that every fresh install rejects passes the gate. No
 manifest or lockfile changed, full mode, or no lockfile: no row.

@@ -40,3 +40,15 @@ you. The lane needs no database, so it runs on every tier.
   SHARE UPDATE EXCLUSIVE, which blocks neither reads nor writes. A narrowing
   stays one validated ALTER: the rows it refuses must be rewritten first, in
   the same migration, and the ALTER proves none was missed.
+
+## Access-token scopes: a format check is the other option
+
+`accesstoken.AllScopes` grows with forge releases, so a scope column that
+declares it pays a widening and a validate migration for every new scope, and
+cannot store a `bundle:<name>` reference at all. A store may instead CHECK the
+FORMAT of each entry (`^[a-z:]+$`, or `^bundle:[a-z]+$` for a bundle) and leave
+the vocabulary to the write path, which already refuses an unknown scope, with
+a tolerant read (`accesstoken.ResolveStored`) so a rollback binary skips what a
+newer one wrote. The `forge:closed-set accesstoken.AllScopes` declaration keeps
+working for a store that wants the database to enumerate the set.
+`forge skill load auth/scopes` has the trade-off and the SQL.

@@ -160,8 +160,9 @@ administration (Reliant cloud refuses one: exit 9, `person_session_required`):
     forge cloud token create --env prod --name desktop-sourcemaps --scopes sourcemaps:write --expires-in 2160h
     forge frontend sourcemaps push dist --frontend desktop --build-id "$VERSION" --env <env> --org <org id>
 
-`accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK must
-list every member (`db/closed-sets`).
+`accesstoken.AllScopes` is the closed set; a store's `access_tokens` CHECK
+either lists every member (`db/closed-sets`) or checks each entry's format and
+reads tolerantly (`auth/scopes`).
 
 ## Where the credential comes from
 

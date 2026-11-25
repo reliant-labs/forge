@@ -206,6 +206,10 @@ type pipelineContext struct {
 	// keptHookFailures are the post generate hooks that failed while
 	// KeepOnBuildFailure kept the run going, in the order they ran.
 	keptHookFailures []error
+	// validateCaveats is what the compile check found that keeps the
+	// project from compiling without failing the run (a user-owned
+	// _test.go that does not compile), for the closing line.
+	validateCaveats validateCaveats
 
 	// Verbose toggles per-step skip messages. See pipelineFlags.Verbose
 	// for the rationale; consumed by the gate-loop in runGeneratePipelineFlags.
@@ -3116,7 +3120,8 @@ func stepPostGenValidate(ctx *pipelineContext) error {
 // v2 is the case that asked for it — where the default rollback would undo
 // the very output the next step needs to read.
 func stepGoBuildValidate(ctx *pipelineContext) error {
-	err := goBuildValidate(ctx.ProjectDir)
+	caveats, err := goBuildValidate(ctx.ProjectDir)
+	ctx.validateCaveats = caveats
 	if err == nil || !ctx.KeepOnBuildFailure {
 		return err
 	}
@@ -3130,6 +3135,15 @@ const goBuildValidateStep = "go build (validate generated code)"
 // goBuildValidate is the validate step's compile check, skipped when the
 // tree's build inputs are ones it already passed on (generate_go_memo.go). A
 // variable so a test can fail the step without a toolchain.
-var goBuildValidate = func(projectDir string) error {
-	return memoizedGoValidate(projectDir, func() error { return runGoBuildValidate(projectDir) })
+//
+// A pass with caveats is not memoized: the next run checks again, so it
+// names them again instead of replaying "unchanged since it last compiled".
+var goBuildValidate = func(projectDir string) (validateCaveats, error) {
+	var caveats validateCaveats
+	err := memoizedGoValidate(projectDir, func() (bool, error) {
+		var err error
+		caveats, err = checkGoBuild(projectDir)
+		return !caveats.any(), err
+	})
+	return caveats, err
 }

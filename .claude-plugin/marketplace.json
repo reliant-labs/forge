@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "reliant-labs",
-  "description": "Reliant Labs plugins for Claude Code: Reliant Forge, guardrails for apps and deploys with no account.",
+  "description": "Reliant Labs plugins for Claude Code: Reliant Forge, deploys your agent can verify.",
   "owner": {
     "name": "Reliant Labs",
     "url": "https://reliantlabs.io"
@@ -10,7 +10,7 @@
     {
       "name": "reliant-forge",
       "source": "./plugins/reliant-forge",
-      "description": "Guardrails for apps in any agent harness. Deploy with no account: a live URL plus a claim link.",
+      "description": "Deploy what your coding agent built, and let it prove the release works. Deploys need no account.",
       "category": "deployment",
       "homepage": "https://reliantlabs.io"
     }

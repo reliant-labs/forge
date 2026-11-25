@@ -149,9 +149,9 @@ snapshot (`ChangesService/GetChangesSnapshot`) and nothing else. It acts as no
 person, and `changes:write` and `changes:launch` also allow it.
 
 This needs a control plane that admits `changes:read`: on Reliant cloud, the release
-that carries control-plane#3713. Until your control plane runs it, a token carrying
-`changes:write` (which `GetChangesSnapshot` admits today) works, but it is broader:
-it can also draft and stop changes.
+that carries control-plane#3713. Until your control plane runs it, wait: do not put a
+broader token (`changes:write`, `obs:read`) in an app to read the snapshot, because it
+can do far more than read it.
 
 - **On Reliant cloud**, create the token in the web app, under Settings → API tokens.
   Reliant cloud refuses token administration to a CLI login, so

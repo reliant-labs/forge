@@ -48,7 +48,7 @@ An app on its own cluster or host fetches the same snapshot from the control
 plane, with an access token carrying `changes:read` (it reads one
 environment's snapshot and nothing else). That needs a control plane that
 admits `changes:read` (Reliant cloud from the release that carries
-control-plane#3713); until then a `changes:write` token works but is broader.
+control-plane#3713); until then, never give an app a broader token to read it.
 On Reliant cloud create the token in the web app (Settings → API tokens): it
 refuses token administration to a CLI login. Elsewhere, `reliant forge cloud
 token create --env <env> --name <app>-changes --scopes changes:read

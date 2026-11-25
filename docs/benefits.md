@@ -4065,13 +4065,13 @@ _Enforced · Reliant hosting_
 
 ### Controlled rollouts and A/B tests
 
-Planned: one change ships new app behavior to everyone, as a gradual rollout, or as a comparison of versions, with stable cohorts by user, account, or visitor.
+Beta: one change ships new app behavior to everyone, as a gradual rollout, or as a comparison of versions, with stable cohorts by user, account, or visitor.
 
 _In progress · Reliant hosting_
 
-**Use:** Create a change with its default and new behavior, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The planned project-level Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
+**Use:** Declare a change's default and variants in changes.yaml, then choose who gets it: everyone (remote config), a gradual rollout to a stable percentage, or compare versions (an A/B test measured against your own product events). The same user, account, or visitor keeps the same outcome, and ramping up only adds people. The Experiments screen and Reliant agents use the same permissions and audit trail; apps still implement both behaviors.
 
-**Why:** The evaluation SDK ships: a Go store and OpenFeature provider, a browser loader and OpenFeature provider, and assignment events recorded as product events, and changes are declared in the project (changes.yaml) and shipped in the release. Platform delivery of each environment's policy and the Experiments screen are not shipped yet. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
+**Why:** Beta until platform delivery, the readout and the Experiments screen have all shipped. Shipped: the evaluation SDK (a Go store and OpenFeature provider, a browser loader and OpenFeature provider, assignment events recorded as product events), changes declared in the project (changes.yaml) and shipped in the release, and the readout's query and verdict. Not shipped yet: delivery of each environment's policy to every hosted app, and the Experiments screen that shows the readout. Evaluation is local in the app, from a versioned policy, without a network call on each request or changes to load balancers.
 
 **Evidence:**
 

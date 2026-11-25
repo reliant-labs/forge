@@ -17,9 +17,31 @@ variants, and an answer to "who gets it?" — its delivery mode:
 | `experiment` | a stable percentage, split across variants | an A/B test |
 
 One change moves from preview to experiment to everyone without being
-recreated or re-instrumented. Status: the evaluation SDK below ships; declaring
-changes in the project and steering their delivery from the console are in
-progress.
+recreated or re-instrumented.
+
+**Status: beta.** The evaluation SDK below ships, and so does the declaration
+(`changes.yaml` at the project root, shipped in every release, with generated
+typed accessors: `docs/changes.md`). Delivering each environment's policy to
+every hosted app, and steering it from the console's Experiments screen, are
+still rolling out; until the platform delivers a snapshot, every call site gets
+the default written in code, so it is safe to ship evaluation code now.
+
+## Declare it
+
+```yaml
+# changes.yaml
+version: 1
+changes:
+  new-checkout:
+    type: bool # bool | string | number | json
+    default: control
+    variants: { control: false, treatment: true }
+```
+
+`reliant forge generate` writes one accessor per change
+(`internal/changes/changes_gen.go`, `src/lib/changes_gen.ts`) whose fallback is
+the declared default. The control plane refuses to launch a variant the
+environment's deployed release does not declare.
 
 ## Evaluate in Go
 

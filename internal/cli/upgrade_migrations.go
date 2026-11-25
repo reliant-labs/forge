@@ -152,6 +152,10 @@ type pendingMigration struct {
 	// AppliedAt is the ISO-8601 timestamp from migrations.json when
 	// Applied is true; empty otherwise.
 	AppliedAt string `json:"applied_at,omitempty"`
+	// Crossed: forge_version is already past this playbook's release, but
+	// migrations.json does not record it and its detection still matches —
+	// an earlier upgrade skipped it (crossedUnappliedMigrations).
+	Crossed bool `json:"crossed,omitempty"`
 }
 
 // attachMigrationSubcommands wires `forge project upgrade list` and
@@ -168,6 +172,11 @@ func newUpgradeListCmd() *cobra.Command {
 		Short: "List pending forge migrations for this project",
 		Long: `List forge migration skills for releases this project has not crossed
 yet and whose detection script matches the project's current shape.
+
+It also lists, marked "Missed", the playbooks of releases forge_version has
+already crossed (within the two-minor upgrade window below it) that
+.forge/migrations.json does not record and whose detection still matches: an
+earlier upgrade moved the pin past them without applying them.
 
 Migrations are LLM-readable playbooks under skills/forge/migrations/,
 one per release that introduced a breaking change. This command does NOT
@@ -242,14 +251,69 @@ func computePendingMigrations() ([]pendingMigration, error) {
 		return nil, fmt.Errorf("read %s: %w", migrationsStateFile, err)
 	}
 
-	out := applicableMigrations(migrations, projectBaselineVersion(), projectRoot)
+	baseline := projectBaselineVersion()
+	out := applicableMigrations(migrations, baseline, projectRoot)
 	for i := range out {
 		if ts, ok := state.Applied[out[i].Meta.ID]; ok {
 			out[i].Applied = true
 			out[i].AppliedAt = ts
 		}
 	}
-	return out, nil
+	// Crossed playbooks come first: their releases precede every pending
+	// one, and the list is worked top to bottom.
+	return append(crossedUnappliedMigrations(migrations, baseline, projectRoot, state), out...), nil
+}
+
+// crossedUnappliedMigrations are the playbooks a project's pin moved PAST
+// without applying them: the release is at or below forge_version, within the
+// supported upgrade window below it, .forge/migrations.json does not record
+// it, and its detection still matches. In release order, marked Crossed.
+//
+// migrationApplies never offers them — the version gate says the project
+// crossed the release — and that is how two ordinary paths silently lost a
+// playbook (forge reports 2d879f92, cca9cce3): a pin script that moves
+// forge_version first, and a staged upgrade whose intermediate stage ran a
+// binary tagged before the playbook it was meant to apply (v1.8.0's binary
+// does not ship the v1.8.0 zod 4 playbook). Either way the project still has
+// the old shape, nothing recorded the playbook, and every later list said
+// "nothing pending".
+//
+// The window bounds it to the releases a staged upgrade could have skipped —
+// the ones `forge project upgrade` stages through in one step. An older
+// release was crossed by upgrades this forge cannot reason about, and a
+// playbook kept for it (v1.0.0's, for a project still on the legacy
+// composition by choice) would otherwise be listed forever.
+//
+// This is a listing, not a gate: pinHopNeedsUpgrade and `forge project
+// upgrade`'s own evaluation keep migrationApplies' decision.
+func crossedUnappliedMigrations(migrations []migrationMeta, baseline, projectRoot string, state migrationsState) []pendingMigration {
+	if baselineIsUnknown(baseline) {
+		return nil // migrationApplies already offers every detected playbook
+	}
+	var out []pendingMigration
+	for _, m := range migrations {
+		if _, done := state.Applied[m.ID]; done || strings.TrimSpace(m.Detection) == "" {
+			continue
+		}
+		if semverKey(m.Version) == "" || baselinePrecedes(baseline, m.Version) {
+			continue // not crossed: migrationApplies' to offer
+		}
+		if d := minorHopDistance(m.Version, baseline); d < 0 || d > supportedUpgradeWindowMinors {
+			continue
+		}
+		if !runDetection(projectRoot, m.Detection) {
+			continue
+		}
+		out = append(out, pendingMigration{Meta: m, Crossed: true})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		vi, vj := semverKey(out[i].Meta.Version), semverKey(out[j].Meta.Version)
+		if vi != vj {
+			return semver.Compare(vi, vj) < 0
+		}
+		return out[i].Meta.ID < out[j].Meta.ID
+	})
+	return out
 }
 
 // applicableMigrations filters a migration set down to the rows that
@@ -699,6 +763,11 @@ func writePendingMigrationsHuman(out io.Writer, pending []pendingMigration, ship
 		}
 		if p.Meta.Version != "" {
 			_, _ = fmt.Fprintf(out, "      Release:     %s\n", p.Meta.Version)
+		}
+		if p.Crossed {
+			_, _ = fmt.Fprintf(out, "      Missed:      forge_version %s is past %s, but %s does not record this playbook\n"+
+				"                   and the project still has the old shape — an earlier upgrade skipped it\n",
+				describeVersion(projectBaselineVersion()), p.Meta.Version, migrationsStateFile)
 		}
 		if p.Applied {
 			_, _ = fmt.Fprintf(out, "      Applied:     %s\n", p.AppliedAt)

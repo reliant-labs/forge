@@ -8157,6 +8157,24 @@ schema NetworkPolicy:
 # would be noise on every key; it is what disambiguates when they do not.
 _OVERRIDE_KEY_RE = r"^[A-Z][A-Za-z0-9]*/[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?(@[A-Za-z0-9][-A-Za-z0-9_.:]*)?$"
 
+# The Bundle.overrides keys that would fight a workload's forge.Autoscale: a
+# patch to its Deployment's spec.replicas (the HorizontalPodAutoscaler owns
+# that field, so every apply would reset what it scaled to), or any patch to
+# the HorizontalPodAutoscaler itself, which forge renders from the declared
+# range. The range is changed in `autoscale`, where the checks see it. The HPA
+# is named after its workload, so the key's name is the workload's; the
+# namespace and cluster qualifiers do not change which workload it is.
+_autoscale_override_conflicts = lambda overrides: {str:}, workloads: [Workload] -> [str] {
+    _scaled = [w.name for w in workloads if w.autoscale]
+    [k for k, p in overrides if _override_fights_autoscale(k, p, _scaled)] if _scaled else []
+}
+
+_override_fights_autoscale = lambda k: str, p: any, scaled: [str] -> bool {
+    _parts = k.split("@")[0].split("/")
+    _parts[-1] in scaled and (_parts[0] == "HorizontalPodAutoscaler" \
+        or (_parts[0] == "Deployment" and typeof(p) == "dict" and "spec" in p and typeof(p["spec"]) == "dict" and "replicas" in p["spec"]))
+}
+
 # ---------------------------------------------------------------------------
 # ManagedIdentity — the env's users, declared. One identity-provider instance
 # per declaration (or one shared with a sibling env), converged by the control
@@ -9183,6 +9201,10 @@ schema Bundle:
         # here rather than failing as a type error inside the Go apply.
         all _k, p in overrides { typeof(p) == "dict" }, \
             "Bundle.overrides values ${[k for k, p in overrides if typeof(p) != 'dict']} are not patches: an override's value is a map of the fields to change, e.g. {spec.replicas = 10}"
+        # An autoscaled workload's replica count belongs to its
+        # HorizontalPodAutoscaler, and the HPA to its `autoscale`.
+        len(_autoscale_override_conflicts(overrides, workloads)) == 0, \
+            "Bundle.overrides ${_autoscale_override_conflicts(overrides, workloads)} patch the replica count of an autoscaled workload: forge.Autoscale owns it (the HorizontalPodAutoscaler named after the workload moves the Deployment's spec.replicas within [minReplicas, maxReplicas]), so a patch to `Deployment/<name>` spec.replicas or to `HorizontalPodAutoscaler/<name>` would fight it on every apply. Change the workload's `autoscale` instead, or drop autoscale and set replicas"
         # THE PROJECT IS DECLARED: it is every object's part-of, the handle a
         # CD pipeline selects one release's workloads by.
         project, "Bundle.project is required: set `project = \"<name>\"` (the project name every rendered object is labelled app.kubernetes.io/part-of with)"

@@ -2206,6 +2206,12 @@ func KubectlApplyNamespaced(ctx context.Context, kctx, namespace, manifests stri
 	if err := refuseForeignClusterDocs(kctx, manifests); err != nil {
 		return err
 	}
+	// An autoscaled forge workload on a cluster with no metrics API would
+	// never scale; refused here, before the stream writes anything
+	// (replicas_handover.go).
+	if err := refuseAutoscaleWithoutMetrics(ctx, contextKubectl(kctx), kctx, namespace, manifests, os.Stdout); err != nil {
+		return err
+	}
 	// Docs that name a DIFFERENT namespace than the target cannot ride the
 	// `-n` flag (kubectl rejects the whole stream), so they apply separately
 	// with no flag and keep the namespace they declared. In the common case
@@ -2232,6 +2238,13 @@ func applyStreamInNamespace(ctx context.Context, kctx, namespace, manifests stri
 	// fields and ownerless ones survive it. Claiming them first is what makes
 	// the apply converge each object to its declaration (field_ownership.go).
 	if err := convergeBeforeApply(ctx, kctx, namespace, manifests); err != nil {
+		return err
+	}
+	// A Deployment that stops declaring spec.replicas for an autoscaler
+	// would be reset to 1 by this apply; a second field manager keeps the
+	// live count first. After the convergence, which can move the field into
+	// forge's own entry (replicas_handover.go).
+	if err := handoverReplicas(ctx, contextKubectl(kctx), namespace, manifests, os.Stdout); err != nil {
 		return err
 	}
 	// The strategy recovery wraps the INNER apply, so it heals a

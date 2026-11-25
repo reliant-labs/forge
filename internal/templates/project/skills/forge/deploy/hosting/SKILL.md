@@ -170,6 +170,11 @@ older forge refuses it as an unknown field when you deploy (it decodes the
 spec strictly; nothing is dropped silently). Leave it unset there; it is
 honoured once the platform runs a forge that has it.
 
+`autoscale` (`deploy/model`) passes the hosted profile, but `forge env deploy`
+refuses an autoscaled hosted workload until the control plane advertises the
+`autoscales-workloads` capability: an older one would run it at one replica.
+Until then, set `replicas`.
+
 ## The API is one workload
 
 A browser reaches the API at ONE origin: the frontend's Connect transport has

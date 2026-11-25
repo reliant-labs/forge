@@ -600,6 +600,28 @@ func limitDeclaredShape(ctx context.Context, c HostedCaller, env string, declare
 	return reader.LimitShape(declared), nil
 }
 
+// checkAutoscaleApplied refuses the plan's autoscaled workloads unless the
+// control plane applies them. An older control plane decodes the spec and
+// ignores the unknown field, so the workload would run at one replica with
+// nothing saying so: refused, never stripped. It asks the control plane only
+// when a workload autoscales, so every other deploy costs no call.
+func checkAutoscaleApplied(ctx context.Context, c HostedCaller, plan []hostedPlanItem) error {
+	var scaled []string
+	for _, item := range plan {
+		if spec, ok := item.Spec.(v1alpha1.WorkloadSpec); ok && spec.Autoscale != nil {
+			scaled = append(scaled, item.Name)
+		}
+	}
+	if len(scaled) == 0 {
+		return nil
+	}
+	reader, err := HostedBundleReader(ctx, c)
+	if err != nil {
+		return err
+	}
+	return reader.CheckAutoscaledWorkloads(scaled)
+}
+
 func ensureHostedEnvironment(ctx context.Context, c HostedCaller, ref HostedEnvRef) (wireEnvironment, bool, error) {
 	if ref.Kind == "" {
 		// Never defaulted: the kind is immutable server-side, so a guess
@@ -1399,6 +1421,11 @@ func (p HostedProvider) Deploy(ctx context.Context, group ServiceGroup) error {
 	}
 	c, err := p.client()
 	if err != nil {
+		return err
+	}
+	// Before the environment is ensured or the bundle recorded: a control
+	// plane that predates autoscale would run the workload at one replica.
+	if err := checkAutoscaleApplied(ctx, c, plan); err != nil {
 		return err
 	}
 	// The env's kind is the CLI's derivation over the WHOLE env, carried on

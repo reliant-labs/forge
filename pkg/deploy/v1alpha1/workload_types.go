@@ -145,6 +145,19 @@ type WorkloadSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
 
+	// Autoscale replaces Replicas with a range a HorizontalPodAutoscaler
+	// moves the Deployment within, on the pods' average CPU use. Service and
+	// worker kinds only: an operator elects one leader, so more pods buy it
+	// nothing, and a batch kind or a tool has no Deployment to scale.
+	//
+	// The autoscaler owns the count from then on, so the rendered Deployment
+	// states no spec.replicas and Replicas must stay at its default. It is
+	// refused beside StorageGiB (a ReadWriteOnce volume is mounted by one pod
+	// at a time) and beside strategy Recreate (which declares the count a
+	// correctness bound, not a capacity choice).
+	// +optional
+	Autoscale *Autoscale `json:"autoscale,omitempty"`
+
 	// Resources is the compute request and limit. Omitted means the entry
 	// shape (250m / 1 GiB).
 	// +optional
@@ -434,6 +447,67 @@ type WorkloadSpec struct {
 	// every pod is still Pod Security `restricted`.
 	// +optional
 	SecurityContext *PodSecurity `json:"securityContext,omitempty"`
+}
+
+// Autoscale is the replica range of an autoscaled workload, and the CPU use
+// it holds the pods to.
+//
+// The metric is CPU utilization: the pods' average CPU use as a percent of
+// their CPU REQUEST, summed over every container in the pod, so a sidecar
+// counts against the request that covers it. The renderer turns it into an
+// autoscaling/v2 HorizontalPodAutoscaler named after the workload, whose
+// scale-up and scale-down behaviour forge states rather than leaves to the
+// cluster's defaults.
+type Autoscale struct {
+	// MinReplicas is the fewest pods the autoscaler scales down to, and the
+	// count the workload starts at. At least 1: scale to zero is not
+	// offered.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	MinReplicas int32 `json:"minReplicas"`
+
+	// MaxReplicas is the most pods the autoscaler scales up to, at most
+	// MaxAutoscaleReplicas. The hostname spread and the
+	// PodDisruptionBudget are rendered from it, so they stay put while the
+	// count moves.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	MaxReplicas int32 `json:"maxReplicas"`
+
+	// CPUTargetPercent is the average CPU use, as a percent of the CPU
+	// request, the autoscaler holds the pods to: above it, it adds pods;
+	// below it, it removes them. Default 70. At most 95, because a CPU
+	// limit at the request (the default) caps utilization near 100%, so a
+	// higher target is one the pods can never exceed and the workload would
+	// never scale up.
+	// +optional
+	// +kubebuilder:default=70
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=95
+	CPUTargetPercent int32 `json:"cpuTargetPercent,omitempty"`
+}
+
+// Autoscale bounds and default, mirrored by the markers above.
+const (
+	// MaxAutoscaleReplicas is the most replicas an autoscaled workload may
+	// scale to: a platform cap, so one workload's load cannot claim an
+	// unbounded share of the nodes it shares.
+	MaxAutoscaleReplicas int32 = 10
+	// DefaultAutoscaleCPUTargetPercent is the CPU utilization an autoscaled
+	// workload is held to when it states none.
+	DefaultAutoscaleCPUTargetPercent int32 = 70
+	// MinAutoscaleCPUTargetPercent and MaxAutoscaleCPUTargetPercent bound
+	// CPUTargetPercent.
+	MinAutoscaleCPUTargetPercent int32 = 10
+	MaxAutoscaleCPUTargetPercent int32 = 95
+)
+
+// WithDefaults fills an unset CPUTargetPercent.
+func (a Autoscale) WithDefaults() Autoscale {
+	if a.CPUTargetPercent == 0 {
+		a.CPUTargetPercent = DefaultAutoscaleCPUTargetPercent
+	}
+	return a
 }
 
 // PodSecurity is the closed set of pod-identity knobs forge lets a workload
@@ -837,8 +911,8 @@ const (
 )
 
 // WithDefaults fills every unset value that has a static default: the kind,
-// replicas, resources, port protocols and (when present) probe timings,
-// including each sidecar's.
+// replicas, the autoscale CPU target, resources, port protocols and (when
+// present) probe timings, including each sidecar's.
 // DeployPhase and LeaderElection are resolved by their Effective* helpers
 // instead, because their defaults depend on the kind.
 func (s WorkloadSpec) WithDefaults() WorkloadSpec {
@@ -847,6 +921,10 @@ func (s WorkloadSpec) WithDefaults() WorkloadSpec {
 	}
 	if s.Replicas == 0 {
 		s.Replicas = DefaultReplicas
+	}
+	if s.Autoscale != nil {
+		a := s.Autoscale.WithDefaults()
+		s.Autoscale = &a
 	}
 	s.Resources = s.Resources.WithDefaults()
 	s.Ports = defaultPorts(s.Ports)
@@ -891,6 +969,21 @@ func (s WorkloadSpec) EffectiveKind() WorkloadKind {
 		return DefaultWorkloadKind
 	}
 	return s.Kind
+}
+
+// EffectiveMaxReplicas is the most pods the workload may run at once:
+// Autoscale.MaxReplicas when it autoscales, else Replicas (unset is one).
+// What is rendered per pod set rather than per pod (the hostname spread, the
+// PodDisruptionBudget) keys on it, so an autoscaled workload's objects stay
+// put while the count moves.
+func (s WorkloadSpec) EffectiveMaxReplicas() int32 {
+	if s.Autoscale != nil {
+		return s.Autoscale.MaxReplicas
+	}
+	if s.Replicas == 0 {
+		return DefaultReplicas
+	}
+	return s.Replicas
 }
 
 // EffectiveDeployPhase is a standalone job's phase: DeployPhase, or

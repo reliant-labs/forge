@@ -643,9 +643,11 @@ type Shape struct {
 	// feature ([BundleFeatureChanges]).
 	Changes map[string]ShapeChange `json:"changes,omitempty"`
 	// StatusPage is the env's declared status page (forge.StatusPage): its
-	// title, links and the components its uptime checks make up. Whether it
-	// is public is NOT here: that is live control-plane state. Omitted when
-	// the env declares none, so every shape recorded before the field
+	// title, links and the components its uptime checks make up. Opt-in
+	// only, with no default: nil, and omitted, when the env declares none,
+	// and then nothing is rendered or published. Going public is a separate,
+	// audited act by a person, live control-plane state never recorded here.
+	// Omitted when the env declares none, so every shape recorded before the field
 	// encodes and hashes exactly as it did; a control plane that predates it
 	// refuses the whole shape, so it is a bundle-document feature
 	// ([BundleFeatureStatusPage]).

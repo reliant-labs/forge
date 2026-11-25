@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -128,6 +129,32 @@ func TestStatusPageIsAFeature(t *testing.T) {
 	}
 	if !s.HasOptionalParts() {
 		t.Error("a shape declaring a page reports no optional parts")
+	}
+}
+
+// TestNoStatusPageMeansNoKey: a status page is opt-in only (owner,
+// 2026-11-25). A shape that declares none, however much else it carries,
+// encodes with no status_page key, byte for byte as a reader that predates
+// the field is sent it, and needs nothing of the reader.
+func TestNoStatusPageMeansNoKey(t *testing.T) {
+	s := fullBundleDoc().Shape
+	s.StatusPage = nil
+	raw, err := json.Marshal(s.Canonical())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "status_page") {
+		t.Fatalf("a shape with no page encodes a status_page key: %s", raw)
+	}
+	every := &BundleReader{Features: BundleDocFeatures()}
+	predates := &BundleReader{Features: slices.DeleteFunc(BundleDocFeatures(), func(f string) bool { return f == BundleFeatureStatusPage })}
+	a, _ := json.Marshal(every.LimitShape(s).Canonical())
+	b, _ := json.Marshal(predates.LimitShape(s).Canonical())
+	if string(a) != string(b) {
+		t.Errorf("a shape with no page differs between a reader of the feature and one that predates it:\n%s\n%s", a, b)
+	}
+	if (Shape{Kind: EnvSelfManaged}).HasOptionalParts() {
+		t.Error("an empty shape reports optional parts")
 	}
 }
 

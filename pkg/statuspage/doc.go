@@ -31,6 +31,10 @@
 // Bodies are plain text: blank lines separate paragraphs, and every
 // character is escaped. No HTML or Markdown reaches the page.
 //
+// Nothing here publishes anything: the package renders a document it is
+// handed. In a forge env a page is opt-in (forge.StatusPage), and going
+// public is a separate, audited act by a person in the control plane.
+//
 // [Resolve] derives a component's state from its checks' measured states
 // (the worst wins, an active maintenance window takes precedence, a person's
 // override takes precedence over both and is marked).

@@ -7393,7 +7393,8 @@ schema StatusComponent:
 
 schema StatusPage:
     """The env's status page, on `Bundle.status_page`: what a page telling
-    the app's own users whether it works shows. Each component is a public
+    the app's own users whether it works shows. OPT-IN ONLY: an env that does
+    not declare one gets no page; nothing is rendered or published. Each component is a public
     name for some of the env's uptime checks (see Uptime), so the page is
     opt-in per component: a check no component names never appears on it.
 
@@ -7406,9 +7407,9 @@ schema StatusPage:
             ]
         }
 
-    Whether the page is public is NOT declared here: publishing is a
-    person's act in the control plane, and a rollback must neither publish
-    nor unpublish a page. Check names never reach the public page; it shows
+    Declaring a page does not publish it. Going public is a separate,
+    audited act by a person in the control plane, and a rollback must
+    neither publish nor unpublish a page. Check names never reach the public page; it shows
     component names, states, daily availability and published notices
     (the forge.status/v1 document, forge/pkg/statuspage).
 
@@ -9212,8 +9213,9 @@ schema Bundle:
     # declare `uptime` to add checks or opt out. See Uptime.
     uptime?: Uptime
     # The env's status page: the public components its uptime checks make
-    # up. UNSET = no page. Whether it is public is control-plane state, not
-    # declared. See StatusPage.
+    # up. Opt-in only: UNSET = no page, nothing rendered or published, and
+    # no default. Going public is a separate, audited act by a person in the
+    # control plane, never declared. See StatusPage.
     status_page?: StatusPage
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance

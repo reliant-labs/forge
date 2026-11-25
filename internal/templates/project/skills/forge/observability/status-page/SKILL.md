@@ -10,6 +10,10 @@ component, its current state, 90 days of daily availability bars, and the
 incidents and maintenance the team published. Its numbers come from the env's
 uptime checks (`observability/uptime`), so it needs no second monitor.
 
+It is **opt-in only**. An env that does not declare `forge.StatusPage` gets no
+page: nothing is rendered, recorded or published, and no scaffold adds one.
+Declaring a page does not publish it either (see below).
+
 ## Declaring the components
 
 ```python
@@ -44,9 +48,9 @@ sorted, components in your order). `forge env render <env>` shows it.
 
 ## What is not declared
 
-Whether the page is public. Publishing is a person's act in the control plane,
-like binding a domain, so rolling back a release can neither publish nor
-unpublish a page. Incidents, maintenance windows and their updates are live
+Whether the page is public. Going public is a separate, audited act by a
+person in the control plane, like binding a domain, so rolling back a release
+can neither publish nor unpublish a page. Incidents, maintenance windows and their updates are live
 control-plane state too, written by people (agents may draft).
 
 ## States

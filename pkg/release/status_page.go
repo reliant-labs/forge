@@ -7,14 +7,17 @@ import (
 	"github.com/reliant-labs/forge/pkg/statuspage"
 )
 
-// ShapeStatusPage is the env's declared status page (forge.StatusPage): what
+// ShapeStatusPage is the env's declared status page (forge.StatusPage). It is
+// opt-in only: an env that declares none has a nil [Shape.StatusPage] and no
+// status_page key, and nothing is rendered or published for it. It says what
 // a public page of this env shows, and which of the env's uptime checks each
 // component is made of. The control plane reads it from the recorded shape
 // and builds the page's forge.status/v1 document (pkg/statuspage) from the
 // checks' probes.
 //
-// Whether the page is public is NOT here. It is live control-plane state a
-// person changes, so a rollback can neither publish nor unpublish a page.
+// Declaring a page does not publish it. Going public is a separate, audited
+// act by a person in the control plane, so a rollback can neither publish nor
+// unpublish a page.
 // Check names are here because the control plane needs them to read the
 // probes; they never reach the public document, which names components only.
 type ShapeStatusPage struct {

@@ -102,6 +102,11 @@ type planInputs struct {
 // anything the real build would fail on. Called from runBuild once the target
 // set is resolved and before anything is written.
 func runBuildPlan(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEntities, targets buildTargetSet, opts buildOptions, resolvedTag, projectTag string) error {
+	// The real build refuses an image that cannot compile the bridged forge
+	// before anything else (preflightRealBuild); so does its plan.
+	if err := preflightForgeBridge(opts, targets); err != nil {
+		return err
+	}
 	report := planBuild(ctx, planInputs{
 		cfg:           cfg,
 		entities:      entities,

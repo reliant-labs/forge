@@ -764,13 +764,6 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		return err
 	}
 
-	// A project image that would compile a different forge than the host
-	// does is refused before anything is built — and by --plan, which
-	// preflights what the real build would fail on.
-	if err := preflightForgeBridge(opts, targets); err != nil {
-		return err
-	}
-
 	// --plan stops HERE: the build set is fully resolved by the same
 	// discovery every real build runs, and nothing has been written, built
 	// or pushed. See runBuildPlan.
@@ -780,7 +773,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
-	if err := preflightRealBuild(ctx, entities, opts); err != nil {
+	if err := preflightRealBuild(ctx, entities, targets, opts); err != nil {
 		return err
 	}
 	// A cut of this version that pushed every image and was interrupted
@@ -1042,7 +1035,12 @@ func recordBuild(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEn
 // release — a ShellBuild checkout that is not at the commit the project pins
 // (preflightReleaseSources). Refusing the release HERE rather than at the cut
 // is what keeps a refused release from pushing images under its version.
-func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions) error {
+func preflightRealBuild(ctx context.Context, entities *KCLEntities, targets buildTargetSet, opts buildOptions) error {
+	// A project image that would compile a different forge than the host
+	// does is refused before anything is built (build_forge_bridge.go).
+	if err := preflightForgeBridge(opts, targets); err != nil {
+		return err
+	}
 	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
 		return err
 	}

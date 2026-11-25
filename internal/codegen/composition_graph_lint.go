@@ -14,7 +14,9 @@
 //     one) is a pending warning, not an error: see pendingPackageFinding.
 //     A node no root reaches whose Deps forge cannot fill is left out of
 //     the emitted graph rather than failing generate; it is always an
-//     error here (unbuiltFinding, composition_graph_reach.go).
+//     error here (unbuiltFinding, composition_graph_reach.go). A component
+//     constructed only by its variants (`forge scaffold variant`) is reached
+//     when one of them is: see variantReached.
 //   - AUDIENCE. For every listener (a node whose value is a
 //     serverkit.Listener), the audience of each service its routes reach
 //     must be the audience of the authenticator its chain reaches (a
@@ -29,6 +31,7 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
 	"go/types"
 	"path/filepath"
 	"sort"
@@ -145,16 +148,14 @@ func (m *graphModel) rootNames() string {
 // Route sets and the operators' manager are reported through their members.
 func (m *graphModel) unreachableFindings() []GraphFinding {
 	reached := m.reached()
+	for n := range m.variantReached(reached) {
+		reached[n] = true
+	}
 	consumed := m.consumed()
 	audienceOf := m.serviceAudiences()
 	var out []GraphFinding
 	for _, n := range m.nodes {
 		if reached[n.Name] {
-			continue
-		}
-		// A package built only through `forge scaffold variant` wrappers
-		// is reached through them (composition_graph_variant.go).
-		if m.variantReached(n, reached) {
 			continue
 		}
 		if why, left := m.unbuilt[n.Name]; left {
@@ -192,6 +193,246 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		}
 	}
 	return out
+}
+
+// variantReached is every component a node in reached constructs as a
+// VARIANT: a provider whose value wraps the component's Service by embedding
+// it, the shape `forge scaffold variant <pkg> <Name>` writes
+// (`type <Name> struct{ <pkg>.Service }`, built by New<Name> calling
+// <pkg>.New with that configuration). The graph identifies a node by its Go
+// type, so a component with no default configuration — only variants — is
+// taken by no consumer and drew no edge, and the variants' providers call its
+// constructor themselves. Require a resolved constructor result flowing into
+// the returned embed; a discarded call or a nil or supplied Service in the
+// same wrapper shape is not evidence. The reach check must count it: otherwise the
+// idiom the graph-checks skill documents could not retire the
+// //forge:provided marker it replaces.
+//
+// Only the lint's view of reach changes. Generate's resolution is
+// untouched: the component's own node is still left out of graph_gen.go
+// when forge cannot fill its Deps, which is right — no root asks for the
+// default configuration, and the variants supply their own.
+func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
+	if m.u == nil {
+		return nil
+	}
+	wrapped := map[string]bool{} // "<pkg path>.<Name>" a reached provider embeds
+	for _, n := range m.nodes {
+		if n.Kind != nodeProvider || !reached[n.Name] {
+			continue
+		}
+		calls := m.providerConstructorCalls(n.Name)
+		for _, k := range embeddedTypeKeys(m.u.produced[n.Name]) {
+			for _, component := range m.nodes {
+				if component.Kind != nodeComponent || component.Comp == nil || namedTypeKey(m.u.produced[component.Name]) != k {
+					continue
+				}
+				// Use the loaded function identity, not the import spelling:
+				// aliases work and a local lookalike New cannot prove reach.
+				pkg := k[:strings.LastIndex(k, ".")]
+				if calls[k+"="+pkg+"."+component.Comp.compConstructor] {
+					wrapped[k] = true
+				}
+			}
+		}
+	}
+	if len(wrapped) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, n := range m.nodes {
+		if n.Kind != nodeComponent || reached[n.Name] {
+			continue
+		}
+		if k := namedTypeKey(m.u.produced[n.Name]); k != "" && wrapped[k] {
+			out[n.Name] = true
+		}
+	}
+	return out
+}
+
+// providerConstructorCalls records only constructors whose result flows into
+// an embedded field of the returned wrapper. This deliberately recognizes a
+// small, straight-line subset (including scaffolded error guards), not arbitrary
+// provider control flow. Unknown flow leaves the component pending.
+func (m *graphModel) providerConstructorCalls(name string) map[string]bool {
+	out := map[string]bool{}
+	if m.u.app == nil || m.u.app.TypesInfo == nil {
+		return out
+	}
+	for _, file := range m.u.app.Syntax {
+		for _, decl := range file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || fd.Name.Name != "New"+name || fd.Body == nil {
+				continue
+			}
+			return returnedVariantConstructors(fd.Body, name, m.u.produced[name], m.u.app.TypesInfo)
+		}
+	}
+	return out
+}
+
+// returnedVariantConstructors follows constructor results through local
+// assignments into a returned literal. Reject unsupported control flow rather
+// than treating a discarded call (or an overwritten local) as reach evidence.
+func returnedVariantConstructors(body *ast.BlockStmt, name string, produced types.Type, info *types.Info) map[string]bool {
+	locals := map[string]string{}
+	constructor := func(expr ast.Expr) string {
+		if id, ok := expr.(*ast.Ident); ok {
+			return locals[id.Name]
+		}
+		call, ok := expr.(*ast.CallExpr)
+		if !ok {
+			return ""
+		}
+		var id *ast.Ident
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			id = fun.Sel
+		case *ast.Ident:
+			id = fun
+		}
+		fn, ok := info.Uses[id].(*types.Func)
+		if !ok || fn.Pkg() == nil {
+			return ""
+		}
+		return fn.Pkg().Path() + "." + fn.Name()
+	}
+	for _, stmt := range body.List {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			values := make([]string, len(s.Lhs))
+			for i, rhs := range s.Rhs {
+				values[i] = constructor(rhs)
+			}
+			for i, lhs := range s.Lhs {
+				id, ok := lhs.(*ast.Ident)
+				if !ok { // A field mutation can change the returned value.
+					return nil
+				}
+				locals[id.Name] = values[i]
+			}
+		case *ast.IfStmt:
+			// The scaffold's error guard may exit without a wrapper. Any
+			// other branch needs control-flow analysis we do not claim here.
+			if !variantErrorGuard(s) {
+				return nil
+			}
+		case *ast.ReturnStmt:
+			if len(s.Results) == 0 {
+				return nil
+			}
+			expr := s.Results[0]
+			if addr, ok := expr.(*ast.UnaryExpr); ok {
+				expr = addr.X
+			}
+			lit, ok := expr.(*ast.CompositeLit)
+			if !ok {
+				return nil
+			}
+			id, ok := lit.Type.(*ast.Ident)
+			if !ok || id.Name != name {
+				return nil
+			}
+			t := types.Unalias(produced)
+			if p, ok := t.(*types.Pointer); ok {
+				t = p.Elem()
+			}
+			st, ok := t.Underlying().(*types.Struct)
+			if !ok {
+				return nil
+			}
+			out := map[string]bool{}
+			for i, elt := range lit.Elts {
+				fieldIndex, value := i, elt
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					key, ok := kv.Key.(*ast.Ident)
+					if !ok {
+						continue
+					}
+					fieldIndex = st.NumFields()
+					for j := 0; j < st.NumFields(); j++ {
+						if st.Field(j).Name() == key.Name {
+							fieldIndex = j
+							break
+						}
+					}
+					value = kv.Value
+				}
+				if fieldIndex < st.NumFields() && st.Field(fieldIndex).Embedded() {
+					if fn := constructor(value); fn != "" {
+						out[namedTypeKey(st.Field(fieldIndex).Type())+"="+fn] = true
+					}
+				}
+			}
+			return out
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+func variantErrorGuard(s *ast.IfStmt) bool {
+	if s.Init != nil || s.Else != nil || len(s.Body.List) != 1 {
+		return false
+	}
+	cond, ok := s.Cond.(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	_, leftIdent := cond.X.(*ast.Ident)
+	right, rightIdent := cond.Y.(*ast.Ident)
+	if !leftIdent || !rightIdent || right.Name != "nil" {
+		return false
+	}
+	r, ok := s.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(r.Results) == 0 {
+		return false
+	}
+	id, ok := r.Results[0].(*ast.Ident)
+	return ok && id.Name == "nil"
+}
+
+// embeddedTypeKeys is the namedTypeKey of every field t's struct embeds,
+// through one pointer (a provider returns *<Name>).
+func embeddedTypeKeys(t types.Type) []string {
+	if t == nil {
+		return nil
+	}
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, ok := types.Unalias(t).Underlying().(*types.Struct)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for i := 0; i < st.NumFields(); i++ {
+		if f := st.Field(i); f.Embedded() {
+			if k := namedTypeKey(f.Type()); k != "" {
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// namedTypeKey identifies a named type, through one pointer, by its
+// package path and name — not by types.Identical, because the component's
+// package and internal/app may be type-checked in separate loads.
+func namedTypeKey(t types.Type) string {
+	if t == nil {
+		return ""
+	}
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return ""
+	}
+	return named.Obj().Pkg().Path() + "." + named.Obj().Name()
 }
 
 // unbuiltFinding reports a node no root reaches that forge cannot construct

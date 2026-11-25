@@ -767,7 +767,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
-	if err := preflightRealBuild(ctx, entities, opts); err != nil {
+	if err := preflightRealBuild(ctx, entities, opts, targets.light()); err != nil {
 		return err
 	}
 	// A cut of this version that pushed every image and was interrupted
@@ -1029,8 +1029,16 @@ func recordBuild(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEn
 // release — a ShellBuild checkout that is not at the commit the project pins
 // (preflightReleaseSources). Refusing the release HERE rather than at the cut
 // is what keeps a refused release from pushing images under its version.
-func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions) error {
-	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+//
+// A LIGHT build (no go build, no image build: a static site) is admitted
+// under the light-build reserve; every heavy lane it does not have checks
+// the full reserve again before it runs.
+func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions, light bool) error {
+	check := checkBuildStorageFn
+	if light {
+		check = checkLightBuildStorageFn
+	}
+	if err := check(projectDirForKCL()); err != nil {
 		return err
 	}
 	// Push access for the in-process pushes, with the credential docker was
@@ -1143,6 +1151,13 @@ type buildTargetSet struct {
 	goTargets         []goBuildTarget
 	skipProjectDocker bool
 	cfgArchForDocker  string
+}
+
+// light reports a set that runs no go build and no image build of its own —
+// frontends built with their package manager only, such as a static site.
+// Shell, external and variant builds check the full reserve themselves.
+func (t buildTargetSet) light() bool {
+	return len(t.goTargets) == 0 && len(t.dockerFrontends) == 0
 }
 
 // resolveBuildTargetSet applies the framework / --target / skipFrontends
@@ -2650,7 +2665,8 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	// purpose. Re-deriving through Dir would apply a containment check to
 	// a path that is legitimately external and undo the resolution.
 	feDir := fe.DeclaredDir()
-	if err := checkBuildStorageFn(feDir); err != nil {
+	// A package-manager build, not an image or go build: the light reserve.
+	if err := checkLightBuildStorageFn(feDir); err != nil {
 		return buildResult{name: fe.Name, kind: "frontend", duration: time.Since(start), err: err}
 	}
 	// forge.yaml's dev_runner picks the package manager; `<runner> run build`

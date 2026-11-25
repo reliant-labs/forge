@@ -112,6 +112,32 @@ func TestForgeBridge_NoBridgePasses(t *testing.T) {
 	}
 }
 
+// $GOWORK selects the workspace the go command uses, as an absolute path: a
+// bridge it names is judged wherever the project is, and a relative one —
+// which the go command refuses outright ("invalid GOWORK: not an absolute
+// path") — selects no workspace, so nothing compiles through it.
+func TestForgeBridge_ExplicitGOWORK(t *testing.T) {
+	useFakeBridgeGit(t, fakeBridgeGit{
+		headSHA: bridgeHead, refs: map[string]string{"refs/tags/v1.10.0": bridgeTag},
+		ancestors: map[string]bool{bridgeTag + ".." + bridgeHead: true},
+	})
+	project := bridgedProject(t, "v1.10.0", t.TempDir(), "")
+	work := filepath.Join(t.TempDir(), "elsewhere.work")
+	if err := os.Rename(filepath.Join(project, "go.work"), work); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOWORK", work)
+	err := refuseUnbuildableForgeBridge(project, true)
+	if err == nil || !strings.Contains(err.Error(), work+":5") {
+		t.Errorf("an absolute GOWORK's bridge was not judged: %v", err)
+	}
+	t.Chdir(filepath.Dir(work))
+	t.Setenv("GOWORK", filepath.Base(work))
+	if err := refuseUnbuildableForgeBridge(project, true); err != nil {
+		t.Errorf("a relative GOWORK, which the go command refuses, was judged: %v", err)
+	}
+}
+
 // The hatch, and an image that compiles nothing itself, are not judged.
 func TestForgeBridge_HatchAndHostBuiltImagesPass(t *testing.T) {
 	useFakeBridgeGit(t, fakeBridgeGit{

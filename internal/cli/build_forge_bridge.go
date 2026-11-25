@@ -205,6 +205,14 @@ func findForgeBridge(root string) (forgeBridge, bool) {
 			}
 		}
 	}
+	// The go command takes $GOWORK only as an absolute path: a relative one
+	// fails every go invocation ("go: invalid GOWORK: not an absolute
+	// path"), so no build — host or image — compiles through it. Resolving it
+	// against this process's working directory would inspect a workspace the
+	// go command never selects.
+	if !filepath.IsAbs(path) {
+		return forgeBridge{}, false
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return forgeBridge{}, false

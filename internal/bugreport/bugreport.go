@@ -8,10 +8,9 @@
 // controlplane.v1.ForgeReportService/FileBugReport, which writes the same kind
 // of issue record (control-plane docs/design/forge-cli-reports.md).
 //
-// forge sends NO REPORT unless someone files one. There is no automatic crash
-// or error reporting (forge's anonymous usage events are pkg/observe/cliev's,
-// internal/cli/telemetry.go, and carry no error text). What a report carries
-// is listed in docs/report-bug.md; Payload is all of it.
+// forge sends NOTHING unless someone files a report. There is no automatic
+// crash or error reporting and no telemetry. What a report carries is listed
+// in docs/report-bug.md; Payload is all of it.
 //
 // The report id is minted here, so it can be printed whatever the ingest
 // answers, and a repeat of a report filed in the last 30 minutes returns the

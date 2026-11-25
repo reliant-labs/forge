@@ -256,7 +256,7 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 	httpReq.Header.Set(VersionHeader, buildinfo.Version())
 	// User-Agent and X-Forge-Client name the release, platform and driving
 	// agent harness, for the control plane's product analytics.
-	setClientIdentity(httpReq.Header)
+	setClientIdentity(httpReq.Context(), httpReq.Header)
 
 	resp, err := c.httpClientFor(ctx, procedure).Do(httpReq)
 	if err != nil {

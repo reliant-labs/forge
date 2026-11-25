@@ -163,6 +163,11 @@ like the owned `@/components/nav.tsx` and `@/components/session_nav.tsx`
 keep resolving against the per-frontend `src/` tree, so the components
 each frontend owns keep working unchanged.
 
+One package serves every web frontend, so it carries the sign-in
+component (`login_form`) unless no web frontend in the workspace signs
+in (each was scaffolded `--auth-mode none`, with no
+`src/lib/auth/native-login.ts`). Adding one that does brings it in.
+
 ### Ownership rule
 
 forge writes `packages/ui-web/` files **once**, on first scaffold.

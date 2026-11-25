@@ -909,7 +909,7 @@ func (g *ProjectGenerator) generateFrontendFiles() error {
 	// files are written. WriteFrontendWorkspaceFiles is idempotent and
 	// no-op'd when FrontendWorkspaces is false, so it's safe to call
 	// unconditionally.
-	if err := WriteFrontendWorkspaceFiles(g.Path, g.Name, g.FrontendWorkspaces); err != nil {
+	if err := WriteFrontendWorkspaceFilesForFrontend(g.Path, g.Name, g.FrontendWorkspaces, !g.declaresIdentity()); err != nil {
 		return fmt.Errorf("write frontend workspace files: %w", err)
 	}
 	// `forge project new` doesn't currently support scaffolding an RN frontend

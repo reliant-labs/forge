@@ -11,6 +11,7 @@ import (
 	nativecomponents "github.com/reliant-labs/forge/pkg/components/native"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // Frontend-workspaces emitters.
@@ -117,7 +118,25 @@ func sanitizeNpmScopeSegment(name string) string {
 // Returns nil immediately when workspaces is disabled — callers can
 // invoke unconditionally and let this function decide whether work is
 // needed.
+//
+// Whether packages/ui-web gets the sign-in components is read off the
+// workspace's frontends (workspaceSignsIn). A caller about to scaffold a
+// frontend states that frontend's posture with
+// WriteFrontendWorkspaceFilesForFrontend instead.
 func WriteFrontendWorkspaceFiles(projectDir, projectName string, workspaces bool) error {
+	return writeFrontendWorkspaceFiles(projectDir, projectName, workspaces, workspaceSignsIn(projectDir))
+}
+
+// WriteFrontendWorkspaceFilesForFrontend is WriteFrontendWorkspaceFiles for
+// a caller about to scaffold a frontend into the workspace, which may be the
+// first one: public says that frontend has no sign-in
+// (FrontendGenOptions.Public). packages/ui-web gets the sign-in components
+// unless it is public AND no web frontend already in the workspace signs in.
+func WriteFrontendWorkspaceFilesForFrontend(projectDir, projectName string, workspaces, public bool) error {
+	return writeFrontendWorkspaceFiles(projectDir, projectName, workspaces, !public || anyWorkspaceFrontendSignsIn(projectDir))
+}
+
+func writeFrontendWorkspaceFiles(projectDir, projectName string, workspaces, signIn bool) error {
 	if !workspaces {
 		return nil
 	}
@@ -138,7 +157,7 @@ func WriteFrontendWorkspaceFiles(projectDir, projectName string, workspaces bool
 	// what adds the entry to a workspace project scaffolded before the hooks
 	// declared the type.
 	EnsureWorkspaceHooksWebRuntimeDependency(projectDir)
-	if err := writeUIWebPackage(projectDir, layout); err != nil {
+	if err := writeUIWebPackage(projectDir, layout, signIn); err != nil {
 		return err
 	}
 	return nil
@@ -160,7 +179,48 @@ func WriteUIWebPackageFiles(projectDir, projectName string, workspaces bool) err
 		return nil
 	}
 	layout := NewFrontendWorkspaceLayout(projectName)
-	return writeUIWebPackage(projectDir, layout)
+	return writeUIWebPackage(projectDir, layout, workspaceSignsIn(projectDir))
+}
+
+// workspaceSignsIn reports whether the shared packages/ui-web serves a
+// frontend people sign in to, and so gets signInComponents. One package
+// serves every web frontend, so it is NO only when the workspace has web
+// frontends and none of them signs in (frontendSignsIn: it ships
+// native-login.ts) — the workspace `forge project new --auth-mode none`
+// writes. A workspace with no web frontend yet is YES, as before: nothing
+// says nobody will sign in, and the components are write-if-missing seeds.
+func workspaceSignsIn(projectDir string) bool {
+	if len(workspaceWebFrontendDirs(projectDir)) == 0 {
+		return true
+	}
+	return anyWorkspaceFrontendSignsIn(projectDir)
+}
+
+// anyWorkspaceFrontendSignsIn reports whether a web frontend under
+// frontends/ ships the sign-in flow (frontendSignsIn).
+func anyWorkspaceFrontendSignsIn(projectDir string) bool {
+	for _, dir := range workspaceWebFrontendDirs(projectDir) {
+		if frontendSignsIn(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+// workspaceWebFrontendDirs lists the browser frontends (Next.js, Vite) under
+// frontends/ — the ones packages/ui-web serves. A React Native frontend
+// takes nothing from it.
+func workspaceWebFrontendDirs(projectDir string) []string {
+	var dirs []string
+	for _, fe := range config.DiscoverInRepoFrontends(projectDir) {
+		if fe.Type != "nextjs" && fe.Type != "vite-spa" {
+			continue
+		}
+		if dir, ok := fe.Dir(projectDir); ok {
+			dirs = append(dirs, filepath.Join(projectDir, dir))
+		}
+	}
+	return dirs
 }
 
 // writePnpmWorkspaceYaml writes the root pnpm-workspace.yaml so pnpm
@@ -570,7 +630,13 @@ export {};
 // React Native is OUT of scope here. RN uses platform-specific
 // primitives and does not consume web components; mobile frontends
 // don't get the workspace dep.
-func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout) error {
+//
+// signIn says whether a frontend the package serves signs in: without one,
+// signInComponents (login_form, a password field) are left out, as
+// installCoreComponents leaves them out of a public frontend's own
+// src/components/ui/. They are write-if-missing seeds like the rest, so a
+// frontend that signs in, added later, brings them in then.
+func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout, signIn bool) error {
 	uiDir := filepath.Join(projectDir, "packages", "ui-web")
 	// Components live under src/components/ui/<name>.tsx — mirroring the
 	// per-frontend layout (frontends/<n>/src/components/ui/<name>.tsx).
@@ -654,6 +720,9 @@ func writeUIWebPackage(projectDir string, layout FrontendWorkspaceLayout) error 
 	// land, not WHICH files.
 	lib := components.NewLibrary()
 	for _, name := range coreComponents {
+		if !signIn && signInComponents[name] {
+			continue
+		}
 		content, err := lib.Get(name)
 		if err != nil {
 			return fmt.Errorf("get ui-web component %s: %w", name, err)

@@ -328,7 +328,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 		tierForce = "--tier " + in.tier.Name
 	}
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, frontends: in.ciFrontends,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, modules: cfg.CI.Gate.AffectedModules, frontends: in.ciFrontends,
 		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
@@ -414,6 +414,7 @@ type affectedArgs struct {
 	root, base         string
 	ignore, env, skips []string
 	rules              []config.CIGateAffectedRule
+	modules            string
 	frontends          []templates.FrontendCIConfig
 	cache              *cigate.VerdictCache
 	full               bool
@@ -440,7 +441,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		force = in.tierForce
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
-		Ignore: in.ignore, Rules: in.rules, ChangesOnly: !narrow})
+		Ignore: in.ignore, Rules: in.rules, Modules: in.modules, ChangesOnly: !narrow})
 	if !narrow {
 		return cigate.GateByPaths(checks, a)
 	}
@@ -448,7 +449,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	for _, s := range a.Selections {
 		fmt.Fprintln(out, "  "+s)
 	}
-	return cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends)
+	return cigate.WithModuleTests(cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends), a)
 }
 
 // narrowsUnit reports whether this run may narrow the unit-tests row: it is

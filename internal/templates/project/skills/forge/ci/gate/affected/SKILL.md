@@ -84,6 +84,25 @@ ci:
   rules, and the `test-<name>` rows still run. In full mode there are no
   `test-<name>` rows: `task test` runs every frontend's suite.
 
+## Nested modules the root replaces: `ci.gate.affected_modules`
+
+A root `go.mod` line `replace example.com/app/sdk/go => ./sdk/go` builds that
+directory's own module into the app, but `go list ./...` stops at its
+`go.mod`, so by default every change under it runs the full suite. Opt in:
+
+```yaml
+ci:
+  gate:
+    affected_modules: auto
+```
+
+Then a non-test `.go` file there maps to `<module path>/<dir>`, so the root
+packages that link it are tested, and the module's own affected tests run in
+a `test-mod-sdk-go` row (`go test` in `sdk/go`). Its `go.mod`/`go.sum` runs
+that module's whole suite; the root goes full only when its own `go.mod`/`go.sum`
+changed too. Any other file there still goes through the root's rules and
+also runs the module's whole suite.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when

@@ -65,6 +65,10 @@ func validateCIGatePaths(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 				"give it packages, frontends, or full: true with a reason. A file no test reads belongs in ci.gate.affected_ignore.")
 		}
 	}
+	if m := cfg.CI.Gate.AffectedModules; m != "" && m != "auto" {
+		issue([]string{"ci", "gate", "affected_modules"}, fmt.Sprintf("ci.gate.affected_modules %q is not a known mode", m),
+			"set `affected_modules: auto`, or remove it to keep nested modules on the full suite.")
+	}
 	for i, c := range cfg.CI.Gate.ExtraChecks {
 		globs([]string{"ci", "gate", "extra_checks", fmt.Sprintf("[%d]", i), "paths"}, fmt.Sprintf("ci.gate.extra_checks[%d].paths", i), c.Paths)
 	}

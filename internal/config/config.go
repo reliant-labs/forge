@@ -1058,6 +1058,12 @@ type CIGateConfig struct {
 	// full suite; a file no rule matches behaves as without rules. See
 	// CIGateAffectedRule and internal/cigate/affected.go.
 	AffectedRules []CIGateAffectedRule `yaml:"affected_rules,omitempty"`
+	// AffectedModules, when "auto", maps a change in a nested module the
+	// root go.mod replaces onto a local directory (`replace X => ./sdk/go`)
+	// to the root packages that import it, and runs the module's own
+	// affected tests in a test-mod-<dir> row. Empty (the default) sends any
+	// such change to the full suite, as before.
+	AffectedModules string `yaml:"affected_modules,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.

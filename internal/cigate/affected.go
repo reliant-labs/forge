@@ -80,6 +80,9 @@ type Affected struct {
 	// Selections say, one line per affected rule that matched, what it
 	// claimed and selected.
 	Selections []string
+	// Modules are the nested replaced modules' own tests
+	// (ci.gate.affected_modules: auto; WithModuleTests).
+	Modules []ModuleTests
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -115,6 +118,9 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Modules is ci.gate.affected_modules: "auto" maps changes in nested
+	// modules the root go.mod replaces onto ./dir (affected_modules.go).
+	Modules string
 	// ChangesOnly stops once the changed files are known, without go list:
 	// for a caller that gates checks by path (GateByPaths) but does not
 	// narrow the unit lane.
@@ -175,13 +181,21 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	}
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
+	var modules []ModuleTests
 	fullAfterDiff := func(reason string) Affected {
-		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed}
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, Modules: modules}
 	}
 
 	list := in.GoList
 	if list == nil {
 		list = runGoList
+	}
+	rootChanged := changed
+	nested := nestedChanges{}
+	if in.Modules == AffectedModulesAuto {
+		nested = splitNestedModules(ctx, in, list, changed)
+		rootChanged, modules = nested.rest, nested.tests
+		a.Modules = modules
 	}
 	r, err := list(ctx, in.Root, in.Env)
 	if err != nil {
@@ -191,9 +205,12 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	if err != nil {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
-	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
+	sel, reason := selectChanges(rootChanged, g, in.Ignore, in.Rules)
 	if reason != "" {
 		return fullAfterDiff(reason)
+	}
+	for pkg := range nested.rootPkgs {
+		sel.changedPkgs[pkg] = true
 	}
 	a.Total = len(g.testDeps)
 	for pkg, deps := range g.testDeps {

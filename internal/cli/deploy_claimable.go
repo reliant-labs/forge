@@ -622,7 +622,7 @@ func refuseClaimableWhenSignedIn(ep cloud.Endpoint, env string) error {
 		next := fmt.Sprintf("%s env deploy %s", Name(), env)
 		msg := fmt.Sprintf("you are signed in to %s (%s: %s); drop --claimable to deploy to your organization: %s",
 			ep.URL, cred.Source, cred.From, next)
-		if escape := claimableEscape(cred.Source, env); escape != "" {
+		if escape := claimableEscape(cred.Source, ep.TokenEnv, env); escape != "" {
 			msg += "\n" + escape
 		}
 		return &claimableRefusal{
@@ -644,25 +644,26 @@ func refuseClaimableWhenSignedIn(ep cloud.Endpoint, env string) error {
 // --claimable by accident must not create an orphan preview. The command
 // removes every credential this process can see, not only the one that
 // refused, so it does not just move the refusal to the next source. "" for
-// a --token flag (drop it).
-func claimableEscape(src cloud.CredentialSource, env string) string {
+// a --token flag (drop it). tokenEnv is the endpoint's declared token
+// variable ("" means cloud.DefaultTokenEnv), the one ResolveCredential reads.
+func claimableEscape(src cloud.CredentialSource, tokenEnv, env string) string {
 	if src == cloud.SourceFlag {
 		return ""
+	}
+	if tokenEnv == "" {
+		tokenEnv = cloud.DefaultTokenEnv
 	}
 	args := []string{"env"}
 	if os.Getenv("FORGE_CREDENTIAL_HELPER") != "" {
 		args = append(args, "-u", "FORGE_CREDENTIAL_HELPER")
 	}
-	if os.Getenv(cloud.DefaultTokenEnv) != "" || src == cloud.SourceEnv {
-		args = append(args, "-u", cloud.DefaultTokenEnv)
+	if os.Getenv(tokenEnv) != "" || src == cloud.SourceEnv {
+		args = append(args, "-u", tokenEnv)
 	}
 	tail := ""
 	if src == cloud.SourceLogin {
 		args = append(args, "FORGE_HOME=<empty dir>")
 		tail = " (keep that FORGE_HOME: the deploy's claim link and the token that stops or deletes it are stored there)"
-	}
-	if src == cloud.SourceEnv {
-		tail = " (or unset the env's declared token_env, when it names another variable)"
 	}
 	return fmt.Sprintf("to deploy anonymously from this machine anyway, as a user with no account would: %s %s env deploy %s --claimable%s",
 		strings.Join(args, " "), Name(), env, tail)

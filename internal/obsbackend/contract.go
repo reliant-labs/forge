@@ -180,6 +180,16 @@ type DashboardReader interface {
 	QueryPanelReadout(ctx context.Context, req PanelReadoutRequest) (PanelReadout, error)
 }
 
+// FlamegraphReader reads one service's aggregated profile from the control
+// plane: what `forge obs profile <env>` exports for a hosted env. Only the
+// cloud backend implements it; a ClickStack's profiles are read through
+// pkg/profilequery instead.
+//
+//forge:contract
+type FlamegraphReader interface {
+	Flamegraph(ctx context.Context, req FlamegraphRequest) (FlamegraphResult, error)
+}
+
 // PGOExporter reads an env's merged CPU profile in the shape `go build -pgo`
 // takes: what `forge pgo pull` fetches from the control plane. Only the cloud
 // backend implements it; a ClickStack's profiles are read through

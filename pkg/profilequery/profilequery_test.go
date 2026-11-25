@@ -122,6 +122,51 @@ func TestSpeedscopeIsTheDocumentedFormat(t *testing.T) {
 	}
 }
 
+// What Speedscope writes, ReadSpeedscope reads back stack for stack: the
+// control plane answers GetFlamegraph with Speedscope's bytes, and
+// `forge obs profile <env>` rewrites them as pprof or collapsed stacks.
+func TestReadSpeedscopeRoundTrips(t *testing.T) {
+	want := parsed(t)
+	var b bytes.Buffer
+	if err := want.Speedscope(&b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSpeedscope(&b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Unit != want.Unit || fmt.Sprint(got.Stacks) != fmt.Sprint(want.Stacks) {
+		t.Errorf("read back unit %q stacks %v, want %q %v", got.Unit, got.Stacks, want.Unit, want.Stacks)
+	}
+
+	// A unit speedscope does not know is written as "none" and read as "".
+	b.Reset()
+	if err := (Profile{Unit: "count", Stacks: []Stack{{Frames: []string{"a", "b"}, Value: 3}}}).Speedscope(&b); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadSpeedscope(&b); err != nil || got.Unit != "" || len(got.Stacks) != 1 {
+		t.Errorf("count profile read back as %+v, %v", got, err)
+	}
+}
+
+func TestReadSpeedscopeRefusesWhatItCannotRead(t *testing.T) {
+	for name, doc := range map[string]string{
+		"evented":       `{"shared":{"frames":[{"name":"a"}]},"profiles":[{"type":"evented","unit":"none"}]}`,
+		"frame range":   `{"shared":{"frames":[{"name":"a"}]},"profiles":[{"type":"sampled","samples":[[0,1]],"weights":[1]}]}`,
+		"weights":       `{"shared":{"frames":[{"name":"a"}]},"profiles":[{"type":"sampled","samples":[[0]],"weights":[]}]}`,
+		"active index":  `{"activeProfileIndex":2,"shared":{"frames":[]},"profiles":[{"type":"sampled"}]}`,
+		"not json":      `<html>`,
+		"weight string": `{"shared":{"frames":[{"name":"a"}]},"profiles":[{"type":"sampled","samples":[[0]],"weights":["x"]}]}`,
+	} {
+		if _, err := ReadSpeedscope(strings.NewReader(doc)); err == nil {
+			t.Errorf("%s: read without an error", name)
+		}
+	}
+	if p, err := ReadSpeedscope(strings.NewReader(`{"profiles":[]}`)); err != nil || len(p.Stacks) != 0 {
+		t.Errorf("an empty file = %+v, %v; want no stacks and no error", p, err)
+	}
+}
+
 func TestSQLBindsParametersAndNeverInterpolates(t *testing.T) {
 	q := Query{Service: "x'; DROP TABLE t;--", SampleType: "cpu", From: time.Unix(10, 0), To: time.Unix(20, 0)}
 	sql, params := q.SQL()

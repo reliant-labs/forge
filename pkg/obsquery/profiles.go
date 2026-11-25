@@ -20,6 +20,12 @@ type Flamegraph struct {
 	Service    string
 	SampleType string
 	TraceID    string
+	// Env, when set, narrows a range read (and ProfileTypes) to the samples
+	// recorded under this forge environment NAME (deployment.environment.name);
+	// "" reads every environment. A trace read ignores it: the trace already
+	// names one request. It is a filter, never an access boundary: the name is
+	// the one a workload reports about itself.
+	Env string
 }
 
 // Compile builds the stack statement from forge's profilequery (the SQL forge
@@ -40,7 +46,10 @@ func (q Flamegraph) Compile() (Stmt, error) {
 	if q.SampleType == "" || len(q.SampleType) > 128 {
 		return Stmt{}, invalid("profile_type must be 1-128 characters")
 	}
-	pq := profilequery.Query{Service: q.Service, SampleType: q.SampleType, From: q.Scope.Start, To: q.Scope.End}
+	if len(q.Env) > 128 {
+		return Stmt{}, invalid("env must be at most 128 characters")
+	}
+	pq := profilequery.Query{Service: q.Service, SampleType: q.SampleType, Env: q.Env, From: q.Scope.Start, To: q.Scope.End}
 	if q.TraceID != "" {
 		id, err := NormalizeTraceID(q.TraceID)
 		if err != nil {
@@ -75,6 +84,9 @@ func (q Flamegraph) ProfileTypes() (Stmt, error) {
 	lookback := "Minute >= " + b.secTime(since) + " AND Minute < " + b.secTime(q.Scope.End) +
 		" AND SampleType IN (" + strings.Join(snapshotTypes(b), ", ") + ")"
 	conds := []string{"ServiceName = " + b.str(q.Service), "((" + inRange + ") OR (" + lookback + "))"}
+	if q.Env != "" {
+		conds = append(conds, "Env = "+b.str(q.Env))
+	}
 	return b.stmt("SELECT DISTINCT SampleType FROM " + b.table(q.Scope, "profile_samples_1m") + "\n" +
 		where(conds) + "\nORDER BY SampleType LIMIT 50"), nil
 }

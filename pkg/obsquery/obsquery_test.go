@@ -562,6 +562,27 @@ func TestFlamegraphUsesForgesSQLOnTheOrgDatabase(t *testing.T) {
 	if !strings.Contains(pt.SQL, "AND SampleType IN (") || strings.Count(pt.SQL, "Minute >=") != 2 {
 		t.Errorf("types do not look back for snapshots:\n%s", pt.SQL)
 	}
+	// Env narrows the stacks and the types to one environment name, bound
+	// as a parameter like everything else.
+	envd, err := Flamegraph{Scope: scope(), Service: "api", SampleType: "cpu", Env: h}.Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParameterized(t, envd, h)
+	if envd.Params["env"] != h {
+		t.Errorf("env not bound: %v", envd.Params)
+	}
+	ept, err := Flamegraph{Scope: scope(), Service: "api", Env: h}.ProfileTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertParameterized(t, ept, h)
+	if !strings.Contains(ept.SQL, "Env = ") {
+		t.Errorf("types not narrowed to the env:\n%s", ept.SQL)
+	}
+	if _, err := (Flamegraph{Scope: scope(), Service: "api", SampleType: "cpu", Env: strings.Repeat("e", 129)}).Compile(); !isInvalid(err) {
+		t.Errorf("a 129-character env: err = %v", err)
+	}
 	heap, err := Flamegraph{Scope: scope(), Service: "api", SampleType: "inuse_space"}.Compile()
 	if err != nil {
 		t.Fatal(err)

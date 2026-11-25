@@ -90,7 +90,7 @@ rows. Each step should narrow the hypothesis:
 | A question beyond the structured verbs | `forge obs endpoints dev --explain --json`, then adapt its SQL with `forge obs query dev --sql-file investigation.sql` |
 | A dashboard panel's data | `forge obs query dev --panel panel.json --since 15m` |
 | A dashboard that looks empty | `forge obs dashboards audit prod --dashboard <id> --json` (recipe below) |
-| Continuous CPU/heap evidence | `forge obs profile --env dev --service api --since 15m -o /tmp/api.pb.gz` (local ClickStack; see below) |
+| Continuous CPU/heap evidence | `forge obs profile prod --service api --since 15m -o /tmp/api.pb.gz` (any env, hosted included; see below) |
 
 `api` is an example **telemetry service.name**, not necessarily a workload or
 binary name. Use the name status actually returned. Prefer complete `suggested`

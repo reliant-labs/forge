@@ -34,7 +34,7 @@ func DeclareCloudScopes(c ScopeDeclarer) {
 		procListIssues, procGetIssue, procListIssueEvents, procListIssueTimeline,
 		procListSessions, procGetSession, procGetSessionTimeline,
 		procListDashboards, procGetDashboard,
-		procExportPGOProfile,
+		procExportPGOProfile, procGetFlamegraph,
 	)
 	c.DeclareScope("obs:triage", procUpdateIssueStatus, procAddIssueComment, procAssignIssue)
 }

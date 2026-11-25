@@ -204,6 +204,34 @@ func liveDeployment(t *testing.T, name, mf string, replicas int) map[string]any 
 	return o
 }
 
+func TestHandoverReplicasAfterPreRolloutGate(t *testing.T) {
+	deployment := autoscaledDeploy("api", "prod")
+	hpa := hpaDoc("api", "prod", "api", 2, 6)
+	job := "apiVersion: batch/v1\nkind: Job\nmetadata: {name: migrate, namespace: prod}"
+	support := "apiVersion: v1\nkind: ServiceAccount\nmetadata: {name: migrate, namespace: prod}"
+	phases, err := partitionRolloutPhases(stream(deployment, hpa, job, support))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !phases.gated() || phases.support != support || phases.preJobs != job {
+		t.Fatalf("migration support and Job must still precede workloads: %+v", phases)
+	}
+	if phases.workloads != stream(deployment, hpa) {
+		t.Fatalf("Deployment and HPA must share the held-back apply: %s", phases.workloads)
+	}
+	// Exercise the handover with the actual stream sent after the gate, not
+	// the original unsplit render. Previously this stream lacked the HPA and
+	// handed over nothing, so SSA would default the live count of 4 to 1.
+	f := &handoverKubectl{live: []map[string]any{liveDeployment(t, "api", mfForgeOwnsReplicas, 4)}}
+	if err := handoverReplicas(context.Background(), f.run, "prod", phases.workloads, nil); err != nil {
+		t.Fatal(err)
+	}
+	want := string(replicasHandoverManifest("api", "prod", 4))
+	if len(f.applied) != 1 || f.applied[0] != want {
+		t.Fatalf("want replica ownership handed over at 4, got %v", f.applied)
+	}
+}
+
 func TestHandoverReplicas(t *testing.T) {
 	s := stream(autoscaledDeploy("api", ""), hpaDoc("api", "prod", "api", 2, 3))
 

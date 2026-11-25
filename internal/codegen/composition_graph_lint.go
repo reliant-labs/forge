@@ -152,6 +152,11 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		if reached[n.Name] {
 			continue
 		}
+		// A package built only through `forge scaffold variant` wrappers
+		// is reached through them (composition_graph_variant.go).
+		if m.variantReached(n, reached) {
+			continue
+		}
 		if why, left := m.unbuilt[n.Name]; left {
 			if f, ok := m.unbuiltFinding(n, why, audienceOf[n.Name]); ok {
 				out = append(out, f)

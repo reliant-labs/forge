@@ -142,8 +142,8 @@ func TestExplainCmd_JSONMatchesMCPTool(t *testing.T) {
 // The content check's refusals of an unclaimed deploy are explained, the same
 // way by `forge explain --json` and explain_error: a refusal claiming may
 // lift (not retryable as is), and an unavailable check (retry later). The
-// reason decides, whatever the exit code: forge exits 1 on both today (no
-// exit-code table row names them), so that is the code given here.
+// reason alone decides: the test names no exit code, and the answer is the
+// same whichever code accompanies the reason.
 func TestExplainCmd_ClaimableContentReasons(t *testing.T) {
 	cs := connectMCP(t, t.TempDir())
 	for _, tc := range []struct {
@@ -153,10 +153,15 @@ func TestExplainCmd_ClaimableContentReasons(t *testing.T) {
 		{cloud.ReasonClaimableContentRefused, "no", []string{"Claim:", "claiming lifts the refusal", "change it"}},
 		{cloud.ReasonClaimableScanUnavailable, "later", []string{"again later"}},
 	} {
-		ex, ok := explainForgeErrorMatch(exitWrong, tc.reason, "", "prod")
+		ex, ok := explainForgeErrorMatch(-1, tc.reason, "", "prod")
 		if !ok {
 			t.Errorf("%s: not explained", tc.reason)
 			continue
+		}
+		for _, code := range []int{exitWrong, exitRefused} {
+			if got, _ := explainForgeErrorMatch(code, tc.reason, "", "prod"); !reflect.DeepEqual(got, ex) {
+				t.Errorf("%s with exit %d: %+v, want the reason's answer %+v", tc.reason, code, got, ex)
+			}
 		}
 		if ex.Retry != tc.retry {
 			t.Errorf("%s: retry = %q, want %q", tc.reason, ex.Retry, tc.retry)
@@ -166,7 +171,7 @@ func TestExplainCmd_ClaimableContentReasons(t *testing.T) {
 				t.Errorf("%s: meaning lacks %q: %s", tc.reason, s, ex.Meaning)
 			}
 		}
-		out, err := runExplain(t, tc.reason, strconv.Itoa(exitWrong), "--env", "prod", "--json")
+		out, err := runExplain(t, tc.reason, "--env", "prod", "--json")
 		if err != nil {
 			t.Fatalf("%s: %v", tc.reason, err)
 		}
@@ -175,7 +180,7 @@ func TestExplainCmd_ClaimableContentReasons(t *testing.T) {
 			t.Fatalf("%s: --json is not JSON: %v\n%s", tc.reason, err, out)
 		}
 		text, mcpDoc, isErr, err := callMCPStructured(context.Background(), t, cs, "explain_error",
-			map[string]any{"exit_code": exitWrong, "error_reason": tc.reason, "env": "prod"}, nil)
+			map[string]any{"error_reason": tc.reason, "env": "prod"}, nil)
 		if err != nil || isErr {
 			t.Fatalf("%s: explain_error: %v\n%s", tc.reason, err, text)
 		}

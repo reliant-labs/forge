@@ -88,3 +88,13 @@ repeat the guidance. A rewrite alone is not proof of a completed repair; run
 A page you renamed or restructured so that its type import no longer comes from
 a `_pb` module is outside what the codemod reads; give that import an alias by
 hand the same way.
+
+## Enums
+
+New pages bind protobuf-es enums the same way, with the suffix `Enum`:
+`import { Button as ButtonEnum } from "…_pb"`, and every reference on the
+page (`ButtonEnum.PRIMARY`, `enumType={ ButtonEnum }`, the zod pipe) uses it.
+An enum is imported as a value, not `import type`, so the codemod does not
+touch it. An older page whose enum shares a name with another import (tsc:
+`Duplicate identifier` on the enum's name) is fixed by hand: alias the
+specifier and rename the page's uses of the enum.

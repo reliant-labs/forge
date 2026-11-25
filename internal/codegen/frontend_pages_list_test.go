@@ -131,14 +131,14 @@ func TestAttachListMeta_ServerSideFilterProjection(t *testing.T) {
 	if status.Name != "status" || status.NamePascal != "Status" || status.Kind != "enum" {
 		t.Errorf("filter[0] = %+v, want status/Status/enum", status)
 	}
-	if status.EnumType != "OrderStatus" || status.EnumImport != "@/gen/services/orders/v1/orders_pb" {
-		t.Errorf("filter[0] enum = %q from %q, want OrderStatus / @/gen/services/orders/v1/orders_pb", status.EnumType, status.EnumImport)
+	if status.EnumType != "OrderStatusEnum" || status.EnumImport != "@/gen/services/orders/v1/orders_pb" {
+		t.Errorf("filter[0] enum = %q from %q, want OrderStatusEnum / @/gen/services/orders/v1/orders_pb", status.EnumType, status.EnumImport)
 	}
 	// The real members only: filtering on the zero matches no row, because
 	// the born CHECK never admits it.
 	wantVals := []PageEnumValue{
-		{Ref: "OrderStatus.PENDING", Label: "Pending"},
-		{Ref: "OrderStatus.SHIPPED", Label: "Shipped"},
+		{Ref: "OrderStatusEnum.PENDING", Label: "Pending"},
+		{Ref: "OrderStatusEnum.SHIPPED", Label: "Shipped"},
 	}
 	if len(status.EnumValues) != len(wantVals) {
 		t.Fatalf("filter[0] EnumValues = %+v, want %+v", status.EnumValues, wantVals)
@@ -156,8 +156,8 @@ func TestAttachListMeta_ServerSideFilterProjection(t *testing.T) {
 	if len(page.ListFilterEnumImports) != 1 ||
 		page.ListFilterEnumImports[0].Path != "@/gen/services/orders/v1/orders_pb" ||
 		len(page.ListFilterEnumImports[0].Types) != 1 ||
-		page.ListFilterEnumImports[0].Types[0] != "OrderStatus" {
-		t.Errorf("ListFilterEnumImports = %+v, want one OrderStatus import", page.ListFilterEnumImports)
+		page.ListFilterEnumImports[0].Types[0] != "OrderStatus as OrderStatusEnum" {
+		t.Errorf("ListFilterEnumImports = %+v, want one OrderStatusEnum import", page.ListFilterEnumImports)
 	}
 }
 
@@ -179,15 +179,15 @@ func TestListPage_RendersServerSideResource(t *testing.T) {
 		`data={resource.status === "success" ? resource.data.orders : undefined}`,
 		// Enum filter imported + rendered by the installed <FilterBar>, in a
 		// toolbar row of its own (not the header, which overflowed a phone).
-		`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
+		`import { OrderStatus as OrderStatusEnum } from "@/gen/services/orders/v1/orders_pb";`,
 		`import FilterBar from "@/components/ui/filter_bar";`,
-		`{ value: OrderStatus[OrderStatus.SHIPPED], label: "Shipped" }`,
+		`{ value: OrderStatusEnum[OrderStatusEnum.SHIPPED], label: "Shipped" }`,
 		`toolbar={`,
 		// Filter state lives in the URL, so a dashboard tile linking to
 		// `?status=SHIPPED` lands on a FILTERED list. The token is the enum
 		// MEMBER NAME, not its ordinal.
 		`const statusOptions = [`,
-		`const status = statusOptions.find((member) => OrderStatus[member] === params.status);`,
+		`const status = statusOptions.find((member) => OrderStatusEnum[member] === params.status);`,
 		`setFilters({ status: next.status, expedited: next.expedited });`,
 		`const params = useTypedSearchParams(searchParamsSchema);`,
 		// Every filter passed to the List RPC (server-side).
@@ -240,9 +240,9 @@ func TestViteSpaListPage_ServerSideResource(t *testing.T) {
 		`const resource = useQueryResource(query);`,
 		`<Resource<OrderEntity>`,
 		// Enum filter imported + rendered by the installed <FilterBar>.
-		`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
-		`{ value: String(OrderStatus.SHIPPED), label: "Shipped" }`,
-		`(Number(next.status) as OrderStatus)`,
+		`import { OrderStatus as OrderStatusEnum } from "@/gen/services/orders/v1/orders_pb";`,
+		`{ value: String(OrderStatusEnum.SHIPPED), label: "Shipped" }`,
+		`(Number(next.status) as OrderStatusEnum)`,
 		// Every filter passed to the List RPC (server-side), with the prior
 		// page held while the next loads.
 		`const query = useListOrders({`,

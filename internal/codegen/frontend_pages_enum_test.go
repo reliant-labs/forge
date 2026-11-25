@@ -161,8 +161,8 @@ func TestExtractCRUDEntities_EnumCreateFieldTypedSelect(t *testing.T) {
 	if !status.IsEnum {
 		t.Errorf("status field IsEnum = false, want true")
 	}
-	if status.EnumType != "BrandStatus" {
-		t.Errorf("status field EnumType = %q, want %q", status.EnumType, "BrandStatus")
+	if status.EnumType != "BrandStatusEnum" {
+		t.Errorf("status field EnumType = %q, want %q", status.EnumType, "BrandStatusEnum")
 	}
 	if status.EnumImportPath != "@/gen/services/brand/v1/brand_pb" {
 		t.Errorf("status field EnumImportPath = %q, want %q", status.EnumImportPath, "@/gen/services/brand/v1/brand_pb")
@@ -171,11 +171,11 @@ func TestExtractCRUDEntities_EnumCreateFieldTypedSelect(t *testing.T) {
 	// BRAND_STATUS_ prefix is stripped; labels are humanized. The zero
 	// value is not a choice — it is held separately for the zod refusal.
 	wantValues := []PageEnumValue{
-		{Ref: "BrandStatus.DRAFT", Label: "Draft"},
-		{Ref: "BrandStatus.ACTIVE", Label: "Active"},
+		{Ref: "BrandStatusEnum.DRAFT", Label: "Draft"},
+		{Ref: "BrandStatusEnum.ACTIVE", Label: "Active"},
 	}
-	if status.EnumZeroRef != "BrandStatus.UNSPECIFIED" {
-		t.Errorf("status field EnumZeroRef = %q, want %q", status.EnumZeroRef, "BrandStatus.UNSPECIFIED")
+	if status.EnumZeroRef != "BrandStatusEnum.UNSPECIFIED" {
+		t.Errorf("status field EnumZeroRef = %q, want %q", status.EnumZeroRef, "BrandStatusEnum.UNSPECIFIED")
 	}
 	if len(status.EnumValues) != len(wantValues) {
 		t.Fatalf("EnumValues = %+v, want %+v", status.EnumValues, wantValues)
@@ -186,13 +186,13 @@ func TestExtractCRUDEntities_EnumCreateFieldTypedSelect(t *testing.T) {
 		}
 	}
 
-	wantImports := []PageEnumImport{{Path: "@/gen/services/brand/v1/brand_pb", Types: []string{"BrandStatus"}}}
+	wantImports := []PageEnumImport{{Path: "@/gen/services/brand/v1/brand_pb", Types: []string{"BrandStatus as BrandStatusEnum"}}}
 	for name, got := range map[string][]PageEnumImport{
 		"CreateEnumImports": page.CreateEnumImports,
 		"UpdateEnumImports": page.UpdateEnumImports,
 	} {
 		if len(got) != 1 || got[0].Path != wantImports[0].Path ||
-			len(got[0].Types) != 1 || got[0].Types[0] != "BrandStatus" {
+			len(got[0].Types) != 1 || got[0].Types[0] != "BrandStatus as BrandStatusEnum" {
 			t.Errorf("%s = %+v, want %+v", name, got, wantImports)
 		}
 	}
@@ -246,18 +246,18 @@ func TestResolveFormEnum_ShapeRules(t *testing.T) {
 	if !ok {
 		t.Fatalf("nested same-package enum should resolve")
 	}
-	if meta.TSType != "Brand_Tier" {
-		t.Errorf("nested enum TSType = %q, want %q", meta.TSType, "Brand_Tier")
+	if meta.TSType != "Brand_TierEnum" {
+		t.Errorf("nested enum TSType = %q, want %q", meta.TSType, "Brand_TierEnum")
 	}
 	if meta.ImportPath != "@/gen/services/brand/v1/brand_pb" {
 		t.Errorf("nested enum ImportPath = %q, want %q", meta.ImportPath, "@/gen/services/brand/v1/brand_pb")
 	}
 	// Values are the choices — the zero (TIER_UNSPECIFIED) is held apart.
-	if len(meta.Values) != 1 || meta.Values[0].Ref != "Brand_Tier.GOLD" || meta.Values[0].Label != "Gold" {
+	if len(meta.Values) != 1 || meta.Values[0].Ref != "Brand_TierEnum.GOLD" || meta.Values[0].Label != "Gold" {
 		t.Errorf("nested enum Values = %+v", meta.Values)
 	}
-	if meta.ZeroRef != "Brand_Tier.UNSPECIFIED" {
-		t.Errorf("nested enum ZeroRef = %q, want %q", meta.ZeroRef, "Brand_Tier.UNSPECIFIED")
+	if meta.ZeroRef != "Brand_TierEnum.UNSPECIFIED" {
+		t.Errorf("nested enum ZeroRef = %q, want %q", meta.ZeroRef, "Brand_TierEnum.UNSPECIFIED")
 	}
 
 	if _, ok := resolveFormEnum(svc, "Brand", "shared.v1.Region"); ok {
@@ -352,17 +352,17 @@ func TestCreatePage_EnumFieldTypedSelect(t *testing.T) {
 			create := renderPageTemplate(t, kind, "create-page.tsx.tmpl", page)
 
 			for _, want := range []string{
-				`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
+				`import { BrandStatus as BrandStatusEnum } from "@/gen/services/brand/v1/brand_pb";`,
 				// Enum zod refuses the zero — the mirror of the born CHECK.
-				`status: z.coerce.number().pipe(z.enum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+				`status: z.coerce.number().pipe(z.enum(BrandStatusEnum)).refine((v): boolean => v !== BrandStatusEnum.UNSPECIFIED, "Choose a value"),`,
 				// The installed library primitive, not a hand-styled <select>.
 				`<Select`,
 				// A NOT NULL enum starts on its column DEFAULT, the first
 				// real member — what Create stores when the field is omitted.
-				`defaultValue={ BrandStatus.DRAFT }`,
+				`defaultValue={ BrandStatusEnum.DRAFT }`,
 				`{...register("status")}`,
-				`<option value={ BrandStatus.DRAFT }>Draft</option>`,
-				`<option value={ BrandStatus.ACTIVE }>Active</option>`,
+				`<option value={ BrandStatusEnum.DRAFT }>Draft</option>`,
+				`<option value={ BrandStatusEnum.ACTIVE }>Active</option>`,
 				// The plain fields still render as before.
 				`{...register("name")}`,
 				`{...register("priority")}`,
@@ -373,7 +373,7 @@ func TestCreatePage_EnumFieldTypedSelect(t *testing.T) {
 			}
 
 			// The UNSPECIFIED (zero) option is never a choice (F12).
-			if strings.Contains(create, `<option value={ BrandStatus.UNSPECIFIED }>Unspecified</option>`) {
+			if strings.Contains(create, `<option value={ BrandStatusEnum.UNSPECIFIED }>Unspecified</option>`) {
 				t.Errorf("create page still offers the UNSPECIFIED zero-value option:\n%s", create)
 			}
 
@@ -398,8 +398,8 @@ func TestEditPage_EnumFieldAndEntityFields(t *testing.T) {
 			edit := renderPageTemplate(t, kind, "edit-page.tsx.tmpl", page)
 
 			for _, want := range []string{
-				`import { BrandStatus } from "@/gen/services/brand/v1/brand_pb";`,
-				`status: z.coerce.number().pipe(z.enum(BrandStatus)).refine((v): boolean => v !== BrandStatus.UNSPECIFIED, "Choose a value"),`,
+				`import { BrandStatus as BrandStatusEnum } from "@/gen/services/brand/v1/brand_pb";`,
+				`status: z.coerce.number().pipe(z.enum(BrandStatusEnum)).refine((v): boolean => v !== BrandStatusEnum.UNSPECIFIED, "Choose a value"),`,
 				// Prefill from the fetched entity — the field is the TS
 				// enum (a number), never String()-coerced, and never
 				// defaulted to the zero.
@@ -407,7 +407,7 @@ func TestEditPage_EnumFieldAndEntityFields(t *testing.T) {
 				// The installed library primitive, not a hand-styled <select>.
 				`<Select`,
 				`{...register("status")}`,
-				`<option value={ BrandStatus.ACTIVE }>Active</option>`,
+				`<option value={ BrandStatusEnum.ACTIVE }>Active</option>`,
 				// The sibling plain fields made it into the form too.
 				`{...register("name")}`,
 				`{...register("tagline")}`,
@@ -425,7 +425,7 @@ func TestEditPage_EnumFieldAndEntityFields(t *testing.T) {
 			if strings.Contains(edit, "status: z.string()") {
 				t.Errorf("edit page still types the enum field as z.string():\n%s", edit)
 			}
-			if strings.Contains(edit, "BrandStatus.UNSPECIFIED }>") {
+			if strings.Contains(edit, "BrandStatusEnum.UNSPECIFIED }>") {
 				t.Errorf("edit page offers the UNSPECIFIED zero value as a choice:\n%s", edit)
 			}
 			if strings.Contains(edit, "String(item.status") {

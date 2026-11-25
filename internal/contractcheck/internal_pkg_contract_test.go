@@ -775,7 +775,11 @@ import "example.com/proj/internal/tools"
 
 type Service = tools.ChangeController
 
-type Deps struct{}
+// projects is a collaborator interface, as in reliant's changetools: with
+// it the package is no longer skipped as interface-free.
+type projects interface{ Get() error }
+
+type Deps struct{ Projects projects }
 
 func New(d Deps) Service { return nil }
 `, 0},

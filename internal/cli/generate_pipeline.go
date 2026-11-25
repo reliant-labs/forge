@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -1546,17 +1547,43 @@ func stepShellBuildTokens(ctx *pipelineContext) error {
 // linked into one binary (internal/configproto). Reading it would keep
 // generating a pkg/config that panics at init the moment another repo
 // imports it beside its own.
+//
+// It also refuses a project whose forge.yaml name changed after its config was
+// scaffolded (renamedConfigProtoErr): the config proto's path and package
+// follow the name, so generating on would drop pkg/config and fail on a
+// compiler error that names neither the name nor the rename.
 func stepLegacyConfigProto(ctx *pipelineContext) error {
 	files := configproto.LegacyFiles(ctx.ProjectDir)
+	layout := configproto.ForProject(ctx.ProjectDir)
 	if len(files) == 0 {
+		module := configproto.ModulePath(ctx.ProjectDir)
+		if old, ok := layout.RenamedFrom(ctx.ProjectDir, module); ok {
+			return renamedConfigProtoErr(layout, old, module)
+		}
 		return nil
 	}
-	layout := configproto.ForProject(ctx.ProjectDir)
 	return cliutil.UserErr("forge generate",
 		fmt.Sprintf("the config protos declare the shared package %s, which collides with every other forge project's config at init (\"file config/v1/config.proto is already registered\")", configproto.LegacyPackage),
 		strings.Join(files, ", "),
 		fmt.Sprintf("run `%s fix %s` — it moves them to %s, declares package %s and rewrites every import; then re-run `%s generate`",
 			cmdutil.Name(), configproto.LegacyCodemod, layout.Dir(), layout.Package(), cmdutil.Name()))
+}
+
+// renamedConfigProtoErr is the refusal for a project renamed in forge.yaml
+// whose config proto still sits at the old name's layout. It names everything
+// forge.yaml's name decides, so a rename is finished rather than discovered
+// one failure at a time.
+func renamedConfigProtoErr(now, old configproto.Layout, module string) error {
+	name := cmdutil.Name()
+	return cliutil.UserErr("forge generate",
+		fmt.Sprintf("forge.yaml's name is now %q, but the config proto is still at %s (package %s): its path and package follow forge.yaml's name, so generating on would drop pkg/config", now.Slug, old.RootPath(), old.Package()),
+		old.Dir(),
+		fmt.Sprintf("forge.yaml's name also names the server binary's directory (cmd/<name>), the hosted app every hosted env deploys to (a new name is a NEW hosted app; the old one and its envs keep running) and the hosted registry path of its release images (<org>/<name>/<workload>). "+
+			"To keep the old identity, put `name:` back. To finish the rename: `git mv %s %s`, then in each file there change `package %s;` to `package %s;` and go_package's %s to %s; "+
+			"`git mv cmd/<old name> cmd/<new name>` and change cmd/<old name> to cmd/<new name> in the files you own that name it (`git grep -l cmd/<old name> -- ':!gen'`: the Dockerfile, Taskfile.yml, .air.toml, deploy/kcl); "+
+			"replace any import of %s in Go files you own (generated files are rewritten); then re-run `%s generate`",
+			path.Join("proto", old.Slug), path.Join("proto", now.Slug), old.Package(), now.Package(), old.GoImportPath(module), now.GoImportPath(module),
+			old.GoImportPath(module), name))
 }
 
 // stepMigrateImageRegistry moves a project off env-level registries: it removes

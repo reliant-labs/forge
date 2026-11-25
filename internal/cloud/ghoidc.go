@@ -288,11 +288,22 @@ func withoutURL(err error) error {
 	return err
 }
 
+// httpClient is the client for both requests, and it NEVER follows a redirect.
+// Each carries a secret: the ID-token request the runner's bearer
+// ($ACTIONS_ID_TOKEN_REQUEST_TOKEN) in its header, the exchange the job's ID
+// token in its body. net/http replays a 307/308's body to wherever the
+// Location names, any origin, so an endpoint that redirects (misconfigured,
+// or a repository's KCL naming a hostile one) would hand the ID token to a
+// third party. The redirect is answered as the response itself instead, and
+// fails as a non-200.
 func (ci *ciIdentity) httpClient(timeout time.Duration) *http.Client {
+	c := &http.Client{Timeout: timeout}
 	if ci.http != nil {
-		return ci.http
+		copied := *ci.http
+		c = &copied
 	}
-	return &http.Client{Timeout: timeout}
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }
 
 // exchangeDegrades reports an exchange answer that means "no CI credential

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -427,5 +428,97 @@ func TestResolveCredentialFor_TokensNeverInOutput(t *testing.T) {
 	}
 	if refused.mask.Len() != 0 || failed.mask.Len() != 0 {
 		t.Fatal("a failed exchange printed an add-mask line")
+	}
+}
+
+// redirectTrap is a server every request to which is a leak: the place a
+// redirect points. hits counts them; bodies and auth are what it was handed.
+type redirectTrap struct {
+	mu     sync.Mutex
+	hits   int
+	bodies []string
+	auth   []string
+}
+
+func (r *redirectTrap) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hits++
+	b, _ := io.ReadAll(req.Body)
+	r.bodies = append(r.bodies, string(b))
+	r.auth = append(r.auth, req.Header.Get("Authorization"))
+	_ = json.NewEncoder(w).Encode(map[string]any{"value": "idtok-trap", "token": "rlat_trap", "expiresAt": "2999-01-01T00:00:00Z"})
+}
+
+// redirector answers every request with a 307 (which net/http would replay,
+// body and all) to target's same path.
+func redirector(t *testing.T, target string) (*httptest.Server, func() int) {
+	t.Helper()
+	var mu sync.Mutex
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		http.Redirect(w, r, target+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits
+	}
+}
+
+// A control-plane endpoint that redirects the exchange elsewhere never gets
+// the ID token forwarded: the redirect is the answer, and it fails.
+func TestExchangeFederated_NeverFollowsARedirect(t *testing.T) {
+	t.Parallel()
+	trap := &redirectTrap{}
+	trapSrv := httptest.NewServer(trap)
+	t.Cleanup(trapSrv.Close)
+	redir, _ := redirector(t, trapSrv.URL)
+
+	f := newOIDCFixture(t)
+	f.ep.URL = redir.URL
+	_, err := f.resolve(accesstoken.ScopeTestsWrite)
+	if err == nil {
+		t.Fatal("a redirected exchange must fail")
+	}
+	trap.mu.Lock()
+	defer trap.mu.Unlock()
+	if trap.hits != 0 {
+		t.Fatalf("the redirect target was reached %d times, with bodies %q", trap.hits, trap.bodies)
+	}
+	if strings.Contains(err.Error(), "idtok-1") || f.mask.Len() != 0 {
+		t.Fatalf("the ID token leaked: %v / %q", err, f.mask.String())
+	}
+}
+
+// The ID-token request, whose header carries the runner's bearer, never
+// follows a redirect either, and a redirect is not retried.
+func TestFetchGitHubIDToken_NeverFollowsARedirect(t *testing.T) {
+	t.Parallel()
+	trap := &redirectTrap{}
+	trapSrv := httptest.NewServer(trap)
+	t.Cleanup(trapSrv.Close)
+	redir, hits := redirector(t, trapSrv.URL)
+
+	f := newOIDCFixture(t)
+	f.env[envIDTokenRequestURL] = redir.URL + "/token?api-version=2.0"
+	_, err := f.resolve(accesstoken.ScopeTestsWrite)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+		t.Fatalf("want the 307 named, got %v", err)
+	}
+	trap.mu.Lock()
+	defer trap.mu.Unlock()
+	if trap.hits != 0 {
+		t.Fatalf("the redirect target was reached %d times, with Authorization %q", trap.hits, trap.auth)
+	}
+	if n := hits(); n != 1 {
+		t.Fatalf("a redirect was retried: %d requests", n)
+	}
+	if bodies, _ := f.cp.seen(); len(bodies) != 0 {
+		t.Fatalf("an exchange ran without an ID token: %v", bodies)
 	}
 }

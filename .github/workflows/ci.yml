@@ -67,7 +67,9 @@ permissions:
 #
 #   test-short        two -short shards, no -race (scripts/ci-test-shard.sh),
 #                     and an independent changed-test flake gate, -count=3.
-#                     Whole-repo guard scans/renders run only on main/full.
+#                     The guards' cheap whole-repo checks run here in full
+#                     mode (removalguard, scripts/ci-guard-tests.sh); their
+#                     renders (tierguard) run only on main/full.
 #   checks            forge generate is a no-op, KCL validates, pre-commit hooks,
 #                     Go and npm dependency licenses
 #   golangci          golangci-lint over the packages the entry changed, findings
@@ -141,8 +143,10 @@ permissions:
 # joined it); in the merge queue it runs 5, gate included: test-short (one
 # entry, the flake gate inside it), checks, golangci, windows-changed and the
 # gate. Of the
-# guards, only removalguard's full scan (~10s) extends those entries; the
-# rest stay on main. golangci is the one job added back since
+# guards, removalguard's full scan (~10s) and scripts/ci-guard-tests.sh
+# (about a minute: deadcodeguard, vacuousguard and three whole-repo scans)
+# extend test-short; tierguard, fmtguard, modguard and mockheaderguard stay
+# on main. golangci is the one job added back since
 # (owner, 2026-11-08): a lint step at the end of test-short or checks would
 # have lengthened the slower of them by the lint's own time, and the merge
 # queue's budget is wall time, not runner slots.
@@ -393,12 +397,12 @@ jobs:
   # run the same steps in the same order, and a tool added to one goes into
   # the other.
   #
-  # Whole-program guard scans/renders run in test-short-warm on main/full,
-  # not serially after these shards. Their cheap assertions still run under
-  # -short here. This deliberately trades premerge whole-repo diagnosis for
-  # the five-minute test budget; full/main retains every assertion. The one
-  # exception is internal/removalguard, whose full scan costs ~10s and runs
-  # here too (its step says why).
+  # The guards run whole in test-short-warm on main/full. Here their cheap
+  # assertions run under -short, and the whole-repo checks that fit the
+  # budget run after the tier in full mode: internal/removalguard (~10s) and
+  # scripts/ci-guard-tests.sh (deadcodeguard, vacuousguard and three
+  # whole-repo scans, about a minute; their steps say why). tierguard's
+  # renders stay on main: they cost more than the rest together.
   #
   # Changed-test repetition runs after the tier in the same job: its compile
   # reuses the tier's, and a second runner cost more in queue than it saved.
@@ -494,6 +498,20 @@ jobs:
       - name: KCL render tests (full mode, when a KCL template changed)
         if: ${{ !cancelled() }}
         run: scripts/ci-render-tests.sh HEAD^1
+      # The guards' whole-repo checks that fit this tier, in full mode, when
+      # the entry touches Go, the module files or internal/
+      # (scripts/ci-guard-tests.sh lists them, and why): deadcodeguard,
+      # vacuousguard, the GOFLAGS -trimpath scan, the buf template emitter
+      # guard and the skills path check. Each skips under -short above, and
+      # together they were five of main's red episodes in the week to
+      # 2026-11-25. A step here, not a job: the -short tier compiled every
+      # package, so it costs the tests' run, about a minute (deadcodeguard's
+      # whole-program load is the long pole; the rest run beside it). The
+      # other guards stay on main (test-short-warm): tierguard's renders are
+      # not cheap.
+      - name: Guards' whole-repo checks (full mode)
+        if: ${{ !cancelled() }}
+        run: scripts/ci-guard-tests.sh HEAD^1
       - name: Upload the go test -json stream
         if: ${{ !cancelled() && matrix.args != '' }}
         uses: actions/upload-artifact@v7

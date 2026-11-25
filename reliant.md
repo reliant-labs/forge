@@ -233,8 +233,13 @@ another runner to queue for (the org runs 20 jobs at once, and was saturated hal
   (`scripts/ci-test-shard.sh` over `scripts/ci-test-packages.sh short I N`), and the
   **flake gate**: each test the change adds or edits runs three times
   (`scripts/ci-changed-tests.sh`, `-short -count=3`; `-race` joins it on main). A test that
-  fails one run in three never merges. The guards' whole-repo work skips under `-short` and
-  runs on main. `internal/ciguard` fails if the matrix misses an index. No `-count=1`: an
+  fails one run in three never merges. The guards' whole-repo work skips under `-short`;
+  the merge tier runs the affordable part of it in full mode after the tier:
+  `internal/removalguard` whole (~10s), and, when the change touches Go, the module files or
+  `internal/`, the named checks in `scripts/ci-guard-tests.sh` (deadcodeguard, vacuousguard,
+  the GOFLAGS `-trimpath` scan, the buf template emitter guard, the skills path check; about
+  a minute, `-count=1`). They were five of main's red episodes in the week to 2026-11-25.
+  `internal/tierguard`'s renders and the rest run on main. `internal/ciguard` fails if the matrix misses an index. No `-count=1`: an
   unchanged package replays main's result, which works because `test-short-warm` runs the
   same command in the same environment, and `scripts/ci-normalize-mtimes.sh` stamps every
   tracked file with a content-derived mtime (Go's test cache keys files on mtime, not
@@ -319,7 +324,7 @@ reliant-labs/forge`; reliant #1923). Never review, label or merge as `reliant-01
   Build and the e2e workflows restore);
   then the guards (tierguard, removalguard,
   deadcodeguard, writeguard; `-p 1`, full mode, no `-race`), whose whole-repo work the
-  merge tier skips.
+  merge tier runs only in part (above).
 - **Build (-trimpath) + go-licenses + govulncheck** — the release build flags, the second
   license opinion (Checks covers dependency licenses on every merge-queue entry),
   `forge ci vuln-scan --go`, the ClickHouse integration tests of `pkg/obsquery` and

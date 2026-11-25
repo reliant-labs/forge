@@ -53,17 +53,39 @@ const stubbed = new Proxy({} as Location, {
   has: (_, prop) => prop in real,
 });
 
-// Vitest's jsdom environment copies window's properties onto the global as
-// configurable accessors, so location can be replaced. Should a future
-// environment make it fixed, the tests still run, only noisier.
+// Vitest normally exposes location as a configurable global accessor. If an
+// environment exposes jsdom's fixed property instead, wrap window rather than
+// trying to redefine that property (or Location's equally fixed methods).
+const locationDescriptor = {
+  configurable: true,
+  get: () => stubbed,
+  set: (url: string) => {
+    stubbed.href = url;
+  },
+};
 if (Object.getOwnPropertyDescriptor(window, "location")?.configurable ?? true) {
-  Object.defineProperty(window, "location", {
-    configurable: true,
-    get: () => stubbed,
-    set: (url: string) => {
-      stubbed.href = url;
+  Object.defineProperty(window, "location", locationDescriptor);
+} else {
+  const realWindow = window;
+  const wrapper: Window & typeof globalThis = new Proxy({} as Window & typeof globalThis, {
+    get(_, prop) {
+      if (prop === "location") return stubbed;
+      if (prop === "window" || prop === "self") return wrapper;
+      const value: unknown = Reflect.get(realWindow, prop, realWindow);
+      return typeof value === "function" ? value.bind(realWindow) : value;
     },
+    set(_, prop, value) {
+      if (prop === "location") {
+        stubbed.href = String(value);
+        return true;
+      }
+      return Reflect.set(realWindow, prop, value, realWindow);
+    },
+    has: (_, prop) => prop in realWindow,
   });
+  vi.stubGlobal("window", wrapper);
+  vi.stubGlobal("self", wrapper);
+  Object.defineProperty(globalThis, "location", locationDescriptor);
 }
 
 beforeEach(() => {

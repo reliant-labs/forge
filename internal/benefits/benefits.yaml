@@ -5410,20 +5410,6 @@ glance:
 # beside the wins, so an agent can recommend forge where it fits and say
 # plainly where it does not. Same evidence rules as a benefit.
 limits:
-  - id: static-export-frontends-only
-    title: Hosted frontends are static exports
-    claim: >-
-      Reliant hosting serves a frontend only as a static export, so no
-      server-side rendering, server actions, middleware, ISR, request-time
-      `cookies()`/`headers()` or on-the-fly image optimization; a Vite SPA or a
-      statically exportable Next.js app fits as it is.
-    instead: >-
-      run a Next.js app that needs a server as a container workload (`output:
-      standalone`, skill `frontend/serving`), or keep it on a host built for
-      that and point it at the forge API.
-    evidence:
-      - analyzer: --static-export
-      - skill: frontend/serving
   - id: no-hosted-cron-or-operators
     title: No hosted cron jobs or operators
     claim: >-
@@ -5445,30 +5431,6 @@ limits:
     evidence:
       - skill: authoring
       - skill: adopt
-  - id: one-hosted-region
-    title: One hosted region
-    claim: >-
-      Hosted services and managed databases run in one region, GCP us-central1,
-      with no region choice; static sites are served through the CDN edge.
-    instead: >-
-      bind a workload to a cluster you run in another region
-      (`forge.OnCluster`).
-    evidence:
-      - external: control-plane:deploy/kcl/lib/hub_pool.k
-      - skill: deploy
-  - id: no-hosted-autoscaling
-    title: Hosted backends do not autoscale
-    claim: >-
-      A hosted service or worker runs the replica count its env declares; it
-      does not scale with traffic between a min and a max, and a managed
-      database's storage and compute do not grow on their own.
-    instead: >-
-      raise the replica count or the shape in the env's `main.k` and deploy, or
-      bind the workload to a cluster you run and give it your own
-      HorizontalPodAutoscaler.
-    evidence:
-      - skill: deploy/hosting
-      - command: env shape
   - id: hosted-profiling-opt-in
     title: Hosted profiling is opt-in
     claim: >-

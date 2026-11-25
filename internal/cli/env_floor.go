@@ -19,6 +19,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -59,6 +60,22 @@ func (f *floorFlags) bind(cmd *cobra.Command) {
 func (f *floorFlags) requireReason(verb string) error {
 	if strings.TrimSpace(f.reason) == "" {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s needs --reason \"<why>\": it is recorded with the change", verb)}
+	}
+	return checkFloorReason("--reason", f.reason)
+}
+
+// checkFloorReason refuses, before any ledger is contacted, a reason the
+// ledger would refuse: over release.MaxFloorReasonBytes, or not UTF-8. A
+// control plane answers that with a generic 400 that names neither the field
+// nor the limit, so the CLI says both, with the reason's actual length.
+func checkFloorReason(flag, reason string) error {
+	switch {
+	case len(reason) > release.MaxFloorReasonBytes:
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf(
+			"%s is %d bytes; the floor ledger accepts at most %d (release.MaxFloorReasonBytes)",
+			flag, len(reason), release.MaxFloorReasonBytes)}
+	case !utf8.ValidString(reason):
+		return exitCodeError{code: exitWrong, msg: flag + " is not valid UTF-8; the floor ledger records only UTF-8 text"}
 	}
 	return nil
 }

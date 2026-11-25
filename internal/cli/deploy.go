@@ -363,6 +363,13 @@ func newDeployCmd() *cobra.Command {
 			if len(args) == 2 {
 				apply.promote.version = args[1]
 			}
+			// --floor's reason goes on the ledger: refuse one it would refuse
+			// before anything is built or contacted.
+			if apply.promote.floorReason != "" {
+				if err := checkFloorReason("--floor", apply.promote.floorReason); err != nil {
+					return err
+				}
+			}
 			promote, err := apply.promote.withHealthGateOverride()
 			if err != nil {
 				return err

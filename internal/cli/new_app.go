@@ -27,9 +27,9 @@ import (
 // projectKindApp is the `--kind app` value.
 const projectKindApp = "app"
 
-// newAppDryRun is --dry-run for the `project new` run in progress, and
-// newHarnessExplicit whether --harness was passed (an adopted app gets
-// agent files only when asked).
+// newAppDryRun is --dry-run for the `project new` run in progress (--kind
+// app or --kind site), and newHarnessExplicit whether --harness was passed
+// (an adopted app gets agent files only when asked).
 var (
 	newAppDryRun       bool
 	newHarnessExplicit bool

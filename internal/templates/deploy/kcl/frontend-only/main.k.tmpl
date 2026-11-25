@@ -35,8 +35,14 @@ _{{.FrontendIdent}}_frontend = forge.Frontend {
 {{if .FrontendRoutes}}    routes = [{{range .FrontendRoutes}}{{printf "%q" .}}, {{end}}]
 {{end}}    public_dir = "{{.FrontendPublicDir}}"
     telemetry = forge.BrowserTelemetry {replay = _session_replay}
-{{if eq .EnvName "dev"}}    port = plugin.resolve_port("{{.ProjectName}}-dev-{{.FrontendName}}", 3000)
-{{end}}}
+{{if eq .EnvName "dev"}}{{if .FrontendDevPort}}    # The port the dev server really listens on: its vite.config never reads
+    # PORT, so `forge env up` cannot move it. To let forge pick a free port per
+    # checkout instead, set `server: {port: Number(process.env.PORT) || {{.FrontendDevPort}}, strictPort: Boolean(process.env.PORT)}`
+    # in vite.config and change this line to
+    # `port = plugin.resolve_port("{{.ProjectName}}-dev-{{.FrontendName}}", {{.FrontendDevPort}})`.
+    port = {{.FrontendDevPort}}
+{{else}}    port = plugin.resolve_port("{{.ProjectName}}-dev-{{.FrontendName}}", 3000)
+{{end}}{{end}}}
 {{end}}
 _bundle = forge.Bundle {
     project = "{{.ProjectName}}"

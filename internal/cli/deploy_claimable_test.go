@@ -920,10 +920,16 @@ func TestClaimableDeploy_UnavailableIsRefusedBeforeAnythingIsCreated(t *testing.
 		t.Skip("renders KCL and runs the whole CLI; skipped in -short")
 	}
 	fake, _ := claimableFixture(t)
+	tracked := recordTrackedEvents(t)
 	fake.availability = &cloud.ClaimableAvailability{Causes: []cloud.ClaimableCause{
 		{Code: "disabled", Component: "claimable_deploys.enabled", Message: "an operator has switched off anonymous (claimable) deploys on this platform"}}}
 
 	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
+	for _, event := range *tracked {
+		if event.name == claimableRefusedEvent {
+			t.Errorf("availability already contacted the control plane; unexpected local refusal: %v", event)
+		}
+	}
 	if err == nil || exitCodeForError(err) != exitRefused {
 		t.Fatalf("want exit 4; err=%v\n%s", err, out)
 	}

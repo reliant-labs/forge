@@ -291,8 +291,8 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 	out := progressWriter(f.jsonOut)
 	// What a refusal reports (claimable_telemetry.go): the deploy's shape once
 	// the env rendered, the step that refused when the error does not say,
-	// and whether the control plane already answered the start (it counts
-	// what it refused there itself).
+	// and whether the control plane already heard the deploy (availability
+	// and start refusals are not local-only refusals).
 	var (
 		shape       cloud.DeployShape
 		stage       string
@@ -331,7 +331,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			return err
 		}
 		// One availability answer serves the caps every check below judges
-		// by, the preview and the preflight.
+		// by, the preview and the preflight. This request already tells the
+		// control plane about the deploy, even when it refuses availability.
+		serverHeard = true
 		answer := askClaimableAvailability(ctx, ep)
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
@@ -360,7 +362,6 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err := requireClaimableAvailable(answer, ep, envName, entities, storedErr != nil); err != nil {
 			return err
 		}
-		serverHeard = true
 		session, err := obtainClaimable(ctx, out, ep, project, envName)
 		if err != nil {
 			return err

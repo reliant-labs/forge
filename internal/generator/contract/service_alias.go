@@ -23,6 +23,24 @@ import (
 // second mock of someone else's interface. A same-package target
 // (`type Service = Gateway`) works too.
 
+// contractInterfaceType is the interface a contract file's type spec
+// declares: its own interface type, or a `type Service = <T>` alias read as
+// the interface that embeds T. nil for any other type.
+func contractInterfaceType(ts *ast.TypeSpec, cf *File, r *Resolver) *ast.InterfaceType {
+	if it, ok := ts.Type.(*ast.InterfaceType); ok {
+		return it
+	}
+	return serviceAliasInterface(ts, cf, r)
+}
+
+// collectContractInterfaceNames records the interfaces the contract files
+// declare, so an alias's target is known whichever order they come in.
+func collectContractInterfaceNames(files []*ast.File, names map[string]bool) {
+	for _, f := range files {
+		collectInterfaceNames(f, names)
+	}
+}
+
 // serviceAliasTarget is the type a `type Service = <T>` alias spec names, or
 // nil when ts is not that alias.
 func serviceAliasTarget(ts *ast.TypeSpec) ast.Expr {

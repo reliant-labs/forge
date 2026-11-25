@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"go/format"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -289,11 +290,12 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if consumed := notAComponentConsumers(comps, notComponents); len(consumed) > 0 {
 		return nil, notAComponentConsumedError(in.ProjectDir, consumed)
 	}
-	constructorProblems := unconstructibleComponents(in.ProjectDir, comps)
 	providers, roots, groups, err := discoverAppDeclsAndGroups(in.ProjectDir)
 	if err != nil {
 		return nil, err
 	}
+	comps, suppliedBy := providerSuppliedComponents(in.ModulePath, comps, providers)
+	constructorProblems := unconstructibleComponents(in.ProjectDir, comps)
 	if in.Mixed {
 		if roots = adoptedRoots(roots); len(roots) == 0 {
 			return nil, fmt.Errorf("internal/app declares the legacy Infra / NewComponents composition and no root marked adopt, so there is no graph to generate beside it: mark a //forge:root struct `adopt` to generate it")
@@ -326,6 +328,14 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	}
 	if err := addGraphProviderNodes(providers, add); err != nil {
 		return nil, err
+	}
+	// Name the provider that took a package's place, so its doc (in
+	// graph_gen.go and in every error naming the node) says why the
+	// package has no node.
+	for _, pkg := range slices.Sorted(maps.Keys(suppliedBy)) {
+		if n := m.byName[suppliedBy[pkg]]; n != nil {
+			n.Doc += fmt.Sprintf("; it supplies %s, which is therefore not a node of its own", pkg)
+		}
 	}
 	if m.routesView, err = addGraphRouteNodes(in, m.compNode, add); err != nil {
 		return nil, err

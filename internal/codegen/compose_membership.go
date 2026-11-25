@@ -176,3 +176,70 @@ func notAComponentConsumedError(projectDir string, consumed []notAComponentConsu
 	b.WriteString("  - the server does not need it: remove the Deps field, or mark it //forge:optional-dep if the consumer copes with nil.\n")
 	return fmt.Errorf("%s", b.String())
 }
+
+// providerSuppliedComponents takes out of comps every internal package whose
+// own produced type an internal/app provider func returns, and returns, by
+// the package's import path, the name of the provider that supplies it
+// instead.
+//
+// A provider that returns `orgmove.Service` is the declaration that the
+// server builds orgmove's value by hand, which is what
+// `//forge:external-component` declares on the package. Making the package a
+// node of its own as well would give the type two sources, and generate
+// would refuse the graph: the explicit provider wins, the way an explicit
+// producer of orm.Context wins over the derived one. A package that keeps
+// its external-component marker never reaches this (composedComponents
+// already dropped it), so that shape is unchanged.
+//
+// Only the package's own type counts (`T` or `*T` of its import path and
+// produced type name): a provider of some other type that merely takes the
+// package as a dependency, or wraps it, leaves the package a node.
+func providerSuppliedComponents(module string, comps []BuildComponent, providers []graphProvider) (kept []BuildComponent, suppliedBy map[string]string) {
+	produced := map[string]graphProvider{}
+	for _, p := range providers {
+		if key, ok := providerResultKey(p); ok {
+			if _, dup := produced[key]; !dup {
+				produced[key] = p
+			}
+		}
+	}
+	kept = comps[:0:0]
+	for _, c := range comps {
+		if c.compRoleRoot == "internal" {
+			if p, ok := produced[componentTypeKey(module, &c)]; ok {
+				if suppliedBy == nil {
+					suppliedBy = map[string]string{}
+				}
+				suppliedBy[c.ImportPath] = p.Name
+				continue
+			}
+		}
+		kept = append(kept, c)
+	}
+	return kept, suppliedBy
+}
+
+// providerResultKey is "<import path>.<Name>" for a provider returning a
+// package-qualified named type or a pointer to one.
+func providerResultKey(p graphProvider) (string, bool) {
+	alias, name, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(p.Result), "*"), ".")
+	if !ok || strings.ContainsAny(name, ".[]*") {
+		return "", false
+	}
+	path, ok := p.Imports[alias]
+	if !ok {
+		return "", false
+	}
+	return path + "." + name, true
+}
+
+// componentTypeKey is "<import path>.<Name>" of the type componentNode gives
+// the component.
+func componentTypeKey(module string, c *BuildComponent) string {
+	typ := c.compFieldType
+	if typ == "" {
+		typ = c.Alias + ".Service"
+	}
+	_, name, _ := strings.Cut(strings.TrimPrefix(typ, "*"), ".")
+	return module + "/" + c.ImportPath + "." + name
+}

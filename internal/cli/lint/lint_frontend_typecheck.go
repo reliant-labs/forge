@@ -236,10 +236,7 @@ func resolveLocalTSC(feDir, projectRoot string) string {
 	if err != nil {
 		return ""
 	}
-	root := projectRoot
-	if abs, absErr := filepath.Abs(projectRoot); absErr == nil {
-		root = abs
-	}
+	root := walkStop(dir, projectRoot)
 	for {
 		candidate := filepath.Join(dir, "node_modules", ".bin", bin)
 		if st, statErr := os.Stat(candidate); statErr == nil && !st.IsDir() {
@@ -254,6 +251,24 @@ func resolveLocalTSC(feDir, projectRoot string) string {
 		}
 		dir = parent
 	}
+}
+
+// walkStop is the last directory an upward walk from the absolute dir may
+// visit: projectRoot (absolute), or dir itself when dir is not inside
+// projectRoot. A frontend outside the root has no ancestor within the bound,
+// and a walk that never meets its stop climbs to the filesystem root, where
+// any stray node_modules (a /tmp/node_modules left by an npx run in /tmp)
+// made a frontend with no dependencies look installed.
+func walkStop(dir, projectRoot string) string {
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return dir
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return dir
+	}
+	return root
 }
 
 // anyAncestorHasNodeModules reports whether feDir or any ancestor up to and
@@ -276,10 +291,7 @@ func nearestNodeModulesDir(feDir, projectRoot string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	root := projectRoot
-	if abs, absErr := filepath.Abs(projectRoot); absErr == nil {
-		root = abs
-	}
+	root := walkStop(dir, projectRoot)
 	for {
 		if dirExists(filepath.Join(dir, "node_modules")) {
 			if !filepath.IsAbs(feDir) {

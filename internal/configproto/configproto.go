@@ -222,3 +222,45 @@ func isMajorVersionSuffix(s string) bool {
 	_, err := strconv.Atoi(s[1:])
 	return err == nil
 }
+
+// OtherLayouts lists the project-unique config layouts under projectDir's
+// proto/ other than l: each proto/<slug>/config/v1 whose root file declares
+// package <slug>.config.v1, in lexical order. A project whose forge.yaml name
+// changed after its config was scaffolded has exactly one, at the old name
+// (see [Layout.RenamedFrom]).
+func (l Layout) OtherLayouts(projectDir string) []Layout {
+	entries, err := os.ReadDir(filepath.Join(projectDir, "proto"))
+	if err != nil {
+		return nil
+	}
+	var out []Layout
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == l.Slug || Slug(e.Name()) != e.Name() {
+			continue
+		}
+		other := Layout{Slug: e.Name()}
+		data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(other.RootPath())))
+		if err != nil {
+			continue
+		}
+		re := regexp.MustCompile(`(?m)^\s*package\s+` + regexp.QuoteMeta(other.Package()) + `\s*;`)
+		if re.Match(data) {
+			out = append(out, other)
+		}
+	}
+	return out
+}
+
+// RenamedFrom reports the layout this project's config was scaffolded under
+// when forge.yaml's name no longer matches it: l (the layout of today's name)
+// holds no .proto file, and exactly one other project-unique layout exists.
+func (l Layout) RenamedFrom(projectDir string) (Layout, bool) {
+	if l.HasProtos(projectDir) {
+		return Layout{}, false
+	}
+	others := l.OtherLayouts(projectDir)
+	if len(others) != 1 {
+		return Layout{}, false
+	}
+	return others[0], true
+}

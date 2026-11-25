@@ -160,3 +160,29 @@ func write(t *testing.T, dir, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestRenamedFrom(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := For("shop-v2")
+	if _, ok := now.RenamedFrom(dir); ok {
+		t.Fatal("a project with no config proto at all reads as renamed")
+	}
+	write("proto/shop/config/v1/config.proto", "syntax = \"proto3\";\npackage shop.config.v1;\n")
+	write("proto/notconfig/config/v1/config.proto", "syntax = \"proto3\";\npackage something.else;\n")
+	if old, ok := now.RenamedFrom(dir); !ok || old.Slug != "shop" {
+		t.Fatalf("RenamedFrom = %+v, %v; want the shop layout", old, ok)
+	}
+	write("proto/billing/config/v1/config.proto", "syntax = \"proto3\";\npackage billing.config.v1;\n")
+	if _, ok := now.RenamedFrom(dir); ok {
+		t.Fatal("two other layouts are not one rename")
+	}
+}

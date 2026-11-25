@@ -19,13 +19,32 @@ is what the README leaves out.
 
 ## CI and sandboxes
 
-For a non-interactive sandbox or CI image, the `curl | sh` line is the whole
-setup. Pin the version so the image is reproducible:
+For a non-interactive sandbox or CI image, install an exact release so the
+image is reproducible and a new forge release never changes a pipeline nobody
+touched. Where Node is available, the npm package is one line, and it checks
+the binary against the release's signed checksums (below):
+
+```bash
+npm install -g @reliantlabs/forge@1.0.0
+```
+
+In a forge project, install the version `forge.yaml` pins:
+
+```bash
+npm install -g "@reliantlabs/forge@$(sed -nE 's/^forge_version:[[:space:]]*"?v?([^"[:space:]]+).*/\1/p' forge.yaml)"
+```
+
+Without Node, run `install.sh` at a pinned version (and, where `gh` or `cosign`
+is installed, add `FORGE_REQUIRE_SIGNATURE=1`; see below):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | FORGE_VERSION=v1.0.0 sh
 export PATH="$HOME/.local/bin:$PATH"   # the installer prints this if it is needed
 ```
+
+The skills forge ships show only the pinned npm forms: an agent copies a skill's
+snippet into CI verbatim, so none of them pipes a download into a shell
+(`internal/templates/skills_pinned_install_test.go`).
 
 Releases attach `forge_<os>_<arch>.tar.gz` for linux, darwin and windows on amd64
 and arm64, plus `checksums.txt`, if you would rather download one yourself.

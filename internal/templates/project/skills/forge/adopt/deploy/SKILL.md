@@ -265,7 +265,7 @@ when you want to change the image.
 ### 3. Run it, ship it
 
 ```bash
-npm ci                                 # the app's own install, when dev runs it on the host (no compose file)
+npm ci                                 # the APP's own install from its lockfile, when dev runs it on the host (no compose file)
 forge env render dev                   # host: migrate (job), api (service)
 forge env up dev                       # Postgres → migrations → the app; output in .forge/logs/dev/api.log
 forge env status dev                   # App Health: "accepts connections (its declared tcp probe)"
@@ -332,6 +332,12 @@ them.
 | .NET | `OpenTelemetry.Extensions.Hosting` + the ASP.NET Core / HttpClient instrumentations | `AddOpenTelemetry().WithTracing(...).UseOtlpExporter()` |
 | Go | `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | wrap the handler in `otelhttp.NewHandler` |
 
+These are the app's own dependencies and build steps, not forge's: add each
+to the app's lockfile or requirements file at an exact version, like any other
+dependency, so the image build installs what was reviewed (`opentelemetry-bootstrap
+-a install` writes the instrumentations it picks into the environment; freeze
+them into the requirements file after running it once).
+
 Put the start command in the Dockerfile's `CMD`. Dev exports nothing until
 its Bundle declares `observability` with a local collector (the local
 ClickStack, which needs Docker): `observability` has the declaration.
@@ -358,9 +364,10 @@ deploys from CI instead of a laptop, and probes that mean "ready".
 - **More environments.** `forge env new preview --from staging`; `forge env
   diff`. `deploy/model`.
 - **CI.** forge generates no workflow for a project with no Go module; write
-  one job that installs forge (`curl -fsSL
-  https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh`),
-  runs `forge lint`, `forge env deploy staging --yes` and `forge obs check
+  one job that installs the forge `forge.yaml` pins (`npm install -g
+  "@reliantlabs/forge@$(sed -nE 's/^forge_version:[[:space:]]*"?v?([^"[:space:]]+).*/\1/p'
+  forge.yaml)"`: an exact version, checked against the release's signed
+  checksums), runs `forge lint`, `forge env deploy staging --yes` and `forge obs check
   staging --wait`, with `FORGE_CONTROL_PLANE_TOKEN` a token with
   deploy:read,deploy:write that a person mints in the web app
   (Settings → API tokens, https://forge.reliantlabs.io/settings/tokens). `ci`.

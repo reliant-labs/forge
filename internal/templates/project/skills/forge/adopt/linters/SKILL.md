@@ -16,10 +16,12 @@ fix. No forge.yaml, no generated code, any language for the SQL lane. Part of
 
 ## Get forge
 
-Any of: `npx -y @reliantlabs/forge <command>` (no install; downloads the
-matching binary on first run), `curl -fsSL
-https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh`, or
-inside Reliant `reliant forge <command>`.
+Any of: `npx -y @reliantlabs/forge@<version> <command>` (no install; downloads
+the matching binary on first run and checks it against the release's signed
+checksums), `npm install -g @reliantlabs/forge@<version>`, `brew install
+reliant-labs/reliant/forge`, or inside Reliant `reliant forge <command>`.
+`<version>` is an exact release (`1.10.0`); pin one so a new release cannot
+change a verdict under you.
 
 ## The lanes that run standalone
 
@@ -91,18 +93,23 @@ finding with `rule`, `file`, `line` and `fix_hint` for a machine to read.
    code):
 
    ```yaml
+   # on the job: the exact version you ran locally (`forge version`, no "v")
+   env:
+     FORGE_VERSION: "<version>"
+   # the steps
    - name: Migration safety (new migrations)
      run: |
        files=$(git diff --name-only --diff-filter=A origin/${{ github.base_ref }} -- 'db/migrations/*.up.sql')
        [ -z "$files" ] && exit 0
-       npx -y @reliantlabs/forge lint --migration-safety $(printf -- '--scope %s ' $files)
+       npx -y "@reliantlabs/forge@${FORGE_VERSION}" lint --migration-safety $(printf -- '--scope %s ' $files)
    - name: Tracing lint
-     run: npx -y @reliantlabs/forge lint --tracing
+     run: npx -y "@reliantlabs/forge@${FORGE_VERSION}" lint --tracing
    ```
 
-   The checkout needs the base branch (`fetch-depth: 0`). Pin a forge version
-   in CI (`npx -y @reliantlabs/forge@<version>`) so a new release cannot change
-   the verdict under them.
+   Set `FORGE_VERSION` to an exact release (`1.10.0`): a pinned version keeps
+   a new release from changing the verdict under them, and npm refuses the
+   `<version>` placeholder rather than install whatever is newest. The
+   checkout needs the base branch (`fetch-depth: 0`).
 
 ## Verify
 

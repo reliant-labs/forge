@@ -62,5 +62,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // Stubs jsdom's unimplemented navigation (location.assign/replace/reload).
+    setupFiles: ["./src/test-setup.ts"],
   },
 });

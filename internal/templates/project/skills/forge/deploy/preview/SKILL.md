@@ -114,7 +114,8 @@ jobs:
       FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - run: npm i -g @reliantlabs/forge
+      - name: Install the pinned version of forge
+        run: npm install -g "@reliantlabs/forge@$(sed -nE 's/^forge_version:[[:space:]]*"?v?([^"[:space:]]+).*/\1/p' forge.yaml)"
       - id: preview
         run: |
           forge env preview create --pr ${{ github.event.pull_request.number }} --ttl 72h --json > preview.json
@@ -136,7 +137,8 @@ jobs:
       FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - run: npm i -g @reliantlabs/forge
+      - name: Install the pinned version of forge
+        run: npm install -g "@reliantlabs/forge@$(sed -nE 's/^forge_version:[[:space:]]*"?v?([^"[:space:]]+).*/\1/p' forge.yaml)"
       - run: forge env preview delete --pr ${{ github.event.pull_request.number }} --yes
   gc:
     if: github.event_name == 'schedule'
@@ -146,9 +148,15 @@ jobs:
       # a cluster you operate: write secrets.KUBECONFIG to ~/.kube/config first
     steps:
       - uses: actions/checkout@v4
-      - run: npm i -g @reliantlabs/forge
+      - name: Install the pinned version of forge
+        run: npm install -g "@reliantlabs/forge@$(sed -nE 's/^forge_version:[[:space:]]*"?v?([^"[:space:]]+).*/\1/p' forge.yaml)"
       - run: forge env gc --yes
 ```
+
+Each job installs the exact version of forge `forge.yaml`'s `forge_version`
+pins, from npm (the package checks the binary against the release's signed
+checksums), so the previews run the forge you run locally and a new version
+of forge changes nothing until you move the pin.
 
 A pull request from a fork gets no secrets, so the `up` and `down` jobs above
 run only for branches in the repository (`head.repo.full_name ==

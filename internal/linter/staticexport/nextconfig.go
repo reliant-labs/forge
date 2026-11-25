@@ -89,8 +89,14 @@ func (c *checker) checkExported() {
 }
 
 // exportTemplateHint points at the scaffold's own static next.config, which
-// `forge project upgrade` renders.
+// `forge project upgrade` renders. A frontend at the project root is a
+// static site (`forge project new --kind site`, most often an adopted app):
+// its forge.yaml declares no frontend output, so there is no scaffold
+// next.config to upgrade to, and the fix is the one-line edit itself.
 func (c *checker) exportTemplateHint() string {
+	if c.fe.RelDir == "" || c.fe.RelDir == "." {
+		return " (add `output: \"export\"` to the config object it exports, e.g. `const nextConfig: NextConfig = { output: \"export\" }`)"
+	}
 	p := c.rel("next.config.ts")
 	return fmt.Sprintf(" (with forge.yaml at `output: static`, `forge project upgrade --check %s` shows the scaffold's static next.config, and `forge project upgrade --force %s` adopts it)", p, p)
 }

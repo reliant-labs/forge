@@ -417,3 +417,133 @@ func TestGreenfieldSiteProductionBuilds(t *testing.T) {
 		})
 	}
 }
+
+// A stock Vite app never reads PORT, so the dev env declares the port it
+// really listens on; a config that reads PORT keeps the resolved port.
+func TestViteFixedDevPort(t *testing.T) {
+	for _, tc := range []struct {
+		name, config string
+		want         int
+	}{
+		{"stock create-vite config", "import { defineConfig } from 'vite'\nexport default defineConfig({ plugins: [react()] })\n", 5173},
+		{"literal server.port", "export default { server: { host: true, port: 4321 } }\n", 4321},
+		{"port outside the server block is not the dev port", "export default { preview: { port: 4173 }, server: { open: true } }\n", 5173},
+		{"reads PORT, like forge's starter", "const port = Number(process.env.PORT) || 5173;\nexport default { server: { port } }\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := viteFixedDevPort([]byte(tc.config)); got != tc.want {
+				t.Errorf("viteFixedDevPort = %d, want %d", got, tc.want)
+			}
+		})
+	}
+	t.Run("no vite.config at all is Vite's default", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"devDependencies":{"vite":"^7"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fe, ok := siteFrontendAt(root)
+		if !ok || fe.DevPort != viteDefaultDevPort {
+			t.Fatalf("siteFrontendAt = %+v, %v; want DevPort %d", fe, ok, viteDefaultDevPort)
+		}
+	})
+}
+
+// nextApp lays down a create-next-app@latest (Next 16) app at the root.
+func nextApp(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for rel, body := range map[string]string{
+		"package.json":   `{"name":"shop","dependencies":{"next":"16.0.0","react":"19.0.0"}}`,
+		"next.config.ts": "import type { NextConfig } from \"next\";\n\nconst nextConfig: NextConfig = {\n  cacheComponents: true,\n};\n\nexport default nextConfig;\n",
+		"app/page.tsx":   "export default function Page() { return <h1>hi</h1>; }\n",
+	} {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// Adopting a Next.js app names what the hosted static build would refuse
+// (no `output: "export"`, cacheComponents), with file:line and a fix that
+// fits a site — not `forge project upgrade`, which has no static next.config
+// to offer a project with no frontend output in forge.yaml.
+func TestAdoptedNextSiteNamesTheExportFindings(t *testing.T) {
+	root := nextApp(t)
+	fe, ok := siteFrontendAt(root)
+	if !ok {
+		t.Fatal("no Next.js app detected")
+	}
+	out := captureStdout(t, func() { printAdoptedSiteNotes(root, fe) })
+	for _, want := range []string{
+		"next.config.ts:3 [static-export-not-exported]",
+		"next.config.ts:4 [static-export-partial-prerender]",
+		"add `output: \"export\"`",
+		"@reliantlabs/forge-web-runtime/devlog",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("adoption notes lack %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "project upgrade") {
+		t.Errorf("a root site's fix must not send the user to `forge project upgrade`:\n%s", out)
+	}
+}
+
+// --dry-run previews a site adoption: every forge file with its content,
+// what it keeps, and nothing written.
+func TestRunNewSiteDryRunWritesNothing(t *testing.T) {
+	testkit.Slow(t, "execs git")
+	root := viteApp(t, "export default { server: { port: 4321 } }\n")
+	before, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runNewSite(t.Context(), newSiteInput{targetPath: root, projectName: "landing", inPlace: true, harness: "none", dryRun: true})
+	})
+	if runErr != nil {
+		t.Fatalf("runNewSite --dry-run: %v", runErr)
+	}
+	after, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("--dry-run wrote into the app: %d entries before, %d after", len(before), len(after))
+	}
+	if got := readFile(t, filepath.Join(root, ".gitignore")); got != "node_modules/\ndist/\n" {
+		t.Errorf("--dry-run touched .gitignore: %q", got)
+	}
+	for _, want := range []string{
+		"Nothing was written",
+		"----- forge.yaml -----",
+		"----- deploy/kcl/dev/main.k -----",
+		"    port = 4321\n",
+		".gitignore (yours, with",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// --dry-run is accepted for --kind site, and still refused for kinds it
+// cannot preview.
+func TestProjectNewDryRunKinds(t *testing.T) {
+	root := t.TempDir()
+	cmd := newNewCmd()
+	cmd.SetArgs([]string{"landing", "--kind", "cli", "--dry-run", "--path", root})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "--kind app or --kind site") {
+		t.Errorf("--kind cli --dry-run: want a refusal naming app and site, got %v", err)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Errorf("wrote %d entries before refusing", len(entries))
+	}
+}

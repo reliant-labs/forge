@@ -65,6 +65,11 @@ type EnvTemplateData struct {
 	// SessionReplay opts a newly generated browser starter into recording.
 	// False for an existing application adopted without changing its source.
 	SessionReplay bool
+	// FrontendDevPort, when set, is the fixed port the dev env declares for
+	// a frontend whose dev server ignores PORT (an adopted stock Vite app
+	// listens on its vite.config `server.port`, or 5173). Zero keeps the
+	// resolved, per-checkout port `forge env up` passes as PORT.
+	FrontendDevPort int
 	// Bindings is the body of the env's `_workloads = [...]` list: one
 	// `        _<binder>(wl.<ident>)` line per workload. EnvBinding renders one.
 	Bindings string

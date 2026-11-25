@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +14,9 @@ import (
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
+	"github.com/reliant-labs/forge/internal/linter/finding"
+	"github.com/reliant-labs/forge/internal/linter/staticexport"
+	"github.com/reliant-labs/forge/internal/linter/suppress"
 )
 
 // `forge project new --kind site` — a static site (a landing page, a
@@ -73,6 +78,8 @@ type newSiteInput struct {
 	// defaultSiteFrontendKind). Meaningless when adopting an existing app.
 	frontendKind string
 	verbose      bool
+	// dryRun prints what the site would write, and writes nothing.
+	dryRun bool
 }
 
 // siteFrontendAt reports the static frontend at the root of dir, and whether
@@ -88,16 +95,79 @@ func siteFrontendAt(dir string) (generator.SiteFrontend, bool) {
 		fe.Type, fe.PublicDir = "nextjs", "out"
 	default:
 		fe.Type, fe.PublicDir = "vite", "dist"
-		for _, name := range []string{"vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts"} {
-			if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-				if m := viteOutDirPattern.FindSubmatch(data); m != nil {
-					fe.PublicDir = string(m[1])
-				}
-				break
+		fe.DevPort = viteDefaultDevPort
+		if _, data, ok := readViteConfig(dir); ok {
+			if m := viteOutDirPattern.FindSubmatch(data); m != nil {
+				fe.PublicDir = string(m[1])
 			}
+			fe.DevPort = viteFixedDevPort(data)
 		}
 	}
 	return fe, true
+}
+
+// viteConfigNames are the files Vite reads its config from, in its order.
+var viteConfigNames = []string{"vite.config.ts", "vite.config.js", "vite.config.mjs", "vite.config.mts"}
+
+// readViteConfig returns the first vite config in dir, by name and content.
+func readViteConfig(dir string) (string, []byte, bool) {
+	for _, name := range viteConfigNames {
+		if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
+			return name, data, true
+		}
+	}
+	return "", nil, false
+}
+
+// viteDefaultDevPort is the port `vite` serves on when its config names none.
+const viteDefaultDevPort = 5173
+
+var (
+	// vitePortEnvPattern: a config that mentions PORT reads the port
+	// `forge env up` passes (the site starter's vite.config does).
+	vitePortEnvPattern = regexp.MustCompile(`\bPORT\b`)
+	// viteServerBlockPattern opens the config's `server: {` block.
+	viteServerBlockPattern = regexp.MustCompile(`\bserver\s*:\s*\{`)
+	// viteLiteralPortPattern is a literal `port: <n>`.
+	viteLiteralPortPattern = regexp.MustCompile(`\bport\s*:\s*(\d{2,5})\b`)
+)
+
+// viteFixedDevPort is the port an adopted Vite app's dev server listens on
+// when its config does not read PORT: a stock `vite` ignores the PORT
+// `forge env up` sets, so declaring the resolved port would print a URL
+// nothing serves. It is the literal `server.port`, else Vite's default.
+// Zero means the config reads PORT, so the resolved per-checkout port works.
+// A computed port is not followed; the dev env's `port` line is the one
+// place to correct it.
+func viteFixedDevPort(config []byte) int {
+	if vitePortEnvPattern.Match(config) {
+		return 0
+	}
+	loc := viteServerBlockPattern.FindIndex(config)
+	if loc == nil {
+		return viteDefaultDevPort
+	}
+	// The server block's body: up to its matching brace.
+	depth, end := 1, len(config)
+	for i := loc[1]; i < len(config); i++ {
+		switch config[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
+		if depth == 0 {
+			end = i
+			break
+		}
+	}
+	if m := viteLiteralPortPattern.FindSubmatch(config[loc[1]:end]); m != nil {
+		var p int
+		if _, err := fmt.Sscanf(string(m[1]), "%d", &p); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return viteDefaultDevPort
 }
 
 // agentInstructionFiles are the files a coding agent's harness writes into a
@@ -197,6 +267,16 @@ func adoptSite(in newSiteInput, fe generator.SiteFrontend) error {
 	if err := generator.WriteSiteScaffold(staging, in.projectName, h, fe); err != nil {
 		return err
 	}
+	if in.dryRun {
+		fmt.Printf("Dry run: adopting %s as static site %q would write the files below. Nothing was written.\n\n", in.targetPath, in.projectName)
+		fmt.Printf("frontend %q: the %s app at the root (path \".\", builds into %s/)\n", fe.Name, fe.Type, fe.PublicDir)
+		printAdoptedSiteNotes(in.targetPath, fe)
+		if err := previewScaffoldMerge(os.Stdout, staging, in.targetPath, in.force, nil); err != nil {
+			return err
+		}
+		printSiteDryRunNextSteps()
+		return nil
+	}
 	merged, err := mergeScaffoldInto(staging, in.targetPath, in.force)
 	if err != nil {
 		return err
@@ -209,7 +289,152 @@ func adoptSite(in newSiteInput, fe generator.SiteFrontend) error {
 	for _, line := range inPlaceMergeSummary(merged) {
 		fmt.Println(line)
 	}
+	printAdoptedSiteNotes(in.targetPath, fe)
 	printSiteNextSteps("", fe.Type)
+	return nil
+}
+
+// printAdoptedSiteNotes prints what an adopted app still needs before it
+// runs and ships as declared. adoptSite never edits the app's files, so
+// each is the edit to make, not one made: the dev port of a Vite app that
+// ignores PORT, the browser-console mirror, and every static-export finding
+// (`forge lint --static-export`) that would fail the first hosted build.
+func printAdoptedSiteNotes(dir string, fe generator.SiteFrontend) {
+	cli := Name()
+	var notes []string
+	if fe.DevPort > 0 {
+		cfg := "vite.config"
+		if name, _, ok := readViteConfig(dir); ok {
+			cfg = name
+		}
+		notes = append(notes, fmt.Sprintf("dev port: %s does not read PORT, so deploy/kcl/dev/main.k declares the port Vite listens on, %d (its server.port, or Vite's default). "+
+			"To let `%s env up dev` pick a free port per checkout, read process.env.PORT in %s (the comment above that `port` line shows how)", cfg, fe.DevPort, cli, cfg))
+	}
+	devlog := "browser console in .forge/logs/dev/: call `installDevLogging({ dev: true })` from `@reliantlabs/forge-web-runtime/devlog` in the browser (that subpath needs no other package)"
+	if fe.Type == "vite" {
+		devlog += ", and add the `forgeDevLog()` plugin from `@reliantlabs/forge-web-runtime/vite` to vite.config, its dev-server receiver"
+	} else {
+		devlog += "; its dev-server receiver is a route (`" + cli + " skill load debug`)"
+	}
+	notes = append(notes, devlog)
+	findings := adoptedSiteExportFindings(dir, fe)
+	fmt.Println()
+	fmt.Println("Before it runs and ships as declared (none of your files were changed):")
+	for _, n := range notes {
+		fmt.Println("  - " + n)
+	}
+	if len(findings) == 0 {
+		return
+	}
+	fmt.Printf("  - static export: hosted static hosting publishes only a static export, and `%s lint --static-export` reports %d finding(s) here:\n", cli, len(findings))
+	for _, f := range findings {
+		loc := f.File
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+		}
+		fmt.Printf("      %s %s [%s] %s\n", f.Severity, loc, f.Rule, f.Message)
+		if f.Remediation != "" {
+			fmt.Printf("        fix: %s\n", f.Remediation)
+		}
+	}
+}
+
+// adoptedSiteExportFindings runs the static-export lane over an adopted
+// Next.js app as its staging and prod envs bind it (forge.OnHosted), so the
+// adoption names what `next build` would refuse before anyone builds. A
+// Vite app's build is static by construction, and its outDir was just read
+// into public_dir, so there is nothing to judge.
+func adoptedSiteExportFindings(dir string, fe generator.SiteFrontend) []finding.Finding {
+	if fe.Type != "nextjs" {
+		return nil
+	}
+	var bindings []staticexport.Binding
+	for _, env := range []string{"staging", "prod"} {
+		bindings = append(bindings, staticexport.Binding{Env: env, Runtime: "hosted", PublicDir: fe.PublicDir})
+	}
+	all, err := staticexport.Check(staticexport.Frontend{Name: fe.Name, Dir: dir, RelDir: ".", Bindings: bindings})
+	if err != nil {
+		return nil
+	}
+	sup := suppress.ApplyFiles(dir, all, os.ReadFile)
+	return append(sup.Kept, sup.Violations...)
+}
+
+// printSiteDryRunNextSteps closes a --dry-run.
+func printSiteDryRunNextSteps() {
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  the same command without --dry-run")
+	fmt.Println("      ↳ write these files")
+	fmt.Printf("  %s skill load deploy/static-site\n", Name())
+	fmt.Println("      ↳ the whole flow: envs, releases, hosting, domains")
+}
+
+// previewScaffoldMerge prints what mergeScaffoldInto(staging, target,
+// overwrite) would do, and writes nothing: each file it would write with its
+// content, each existing file it would keep or (overwrite) replace, and the
+// lines it would append to an existing .gitignore. Files in pathsOnly are
+// listed by path alone (a greenfield starter's app files).
+func previewScaffoldMerge(w io.Writer, staging, target string, overwrite bool, pathsOnly map[string]bool) error {
+	var listed []string
+	err := filepath.WalkDir(staging, func(src string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(staging, src)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(rel)
+		content, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		existing, readErr := os.ReadFile(filepath.Join(target, rel))
+		exists := readErr == nil
+		if !exists {
+			if info, statErr := os.Stat(filepath.Join(target, rel)); statErr == nil && info.IsDir() {
+				fmt.Fprintf(w, "\n----- %s (a directory there: kept, nothing written) -----\n", relSlash)
+				return nil
+			}
+		}
+		switch {
+		case relSlash == ".gitignore":
+			forgeBody, _ := dropTrackedIgnores(string(content), gitTrackedIgnoreMatcher(target))
+			if !exists {
+				fmt.Fprintf(w, "\n----- .gitignore -----\n%s", forgeBody)
+				return nil
+			}
+			merged, added := mergeGitignore(string(existing), forgeBody)
+			rest, _ := openForgeDirIgnore(stripForgeGitignoreBlock(string(existing)))
+			if added == 0 || !strings.HasPrefix(merged, rest) {
+				fmt.Fprintf(w, "\n----- .gitignore (yours already has every forge entry: unchanged) -----\n")
+				return nil
+			}
+			fmt.Fprintf(w, "\n----- .gitignore (yours, with %d forge entr%s appended) -----\n%s", added, plural(added, "y", "ies"), strings.TrimLeft(strings.TrimPrefix(merged, rest), "\n"))
+		case exists && !overwrite:
+			fmt.Fprintf(w, "\n----- %s (exists: kept, forge's version is not written; --force replaces it) -----\n", relSlash)
+		case pathsOnly[relSlash] && !exists:
+			listed = append(listed, relSlash)
+		case exists:
+			fmt.Fprintf(w, "\n----- %s (exists: REPLACED, --force) -----\n%s", relSlash, content)
+		default:
+			fmt.Fprintf(w, "\n----- %s -----\n%s", relSlash, content)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(listed) > 0 {
+		fmt.Fprintf(w, "\n----- the starter app (%d files) -----\n", len(listed))
+		for _, p := range listed {
+			fmt.Fprintln(w, "  "+p)
+		}
+	}
 	return nil
 }
 
@@ -237,8 +462,31 @@ func greenfieldSite(ctx context.Context, in newSiteInput) error {
 	if err := generator.WriteSiteStarter(staging, in.projectName, fe); err != nil {
 		return err
 	}
+	starterFiles := map[string]bool{}
+	if in.dryRun {
+		if err := filepath.WalkDir(staging, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			rel, err := filepath.Rel(staging, p)
+			starterFiles[filepath.ToSlash(rel)] = true
+			return err
+		}); err != nil {
+			return err
+		}
+	}
 	if err := generator.WriteSiteScaffold(staging, in.projectName, h, fe); err != nil {
 		return err
+	}
+	if in.dryRun {
+		fmt.Printf("Dry run: a new static site %q at %s would get the files below. Nothing was written.\n\n", in.projectName, in.targetPath)
+		fmt.Printf("frontend %q: a %s starter at the root (path \".\", builds into %s/)\n", fe.Name, siteStarterLabel(kind), fe.PublicDir)
+		fmt.Println("then: npm install (writes package-lock.json), and git init when it is not in a repository")
+		if err := previewScaffoldMerge(os.Stdout, staging, in.targetPath, in.force, starterFiles); err != nil {
+			return err
+		}
+		printSiteDryRunNextSteps()
+		return nil
 	}
 
 	scaffold, err := beginScaffold(in.targetPath, in.inPlace)

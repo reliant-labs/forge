@@ -74,6 +74,7 @@ Pages, Netlify, Firebase) becomes a forge project without moving a file:
 
 ```bash
 cd my-site                                    # the app's root: package.json + vite.config / next.config
+reliant forge project new --in-place --kind site --name my-site --dry-run   # every file it would write; writes nothing
 reliant forge project new --in-place --kind site --name my-site
 ```
 
@@ -87,6 +88,20 @@ golangci-lint, the contract linter) skips by itself, and the root app is in
 the inventory `forge lint` and `forge build` load. A bare `--in-place` over
 such a directory stops and names `--kind site` rather than scaffolding a Go
 server beside the app.
+
+Because it never edits the app, adoption ends with what the app still needs:
+
+- **Next.js**: it runs the `--static-export` checks and prints each finding
+  with file:line. An app that is not yet a static export needs
+  `output: "export"` in its `next.config`, and `create-next-app`'s Next 16
+  default `cacheComponents: true` must go (`next build` refuses an export with
+  it). Make both edits before the first hosted build.
+- **Vite**: a stock `vite.config` ignores the `PORT` that `env up` sets, so
+  the dev env declares the port Vite really listens on (its literal
+  `server.port`, else 5173) instead of a resolved one. To let forge pick a
+  free port per checkout, read `process.env.PORT` in `vite.config` and switch
+  the dev `port` back to `plugin.resolve_port(...)`; the comment on that line
+  shows both.
 
 Build-time keys (`VITE_*`, `NEXT_PUBLIC_*`) become `env_vars` on the frontend
 in each env, and are baked in per release; values that must change without a
@@ -155,7 +170,8 @@ forge env up dev --watch   # an agent: run it in the background; SIGTERM stops i
 ```
 
 No database or cluster is needed: the dev env declares only the frontend's dev
-server, and `env up` starts it in the frontend's directory with `PORT` set. A
+server, and `env up` starts it in the frontend's directory with `PORT` set (an
+adopted Vite app that ignores `PORT` declares its own fixed port; see above). A
 site forge started mirrors the browser console to
 `.forge/logs/dev/frontend_<name>.log`. An adopted app does the same once it
 calls `installDevLogging()` from `@reliantlabs/forge-web-runtime/devlog` in the

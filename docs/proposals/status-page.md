@@ -36,8 +36,11 @@ The design has three parts:
   reads only what was published. No request from the public ever reaches tenant
   telemetry.
 
-A page is private by default, and the private view is a console page for signed
-in members. Making it public is a deliberate act by a person. Measured state
+A status page is **opt-in**. A project or env without a `forge.StatusPage`
+declaration gets no page of any kind: nothing is rendered or published, and the
+console shows only an empty state that explains how to opt in. A declared page
+is private at first: a console page for signed-in members. Making it public is a
+separate, deliberate act by a person. Measured state
 (up, down, no data) appears on its own. Words (incident updates) are drafted by
 a person or an agent and published only by a person.
 
@@ -81,11 +84,24 @@ a person or an agent and published only by a person.
      `forge.status/v1` schema, and no self-hosted prober.
    - **10.** Pages are hosted on Reliant static hosting with `stale-if-error`.
      The shared-fate limit is published.
-   - **11.** The private view is free for everyone. One public page per org is
+   - **11.** A declared page's private view is free. One public page per org is
      free and is exempt from the static-site count. Further pages, and email
-     past a free cap, need billing.
+     past a free cap, need billing. (As amended by item 5: there is no private
+     view for an env that has not opted in.)
    - **12.** The new scopes `status:write` and `status:publish` join forge's
      closed set.
+5. **A status page is opt-in only** (owner, 2026-11-25: "have status page be
+   opt-in only"). No project or env gets a status page, not even the private
+   view, unless its KCL declares `forge.StatusPage`. When the declaration is
+   absent, the env's shape carries no `status_page`, and its render is byte-for-byte
+   what it was before this feature. The publisher does no work for it, and the
+   console shows an empty state that explains how to opt in. Scaffolds and
+   `forge project new` never add a `forge.StatusPage`. Going public stays a
+   separate, audited act by a person, on top of the declaration (item 4,
+   decision 2). Uptime checks, the prober and the uptime alerts are not part of
+   this opt-in: they keep collecting data for every hosted env as before
+   (`Uptime and certificate probes` in `docs/benefits.md`), and the page only
+   reads that data.
 
 ## 1. Problem and experience
 
@@ -118,10 +134,12 @@ samples today (`docs/observability/uptime-prober.md`, "Status"; step 2 of
 "Turning it on" is the owner's). A status page with no samples shows "no data"
 for every component, so slice 0 of the rollout is turning the prober on.
 
-**What a person does.** In **Observability › Uptime & Status page** they see
-the private page: every check of the env, its state and its bars, rendered by
-the same renderer the public page uses. The project's `deploy/kcl/prod/main.k`
-names the public components. "Publish page" makes the page public on a platform
+**What a person does.** They opt in by declaring `forge.StatusPage` in the
+env's `deploy/kcl/prod/main.k` and naming its components. Until they do,
+**Observability › Uptime & Status page** shows the Uptime dashboard and an empty
+state with the declaration to add. Once the release carrying it is promoted,
+they see the private page: the declared components, their states and bars,
+rendered by the same renderer the public page uses. "Publish page" makes the page public on a platform
 hostname, and **Configure › Domains** binds `status.example.com` to it. During
 an outage they open an incident from the down component, write or approve
 updates, and resolve it. They schedule maintenance ahead of time.
@@ -149,17 +167,20 @@ updates, upcoming maintenance, and the incident history. The page links to
 A **component** is a public name for one or more uptime checks of **one** env.
 Its state is the worst state among its checks.
 
-| Source                                         | Check name (today)        | Shown on the private view | Shown on the public page                     |
-| ---------------------------------------------- | ------------------------- | ------------------------- | -------------------------------------------- |
-| `forge.OnHosted` frontend (derived)            | `<frontend>`              | Yes, one row per check    | Only if a declared component names the check |
-| Hosted workload with an exposed port (derived) | `<workload>`              | Yes                       | Same                                         |
-| HTTPRoute with a hostname (derived)            | `route-<route>`           | Yes                       | Same                                         |
-| `forge.UptimeCheck` (declared)                 | its `name`                | Yes                       | Same                                         |
-| A check the env opted out of (`Uptime.skip`)   | not in the shape, no data | No                        | No; naming it is a render error              |
+| Source                                          | Check name (today)        | Shown on the private view (page declared)                      | Shown on the public page                     |
+| ----------------------------------------------- | ------------------------- | -------------------------------------------------------------- | -------------------------------------------- |
+| `forge.OnHosted` frontend (derived)             | `<frontend>`              | Only if a declared component names the check                   | Only if a declared component names the check |
+| Hosted workload with an exposed port (derived)  | `<workload>`              | Same                                                           | Same                                         |
+| HTTPRoute with a hostname (derived)             | `route-<route>`           | Same                                                           | Same                                         |
+| `forge.UptimeCheck` (declared)                  | its `name`                | Same                                                           | Same                                         |
+| A check the env opted out of (`Uptime.skip`)    | not in the shape, no data | No                                                             | No; naming it is a render error              |
+| Any check, in an env with no `forge.StatusPage` | as above                  | No page (empty state); the check stays on the Uptime dashboard | No page                                      |
 
-The public page is **opt-in per component**. A derived check on `route-admin`
-must never become public because someone published the page. The private view
-lists every check, so the console stays useful with nothing declared.
+The page is **opt-in**, and so is each component on it. A derived check on
+`route-admin` must never become public because someone published the page. The
+private view shows the same declared components the public page would, so a
+person previews exactly what publishing exposes. Every check stays visible on
+the existing Uptime dashboard whether or not a page is declared.
 
 ### State vocabulary
 
@@ -313,7 +334,8 @@ uses. For each page with a declared shape it:
    boundary (a Postgres `NOTIFY`, the way the reconciler is woken in
    `internal/app/reconcile_wire.go`).
 
-Private pages are never written to the bucket. The console renders the private
+An env with no declared page has no `status_pages` row and is never visited by
+the publisher. Private pages are never written to the bucket. The console renders the private
 view from the same document, which it gets through `GetStatusPage` under
 `obs:read`.
 
@@ -515,8 +537,8 @@ What a page costs Reliant:
 
 Settled ([decision 11](#11-owner-decisions)):
 
-- The private view is included for every signed-in org. It is part of
-  monitoring.
+- A declared page's private view is included for every signed-in org. It is
+  part of monitoring. There is no page, and no cost, without the declaration.
 - One public page per org is included and does **not** count as a static site.
   It counts neither toward the free tier (`computegate`,
   `StaticFreeTierExceeded`) nor toward a billed org's live cap
@@ -566,7 +588,7 @@ the owner's call.
 | 8   | Order relative to incidents (control-plane#3230) | (a) status incidents stand alone now, with a nullable link the #3230 incident fills later; (b) build the #3230 incident object first, and the page publishes from it.                                                                                                                    | (a). The page is useful with no incident model, and the link keeps one future record. (b) delays the page by an M-sized design.                                                                                                                                                             | Incident tables and rpcs.                                     |
 | 9   | Forge-only users with no account                 | (a) public renderer and schema only, no self-hosted prober; (b) ship a self-hosted prober in forge.                                                                                                                                                                                      | (a). Monitoring requires sign-in. A forge prober is a second monitoring runtime to maintain for users we do not monitor.                                                                                                                                                                    | `pkg/statuspage` scope; docs.                                 |
 | 10  | Where pages are hosted (shared fate)             | (a) Reliant static hosting with `stale-if-error`, the limit published; (b) a separate serving path on independent infrastructure (another provider or bucket and CDN).                                                                                                                   | (a) for v1, stated honestly in benefits and compare. (b) is a multi-provider project, and multi-region is "not now".                                                                                                                                                                        | Serving slice; what status.reliantlabs.io may claim.          |
-| 11  | Pricing                                          | (a) private view free; one public page per org free and exempt from the static-site count; email past a free cap and further pages need billing; (b) a public page needs billing; (c) a priced add-on.                                                                                   | (a). The ticket's premise is "every production app needs a status page on day 0". Its marginal cost is small and bounded.                                                                                                                                                                   | `computegate`, `pricing.yaml`, benefits row.                  |
+| 11  | Pricing                                          | (a) a declared page's private view free (opt-in, settled item 5); one public page per org free and exempt from the static-site count; email past a free cap and further pages need billing; (b) a public page needs billing; (c) a priced add-on.                                        | (a). The ticket's premise is "every production app needs a status page on day 0". Its marginal cost is small and bounded.                                                                                                                                                                   | `computegate`, `pricing.yaml`, benefits row.                  |
 | 12  | New scopes                                       | (a) `status:write` and `status:publish` in forge's closed set (a semver minor); (b) reuse `obs:write` or `obs:triage`.                                                                                                                                                                   | (a). Speaking publicly is a separate authority from editing dashboards or triaging issues, and it must be grantable per environment.                                                                                                                                                        | Authorization for every mutation.                             |
 
 ## 12. Rollout plan
@@ -583,12 +605,15 @@ incidents, maintenance, agent drafting and email. Each slice ships alone.
    classified). `forge.StatusPage` in KCL with render validation, the
    `status_page` shape field, and `BundleFeatureStatusPage` with strip logic.
    The `observability/status-page` skill. `forge obs statuspage preview`.
+   Opt-in: no default and no scaffold adds one, and a test proves that an env
+   without the declaration renders byte-identically.
 2. **control-plane: history.** The `uptime_check_1d` rollup (tenant schema
    migration) and `obsquery.UptimeDailySQL`. The dashboard's range beyond 30
    days reads it too.
 3. **control-plane and console: private view.** `StatusService.GetStatusPage`
-   under `obs:read`, and the console page behind a `ReliantWebConfig` flag. The
-   first user-visible value.
+   under `obs:read` (NotFound for an env without the declaration), and the
+   console page behind a `ReliantWebConfig` flag, with the opt-in empty state.
+   The first user-visible value.
 4. **Public page.** Scopes (the forge PR first), `status_pages`,
    `PublishStatusPage`, the `status_publisher` worker, bucket prefix and host
    index, `no-cache` and `stale-if-error`, the `@status` domain target, and

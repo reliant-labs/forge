@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/forgecompat"
@@ -236,6 +238,59 @@ func TestProjectConfigCheckRefusesAGatedUnverifiedWorkload(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "? delivery-signer: unverified") {
 			t.Errorf("mode %s: unverified is not reported:\n%s", c.mode, out.String())
+		}
+	}
+}
+
+// A container runtime slow to start a container on a loaded host must not
+// fail a healthy workload (control-plane #3625): a workload that runs out of
+// time is checked once more, alone, and one that blocks every time is still
+// unverified.
+func TestConfigCheckRetriesAWorkloadThatRanOutOfTime(t *testing.T) {
+	prevTimeout := configCheckTimeout
+	configCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { configCheckTimeout = prevTimeout })
+	ok := forgeconfig.CheckResultPrefix + ` {"ok":true}`
+	for _, c := range []struct {
+		name     string
+		slowRuns int
+		wantErr  bool
+	}{{"slow once", 1, false}, {"blocks every time", 99, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			var calls atomic.Int32
+			prev := configCheckRunner
+			configCheckRunner = func(ctx context.Context, _ string, _ configCheckTarget) (string, string, error) {
+				if int(calls.Add(1)) <= c.slowRuns {
+					<-ctx.Done()
+					return "", "", ctx.Err()
+				}
+				return ok, "", nil
+			}
+			t.Cleanup(func() { configCheckRunner = prev })
+			var out bytes.Buffer
+			chk := &projectConfigCheck{entities: &KCLEntities{Workloads: []WorkloadEntity{signerWorkload()}}, env: "prod", mode: configCheckGate, out: &out, outputDir: fakeProjectBinary(t, true)}
+			err := chk.run(t.Context(), "control-plane:v1")
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, want error %v\n%s", err, c.wantErr, out.String())
+			}
+			if got := calls.Load(); got != 2 {
+				t.Errorf("the workload ran %d times, want 2 (once, then once more alone)", got)
+			}
+			if c.wantErr && !strings.Contains(out.String(), configCheckTimeoutEnv) {
+				t.Errorf("the unverified line does not name %s:\n%s", configCheckTimeoutEnv, out.String())
+			}
+		})
+	}
+}
+
+func TestConfigCheckTimeoutHonoursTheEnvironment(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want time.Duration
+	}{{"", configCheckTimeout}, {"5m", 5 * time.Minute}, {"nonsense", configCheckTimeout}, {"-1s", configCheckTimeout}} {
+		t.Setenv(configCheckTimeoutEnv, c.env)
+		if got := effectiveConfigCheckTimeout(); got != c.want {
+			t.Errorf("%s=%q: timeout %s, want %s", configCheckTimeoutEnv, c.env, got, c.want)
 		}
 	}
 }

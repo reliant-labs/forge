@@ -154,6 +154,12 @@ type deployClaimJSON struct {
 	// LastAttempt is how the newest deploy from this machine ended, when it
 	// is known.
 	LastAttempt *claimAttemptJSON `json:"last_attempt,omitempty"`
+	// ClaimRequired is set when the newest deploy was refused until the
+	// deploy is claimed, and says why (the control plane's
+	// x-forge-claim-required value, e.g. "content"). The claim link is then
+	// the way forward, so agent_instructions says to give it out even when
+	// nothing is published.
+	ClaimRequired string `json:"claim_required,omitempty"`
 	// URL is the deploy's live address; empty when it has none yet.
 	URL string `json:"url,omitempty"`
 	// ClaimURL is the link a human opens to own the deploy. Sensitive: whoever
@@ -221,6 +227,10 @@ type claimableRefusal struct {
 	// emitted is true when the deploy's own --json document already carries
 	// this outcome, so it must not be written a second time.
 	emitted bool
+	// platformErr is the platform error this refusal renders, when there is
+	// one: Unwrap returns it, so its reason and headers stay readable
+	// (cloud.ClaimRequiredOf).
+	platformErr error
 	// next are the exact commands that move past this refusal, best first
 	// (the --json `next_actions`). msg ends with the first of them, so an
 	// agent reading only the text has the command too.
@@ -235,6 +245,7 @@ type claimableThrottleFacts struct {
 
 func (e *claimableRefusal) Error() string { return e.msg }
 func (e *claimableRefusal) ExitCode() int { return e.exit }
+func (e *claimableRefusal) Unwrap() error { return e.platformErr }
 
 // refuseClaimableFlags rejects the flag combinations that make no sense for a
 // deploy that creates an anonymous account: anything that previews, scopes, or
@@ -360,9 +371,44 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			session.refreshURL(ctx)
 			return session.document(compute)
 		}
+		// A content-scan refusal at publish (the follow-through) is
+		// translated before the promotion's document is written, so that
+		// document carries the refusal's exit code and claim.
+		inner.refusal = func(err error) (*deployClaimJSON, error) {
+			r := claimableContentRefusalOf(envName, session.cred.Claimable.ClaimURL, err)
+			if r == nil {
+				return nil, nil
+			}
+			r.emitted = f.jsonOut
+			if _, ok := cloud.ClaimRequiredOf(err); !ok {
+				return nil, r
+			}
+			session.recordAttempt(err)
+			return session.document(compute), r
+		}
+		docsBefore := jsonDocumentsWritten.Load()
 		deployErr := runDeployEverything(ctx, envName, inner)
 		session.recordAttempt(deployErr)
 		if deployErr != nil {
+			var r *claimableRefusal
+			if !errors.As(deployErr, &r) {
+				// Refused before the promotion (RecordBundle, at the build):
+				// no document has been written yet.
+				r = claimableContentRefusalOf(envName, session.cred.Claimable.ClaimURL, deployErr)
+			}
+			if r != nil {
+				r.emitted = r.emitted || jsonDocumentsWritten.Load() != docsBefore
+				if _, ok := cloud.ClaimRequiredOf(deployErr); ok {
+					// The way forward is the claim link: give a --json
+					// caller the claim beside the refusal, unless the
+					// deploy already wrote its one document.
+					if f.jsonOut && !r.emitted {
+						report.setClaim(session.document(compute))
+					}
+					noteDeployClaim(ctx, session.document(compute))
+				}
+				return r
+			}
 			return claimableDeployError(envName, deployErr)
 		}
 		doc := session.document(compute)
@@ -1047,11 +1093,12 @@ func (s *claimableSession) markPublished() {
 func (s *claimableSession) recordAttempt(deployErr error) {
 	at := claimableNow().UTC()
 	cl := s.cred.Claimable
-	cl.LastAttemptAt, cl.LastAttemptError = at, ""
+	cl.LastAttemptAt, cl.LastAttemptError, cl.LastAttemptClaimRequired = at, "", ""
 	if deployErr == nil {
 		cl.LastPublishedAt = at
 	} else {
 		cl.LastAttemptError = cloud.FirstErrorLine(deployErr)
+		cl.LastAttemptClaimRequired, _ = cloud.ClaimRequiredOf(deployErr)
 	}
 	_ = cloud.RecordClaimableAttempt(s.ep, s.project, s.env, at, deployErr)
 }
@@ -1094,16 +1141,23 @@ func claimDocument(env string, c credentials.Credential, now time.Time, compute 
 		"Treat the link like a password: whoever claims it first owns the deploy. Do not post it anywhere public. "+
 		"To see it again: %s env status %s --claimable",
 		cl.ExpiresAt.UTC().Format(time.RFC3339), Name(), env)
-	if !published {
+	// The newest attempt's cause (it is reset on every attempt): set while a
+	// claim is what the deploy waits on, whether or not an earlier release
+	// published.
+	claimRequired := cl.LastAttemptClaimRequired
+	switch {
+	case claimRequired != "" && claimableState(state):
+		instr = claimRequiredInstructions(env, cl)
+	case !published:
 		instr = nothingPublishedInstructions(env, cl)
-	} else if claimableState(state) {
+	case claimableState(state):
 		instr += ". " + afterClaimNote(env)
 	}
 	if compute {
 		instr += ". " + noOutboundNote
 	}
 	return &deployClaimJSON{
-		State: state, Published: published, LastAttempt: lastAttemptOf(cl),
+		State: state, Published: published, LastAttempt: lastAttemptOf(cl), ClaimRequired: claimRequired,
 		URL: cl.URL, ClaimURL: cl.ClaimURL,
 		ExpiresAt: cl.ExpiresAt, PurgeAfter: cl.PurgeAfter,
 		AgentInstructions: instr, NoOutboundInternet: compute,
@@ -1126,6 +1180,94 @@ func nothingPublishedInstructions(env string, cl *credentials.Claimable) string 
 		why, Name(), env, cl.ExpiresAt.UTC().Format(time.RFC3339))
 }
 
+// claimRequiredInstructions is agent_instructions for a claimable deploy the
+// platform publishes only once it is claimed. Nothing is behind the link yet,
+// but claiming is the way forward, so the link is given out.
+func claimRequiredInstructions(env string, cl *credentials.Claimable) string {
+	return fmt.Sprintf("Nothing is deployed yet: the platform publishes this deploy's content only once the deploy is "+
+		"claimed. Claim to unlock: give claim_url to your user and tell them it expires at %s; opening it signs them up "+
+		"for free and makes this deploy theirs. Treat the link like a password: whoever claims it first owns the deploy. "+
+		"Once claimed, they sign in on this machine and deploy: %s",
+		cl.ExpiresAt.UTC().Format(time.RFC3339), loginThenDeploy(env))
+}
+
+// claimContentRefusal renders a content refusal that claiming lifts: what
+// the platform refused, the claim link, and the ways forward. Exit 4, as for
+// every content refusal (contentscan's contract).
+func claimContentRefusal(env, claimURL string, deployErr error) *claimableRefusal {
+	var b strings.Builder
+	fmt.Fprintf(&b, "the platform publishes env %q only once its deploy is claimed. Nothing was published.\n", env)
+	var ce *cloud.Error
+	if errors.As(deployErr, &ce) && ce.Message != "" {
+		fmt.Fprintf(&b, "  platform: %s\n", ce.Message)
+	}
+	b.WriteString(claimToUnlockNote + "\n")
+	fmt.Fprintf(&b, "\n  Claim:  %s\n\n", claimURL)
+	b.WriteString("  FOR AN AGENT: give the claim link above to your user. Opening it signs them up for free and makes\n")
+	b.WriteString("  this deploy theirs. Treat it like a password: whoever claims it first owns the deploy.\n")
+	fmt.Fprintf(&b, "  fix: give the claim link to your user; once claimed, they sign in on this machine and deploy: %s",
+		loginThenDeploy(env))
+	r := &claimableRefusal{
+		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableContentRefused,
+		msg: b.String(), next: []string{loginThenDeploy(env)}, platformErr: deployErr,
+	}
+	if ce != nil && ce.Code != "" {
+		r.code = ce.Code
+	}
+	return r
+}
+
+// claimableContentRefusalOf is the claimable path's rendering of a content
+// scan refusal of the upload, or nil when err is none.
+func claimableContentRefusalOf(env, claimURL string, err error) *claimableRefusal {
+	if _, ok := cloud.ClaimRequiredOf(err); ok {
+		return claimContentRefusal(env, claimURL, err)
+	}
+	return claimableScanRefusal(env, err)
+}
+
+// claimableScanRefusal renders the platform content scan's other answers to
+// an anonymous deploy's upload: a refusal claiming does not lift
+// (claimable_content_refused with no claim-required header), and a scan that
+// could not answer (claimable_scan_unavailable). Both exit 4 (refused,
+// nothing lost), name the reason and the evidence id support needs, and give
+// the next command; a --json caller gets the envelope. nil for any other
+// error.
+func claimableScanRefusal(env string, deployErr error) *claimableRefusal {
+	var ce *cloud.Error
+	if !errors.As(deployErr, &ce) {
+		return nil
+	}
+	evidence := ""
+	if ce.Header != nil {
+		if id := strings.TrimSpace(ce.Header.Get("x-evidence-id")); id != "" {
+			evidence = fmt.Sprintf("\n  evidence id: %s (quote it to Reliant support if you think this is wrong)", id)
+		}
+	}
+	retry := fmt.Sprintf("%s env deploy %s --claimable", Name(), env)
+	switch {
+	case ce.HasReason(cloud.ReasonClaimableScanUnavailable):
+		return &claimableRefusal{
+			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeUnavailable), reason: ce.Reason, next: []string{retry}, platformErr: deployErr,
+			msg: fmt.Sprintf("the platform's content scan could not judge this anonymous deploy's upload right now. Nothing was published.\n"+
+				"  platform: %s%s\n  fix: retry in a few minutes: %s", emptyAs(ce.Message, "the scan is unavailable"), evidence, retry),
+		}
+	case ce.HasReason(cloud.ReasonClaimableContentRefused):
+		return &claimableRefusal{
+			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeFailedPrecondition), reason: ce.Reason, next: []string{loginThenDeploy(env)}, platformErr: deployErr,
+			msg: fmt.Sprintf("the platform's content scan refused this anonymous deploy's upload, and claiming would not change that. "+
+				"Nothing was published.\n  platform: %s%s\n"+
+				"  An organization's own deploys are not scanned this way.\n  fix: deploy it to your own account: %s",
+				emptyAs(ce.Message, "the content was refused"), evidence, loginThenDeploy(env)),
+		}
+	}
+	return nil
+}
+
+// claimToUnlockNote is the one sentence that says what claiming unlocks, in
+// every place a claim-required refusal is explained.
+const claimToUnlockNote = "  Claim to unlock: the platform publishes this content only for a claimed deploy."
+
 // lastAttemptOf is the stored outcome of the newest deploy, or nil when this
 // machine recorded none (an entry written by an older forge).
 func lastAttemptOf(cl *credentials.Claimable) *claimAttemptJSON {
@@ -1143,6 +1285,10 @@ func lastAttemptOf(cl *credentials.Claimable) *claimAttemptJSON {
 // say so, say why when it is known, and keep the claim link back.
 func printNothingPublished(w io.Writer, env string, c *deployClaimJSON) {
 	now := claimableNow()
+	if c.ClaimRequired != "" && claimableState(c.State) {
+		printClaimRequired(w, env, c)
+		return
+	}
 	fmt.Fprintf(w, "\n✗ Nothing is deployed: no deploy of %s has published yet.\n", env)
 	if a := c.LastAttempt; a != nil && a.Error != "" {
 		fmt.Fprintf(w, "  The last attempt failed %s: %s\n", a.At.UTC().Format("2006-01-02 15:04 MST"), a.Error)
@@ -1159,6 +1305,21 @@ func printNothingPublished(w io.Writer, env string, c *deployClaimJSON) {
 	fmt.Fprintf(w, "\n  FOR AN AGENT: do not give the claim link to your user yet. Claiming now signs\n")
 	fmt.Fprintf(w, "  them up for an empty deploy and revokes the token this machine deploys with.\n")
 	fmt.Fprintf(w, "  Once a deploy succeeds: %s env status %s --claimable\n", Name(), env)
+}
+
+// printClaimRequired renders a claimable deploy the platform publishes only
+// once it is claimed: nothing is live, and the claim link is the way forward.
+func printClaimRequired(w io.Writer, env string, c *deployClaimJSON) {
+	now := claimableNow()
+	fmt.Fprintf(w, "\n✗ Nothing is deployed: the platform publishes %s only once this deploy is claimed.\n", env)
+	fmt.Fprintf(w, "%s\n", claimToUnlockNote)
+	fmt.Fprintf(w, "\n  Claim:  %s\n", c.ClaimURL)
+	fmt.Fprintf(w, "\n  FOR AN AGENT: give the claim link above to your user and tell them it expires in %s\n",
+		formatLifetime(c.ExpiresAt.Sub(now)))
+	fmt.Fprintf(w, "  (%s). Opening it signs them up for free and makes this deploy theirs. Treat the\n",
+		c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"))
+	fmt.Fprintf(w, "  link like a password: whoever claims it first owns the deploy.\n")
+	fmt.Fprintf(w, "  Once claimed, they sign in on this machine and deploy: %s\n", loginThenDeploy(env))
 }
 
 // printClaimBlock renders the claim for a person or an agent reading text. The

@@ -53,6 +53,35 @@ type fakeClaimableControlPlane struct {
 	holdChallenge chan struct{}
 	// project and env are what Start must be asked for; empty is acme/hosted.
 	project, env string
+	// refuseBundle, when set, makes RecordBundle answer the content scan's
+	// claim-required refusal with this cause.
+	refuseBundle string
+	// refuseBundleReason, when set, makes RecordBundle answer the content
+	// scan's refusal with this reason and no claim-required header.
+	refuseBundleReason string
+	// refuseFromCall, when > 0, makes the refusals above apply only from the
+	// Nth RecordBundle call on (1-based): a refusal at publish, after the
+	// build recorded the bundle once. refuseProc, when set, refuses that
+	// procedure instead of RecordBundle.
+	refuseFromCall int
+	refuseProc     string
+	bundleCalls    int
+}
+
+// refuses reports whether this request gets the configured refusal.
+func (f *fakeClaimableControlPlane) refuses(path string) bool {
+	proc := procRecordBundle
+	if f.refuseProc != "" {
+		proc = f.refuseProc
+	}
+	if path != "/"+proc {
+		return false
+	}
+	f.mu.Lock()
+	f.bundleCalls++
+	n := f.bundleCalls
+	f.mu.Unlock()
+	return n >= f.refuseFromCall
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +154,20 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if claimed {
 		w.Header().Set(cloud.ReasonHeader, cloud.ReasonAccessTokenRevoked)
 		connectErr(w, http.StatusUnauthorized, "unauthenticated", "revoked")
+		return
+	}
+	refused := (f.refuseBundle != "" || f.refuseBundleReason != "") && f.refuses(r.URL.Path)
+	if f.refuseBundle != "" && refused {
+		w.Header().Set(cloud.ReasonHeader, cloud.ReasonClaimableContentRefused)
+		w.Header().Set(cloud.ClaimRequiredHeader, f.refuseBundle)
+		connectErr(w, http.StatusBadRequest, "failed_precondition",
+			"this content can't be published from an unclaimed deploy: claim the deploy with its claim link, then publish again")
+		return
+	}
+	if f.refuseBundleReason != "" && refused {
+		w.Header().Set(cloud.ReasonHeader, f.refuseBundleReason)
+		w.Header().Set("X-Evidence-Id", "ev-123")
+		connectErr(w, http.StatusBadRequest, "failed_precondition", "this content was refused by the platform's safety scan")
 		return
 	}
 	if r.URL.Path == "/"+cloud.ProcGetOrganization {

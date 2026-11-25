@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"math/bits"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -248,7 +249,7 @@ func (c *ClaimableClient) Challenge(ctx context.Context) (ClaimableChallenge, er
 // call that carries the canary pass (ClaimableCanaryTokenEnv), when set.
 func (c *ClaimableClient) Start(ctx context.Context, req ClaimableStartRequest) (ClaimableDeploy, error) {
 	var out ClaimableDeploy
-	if err := c.client.callWith(ctx, ProcStartClaimableDeploy, req, &out, "", claimableCanaryHeader()); err != nil {
+	if err := c.client.callWith(ctx, ProcStartClaimableDeploy, req, &out, "", claimableCanaryHeader(c.client.Endpoint.URL)); err != nil {
 		return ClaimableDeploy{}, err
 	}
 	if strings.TrimSpace(out.AccessToken) == "" || strings.TrimSpace(out.ClaimURL) == "" {
@@ -623,20 +624,31 @@ func (c *Client) CallAnonymous(ctx context.Context, procedure string, req, out a
 // forge canary, so its anonymous deploys are exempt from the per-network and
 // per-device claimable rate limits. It is an operator knob, not a user
 // feature: ordinary users never set it. Its value is sent only as
-// ClaimableCanaryHeader on StartClaimableDeploy, and is never logged, printed
-// or written anywhere. A control plane that does not know the header ignores
+// ClaimableCanaryHeader on StartClaimableDeploy at DefaultEndpoint's HTTPS
+// origin only, and is never logged, printed or written anywhere. A control plane that does not know the header ignores
 // it, and treats its absence as an ordinary anonymous start.
 const ClaimableCanaryTokenEnv = "FORGE_CLAIMABLE_CANARY_TOKEN"
 
 // ClaimableCanaryHeader is the request header that carries the canary pass.
 const ClaimableCanaryHeader = "X-Forge-Claimable-Canary"
 
-// claimableCanaryHeader is the header set Start adds: the canary pass when
-// ClaimableCanaryTokenEnv holds one, else nil.
-func claimableCanaryHeader() http.Header {
+// claimableCanaryHeader never discloses the operator's pass to a custom
+// control plane, even when the pass is set in the ambient environment.
+func claimableCanaryHeader(endpoint string) http.Header {
+	u, err := url.Parse(endpoint)
+	if err != nil || !claimableCanaryOrigin(u) {
+		return nil
+	}
 	token := strings.TrimSpace(os.Getenv(ClaimableCanaryTokenEnv))
 	if token == "" {
 		return nil
 	}
 	return http.Header{ClaimableCanaryHeader: []string{token}}
+}
+
+func claimableCanaryOrigin(u *url.URL) bool {
+	trusted, err := url.Parse(DefaultEndpoint)
+	return err == nil && u.User == nil && u.Scheme == "https" &&
+		strings.EqualFold(u.Hostname(), trusted.Hostname()) &&
+		(u.Port() == "" || u.Port() == "443")
 }

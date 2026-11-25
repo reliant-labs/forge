@@ -227,11 +227,17 @@ func TestClaimableClient_SendsNoCredentialAndDecodesTheDeploy(t *testing.T) {
 // environment holds a non-blank one. Not parallel: it sets the environment.
 func TestClaimableClient_SendsTheCanaryPassOnlyOnStart(t *testing.T) {
 	for _, tc := range []struct {
-		name, env, want string
+		name, env, want, endpoint string
 	}{
-		{name: "set", env: "  pass-123\n", want: "pass-123"},
-		{name: "blank", env: "   ", want: ""},
-		{name: "unset", env: "", want: ""},
+		{name: "set", env: "  pass-123\n", want: "pass-123", endpoint: DefaultEndpoint},
+		{name: "blank", env: "   ", endpoint: DefaultEndpoint},
+		{name: "unset", env: "", endpoint: DefaultEndpoint},
+		{name: "custom", env: "pass-123", endpoint: "https://example.com"},
+		{name: "insecure", env: "pass-123", endpoint: "http://admin.reliantapi.com"},
+		{name: "other-port", env: "pass-123", endpoint: DefaultEndpoint + ":8443"},
+		{name: "suffix", env: "pass-123", endpoint: DefaultEndpoint + ".example.com"},
+		{name: "userinfo", env: "pass-123", endpoint: "https://user@admin.reliantapi.com"},
+		{name: "explicit-https-port", env: "pass-123", want: "pass-123", endpoint: DefaultEndpoint + ":443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(ClaimableCanaryTokenEnv, tc.env)
@@ -249,7 +255,15 @@ func TestClaimableClient_SendsTheCanaryPassOnlyOnStart(t *testing.T) {
 				}
 			}))
 			defer srv.Close()
-			c := NewClaimableClient(endpointFor(t, "prod", srv.URL, ""))
+			c := NewClaimableClient(endpointFor(t, "prod", tc.endpoint, ""))
+			// Keep the declared origin intact for credential policy, routing
+			// the wire request to our local fixture without external network.
+			c.client.HTTP.Transport = canaryTestTransport(func(r *http.Request) (*http.Response, error) {
+				local := r.Clone(r.Context())
+				local.URL.Scheme = "http"
+				local.URL.Host = strings.TrimPrefix(srv.URL, "http://")
+				return srv.Client().Transport.RoundTrip(local)
+			})
 			ctx := context.Background()
 			if _, err := c.Availability(ctx); err != nil {
 				t.Fatalf("availability: %v", err)
@@ -276,6 +290,36 @@ func TestClaimableClient_SendsTheCanaryPassOnlyOnStart(t *testing.T) {
 				t.Fatalf("start canary header = %q, want [%q]", got, tc.want)
 			}
 		})
+	}
+}
+
+type canaryTestTransport func(*http.Request) (*http.Response, error)
+
+func (f canaryTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestClaimableClient_CanaryPassDoesNotFollowRedirect(t *testing.T) {
+	t.Setenv(ClaimableCanaryTokenEnv, "pass-123")
+	c := NewClaimableClient(endpointFor(t, "prod", DefaultEndpoint, ""))
+	calls := 0
+	c.client.HTTP.Transport = canaryTestTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Host != "admin.reliantapi.com" || r.Header.Get(ClaimableCanaryHeader) != "pass-123" {
+			t.Errorf("unexpected canary request to %s", r.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusTemporaryRedirect,
+			Header:     http.Header{"Location": {"https://example.com/stolen"}},
+			Body:       http.NoBody,
+			Request:    r,
+		}, nil
+	})
+	if _, err := c.Start(context.Background(), ClaimableStartRequest{}); err == nil {
+		t.Fatal("redirect must not succeed")
+	}
+	if calls != 1 {
+		t.Fatalf("made %d requests, want only the initial request", calls)
 	}
 }
 

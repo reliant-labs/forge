@@ -270,7 +270,17 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 		}
 	}
 
-	resp, err := c.httpClientFor(ctx, procedure).Do(httpReq)
+	httpClient := c.httpClientFor(ctx, procedure)
+	if httpReq.Header.Get(ClaimableCanaryHeader) != "" {
+		// net/http forwards custom headers across redirects, including to a
+		// different origin. Never let a redirect disclose the canary pass.
+		guarded := *httpClient
+		guarded.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		httpClient = &guarded
+	}
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("call %s at %s: %w", procedure, c.Endpoint.URL, err)
 	}

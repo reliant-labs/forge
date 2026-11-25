@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
@@ -29,11 +31,27 @@ import (
 // rerun), host or infra is healthy without ever having been suspected here:
 // it gets no issue, and an open one is left alone.
 //
-// A test the local record knows nothing about is never touched: the local
-// record is one machine's, and silence there is not evidence.
+// A test the local record knows nothing about is never touched by those
+// rules: the local record is one machine's, and silence there is not
+// evidence. A CI runner starts with an empty record, so on CI nothing would
+// ever close; StaleAfter is the sweep for that case (flake-report.sh
+// --sweep's port), which reads the evidence from the issues themselves:
+//
+//   - an open issue whose test function no longer exists in the checkout is
+//     closed;
+//   - an open issue whose newest evidence — its creation, or the newest
+//     "Failed then passed on retry again" comment forge wrote on it — is
+//     older than StaleAfter is closed.
+//
+// Either way a later flake of the test finds the closed issue and reopens it.
 
 // LabelSuspected is the label of a suspected flake's issue.
 const LabelSuspected = "flake:suspected"
+
+// evidencePrefix starts every comment forge (and flake-report.sh before it)
+// writes when a test flakes again: the sweep's evidence marker. Comments
+// anyone else writes do not keep an issue open.
+const evidencePrefix = "Failed then passed on retry again"
 
 // IssueOptions configures SyncIssues.
 type IssueOptions struct {
@@ -45,6 +63,12 @@ type IssueOptions struct {
 	// DryRun says what would be filed, commented and closed, and does none
 	// of it.
 	DryRun bool
+	// StaleAfter, when positive, also closes each open forge-filed issue
+	// whose newest flake evidence is older than this, or whose test no
+	// longer exists under Root. Zero leaves those issues alone.
+	StaleAfter time.Duration
+	// Now is the clock StaleAfter is measured against (default time.Now).
+	Now time.Time
 }
 
 // IssueResult is what SyncIssues did.
@@ -58,13 +82,15 @@ type IssueResult struct {
 }
 
 type ghIssue struct {
-	Number   int    `json:"number"`
-	Title    string `json:"title"`
-	State    string `json:"state"`
-	URL      string `json:"url"`
-	Body     string `json:"body"`
-	Comments []struct {
-		Body string `json:"body"`
+	Number    int       `json:"number"`
+	Title     string    `json:"title"`
+	State     string    `json:"state"`
+	URL       string    `json:"url"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+	Comments  []struct {
+		Body      string    `json:"body"`
+		CreatedAt time.Time `json:"createdAt"`
 	} `json:"comments"`
 }
 
@@ -107,7 +133,11 @@ func SyncIssues(ctx context.Context, o IssueOptions, doc *testreport.Flakes) Iss
 	s.module, _ = ModulePath(o.Root)
 
 	open := map[string]ghIssue{} // title -> issue
-	out, err := o.GH(ctx, "issue", "list", "-R", s.repo, "--label", LabelSuspected, "--state", "open", "--limit", "500", "--json", "number,title,state,url")
+	fields := "number,title,state,url"
+	if o.StaleAfter > 0 {
+		fields += ",createdAt,comments"
+	}
+	out, err := o.GH(ctx, "issue", "list", "-R", s.repo, "--label", LabelSuspected, "--state", "open", "--limit", "500", "--json", fields)
 	if err != nil {
 		s.say("cannot list the open %s issues: %v", LabelSuspected, err)
 		return s.res
@@ -118,12 +148,18 @@ func SyncIssues(ctx context.Context, o IssueOptions, doc *testreport.Flakes) Iss
 			open[i.Title] = i
 		}
 	}
+	// handled holds the titles the record decided this run: the sweep
+	// leaves them to it, so a test the record still calls a flake is not
+	// closed (and then reopened by the next run), and none is closed twice.
+	handled := map[string]bool{}
 	for _, t := range doc.Tests {
 		if t.ID.Name == "" || t.ID.Lang != testreport.LangGo {
 			continue
 		}
+		title := IssueTitle(t.ID, s.module)
 		switch t.State {
 		case testreport.StateSuspected, testreport.StateFlaky:
+			handled[title] = true
 			s.file(ctx, t)
 		case testreport.StateHealthy:
 			// Healthy with no Since was never suspected in this record: its
@@ -132,16 +168,124 @@ func SyncIssues(ctx context.Context, o IssueOptions, doc *testreport.Flakes) Iss
 			if t.Since == nil {
 				continue
 			}
-			if existing, ok := open[IssueTitle(t.ID, s.module)]; ok {
-				s.close(ctx, t, existing)
+			if existing, ok := open[title]; ok {
+				handled[title] = true
+				s.close(ctx, existing, closeReason(t))
 			}
 		default:
-			if existing, ok := open[IssueTitle(t.ID, s.module)]; ok {
-				s.close(ctx, t, existing)
+			if existing, ok := open[title]; ok {
+				handled[title] = true
+				s.close(ctx, existing, closeReason(t))
 			}
 		}
 	}
+	if o.StaleAfter > 0 {
+		s.sweep(ctx, issues, handled)
+	}
 	return s.res
+}
+
+// issueTitleRE parses IssueTitle: the test's name and its package, relative
+// to the module (the module path itself for its root package).
+var issueTitleRE = regexp.MustCompile(`^flake:suspected: (\S+) \((.+)\)$`)
+
+// sweep closes each open issue, of the ones the record did not decide, whose
+// test is gone from the checkout or whose newest evidence is older than
+// StaleAfter.
+func (s *issueSync) sweep(ctx context.Context, issues []ghIssue, handled map[string]bool) {
+	now := s.o.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	for _, i := range issues {
+		m := issueTitleRE.FindStringSubmatch(i.Title)
+		if m == nil || handled[i.Title] {
+			continue // not one forge filed, or the record decided it
+		}
+		reason := s.goneReason(ctx, m[1], m[2])
+		if reason == "" {
+			last := lastEvidence(i)
+			if last.IsZero() || now.Sub(last) < s.o.StaleAfter {
+				continue
+			}
+			reason = fmt.Sprintf("it has not flaked again for %d days (last seen %s), past --stale-after %s",
+				int(now.Sub(last)/(24*time.Hour)), last.UTC().Format("2006-01-02"), FormatStaleAfter(s.o.StaleAfter))
+		}
+		s.close(ctx, i, reason)
+	}
+}
+
+// goneReason says why the test of an issue is gone from the checkout at
+// Root, or "" when it is there or that cannot be told (no module, or a
+// package outside it).
+func (s *issueSync) goneReason(ctx context.Context, name, short string) string {
+	if s.module == "" {
+		return ""
+	}
+	pkg := s.module
+	if short != s.module {
+		pkg = s.module + "/" + short
+		// A package path from another module would be looked for in a
+		// directory that cannot exist here; that is not evidence.
+		if first, _, _ := strings.Cut(short, "/"); strings.Contains(first, ".") {
+			if _, err := os.Stat(filepath.Join(s.o.Root, filepath.FromSlash(short))); err != nil {
+				return ""
+			}
+		}
+	}
+	top, _, _ := strings.Cut(name, "/") // a subtest lives in its top-level test
+	if TestBody(s.o.Root, s.module, testreport.TestID{Lang: testreport.LangGo, Package: pkg, Name: top}) != "" {
+		return ""
+	}
+	at := ""
+	if head, err := ExecGit(ctx, s.o.Root, "rev-parse", "--short=12", "HEAD"); err == nil && head != "" {
+		at = " at `" + head + "`"
+	}
+	return fmt.Sprintf("%#q no longer exists in %#q%s", top, short, at)
+}
+
+// lastEvidence is the newest time an issue was seen flaking: its creation,
+// or the newest evidence comment forge wrote on it.
+func lastEvidence(i ghIssue) time.Time {
+	last := i.CreatedAt
+	for _, c := range i.Comments {
+		if strings.HasPrefix(strings.TrimSpace(c.Body), evidencePrefix) && c.CreatedAt.After(last) {
+			last = c.CreatedAt
+		}
+	}
+	return last
+}
+
+// ParseStaleAfter parses --stale-after: a whole number of days ("7d") or a
+// Go duration ("168h"). It must be positive.
+func ParseStaleAfter(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	var d time.Duration
+	if n, ok := strings.CutSuffix(v, "d"); ok {
+		days, err := strconv.Atoi(n)
+		if err != nil {
+			return 0, fmt.Errorf("--stale-after %q: want a whole number of days (7d) or a duration (168h)", v)
+		}
+		d = time.Duration(days) * 24 * time.Hour
+	} else {
+		var err error
+		if d, err = time.ParseDuration(v); err != nil {
+			return 0, fmt.Errorf("--stale-after %q: want a whole number of days (7d) or a duration (168h)", v)
+		}
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("--stale-after %q: must be positive", v)
+	}
+	return d, nil
+}
+
+// FormatStaleAfter prints a StaleAfter the way ParseStaleAfter reads it:
+// whole days as "7d", anything else as a Go duration.
+func FormatStaleAfter(d time.Duration) string {
+	if d%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
+	}
+	return d.String()
 }
 
 type issueSync struct {
@@ -201,7 +345,7 @@ func (s *issueSync) file(ctx context.Context, t testreport.FlakyTest) {
 		}
 	}
 	if len(fresh) > 0 {
-		if _, err := o.GH(ctx, "issue", "comment", num, "-R", s.repo, "--body", "Failed then passed on retry again:\n\n"+eventLines(fresh)); err != nil {
+		if _, err := o.GH(ctx, "issue", "comment", num, "-R", s.repo, "--body", evidencePrefix+":\n\n"+eventLines(fresh)); err != nil {
 			s.say("could not comment on #%d: %v", existing.Number, err)
 			return
 		}
@@ -210,9 +354,9 @@ func (s *issueSync) file(ctx context.Context, t testreport.FlakyTest) {
 	s.say("commented on #%d (%s)", existing.Number, t.ID.Name)
 }
 
-// close closes the open issue of a test that left suspected and flaky.
-func (s *issueSync) close(ctx context.Context, t testreport.FlakyTest, existing ghIssue) {
-	reason := closeReason(t)
+// close closes an open issue, saying why: its test left suspected and
+// flaky, or the sweep found it stale or gone.
+func (s *issueSync) close(ctx context.Context, existing ghIssue, reason string) {
 	if s.o.DryRun {
 		s.say("--dry-run: would close #%d: %s", existing.Number, reason)
 		return

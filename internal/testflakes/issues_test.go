@@ -3,6 +3,8 @@ package testflakes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -141,5 +143,121 @@ func TestSyncIssuesLeavesARealFailureAlone(t *testing.T) {
 	res := SyncIssues(context.Background(), IssueOptions{Root: root, Repo: "acme/m", GH: gh.run, Stdout: &bytes.Buffer{}, Getenv: noEnv}, doc)
 	if len(gh.writes) != 0 || len(res.Opened)+len(res.Closed)+len(res.Updated) != 0 {
 		t.Errorf("a real failure must neither open nor close an issue: writes %v, result %+v", gh.writes, res)
+	}
+}
+
+// openIssue is one entry of an `issue list --json number,title,…,createdAt,comments`
+// answer, comments given as body/createdAt pairs.
+func openIssue(num int, test string, created time.Time, comments ...any) string {
+	var cs []string
+	for i := 0; i+1 < len(comments); i += 2 {
+		body, _ := json.Marshal(comments[i].(string))
+		cs = append(cs, fmt.Sprintf(`{"body":%s,"createdAt":%q}`, body, comments[i+1].(time.Time).UTC().Format(time.RFC3339)))
+	}
+	return fmt.Sprintf(`{"number":%d,"title":"flake:suspected: %s (internal/a)","state":"OPEN","url":"https://github.com/acme/m/issues/%d","createdAt":%q,"comments":[%s]}`,
+		num, test, num, created.UTC().Format(time.RFC3339), strings.Join(cs, ","))
+}
+
+// The sweep reads the evidence from the issues alone, so it closes stale
+// issues on a CI runner whose local record is empty.
+func TestSyncIssuesStaleAfter(t *testing.T) {
+	now := day0.Add(30 * 24 * time.Hour)
+	days := func(n int) time.Time { return now.Add(-time.Duration(n) * 24 * time.Hour) }
+	evidence := "Failed then passed on retry again:\n\n- run `r9`"
+	tree := map[string]string{"internal/a/a_test.go": "package a\n\nfunc TestA(t *testing.T) {}\n"}
+	for _, tc := range []struct {
+		name       string
+		issue      string
+		staleAfter time.Duration
+		dryRun     bool
+		record     *testreport.Flakes // nil: computed from the empty local record
+		search     map[string]string
+		wantClose  string // a substring of the close comment; "" means nothing is closed
+		wantSay    string
+	}{
+		{name: "stale is closed", issue: openIssue(1, "TestA", days(10)), staleAfter: 7 * 24 * time.Hour,
+			wantClose: "it has not flaked again for 10 days (last seen " + days(10).Format("2006-01-02") + "), past --stale-after 7d. A new flake of this test reopens it."},
+		{name: "fresh is kept", issue: openIssue(1, "TestA", days(3)), staleAfter: 7 * 24 * time.Hour},
+		{name: "a forge evidence comment resets the age", issue: openIssue(1, "TestA", days(20), evidence, days(2)), staleAfter: 7 * 24 * time.Hour},
+		{name: "an old forge evidence comment does not", issue: openIssue(1, "TestA", days(20), evidence, days(9)), staleAfter: 7 * 24 * time.Hour,
+			wantClose: "for 9 days"},
+		{name: "other comments do not reset the age", issue: openIssue(1, "TestA", days(20), "looking into it", days(1)), staleAfter: 7 * 24 * time.Hour,
+			wantClose: "for 20 days"},
+		{name: "a gone test is closed however fresh", issue: openIssue(1, "TestGone", days(1)), staleAfter: 7 * 24 * time.Hour,
+			wantClose: "`TestGone` no longer exists in `internal/a`"},
+		{name: "a hours duration", issue: openIssue(1, "TestA", now.Add(-60*time.Hour)), staleAfter: 50 * time.Hour,
+			wantClose: "past --stale-after 50h0m0s"},
+		{name: "dry-run closes nothing", issue: openIssue(1, "TestA", days(10)), staleAfter: 7 * 24 * time.Hour, dryRun: true,
+			wantSay: "--dry-run: would close #1: it has not flaked again for 10 days"},
+		{name: "no --stale-after sweeps nothing", issue: openIssue(1, "TestA", days(10))},
+		{name: "a hand-filed issue is left alone", staleAfter: 7 * 24 * time.Hour,
+			issue: fmt.Sprintf(`{"number":1,"title":"flaky CI on main","state":"OPEN","createdAt":%q,"comments":[]}`, days(60).Format(time.RFC3339))},
+		{name: "a test the record still calls a flake is left to it", issue: openIssue(1, "TestA", days(10)), staleAfter: 7 * 24 * time.Hour,
+			record: &testreport.Flakes{Tests: []testreport.FlakyTest{flaky("TestA", testreport.StateSuspected, "r1")}},
+			search: map[string]string{"TestA": `[{"number":1,"title":"flake:suspected: TestA (internal/a)","state":"OPEN","url":"u","body":"run ` + "`r1`" + `","comments":[]}]`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newModule(t, tree)
+			doc := tc.record
+			if doc == nil {
+				var warnings []string
+				doc, warnings = ComputeFlakes(FlakesOptions{Root: root, Now: now, States: []testreport.State{
+					testreport.StateHealthy, testreport.StateSuspected, testreport.StateFlaky,
+					testreport.StateFixed, testreport.StateQuarantined, testreport.StateRemoved,
+				}})
+				if len(warnings) > 0 || len(doc.Tests) != 0 {
+					t.Fatalf("the record must be empty: %v %v", doc.Tests, warnings)
+				}
+			}
+			gh := &fakeGH{open: "[" + tc.issue + "]", search: tc.search}
+			out := &bytes.Buffer{}
+			res := SyncIssues(context.Background(), IssueOptions{Root: root, Repo: "acme/m", GH: gh.run, Stdout: out, Getenv: noEnv,
+				DryRun: tc.dryRun, StaleAfter: tc.staleAfter, Now: now}, doc)
+			writes := strings.Join(gh.writes, "\n")
+			if tc.wantClose == "" {
+				if len(gh.writes) != 0 || len(res.Closed) != 0 {
+					t.Errorf("nothing may be written: %s", writes)
+				}
+			} else if len(gh.writes) != 1 || !strings.HasPrefix(writes, "issue close 1 -R acme/m --reason not planned --comment Closed by `forge test flakes --issues`: ") ||
+				!strings.Contains(writes, tc.wantClose) || len(res.Closed) != 1 {
+				t.Errorf("want one close carrying %q, got:\n%s", tc.wantClose, writes)
+			}
+			if tc.wantSay != "" && !strings.Contains(out.String(), tc.wantSay) {
+				t.Errorf("output lacks %q:\n%s", tc.wantSay, out.String())
+			}
+		})
+	}
+}
+
+// The sweep needs the issues' dates, so only it asks gh for them.
+func TestSyncIssuesAsksForDatesOnlyToSweep(t *testing.T) {
+	for _, stale := range []time.Duration{0, time.Hour} {
+		var listed string
+		gh := func(_ context.Context, args ...string) ([]byte, error) {
+			if hasArg(args, "open") {
+				listed = argAfter(args, "--json")
+			}
+			return []byte("[]"), nil
+		}
+		SyncIssues(context.Background(), IssueOptions{Root: newModule(t, nil), Repo: "acme/m", GH: gh, Stdout: &bytes.Buffer{}, StaleAfter: stale}, &testreport.Flakes{})
+		if got := strings.Contains(listed, "createdAt,comments"); got != (stale > 0) {
+			t.Errorf("stale-after %v: listed fields %q", stale, listed)
+		}
+	}
+}
+
+func TestParseStaleAfter(t *testing.T) {
+	for in, want := range map[string]time.Duration{"7d": 7 * 24 * time.Hour, "168h": 168 * time.Hour, " 1d ": 24 * time.Hour, "90m": 90 * time.Minute} {
+		if got, err := ParseStaleAfter(in); err != nil || got != want {
+			t.Errorf("%q: %v %v, want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "0d", "-1d", "1.5d", "seven", "0s"} {
+		if _, err := ParseStaleAfter(in); err == nil {
+			t.Errorf("%q must be refused", in)
+		}
+	}
+	if FormatStaleAfter(14*24*time.Hour) != "14d" || FormatStaleAfter(36*time.Hour) != "36h0m0s" {
+		t.Error("FormatStaleAfter")
 	}
 }

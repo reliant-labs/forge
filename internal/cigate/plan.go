@@ -103,6 +103,16 @@ type PlanInput struct {
 	Cfg *config.ProjectConfig
 	// Forge is the argv that re-enters this forge binary.
 	Forge []string
+	// Warn, when set, receives the plan's warnings: a configuration the gate
+	// accepts but that should be written differently. nil drops them.
+	Warn func(string)
+}
+
+// warn passes msg to PlanInput.Warn, when there is one.
+func (p planner) warn(msg string) {
+	if p.Warn != nil {
+		p.Warn(msg)
+	}
 }
 
 // Groups forge's own checks carry, for CI_ONLY (`CI_ONLY=kcl`). A project's
@@ -755,6 +765,23 @@ func (p planner) extras(owned []Check) (map[string]Check, []Check, error) {
 			}
 			taken[c.Name] = true
 			replaced[e.Replaces] = c
+			continue
+		}
+		if orig, ok := ownedBy[c.Name]; ok && taken[c.Name] && replaced[c.Name].Name == "" {
+			// An extra check named like one of forge's own rows takes that
+			// row over, as `replaces: <name>` would. A row forge adds in a
+			// later release (lint-<frontend> once the frontend is discovered,
+			// say) must not turn a check the project already declared into
+			// a config error: the gate keeps running the project's check,
+			// and says how to make the takeover explicit.
+			if e.Lane == "" {
+				c.Lane = orig.Lane
+			}
+			if e.Group == "" {
+				c.Group = orig.Group
+			}
+			p.warn(fmt.Sprintf("%s: %q is also the name of forge's own row, so it takes that row over; add `replaces: %s` to say so (or rename it to run both)", where, c.Name, c.Name))
+			replaced[c.Name] = c
 			continue
 		}
 		if taken[c.Name] {

@@ -70,12 +70,16 @@ func nonEmpty(attrs []attribute.KeyValue, key, v string) []attribute.KeyValue {
 }
 
 // start opens a span named name under ctx with the scope, own and extra
-// attributes, all passed at start so a sampler sees them, and returns the
+// attributes and links, all passed at start so a sampler sees them, and returns the
 // context with scoped added to its scope.
-func start(ctx context.Context, name string, kind trace.SpanKind, own, scoped, extra []attribute.KeyValue) (context.Context, trace.Span) {
+func start(ctx context.Context, name string, kind trace.SpanKind, own, scoped, extra []attribute.KeyValue, links []trace.Link) (context.Context, trace.Span) {
 	ctx = WithScope(ctx, scoped...)
 	attrs := append(append(append([]attribute.KeyValue{}, Scope(ctx)...), own...), extra...)
-	return tracer().Start(ctx, name, trace.WithSpanKind(kind), trace.WithAttributes(attrs...))
+	opts := []trace.SpanStartOption{trace.WithSpanKind(kind), trace.WithAttributes(attrs...)}
+	if len(links) > 0 {
+		opts = append(opts, trace.WithLinks(links...))
+	}
+	return tracer().Start(ctx, name, opts...)
 }
 
 // spanName is "<operation> <subject>", or the operation alone.
@@ -104,6 +108,10 @@ type Chat struct {
 	Temperature *float64
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue
+	// Links are links for this span, set at start (trace.WithLinks) so a
+	// sampler sees them: the span that asked for this one in another trace,
+	// say, or the one it continues.
+	Links []trace.Link
 }
 
 // StartChat opens the CLIENT span "chat <model>" for one model call. Close it
@@ -125,7 +133,7 @@ func StartChat(ctx context.Context, c Chat) (context.Context, trace.Span) {
 	if c.Temperature != nil {
 		own = append(own, attribute.Float64(AttrRequestTemperature, *c.Temperature))
 	}
-	return start(ctx, spanName(op, c.Model), trace.SpanKindClient, own, nil, c.Attributes)
+	return start(ctx, spanName(op, c.Model), trace.SpanKindClient, own, nil, c.Attributes, c.Links)
 }
 
 // Agent describes one agent turn.
@@ -139,6 +147,10 @@ type Agent struct {
 	ConversationID string
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue
+	// Links are links for this span, set at start (trace.WithLinks) so a
+	// sampler sees them: the span that asked for this one in another trace,
+	// say, or the one it continues.
+	Links []trace.Link
 }
 
 // StartAgent opens the INTERNAL span "invoke_agent <name>" for one agent turn.
@@ -150,7 +162,7 @@ func StartAgent(ctx context.Context, a Agent) (context.Context, trace.Span) {
 	scoped = nonEmpty(scoped, AttrConversationID, a.ConversationID)
 	own := []attribute.KeyValue{attribute.String(AttrOperationName, OpInvokeAgent)}
 	own = nonEmpty(own, AttrAgentID, a.ID)
-	return start(ctx, spanName(OpInvokeAgent, a.Name), trace.SpanKindInternal, own, scoped, a.Attributes)
+	return start(ctx, spanName(OpInvokeAgent, a.Name), trace.SpanKindInternal, own, scoped, a.Attributes, a.Links)
 }
 
 // Tool describes one tool call.
@@ -166,6 +178,10 @@ type Tool struct {
 	Location string
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue
+	// Links are links for this span, set at start (trace.WithLinks) so a
+	// sampler sees them: the span that asked for this one in another trace,
+	// say, or the one it continues.
+	Links []trace.Link
 }
 
 // StartTool opens the INTERNAL span "execute_tool <name>" for one tool call.
@@ -176,7 +192,7 @@ func StartTool(ctx context.Context, t Tool) (context.Context, trace.Span) {
 	own = nonEmpty(own, AttrToolCallID, t.CallID)
 	own = nonEmpty(own, AttrToolType, t.Type)
 	own = nonEmpty(own, AttrToolLocation, t.Location)
-	return start(ctx, spanName(OpExecuteTool, t.Name), trace.SpanKindInternal, own, nil, t.Attributes)
+	return start(ctx, spanName(OpExecuteTool, t.Name), trace.SpanKindInternal, own, nil, t.Attributes, t.Links)
 }
 
 // Workflow describes one segment of a workflow run.
@@ -195,6 +211,10 @@ type Workflow struct {
 	ParentRunID string
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue
+	// Links are links for this span, set at start (trace.WithLinks) so a
+	// sampler sees them: the span that asked for this one in another trace,
+	// say, or the one it continues.
+	Links []trace.Link
 }
 
 // StartWorkflow opens the INTERNAL span "invoke_workflow <name>" for one
@@ -215,7 +235,7 @@ func StartWorkflow(ctx context.Context, w Workflow) (context.Context, trace.Span
 	own = nonEmpty(own, AttrWorkflowRef, w.Ref)
 	own = nonEmpty(own, AttrWorkflowTrigger, w.Trigger)
 	own = nonEmpty(own, AttrParentRunID, w.ParentRunID)
-	return start(ctx, spanName(OpInvokeWorkflow, w.Name), trace.SpanKindInternal, own, scoped, w.Attributes)
+	return start(ctx, spanName(OpInvokeWorkflow, w.Name), trace.SpanKindInternal, own, scoped, w.Attributes, w.Links)
 }
 
 // Node describes one execution of a workflow node.
@@ -229,6 +249,10 @@ type Node struct {
 	Iteration int
 	// Attributes are extra attributes for this span alone.
 	Attributes []attribute.KeyValue
+	// Links are links for this span, set at start (trace.WithLinks) so a
+	// sampler sees them: the span that asked for this one in another trace,
+	// say, or the one it continues.
+	Links []trace.Link
 }
 
 // StartNode opens the INTERNAL span "workflow.node <id>" for one execution of
@@ -237,7 +261,7 @@ func StartNode(ctx context.Context, n Node) (context.Context, trace.Span) {
 	scoped := nonEmpty(nil, AttrNodeID, n.ID)
 	own := nonEmpty(nil, AttrNodeType, n.Type)
 	own = append(own, attribute.Int(AttrNodeIteration, n.Iteration))
-	return start(ctx, spanName("workflow.node", n.ID), trace.SpanKindInternal, own, scoped, n.Attributes)
+	return start(ctx, spanName("workflow.node", n.ID), trace.SpanKindInternal, own, scoped, n.Attributes, n.Links)
 }
 
 // Usage is a call's token usage. A zero field is not recorded, except the

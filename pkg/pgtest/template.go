@@ -100,6 +100,13 @@ func parseUsedComment(comment string) (time.Time, bool) {
 // the last edit — is gone a day later instead of living as long as the server.
 // A template reaped between two clones is rebuilt on demand.
 //
+// On the embedded server (Postgres 15+, fsync off) a clone copies the
+// template's files (STRATEGY = FILE_COPY) rather than writing every block of
+// it to WAL, which is what lets dozens of concurrent clones of a wide schema
+// finish in a second rather than queue on WAL insertion. A clone that does not
+// finish within DefaultCreateTimeout (EnvCreateTimeout overrides it) fails
+// with an error naming the server and what the create waited on.
+//
 // build receives an open handle on the empty database to fill, and that
 // database's DSN for a builder that connects itself (a migrator that takes a
 // URL). Connections it leaves open — through either — are terminated before
@@ -149,7 +156,7 @@ func cloneTemplate(s *server, key string, build func(*sql.DB, string) error, nam
 		if err != nil {
 			return err
 		}
-		_, err = s.baseDB.Exec("CREATE DATABASE " + name + " TEMPLATE " + tmpl)
+		err = s.execCreate(s.createDatabaseSQL(name, tmpl))
 		if err == nil {
 			return nil
 		}

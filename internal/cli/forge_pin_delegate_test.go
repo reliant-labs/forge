@@ -269,7 +269,7 @@ func TestHandOffWanted(t *testing.T) {
 		"a-command-this-forge-lacks": true, "project a-subcommand-this-forge-lacks": true,
 		"": false, "version": false, "help": false, "help generate": false, "completion bash": false, "__complete": false,
 		"env down": true, "env ps": false, "env devstack": false,
-		"project upgrade": false, "project new": false, "report-bug": false,
+		"project upgrade": false, "project upgrade apply": false, "project upgrade list": true, "project new": false, "report-bug": false,
 		"storage gc": false, "slot run": false,
 	} {
 		if got := handOffWanted(rel); got != want {

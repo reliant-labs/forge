@@ -15,8 +15,11 @@ required variable the env never wires, a value outside `allowed_values`, a
 env wires from a Secret, the secret store, a database credential, a
 ConfigMap or the Downward API gets a placeholder: it counts as set, and its
 value is not judged. A failure refuses the push and names the workload; so
-does a workload that prints no result (it exits, or blocks for 30s, before
-its config load), since its config was never verified.
+does a workload that prints no result (it exits, or blocks for 2 minutes,
+before its config load), since its config was never verified. The bound
+includes docker starting the container, so a workload that runs out of it is
+checked once more, alone, before it fails; on a host slower still, set
+`FORGE_CONFIG_CHECK_TIMEOUT` (a Go duration, e.g. `5m`).
 
 ## Cross-field rules belong on the config message
 

@@ -89,7 +89,7 @@ adopts it; the rest are for any repo.
 | `deploy_status` (`env`)                                                                                      | `forge env status <env> --claimable --json`                                        | no                                                                                                                               |
 | `db_query` (`env`, `sql`, `workload`, `database`, `max_rows`, `confirm_env`, `reason`)                       | `forge db query <env> <sql> --json` (same policy, read-only role and audit record) | no                                                                                                                               |
 | `obs_status`, `obs_issues`, `obs_issue`, `obs_logs`, `obs_check` (`env`, and the hosted connector's options) | `forge obs status\|issues\|issue\|logs\|check <env> --json`                        | no                                                                                                                               |
-| `explain_error` (`exit_code`, `error_reason`, `error`, `env`)                                                | none: maps forge's exit codes and reasons to the next command                      | no                                                                                                                               |
+| `explain_error` (`exit_code`, `error_reason`, `error`, `env`)                                                | `forge explain [<error_reason>] [<exit_code>] [--error <text>] --json`             | no                                                                                                                               |
 
 The read-only tools are annotated `readOnlyHint`; `lint`, `generate`,
 `report_bug` and `deploy_claimable` are not, so a harness can ask before running
@@ -156,8 +156,8 @@ serialized, so other tools wait while a deploy runs.
 
 A failure is a tool error whose result still has structure: `exit_code`,
 `error`, `error_reason`, and `next_actions`, the exact commands to run, best
-first. `explain_error` gives the same mapping for any forge failure an agent
-saw elsewhere. When the code calls `api.openai.com` or `api.anthropic.com`
+first. `explain_error` (`forge explain` on the command line) gives the same
+mapping for any forge failure an agent saw elsewhere. When the code calls `api.openai.com` or `api.anthropic.com`
 directly (or depends on their SDKs), `next_steps` explains that an unclaimed
 backend has no outbound internet. Claim it, arrange backend billing, sign in,
 store the provider key as a managed secret and redeploy without `--claimable`;

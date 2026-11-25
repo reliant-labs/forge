@@ -1562,6 +1562,12 @@ func (c *generateCacheRun) record(w io.Writer, pctx *pipelineContext, ran []GenS
 		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point: %s failed; the next run runs every step.\n", strings.Join(pctx.SoftFailures, ", "))
 		return false
 	}
+	if pctx.validateCaveats.any() {
+		// The tree does not compile, so a skip that replays "nothing to do"
+		// would hide that from every run until something else moved it.
+		fmt.Fprintf(w, "ℹ️  not recorded as a verified fixed point: the project does not compile; the next run checks it again.\n")
+		return false
+	}
 	outputs, dirs := generateRunOutputs(pctx, ran)
 	// The forge that produced this run's outputs is the one RUNNING, which
 	// cannot change under a process: it is what the pre-run fingerprint

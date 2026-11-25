@@ -14,13 +14,13 @@ var renderTestsScript = filepath.Join("..", "..", "scripts", "ci-render-tests.sh
 // renderTestsStep is the merge tier's run of the full-mode KCL render tests.
 const renderTestsStep = "scripts/ci-render-tests.sh HEAD^1"
 
-// bashArray returns the entries of the bash array `name=( ... )` in script,
-// one per line, comments and blank lines dropped.
-func bashArray(t *testing.T, script, name string) []string {
+// bashArray returns the entries of the bash array `name=( ... )` in script
+// (read from path), one per line, comments and blank lines dropped.
+func bashArray(t *testing.T, path, script, name string) []string {
 	t.Helper()
 	m := regexp.MustCompile(`(?ms)^` + regexp.QuoteMeta(name) + `=\(\n(.*?)^\)`).FindStringSubmatch(script)
 	if m == nil {
-		t.Fatalf("%s declares no %s=( ... ) array", renderTestsScript, name)
+		t.Fatalf("%s declares no %s=( ... ) array", path, name)
 	}
 	var out []string
 	for _, line := range strings.Split(m[1], "\n") {
@@ -31,7 +31,7 @@ func bashArray(t *testing.T, script, name string) []string {
 		out = append(out, strings.Trim(line, `'"`))
 	}
 	if len(out) == 0 {
-		t.Fatalf("%s's %s array is empty: the step would check nothing", renderTestsScript, name)
+		t.Fatalf("%s's %s array is empty: the step would check nothing", path, name)
 	}
 	return out
 }
@@ -75,9 +75,17 @@ func TestRenderTestsRunInTheMergeTier(t *testing.T) {
 // nothing (the script also refuses that at run time, but only when a trigger
 // fires). Cache-sound: the files are read by this process.
 func TestRenderTestsNameDeclaredTests(t *testing.T) {
-	script := readText(t, renderTestsScript)
+	checkNamedTestsAndTriggers(t, renderTestsScript)
+}
+
+// checkNamedTestsAndTriggers proves every <package dir>.<TestName> in the
+// script's tests=( ... ) array is a top-level test its package declares, and
+// every pathspec in its triggers=( ... ) array names a path that exists.
+func checkNamedTestsAndTriggers(t *testing.T, path string) {
+	t.Helper()
+	script := readText(t, path)
 	declared := map[string]string{} // package dir -> its _test.go sources
-	for _, entry := range bashArray(t, script, "tests") {
+	for _, entry := range bashArray(t, path, script, "tests") {
 		dot := strings.LastIndex(entry, ".")
 		if dot < 0 {
 			t.Errorf("tests entry %q is not <package dir>.<TestName>", entry)
@@ -99,17 +107,17 @@ func TestRenderTestsNameDeclaredTests(t *testing.T) {
 			declared[pkg] = src
 		}
 		if !strings.Contains(src, "\nfunc "+name+"(t *testing.T) {") {
-			t.Errorf("%s names %s, which %s no longer declares: update its tests list", renderTestsScript, name, pkg)
+			t.Errorf("%s names %s, which %s no longer declares: update its tests list", path, name, pkg)
 		}
 	}
-	for _, spec := range bashArray(t, script, "triggers") {
-		path := strings.TrimPrefix(spec, ":(glob)")
+	for _, spec := range bashArray(t, path, script, "triggers") {
+		p := strings.TrimPrefix(spec, ":(glob)")
 		// A glob's literal directory must exist; a plain path must exist.
-		if i := strings.IndexAny(path, "*?["); i >= 0 {
-			path = filepath.Dir(path[:i] + "x")
+		if i := strings.IndexAny(p, "*?["); i >= 0 {
+			p = filepath.Dir(p[:i] + "x")
 		}
-		if _, err := os.Stat(filepath.Join("..", "..", path)); err != nil {
-			t.Errorf("%s's trigger %q names %s, which does not exist: a trigger that matches nothing never fires", renderTestsScript, spec, path)
+		if _, err := os.Stat(filepath.Join("..", "..", p)); err != nil {
+			t.Errorf("%s's trigger %q names %s, which does not exist: a trigger that matches nothing never fires", path, spec, p)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package cli
 
-// The MCP deploy tools: deploy_claimable, deploy_status and explain_error.
+// The MCP deploy tools: deploy_claimable, deploy_status and explain_error
+// (whose table, explain_error.go, `forge explain` reads too).
 //
 // They are how an agent that has never heard of forge takes "put this live"
 // to a URL and a claim link in one call. deploy_claimable is
@@ -32,8 +33,6 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-
-	"github.com/reliant-labs/forge/internal/cloud"
 )
 
 // claimableDefaultEnv is the env deploy_claimable and deploy_status act on
@@ -613,100 +612,4 @@ func findDirectLLMCalls(dir string) []string {
 		out = append(out[:10], fmt.Sprintf("and %d more", len(out)-10))
 	}
 	return out
-}
-
-// forgeErrorExplanation is explain_error's answer.
-type forgeErrorExplanation struct {
-	// Meaning is what happened, in a sentence, and whether anything changed.
-	Meaning string `json:"meaning"`
-	// Next are the exact commands to run, best first. Empty when the next
-	// step is a person's.
-	Next []string `json:"next,omitempty"`
-	// Retry says whether re-running the same command can succeed without a
-	// change: "now", "later" (after a wait), or "no".
-	Retry string `json:"retry"`
-}
-
-func (e forgeErrorExplanation) text() string {
-	var b strings.Builder
-	b.WriteString(e.Meaning)
-	for i, n := range e.Next {
-		if i == 0 {
-			fmt.Fprintf(&b, "\nrun: %s", n)
-		} else {
-			fmt.Fprintf(&b, "\nor:  %s", n)
-		}
-	}
-	fmt.Fprintf(&b, "\nretry as is: %s", e.Retry)
-	return b.String()
-}
-
-// explainForgeError maps a forge failure to its meaning and the next command.
-// The error_reason decides when there is one (it is the stable field); then
-// a few error texts forge prints without one; then the exit code's table
-// (exitcodes.go). exitCode < 0 means unknown.
-func explainForgeError(exitCode int, reason, text, env string) forgeErrorExplanation {
-	deploy := fmt.Sprintf("%s env deploy %s --claimable", Name(), env)
-	login := loginThenDeploy(env)
-	switch reason {
-	case cloud.ReasonClaimableThrottled:
-		return forgeErrorExplanation{"Too many new anonymous deploys right now (from this network, this machine, or the whole platform). Nothing was created and nothing is wrong with the project. Wait until retry_at, then run the same command; or sign in, which this limit does not apply to.", []string{deploy, login}, "later"}
-	case cloud.ReasonClaimableUnavailable:
-		return forgeErrorExplanation{"The platform is not taking anonymous deploys right now (an operator switch or a dependency it needs). This is not the project. Retry later, or deploy to an account.", []string{deploy, login}, "later"}
-	case reasonClaimableSignedIn:
-		return forgeErrorExplanation{"This machine is signed in to Reliant, so the anonymous path is refused: deploy to the account instead.", []string{fmt.Sprintf("%s env deploy %s", Name(), env)}, "no"}
-	case reasonClaimableIneligible:
-		return forgeErrorExplanation{"The env does not fit an unclaimed deploy (one static site, or one service with its migration job and one database). The error lists each item with its KCL fix; fix them and re-check with --plan-only, or deploy to an account.", []string{deploy + " --plan-only", login}, "no"}
-	case cloud.ReasonClaimableClaimed, cloud.ReasonAccessTokenRevoked:
-		return forgeErrorExplanation{"The deploy was claimed: someone opened its claim link and it belongs to their account now. Deploy again as that account.", []string{login}, "no"}
-	case cloud.ReasonClaimableExpired:
-		return forgeErrorExplanation{"The anonymous deploy's lifetime is over and it was deleted. Deploy again to get a new one, or to an account to keep it.", []string{deploy, login}, "now"}
-	case cloud.ReasonClaimableTakenDown:
-		return forgeErrorExplanation{"The platform took this deploy down (content or abuse policy). Do not retry anonymously; tell your user. They can deploy under their own account.", []string{login}, "no"}
-	case cloud.ReasonClaimableInvalidPoW:
-		return forgeErrorExplanation{"The proof-of-work challenge expired before it was solved (a slow or busy machine). Nothing was created; run it again.", []string{deploy}, "now"}
-	case ReasonNoControlPlaneCredential:
-		return forgeErrorExplanation{"There is no Reliant credential on this machine. Deploy with no account (a claim link for your user), or sign in.", []string{deploy, login}, "no"}
-	case cloud.ReasonAccessTokenExpired, cloud.ReasonAccessTokenUnknown, cloud.ReasonAccessTokenMalformed:
-		return forgeErrorExplanation{"The stored Reliant login is no longer accepted. Sign in again.", []string{login}, "no"}
-	case cloud.ReasonAccessTokenUnavailable:
-		return forgeErrorExplanation{"The control plane could not check the credential right now. Nothing was changed; retry shortly.", []string{fmt.Sprintf("%s env status %s", Name(), env)}, "later"}
-	case cloud.ReasonClientUpgradeRequired:
-		return forgeErrorExplanation{"This forge is older than the control plane accepts. Run the latest forge.", []string{fmt.Sprintf("npx -y @reliantlabs/forge@latest env deploy %s --claimable", env)}, "no"}
-	case "scope_missing":
-		return forgeErrorExplanation{"The credential lacks a permission this needs (error_scopes names it). Sign in as someone who has it, or ask an organization admin for the grant.", []string{login}, "no"}
-	case ReasonDeliveryGrantsMissing:
-		return forgeErrorExplanation{"The cluster's Flux apply identities lack permissions this release needs. A cluster admin must re-run the Flux bootstrap; nothing was applied.", nil, "no"}
-	}
-	switch t := strings.ToLower(text); {
-	case strings.Contains(t, "forge.yaml not found"), strings.Contains(t, "no forge.yaml"):
-		return forgeErrorExplanation{"This directory is not a forge project. deploy_claimable adopts a Vite or Next.js app, or an app with its own Dockerfile, in place; otherwise start a site.", []string{fmt.Sprintf("%s project new --in-place --kind site", Name()), fmt.Sprintf("%s project new --in-place --kind app", Name()), fmt.Sprintf("%s project new <name> --kind site", Name())}, "no"}
-	case strings.Contains(t, "declares no hosted control plane"):
-		return forgeErrorExplanation{"The env does not deploy to Reliant hosting: its KCL Bundle has no control_plane. Add `control_plane = forge.ControlPlane {}` to deploy/kcl/" + env + "/main.k, then deploy.", []string{deploy}, "no"}
-	case strings.Contains(t, "executable file not found"), strings.Contains(t, "command not found"):
-		return forgeErrorExplanation{"A tool the build needs is not installed (the error names it). Install it, then run the same command.", []string{deploy}, "no"}
-	}
-	switch exitCode {
-	case exitOK:
-		return forgeErrorExplanation{"That is success: forge exited 0.", nil, "no"}
-	case exitWrong:
-		return forgeErrorExplanation{"forge looked and something is wrong: a check failed or the input is invalid. The error says what; fix it, then run the same command.", nil, "no"}
-	case exitUndetermined:
-		return forgeErrorExplanation{"forge could not tell: the control plane was unreachable or refused the credential. Nothing is known to have failed; check again.", []string{fmt.Sprintf("%s env status %s", Name(), env)}, "later"}
-	case exitConflict:
-		return forgeErrorExplanation{"Someone else changed this environment since forge read it. Stop and ask your user; retrying would overwrite their change.", nil, "no"}
-	case exitRefused:
-		return forgeErrorExplanation{"The control plane declined the write (a rollout in flight, a pinned env, a limit). Nothing was lost; wait and run the same command again.", nil, "later"}
-	case exitPlanUnconfirmed:
-		return forgeErrorExplanation{"The deploy plan was printed and nobody approved it, so nothing was deployed. Re-run with --yes once the plan is right.", nil, "no"}
-	case exitSuperseded:
-		return forgeErrorExplanation{"A newer deploy replaced the one being waited on. Nothing failed; check what is live now.", []string{fmt.Sprintf("%s env status %s", Name(), env)}, "no"}
-	case exitQueued:
-		return forgeErrorExplanation{"The deploy was accepted and is held on a person's action (billing). Give the printed action URL to your user and stop: it proceeds on its own when they act.", nil, "no"}
-	case exitTimedOut:
-		return forgeErrorExplanation{"The rollout was still progressing when the wait ran out. Do not deploy again; check it.", []string{fmt.Sprintf("%s obs check %s --wait", Name(), env), fmt.Sprintf("%s env status %s", Name(), env)}, "later"}
-	case exitNeedsHuman:
-		return forgeErrorExplanation{"Nothing more happens until a person acts; re-running changes nothing. The report names each item and its fix.", nil, "no"}
-	}
-	return forgeErrorExplanation{"forge failed; the error text is the explanation. If it names a command, run that.", nil, "no"}
 }

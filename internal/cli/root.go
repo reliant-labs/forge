@@ -284,6 +284,10 @@ path from an empty directory to authored protos, in one call.`,
 	// answers the question a newcomer asks before any noun means anything
 	// (owner, 2026-11-20). `forge project benefits --why` is the same list.
 	rootCmd.AddCommand(newWhyCmd())
+	// `forge explain` turns a failure's error_reason or exit code into its
+	// meaning and next command (explain_cmd.go): the MCP explain_error
+	// tool's twin, from the same table, for a person at a terminal.
+	rootCmd.AddCommand(newExplainCmd())
 	// The git merge driver forge configures for its generated files
 	// (merge_generated.go). Hidden: git runs it, people do not.
 	rootCmd.AddCommand(newMergeGeneratedCmd())

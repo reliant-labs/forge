@@ -386,58 +386,58 @@ func forgePkgVersionInGoMod(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// readForgePkgPackages lists the subdirectories of the resolved module that
-// are Go packages, each with the synopsis of its own package doc. A
-// directory that holds no package of its own but groups packages
-// (pkg/appkit/operatorkit) lists those, named by their path under pkg/.
+// readForgePkgPackages lists every Go package under the resolved pkg/
+// directory, at any depth, each with the synopsis of its own package doc and
+// named by its path under pkg/: "svcerr", "appkit/operatorkit" (under a
+// directory that is no package itself), "observe/genai" (under one that is).
+//
+// Nested packages used to be listed only below a directory with no package of
+// its own, so pkg/observe/genai, natsotel and temporalotel — under the
+// observe package — were missing from the index, and `forge project libraries
+// observe/genai` failed "is not a forge/pkg package" while the docs sent
+// agents there (forge report d542c517).
 func readForgePkgPackages(moduleDir string) ([]LibrarySpec, error) {
-	entries, err := os.ReadDir(moduleDir)
-	if err != nil {
+	if _, err := os.ReadDir(moduleDir); err != nil {
 		return nil, fmt.Errorf("read %s: %w", moduleDir, err)
 	}
 
 	var out []LibrarySpec
-	add := func(name, pkgDir string) bool {
-		synopsis, isPkg := packageSynopsis(pkgDir)
-		if !isPkg {
-			return false
-		}
-		out = append(out, LibrarySpec{
-			Name:       name,
-			ImportPath: forgePkgModule + "/" + name,
-			Dir:        pkgDir,
-			Synopsis:   synopsis,
-		})
-		return true
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if !e.IsDir() || !isLibraryDirName(name) {
-			continue
-		}
-		pkgDir := filepath.Join(moduleDir, name)
-		if add(name, pkgDir) {
-			continue
-		}
-		children, err := os.ReadDir(pkgDir)
+	var walk func(dir, name string)
+	walk = func(dir, name string) {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			return
 		}
-		for _, c := range children {
-			if c.IsDir() && isLibraryDirName(c.Name()) {
-				add(name+"/"+c.Name(), filepath.Join(pkgDir, c.Name()))
+		for _, e := range entries {
+			if !e.IsDir() || !isLibraryDirName(e.Name()) {
+				continue
 			}
+			childName := e.Name()
+			if name != "" {
+				childName = name + "/" + e.Name()
+			}
+			childDir := filepath.Join(dir, e.Name())
+			if synopsis, isPkg := packageSynopsis(childDir); isPkg {
+				out = append(out, LibrarySpec{
+					Name:       childName,
+					ImportPath: forgePkgModule + "/" + childName,
+					Dir:        childDir,
+					Synopsis:   synopsis,
+				})
+			}
+			walk(childDir, childName)
 		}
 	}
+	walk(moduleDir, "")
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
 // isLibraryDirName reports whether a directory can hold a library: dot- and
-// underscore-prefixed directories are invisible to the go tool, and testdata
-// is data, not a library.
+// underscore-prefixed directories are invisible to the go tool, testdata is
+// data, and an internal/ tree cannot be imported from outside forge.
 func isLibraryDirName(name string) bool {
-	return !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") && name != "testdata"
+	return !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") && name != "testdata" && name != "internal"
 }
 
 // packageSynopsis reports whether dir holds a non-test Go package and, if
@@ -593,6 +593,12 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 	if err := writeLibraryDivergence(w, spec.Module, spec.Divergence); err != nil {
 		return err
 	}
+	// The name column fits the longest name ("observe/temporalotel"), with
+	// the old 14 as its floor.
+	width := 14
+	for _, l := range spec.Packages {
+		width = max(width, len(l.Name))
+	}
 	for _, l := range spec.Packages {
 		synopsis := l.Synopsis
 		if synopsis == "" {
@@ -600,7 +606,7 @@ func writeLibraries(w io.Writer, spec LibrariesSpec, asJSON bool) error {
 			// package is a real (and fixable) state, not a rendering bug.
 			synopsis = "(no package doc — read it with `go doc " + l.ImportPath + "`)"
 		}
-		if err := p("  %-14s %s\n", l.Name, synopsis); err != nil {
+		if err := p("  %-*s %s\n", width, l.Name, synopsis); err != nil {
 			return err
 		}
 	}

@@ -225,6 +225,7 @@ forge env status	cmd	allow-version-skew:bool before:string claimable:bool fail-f
 forge env stop	cmd	allow-version-skew:bool poll-interval:duration project-dir/C:string target:string timeout:duration token:string wait:bool
 forge env up	cmd	allow-version-skew:bool background:bool host-ready-timeout:duration no-build:bool no-deploy:bool no-generate:bool no-install:bool no-seed:bool option/D:stringArray project-dir/C:string rebuild:bool target:stringArray telemetry:string watch:bool
 forge env verify	cmd	allow-version-skew:bool image:stringArray json:bool project-dir/C:string workload:stringArray
+forge explain	cmd	allow-version-skew:bool env:string error:string json:bool project-dir/C:string
 forge fix	group	allow-version-skew:bool project-dir/C:string
 forge fix composition-graph	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string
 forge fix config-proto-package	cmd	allow-dirty:bool allow-version-skew:bool dry-run:bool project-dir/C:string

@@ -757,3 +757,140 @@ type Deps struct{}
 		}
 	}
 }
+
+// TestInternalContracts_ServiceAliasOfAnInterface pins forge bug 75cd71d8: a
+// package whose contract is its consumer's interface, by alias
+// (`type Service = tools.ChangeController`, reliant's internal/changetools),
+// satisfies the shape — the alias is the one honest spelling, where the
+// workaround declared a second interface. An alias to a type that is not an
+// interface still does not.
+func TestInternalContracts_ServiceAliasOfAnInterface(t *testing.T) {
+	invalidTargets := []struct{ imports, target string }{
+		{"", "missingpkg.NoSuchType"},
+		{`import "example.net/external"`, "external.Contract"},
+		{`import "example.com/proj/internal/missing"`, "missing.Contract"},
+		{`import "example.com/proj/internal/tools"`, "tools.Missing"},
+		{`import "example.com/proj/internal/tools"`, "tools.StructAlias"},
+		{`import "example.com/proj/internal/tools"`, "tools.MissingAlias"},
+		{`import "example.com/proj/internal/tools"`, "tools.Cycle"},
+	}
+	for _, tc := range invalidTargets {
+		t.Run("reject "+tc.target, func(t *testing.T) {
+			tmp := t.TempDir()
+			must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/proj\n\ngo 1.22\n"))
+			tools := filepath.Join(tmp, "internal", "tools")
+			must(t, mkdirAll(tools))
+			must(t, writeFile(filepath.Join(tools, "tools.go"), `package tools
+ type StructAlias = Concrete
+ type Concrete struct{}
+ type MissingAlias = Missing
+ type Cycle = Cycle
+`))
+			adapter := filepath.Join(tmp, "internal", "adapter")
+			must(t, mkdirAll(adapter))
+			must(t, writeFile(filepath.Join(adapter, "contract.go"), "package adapter\n"+tc.imports+"\ntype Service = "+tc.target+"\ntype helper interface{ Do() }\ntype Deps struct{}\nfunc New(d Deps) Service { return nil }\n"))
+			facts, err := scanPackageContractShape(adapter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if facts.hasServiceInterface {
+				t.Fatal("unresolved or non-interface alias accepted as Service interface")
+			}
+		})
+	}
+	cases := []struct {
+		name, contract string
+		want           int
+	}{
+		{"alias of another package's interface", `package adapter
+
+import "example.com/proj/internal/tools"
+
+type Service = tools.ChangeController
+
+// projects is a collaborator interface, as in reliant's changetools: with
+// it the package is no longer skipped as interface-free.
+type projects interface{ Get() error }
+
+type Deps struct{ Projects projects }
+
+func New(d Deps) Service { return nil }
+`, 0},
+		{"alias chain to another package's interface", `package adapter
+
+import "example.com/proj/internal/tools"
+
+type Service = tools.Alias
+
+type Deps struct{}
+
+func New(d Deps) Service { return nil }
+`, 0},
+		{"alias of this package's interface", `package adapter
+
+type Gateway interface{ Do() error }
+
+type Service = Gateway
+
+type Deps struct{}
+
+func New(d Deps) (Service, error) { return nil, nil }
+`, 0},
+		{"alias of another package's struct", `package adapter
+
+import "example.com/proj/internal/tools"
+
+type Service = tools.Controller
+
+type Deps struct{}
+
+func New(d Deps) Service { return Service{} }
+
+type helper interface{ Do() }
+`, 1},
+		{"alias of this package's struct", `package adapter
+
+type impl struct{}
+
+type Service = impl
+
+type Deps struct{}
+
+func New(d Deps) Service { return impl{} }
+
+type helper interface{ Do() }
+`, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/proj\n\ngo 1.22\n"))
+			must(t, mkdirAll(filepath.Join(tmp, "internal", "tools")))
+			must(t, writeFile(filepath.Join(tmp, "internal", "tools", "tools.go"), `package tools
+
+// ChangeController is the consumer-owned contract.
+type ChangeController interface{ Apply() error }
+type Alias = ChangeController
+
+// Controller is a concrete type.
+type Controller struct{}
+`))
+			pkgDir := filepath.Join(tmp, "internal", "adapter")
+			must(t, mkdirAll(pkgDir))
+			must(t, writeFile(filepath.Join(pkgDir, "contract.go"), tc.contract))
+			fs, err := Inspect(context.Background(), tmp, Options{Rules: []Rule{RuleInternalPackageContractNames}})
+			if err != nil {
+				t.Fatalf("Inspect: %v", err)
+			}
+			var got []forgeconv.Finding
+			for _, f := range findingsForRule(fs, string(RuleInternalPackageContractNames)) {
+				if strings.HasPrefix(filepath.ToSlash(f.File), "internal/adapter") {
+					got = append(got, f)
+				}
+			}
+			if len(got) != tc.want {
+				t.Fatalf("findings = %d, want %d:\n%s", len(got), tc.want, AsResult(fs).FormatText())
+			}
+		})
+	}
+}

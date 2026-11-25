@@ -136,6 +136,12 @@ func (c *Client) credential() Credential {
 
 // call is one HTTP round trip with an explicit bearer.
 func (c *Client) call(ctx context.Context, procedure string, req, out any, token string) error {
+	return c.callWith(ctx, procedure, req, out, token, nil)
+}
+
+// callWith is call with extra request headers, set on this one request only
+// (never on the ResolveHostedProject lookup it may make first).
+func (c *Client) callWith(ctx context.Context, procedure string, req, out any, token string, extra http.Header) error {
 	// Resolve the server target before any human operation, including reads.
 	// The session has no org default that can stand in for project ownership.
 	projectID := c.Endpoint.ProjectID
@@ -157,7 +163,7 @@ func (c *Client) call(ctx context.Context, procedure string, req, out any, token
 		return fmt.Errorf("encode %s request: %w", procedure, err)
 	}
 
-	resp, err := c.send(ctx, procedure, body, projectID, token)
+	resp, err := c.send(ctx, procedure, body, projectID, token, extra)
 	if err != nil {
 		return err
 	}
@@ -203,14 +209,14 @@ var (
 // failure, a TLS handshake timeout on a loaded host) reached no handler, so a
 // second attempt cannot double an effect, whatever the procedure. A failure
 // after the headers went out is returned as it is: the server may have acted.
-func (c *Client) send(ctx context.Context, procedure string, body []byte, projectID, token string) (*http.Response, error) {
+func (c *Client) send(ctx context.Context, procedure string, body []byte, projectID, token string, extra http.Header) (*http.Response, error) {
 	var err error
 	for attempt := 1; ; attempt++ {
 		// The transport reports the write from its own goroutine.
 		var wrote atomic.Bool
 		trace := &httptrace.ClientTrace{WroteHeaders: func() { wrote.Store(true) }}
 		var resp *http.Response
-		resp, err = c.sendOnce(httptrace.WithClientTrace(ctx, trace), procedure, body, projectID, token)
+		resp, err = c.sendOnce(httptrace.WithClientTrace(ctx, trace), procedure, body, projectID, token, extra)
 		if err == nil || wrote.Load() || ctx.Err() != nil || attempt >= connectAttempts {
 			return resp, err
 		}
@@ -224,7 +230,7 @@ func (c *Client) send(ctx context.Context, procedure string, body []byte, projec
 	}
 }
 
-func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, projectID, token string) (*http.Response, error) {
+func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, projectID, token string, extra http.Header) (*http.Response, error) {
 	url := c.Endpoint.URL + "/" + strings.TrimPrefix(procedure, "/")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -257,6 +263,12 @@ func (c *Client) sendOnce(ctx context.Context, procedure string, body []byte, pr
 	// User-Agent and X-Forge-Client name the release, platform and driving
 	// agent harness, for the control plane's product analytics.
 	setClientIdentity(httpReq.Header)
+	// A caller's per-call headers (callWith) go last, beside the ones above.
+	for k, vs := range extra {
+		for _, v := range vs {
+			httpReq.Header.Add(k, v)
+		}
+	}
 
 	resp, err := c.httpClientFor(ctx, procedure).Do(httpReq)
 	if err != nil {

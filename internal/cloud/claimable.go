@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -243,10 +244,11 @@ func (c *ClaimableClient) Challenge(ctx context.Context) (ClaimableChallenge, er
 	return out, nil
 }
 
-// Start mints (or, idempotently, finds) the anonymous deploy.
+// Start mints (or, idempotently, finds) the anonymous deploy. It is the one
+// call that carries the canary pass (ClaimableCanaryTokenEnv), when set.
 func (c *ClaimableClient) Start(ctx context.Context, req ClaimableStartRequest) (ClaimableDeploy, error) {
 	var out ClaimableDeploy
-	if err := c.client.CallAnonymous(ctx, ProcStartClaimableDeploy, req, &out); err != nil {
+	if err := c.client.callWith(ctx, ProcStartClaimableDeploy, req, &out, "", claimableCanaryHeader()); err != nil {
 		return ClaimableDeploy{}, err
 	}
 	if strings.TrimSpace(out.AccessToken) == "" || strings.TrimSpace(out.ClaimURL) == "" {
@@ -614,4 +616,27 @@ func claimableCredentialFor(ep Endpoint) (Credential, bool) {
 // to refresh.
 func (c *Client) CallAnonymous(ctx context.Context, procedure string, req, out any) error {
 	return c.call(ctx, procedure, req, out, "")
+}
+
+// ClaimableCanaryTokenEnv names the environment variable holding a canary
+// pass: a short-lived token the control plane signs for Reliant's own daily
+// forge canary, so its anonymous deploys are exempt from the per-network and
+// per-device claimable rate limits. It is an operator knob, not a user
+// feature: ordinary users never set it. Its value is sent only as
+// ClaimableCanaryHeader on StartClaimableDeploy, and is never logged, printed
+// or written anywhere. A control plane that does not know the header ignores
+// it, and treats its absence as an ordinary anonymous start.
+const ClaimableCanaryTokenEnv = "FORGE_CLAIMABLE_CANARY_TOKEN"
+
+// ClaimableCanaryHeader is the request header that carries the canary pass.
+const ClaimableCanaryHeader = "X-Forge-Claimable-Canary"
+
+// claimableCanaryHeader is the header set Start adds: the canary pass when
+// ClaimableCanaryTokenEnv holds one, else nil.
+func claimableCanaryHeader() http.Header {
+	token := strings.TrimSpace(os.Getenv(ClaimableCanaryTokenEnv))
+	if token == "" {
+		return nil
+	}
+	return http.Header{ClaimableCanaryHeader: []string{token}}
 }

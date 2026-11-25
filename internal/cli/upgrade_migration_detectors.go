@@ -9,6 +9,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/checksums"
 	"github.com/reliant-labs/forge/internal/codegen"
+	"github.com/reliant-labs/forge/internal/codemod"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
 	"github.com/reliant-labs/forge/internal/shellrun"
@@ -38,8 +39,26 @@ func migrationDetector(name string) (func(projectRoot string) bool, bool) {
 		// The codemod's own decision, so the playbook is offered exactly
 		// where `forge fix trimpath-default` has something to do or say.
 		return projectNeedsTrimpathDefault, true
+	case "entity-type-alias":
+		// The codemod's own decision: a page whose entity type import
+		// collides with another import of the file.
+		return projectNeedsEntityTypeAlias, true
 	}
 	return nil, false
+}
+
+// projectNeedsEntityTypeAlias is the v1.11.0 entity-type-alias playbook's
+// detection (`forge-detect entity-type-alias`): whether `forge fix
+// entity-type-alias` would rewrite a page or report a use to check. So the
+// playbook is offered exactly where a page still collides, and resolved once
+// none does.
+func projectNeedsEntityTypeAlias(projectRoot string) bool {
+	c, ok := codemod.Lookup("entity-type-alias")
+	if !ok {
+		return false
+	}
+	rep, err := c.Run(projectRoot, codemod.Options{})
+	return err == nil && (rep.Changed() || len(rep.Next) > 0)
 }
 
 // migrationDetectionCommands are the in-process commands a detection script

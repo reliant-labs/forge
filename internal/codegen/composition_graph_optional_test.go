@@ -187,3 +187,48 @@ func TestOptionalComponentProviderOnlyMarker(t *testing.T) {
 		t.Fatalf("a bare provider marker must be refused naming the func, got %v", err)
 	}
 }
+
+// [e5e9b7da] An optional variant wrapper whose consumer field takes the
+// inner value through the wrapper's accessor (compose.go writes
+// `g.CallerControlPlane().Client()`, directly or through a local) is a field
+// the optional node fills, though the wrapper's type is not the field's.
+func TestOptionalComponentFollowsVariantAccessorToConsumerField(t *testing.T) {
+	pkg := types.NewPackage("example.com/x/internal/app", "app")
+	wrapper := types.NewPointer(types.NewNamed(types.NewTypeName(token.NoPos, pkg, "CallerControlPlane", nil), types.NewStruct(nil, nil), nil))
+	inner := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "Client", nil), types.NewInterfaceType([]*types.Func{
+		types.NewFunc(token.NoPos, pkg, "Call", types.NewSignatureType(nil, nil, nil, nil, nil, false)),
+	}, nil).Complete(), nil)
+	if types.AssignableTo(wrapper, inner) {
+		t.Fatal("fixture: the wrapper must not satisfy the inner type, or the type check alone finds the field")
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"accessor chain", "return tools.New(tools.Deps{CP: g.CallerControlPlane().Client(), Name: \"x\"})"},
+		{"nested in a call argument", "return tools.New(tools.Deps{CP: wrap(g.CallerControlPlane().Client().Sub()), Name: \"x\"})"},
+		{"through a local", "cp := g.CallerControlPlane()\n\treturn tools.New(tools.Deps{CP: cp.Client(), Name: \"x\"})"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := func(fieldOptional bool) *graphModel {
+				v := &graphNode{Name: "CallerControlPlane", LogName: "caller-control-plane", Kind: nodeProvider, File: "internal/app/variant_caller_controlplane.go", Optional: true}
+				tools := &graphNode{Name: "Tools", LogName: "tools", Kind: nodeComponent, Comp: &BuildComponent{ImportPath: "internal/handlers/tools"},
+					Deps: []DepsField{{Name: "CP", Optional: fieldOptional}, {Name: "Name"}}}
+				return &graphModel{
+					byName: map[string]*graphNode{"CallerControlPlane": v, "Tools": tools},
+					nodes:  []*graphNode{v, tools},
+					u: &graphUniverse{
+						produced: map[string]types.Type{"CallerControlPlane": wrapper},
+						deps:     map[string]map[string]types.Type{"Tools": {"CP": inner, "Name": types.Typ[types.String]}},
+					},
+					edges:   map[string][]string{"Tools": {"CallerControlPlane"}},
+					compose: "package app\n\nfunc (g *Graph) newTools() tools.Service {\n\t" + tc.body + "\n}\n",
+				}
+			}
+			fs := build(false).optionalComponentFindings()
+			if len(fs) != 1 || !strings.Contains(fs[0].Message, "Deps.CP") {
+				t.Fatalf("findings = %+v, want one naming Deps.CP", fs)
+			}
+			if fs := build(true).optionalComponentFindings(); len(fs) != 0 {
+				t.Fatalf("an optional-dep consumer is clean, got %+v", fs)
+			}
+		})
+	}
+}

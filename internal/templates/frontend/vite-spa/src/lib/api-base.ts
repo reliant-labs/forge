@@ -96,3 +96,43 @@ export function apiBaseFor(name: string): string {
     configured: typeof configured === "string" ? configured : "",
   });
 }
+
+// ── Credentials ─────────────────────────────────────────────────────────
+//
+// Which cookies a request to the API carries: the session cookie, when there
+// is one, must reach the API wherever it is, and nothing else may break.
+//
+//   same origin   "same-origin". The browser sends the cookie, and a page the
+//                 platform serves in an OPAQUE origin — an unclaimed preview
+//                 on reliantpreview.dev is sandboxed, so its own /_api is
+//                 cross-origin to it — still gets its answer: the platform
+//                 grants that page `Access-Control-Allow-Origin: *`, and a
+//                 browser refuses a wildcard grant only to a request that
+//                 sent credentials ("include").
+//   other origin  "include". An API on its own host (a literal API_URL, or
+//                 the dev loop with FORGE_DEV_API_PROXY=off): the browser's
+//                 default would silently drop the session cookie, sign-in
+//                 would answer 200 and every call after it 401. The API pairs
+//                 this with cors_allow_credentials.
+
+/**
+ * credentialsFor is the fetch credentials mode for a request to `url` from a
+ * page at `pageOrigin`: "same-origin" on the page's own origin, "include" on
+ * any other.
+ */
+export function credentialsFor(url: string, pageOrigin: string): RequestCredentials {
+  if (!pageOrigin) {
+    return "include";
+  }
+  try {
+    return new URL(url, pageOrigin).origin === pageOrigin ? "same-origin" : "include";
+  } catch {
+    return "include";
+  }
+}
+
+/** apiCredentials is credentialsFor from this page, for a fetch's `input`. */
+export function apiCredentials(input: RequestInfo | URL): RequestCredentials {
+  const url = input instanceof Request ? input.url : String(input);
+  return credentialsFor(url, typeof window === "undefined" ? "" : window.location.origin);
+}

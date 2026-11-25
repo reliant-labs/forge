@@ -164,7 +164,7 @@ func TestPreviewSkillCIRecipeCallsStandaloneForgeUnderTheMount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(out, []byte("npm i -g @reliantlabs/forge")) {
+	if !bytes.Contains(out, []byte(`npm install -g "@reliantlabs/forge@`)) {
 		t.Fatal("deploy/preview no longer installs forge from npm; revisit this test")
 	}
 	for _, line := range bytes.Split(out, []byte("\n")) {

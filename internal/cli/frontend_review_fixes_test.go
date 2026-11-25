@@ -232,12 +232,12 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 
 	list := renderPageForTest(t, "list-page.tsx.tmpl", page)
 	for _, want := range []string{
-		`import type { Task } from "@/gen/db/v1/tasks_pb";`,
+		`import type { Task as TaskEntity } from "@/gen/db/v1/tasks_pb";`,
 		// Adopts the runtime <Resource> container + tristate adapter — the
 		// tristate ladder + pagination are owned once, not re-hand-rolled.
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
 		`import { Resource, type ResourceColumn } from "@reliantlabs/forge-web-runtime";`,
-		`const columns: ResourceColumn<Task>[] = [`,
+		`const columns: ResourceColumn<TaskEntity>[] = [`,
 		`header: "Title",`,
 		// title is the primary cell: a real link to the record, around the
 		// same formatted value.
@@ -250,7 +250,7 @@ func TestPageTemplates_TypedColumnsNoReflection(t *testing.T) {
 		`cell: (item) => <StatusBadge value={item.status} />,`,
 		`import { StatusBadge } from "@/components/status-badge";`,
 		// typed container + row key + navigation
-		`<Resource<Task>`,
+		`<Resource<TaskEntity>`,
 		`rowKey={(item) => String(item.id)}`,
 		`router.push(entityViewHref("tasks", item.id))`,
 	} {

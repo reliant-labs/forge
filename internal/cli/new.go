@@ -148,11 +148,14 @@ existing go.mod's major is kept.
 native (the default) scaffolds today's: the users in deploy/kcl/identity.k,
 the dev identity provider and mail catcher, the sign-in pages and the route
 guard. none scaffolds an app nobody signs in to: no identity, no dev IdP, a
-public frontend with no route guard and no sign-in pages, and a login broker
-that is never mounted. The API still authenticates, fail-closed: an rpc
-answers anonymous callers only when its proto declares
+public frontend with no route guard, no sign-in pages and no session requests,
+and a login broker that is never mounted. The API still authenticates,
+fail-closed: an rpc answers anonymous callers only when its proto declares
 ` + "`option (forge.v1.method) = {auth_required: false}`" + `; every other rpc
-answers 401, because nothing can issue the token it requires.
+answers 401, because nothing can issue the token it requires. So in such a
+project ` + "`forge scaffold`" + ` births each entity's CRUD rpcs with
+auth_required: false written out, and ` + "`forge lint`" + ` warns about any rpc
+that still requires a caller.
 
 Example:
   forge project new my-project --mod github.com/example/my-project
@@ -265,7 +268,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().BoolVar(&verify, "verify", false, "Compile the scaffold before returning: the bootstrap generate then ends with its go build check and a render of every deploy env (adds ~1s warm, ~40s on a cold build cache, and saturates the CPU while it runs). Off by default: the scaffold is deterministic and forge's own e2e corpus compiles it, and your first go build or forge generate pays for the same compile")
 	cmd.Flags().BoolVar(&claimable, "claimable", false, "Scaffold prod for an ANONYMOUS deploy: forge env deploy prod --claimable then publishes with no account and prints a claim link. prod declares control_plane = forge.ControlPlane {claimable = True} and sizes its hosted services and jobs to the claimable plan ("+deploy.ClaimableLimitsFallback().WorkloadShape()+", request and limit) instead of the billed shape band. A static site needs nothing extra")
 	cmd.Flags().StringVar(&connectFlag, "connect", "", "connect-go major of a service project: v2 (default; connectrpc.com/connect/v2) or v1 (connectrpc.com/connect). Chooses what go.mod requires; from then on forge generate reads the major from go.mod (a direct require of connectrpc.com/connect/v2 is v2). With --in-place and no --connect, the existing go.mod's major is kept")
-	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (no sign-in at all: no identity, no dev IdP, a public frontend). Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
+	cmd.Flags().StringVar(&authMode, "auth-mode", "", "Sign-in system of a service project with a --frontend: native (default — managed identity, the dev IdP, sign-in pages and a route guard) or none (no sign-in at all: no identity, no dev IdP, a public frontend; forge scaffold births entity rpcs auth_required: false). Either way the API fails closed: an rpc answers anonymous callers only when its proto declares auth_required: false")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream every step's raw output — the package manager's install, the bootstrap generate, go mod tidy, git — instead of one line per step with the output kept in .forge/logs/project-new.log (also: git's explanation when the initial commit is skipped for want of a git identity)")
 
 	return cmd
@@ -1345,7 +1348,8 @@ func newNextSteps(projectName string, inPlace bool, kind string, serviceNames []
 			out = append(out,
 				"      ↳ applies migrations, seeds demo rows, prints your URLs",
 				"",
-				"  No sign-in (--auth-mode none): every rpc the frontend calls needs",
+				"  No sign-in (--auth-mode none): scaffold births entity rpcs public, and",
+				"  every custom rpc the frontend calls needs",
 				"      option (forge.v1.method) = {auth_required: false};",
 				"      ↳ without it the rpc answers 401 — the API still fails closed",
 				"",
@@ -1712,7 +1716,7 @@ func newAuthSummary(mode string, hasFrontend bool) string {
 	switch {
 	case mode == authModeNone && hasFrontend:
 		return "  Auth: none (--auth-mode none) — no identity, dev IdP or sign-in pages; the frontend is public. " +
-			"An rpc answers anonymous callers only if its proto declares `auth_required: false`; every other rpc answers 401."
+			"An rpc answers anonymous callers only if its proto declares `auth_required: false` (`forge scaffold` writes it on entity rpcs); every other rpc answers 401."
 	case hasFrontend:
 		return "  Auth: native sign-in — managed identity (deploy/kcl/identity.k), the dev IdP, sign-in pages and a route guard. " +
 			"--auth-mode none scaffolds an app nobody signs in to."

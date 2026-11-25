@@ -121,7 +121,7 @@ func gradableRules() []string {
 		// delivery policy verdicts graded outside forge lint (rollout_grade.go)
 		RuleVulnGate, RuleSBOMRequired,
 		// auth scaffold
-		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault,
+		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault, ruleAuthRequiredNoSignIn,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,

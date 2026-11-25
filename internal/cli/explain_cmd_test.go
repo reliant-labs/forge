@@ -139,6 +139,57 @@ func TestExplainCmd_JSONMatchesMCPTool(t *testing.T) {
 	}
 }
 
+// The content check's refusals of an unclaimed deploy are explained, the same
+// way by `forge explain --json` and explain_error: a refusal claiming may
+// lift (not retryable as is), and an unavailable check (retry later). The
+// reason alone decides: the test names no exit code, and the answer is the
+// same whichever code accompanies the reason.
+func TestExplainCmd_ClaimableContentReasons(t *testing.T) {
+	cs := connectMCP(t, t.TempDir())
+	for _, tc := range []struct {
+		reason, retry string
+		mentions      []string
+	}{
+		{cloud.ReasonClaimableContentRefused, "no", []string{"Claim:", "claiming lifts the refusal", "change it"}},
+		{cloud.ReasonClaimableScanUnavailable, "later", []string{"again later"}},
+	} {
+		ex, ok := explainForgeErrorMatch(-1, tc.reason, "", "prod")
+		if !ok {
+			t.Errorf("%s: not explained", tc.reason)
+			continue
+		}
+		for _, code := range []int{exitWrong, exitRefused} {
+			if got, _ := explainForgeErrorMatch(code, tc.reason, "", "prod"); !reflect.DeepEqual(got, ex) {
+				t.Errorf("%s with exit %d: %+v, want the reason's answer %+v", tc.reason, code, got, ex)
+			}
+		}
+		if ex.Retry != tc.retry {
+			t.Errorf("%s: retry = %q, want %q", tc.reason, ex.Retry, tc.retry)
+		}
+		for _, s := range tc.mentions {
+			if !strings.Contains(ex.Meaning, s) {
+				t.Errorf("%s: meaning lacks %q: %s", tc.reason, s, ex.Meaning)
+			}
+		}
+		out, err := runExplain(t, tc.reason, "--env", "prod", "--json")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.reason, err)
+		}
+		var cli map[string]any
+		if err := json.Unmarshal([]byte(out), &cli); err != nil {
+			t.Fatalf("%s: --json is not JSON: %v\n%s", tc.reason, err, out)
+		}
+		text, mcpDoc, isErr, err := callMCPStructured(context.Background(), t, cs, "explain_error",
+			map[string]any{"error_reason": tc.reason, "env": "prod"}, nil)
+		if err != nil || isErr {
+			t.Fatalf("%s: explain_error: %v\n%s", tc.reason, err, text)
+		}
+		if !reflect.DeepEqual(cli, mcpDoc) {
+			t.Errorf("%s: forge explain --json:\n%v\nexplain_error:\n%v", tc.reason, cli, mcpDoc)
+		}
+	}
+}
+
 // With nothing to explain it lists every reason and code the table knows,
 // in text and as JSON, and succeeds.
 func TestExplainCmd_List(t *testing.T) {

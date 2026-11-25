@@ -97,3 +97,50 @@ func TestV1110PGOPlaybook_Detection(t *testing.T) {
 		})
 	}
 }
+
+// v1.11.0/auth-none-public applies to a project nobody signs in to (no
+// identity.k, a dev env with no IdP) whose frontend still has the sign-in
+// flow's API client, and to no project that declares users.
+func TestV1110AuthNonePlaybook_Detection(t *testing.T) {
+	metas, err := loadMigrationMetas()
+	if err != nil {
+		t.Fatalf("loadMigrationMetas: %v", err)
+	}
+	var m migrationMeta
+	for _, c := range metas {
+		if c.ID == "v1.11.0/auth-none-public" {
+			m = c
+		}
+	}
+	if m.ID == "" {
+		t.Fatal("no shipped playbook v1.11.0/auth-none-public")
+	}
+	const noIDP = "# no identity provider\nfrontends = []\n"
+	const client = "frontends/web/src/lib/auth/native-login.ts"
+	for name, tc := range map[string]struct {
+		files map[string]string
+		want  bool
+	}{
+		"auth-mode none, old frontend":    {map[string]string{"deploy/kcl/dev/main.k": noIDP, client: "export {};\n"}, true},
+		"auth-mode none, already applied": {map[string]string{"deploy/kcl/dev/main.k": noIDP, "frontends/web/src/lib/auth/context.tsx": "x\n"}, false},
+		"identity declared":               {map[string]string{"deploy/kcl/dev/main.k": noIDP, "deploy/kcl/identity.k": "X = 1\n", client: "export {};\n"}, false},
+		"legacy dev IdP":                  {map[string]string{"deploy/kcl/dev/main.k": "engine = \"zitadel\"\n", client: "export {};\n"}, false},
+		"no dev env":                      {map[string]string{client: "export {};\n"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for rel, body := range tc.files {
+				p := filepath.Join(dir, filepath.FromSlash(rel))
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := migrationApplies(m, "v1.10.0", dir); got != tc.want {
+				t.Errorf("applies = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

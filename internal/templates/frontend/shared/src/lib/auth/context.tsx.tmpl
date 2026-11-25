@@ -1,6 +1,66 @@
 {{if eq .Platform "nextjs"}}"use client";
 
-{{end}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+{{end}}{{if and .Public (ne .Platform "react-native")}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+// The app's auth state, for a PUBLIC frontend (--auth-mode none): the project declares no sign-in, so
+// nobody is ever signed in and NO request is sent — there is no session for the API to report. MOCK_API
+// set: the identity is the fixture user, so UI built for a signed-in person still has one to render.
+// The Identity decides what to SHOW, never what is ALLOWED. To give the app users later, declare an
+// identity and read the session here (`forge skill load auth/frontend`).
+// useAuth() lives in ./use-auth (so Fast Refresh can hot-swap this provider): import it from there.
+
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+
+import { createSessionAuthProvider, isMockMode } from "./session-provider";
+import { AuthContext, type AuthContextValue, type Identity } from "./use-auth";
+
+export function AuthContextProvider({ children }: { children: ReactNode }) {
+  const [identity, setIdentity] = useState<Identity>({ authenticated: false });
+  const [isLoading, setIsLoading] = useState(true);
+  // The fixture session, in mock mode only. Decided once, at mount: the mode
+  // is runtime config, and it does not change under a running page. Held in
+  // state so a logout moves the one session the callbacks below read.
+  const [mockSession] = useState(() => (isMockMode() ? createSessionAuthProvider() : null));
+  // Nothing to ask: with no sign-in there is no session, so the answer is
+  // "signed out" (or the fixture user, in mock mode) and the network is never
+  // touched.
+  const refresh = useCallback(async () => {
+    const user = mockSession?.getUser() ?? null;
+    setIdentity({
+      authenticated: user !== null,
+      email: user?.email,
+      name: user?.name,
+      subject: user?.id,
+    });
+    setIsLoading(false);
+  }, [mockSession]);
+
+  // Awaited inside an async IIFE rather than called bare, so the state
+  // updates land in a continuation instead of forcing a second render pass
+  // before the browser paints.
+  useEffect(() => {
+    void (async () => {
+      await refresh();
+    })();
+  }, [refresh]);
+
+  // Ends the FIXTURE session, locally (mock mode); otherwise there is nobody
+  // to sign out.
+  const logout = useCallback(async () => {
+    await mockSession?.logout();
+    setIdentity({ authenticated: false });
+  }, [mockSession]);
+
+  const value: AuthContextValue = {
+    identity,
+    isAuthenticated: identity.authenticated,
+    isLoading,
+    refresh,
+    logout,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+{{else}}// yours: scaffolded once, never touched again — forge will not overwrite this file
 {{- if eq .Platform "react-native"}}
 // The app's auth state. This tree ships a MOCK session on purpose (React Native has no cookie jar or
 // same-origin for native sign-in): plug your provider in at the import below. useAuth() exposes an
@@ -177,3 +237,4 @@ export function AuthContextProvider({ children }: { children: ReactNode }) {
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
+{{end -}}

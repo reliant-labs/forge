@@ -341,6 +341,12 @@ var newRules = []rolloutGroup{
 	// forge lint --idempotency: an rpc's idempotency_level must agree with
 	// its name (lint_idempotency.go).
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Most existing protos declare no idempotency_level on their reads, forge's own entity scaffold included before this release; warn for a release so each read can declare NO_SIDE_EFFECTS (and each read-named write forge:mutation with a reason) before the rules gate"}, Rules: []string{ruleIdempotencyReadUndeclared, ruleIdempotencyWriteAsRead}},
+	// An rpc that requires a signed-in caller in a project nobody can sign
+	// in to (`forge project new --auth-mode none`): it answers 401 to every
+	// browser caller (lint_auth_no_sign_in.go). The lane is advisory (its
+	// findings are warnings at any pin); the row is what lets lint.rules
+	// raise it, and the window applies only to a project that does.
+	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Every --auth-mode none project scaffolded before this release was born with auth_required: true on its CRUD rpcs; warn for a release so each author can publish them or say who calls them before a project that raises the rule sees it gate"}, Rules: []string{ruleAuthRequiredNoSignIn}},
 	// forge lint --idempotency: a read whose response carries a secret or a
 	// per-call value never declares NO_SIDE_EFFECTS (lint_idempotency_secret.go).
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Reads that return a token, a presigned URL or a one-time link already declare NO_SIDE_EFFECTS in existing protos, some because forge-idempotency-read-undeclared asked them to; warn for a release so each can move to forge:mutation with a reason before the rule gates"}, Rules: []string{ruleIdempotencySecretResponse}},

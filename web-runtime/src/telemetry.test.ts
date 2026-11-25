@@ -147,6 +147,24 @@ describe("initBrowserTelemetry", () => {
     expect(init).not.toHaveBeenCalled();
   });
 
+  it("stays off in an opaque origin, saying so once, and never loads the SDK", async () => {
+    stubDom();
+    (window as unknown as { origin: string }).origin = "null";
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { t } = await load();
+
+    await expect(
+      t.initBrowserTelemetry({ serviceName: "web", endpoint: "/_otel" }),
+    ).resolves.toBe(false);
+    expect(init).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0]?.[0])).toMatch(/opaque origin/);
+    expect(warn).not.toHaveBeenCalled();
+    info.mockRestore();
+    warn.mockRestore();
+  });
+
   it("initialises the SDK exactly once however often it is called", async () => {
     stubDom();
     const { t } = await load();

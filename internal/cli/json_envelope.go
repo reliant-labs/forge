@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync/atomic"
 
 	"github.com/reliant-labs/forge/internal/exitcode"
 )
@@ -121,8 +122,15 @@ func writeJSONDocument(w io.Writer, doc any) error {
 	if err := enc.Encode(doc); err != nil {
 		return fmt.Errorf("write json document: %w", err)
 	}
+	jsonDocumentsWritten.Add(1)
 	return nil
 }
+
+// jsonDocumentsWritten counts the --json documents this process wrote. A verb
+// that wraps another (deploy --claimable around the deploy) compares it
+// before and after, so it adds its own document only when the inner one
+// wrote none: stdout carries exactly one.
+var jsonDocumentsWritten atomic.Int64
 
 // progressWriter is where a verb's human progress goes: stdout normally,
 // stderr in JSON mode. One call at the top of a verb, and every subsequent

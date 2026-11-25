@@ -47,6 +47,7 @@ func TestPublicFrontendOmitsSignInFlow(t *testing.T) {
 					t.Errorf("a public %s frontend is missing %s", label, rel)
 				}
 			}
+			assertPublicTreeNeverCallsAuth(t, label, public)
 		})
 	}
 
@@ -58,6 +59,74 @@ func TestPublicFrontendOmitsSignInFlow(t *testing.T) {
 	}
 	if strings.Contains(string(providers), "<RouteGuard") {
 		t.Error("a public Next.js frontend mounts the RouteGuard in providers.tsx")
+	}
+}
+
+// assertPublicTreeNeverCallsAuth pins that a public frontend has no client of
+// the API's sign-in routes: no source file names /auth/session or
+// /auth/logout (the session provider asked the first twice per page load,
+// and a project with no sign-in serves neither — every load logged two 404s),
+// and none renders a password field. The tests and the unmounted route
+// guard, whose sign-in paths are strings in a list nothing mounts, are
+// exempt.
+func assertPublicTreeNeverCallsAuth(t *testing.T, label, dir string) {
+	t.Helper()
+	err := filepath.WalkDir(filepath.Join(dir, "src"), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		rel = filepath.ToSlash(rel)
+		if strings.Contains(rel, ".test.") || rel == "src/lib/auth/route-guard.tsx" {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for n, line := range strings.Split(string(b), "\n") {
+			// Prose may mention the routes; only code calls them.
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "/*") {
+				continue
+			}
+			for _, banned := range []string{"/auth/session", "/auth/logout", `type="password"`, "native-login"} {
+				if strings.Contains(line, banned) {
+					t.Errorf("a public %s frontend's %s:%d names %q: it has no sign-in to call", label, rel, n+1, banned)
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEnsureCoreComponentsKeepsAPublicFrontendFreeOfSignInComponents pins the
+// generate lane: a public frontend (no src/lib/auth/native-login.ts) was
+// scaffolded without login_form, and `forge generate`'s component install
+// must not hand it one after all, while a frontend that signs in still gets it.
+func TestEnsureCoreComponentsKeepsAPublicFrontendFreeOfSignInComponents(t *testing.T) {
+	t.Parallel()
+	for _, signsIn := range []bool{false, true} {
+		fe := filepath.Join(t.TempDir(), "frontends", "web")
+		if signsIn {
+			if err := os.MkdirAll(filepath.Join(fe, "src", "lib", "auth"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(fe, "src", "lib", "auth", "native-login.ts"), []byte("export {};\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := EnsureCoreComponentsIn(fe, ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := fileExistsAt(fe, "src/components/ui/login_form.tsx"); got != signsIn {
+			t.Errorf("signs in = %v: login_form.tsx installed = %v, want %v", signsIn, got, signsIn)
+		}
+		if !fileExistsAt(fe, "src/components/ui/button.tsx") {
+			t.Errorf("signs in = %v: the other core components were not installed", signsIn)
+		}
 	}
 }
 

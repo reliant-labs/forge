@@ -94,6 +94,41 @@ func TestExpandDir(t *testing.T) {
 	}
 }
 
+func TestPlan_FullChecksRejectUnknownRows(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  string
+		want bool
+	}{
+		{"path-gated extra", "electron", true},
+		{"configured frontend", "test-web", true},
+		{"typo", "electron-typo", false},
+		{"missing frontend", "test-missing", false},
+		{"non-path-gated row", UnitTests, false},
+		{"frontend row shadowed by non-path-gated extra", "test-shadowed", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.ProjectConfig{}
+			cfg.CI.Gate.AffectedRules = []rule{{Paths: []string{"proto/**"}, FullChecks: []string{tc.row}}}
+			cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{
+				{Name: "electron", Command: []string{"echo", "ok"}, Paths: []string{"electron/**"}},
+				{Name: "test-shadowed", Command: []string{"echo", "ok"}},
+			}
+			_, err := Plan(PlanInput{
+				Root: t.TempDir(), Cfg: cfg, Forge: []string{"forge"},
+				CI: templates.CIWorkflowData{Frontends: []templates.FrontendCIConfig{{Name: "web"}, {Name: "shadowed"}}},
+			})
+			if tc.want {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "affected_rules[0].full_checks[0]") || !strings.Contains(err.Error(), tc.row) {
+				t.Fatalf("want full_checks error naming %q, got %v", tc.row, err)
+			}
+		})
+	}
+}
+
 func TestAffectedRuleFields_FullChecksForceRowsWhole(t *testing.T) {
 	root := webRoot(t, map[string]string{"test": "vitest run", RelatedScript: "vitest related --run --passWithNoTests"},
 		"frontends/web/src/App.tsx")

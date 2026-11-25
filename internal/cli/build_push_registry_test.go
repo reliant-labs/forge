@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -478,6 +479,10 @@ func TestImageTagSet_NeverPushesABareRepository(t *testing.T) {
 // with no declared destination; the pushing build refuses before building,
 // naming what the env does declare, instead of pushing the bare tag.
 func TestRefuseUndeclaredPushes_RenamedProject(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("Dockerfile", []byte("FROM scratch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.ProjectConfig{Name: "greeter-demo"}
 	targets := buildTargetSet{goTargets: []goBuildTarget{{}}}
 	opts := buildOptions{push: true, buildDocker: true, pushPlan: pushPlan{push: true, env: "prod", destinations: []imageDestination{
@@ -496,6 +501,23 @@ func TestRefuseUndeclaredPushes_RenamedProject(t *testing.T) {
 	opts.pushPlan.destinations[0].repository = "registry.reliantapi.com/acme/greeter-demo/greeter-demo"
 	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
 		t.Errorf("declared destination refused: %v", err)
+	}
+	// No project image built by this invocation: nothing to refuse. Neither
+	// with the project image skipped by target selection, nor without a
+	// root Dockerfile (dockerBuildProject skips the image then).
+	skipped := targets
+	skipped.skipProjectDocker = true
+	if err := refuseUndeclaredPushes(cfg, skipped, opts); err != nil {
+		t.Errorf("a build that skips the project image was refused: %v", err)
+	}
+	if err := os.Remove("Dockerfile"); err != nil {
+		t.Fatal(err)
+	}
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		t.Errorf("a build with no root Dockerfile (no project image) was refused: %v", err)
+	}
+	if err := os.WriteFile("Dockerfile", []byte("FROM scratch\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	// Not pushing (forge env up's local build): nothing to refuse.
 	opts.pushPlan.destinations[0].repository = "registry.reliantapi.com/acme/greeter-demo/hello"

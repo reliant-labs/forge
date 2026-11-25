@@ -573,6 +573,12 @@ func resolveProjectImageTag(cfg *config.ProjectConfig, entities *KCLEntities, ta
 	if err := checkExplicitTagAgainstPins(entities, opts, cfg.Name, projectImageBuilt); err != nil {
 		return "", err
 	}
+	// A pushed image with no declared destination would push a bare tag,
+	// which docker sends to Docker Hub. Refused here, before anything is
+	// built, beside the other refusal about what this build tags.
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		return "", err
+	}
 	projectTag := buildTagFor(opts, imagePinFor(entities, cfg.Name), resolvedTag)
 	if projectImageBuilt && projectTag != resolvedTag {
 		fmt.Printf("[build]   %s image tag: %s (pinned by its declared image)\n", cfg.Name, projectTag)
@@ -755,11 +761,6 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// before anything is built — so a plan refuses it too.
 	projectTag, err := resolveProjectImageTag(cfg, entities, targets, opts, resolvedTag)
 	if err != nil {
-		return err
-	}
-	// A pushed image with no declared destination would push a bare tag,
-	// which docker sends to Docker Hub. Refused before anything is built.
-	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
 		return err
 	}
 

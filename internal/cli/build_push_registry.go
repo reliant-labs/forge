@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -491,13 +492,20 @@ func refuseUndeclaredPushes(cfg *config.ProjectConfig, targets buildTargetSet, o
 	if !opts.push || !opts.pushPlan.push || !opts.buildDocker {
 		return nil
 	}
+	// Exactly the images this invocation's docker builds tag (runBuild's
+	// buildDocker branch): the project image when go targets remain and the
+	// project image is not skipped, each docker frontend; and each only when
+	// its Dockerfile exists, since dockerBuildProject / dockerBuild skip the
+	// image (and so push nothing) without one.
 	type artifact struct{ name, what string }
 	var pushed []artifact
-	if len(targets.goTargets) > 0 && !targets.skipProjectDocker {
+	if len(targets.goTargets) > 0 && !targets.skipProjectDocker && fileExists(filepath.Join(projectDirForKCL(), "Dockerfile")) {
 		pushed = append(pushed, artifact{cfg.Name, fmt.Sprintf("the project image %q (named by forge.yaml `name`)", cfg.Name)})
 	}
 	for _, fe := range targets.dockerFrontends {
-		pushed = append(pushed, artifact{fe.Name, fmt.Sprintf("the frontend image %q", fe.Name)})
+		if fileExists(filepath.Join(fe.DeclaredDir(), "Dockerfile")) {
+			pushed = append(pushed, artifact{fe.Name, fmt.Sprintf("the frontend image %q", fe.Name)})
+		}
 	}
 	for _, a := range pushed {
 		if registryHost(opts.pushPlan.repositoryFor(a.name)) != "" {

@@ -1,7 +1,8 @@
 # ML training and inference in your own clusters
 
 **Status:** proposal. Nothing here is built. The owner settled the direction on
-2026-11-25 (the "Settled" list below); everything else is **proposed**, and the
+2026-11-25 (the "Settled" list below; items 7 and 8 came from the owner's
+review of forge#2836); everything else is **proposed**, and the
 open owner decisions are in [section 11](#11-open-owner-decisions), each saying
 what it blocks.
 **Date:** 2026-11-25
@@ -20,22 +21,23 @@ No ML-specific code exists in forge, control-plane or reliant: nothing in any
 repository mentions GPUs, DCGM or accelerators. The design builds on the pieces
 below. "Released" means the code is in a final tag (rc tags ignored).
 
-| Building block                                                                          | State                                                                                                                                                                                                                                                                                            |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `forge cluster connect`: a per-(cluster, env) ServiceAccount and a render-derived grant | Released (forge v0.1.44; scopes in v0.1.46). `internal/cli/cluster_connect.go`, `cluster_connect_scope.go:360-462`.                                                                                                                                                                              |
-| Hub delivery into connected clusters                                                    | Released. A dedicated Flux shard, `kustomize-controller-connected`, dials the cluster with `spec.kubeConfig.secretRef` (`kcl/lib/flux.k:337-372`; control-plane `internal/fluxhub/kubeconfig.go:19-25`).                                                                                         |
-| Private-address refusal                                                                 | Released (control-plane v1.7.76). `internal/clusteraddr/clusteraddr.go:92-117`: only platform orgs, at exact /32 endpoints, may connect a private address.                                                                                                                                       |
-| forge's node agent in a connected cluster (OTel collector DaemonSet)                    | Released (v0.1.45). `pkg/deploy/observability.go:338-504`: receivers `otlp`, `kubeletstats`, `filelog`, `k8sattributes`. There is no `k8s_events`, `k8sobjects` or cluster receiver.                                                                                                             |
-| OTLP token delivered into the customer cluster and renewed                              | Released (control-plane v1.7.54). `internal/telemetrydelivery`; it also dials in (`clusterclient/clusterclient.go:80`).                                                                                                                                                                          |
-| `forge.Telemetry`: scrape any third-party system, with no presets                       | Released (v1.10.0). `kcl/telemetry.k:93`. `Observability.telemetry` scrapes pods forge never declared (a HelmChart, an operator).                                                                                                                                                                |
-| `HelmChart`, `Manifests`, `ExternalDatabase`, `OnExternal`                              | Released (v1.0.0, v1.0.0, v1.0.12, v1.5.0).                                                                                                                                                                                                                                                      |
-| Adopting an existing install: ESO CRDs with no owner label                              | Released. `internal/cluster/component_owner.go:8-22`.                                                                                                                                                                                                                                            |
-| Release ledger: build once, promote by digest                                           | Released. `pkg/release/release.go:362`. Artifact kinds are a closed set, `oci`, `npm`, `gomod`, `file` and `git` (`:30-118`), and an artifact may be `CarriedFrom` an earlier release.                                                                                                           |
-| Release health (`forge obs check`)                                                      | Released (v1.0.0). `pkg/releasehealth`. It judges server-span RED (`pkg/obsquery/traces.go:776-840`), with changed ops keyed Connect-style (`changed_ops.go:110`).                                                                                                                               |
-| Changes and the experiment readout                                                      | Released (v1.10.0), labelled beta. `pkg/experimentstats` reads out a binary metric. Load-balancer routing is out of v1 (changes.md, Settled 4).                                                                                                                                                  |
-| Hosted OCI registry, `registry.reliantapi.com`                                          | Released (control-plane v1.12.0). CNCF distribution v3.1.2 on GCS (`deploy/kcl/lib/registry.k:24`). Blobs are proxied through the registry pods (`deploy/kcl/prod/main.k:1275-1281`). It has no referrers API, and no pull path into a customer's cluster (`internal/registrypull/contract.go`). |
-| A GPU request on a `forge.Workload`                                                     | **Not possible.** `tiers.Resources` is CPU and memory only (`kcl/tiers/tiers_gen.k:612-617`). The only way in today is a `Bundle.overrides` patch.                                                                                                                                               |
-| A Clusters or ML page in the console                                                    | None. The generated client `cluster_pb.ts` exists in reliant `frontends/web`, but no page uses it.                                                                                                                                                                                               |
+| Building block                                                                          | State                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `forge cluster connect`: a per-(cluster, env) ServiceAccount and a render-derived grant | Released (forge v0.1.44; scopes in v0.1.46). `internal/cli/cluster_connect.go`, `cluster_connect_scope.go:360-462`.                                                                                                                                                                                                                                                            |
+| Hub delivery into connected clusters                                                    | Released. A dedicated Flux shard, `kustomize-controller-connected`, dials the cluster with `spec.kubeConfig.secretRef` (`kcl/lib/flux.k:337-372`; control-plane `internal/fluxhub/kubeconfig.go:19-25`).                                                                                                                                                                       |
+| Private-address refusal                                                                 | Released (control-plane v1.7.76). `internal/clusteraddr/clusteraddr.go:92-117`: only platform orgs, at exact /32 endpoints, may connect a private address.                                                                                                                                                                                                                     |
+| forge's node agent in a connected cluster (OTel collector DaemonSet)                    | Released (v0.1.45). `pkg/deploy/observability.go:338-504`: receivers `otlp`, `kubeletstats`, `filelog`, `k8sattributes`. There is no `k8s_events`, `k8sobjects` or cluster receiver.                                                                                                                                                                                           |
+| OTLP token delivered into the customer cluster and renewed                              | Released (control-plane v1.7.54). `internal/telemetrydelivery`; it also dials in (`clusterclient/clusterclient.go:80`).                                                                                                                                                                                                                                                        |
+| `forge.Telemetry`: scrape any third-party system, with no presets                       | Released (v1.10.0). `kcl/telemetry.k:93`. `Observability.telemetry` scrapes pods forge never declared (a HelmChart, an operator).                                                                                                                                                                                                                                              |
+| `HelmChart`, `Manifests`, `ExternalDatabase`, `OnExternal`                              | Released (v1.0.0, v1.0.0, v1.0.12, v1.5.0).                                                                                                                                                                                                                                                                                                                                    |
+| Adopting an existing install: ESO CRDs with no owner label                              | Released. `internal/cluster/component_owner.go:8-22`.                                                                                                                                                                                                                                                                                                                          |
+| Release ledger: build once, promote by digest                                           | Released. `pkg/release/release.go:362`. Artifact kinds are a closed set, `oci`, `npm`, `gomod`, `file` and `git` (`:30-118`), and an artifact may be `CarriedFrom` an earlier release.                                                                                                                                                                                         |
+| Release health (`forge obs check`)                                                      | Released (v1.0.0). `pkg/releasehealth`. It judges server-span RED (`pkg/obsquery/traces.go:776-840`), with changed ops keyed Connect-style (`changed_ops.go:110`).                                                                                                                                                                                                             |
+| Changes and the experiment readout                                                      | Released (v1.10.0), labelled beta. `pkg/experimentstats` reads out a binary metric. Load-balancer routing is out of v1 (changes.md, Settled 4).                                                                                                                                                                                                                                |
+| Hosted OCI registry, `registry.reliantapi.com`                                          | Released (control-plane v1.12.0). CNCF distribution v3.1.2 on GCS. Blobs are proxied through the registry pods, there is no referrers API, and there is no pull path into a customer's cluster. An org can already push any OCI artifact under its image paths. The precise gap is in [section 3.7](#37-building-out-the-reliant-registry).                                    |
+| Image registry override                                                                 | Released. A host-bearing image reference is pushed as written, and a bare one composes under `ControlPlane.registry_host` (`kcl/schema.k:906-913, 2191-2225`; `internal/cli/build_push_registry.go:16-25`). Credentials come from the docker credential store, never KCL. The release records each artifact's registry (`URI`) and digests (`pkg/release/release.go:162-199`). |
+| A GPU request on a `forge.Workload`                                                     | **Not possible.** `tiers.Resources` is CPU and memory only (`kcl/tiers/tiers_gen.k:612-617`). The only way in today is a `Bundle.overrides` patch.                                                                                                                                                                                                                             |
+| A Clusters or ML page in the console                                                    | None. The generated client `cluster_pb.ts` exists in reliant `frontends/web`, but no page uses it.                                                                                                                                                                                                                                                                             |
 
 ## Summary
 
@@ -57,6 +59,9 @@ The rest builds on the same declarations, in later slices:
   cluster already runs: JobSet, a Kubeflow TrainJob, a RayJob or a plain Job.
   A **run** is a recorded launch against that template.
 - A **model version** is an OCI digest, recorded and promoted like an image.
+  It lives in Reliant's registry by default, which this proposal builds out for
+  multi-GB weights. A declared override can point at the customer's own OCI
+  repository.
 - An **inference service** is a `forge.Workload` that requests accelerators and
   mounts a model by digest. It ships through the existing release, promotion
   and `forge obs check` path, which gains inference SLIs.
@@ -90,7 +95,32 @@ it is neutral about which hardware and which cloud.
 6. **Model artifacts and pull speed are first-class.** Weights are OCI artifacts,
    versioned and promoted by digest, and cold start gets its own per-cloud
    checklist ([Appendix A](#appendix-a-cold-start-checklist-per-cloud)).
-7. Standing rules that apply unchanged:
+7. **Weights live in Reliant's registry by default, and we build it out for them;
+   a customer may override with their own OCI repository** (owner, 2026-11-25,
+   on forge#2836). The build-out is a first-class workstream
+   ([section 3.7](#37-building-out-the-reliant-registry)):
+
+   - serve blobs straight from object storage;
+   - the referrers API;
+   - pull credentials for connected clusters;
+   - region placement;
+   - pull-speed rules that apply to it.
+
+   The override is declared per env or per model in KCL: the customer's
+   same-region ECR, Artifact Registry, ACR or Harbor. forge pushes to it and
+   records the digests. Its credentials stay the customer's and never appear
+   in KCL.
+
+8. **One top-level nav item for everything ML** (owner, 2026-11-25). It holds
+   six sub-pages:
+
+   - org-wide: Machines, Stack and Recommendations;
+   - filterable by app or project: Runs, Models and Inference.
+
+   Only the label is open
+   ([decision 9](#11-open-owner-decisions)).
+
+9. Standing rules that apply unchanged:
    - Monitoring requires sign-in.
    - forge never stands in for another tool.
    - forge is semver at major 1, so every surface here is additive.
@@ -293,7 +323,7 @@ ml_stacks = [forge.MLStack {
 | `Workload.affinity?`, `topologySpread?`, `runtimeClassName?` | Pass-through, as `nodeSelector` and `tolerations` already are (`kcl/workload.k:729-730`)                                                                                                                                                                                                          | Pod spec fields                                                                                                                                                                                                                    |
 | `VolumeSource.image`                                         | `{reference, pull_policy?}`                                                                                                                                                                                                                                                                       | A Kubernetes image volume (an OCI artifact mounted read-only). The model mount.                                                                                                                                                    |
 | `EmptyDirVolumeSource.medium?: "Memory"`                     | —                                                                                                                                                                                                                                                                                                 | A memory-backed `emptyDir` for `/dev/shm`. PyTorch DataLoader and NCCL need it, and today it cannot be declared.                                                                                                                   |
-| `Bundle.models: [Model]`                                     | `name`, `repository` (`oci://…`, or `s3://`/`gs://` as the escape hatch), `format = "modelpack"`, `digest?` (pin; else the release's), `source_run?`                                                                                                                                              | A release artifact (section 7). Consumed through `ModelRef`.                                                                                                                                                                       |
+| `Bundle.models: [Model]`                                     | `name`, `repository` (a bare name: Reliant's registry, the default; a host-bearing reference: the customer's registry, pushed verbatim; `s3://`/`gs://` as the escape hatch), `format = "modelpack"`, `digest?` (pin; else the release's), `source_run?`                                          | A release artifact (section 7). Consumed through `ModelRef`.                                                                                                                                                                       |
 | `Workload.model?: ModelRef`                                  | `{model, mount_path = "/models/<name>", via: "image_volume" \| "init" = "image_volume"}`                                                                                                                                                                                                          | An image volume of `repository@digest`. Fallback: an init container that pulls the artifact into an `emptyDir`. The image is the customer's choice (for example `ghcr.io/oras-project/oras`); forge runs no pull logic of its own. |
 | `Bundle.trainings: [Training]`                               | `name`, `workload: Workload` (pod template; kind `job`), `orchestrator: "job" \| "jobset" \| "trainjob" \| "pytorchjob" \| "rayjob"`, `workers`, `queue?` (Kueue LocalQueue), `checkpoint?: {uri, env = "FORGE_CHECKPOINT_DIR"}`, `outputs?: {model}`, `params: {str:str}`, `runs: [TrainingRun]` | Nothing until a run exists. Each run renders the orchestrator's own CR (an Indexed Job, a JobSet, a TrainJob, a RayJob) with the `kueue.x-k8s.io/queue-name` label. The CR is the orchestrator's; forge writes it.                 |
 
@@ -444,20 +474,46 @@ Consuming the model:
   be verified, and it needs containerd 2.1+): an init container pulls the
   artifact into an `emptyDir`.
 
-**Where the bytes live** is [decision 6](#11-open-owner-decisions). The
-recommendation is the **customer's own registry in the GPU nodes' region**
-(Artifact Registry, ECR, ACR) by default, declared in `forge.Model.repository`.
-Our hosted registry stays opt-in, for small models and demos. The reasons:
+**Where the bytes live** (settled, item 7) follows the rule forge already
+applies to images. There is deliberately no env-level registry field
+(`kcl/schema.k:906-913`). The reference _is_ the destination
+(`internal/cli/build_push_registry.go:16-25`):
 
-- weights never leave the customer's cloud;
-- nodes pull with cloud IAM, so there is no pull secret to deliver;
-- the cloud's streaming (GKE Image Streaming, SOCI, ACR Artifact Streaming) only
-  works from its own registry;
-- `registry.reliantapi.com` today proxies blobs through us-central1 pods, lacks
-  the referrers API, and has no way to give a customer cluster pull credentials.
+| `forge.Model.repository`                                                                     | Pushed to                                                                                      | Pulled by the cluster with                                                                                                                                                                         |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A bare name, `"llama-ft"` (the default)                                                      | `<ControlPlane.registry_host>/<org>/<project>/models/llama-ft`, i.e. `registry.reliantapi.com` | A scoped, rotated pull credential the control plane delivers into the connected cluster, declared as a `forge.ControlPlaneSecret` ([section 3.7](#37-building-out-the-reliant-registry))           |
+| A host-bearing reference, `"us-central1-docker.pkg.dev/acme/models/llama-ft"` (the override) | That repository, verbatim                                                                      | The customer's own means: node IAM (GKE Workload Identity, EKS node role, AKS kubelet identity), or a Secret they name in the existing `ClusterTarget.image_pull_secrets` (`kcl/schema.k:956-960`) |
 
-A bucket (`s3://`, `gs://`) is the escape hatch. Its version is the object path
-plus a manifest of file SHA-256s, because a bucket has no digest.
+The override can be set per model (one `forge.Model`) or per env: that env's
+`main.k` declares the same model with a different `repository`. It needs no
+new concept. Push credentials for an override come from the docker credential
+store and its helpers (`docker-credential-gcr`, `-ecr-login`, `-acr-env`),
+through the same `internal/dockercred` path the static-site push uses
+(`internal/deploytarget/staticsite_oci.go:40-50`). Nothing goes in KCL. The
+release records the registry and digest on the artifact (`release.Artifact.URI`
+and `Digests`, `pkg/release/release.go:162-199`). So promotion is by digest
+from whichever registry holds the model, and a release can carry models from
+both registries.
+
+Why a team chooses the override:
+
+- weights must not leave their cloud (residency);
+- their nodes pull with cloud IAM, so no secret is delivered;
+- the cloud's own streaming (GKE Image Streaming, SOCI, ACR Artifact Streaming)
+  only works from that cloud's registry.
+
+Why the default is ours:
+
+- nothing to set up;
+- one pull credential the platform rotates;
+- a single place where retention, signing and lineage are enforced;
+- it works the same on every cloud and on bare metal.
+
+The [cold-start checklist](#appendix-a-cold-start-checklist-per-cloud) says
+which choice is faster for a given cluster.
+
+A bucket (`s3://`, `gs://`) remains the escape hatch. Its version is the object
+path plus a manifest of file SHA-256s, because a bucket has no digest.
 
 ### 3.6 Cold start
 
@@ -479,6 +535,91 @@ detects it, recommends it, or declares it (an image reference, a node selector,
 an image volume, a Spegel HelmChart under `MLStack.pull_cache`). It implements
 none of them. `node.status.images` is the generic, privilege-free signal for
 whether an image is already warm on the GPU nodes.
+
+### 3.7 Building out the Reliant registry
+
+The owner made Reliant's registry the default home for weights. This is what it
+has today, and what it needs to carry multi-GB artifacts into customer
+clusters. Paths are control-plane unless marked forge. Everything listed as
+existing is in a final tag: control-plane v1.7.54, sigguard in v1.7.88, and
+the registry declaration in v1.12.0.
+
+**What exists.**
+
+- **The server.** `registry.reliantapi.com` is CNCF distribution v3.1.2 on the
+  GCS bucket `reliant-prod-registry`, running 2 replicas in the prod hub
+  (us-central1). It has no CDN and no second region
+  (`deploy/kcl/lib/hosted_deploy.k:96,104`; `deploy/kcl/prod/main.k:1267-1305`).
+- **Pushing.** A customer pushes with their own `rlat_` token:
+  `forge registry login`, or an implicit login in `env build --push`. The
+  argv is in forge `internal/cli/registry_cmd.go:58-63`; see also forge
+  `deploy/hosted-registry` skill.
+  - The token realm mints a 15-minute org-scoped JWT
+    (`internal/registryauth/mint.go:28`).
+  - `allowedActions` grants push only inside the caller's org, and only with
+    `deploy:write` and the push-quota verdict. It drops `delete` and every
+    other action (`internal/registryauth/claims.go:160-230`).
+- **Only the repository name is checked.** The path grammar has four kinds,
+  `image`, `static_site`, `bundle` and `config`
+  (`internal/ociregistry/name.go:57-62`; `doc.go:20-25`).
+  - Nothing checks `mediaType` or `artifactType`. So **an org can already push
+    any OCI artifact, a ModelPack included, under its `<org>/<project>/…`
+    image paths.**
+  - `sigguard` protects only `bundle.v1` repositories
+    (`tools/registry-reliant/sigguard/guard.go:1-62`).
+- **Quota and metering.**
+  - A per-plan push cap of 10, 25 or 50 GiB refuses pushes, never pulls, and
+    fails open (`internal/app/registry_quota_wire.go:46-100`;
+    `internal/plansconfig/pricing.yaml:576,597,618`).
+  - Storage is metered in GiB-hours but shadow-only, so nothing is billed
+    (`pricing.yaml:410-417`; `internal/orgcosts/history.go:547`).
+  - **Pull egress is not metered at all.**
+  - Unclaimed orgs' content scan gives up above 256 MiB per layer or 1 GiB
+    per image (`internal/contentscan/service.go:25-29`).
+- **Pulling.** One credential per org (`internal/registrypull/contract.go:1-40`):
+  - read-only (`deploy:read`), but covering the org's **whole subtree** with no
+    expiry, rotated every 30 days with a 1-hour overlap (`tokens.go:33-68`,
+    `contract.go:126,141`);
+  - used by exactly three platform consumers: the tenant-namespace kubelet,
+    hub Flux and the static-site operator. None of them is a customer cluster.
+- **The precedent for writing into a customer cluster.** `internal/telemetrydelivery`
+  already writes and renews a Secret in connected clusters. It is
+  level-triggered and server-side-applies with its own field manager. On
+  withdrawal it revokes first, then deletes the Secret. It is declared from
+  forge as `forge.ControlPlaneSecret`, which today accepts only
+  `kind = "telemetry_token"` (`internal/cpsecrets/shape.go:131`).
+
+**The gap, as workstream items.** Each is a separate control-plane change, and
+none blocks the customer-registry override.
+
+| #   | Item                                   | Today                                                                                                                                                                                                 | Needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| R1  | Serve blobs from object storage        | `REGISTRY_REDIRECT = False` (`deploy/kcl/lib/hosted_deploy.k:205-224`). Every byte goes through 2 pods. The GCS driver's signed-URL redirect is "expected to work" but was never verified in-cluster. | Verify one redirected pull (the runbook's one-line flip) and turn it on. Manifests stay on the registry, which keeps auth and admission; blob GETs redirect to short-lived signed GCS URLs. Without this, one 70 GB model pulled by 16 nodes is about 1.1 TB through two pods.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| R2  | A model namespace                      | Models would sit under image paths, indistinguishable from images.                                                                                                                                    | A reserved `<org>/<project>/models/<name>` (or `model.v1`) kind in `ParseTenantName` and the forge artifact type, so quota, retention, scanning, pricing and signing can treat weights as weights.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| R3  | Pull credentials in connected clusters | None.                                                                                                                                                                                                 | A `forge.ControlPlaneSecret {kind = "registry_pull"}`, delivered by the `telemetrydelivery` reconciler, generalised (new `cpsecrets` kind; forge KCL kind), rendered as `kubernetes.io/dockerconfigjson`, and wired into the workload's ServiceAccount the way `image_pull_secrets` is. Scope: `deploy:read`, **resource-bound to the project's `models/` subtree** (not registrypull's whole-org grant), one per (cluster, env) binding, rotated on a declared period with an overlap, revoked first on withdraw or disconnect. A docker pull secret cannot refresh a 15-minute JWT, so the Secret holds the rotated long-lived pull token and each pull exchanges it at the realm. |
+| R4  | The OCI referrers API                  | None in distribution v3.1.2; signatures use the `sha256-<hex>` tag fallback (`sigguard/guard.go:33-36`).                                                                                              | Referrers for model signatures, SBOMs and eval attestations. Either a distribution release that serves it, or a registry that does (zot, Harbor). That replacement is a control-plane architecture choice ([decision 14](#11-open-owner-decisions)). Until then, the tag fallback, with `models/` joining sigguard's protected set so only the platform signer can write signature tags.                                                                                                                                                                                                                                                                                             |
+| R5  | Region placement and egress            | One region (us-central1). A pull into an EKS cluster in eu-west-1 is cross-cloud internet egress, unmetered and unpriced.                                                                             | A registry-pull egress meter first. Then placement: either regional mirrors (GCS dual- or multi-region buckets plus redirect, so the signed URL is near the puller), or an **in-cluster pull-through cache** the customer installs (`MLStack.pull_cache`: Spegel, Dragonfly, or a distribution or Harbor proxy cache). With a cache, the bytes cross clouds once per digest, not once per node. Who pays is [decision 6](#11-open-owner-decisions).                                                                                                                                                                                                                                  |
+| R6  | Sizes, plans and billing               | Push caps of 10, 25 and 50 GiB per plan; storage shadow-billed; no per-blob cap; claimable scan limits.                                                                                               | Plan limits sized for weights (decision 13). Storage billed through the org storage-pool cutover. Unclaimed (claimable) orgs refused for the `models/` kind, because weights cannot be content-scanned.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| R7  | Retention                              | No tenant delete; retention is platform-run.                                                                                                                                                          | Keep every digest a live release references, and expire unreferenced model digests after a declared period. Today's platform retention must learn the `models/` kind so it never collects a digest an env still runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+
+**How the pull-speed checklist applies to our registry.** Several Appendix A
+rows behave differently when the source is `registry.reliantapi.com`:
+
+- **Cloud streaming does not apply.** GKE Image Streaming, SOCI and ACR
+  Artifact Streaming only serve from their own cloud's registry.
+- **What does apply:**
+  - an in-cluster pull-through cache or P2P (Spegel, Dragonfly), which is also
+    the egress answer;
+  - pre-warming on GPU nodes (`node.status.images`);
+  - node-local NVMe;
+  - per-file layers for parallel pulls;
+  - R1, which every other row assumes.
+- **A new rule, `registry-cross-cloud`:** the model's registry is ours, the GPU
+  nodes are on another cloud or region, and no cache is present. Its fix is to
+  install a pull-through cache, or to declare the override for that env.
+
+So the default stays fast for a scale-out, and the override stays a one-line
+change for a team whose cloud streaming matters more.
 
 ## 4. Control plane
 
@@ -613,14 +754,37 @@ release and git commit.
 
 ## 8. UI and agent tools
 
-A new **ML** area in the reliant console, at the placement chosen in
-[decision 9](#11-open-owner-decisions). It is registered the way every console
-area is:
+**One top-level nav item** (settled, item 8). Its label is
+[decision 9](#11-open-owner-decisions); "ML" is recommended. It is one `NavArea`,
+a drill-in whose rows replace the nav on its routes, the same kind as
+Observability.
 
-- a route in `frontends/web/src/forgeConsoleRoutes.tsx`;
-- a `ConsolePage` kind in `components/Forge/Console/paths.ts:166`;
-- rows in `navConfig/items.tsx`;
-- its slot in `navConfig/hybrid.ts:44-61`.
+The precedent is the Observability area. In reliant `frontends/web/src`, it is
+registered like this:
+
+- The nav is a plain list in `components/Layout/sidebar/navConfig/hybrid.ts:44-61`,
+  and its item kinds (row, group, area, heading, slot) are in `navConfig/types.ts:1-22`.
+  `NavArea` is at `:147-168`.
+- `observabilityArea` (`navConfig/items.tsx:367-377`) is a `NavArea` with:
+  - `available: (ctx) => hasApp(ctx) || ctx.mode !== "one"`, so it shows with
+    or without an app chosen;
+  - a `match` (`isObservabilityRoute`, `:359-364`) that claims both per-app
+    console pages and the org pages.
+- Org pages are an `OrgPage` kind (`components/Forge/Console/paths.ts:141`,
+  `orgPath` at `:148`) under the org layout's routes
+  (`forgeConsoleRoutes.tsx:10-11`: `/forge/observability`, where `?project=`
+  scopes to one app; route at `:211`). Per-app pages are a `ConsolePage` kind
+  (`paths.ts:166`, `consolePath` at `:328`).
+
+The ML item follows the same steps:
+
+1. An `mlArea: NavArea` in `items.tsx`, inserted into `hybridNav.items` (the
+   proposal places it after `observabilityArea`).
+2. `OrgPage` kinds for Machines, Stack and Recommendations, since clusters are
+   org resources.
+3. `ConsolePage` kinds, or org pages with a `?project=` filter, for Runs, Models
+   and Inference, so they are filterable by app or project.
+4. One `match` that claims all six pages.
 
 | Page            | Shows                                                                                                                                                                             | Slice |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
@@ -670,7 +834,13 @@ the cluster except through a declaration or a recorded launch.
   removes the grant objects.
 - **Telemetry stays per org.** It goes outbound with the per-org token into
   `t_<org>`. Reading it requires sign-in.
-- **Weights stay in the customer's cloud by default** (section 3.5).
+- **Model weights.**
+  - In Reliant's registry, they are pulled with a per-binding,
+    resource-scoped, read-only credential that the control plane delivers
+    and rotates, and revokes first on disconnect (R3).
+  - Under the override, they never touch our infrastructure. Push and pull
+    credentials stay the customer's, in their credential helpers or their own
+    pull Secret, never in KCL.
 
 ## 10. Pricing
 
@@ -691,20 +861,23 @@ Events are low-volume.
 None of these is decided. Each gives the realistic options, a recommendation, and
 what it blocks.
 
-| #   | Decision                                                       | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Recommendation                                                                                                                                                                                                                                      | Blocks                                                                |
-| --- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 1   | Private GPU clusters (the hub must reach the API server today) | (a) Public endpoint required, restricted to published hub egress addresses (GKE authorized networks, EKS public access CIDRs). (b) **Pull-mode delivery**: Flux in the customer's cluster pulls the env's release bundle (already an OCI artifact) outbound from a registry, and telemetry pushes outbound, so nothing dials in. Needs a pull credential into the cluster and a status channel back (the collector reports Kustomization status as inventory). (c) A reverse-tunnel agent we build. (d) Per-customer peering or PrivateLink. | (a) now. Verify the connected shard's egress is a stable, publishable set. (b) as the durable path: it is Flux's own model, adds no tunnel, and reuses the bundle. (c) builds a privileged component another tool already does. (d) does not scale. | Private-cluster customers; telemetry token renewal for them; slice 7. |
-| 2   | Where discovery runs, and its RBAC                             | (a) In-cluster collector with a declared read-only ClusterRole, derived into the connect grant (needs `--apply-scope cluster`). (b) A separate hub-side discovery ServiceAccount added by `connect --discover`. (c) Only the local `forge ml discover`.                                                                                                                                                                                                                                                                                      | (c) for the first look plus (a) for continuous. Both keep the hub's identity a function of the render; (b) adds a standing hub credential that reads the whole cluster.                                                                             | Slice 1.                                                              |
-| 3   | Vendor metric adapters against "no presets"                    | (a) forge ships accelerator adapters as versioned data (metric family → neutral field, the `allow` list, the version aliases, the bad-device rules), a narrow exception to third-party-telemetry's no-presets rule. (b) Each project or its agent writes the mapping.                                                                                                                                                                                                                                                                        | (a). A neutral Machines view and bad-machine rules cannot exist without the vendor facts, and every customer would rewrite the same table. Keep it data, outside the collector, so a new DCGM version is a table row.                               | The accelerator model; slice 1.                                       |
-| 4   | Run tracking: build or integrate                               | (a) Our own tracking SDK and charting UI. (b) Own the run record, accelerator metrics and lineage; accept an MLflow-compatible tracking API; link out to W&B. (c) Link-out only.                                                                                                                                                                                                                                                                                                                                                             | (b). Users keep their logger; we own what nobody joins (run → model → release → live health). Revisit (a) only on demand.                                                                                                                           | Slice 5.                                                              |
-| 5   | How a run is declared                                          | (a) Every run is a KCL commit. (b) Templates are declared; runs are recorded launches against them; reproducible runs may be pinned in KCL. (c) Observe-only: runs others create are shown, never launched by us.                                                                                                                                                                                                                                                                                                                            | (b), with (c) always on (start anywhere). (a) turns a sweep into fifty deploys.                                                                                                                                                                     | `forge.Training`, `LaunchRun`; slice 5.                               |
-| 6   | Where model bytes live by default                              | (a) The customer's same-region registry (or bucket), declared in `forge.Model`; ours opt-in. (b) Our hosted registry by default.                                                                                                                                                                                                                                                                                                                                                                                                             | (a). (b) needs GCS redirects on, a pull-credential path into customer clusters, and referrers first, and still puts weights in our region and out of the cloud's streaming.                                                                         | Slice 4; whether registry work is scheduled.                          |
-| 7   | Model release cadence                                          | (a) The model digest is part of the app release; a model-only release carries code artifacts forward (`CarriedFrom`). (b) A separate model release ledger. (c) A digest pinned per env in `main.k`, changed by PR.                                                                                                                                                                                                                                                                                                                           | (a), with (c) allowed as an explicit pin. One ledger, one promotion, one health check.                                                                                                                                                              | Slice 4.                                                              |
-| 8   | Online comparison of model versions                            | (a) In-app Changes variants only (consistent with Changes Settled 4). (b) Also declare a split or shadow through the router the cluster runs (KServe, Gateway API, Inference Extension), plus continuous metrics in the readout.                                                                                                                                                                                                                                                                                                             | (a) now; (b) as a deliberate ML exception later. forge declares, the router routes, so it does not stand in for a tool.                                                                                                                             | Slice 6.                                                              |
-| 9   | Where the ML area sits in the console                          | (a) A top-level area in the per-app nav. (b) Machines, Stack and Recommendations at org level (clusters are org resources shared by apps), with Runs, Models and Inference per app. (c) All at org level.                                                                                                                                                                                                                                                                                                                                    | (b). A GPU pool serves several apps; its health is not one app's.                                                                                                                                                                                   | Routes and nav registration; slice 1 UI.                              |
-| 10  | Disconnect and what we installed                               | (a) Today's behaviour: delivered objects are orphaned. (b) Disconnect also removes components labelled `forge-ml` (our installs, the collector); customer workloads stay. (c) Remove everything delivered.                                                                                                                                                                                                                                                                                                                                   | (b). Our DaemonSets on their GPU nodes should not outlive the relationship; their apps should.                                                                                                                                                      | Slice 1 install path.                                                 |
-| 11  | Pricing                                                        | (a) Observability ingest only. (b) Per monitored accelerator-hour. (c) A free tier of N accelerators.                                                                                                                                                                                                                                                                                                                                                                                                                                        | (a) + (c) through beta; decide (b) with dogfood and early-customer data.                                                                                                                                                                            | GA.                                                                   |
-| 12  | Dogfood hardware                                               | (a) Simulated GPUs only (a fake GPU operator on k3d, emitting DCGM-shaped metrics). (b) Plus a small real GPU pool (e.g. 2 × L4 on GKE) for two weeks per slice.                                                                                                                                                                                                                                                                                                                                                                             | (b). Xid, driver and streaming behaviour cannot be simulated; the cost is a few hundred dollars per slice (estimate).                                                                                                                               | Slice 1 sign-off.                                                     |
+| #   | Decision                                                                  | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Recommendation                                                                                                                                                                                                                                      | Blocks                                                                |
+| --- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 1   | Private GPU clusters (the hub must reach the API server today)            | (a) Public endpoint required, restricted to published hub egress addresses (GKE authorized networks, EKS public access CIDRs). (b) **Pull-mode delivery**: Flux in the customer's cluster pulls the env's release bundle (already an OCI artifact) outbound from a registry, and telemetry pushes outbound, so nothing dials in. Needs a pull credential into the cluster and a status channel back (the collector reports Kustomization status as inventory). (c) A reverse-tunnel agent we build. (d) Per-customer peering or PrivateLink. | (a) now. Verify the connected shard's egress is a stable, publishable set. (b) as the durable path: it is Flux's own model, adds no tunnel, and reuses the bundle. (c) builds a privileged component another tool already does. (d) does not scale. | Private-cluster customers; telemetry token renewal for them; slice 7. |
+| 2   | Where discovery runs, and its RBAC                                        | (a) In-cluster collector with a declared read-only ClusterRole, derived into the connect grant (needs `--apply-scope cluster`). (b) A separate hub-side discovery ServiceAccount added by `connect --discover`. (c) Only the local `forge ml discover`.                                                                                                                                                                                                                                                                                      | (c) for the first look plus (a) for continuous. Both keep the hub's identity a function of the render; (b) adds a standing hub credential that reads the whole cluster.                                                                             | Slice 1.                                                              |
+| 3   | Vendor metric adapters against "no presets"                               | (a) forge ships accelerator adapters as versioned data (metric family → neutral field, the `allow` list, the version aliases, the bad-device rules), a narrow exception to third-party-telemetry's no-presets rule. (b) Each project or its agent writes the mapping.                                                                                                                                                                                                                                                                        | (a). A neutral Machines view and bad-machine rules cannot exist without the vendor facts, and every customer would rewrite the same table. Keep it data, outside the collector, so a new DCGM version is a table row.                               | The accelerator model; slice 1.                                       |
+| 4   | Run tracking: build or integrate                                          | (a) Our own tracking SDK and charting UI. (b) Own the run record, accelerator metrics and lineage; accept an MLflow-compatible tracking API; link out to W&B. (c) Link-out only.                                                                                                                                                                                                                                                                                                                                                             | (b). Users keep their logger; we own what nobody joins (run → model → release → live health). Revisit (a) only on demand.                                                                                                                           | Slice 5.                                                              |
+| 5   | How a run is declared                                                     | (a) Every run is a KCL commit. (b) Templates are declared; runs are recorded launches against them; reproducible runs may be pinned in KCL. (c) Observe-only: runs others create are shown, never launched by us.                                                                                                                                                                                                                                                                                                                            | (b), with (c) always on (start anywhere). (a) turns a sweep into fifty deploys.                                                                                                                                                                     | `forge.Training`, `LaunchRun`; slice 5.                               |
+| 6   | Who pays cross-cloud pull egress from Reliant's registry                  | (a) We absorb it within plan limits, metered per org. (b) Pass it through at cost, per GiB, like backend egress (`pricing.yaml:403-408`). (c) A free regional allowance; cross-cloud billed.                                                                                                                                                                                                                                                                                                                                                 | Meter first (R5), then (c): same-cloud pulls are cheap for us and should feel free; a cross-cloud scale-out is the customer's choice, and a pull-through cache or the override is the way out of it.                                                | Billing for models; R5; GA.                                           |
+| 7   | Model release cadence                                                     | (a) The model digest is part of the app release; a model-only release carries code artifacts forward (`CarriedFrom`). (b) A separate model release ledger. (c) A digest pinned per env in `main.k`, changed by PR.                                                                                                                                                                                                                                                                                                                           | (a), with (c) allowed as an explicit pin. One ledger, one promotion, one health check.                                                                                                                                                              | Slice 4.                                                              |
+| 8   | Online comparison of model versions                                       | (a) In-app Changes variants only (consistent with Changes Settled 4). (b) Also declare a split or shadow through the router the cluster runs (KServe, Gateway API, Inference Extension), plus continuous metrics in the readout.                                                                                                                                                                                                                                                                                                             | (a) now; (b) as a deliberate ML exception later. forge declares, the router routes, so it does not stand in for a tool.                                                                                                                             | Slice 6.                                                              |
+| 9   | Label of the one ML nav item (the item and its six sub-pages are settled) | (a) "ML". (b) "ML Workloads". (c) "Machine Learning". (d) "AI/ML".                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | (a) "ML": it is short and fits the nav's one-word rows (Data, Storage, Auth). "Workloads" collides with forge's `Workload` type, which would read as a filter of it. "AI/ML" promises agent and LLM features that live elsewhere.                   | Nav registration; slice 1 UI.                                         |
+| 10  | Disconnect and what we installed                                          | (a) Today's behaviour: delivered objects are orphaned. (b) Disconnect also removes components labelled `forge-ml` (our installs, the collector); customer workloads stay. (c) Remove everything delivered.                                                                                                                                                                                                                                                                                                                                   | (b). Our DaemonSets on their GPU nodes should not outlive the relationship; their apps should.                                                                                                                                                      | Slice 1 install path.                                                 |
+| 11  | Pricing                                                                   | (a) Observability ingest only. (b) Per monitored accelerator-hour. (c) A free tier of N accelerators.                                                                                                                                                                                                                                                                                                                                                                                                                                        | (a) + (c) through beta; decide (b) with dogfood and early-customer data.                                                                                                                                                                            | GA.                                                                   |
+| 12  | Dogfood hardware                                                          | (a) Simulated GPUs only (a fake GPU operator on k3d, emitting DCGM-shaped metrics). (b) Plus a small real GPU pool (e.g. 2 × L4 on GKE) for two weeks per slice.                                                                                                                                                                                                                                                                                                                                                                             | (b). Xid, driver and streaming behaviour cannot be simulated; the cost is a few hundred dollars per slice (estimate).                                                                                                                               | Slice 1 sign-off.                                                     |
+| 13  | Size limits and plan for model storage                                    | (a) Model bytes count against today's per-plan registry caps (10/25/50 GiB). (b) A separate `models/` allowance per plan, sized for weights (100s of GiB), billed beyond it through the storage pool. (c) Unlimited with storage billed.                                                                                                                                                                                                                                                                                                     | (b). Today's caps would refuse a single 70B model; a separate allowance keeps image quota behaviour unchanged. Refuse `models/` for unclaimed orgs (no content scan past 1 GiB).                                                                    | R2, R6; slice 4.                                                      |
+| 14  | Referrers API for signatures and SBOMs on models                          | (a) Keep distribution and the `sha256-<hex>` tag fallback, with `models/` added to sigguard's protected set. (b) Move to a distribution release that serves referrers. (c) Replace the registry with zot or Harbor.                                                                                                                                                                                                                                                                                                                          | (a) now, so signing is not blocked; (b) when it ships. (c) is a registry migration whose cost is outside ML and should be decided on its own.                                                                                                       | R4; model signing.                                                    |
+| 15  | Scope of the connected-cluster pull credential                            | (a) Reuse registrypull's per-org, whole-subtree token. (b) A new token per (cluster, env) binding, read-only and resource-bound to the project's `models/` (and image) paths.                                                                                                                                                                                                                                                                                                                                                                | (b). A credential sitting in a customer's cluster should read only what that env deploys; (a) would expose every project of the org.                                                                                                                | R3; slice 4.                                                          |
 
 ## 12. Rollout plan
 
@@ -738,10 +911,25 @@ before we model a single run.
    - The `ml/instrument` skill: OTLP traces from vLLM and Triton, metric
      `allow` lists, and the `/dev/shm` and probe settings serving needs.
 4. **Models.**
+
    - `forge.Model`, `Workload.model`, `VolumeSource.image`, and
-     `forge ml model push` (ModelPack via oras-go).
+     `forge ml model push` (ModelPack via oras-go). It pushes to Reliant's
+     registry, or verbatim to a declared override.
+   - The registry workstream, as control-plane changes that land before or
+     alongside it:
+
+     - R1, redirect, comes first, because every model pull depends on it;
+     - then R2, the `models/` kind;
+     - R3, the `registry_pull` ControlPlaneSecret;
+     - R6 and R7, limits and retention;
+     - the egress meter from R5.
+
+     R4, referrers, and regional placement follow. The override needs none of
+     them, so a team that brings its own registry is not blocked.
+
    - Model-only releases with `CarriedFrom` (decision 7).
    - The Models page.
+
 5. **Training.**
    - `forge.Training` lowering to Job, JobSet, TrainJob, PyTorchJob or RayJob
      with a Kueue queue.
@@ -785,22 +973,23 @@ forge detects these, recommends them, or declares them. It implements none of
 them. Rows marked † contain label names or figures not verified in this pass
 ([Appendix C](#appendix-c-what-to-verify-before-building)).
 
-| Finding                               | Cloud | Detection (k8s API or registry)                                                                       | Typical impact                             | Fix (the customer's tool)                                                     |
-| ------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
-| Registry not in the nodes' region     | all   | Registry host region ≠ `topology.kubernetes.io/region` of the GPU nodes                               | High                                       | Replicate or mirror into the region                                           |
-| Weights baked into the serving image  | all   | Image > 10 GB from manifest sizes                                                                     | High: weights re-pulled on code changes    | ModelPack artifact + slim runtime image (section 3.5)                         |
-| Image Streaming off †                 | GKE   | Image on Artifact Registry and the GPU pool lacks the streaming label                                 | High for large images                      | Enable Image Streaming on the pool                                            |
-| No secondary boot disk †              | GKE   | GPU pool lacks the secondary-boot-disk label                                                          | Medium–high                                | A secondary boot disk preloaded with the CUDA and runtime images              |
-| SOCI not in use †                     | EKS   | No SOCI index referrer for the image, or the node image lacks SOCI / parallel pull                    | Medium–high                                | Enable SOCI (parallel-pull mode on AL2023 / Bottlerocket) and build the index |
-| Artifact Streaming off †              | AKS   | ACR not Premium, or streaming not enabled on the node pool                                            | Medium                                     | Enable ACR Artifact Streaming                                                 |
-| No P2P or in-cluster cache at fan-out | all   | ≥ N accelerator replicas of one image and no Spegel, Dragonfly or pull-through cache                  | High when scaling out                      | Spegel (one small DaemonSet) or Dragonfly, as `MLStack.pull_cache`            |
-| Image not warm on GPU nodes           | all   | Target image absent from `node.status.images` on the pool                                             | Medium                                     | Pre-pull DaemonSet or kube-fledged, or a baked node image                     |
-| Local NVMe unused                     | all   | GPU nodes with local SSD where ephemeral storage is not on it                                         | Medium                                     | Put ephemeral storage on local SSD (node-pool setting)                        |
-| Model downloaded per pod              | all   | Init or storage-initializer fetch from `s3://`/`gs://`/`hf://` on each start; no LocalModelCache      | High                                       | `Workload.model` by digest; KServe LocalModelCache                            |
-| Slow loader                           | all   | vLLM args without `runai_streamer` / `tensorizer`; non-safetensors weights                            | Medium                                     | safetensors + Run:ai Model Streamer                                           |
-| Hugging Face download unaccelerated   | all   | Pods fetch from `hf://` without `HF_HUB_ENABLE_HF_TRANSFER` / Xet                                     | Medium                                     | Enable it, or stop downloading per pod                                        |
-| GPU node provisioning dominates       | all   | `TriggeredScaleUp` event; scale-up to Ready time                                                      | High                                       | Warm pool / minimum nodes, or capacity reservations (their choice)            |
-| Image volumes unavailable †           | all   | Server version below the default-on release, or containerd < 2.1 (`nodeInfo.containerRuntimeVersion`) | Enables mounting weights without a sidecar | Upgrade; meanwhile the modelcar sidecar or init-container fallback            |
+| Finding                                                                                          | Cloud | Detection (k8s API or registry)                                                                                                                                   | Typical impact                             | Fix (the customer's tool)                                                                              |
+| ------------------------------------------------------------------------------------------------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Model on Reliant's registry, nodes on another cloud or region, no cache (`registry-cross-cloud`) | all   | `forge.Model.repository` is ours, the GPU nodes' `topology.kubernetes.io/region` is outside our region, and no Spegel, Dragonfly or pull-through cache is present | High at scale-out; egress per node         | Install a pull-through cache (`MLStack.pull_cache`), or declare the override to a same-region registry |
+| Registry not in the nodes' region                                                                | all   | Registry host region ≠ `topology.kubernetes.io/region` of the GPU nodes                                                                                           | High                                       | Replicate or mirror into the region                                                                    |
+| Weights baked into the serving image                                                             | all   | Image > 10 GB from manifest sizes                                                                                                                                 | High: weights re-pulled on code changes    | ModelPack artifact + slim runtime image (section 3.5)                                                  |
+| Image Streaming off †                                                                            | GKE   | Image on Artifact Registry and the GPU pool lacks the streaming label                                                                                             | High for large images                      | Enable Image Streaming on the pool                                                                     |
+| No secondary boot disk †                                                                         | GKE   | GPU pool lacks the secondary-boot-disk label                                                                                                                      | Medium–high                                | A secondary boot disk preloaded with the CUDA and runtime images                                       |
+| SOCI not in use †                                                                                | EKS   | No SOCI index referrer for the image, or the node image lacks SOCI / parallel pull                                                                                | Medium–high                                | Enable SOCI (parallel-pull mode on AL2023 / Bottlerocket) and build the index                          |
+| Artifact Streaming off †                                                                         | AKS   | ACR not Premium, or streaming not enabled on the node pool                                                                                                        | Medium                                     | Enable ACR Artifact Streaming                                                                          |
+| No P2P or in-cluster cache at fan-out                                                            | all   | ≥ N accelerator replicas of one image and no Spegel, Dragonfly or pull-through cache                                                                              | High when scaling out                      | Spegel (one small DaemonSet) or Dragonfly, as `MLStack.pull_cache`                                     |
+| Image not warm on GPU nodes                                                                      | all   | Target image absent from `node.status.images` on the pool                                                                                                         | Medium                                     | Pre-pull DaemonSet or kube-fledged, or a baked node image                                              |
+| Local NVMe unused                                                                                | all   | GPU nodes with local SSD where ephemeral storage is not on it                                                                                                     | Medium                                     | Put ephemeral storage on local SSD (node-pool setting)                                                 |
+| Model downloaded per pod                                                                         | all   | Init or storage-initializer fetch from `s3://`/`gs://`/`hf://` on each start; no LocalModelCache                                                                  | High                                       | `Workload.model` by digest; KServe LocalModelCache                                                     |
+| Slow loader                                                                                      | all   | vLLM args without `runai_streamer` / `tensorizer`; non-safetensors weights                                                                                        | Medium                                     | safetensors + Run:ai Model Streamer                                                                    |
+| Hugging Face download unaccelerated                                                              | all   | Pods fetch from `hf://` without `HF_HUB_ENABLE_HF_TRANSFER` / Xet                                                                                                 | Medium                                     | Enable it, or stop downloading per pod                                                                 |
+| GPU node provisioning dominates                                                                  | all   | `TriggeredScaleUp` event; scale-up to Ready time                                                                                                                  | High                                       | Warm pool / minimum nodes, or capacity reservations (their choice)                                     |
+| Image volumes unavailable †                                                                      | all   | Server version below the default-on release, or containerd < 2.1 (`nodeInfo.containerRuntimeVersion`)                                                             | Enables mounting weights without a sidecar | Upgrade; meanwhile the modelcar sidecar or init-container fallback                                     |
 
 ## Appendix B: discovery signatures
 
@@ -867,8 +1056,9 @@ live source. Before any of these is implemented or quoted to a customer, confirm
   checked);
 - whether the hub's connected shard has a stable, publishable egress address
   set (decision 1 (a));
-- the hosted registry's per-org quota and pricing, which this research did not
-  find.
+- that `REGISTRY_REDIRECT` works in-cluster (the GCS signer has never been
+  exercised), and the region of the `reliant-prod-registry` bucket, which the
+  research did not find.
 
 Checked in this pass:
 
@@ -889,6 +1079,8 @@ the repository with the chat that produced it:
 - `artifacts-and-pull-speed.md`: registries, model-as-OCI, the cold-start
   checklist;
 - `competitive.md`: W&B, MLflow, Run:ai, HyperPod, SkyPilot and others.
+- `registry-gap.md`: what Reliant's registry has today and what model weights
+  need (section 3.7).
 
 The code citations above were checked against forge `main` at 175acbe5f,
 control-plane, and reliant on 2026-11-25.

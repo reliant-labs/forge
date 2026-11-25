@@ -284,6 +284,7 @@ func RegisterLoginBroker(appMux *http.ServeMux, cfg *config.{{or .ConfigType "Co
 		forgotByAddress: newAttemptLimiter(3, time.Hour),
 		forgotByIP:      newAttemptLimiter(10, time.Hour),
 		resetByUser:     newAttemptLimiter(5, time.Hour),
+		resetByIP:       newAttemptLimiter(20, time.Hour),
 	}
 	for _, opt := range opts {
 		opt(broker)
@@ -451,6 +452,9 @@ type loginBroker struct {
 	forgotByAddress *attemptLimiter
 	forgotByIP      *attemptLimiter
 	resetByUser     *attemptLimiter
+	// resetByIP admits reset attempts per client before any is charged to
+	// a user id, so one client cannot spend invented user ids' budgets.
+	resetByIP *attemptLimiter
 }
 
 // credentials is what the sign-in form posts.
@@ -888,8 +892,16 @@ func (b *loginBroker) accessToken(r *http.Request) (string, error) {
 	if err != nil || cookie.Value == "" {
 		return "", nil
 	}
-	if b.sessions == nil || !session.IsID(cookie.Value) {
+	if b.sessions == nil {
 		return cookie.Value, nil
+	}
+	if !session.IsID(cookie.Value) {
+		// With server-side sessions the broker only ever sets a session id
+		// in the cookie: anything else in it (a token replayed as the
+		// cookie, one from before the switch) is no session, so
+		// /auth/session reports signed out and clears it rather than
+		// presenting the claims an unverified token brought.
+		return "", session.ErrNoSession
 	}
 	return b.sessions.AccessToken(r.Context(), cookie.Value)
 }
@@ -1555,6 +1567,12 @@ func (b *loginBroker) handleReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// Per-client admission first, so one client cannot charge invented user
+	// ids until the per-user table is full.
+	if !b.resetByIP.reserve(devidp.ClientKey(r, b.proxyHops)) {
+		writeAuthError(w, http.StatusTooManyRequests, resetTooMany)
+		return
+	}
 	if !b.resetByUser.reserve(userID) {
 		b.logger.WarnContext(ctx, "password reset refused: attempt budget spent", "user_id", userID)
 		writeAuthError(w, http.StatusTooManyRequests, resetTooMany)
@@ -1635,7 +1653,9 @@ func appBaseFrom(loginURI string) string {
 //
 // Memory is bounded: an expired window is dropped whenever the table grows
 // past attemptLimiterMaxKeys, so an attacker typing endless addresses cannot
-// grow it without limit.
+// grow it without limit. A full table never refuses a key it has not seen:
+// that would let anyone who fills it with invented keys (user ids, client
+// addresses) lock every real caller out. evict makes room instead.
 type attemptLimiter struct {
 	mu      sync.Mutex
 	max     int
@@ -1666,9 +1686,7 @@ func (l *attemptLimiter) reserve(key string) bool {
 			l.sweep(now)
 		}
 		if len(l.entries) >= attemptLimiterMaxKeys {
-			// Every window is live: refuse rather than grow. Reached only
-			// under a flood of distinct keys.
-			return false
+			l.evict()
 		}
 		e = &attemptEntry{since: now}
 		l.entries[key] = e
@@ -1678,6 +1696,33 @@ func (l *attemptLimiter) reserve(key string) bool {
 	}
 	e.used++
 	return true
+}
+
+// evict drops one window to make room for a key the table has not seen.
+//
+// It drops the oldest window that still has attempts left. Only when every
+// window is spent does it drop the oldest spent one, which hands that key a
+// fresh budget: the price of never refusing an unseen key. It is a bounded
+// price. To refresh a spent window an attacker must first open and spend
+// attemptLimiterMaxKeys newer windows (each one charged to a client's own
+// budget), and the window dropped is the one nearest its expiry anyway.
+func (l *attemptLimiter) evict() {
+	var open, spent string
+	var openSince, spentSince time.Time
+	for k, e := range l.entries {
+		if e.used < l.max {
+			if open == "" || e.since.Before(openSince) {
+				open, openSince = k, e.since
+			}
+		} else if spent == "" || e.since.Before(spentSince) {
+			spent, spentSince = k, e.since
+		}
+	}
+	if open != "" {
+		delete(l.entries, open)
+		return
+	}
+	delete(l.entries, spent)
 }
 
 // sweep drops every expired window.

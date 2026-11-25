@@ -46,13 +46,20 @@ func TestEnvLifecycle_UsesTheStoredClaimableCredential(t *testing.T) {
 	if err != nil || got.EnvironmentID != "env_9" {
 		t.Fatalf("target = %+v, %v; want env_9 via the stored claimable token", got, err)
 	}
+	if !got.Claimable {
+		t.Errorf("target = %+v; want it marked as reached with the claimable credential", got)
+	}
 	if a, _ := auth.Load().(string); !strings.Contains(a, "rlat_anonymous0123456789") {
 		t.Fatalf("Authorization = %q; want the stored claimable token", a)
 	}
 
 	// A token the caller names still wins over the stored one.
-	if _, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok-explicit", ""); err != nil {
+	explicit, err := resolveDeclaredLifecycleTarget(t.Context(), "prod-web", "delete", "tok-explicit", "")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if explicit.Claimable {
+		t.Errorf("a --token target was marked claimable")
 	}
 	if a, _ := auth.Load().(string); !strings.Contains(a, "tok-explicit") {
 		t.Fatalf("Authorization = %q; want the --token credential", a)

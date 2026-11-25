@@ -360,3 +360,29 @@ func TestEnvDelete_AmbiguousEnvDocumentsCountAsDeclared(t *testing.T) {
 		}
 	})
 }
+
+// The anonymous credential of an unclaimed (--claimable) deploy carries no
+// domain scope, so ListDomains refuses it; such an env can have no domain it
+// bound, and its creator must still be able to delete it (obs f8ff6e6b).
+func TestRunEnvDelete_ClaimableCredentialWithoutDomainScopeStillDeletes(t *testing.T) {
+	denied := &cloud.Error{Code: cloud.CodePermissionDenied, Message: "credential lacks domain:read"}
+	f := &fakeLifecycleCaller{errs: map[string]error{"ListDomains": denied}}
+	var out bytes.Buffer
+	if err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true, Claimable: true}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "custom domains: none (an unclaimed deploy cannot bind one)") {
+		t.Errorf("preview should say an unclaimed deploy has no domain:\n%s", out.String())
+	}
+	if last := f.calls[len(f.calls)-1]; last.proc != procDeleteEnvironment {
+		t.Errorf("the claimable delete stopped; last call %s", last.proc)
+	}
+
+	// A signed-in credential refused the same way still stops the delete:
+	// its env may have domains this preview cannot see.
+	f = &fakeLifecycleCaller{errs: map[string]error{"ListDomains": denied}}
+	out.Reset()
+	if err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true}, strings.NewReader(""), &out); err == nil {
+		t.Fatal("a signed-in delete with an unreadable domain list proceeded")
+	}
+}

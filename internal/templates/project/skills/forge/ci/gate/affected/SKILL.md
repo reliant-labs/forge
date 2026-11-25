@@ -84,6 +84,36 @@ ci:
   rules, and the `test-<name>` rows still run. In full mode there are no
   `test-<name>` rows: `task test` runs every frontend's suite.
 
+### Walkers, helper importers, generated code and whole rows
+
+Four optional rule fields cover what a path list cannot say:
+
+```yaml
+ci:
+  gate:
+    affected_rules:
+      - on: go-source                        # every changed .go file (paths optional)
+        packages: ["./internal/guard"]       # a test that reads the whole tree's Go source
+      - paths: ["db/migrations/**"]
+        packages_importing: ["./internal/db/testutil"]  # tests whose test files import it
+      - paths: ["proto/**"]
+        packages: ["./gen/{dir}"]            # proto/x/v1/a.proto → ./gen/x/v1
+        full_checks: [test-web, electron]    # these rows run whole
+```
+
+- `on: go-source` matches any changed `.go` file besides `paths`. It adds what
+  the rule selects but claims nothing: a Go file outside every package still
+  runs the full suite.
+- `packages_importing` names helper packages (import path or `./dir`). The test
+  packages whose test files import one run (go list's `TestImports` and
+  `XTestImports`); packages that only link it transitively do not.
+- `{dir}` in a `packages` pattern is the matched file's directory below the
+  matching glob's literal prefix (`proto/**` → `proto/`), substituted per file.
+- `full_checks` names gate rows: a path-gated check runs although no change is
+  under its `paths`, and a `test-<frontend>` row is added if needed and runs
+  the whole `test` script instead of `test:related`. `full: true` still means
+  the whole unit lane.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when

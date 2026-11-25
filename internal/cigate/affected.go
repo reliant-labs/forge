@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -80,6 +81,9 @@ type Affected struct {
 	// Selections say, one line per affected rule that matched, what it
 	// claimed and selected.
 	Selections []string
+	// FullChecks are the gate rows a matching rule's full_checks force to
+	// run whole, sorted. Set whenever Changed is.
+	FullChecks []string
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -169,14 +173,15 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 		// nothing about the base unless the suite actually runs.
 		return full("nothing changed since " + baseRef + " (" + short + ")")
 	}
-	a := Affected{BaseRef: baseRef, Base: short, Changed: changed}
+	fullChecks := ruleFullChecks(changed, in.Rules)
+	a := Affected{BaseRef: baseRef, Base: short, Changed: changed, FullChecks: fullChecks}
 	if in.ChangesOnly {
 		return a
 	}
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
 	fullAfterDiff := func(reason string) Affected {
-		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed}
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: fullChecks}
 	}
 
 	list := in.GoList
@@ -237,7 +242,8 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 	for _, f := range changed {
 		claimed := false
 		for i, rule := range rules {
-			if !matchGlobs(f, rule.Paths) || matchGlobs(f, rule.Except) {
+			matched, claims := ruleMatch(f, rule)
+			if !matched {
 				continue
 			}
 			if rule.Full {
@@ -248,11 +254,9 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 				return sel, fmt.Sprintf("%s changed — %s (ci.gate.affected_rules[%d])", f, why, i)
 			}
 			sel.hits[i]++
-			claimed = true
-			for _, pat := range rule.Packages {
-				for _, pkg := range g.resolve(pat) {
-					sel.rulePkgs[pkg] = true
-				}
+			claimed = claimed || claims
+			for _, pkg := range g.rulePackages(f, rule) {
+				sel.rulePkgs[pkg] = true
 			}
 			for _, fe := range rule.Frontends {
 				sel.frontends[fe] = true
@@ -276,6 +280,10 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 func selectionLine(i int, rule config.CIGateAffectedRule, hits int, g *packageGraph) string {
 	var what []string
 	for _, pat := range rule.Packages {
+		if strings.Contains(pat, DirPlaceholder) {
+			what = append(what, pat+" (per matched file)")
+			continue
+		}
 		switch n := len(g.resolve(pat)); n {
 		case 0:
 			what = append(what, pat+" (no package with tests)")
@@ -285,11 +293,21 @@ func selectionLine(i int, rule config.CIGateAffectedRule, hits int, g *packageGr
 			what = append(what, fmt.Sprintf("%s (%d packages)", pat, n))
 		}
 	}
+	if len(rule.PackagesImporting) > 0 {
+		what = append(what, fmt.Sprintf("importers of %s (%d packages)", strings.Join(rule.PackagesImporting, ", "), len(g.importers(rule.PackagesImporting))))
+	}
 	if len(rule.Frontends) > 0 {
 		what = append(what, "frontend tests: "+strings.Join(rule.Frontends, ", "))
 	}
+	if len(rule.FullChecks) > 0 {
+		what = append(what, "whole: "+strings.Join(rule.FullChecks, ", "))
+	}
+	paths := rule.Paths
+	if rule.On != "" {
+		paths = append(append([]string(nil), paths...), "on: "+rule.On)
+	}
 	line := fmt.Sprintf("ci.gate.affected_rules[%d] (%s): %d changed file(s) → %s",
-		i, strings.Join(rule.Paths, ", "), hits, strings.Join(what, "; "))
+		i, strings.Join(paths, ", "), hits, strings.Join(what, "; "))
 	if rule.Reason != "" {
 		line += " — " + rule.Reason
 	}
@@ -316,6 +334,10 @@ func GateByPaths(checks []Check, a Affected) []Check {
 			if matchGlobs(f, c.Paths) {
 				hit = append(hit, f)
 			}
+		}
+		if len(hit) == 0 && slices.Contains(a.FullChecks, c.Name) {
+			c.Note = "affected mode: run whole by ci.gate.affected_rules full_checks"
+			continue
 		}
 		if len(hit) == 0 {
 			c.NotApplicable = fmt.Sprintf("affected mode: no change under %s since %s (%s=1 runs it)", strings.Join(c.Paths, ", "), a.BaseRef, FullEnv)
@@ -370,6 +392,8 @@ type packageGraph struct {
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
+	// testImports maps a module package to what its test files import.
+	testImports map[string]map[string]bool
 }
 
 // listedPackage is the part of a `go list -json` package affected mode reads;
@@ -384,6 +408,8 @@ type listedPackage struct {
 	EmbedFiles      []string `json:"EmbedFiles"`
 	TestEmbedFiles  []string `json:"TestEmbedFiles"`
 	XTestEmbedFiles []string `json:"XTestEmbedFiles"`
+	TestImports     []string `json:"TestImports"`
+	XTestImports    []string `json:"XTestImports"`
 }
 
 func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
@@ -403,7 +429,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
 		realRoot = r
 	}
-	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}}
+	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}}
 	dec := json.NewDecoder(r)
 	for {
 		var p listedPackage
@@ -438,6 +464,12 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 		path := stripTestVariant(p.ImportPath)
 		if p.ForTest == "" {
 			g.dirPkg[dir] = path
+			for _, imp := range append(append([]string(nil), p.TestImports...), p.XTestImports...) {
+				if g.testImports[path] == nil {
+					g.testImports[path] = map[string]bool{}
+				}
+				g.testImports[path][imp] = true
+			}
 		}
 		for _, files := range [][]string{p.EmbedFiles, p.TestEmbedFiles, p.XTestEmbedFiles} {
 			for _, f := range files {
@@ -602,7 +634,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 
 func runGoList(ctx context.Context, dir string, env []string) (io.Reader, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-test",
-		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles",
+		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles,TestImports,XTestImports",
 		"./...")
 	cmd.Dir = dir
 	if env == nil {

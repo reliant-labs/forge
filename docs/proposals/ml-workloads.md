@@ -2,7 +2,8 @@
 
 **Status:** proposal. Nothing here is built. The owner settled the direction on
 2026-11-25 (the "Settled" list below; items 7 and 8 came from the owner's
-review of forge#2836); everything else is **proposed**, and the
+review of forge#2836, items 9 and 10 from the owner's direction after it
+merged); everything else is **proposed**, and the
 open owner decisions are in [section 11](#11-open-owner-decisions), each saying
 what it blocks.
 **Date:** 2026-11-25
@@ -36,6 +37,8 @@ below. "Released" means the code is in a final tag (rc tags ignored).
 | Changes and the experiment readout                                                      | Released (v1.10.0), labelled beta. `pkg/experimentstats` reads out a binary metric. Load-balancer routing is out of v1 (changes.md, Settled 4).                                                                                                                                                                                                                                |
 | Hosted OCI registry, `registry.reliantapi.com`                                          | Released (control-plane v1.12.0). CNCF distribution v3.1.2 on GCS. Blobs are proxied through the registry pods, there is no referrers API, and there is no pull path into a customer's cluster. An org can already push any OCI artifact under its image paths. The precise gap is in [section 3.7](#37-building-out-the-reliant-registry).                                    |
 | Image registry override                                                                 | Released. A host-bearing image reference is pushed as written, and a bare one composes under `ControlPlane.registry_host` (`kcl/schema.k:906-913, 2191-2225`; `internal/cli/build_push_registry.go:16-25`). Credentials come from the docker credential store, never KCL. The release records each artifact's registry (`URI`) and digests (`pkg/release/release.go:162-199`). |
+| A per-org feature entitlement                                                           | **None.** `grants.yaml` grants plans (and needs a release), `LimitsOverride` is per subscription, the claimable switches are global, and `CHANGES_UI` is per deployment. No RPC tells the console what an org may use ([section 4.1](#41-access-by-request)).                                                                                                                  |
+| The demo shell, `demo.reliantlabs.io`                                                   | Released (reliant v1.29.0). One fixture transport answers every RPC from the `fixtures/shop` pack, read-only (reliant `frontends/web/src/fixtures/transport.ts`, `components/Forge/Demo/demoTransport.ts`).                                                                                                                                                                    |
 | A GPU request on a `forge.Workload`                                                     | **Not possible.** `tiers.Resources` is CPU and memory only (`kcl/tiers/tiers_gen.k:612-617`). The only way in today is a `Bundle.overrides` patch.                                                                                                                                                                                                                             |
 | A Clusters or ML page in the console                                                    | None. The generated client `cluster_pb.ts` exists in reliant `frontends/web`, but no page uses it.                                                                                                                                                                                                                                                                             |
 
@@ -70,6 +73,13 @@ The rest builds on the same declarations, in later slices:
 
 Reliant never provisions or sells GPUs. The product is the management layer, and
 it is neutral about which hardware and which cloud.
+
+**Access is by request.** ML is off for every org until Reliant grants it.
+The forge types and CLI still parse, render and run without it. Everything the
+control plane does for ML refuses without the grant, and says how to ask for
+it. The real console's ML item opens a request-access page. The demo at
+`demo.reliantlabs.io` shows the whole experience on fixture data. It is built
+and tested without GPUs ([section 13](#13-testing-without-gpus)).
 
 ## Settled (owner, 2026-11-25)
 
@@ -120,12 +130,41 @@ it is neutral about which hardware and which cloud.
    Only the label is open
    ([decision 9](#11-open-owner-decisions)).
 
-9. Standing rules that apply unchanged:
-   - Monitoring requires sign-in.
-   - forge never stands in for another tool.
-   - forge is semver at major 1, so every surface here is additive.
-   - Every piece is usable alone ("start anywhere").
-   - Recovery rolls forward.
+9. **Access is gated, per org, by Reliant** (owner, 2026-11-25). The owner
+   will not offer an experience nobody has tested on real GPUs, and will not
+   pay for real GPUs to test it. So ML is off for every org unless Reliant
+   grants it ([section 4.1](#41-access-by-request)):
+   - **Server-side, per org.** The control plane checks an entitlement in
+     every ML handler that ingests, recommends or shows. Without it, the
+     handler refuses with an error that names how to request access.
+   - **forge stays usable piece by piece.** The KCL types, `forge env render`,
+     `forge lint` and the local `forge ml discover` work without the
+     entitlement, because none of them calls the control plane's ML features.
+   - **The real console** shows the ML nav item to everyone. Without the
+     entitlement it opens a "Reach out to Reliant for access" page with a
+     request-access action, so it is never a dead end.
+   - **The demo shell** (`demo.reliantlabs.io`) shows the full ML experience,
+     unblocked, on fixture data.
+   - **Public docs and the landing page call it "by request".** They make no
+     claim of general availability.
+10. **Built and tested without GPUs.** The test strategy runs on CPU-only k3d
+    ([section 13](#13-testing-without-gpus)):
+
+    - run-ai's fake-gpu-operator;
+    - KWOK;
+    - CPU inference and training;
+    - synthetic exporter fixtures.
+
+    Whether to spend on real hardware for what only hardware can prove is an
+    open decision ([decision 12](#11-open-owner-decisions)).
+
+11. Standing rules that apply unchanged:
+
+- Monitoring requires sign-in.
+- forge never stands in for another tool.
+- forge is semver at major 1, so every surface here is additive.
+- Every piece is usable alone ("start anywhere").
+- Recovery rolls forward.
 
 ## Design principles
 
@@ -651,6 +690,94 @@ runs no scheduling logic.
 `ml:read` and `ml:launch`, grantable per environment. Reading machines and
 findings needs sign-in, as all monitoring does.
 
+### 4.1 Access by request
+
+Nothing in the control plane today is a per-org feature switch that Reliant
+grants and the console can read. These are the nearest mechanisms, all
+released, and why each misses:
+
+| Mechanism                                                                                                                                                 | Why it is not the ML gate                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Declared plan grants, `internal/plansconfig/grants{,.e2e,.prod}.yaml`                                                                                     | They can target an `org_id`, but they grant a **plan**; every change is a release; and there is no RPC ("BillingAdminService.AssignPlan was deleted", `grants.yaml:8-14`). The file is picked per env (`plansconfig.go:247`). |
+| `LimitsOverride` (`internal/planlimits/override.go:20`)                                                                                                   | Per subscription, with a closed key list.                                                                                                                                                                                     |
+| Claimable switches (`proto/services/deploy_admin/v1/deploy_admin.proto:184-222`; table from `db/migrations/20261027151013_claimable_admission.up.sql:66`) | **Global** kill switches, not per org. The _shape_ is the one to copy: a DB row; an admin RPC that requires a reason and records who and when; effect within seconds with no deploy; generated internal-console hooks.        |
+| `platform_org_ids` (`proto/control_plane/config/v1/config.proto:2717`)                                                                                    | A per-org allowlist for one purpose; each change is a deploy; the console cannot read it.                                                                                                                                     |
+| Org policy (`proto/services/org_policy/v1/org_policy.proto:31-121`)                                                                                       | Set by the customer's own admins: the wrong owner for a grant Reliant makes.                                                                                                                                                  |
+| `CHANGES_UI` (reliant `proto/reliant/config/v1/web_config.proto:234`)                                                                                     | One flag per deployment, read by `changesUIEnabled()` to show Experiments in the nav (reliant `navConfig/items.tsx:434-445`).                                                                                                 |
+
+`BillingService.GetCurrentUserComputeEligibility`
+(`proto/services/billing/v1/billing.proto:830-843`) states the right read
+pattern. The authoritative gate is server-side, and the RPC reports the same
+facts so the UI can predict that gate without owning it.
+
+**Proposed** (all control-plane, all additive):
+
+1. **Storage.**
+   - A table `controlplane.org_entitlements`: `org_id`, `feature`, `reason`
+     (required), `granted_by`, `granted_at`, `revoked_at`, `revoked_by`,
+     `revoke_reason`, and `requested_at` / `requested_by`.
+   - The primary key is `(org_id, feature)`, and the migration is
+     `forge:backward-compatible`.
+   - The feature set is closed by a CHECK, today `IN ('ml')`, the way
+     `ck_cp_claimable_switch_name` closes the switch set.
+   - Revoking is soft, so the audit trail survives.
+2. **The check.** A package, `internal/entitlement`:
+
+   - `Has(ctx, org, feature)`, cached for seconds like the switches;
+   - `Require(ctx, org, feature)`, which every ML handler calls first.
+
+   Handlers check inline today; no interceptor does it. Refusal is
+   `svcerr.PermissionDenied`, with `svcerr.WithReason(…, "FEATURE_NOT_ENTITLED")`
+   and metadata `feature=ml` (forge `pkg/svcerr/svcerr.go:269,1023,1070`). The
+   message names the next step, following the convention of
+   `internal/computegate/gate.go:156-161`:
+
+   > ML is available by request and is not enabled for this organization.
+   > Request access in the console (ML → Request access) or email
+   > support@reliantlabs.io with your organization id.
+
+   It is PermissionDenied, not FailedPrecondition, because nothing the caller
+   changes makes it pass. The reason code is what the CLI and the web branch
+   on. The CLI prints the message and exits non-zero; this is a new code in
+   its `--json` documents, so it is additive.
+
+   What is gated: `MLService`, the ML inventory and findings ingest, the
+   recommendations engine, and the ML read RPCs. **What is not gated:**
+
+   - forge's KCL types and render;
+   - `forge lint`;
+   - the local `forge ml discover`;
+   - forge's generic observability. A `forge.Telemetry` scrape of an exporter
+     keeps working under the org's normal observability, as it does today.
+     Only the ML-specific queries, inventory and rules are gated.
+
+3. **Grant path (Reliant admins).** `GrantOrgEntitlement`,
+   `RevokeOrgEntitlement` and `ListOrgEntitlements`, beside `SetClaimableSwitch`
+   in `deploy_admin.proto`. A reason is required and the actor is recorded.
+   They are used through
+   `control-plane ops call --env prod DeployAdminService/GrantOrgEntitlement '{"org_id": …, "feature": "ml", "reason": …}'`
+   and an internal-console page over the generated hooks.
+4. **The console's read.** `OrganizationService.GetMyOrgEntitlements`
+   (`auth_required`, `NO_SIDE_EFFECTS`), returning
+   `features[{feature, enabled, requested_at}]`. The console puts it on `NavCtx`,
+   which already carries per-app console state such as `ctx.console?.navCounts`
+   (reliant `navConfig/types.ts:32-49`). The console reads this to decide what
+   to draw; the server still decides.
+5. **Request access.** Nothing like it exists today; there are only support@
+   mailtos (reliant `components/Settings/cloud/usage/UsageBillingCard.tsx:54-55`)
+   and error text. `OrganizationService.RequestOrgEntitlement(feature, note)`:
+
+   - records `requested_at` and `requested_by`, idempotently per org and
+     feature;
+   - posts to Reliant's Slack through an existing sender (`internal/alerting`);
+   - emits a product event, `ml_access_requested`.
+
+   A mailto is the fallback when the RPC fails.
+
+Where the entitlement is stored is a sub-decision. A declared `features:`
+list in `grants.yaml` would also be reviewed in git, but every grant would need
+a release ([decision 16](#11-open-owner-decisions)).
+
 ## 5. Recommendations catalogue
 
 Each rule is pure over inventory and telemetry, has a stable `id` (what a
@@ -786,6 +913,47 @@ The ML item follows the same steps:
    and Inference, so they are filterable by app or project.
 4. One `match` that claims all six pages.
 
+**Gated access in the real console** (settled, item 9):
+
+- The ML item's `available` is true for every signed-in org, so the feature can
+  be discovered.
+- Its pages read `GetMyOrgEntitlements`. Without `ml`, every ML route renders
+  one **"Reach out to Reliant for access"** page with:
+  - what ML does, with screenshots from the demo;
+  - a "View the demo" link to `demo.reliantlabs.io`;
+  - a **Request access** button, which calls `RequestOrgEntitlement` and then
+    shows "Requested on <date>; we'll reach out". Its mailto fallback mirrors
+    `HOSTING_SUPPORT_MAILTO`.
+- Any ML RPC that returns `FEATURE_NOT_ENTITLED` (for example, after a
+  revocation) shows the same page, rather than an error toast.
+
+**The demo shell** (`demo.reliantlabs.io`) shows all six pages unblocked. It
+needs no `isDemoShell()` branch in the ML pages, because the demo answers every
+RPC from its fixture transport:
+
+- `getShell()` returns `demo` for the separate `demo.html` build (reliant
+  `frontends/web/src/lib/shell.ts`, `isDemoShell()` at `:183`;
+  `vite.config.ts:230,520`).
+- `components/Forge/Demo/demoTransport.ts` installs the `fixtures/shop` pack
+  for the whole shell, over forge web-runtime's `createFixtureTransport`
+  (`fixtures/transport.ts`). The pack refuses writes.
+
+So the demo:
+
+1. answers `GetMyOrgEntitlements` with `ml` enabled;
+2. adds `fixtures/shop/handlers/ml.ts`, which answers the `MLService` reads
+   from the shop story (`shopStory.ts`'s cast and clock). The story includes
+   two clusters, an H100 pool with one Xid-79 node, an L4 inference pool,
+   findings, three runs and two model versions;
+3. registers it in `fixtures/shop/index.ts:30-54`;
+4. marks the ML read RPCs `NO_SIDE_EFFECTS`;
+5. adds the ML item to `components/Forge/Demo/demoNav.ts`, out of
+   `DEMO_HIDDEN_PAGES` (`components/Forge/Demo/demoPath.ts:37`).
+
+"Propose fix" and "Request access" are refused there, as every demo write is.
+The same fixtures drive the console's component tests, so the demo is also the
+ML pages' regression baseline.
+
 | Page            | Shows                                                                                                                                                                             | Slice |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
 | Machines        | Per cluster and pool: nodes, accelerators (product, count, MIG/sharing), allocation against utilisation over time, health flags with evidence (Xid, ECC, conditions), warm images | 1     |
@@ -844,6 +1012,10 @@ the cluster except through a declaration or a recorded launch.
 
 ## 10. Pricing
 
+While access is by request (settled, item 9), no price is published and no
+public page claims general availability. The landing page and public docs say
+"ML: by request".
+
 We sell no GPUs, so nothing here competes with a customer's cloud bill. That
 neutrality is the position against W&B (CoreWeave) and Run:ai (NVIDIA). What
 could be charged for is [decision 11](#11-open-owner-decisions):
@@ -861,29 +1033,42 @@ Events are low-volume.
 None of these is decided. Each gives the realistic options, a recommendation, and
 what it blocks.
 
-| #   | Decision                                                                  | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Recommendation                                                                                                                                                                                                                                      | Blocks                                                                |
-| --- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 1   | Private GPU clusters (the hub must reach the API server today)            | (a) Public endpoint required, restricted to published hub egress addresses (GKE authorized networks, EKS public access CIDRs). (b) **Pull-mode delivery**: Flux in the customer's cluster pulls the env's release bundle (already an OCI artifact) outbound from a registry, and telemetry pushes outbound, so nothing dials in. Needs a pull credential into the cluster and a status channel back (the collector reports Kustomization status as inventory). (c) A reverse-tunnel agent we build. (d) Per-customer peering or PrivateLink. | (a) now. Verify the connected shard's egress is a stable, publishable set. (b) as the durable path: it is Flux's own model, adds no tunnel, and reuses the bundle. (c) builds a privileged component another tool already does. (d) does not scale. | Private-cluster customers; telemetry token renewal for them; slice 7. |
-| 2   | Where discovery runs, and its RBAC                                        | (a) In-cluster collector with a declared read-only ClusterRole, derived into the connect grant (needs `--apply-scope cluster`). (b) A separate hub-side discovery ServiceAccount added by `connect --discover`. (c) Only the local `forge ml discover`.                                                                                                                                                                                                                                                                                      | (c) for the first look plus (a) for continuous. Both keep the hub's identity a function of the render; (b) adds a standing hub credential that reads the whole cluster.                                                                             | Slice 1.                                                              |
-| 3   | Vendor metric adapters against "no presets"                               | (a) forge ships accelerator adapters as versioned data (metric family → neutral field, the `allow` list, the version aliases, the bad-device rules), a narrow exception to third-party-telemetry's no-presets rule. (b) Each project or its agent writes the mapping.                                                                                                                                                                                                                                                                        | (a). A neutral Machines view and bad-machine rules cannot exist without the vendor facts, and every customer would rewrite the same table. Keep it data, outside the collector, so a new DCGM version is a table row.                               | The accelerator model; slice 1.                                       |
-| 4   | Run tracking: build or integrate                                          | (a) Our own tracking SDK and charting UI. (b) Own the run record, accelerator metrics and lineage; accept an MLflow-compatible tracking API; link out to W&B. (c) Link-out only.                                                                                                                                                                                                                                                                                                                                                             | (b). Users keep their logger; we own what nobody joins (run → model → release → live health). Revisit (a) only on demand.                                                                                                                           | Slice 5.                                                              |
-| 5   | How a run is declared                                                     | (a) Every run is a KCL commit. (b) Templates are declared; runs are recorded launches against them; reproducible runs may be pinned in KCL. (c) Observe-only: runs others create are shown, never launched by us.                                                                                                                                                                                                                                                                                                                            | (b), with (c) always on (start anywhere). (a) turns a sweep into fifty deploys.                                                                                                                                                                     | `forge.Training`, `LaunchRun`; slice 5.                               |
-| 6   | Who pays cross-cloud pull egress from Reliant's registry                  | (a) We absorb it within plan limits, metered per org. (b) Pass it through at cost, per GiB, like backend egress (`pricing.yaml:403-408`). (c) A free regional allowance; cross-cloud billed.                                                                                                                                                                                                                                                                                                                                                 | Meter first (R5), then (c): same-cloud pulls are cheap for us and should feel free; a cross-cloud scale-out is the customer's choice, and a pull-through cache or the override is the way out of it.                                                | Billing for models; R5; GA.                                           |
-| 7   | Model release cadence                                                     | (a) The model digest is part of the app release; a model-only release carries code artifacts forward (`CarriedFrom`). (b) A separate model release ledger. (c) A digest pinned per env in `main.k`, changed by PR.                                                                                                                                                                                                                                                                                                                           | (a), with (c) allowed as an explicit pin. One ledger, one promotion, one health check.                                                                                                                                                              | Slice 4.                                                              |
-| 8   | Online comparison of model versions                                       | (a) In-app Changes variants only (consistent with Changes Settled 4). (b) Also declare a split or shadow through the router the cluster runs (KServe, Gateway API, Inference Extension), plus continuous metrics in the readout.                                                                                                                                                                                                                                                                                                             | (a) now; (b) as a deliberate ML exception later. forge declares, the router routes, so it does not stand in for a tool.                                                                                                                             | Slice 6.                                                              |
-| 9   | Label of the one ML nav item (the item and its six sub-pages are settled) | (a) "ML". (b) "ML Workloads". (c) "Machine Learning". (d) "AI/ML".                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | (a) "ML": it is short and fits the nav's one-word rows (Data, Storage, Auth). "Workloads" collides with forge's `Workload` type, which would read as a filter of it. "AI/ML" promises agent and LLM features that live elsewhere.                   | Nav registration; slice 1 UI.                                         |
-| 10  | Disconnect and what we installed                                          | (a) Today's behaviour: delivered objects are orphaned. (b) Disconnect also removes components labelled `forge-ml` (our installs, the collector); customer workloads stay. (c) Remove everything delivered.                                                                                                                                                                                                                                                                                                                                   | (b). Our DaemonSets on their GPU nodes should not outlive the relationship; their apps should.                                                                                                                                                      | Slice 1 install path.                                                 |
-| 11  | Pricing                                                                   | (a) Observability ingest only. (b) Per monitored accelerator-hour. (c) A free tier of N accelerators.                                                                                                                                                                                                                                                                                                                                                                                                                                        | (a) + (c) through beta; decide (b) with dogfood and early-customer data.                                                                                                                                                                            | GA.                                                                   |
-| 12  | Dogfood hardware                                                          | (a) Simulated GPUs only (a fake GPU operator on k3d, emitting DCGM-shaped metrics). (b) Plus a small real GPU pool (e.g. 2 × L4 on GKE) for two weeks per slice.                                                                                                                                                                                                                                                                                                                                                                             | (b). Xid, driver and streaming behaviour cannot be simulated; the cost is a few hundred dollars per slice (estimate).                                                                                                                               | Slice 1 sign-off.                                                     |
-| 13  | Size limits and plan for model storage                                    | (a) Model bytes count against today's per-plan registry caps (10/25/50 GiB). (b) A separate `models/` allowance per plan, sized for weights (100s of GiB), billed beyond it through the storage pool. (c) Unlimited with storage billed.                                                                                                                                                                                                                                                                                                     | (b). Today's caps would refuse a single 70B model; a separate allowance keeps image quota behaviour unchanged. Refuse `models/` for unclaimed orgs (no content scan past 1 GiB).                                                                    | R2, R6; slice 4.                                                      |
-| 14  | Referrers API for signatures and SBOMs on models                          | (a) Keep distribution and the `sha256-<hex>` tag fallback, with `models/` added to sigguard's protected set. (b) Move to a distribution release that serves referrers. (c) Replace the registry with zot or Harbor.                                                                                                                                                                                                                                                                                                                          | (a) now, so signing is not blocked; (b) when it ships. (c) is a registry migration whose cost is outside ML and should be decided on its own.                                                                                                       | R4; model signing.                                                    |
-| 15  | Scope of the connected-cluster pull credential                            | (a) Reuse registrypull's per-org, whole-subtree token. (b) A new token per (cluster, env) binding, read-only and resource-bound to the project's `models/` (and image) paths.                                                                                                                                                                                                                                                                                                                                                                | (b). A credential sitting in a customer's cluster should read only what that env deploys; (a) would expose every project of the org.                                                                                                                | R3; slice 4.                                                          |
+| #   | Decision                                                                                                  | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Recommendation                                                                                                                                                                                                                                      | Blocks                                                                |
+| --- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 1   | Private GPU clusters (the hub must reach the API server today)                                            | (a) Public endpoint required, restricted to published hub egress addresses (GKE authorized networks, EKS public access CIDRs). (b) **Pull-mode delivery**: Flux in the customer's cluster pulls the env's release bundle (already an OCI artifact) outbound from a registry, and telemetry pushes outbound, so nothing dials in. Needs a pull credential into the cluster and a status channel back (the collector reports Kustomization status as inventory). (c) A reverse-tunnel agent we build. (d) Per-customer peering or PrivateLink. | (a) now. Verify the connected shard's egress is a stable, publishable set. (b) as the durable path: it is Flux's own model, adds no tunnel, and reuses the bundle. (c) builds a privileged component another tool already does. (d) does not scale. | Private-cluster customers; telemetry token renewal for them; slice 7. |
+| 2   | Where discovery runs, and its RBAC                                                                        | (a) In-cluster collector with a declared read-only ClusterRole, derived into the connect grant (needs `--apply-scope cluster`). (b) A separate hub-side discovery ServiceAccount added by `connect --discover`. (c) Only the local `forge ml discover`.                                                                                                                                                                                                                                                                                      | (c) for the first look plus (a) for continuous. Both keep the hub's identity a function of the render; (b) adds a standing hub credential that reads the whole cluster.                                                                             | Slice 1.                                                              |
+| 3   | Vendor metric adapters against "no presets"                                                               | (a) forge ships accelerator adapters as versioned data (metric family → neutral field, the `allow` list, the version aliases, the bad-device rules), a narrow exception to third-party-telemetry's no-presets rule. (b) Each project or its agent writes the mapping.                                                                                                                                                                                                                                                                        | (a). A neutral Machines view and bad-machine rules cannot exist without the vendor facts, and every customer would rewrite the same table. Keep it data, outside the collector, so a new DCGM version is a table row.                               | The accelerator model; slice 1.                                       |
+| 4   | Run tracking: build or integrate                                                                          | (a) Our own tracking SDK and charting UI. (b) Own the run record, accelerator metrics and lineage; accept an MLflow-compatible tracking API; link out to W&B. (c) Link-out only.                                                                                                                                                                                                                                                                                                                                                             | (b). Users keep their logger; we own what nobody joins (run → model → release → live health). Revisit (a) only on demand.                                                                                                                           | Slice 5.                                                              |
+| 5   | How a run is declared                                                                                     | (a) Every run is a KCL commit. (b) Templates are declared; runs are recorded launches against them; reproducible runs may be pinned in KCL. (c) Observe-only: runs others create are shown, never launched by us.                                                                                                                                                                                                                                                                                                                            | (b), with (c) always on (start anywhere). (a) turns a sweep into fifty deploys.                                                                                                                                                                     | `forge.Training`, `LaunchRun`; slice 5.                               |
+| 6   | Who pays cross-cloud pull egress from Reliant's registry                                                  | (a) We absorb it within plan limits, metered per org. (b) Pass it through at cost, per GiB, like backend egress (`pricing.yaml:403-408`). (c) A free regional allowance; cross-cloud billed.                                                                                                                                                                                                                                                                                                                                                 | Meter first (R5), then (c): same-cloud pulls are cheap for us and should feel free; a cross-cloud scale-out is the customer's choice, and a pull-through cache or the override is the way out of it.                                                | Billing for models; R5; GA.                                           |
+| 7   | Model release cadence                                                                                     | (a) The model digest is part of the app release; a model-only release carries code artifacts forward (`CarriedFrom`). (b) A separate model release ledger. (c) A digest pinned per env in `main.k`, changed by PR.                                                                                                                                                                                                                                                                                                                           | (a), with (c) allowed as an explicit pin. One ledger, one promotion, one health check.                                                                                                                                                              | Slice 4.                                                              |
+| 8   | Online comparison of model versions                                                                       | (a) In-app Changes variants only (consistent with Changes Settled 4). (b) Also declare a split or shadow through the router the cluster runs (KServe, Gateway API, Inference Extension), plus continuous metrics in the readout.                                                                                                                                                                                                                                                                                                             | (a) now; (b) as a deliberate ML exception later. forge declares, the router routes, so it does not stand in for a tool.                                                                                                                             | Slice 6.                                                              |
+| 9   | Label of the one ML nav item (the item and its six sub-pages are settled)                                 | (a) "ML". (b) "ML Workloads". (c) "Machine Learning". (d) "AI/ML".                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | (a) "ML": it is short and fits the nav's one-word rows (Data, Storage, Auth). "Workloads" collides with forge's `Workload` type, which would read as a filter of it. "AI/ML" promises agent and LLM features that live elsewhere.                   | Nav registration; slice 1 UI.                                         |
+| 10  | Disconnect and what we installed                                                                          | (a) Today's behaviour: delivered objects are orphaned. (b) Disconnect also removes components labelled `forge-ml` (our installs, the collector); customer workloads stay. (c) Remove everything delivered.                                                                                                                                                                                                                                                                                                                                   | (b). Our DaemonSets on their GPU nodes should not outlive the relationship; their apps should.                                                                                                                                                      | Slice 1 install path.                                                 |
+| 11  | Pricing                                                                                                   | (a) Observability ingest only. (b) Per monitored accelerator-hour. (c) A free tier of N accelerators.                                                                                                                                                                                                                                                                                                                                                                                                                                        | (a) + (c) through beta; decide (b) with dogfood and early-customer data.                                                                                                                                                                            | GA.                                                                   |
+| 12  | Spend on real GPUs for what simulation cannot prove ([section 13.2](#132-what-only-real-hardware-proves)) | (a) None: ship on simulation only, and say so in the gated program's terms. (b) A scale-to-zero GKE Spot L4 (or T4) node pool in our own project, used about 4 hours per release (est. $15–40/month, unverified, section 13.3). (c) A design partner's cluster under the gated-access program, with their consent, before each wider grant.                                                                                                                                                                                                  | (c) as the gate for granting access beyond design partners, with (b) as a cheap per-release smoke test if you approve the spend. (a) leaves Xid, profiling counters and image streaming unproven, which is exactly what the gate exists for.        | Granting access beyond design partners; the release checklist.        |
+| 13  | Size limits and plan for model storage                                                                    | (a) Model bytes count against today's per-plan registry caps (10/25/50 GiB). (b) A separate `models/` allowance per plan, sized for weights (100s of GiB), billed beyond it through the storage pool. (c) Unlimited with storage billed.                                                                                                                                                                                                                                                                                                     | (b). Today's caps would refuse a single 70B model; a separate allowance keeps image quota behaviour unchanged. Refuse `models/` for unclaimed orgs (no content scan past 1 GiB).                                                                    | R2, R6; slice 4.                                                      |
+| 14  | Referrers API for signatures and SBOMs on models                                                          | (a) Keep distribution and the `sha256-<hex>` tag fallback, with `models/` added to sigguard's protected set. (b) Move to a distribution release that serves referrers. (c) Replace the registry with zot or Harbor.                                                                                                                                                                                                                                                                                                                          | (a) now, so signing is not blocked; (b) when it ships. (c) is a registry migration whose cost is outside ML and should be decided on its own.                                                                                                       | R4; model signing.                                                    |
+| 15  | Scope of the connected-cluster pull credential                                                            | (a) Reuse registrypull's per-org, whole-subtree token. (b) A new token per (cluster, env) binding, read-only and resource-bound to the project's `models/` (and image) paths.                                                                                                                                                                                                                                                                                                                                                                | (b). A credential sitting in a customer's cluster should read only what that env deploys; (a) would expose every project of the org.                                                                                                                | R3; slice 4.                                                          |
+| 16  | Where the ML entitlement is stored                                                                        | (a) A DB table with admin RPCs and an audit trail, like the claimable switches. (b) A declared `features:` list on `grants.yaml` entries, reviewed in git. (c) A plan feature in `pricing.yaml`.                                                                                                                                                                                                                                                                                                                                             | (a). A grant takes effect without a release, the console can read it, and every grant and revoke records who and why. (b) needs a release per grant and the file is plan-shaped; (c) ties ML to a purchase, while the owner said Reliant grants it. | Slice 0.                                                              |
 
 ## 12. Rollout plan
 
 Each slice ships alone and is useful without the next. The first ships the most
 value fastest: a team connects a cluster and sees its machines and what to fix,
 before we model a single run.
+
+0. **Access gate, request page and demo.** This ships first, so every later
+   slice lands gated:
+
+   - control-plane: `org_entitlements`, `internal/entitlement`, the admin
+     Grant/Revoke/List RPCs, `GetMyOrgEntitlements` and `RequestOrgEntitlement`
+     with its Slack notice ([section 4.1](#41-access-by-request));
+   - reliant: the ML nav item, the request-access page, and the `ml` fixture
+     handler in the demo fixtures;
+   - the landing page and docs: "ML: by request".
+
+   Each later slice adds its pages to the demo fixtures in the same PR.
 
 1. **Machines, Stack and Recommendations (NVIDIA).**
    - `pkg/mldiscover` (signatures, pure) and `forge ml discover` (local; proposes
@@ -947,16 +1132,17 @@ before we model a single run.
 
 **Dogfood.**
 
-- Every slice is proven first on a k3d cluster with a simulated GPU operator in
-  CI.
-- Slice 1 is then proven on a real small GPU pool in our own GCP project
-  (decision 12). That covers:
+- Every slice is proven on CPU-only k3d in e2e, with the vehicles in
+  [section 13](#13-testing-without-gpus). That covers:
   - discover → commit `ml.k` → deploy;
-  - Machines filled in;
+  - Machines filled in from fake GPUs;
   - a planted duplicate exporter that must be detected and never installed over;
-  - an Image Streaming finding that goes away after the fix.
-- The first external user is a design partner with an existing GPU Operator and
-  Kueue. That is the adopt path, which is the common case.
+  - a synthetic Xid that raises `bad-accelerator`.
+- Before access widens beyond design partners, a real cluster checks what only
+  hardware can prove ([decision 12](#11-open-owner-decisions)).
+- The first users are design partners under the gated program, each with an
+  existing GPU Operator and Kueue. That is the adopt path, which is the common
+  case.
 
 **Explicitly out:**
 
@@ -966,6 +1152,86 @@ before we model a single run.
 - automatic cordon or drain (we recommend it; the customer's NPD, NVSentinel or
   cloud auto-repair acts);
 - automatic rollback.
+
+## 13. Testing without GPUs
+
+The owner will not pay for GPUs to test this (settled, item 10). Every slice is
+proven in k3d on CPU-only machines, in layers. "Verified" marks what the
+research read in source; the rest is marked.
+
+| Layer              | Vehicle                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Runs                  |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| Unit and contract  | **Synthetic exporter fixtures**: static `/metrics` exposition with dcgm-exporter's exact label set (`gpu`, `UUID`, `Hostname`, `modelName`, `pod`): Xid codes, ECC DBE, row-remap failure, profiling counters present or absent, two exporters reporting the same `UUID`; plus recorded Kubernetes object lists for `pkg/mldiscover` (a GPU Operator install, GKE managed DCGM, a standalone exporter, a stale CRD)                                                                                                                                                                                                                                                                                                        | every PR              |
+| k3d e2e            | **run-ai/fake-gpu-operator** (verified: README and code): advertises `nvidia.com/gpu` on CPU nodes, GFD-style labels (`nvidia.com/gpu.product`, `.count`, `.memory`), DRA, MIG for scheduling, a fake `nvidia-smi`, and per-pod utilisation set by the `run.ai/simulated-gpu-utilization` annotation, exported on port 9400 as `DCGM_FI_DEV_GPU_UTIL`, `DCGM_FI_DEV_FB_USED` and `DCGM_FI_DEV_FB_FREE`.                                                                                                                                                                                                                                                                                                                    | merge tier or nightly |
+| k3d e2e: workloads | **CPU inference:** `vllm/vllm-openai-cpu:latest-x86_64` (verified in vLLM's docs) serving `facebook/opt-125m`. It exposes the engine's `vllm:*` metrics, so inference SLIs, a release, `forge obs check` and a Changes comparison of two model digests run for real; that the metric names match the GPU build is unverified. **CPU training:** PyTorch DDP with the `gloo` backend under JobSet and Kueue. Pods request fake `nvidia.com/gpu`, so quota, admission, preemption, restarts and the step-reset checkpoint rule behave as on real GPUs while the container trains on CPU. **Models:** a ModelPack push to the k3d registry and an image-volume mount, if the k3s build's containerd supports it (unverified). | nightly               |
+| k3d scale          | **KWOK** (verified: README): hundreds to thousands of fake nodes carrying `nvidia.com/gpu` and GFD labels (fake-gpu-operator ships KWOK plugins); `Stage` objects that delay pods through scheduling, pulling and running and emit their events, which feeds the pod-start breakdown and cold-start rules; node conditions for NPD-style findings. KWOK fakes CPU and memory metrics only, not GPU.                                                                                                                                                                                                                                                                                                                        | nightly               |
+| Optional spike     | fake-gpu-operator's `mock` backend (NVIDIA's nvml-mock), under which the real gpu-operator device plugin, DRA driver and `nvidia-smi` run. It is privileged, and the operator's status stays NotReady. **Whether the real DCGM exporter runs under it is undocumented**; assume not until a spike shows it. It is worth having for discovery against a real-looking ClusterPolicy install.                                                                                                                                                                                                                                                                                                                                 | once, before slice 1  |
+
+Not usable here: DCGM's field-injection API needs a real DCGM host engine, so it
+cannot raise a Xid in k3d. The synthetic fixtures stand in for it.
+
+### 13.1 What this covers
+
+| Feature                                             | Proven by                                                                     |
+| --------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Machines inventory, labels, product and memory      | fake-gpu-operator; KWOK at scale                                              |
+| Allocation (device plugin, DRA, MIG scheduling)     | fake-gpu-operator                                                             |
+| Utilisation (GPU_UTIL, frame buffer)                | fake-gpu-operator (three fields, annotation-driven)                           |
+| `bad-accelerator`, ECC, row remap                   | synthetic fixtures; `allocatable < capacity` by patching node status          |
+| Duplicate-exporter detection                        | fake-gpu-operator's exporter plus a second synthetic one with the same `UUID` |
+| Discovery and adopt                                 | recorded object lists; the mock-backend spike for a real ClusterPolicy        |
+| Node health findings                                | KWOK Stage-driven or patched node conditions                                  |
+| Kueue, JobSet, runs, restarts, checkpoint rule      | CPU training on fake GPUs                                                     |
+| Inference SLIs, release, `forge obs check`, Changes | CPU vLLM                                                                      |
+| Model push, digest promotion, image volume          | the k3d registry; CPU vLLM loading the mounted model                          |
+| Pod-start breakdown, cold-start rules               | KWOK delays and real small pulls (shape and rules, not real timings)          |
+| Scale (100s–1000s of GPU nodes)                     | KWOK                                                                          |
+| Gated access, request page, demo                    | control-plane and web tests; the demo fixtures                                |
+
+### 13.2 What only real hardware proves
+
+- `DCGM_FI_PROF_*` profiling counters, and real power, temperature and clocks;
+  the `dcgm-profiling-off` rule's negative case.
+- Real Xid and ECC events and row remapping. Even on hardware they cannot be
+  forced, so the rules stay fixture-tested; hardware proves the exporter
+  reports them with the labels we expect.
+- Driver, toolkit, device plugin and GFD on a real node; real MIG
+  reconfiguration and its metrics.
+- Duplicate detection against a real GPU Operator exporter beside GKE managed
+  DCGM.
+- NCCL over NVLink, InfiniBand or GPUDirect; the `nccl-failures` correlation.
+- GPU node provisioning, scale-from-zero time, Spot preemption and stockouts.
+- Cloud image streaming (GKE Image Streaming, SOCI, ACR Artifact Streaming) and
+  real pull times for 10–20 GB images and large weights.
+- Model load into GPU memory, CUDA OOM, and real TTFT and throughput.
+
+### 13.3 The cheapest real check
+
+Two options, both under [decision 12](#11-open-owner-decisions).
+
+**A scale-to-zero GKE Spot pool in our own project.** One zonal cluster (its
+management fee is covered by GKE's free tier for one cluster per billing
+account), and a GPU pool at zero nodes except during a release check. All
+prices are **unverified**: Google's pricing pages could not be read in this
+pass, so check them in the GCP calculator before approving.
+
+| Shape                          | Spot price (est.) | Use                                                                 | Per month (est.) |
+| ------------------------------ | ----------------- | ------------------------------------------------------------------- | ---------------- |
+| g2-standard-4, 1 × L4          | ~$0.25–0.30/h     | ~4 h per release × 2 releases a week (~35 h)                        | ~$9–11           |
+| n1-standard-4 + 1 × T4         | ~$0.15–0.18/h     | the same                                                            | ~$5–7            |
+| CPU system node, disks, egress | —                 | always on (a Standard cluster cannot scale its system pool to zero) | ~$10–30          |
+
+That is **about $15–40 a month in total**. A new project starts with a GPU quota
+of zero, so it needs a quota request for both `GPUS_ALL_REGIONS` and the
+regional Spot quota. Spot L4 capacity in us-central1 can run out, so the pool
+should allow several zones.
+
+**A design partner's cluster under the gated program.** No spend, and real
+production shapes (H100s, an existing GPU Operator, Kueue). It needs the
+partner's consent and an agreed window, and it cannot run per release.
+
+The recommendation is the design partner as the gate before access widens,
+with the Spot pool as a per-release smoke test if the owner approves the spend.
 
 ## Appendix A: cold-start checklist per cloud
 
@@ -1080,7 +1346,11 @@ the repository with the chat that produced it:
   checklist;
 - `competitive.md`: W&B, MLflow, Run:ai, HyperPod, SkyPilot and others.
 - `registry-gap.md`: what Reliant's registry has today and what model weights
-  need (section 3.7).
+  need (section 3.7);
+- `entitlement-and-demo.md`: per-org gates today, the demo shell's fixture
+  transport, and the entitlement design (section 4.1);
+- `testing-without-gpus.md`: fake-gpu-operator, KWOK, CPU inference and
+  training, and the coverage matrix (section 13).
 
 The code citations above were checked against forge `main` at 175acbe5f,
 control-plane, and reliant on 2026-11-25.

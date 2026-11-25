@@ -425,8 +425,10 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	narrow := narrowsUnit(out, checks, in)
 	gated := false
 	for _, c := range checks {
-		gated = gated || len(c.Paths) > 0
+		gated = gated || len(c.Paths) > 0 || len(c.GoClosure) > 0
 	}
+	// A frontend's lockfile-<name> row is decided by the diff too.
+	gated = gated || len(in.frontends) > 0
 	if !narrow && !gated {
 		return checks
 	}
@@ -441,6 +443,8 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
 		Ignore: in.ignore, Rules: in.rules, ChangesOnly: !narrow})
+	a = cigate.ResolveGoClosures(ctx, in.root, in.env, checks, a, nil)
+	checks = cigate.WithLockfileChecks(checks, a, in.root, in.frontends)
 	if !narrow {
 		return cigate.GateByPaths(checks, a)
 	}

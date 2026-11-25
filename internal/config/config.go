@@ -1129,6 +1129,12 @@ type CIGateCheck struct {
 	// default branch, CI_FULL=1 / --full, --tier main or full, no base to
 	// diff against) it always runs.
 	Paths []string `yaml:"paths,omitempty"`
+	// PathsGoClosure, when set, are Go package patterns (`./tools/docgen/...`):
+	// on a branch in affected mode the check also runs when a changed file
+	// is in their build closure (`go list -deps`), besides any Paths glob it
+	// matches. For a check that runs a generator or tool built from the
+	// module. In full mode it always runs.
+	PathsGoClosure []string `yaml:"paths_go_closure,omitempty"`
 }
 
 // CIGateAffectedRule is one ci.gate.affected_rules entry: the changed files

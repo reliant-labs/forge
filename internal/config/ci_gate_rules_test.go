@@ -21,10 +21,14 @@ func TestCIGateAffectedRules_Load(t *testing.T) {
       - name: electron
         command: [npm, test]
         paths: ["electron/**"]
+        paths_go_closure: ["./tools/docgen/..."]
 `
 	cfg, err := LoadProject([]byte(in), "forge.yaml")
 	if err != nil {
 		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.CI.Gate.ExtraChecks[0].PathsGoClosure; len(got) != 1 || got[0] != "./tools/docgen/..." {
+		t.Fatalf("paths_go_closure = %v", got)
 	}
 	rules := cfg.CI.Gate.AffectedRules
 	if len(rules) != 3 || rules[0].Except[0] != "db/migrations/README.md" || rules[1].Frontends[0] != "web" || !rules[2].Full || rules[2].Reason == "" {
@@ -51,6 +55,7 @@ func TestCIGateAffectedRules_Invalid(t *testing.T) {
 		{"empty frontend", "    affected_rules:\n      - paths: [\"x/**\"]\n        frontends: [\"\"]\n", []string{"frontends[0] is empty"}},
 		{"unknown key", "    affected_rules:\n      - paths: [\"x/**\"]\n        frontend: [web]\n", []string{"unknown key", "affected_rules[0].frontend"}},
 		{"extra check bad paths", "    extra_checks:\n      - name: e\n        command: [x]\n        paths: [\"\"]\n", []string{"ci.gate.extra_checks[0].paths[0] \"\" is empty"}},
+		{"extra check glob closure", "    extra_checks:\n      - name: e\n        command: [x]\n        paths_go_closure: [\"tools/*\"]\n", []string{"ci.gate.extra_checks[0].paths_go_closure[0] \"tools/*\" is not a Go package pattern"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadProject([]byte(gateRulesBase+tc.yaml), "forge.yaml")

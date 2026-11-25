@@ -80,6 +80,11 @@ type Affected struct {
 	// Selections say, one line per affected rule that matched, what it
 	// claimed and selected.
 	Selections []string
+	// ClosureHits are, per check with GoClosure, the changed files in its
+	// Go build closure; ClosureErrs why one could not be computed
+	// (ResolveGoClosures).
+	ClosureHits map[string][]string
+	ClosureErrs map[string]string
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -308,29 +313,48 @@ func GateByPaths(checks []Check, a Affected) []Check {
 	}
 	for i := range out {
 		c := &out[i]
-		if len(c.Paths) == 0 || c.NotApplicable != "" || c.Deferred != "" {
+		if len(c.Paths) == 0 && len(c.GoClosure) == 0 || c.NotApplicable != "" || c.Deferred != "" {
+			continue
+		}
+		if why, ok := a.ClosureErrs[c.Name]; ok {
+			c.Note = joinNote(c.Note, "affected mode: Go closure of "+strings.Join(c.GoClosure, ", ")+" unknown ("+why+") — runs")
 			continue
 		}
 		var hit []string
+		inClosure := map[string]bool{}
+		for _, f := range a.ClosureHits[c.Name] {
+			inClosure[f] = true
+		}
 		for _, f := range a.Changed {
-			if matchGlobs(f, c.Paths) {
+			if len(c.Paths) > 0 && matchGlobs(f, c.Paths) || inClosure[f] {
 				hit = append(hit, f)
 			}
 		}
 		if len(hit) == 0 {
-			c.NotApplicable = fmt.Sprintf("affected mode: no change under %s since %s (%s=1 runs it)", strings.Join(c.Paths, ", "), a.BaseRef, FullEnv)
+			var under []string
+			if len(c.Paths) > 0 {
+				under = append(under, strings.Join(c.Paths, ", "))
+			}
+			if len(c.GoClosure) > 0 {
+				under = append(under, "the Go build closure of "+strings.Join(c.GoClosure, ", "))
+			}
+			c.NotApplicable = fmt.Sprintf("affected mode: no change under %s since %s (%s=1 runs it)", strings.Join(under, " or "), a.BaseRef, FullEnv)
 			continue
 		}
 		note := "affected mode: " + hit[0] + " changed"
 		if len(hit) > 1 {
 			note = fmt.Sprintf("affected mode: %s and %d more changed", hit[0], len(hit)-1)
 		}
-		if c.Note != "" {
-			note = c.Note + "; " + note
-		}
-		c.Note = note
+		c.Note = joinNote(c.Note, note)
 	}
 	return out
+}
+
+func joinNote(old, note string) string {
+	if old != "" {
+		return old + "; " + note
+	}
+	return note
 }
 
 // ApplyAffected narrows the unit-tests row to a's packages. In full mode it

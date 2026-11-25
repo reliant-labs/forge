@@ -6,7 +6,7 @@ import { buildRuntimeInterceptors } from "@reliantlabs/forge-web-runtime";
 {{end}}import { emitAuthExpired } from "@/lib/events";
 import { lazyTransport, runtimeFixtures } from "@/lib/fixtures";
 
-import { apiBase } from "./api-base";
+import { apiBase, apiCredentials } from "./api-base";
 import { DEV_API_URL } from "./apiurl_gen";
 
 import type { MockTransportOptions } from "@/lib/mock-transport_gen";
@@ -88,18 +88,23 @@ const interceptors = buildRuntimeInterceptors({
   },
 });
 
-// Send the session cookie with every RPC.
+// Send the session cookie with every RPC, wherever the API is.
 //
-// "include", not the browser's "same-origin" default: whenever the API is on
-// another origin — a deployed API_URL naming its own host, or the dev loop
-// with FORGE_DEV_API_PROXY=off, where the API binds its own port — the
-// default silently DROPS the cookie: the calls go out unauthenticated, the
-// backend answers 401, and nothing in the console explains why. The server
-// pairs this with cors_allow_credentials. Through the dev proxy the requests
-// are same-origin and this costs nothing. native-login.ts makes the
-// identical choice for the same reason.
+// apiCredentials (src/lib/api-base.ts) picks the mode per request:
+// "same-origin" when the API is on this page's origin (/_api on Reliant
+// hosting, the dev proxy), "include" when it is on another — a deployed
+// API_URL naming its own host, or the dev loop with FORGE_DEV_API_PROXY=off,
+// where the browser's default would silently DROP the cookie: the calls go
+// out unauthenticated, the backend answers 401, and nothing in the console
+// explains why. The server pairs "include" with cors_allow_credentials.
+//
+// Never "include" for the page's own origin: an unclaimed preview on
+// reliantpreview.dev is sandboxed into an opaque origin, so its own /_api is
+// cross-origin to it, and a browser refuses the platform's
+// `Access-Control-Allow-Origin: *` to a request that asked for credentials —
+// every RPC would fail with a CORS error.
 const fetchWithSession: typeof globalThis.fetch = (input, init) =>
-  fetch(input, { ...init, credentials: "include" });
+  fetch(input, { ...init, credentials: apiCredentials(input) });
 
 // The generated mock transport (src/lib/mock-transport_gen.ts), loaded on the
 // first RPC. import(), not require(): webpack splits the mock transport, its

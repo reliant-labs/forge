@@ -6,7 +6,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chooseApiBase, chooseApiBaseFor } from "./api-base";
+import { chooseApiBase, chooseApiBaseFor, credentialsFor } from "./api-base";
 
 const preview = "https://5173-abc123.workspaces.reliantapi.com";
 
@@ -139,5 +139,25 @@ describe("apiBaseFor", () => {
   it("refuses a name the environment does not declare", async () => {
     const apiBaseFor = await apiBaseForUnder(false, "", { billing: "/_api/@billing" });
     expect(() => apiBaseFor("biling")).toThrow(/no API named "biling"/);
+  });
+});
+
+describe("credentialsFor", () => {
+  const page = "https://notes.sites.example.dev";
+
+  it("sends the cookie on this page's own origin without asking for a credentialed grant", () => {
+    expect(credentialsFor("/_api/notes.v1.NoteService/ListNotes", page)).toBe("same-origin");
+    expect(credentialsFor(`${page}/_api/notes.v1.NoteService/ListNotes`, page)).toBe("same-origin");
+  });
+
+  it("includes the cookie for an API on another origin", () => {
+    expect(credentialsFor("https://api.example.dev/notes.v1.NoteService/ListNotes", page)).toBe(
+      "include",
+    );
+    expect(credentialsFor("http://localhost:8080/x", "http://localhost:3000")).toBe("include");
+  });
+
+  it("includes the cookie when there is no page to compare with", () => {
+    expect(credentialsFor("/_api/x", "")).toBe("include");
   });
 });

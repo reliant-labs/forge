@@ -611,14 +611,24 @@ func wireGeneratedMergeDriver(w io.Writer, root string, enclosing bool) {
 			pinnedDriverSection, mergeDriverIdentity(), command))
 	}
 	if ok && current != command && (!driverCommandUsable(current) || (!skewed && !driverCommandCurrent(current))) {
+		// A usable command in an older shape that names another binary
+		// keeps that binary: only its shape is repaired
+		// (reshapedDriverCommand). One naming this binary becomes this
+		// forge's own command.
+		value := command
+		if driverCommandUsable(current) && !sameDriverBinary(current, command) {
+			if reshaped, rok := reshapedDriverCommand(current); rok {
+				value = reshaped
+			}
+		}
 		_ = exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local",
 			nameKey, "forge-generated files: merge, keeping fingerprint lines for forge generate to refresh").Run()
-		if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, command).Run() == nil {
+		if exec.CommandContext(context.Background(), "git", "-C", root, "config", "--local", key, value).Run() == nil {
 			was := "unset"
 			if current != "" {
 				was = current
 			}
-			changes = append(changes, fmt.Sprintf("%s = %s (was: %s)", key, command, was))
+			changes = append(changes, fmt.Sprintf("%s = %s (was: %s)", key, value, was))
 		}
 	}
 	if len(changes) > 0 {
@@ -727,6 +737,14 @@ func driverCommandUsable(command string) bool {
 	if !strings.Contains(command, " merge-generated %O %A %B %L %P") {
 		return false
 	}
+	bin, ok := driverCommandBinary(command)
+	return ok && isExecutableFile(bin)
+}
+
+// driverCommandBinary is the binary a driver command names first: the one its
+// `[ -x … ]` guard tests, or, in a command from before the guard, its first
+// word.
+func driverCommandBinary(command string) (string, bool) {
 	bin := strings.TrimPrefix(command, driverGuardPrefix)
 	if strings.HasPrefix(bin, "'") {
 		var b strings.Builder
@@ -734,7 +752,7 @@ func driverCommandUsable(command string) bool {
 		for {
 			end := strings.Index(rest, "'")
 			if end < 0 {
-				return false
+				return "", false
 			}
 			b.WriteString(rest[:end])
 			rest = rest[end+1:]
@@ -744,11 +762,62 @@ func driverCommandUsable(command string) bool {
 			b.WriteByte('\'')
 			rest = rest[3:]
 		}
-		bin = b.String()
-	} else if i := strings.IndexByte(bin, ' '); i >= 0 {
+		return b.String(), true
+	}
+	if i := strings.IndexByte(bin, ' '); i >= 0 {
 		bin = bin[:i]
 	}
-	return isExecutableFile(bin)
+	return bin, bin != ""
+}
+
+// sameDriverBinary reports whether two driver commands name the same binary.
+func sameDriverBinary(a, b string) bool {
+	ab, aok := driverCommandBinary(a)
+	bb, bok := driverCommandBinary(b)
+	return aok && bok && ab == bb
+}
+
+// reshapedDriverCommand is a usable driver command in an older shape,
+// rewritten into the current one (driverCommandCurrent) around the SAME
+// binary and route: `[ -x '/daemon-bin/reliant' ] && exec '/daemon-bin/reliant'
+// forge merge-generated …` keeps naming /daemon-bin/reliant and `forge`, and
+// gains the reinstall and launcher clauses. ok is false for a command that is
+// not one forge wrote with the guard (driverCommandDelegates), whose route
+// cannot be read back.
+//
+// This is what the pinned forge repairs an older shape with. Pointing the
+// shared driver at whichever binary happened to run instead moved every
+// worktree of a clone onto a forge built into one chat's scratch directory
+// (forge reports b2bb83d3, 8713584e): the driver hands each merge to the pinned
+// forge whichever forge it names, so the shape is what needed the repair,
+// never the binary.
+func reshapedDriverCommand(command string) (string, bool) {
+	if !driverCommandDelegates(command) {
+		return "", false
+	}
+	bin, ok := driverCommandBinary(command)
+	if !ok {
+		return "", false
+	}
+	q := shellQuote(bin)
+	prefix := driverGuardPrefix + q + " ] && exec " + q
+	if !strings.HasPrefix(command, prefix) {
+		return "", false
+	}
+	rest := command[len(prefix):]
+	end := strings.Index(rest, " merge-generated %O %A %B %L %P")
+	if end < 0 {
+		return "", false
+	}
+	// The name is the route as a PATH lookup would spell it (`reliant
+	// forge`): its words reach the launcher clause unquoted.
+	words := append([]string{filepath.Base(bin)}, strings.Fields(rest[:end])...)
+	for _, w := range words {
+		if !launcherWordRE.MatchString(w) {
+			return "", false
+		}
+	}
+	return driverCommandLine(bin, strings.Join(words, " ")), true
 }
 
 // driverGuardPrefix opens every driver command forge writes: `[ -x '<bin>' ]`

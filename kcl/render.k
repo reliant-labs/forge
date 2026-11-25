@@ -2455,13 +2455,27 @@ _uptime_exposes = lambda w: any -> bool {
     bool(w.runtime and w.runtime.type == "hosted" and [p for p in (w.ports or []) if p.expose])
 }
 
+# A URL whose host is a wildcard (`https://*.example.com`): it names a set of
+# hosts, none of which resolves, so a prober can never reach it.
+_uptime_wildcard = lambda u: str -> bool {
+    "*" in (u.split("://")[-1].split("/")[0] if u else "")
+}
+
+# The routes whose public URL is a wildcard host: never derived (a check of
+# one could only ever report down), but still names `Uptime.skip` may hold,
+# since earlier forges derived them.
+_uptime_wildcard_routes = lambda b: Bundle -> [str] {
+    [_uptime_route_name(r) for r in b.http_routes if _uptime_wildcard(wurl_lib.route_public_url(r, b))]
+}
+
 # Every check forge derives, as {name: check}. A hosted frontend or a hosted
 # workload with an exposed port is checked at its platform hostname; a route
-# is checked at its public URL when some hostname names it.
+# is checked at its public URL when some hostname names it, unless that
+# hostname is a wildcard.
 _uptime_derived = lambda b: Bundle -> {str: any} {
     _targets = [f.name for f in b.frontends if f.runtime and f.runtime.type == "hosted"] \
         + [w.name for w in b.workloads if _uptime_exposes(w)]
-    _routes = [r for r in b.http_routes if wurl_lib.route_public_url(r, b)]
+    _routes = [r for r in b.http_routes if wurl_lib.route_public_url(r, b) and not _uptime_wildcard(wurl_lib.route_public_url(r, b))]
     ({n: _uptime_default(n) | {"target": n} for n in _targets} \
         | {_uptime_route_name(r): _uptime_default(_uptime_route_name(r)) | {
             "url": wurl_lib.route_public_url(r, b)
@@ -2478,6 +2492,8 @@ _uptime_declared = lambda c: any, b: Bundle -> any {
     _url = wurl_lib.route_public_url(_routes[0], b) if c.route else c.url
     assert not c.route or _url, \
         "UptimeCheck '${c.name}': route '${c.route}' has no public hostname (no route, listener or gateway host): set one, or use `url`"
+    assert not _uptime_wildcard(_url), \
+        "UptimeCheck '${c.name}': ${_url} has a wildcard host, which no prober can reach: check one concrete hostname with `url`"
     assert not c.target or c.target in _env_names(b.workloads, b.infra, b.frontends), \
         "UptimeCheck '${c.name}': target '${c.target}' is not a workload or frontend of this Bundle"
     assert not c.target or c.target in _hosted_names(b.workloads, [], b.frontends), \
@@ -2502,7 +2518,7 @@ _render_uptime_checks = lambda b: Bundle -> [any] {
     _derived = _uptime_derived(b)
     _u = b.uptime
     _skip = _u.skip if _u else []
-    assert all n in _skip {n in _derived}, \
+    assert all n in _skip {n in _derived or n in _uptime_wildcard_routes(b)}, \
         "Uptime.skip names ${[n for n in _skip if n not in _derived]}, which forge does not derive a check for here (derived: ${sorted([n for n in _derived])})"
     _declared = {c.name = _uptime_declared(c, b) for c in (_u.checks if _u else [])}
     _all = {k = v for k, v in _derived if k not in _skip and k not in _declared} | _declared

@@ -2583,7 +2583,7 @@ _Enforced · Forge, on any infrastructure_
 
 ### Forbidden licenses fail the gate
 
-A generated project's `forge ci gate` runs go-licenses over its Go dependencies and fails on one whose license type is forbidden or restricted; there is no license check for npm dependencies.
+A generated project's `forge ci gate` runs go-licenses over its Go dependencies and fails on one whose license type is forbidden or restricted (warn-first, through the `license-check` lint rollout row); there is no license check for npm dependencies.
 
 _Enforced · Forge, on any infrastructure_
 

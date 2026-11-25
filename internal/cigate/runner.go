@@ -151,6 +151,12 @@ type Check struct {
 	// below its GatesFrom release). The row is SKIPPED with its last
 	// output line as the reason, and allowed, like a CI_SKIP.
 	AllowedSkipExitCode int
+	// WarnOnFail, when set, makes a failing command a warning, not a FAIL:
+	// the row is SKIPPED, allowed, with "would fail" and the command's last
+	// output line, then this reason. It is how a check whose verdict forge
+	// only just made real warns before it gates (a rollout row below its
+	// GatesFrom).
+	WarnOnFail string
 	// Note annotates the row when the command runs: how it was narrowed
 	// (affected-package mode) or anything else the reader needs.
 	Note string
@@ -209,8 +215,10 @@ func (r Report) Failed() bool {
 }
 
 // Tally is the rows of a report counted by outcome. Skipped counts only the
-// SKIPPED rows that fail the gate; Allowed counts the ones CI_SKIP named.
-type Tally struct{ Passed, Cached, Failed, Skipped, Allowed, NA, Deferred int }
+// SKIPPED rows that fail the gate; Allowed counts the ones CI_SKIP named, and
+// SelfAllowed the ones the check itself said fail nothing (a warn-first
+// "would fail", a scan that does not gate yet).
+type Tally struct{ Passed, Cached, Failed, Skipped, Allowed, SelfAllowed, NA, Deferred int }
 
 // Counts tallies the rows by outcome.
 func (r Report) Counts() Tally {
@@ -224,6 +232,8 @@ func (r Report) Counts() Tally {
 			}
 		case res.Status == Fail:
 			t.Failed++
+		case res.Status == Skip && res.Allowed && res.selfAllowed:
+			t.SelfAllowed++
 		case res.Status == Skip && res.Allowed:
 			t.Allowed++
 		case res.Status == Skip:
@@ -252,6 +262,9 @@ func (r Report) verdict() string {
 	}
 	if t.Allowed > 0 {
 		parts = append(parts, fmt.Sprintf("%d skipped by %s", t.Allowed, SkipEnv))
+	}
+	if t.SelfAllowed > 0 {
+		parts = append(parts, fmt.Sprintf("%d skipped, not gating yet", t.SelfAllowed))
 	}
 	if t.NA > 0 {
 		parts = append(parts, fmt.Sprintf("%d n/a", t.NA))
@@ -925,16 +938,12 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 	}
 	env = withPathPrefix(env, append(append([]string(nil), s.opt.Path...), dirs...))
 	env = append(append(append([]string(nil), env...), c.Env...), slotEnv...)
-	for _, bin := range c.Requires {
-		if _, err := lookPathIn(env, bin); err != nil {
-			return skip(bin + " is not on PATH")
-		}
+	dir := s.checkDir(c)
+	env, reason := s.runEnv(c, dir, env)
+	if reason != "" {
+		return skip(reason)
 	}
 
-	dir := s.opt.Root
-	if c.Dir != "" {
-		dir = joinDir(s.opt.Root, c.Dir)
-	}
 	if len(c.Probe) > 0 {
 		if err := s.exec(s.ctx, dir, env, c.Probe, io.Discard); err != nil {
 			reason := c.ProbeReason
@@ -983,6 +992,8 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 		if res.Note == "" {
 			res.Note = fmt.Sprintf("exit status %d: could not run here", c.SkipExitCode)
 		}
+	case c.WarnOnFail != "":
+		res = warnOnly(res, c.WarnOnFail, tail)
 	default:
 		res.Status, res.Note, res.Tail = Fail, failNote(err), tail.lastLines(25)
 		if c.Note != "" {
@@ -1342,4 +1353,68 @@ func lookPathIn(env []string, file string) (string, error) {
 		}
 	}
 	return "", &exec.Error{Name: file, Err: exec.ErrNotFound}
+}
+
+// warnOnly is the row of a failed command whose check warns rather than
+// gates (Check.WarnOnFail): SKIPPED and allowed, saying what would have
+// failed and why it does not yet.
+func warnOnly(res Result, why string, tail *tailBuffer) Result {
+	res.Status, res.Allowed, res.selfAllowed = Skip, true, true
+	res.Note = "would fail"
+	if last := lastLine(tail); last != "" {
+		res.Note += ": " + last
+	}
+	res.Note += " — " + why
+	res.Tail = tail.lastLines(25)
+	return res
+}
+
+// checkDir is the directory c runs in: its Dir under the root, or the root.
+func (s *scheduler) checkDir(c Check) string {
+	if c.Dir == "" {
+		return s.opt.Root
+	}
+	return joinDir(s.opt.Root, c.Dir)
+}
+
+// runEnv completes the environment c runs in (GOROOT for a tool that needs
+// it) and checks that every binary c requires resolves on its PATH. A
+// non-empty reason means c cannot run here, and the check is SKIPPED.
+func (s *scheduler) runEnv(c Check, dir string, env []string) ([]string, string) {
+	env, reason := s.withGOROOT(c, dir, env)
+	if reason != "" {
+		return env, reason
+	}
+	for _, bin := range c.Requires {
+		if _, err := lookPathIn(env, bin); err != nil {
+			return env, bin + " is not on PATH"
+		}
+	}
+	return env, ""
+}
+
+// withGOROOT adds GOROOT to env, as `go env GOROOT` in dir reports it, when
+// one of c's tools needs it (Tool.NeedsGOROOT) and env does not set it. A
+// non-empty reason means it could not, and the check is SKIPPED.
+func (s *scheduler) withGOROOT(c Check, dir string, env []string) ([]string, string) {
+	if !needsGOROOT(c.Tools) || envValue(env, "GOROOT") != "" {
+		return env, ""
+	}
+	var out bytes.Buffer
+	err := s.exec(s.ctx, dir, env, []string{"go", "env", "GOROOT"}, &out)
+	goroot := strings.TrimSpace(out.String())
+	if err != nil || goroot == "" {
+		return env, fmt.Sprintf("cannot resolve GOROOT (`go env GOROOT`: %v)", err)
+	}
+	return append(env, "GOROOT="+goroot), ""
+}
+
+// needsGOROOT reports whether any of tools must run with GOROOT set.
+func needsGOROOT(tools []Tool) bool {
+	for _, t := range tools {
+		if t.NeedsGOROOT {
+			return true
+		}
+	}
+	return false
 }

@@ -1007,6 +1007,7 @@ func TestGraceRowsWarnThroughTheReleaseThatShipsThem(t *testing.T) {
 		ruleFrontendNoInstall:          {IntroducedIn: "v1.10.0", GatesFrom: "v1.11.0"},
 		ruleTelemetryMetricUncollected: {IntroducedIn: "v1.10.0", GatesFrom: "v1.11.0"},
 		ruleCRUDTableUnowned:           {IntroducedIn: "v1.11.0", GatesFrom: "v1.12.0"},
+		RuleLicenseCheck:               {IntroducedIn: "v1.11.0", GatesFrom: "v1.12.0"},
 	} {
 		if ro := lintRollouts[rule]; ro.IntroducedIn != want.IntroducedIn || ro.GatesFrom != want.GatesFrom {
 			t.Errorf("%s: rollout %+v, want introduced %s, gates from %s", rule, ro, want.IntroducedIn, want.GatesFrom)

@@ -35,6 +35,11 @@ const (
 	// RuleSBOMRequired grades a declared `provenance_sbom = enforce` (the
 	// schema default is audit): a promotion whose artifacts have no SBOM.
 	RuleSBOMRequired = "sbom-required"
+	// RuleLicenseCheck grades the `forge ci gate` license-check row. Until
+	// forge ran its pinned go-licenses with GOROOT set, the row loaded no
+	// dependency and passed, so every finding it reports is new: while the
+	// rule warns, a failing row is an allowed SKIPPED "would fail".
+	RuleLicenseCheck = "license-check"
 )
 
 // RuleGrade is what a project makes of one rule.

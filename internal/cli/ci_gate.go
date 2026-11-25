@@ -17,6 +17,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/cigate"
+	"github.com/reliant-labs/forge/internal/cli/lint"
 	"github.com/reliant-labs/forge/internal/cliutil"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/generator"
@@ -248,7 +249,8 @@ func runGate(cmd *cobra.Command, args []string, flags gateFlags, out io.Writer) 
 	}
 	ciData := generator.CIWorkflowDataFor(root, cfg, generator.CIInputs{Frontends: ciFrontends(root, cfg)})
 	all, err := cigate.Plan(cigate.PlanInput{Root: root, CI: ciData, Cfg: cfg, Forge: forge,
-		Warn: func(msg string) { fmt.Fprintf(os.Stderr, "forge ci gate: warning: %s (forge.yaml, ci.gate)\n", msg) }})
+		LicenseWarnFirst: licenseWarnFirst(cfg),
+		Warn:             func(msg string) { fmt.Fprintf(os.Stderr, "forge ci gate: warning: %s (forge.yaml, ci.gate)\n", msg) }})
 	if err != nil {
 		return run, cliutil.UserErr("forge ci gate", err.Error(), "forge.yaml (ci.gate)", "fix the extra check and re-run")
 	}
@@ -600,4 +602,15 @@ func truthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// licenseWarnFirst is why the license-check row warns rather than fails for
+// this project ("" when it gates): the license-check rollout row, graded by
+// the project's pin and lint.rules (cigate.PlanInput.LicenseWarnFirst).
+func licenseWarnFirst(cfg *config.ProjectConfig) string {
+	g := lint.GradeRule(cfg, lint.RuleLicenseCheck)
+	if g.Gates {
+		return ""
+	}
+	return fmt.Sprintf("does not gate yet (%s; gate now with %s)", g.Note(), g.OptIn())
 }

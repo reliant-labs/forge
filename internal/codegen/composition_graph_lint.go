@@ -14,7 +14,9 @@
 //     one) is a pending warning, not an error: see pendingPackageFinding.
 //     A node no root reaches whose Deps forge cannot fill is left out of
 //     the emitted graph rather than failing generate; it is always an
-//     error here (unbuiltFinding, composition_graph_reach.go).
+//     error here (unbuiltFinding, composition_graph_reach.go). A component
+//     constructed only by its variants (`forge scaffold variant`) is reached
+//     when one of them is: see variantReached.
 //   - AUDIENCE. For every listener (a node whose value is a
 //     serverkit.Listener), the audience of each service its routes reach
 //     must be the audience of the authenticator its chain reaches (a
@@ -145,6 +147,9 @@ func (m *graphModel) rootNames() string {
 // Route sets and the operators' manager are reported through their members.
 func (m *graphModel) unreachableFindings() []GraphFinding {
 	reached := m.reached()
+	for n := range m.variantReached(reached) {
+		reached[n] = true
+	}
 	consumed := m.consumed()
 	audienceOf := m.serviceAudiences()
 	var out []GraphFinding
@@ -187,6 +192,91 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 		}
 	}
 	return out
+}
+
+// variantReached is every component a node in reached constructs as a
+// VARIANT: a provider whose value wraps the component's Service by embedding
+// it, the shape `forge scaffold variant <pkg> <Name>` writes
+// (`type <Name> struct{ <pkg>.Service }`, built by New<Name> calling
+// <pkg>.New with that configuration). The graph identifies a node by its Go
+// type, so a component with no default configuration — only variants — is
+// taken by no consumer and drew no edge, and the variants' providers call its
+// constructor themselves. It is still constructed by every process that
+// reaches one of them, so the reach check must count it: otherwise the
+// idiom the graph-checks skill documents could not retire the
+// //forge:provided marker it replaces.
+//
+// Only the lint's view of reach changes. Generate's resolution is
+// untouched: the component's own node is still left out of graph_gen.go
+// when forge cannot fill its Deps, which is right — no root asks for the
+// default configuration, and the variants supply their own.
+func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
+	if m.u == nil {
+		return nil
+	}
+	wrapped := map[string]bool{} // "<pkg path>.<Name>" a reached provider embeds
+	for _, n := range m.nodes {
+		if n.Kind != nodeProvider || !reached[n.Name] {
+			continue
+		}
+		for _, k := range embeddedTypeKeys(m.u.produced[n.Name]) {
+			wrapped[k] = true
+		}
+	}
+	if len(wrapped) == 0 {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, n := range m.nodes {
+		if n.Kind != nodeComponent || reached[n.Name] {
+			continue
+		}
+		if k := namedTypeKey(m.u.produced[n.Name]); k != "" && wrapped[k] {
+			out[n.Name] = true
+		}
+	}
+	return out
+}
+
+// embeddedTypeKeys is the namedTypeKey of every field t's struct embeds,
+// through one pointer (a provider returns *<Name>).
+func embeddedTypeKeys(t types.Type) []string {
+	if t == nil {
+		return nil
+	}
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, ok := types.Unalias(t).Underlying().(*types.Struct)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for i := 0; i < st.NumFields(); i++ {
+		if f := st.Field(i); f.Embedded() {
+			if k := namedTypeKey(f.Type()); k != "" {
+				out = append(out, k)
+			}
+		}
+	}
+	return out
+}
+
+// namedTypeKey identifies a named type, through one pointer, by its
+// package path and name — not by types.Identical, because the component's
+// package and internal/app may be type-checked in separate loads.
+func namedTypeKey(t types.Type) string {
+	if t == nil {
+		return ""
+	}
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
+		return ""
+	}
+	return named.Obj().Pkg().Path() + "." + named.Obj().Name()
 }
 
 // unbuiltFinding reports a node no root reaches that forge cannot construct

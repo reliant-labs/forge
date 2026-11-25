@@ -120,10 +120,18 @@ func withoutNodes(nodes []*graphNode, drop map[string]unbuiltNode) []*graphNode 
 // unbuiltWarning is generate's one advisory line for the nodes left out, ""
 // when there are none.
 func (m *graphModel) unbuiltWarning() string {
-	if len(m.unbuilt) == 0 {
+	// A component left out only because no root asks for its default
+	// configuration, while a reached variant constructs it, is not news.
+	viaVariant := m.variantReached(m.reached())
+	var names []string
+	for _, n := range graphSortedKeys(m.unbuilt) {
+		if !viaVariant[n] {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
 		return ""
 	}
-	names := graphSortedKeys(m.unbuilt)
 	return fmt.Sprintf("%d node(s) no root reaches are left out of the composition graph, because forge cannot fill their Deps: %s. "+
 		"graph_gen.go has no accessor for them and compose.go gets no constructor until a root reaches one — then generate names every provider it lacks. "+
 		"`forge lint --graph` reports each (%s)", len(names), capList(names, 8), GraphRuleUnreachable)

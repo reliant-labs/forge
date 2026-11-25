@@ -92,6 +92,42 @@ func TestAffectedReaders(t *testing.T) {
 	}
 }
 
+// Both packages must be selected: finding one reader must not narrow away
+// another whose literal Join is used after changing to the repo root.
+func TestAffectedReaders_LiteralJoinWorkingDirectory(t *testing.T) {
+	for _, expr := range []string{
+		`filepath.Join("deploy", "kcl")`,
+		`path.Join("deploy", "kcl")`,
+		`filepath.Join("deploy")`,
+		`filepath.Join(deployDir)`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			root, tracked := readerRoot(t)
+			write(t, root, "b/b_test.go", `package b
+const deployDir = "deploy"
+func TestReads(t *testing.T) {
+    os.Chdir(repoRoot(t))
+    os.ReadDir(`+expr+`)
+}
+`)
+			tracked = append(tracked, "b/b_test.go", "b/deploy/kcl/local.k")
+			write(t, root, "b/deploy/kcl/local.k", "x")
+			for _, tc := range []struct {
+				changed, want string
+			}{
+				{"deploy/kcl/main.k", "ex.com/m/b,ex.com/m/c"},
+				{"b/deploy/kcl/local.k", "ex.com/m/b"},
+			} {
+				g := readerGit{fakeGit: fakeGit{branch: "f", changed: []string{tc.changed}}, tracked: tracked}
+				a := ComputeAffected(context.Background(), AffectedInput{Root: root, Git: g.run, GoList: listed(root), Readers: true})
+				if got := strings.Join(a.Packages, ","); a.Full || got != tc.want {
+					t.Errorf("%s: full=%v packages=%q, want %q (%s)", tc.changed, a.Full, got, tc.want, a.Reason)
+				}
+			}
+		})
+	}
+}
+
 func TestReaderScan_PackageNotLocatingRootIsNotScanned(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "c/c_test.go", "package c\n\nvar _ = \"config/settings.yaml\"\n")

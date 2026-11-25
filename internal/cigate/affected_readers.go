@@ -309,13 +309,14 @@ func joinCandidates(x *ast.CallExpr, rel string, rf *rootFacts, local map[string
 		if path.IsAbs(joined) {
 			return nil // under /, not in this repo
 		}
-		cands := []readCandidate{{path: path.Join(rel, joined), anchored: true}}
-		if strings.Contains(joined, "/") {
-			// The joined path may be handed to a child that runs at the
-			// repo root: a full tracked path is a read wherever it runs.
-			cands = append(cands, readCandidate{path: joined})
+		// go test starts in the package directory, but a test may change
+		// directory or pass this path to a child running at the repo root.
+		// Keep both interpretations, even for a lone directory name: Join
+		// is a path call, not a bare label in prose.
+		return []readCandidate{
+			{path: path.Join(rel, joined), anchored: true},
+			{path: joined, dirArg: true},
 		}
-		return cands
 	}
 	if run := lits(1); len(run) > 0 && rf.locates(x.Args[0], local) {
 		return []readCandidate{{path: path.Join(run...), anchored: true}}

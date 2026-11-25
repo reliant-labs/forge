@@ -94,3 +94,22 @@ func TestComputeAffected_Reach(t *testing.T) {
 		})
 	}
 }
+
+// A package an affected rule selects is a change target: its direct
+// importer stays direct, even when the cap would defer it.
+func TestComputeAffected_ReachRuleSelectedImporterIsDirect(t *testing.T) {
+	root := t.TempDir()
+	rules := []config.CIGateAffectedRule{{Paths: []string{"docs/**"}, Packages: []string{"./e"}}}
+	a := ComputeAffected(context.Background(), AffectedInput{Root: root,
+		Git:    fakeGit{branch: "feat", changed: []string{"a/a.go", "docs/x.md"}}.run,
+		GoList: reachListed(root), Rules: rules, Reach: &config.CIGateAffectedReach{Mode: "direct"}})
+	if a.Full {
+		t.Fatalf("full: %s", a.Reason)
+	}
+	if !slices.Contains(a.Packages, "ex.com/m/f") || slices.Contains(a.Deferred, "ex.com/m/f") {
+		t.Fatalf("f imports rule-selected e and must be direct: packages %v deferred %v", a.Packages, a.Deferred)
+	}
+	if !slices.Contains(a.Packages, "ex.com/m/e") {
+		t.Fatalf("rule-selected e missing: %v", a.Packages)
+	}
+}

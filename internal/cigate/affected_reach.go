@@ -34,7 +34,8 @@ func (g *packageGraph) addDirectImports(path string, p listedPackage) {
 // applyReach narrows a.Packages under mode direct: the changed packages
 // (a package whose own file, or a file it embeds, changed — selectChanges
 // maps both to changedPkgs), those a rule names, and their direct importers
-// (production or test imports) stay. A package whose test binary links a
+// (production or test imports) of either stay — a rule-selected package
+// is a change target too, as reliant's test-only/db selections never defer. A package whose test binary links a
 // change only through a deeper dependency is transitive by design. The rest — transitive
 // importers — stay too when they number at most the cap, and are otherwise
 // moved to a.Deferred for the full gate. This mirrors reliant's
@@ -48,7 +49,7 @@ func applyReach(a *Affected, g *packageGraph, sel selection, reach *config.CIGat
 	a.Reach, a.TransitiveCap = ReachDirect, reach.TransitiveCap
 	var direct, transitive []string
 	for _, p := range a.Packages {
-		if sel.changedPkgs[p] || sel.rulePkgs[p] || slices.ContainsFunc(g.directImports[p], func(d string) bool { return sel.changedPkgs[d] }) {
+		if sel.changedPkgs[p] || sel.rulePkgs[p] || slices.ContainsFunc(g.directImports[p], func(d string) bool { return sel.changedPkgs[d] || sel.rulePkgs[d] }) {
 			direct = append(direct, p)
 		} else {
 			transitive = append(transitive, p)

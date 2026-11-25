@@ -165,7 +165,10 @@ func TestDelegation_ReadsAreHandedOverAndExemptCommandsStayLocal(t *testing.T) {
 			t.Errorf("forge %v ran under a forge the project does not pin", args)
 		}
 	}
-	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down", "--all"}, {"project", "upgrade"}, {"report-bug"}, {"slot", "status"}} {
+	// `project upgrade` names its target here: without --to, run by this
+	// older forge, it would move the pin backwards and is handed over
+	// (TestUpgrade_OlderForgeHandsAnImplicitTargetToThePin).
+	for _, args := range [][]string{{"version"}, {"env", "ps"}, {"env", "down", "--all"}, {"project", "upgrade", "--to", "v9.9.9"}, {"report-bug"}, {"slot", "status"}} {
 		h, installs := armDelegation(t)
 		_, _ = runCheck(t, args...)
 		if h.path != "" || len(*installs) != 0 {

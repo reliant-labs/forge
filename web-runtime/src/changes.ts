@@ -618,6 +618,29 @@ export function evaluate(
 }
 
 /**
+ * The id of the unit the change `key` keeps together, read from `ctx` the way
+ * evaluate reads it, or "" when the snapshot has no valid change of that key,
+ * it names no unit, or `ctx` has no id for it.
+ *
+ * @internal For changes-store.ts, which names an account unit's id on the
+ * event it records; the barrel does not re-export it.
+ */
+export function changeUnitId(
+  snapshot: Snapshot | null | undefined,
+  key: string,
+  ctx: EvalContext,
+): string {
+  if (!(snapshot instanceof ParsedSnapshot)) {
+    return "";
+  }
+  const c = snapshot.changes.get(key);
+  if (c === undefined || c === INVALID) {
+    return "";
+  }
+  return unitId(c, ctx);
+}
+
+/**
  * The unit the change `key` keeps together — "user", "account" or "visitor" —
  * or "" when the snapshot has no valid change of that key or it names none.
  *

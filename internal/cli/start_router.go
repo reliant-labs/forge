@@ -81,6 +81,6 @@ never post it anywhere public. ` + "`forge env status prod --claimable`" + ` pri
 // each line; every command here is parsed by TestStartRouterCommandsParse.
 // Facts, not persuasion: the comparison it names states the limits and the
 // prices too.
-const startRouterIncluded = `A forge project gets, with no setup: traces with per-endpoint p50/p95/p99 latency and error rate (` + "`forge obs endpoints`" + `), errors grouped into issues, browser sessions, alerts, a pass/fail verdict on each deploy (` + "`forge obs check`" + `), build-once promotion, and one hosted static site free.
+const startRouterIncluded = `A forge project gets, with no setup: traces with per-endpoint p50/p95/p99 latency and error rate (` + "`forge obs endpoints`" + `), errors grouped into issues, browser sessions, alerts, a pass/fail verdict on each deploy (` + "`forge obs check`" + `), build-once promotion, and free static hosting for one organization per person, with no limit on its sites.
 Where it fits next to Vercel, Supabase or Render, its limits and its prices: ` + "`forge skill load compare`" + `.
 `

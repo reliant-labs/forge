@@ -91,7 +91,8 @@ func newCIGateCmd() *cobra.Command {
 			"  CI_SKIP=vuln-go forge ci gate       # offline: allow one skip, still listed\n" +
 			"  CI_FULL=1 forge ci gate test        # the whole unit suite on a branch\n" +
 			"  forge ci gate --tier queue --base <group base sha> --json   # a merge group, for a check run\n" +
-			"  forge ci gate test --event push --json                       # the test lane as a push to main runs it",
+			"  forge ci gate test --event push --json                       # the test lane as a push to main runs it\n" +
+			"  forge ci gate --plan --files internal/a/a.go,docs/x.md       # what-if: what would those changes run, and why",
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -112,7 +113,10 @@ func newCIGateCmd() *cobra.Command {
 	f.StringVar(&flags.event, "event", "", "Pick the tier from a GitHub event name: pull_request, merge_group, push, schedule, workflow_dispatch (an action suffix such as pull_request.synchronize is ignored)")
 	f.BoolVar(&flags.json, "json", false, "Print a "+cigate.DocumentSchema+" document on stdout; progress and the table go to stderr")
 	cmd.MarkFlagsMutuallyExclusive("tier", "event")
+	f.BoolVar(&flags.plan, "plan", false, "Print the affected-mode decision (packages, build set, why each, per changed file) and exit without running anything")
+	f.StringSliceVar(&flags.files, "files", nil, "With --plan: judge these changed files instead of the diff against the base (a what-if)")
 	cmd.MarkFlagsMutuallyExclusive("list", "json")
+	cmd.MarkFlagsMutuallyExclusive("list", "plan")
 	return cmd
 }
 
@@ -127,6 +131,8 @@ func gateTierHelp() string {
 
 type gateFlags struct {
 	list, groups, noCache, full, json bool
+	plan                              bool
+	files                             []string
 	skip, only                        []string
 	jobs                              int
 	report, base, tier, event         string
@@ -140,12 +146,17 @@ type gateRun struct {
 	tier         string
 	root, module string
 	dirs         map[string]string
+	// affected is the unit lane's affected-mode decision, when one was made.
+	affected *cigate.Affected
 }
 
 // runCIGate runs the gate. Under --json the human output goes to stderr and the
 // document to stdout — also when the gate could not run, so a check run always
 // has a document to read. The exit status is the same either way.
 func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
+	if flags.plan {
+		return runGatePlan(cmd, flags)
+	}
 	if !flags.json {
 		_, err := runGate(cmd, args, flags, cmd.OutOrStdout())
 		return err
@@ -156,6 +167,7 @@ func runCIGate(cmd *cobra.Command, args []string, flags gateFlags) error {
 	}
 	doc := cigate.NewDocument(run.rep, cigate.DocumentInput{
 		Tier: run.tier, Err: err, Ran: run.ran, Root: run.root, Module: run.module, Dirs: run.dirs,
+		Affected: run.affected,
 	})
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
@@ -272,10 +284,15 @@ func runGate(cmd *cobra.Command, args []string, flags gateFlags, out io.Writer) 
 	if tiered {
 		fmt.Fprintf(out, "tier: %s — %s\n", tier.Name, tier.About)
 	}
+	decided := &cigate.Affected{}
 	rep := executeGate(cmd, out, gateExec{
-		root: root, cfg: cfg, frontends: frontendDirs(ciData), ciFrontends: ciData.Frontends, plan: plan, flags: flags, tier: tier, tiered: tiered,
+		affected: decided,
+		root:     root, cfg: cfg, frontends: frontendDirs(ciData), ciFrontends: ciData.Frontends, plan: plan, flags: flags, tier: tier, tiered: tiered,
 	})
 	run.rep, run.ran = rep, true
+	if decided.Full || decided.BaseRef != "" {
+		run.affected = decided
+	}
 	if rep.Failed() {
 		return run, gateFailure{}
 	}
@@ -294,6 +311,8 @@ type gateExec struct {
 	flags       gateFlags
 	tier        cigate.Tier
 	tiered      bool
+	// affected, when set, receives the affected-mode decision.
+	affected *cigate.Affected
 }
 
 // executeGate runs the planned checks: verdict cache, affected mode, host
@@ -329,7 +348,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 	}
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
 		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, modules: cfg.CI.Gate.AffectedModules, frontends: in.ciFrontends,
-		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
+		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce, decided: in.affected,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
 
@@ -420,6 +439,8 @@ type affectedArgs struct {
 	full               bool
 	// tierForce, when set, is the tier that runs the whole suite (--tier main).
 	tierForce string
+	// decided, when set, receives the affected-mode decision.
+	decided *cigate.Affected
 }
 
 func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check, in affectedArgs) []cigate.Check {
@@ -442,12 +463,22 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
 		Ignore: in.ignore, Rules: in.rules, Modules: in.modules, ChangesOnly: !narrow})
+	if in.decided != nil {
+		*in.decided = a
+	}
 	if !narrow {
 		return cigate.GateByPaths(checks, a)
 	}
 	fmt.Fprintln(out, a.Line())
 	for _, s := range a.Selections {
 		fmt.Fprintln(out, "  "+s)
+	}
+	if len(a.Why) <= maxWhyLines {
+		for _, w := range a.WhyLines() {
+			fmt.Fprintln(out, "  "+w)
+		}
+	} else {
+		fmt.Fprintf(out, "  (%d packages; `forge ci gate --plan` or --json says why each runs)\n", len(a.Why))
 	}
 	return cigate.WithModuleTests(cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends), a)
 }

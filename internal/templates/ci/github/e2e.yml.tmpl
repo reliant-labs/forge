@@ -106,7 +106,9 @@ jobs:
 {{installForgeRun 8}}
 
       - name: Install k3d
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        # The pinned k3d release binary, checked against its published
+        # sha256 — never a script piped from k3d's main branch.
+{{installK3dRun 8}}
 
       # Everything below goes through forge — never a raw KCL render piped to
       # kubectl, which cannot resolve kcl_plugin.forge and skips the declared

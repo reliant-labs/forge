@@ -6,6 +6,11 @@ and one or more named variants. The control plane decides who gets which variant
 (Everyone, a stable percentage, or a split between variants). This repo decides what
 a change _can_ be: its key, its value type, its variants and its default.
 
+Changes are in **beta** until platform delivery, the readout and the Experiments
+screen have all shipped. The declaration below, the evaluation SDKs and typed
+accessors are released; until the platform delivers an environment's policy to
+an app, every accessor returns the declared default.
+
 You write that once, in `changes.yaml` at the project root. forge ships it in every
 environment's release and generates typed accessors for your code. The design is in
 [proposals/changes.md](proposals/changes.md), and the evaluation model is in
@@ -73,7 +78,8 @@ keyed by change key:
 The control plane uses this to refuse launching or ramping a variant that the env's
 current release does not declare. The field is the `shape-changes` bundle feature, so
 forge sends it only to a control plane that decodes it. `forge env shape <env>` lists
-the declared changes.
+the declared changes. A deploy whose release no longer declares a variant a running
+change uses stops that change; `forge env deploy`'s plan says so first.
 
 **Go** (projects with a `go.mod`): `internal/changes/changes_gen.go` has one constant
 and one accessor per change:

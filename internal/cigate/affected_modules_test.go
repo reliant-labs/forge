@@ -170,3 +170,22 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+func TestAnnotateModuleFiles(t *testing.T) {
+	mods := []ModuleTests{{Dir: "sdk/go", Path: "ex.com/sdk"}}
+	got := annotateModuleFiles([]FileReport{
+		{Path: "sdk/go/client/c_test.go", Note: "unclaimed — runs the full suite"},
+		{Path: "sdk/go/util/u.go", Package: "ex.com/sdk/util", Note: "package ex.com/sdk/util"},
+		{Path: "other/o.go", Package: "ex.com/m/other", Note: "package ex.com/m/other"},
+	}, nestedChanges{}, mods)
+	want := []string{
+		"nested module ex.com/sdk (test-mod-sdk-go)",
+		"package ex.com/sdk/util; nested module ex.com/sdk (test-mod-sdk-go)",
+		"package ex.com/m/other",
+	}
+	for i, w := range want {
+		if got[i].Note != w {
+			t.Errorf("%s: Note = %q, want %q", got[i].Path, got[i].Note, w)
+		}
+	}
+}

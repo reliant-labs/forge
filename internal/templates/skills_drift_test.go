@@ -59,6 +59,9 @@ func TestSkillsDoNotReferenceRemovedGenFiles(t *testing.T) {
 		// them). It is what a service's Deps field names, so packages stop
 		// hand-writing a passthrough adapter over the free functions.
 		"store_gen.go": {},
+		// internal/changes/changes_gen.go — one typed accessor per change
+		// a project's changes.yaml declares (codegen.ChangesGoFile).
+		"changes_gen.go": {},
 		// Legacy pre-split CRUD implementation file. No longer emitted,
 		// but live skills may still name it in "legacy / still
 		// recognized" context (e.g. audit-json's crud_stubs row).

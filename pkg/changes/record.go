@@ -57,7 +57,9 @@ func (s *Snapshot) unit(key string, ec EvalContext) (name, id string) {
 }
 
 // recorder records Store evaluations as flag_evaluated, once per (unit,
-// change, run, variant) per UTC day.
+// change, run, variant) per UTC day. An account-unit change's event also
+// carries the `account` it assigned (the evaluation context's account
+// attribute).
 type recorder struct {
 	mu   sync.Mutex
 	day  string
@@ -136,6 +138,14 @@ func (rec *recorder) record(ctx context.Context, snap *Snapshot, key string, ec 
 	}
 	if unitName != "" {
 		attrs = append(attrs, slog.String("unit", unitName))
+	}
+	// An account id is not a column of the event the way a user's or a
+	// visitor's is, so the assignment names the one the change hashed: an
+	// app whose accounts are not its telemetry orgs is still counted by a
+	// readout (obsquery's experiment readout reads Props['account'] on an
+	// event with no org).
+	if unitName == "account" && unitID != "" {
+		attrs = append(attrs, slog.String("account", unitID))
 	}
 	observe.Track(ctx, FlagEvaluatedEvent, attrs...)
 }

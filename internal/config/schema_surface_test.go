@@ -89,10 +89,25 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			//
 			// workflows: read by generator.CIWorkflowsFor — the per-workflow
 			// opt-out every CI writer goes through.
+			//
+			// license: read by cigate's license-check row
+			// (internal/cigate/license.go planLicenseCheck).
 			want: []string{
-				"e2e", "gate", "lint", "permissions", "provider",
+				"e2e", "gate", "license", "lint", "permissions", "provider",
 				"test", "test_skips", "vuln_scan", "workflows",
 			},
+		},
+		{
+			// allowed → go-licenses --allowed_licenses; exceptions → one
+			// --ignore each (internal/cigate/license.go planLicenseCheck).
+			name: "CILicenseConfig",
+			typ:  reflect.TypeFor[CILicenseConfig](),
+			want: []string{"allowed", "exceptions"},
+		},
+		{
+			name: "CILicenseException",
+			typ:  reflect.TypeFor[CILicenseException](),
+			want: []string{"expires", "module", "reason"},
 		},
 		{
 			// env / path: every check's environment, read by

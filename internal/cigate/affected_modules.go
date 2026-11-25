@@ -231,3 +231,29 @@ func WithModuleTests(checks []Check, a Affected) []Check {
 	out = append(out, rows...)
 	return append(out, checks[at+1:]...)
 }
+
+// annotateModuleFiles says, in each changed file's report, which nested
+// module's test-mod row it runs. A file only the module judges (its tests,
+// go.mod, go.sum) is not "unclaimed": the root never saw it.
+func annotateModuleFiles(files []FileReport, nc nestedChanges, mods []ModuleTests) []FileReport {
+	rest := map[string]bool{}
+	for _, f := range nc.rest {
+		rest[f] = true
+	}
+	for i := range files {
+		f := &files[i]
+		for _, m := range mods {
+			if !strings.HasPrefix(filepath.ToSlash(f.Path), m.Dir+"/") {
+				continue
+			}
+			note := "nested module " + m.Path + " (" + ModuleTestName(m.Dir) + ")"
+			if f.Package == "" && len(f.Rules) == 0 && !f.Ignored && !rest[f.Path] {
+				f.Note = note
+			} else {
+				f.Note += "; " + note
+			}
+			break
+		}
+	}
+	return files
+}

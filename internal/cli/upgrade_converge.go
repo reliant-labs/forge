@@ -73,9 +73,10 @@ type upgradeOptions struct {
 type upgradeSteps struct {
 	// generate runs `forge generate` in the project.
 	generate func(dir string) error
-	// lint runs `forge lint --json` and returns its stdout, whatever its
-	// exit status: a failing lint prints the same document.
-	lint func(dir string) ([]byte, error)
+	// lint runs `forge lint --json` (with --install when install) and
+	// returns its stdout, whatever its exit status: a failing lint prints
+	// the same document.
+	lint func(dir string, install bool) ([]byte, error)
 	// command runs one declared re-vendor argv from dir with env added.
 	command func(dir string, env, argv []string) error
 }
@@ -927,6 +928,32 @@ func (r *upgradeRun) lockTargets() []string {
 	return dirs
 }
 
+// installedTreesStale reports whether a frontend's INSTALLED node_modules is
+// older than its manifest or lockfile — what an upgrade that raised
+// @reliantlabs/forge-web-runtime (or refreshed a lockfile) leaves behind.
+// Linting against that tree reported every generated hook importing a new
+// runtime export as its own "needs a person" item: 128 of them for one
+// stale install (forge report 39603ed1). Then the lint phase passes
+// --install, which refreshes the tree from the lockfile first, as `forge
+// lint --install` does. A frontend with no node_modules at all is not
+// installed here: upgrade does not start installing what the project never
+// had (its lint lane reports it could not run, once).
+func (r *upgradeRun) installedTreesStale() bool {
+	for _, rel := range r.lockTargets() {
+		manifestDir := filepath.Join(r.projectDir, filepath.FromSlash(rel))
+		dirs := []string{manifestDir}
+		if lock, ok := frontenddeps.FindLock(manifestDir, r.projectDir); ok {
+			dirs = append(dirs, filepath.Dir(lock.Path()))
+		}
+		for _, d := range dirs {
+			if st, err := os.Stat(filepath.Join(d, "node_modules")); err == nil && st.IsDir() && frontenddeps.Stale(d) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (r *upgradeRun) phaseLocks() error {
 	seen := map[string]bool{}
 	for _, rel := range r.lockTargets() {
@@ -1068,7 +1095,7 @@ func (r *upgradeRun) phaseLint() error {
 		r.notRun("lint", "--check changes nothing")
 		return nil
 	}
-	raw, err := r.steps.lint(r.projectDir)
+	raw, err := r.steps.lint(r.projectDir, r.installedTreesStale())
 	if err != nil {
 		return &exitCodeError{code: exitUndetermined, msg: "forge lint could not run: " + err.Error()}
 	}
@@ -1235,8 +1262,12 @@ func realUpgradeSteps(out io.Writer) *upgradeSteps {
 			cmd.Stdout = out
 			return cmd.Run()
 		},
-		lint: func(dir string) ([]byte, error) {
-			cmd, err := forge(dir, "lint", "--json")
+		lint: func(dir string, install bool) ([]byte, error) {
+			args := []string{"lint", "--json"}
+			if install {
+				args = append(args, "--install")
+			}
+			cmd, err := forge(dir, args...)
 			if err != nil {
 				return nil, err
 			}

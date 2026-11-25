@@ -17,6 +17,9 @@ const fullIssueID = "484169c0-ab61-4c24-baf4-889e8d3e3046"
 type prefixIssuesCP struct {
 	ids  []string
 	gets []string
+	// endless answers every ListIssues page with a next token, as an env
+	// with more issues than the scan reads.
+	endless bool
 }
 
 func (p *prefixIssuesCP) Call(_ context.Context, proc string, req, out any) error {
@@ -39,14 +42,18 @@ func (p *prefixIssuesCP) Call(_ context.Context, proc string, req, out any) erro
 		for _, id := range p.ids {
 			rows = append(rows, `{"id":"`+id+`","envId":"env-1"}`)
 		}
-		return json.Unmarshal([]byte(`{"issues":[`+strings.Join(rows, ",")+`]}`), out)
+		next := ""
+		if p.endless {
+			next = "more"
+		}
+		return json.Unmarshal([]byte(`{"issues":[`+strings.Join(rows, ",")+`],"nextPageToken":"`+next+`"}`), out)
 	}
 	return &cloud.Error{Code: cloud.CodeUnimplemented, Message: proc}
 }
 
 func prefixNarrow() Narrow {
-	now := time.Now()
-	return Narrow{Range: Range{From: now.Add(-72 * time.Hour), To: now}}
+	to := time.Date(2026, 11, 25, 18, 0, 0, 0, time.UTC)
+	return Narrow{Range: Range{From: to.Add(-72 * time.Hour), To: to}}
 }
 
 // `forge obs issue 484169c0 prod`: the 8-character id a table shows resolves
@@ -79,8 +86,14 @@ func TestCloudGetIssuePrefixRefusals(t *testing.T) {
 			}
 		})
 	}
+	// A scan that hits its page cap with issues unread proves no uniqueness:
+	// one match so far is refused, not resolved.
+	_, err := Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: &prefixIssuesCP{ids: []string{fullIssueID}, endless: true}}.GetIssue(context.Background(), GetIssueRequest{Narrow: prefixNarrow(), ID: "484169c0"})
+	if err == nil || !strings.Contains(err.Error(), "could not be resolved to exactly one") || exitOf(err) != ExitWrong {
+		t.Errorf("capped scan = %v, want a refusal", err)
+	}
 	// A full id that is not found stays the control plane's NotFound.
-	_, err := Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: &prefixIssuesCP{}}.GetIssue(context.Background(), GetIssueRequest{Narrow: prefixNarrow(), ID: fullIssueID})
+	_, err = Cloud{Env: "prod", EnvID: "env-1", OrgID: "org-1", Caller: &prefixIssuesCP{}}.GetIssue(context.Background(), GetIssueRequest{Narrow: prefixNarrow(), ID: fullIssueID})
 	if !isCloudNotFound(err) {
 		t.Errorf("full-id miss = %v, want the NotFound unchanged", err)
 	}

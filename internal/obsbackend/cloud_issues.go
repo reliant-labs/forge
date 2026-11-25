@@ -355,6 +355,7 @@ const issuePrefixPages, issuePrefixPageSize = 10, 100
 func (c Cloud) resolveIssuePrefix(ctx context.Context, prefix string, n Narrow) (string, error) {
 	want := strings.ToLower(prefix)
 	var matches []string
+	seen := map[string]bool{}
 	token := ""
 	for page := 0; page < issuePrefixPages; page++ {
 		res, err := c.ListIssues(ctx, ListIssuesRequest{Narrow: n, Statuses: IssueStatuses, Sort: "last", Limit: issuePrefixPageSize, PageToken: token})
@@ -362,13 +363,21 @@ func (c Cloud) resolveIssuePrefix(ctx context.Context, prefix string, n Narrow) 
 			return "", err
 		}
 		for _, i := range res.Issues {
-			if strings.HasPrefix(strings.ToLower(i.ID), want) {
+			// Deduplicated: a list that shifts between pages may repeat one.
+			if strings.HasPrefix(strings.ToLower(i.ID), want) && !seen[i.ID] {
+				seen[i.ID] = true
 				matches = append(matches, i.ID)
 			}
 		}
 		if token = res.NextPageToken; token == "" {
 			break
 		}
+	}
+	// The scan stopped at its cap with issues left unread: one match so far
+	// is not proof of a unique one, so nothing is resolved.
+	if token != "" && len(matches) <= 1 {
+		return "", Wrong("%s has more than %d issues in this time range, so %q could not be resolved to exactly one: use the full id from `forge obs issues %s` (or narrow --since)",
+			c.Env, issuePrefixPages*issuePrefixPageSize, prefix, c.Env)
 	}
 	switch len(matches) {
 	case 1:

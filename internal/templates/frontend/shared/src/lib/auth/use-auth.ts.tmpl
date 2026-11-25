@@ -10,11 +10,11 @@
 // full page reload and loses the state the reload was meant to keep
 // (eslint-plugin-react-refresh's only-export-components).
 import { createContext, useContext } from "react";
-{{- if ne .Platform "react-native"}}
+{{- if and (ne .Platform "react-native") (not .Public)}}
 
 import type { Identity } from "./native-login";
 {{- end}}
-{{- if eq .Platform "react-native"}}
+{{- if or (eq .Platform "react-native") .Public}}
 
 /** Who is signed in. Presentation only. */
 export interface Identity {

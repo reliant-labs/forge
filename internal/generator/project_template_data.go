@@ -3,7 +3,6 @@ package generator
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -13,33 +12,12 @@ import (
 	"github.com/reliant-labs/forge/internal/naming"
 )
 
-// devEnvMentionsIDP matches a dev env main.k that runs an identity provider
-// some way: the scaffolded HostInfra (`engine = "zitadel"`), or a workload
-// or binding naming the compose `idp` service.
-var devEnvMentionsIDP = regexp.MustCompile(`zitadel|"idp"`)
-
 // projectDeclaresIdentity is the regenerate lane's answer to "does this
-// project have users to sign in?", read off the tree: deploy/kcl/identity.k,
-// which `forge project new` writes for a project with a frontend and a
-// backend unless --auth-mode none, is the declaration.
-//
-// It errs toward YES, because the answer removes the dev IdP from
-// docker-compose.yml: a project scaffolded before identity.k existed has a
-// frontend and no identity.k, yet its dev env may still run the IdP, so a dev
-// main.k that mentions one (or that cannot be read) also counts. An empty
-// projectDir (no tree to read) keeps the IdP too.
+// project have users to sign in?": codegen.ProjectDeclaresIdentity, which
+// reads deploy/kcl/identity.k (and, for a project scaffolded before it, the
+// dev env's IdP) back off the tree. It errs toward YES.
 func projectDeclaresIdentity(projectDir string) bool {
-	if projectDir == "" {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(projectDir, filepath.FromSlash(codegen.IdentityKCLRelPath))); err == nil {
-		return true
-	}
-	b, err := os.ReadFile(filepath.Join(projectDir, "deploy", "kcl", codegen.DevEnvName, "main.k"))
-	if err != nil {
-		return true
-	}
-	return devEnvMentionsIDP.Match(b)
+	return codegen.ProjectDeclaresIdentity(projectDir)
 }
 
 // guardTemplateMode maps a ConfigGuardConfig to the TypedAccessGuard string

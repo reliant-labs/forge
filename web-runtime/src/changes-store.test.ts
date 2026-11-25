@@ -183,7 +183,8 @@ describe("ChangesStore.evaluate", () => {
     [
       "experiment",
       "exp",
-      { targetingKey: "u1", attributes: { plan: "paid" } },
+      // An account attribute on a user-unit change is not recorded.
+      { targetingKey: "u1", attributes: { plan: "paid", account: "a9" } },
       true,
     ],
     ["rollout", "acct", { attributes: { account: "a1" } }, true],
@@ -206,6 +207,11 @@ describe("ChangesStore.evaluate", () => {
     expect(events.length).toBe(recorded ? 1 : 0);
     if (recorded && key === "acct") {
       expect(events[0]![1].unit).toBe("account");
+      // The account the change hashed, which no event column carries.
+      expect(events[0]![1].account).toBe("a1");
+    }
+    if (recorded && key === "exp") {
+      expect(events[0]![1]).not.toHaveProperty("account");
     }
     if (recorded && key === "all") {
       expect(events[0]![1]).not.toHaveProperty("run");

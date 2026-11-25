@@ -124,9 +124,11 @@ project with `forge project new --claimable`, which sizes prod to the free
 anonymous plan, then `forge env deploy prod --claimable` (`deploy/hosting`): it
 applies the working tree's migrations as they are, so it needs no commit.
 
-One static site per person is free (counted across the orgs they own without
-a plan); a second (another env's included) or any
-compute (service, worker, job, managed DB, image build) needs billing.
+Free static hosting covers one organization per person, with no limit on its
+sites (each env's site is one; 1 GiB stored per site, 10 GiB stored and 10 GiB
+of transfer a month in total). A static site in another of their
+organizations, or any compute (service, worker, job, managed DB, image build),
+needs hosting billing.
 Without it the deploy is **queued, not refused**: `env deploy` exits **7** with
 the billing link; give it to the user, don't retry. Under Reliant never ask for
 `forge login`. Depth: `deploy`, `deploy/hosting`, `deploy/static-site`.

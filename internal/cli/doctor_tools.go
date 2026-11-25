@@ -329,7 +329,7 @@ func allToolChecks() []toolCheck {
 			VersionArgs: []string{"version"},
 			InstallHints: map[string]string{
 				"darwin":  "brew install k3d",
-				"linux":   "curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash",
+				"linux":   k3dLinuxHint(runtime.GOARCH),
 				"windows": "choco install k3d   (or `scoop install k3d`)",
 			},
 			UpstreamURL: "https://k3d.io/#installation",
@@ -678,4 +678,16 @@ func fetchedToolChecks(f *toolfetch.Fetcher, tools []toolfetch.Tool) []doctor.Ch
 		results = append(results, r)
 	}
 	return results
+}
+
+// k3dLinuxHint is doctor's k3d install line on linux/arch: the pinned release
+// binary, verified against its sha256 (templates.K3dLinuxInstallHint), the
+// same k3d the scaffolded workflows install. On an architecture with no
+// pinned checksum it names the pinned release's page instead.
+func k3dLinuxHint(arch string) string {
+	if hint := templates.K3dLinuxInstallHint(arch); hint != "" {
+		return hint
+	}
+	return "download k3d " + templates.K3dVersion + " for your architecture from https://github.com/k3d-io/k3d/releases/tag/" +
+		templates.K3dVersion + " and verify it against that release's checksums.txt"
 }

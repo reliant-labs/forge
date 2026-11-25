@@ -1,6 +1,6 @@
 ---
 name: deploy/static-site
-description: Ship a landing page, marketing/docs site, SPA or PWA with Reliant Forge — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per person free across their unplanned orgs, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
+description: Ship a landing page, marketing/docs site, SPA or PWA with Reliant Forge — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; free in one organization per person, with no limit on its sites) or your own bucket, custom domains, and the build-once → promote release flow.
 applies: any
 ---
 
@@ -117,15 +117,18 @@ A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:
 | `forge.OnBucket {bucket = ...}` | your own bucket: `releases/<digest>/` + `live/`, the asset dir uploaded immutable and everything else `no-cache` (unless `cache_control` says otherwise), then CDN invalidation |
 | `forge.OnFirebase {project, site}` | `firebase deploy` |
 
-Hosted static hosting accepts only a static export. **One hosted static site
-per person is free**, across every org they own without a plan (no billing,
-1 GiB storage cap), and it is counted across environments: each env's deployed
-site is a site. A new site binds both `staging` and `prod` to hosting, so
-without billing one of them deploys free (deploy `prod` first if that is the
-one that must be live) and the other is queued with
-`STATIC_FREE_TIER_EXCEEDED`. Past the free site — a second env or site, or any hosted workload or managed database beside it — the deploy needs
-billing and is queued, not refused, until it is set up (exit 7, with the
-billing link; `deploy/hosting`).
+Hosted static hosting accepts only a static export. **Free static hosting
+covers one organization per person** (one they founded), with no billing and no
+limit on the number of sites there. Each env's deployed site is one site, so a
+new site's `staging` and `prod`, both bound to hosting, deploy free in that
+organization. The caps are 1 GiB stored per site, 10 GiB stored in total
+(retained releases included) and 10 GiB of transfer a month. A static site in
+any of the person's other organizations without hosting billing is queued with
+`STATIC_FREE_TIER_EXCEEDED` (the fix: move the free hosting organization to it
+in organization settings, or enable hosting billing there), and any hosted
+workload or managed database needs hosting billing too. Either way the deploy
+is queued, not refused, until it is set up (exit 7, with the billing link;
+`deploy/hosting`).
 
 A site with no backend needs nothing else in the env. This is a complete
 hosted `prod`:
@@ -346,72 +349,12 @@ server APIs such as server actions, middleware, and `cookies()`. For those,
 switch `output` to `standalone` and ship the frontend as a workload instead
 (`deploy`, `frontend/serving`).
 
-## How hosted static hosting resolves a path
+## How the hosted origin serves the build
 
-A request for `/books/view?id=…` is served `books/view.html`. The export
-writes one `.html` file per route because `trailingSlash` is off, and the
-hosted origin tries `<path>`, then `<path>.html`, then `<path>/index.html`.
-Every link the scaffold generates resolves to the file for its own route.
-`frontend/serving` covers hosts that only map directories to `index.html`.
-
-What a path no file answers gets is declared by the build itself, by
-Cloudflare Pages' rule:
-
-- **The build ships a `404.html`** at the site's root (a Next.js export
-  always does; a Vite site adds `public/404.html`): every miss is that page
-  with status **404** and `Cache-Control: no-store`. There is no SPA
-  fallback, so every page must be a file — a static export, or a SPA that
-  prerenders each route as `<path>.html`. This is what keeps a mistyped URL
-  out of search results as a copy of the homepage.
-- **No `404.html`**: the site is a single-page app. A route-shaped miss
-  falls back to the root `index.html` with 200 for the client router to
-  draw; a miss with an extension is a plain 404.
-
-## Response headers: `_headers`
-
-A `_headers` file at the root of the build (Vite: `public/_headers`; Next.js:
-`public/_headers`) declares response headers, in the Netlify / Cloudflare
-Pages format. It is part of the release, so the policy ships with the code it
-describes and a promoted digest serves the same headers in every env. The
-file itself is never served.
-
-```
-# every response
-/*
-  Content-Security-Policy: default-src 'self'; frame-ancestors 'none'
-  Permissions-Policy: camera=(), microphone=(), geolocation=()
-  X-Frame-Options: DENY
-# a narrower rule adds to (and, for a repeated name, joins with) the wider one
-/embed/*
-  Content-Security-Policy: frame-ancestors https://partner.example
-```
-
-- A pattern is an absolute request path; `*` matches anything, `/` included.
-  `:placeholders`, per-host rules and `! Name` removal are not supported.
-- Every matching rule applies, in file order; a name several rules set is
-  joined with `, ` (two CSPs are both enforced, so a rule can only tighten).
-- The platform always sends `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: strict-origin-when-cross-origin` (yours replaces it) and
-  `Strict-Transport-Security: max-age=31536000` (`includeSubDomains` is a
-  per-domain flag: `deploy/domains`). It sends NO anti-framing header:
-  framing is the site's policy. A scaffolded app frontend (Next.js, Vite)
-  ships `public/_headers` with `frame-ancestors 'self'` and
-  `X-Frame-Options: SAMEORIGIN`; a site created before that, or a site
-  without the file, can be framed by any origin until it declares one.
-- Refused, and logged: the headers the platform owns (`Set-Cookie`,
-  `Cache-Control`, `Content-Type`, `Strict-Transport-Security`,
-  `X-Content-Type-Options`, `Access-Control-Allow-Credentials`, HTTP
-  message-framing headers such as `Content-Length` and `Transfer-Encoding`,
-  and hop-by-hop headers), invalid names or values, and anything past the caps —
-  100 rules, 50 headers per rule, 4 KiB per value, 64 KiB per file, 16 KiB of
-  file headers per response. A bad line is skipped; the rest still apply.
-- On an unclaimed preview, CORS stays the platform's (`*`) and the
-  preview sandbox policy is added beside your CSP.
-
-A missing file that is not route-shaped (`/assets/app-1a2b.js`) is a 404,
-never the HTML fallback. The frontend's content-hashed asset directory
-(`asset_dir`: `_next/static` for Next.js, `assets` for Vite) is published as
-the site's `assetDir`: files under it are served
-`public, max-age=31536000, immutable`, everything else `no-cache`, and the
-previous releases' copies stay serveable after a deploy, so a tab opened
-before it can still lazy-load the chunks it was built against.
+Three files in the build change how hosted static hosting serves it, all at
+the site's root and all shipped in the release: `404.html` (real 404s
+instead of the SPA fallback), `_headers` (response headers) and
+`_redirects` (path redirects, e.g.
+`/docs/* https://docs.example.com/:splat 301`). Their formats and limits,
+how a path resolves to a file, and the cache policy are in
+`deploy/static-site/serving`. A bad `_redirects` line fails the deploy.

@@ -7,9 +7,7 @@ with a Dockerfile, with a managed Postgres when the app uses one. Sign in free,
 and your agent reads the release's traces, errors and pass/fail verdict through
 the same CLI, or the verdict, errors and logs through Forge's MCP server.
 
-<!-- TODO(owner): 30-45s GIF/video of the deploy-and-verify loop goes here: an
-agent deploys, a request fails, it runs `forge obs issues`, follows the trace,
-fixes the code, redeploys, and `forge obs check` passes. No asset exists yet. -->
+![A recorded terminal session with forge v1.11.0: an anonymous deploy prints a live URL and a claim link; signed in, the same app is deployed, a request with an empty name fails, forge obs issues and forge obs issue point at the panic in rpc_greet.go, forge obs check fails the release, a one-line fix is redeployed, and forge obs check --wait passes with exit 0](docs/images/forge-deploy-verify.gif)
 
 ```bash
 npx -y @reliantlabs/forge@latest env deploy prod --claimable

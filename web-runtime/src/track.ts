@@ -769,6 +769,15 @@ export function stampedTelemetryUser(): string {
 }
 
 /**
+ * `id` when the tier lets the SDK carry an id (the user and org ids' rule:
+ * `identified` and `full`), else "". For an id the runtime puts in an event's
+ * props, such as the account an exposure assigned.
+ */
+export function stampableTelemetryId(id: string): string {
+  return stampable(id);
+}
+
+/**
  * Erase what the `full` tier keeps on the device: the visitor id, the stored
  * campaign, the identified-user and daily sign-in markers, the RUM session
  * (cookie or its localStorage fallback) and the replay sampling decision.

@@ -537,6 +537,7 @@ func buildUpServicesReport(ctx context.Context, in buildUpServicesInput) (upServ
 	rep.Destination, rep.Endpoint, rep.EnvironmentID = dest.Destination, dest.Endpoint, dest.EnvironmentID
 	rep.ControlPlaneKind = dest.ControlPlaneKind
 	rep.Verdict, rep.HostedWorkloads, rep.HostedNote = dest.Verdict, dest.Workloads, dest.Note
+	rep.HostedAPIURLs = hostedSiteAPIURLs(in.entities, dest.Workloads)
 	rep.Placements = dest.Placements
 	return rep, nil
 }
@@ -2152,6 +2153,10 @@ type upServicesReport struct {
 	Verdict          string                              `json:"verdict,omitempty"`
 	HostedWorkloads  []deploytarget.HostedWorkloadStatus `json:"hosted_workloads,omitempty"`
 	HostedNote       string                              `json:"hosted_note,omitempty"`
+	// HostedAPIURLs maps each hosted site that serves the env's API on its
+	// own host to that address (<site origin>/_api): the platform routes it
+	// when the site's API_URL references a hosted workload. Absent for none.
+	HostedAPIURLs map[string]string `json:"hosted_api_urls,omitempty"`
 	// Placements is every part of the env and where it runs; see
 	// env_destination.go.
 	Placements []partPlacement `json:"placements,omitempty"`

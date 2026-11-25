@@ -15,3 +15,8 @@ pkg/testreport/testdata/cover/cov*/covcounters.*
 # icon), which the Claude Code, Codex and Cursor manifests reference by path;
 # the marketplaces read it from this repository.
 plugins/reliant-forge/assets/*.png
+
+# The favicon every fresh frontend ships (16x16 and 32x32 in one .ico), which
+# browsers request at /favicon.ico whatever the page declares; the scaffold
+# copies it verbatim from these embedded templates.
+internal/templates/frontend/shared-web/public/favicon.ico

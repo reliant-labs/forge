@@ -888,12 +888,15 @@ func writeEnvDeleteSummary(ctx context.Context, c cloudCaller, out io.Writer, en
 		fmt.Fprintln(out, "  custom domains: none (this control plane has no domain service)")
 	case err != nil && opts.Claimable && hostedErrorHasCode(err, cloud.CodePermissionDenied):
 		// The anonymous credential of an unclaimed deploy carries no domain
-		// scope, so it can neither read nor bind a custom domain: an env it
-		// alone can reach has none it could have bound. Refusing here left the
-		// anonymous creator unable to delete its own deploy, with advice
-		// (`forge login`) that does not apply to it (obs f8ff6e6b). The
-		// control plane still refuses the delete itself if a domain is bound.
-		fmt.Fprintln(out, "  custom domains: none (an unclaimed deploy cannot bind one)")
+		// scope, so it cannot read the list at all, and no login it could
+		// obtain would let it (obs f8ff6e6b: refusing here left the anonymous
+		// creator unable to delete its own deploy, with advice that does not
+		// apply to it). The refusal is NOT evidence that no domain is bound,
+		// so the preview says it could not tell rather than "none". What
+		// keeps the delete safe is the control plane itself: it refuses to
+		// delete an env while a custom domain is bound (control plane #1547),
+		// and that refusal reaches the user as it said it.
+		fmt.Fprintln(out, "  custom domains: not readable with an unclaimed deploy's credential (the control plane refuses this delete if one is bound)")
 	case err != nil:
 		fmt.Fprintf(out, "  custom domains: could not be read (%v)\n", err)
 		return fmt.Errorf("could not list the custom domains bound to env %s, so the delete preview is incomplete; nothing was deleted: %w\n"+

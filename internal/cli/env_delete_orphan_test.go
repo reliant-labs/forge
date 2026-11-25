@@ -371,8 +371,8 @@ func TestRunEnvDelete_ClaimableCredentialWithoutDomainScopeStillDeletes(t *testi
 	if err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true, Claimable: true}, strings.NewReader(""), &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "custom domains: none (an unclaimed deploy cannot bind one)") {
-		t.Errorf("preview should say an unclaimed deploy has no domain:\n%s", out.String())
+	if !strings.Contains(out.String(), "custom domains: not readable with an unclaimed deploy's credential") || strings.Contains(out.String(), "custom domains: none") {
+		t.Errorf("preview must say the domains could not be read, never that there are none:\n%s", out.String())
 	}
 	if last := f.calls[len(f.calls)-1]; last.proc != procDeleteEnvironment {
 		t.Errorf("the claimable delete stopped; last call %s", last.proc)
@@ -384,5 +384,20 @@ func TestRunEnvDelete_ClaimableCredentialWithoutDomainScopeStillDeletes(t *testi
 	out.Reset()
 	if err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true}, strings.NewReader(""), &out); err == nil {
 		t.Fatal("a signed-in delete with an unreadable domain list proceeded")
+	}
+}
+
+// A domain bound to the env after its claimable deploy (by whoever can bind
+// one) is invisible to the anonymous credential; the delete reaches the
+// control plane, whose bound-domain refusal is what the user sees.
+func TestRunEnvDelete_ClaimableDeleteOfAnEnvWithABoundDomainIsRefusedByTheControlPlane(t *testing.T) {
+	refusal := &cloud.Error{Code: cloud.CodeFailedPrecondition, Message: "custom domain shop.example is bound to this environment"}
+	f := &fakeLifecycleCaller{errs: map[string]error{
+		"ListDomains":       &cloud.Error{Code: cloud.CodePermissionDenied, Message: "credential lacks domain:read"},
+		"DeleteEnvironment": refusal,
+	}}
+	err := runEnvDelete(context.Background(), f, "env_1", "prod", envDeleteOptions{Yes: true, Claimable: true}, strings.NewReader(""), &bytes.Buffer{})
+	if err == nil || !errors.Is(err, refusal) || !strings.Contains(err.Error(), "shop.example is bound") {
+		t.Fatalf("err = %v; want the control plane's bound-domain refusal", err)
 	}
 }

@@ -516,22 +516,60 @@ func (f FrontendCIConfig) FrozenInstall() string {
 	return "pnpm install --frozen-lockfile"
 }
 
-// UniqueFrontendDirs keeps the first frontend of each directory, in order.
+// UniqueFrontendDirs keeps one frontend per directory, in the order the
+// directories first appear.
 //
 // Two declared frontends may share one directory (a web and a desktop
 // frontend built from the same package.json), and everything that works on
 // the directory — an install, a lint, a build, a Taskfile loop — must run
 // there once: twice is wasted work at best, and two concurrent installs into
 // one node_modules at worst.
+//
+// The frontend that stands for a shared directory names its rows (lint-<name>,
+// deps-<name>, …), which forge.yaml's ci.gate.extra_checks `replaces:` names,
+// so the choice must not depend on declaration order (DirFrontend).
 func UniqueFrontendDirs(fes []FrontendCIConfig) []FrontendCIConfig {
-	seen := make(map[string]bool, len(fes))
+	index := make(map[string]int, len(fes))
 	out := make([]FrontendCIConfig, 0, len(fes))
 	for _, fe := range fes {
-		if seen[fe.Path] {
+		i, seen := index[fe.Path]
+		if !seen {
+			index[fe.Path] = len(out)
+			out = append(out, fe)
 			continue
 		}
-		seen[fe.Path] = true
-		out = append(out, fe)
+		if standsFor(fe, out[i]) {
+			out[i] = fe
+		}
+	}
+	return out
+}
+
+// standsFor reports whether candidate, rather than current, names the
+// directory both are declared on: the frontend named like the directory
+// (frontends/web's "web"), else the alphabetically first name. Either way
+// reordering the declarations never renames a row.
+func standsFor(candidate, current FrontendCIConfig) bool {
+	base := path.Base(filepath.ToSlash(candidate.Path))
+	if (candidate.Name == base) != (current.Name == base) {
+		return candidate.Name == base
+	}
+	return candidate.Name < current.Name
+}
+
+// FrontendsSharingDir maps each frontend that does NOT stand for its
+// directory (UniqueFrontendDirs) to the one that does. Its rows are the
+// other's: a reference to lint-<name> means lint-<that frontend>.
+func FrontendsSharingDir(fes []FrontendCIConfig) map[string]string {
+	byDir := map[string]string{}
+	for _, fe := range UniqueFrontendDirs(fes) {
+		byDir[fe.Path] = fe.Name
+	}
+	out := map[string]string{}
+	for _, fe := range fes {
+		if canon := byDir[fe.Path]; canon != fe.Name {
+			out[fe.Name] = canon
+		}
 	}
 	return out
 }

@@ -142,14 +142,16 @@ func TestMainBisectJudgement(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// Capture one argument per line, plus the environment and cwd, then return
-			// a controlled Go exit status. No compiler, network or candidate code runs.
-			stub := "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\nprintf '%s\\n' \"$PWD\" \"${CGO_ENABLED-}\" \"${FORGE_E2E_REQUIRE_TOOLS-}\" > \"$DETAILS\"\necho 'candidate output'\nexit \"$GO_EXIT\"\n"
+			// Capture one argument per line, plus the environment and cwd identity,
+			// then return a controlled Go exit status. Compare directories in Bash:
+			// Git Bash's $PWD and Go's Windows paths have different spellings.
+			// No compiler, network or candidate code runs.
+			stub := "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$CAPTURE\"\ncwd_matches=false\nif [[ . -ef \"$EXPECTED_CWD\" ]]; then cwd_matches=true; fi\nprintf '%s\\n' \"$cwd_matches\" \"${CGO_ENABLED-}\" \"${FORGE_E2E_REQUIRE_TOOLS-}\" > \"$DETAILS\"\necho 'candidate output'\nexit \"$GO_EXIT\"\n"
 			if err := os.WriteFile(filepath.Join(bin, "go"), []byte(stub), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			capture, details := filepath.Join(dir, "args"), filepath.Join(dir, "details")
-			env := map[string]string{"PATH": bin + string(os.PathListSeparator) + os.Getenv("PATH"), "CAPTURE": capture, "DETAILS": details, "GO_EXIT": strconv.Itoa(tc.code), "RUNNER_OS": tc.runner, "RACE": tc.race, "TAGS": tc.tags, "RUN": tc.run, "PKGS": ". internal/pathglob/ pkg/a"}
+			env := map[string]string{"PATH": bin + string(os.PathListSeparator) + os.Getenv("PATH"), "CAPTURE": capture, "DETAILS": details, "EXPECTED_CWD": filepath.ToSlash(candidate), "GO_EXIT": strconv.Itoa(tc.code), "RUNNER_OS": tc.runner, "RACE": tc.race, "TAGS": tc.tags, "RUN": tc.run, "PKGS": ". internal/pathglob/ pkg/a"}
 			out, code := runMainBisectScript(t, script, candidate, env)
 			marker := fmt.Sprintf("MAIN_BISECT_EXIT=%d\n", tc.code)
 			if code != tc.code || strings.Count(out, "MAIN_BISECT_EXIT=") != 1 || !strings.HasSuffix(out, marker) || !strings.Contains(out, "candidate output\n") {
@@ -169,7 +171,7 @@ func TestMainBisectJudgement(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := candidate + "\n" + tc.cgo + "\n" + tc.tools + "\n"; string(raw) != want {
+			if want := "true\n" + tc.cgo + "\n" + tc.tools + "\n"; string(raw) != want {
 				t.Fatalf("cwd/environment=%q; want %q", raw, want)
 			}
 		})

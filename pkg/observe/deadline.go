@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -221,6 +222,7 @@ func (d Deadline) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			defer cancel()
 		}
 		stop := d.watch(ctx, procedure)
+		defer stop(errHandlerPanicked) // see errHandlerPanicked
 		resp, err := next(ctx, req)
 		stop(err)
 		return resp, markDeadline(ctx, err)
@@ -351,8 +353,17 @@ func markDeadline(ctx context.Context, err error) error {
 	return &deadlineError{err: err, origin: origin}
 }
 
+// errHandlerPanicked is the result a watched call ends with when the handler
+// panics. The panic unwinds past this slot to a recovery interceptor outside
+// it (which answers INTERNAL), so the slot never sees a return value; it
+// ends the watchdog from a defer instead. Before, nothing ended it, and every
+// recovered panic was followed by "rpc still in flight" warnings for a call
+// long since answered, repeating for the life of the process.
+var errHandlerPanicked = errors.New("handler panicked")
+
 // watch starts the watchdog for one unary call and returns the func that
-// ends it with the call's result.
+// ends it with the call's result. Only the first call of that func counts,
+// so a caller may also defer it to end the watchdog on a panic.
 func (d Deadline) watch(ctx context.Context, procedure string) func(error) {
 	after, repeat := d.SlowAfter, d.SlowRepeat
 	switch {
@@ -380,11 +391,14 @@ func (d Deadline) watch(ctx context.Context, procedure string) func(error) {
 			}
 		}
 	}()
+	var once sync.Once
 	return func(err error) {
-		close(done)
-		if elapsed := time.Since(start); elapsed >= after {
-			report(ctx, SlowCall{Procedure: procedure, Elapsed: elapsed, Done: true, Err: err})
-		}
+		once.Do(func() {
+			close(done)
+			if elapsed := time.Since(start); elapsed >= after {
+				report(ctx, SlowCall{Procedure: procedure, Elapsed: elapsed, Done: true, Err: err})
+			}
+		})
 	}
 }
 

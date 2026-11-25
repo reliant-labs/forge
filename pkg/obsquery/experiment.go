@@ -55,9 +55,10 @@ import (
 //   - account: OrgId (observe's org.id: the claims' org, the browser's
 //     setTelemetryOrg; tenant schema v29), else Props['account'] on an event
 //     that names no org. The SDK hashes the evaluation context's `account`
-//     attribute, so an app that measures by account sets that attribute to
-//     the org id its events carry; one whose accounts are not orgs tags its
-//     outcome events with an `account` prop instead.
+//     attribute and stamps it as the `account` prop of the flag_evaluated
+//     assignment, so an app that measures by account either sets that
+//     attribute to the org id its events carry, or, when its accounts are
+//     not orgs, tags only its OUTCOME events with an `account` prop.
 //
 // Every caller value (the change key, run, unit kind, outcome event and its
 // filter, the window and the times) is a bound parameter: none can become SQL

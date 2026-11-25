@@ -135,7 +135,8 @@ const (
 // PlanSections is the closed set, in display order.
 var PlanSections = []string{SectionStateful, SectionLB, SectionTrees, SectionDeliveryGrants, SectionObjects, SectionImages, SectionConfig, SectionSecrets, SectionDrift}
 
-// Plan is one reviewed deploy. Field names match controlplane.v1.DeployPlan.
+// Plan is one reviewed deploy. Field names match controlplane.v1.DeployPlan,
+// except ChangeWarnings, which PlanDeployResponse carries beside it.
 type Plan struct {
 	Digest string `json:"digest"`
 	// BaseDigest is the digest before chart findings were folded in by
@@ -152,6 +153,35 @@ type Plan struct {
 	// manufacturing a diff to approve.
 	ConfigIdentical bool      `json:"config_identical"`
 	ComputedAt      time.Time `json:"computed_at"`
+	// ChangeWarnings are the running Changes this deploy would stop (see
+	// [PlanChangeWarning]). Advisory and NOT digested, like Detail and
+	// ComputedAt: a Change launched or stopped between plan and approval
+	// must not make the approval stale. On the wire they travel BESIDE the
+	// plan (PlanDeployResponse.change_warnings), not inside DeployPlan; they
+	// are attached here so they ride wherever the plan is shown. Empty for a
+	// plan built locally, and from a control plane that predates them.
+	ChangeWarnings []PlanChangeWarning `json:"change_warnings,omitempty"`
+}
+
+// PlanChangeWarning is a running Change (pkg/changes) whose delivery names a
+// variant, or a whole key, that the candidate release no longer declares. The
+// deploy goes through and the control plane stops that Change, so everyone
+// gets the key's default. A warning only: never a refusal, never an
+// acknowledgement, never an exit code.
+type PlanChangeWarning struct {
+	ChangeID string `json:"change_id"`
+	Key      string `json:"key"`
+	// Mode is the Change's delivery: everyone, rollout or experiment.
+	Mode string `json:"mode,omitempty"`
+	// RunID is the running rollout's or experiment's run; empty when none.
+	RunID string `json:"run_id,omitempty"`
+	// UndeclaredVariants are the delivered variants the release no longer
+	// declares; empty when KeyUndeclared.
+	UndeclaredVariants []string `json:"undeclared_variants,omitempty"`
+	// KeyUndeclared: the release no longer declares the key at all.
+	KeyUndeclared bool `json:"key_undeclared,omitempty"`
+	// Detail is the control plane's one-line wording.
+	Detail string `json:"detail,omitempty"`
 }
 
 // PlanBasis is what a plan was computed AGAINST. Any change to it — another

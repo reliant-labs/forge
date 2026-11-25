@@ -17,9 +17,31 @@ variants, and an answer to "who gets it?" — its delivery mode:
 | `experiment` | a stable percentage, split across variants | an A/B test |
 
 One change moves from preview to experiment to everyone without being
-recreated or re-instrumented. Status: the evaluation SDK below ships; declaring
-changes in the project and steering their delivery from the console are in
-progress.
+recreated or re-instrumented.
+
+**Status: beta.** The evaluation SDK below ships, and so does the declaration
+(`changes.yaml` at the project root, shipped in every release, with generated
+typed accessors: `docs/changes.md`). Delivering each environment's policy to
+every hosted app, and steering it from the console's Experiments screen, are
+still rolling out; until the platform delivers a snapshot, every call site gets
+the default written in code, so it is safe to ship evaluation code now.
+
+## Declare it
+
+```yaml
+# changes.yaml
+version: 1
+changes:
+  new-checkout:
+    type: bool # bool | string | number | json
+    default: control
+    variants: { control: false, treatment: true }
+```
+
+`reliant forge generate` writes one accessor per change
+(`internal/changes/changes_gen.go`, `src/lib/changes_gen.ts`) whose fallback is
+the declared default. The control plane refuses to launch a variant the
+environment's deployed release does not declare.
 
 ## Evaluate in Go
 
@@ -85,12 +107,26 @@ snapshot) and the variant each sees. It applies under every mode but `off`, so
 your team keeps its variant while an experiment runs, and a previewed unit is
 never measured.
 
+## Deploying a release that drops a variant
+
+A deploy whose release no longer declares a variant a running change
+delivers, or the change's whole key, goes through, and the control plane
+stops that change (everyone gets the default) and records why. The plan
+`forge env deploy` prints says so first, under `running changes this deploy
+stops`, as a `[warn]` line naming the change, its run and the variant; `--json`
+carries it as `deploy_plan.change_warnings`. It is a warning only: no
+acknowledgement, no exit code. To keep the change running, keep the variant
+declared in `changes.yaml` until the change ends.
+
 ## What gets recorded
 
 Every evaluation through a store records the product event `flag_evaluated` —
 the same event `trackExposure` and other flag providers record — with
-`flag`, `variant`, `provider=forge`, `run`, `unit`, `reason` and `revision`.
-Only results a readout or a dashboard can use: enrolled ones (`rollout`,
+`flag`, `variant`, `provider=forge`, `run`, `unit`, `reason` and `revision`,
+plus `account` (the `account` attribute the change hashed) when its unit is
+`account`: a user or visitor id is a column of every event, an account id is
+not, so a readout counts an account-unit run by it on an event that names no
+org (in the browser, only in the tiers that carry ids). Only results a readout or a dashboard can use: enrolled ones (`rollout`,
 `experiment`, the unit's assignment, recorded before the app acts on it) plus
 `preview` and `everyone`. Once per unit, change, run and variant per day per
 process. Readouts count only enrolled rows of the run, by assigned unit. In

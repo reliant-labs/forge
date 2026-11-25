@@ -711,3 +711,45 @@ func anyIssue(fs []lintJSONFinding) bool {
 	}
 	return false
 }
+
+// TestNodeModulesWalkNeverLeavesTheProjectRoot: the walk for a hoisted
+// node_modules stops at the project root, and a frontend OUTSIDE the root has
+// no ancestor inside the bound at all. Before, the walk for such a frontend
+// never met its stop and climbed to the filesystem root, so a stray
+// /tmp/node_modules on the host made every t.TempDir() frontend look
+// installed and the eslint lane run instead of reporting it could not.
+func TestNodeModulesWalkNeverLeavesTheProjectRoot(t *testing.T) {
+	parent := t.TempDir()
+	fe := filepath.Join(parent, "web")
+	if err := os.MkdirAll(filepath.Join(parent, "node_modules", ".bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fe, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := "tsc"
+	if runtime.GOOS == "windows" {
+		bin = "tsc.cmd"
+	}
+	if err := os.WriteFile(filepath.Join(parent, "node_modules", ".bin", bin), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ancestor is the project root: a workspace that hoists.
+	if dir, ok := nearestNodeModulesDir(fe, parent); !ok || dir != parent {
+		t.Errorf("hoisted node_modules at the root: got %q, %v; want %q", dir, ok, parent)
+	}
+	if resolveLocalTSC(fe, parent) == "" {
+		t.Error("hoisted tsc at the root was not found")
+	}
+
+	// The frontend is outside an unrelated project root: its parent's
+	// node_modules is not the project's.
+	elsewhere := t.TempDir()
+	if dir, ok := nearestNodeModulesDir(fe, elsewhere); ok {
+		t.Errorf("walk left the project root and found %q", dir)
+	}
+	if got := resolveLocalTSC(fe, elsewhere); got != "" {
+		t.Errorf("walk left the project root and found tsc at %q", got)
+	}
+}

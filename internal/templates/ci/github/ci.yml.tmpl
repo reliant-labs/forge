@@ -387,7 +387,9 @@ jobs:
       - name: Install forge
 {{- template "install-forge" .}}
       - name: Install k3d
-        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        # The pinned k3d release binary, checked against its published
+        # sha256 — never a script piped from k3d's main branch.
+{{installK3dRun 8}}
       # Everything below goes THROUGH forge, exactly as .github/workflows/e2e.yml
       # does: the cluster the e2e env declares, the images it builds, the
       # context and namespace it deploys to, and the rollout wait. A raw

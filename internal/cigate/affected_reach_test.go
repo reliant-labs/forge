@@ -22,7 +22,7 @@ func reachListed(root string) func(context.Context, string, []string) (io.Reader
 		return listedPackage{ImportPath: "ex.com/m/" + name + ".test", Name: "main", Dir: filepath.Join(root, name), Deps: deps}
 	}
 	pkgs := []listedPackage{
-		pkg("a"), pkg("b", "ex.com/m/a"), pkg("e", "ex.com/m/b"), pkg("f", "ex.com/m/e"), pkg("c"),
+		pkg("a"), pkg("b", "ex.com/m/a"), {ImportPath: "ex.com/m/e", Name: "e", Dir: filepath.Join(root, "e"), Imports: []string{"ex.com/m/b"}, EmbedFiles: []string{"tmpl/e.tmpl"}}, pkg("f", "ex.com/m/e"), pkg("c"),
 		// b's external test imports a too; e's test variant of b is not e's import.
 		{ImportPath: "ex.com/m/b_test [ex.com/m/b.test]", Name: "b_test", Dir: filepath.Join(root, "b"), ForTest: "ex.com/m/b", Imports: []string{"ex.com/m/a"}},
 		{ImportPath: "ex.com/m/a [ex.com/m/e.test]", Name: "a", Dir: filepath.Join(root, "a"), ForTest: "ex.com/m/e", Imports: []string{"ex.com/m/x"}},
@@ -55,6 +55,11 @@ func TestComputeAffected_Reach(t *testing.T) {
 		{"direct defers transitive past the cap", &config.CIGateAffectedReach{Mode: "direct", TransitiveCap: 1}, "a/a.go", []string{"a", "b"}, []string{"e", "f"}, ReachDirect},
 		{"direct cap 0 defers every transitive importer", &config.CIGateAffectedReach{Mode: "direct"}, "a/a.go", []string{"a", "b"}, []string{"e", "f"}, ReachDirect},
 		{"direct within the cap runs them all", &config.CIGateAffectedReach{Mode: "direct", TransitiveCap: 2}, "a/a.go", []string{"a", "b", "e", "f"}, nil, ReachDirect},
+		// f links a only through b and e: deferred and named, never dropped.
+		{"deep link is deferred and named", &config.CIGateAffectedReach{Mode: "direct", TransitiveCap: 1}, "a/a.go", []string{"a", "b"}, []string{"e", "f"}, ReachDirect},
+		// A package's own change or an embedded file is direct whatever the cap.
+		{"own file changed is direct", &config.CIGateAffectedReach{Mode: "direct"}, "f/f.go", []string{"f"}, nil, ReachDirect},
+		{"embedded file changed is direct", &config.CIGateAffectedReach{Mode: "direct"}, "e/tmpl/e.tmpl", []string{"e", "f"}, nil, ReachDirect},
 		{"direct with nothing transitive", &config.CIGateAffectedReach{Mode: "direct"}, "e/e.go", []string{"e", "f"}, nil, ReachDirect},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,8 +82,8 @@ func TestComputeAffected_Reach(t *testing.T) {
 				if line := a.Line(); !strings.Contains(line, "deferred to the full gate") || !strings.Contains(line, "ex.com/m/f") {
 					t.Errorf("Line does not name the deferred packages: %s", line)
 				}
-				doc := NewDocumentAffected(a)
-				if doc == nil || !slices.Equal(doc.Deferred, a.Deferred) || doc.Reach != ReachDirect {
+				doc := a.Document()
+				if doc == nil || !slices.Equal(doc.Deferred, a.Deferred) || doc.Reach != ReachDirect || !doc.FullGateRequired {
 					t.Errorf("document affected = %+v", doc)
 				}
 				rows := ApplyAffected([]Check{{Name: UnitTests, Argv: []string{"task", "test"}}}, a)

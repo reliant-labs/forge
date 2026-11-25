@@ -1029,6 +1029,10 @@ type CIConfig struct {
 	// Gate extends `forge ci gate` — the local gate behind `task ci` and
 	// `task ci:checks` — with the project's own checks.
 	Gate CIGateConfig `yaml:"gate,omitempty"`
+	// License is the policy of the gate's license-check row: an allowlist
+	// of license names and per-module exceptions. Absent, the row keeps its
+	// forbidden/restricted blocklist. See CILicenseConfig.
+	License CILicenseConfig `yaml:"license,omitempty"`
 
 	Workflows map[string]bool `yaml:"workflows,omitempty"` // per-workflow opt-out; see ci_workflows.go
 }
@@ -1158,6 +1162,19 @@ type CIGateAffectedRule struct {
 	// Reason is printed beside what the rule selected; for a Full rule it is
 	// the cause the gate gives for running the full suite.
 	Reason string `yaml:"reason,omitempty"`
+	// On widens what the rule matches. "go-source" matches every changed
+	// .go file as well as Paths (which may then be empty): a walker test
+	// that reads the whole tree's Go source runs on any Go change. A Go file
+	// matched only this way keeps its own mapping and is not claimed.
+	On string `yaml:"on,omitempty"`
+	// PackagesImporting are import paths (or ./dir patterns) of helper
+	// packages: when the rule matches, every test package whose test files
+	// import one of them runs (go list's TestImports and XTestImports).
+	PackagesImporting []string `yaml:"packages_importing,omitempty"`
+	// FullChecks name gate rows that run whole when the rule matches: a
+	// path-gated check runs even with no change under its paths, and a
+	// test-<frontend> row runs the frontend's whole `test` script.
+	FullChecks []string `yaml:"full_checks,omitempty"`
 }
 
 // CIGateAffectedReach is ci.gate.affected_reach. Mode "direct" selects the
@@ -1169,6 +1186,10 @@ type CIGateAffectedReach struct {
 	Mode          string `yaml:"mode,omitempty"`
 	TransitiveCap int    `yaml:"transitive_cap,omitempty"`
 }
+
+// CIGateOnGoSource is the CIGateAffectedRule.On value that matches every
+// changed .go file.
+const CIGateOnGoSource = "go-source"
 
 // CIGateProbe is a command whose success a check needs before it runs.
 type CIGateProbe struct {

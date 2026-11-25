@@ -31,8 +31,11 @@ func (g *packageGraph) addDirectImports(path string, p listedPackage) {
 	}
 }
 
-// applyReach narrows a.Packages under mode direct: the changed packages,
-// those a rule names, and their direct importers stay. The rest — transitive
+// applyReach narrows a.Packages under mode direct: the changed packages
+// (a package whose own file, or a file it embeds, changed — selectChanges
+// maps both to changedPkgs), those a rule names, and their direct importers
+// (production or test imports) stay. A package whose test binary links a
+// change only through a deeper dependency is transitive by design. The rest — transitive
 // importers — stay too when they number at most the cap, and are otherwise
 // moved to a.Deferred for the full gate. This mirrors reliant's
 // tools/test-affected `-reach direct -go-reach-cap N`: the budget is all or

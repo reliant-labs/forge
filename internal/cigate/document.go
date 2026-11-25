@@ -35,29 +35,9 @@ type Document struct {
 	WallMS int64           `json:"wall_ms"`
 	Counts DocumentCounts  `json:"counts"`
 	Checks []DocumentCheck `json:"checks"`
-	// Affected is the unit lane's affected-mode reach; absent when the
-	// gate did not narrow it.
+	// Affected is the unit lane's affected-mode decision, when the gate
+	// computed one: the packages, the build set, and why each was chosen.
 	Affected *DocumentAffected `json:"affected,omitempty"`
-}
-
-// DocumentAffected is what ci.gate.affected_reach did to the unit lane.
-type DocumentAffected struct {
-	// Reach is "all" or "direct"; TransitiveCap the direct mode's cap.
-	Reach         string `json:"reach"`
-	TransitiveCap int    `json:"transitive_cap,omitempty"`
-	// Packages are the test packages run; Deferred those a direct reach
-	// left to the full gate. Both always lists.
-	Packages []string `json:"packages"`
-	Deferred []string `json:"deferred"`
-}
-
-// NewDocumentAffected is a's document section, or nil in full mode.
-func NewDocumentAffected(a Affected) *DocumentAffected {
-	if a.Full || a.Reach == "" {
-		return nil
-	}
-	return &DocumentAffected{Reach: a.Reach, TransitiveCap: a.TransitiveCap,
-		Packages: append([]string{}, a.Packages...), Deferred: append([]string{}, a.Deferred...)}
 }
 
 // Verdicts of a Document.
@@ -143,12 +123,15 @@ type DocumentInput struct {
 	Dirs   map[string]string
 	// ReadLog reads a check's log; nil reads it from disk.
 	ReadLog func(path string) ([]byte, error)
+	// Affected is the affected-mode decision; nil when none was computed.
+	Affected *Affected
 }
 
 // NewDocument builds the document of one gate run.
 func NewDocument(rep Report, in DocumentInput) Document {
-	doc := Document{Lane: rep.Lane, Tier: in.Tier, Commit: rep.Head, Dirty: rep.Dirty, WallMS: rep.Wall.Milliseconds(), Checks: []DocumentCheck{}, Affected: rep.Affected}
+	doc := Document{Lane: rep.Lane, Tier: in.Tier, Commit: rep.Head, Dirty: rep.Dirty, WallMS: rep.Wall.Milliseconds(), Checks: []DocumentCheck{}}
 	doc.Stamp(DocumentSchema, in.Err)
+	doc.Affected = in.Affected.Document()
 	switch {
 	case !in.Ran:
 		doc.Verdict = VerdictError

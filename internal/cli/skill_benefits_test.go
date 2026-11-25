@@ -102,7 +102,7 @@ func TestEntrySkillsOpenWithTheGlance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Where it does not fit", "static export", "per vCPU-hour", "No CPU, memory or storage is included", "reliantlabs.io/pricing"} {
+	for _, want := range []string{"Where it does not fit", "No hosted cron jobs or operators", "per vCPU-hour", "No CPU, memory or storage is included", "reliantlabs.io/pricing"} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("compare skill is missing %q", want)
 		}

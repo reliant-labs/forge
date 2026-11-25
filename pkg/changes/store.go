@@ -187,7 +187,8 @@ func (s *Store) warnOnce(msg string, err error) {
 //
 // With no OnEvaluate it records the product event flag_evaluated (through
 // pkg/observe's Track, so it carries the caller's user and org ids) with the
-// properties flag, variant, provider=forge, run, unit, reason and revision.
+// properties flag, variant, provider=forge, run, unit, reason and revision,
+// plus account (the unit id) when the change's unit is account.
 // Only results a readout or a dashboard can use are recorded: enrolled ones
 // (ReasonRollout, ReasonExperiment), which are a unit's assignment, plus
 // ReasonPreview and ReasonEveryone. One event per unit, change, run and

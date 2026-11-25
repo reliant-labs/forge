@@ -47,7 +47,7 @@ func TestApplyAffectedMode_GatesPathsWithoutNarrowingUnit(t *testing.T) {
 		{Name: "electron-tests", Paths: []string{"electron/**"}, Argv: []string{"npm", "test"}},
 	}
 	var out bytes.Buffer
-	got, _ := applyAffectedMode(context.Background(), &out, checks, affectedArgs{root: root, skips: []string{cigate.UnitTests}})
+	got := applyAffectedMode(context.Background(), &out, checks, affectedArgs{root: root, skips: []string{cigate.UnitTests}})
 	if got[1].NotApplicable == "" || got[0].NotApplicable != "" || len(got[0].Argv) != 2 {
 		t.Fatalf("unit %+v / electron %+v", got[0], got[1])
 	}
@@ -55,7 +55,7 @@ func TestApplyAffectedMode_GatesPathsWithoutNarrowingUnit(t *testing.T) {
 		t.Errorf("printed %q; the unit lane's mode line belongs to a run that narrows it", out.String())
 	}
 
-	got, _ = applyAffectedMode(context.Background(), &out, checks, affectedArgs{root: root, skips: []string{cigate.UnitTests}, full: true})
+	got = applyAffectedMode(context.Background(), &out, checks, affectedArgs{root: root, skips: []string{cigate.UnitTests}, full: true})
 	if got[1].NotApplicable != "" {
 		t.Errorf("--full runs every path-gated check: %+v", got[1])
 	}

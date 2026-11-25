@@ -195,11 +195,12 @@ type deployClaimJSON struct {
 // afterClaimNote is what the person who claims a deploy gets, for the agent to
 // pass on. Every clause is the control plane's behaviour on claim
 // (control-plane internal/claimable: the deploy's org becomes theirs, the
-// agent's claimable token is revoked, the org follows the normal plan rules)
-// and the claim page's own copy ("The free plan includes one static site").
+// agent's claimable token is revoked, the org follows the normal plan rules:
+// free static hosting covers one organization per person, with no limit on
+// its sites, and anything else needs hosting billing).
 func afterClaimNote(env string) string {
-	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): the free plan "+
-		"includes one static site, and a backend or database needs billing on their account. "+
+	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): free static hosting "+
+		"covers one organization per person, with no limit on its sites, and a backend or database needs hosting billing on their account. "+
 		"This machine's claimable credential stops working at the claim; to redeploy as them: %s login, then %s env deploy %s",
 		Name(), Name(), env)
 }
@@ -294,10 +295,21 @@ func refuseClaimableFlags(envName string, f deployCmdFlags) error {
 func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFlags) error {
 	report := newDeployReport(envName, f.jsonOut)
 	out := progressWriter(f.jsonOut)
+	// What a refusal reports (claimable_telemetry.go): the deploy's shape once
+	// the env rendered, the step that refused when the error does not say,
+	// and whether the control plane already heard the deploy (availability
+	// and start refusals are not local-only refusals).
+	var (
+		shape       cloud.DeployShape
+		stage       string
+		serverHeard bool
+	)
 	err := func() error {
+		stage = refusedInvalidFlags
 		if err := refuseClaimableFlags(envName, f); err != nil {
 			return err
 		}
+		stage = ""
 		adopted, err := adoptBeforeClaimableDeploy(ctx, out)
 		if err != nil {
 			return err
@@ -308,6 +320,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		// From here every control-plane call names the deploy's shape.
+		shape = claimableShapeOf(entities)
+		ctx = cloud.WithDeployShape(ctx, shape)
 		if entities == nil || !entities.HasHosted() || entities.ControlPlane == nil {
 			return fmt.Errorf("env %q publishes nothing to a hosted control plane, so there is nothing to deploy with --claimable.\n"+
 				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), then: %s env deploy %s --claimable", envName, Name(), envName)
@@ -322,7 +337,9 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 			return err
 		}
 		// One availability answer serves the caps every check below judges
-		// by, the preview and the preflight.
+		// by, the preview and the preflight. This request already tells the
+		// control plane about the deploy, even when it refuses availability.
+		serverHeard = true
 		answer := askClaimableAvailability(ctx, ep)
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
@@ -336,9 +353,11 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
 			return claimableIneligibleError(envName, limits.limits, reasons)
 		}
+		stage = refusedUnmergedMigrations
 		if err := claimableMigrationNote(out, projectDir, entities); err != nil {
 			return err
 		}
+		stage = ""
 		project := hostedProjectName()
 		if project == "" {
 			return fmt.Errorf("--claimable needs the project's name: set `name` in forge.yaml, then: %s env deploy %s --claimable", Name(), envName)
@@ -353,6 +372,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if err != nil {
 			return err
 		}
+		serverHeard = false
 		restore := cloud.UseClaimableCredential(ep, session.cred.Token, session.cred.ExpiresAt)
 		defer restore()
 		compute := needsCompute(entities)
@@ -436,6 +456,17 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 	}()
 	if err == nil {
 		return nil
+	}
+	if !f.promote.planOnly && !serverHeard && !errors.Is(err, context.Canceled) {
+		// Refused before the control plane recorded a deploy attempt: it
+		// never hears of this one, so forge counts it. After the attempt
+		// opened, the attempt's own close records the failure.
+		if opened, phase := deployAttemptFrom(ctx).progress(); !opened {
+			if phase == "build" {
+				stage = refusedBuild
+			}
+			trackClaimableRefused(claimableRefusedReason(err, stage), shape)
+		}
 	}
 	// A refusal raised on this path owes a --json caller its envelope. An error
 	// from inside the deploy keeps the deploy's own reporting.
@@ -1388,7 +1419,8 @@ func printAfterClaim(w io.Writer, env, consoleURL string) {
 	if consoleURL != "" {
 		fmt.Fprintf(w, "  Its releases, logs and dashboards: %s (signed in)\n", consoleURL)
 	}
-	fmt.Fprintf(w, "  The free plan includes one static site; a backend or database needs billing on their account.\n")
+	fmt.Fprintf(w, "  Free static hosting covers one organization per person, with no limit on its sites;\n")
+	fmt.Fprintf(w, "  a backend or database needs hosting billing on their account.\n")
 	fmt.Fprintf(w, "  The claim revokes this machine's claimable credential. To redeploy as them:\n")
 	fmt.Fprintf(w, "  %s login, then %s env deploy %s\n", Name(), Name(), env)
 }

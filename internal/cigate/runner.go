@@ -112,6 +112,10 @@ type Check struct {
 	// Deferred, when set, reports the row as DEFERRED with this reason and
 	// runs nothing: the selected tier leaves the check to another tier.
 	Deferred string
+	// Failed, when set, reports the row as FAIL with this reason and runs
+	// nothing: the plan itself found the check cannot pass (a ci.license
+	// exception past its review date). CI_SKIP still skips it.
+	Failed string
 	// Done returns a non-empty note when the check's work is already done
 	// (dependencies installed); the row is PASS and nothing runs.
 	Done func() string
@@ -208,9 +212,6 @@ type Report struct {
 	Dirty bool
 	// Wall is the gate's elapsed time.
 	Wall time.Duration
-	// Affected is the unit lane's affected-mode reach, set by the caller
-	// that computed it (the --json document's "affected").
-	Affected *DocumentAffected
 }
 
 // Failed reports whether the gate is red: any FAIL, or any SKIPPED the caller
@@ -751,6 +752,9 @@ func (s *scheduler) run() {
 			res.Status, res.Note = NA, c.NotApplicable
 		case skip[c.Name]:
 			res.Status, res.Note, res.Allowed = Skip, "not run", true
+		case c.Failed != "":
+			res.Status, res.Note, res.Tail = Fail, c.Failed, c.Failed
+			s.out.printf("✗ %s  FAIL — %s\n", c.Name, c.Failed)
 		default:
 			if commit, ok := s.cached(c); ok {
 				res.Status, res.Cached, res.Note = Pass, commit, "this tree passed before"

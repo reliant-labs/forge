@@ -28,7 +28,10 @@ events, and CLIs (`pkg/observe/cliev`).
 Also added by the Events design: an org actor (`org.id`, `observe.WithActor`;
 control-plane tenant schema v29 `OrgId`) and the forge CLI's own anonymous
 `forge_cli_first_run` (on by default with a notice; `DO_NOT_TRACK`,
-`FORGE_TELEMETRY=off`, off in CI).
+`FORGE_TELEMETRY=off`, off in CI), and `forge_claimable_refused`: one per
+`forge env deploy --claimable` forge itself refuses before the control plane
+records an attempt, carrying only its reason (a fixed list), version, OS,
+architecture, harness, and the deploy's template kind and auth mode.
 
 The rest of this file is the proposal as it stood on 2026-10-21.
 

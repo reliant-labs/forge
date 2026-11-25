@@ -995,7 +995,7 @@ func TestHooksTemplate_SameMessageNameFromTwoModules(t *testing.T) {
 	for _, want := range []string{
 		"createQueryHook<typeof services_alpha_v1_alpha_pb_GetThingRequestSchema, services_alpha_v1_alpha_pb_Thing>(",
 		"createQueryHook<typeof shared_v1_types_pb_GetThingRequestSchema, shared_v1_types_pb_Thing>(",
-		"const client = connectClient(AlphaService);",
+		"const clientOf = scopedClient(AlphaService, connectClient(AlphaService));",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hooks missing %q:\n%s", want, out)

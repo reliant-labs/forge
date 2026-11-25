@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -102,6 +104,74 @@ func TestK3dPinMatchesForgesOwnCI(t *testing.T) {
 		if !strings.Contains(string(suite), want) {
 			t.Errorf(".github/workflows/e2e-suite.yml lacks %q: move forge's own k3d pin with K3dVersion", want)
 		}
+	}
+}
+
+// Exercise both architecture branches without network or root privileges. Only
+// the expected digest is replaced with a fixture digest; verification still
+// uses real sha256sum, and sudo redirects the real install into the sandbox.
+func TestInstallK3dScript_InstallsVerifiedBinary(t *testing.T) {
+	for _, runner := range []struct {
+		machine string
+		arch    string
+	}{
+		{"x86_64", "amd64"},
+		{"aarch64", "arm64"},
+		{"arm64", "arm64"},
+	} {
+		t.Run(runner.machine, func(t *testing.T) {
+			bash, err := exec.LookPath("bash")
+			if err != nil {
+				t.Skip("bash not on PATH")
+			}
+			for _, tool := range []string{"sha256sum", "install"} {
+				if _, err := exec.LookPath(tool); err != nil {
+					t.Skipf("%s not on PATH (coreutils)", tool)
+				}
+			}
+			bin := t.TempDir()
+			tmp := t.TempDir()
+			fixture := []byte("#!/bin/sh\n[ \"$#\" -eq 1 ] && [ \"$1\" = version ] || exit 1\necho verified-k3d-version\n")
+			fixturePath := filepath.Join(tmp, "fixture")
+			if err := os.WriteFile(fixturePath, fixture, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stubs := map[string]string{
+				"uname": "#!/bin/sh\necho " + runner.machine + "\n",
+				"curl": `#!/bin/sh
+set -eu
+[ "$#" -eq 3 ] && [ "$1" = -fsSLo ] && [ "$3" = "$EXPECTED_URL" ]
+cp "$FIXTURE" "$2"
+`,
+				"sudo": `#!/bin/sh
+set -eu
+[ "$#" -eq 5 ] && [ "$1" = install ] && [ "$2" = -m ] && [ "$3" = 0755 ] && [ "$5" = /usr/local/bin/k3d ]
+install -m 0755 "$4" "$INSTALL_BIN/k3d"
+`,
+			}
+			for name, body := range stubs {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := strings.ReplaceAll(installK3dScript(), k3dLinuxSHA256[runner.arch], fmt.Sprintf("%x", sha256.Sum256(fixture)))
+			cmd := exec.Command(bash, "-c", script)
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+string(os.PathListSeparator)+"/usr/bin:/bin",
+				"RUNNER_TEMP="+tmp, "FIXTURE="+fixturePath, "INSTALL_BIN="+bin,
+				"EXPECTED_URL="+k3dReleaseURL(runner.arch))
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("verified installation failed: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), ": OK") || !strings.Contains(string(out), "verified-k3d-version") {
+				t.Fatalf("expected real checksum verification and installed binary execution:\n%s", out)
+			}
+			installed, err := os.ReadFile(filepath.Join(bin, "k3d"))
+			if err != nil || string(installed) != string(fixture) {
+				t.Fatalf("installed bytes differ from verified fixture: %v", err)
+			}
+		})
 	}
 }
 

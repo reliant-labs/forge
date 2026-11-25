@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/reliant-labs/forge/internal/goexec"
 	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
@@ -192,7 +193,7 @@ func TestEvictDropsAnOpenWindowBeforeASpentOne(t *testing.T) {
 	}
 	cmd := exec.Command("go", "test", "-count=1", "./...")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=")
+	cmd.Env = goexec.WithTrimpath(append(os.Environ(), "GOWORK=off", "GOFLAGS="))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("the scaffolded limiter misbehaves: %v\n%s\n--- limiter.go ---\n%s", err, out, b.String())
 	}

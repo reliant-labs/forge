@@ -47,6 +47,8 @@ func modulesFixture(t *testing.T) (string, func(context.Context, string, []strin
 			}), nil
 		}
 		return render([]listedPackage{
+			{ImportPath: "ex.com/sdk/client", Name: "client", Dir: filepath.Join(sdk, "client")},
+			{ImportPath: "ex.com/sdk/util", Name: "util", Dir: filepath.Join(sdk, "util")},
 			{ImportPath: "ex.com/m/app", Name: "app", Dir: filepath.Join(root, "app"), Deps: []string{"ex.com/sdk/client", "ex.com/sdk/util"}},
 			{ImportPath: "ex.com/m/other", Name: "other", Dir: filepath.Join(root, "other")},
 			{ImportPath: "ex.com/m/app.test", Name: "main", Dir: filepath.Join(root, "app"), Deps: []string{"ex.com/m/app [ex.com/m/app.test]", "ex.com/sdk/client", "ex.com/sdk/util"}},
@@ -69,7 +71,7 @@ func TestComputeAffected_ReplacedModules(t *testing.T) {
 		pkgs       []string
 		mod        *ModuleTests
 	}{
-		{name: "default is unchanged: full suite", changed: []string{"sdk/go/util/u.go"}, full: true},
+		{name: "default uses the root graph without nested tests", changed: []string{"sdk/go/util/u.go"}, pkgs: []string{"ex.com/m/app"}},
 		{name: "source maps into the root graph and the module", mode: "auto", changed: []string{"sdk/go/util/u.go"},
 			pkgs: []string{"ex.com/m/app"}, mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
 		{name: "a module test file runs only in the module", mode: "auto", changed: []string{"sdk/go/client/c_test.go"},
@@ -96,6 +98,44 @@ func TestComputeAffected_ReplacedModules(t *testing.T) {
 				t.Errorf("Modules = %+v, want [%+v]", a.Modules, *tc.mod)
 			}
 		})
+	}
+}
+
+func TestComputeAffected_ReplacedModuleDifferentPath(t *testing.T) {
+	root, list := modulesFixture(t)
+	sdk := filepath.Join(root, "sdk", "go")
+	if err := os.WriteFile(filepath.Join(sdk, "go.mod"), []byte("module ex.com/fork\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The root imports ex.com/sdk via its replacement; the nested module
+	// lists itself under its own directive, ex.com/fork.
+	goList := func(ctx context.Context, dir string, env []string) (io.Reader, error) {
+		r, err := list(ctx, dir, env)
+		if err != nil || dir != sdk {
+			return r, err
+		}
+		data, err := io.ReadAll(r)
+		return bytes.NewReader(bytes.ReplaceAll(data, []byte("ex.com/sdk"), []byte("ex.com/fork"))), err
+	}
+	a := ComputeAffected(context.Background(), AffectedInput{Root: root, Modules: "auto",
+		Git: fakeGit{branch: "f", changed: []string{"sdk/go/util/u.go"}}.run, GoList: goList})
+	if a.Full || !equal(a.Packages, []string{"ex.com/m/app"}) {
+		t.Fatalf("root selection = %+v, want affected app", a)
+	}
+	if len(a.Modules) != 1 || !equal(a.Modules[0].Packages, []string{"ex.com/fork/client", "ex.com/fork/util"}) {
+		t.Fatalf("nested selection = %+v, want fork client and util", a.Modules)
+	}
+}
+
+func TestComputeAffected_ReplacedModuleUnmappedSource(t *testing.T) {
+	root, list := modulesFixture(t)
+	a := ComputeAffected(context.Background(), AffectedInput{Root: root, Modules: "auto",
+		Git: fakeGit{branch: "f", changed: []string{"sdk/go/missing/m.go"}}.run, GoList: list})
+	if !a.Full || a.Reason != "sdk/go/missing/m.go cannot be mapped to a package in the root graph" {
+		t.Fatalf("selection = %+v, want conservative full root suite", a)
+	}
+	if len(a.Modules) != 1 || !a.Modules[0].Full {
+		t.Fatalf("nested selection = %+v, want full nested suite", a.Modules)
 	}
 }
 

@@ -19,8 +19,9 @@ import (
 // root's `go list ./...` stops at dir's go.mod, so without this a change
 // under dir is owned by no package and runs the full suite. With it:
 //
-//   - a non-test .go file maps to <module path>/<rel dir> in the root graph,
-//     so the root packages whose test binaries link it are selected;
+//   - a non-test .go file maps by directory to the actual root graph,
+//     so the root packages whose test binaries link it are selected; if the
+//     graph cannot place it, the root conservatively runs its full suite;
 //   - the nested module's own affected tests run in a test-mod-<dir> row,
 //     `go test` in the module's directory, chosen from its own go list;
 //   - its go.mod / go.sum runs that module's full suite. The root goes full
@@ -93,16 +94,16 @@ func replacedModules(root string) []localModule {
 }
 
 // nestedChanges splits changed into what the replaced local modules take and
-// what the root still judges. rootPkgs are root-graph packages the module
-// files change; rest goes on to selectChanges.
+// what the root still judges. rootFiles must be resolved against the root's
+// actual package graph; rest goes on to selectChanges.
 type nestedChanges struct {
-	rootPkgs map[string]bool
-	rest     []string
-	tests    []ModuleTests
+	rootFiles []string
+	rest      []string
+	tests     []ModuleTests
 }
 
 func splitNestedModules(ctx context.Context, in AffectedInput, list func(context.Context, string, []string) (io.Reader, error), changed []string) nestedChanges {
-	nc := nestedChanges{rootPkgs: map[string]bool{}}
+	nc := nestedChanges{}
 	mods := replacedModules(in.Root)
 	if len(mods) == 0 {
 		nc.rest = changed
@@ -128,11 +129,9 @@ func splitNestedModules(ctx context.Context, in AffectedInput, list func(context
 		case rel == "go.mod" || rel == "go.sum" || strings.HasSuffix(rel, "_test.go") && !underTestdata(rel):
 			// The module's own business: its row runs.
 		case strings.HasSuffix(rel, ".go") && !underTestdata(rel):
-			pkg := mods[i].path
-			if d := path.Dir(rel); d != "." {
-				pkg += "/" + d
-			}
-			nc.rootPkgs[pkg] = true
+			// A replacement's module directive need not be the import path
+			// used by the root. Resolve its directory after listing the root.
+			nc.rootFiles = append(nc.rootFiles, f)
 		default:
 			nc.rest = append(nc.rest, f)
 		}

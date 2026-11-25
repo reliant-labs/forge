@@ -209,7 +209,11 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	if reason != "" {
 		return fullAfterDiff(reason)
 	}
-	for pkg := range nested.rootPkgs {
+	for _, f := range nested.rootFiles {
+		pkg, ok := g.owner(f)
+		if !ok {
+			return fullAfterDiff(f + " cannot be mapped to a package in the root graph")
+		}
 		sel.changedPkgs[pkg] = true
 	}
 	a.Total = len(g.testDeps)

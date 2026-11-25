@@ -3510,13 +3510,13 @@ _Enforced · Reliant hosting_
 
 ### Posted pay-as-you-go hosting rates
 
-Reliant hosting's posted rates are $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage, on what each pod requests. No CPU, memory or storage is included, on any plan, so a workload is billed from its first vCPU-hour and GiB-hour: about $8.34 a month for an always-on service at 0.1 vCPU and 512 MiB, and $20.14 for managed Postgres at 0.25 vCPU, 1 GiB and 10 GiB. A $5 invoice minimum applies, and static-site egress is included to 10 GiB a month, then $0.10 per GiB.
+Reliant hosting's posted rates are $0.0455 per vCPU-hour, $0.01375 per GiB-hour of memory and $0.18 per GiB-month of storage, on what each pod requests. No CPU, memory or storage is included, on any plan, so a workload is billed from its first vCPU-hour and GiB-hour: about $18.34 a month for an always-on service at the 0.25 vCPU and 1 GiB a scaffolded service requests ($9.17 at 0.125 vCPU and 512 MiB, the smallest shape hosting admits), and $20.14 for managed Postgres at 0.25 vCPU, 1 GiB and 10 GiB. A $5 invoice minimum applies, and static-site egress is included to 10 GiB a month, then $0.10 per GiB.
 
 _Enforced · Reliant hosting_
 
 **Use:** `forge env shape <env>` prints what each workload requests. Current terms, and what is billed today: https://reliantlabs.io/pricing.
 
-**Why:** The rates are the pricing-v2 list (2026-11-06) in control-plane's `internal/plansconfig/pricing.yaml`, the file reliantlabs.io/pricing renders. Hosting is pay-as-you-go beside the machine plans: every plan there sets `included_cpu_hours`, `included_memory_gib_hours` and `included_storage_gib_hours` to 0. The monthly figures assume 730 hours.
+**Why:** The rates are the pricing-v2 list (2026-11-06) in control-plane's `internal/plansconfig/pricing.yaml`, the file reliantlabs.io/pricing renders. Hosting is pay-as-you-go beside the machine plans: every plan there sets `included_cpu_hours`, `included_memory_gib_hours` and `included_storage_gib_hours` to 0. The monthly figures assume 730 hours. Every quoted shape sits on the hosted shape band admission enforces (`pkg/deploy` CheckShapeBand: CPU in steps of 125m, exactly 4 GiB of memory per vCPU), so each is one a hosted deploy can actually request.
 
 **Evidence:**
 

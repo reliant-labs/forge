@@ -154,6 +154,13 @@ message PurgePostsResponse {}
 	runCmdTimeout(t, webDir, 5*time.Minute, "npx", "--no-install", "vitest", "run",
 		"src/lib/auth/context.test.tsx", "src/components/session_nav.test.tsx")
 
+	// The hand-written rpcs above are formatted by the buf the proto-format
+	// lane resolves, not by this file: buf releases lay out a one-field
+	// option literal differently (1.50 splits it, 1.71 joins it), so no
+	// literal layout here passes on every machine.
+	if out, err := runLintE2E(t, projectDir, contractlintDir, forgeBin, "lint", "--proto-format", "--fix"); err != nil {
+		t.Fatalf("forge lint --proto-format --fix: %v\n%s", err, out)
+	}
 	lintOut, lintErr := runLintE2E(t, projectDir, contractlintDir, forgeBin, "lint", "--no-fix")
 	if lintErr != nil {
 		t.Fatalf("forge lint on a --auth-mode none project: %v\n%s", lintErr, lintOut)

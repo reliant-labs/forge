@@ -30,6 +30,8 @@
 // resolve, an untracked template variable — is OPEN and never checked. So a
 // finding is a reference the data provably cannot satisfy, never a guess; the
 // cost is that an open site is unchecked, which the Report's counts expose.
+//
+//forge:exclude-contract: a test-guard checker: one pure function (Scan) over source maps and the value records it returns; its only caller is this package's own repo test, so there is no seam for a contract to describe
 package tmplfields
 
 import (

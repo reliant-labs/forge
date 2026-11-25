@@ -73,7 +73,31 @@ const (
 // and is reported as unverified. Unverified is not OK: it fails the check
 // like a problem does, under the same gate, because a push the check never
 // judged is exactly the push it exists to stop.
-var configCheckTimeout = 30 * time.Second
+//
+// The bound also covers `docker run` starting the container, which the
+// process cannot be timed apart from, and that is not milliseconds on a busy
+// host: control-plane's release host took 37s to run /bin/true in its image
+// at load 150 on 48 CPUs, and a 30s bound failed 8 of 18 healthy workloads
+// of a release cut (control-plane #3625), a different 4 of 18 on a re-run.
+// So the bound is generous, a workload that runs out of it is checked once
+// more, alone (runConfigChecks), and FORGE_CONFIG_CHECK_TIMEOUT (a Go
+// duration) sets it for a host slower still. A command that truly blocks
+// costs two bounds in a failing build, never a passing one.
+var configCheckTimeout = 2 * time.Minute
+
+// configCheckTimeoutEnv overrides configCheckTimeout.
+const configCheckTimeoutEnv = "FORGE_CONFIG_CHECK_TIMEOUT"
+
+// effectiveConfigCheckTimeout is configCheckTimeout, or the duration
+// FORGE_CONFIG_CHECK_TIMEOUT names when it is a positive Go duration.
+func effectiveConfigCheckTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv(configCheckTimeoutEnv)); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return configCheckTimeout
+}
 
 // configCheckParallel is how many checks run at once.
 const configCheckParallel = 4
@@ -291,7 +315,9 @@ func runConfigChecks(ctx context.Context, image string, targets []configCheckTar
 			run = append(run, t)
 		}
 	}
+	timeout := effectiveConfigCheckTimeout()
 	outcomes := make([]configCheckOutcome, len(run))
+	timedOut := make([]bool, len(run))
 	sem := make(chan struct{}, configCheckParallel)
 	var wg sync.WaitGroup
 	for i, t := range run {
@@ -300,19 +326,29 @@ func runConfigChecks(ctx context.Context, image string, targets []configCheckTar
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			outcomes[i] = checkOneWorkload(ctx, image, t)
+			outcomes[i], timedOut[i] = checkOneWorkload(ctx, image, t, timeout)
 		}(i, t)
 	}
 	wg.Wait()
+	// A workload that ran out of time may only have waited on a busy
+	// container runtime (configCheckTimeout): check it once more, alone, so
+	// the verdict is the process's and not the host's load.
+	for i, t := range run {
+		if timedOut[i] && ctx.Err() == nil {
+			outcomes[i], _ = checkOneWorkload(ctx, image, t, timeout)
+		}
+	}
 	return outcomes, skips
 }
 
-func checkOneWorkload(ctx context.Context, image string, t configCheckTarget) configCheckOutcome {
-	cctx, cancel := context.WithTimeout(ctx, configCheckTimeout)
+// checkOneWorkload runs one target under timeout; timedOut says it printed
+// no result before the bound.
+func checkOneWorkload(ctx context.Context, image string, t configCheckTarget, timeout time.Duration) (_ configCheckOutcome, timedOut bool) {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	stdout, stderr, err := configCheckRunner(cctx, image, t)
 	if r, ok := forgeconfig.ParseCheckResult(stdout); ok {
-		return configCheckOutcome{Workload: t.Workload, Result: &r}
+		return configCheckOutcome{Workload: t.Workload, Result: &r}, false
 	}
 	// A clean exit with no result is a command that reads no typed config:
 	// say how such a command joins the check (a `db migrate` scaffolded
@@ -321,15 +357,17 @@ func checkOneWorkload(ctx context.Context, image string, t configCheckTarget) co
 		"variables answers the check by calling config.CheckVariables (forge/pkg/config) with them first — " +
 		"the scaffolded `db migrate` does it in checkMigratorConfig (cmd/<binary>/cmd/db.go)"
 	switch {
-	case errors.Is(cctx.Err(), context.DeadlineExceeded):
-		why = fmt.Sprintf("it printed no result within %s (a command that loads no config, or blocks before it)", configCheckTimeout)
+	case errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
+		timedOut = true
+		why = fmt.Sprintf("it printed no result within %s (a command that loads no config, or blocks before it; "+
+			"on a host whose container runtime is slower than that to start it, raise %s)", timeout, configCheckTimeoutEnv)
 	case err != nil:
 		why = fmt.Sprintf("it ended (%v) before loading its config", err)
 	}
 	if tail := lastLines(stderr, 3); tail != "" {
 		why += ": " + tail
 	}
-	return configCheckOutcome{Workload: t.Workload, Unverified: why}
+	return configCheckOutcome{Workload: t.Workload, Unverified: why}, timedOut
 }
 
 func lastLines(s string, n int) string {

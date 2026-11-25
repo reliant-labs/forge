@@ -5,7 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -86,14 +89,23 @@ func TestRootsKCL_TwoRootsRenderDisjointEnv(t *testing.T) {
 	src := RootsKCL(roots)
 	for _, want := range []string{
 		`"server" = Root {`,
-		`required_secrets = ["DATABASE_URL"]`,
-		`secrets = ["DATABASE_URL", "STRIPE_SECRET_KEY"]`,
-		`env = ["PORT", "TICK_INTERVAL"]`,
 		"root_of = lambda name: str",
 		"workloadEnvMap = lambda c: AppConfig, w: any",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("ROOTS lacks %q:\n%s", want, src)
+		}
+	}
+	for _, c := range []struct {
+		root, member string
+		want         []string
+	}{
+		{"server", "required_secrets", []string{"DATABASE_URL"}},
+		{"server", "secrets", []string{"DATABASE_URL", "STRIPE_SECRET_KEY"}},
+		{"worker", "env", []string{"PORT", "TICK_INTERVAL"}},
+	} {
+		if got := rootListEntries(t, src, c.root, c.member); !slices.Equal(got, c.want) {
+			t.Errorf("ROOTS[%s].%s = %v, want %v:\n%s", c.root, c.member, got, c.want, src)
 		}
 	}
 	if RootsKCL(nil) != "" || RootsKCL([]GraphRoot{{Name: "x", Args: []string{"x"}}}) != "" {
@@ -276,4 +288,32 @@ env = config_gen.workloadEnvMap(_c, _api) | _api.env
 	if _, ok := got.Env["DATABASE_URL"].(map[string]any); !ok {
 		t.Errorf("DATABASE_URL = %#v: the projected credential must survive", got.Env["DATABASE_URL"])
 	}
+}
+
+// rootListEntries is the names ROOTS[root].<member> lists in src, in order.
+func rootListEntries(t *testing.T, src, root, member string) []string {
+	t.Helper()
+	at := strings.Index(src, "    "+strconv.Quote(root)+" = Root {")
+	if at < 0 {
+		t.Fatalf("ROOTS has no root %q:\n%s", root, src)
+	}
+	block := src[at:]
+	block = block[:strings.Index(block, "\n    }")]
+	m := regexp.MustCompile(`(?ms)^\s+` + member + ` = \[(.*?)\]$`).FindStringSubmatch(block)
+	if m == nil {
+		t.Fatalf("ROOTS[%s] has no %s:\n%s", root, member, block)
+	}
+	var out []string
+	for _, line := range strings.Split(m[1], "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		name, err := strconv.Unquote(strings.TrimSuffix(line, ","))
+		if err != nil {
+			t.Fatalf("ROOTS[%s].%s: entry %q: %v", root, member, line, err)
+		}
+		out = append(out, name)
+	}
+	return out
 }

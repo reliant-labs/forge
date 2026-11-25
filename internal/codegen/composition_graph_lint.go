@@ -75,6 +75,7 @@ func LintGraph(projectDir string) (findings []GraphFinding, graphMode bool, err 
 	}
 	findings = append(findings, m.unreachableFindings()...)
 	findings = append(findings, m.audienceFindings()...)
+	findings = append(findings, m.optionalComponentFindings()...)
 	sort.SliceStable(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
 			return findings[i].File < findings[j].File
@@ -149,6 +150,11 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 	var out []GraphFinding
 	for _, n := range m.nodes {
 		if reached[n.Name] {
+			continue
+		}
+		// A package built only through `forge scaffold variant` wrappers
+		// is reached through them (composition_graph_variant.go).
+		if m.variantReached(n, reached) {
 			continue
 		}
 		if why, left := m.unbuilt[n.Name]; left {

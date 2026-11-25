@@ -23,7 +23,7 @@ const embeddedPostgresRestore = "./.github/actions/embedded-postgres-cache"
 // runsGoTests matches a shell line that runs Go tests: `go test` (not the
 // compile-only `go test -c`), the shard scripts that wrap it, or the prebuilt
 // e2e test binary.
-var runsGoTests = regexp.MustCompile(`(^|[\s;(&|])go test\b|scripts/ci-(test-shard|test-full-shard|changed-tests)\.sh|e2e\.test"?\s+-test\.(v|run)\b`)
+var runsGoTests = regexp.MustCompile(`(^|[\s;(&|])go test\b|scripts/ci-(test-shard|test-full-shard|changed-tests|render-tests|guard-tests)\.sh|e2e\.test"?\s+-test\.(v|run)\b`)
 
 // compileOnly matches `go test -c`, which builds a test binary and runs nothing.
 var compileOnly = regexp.MustCompile(`\bgo test\b.*\s-c(\s|$)`)
@@ -114,6 +114,8 @@ func TestStepRunsGoTests(t *testing.T) {
 		"scripts/ci-test-shard.sh 0 2":                                true,
 		"scripts/ci-test-full-shard.sh unit 0 2":                      true,
 		"scripts/ci-changed-tests.sh HEAD^1":                          true,
+		"scripts/ci-render-tests.sh HEAD^1":                           true,
+		"scripts/ci-guard-tests.sh HEAD^1":                            true,
 		`"$RUNNER_TEMP/e2e-dist/e2e.test" -test.v=test2json \`:        true,
 		`go test -c -tags e2e -o "$dist/e2e.test" ./internal/cli/`:    false,
 		`(cd internal/cli && "$dist/e2e.test" -test.list '^TestE2E')`: false,

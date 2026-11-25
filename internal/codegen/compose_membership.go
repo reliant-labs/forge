@@ -13,6 +13,10 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -175,4 +179,147 @@ func notAComponentConsumedError(projectDir string, consumed []notAComponentConsu
 	b.WriteString("  - the server needs it but you build it by hand: replace the marker with //forge:external-component and put the instance on Infra (internal/app/providers.go).\n")
 	b.WriteString("  - the server does not need it: remove the Deps field, or mark it //forge:optional-dep if the consumer copes with nil.\n")
 	return fmt.Errorf("%s", b.String())
+}
+
+// providerSuppliedComponents takes out of comps every internal package whose
+// own produced type an internal/app provider func returns, and returns, by
+// the package's import path, the name of the provider that supplies it
+// instead.
+//
+// A provider that returns `orgmove.Service` is the declaration that the
+// server builds orgmove's value by hand, which is what
+// `//forge:external-component` declares on the package. Making the package a
+// node of its own as well would give the type two sources, and generate
+// would refuse the graph: the explicit provider wins, the way an explicit
+// producer of orm.Context wins over the derived one. A package that keeps
+// its external-component marker never reaches this (composedComponents
+// already dropped it), so that shape is unchanged.
+//
+// Only the package's own type counts (`T` or `*T` of its import path and
+// produced type name): a provider of some other type that merely takes the
+// package as a dependency, or wraps it, leaves the package a node.
+func providerSuppliedComponents(projectDir, module string, comps []BuildComponent, providers []graphProvider) (kept []BuildComponent, suppliedBy map[string]string) {
+	produced := map[string]graphProvider{}
+	for _, p := range providers {
+		if key, ok := providerResultKey(p); ok {
+			if _, dup := produced[key]; !dup {
+				produced[key] = p
+			}
+		}
+	}
+	kept = comps[:0:0]
+	for _, c := range comps {
+		if c.compRoleRoot == "internal" {
+			p, ok := produced[componentTypeKey(module, &c)]
+			if !ok && projectDir != "" {
+				// A Service that only embeds the consumer's interface
+				// (`type Service interface{ tools.ChangeController }`) is
+				// that interface: a provider returning it supplies the
+				// package just as one returning Service would.
+				if key, embeds := soleEmbeddedInterface(projectDir, module, &c); embeds {
+					p, ok = produced[key]
+				}
+			}
+			if ok {
+				if suppliedBy == nil {
+					suppliedBy = map[string]string{}
+				}
+				suppliedBy[c.ImportPath] = p.Name
+				continue
+			}
+		}
+		kept = append(kept, c)
+	}
+	return kept, suppliedBy
+}
+
+// providerResultKey is "<import path>.<Name>" for a provider returning a
+// package-qualified named type or a pointer to one.
+func providerResultKey(p graphProvider) (string, bool) {
+	alias, name, ok := strings.Cut(strings.TrimPrefix(strings.TrimSpace(p.Result), "*"), ".")
+	if !ok || strings.ContainsAny(name, ".[]*") {
+		return "", false
+	}
+	path, ok := p.Imports[alias]
+	if !ok {
+		return "", false
+	}
+	return path + "." + name, true
+}
+
+// soleEmbeddedInterface reports "<import path>.<Name>" of the one interface
+// the component's produced interface type embeds, when that embedding is its
+// whole body (no methods of its own, nothing else embedded).
+func soleEmbeddedInterface(projectDir, module string, c *BuildComponent) (string, bool) {
+	typ := c.compFieldType
+	if typ == "" {
+		typ = c.Alias + ".Service"
+	}
+	if strings.HasPrefix(typ, "*") {
+		return "", false
+	}
+	_, want, _ := strings.Cut(typ, ".")
+	dir := filepath.Join(projectDir, filepath.FromSlash(c.ImportPath))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts := spec.(*ast.TypeSpec)
+				if ts.Name.Name != want {
+					continue
+				}
+				it, ok := ts.Type.(*ast.InterfaceType)
+				if !ok || it.Methods == nil || len(it.Methods.List) != 1 || len(it.Methods.List[0].Names) != 0 {
+					return "", false
+				}
+				sel, ok := it.Methods.List[0].Type.(*ast.SelectorExpr)
+				if !ok {
+					return "", false
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return "", false
+				}
+				for _, imp := range f.Imports {
+					path := strings.Trim(imp.Path.Value, `"`)
+					alias := path[strings.LastIndex(path, "/")+1:]
+					if imp.Name != nil {
+						alias = imp.Name.Name
+					}
+					if alias == pkg.Name {
+						return path + "." + sel.Sel.Name, true
+					}
+				}
+				return "", false
+			}
+		}
+	}
+	return "", false
+}
+
+// componentTypeKey is "<import path>.<Name>" of the type componentNode gives
+// the component.
+func componentTypeKey(module string, c *BuildComponent) string {
+	typ := c.compFieldType
+	if typ == "" {
+		typ = c.Alias + ".Service"
+	}
+	_, name, _ := strings.Cut(strings.TrimPrefix(typ, "*"), ".")
+	return module + "/" + c.ImportPath + "." + name
 }

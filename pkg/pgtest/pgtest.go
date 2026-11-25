@@ -95,6 +95,9 @@ type server struct {
 	// template says otherwise (revokePublicCreate). An embedded server's
 	// template1 already does; an external one's may not.
 	publicCreate bool
+	// cloneStrategy is the STRATEGY a CREATE DATABASE … TEMPLATE on this
+	// server takes, or "" for the server's default (cloneStrategy).
+	cloneStrategy string
 }
 
 var (
@@ -172,9 +175,18 @@ func startServer() (*server, error) {
 	// Collect the scratch databases crashed processes left on this server
 	// (owner.go). Once per server per process, before this one adds its own.
 	sweepScratchOnce(db, baseURL)
-	var version int
-	_ = db.QueryRow(`SELECT current_setting('server_version_num')::int`).Scan(&version)
-	return &server{baseURL: baseURL, baseDB: db, release: release, publicCreate: version > 0 && version < 150000}, nil
+	var (
+		version int
+		fsync   string
+	)
+	_ = db.QueryRow(`SELECT current_setting('server_version_num')::int, current_setting('fsync')`).Scan(&version, &fsync)
+	return &server{
+		baseURL:       baseURL,
+		baseDB:        db,
+		release:       release,
+		publicCreate:  version > 0 && version < 150000,
+		cloneStrategy: cloneStrategy(version, fsync),
+	}, nil
 }
 
 // Shutdown releases this process's shared-server reference: it closes the
@@ -663,7 +675,7 @@ func NewClone(template string) (*sql.DB, func(), error) {
 // a copy of template.
 func newOnShared(template string) (*sql.DB, func(), error) {
 	name := scratchName(scratchTestPrefix)
-	s, err := createOnShared(createDatabaseSQL(name, template))
+	s, err := createOnShared(name, template)
 	if err != nil {
 		return nil, nil, wrapCreate(name, err)
 	}
@@ -705,20 +717,21 @@ func newOnShared(template string) (*sql.DB, func(), error) {
 	return db, cleanup, nil
 }
 
-// createOnShared runs stmt (a CREATE DATABASE) on this process's shared
-// server, booting it on first use. When the server fails it for a reason a
+// createOnShared creates database name on this process's shared server,
+// empty or as a copy of template, booting the server on first use. The
+// CREATE DATABASE is bounded by createTimeout (create.go). When the server fails it for a reason a
 // fresh server fixes (brokenServerError: its data directory lost a file, or
 // it is shutting down; lostServerError: it refuses connections, its
 // postmaster dead), the binding is dropped and the create retried ONCE
 // on a re-attached server: the attach replaces a broken shared server under
 // the pool lock (health.go). An external FORGE_TEST_POSTGRES_URL server is
 // never retried; its owner fixes it.
-func createOnShared(stmt string) (*server, error) {
+func createOnShared(name, template string) (*server, error) {
 	s, err := boot()
 	if err != nil {
 		return nil, bootError{err}
 	}
-	_, err = s.baseDB.Exec(stmt)
+	err = s.execCreate(s.createDatabaseSQL(name, template))
 	if err == nil || !(brokenServerError(err) || lostServerError(err)) || !healShared() {
 		return s, err
 	}
@@ -726,7 +739,7 @@ func createOnShared(stmt string) (*server, error) {
 	if err != nil {
 		return nil, bootError{err}
 	}
-	if _, err := s.baseDB.Exec(stmt); err != nil {
+	if err := s.execCreate(s.createDatabaseSQL(name, template)); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -757,7 +770,7 @@ func wrapCreate(name string, err error) error {
 // caller must not hold connections past it.
 func NewURL() (dsn string, cleanup func(), err error) {
 	name := scratchName(scratchTestPrefix)
-	s, err := createOnShared("CREATE DATABASE " + name)
+	s, err := createOnShared(name, "")
 	if err != nil {
 		return "", nil, wrapCreate(name, err)
 	}

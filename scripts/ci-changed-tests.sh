@@ -55,10 +55,18 @@ esac
 
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-status=0
-scripts/ci-forge.sh test flakes gate "${args[@]}" -- scripts/ci-go-test.sh 2> >(tee "$log" >&2) || status=$?
-# The process substitution's tee may still be writing: wait for it.
-wait
+# The gate's stderr goes to the terminal and into $log through a PIPELINE, not
+# a process substitution: bash returns from a pipeline only once tee has
+# exited, so $log is complete before it is read. A bare `wait` does not wait
+# for a `2> >(tee …)` (bash 5.2), and reading $log while tee was still
+# writing it turned "could not run" into a pass now and then (forge#2714).
+# fd 3 carries the gate's stdout past the pipe.
+exec 3>&1
+set +e
+scripts/ci-forge.sh test flakes gate "${args[@]}" -- scripts/ci-go-test.sh 2>&1 1>&3 3>&- | tee "$log" >&2 3>&-
+status=${PIPESTATUS[0]}
+set -e
+exec 3>&-
 if [[ $status -eq 2 ]]; then
   if grep -q '^flake gate: could not run' "$log"; then
     status=1 # the test command did not start: a failure, as it always was

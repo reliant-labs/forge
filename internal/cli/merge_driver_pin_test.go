@@ -162,6 +162,89 @@ func TestEnsureGeneratedMergeDriver_PinnedForgeUpgradesAnOlderShape(t *testing.T
 	}
 }
 
+// A clone's driver in an older shape that still works — reliant's daemon wired
+// `[ -x '/daemon-bin/reliant' ] && exec '/daemon-bin/reliant' forge
+// merge-generated …` — is repaired around the binary it names. The pinned
+// forge that happens to run (one built into a chat's scratch directory, forge
+// reports b2bb83d3 and 8713584e) records itself under its identity, but never
+// becomes the driver every worktree of the clone uses.
+func TestEnsureGeneratedMergeDriver_PinnedForgeKeepsAWorkingDriversBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds real git repositories; runs in task test")
+	}
+	repo := pinTestRepo(t)
+	t.Setenv("TMPDIR", t.TempDir())
+	host := filepath.Join(t.TempDir(), "daemon-bin", "reliant")
+	scratch := filepath.Join(t.TempDir(), "chat-scratch", "forge-bin")
+	for _, bin := range []string{host, scratch} {
+		writeTreeFileT(t, bin, "#!/bin/sh\n")
+		if err := os.Chmod(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hq := shellQuote(host)
+	older := driverGuardPrefix + hq + " ] && exec " + hq + " forge merge-generated %O %A %B %L %P; " +
+		"git merge-file --marker-size=%L -L ours -L base -L theirs %A %O %B; exit 1"
+	if driverCommandCurrent(older) || !driverCommandUsable(older) {
+		t.Fatalf("precondition: %q must be usable but not current", older)
+	}
+	gitT(t, repo, "config", "merge.forge-generated.driver", older)
+
+	prevExe, prevID := mergeDriverExecutable, mergeDriverIdentity
+	t.Cleanup(func() { mergeDriverExecutable, mergeDriverIdentity = prevExe, prevID })
+	mergeDriverExecutable = func() (string, error) { return scratch, nil }
+	mergeDriverIdentity = func() string { return "7410e351b23b" }
+	setPinCheck(t, false)
+	wireGeneratedMergeDriver(io.Discard, filepath.Join(repo, "svc"), true)
+
+	got := gitConfig(t, repo, "merge.forge-generated.driver")
+	if !driverCommandCurrent(got) {
+		t.Errorf("the older shape was not repaired: %q", got)
+	}
+	if !strings.HasPrefix(got, driverGuardPrefix+hq+" ] && exec "+hq+" forge merge-generated %O %A %B %L %P; ") {
+		t.Errorf("the driver must keep naming %s and its route: %q", host, got)
+	}
+	if strings.Contains(got, scratch) {
+		t.Errorf("the forge that ran became every worktree's driver: %q", got)
+	}
+	if !strings.Contains(got, "Run `reliant forge merge-driver install`") {
+		t.Errorf("the repaired driver should name its route as `reliant forge`: %q", got)
+	}
+	if reg := gitConfig(t, repo, pinnedDriverSection+".7410e351b23b.command"); !strings.Contains(reg, scratch) {
+		t.Errorf("the pinned forge should still record itself for hand-offs: %q", reg)
+	}
+
+	// Its next writing command leaves the repaired driver alone.
+	wireGeneratedMergeDriver(io.Discard, filepath.Join(repo, "svc"), true)
+	if again := gitConfig(t, repo, "merge.forge-generated.driver"); again != got {
+		t.Errorf("a second run rewrote a current driver: %q", again)
+	}
+}
+
+func TestReshapedDriverCommand_RefusesWhatItCannotReadBack(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "forge")
+	writeTreeFileT(t, bin, "#!/bin/sh\n")
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	q := shellQuote(bin)
+	for name, cmd := range map[string]string{
+		"no guard":            q + " merge-generated %O %A %B %L %P",
+		"guard, other exec":   driverGuardPrefix + q + " ] && exec /usr/bin/env forge merge-generated %O %A %B %L %P",
+		"route with a quote":  driverGuardPrefix + q + " ] && exec " + q + " 'x y' merge-generated %O %A %B %L %P",
+		"binary gone":         driverGuardPrefix + "'/nonexistent/forge' ] && exec '/nonexistent/forge' merge-generated %O %A %B %L %P",
+		"not merge-generated": driverGuardPrefix + q + " ] && exec " + q + " merge %O %A %B",
+	} {
+		if got, ok := reshapedDriverCommand(cmd); ok {
+			t.Errorf("%s: reshaped %q into %q, want a refusal", name, cmd, got)
+		}
+	}
+	got, ok := reshapedDriverCommand(driverGuardPrefix + q + " ] && exec " + q + " merge-generated %O %A %B %L %P; exit 1")
+	if !ok || got != driverCommandLine(bin, "forge") {
+		t.Errorf("a bare forge driver: got %q, %v; want %q", got, ok, driverCommandLine(bin, "forge"))
+	}
+}
+
 func runMergeDriver(t *testing.T, repo, relPath, base, ours, theirs string) (merged string, err error) {
 	t.Helper()
 	dir := t.TempDir()

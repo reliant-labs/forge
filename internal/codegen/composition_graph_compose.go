@@ -84,6 +84,14 @@ func renderGraphMethod(n *graphNode, assigns []graphAssign) string {
 	fmt.Fprintf(&b, "\n// new%s constructs %s.\n", n.Name, n.Doc)
 	fmt.Fprintf(&b, "func (g *Graph) new%s() (%s, error) {\n", n.Name, n.Type)
 	switch {
+	case n.Wrapped && n.Optional && n.Fallible:
+		// An optional component's nil is "absent": wrapping it would hand
+		// consumers a non-nil decorator over nothing.
+		fmt.Fprintf(&b, "\tsvc, err := %s\n\tif err != nil || svc == nil {\n\t\treturn nil, err\n\t}\n\treturn %s(svc), nil\n",
+			call, n.importAlias()+"."+n.MiddlewareCtor)
+	case n.Wrapped && n.Optional:
+		fmt.Fprintf(&b, "\tsvc := %s\n\tif svc == nil {\n\t\treturn nil, nil\n\t}\n\treturn %s(svc), nil\n",
+			call, n.importAlias()+"."+n.MiddlewareCtor)
 	case n.Wrapped && n.Fallible:
 		fmt.Fprintf(&b, "\tsvc, err := %s\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn %s(svc), nil\n",
 			call, n.importAlias()+"."+n.MiddlewareCtor)

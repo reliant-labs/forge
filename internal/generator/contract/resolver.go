@@ -172,6 +172,11 @@ func embedsSiblingInterface(fset *token.FileSet, contractPath string) bool {
 	}
 	declared := map[string]bool{}
 	var embeds []string
+	for _, t := range serviceAliasEmbeds(file) {
+		if id, ok := t.(*ast.Ident); ok {
+			embeds = append(embeds, id.Name)
+		}
+	}
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
 		if !ok || gen.Tok != token.TYPE {
@@ -255,6 +260,14 @@ func embeddedImportPaths(fset *token.FileSet, contractPath string, r *Resolver) 
 	}
 	imports := importRefs(file, r)
 	seen := map[string]bool{}
+	// A `type Service = pkg.X` contract is typed like an embed of pkg.X.
+	for _, t := range serviceAliasEmbeds(file) {
+		if sel, ok := t.(*ast.SelectorExpr); ok {
+			if ref, ok := imports[sel.X.(*ast.Ident).Name]; ok {
+				seen[ref.path] = true
+			}
+		}
+	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		it, ok := n.(*ast.InterfaceType)
 		if !ok || it.Methods == nil {

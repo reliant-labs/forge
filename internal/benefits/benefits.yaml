@@ -2126,6 +2126,12 @@ benefits:
         bug_class: >-
           A composition graph that does not assemble (the error `generate` would
           fail with)
+      - id: forge-graph-optional-component
+        lane: --graph
+        bug_class: >-
+          A consumer of an optional component (one that can be nil when not
+          deployed) whose Deps field is not `forge:optional-dep`: it
+          dereferences a nil on a self-hosted install
       - id: forgeconv-allocate-port-spacing
         lane: --conventions
         bug_class: >-

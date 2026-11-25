@@ -301,8 +301,8 @@ func TestMemoizedGoValidateRecordsOnlyAPass(t *testing.T) {
 	root := goMemoFixture(t)
 	m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
 	runs := 0
-	pass := func() error { runs++; return nil }
-	fail := func() error { runs++; return errors.New("does not compile") }
+	pass := func() (bool, error) { runs++; return true, nil }
+	fail := func() (bool, error) { runs++; return false, errors.New("does not compile") }
 
 	if err := memoizedGoValidate(root, fail); err == nil || runs != 1 {
 		t.Fatalf("a failing validate: err=%v runs=%d", err, runs)
@@ -319,6 +319,17 @@ func TestMemoizedGoValidateRecordsOnlyAPass(t *testing.T) {
 	editMemoFixture(t, root, "internal/a/a.go", "package a\n")
 	if err := memoizedGoValidate(root, pass); err != nil || runs != 3 {
 		t.Fatalf("after an edit: runs=%d, want a run", runs)
+	}
+
+	// A pass with caveats (a user-owned _test.go that does not compile) is
+	// not recorded: the next run checks, and names them, again.
+	editMemoFixture(t, root, "internal/a/a.go", "package a\n\nconst C = 1\n")
+	caveated := func() (bool, error) { runs++; return false, nil }
+	if err := memoizedGoValidate(root, caveated); err != nil || runs != 4 {
+		t.Fatalf("a pass with caveats: err=%v runs=%d", err, runs)
+	}
+	if err := memoizedGoValidate(root, pass); err != nil || runs != 5 {
+		t.Fatalf("after a pass with caveats: runs=%d, want a run", runs)
 	}
 }
 
@@ -347,7 +358,7 @@ func TestMemoizedGoValidateRerunsWhenPackageSelectionMoves(t *testing.T) {
 		return "", errors.New("not found")
 	}
 	runs := 0
-	pass := func() error { runs++; return nil }
+	pass := func() (bool, error) { runs++; return true, nil }
 	if err := memoizedGoValidate(root, pass); err != nil || runs != 1 {
 		t.Fatalf("first validate: err=%v runs=%d", err, runs)
 	}
@@ -445,7 +456,7 @@ func TestGoMemoKeepsRecentStates(t *testing.T) {
 	root := goMemoFixture(t)
 	m := newTestGoMemo(t, root, pipelineFlags{Cache: true})
 	runs := 0
-	pass := func() error { runs++; return nil }
+	pass := func() (bool, error) { runs++; return true, nil }
 	stateA := "package a\n\nimport \"fmt\"\n\nvar A = fmt.Sprint\n"
 	stateB := "package a\n\nimport \"os\"\n\nvar A = os.Args\n"
 	for i, content := range []string{stateA, stateB, stateA, stateB} {
@@ -469,7 +480,7 @@ func TestGoMemoKeepsRecentStates(t *testing.T) {
 func TestGoMemoHonorsTheCacheMode(t *testing.T) {
 	root := goMemoFixture(t)
 	runs := 0
-	pass := func() error { runs++; return nil }
+	pass := func() (bool, error) { runs++; return true, nil }
 	end := beginGenerateMemo(root, pipelineFlags{Cache: true}, fakeGoMemoSys(t))
 	_ = memoizedGoValidate(root, pass)
 	end()

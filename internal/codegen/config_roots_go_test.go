@@ -47,7 +47,7 @@ func TestRootsGoSource_EachRootsReachAsData(t *testing.T) {
 		block := kcl[strings.Index(kcl, "    \""+name+"\" = Root {"):]
 		block = block[:strings.Index(block, "    }")]
 		var kclVars []string
-		for _, list := range regexp.MustCompile(`(?m)^\s+(env|secrets) = \[(.*)\]$`).FindAllStringSubmatch(block, -1) {
+		for _, list := range regexp.MustCompile(`(?ms)^\s+(env|secrets) = \[(.*?)\]$`).FindAllStringSubmatch(block, -1) {
 			for _, v := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(list[2], -1) {
 				kclVars = append(kclVars, v[1])
 			}

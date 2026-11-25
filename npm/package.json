@@ -1,7 +1,7 @@
 {
   "name": "@reliantlabs/forge",
   "version": "1.10.0",
-  "description": "Guardrails for apps in any agent harness. Deploy with no account: a live URL plus a claim link. Forge is an open-source CLI and MCP server for Claude Code, Codex, Cursor or a harness you wrote: run `npx -y @reliantlabs/forge@latest env deploy prod --claimable` in a Vite, Next.js or Dockerfile app.",
+  "description": "Deploy what your coding agent built, and let it prove the release works. Deploys need no account. A no-account deploy returns a live URL plus a claim link; signed in, the agent checks the release's health. Forge is an open-source CLI and MCP server for Claude Code, Codex, Cursor or a harness you wrote: run `npx -y @reliantlabs/forge@latest env deploy prod --claimable` in a Vite, Next.js or Dockerfile app.",
   "keywords": [
     "forge",
     "reliant",

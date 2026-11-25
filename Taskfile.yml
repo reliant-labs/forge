@@ -183,7 +183,9 @@ tasks:
     # THE PRE-MERGE GATE, locally: what the merge steward runs to gate a forge
     # pull request, in about five minutes. ci.yml's merge tier on this
     # machine — the whole -short tier (cached, no -race, no -count), the
-    # flake gate over the tests the branch adds or edits, and the checks job
+    # flake gate over the tests the branch adds or edits, the full-mode KCL
+    # render tests when the branch touches a KCL template or composition
+    # root (scripts/ci-render-tests.sh), and the checks job
     # (generated code, KCL, pre-commit over the changed files, licenses, the
     # CHANGELOG and pkg/ API guards) — run concurrently, in one table, non-zero
     # if any step failed or was skipped. scripts/ci-premerge.sh says what each

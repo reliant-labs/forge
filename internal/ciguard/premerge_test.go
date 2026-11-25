@@ -42,6 +42,8 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 	for _, want := range []string{
 		"scripts/ci-test-shard.sh 0 1",
 		`scripts/ci-changed-tests.sh "$base"`,
+		`scripts/ci-render-tests.sh "$base"`,
+		`scripts/ci-guard-tests.sh "$base"`,
 		strings.TrimPrefix(mergeTierGuardStep, "run: "),
 		"scripts/check-changelog-untouched.sh",
 		"go run ./internal/apigate",
@@ -59,6 +61,8 @@ func TestLocalPremergeGateMirrorsThePullRequestTier(t *testing.T) {
 	for _, want := range []string{
 		"scripts/ci-test-shard.sh ${{ matrix.args }}",
 		"scripts/ci-changed-tests.sh HEAD^1\n",
+		renderTestsStep,
+		guardTestsStep,
 		mergeTierGuardStep,
 		"scripts/check-changelog-untouched.sh HEAD^1",
 		"go run ./internal/apigate",

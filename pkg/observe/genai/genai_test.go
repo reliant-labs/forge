@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // recorder installs a global provider that samples per sampler and records
@@ -178,3 +179,43 @@ func TestWithScopeReplacesAKey(t *testing.T) {
 		t.Errorf("scope = %v", Scope(ctx))
 	}
 }
+
+// A descriptor's links are set at start, where a sampler sees them, not added
+// after (reliant's tool span links the execute_tools node span that asked).
+func TestLinksAreSetAtStart(t *testing.T) {
+	sampler := &linkSampler{}
+	rec := recorder(t, sampler)
+	ctx := context.Background()
+	_, other := otel.Tracer("t").Start(ctx, "execute_tools")
+	link := trace.Link{SpanContext: other.SpanContext(), Attributes: []attribute.KeyValue{attribute.String("why", "asked")}}
+	other.End()
+
+	_, tool := StartTool(ctx, Tool{Name: "shell", Links: []trace.Link{link}})
+	End(tool, nil)
+	_, chat := StartChat(ctx, Chat{Model: "m"})
+	End(chat, nil)
+
+	if got := byName(t, rec, "execute_tool shell").Links(); len(got) != 1 || got[0].SpanContext.SpanID() != link.SpanContext.SpanID() {
+		t.Errorf("tool span links = %v, want the one link", got)
+	}
+	if got := byName(t, rec, "chat m").Links(); len(got) != 0 {
+		t.Errorf("a span with no Links has links: %v", got)
+	}
+	if got := sampler.links["execute_tool shell"]; len(got) != 1 || got[0].SpanContext.SpanID() != link.SpanContext.SpanID() {
+		t.Errorf("the sampler saw links %v at start, want the one link", got)
+	}
+}
+
+// linkSampler samples everything and records the links each span started
+// with, by name.
+type linkSampler struct{ links map[string][]trace.Link }
+
+func (s *linkSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
+	if s.links == nil {
+		s.links = map[string][]trace.Link{}
+	}
+	s.links[p.Name] = p.Links
+	return sdktrace.AlwaysSample().ShouldSample(p)
+}
+
+func (s *linkSampler) Description() string { return "linkSampler" }

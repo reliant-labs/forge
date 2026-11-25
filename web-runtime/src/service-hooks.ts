@@ -258,15 +258,38 @@ export function serviceKeys(service: string): ServiceKeyBuilders {
  * `callOptions` is the caller's per-call Connect options (headers,
  * contextValues, timeoutMs, onHeader, onTrailer), already resolved, with any
  * signal of the caller's folded into `signal`. The builders below pass it
- * only when a caller set `callOptions`, so a call without them is exactly
- * `call(req, signal)`. A generated file forwards it to the client as
+ * only when a caller set `callOptions`; without them it is undefined. A
+ * generated file forwards it to the client as
  * `client.<method>(req, { ...callOptions, signal })`.
+ *
+ * `context` is the context of the React Query function making the call: the
+ * QueryFunctionContext of a read, the MutationFunctionContext of a hook's
+ * write, and `{ client }` for an imperative `<service>Mutations(queryClient)`
+ * write. Its `client` is the QueryClient the call runs on, which is how a
+ * generated file finds the transport of a TransportScope
+ * (`./transport-scope`'s scopedClient) where React context cannot be read.
+ * A file generated before it existed declares three parameters and ignores
+ * it, and keeps compiling: the parameter is optional.
  */
 export type ServiceCall<Schema extends DescMessage, Response> = (
   req: MessageInitShape<Schema>,
   signal?: AbortSignal,
   callOptions?: Omit<CallOptions, "signal">,
+  context?: ServiceCallContext,
 ) => Promise<Response>;
+
+/**
+ * What a ServiceCall's `context` carries for certain: the QueryClient the
+ * call runs on. A read passes React Query's whole QueryFunctionContext
+ * (`queryKey`, `meta`, `signal` too), a hook's write its
+ * MutationFunctionContext. `client` is optional because a TanStack Query
+ * older than 5.66.0 passes no client to a queryFn; the mutation hook fills
+ * it from its own useQueryClient() where TanStack (before 5.89.0) passes no
+ * mutation context.
+ */
+export interface ServiceCallContext {
+  readonly client?: QueryClient;
+}
 
 /**
  * Per-call transport options for a generated read: Connect's own
@@ -366,18 +389,20 @@ function warnIfCallOptionsDropped(call: (...args: never[]) => unknown): void {
 /**
  * invokeCall makes one call with the caller's resolved CallOptions, if any:
  * their signal combined with React Query's, the rest passed through. With
- * none it is `call(req, signal)`, exactly as before callOptions existed.
+ * none, the third argument is undefined and no options are sent, as before
+ * callOptions existed. `context` (ServiceCallContext) is always last.
  */
 function invokeCall<Schema extends DescMessage, Response>(
   call: ServiceCall<Schema, Response>,
   req: MessageInitShape<Schema>,
   signal: AbortSignal | undefined,
   callOptions: CallOptions | undefined,
+  context: ServiceCallContext,
 ): Promise<Response> {
-  if (callOptions === undefined) return call(req, signal);
+  if (callOptions === undefined) return call(req, signal, undefined, context);
   warnIfCallOptionsDropped(call);
   const { signal: callerSignal, ...rest } = callOptions;
-  return call(req, anySignal(signal, callerSignal), rest);
+  return call(req, anySignal(signal, callerSignal), rest, context);
 }
 
 /** Resolves a static-or-function callOptions against its argument. */
@@ -675,6 +700,7 @@ export function createQueryOptions<Schema extends DescMessage, Response>(
           req,
           context.signal,
           resolveCallOptions(callOptions, context),
+          context,
         ),
     }) as ServiceQueryOptions<Response, TData>;
   };
@@ -743,6 +769,7 @@ export function createInfiniteQueryOptions<
               }) as unknown as MessageInitShape<Schema>,
           context.signal,
           resolveCallOptions(callOptions, context),
+          context,
         ),
       initialPageParam: "",
     }) as ServiceInfiniteQueryOptions<Response, TData>;
@@ -796,12 +823,22 @@ export function createMutationHook<Schema extends DescMessage, Response>(
       MessageInitShape<Schema>,
       TContext
     >({
-      mutationFn: (req: MessageInitShape<Schema>) => {
-        const resolved = resolveCallOptions(callOptions, req);
-        return resolved === undefined
-          ? call(req)
-          : invokeCall(call, req, undefined, resolved);
-      },
+      // `context` is TanStack's MutationFunctionContext from 5.89.0, and
+      // absent before it. The QueryClient this hook runs on is the one the
+      // mutation runs on, so it stands in for `context.client` there.
+      mutationFn: (
+        req: MessageInitShape<Schema>,
+        context?: ServiceCallContext,
+      ) =>
+        invokeCall(
+          call,
+          req,
+          undefined,
+          resolveCallOptions(callOptions, req),
+          context?.client === undefined
+            ? { ...context, client: queryClient }
+            : context,
+        ),
       onSuccess: (...args) => {
         invalidateAfterWrite(queryClient, invalidateKey, invalidate);
         onSuccess?.(...args);
@@ -883,6 +920,7 @@ export function createMutationCall<Schema extends DescMessage, Response>(
       req,
       options?.signal,
       options?.callOptions,
+      { client: queryClient },
     );
     invalidateAfterWrite(queryClient, invalidateKey, options?.invalidate);
     return response;
@@ -901,7 +939,9 @@ export type ServiceMutations<
  * createServiceMutations builds a generated `<service>Mutations` from its
  * table of createMutationCall definitions: a function of the QueryClient
  * whose invalidations the writes should reach — the app's, normally the
- * singleton in src/lib/query-client.ts.
+ * singleton in src/lib/query-client.ts. Each write passes that QueryClient
+ * to its call as `context.client`, so `<service>Mutations(scope.queryClient)`
+ * writes through a TransportScope's transport (`./transport-scope`).
  */
 export function createServiceMutations<
   Definitions extends Record<string, (queryClient: QueryClient) => unknown>,

@@ -44,30 +44,33 @@ func realPkgSubdirs(t *testing.T) map[string]bool {
 		t.Fatalf("read forge/pkg: %v", err)
 	}
 	out := map[string]bool{}
+	// Importable from outside forge: not hidden from the go tool, not data,
+	// not under an internal/ tree.
 	visible := func(e os.DirEntry) bool {
 		n := e.Name()
-		return e.IsDir() && !strings.HasPrefix(n, ".") && !strings.HasPrefix(n, "_") && n != "testdata"
+		return e.IsDir() && !strings.HasPrefix(n, ".") && !strings.HasPrefix(n, "_") && n != "testdata" && n != "internal"
 	}
-	for _, e := range entries {
-		if !visible(e) {
-			continue
-		}
-		dir := filepath.Join(repoPkgDir(t), e.Name())
-		if hasGoSource(t, dir) {
-			out[e.Name()] = true
-			continue
-		}
-		// A grouping directory (pkg/appkit): its packages are the libraries.
-		children, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("read %s: %v", dir, err)
-		}
-		for _, c := range children {
-			if visible(c) && hasGoSource(t, filepath.Join(dir, c.Name())) {
-				out[e.Name()+"/"+c.Name()] = true
+	// Every package at any depth: a grouping directory's packages
+	// (pkg/appkit/operatorkit) and a package's own subpackages
+	// (pkg/observe/genai) alike.
+	var walk func(dir, prefix string, entries []os.DirEntry)
+	walk = func(dir, prefix string, entries []os.DirEntry) {
+		for _, e := range entries {
+			if !visible(e) {
+				continue
 			}
+			child := filepath.Join(dir, e.Name())
+			if hasGoSource(t, child) {
+				out[prefix+e.Name()] = true
+			}
+			children, err := os.ReadDir(child)
+			if err != nil {
+				t.Fatalf("read %s: %v", child, err)
+			}
+			walk(child, prefix+e.Name()+"/", children)
 		}
 	}
+	walk(repoPkgDir(t), "", entries)
 	if len(out) == 0 {
 		t.Fatal("forge/pkg has no subpackages — the truth source is wrong, so every assertion below would pass vacuously")
 	}

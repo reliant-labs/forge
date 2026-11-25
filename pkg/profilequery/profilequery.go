@@ -338,6 +338,73 @@ func (p Profile) Speedscope(w io.Writer) error {
 	return enc.Encode(doc)
 }
 
+// ReadSpeedscope reads back what Speedscope writes: the file's active profile,
+// which must be a "sampled" one, as stacks of frame names, root to leaf, the
+// heaviest first. The control plane's GetFlamegraph answers in this format, so
+// `forge obs profile <env>` turns a hosted env's flamegraph into pprof or
+// collapsed stacks through it. Unit is the profile's unit, "" for speedscope's
+// "none"; Service, SampleType and the range are left for the caller to set.
+func ReadSpeedscope(r io.Reader) (Profile, error) {
+	var doc struct {
+		ActiveProfileIndex int `json:"activeProfileIndex"`
+		Shared             struct {
+			Frames []struct {
+				Name string `json:"name"`
+			} `json:"frames"`
+		} `json:"shared"`
+		Profiles []struct {
+			Type    string        `json:"type"`
+			Unit    string        `json:"unit"`
+			Samples [][]int       `json:"samples"`
+			Weights []json.Number `json:"weights"`
+		} `json:"profiles"`
+	}
+	if err := json.NewDecoder(r).Decode(&doc); err != nil {
+		return Profile{}, fmt.Errorf("decode speedscope file: %w", err)
+	}
+	if len(doc.Profiles) == 0 {
+		return Profile{}, nil
+	}
+	at := doc.ActiveProfileIndex
+	if at < 0 || at >= len(doc.Profiles) {
+		return Profile{}, fmt.Errorf("speedscope file: activeProfileIndex %d names none of its %d profiles", at, len(doc.Profiles))
+	}
+	sp := doc.Profiles[at]
+	if sp.Type != "sampled" {
+		return Profile{}, fmt.Errorf("speedscope file: profile type %q, want \"sampled\"", sp.Type)
+	}
+	if len(sp.Weights) != len(sp.Samples) {
+		return Profile{}, fmt.Errorf("speedscope file: %d samples but %d weights", len(sp.Samples), len(sp.Weights))
+	}
+	p := Profile{Unit: sp.Unit}
+	if p.Unit == "none" {
+		p.Unit = ""
+	}
+	for i, st := range sp.Samples {
+		v, err := sp.Weights[i].Int64()
+		if err != nil {
+			f, ferr := sp.Weights[i].Float64()
+			if ferr != nil {
+				return Profile{}, fmt.Errorf("speedscope file: weight %q: %w", sp.Weights[i], err)
+			}
+			v = int64(f)
+		}
+		if len(st) == 0 || v <= 0 {
+			continue
+		}
+		frames := make([]string, len(st))
+		for j, n := range st {
+			if n < 0 || n >= len(doc.Shared.Frames) {
+				return Profile{}, fmt.Errorf("speedscope file: sample %d names frame %d of %d", i, n, len(doc.Shared.Frames))
+			}
+			frames[j] = doc.Shared.Frames[n].Name
+		}
+		p.Stacks = append(p.Stacks, Stack{Frames: frames, Value: v})
+	}
+	sort.SliceStable(p.Stacks, func(i, j int) bool { return p.Stacks[i].Value > p.Stacks[j].Value })
+	return p, nil
+}
+
 func speedscopeUnit(u string) string {
 	switch u {
 	case "nanoseconds", "microseconds", "milliseconds", "seconds", "bytes":

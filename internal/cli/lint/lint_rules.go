@@ -111,7 +111,7 @@ func gradableRules() []string {
 		// Deps shape
 		"forge-optional-deps-guard", "forge-config-deps",
 		// composition graph
-		codegen.GraphRuleUnreachable, codegen.GraphRuleAudience, codegen.GraphRuleAssemble,
+		codegen.GraphRuleUnreachable, codegen.GraphRuleAudience, codegen.GraphRuleAssemble, codegen.GraphRuleOptionalComponent,
 		// component drift
 		"component-drift/orphan-entry", "component-drift/undeclared-component", ruleComponentDriftNoCommand,
 		// deploy

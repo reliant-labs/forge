@@ -38,8 +38,11 @@ func TestMCPRestartHint(t *testing.T) {
 			if (got != "") != tc.want {
 				t.Fatalf("hint = %q, want printed=%v", got, tc.want)
 			}
-			if got != "" && (strings.Contains(got, "\n") || !strings.HasPrefix(got, "Restart your agent session")) {
-				t.Errorf("hint must be one line starting with the action: %q", got)
+			if got != "" && (strings.Contains(got, "\n") || !strings.HasPrefix(got, "Optional: restart your agent session")) {
+				t.Errorf("hint must be one line saying the restart is optional: %q", got)
+			}
+			if got != "" && (!strings.Contains(got, "Nothing waits on it") || !strings.Contains(got, "every tool is also a CLI command")) {
+				t.Errorf("hint must say nothing waits on the restart and name the CLI twins: %q", got)
 			}
 		})
 	}
@@ -49,6 +52,7 @@ func TestMCPRestartHint(t *testing.T) {
 // tool forge's MCP server actually lists, so a renamed tool cannot leave the
 // hint naming one that does not exist.
 func TestMCPRestartHintNamesRealTools(t *testing.T) {
+	asForgeBinary(t) // the hint and the check below must agree on Name()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), []byte(`{"mcpServers":{"forge":{"command":"forge","args":["mcp"]}}}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -69,6 +73,25 @@ func TestMCPRestartHintNamesRealTools(t *testing.T) {
 	for _, m := range named {
 		if !have[m[1]] {
 			t.Errorf("hint names tool %q, which forge mcp does not list", m[1])
+		}
+	}
+
+	// Each tool's CLI twin is a command the root tree resolves.
+	twins := regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(hint, -1)
+	if len(twins) != len(named) {
+		t.Fatalf("hint names %d tools but %d CLI twins: %q", len(named), len(twins), hint)
+	}
+	root := newTestRootCmd(t)
+	for _, tw := range twins {
+		line := tw[1]
+		rest, ok := strings.CutPrefix(line, Name()+" ")
+		if !ok {
+			t.Errorf("CLI twin %q does not start with %q", line, Name())
+			continue
+		}
+		cmd, _, err := root.Find(strings.Fields(rest))
+		if err != nil || cmd == nil || cmd == root || !strings.HasPrefix(root.Name()+" "+rest+" ", cmd.CommandPath()+" ") {
+			t.Errorf("CLI twin %q does not resolve to a forge command (got %v, %v)", line, cmd, err)
 		}
 	}
 }

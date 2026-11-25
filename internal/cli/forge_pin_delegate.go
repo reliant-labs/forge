@@ -62,6 +62,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/mod/semver"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/internal/forgecompat"
@@ -77,7 +78,9 @@ import (
 //     answer depend on the forge in hand, and a tool outside the project
 //     asks it precisely because it cannot reach the pin itself.
 //   - project upgrade: moves the pin, so it is run by the forge being moved
-//     TO, and must work when the old pin cannot be built.
+//     TO, and must work when the old pin cannot be built. Its reporting
+//     subcommands (upgradeReportCommands) are handed to a pin NEWER than
+//     this forge.
 //   - project new: the project it writes is not the one around the cwd.
 //   - report-bug: reports a defect in this forge, and must work offline.
 //   - telemetry: this machine's usage-event choice, the same for every forge.
@@ -142,6 +145,21 @@ var machineWideFlags = map[string]string{
 	"env down": "all",
 }
 
+// upgradeReportCommands are the `project upgrade` subcommands that only report
+// — they move no pin — and so are NOT exempt like `project upgrade` itself
+// when this forge is OLDER than the pin. A forge lists its own playbooks: run
+// by a newer forge (the upgrade target) that is the point, but run by an older
+// one it is a stale worklist — playbooks the project already crossed listed as
+// pending, the pin's own missing — that looks right. `reliant forge` embedding
+// v1.6.1 printed playbooks up to v1.4.0 in a project pinned at v1.10.1 while
+// `skill load` handed off (forge reports 727a5325, a8173760). So under an older
+// forge they go to the pin, and when it cannot be had they run here with the
+// skew warning (handOffPreferred) rather than not at all. pinTarget makes the
+// older-than-the-pin decision.
+var upgradeReportCommands = map[string]bool{
+	"project upgrade list": true,
+}
+
 // handOffModeFor is the hand-off decision for the command at rel (relative to
 // forge's root; "" is the root itself). machineWide is whether the run spans
 // every project on the machine (machineWideRun).
@@ -151,6 +169,9 @@ func handOffModeFor(rel string, machineWide bool) handOffMode {
 		// it prints its help, and a forge older than the nouns has no such
 		// command to hand it to.
 		return runHere
+	}
+	if upgradeReportCommands[rel] {
+		return handOffPreferred
 	}
 	for _, ex := range handOffExempt {
 		if rel == ex || (ex != "" && strings.HasPrefix(rel, ex+" ")) {
@@ -531,7 +552,23 @@ func pinTarget(rel string, allow bool, projectRoot string) (t delegateTarget, ok
 		// Run this forge; checkForgePinSkew warns, or refuses.
 		return delegateTarget{}, false, ""
 	}
+	if upgradeReportCommands[rel] && !t.pinIsNewer() {
+		// This forge is the upgrade target (or cannot be ordered against
+		// the pin): it reports its own playbooks, as `project upgrade` does.
+		return delegateTarget{}, false, ""
+	}
 	return t, true, ""
+}
+
+// pinIsNewer reports whether t's pin is a later forge than the running one,
+// by semver. A linked checkout, or a version that is not semver, cannot be
+// ordered: false.
+func (t delegateTarget) pinIsNewer() bool {
+	if t.checkout != "" {
+		return false
+	}
+	pk, bk := semverKey(t.pin), semverKey(t.binary)
+	return pk != "" && bk != "" && semver.Compare(bk, pk) < 0
 }
 
 // PinnedForge is the forge a project pins, resolved and ready to run.

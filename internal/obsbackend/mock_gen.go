@@ -611,6 +611,32 @@ func (m *MockDashboardReader) QueryPanelReadout(ctx context.Context, req PanelRe
 // Compile-time check.
 var _ DashboardReader = (*MockDashboardReader)(nil)
 
+// forge:section MockFlamegraphReader
+// forge:hash=0f6a9e8f2b85caca069f270726a7585b47eeb2816e321197bdc8a6ae93a7a135
+
+// MockFlamegraphReader is a test mock for the FlamegraphReader interface.
+//
+// The embedded contractkit.Recorder records every call so tests can
+// assert call counts and captured arguments. Set XxxFunc fields to
+// override per-method behaviour; unset methods return the canonical
+// "MockFlamegraphReader.<Method>Func not set" error.
+type MockFlamegraphReader struct {
+	contractkit.Recorder
+	FlamegraphFunc func(context.Context, FlamegraphRequest) (FlamegraphResult, error)
+}
+
+// Flamegraph records the call and delegates to FlamegraphFunc when set.
+func (m *MockFlamegraphReader) Flamegraph(ctx context.Context, req FlamegraphRequest) (FlamegraphResult, error) {
+	m.Recorder.Record("Flamegraph", ctx, req)
+	if m.FlamegraphFunc != nil {
+		return m.FlamegraphFunc(ctx, req)
+	}
+	return FlamegraphResult{}, contractkit.MockNotSet("MockFlamegraphReader", "Flamegraph")
+}
+
+// Compile-time check.
+var _ FlamegraphReader = (*MockFlamegraphReader)(nil)
+
 // forge:section MockPGOExporter
 // forge:hash=5b8449c31554c182e9633c2c4c2427a9c1e96b3288c5998c95772232e8ee15fb
 

@@ -29,6 +29,9 @@ func FuncMap() template.FuncMap {
 	return template.FuncMap{
 		"lower":                     strings.ToLower,
 		"browserReplayPrivacyGuard": func() string { return browserReplayPrivacyGuard },
+		// taskfileTrimpathGOFLAGS is the Taskfile env's GOFLAGS entry
+		// (TaskfileTrimpathGOFLAGS), shared with `forge fix trimpath-default`.
+		"taskfileTrimpathGOFLAGS": func() string { return TaskfileTrimpathGOFLAGS },
 		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
 		"pnpmVersion": func() string { return PnpmVersion },
 		// pgoBuildArg names a binary's PGO ARG in the Dockerfile (PGOBuildArg).
@@ -78,6 +81,17 @@ func FuncMap() template.FuncMap {
 		// resolves splits the webpack bundle, so it must not outlive it.
 		"typePinPath": func(name string, hoisted bool) string {
 			return webruntimepeers.TypePinPath(name, hoisted, "")
+		},
+		// webRuntimePeer renders the specifier the runtime declares for one
+		// of its peers (web-runtime/package.json, embedded by
+		// webruntimepeers), so a scaffold's package.json cannot drift from
+		// it. A peer the runtime stops declaring fails the render.
+		"webRuntimePeer": func(name string) (string, error) {
+			spec, ok := webruntimepeers.PeerSpec(name)
+			if !ok {
+				return "", fmt.Errorf("@reliantlabs/forge-web-runtime declares no peer %q", name)
+			}
+			return spec, nil
 		},
 		"joinStrings":  strings.Join,
 		"default":      getDefault,

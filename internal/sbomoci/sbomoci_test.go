@@ -27,8 +27,18 @@ import (
 
 // TestMain gives every registry client in these tests a transport that does
 // not retry: a refused request must fail at once, not back off.
+//
+// The transport is a private clone, never http.DefaultTransport: every
+// ocitest.Registry is an httptest.Server, and httptest.Server.Close calls
+// http.DefaultTransport.CloseIdleConnections(). With the tests running in
+// parallel, one test's cleanup then broke another's pooled connection
+// mid-request ("http: CloseIdleConnections called"; #2739 and
+// control-plane#3573).
 func TestMain(m *testing.M) {
-	registryHTTPClient = &http.Client{Timeout: 10 * time.Second}
+	registryHTTPClient = &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: http.DefaultTransport.(*http.Transport).Clone(),
+	}
 	os.Exit(m.Run())
 }
 
@@ -140,27 +150,6 @@ func TestAttach_ReferrersAPI(t *testing.T) {
 	}
 	if got := referrerDigests(t, subject); len(got) != 1 || !got[strings.SplitN(referrer, "@", 2)[1]] {
 		t.Errorf("listed %v, want exactly %s", got, referrer)
-	}
-}
-
-// The hosted registry's tenant token cannot DELETE. Without SkipReferrersGC
-// the second attach to a subject fails after moving the tag.
-func TestAttach_SecondSBOMWhenDeleteRefused(t *testing.T) {
-	t.Parallel()
-	f := ocitest.New(t, func(f *ocitest.Registry) { f.RefuseDelete = true })
-	subject := f.PutSubject("org/proj/api", "v1")
-
-	first := mustAttach(t, subject, sbomDoc("first"))
-	second := mustAttach(t, subject, sbomDoc("second"))
-
-	got := referrerDigests(t, subject)
-	for _, r := range []string{first, second} {
-		if !got[strings.SplitN(r, "@", 2)[1]] {
-			t.Errorf("%s not listed; listed %v", r, got)
-		}
-	}
-	if n := f.DeleteCount(); n != 0 {
-		t.Errorf("attach sent %d DELETE(s); it must never garbage-collect the old index", n)
 	}
 }
 

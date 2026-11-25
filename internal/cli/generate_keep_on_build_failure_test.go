@@ -39,7 +39,7 @@ import (
 func stubGoBuildValidate(t *testing.T, fn func(string) error) {
 	t.Helper()
 	prev := goBuildValidate
-	goBuildValidate = fn
+	goBuildValidate = func(dir string) (validateCaveats, error) { return validateCaveats{}, fn(dir) }
 	t.Cleanup(func() { goBuildValidate = prev })
 }
 

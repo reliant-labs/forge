@@ -291,12 +291,19 @@ describe("createQueryOptions", () => {
       { id: "abc" },
     ]);
     const signal = new AbortController().signal;
-    await (opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)({
-      signal,
-    });
+    const context = { signal };
+    await (opts.queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)(
+      context,
+    );
     // The signal is React Query's: an unmounted or superseded query aborts
-    // its request rather than landing it on an entry nobody reads.
-    expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
+    // its request rather than landing it on an entry nobody reads. The
+    // context is last, for a TransportScope's client (transport-scope.tsx).
+    expect(call).toHaveBeenCalledWith(
+      { id: "abc" },
+      signal,
+      undefined,
+      context,
+    );
   });
 
   it("passes caller options through but never lets them replace the key or the fetch", async () => {
@@ -400,10 +407,16 @@ describe("createQueryHook", () => {
     );
     expect(hookRest).toEqual(optsRest);
     const signal = new AbortController().signal;
-    await (queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)({
+    const context = { signal };
+    await (queryFn as (ctx: { signal: AbortSignal }) => Promise<unknown>)(
+      context,
+    );
+    expect(call).toHaveBeenCalledWith(
+      { id: "abc" },
       signal,
-    });
-    expect(call).toHaveBeenCalledWith({ id: "abc" }, signal);
+      undefined,
+      context,
+    );
   });
 
   it("types data as what select returns, defaulting to the response", () => {
@@ -700,13 +713,22 @@ describe("createInfiniteQueryOptions + createInfiniteQueryHook", () => {
       signal: AbortSignal;
     }) => Promise<unknown>;
     const signal = new AbortController().signal;
-    await queryFn({ pageParam: "", signal });
+    const first = { pageParam: "", signal };
+    await queryFn(first);
     // No token on the first page: an `optional string page_token` stays unset.
-    expect(call).toHaveBeenLastCalledWith({ pageSize: 20n }, signal);
-    await queryFn({ pageParam: "p2", signal });
+    expect(call).toHaveBeenLastCalledWith(
+      { pageSize: 20n },
+      signal,
+      undefined,
+      first,
+    );
+    const second = { pageParam: "p2", signal };
+    await queryFn(second);
     expect(call).toHaveBeenLastCalledWith(
       { pageSize: 20n, pageToken: "p2" },
       signal,
+      undefined,
+      second,
     );
   });
 
@@ -954,7 +976,9 @@ describe("createMutationHook", () => {
     await (captured.mutation?.mutationFn as (r: unknown) => Promise<unknown>)({
       id: "x",
     });
-    expect(call).toHaveBeenCalledWith({ id: "x" });
+    expect(call).toHaveBeenCalledWith({ id: "x" }, undefined, undefined, {
+      client: expect.anything(),
+    });
   });
 });
 
@@ -997,13 +1021,15 @@ describe("createMutationCall + createServiceMutations", () => {
     });
     const signal = new AbortController().signal;
 
-    const got = await mutations(new QueryClient()).createOrder(
-      { id: "x" },
-      { signal },
-    );
+    const client = new QueryClient();
+    const got = await mutations(client).createOrder({ id: "x" }, { signal });
 
     expect(got).toEqual({ id: "new" });
-    expect(call).toHaveBeenCalledWith({ id: "x" }, signal);
+    // The bound QueryClient rides along as the context, so
+    // `<service>Mutations(scope.queryClient)` writes through the scope.
+    expect(call).toHaveBeenCalledWith({ id: "x" }, signal, undefined, {
+      client,
+    });
   });
 
   it("invalidates the scope it was given on success, and nothing outside it", async () => {
@@ -1197,13 +1223,19 @@ describe("callOptions — per-call Connect options on every generated call", () 
     expect(calls[0]?.opts).toEqual({ headers: { "Forge-Panel": "d/p" } });
   });
 
-  it("without callOptions, calls exactly as before: (req, signal)", async () => {
+  it("without callOptions, sends none: (req, signal, undefined, context)", async () => {
     const call = vi.fn(async () => ({ id: "r" }));
     const signal = new AbortController().signal;
+    const context = { signal };
     await (
       createQueryOptions(getOrderKey, call)({ id: "a" }).queryFn as QueryFn
-    )({ signal });
-    expect(call.mock.calls[0]).toEqual([{ id: "a" }, signal]);
+    )(context);
+    expect(call.mock.calls[0]).toEqual([
+      { id: "a" },
+      signal,
+      undefined,
+      context,
+    ]);
   });
 
   it("the function form reads React Query's context — meta included — on every fetch", async () => {
@@ -1295,13 +1327,19 @@ describe("callOptions — per-call Connect options on every generated call", () 
     ]);
   });
 
-  it("without callOptions, a mutation hook calls (req) exactly as before", async () => {
+  it("without callOptions, a mutation hook sends none, and passes TanStack's mutation context", async () => {
     const call = vi.fn(async () => ({ id: "r" }));
     createMutationHook(keys.entity("order"), call)();
-    await (captured.mutation?.mutationFn as (v: unknown) => Promise<unknown>)({
-      id: "a",
-    });
-    expect(call.mock.calls[0]).toEqual([{ id: "a" }]);
+    type MutationFn = (v: unknown, ctx?: object) => Promise<unknown>;
+    const client = new QueryClient();
+    const context = { client, meta: undefined };
+    await (captured.mutation?.mutationFn as MutationFn)({ id: "a" }, context);
+    expect(call.mock.calls[0]).toEqual([
+      { id: "a" },
+      undefined,
+      undefined,
+      context,
+    ]);
   });
 
   it("reach an imperative write, its signal combined with the option's", async () => {

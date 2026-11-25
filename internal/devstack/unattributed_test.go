@@ -144,7 +144,7 @@ func TestReleaseKeyFreesExactlyTheNamedBlock(t *testing.T) {
 	}`)
 	setActiveWorktree(t, "")
 
-	index, err := ReleaseKey(primary, "prod-cp-obs")
+	index, _, err := ReleaseKey(primary, "prod-cp-obs")
 	if err != nil {
 		t.Fatalf("ReleaseKey: %v", err)
 	}
@@ -170,10 +170,10 @@ func TestReleaseKeyRefusesUnknownKeyAndDefault(t *testing.T) {
 	pruneInitRepo(t, primary)
 	writeRawRegistry(t, primary, `{"prod": {"block": 1}}`)
 
-	if _, err := ReleaseKey(primary, "prod-typo"); err == nil {
+	if _, _, err := ReleaseKey(primary, "prod-typo"); err == nil {
 		t.Error("ReleaseKey silently succeeded for a key with no entry; a typo must not look like success")
 	}
-	if _, err := ReleaseKey(primary, ""); err == nil {
+	if _, _, err := ReleaseKey(primary, ""); err == nil {
 		t.Error("ReleaseKey accepted the default key; block 0 is the primary checkout's implicit block")
 	}
 	if _, ok := blockFor(t, primary, "prod"); !ok {
@@ -193,7 +193,7 @@ func TestFreedBlockIsReusedDensely(t *testing.T) {
 	writeRawRegistry(t, primary, `{"prod": {"block": 1}, "prod-cp-obs": {"block": 2}}`)
 	setActiveWorktree(t, "")
 
-	if _, err := ReleaseKey(primary, "prod-cp-obs"); err != nil {
+	if _, _, err := ReleaseKey(primary, "prod-cp-obs"); err != nil {
 		t.Fatalf("ReleaseKey: %v", err)
 	}
 	block, err := AllocateBlock(primary, "prod-brand-new")

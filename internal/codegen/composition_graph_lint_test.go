@@ -1,10 +1,14 @@
 package codegen
 
 import (
+	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // lintGraphFixture is a graph with one user listener over a user chain,
@@ -214,5 +218,112 @@ func NewDaemonAuth(DaemonAuthDeps) (*DaemonAuth, error) { return nil, nil }
 	}
 	if got["DaemonAuth"].Standby || got["DaemonAuth"].Audience != "daemon" {
 		t.Errorf("DaemonAuth = %+v", got["DaemonAuth"])
+	}
+}
+
+// A package with no default configuration, constructed only by its variants
+// (`forge scaffold variant`: `type <Name> struct{ <pkg>.Service }` and a
+// provider New<Name>), is reached through any variant a root reaches — forge
+// bug 65120c00: reliant's workflowcheck, built only by RecordOnlyChecks and
+// SyncingChecks, was reported unreachable once //forge:provided was removed.
+func TestLintGraph_PackageReachedThroughItsVariant(t *testing.T) {
+	m := newLintGraphFixture(t).m
+	wcPkg := types.NewPackage("example.com/x/internal/workflowcheck", "workflowcheck")
+	svc := types.NewNamed(types.NewTypeName(token.NoPos, wcPkg, "Service", nil), types.NewInterfaceType(nil, nil), nil)
+	app := types.NewPackage("example.com/x/internal/app", "app")
+	// The variant's package and internal/app are separate loads in a real
+	// project, so the embed is a distinct *types.Named of the same name.
+	svcAgain := types.NewNamed(types.NewTypeName(token.NoPos, types.NewPackage(wcPkg.Path(), "workflowcheck"), "Service", nil), types.NewInterfaceType(nil, nil), nil)
+	wrapper := types.NewPointer(types.NewNamed(types.NewTypeName(token.NoPos, app, "RecordOnlyChecks", nil),
+		types.NewStruct([]*types.Var{types.NewField(token.NoPos, app, "Service", svcAgain, true)}, nil), nil))
+
+	pkg := &graphNode{Name: "Workflowcheck", Kind: nodeComponent, Role: "internal", Type: "workflowcheck.Service",
+		Doc: "the workflowcheck package (internal/workflowcheck)", Comp: &BuildComponent{ImportPath: "internal/workflowcheck", compConstructor: "New"}}
+	variant := &graphNode{Name: "RecordOnlyChecks", Kind: nodeProvider, Type: "*RecordOnlyChecks", File: "internal/app/variant_record_only_checks.go", Line: 29}
+	for _, n := range []*graphNode{pkg, variant} {
+		m.nodes = append(m.nodes, n)
+		m.byName[n.Name] = n
+	}
+	m.u.produced["Workflowcheck"] = svc
+	m.u.produced["RecordOnlyChecks"] = wrapper
+	// Forge cannot fill the package's own Deps (it has no default
+	// configuration), so its node is left out of graph_gen.go.
+	m.unbuilt = map[string]unbuiltNode{"Workflowcheck": {Problems: []graphProblem{{Node: "Workflowcheck", Field: "Store", Type: "workflowcheck.Store"}}}}
+
+	const base = "forge-graph-unreachable/error@internal/app/providers.go, forge-graph-unreachable/error@internal/handlers/tools"
+
+	// No root reaches the variant: both it and the package are reported.
+	if got := rulesOf(m.unreachableFindings()); got != base+", forge-graph-unreachable/error@internal/workflowcheck, forge-graph-unreachable/error@internal/app/variant_record_only_checks.go" {
+		t.Fatalf("an unreached variant reaches nothing: %s", got)
+	}
+	if w := m.unbuiltWarning(); !strings.Contains(w, "Workflowcheck") {
+		t.Fatalf("generate's warning names the unreached package: %q", w)
+	}
+
+	setProvider := func(body string, calledPackage *types.Package) {
+		t.Helper()
+		file, err := parser.ParseFile(token.NewFileSet(), "variant.go", "package app; func NewRecordOnlyChecks() {"+body+"}", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "New" {
+				info.Uses[sel.Sel] = types.NewFunc(token.NoPos, calledPackage, "New", nil)
+			}
+			return true
+		})
+		m.u.app = &packages.Package{Syntax: []*ast.File{file}, TypesInfo: info}
+	}
+
+	m.rootViews[0].Reach = append(m.rootViews[0].Reach, "RecordOnlyChecks")
+	// Embedding nil, retaining a supplied service, an uncalled closure and a
+	// same-spelled constructor from another package are not evidence.
+	for _, body := range []string{
+		"return &RecordOnlyChecks{}",
+		"return &RecordOnlyChecks{Service: supplied}",
+		"workflowcheck.New(); return &RecordOnlyChecks{}",
+		"svc, err := workflowcheck.New(); _ = svc; _ = err; return &RecordOnlyChecks{}",
+		"svc, err := workflowcheck.New(); svc = supplied; return &RecordOnlyChecks{Service: svc}, err",
+		"svc, err := workflowcheck.New(); return &RecordOnlyChecks{Service: supplied}, err",
+		"if enabled { workflowcheck.New() }; return &RecordOnlyChecks{}",
+		"f := func() { workflowcheck.New() }; _ = f",
+	} {
+		setProvider(body, wcPkg)
+		if got := rulesOf(m.unreachableFindings()); got != base+", forge-graph-unreachable/error@internal/workflowcheck" {
+			t.Fatalf("provider %q must not suppress the unbuilt finding: %s", body, got)
+		}
+		if w := m.unbuiltWarning(); !strings.Contains(w, "Workflowcheck") {
+			t.Fatalf("provider %q must retain generate's warning: %q", body, w)
+		}
+	}
+	setProvider("workflowcheck.New()", types.NewPackage("example.com/other", "workflowcheck"))
+	if m.variantReached(m.reached())["Workflowcheck"] {
+		t.Fatal("a constructor from a different package must not establish reach")
+	}
+
+	// The server root takes the variant, whose body calls the real constructor
+	// (even with a different import alias).
+	for _, body := range []string{
+		"svc, err := checks.New(checks.Deps{}); if err != nil { return nil, err }; return &RecordOnlyChecks{Service: svc}, nil",
+		"return &RecordOnlyChecks{Service: checks.New()}",
+		"svc := checks.New(); alias := svc; return &RecordOnlyChecks{alias}",
+	} {
+		setProvider(body, wcPkg)
+		if got := rulesOf(m.unreachableFindings()); got != base {
+			t.Fatalf("provider %q wraps a constructed service: %s", body, got)
+		}
+		if w := m.unbuiltWarning(); w != "" {
+			t.Fatalf("generate must not warn about a package a reached variant constructs: %q", w)
+		}
+	}
+
+	// A wrapper that NAMES the Service in a field, rather than embedding
+	// it, is not the variant shape: the package stays pending.
+	m.unbuilt = nil
+	m.u.produced["RecordOnlyChecks"] = types.NewPointer(types.NewNamed(types.NewTypeName(token.NoPos, app, "RecordOnlyChecks", nil),
+		types.NewStruct([]*types.Var{types.NewField(token.NoPos, app, "Service", svcAgain, false)}, nil), nil))
+	if got := rulesOf(m.unreachableFindings()); got != base+", forge-graph-unreachable/warn@internal/workflowcheck" {
+		t.Fatalf("a named (not embedded) field is not the variant shape: %s", got)
 	}
 }

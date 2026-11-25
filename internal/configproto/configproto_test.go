@@ -160,3 +160,36 @@ func write(t *testing.T, dir, rel, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestRenamedFrom(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const mod = "example.com/shop"
+	now := For("shop-v2")
+	if _, ok := now.RenamedFrom(dir, mod); ok {
+		t.Fatal("a project with no config proto at all reads as renamed")
+	}
+	write("proto/shop/config/v1/config.proto", "syntax = \"proto3\";\npackage shop.config.v1;\n")
+	write("proto/notconfig/config/v1/config.proto", "syntax = \"proto3\";\npackage something.else;\n")
+	// One other layout, but nothing of this project's imports it: vendored
+	// or a neighbour's, not this project's former config.
+	if _, ok := now.RenamedFrom(dir, mod); ok {
+		t.Fatal("a config layout this project's generated config does not import reads as its rename")
+	}
+	write("pkg/config/config_gen.go", "package config\n\nimport configv1 \"example.com/shop/gen/shop/config/v1\"\n")
+	if old, ok := now.RenamedFrom(dir, mod); !ok || old.Slug != "shop" {
+		t.Fatalf("RenamedFrom = %+v, %v; want the shop layout", old, ok)
+	}
+	write("proto/billing/config/v1/config.proto", "syntax = \"proto3\";\npackage billing.config.v1;\n")
+	if _, ok := now.RenamedFrom(dir, mod); ok {
+		t.Fatal("two other layouts are not one rename")
+	}
+}

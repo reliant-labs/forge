@@ -72,7 +72,8 @@ func newNewCmd() *cobra.Command { //nolint:funlen // one cobra command: its flag
 		// authMode is --auth-mode: the sign-in system a service project
 		// with a frontend is scaffolded with (native, the default, or none).
 		authMode string
-		// dryRun prints what --kind app would write, and writes nothing.
+		// dryRun prints what --kind app or --kind site would write, and
+		// writes nothing.
 		dryRun bool
 		// connectFlag is --connect: the connect-go major a new service
 		// project's Go code targets (v1, the default, or v2).
@@ -107,6 +108,7 @@ Pick a project kind with --kind:
                             a starter app (--frontend-kind nextjs, the default:
                             a static export; or vite-spa); --in-place inside an
                             existing Vite or Next.js app adopts it untouched.
+                            --dry-run prints the files instead.
   --kind app                An existing app in ANY language, with --in-place:
                             forge.yaml and deploy/kcl (workloads.k + dev,
                             staging and prod envs) declaring what it runs,
@@ -223,9 +225,9 @@ checkout stop being the same source; drop the bridge with
 				return err
 			}
 			defer func() { newAuthMode = "" }()
-			if dryRun && !strings.EqualFold(strings.TrimSpace(kindFlag), projectKindApp) {
-				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app would write, and needs --kind app", "",
-					"add --kind app --in-place inside the app, or drop --dry-run")
+			if k := strings.ToLower(strings.TrimSpace(kindFlag)); dryRun && k != projectKindApp && k != projectKindSite {
+				return cliutil.UserErr("forge project new", "--dry-run prints what --kind app or --kind site would write, and needs one of them", "",
+					"add --kind app --in-place (an app with a Dockerfile) or --kind site (a Vite or Next.js app, or a new site), or drop --dry-run")
 			}
 			newConnectMajor, err = resolveNewConnectMajor(cmd.Flags().Changed("connect"), connectFlag, kindFlag)
 			if err != nil {
@@ -242,7 +244,7 @@ checkout stop being the same source; drop the bridge with
 	cmd.Flags().StringVarP(&projectPath, "path", "p", ".", "Path where to create the project")
 	cmd.Flags().StringVar(&modulePath, "mod", "", "Go module path (e.g., github.com/example/my-project). Defaults to example.com/<name>, so a first project needs no flag; set it to the path you will publish under")
 	cmd.Flags().StringVar(&kindFlag, "kind", "", "Project kind: service (default), cli, library, site (a static site with no backend: a new starter app, or with --in-place the Vite/Next.js app already here), app (with --in-place: the app already here, in any language, deployed from its own Dockerfile — forge.yaml and deploy/kcl only)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "With --kind app: print what was detected and every file it would write, and write nothing")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "With --kind app or --kind site: print what was detected and every file it would write, and write nothing")
 	cmd.Flags().StringSliceVar(&serviceNames, "service", nil, "Name(s) of initial Go services (repeatable or comma-separated). Name services after domain entities (item, order), not the binary. Omit to scaffold zero services and add them later via 'forge scaffold service <entity>'")
 	cmd.Flags().StringSliceVar(&frontendNames, "frontend", nil, "Name(s) of Next.js frontends (can be repeated or comma-separated). With --kind site: the one name the site's frontend is declared under (default web)")
 	cmd.Flags().StringVar(&frontendKind, "frontend-kind", "", "With --kind site: the starter a new site gets — nextjs (default; a static export, one HTML file per route) or vite-spa (a single-page app)")
@@ -485,6 +487,7 @@ func runNew(ctx context.Context, projectName, projectPath, modulePath, kindFlag 
 			frontendName: frontendName,
 			frontendKind: frontend.kind,
 			verbose:      verbose,
+			dryRun:       newAppDryRun,
 		})
 	}
 	targetPath, projectName, err := resolveNewTargetPath(projectName, projectPath, inPlace, force)

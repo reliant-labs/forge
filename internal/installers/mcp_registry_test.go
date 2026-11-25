@@ -77,9 +77,11 @@ func TestMCPRegistryListingMatchesTheNpmPackage(t *testing.T) {
 // opens with the same one-line definition: the MCP registry's description
 // (npm/server.json, at most 100 characters, so it is the canonical short
 // form), the npm package's description (what npmjs.com and npm search show),
-// the Gemini extension's description, and the first paragraph of
-// npm/README.md (the npm page and the Smithery listing). One definition, so a
-// rewording of one listing cannot leave the others describing another product.
+// the Gemini extension's description, the first paragraph of npm/README.md
+// (the npm page and the Smithery listing), and the reliant-forge plugin's
+// manifests and marketplace entries (Claude Code, Codex, Cursor). One
+// definition, so a rewording of one listing cannot leave the others describing
+// another product.
 func TestListingsShareOneDefinition(t *testing.T) {
 	descriptionOf := func(rel string) string {
 		t.Helper()
@@ -104,6 +106,25 @@ func TestListingsShareOneDefinition(t *testing.T) {
 	}
 	if got := descriptionOf("gemini-extension.json"); got != canonical {
 		t.Errorf("gemini-extension.json description = %q, want the registry's %q", got, canonical)
+	}
+	for _, rel := range pluginManifests {
+		if got := descriptionOf(rel); !strings.HasPrefix(got, canonical) {
+			t.Errorf("%s description does not open with the registry's %q:\n%s", rel, canonical, got)
+		}
+	}
+	for _, rel := range []string{".claude-plugin/marketplace.json", ".cursor-plugin/marketplace.json"} {
+		for _, entry := range readMarketplace(t, rel).Plugins {
+			if entry.Description != canonical {
+				t.Errorf("%s entry %q description = %q, want the registry's %q", rel, entry.Name, entry.Description, canonical)
+			}
+		}
+	}
+	readmeOf, err := os.ReadFile(repoFile(t, "plugins/reliant-forge/README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(readmeOf), "\n\n"+canonical+"\n") {
+		t.Errorf("plugins/reliant-forge/README.md does not carry the registry's %q as a paragraph of its own", canonical)
 	}
 	readme, err := os.ReadFile(repoFile(t, "npm/README.md"))
 	if err != nil {

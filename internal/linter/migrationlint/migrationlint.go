@@ -316,7 +316,7 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 	// emptyTables are the tables this migration created empty and that no
 	// statement since could have written a row to (blocking_index.go): an
 	// index built on one is not a blocking build.
-	emptyTables := map[indexRelation]bool{}
+	emptyTables := map[indexRelation]tableProof{}
 	var findings []Finding
 
 	for _, stmt := range statements {
@@ -328,8 +328,12 @@ func lintStatements(file, content string, cfg RuleConfig) []Finding {
 		if f, ok := blockingIndexFinding(file, statement{Text: text, Line: stmt.Line}, emptyTables); ok {
 			findings = append(findings, f)
 		}
-		if table, ok := createdTable(text); ok {
-			emptyTables[table] = true
+		if table, proof, ok := createdTable(text); ok {
+			// A CREATE TABLE IF NOT EXISTS after a plain CREATE TABLE of
+			// the same table is a no-op: it keeps the stronger proof.
+			if emptyTables[table] != createdEmpty {
+				emptyTables[table] = proof
+			}
 		} else if !preservesEmptyTables(text, emptyTables) {
 			clear(emptyTables)
 		}

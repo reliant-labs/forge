@@ -15,9 +15,16 @@
 #   flake-gate       the tests this change adds or edits, -short -count=3, no -race
 #                    (scripts/ci-changed-tests.sh: only those tests, whose binaries
 #                    changed anyway, so the repetition defeats no cache)
+#   render-tests     the full-mode KCL render tests, when the change touches the
+#                    KCL templates or the composition roots (scripts/ci-render-tests.sh;
+#                    N/A otherwise)
 #   removalguard     internal/removalguard in full mode, the one guard the merge
 #                    tier runs whole (~10s); -count=1, because it lists files with
 #                    git, which the test cache cannot see
+#   guard-tests      the other guards' whole-repo checks the merge tier affords
+#                    (deadcodeguard, vacuousguard, three scans), full mode, when the
+#                    change touches Go, the module files or internal/
+#                    (scripts/ci-guard-tests.sh; N/A otherwise)
 #   changelog        CHANGELOG.md is untouched (scripts/check-changelog-untouched.sh)
 #   apigate          an incompatible pkg/ change is declared (internal/apigate; PR=<n>
 #                    reads the pull request's labels and body, as CI does)
@@ -29,8 +36,8 @@
 #   golangci         golangci-lint on the changed packages (scripts/ci-golangci-changed.sh),
 #                    with the golangci-lint release CI pins (SKIP under any other)
 #
-# What it leaves to main, as ci.yml does: -race, full mode, the other guards'
-# whole-repo work, golangci-lint over unchanged packages and go vet,
+# What it leaves to main, as ci.yml does: -race, full mode, tierguard's renders
+# and the remaining guards, golangci-lint over unchanged packages and go vet,
 # govulncheck, Windows, e2e.
 #
 # RULES. Every step runs whatever the others concluded. A step that could not
@@ -73,7 +80,7 @@ declare -A waived=()
 IFS=',' read -ra skips <<<"${CI_SKIP:-}"
 for s in "${skips[@]}"; do [[ -n "$s" ]] && waived[$s]=1; done
 
-order=(test-short flake-gate removalguard changelog apigate verify-generated validate-kcl pre-commit licenses-go licenses-npm golangci)
+order=(test-short flake-gate render-tests removalguard guard-tests changelog apigate verify-generated validate-kcl pre-commit licenses-go licenses-npm golangci)
 started=$SECONDS
 echo "forge pre-merge gate: $(git rev-parse --short HEAD) against $(git rev-parse --short "$base"), logs in $logs"
 
@@ -104,7 +111,19 @@ need() { command -v "$1" >/dev/null 2>&1 || skip "$1 is not on PATH"; }
 
 test_short() { CI_TEST_JSON="$logs/test-short.json" GITHUB_STEP_SUMMARY="$logs/test-short.md" scripts/ci-test-shard.sh 0 1; }
 flake_gate() { GITHUB_STEP_SUMMARY="$logs/flake-gate.md" scripts/ci-changed-tests.sh "$base"; }
+render_tests() {
+  local plan
+  plan=$(scripts/ci-render-tests.sh --plan "$base") || return 1
+  if [[ $plan == "ci-render-tests: no KCL template"* ]]; then na "$plan"; fi
+  scripts/ci-render-tests.sh "$base"
+}
 removalguard() { go test -count=1 -timeout 10m ./internal/removalguard/; }
+guard_tests() {
+  local plan
+  plan=$(scripts/ci-guard-tests.sh --plan "$base") || return 1
+  if [[ $plan == "ci-guard-tests: no Go"* ]]; then na "$plan"; fi
+  scripts/ci-guard-tests.sh "$base"
+}
 changelog() { scripts/check-changelog-untouched.sh "$base"; }
 apigate() {
   local args=(-base "$base")
@@ -161,7 +180,9 @@ golangci() {
 
 step test-short test_short &
 step flake-gate flake_gate &
+step render-tests render_tests &
 step removalguard removalguard &
+step guard-tests guard_tests &
 step changelog changelog &
 step apigate apigate &
 {

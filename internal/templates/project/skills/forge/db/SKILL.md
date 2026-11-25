@@ -144,6 +144,8 @@ Deployed envs migrate themselves — load the `db/deploy-migrations` skill.
 
 To read an env's rows, `forge db query <env> "<sql>"` (read-only, no `forge:secret` columns): load `db/query`.
 
+To undo a bad write in a deployed env, `forge db restore <env> --to <RFC 3339 time>` declares a NEW managed database restored from the source's backups to that moment, beside the source in `deploy/kcl/<env>/main.k` (`--dry-run` prints the edit). The deploy that ships it creates the copy; the app keeps reading the source until you pass the copy's name where the env passes the source's. It never restores over the source.
+
 `forge db seed apply|status|reset` materializes deterministic dev rows from the applied schema, and `db/seeds/vocab.yaml` teaches it your domain's vocabulary — load the `db/seeding` skill before seeding.
 
 ## Declaring a database's schema in the env (several per project)

@@ -60,6 +60,14 @@ func wrFixtureFloor(v string) string {
 	return "package generator\n\nconst webRuntimePublishedRange = \"^" + v + "\"\n"
 }
 
+// wrPublishedList is the record of the runtime versions npm serves, and
+// wrFixturePublished a fixture's: a header, then versions out of lexical order
+// (0.9.0 sorts after 0.13.0 as text), which the release keeps in semver order.
+const (
+	wrPublishedList    = "internal/generator/webruntime_published_versions.txt"
+	wrFixturePublished = "# written by the release\n0.9.0\n0.13.0\n"
+)
+
 // writeFiles writes rel → content under root.
 func writeFiles(t *testing.T, root string, files map[string]string) {
 	t.Helper()
@@ -268,22 +276,19 @@ func TestReleaseWebRuntime_ComputesTheVersion(t *testing.T) {
 			wantChanged: true, wantVersion: "0.13.2", wantBump: "patch",
 		},
 		{
-			// A breaking change raises the scaffold floor in the same pull
-			// request (TestReleaseWebRuntime_RefusesAFloorThatCannotResolveTheRelease).
+			// A breaking change leaves the scaffold floor on the published
+			// ^0.13.1: the bookkeeping raises it after the publish
+			// (TestReleaseWebRuntime_AFloorInThePreviousWindowIsANotice).
 			name: "before 1.0 a breaking title bumps the minor",
 			setup: func(t *testing.T, repo string) {
-				commitAndPush(t, repo, "feat(web-runtime)!: drop the old session API", map[string]string{
-					"web-runtime/src/index.ts": "export {};\n", "internal/generator/frontend_webruntime.go": wrFixtureFloor("0.14.0"),
-				})
+				commitAndPush(t, repo, "feat(web-runtime)!: drop the old session API", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
 			},
 			wantChanged: true, wantVersion: "0.14.0", wantBump: "minor",
 		},
 		{
 			name: "a BREAKING CHANGE footer bumps the minor",
 			setup: func(t *testing.T, repo string) {
-				commitAndPush(t, repo, "refactor(web-runtime): one session store\n\nBREAKING CHANGE: Session.legacy is gone.", map[string]string{
-					"web-runtime/src/index.ts": "export {};\n", "internal/generator/frontend_webruntime.go": wrFixtureFloor("0.14.0"),
-				})
+				commitAndPush(t, repo, "refactor(web-runtime): one session store\n\nBREAKING CHANGE: Session.legacy is gone.", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
 			},
 			wantChanged: true, wantVersion: "0.14.0", wantBump: "minor",
 		},
@@ -300,9 +305,8 @@ func TestReleaseWebRuntime_ComputesTheVersion(t *testing.T) {
 			name: "a declared version is a floor",
 			setup: func(t *testing.T, repo string) {
 				commitAndPush(t, repo, "fix(web-runtime): x", map[string]string{
-					"web-runtime/package.json":                  wrFixtureManifest("0.15.0"),
-					"web-runtime/src/index.ts":                  "export const three = 3;\n",
-					"internal/generator/frontend_webruntime.go": wrFixtureFloor("0.15.0"),
+					"web-runtime/package.json": wrFixtureManifest("0.15.0"),
+					"web-runtime/src/index.ts": "export const three = 3;\n",
 				})
 			},
 			wantChanged: true, wantVersion: "0.15.0", wantBump: "declared",
@@ -321,12 +325,11 @@ func TestReleaseWebRuntime_ComputesTheVersion(t *testing.T) {
 			wantChanged: true, wantVersion: "0.13.5", wantBump: "declared",
 		},
 		{
-			name: "a declared version alone raises the floor with it",
+			name: "a declared minor alone is published under the previous floor",
 			setup: func(t *testing.T, repo string) {
 				commitAndPush(t, repo, "chore(web-runtime)!: declare 0.14.0", map[string]string{
-					"web-runtime/package.json":                  wrFixtureManifest("0.14.0"),
-					"web-runtime/package-lock.json":             wrFixtureLock("0.14.0"),
-					"internal/generator/frontend_webruntime.go": wrFixtureFloor("0.14.0"),
+					"web-runtime/package.json":      wrFixtureManifest("0.14.0"),
+					"web-runtime/package-lock.json": wrFixtureLock("0.14.0"),
 				})
 			},
 			wantChanged: true, wantVersion: "0.14.0", wantBump: "declared",
@@ -345,7 +348,7 @@ func TestReleaseWebRuntime_ComputesTheVersion(t *testing.T) {
 			setup: func(t *testing.T, repo string) {
 				commitAndPush(t, repo, "chore: one", map[string]string{"web-runtime/package.json": wrFixtureManifest("1.2.3"), "web-runtime/src/index.ts": "export const v1 = 1;\n", "internal/generator/frontend_webruntime.go": wrFixtureFloor("1.2.3")})
 				tagWebRuntime(t, repo, "1.2.3")
-				commitAndPush(t, repo, "fix(web-runtime)!: less", map[string]string{"web-runtime/src/index.ts": "export {};\n", "internal/generator/frontend_webruntime.go": wrFixtureFloor("2.0.0")})
+				commitAndPush(t, repo, "fix(web-runtime)!: less", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
 			},
 			wantChanged: true, wantVersion: "2.0.0", wantBump: "major",
 		},
@@ -378,26 +381,28 @@ func TestReleaseWebRuntime_ComputesTheVersion(t *testing.T) {
 	}
 }
 
-// TestReleaseWebRuntime_RefusesAFloorThatCannotResolveTheRelease: forge's
-// release ships the generator of the commit it tags, so a breaking runtime
-// whose commit still declares the old caret window (^0.13.1 for 0.14.0, ^1.2.3
-// for 2.0.0) would release a forge scaffolding a range that cannot install
-// the runtime its code needs. The plan refuses it, before any publish.
-func TestReleaseWebRuntime_RefusesAFloorThatCannotResolveTheRelease(t *testing.T) {
+// TestReleaseWebRuntime_AFloorInThePreviousWindowIsANotice: a pull request
+// never raises the scaffold floor to an unpublished version
+// (internal/generator's TestWebRuntimeFloorIsAPublishedVersion), so a breaking
+// runtime is released from a commit whose floor is still the previous caret
+// window (^0.13.1 for 0.14.0, ^1.2.3 for 2.0.0). That is the policy, not a
+// defect: the plan proceeds and says the bookkeeping raises the floor.
+func TestReleaseWebRuntime_AFloorInThePreviousWindowIsANotice(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the web-runtime release script over a fixture git repo")
 	}
 	cases := []struct {
-		name  string
-		setup func(t *testing.T, repo string)
-		floor string
+		name    string
+		setup   func(t *testing.T, repo string)
+		floor   string
+		version string
 	}{
 		{
 			name: "before 1.0 a breaking change with the old minor's floor",
 			setup: func(t *testing.T, repo string) {
 				commitAndPush(t, repo, "feat(web-runtime)!: drop the old session API", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
 			},
-			floor: "^0.13.1",
+			floor: "^0.13.1", version: "0.14.0",
 		},
 		{
 			name: "from 1.0 a breaking change with the old major's floor",
@@ -406,7 +411,7 @@ func TestReleaseWebRuntime_RefusesAFloorThatCannotResolveTheRelease(t *testing.T
 				tagWebRuntime(t, repo, "1.2.3")
 				commitAndPush(t, repo, "fix(web-runtime)!: less", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
 			},
-			floor: "^1.2.3",
+			floor: "^1.2.3", version: "2.0.0",
 		},
 	}
 	for _, tc := range cases {
@@ -414,8 +419,44 @@ func TestReleaseWebRuntime_RefusesAFloorThatCannotResolveTheRelease(t *testing.T
 			repo := newWebRuntimeReleaseRepo(t)
 			tc.setup(t, repo)
 			res, stderr, err := runWebRuntimeScript(t, repo, webRuntimeEnv(t), "--plan")
-			if err == nil || res.State != "failed" || !strings.Contains(res.Detail, "declares "+tc.floor+", which does not admit") {
-				t.Errorf("want the %s floor refused, got err=%v %+v\n%s", tc.floor, err, res, stderr)
+			if err != nil || res.State != "planned" || res.Version != tc.version {
+				t.Fatalf("want %s planned under the %s floor, got err=%v %+v\n%s", tc.version, tc.floor, err, res, stderr)
+			}
+			if !strings.Contains(stderr, "declares "+tc.floor+", the caret window before the "+tc.version) ||
+				!strings.Contains(stderr, "raises the floor to ^"+tc.version+" once npm serves it") {
+				t.Errorf("the plan did not note that the bookkeeping raises the %s floor to ^%s:\n%s", tc.floor, tc.version, stderr)
+			}
+		})
+	}
+}
+
+// TestReleaseWebRuntime_RefusesAFloorAboveTheReleaseOrMalformed: a floor
+// above the version this commit releases names a version nobody publishes,
+// and a floor that is not ^X.Y.Z cannot be judged. Both are refused before
+// anything is built or published.
+func TestReleaseWebRuntime_RefusesAFloorAboveTheReleaseOrMalformed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs the web-runtime release script over a fixture git repo")
+	}
+	cases := []struct {
+		name  string
+		floor string // the file's whole const line value
+		want  string
+	}{
+		{"a floor above the release", `^0.14.0`, "declares ^0.14.0, above the 0.13.2 this commit releases"},
+		{"a floor with no patch", `^0.13`, "declares ^0.13, not ^X.Y.Z"},
+		{"a floor with no caret", `0.13.1`, "declares 0.13.1, not ^X.Y.Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newWebRuntimeReleaseRepo(t)
+			commitAndPush(t, repo, "fix(web-runtime): x", map[string]string{
+				"web-runtime/src/index.ts":                  "export const one = 2;\n",
+				"internal/generator/frontend_webruntime.go": "package generator\n\nconst webRuntimePublishedRange = \"" + tc.floor + "\"\n",
+			})
+			res, stderr, err := runWebRuntimeScript(t, repo, webRuntimeEnv(t), "--plan")
+			if err == nil || res.State != "failed" || !strings.Contains(res.Detail, tc.want) {
+				t.Errorf("want the %s floor refused (%q), got err=%v %+v\n%s", tc.floor, tc.want, err, res, stderr)
 			}
 		})
 	}
@@ -634,6 +675,7 @@ func addWebRuntimeToForgeFixture(t *testing.T, repo string) {
 		"web-runtime/package-lock.json":             wrFixtureLock("0.13.0"),
 		"web-runtime/src/index.ts":                  "export const one = 1;\n",
 		"internal/generator/frontend_webruntime.go": wrFixtureFloor("0.13.0"),
+		wrPublishedList:                             wrFixturePublished,
 	})
 	tagWebRuntime(t, repo, "0.13.0")
 	commitAndPush(t, repo, "fix(web-runtime): a fix", map[string]string{"web-runtime/src/index.ts": "export const one = 2;\n"})
@@ -668,26 +710,61 @@ func TestReleaseForgeScript_PublishesTheWebRuntimeFirst(t *testing.T) {
 	if v := bookkeepingFile(t, origin, "v0.2.0", "internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.13.1"`) {
 		t.Errorf("the bookkeeping did not raise the scaffold floor to ^0.13.1:\n%s", v)
 	}
+	// The floor's version is recorded as published, in the same commit, so the
+	// -short TestWebRuntimeFloorIsAPublishedVersion accepts it.
+	if v, want := bookkeepingFile(t, origin, "v0.2.0", wrPublishedList), wrFixturePublished+"0.13.1\n"; v != want {
+		t.Errorf("the bookkeeping did not record 0.13.1 as published, in order and under the list's header:\n%s\nwant:\n%s", v, want)
+	}
 	if !strings.Contains(out, "web runtime: @reliantlabs/forge-web-runtime 0.13.1") {
 		t.Errorf("the release did not report the runtime it shipped:\n%s", out)
 	}
 }
 
-// TestReleaseForgeScript_ABreakingRuntimeReleasesAGeneratorThatResolvesIt: a
-// breaking runtime change raises the floor in its own commit, so the commit
-// forge tags (whose generator the archives are built from) already declares
-// ^0.14.0; and the same change with the old floor is not released at all.
-func TestReleaseForgeScript_ABreakingRuntimeReleasesAGeneratorThatResolvesIt(t *testing.T) {
+// TestReleaseForgeScript_ABreakingRuntimeRaisesTheFloorInTheBookkeeping: a
+// breaking runtime change lands without touching the floor (a pull request
+// never names an unpublished version there), so the release publishes 0.14.0
+// from a commit whose generator still scaffolds the published ^0.13.0, and
+// its bookkeeping raises the floor to ^0.14.0 and records 0.14.0 as published.
+// A floor above the release is refused before anything is tagged.
+func TestReleaseForgeScript_ABreakingRuntimeRaisesTheFloorInTheBookkeeping(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs the release script, which builds the fixture module")
 	}
-	t.Run("floor raised", func(t *testing.T) {
+	t.Run("floor raised by the bookkeeping", func(t *testing.T) {
 		repo := newForgeFixtureRepo(t)
 		addWebRuntimeToForgeFixture(t, repo)
-		commitAndPush(t, repo, "feat(web-runtime)!: a new session API", map[string]string{
-			"web-runtime/src/index.ts":                  "export {};\n",
-			"web-runtime/package.json":                  wrFixtureManifest("0.14.0"),
-			"internal/generator/frontend_webruntime.go": wrFixtureFloor("0.14.0"),
+		commitAndPush(t, repo, "feat(web-runtime)!: a new session API", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
+		stubDir, _ := webRuntimeStubs(t)
+		out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH")}, "v0.2.0")
+		if err != nil {
+			t.Fatalf("release failed: %v\n%s", err, out)
+		}
+		origin := fixtureOrigin(t, repo)
+		if got, tagged := gitOut(t, origin, "rev-parse", "web-runtime/v0.14.0^{commit}"), gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); got != tagged {
+			t.Errorf("web-runtime/v0.14.0 is on %s, want forge's released commit %s", got, tagged)
+		}
+		if v := gitOut(t, origin, "show", "v0.2.0:internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.13.0"`) {
+			t.Errorf("the released generator does not keep the published ^0.13.0:\n%s", v)
+		}
+		if v := bookkeepingFile(t, origin, "v0.2.0", "internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.14.0"`) {
+			t.Errorf("the bookkeeping did not raise the floor to ^0.14.0:\n%s", v)
+		}
+		if v, want := bookkeepingFile(t, origin, "v0.2.0", wrPublishedList), wrFixturePublished+"0.14.0\n"; v != want {
+			t.Errorf("the bookkeeping did not record 0.14.0 as published:\n%s\nwant:\n%s", v, want)
+		}
+	})
+	// The path forge itself takes (its release refuses a `!` title within v1):
+	// the pull request declares 0.14.0 in package.json and its lock, the floor
+	// stays on the published ^0.13.0, and the release publishes exactly the
+	// declared version. The manifests already match it, so only the floor is
+	// behind, and the bookkeeping must still raise it.
+	t.Run("version declared in package.json", func(t *testing.T) {
+		repo := newForgeFixtureRepo(t)
+		addWebRuntimeToForgeFixture(t, repo)
+		commitAndPush(t, repo, "fix(web-runtime): telemetry packages are optional peers", map[string]string{
+			"web-runtime/src/index.ts":      "export {};\n",
+			"web-runtime/package.json":      wrFixtureManifest("0.14.0"),
+			"web-runtime/package-lock.json": wrFixtureLock("0.14.0"),
 		})
 		stubDir, _ := webRuntimeStubs(t)
 		out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH")}, "v0.2.0")
@@ -698,20 +775,29 @@ func TestReleaseForgeScript_ABreakingRuntimeReleasesAGeneratorThatResolvesIt(t *
 		if got, tagged := gitOut(t, origin, "rev-parse", "web-runtime/v0.14.0^{commit}"), gitOut(t, origin, "rev-parse", "v0.2.0^{commit}"); got != tagged {
 			t.Errorf("web-runtime/v0.14.0 is on %s, want forge's released commit %s", got, tagged)
 		}
-		if v := gitOut(t, origin, "show", "v0.2.0:internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.14.0"`) {
-			t.Errorf("the released generator does not declare ^0.14.0:\n%s", v)
+		if v := gitOut(t, origin, "show", "v0.2.0:internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.13.0"`) {
+			t.Errorf("the released generator does not keep the published ^0.13.0:\n%s", v)
+		}
+		if v := bookkeepingFile(t, origin, "v0.2.0", "internal/generator/frontend_webruntime.go"); !strings.Contains(v, `webRuntimePublishedRange = "^0.14.0"`) {
+			t.Errorf("the bookkeeping did not raise the floor to ^0.14.0 when package.json already declared it:\n%s", v)
+		}
+		if v := bookkeepingFile(t, origin, "v0.2.0", "web-runtime/package.json"); !strings.Contains(v, `"version": "0.14.0"`) {
+			t.Errorf("the bookkeeping changed web-runtime/package.json's declared 0.14.0:\n%s", v)
+		}
+		if v, want := bookkeepingFile(t, origin, "v0.2.0", wrPublishedList), wrFixturePublished+"0.14.0\n"; v != want {
+			t.Errorf("the bookkeeping did not record 0.14.0 as published:\n%s\nwant:\n%s", v, want)
 		}
 	})
-	t.Run("floor not raised", func(t *testing.T) {
+	t.Run("floor above the release", func(t *testing.T) {
 		repo := newForgeFixtureRepo(t)
 		addWebRuntimeToForgeFixture(t, repo)
-		commitAndPush(t, repo, "feat(web-runtime)!: a new session API", map[string]string{"web-runtime/src/index.ts": "export {};\n"})
+		commitAndPush(t, repo, "fix(web-runtime): x", map[string]string{"internal/generator/frontend_webruntime.go": wrFixtureFloor("0.14.0")})
 		stubDir, _ := webRuntimeStubs(t)
 		out, err := runForgeScriptEnv(t, repo, []string{"PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH")}, "v0.2.0")
-		if err == nil || !strings.Contains(out, "forge v0.2.0 is NOT released") || !strings.Contains(out, "does not admit the 0.14.0") {
-			t.Fatalf("want the release refused for its ^0.13.0 floor, got err=%v:\n%s", err, out)
+		if err == nil || !strings.Contains(out, "forge v0.2.0 is NOT released") || !strings.Contains(out, "above the 0.13.1") {
+			t.Fatalf("want the release refused for its ^0.14.0 floor, got err=%v:\n%s", err, out)
 		}
-		if tags := gitOut(t, fixtureOrigin(t, repo), "tag", "-l", "v0.2.0", "web-runtime/v0.14.0"); tags != "" {
+		if tags := gitOut(t, fixtureOrigin(t, repo), "tag", "-l", "v0.2.0", "web-runtime/v0.13.1"); tags != "" {
 			t.Errorf("a refused release pushed tags: %q", tags)
 		}
 	})

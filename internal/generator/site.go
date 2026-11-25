@@ -28,6 +28,10 @@ type SiteFrontend struct {
 	// SessionReplay is set only for a freshly generated starter. Adopting
 	// existing application code preserves its prior capture intent (off).
 	SessionReplay bool
+	// DevPort is the fixed port the dev env declares, for an adopted app
+	// whose dev server ignores PORT (templates.EnvTemplateData.FrontendDevPort).
+	// Zero keeps the resolved port `forge env up` passes as PORT.
+	DevPort int
 }
 
 // WriteSiteScaffold writes a static site's forge files into dir: forge.yaml,
@@ -110,6 +114,7 @@ func WriteSiteScaffold(dir, projectName string, harness Harness, fe SiteFrontend
 			FrontendType:      fe.Type,
 			FrontendPublicDir: fe.PublicDir,
 			SessionReplay:     fe.SessionReplay,
+			FrontendDevPort:   fe.DevPort,
 		})
 		if err != nil {
 			return fmt.Errorf("render %s env: %w", env, err)

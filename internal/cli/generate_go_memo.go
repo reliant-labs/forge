@@ -447,13 +447,15 @@ func memoizedGoTidy(moduleDir, name, done string, tidy func() error) error {
 
 // memoizedGoValidate runs the validate build unless the tree's build inputs
 // are ones it already passed on. A pass is recorded only when the inputs did
-// not move while it ran.
-func memoizedGoValidate(projectDir string, validate func() error) error {
+// not move while it ran, and only when validate says it is recordable: a
+// pass with caveats (validateCaveats) must run, and report them, again.
+func memoizedGoValidate(projectDir string, validate func() (recordable bool, err error)) error {
 	m := goMemoFor(projectDir)
 	if m == nil || !sameDirectory(projectDir, m.root) {
 		// The key discovers the workspace from the memo's root; a build run
 		// elsewhere could select another go.work.
-		return validate()
+		_, err := validate()
+		return err
 	}
 	env := goexec.CheckEnv()
 	pre, ok := m.goValidateMemoKey(env)
@@ -462,8 +464,12 @@ func memoizedGoValidate(projectDir string, validate func() error) error {
 		fmt.Println("  ✅ unchanged since it last compiled: every Go build input, the toolchain and the environment are byte-identical")
 		return nil
 	}
-	if err := validate(); err != nil {
+	recordable, err := validate()
+	if err != nil {
 		return err
+	}
+	if !recordable {
+		return nil
 	}
 	if post, ok2 := m.goValidateMemoKey(env); ok && ok2 && post == pre {
 		m.store("validate", pre)

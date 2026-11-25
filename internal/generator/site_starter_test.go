@@ -86,7 +86,8 @@ func TestWriteSiteStarter(t *testing.T) {
 				}
 			}
 			pkg, _ := os.ReadFile(filepath.Join(dir, "package.json"))
-			// The runtime carries the SDK's parts itself.
+			// The SDK's parts are the runtime's telemetry peers (below); the
+			// retired @hyperdx/browser is not.
 			if strings.Contains(string(pkg), `"@hyperdx/browser"`) {
 				t.Fatal("site declares @hyperdx/browser, which the runtime no longer imports")
 			}
@@ -94,7 +95,7 @@ func TestWriteSiteStarter(t *testing.T) {
 			if !strings.Contains(string(pkg), `"@reliantlabs/forge-web-runtime": "`+webRuntimePublishedRange+`"`) {
 				t.Errorf("package.json must declare the web runtime at forge's floor:\n%s", pkg)
 			}
-			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api"} {
+			for _, peer := range []string{"@connectrpc/connect", "@bufbuild/protobuf", "@opentelemetry/api", "@hyperdx/otel-web", "rrweb"} {
 				spec, _ := webruntimepeers.PeerSpec(peer)
 				if !strings.Contains(string(pkg), `"`+peer+`": "`+spec+`"`) {
 					t.Errorf("package.json must declare the runtime's peer %s at %q:\n%s", peer, spec, pkg)
@@ -117,6 +118,38 @@ func TestSiteStarterKindNamesAreAllBacked(t *testing.T) {
 		}
 		if err := WriteSiteStarter(t.TempDir(), "landing", fe); err != nil {
 			t.Errorf("%s: %v", kind, err)
+		}
+	}
+}
+
+// An adopted Vite app whose dev server ignores PORT gets its real port in
+// dev, and only in dev; with no DevPort the resolved port stays.
+func TestSiteScaffoldDevPort(t *testing.T) {
+	for _, tc := range []struct {
+		port int
+		want string
+	}{
+		{4321, "    port = 4321\n"},
+		{0, `port = plugin.resolve_port("landing-dev-web", 3000)`},
+	} {
+		dir := t.TempDir()
+		fe := SiteFrontend{Name: "web", Type: "vite", PublicDir: "dist", DevPort: tc.port}
+		if err := WriteSiteScaffold(dir, "landing", HarnessNone, fe); err != nil {
+			t.Fatal(err)
+		}
+		dev, err := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "dev", "main.k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(dev), tc.want) {
+			t.Errorf("DevPort %d: dev/main.k lacks %q:\n%s", tc.port, tc.want, dev)
+		}
+		prod, err := os.ReadFile(filepath.Join(dir, "deploy", "kcl", "prod", "main.k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(prod), "port =") {
+			t.Errorf("DevPort %d: a hosted env declares no dev port:\n%s", tc.port, prod)
 		}
 	}
 }

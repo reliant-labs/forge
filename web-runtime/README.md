@@ -100,14 +100,28 @@ installs `@opentelemetry/api` and nothing else. `src/published-surface.test.ts`
 holds the rule: a peer the `/node` import closure does not reach must be
 optional.
 
-The browser telemetry SDK is not a peer. `@hyperdx/otel-web` and `rrweb` are
-exact-pinned **dependencies**, imported only by `/telemetry` and only through
-`import()`, so each is its own chunk (rrweb loads only when replay runs) and a
-consumer that never imports `/telemetry` bundles neither. They are
-dependencies rather than optional peers because apps that installed an earlier
-runtime declare `@hyperdx/browser` instead; a peer they don't declare would
-fail to resolve on their next install. Those apps need no edit, and their
-`@hyperdx/browser` entry is unused from then on.
+The browser telemetry SDK is an optional peer too. `@hyperdx/otel-web` and
+`rrweb` are imported only by `/telemetry` and only through `import()`, so each
+is its own chunk (rrweb loads only when replay runs) and a consumer that never
+imports `/telemetry` neither bundles nor installs them. Both are **exact**
+peers, because the runtime drives them below their public surface, so an app
+that imports `/telemetry` declares them at exactly the versions in this
+package's `peerDependencies`. Every forge web scaffold (Next.js, Vite, the
+static-site starters) does, and `forge generate` adds them to any frontend
+whose sources import `/telemetry`.
+
+Until 0.14.0 they were **dependencies**, which put about 90 MB of browser
+packages into every consumer, an Electron main process that imports only
+`/node` included. 0.14.0 is a minor release for that reason: a `^0.13` app
+that never regenerates keeps the runtime that carries them, and an app that
+moves to `^0.14` without forge declares them itself:
+
+```sh
+npm install @hyperdx/otel-web@0.20.0 rrweb@2.1.7
+```
+
+An app that installed a runtime before 0.13.19 may still declare
+`@hyperdx/browser`; nothing imports it any more, and it can be removed.
 
 Under Node, `/telemetry` loads the SDK from `dist/hyperdx-otel-web.node.js`
 instead. That file is `@hyperdx/otel-web` bundled for the browser platform
@@ -784,6 +798,44 @@ test-side check: it names each handler whose output the proto would not
 accept. It is a subpath of its own, outside the barrel, so an app that
 lazy-loads it for a demo keeps it out of its main bundle. The
 `frontend/mock-mode` skill has the recipe.
+
+## Transport scopes (`/transport-scope`)
+
+A `TransportScope` gives a subtree its own transport and its own React Query
+cache, so part of a page (a sample app in a tour, a preview panel) reads a
+fixture transport while the rest stays live:
+
+```tsx
+import {
+  createTransportScope,
+  TransportScopeProvider,
+} from "@reliantlabs/forge-web-runtime/transport-scope";
+
+const scope = createTransportScope({ id: "sample", transport, readOnly: true });
+
+<TransportScopeProvider scope={scope}>{children}</TransportScopeProvider>;
+```
+
+The scope's QueryClient carries its transport. React context cannot be read
+inside a `queryFn` or `mutationFn`, but TanStack Query passes them the
+QueryClient they run on as `context.client`, and `scopedClient(Svc, fallback)`
+turns that into the scope's client, or `fallback` on any other QueryClient. So
+hooks, `scope.queryClient.fetchQuery(...)` outside React and
+`<service>Mutations(scope.queryClient)` all reach the scope's transport. The
+`/service-hooks` builders pass that context to a generated call as its optional
+last argument; hook files generated before it ignore it and keep calling the
+module client. The scope id is never part of a query key: each scope owns its
+QueryClient, so its cache is isolated by construction. `useClient`,
+`useTransport` and `useTransportScope` read the nearest scope in hand-written
+hooks; `clientFor(Svc, transport)` is memoized per transport;
+`transportOf(queryClient)` returns a scope client's transport. `readOnly` is a
+flag for the app's UI, and the runtime enforces nothing with it.
+
+Reads need `@tanstack/react-query` **5.66.0** or later (`context.client` on a
+`queryFn`); on an older one they fall back to the module client. Mutation hooks
+take the client from their own `useQueryClient()` where TanStack before 5.89.0
+passes no mutation context. Like `/service-hooks`, the subpath imports React
+Query, an optional peer, so it stays out of the barrel.
 
 ## The session (`/session`)
 

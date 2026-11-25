@@ -407,6 +407,9 @@ describe("the full tier", () => {
     const visitor = stamped("visitor.id")[0];
     expect(visitor).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
     expect(dom.local.getItem("forge.visitor_id")).toBe(visitor);
+    // The barrel's visitorId() is the same id, so a Forge Changes `visitor`
+    // unit buckets by exactly what product events carry as visitor.id.
+    expect(index.visitorId()).toBe(visitor);
     // The signed-in user is linked to the visitor once consent arrives.
     expect(actions("user_identified")).toEqual([
       ["user_identified", { visitor_id: visitor, landing_path: "/" }],
@@ -435,6 +438,7 @@ describe("the full tier", () => {
     expect(dom.local.length).toBe(0);
     expect(dom.session.length).toBe(0);
     expect(setGlobalAttributes).toHaveBeenCalledWith({ "visitor.id": "" });
+    expect(index.visitorId()).toBe("");
     expect(stopSessionRecorder).toHaveBeenCalled();
     expect(index.withAttribution("https://app.example.com/")).toBe(
       "https://app.example.com/",

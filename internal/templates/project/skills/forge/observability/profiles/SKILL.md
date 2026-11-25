@@ -67,6 +67,17 @@ forge obs profile --service api --type inuse_space --format folded | flamegraph.
 forge obs profile --service api --sql                      # the query, to run yourself
 ```
 
+**A hosted env's profile:** name the env, as with every other obs verb. `forge obs profile prod --service api -o api.pb.gz` reads it from the control plane (the console's flamegraph, `GetFlamegraph`; sign-in or an `obs:read` token not bound to one environment) and writes the same pprof, speedscope or folded output. It keeps the heaviest 5000 stacks (a note says when there were more) and has no `--span`. A local env's name reads that env's ClickStack, filtered to its samples. With no env, `forge obs profile` reads the local ClickStack and `--env` is only a sample filter on it.
+
+**Profile SQL against any env:** `forge obs profile <env> --sql` prints the statement in `forge obs query`'s parameters, over the tables named **unqualified** (`otel_profiles`, `profile_samples_1m`, `profile_stacks`), and the command that runs it on stderr. obs query reads the env's own database, so `default.` (the local name) does not exist on a hosted env:
+
+```bash
+forge obs profile prod --service api --sql > profile.sql
+forge obs query prod --sql-file profile.sql --service api --since 1h
+forge obs query prod --sql "SELECT ServiceName, SampleType, count() AS n FROM profile_samples_1m
+  WHERE Minute >= {from:DateTime64(9)} GROUP BY ServiceName, SampleType"
+```
+
 Types: `cpu` (nanoseconds) and `inuse_space` (bytes) / `inuse_objects` by default; `alloc_space`/`alloc_objects`, `goroutine`, and the mutex/block `contentions`/`delay` only from a workload that opted in. The same aggregated-flamegraph SQL, to run in HyperDX's SQL console or `clickhouse-client`:
 
 ```sql

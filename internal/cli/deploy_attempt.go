@@ -328,17 +328,6 @@ func attemptRelease(ctx context.Context, store *hostedStore, shipsCheckout bool,
 	return r
 }
 
-// progress reports whether the attempt opened on the control plane, and the
-// last phase the invocation entered. A nil attempt never opens.
-func (a *deployAttempt) progress() (opened bool, phase string) {
-	if a == nil {
-		return false, ""
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.opened, a.phase
-}
-
 // noteDeployPhase records that the invocation entered a phase.
 func noteDeployPhase(ctx context.Context, phase string) {
 	deployAttemptFrom(ctx).set(func(a *deployAttempt) { a.phase = phase })

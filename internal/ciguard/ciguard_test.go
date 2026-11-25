@@ -276,15 +276,18 @@ func TestRequiredGateReportsOnEveryPullRequestAndQueueEntry(t *testing.T) {
 // The guard packages, as scripts/ci-test-packages.sh declares them.
 var guardScript = filepath.Join("..", "..", "scripts", "ci-test-packages.sh")
 
-// mergeTierGuardStep is the merge tier's one full-mode guard run:
-// internal/removalguard, main's most frequent red, whose scan is cheap enough
-// (~10s) for the queue. The other guards' whole-program loads and renders are
-// not.
+// mergeTierGuardStep is the merge tier's one whole-package full-mode guard
+// run: internal/removalguard, main's most frequent red, whose scan is cheap
+// enough (~10s) for the queue. The other guards' affordable whole-repo checks
+// run by name through scripts/ci-guard-tests.sh (guard_tests_test.go);
+// tierguard's renders are main's alone.
 const mergeTierGuardStep = "run: go test -count=1 -timeout 10m ./internal/removalguard/"
 
-// Whole-program loads and native KCL renders belong to the full tier. PRs
-// still compile and run each guard package's cheap -short assertions, and
-// removalguard alone runs in full mode in the merge tier as well.
+// Every guard runs whole in the full tier. PRs still compile and run each
+// guard package's cheap -short assertions; removalguard alone runs whole in
+// full mode in the merge tier as well, and the named whole-repo checks of
+// scripts/ci-guard-tests.sh run there through that script, never by a guard
+// package's path in a step.
 func TestWholeRepoGuardsRunOnlyInFullTier(t *testing.T) {
 	raw, err := os.ReadFile(guardScript)
 	if err != nil {

@@ -744,7 +744,7 @@ func runGeneratePipelineFlags(projectDir string, flags pipelineFlags) error {
 		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not clean up %s: %v\n", failedGenerateDir, err)
 	}
 	fmt.Println()
-	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps)
+	printGenerateOutcome(os.Stdout, summary, outside, flags, len(steps), totalSteps, runCaveatsOf(ctx))
 	printLeftAlone(os.Stdout, checksums.LeftAloneThisRun())
 	printExcludedSkips(os.Stdout, checksums.TakeExcludedSkips(), generateVerbose)
 	printUnrestoredExcluded(os.Stdout, excludeUnrestored)
@@ -1125,9 +1125,22 @@ var pipelineSteps = generateSteps
 //	              is the normal, healthy re-run and stays a quiet one-liner.
 //	Changed > 0   real work landed. Name the counts; the file names are
 //	              already on screen from the per-step output above.
-func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []string, flags pipelineFlags, ranSteps, totalSteps int) {
+//
+// Whichever it is, a run that leaves the project not compiling, or that went
+// on past a failed step, says so on the same line and never under a green
+// check (caveats). The counts keep their wording, which `project new` reads.
+func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []string, flags pipelineFlags, ranSteps, totalSteps int, caveats runCaveats) {
+	defer caveats.explain(w)
+	mark, but := "✅", ""
+	headline := caveats.headline()
+	if headline != "" {
+		mark, but = "⚠️ ", " — but "+headline
+	}
 	if sum.Touched == 0 && sum.Changed() == 0 {
 		fmt.Fprintf(w, "⚠️  Code generation ran %d of %d pipeline steps and WROTE NO FILES.\n", ranSteps, totalSteps)
+		if headline != "" {
+			fmt.Fprintf(w, "    And %s.\n", headline)
+		}
 		switch {
 		case flags.Steps != "" || flags.TemplatesOnly:
 			// The narrowed pipeline is the case that actually shipped
@@ -1142,20 +1155,77 @@ func printGenerateOutcome(w io.Writer, sum checksums.WriteSummary, outside []str
 		return
 	}
 	if sum.Changed() == 0 {
-		fmt.Fprintf(w, "✅ Code generation complete — %d file(s) up to date, 0 changed.\n", sum.Touched)
+		fmt.Fprintf(w, "%s Code generation complete — %d file(s) up to date, 0 changed%s.\n", mark, sum.Touched, but)
 		return
 	}
 	detail := fmt.Sprintf("%d new, %d updated", len(sum.Created), len(sum.Updated))
 	if len(sum.Deleted) > 0 {
 		detail += fmt.Sprintf(", %d removed", len(sum.Deleted))
 	}
-	fmt.Fprintf(w, "✅ Code generation complete — %d file(s) written, %d changed (%s).\n",
-		sum.Touched, sum.Changed(), detail)
+	fmt.Fprintf(w, "%s Code generation complete — %d file(s) written, %d changed (%s)%s.\n",
+		mark, sum.Touched, sum.Changed(), detail, but)
 	if len(outside) > 0 {
 		// Counted above, and named here: no forge writer recorded these, so
 		// either a step wrote them directly or another process did while
 		// generate ran. Either way the tree moved, and the reader decides.
 		fmt.Fprintf(w, "   %d of them changed outside forge's writers: %s\n", len(outside), strings.Join(outside, ", "))
+	}
+}
+
+// runCaveats is what the closing line must admit beside its counts: the
+// run did not leave a clean tree, whether or not it exits non-zero.
+type runCaveats struct {
+	// compile is what a passing compile check found that does not compile.
+	compile validateCaveats
+	// buildKept is set when --keep-on-build-failure kept the writes of a
+	// run whose compile check failed.
+	buildKept bool
+	// failedSteps is how many steps failed soft (ctx.SoftFailures), the
+	// kept compile check among them.
+	failedSteps int
+}
+
+func runCaveatsOf(ctx *pipelineContext) runCaveats {
+	return runCaveats{
+		compile:     ctx.validateCaveats,
+		buildKept:   ctx.keptBuildFailure != nil,
+		failedSteps: len(ctx.SoftFailures),
+	}
+}
+
+// headline is the clause the closing line ends on, "" for a clean run.
+func (c runCaveats) headline() string {
+	var parts []string
+	failed := c.failedSteps
+	if c.buildKept || c.compile.any() {
+		parts = append(parts, "the project does NOT compile")
+		if c.buildKept && failed > 0 {
+			failed-- // the compile check is the failed step just named
+		}
+	}
+	if failed > 0 {
+		other := ""
+		if len(parts) > 0 {
+			other = "other "
+		}
+		parts = append(parts, fmt.Sprintf("%d %sstep(s) failed", failed, other))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// explain follows the closing line with what each caveat means and what to
+// do about it. Failed steps are named by softFailureOutcome, last.
+func (c runCaveats) explain(w io.Writer) {
+	if n := c.compile.UserTestErrors; n > 0 {
+		fmt.Fprintf(w, "   %d compile error(s) in %d _test.go file(s) you own, listed above: forge does not rewrite them, "+
+			"and `go test` fails on them. Fix or delete them before lint or commit.\n", n, c.compile.UserTestFiles)
+	}
+	if c.compile.PinLag {
+		fmt.Fprintf(w, "   The project compiles only against an in-tree producer that is not published at the version it pins (above): "+
+			"publish it and move the pin.\n")
+	}
+	if c.buildKept {
+		fmt.Fprintf(w, "   --keep-on-build-failure kept this run's files; the compile errors are repeated at the end.\n")
 	}
 }
 
@@ -1450,6 +1520,33 @@ func (e *validateBuildError) Unwrap() error { return e.err }
 // where `go build ./...` would, plus where a forge-owned _test.go does not
 // compile.
 func runGoBuildValidate(projectDir string) error {
+	_, err := checkGoBuild(projectDir)
+	return err
+}
+
+// validateCaveats is what a compile check that PASSED still found keeping
+// the project from compiling: nothing forge owns is broken, so the run does
+// not fail (see validateTestFiles for why it must not), but the tree does
+// not compile either, and the closing line must not read as a clean run.
+//
+// An outside evaluator's run printed `middleware_test.go:…: assignment
+// mismatch` and then "✅ Code generation complete": a green check under
+// compile errors, which every agent reads as "done".
+type validateCaveats struct {
+	// UserTestErrors are the compile errors in _test.go files the user
+	// owns, and UserTestFiles how many files they are in.
+	UserTestErrors, UserTestFiles int
+	// PinLag is set when the root compiles only against an in-tree
+	// producer that is not published at the version it pins yet.
+	PinLag bool
+}
+
+// any reports whether the project does not compile despite the passed check.
+func (c validateCaveats) any() bool { return c.UserTestErrors > 0 || c.PinLag }
+
+// checkGoBuild is runGoBuildValidate with its caveats: what it found that
+// does not compile but does not fail the run.
+func checkGoBuild(projectDir string) (validateCaveats, error) {
 	fmt.Println("\n🔨 Validating generated code...")
 	rep, err := compileTree(projectDir, true)
 	if err != nil {
@@ -1458,9 +1555,9 @@ func runGoBuildValidate(projectDir string) error {
 		// go.mod, an unusable toolchain) is the familiar one.
 		out, buildErr := goBuildFallback(projectDir, os.Stderr)
 		if buildErr != nil {
-			return goBuildValidateFailure(projectDir, out, buildErr)
+			return validateCaveats{}, goBuildValidateFailure(projectDir, out, buildErr)
 		}
-		return nil
+		return validateCaveats{}, nil
 	}
 	if rep.Build != "" {
 		// A root that consumes an in-tree producer (a generated SDK) at a
@@ -1470,10 +1567,12 @@ func runGoBuildValidate(projectDir string) error {
 		// assumed (producerPinLag).
 		if lag, local := producerPinLag(projectDir); lag != "" {
 			fmt.Fprintf(os.Stderr, "\n⚠️  %s\n", lag)
-			return validateTestFiles(projectDir, local.TestFiles)
+			caveats, err := validateTestFiles(projectDir, local.TestFiles)
+			caveats.PinLag = true
+			return caveats, err
 		}
 		fmt.Fprint(os.Stderr, rep.Build)
-		return goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
+		return validateCaveats{}, goBuildValidateFailure(projectDir, rep.Build, errors.New("the tree does not compile"))
 	}
 	return validateTestFiles(projectDir, rep.TestFiles)
 }
@@ -1608,12 +1707,17 @@ func goSourceOriginOf(path string) goSourceOrigin {
 // filename list, so it stays true as emitters are added or renamed, and
 // a `forge project disown` (which strips the marker) correctly moves a
 // file from fail to warn along with the ownership it transferred.
-func validateTestFiles(projectDir string, diags []string) error {
+//
+// Warned is not passed, though: the user-owned errors come back as the
+// caveats the closing line names, so the run does not end on a green check
+// over a tree whose `go test` cannot build.
+func validateTestFiles(projectDir string, diags []string) (validateCaveats, error) {
 	// Split by OWNERSHIP, because the two halves warrant opposite
 	// responses: forge's own output failing to compile is forge's bug and
 	// fails the run, while a user-owned test is the user's to fix and must
 	// never block the generate that would refresh what it compiles against.
 	var owned, theirs []string
+	theirFiles := map[string]bool{}
 	seen := map[string]bool{}
 	for _, d := range diags {
 		if seen[d] {
@@ -1628,8 +1732,10 @@ func validateTestFiles(projectDir string, diags []string) error {
 			owned = append(owned, d)
 		} else {
 			theirs = append(theirs, d)
+			theirFiles[file] = true
 		}
 	}
+	caveats := validateCaveats{UserTestErrors: len(theirs), UserTestFiles: len(theirFiles)}
 
 	// User-owned breakage is reported and moved past. Naming the file and
 	// saying plainly that it is theirs is the whole remedy: the previous
@@ -1638,12 +1744,12 @@ func validateTestFiles(projectDir string, diags []string) error {
 	if len(theirs) > 0 {
 		sort.Strings(theirs)
 		fmt.Fprintf(os.Stderr, "\n⚠️  These _test.go files do not compile. They are YOURS — forge will not "+
-			"regenerate them, so update or delete them (generate itself succeeded):\n%s\n",
+			"regenerate them, so update or delete them (forge's own output compiles; `go test` fails on these until you do):\n%s\n",
 			strings.Join(theirs, "\n"))
 	}
 
 	if len(owned) == 0 {
-		return nil
+		return caveats, nil
 	}
 
 	sort.Strings(owned)
@@ -1659,7 +1765,7 @@ func validateTestFiles(projectDir string, diags []string) error {
 	if seam := missingHarnessSeam(owned); seam != "" {
 		fix = seam
 	}
-	return &validateBuildError{
+	return caveats, &validateBuildError{
 		Output: output,
 		err: cliutil.WrapUserErr("forge generate (validate generated code)",
 			"generated test files do not compile", "",

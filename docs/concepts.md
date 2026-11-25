@@ -793,8 +793,8 @@ one definition.
 It covers the whole range, from the small end up. A landing page, docs site, SPA
 or PWA with no backend is a first-class project: one static frontend, the same
 environments and build-once releases, a dev loop with no database or cluster,
-and hosted static hosting with a CDN (one static site per person is free,
-counted across their orgs; each environment's site counts). Start one with `forge project new <name> --kind
+and hosted static hosting with a CDN (free in one organization per person, with
+no limit on its sites; each environment's site is one). Start one with `forge project new <name> --kind
 site`, or adopt an existing Vite or Next.js app in place with `forge project new
 --in-place --kind site` (`forge skill load deploy/static-site`). When it grows a
 waitlist or a checkout, the API is its own forge project beside it.

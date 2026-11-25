@@ -195,11 +195,12 @@ type deployClaimJSON struct {
 // afterClaimNote is what the person who claims a deploy gets, for the agent to
 // pass on. Every clause is the control plane's behaviour on claim
 // (control-plane internal/claimable: the deploy's org becomes theirs, the
-// agent's claimable token is revoked, the org follows the normal plan rules)
-// and the claim page's own copy ("The free plan includes one static site").
+// agent's claimable token is revoked, the org follows the normal plan rules:
+// free static hosting covers one organization per person, with no limit on
+// its sites, and anything else needs hosting billing).
 func afterClaimNote(env string) string {
-	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): the free plan "+
-		"includes one static site, and a backend or database needs billing on their account. "+
+	return fmt.Sprintf("Once claimed it is theirs, in their own Reliant account (free to sign up): free static hosting "+
+		"covers one organization per person, with no limit on its sites, and a backend or database needs hosting billing on their account. "+
 		"This machine's claimable credential stops working at the claim; to redeploy as them: %s login, then %s env deploy %s",
 		Name(), Name(), env)
 }
@@ -1388,7 +1389,8 @@ func printAfterClaim(w io.Writer, env, consoleURL string) {
 	if consoleURL != "" {
 		fmt.Fprintf(w, "  Its releases, logs and dashboards: %s (signed in)\n", consoleURL)
 	}
-	fmt.Fprintf(w, "  The free plan includes one static site; a backend or database needs billing on their account.\n")
+	fmt.Fprintf(w, "  Free static hosting covers one organization per person, with no limit on its sites;\n")
+	fmt.Fprintf(w, "  a backend or database needs hosting billing on their account.\n")
 	fmt.Fprintf(w, "  The claim revokes this machine's claimable credential. To redeploy as them:\n")
 	fmt.Fprintf(w, "  %s login, then %s env deploy %s\n", Name(), Name(), env)
 }

@@ -38,7 +38,8 @@ npx -y @reliantlabs/forge@latest env deploy prod --claimable
 
 Unclaimed: one service with its migration job, one database and one static
 site, 125m / 128 MiB, 72 hours, no outbound internet. Claimed, or deployed
-signed in, the static site is free and the API and database need billing.
+signed in, the static site is free in your free hosting organization (one per
+person) and the API and database need hosting billing.
 
 ## Verify it
 

@@ -655,6 +655,7 @@ func renderPageScaffoldIfMissing(tmpl *template.Template, data codegen.PageTempl
 	// here would re-render (and, before the gate learned better, re-write)
 	// a page the user removed on purpose.
 	if !checksums.ScaffoldOnceDecision(projectDir, relPath) {
+		notePageMissingFields(tmpl, data, projectDir, relPath)
 		return false, nil
 	}
 	if _, err := os.Stat(fullPath); err != nil && !errors.Is(err, fs.ErrNotExist) {

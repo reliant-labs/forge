@@ -88,6 +88,7 @@ When something is wedged:
 	cmd.AddCommand(newDBResetCommand())
 	cmd.AddCommand(newDBQueryCommand())
 	cmd.AddCommand(newDBAnalyzeCommand())
+	cmd.AddCommand(newDBRestoreCommand())
 
 	// --db picks which of the project's databases the migration, migrate,
 	// seed, reset and squash verbs act on (db_paths.go). `forge db query`

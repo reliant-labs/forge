@@ -155,6 +155,21 @@ const (
 	envKubernetesServiceHost = "KUBERNETES_SERVICE_HOST"
 )
 
+// The database-span policy (db_spans.go), forge's own variables.
+const (
+	// EnvDBSpanMinDuration exports a database span only when it took at
+	// least this long or failed, as a Go duration ("20ms"); "0" exports all.
+	EnvDBSpanMinDuration = "FORGE_OBSERVE_DB_SPAN_MIN_DURATION"
+	// EnvDBSpanOmitTx drops the BEGIN and COMMIT spans of transactions that
+	// did not fail: true or false.
+	EnvDBSpanOmitTx = "FORGE_OBSERVE_DB_SPAN_OMIT_TX"
+)
+
+// dbSpansEnv returns the raw database-span variables.
+func dbSpansEnv() (minDuration, omitTx string) {
+	return envValue(EnvDBSpanMinDuration), envValue(EnvDBSpanOmitTx)
+}
+
 // resourceMetricsEnv returns the raw resource-metrics switch and interval, and
 // whether the process runs in a Kubernetes pod.
 func resourceMetricsEnv() (mode, interval string, inPod bool) {

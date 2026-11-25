@@ -21,6 +21,10 @@
 //     otherwise become a one-span trace of its own, which is noise, not depth.
 //     Give the loop a root span (lifecyclekit does) and its queries appear
 //     under it.
+//   - Which of these spans are exported is observe.Config.DBSpans' choice
+//     (or FORGE_OBSERVE_DB_SPAN_MIN_DURATION / FORGE_OBSERVE_DB_SPAN_OMIT_TX):
+//     by default every one; a busy service can keep only slow or failed
+//     statements and leave out BEGIN/COMMIT.
 //
 // A native pgx / pgxpool connection (no database/sql) gets the same spans from
 // NewPgxTracer, assigned to cfg.ConnConfig.Tracer.

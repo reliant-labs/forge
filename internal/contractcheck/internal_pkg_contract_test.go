@@ -765,6 +765,39 @@ type Deps struct{}
 // workaround declared a second interface. An alias to a type that is not an
 // interface still does not.
 func TestInternalContracts_ServiceAliasOfAnInterface(t *testing.T) {
+	invalidTargets := []struct{ imports, target string }{
+		{"", "missingpkg.NoSuchType"},
+		{`import "example.net/external"`, "external.Contract"},
+		{`import "example.com/proj/internal/missing"`, "missing.Contract"},
+		{`import "example.com/proj/internal/tools"`, "tools.Missing"},
+		{`import "example.com/proj/internal/tools"`, "tools.StructAlias"},
+		{`import "example.com/proj/internal/tools"`, "tools.MissingAlias"},
+		{`import "example.com/proj/internal/tools"`, "tools.Cycle"},
+	}
+	for _, tc := range invalidTargets {
+		t.Run("reject "+tc.target, func(t *testing.T) {
+			tmp := t.TempDir()
+			must(t, writeFile(filepath.Join(tmp, "go.mod"), "module example.com/proj\n\ngo 1.22\n"))
+			tools := filepath.Join(tmp, "internal", "tools")
+			must(t, mkdirAll(tools))
+			must(t, writeFile(filepath.Join(tools, "tools.go"), `package tools
+ type StructAlias = Concrete
+ type Concrete struct{}
+ type MissingAlias = Missing
+ type Cycle = Cycle
+`))
+			adapter := filepath.Join(tmp, "internal", "adapter")
+			must(t, mkdirAll(adapter))
+			must(t, writeFile(filepath.Join(adapter, "contract.go"), "package adapter\n"+tc.imports+"\ntype Service = "+tc.target+"\ntype helper interface{ Do() }\ntype Deps struct{}\nfunc New(d Deps) Service { return nil }\n"))
+			facts, err := scanPackageContractShape(adapter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if facts.hasServiceInterface {
+				t.Fatal("unresolved or non-interface alias accepted as Service interface")
+			}
+		})
+	}
 	cases := []struct {
 		name, contract string
 		want           int
@@ -780,6 +813,16 @@ type Service = tools.ChangeController
 type projects interface{ Get() error }
 
 type Deps struct{ Projects projects }
+
+func New(d Deps) Service { return nil }
+`, 0},
+		{"alias chain to another package's interface", `package adapter
+
+import "example.com/proj/internal/tools"
+
+type Service = tools.Alias
+
+type Deps struct{}
 
 func New(d Deps) Service { return nil }
 `, 0},
@@ -827,6 +870,7 @@ type helper interface{ Do() }
 
 // ChangeController is the consumer-owned contract.
 type ChangeController interface{ Apply() error }
+type Alias = ChangeController
 
 // Controller is a concrete type.
 type Controller struct{}

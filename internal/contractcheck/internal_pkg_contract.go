@@ -677,12 +677,9 @@ func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
 }
 
 // serviceAliasOK reports whether the type a `type Service = <T>` alias names
-// is an interface, read from syntax: T declared in this package must be one
-// of its interfaces; pkg.T in another package of this module is looked up
-// in that package's files, and only a T declared there as something else (a
-// struct, a func type) is refused. A package outside the module is not read:
-// the mock generator type-checks it, and mocks the alias only when it is an
-// interface.
+// is an interface, read from syntax. Imported targets must resolve to an
+// interface declaration in this module, including through alias chains.
+// Unknown qualifiers, unavailable packages and unresolved targets fail closed.
 func serviceAliasOK(pkgDir string, facts contractShapeFacts) bool {
 	switch t := facts.serviceAlias.(type) {
 	case *ast.Ident:
@@ -694,14 +691,13 @@ func serviceAliasOK(pkgDir string, facts contractShapeFacts) bool {
 		}
 		importPath, ok := facts.serviceAliasImports[x.Name]
 		if !ok {
-			return true // a qualifier the import block does not spell: not read
+			return false
 		}
 		dir := moduleImportDir(pkgDir, importPath)
 		if dir == "" {
-			return true
+			return false
 		}
-		isIface, declared := declaredInterface(dir, t.Sel.Name)
-		return isIface || !declared
+		return declaredInterface(dir, t.Sel.Name, make(map[string]bool))
 	}
 	return false
 }
@@ -737,12 +733,17 @@ func moduleImportDir(pkgDir, importPath string) string {
 	return filepath.Join(dir, filepath.FromSlash(rel))
 }
 
-// declaredInterface reports whether dir's non-test files declare name, and
-// whether as an interface (an alias counts as one: it is not read further).
-func declaredInterface(dir, name string) (isIface, declared bool) {
+// declaredInterface follows aliases to a known interface declaration. The
+// visited set prevents cyclic aliases from being accepted or recursing forever.
+func declaredInterface(dir, name string, visited map[string]bool) bool {
+	key := filepath.Join(dir, name)
+	if visited[key] {
+		return false
+	}
+	visited[key] = true
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return false, false
+		return false
 	}
 	fset := token.NewFileSet()
 	for _, e := range entries {
@@ -764,14 +765,23 @@ func declaredInterface(dir, name string) (isIface, declared bool) {
 					continue
 				}
 				if ts.Assign.IsValid() {
-					return true, true
+					switch target := ts.Type.(type) {
+					case *ast.Ident:
+						return declaredInterface(dir, target.Name, visited)
+					case *ast.SelectorExpr:
+						if qualifier, ok := target.X.(*ast.Ident); ok {
+							if targetDir := moduleImportDir(dir, importAliases(file)[qualifier.Name]); targetDir != "" {
+								return declaredInterface(targetDir, target.Sel.Name, visited)
+							}
+						}
+					}
 				}
 				_, isIface := ts.Type.(*ast.InterfaceType)
-				return isIface, true
+				return isIface
 			}
 		}
 	}
-	return false, false
+	return false
 }
 
 // markedTypeLine is the line of dir's first `//forge:contract` type (0 when

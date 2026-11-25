@@ -2,7 +2,8 @@ package cli
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -367,54 +368,85 @@ func slicesEqual(a, b []string) bool {
 // Kubernetes Job: once the job has run that long its process is killed and
 // the run fails, naming the deadline, so the jobs it gates never start.
 //
-// The job forks a grandchild (the `go run` shape: the real program is a
-// child of the launcher) and records its pid. Killing only the direct child
-// would orphan that grandchild still running, which is a deadline in name
-// only — so the test also proves the whole tree is gone.
-func TestRunOneHostJob_ActiveDeadlineKillsTheProcessTree(t *testing.T) {
-	testkit.Slow(t, "execs sh and ps")
+// A grandchild holds a TCP connection open until killed. EOF proves it has
+// released its resources even if the host's init has not reaped its zombie;
+// polling PID liveness confused those zombies with running processes.
+func TestRunOneHostJob_ActiveDeadlineClosesGrandchildConnection(t *testing.T) {
+	testkit.Slow(t, "execs a launcher and grandchild until the active deadline")
 	if runtime.GOOS == "windows" {
-		// The grandchild's pid comes from sh's $!, which under the Windows
-		// runner's sh (MSYS) is an MSYS pid, not a Windows one — processAlive
-		// cannot observe it, so the tree-kill assertion has nothing to check.
-		t.Skip("the grandchild pid is sh's $!, which on Windows (MSYS sh) is not a Windows pid processAlive can observe")
+		t.Skip("requires a POSIX sh launcher")
 	}
-	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
-	deadline := int64(1)
-	j := job("seed", []string{"sh", "-c", "sleep 60 & echo $! > " + shPath(pidFile) + "; wait"}, "api")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := int64(5)
+	// Keep sh as the launcher (wait prevents exec optimization).
+	j := job("seed", []string{"sh", "-c", "\"$1\" -test.run=^TestHostJobGrandchildConnectionHelper$ -- \"$2\" & wait", "launcher", binary, listener.Addr().String()}, "api")
 	j.Spec.ActiveDeadlineSeconds = &deadline
 
 	start := time.Now()
-	err := runOneHostJob(context.Background(), nil, j, nil, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runOneHostJob(ctx, nil, j, nil, "") }()
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("grandchild never connected: %v", err)
+	}
+	defer conn.Close() // also releases the helper if tree killing regresses
+	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var b [1]byte
+	if _, err := io.ReadFull(conn, b[:]); err != nil || b[0] != 'R' {
+		t.Fatalf("grandchild readiness: %q, %v", b, err)
+	}
+	if _, err := conn.Read(b[:]); err != io.EOF {
+		t.Errorf("grandchild connection survived the deadline: want EOF, got %v", err)
+	}
+	err = <-done
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("a job past its activeDeadlineSeconds must fail")
 	}
 	if elapsed > 15*time.Second {
-		t.Errorf("the job ran %s; activeDeadlineSeconds=1 did not bound it", elapsed)
+		t.Errorf("the job ran %s; activeDeadlineSeconds=5 did not bound it", elapsed)
 	}
-	for _, want := range []string{"seed", "activeDeadlineSeconds", "1s", "killed", "api"} {
+	for _, want := range []string{"seed", "activeDeadlineSeconds", "5s", "killed", "api"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q:\n%s", want, err)
 		}
 	}
+}
 
-	raw, rerr := os.ReadFile(pidFile)
-	if rerr != nil {
-		t.Fatalf("the job never started its grandchild: %v", rerr)
+// Invoked only by the launcher above. Reading until the parent closes the
+// connection provides cleanup without PID reuse or process-table polling.
+func TestHostJobGrandchildConnectionHelper(t *testing.T) {
+	if len(os.Args) < 2 || os.Args[len(os.Args)-2] != "--" {
+		return
 	}
-	var pid int
-	if _, serr := fmt.Sscan(strings.TrimSpace(string(raw)), &pid); serr != nil || pid <= 0 {
-		t.Fatalf("bad grandchild pid %q", raw)
+	conn, err := net.DialTimeout("tcp", os.Args[len(os.Args)-1], 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	waitUntil := time.Now().Add(5 * time.Second)
-	for processAlive(pid) && time.Now().Before(waitUntil) {
-		time.Sleep(50 * time.Millisecond)
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
 	}
-	if processAlive(pid) {
-		_ = signalProcessGroup(pid, 9)
-		t.Fatalf("grandchild %d outlived the deadline: only the direct child was killed", pid)
+	if _, err := conn.Write([]byte("R")); err != nil {
+		t.Fatal(err)
 	}
+	var b [1]byte
+	_, _ = conn.Read(b[:])
 }
 
 // The deadline a host job runs under: its declared activeDeadlineSeconds,

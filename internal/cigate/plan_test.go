@@ -651,3 +651,32 @@ func TestPlan_VulnSBOMStep(t *testing.T) {
 		t.Errorf("vuln-sbom runs %v", c.Argv)
 	}
 }
+
+// Two frontends declared on one directory are one directory to install,
+// lint and build: the first of them names its rows, and the second gets none.
+// Two deps rows there would run two installs into one node_modules at once.
+func TestPlan_SharedFrontendDirectoryGetsOneSetOfRows(t *testing.T) {
+	in := PlanInput{Root: t.TempDir(), Forge: []string{"forge"}, CI: templates.CIWorkflowData{
+		HasFrontends: true, LintFrontend: true, VerifyGenerated: true,
+		Frontends: []templates.FrontendCIConfig{
+			{Name: "admin", Path: "frontends/admin"},
+			{Name: "desktop", Path: "frontends/web"},
+			{Name: "web", Path: "frontends/web"},
+		},
+	}}
+	all, err := Plan(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"deps-admin", "deps-desktop", "lint-desktop", "typecheck-desktop", "build-desktop", "build-admin"} {
+		find(t, all, row)
+	}
+	for _, n := range names(all) {
+		if strings.HasSuffix(n, "-web") {
+			t.Errorf("row %s duplicates frontends/web, which deps-desktop already installs", n)
+		}
+	}
+	if got := strings.Join(find(t, all, "verify-generated").After, " "); got != "deps-admin deps-desktop" {
+		t.Errorf("verify-generated waits for %q, want one deps row per directory", got)
+	}
+}

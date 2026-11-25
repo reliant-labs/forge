@@ -309,7 +309,7 @@ func (p planner) frontendDeps(lane Lane) []Check {
 		return nil
 	}
 	var out []Check
-	for _, fe := range p.CI.Frontends {
+	for _, fe := range p.CI.FrontendDirs() {
 		fe := fe
 		inst := frontenddeps.InstallArgv(p.path(fe.Path), "", true)
 		depsArgv := frontenddeps.ExecArgv(p.path(fe.Path), inst[0], inst[1:]...)
@@ -381,7 +381,7 @@ func (p planner) allDeps() []string {
 		return nil
 	}
 	var out []string
-	for _, fe := range p.CI.Frontends {
+	for _, fe := range p.CI.FrontendDirs() {
 		out = append(out, depsName(fe))
 	}
 	return out
@@ -459,7 +459,7 @@ func (p planner) checksLane() []Check {
 		out = append(out, c)
 	}
 	if ci.LintFrontend && ci.HasFrontends {
-		for _, fe := range ci.Frontends {
+		for _, fe := range ci.FrontendDirs() {
 			fe := fe
 			needDeps, after := p.needsDeps(fe), []string{depsName(fe)}
 			out = append(out,
@@ -512,7 +512,7 @@ func (p planner) checksLane() []Check {
 	}
 	out = append(out, build)
 	if ci.HasFrontends {
-		for _, fe := range ci.Frontends {
+		for _, fe := range ci.FrontendDirs() {
 			fe := fe
 			out = append(out, Check{
 				Name:   "build-" + fe.Name,

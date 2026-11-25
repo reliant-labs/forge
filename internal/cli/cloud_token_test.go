@@ -77,6 +77,49 @@ func TestCloudTokenCreate_ExpiryIsSent(t *testing.T) {
 	}
 }
 
+// --bind-env reaches the wire as CreateTokenRequest.resource, in the
+// protojson shape control-plane's ResourceBinding decodes; without it no
+// resource is sent, so an older control plane sees the request it accepts.
+func TestCloudTokenCreate_BindEnvSendsTheResource(t *testing.T) {
+	t.Parallel()
+	caller := &recordingCaller{resp: `{"token":{"id":"tok_1","name":"app","scopes":["changes:read"]},"secret":"x"}`}
+	var out bytes.Buffer
+	if err := runCloudTokenCreateBound(context.Background(), caller, "app", []string{"changes:read"}, 0, " env-123 ", false, &out); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(caller.req["resource"])
+	if string(raw) != `{"id":"env-123","kind":"environment"}` {
+		t.Errorf("resource = %s, want {\"kind\":\"environment\",\"id\":\"env-123\"}", raw)
+	}
+	if !strings.Contains(out.String(), "Bound to environment env-123") {
+		t.Errorf("output does not name the binding:\n%s", out.String())
+	}
+
+	unbound := &recordingCaller{resp: `{"token":{"id":"tok_2"},"secret":"x"}`}
+	if err := runCloudTokenCreate(context.Background(), unbound, "ci", []string{"deploy:write"}, 0, true, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := unbound.req["resource"]; has {
+		t.Error("no --bind-env must send no resource")
+	}
+}
+
+// A scope that cannot ride an environment binding is refused before the
+// round trip, naming it; one that can passes, and no flag checks nothing.
+func TestCloudTokenCreate_BindEnvChecksScopes(t *testing.T) {
+	t.Parallel()
+	if err := checkEnvBinding("app", []string{"changes:read", "obs:read"}, "env-1"); err != nil {
+		t.Errorf("env-bindable scopes refused: %v", err)
+	}
+	if err := checkEnvBinding("ci", []string{"deploy:write"}, ""); err != nil {
+		t.Errorf("no --bind-env refused: %v", err)
+	}
+	err := checkEnvBinding("ci", []string{"changes:read", "deploy:write"}, "env-1")
+	if err == nil || !strings.Contains(err.Error(), "--bind-env") || !strings.Contains(err.Error(), "deploy:write") {
+		t.Errorf("deploy:write bound to an environment: err = %v", err)
+	}
+}
+
 // A server refusal (e.g. a machine credential, which the control plane will
 // not let mint a token) surfaces as the command's error, never as success.
 func TestCloudTokenCreate_ServerRefusalIsAnError(t *testing.T) {

@@ -144,35 +144,31 @@ On Reliant hosting the platform mounts each workload's snapshot as a file
 app that runs anywhere else (your own cluster, a VM, another host) fetches the same
 snapshot from the control plane instead, with an access token that may read it.
 
-**Prerequisite: control-plane support.** This framework release adds the client
-and scope, but does not by itself enable `changes:read` on the server. The companion
-control-plane release must both admit `changes:read` when minting tokens (including
-the database scopes CHECK) and authorize it for `ChangesService/GetChangesSnapshot`.
-Until that release is deployed, the read-only setup below is not available: the
-existing server refuses it. Do not substitute a broader write or observability
-token just to make this setup work.
+**1. Mint a token with the `changes:read` scope.** It reads one environment's Changes
+snapshot (`ChangesService/GetChangesSnapshot`) and nothing else. It acts as no
+person, and `changes:write` and `changes:launch` also allow it.
 
-**1. Create a token with the `changes:read` scope, after that prerequisite is met.**
-It reads Changes snapshots and nothing else. It acts as no person, and
-`changes:write` and `changes:launch` also allow snapshot reads.
+This needs a control plane that admits `changes:read`: on Reliant cloud, the release
+that carries control-plane#3713. Until your control plane runs it, a token carrying
+`changes:write` (which `GetChangesSnapshot` admits today) works, but it is broader:
+it can also draft and stop changes.
 
-On **Reliant cloud**, sign in and open **Settings → API tokens** to create the
-token. Production refuses token administration using a CLI-login credential;
-`cloud token create` is not the cloud-login setup path. If `changes:read` is not
-available in Settings, the companion server support is not ready for this setup.
+- **On Reliant cloud**, create the token in the web app, under Settings → API tokens.
+  Reliant cloud refuses token administration to a CLI login, so
+  `forge cloud token create` exits 9 there and points you to that page.
+- **On a control plane that admits CLI token administration**, mint it from the
+  CLI. `--env` picks the control plane that env declares:
 
-Only on a **self-hosted control plane that enables CLI token administration** may
-you use this alternative:
+  ```bash
+  reliant forge cloud token create --env prod --name checkout-changes \
+      --scopes changes:read --bind-env <environment-id>
+  ```
 
-```bash
-reliant forge cloud token create --env prod --name checkout-changes --scopes changes:read
-```
-
-`--env` picks the control plane that env declares. A `changes:read` grant can be
-bound to one environment, so a leaked token reads that environment's snapshot and no
-other's. Select that binding if the token-creation interface supports it;
-`cloud token create` cannot bind one yet. An unbound token reads the snapshot of
-every environment in the organization.
+**Bind the token to one environment** where you can, so a leaked token reads that
+environment's snapshot and no other's. Binding needs a control plane whose
+`CreateToken` accepts a resource binding (control-plane#3713); `--bind-env` sends
+it, and an older control plane rejects the request. A token minted without a
+binding is org-wide: it reads the snapshot of every environment in the organization.
 
 **2. Give the backend three environment variables.** Keep the token in your secret
 store, never in the repository:

@@ -45,24 +45,16 @@ every 10s. `String`, `Float64` and `Decode` read the other value types.
 ### Not on Reliant hosting
 
 An app on its own cluster or host fetches the same snapshot from the control
-plane. **Prerequisite:** the companion control-plane release must admit
-`changes:read` when minting tokens (including its database scopes CHECK) and
-authorize it for `ChangesService/GetChangesSnapshot`. This framework release
-alone does not enable that server support; until it is deployed, this read-only
-setup is unavailable. Do not work around it with broader write or observability
-credentials.
-
-After that prerequisite is met, create an access token carrying `changes:read`
-(snapshot reads only). **Reliant cloud users: sign in and open Settings → API
-tokens.** Production refuses CLI-login token administration; if the scope is not
-available in Settings, the server support is not ready. Only on a self-hosted
-control plane that enables CLI token administration, the alternative is
-`reliant forge cloud token create --env <env> --name <app>-changes --scopes changes:read`.
-Bind the grant to one environment if the token-creation interface supports it;
-the CLI cannot bind it yet, and an unbound token reads every environment in the
-organization.
-
-Set `FORGE_CHANGES_URL` (the control plane's base URL),
+plane, with an access token carrying `changes:read` (it reads one
+environment's snapshot and nothing else). That needs a control plane that
+admits `changes:read` (Reliant cloud from the release that carries
+control-plane#3713); until then a `changes:write` token works but is broader.
+On Reliant cloud create the token in the web app (Settings → API tokens): it
+refuses token administration to a CLI login. Elsewhere, `reliant forge cloud
+token create --env <env> --name <app>-changes --scopes changes:read
+--bind-env <environment-id>`; binding to one environment needs a control
+plane with control-plane#3713, and an unbound token is org-wide. Set
+`FORGE_CHANGES_URL` (the control plane's base URL),
 `FORGE_CHANGES_ENVIRONMENT_ID` and `FORGE_CHANGES_TOKEN`, allow egress to the
 control plane on 443, and open the store with
 `changes.OpenFromEnv(ctx, os.Getenv, changes.Options{})`: it reads

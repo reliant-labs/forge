@@ -308,6 +308,30 @@ func TestGenerate_DepsNonInterfaceFieldsIgnored(t *testing.T) {
 	assertNotContains(t, mockPath, "MockEstimate struct")
 }
 
+// TestGenerate_DepsValueFieldImportsNothing pins forge bug 2b57dc2b: a Deps
+// field holding a VALUE of a non-interface type from another package (a
+// config struct, a string enum — control-plane's deploydest.Platform,
+// ociregistry.AdmitConfig, deliverysign.Mode) is not mocked, so the mock must
+// not import its package either. The import used to be claimed before the
+// type was known not to be an interface, and the mock then failed to compile
+// with "imported and not used".
+func TestGenerate_DepsValueFieldImportsNothing(t *testing.T) {
+	skipTypeCheckUnderShort(t)
+	root := depsProject(t, "\tRow db.Estimate\n")
+	contractPath := filepath.Join(root, "internal", "pipeline", "contract.go")
+
+	if err := Generate(contractPath); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	mockPath := filepath.Join(root, "internal", "pipeline", "mock_gen.go")
+	assertValidGo(t, mockPath)
+	assertContains(t, mockPath, "type MockService struct {")
+	assertNotContains(t, mockPath, `"example.com/proj/internal/db"`)
+
+	buildDepsProject(t, root)
+}
+
 // TestGenerate_DepsForeignUnnamedParamsAndAliasCollision reproduces the
 // protoc-gen-connect-go shape: foreign client methods omit parameter names and
 // use an explicit `v1` alias inside a generic request type. The consuming

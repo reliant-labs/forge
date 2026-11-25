@@ -115,6 +115,10 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Readers turns on the reader scan (ci.gate.affected_readers): a changed
+	// file nothing else places selects the test packages whose sources name
+	// it (affected_readers.go).
+	Readers bool
 	// ChangesOnly stops once the changed files are known, without go list:
 	// for a caller that gates checks by path (GateByPaths) but does not
 	// narrow the unit lane.
@@ -191,6 +195,13 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	if err != nil {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
+	if in.Readers {
+		// No tracked list means no readers: every unplaced file still runs
+		// the full suite.
+		if tracked, terr := trackedFiles(ctx, git, in.Root); terr == nil {
+			g.readers = scanReaders(g, tracked)
+		}
+	}
 	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
 	if reason != "" {
 		return fullAfterDiff(reason)
@@ -218,6 +229,7 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 			a.Selections = append(a.Selections, selectionLine(i, rule, sel.hits[i], g))
 		}
 	}
+	a.Selections = append(a.Selections, sel.readerLines...)
 	return a
 }
 
@@ -228,6 +240,7 @@ type selection struct {
 	rulePkgs    map[string]bool // test packages an affected rule names
 	frontends   map[string]bool // frontends an affected rule names
 	hits        []int           // per rule, how many changed files it claimed
+	readerLines []string        // per file the reader scan placed, what it selected
 }
 
 // selectChanges maps each changed file to what it selects, or returns why the
@@ -265,7 +278,14 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 		switch {
 		case ok:
 			sel.changedPkgs[pkg] = true
-		case !claimed:
+		case claimed:
+		case len(g.readers.readersOf(f)) > 0:
+			readers := g.readers.readersOf(f)
+			for p := range readers {
+				sel.rulePkgs[p] = true
+			}
+			sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+		default:
 			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
 		}
 	}
@@ -370,6 +390,8 @@ type packageGraph struct {
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
+	// readers is the reader scan's index; nil unless it is on.
+	readers readerIndex
 }
 
 // listedPackage is the part of a `go list -json` package affected mode reads;

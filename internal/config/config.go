@@ -1058,6 +1058,13 @@ type CIGateConfig struct {
 	// full suite; a file no rule matches behaves as without rules. See
 	// CIGateAffectedRule and internal/cigate/affected.go.
 	AffectedRules []CIGateAffectedRule `yaml:"affected_rules,omitempty"`
+	// AffectedReaders turns on the reader scan: forge reads each test
+	// package's Go sources for string literals naming tracked repo paths,
+	// and a changed non-Go file no rule claims selects the packages that
+	// name it (or a directory holding it) instead of the full suite. A file
+	// no package names still runs the full suite. Go-only. See
+	// internal/cigate/affected_readers.go.
+	AffectedReaders bool `yaml:"affected_readers,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.

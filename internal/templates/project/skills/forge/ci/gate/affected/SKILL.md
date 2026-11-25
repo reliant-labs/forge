@@ -84,6 +84,39 @@ ci:
   rules, and the `test-<name>` rows still run. In full mode there are no
   `test-<name>` rows: `task test` runs every frontend's suite.
 
+## Tests that read repo files: `ci.gate.affected_readers`
+
+A Go test that reads a repo file at run time (`os.ReadFile(filepath.Join(root,
+"deploy", "kcl", "main.k"))`) is invisible to the package graph, so a change to
+that file runs the whole suite. Opt in to the reader scan and forge reads each
+test package's Go sources (test and non-test files) for string literals that
+name a tracked file or directory:
+
+```yaml
+ci:
+  gate:
+    affected_readers: true
+```
+
+A changed file that is not Go, not embedded, not a package's testdata and not
+claimed by a rule then selects the packages that name it, or name a directory
+holding it; the gate's selection lines say which (`ci.gate.affected_readers:
+deploy/kcl/main.k changed → ex.com/m/internal/render (names deploy/kcl)`). A file
+no package names still runs the whole suite.
+
+What counts as naming a path: a package is scanned only if its sources locate
+the repo root (`runtime.Caller`, `os.Getwd`, a `".."`, `git rev-parse`,
+`"go.mod"`, a `repoRoot(` helper). A `filepath.Join`/`path.Join` is judged by its
+first argument: all-literal joins are relative to the package directory, joins
+onto a root-derived value are relative to the root, and joins onto anything else
+(`t.TempDir()`, a parameter) name nothing. Other multi-segment literals naming a
+tracked path count anywhere; a bare word counts only as a root-level file or the
+lone literal argument of a path call. Limits: the scan is syntactic and per
+package, so a path built at run time (a loop variable, a flag, another package's
+constant) or read by a child process from a path the test never spells is not
+seen; route those with `affected_rules`. It is Go-only: frontend tests are not
+scanned.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when

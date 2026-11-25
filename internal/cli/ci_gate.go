@@ -328,7 +328,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 		tierForce = "--tier " + in.tier.Name
 	}
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, frontends: in.ciFrontends,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, readers: cfg.CI.Gate.AffectedReaders, frontends: in.ciFrontends,
 		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
@@ -417,6 +417,7 @@ type affectedArgs struct {
 	frontends          []templates.FrontendCIConfig
 	cache              *cigate.VerdictCache
 	full               bool
+	readers            bool // ci.gate.affected_readers
 	// tierForce, when set, is the tier that runs the whole suite (--tier main).
 	tierForce string
 }
@@ -440,7 +441,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		force = in.tierForce
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
-		Ignore: in.ignore, Rules: in.rules, ChangesOnly: !narrow})
+		Ignore: in.ignore, Rules: in.rules, Readers: in.readers, ChangesOnly: !narrow})
 	if !narrow {
 		return cigate.GateByPaths(checks, a)
 	}

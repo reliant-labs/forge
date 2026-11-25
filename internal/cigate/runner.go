@@ -155,8 +155,11 @@ type Check struct {
 	// the row is SKIPPED, allowed, with "would fail" and the command's last
 	// output line, then this reason. It is how a check whose verdict forge
 	// only just made real warns before it gates (a rollout row below its
-	// GatesFrom).
+	// GatesFrom). Only failures accepted by IsFinding are softened.
 	WarnOnFail string
+	// IsFinding distinguishes completed checks with findings from execution
+	// or scan errors. It receives the complete command output, not its tail.
+	IsFinding func(error, string) bool
 	// Note annotates the row when the command runs: how it was narrowed
 	// (affected-package mode) or anything else the reader needs.
 	Note string
@@ -963,7 +966,7 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 		w = io.MultiWriter(log, tail)
 	}
 	var full *bytes.Buffer
-	if s.opt.Groups && log == nil {
+	if (s.opt.Groups && log == nil) || c.IsFinding != nil {
 		full = &bytes.Buffer{}
 		w = io.MultiWriter(w, full)
 	}
@@ -992,7 +995,7 @@ func (s *scheduler) execute(c Check, slotEnv []string) (res Result, ran bool) {
 		if res.Note == "" {
 			res.Note = fmt.Sprintf("exit status %d: could not run here", c.SkipExitCode)
 		}
-	case c.WarnOnFail != "":
+	case c.WarnOnFail != "" && c.IsFinding != nil && c.IsFinding(err, full.String()):
 		res = warnOnly(res, c.WarnOnFail, tail)
 	default:
 		res.Status, res.Note, res.Tail = Fail, failNote(err), tail.lastLines(25)

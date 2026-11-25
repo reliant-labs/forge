@@ -559,6 +559,7 @@ func (p planner) scanChecks() []Check {
 			Argv:  licenseCheckArgv(p.Root),
 			// The verdict is new (Tool.NeedsGOROOT): warn first.
 			WarnOnFail: p.LicenseWarnFirst,
+			IsFinding:  licenseFindingsOnly,
 		})
 	}
 	return out

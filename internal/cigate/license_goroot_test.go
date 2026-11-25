@@ -31,8 +31,8 @@ func (g *goenvExec) run(_ context.Context, _ string, env []string, argv []string
 	}
 	g.env[argv[0]] = env
 	if g.fail[argv[0]] {
-		_, _ = io.WriteString(out, "Not allowed license GPL-3.0 found for library example.com/gpl\n")
-		return errors.New("exit status 1")
+		_, _ = io.WriteString(out, "Restricted license type GPL-3.0 found for library example.com/gpl\n")
+		return codedErr(1)
 	}
 	return nil
 }
@@ -48,6 +48,7 @@ func goLicensesResolver(t *testing.T) *Resolver {
 func licenseRow() Check {
 	c := check("license-check", "go-licenses", "check", "./...")
 	c.Tools = []Tool{goLicenses}
+	c.IsFinding = licenseFindingsOnly
 	return c
 }
 
@@ -116,6 +117,37 @@ func TestRun_LicenseCheckWarnsFirst(t *testing.T) {
 	rep = Run(context.Background(), "checks", []Check{c}, Options{Out: io.Discard, Exec: fx.run, Resolver: r, Env: []string{"PATH=/bin"}})
 	if statuses(rep)["license-check"] != Fail || !rep.Failed() {
 		t.Errorf("rows %+v: a gating license-check must FAIL", rep.Results)
+	}
+}
+
+func TestRun_LicenseScanErrorsStillFail(t *testing.T) {
+	finding := "Restricted license type GPL-3.0 found for library example.com/gpl\n"
+	for _, tc := range []struct {
+		name, output string
+		err          error
+	}{
+		{"package load", "Error: loading packages failed\n", codedErr(1)},
+		{"parse", "Error: invalid input\n", codedErr(1)},
+		{"empty", "", codedErr(1)},
+		{"execution", finding, errors.New("cannot start process")},
+		{"other exit", finding, codedErr(2)},
+		{"mixed", finding + "Error: identifying license failed\n", codedErr(1)},
+		{"error before long tail", "Error: scan incomplete\n" + strings.Repeat(finding, 200), codedErr(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := licenseRow()
+			c.WarnOnFail = "does not gate yet"
+			rep := Run(context.Background(), "checks", []Check{c}, Options{
+				Out: io.Discard, Resolver: goLicensesResolver(t), Env: []string{"GOROOT=/opt/go"},
+				Exec: func(_ context.Context, _ string, _ []string, _ []string, out io.Writer) error {
+					_, _ = io.WriteString(out, tc.output)
+					return tc.err
+				},
+			})
+			if res := rep.Results[0]; res.Status != Fail || res.Allowed || !rep.Failed() {
+				t.Fatalf("scan error softened: %+v", res)
+			}
+		})
 	}
 }
 

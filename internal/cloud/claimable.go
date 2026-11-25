@@ -65,6 +65,19 @@ const (
 	ReasonClaimableInvalidPoW  = "claimable_invalid_pow"
 )
 
+// The reasons a DeployService write (RecordBundle, a promotion) of an
+// unclaimed org answers with when the platform's content check refuses the
+// upload, or cannot judge it. An unclaimed upload goes live only once judged
+// clean, so both mean nothing from it was published.
+const (
+	// ReasonClaimableContentRefused: the content may not be published from an
+	// unclaimed deploy. Some refusals lift once the deploy is claimed (the
+	// message says so); the rest need the content to change.
+	ReasonClaimableContentRefused = "claimable_content_refused"
+	// ReasonClaimableScanUnavailable: no verdict could be had right now.
+	ReasonClaimableScanUnavailable = "claimable_scan_unavailable"
+)
+
 // The ClaimableService procedures forge calls.
 const (
 	ProcStartClaimableDeploy     = "controlplane.v1.ClaimableService/StartClaimableDeploy"

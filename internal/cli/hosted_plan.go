@@ -181,11 +181,57 @@ func (c hostedPlanClient) PlanDeploy(ctx context.Context, environmentID, bundleI
 	if releaseVersion != "" {
 		req["releaseVersion"] = releaseVersion
 	}
-	var resp struct {
-		Plan wirePlan `json:"plan"`
-	}
+	var resp wirePlanDeployResponse
 	if err := c.client.Call(ctx, procPlanDeploy, req, &resp); err != nil {
 		return release.Plan{}, bundlesUnsupported(err)
 	}
-	return planFromWire(resp.Plan)
+	plan, err := planFromWire(resp.Plan)
+	if err != nil {
+		return release.Plan{}, err
+	}
+	plan.ChangeWarnings = changeWarningsFromWire(resp.ChangeWarnings)
+	return plan, nil
+}
+
+// wirePlanDeployResponse is controlplane.v1.PlanDeployResponse.
+type wirePlanDeployResponse struct {
+	Plan wirePlan `json:"plan"`
+	// ChangeWarnings sit BESIDE the plan, outside its digest (owner decision
+	// 6, 2026-11-25): running Changes the deploy would stop because the
+	// release no longer declares what they deliver. Advisory, so they are
+	// decoded leniently — a control plane that predates them omits the
+	// field, and nothing about them can refuse the plan.
+	ChangeWarnings []wirePlanChangeWarning `json:"changeWarnings,omitempty"`
+}
+
+// wirePlanChangeWarning is controlplane.v1.DeployPlanChangeWarning.
+type wirePlanChangeWarning struct {
+	ChangeID           string   `json:"changeId,omitempty"`
+	Key                string   `json:"key,omitempty"`
+	Mode               string   `json:"mode,omitempty"`
+	RunID              string   `json:"runId,omitempty"`
+	UndeclaredVariants []string `json:"undeclaredVariants,omitempty"`
+	KeyUndeclared      bool     `json:"keyUndeclared,omitempty"`
+	Detail             string   `json:"detail,omitempty"`
+}
+
+// changeWarningsFromWire converts the advisory warnings; nil when there are
+// none, so the plan's JSON omits the field rather than printing [].
+func changeWarningsFromWire(ws []wirePlanChangeWarning) []release.PlanChangeWarning {
+	if len(ws) == 0 {
+		return nil
+	}
+	out := make([]release.PlanChangeWarning, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, release.PlanChangeWarning{
+			ChangeID:           w.ChangeID,
+			Key:                w.Key,
+			Mode:               w.Mode,
+			RunID:              w.RunID,
+			UndeclaredVariants: w.UndeclaredVariants,
+			KeyUndeclared:      w.KeyUndeclared,
+			Detail:             w.Detail,
+		})
+	}
+	return out
 }

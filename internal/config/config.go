@@ -1029,6 +1029,10 @@ type CIConfig struct {
 	// Gate extends `forge ci gate` — the local gate behind `task ci` and
 	// `task ci:checks` — with the project's own checks.
 	Gate CIGateConfig `yaml:"gate,omitempty"`
+	// License is the policy of the gate's license-check row: an allowlist
+	// of license names and per-module exceptions. Absent, the row keeps its
+	// forbidden/restricted blocklist. See CILicenseConfig.
+	License CILicenseConfig `yaml:"license,omitempty"`
 
 	Workflows map[string]bool `yaml:"workflows,omitempty"` // per-workflow opt-out; see ci_workflows.go
 }

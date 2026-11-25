@@ -21,7 +21,8 @@
 //
 // evaluate() records `flag_evaluated` through exposure.ts with
 // provider=forge plus the change's `run`, `unit`, `reason` and the snapshot
-// `revision`, once per person, change, variant and run per day. Only
+// `revision` (and, for an account unit, the `account` it assigned), once per
+// person, change, variant and run per day. Only
 // results a readout or dashboard can use are recorded: enrolled ones
 // (`rollout`, `experiment`), which are a unit's assignment and are recorded
 // before the app renders the treatment, plus `preview` and `everyone`.
@@ -32,6 +33,7 @@
 // loadChanges is called, nothing on import.
 import {
   changeUnit,
+  changeUnitId,
   evaluate,
   parseSnapshot,
   type EvalContext,
@@ -78,12 +80,17 @@ function store(snapshot: Snapshot | null): ChangesStore {
     evaluate(key: string, ctx: EvalContext = {}): Result {
       const r = evaluate(snapshot, key, ctx);
       if (RECORDED.has(r.reason) && r.variant !== "") {
+        const unit = changeUnit(snapshot, key);
         trackExposure(key, r.variant, {
           provider: FORGE_CHANGES_PROVIDER,
           run: r.run,
-          unit: changeUnit(snapshot, key),
+          unit,
           reason: r.reason,
           revision,
+          // A user or visitor id is a column of every event; an account id
+          // is not, so the assignment names the one the change hashed.
+          account:
+            unit === "account" ? changeUnitId(snapshot, key, ctx) : undefined,
         });
       }
       return r;

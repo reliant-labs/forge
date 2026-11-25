@@ -437,8 +437,10 @@ built to refuse a pass it didn't actually verify, so a missing scanner fails the
 job instead of exiting green over an empty scan. Its `docker-build` job also
 runs Trivy over the images CI builds, blocking on HIGH/CRITICAL. Dependabot
 ships too. A generated project's `forge ci gate` also runs `go-licenses` over its
-Go dependencies and fails on one whose license type is forbidden or restricted;
-there is no license check for npm dependencies.
+Go dependencies and fails on one whose license type is forbidden or restricted,
+or, when forge.yaml sets `ci.license.allowed`, on any license not on that
+allowlist, with reviewed per-module exceptions; there is no license check for
+npm dependencies.
 
 The second half is forge itself, and it runs wherever a release is cut — your
 laptop, your CI, `forge env deploy` — with nothing to set up. Every artifact in a
@@ -791,8 +793,8 @@ one definition.
 It covers the whole range, from the small end up. A landing page, docs site, SPA
 or PWA with no backend is a first-class project: one static frontend, the same
 environments and build-once releases, a dev loop with no database or cluster,
-and hosted static hosting with a CDN (one static site per person is free,
-counted across their orgs; each environment's site counts). Start one with `forge project new <name> --kind
+and hosted static hosting with a CDN (free in one organization per person, with
+no limit on its sites; each environment's site is one). Start one with `forge project new <name> --kind
 site`, or adopt an existing Vite or Next.js app in place with `forge project new
 --in-place --kind site` (`forge skill load deploy/static-site`). When it grows a
 waitlist or a checkout, the API is its own forge project beside it.

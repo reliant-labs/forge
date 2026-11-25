@@ -131,3 +131,25 @@ lists them too (no Go test reads `electron/**`) or a rule claims them.
         lane: test
         paths: ["electron/**"]
 ```
+
+## Why each package runs, the build set, and a what-if
+
+Under the mode line the gate prints one line per selected package (up to 30):
+`ex.com/m/b ← a/x.go (imports ex.com/m/a)` — the first changed file that
+reached it and the edge: `changed` (the file is part of it), `imports <pkg>`
+(its test binary links the changed package) or `ci.gate.affected_rules[<i>]`.
+
+`--json` adds an `affected` object to the forge.ci.gate/v1 document whenever the
+gate computed the mode: `full`, `reason`, `changed`, `packages`, `why` (per
+package: `package`, `file`, `edge`), `files` (per changed file: `package`,
+`rules`, `ignored`, `note`), and `build`: every module package, with tests or
+not, whose build contains a changed package, the set a compile phase needs.
+
+`--plan` prints that decision without running a check; `--files` judges the
+files you name instead of the diff:
+
+```bash
+forge ci gate --plan                                    # this branch
+forge ci gate --plan --files internal/a/a.go,docs/x.md  # what would these run, and why
+forge ci gate --plan --json | jq '.build'               # the compile set
+```

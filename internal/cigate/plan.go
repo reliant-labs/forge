@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/frontenddeps"
@@ -114,6 +115,9 @@ type PlanInput struct {
 	// set GOROOT for the pinned go-licenses the row checked nothing and
 	// passed, so its findings are new to every project that ran it.
 	LicenseWarnFirst string
+	// Now is the clock date-bound policy is judged by (a ci.license
+	// exception's expiry). nil is the wall clock.
+	Now func() time.Time
 }
 
 // warn passes msg to PlanInput.Warn, when there is one.
@@ -614,19 +618,50 @@ func (p planner) scanChecks() []Check {
 	out = append(out, p.vulnSBOM()...)
 	out = append(out, p.secretScan())
 	if ci.LicenseCheck {
-		out = append(out, Check{
-			Name:  "license-check",
-			Lane:  LaneChecks,
-			Group: GroupStatic,
-			Heavy: true,
-			Tools: []Tool{goLicenses},
-			Argv:  licenseCheckArgv(p.Root),
-			// The verdict is new (Tool.NeedsGOROOT): warn first.
-			WarnOnFail: p.LicenseWarnFirst,
-			IsFinding:  licenseFindingsOnly,
-		})
+		out = append(out, p.licenseCheck())
 	}
 	return out
+}
+
+// licenseCheck is the license-check row: go-licenses under the project's
+// ci.license policy (planLicenseCheck). An exception past its review date
+// makes the row FAIL without running, naming the entry.
+func (p planner) licenseCheck() Check {
+	var policy config.CILicenseConfig
+	if p.Cfg != nil {
+		policy = p.Cfg.CI.License
+	}
+	lp := planLicenseCheck(p.Root, policy, p.now())
+	c := Check{
+		Name:  "license-check",
+		Lane:  LaneChecks,
+		Group: GroupStatic,
+		Heavy: true,
+		Tools: []Tool{goLicenses},
+		Argv:  lp.argv,
+		// The verdict is new (Tool.NeedsGOROOT): warn first, unless the
+		// project declared a license policy, which asks for this verdict.
+		WarnOnFail: p.LicenseWarnFirst,
+		IsFinding:  licenseFindingsOnly,
+	}
+	if len(policy.Allowed) > 0 || len(policy.Exceptions) > 0 {
+		c.WarnOnFail = ""
+	}
+	if len(lp.expired) > 0 {
+		c.Failed = expiredLicenseNote(lp.expired)
+	}
+	if lp.overbroad != "" {
+		c.Failed = strings.TrimPrefix(c.Failed+"; "+lp.overbroad, "; ")
+	}
+	return c
+}
+
+// now is PlanInput.Now, or the wall clock.
+func (p planner) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
 }
 
 // SecretScanCheck is the name of the gate's secret-scan row.

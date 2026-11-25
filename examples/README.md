@@ -42,15 +42,15 @@ npx -y @reliantlabs/forge@latest env deploy prod --claimable               # dep
 `--claimable` publishes with no account and prints a live URL and a claim link.
 The claim link works like a password: whoever opens it first owns the deploy.
 
-|                          | Unclaimed (`--claimable`, no account)                                   | Claimed, or deployed signed in                            |
-| ------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------- |
-| lifetime                 | offline after 72 hours, deleted 7 days later                            | yours until you delete it                                 |
-| shape                    | one static site, or one service with its migration job and one Postgres | what your plan allows                                     |
-| size                     | 125m CPU / 128 MiB per workload; Postgres 256 MiB of data               | billed sizes                                              |
-| outbound internet        | none: DNS and its own Postgres only (no LLM, payment or webhook calls)  | normal                                                    |
-| secrets                  | none can be set                                                         | `reliant forge secret set`                                |
-| logs, traces, dashboards | none until claimed                                                      | https://forge.reliantlabs.io (signed in)                  |
-| cost                     | free                                                                    | one static site free; a backend or database needs billing |
+|                          | Unclaimed (`--claimable`, no account)                                   | Claimed, or deployed signed in                                               |
+| ------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| lifetime                 | offline after 72 hours, deleted 7 days later                            | yours until you delete it                                                    |
+| shape                    | one static site, or one service with its migration job and one Postgres | what your plan allows                                                        |
+| size                     | 125m CPU / 128 MiB per workload; Postgres 256 MiB of data               | billed sizes                                                                 |
+| outbound internet        | none: DNS and its own Postgres only (no LLM, payment or webhook calls)  | normal                                                                       |
+| secrets                  | none can be set                                                         | `reliant forge secret set`                                                   |
+| logs, traces, dashboards | none until claimed                                                      | https://forge.reliantlabs.io (signed in)                                     |
+| cost                     | free                                                                    | static sites free in one org per person; a backend or database needs billing |
 
 Signed in already (`reliant forge login`, or inside Reliant)? `--claimable` is
 refused; deploy to your own organization with

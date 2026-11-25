@@ -84,6 +84,35 @@ func TestNoSensitiveScopeIsReachableThroughABundle(t *testing.T) {
 	}
 }
 
+// TestMembershipImpliedScopesAreNarrow guards the widest grant there is:
+// every member of an org, and every credential acting as one (their daemon,
+// its exchanged helpers, their personal tokens), holds a ClassMember scope
+// with no grant naming it. So none may be sensitive, NeverOnDaemon, personal
+// or a whole credential of its own, each must ride a daemon's credential
+// (Grant.Admissible on a daemon binding), and the set is pinned exactly: a
+// scope joins it only as a reviewed diff of this list.
+func TestMembershipImpliedScopesAreNarrow(t *testing.T) {
+	member := ScopesOfClass(ClassMember)
+	if want := []Scope{ScopeObsRead, ScopeObsTriage, ScopeTestsWrite}; !reflect.DeepEqual(member, want) {
+		t.Fatalf("membership-implied = %v, want exactly %v: a scope every member holds is an owner decision", member, want)
+	}
+	daemon := Grant{OrgID: "org", Name: "probe", ActingUserID: "user",
+		Resource: &Resource{Kind: ResourceDaemon, ID: "daemon"}}.Admissible()
+	for _, s := range member {
+		if ClassOf(s) == ClassSensitive || NeverOnDaemon(s) || RequiresActingUser(s) || wholeCredential(s) {
+			t.Errorf("membership-implied %s is sensitive, never-on-daemon, personal or a whole credential", s)
+		}
+		if !daemon.Has(s) {
+			t.Errorf("membership-implied %s cannot ride a daemon's credential", s)
+		}
+	}
+	for _, s := range ScopesOfClass(ClassSensitive) {
+		if slices.Contains(member, s) {
+			t.Errorf("sensitive %s is membership-implied", s)
+		}
+	}
+}
+
 // TestExpandBundle_SkipsASensitiveRowEvenIfListed proves the expansion's own
 // guard, not just the table: a mistaken row cannot widen a bundle.
 func TestExpandBundle_SkipsASensitiveRowEvenIfListed(t *testing.T) {
@@ -238,8 +267,10 @@ func TestClasses_MatchWhatConsumersHeld(t *testing.T) {
 	if got := SetOf(ScopesOfClass(ClassPersonal)...); !reflect.DeepEqual(got, SetOf(personal...)) {
 		t.Errorf("personal = %s\nwant      %s", got, SetOf(personal...))
 	}
-	if got := ScopesOfClass(ClassMember); !reflect.DeepEqual(got, []Scope{ScopeObsRead, ScopeObsTriage}) {
-		t.Errorf("member = %v, want [obs:read obs:triage]", got)
+	// tests:write joined on 2026-11-25 (owner: daemons hold it by default);
+	// it was standard before.
+	if got := ScopesOfClass(ClassMember); !reflect.DeepEqual(got, []Scope{ScopeObsRead, ScopeObsTriage, ScopeTestsWrite}) {
+		t.Errorf("member = %v, want [obs:read obs:triage tests:write]", got)
 	}
 	sensitive := []Scope{
 		ScopeDeployConfigRead, ScopeTokenRead, ScopeTokenWrite, ScopeSecretWrite,

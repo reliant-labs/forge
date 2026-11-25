@@ -23,7 +23,10 @@ import "strings"
 //     holds it implicitly; no org grant names it. Every scope that acts as a
 //     person (RequiresActingUser) is personal.
 //   - ClassMember: what every MEMBER of an org holds without a grant (reading
-//     and triaging the org's telemetry).
+//     and triaging the org's telemetry, uploading test runs). Never a
+//     sensitive scope, never one a daemon must not carry, never a whole
+//     credential of its own: membership is the widest grant there is, so
+//     the tests pin this class's members one by one.
 //   - ClassStandard: org authority held by grant, directly or through a
 //     bundle.
 //   - ClassSensitive: org authority whose leak is not recoverable by revoking
@@ -191,7 +194,13 @@ var catalog = []scopeEntry{
 	{scope: ScopeChangesLaunch, class: ClassSensitive, notElevatable: true},
 	{scope: ScopeVulnRead, class: ClassStandard, bundles: inCIAndUp},
 	{scope: ScopeTestsRead, class: ClassStandard, bundles: inDeveloperAndUp},
-	{scope: ScopeTestsWrite, class: ClassStandard, bundles: inCIAndUp},
+	// Membership-implied (owner, 2026-11-25: "daemons should have them by
+	// default"): uploading a test run is evidence about a commit, changes
+	// nothing that runs and reads nothing back, so every member holds it,
+	// and so does every credential acting as one: their daemon, its
+	// exchanged helpers, their personal tokens. A daemon still never exceeds
+	// its person. An org's CI token holds it through the ci bundle.
+	{scope: ScopeTestsWrite, class: ClassMember, bundles: inCIAndUp},
 	{scope: ScopeMCPForge, class: ClassPersonal},
 }
 

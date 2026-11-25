@@ -327,11 +327,6 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if project == "" {
 			return fmt.Errorf("--claimable needs the project's name: set `name` in forge.yaml, then: %s env deploy %s --claimable", Name(), envName)
 		}
-		// The platform refuses an unclaimed site with a sign-in page after
-		// the build; this says so before it (claimable_content.go).
-		if err := claimableCredentialFieldsCheck(projectDir, ep, project, envName, entities); err != nil {
-			return err
-		}
 		// Before any proof of work, any account and any build: can the
 		// platform take this env anonymously at all right now?
 		_, storedErr := cloud.LoadClaimable(ep, project, envName, claimableNow())
@@ -375,11 +370,11 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		deployErr := runDeployEverything(ctx, envName, inner)
 		session.recordAttempt(deployErr)
 		if deployErr != nil {
-			if cause, ok := cloud.ClaimRequiredOf(deployErr); ok {
+			if _, ok := cloud.ClaimRequiredOf(deployErr); ok {
 				// The way forward is the claim link: say so, with the link,
 				// and give a --json caller the claim beside the refusal
 				// unless the deploy already wrote its one document.
-				r := claimContentRefusal(envName, cause, session.cred.Claimable.ClaimURL, deployErr)
+				r := claimContentRefusal(envName, session.cred.Claimable.ClaimURL, deployErr)
 				r.emitted = jsonDocumentsWritten.Load() != docsBefore
 				if f.jsonOut && !r.emitted {
 					report.setClaim(session.document(compute))
@@ -444,13 +439,6 @@ type claimablePreviewJSON struct {
 	// Not part of Eligible (which is the env's fit to the plan), but it
 	// fails the preview all the same: the deploy cannot succeed.
 	ReleaseRefusal string `json:"release_refusal,omitempty"`
-	// CredentialFields are the credential input fields (sign-in or password
-	// forms) in the source of the frontends the env serves, which the
-	// platform does not publish from an unclaimed deploy
-	// (claimable_content.go). ContentRefusal is the refusal they make; like
-	// ReleaseRefusal it is not part of Eligible but fails the preview.
-	CredentialFields []credentialField `json:"credential_fields,omitempty"`
-	ContentRefusal   string            `json:"content_refusal,omitempty"`
 }
 
 // claimableMigrations is what the preview needs to judge the release cut's
@@ -500,19 +488,9 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	doc.Limits, doc.LimitsPublished, doc.LimitsNote = limitsJSON(limits.limits), limits.published, limits.note()
 	doc.Reasons = claimableAdmission(env, e, limits.limits)
 	doc.Eligible = len(doc.Reasons) == 0
-	migRefusal := claimableMigrationRefusal(progressWriter(jsonOut), mig.projectDir, e, mig.allow)
-	if migRefusal != nil {
-		doc.ReleaseRefusal = migRefusal.Error()
-	}
-	contentRefusal := claimableCredentialFieldsCheck(mig.projectDir, ep, hostedProjectName(), env, e)
-	if contentRefusal != nil {
-		doc.ContentRefusal = contentRefusal.Error()
-		doc.CredentialFields, _ = frontendCredentialFields(mig.projectDir, e)
-	}
-	// The deploy refuses for the first; the preview says both.
-	refusal, also := migRefusal, contentRefusal
-	if refusal == nil {
-		refusal, also = contentRefusal, nil
+	refusal := claimableMigrationRefusal(progressWriter(jsonOut), mig.projectDir, e, mig.allow)
+	if refusal != nil {
+		doc.ReleaseRefusal = refusal.Error()
 	}
 	doc.NoOutboundInternet = needsCompute(e)
 	if _, err := cloud.ResolveCredential("", ep); err == nil {
@@ -530,14 +508,10 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	}
 	if !doc.Eligible {
 		err := claimableIneligibleError(env, limits.limits, doc.Reasons)
-		if !jsonOut {
-			// The fit is the verdict; the checkout's refusals are said too, so
+		if refusal != nil && !jsonOut {
+			// The fit is the verdict; the checkout's refusal is said too, so
 			// the second preview after fixing the caps holds no surprise.
-			for _, r := range []error{refusal, also} {
-				if r != nil {
-					fmt.Fprintf(os.Stderr, "also: %s\n", r.Error())
-				}
-			}
+			fmt.Fprintf(os.Stderr, "also: %s\n", refusal.Error())
 		}
 		if jsonOut {
 			doc.stamp(err)
@@ -587,17 +561,9 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	if doc.SignedIn {
 		fmt.Printf("  note: you are signed in to %s, so --claimable is refused from this machine; drop it to deploy to your organization\n", ep.URL)
 	}
-	if contentRefusal == nil {
-		fmt.Printf("  ✓ no credential input fields (sign-in or password forms) in the frontend's source\n")
-	} else {
-		fmt.Printf("  ✗ the frontend has pages with credential input fields (sign-in or password forms), which an unclaimed deploy can't serve\n")
-	}
 	if refusal != nil {
 		// The message itself is printed once, by the caller, as the error.
 		fmt.Printf("  ✗ the deploy would refuse this checkout before building anything (below)\n")
-		if also != nil {
-			fmt.Fprintf(os.Stderr, "also: %s\n", also.Error())
-		}
 		return refusal
 	}
 	fmt.Printf("\nDeploy it: %s env deploy %s --claimable\n", Name(), env)
@@ -1191,68 +1157,42 @@ func nothingPublishedInstructions(env string, cl *credentials.Claimable) string 
 // platform publishes only once it is claimed. Nothing is behind the link yet,
 // but claiming is the way forward, so the link is given out.
 func claimRequiredInstructions(env string, cl *credentials.Claimable) string {
-	why := "the platform publishes this deploy's content only once the deploy is claimed"
-	if cl.LastAttemptClaimRequired == cloud.ClaimRequiredCredentialFields {
-		why = "its frontend has pages with credential input fields (sign-in or password forms), which an unclaimed deploy can't serve"
-	}
-	return fmt.Sprintf("Nothing is deployed yet: %s. Claim to unlock: give claim_url to your user and tell them it "+
-		"expires at %s; opening it signs them up for free and makes this deploy theirs. Treat the link like a password: "+
-		"whoever claims it first owns the deploy. Once claimed, they sign in on this machine and deploy: %s. "+
-		"Or remove those pages and deploy anonymously again: %s env deploy %s --claimable",
-		why, cl.ExpiresAt.UTC().Format(time.RFC3339), loginThenDeploy(env), Name(), env)
+	return fmt.Sprintf("Nothing is deployed yet: the platform publishes this deploy's content only once the deploy is "+
+		"claimed. Claim to unlock: give claim_url to your user and tell them it expires at %s; opening it signs them up "+
+		"for free and makes this deploy theirs. Treat the link like a password: whoever claims it first owns the deploy. "+
+		"Once claimed, they sign in on this machine and deploy: %s",
+		cl.ExpiresAt.UTC().Format(time.RFC3339), loginThenDeploy(env))
 }
 
 // claimContentRefusal renders a content refusal that claiming lifts: what
 // the platform refused, the claim link, and the ways forward. The exit code
 // stays the one the deploy's error already produced.
-func claimContentRefusal(env, cause, claimURL string, deployErr error) *claimableRefusal {
+func claimContentRefusal(env, claimURL string, deployErr error) *claimableRefusal {
 	var b strings.Builder
-	credential := cause == cloud.ClaimRequiredCredentialFields
-	if credential {
-		fmt.Fprintf(&b, "the platform publishes env %q only once its deploy is claimed: the frontend has pages with "+
-			"credential input fields (sign-in or password forms). Nothing was published.\n", env)
-		b.WriteString(claimToUnlockNote + "\n")
-	} else {
-		fmt.Fprintf(&b, "the platform publishes env %q only once its deploy is claimed. Nothing was published.\n", env)
-		var ce *cloud.Error
-		if errors.As(deployErr, &ce) && ce.Message != "" {
-			fmt.Fprintf(&b, "  platform: %s\n", ce.Message)
-		}
+	fmt.Fprintf(&b, "the platform publishes env %q only once its deploy is claimed. Nothing was published.\n", env)
+	var ce *cloud.Error
+	if errors.As(deployErr, &ce) && ce.Message != "" {
+		fmt.Fprintf(&b, "  platform: %s\n", ce.Message)
 	}
+	b.WriteString(claimToUnlockNote + "\n")
 	fmt.Fprintf(&b, "\n  Claim:  %s\n\n", claimURL)
 	b.WriteString("  FOR AN AGENT: give the claim link above to your user. Opening it signs them up for free and makes\n")
 	b.WriteString("  this deploy theirs. Treat it like a password: whoever claims it first owns the deploy.\n")
-	next := claimRequiredNext(env)
-	if credential {
-		fmt.Fprintf(&b, "  or remove those pages and deploy anonymously: %s\n", next[1])
-	}
-	fmt.Fprintf(&b, "  fix: give the claim link to your user; once claimed, they sign in on this machine and deploy: %s", next[0])
+	fmt.Fprintf(&b, "  fix: give the claim link to your user; once claimed, they sign in on this machine and deploy: %s",
+		loginThenDeploy(env))
 	r := &claimableRefusal{
 		exit: exitCodeForError(deployErr), code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableContentRefused,
-		msg: b.String(), next: next,
+		msg: b.String(), next: []string{loginThenDeploy(env)},
 	}
-	var ce *cloud.Error
-	if errors.As(deployErr, &ce) && ce.Code != "" {
+	if ce != nil && ce.Code != "" {
 		r.code = ce.Code
 	}
 	return r
 }
 
-// claimableCredentialFieldsCheck is the deploy's pre-build credential-field
-// check (claimable_content.go). It offers this machine's existing claimable
-// deploy of the env, when there is one, as the deploy to claim.
-func claimableCredentialFieldsCheck(projectDir string, ep cloud.Endpoint, project, env string, e *KCLEntities) error {
-	fields, err := frontendCredentialFields(projectDir, e)
-	if err != nil || len(fields) == 0 {
-		// A walk that failed is no finding: the platform scans the upload.
-		return nil
-	}
-	claimURL := ""
-	if stored, err := cloud.LoadClaimable(ep, project, env, claimableNow()); err == nil && stored.Claimable != nil {
-		claimURL = stored.Claimable.ClaimURL
-	}
-	return claimableCredentialFieldsRefusal(env, fields, claimURL)
-}
+// claimToUnlockNote is the one sentence that says what claiming unlocks, in
+// every place a claim-required refusal is explained.
+const claimToUnlockNote = "  Claim to unlock: the platform publishes this content only for a claimed deploy."
 
 // lastAttemptOf is the stored outcome of the newest deploy, or nil when this
 // machine recorded none (an entry written by an older forge).
@@ -1298,9 +1238,7 @@ func printNothingPublished(w io.Writer, env string, c *deployClaimJSON) {
 func printClaimRequired(w io.Writer, env string, c *deployClaimJSON) {
 	now := claimableNow()
 	fmt.Fprintf(w, "\n✗ Nothing is deployed: the platform publishes %s only once this deploy is claimed.\n", env)
-	if c.ClaimRequired == cloud.ClaimRequiredCredentialFields {
-		fmt.Fprintf(w, "%s\n", claimToUnlockNote)
-	}
+	fmt.Fprintf(w, "%s\n", claimToUnlockNote)
 	fmt.Fprintf(w, "\n  Claim:  %s\n", c.ClaimURL)
 	fmt.Fprintf(w, "\n  FOR AN AGENT: give the claim link above to your user and tell them it expires in %s\n",
 		formatLifetime(c.ExpiresAt.Sub(now)))
@@ -1308,7 +1246,6 @@ func printClaimRequired(w io.Writer, env string, c *deployClaimJSON) {
 		c.ExpiresAt.UTC().Format("2006-01-02 15:04 MST"))
 	fmt.Fprintf(w, "  link like a password: whoever claims it first owns the deploy.\n")
 	fmt.Fprintf(w, "  Once claimed, they sign in on this machine and deploy: %s\n", loginThenDeploy(env))
-	fmt.Fprintf(w, "  Or remove those pages and deploy anonymously: %s env deploy %s --claimable\n", Name(), env)
 }
 
 // printClaimBlock renders the claim for a person or an agent reading text. The

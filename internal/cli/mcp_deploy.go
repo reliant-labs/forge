@@ -100,8 +100,8 @@ type claimableDeployResult struct {
 	NothingDeployed  bool   `json:"nothing_deployed,omitempty"`
 	LastAttemptError string `json:"last_attempt_error,omitempty"`
 	// ClaimRequired is set when the platform publishes this deploy only
-	// once it is claimed, and says why ("credential_fields": pages with
-	// sign-in forms). The claim link is then the way forward.
+	// once it is claimed, and says why (today always "content"). The claim
+	// link is then the way forward.
 	ClaimRequired string `json:"claim_required,omitempty"`
 	// RolloutVerified is true only when this call waited for the rollout and
 	// it came up healthy. A no_wait deploy and deploy_status leave it false:
@@ -410,14 +410,10 @@ func failedResult(res *claimableDeployResult, code int, msg, reason string, next
 // the rollout; every other state says what is true instead.
 func claimNextSteps(res *claimableDeployResult) string {
 	if res.NothingDeployed && res.ClaimRequired != "" && (res.State == "live" || res.State == "suspended") {
-		why := "The platform publishes this deploy only once it is claimed."
-		if res.ClaimRequired == cloud.ClaimRequiredCredentialFields {
-			why = "Claim to unlock: pages with sign-in forms can't be served anonymously."
-		}
-		return fmt.Sprintf("Nothing is deployed yet. %s Give your user the claim link %s and tell them it expires at %s: "+
-			"opening it signs them up for free and makes this deploy theirs. Treat the link like a password: do not post it "+
-			"anywhere public. Once they have claimed it, they sign in on this machine and deploy: %s. Or remove the sign-in "+
-			"pages and call deploy_claimable again.", why, res.ClaimURL, res.ExpiresAt, loginThenDeploy(res.Env))
+		return fmt.Sprintf("Nothing is deployed yet: the platform publishes this deploy only once it is claimed. Give your "+
+			"user the claim link %s and tell them it expires at %s: opening it signs them up for free and makes this deploy "+
+			"theirs. Treat the link like a password: do not post it anywhere public. Once they have claimed it, they sign in "+
+			"on this machine and deploy: %s.", res.ClaimURL, res.ExpiresAt, loginThenDeploy(res.Env))
 	}
 	if res.NothingDeployed && (res.State == "live" || res.State == "suspended") {
 		why := "No deploy of it has published yet."

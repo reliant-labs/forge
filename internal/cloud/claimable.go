@@ -71,14 +71,13 @@ const (
 )
 
 // ClaimRequiredHeader marks a content refusal that claiming the deploy lifts,
-// and its value says why: ClaimRequiredCredentialFields (pages with credential
-// input fields, a sign-in form) or ClaimRequiredContent (anything else the
-// platform will publish only for a claimed deploy). A control plane that
-// predates it sends the reason alone; ClaimRequiredOf then reports false.
+// and its value says why: today always ClaimRequiredContent (content the
+// platform publishes only for a claimed deploy). A newer control plane may add
+// values; ClaimRequiredOf passes them through. One that predates the header
+// sends the reason alone; ClaimRequiredOf then reports false.
 const (
-	ClaimRequiredHeader           = "x-forge-claim-required"
-	ClaimRequiredCredentialFields = "credential_fields"
-	ClaimRequiredContent          = "content"
+	ClaimRequiredHeader  = "x-forge-claim-required"
+	ClaimRequiredContent = "content"
 )
 
 // ClaimRequiredOf reports whether err is a content refusal that claiming the

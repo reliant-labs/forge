@@ -160,9 +160,9 @@ type Claimable struct {
 	LastAttemptError string    `json:"last_attempt_error,omitempty"`
 	// LastAttemptClaimRequired is set when the newest deploy was refused
 	// because only a claimed deploy may publish its content, and says why
-	// ("credential_fields": pages with sign-in forms; "content": anything
-	// else claiming admits). Then the claim link IS the way forward, so it is
-	// given out although nothing is published. Empty otherwise.
+	// (the control plane's x-forge-claim-required value, e.g. "content").
+	// Then the claim link IS the way forward, so it is given out although
+	// nothing is published. Empty otherwise.
 	LastAttemptClaimRequired string `json:"last_attempt_claim_required,omitempty"`
 }
 

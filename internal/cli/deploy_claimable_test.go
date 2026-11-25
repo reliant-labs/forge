@@ -134,7 +134,7 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 		w.Header().Set(cloud.ReasonHeader, cloud.ReasonClaimableContentRefused)
 		w.Header().Set(cloud.ClaimRequiredHeader, f.refuseBundle)
 		connectErr(w, http.StatusBadRequest, "failed_precondition",
-			"this site has pages with credential input fields (such as a sign-in form), which an unclaimed deploy can't publish: claim the deploy with its claim link, then publish again; or remove those pages")
+			"this content can't be published from an unclaimed deploy: claim the deploy with its claim link, then publish again")
 		return
 	}
 	if r.URL.Path == "/"+cloud.ProcGetOrganization {

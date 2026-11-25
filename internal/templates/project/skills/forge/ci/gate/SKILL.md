@@ -197,6 +197,16 @@ everyone else the row passes with a warning. A branch that changed no test
 passes it. Quarantined tests (`forge test quarantine`) stay skipped through the
 lanes' `-skip "$(forge test quarantine skip-regex go)"`.
 
+For the tests that already exist, `forge test flakes confirm` reruns a red
+run's failures once and `forge test flakes --issues` files one
+`flake:suspected` issue per test that passed on the rerun (a later flake
+comments on it, reopening it if closed). Run from CI, the local record is
+empty, so add `--stale-after 7d` to a scheduled job on the default branch:
+it closes each open issue forge filed whose test no longer exists in the
+checkout, or whose newest evidence (the issue's creation, or forge's newest
+"Failed then passed on retry again" comment) is older than the age, with a
+comment saying why. `--dry-run` prints what it would close.
+
 ## Selecting and recording
 
 | | |

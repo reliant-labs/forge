@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -164,5 +165,34 @@ func TestFlakeGateVerdictGradedFailsWhenTheCommandCannotStart(t *testing.T) {
 	// Ungraded, the exit code is the gate's own, unchanged.
 	if err := flakeGateVerdict(&out, notRun, false, gated); !errors.As(err, &ec) || ec.code != testflakes.GateUndetermined {
 		t.Errorf("ungraded: %v, want exit %d", err, testflakes.GateUndetermined)
+	}
+}
+
+// --stale-after sweeps from an empty local record (a fresh CI runner), and is
+// refused without --issues or with an unreadable age.
+func TestRunTestFlakesStaleAfter(t *testing.T) {
+	for _, args := range [][]string{{"flakes", "--stale-after", "7d"}, {"flakes", "--issues", "--stale-after", "soon"}} {
+		_, err := execTestCmd(t, args...)
+		var ec exitCodeError
+		if !errors.As(err, &ec) || ec.code != exitWrong {
+			t.Errorf("%v: %v, want a usage error", args, err)
+		}
+	}
+	root := flakesModule(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var writes []string
+	gh := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "issue" && args[1] == "list" {
+			return []byte(`[{"number":3,"title":"flake:suspected: TestOld (example.com/m)","state":"OPEN","createdAt":"2026-11-01T00:00:00Z","comments":[]}]`), nil
+		}
+		writes = append(writes, strings.Join(args, " "))
+		return nil, nil
+	}
+	var out bytes.Buffer
+	if err := runTestFlakes(t.Context(), &out, testFlakesArgs{root: root, issues: true, repo: "acme/m", gh: gh, staleAfter: 7 * 24 * time.Hour, now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if len(writes) != 1 || !strings.HasPrefix(writes[0], "issue close 3 -R acme/m") || !strings.Contains(writes[0], "`TestOld` no longer exists") {
+		t.Errorf("writes = %v\n%s", writes, out.String())
 	}
 }

@@ -44,11 +44,12 @@ func newTestFlakesCmd() *cobra.Command {
 		states        []string
 		issues, dry   bool
 		repo          string
+		staleAfter    string
 		jsonOut       bool
 		includeHealth bool
 	)
 	cmd := &cobra.Command{
-		Use:   "flakes [--state suspected|flaky|quarantined|removed|fixed] [--issues] [--json]",
+		Use:   "flakes [--state suspected|flaky|quarantined|removed|fixed] [--issues [--stale-after 7d]] [--json]",
 		Short: "Flaky tests in the local test record, with the quarantine command for each",
 		Long: `Computes each test's flake state from the local test record
 (.forge/tests/runs/: the project's own lanes, ` + "`forge test flakes gate`" + ` and
@@ -72,19 +73,42 @@ bound with its n: a ranking, never a trigger.
 (the test's body, its failure signature and its runs), comments on an
 existing one, and closes an open one whose test left those states.
 
+Those states come from the local record, and a CI runner starts with none,
+so on CI that never closes anything. --stale-after <age> (7d, 168h) adds a
+sweep that reads the evidence from the open issues themselves: it closes each
+open flake:suspected issue forge filed whose test function no longer exists
+in this checkout (run it from the default branch), or whose newest evidence —
+the issue's creation, or the newest "Failed then passed on retry again"
+comment forge wrote — is older than <age>. Other comments do not keep an
+issue open, and an issue of a test the local record still calls suspected or
+flaky is left to it. Each close comments with its reason; a later flake of
+the test reopens the issue and comments on it. --dry-run prints the closes.
+
 --json prints a forge.test.flakes/v1 document.`,
 		Example: `  forge test flakes
   forge test flakes --state suspected --json
-  forge test flakes --issues --dry-run`,
+  forge test flakes --issues --dry-run
+  forge test flakes --issues --stale-after 7d`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			// TODO(tests.flakes.issues): forge.yaml's tests.flakes.issues
 			// (design 1.8, task F5a) turns --issues on for a project; until
 			// that block lands only the flag does.
+			var stale time.Duration
+			if staleAfter != "" {
+				if !issues {
+					return exitCodeError{code: exitWrong, msg: "forge test flakes: --stale-after needs --issues"}
+				}
+				d, err := testflakes.ParseStaleAfter(staleAfter)
+				if err != nil {
+					return exitCodeError{code: exitWrong, msg: "forge test flakes: " + err.Error()}
+				}
+				stale = d
+			}
 			return runTestFlakes(cmd.Context(), cmd.OutOrStdout(), testFlakesArgs{
 				root: testRoot(), states: states, issues: issues, dryRun: dry, repo: repo, json: jsonOut, all: includeHealth,
-				now: time.Now(),
+				staleAfter: stale, now: time.Now(),
 			})
 		},
 	}
@@ -93,6 +117,7 @@ existing one, and closes an open one whose test left those states.
 	f.BoolVar(&includeHealth, "all", false, "Include healthy tests that have flake history")
 	f.BoolVar(&issues, "issues", false, "File, update and close flake:suspected issues with gh")
 	f.BoolVar(&dry, "dry-run", false, "With --issues: say what would be filed, commented and closed, and do none of it")
+	f.StringVar(&staleAfter, "stale-after", "", "With --issues: also close open flake:suspected issues with no flake evidence for this long (7d, 168h), or whose test is gone")
 	f.StringVar(&repo, "repo", "", "With --issues: the owner/name to file in (default $GITHUB_REPOSITORY, else the current repository)")
 	f.BoolVar(&jsonOut, "json", false, "Print a "+testreport.SchemaFlakes+" document")
 	cmd.AddCommand(newTestFlakesGateCmd(), newTestFlakesConfirmCmd())
@@ -107,6 +132,7 @@ type testFlakesArgs struct {
 	repo         string
 	json         bool
 	all          bool
+	staleAfter   time.Duration
 	gh           testflakes.GH
 	issuesStdout io.Writer
 	// now is the clock the states are computed at: the command passes the
@@ -141,7 +167,8 @@ func runTestFlakes(ctx context.Context, out io.Writer, a testFlakesArgs) error {
 				iout = out
 			}
 		}
-		res := testflakes.SyncIssues(ctx, testflakes.IssueOptions{Root: a.root, Repo: a.repo, GH: a.gh, Stdout: iout, DryRun: a.dryRun}, doc)
+		res := testflakes.SyncIssues(ctx, testflakes.IssueOptions{Root: a.root, Repo: a.repo, GH: a.gh, Stdout: iout, DryRun: a.dryRun,
+			StaleAfter: a.staleAfter, Now: now}, doc)
 		for i := range doc.Tests {
 			if url := res.URLs[doc.Tests[i].ID.String()]; url != "" {
 				doc.Tests[i].Issue = url

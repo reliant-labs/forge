@@ -35,6 +35,9 @@ type Document struct {
 	WallMS int64           `json:"wall_ms"`
 	Counts DocumentCounts  `json:"counts"`
 	Checks []DocumentCheck `json:"checks"`
+	// Affected is the unit lane's affected-mode decision, when the gate
+	// computed one: the packages, the build set, and why each was chosen.
+	Affected *DocumentAffected `json:"affected,omitempty"`
 }
 
 // Verdicts of a Document.
@@ -120,12 +123,15 @@ type DocumentInput struct {
 	Dirs   map[string]string
 	// ReadLog reads a check's log; nil reads it from disk.
 	ReadLog func(path string) ([]byte, error)
+	// Affected is the affected-mode decision; nil when none was computed.
+	Affected *Affected
 }
 
 // NewDocument builds the document of one gate run.
 func NewDocument(rep Report, in DocumentInput) Document {
 	doc := Document{Lane: rep.Lane, Tier: in.Tier, Commit: rep.Head, Dirty: rep.Dirty, WallMS: rep.Wall.Milliseconds(), Checks: []DocumentCheck{}}
 	doc.Stamp(DocumentSchema, in.Err)
+	doc.Affected = in.Affected.Document()
 	switch {
 	case !in.Ran:
 		doc.Verdict = VerdictError

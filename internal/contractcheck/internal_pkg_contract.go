@@ -537,6 +537,14 @@ type contractShapeFacts struct {
 	// a type other than the one the constructor returns" — the seam test.
 	contractIfaceMethods []string
 	methodsByType        map[string]map[string]bool
+	// serviceAlias is the type a `type Service = <T>` alias names (nil when
+	// there is none), with its position and its file's imports: a contract
+	// that IS another interface, resolved after the walk (serviceAliasOK).
+	serviceAlias        ast.Expr
+	serviceAliasPos     token.Position
+	serviceAliasImports map[string]string
+	// interfaceNames is every interface the package declares.
+	interfaceNames map[string]bool
 }
 
 // contractIsSeam reports whether the package's contract interface is a SEAM
@@ -643,6 +651,18 @@ func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
 		for _, decl := range file.Decls {
 			scanContractDecl(decl, fset, &facts)
 		}
+		if facts.serviceAlias != nil && facts.serviceAliasImports == nil {
+			facts.serviceAliasImports = importAliases(file)
+		}
+	}
+
+	// `type Service = tools.ChangeController` declares the contract as
+	// another interface, the consumer's: that satisfies the shape as well
+	// as an interface declared here, with no second interface to drift.
+	if !facts.hasServiceInterface && facts.serviceAlias != nil && serviceAliasOK(pkgDir, facts) {
+		facts.hasServiceInterface = true
+		facts.serviceIfacePos = facts.serviceAliasPos
+		facts.interfaceCount++
 	}
 
 	// A `//forge:contract` type IS the contract: forge derives `Service`
@@ -654,6 +674,104 @@ func scanPackageContractShape(pkgDir string) (contractShapeFacts, error) {
 	}
 
 	return facts, nil
+}
+
+// serviceAliasOK reports whether the type a `type Service = <T>` alias names
+// is an interface, read from syntax: T declared in this package must be one
+// of its interfaces; pkg.T in another package of this module is looked up
+// in that package's files, and only a T declared there as something else (a
+// struct, a func type) is refused. A package outside the module is not read:
+// the mock generator type-checks it, and mocks the alias only when it is an
+// interface.
+func serviceAliasOK(pkgDir string, facts contractShapeFacts) bool {
+	switch t := facts.serviceAlias.(type) {
+	case *ast.Ident:
+		return facts.interfaceNames[t.Name]
+	case *ast.SelectorExpr:
+		x, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		importPath, ok := facts.serviceAliasImports[x.Name]
+		if !ok {
+			return true // a qualifier the import block does not spell: not read
+		}
+		dir := moduleImportDir(pkgDir, importPath)
+		if dir == "" {
+			return true
+		}
+		isIface, declared := declaredInterface(dir, t.Sel.Name)
+		return isIface || !declared
+	}
+	return false
+}
+
+// moduleImportDir is the directory of importPath when it is a package of the
+// module pkgDir belongs to, else "".
+func moduleImportDir(pkgDir, importPath string) string {
+	dir, err := filepath.Abs(pkgDir)
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+	module := readModulePath(dir)
+	if module == "" {
+		return ""
+	}
+	if importPath == module {
+		return dir
+	}
+	rel, ok := strings.CutPrefix(importPath, module+"/")
+	if !ok {
+		return ""
+	}
+	return filepath.Join(dir, filepath.FromSlash(rel))
+}
+
+// declaredInterface reports whether dir's non-test files declare name, and
+// whether as an interface (an alias counts as one: it is not read further).
+func declaredInterface(dir, name string) (isIface, declared bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		file, perr := parser.ParseFile(fset, filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
+		if perr != nil {
+			continue
+		}
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Name.Name != name {
+					continue
+				}
+				if ts.Assign.IsValid() {
+					return true, true
+				}
+				_, isIface := ts.Type.(*ast.InterfaceType)
+				return isIface, true
+			}
+		}
+	}
+	return false, false
 }
 
 // markedTypeLine is the line of dir's first `//forge:contract` type (0 when
@@ -679,8 +797,21 @@ func scanContractDecl(decl ast.Decl, fset *token.FileSet, facts *contractShapeFa
 			if !ok {
 				continue
 			}
+			if ts.Assign.IsValid() {
+				// An alias declares no type of its own; the one the
+				// contract may be is resolved after the walk.
+				if ts.Name.Name == facts.serviceIfaceName && ts.TypeParams == nil && facts.serviceAlias == nil {
+					facts.serviceAlias = ts.Type
+					facts.serviceAliasPos = fset.Position(ts.Pos())
+				}
+				continue
+			}
 			switch ts.Type.(type) {
 			case *ast.InterfaceType:
+				if facts.interfaceNames == nil {
+					facts.interfaceNames = map[string]bool{}
+				}
+				facts.interfaceNames[ts.Name.Name] = true
 				facts.interfaceCount++
 				if ts.Name.Name == facts.serviceIfaceName {
 					facts.contractIfaceMethods = interfaceMethodNames(ts)

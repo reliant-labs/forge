@@ -375,6 +375,13 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 		return nil, err
 	}
 
+	// The contract files' own interface names join the siblings' before
+	// the first pass, so a `type Service = <Name>` alias can tell an
+	// interface from a struct whichever order the file declares them in.
+	for _, f := range files {
+		collectInterfaceNames(f, cf.InterfaceNames)
+	}
+
 	// First pass: collect all interface AST nodes by name.
 	type ifaceEntry struct {
 		name      string
@@ -394,7 +401,14 @@ func ParseContractWith(path string, r *Resolver) (*File, error) {
 				}
 				ifaceType, ok := typeSpec.Type.(*ast.InterfaceType)
 				if !ok {
-					continue
+					// `type Service = tools.ChangeController`: the
+					// contract IS another interface (serviceAlias).
+					// It is mocked as the interface that embeds it,
+					// which has exactly its method set.
+					ifaceType = serviceAliasInterface(typeSpec, cf, r)
+					if ifaceType == nil {
+						continue
+					}
 				}
 				ifaceEntries = append(ifaceEntries, ifaceEntry{
 					name:      typeSpec.Name.Name,

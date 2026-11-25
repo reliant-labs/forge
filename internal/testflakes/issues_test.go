@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +176,7 @@ func TestSyncIssuesStaleAfter(t *testing.T) {
 		search     map[string]string
 		wantClose  string // a substring of the close comment; "" means nothing is closed
 		wantSay    string
+		extra      func(t *testing.T, root string)
 	}{
 		{name: "stale is closed", issue: openIssue(1, "TestA", days(10)), staleAfter: 7 * 24 * time.Hour,
 			wantClose: "it has not flaked again for 10 days (last seen " + days(10).Format("2006-01-02") + "), past --stale-after 7d. A new flake of this test reopens it."},
@@ -185,6 +188,18 @@ func TestSyncIssuesStaleAfter(t *testing.T) {
 			wantClose: "for 20 days"},
 		{name: "a gone test is closed however fresh", issue: openIssue(1, "TestGone", days(1)), staleAfter: 7 * 24 * time.Hour,
 			wantClose: "`TestGone` no longer exists in `internal/a`"},
+		{name: "a missing package dir is indeterminate", issue: strings.Replace(openIssue(1, "TestGone", days(1)), "(internal/a)", "(internal/missing)", 1), staleAfter: 7 * 24 * time.Hour},
+		{name: "an unreadable test file is indeterminate", issue: openIssue(1, "TestGone", days(1)), staleAfter: 7 * 24 * time.Hour,
+			extra: func(t *testing.T, root string) {
+				// A directory under a test file's name: the glob sees it, reading fails (as root too).
+				if err := os.Mkdir(filepath.Join(root, "internal/a/b_test.go"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "an unparsable test file is indeterminate", issue: openIssue(1, "TestGone", days(1)), staleAfter: 7 * 24 * time.Hour,
+			extra: func(t *testing.T, root string) {
+				write(t, filepath.Join(root, "internal/a/b_test.go"), "package a\n\nfunc helper( {\n")
+			}},
 		{name: "a hours duration", issue: openIssue(1, "TestA", now.Add(-60*time.Hour)), staleAfter: 50 * time.Hour,
 			wantClose: "past --stale-after 50h0m0s"},
 		{name: "dry-run closes nothing", issue: openIssue(1, "TestA", days(10)), staleAfter: 7 * 24 * time.Hour, dryRun: true,
@@ -198,6 +213,9 @@ func TestSyncIssuesStaleAfter(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := newModule(t, tree)
+			if tc.extra != nil {
+				tc.extra(t, root)
+			}
 			doc := tc.record
 			if doc == nil {
 				var warnings []string

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
 	"path/filepath"
@@ -216,25 +219,24 @@ func (s *issueSync) sweep(ctx context.Context, issues []ghIssue, handled map[str
 }
 
 // goneReason says why the test of an issue is gone from the checkout at
-// Root, or "" when it is there or that cannot be told (no module, or a
-// package outside it).
+// Root, or "" when it is there or that cannot be proved. Only a complete scan
+// proves absence: the package directory exists and every one of its test
+// files was read and parsed without finding the function. A missing
+// directory (a partial checkout, a package of another module), or a file
+// that cannot be read or parsed, is indeterminate and leaves the issue open.
 func (s *issueSync) goneReason(ctx context.Context, name, short string) string {
 	if s.module == "" {
 		return ""
 	}
-	pkg := s.module
+	rel := "."
 	if short != s.module {
-		pkg = s.module + "/" + short
-		// A package path from another module would be looked for in a
-		// directory that cannot exist here; that is not evidence.
-		if first, _, _ := strings.Cut(short, "/"); strings.Contains(first, ".") {
-			if _, err := os.Stat(filepath.Join(s.o.Root, filepath.FromSlash(short))); err != nil {
-				return ""
-			}
-		}
+		rel = filepath.FromSlash(short)
+	}
+	if !filepath.IsLocal(rel) {
+		return ""
 	}
 	top, _, _ := strings.Cut(name, "/") // a subtest lives in its top-level test
-	if TestBody(s.o.Root, s.module, testreport.TestID{Lang: testreport.LangGo, Package: pkg, Name: top}) != "" {
+	if present, known := testFuncPresent(filepath.Join(s.o.Root, rel), top); present || !known {
 		return ""
 	}
 	at := ""
@@ -242,6 +244,40 @@ func (s *issueSync) goneReason(ctx context.Context, name, short string) string {
 		at = " at `" + head + "`"
 	}
 	return fmt.Sprintf("%#q no longer exists in %#q%s", top, short, at)
+}
+
+// testFuncPresent reports whether a top-level func name is declared in the
+// *_test.go files of dir. known is false when that cannot be told: dir is
+// not a readable directory, or a test file could not be read or parsed.
+func testFuncPresent(dir, name string) (present, known bool) {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return false, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return false, false
+		}
+		f, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
+		if err != nil {
+			return false, false
+		}
+		for _, d := range f.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name.Name == name {
+				return true, true
+			}
+		}
+	}
+	return false, true
 }
 
 // lastEvidence is the newest time an issue was seen flaking: its creation,

@@ -294,7 +294,7 @@ func assembleGraph(in GraphGenInput) (*graphModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	comps, suppliedBy := providerSuppliedComponents(in.ModulePath, comps, providers)
+	comps, suppliedBy := providerSuppliedComponents(in.ProjectDir, in.ModulePath, comps, providers)
 	constructorProblems := unconstructibleComponents(in.ProjectDir, comps)
 	if in.Mixed {
 		if roots = adoptedRoots(roots); len(roots) == 0 {

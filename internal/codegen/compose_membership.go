@@ -13,6 +13,10 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -194,7 +198,7 @@ func notAComponentConsumedError(projectDir string, consumed []notAComponentConsu
 // Only the package's own type counts (`T` or `*T` of its import path and
 // produced type name): a provider of some other type that merely takes the
 // package as a dependency, or wraps it, leaves the package a node.
-func providerSuppliedComponents(module string, comps []BuildComponent, providers []graphProvider) (kept []BuildComponent, suppliedBy map[string]string) {
+func providerSuppliedComponents(projectDir, module string, comps []BuildComponent, providers []graphProvider) (kept []BuildComponent, suppliedBy map[string]string) {
 	produced := map[string]graphProvider{}
 	for _, p := range providers {
 		if key, ok := providerResultKey(p); ok {
@@ -206,7 +210,17 @@ func providerSuppliedComponents(module string, comps []BuildComponent, providers
 	kept = comps[:0:0]
 	for _, c := range comps {
 		if c.compRoleRoot == "internal" {
-			if p, ok := produced[componentTypeKey(module, &c)]; ok {
+			p, ok := produced[componentTypeKey(module, &c)]
+			if !ok && projectDir != "" {
+				// A Service that only embeds the consumer's interface
+				// (`type Service interface{ tools.ChangeController }`) is
+				// that interface: a provider returning it supplies the
+				// package just as one returning Service would.
+				if key, embeds := soleEmbeddedInterface(projectDir, module, &c); embeds {
+					p, ok = produced[key]
+				}
+			}
+			if ok {
 				if suppliedBy == nil {
 					suppliedBy = map[string]string{}
 				}
@@ -231,6 +245,72 @@ func providerResultKey(p graphProvider) (string, bool) {
 		return "", false
 	}
 	return path + "." + name, true
+}
+
+// soleEmbeddedInterface reports "<import path>.<Name>" of the one interface
+// the component's produced interface type embeds, when that embedding is its
+// whole body (no methods of its own, nothing else embedded).
+func soleEmbeddedInterface(projectDir, module string, c *BuildComponent) (string, bool) {
+	typ := c.compFieldType
+	if typ == "" {
+		typ = c.Alias + ".Service"
+	}
+	if strings.HasPrefix(typ, "*") {
+		return "", false
+	}
+	_, want, _ := strings.Cut(typ, ".")
+	dir := filepath.Join(projectDir, filepath.FromSlash(c.ImportPath))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts := spec.(*ast.TypeSpec)
+				if ts.Name.Name != want {
+					continue
+				}
+				it, ok := ts.Type.(*ast.InterfaceType)
+				if !ok || it.Methods == nil || len(it.Methods.List) != 1 || len(it.Methods.List[0].Names) != 0 {
+					return "", false
+				}
+				sel, ok := it.Methods.List[0].Type.(*ast.SelectorExpr)
+				if !ok {
+					return "", false
+				}
+				pkg, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return "", false
+				}
+				for _, imp := range f.Imports {
+					path := strings.Trim(imp.Path.Value, `"`)
+					alias := path[strings.LastIndex(path, "/")+1:]
+					if imp.Name != nil {
+						alias = imp.Name.Name
+					}
+					if alias == pkg.Name {
+						return path + "." + sel.Sel.Name, true
+					}
+				}
+				return "", false
+			}
+		}
+	}
+	return "", false
 }
 
 // componentTypeKey is "<import path>.<Name>" of the type componentNode gives

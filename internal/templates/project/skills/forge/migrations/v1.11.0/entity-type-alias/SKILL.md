@@ -74,12 +74,16 @@ the collision.
 
 ## What it leaves to you
 
-A use of `X` it cannot tell apart from the other import's value — an annotation
-(`(item: Link) =>`), an assertion (`as Link`, `satisfies Link`), a union member —
-is listed as `file:line` with the line's text. If that use means the entity
-type, write `XEntity`; if it means the component, leave it. `npx tsc --noEmit`
-in the frontend then proves the file: a use still spelled `Link` where the type
-was meant fails there with the component's type in the message.
+Every remaining reference to `X` outside imports and comment-only lines is
+listed as `file:line` with the line's text. This is intentionally conservative:
+the codemod is not a TypeScript parser. Annotations (`(item: Link) =>`), type
+aliases (`type X = Link`), unions, tuples and nested generics may need manual
+repair. Values and JSX are also listed; their presence does not mean they
+should be renamed. If a reference means the entity type, write `XEntity`; if it
+means the component, leave it. Resolve this report from the first run: after
+the import is aliased a second run no longer detects a collision and does not
+repeat the guidance. A rewrite alone is not proof of a completed repair; run
+`npx tsc --noEmit` in the frontend to verify it.
 
 A page you renamed or restructured so that its type import no longer comes from
 a `_pb` module is outside what the codemod reads; give that import an alias by

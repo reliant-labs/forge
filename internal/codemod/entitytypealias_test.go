@@ -41,8 +41,8 @@ func TestEntityTypeAliasRepairsThePagesForgeWrote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dry.Rewrites) != 2 || len(dry.Next) != 0 {
-		t.Fatalf("dry run: want 2 rewrites and nothing to check, got %+v", dry)
+	if len(dry.Rewrites) != 2 || len(dry.Next) == 0 {
+		t.Fatalf("dry run: want 2 rewrites and remaining references to check, got %+v", dry)
 	}
 	if got := readFile(t, dir, "frontends/web/src/app/links/page.tsx"); got != files["frontends/web/src/app/links/page.tsx"] {
 		t.Fatal("a dry run wrote the page")
@@ -118,8 +118,45 @@ const nav = <Link to="/x">Link</Link>;
 			t.Errorf("rewritten file should contain %q:\n%s", want, edit.content)
 		}
 	}
-	if len(edit.next) != 1 || !strings.HasPrefix(edit.next[0], "src/x.tsx:6: `const pick = (item: Link) => item.id;`") {
-		t.Errorf("next = %q, want the one annotation on line 6", edit.next)
+	if len(edit.next) != 2 || !strings.HasPrefix(edit.next[0], "src/x.tsx:6: `const pick = (item: Link) => item.id;`") ||
+		!strings.HasPrefix(edit.next[1], "src/x.tsx:9:") {
+		t.Errorf("next = %q, want the annotation and JSX references", edit.next)
+	}
+}
+
+// Unsupported syntax must always be reported rather than silently left behind
+// after changing the import. Do not guess whether a reference means the entity
+// or the component: both can have a type in TypeScript.
+func TestEntityTypeAliasReportsEveryUnrepairedReference(t *testing.T) {
+	for _, use := range []string{
+		"const x: Link = value;",
+		"type X = Link;",
+		"type X = Link | Other;",
+		"type X = Other & Link;",
+		"type X = [Link, Other];",
+		"type X = T extends Other ? Link : never;",
+		"type X = Wrapper<Inner<Other>, Link>;",
+		"const x = value as Link;",
+		"const x = value satisfies Link;",
+		"type X =\n  Link;",
+		"const x = Link;",
+		"const x = <Link />;",
+	} {
+		t.Run(use, func(t *testing.T) {
+			page := "import Link from 'next/link';\nimport type { Link } from './links_pb';\n" + use + "\n"
+			edit := aliasCollidingEntityTypes("src/x.tsx", page)
+			if edit == nil || len(edit.renamed) != 1 || len(edit.next) != 1 {
+				t.Fatalf("unrepaired reference must be reported: %+v", edit)
+			}
+			if !strings.Contains(edit.content, use) || !strings.HasPrefix(edit.next[0], "src/x.tsx:") {
+				t.Fatalf("expected unchanged use and file:line guidance: %+v", edit)
+			}
+		})
+	}
+	// This example in B1 is already covered by the generic-argument rewrite.
+	edit := aliasCollidingEntityTypes("src/x.tsx", "import Link from 'next/link';\nimport type { Link } from './links_pb';\ntype X = Promise<Link>;\n")
+	if edit == nil || !strings.Contains(edit.content, "Promise<LinkEntity>") || len(edit.next) != 0 {
+		t.Fatalf("simple generic should be repaired: %+v", edit)
 	}
 }
 

@@ -31,9 +31,8 @@ import (
 //     `Foo<X, Y>`, `Foo<A, X>`) and as an array type (`X[]`) becomes XEntity;
 //     JSX (`<X …>`, `</X>`) is the other import's and stays.
 //
-// A use it cannot tell apart from the other import's value (`item: X`,
-// `as X`, `satisfies X`, a union member) is reported with its file:line, as
-// the edit to make by hand when it names the entity type. A file whose alias
+// Every remaining reference (including values and JSX) is reported with its
+// file:line, as the edit to make by hand when it names the entity type. A file whose alias
 // is already bound by something else is left alone and reported. Re-running
 // it changes nothing: a fixed file no longer has the collision.
 
@@ -55,8 +54,10 @@ frontend's src/ (the project root and each frontends/<name>) that has the
 collision, the type import gets the alias, and the type's uses as a type argument
 (` + "`ResourceColumn<Link>`, `<Resource<Link>`" + `) and array type (` + "`Link[]`" + `) are
 renamed. JSX such as ` + "`<Link href=…>`" + ` belongs to the other import and is
-not touched. A use it cannot classify (` + "`item: Link`" + `) is listed with its
-file:line for you to check. Files without the collision are left exactly as they
+not touched. Every remaining reference (including values and JSX) is listed
+with its file:line for you to check: if it means the entity type, write the
+alias; otherwise leave it. Resolve this first-run report and run tsc before
+considering the repair complete. Files without the collision are left exactly as they
 are. Re-running it changes nothing.`,
 		Scoped: true,
 		Run:    runEntityTypeAlias,
@@ -258,13 +259,14 @@ func replaceOutsideImports(src string, re *regexp.Regexp, repl func([]string) st
 	return b.String()
 }
 
-// ambiguousUses lists, with their lines, the uses of name left after the
-// rename that read like a type (an annotation, an assertion, a union member):
-// they may mean the entity type, which is now spelled local, or the other
-// import's value.
+// ambiguousUses lists every remaining reference, not just a selection of
+// type-looking patterns. TypeScript has more type positions than this regex
+// codemod can parse (aliases, conditional types, tuples, nested generics, ...).
+// A conservative report may include the other import's values or JSX, but must
+// never silently declare an unsupported type reference repaired.
 func ambiguousUses(rel, src, name, local string) []string {
 	q := regexp.QuoteMeta(name)
-	re := regexp.MustCompile(`(:\s*` + q + `\b)|(\b(as|satisfies|keyof|extends)\s+` + q + `\b)|(\|\s*` + q + `\b)|(\b` + q + `\s*\|)`)
+	re := regexp.MustCompile(`(^|[^\w$])` + q + `([^\w$]|$)`)
 	inImport := make([]bool, len(src)+1)
 	for _, imp := range parseTSImports(src) {
 		for i := imp.start; i < imp.end; i++ {

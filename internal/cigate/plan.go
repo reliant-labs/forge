@@ -187,7 +187,37 @@ func Plan(in PlanInput) ([]Check, error) {
 	if err := validateGraph(out); err != nil {
 		return nil, err
 	}
+	if err := p.checkFullChecks(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// checkFullChecks uses the assembled rows, after extra checks replace built-ins,
+// so a rule cannot silently name a missing or non-path-gated check. Frontend
+// test rows are added later by WithFrontendTests, from the discovered frontends.
+func (p planner) checkFullChecks(checks []Check) error {
+	if p.Cfg == nil {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, c := range checks {
+		known[c.Name] = len(c.Paths) > 0
+	}
+	for _, fe := range p.CI.Frontends {
+		name := FrontendTestName(fe.Name)
+		if _, exists := known[name]; !exists {
+			known[name] = true
+		}
+	}
+	for i, r := range p.Cfg.CI.Gate.AffectedRules {
+		for j, name := range r.FullChecks {
+			if !known[name] {
+				return fmt.Errorf("ci.gate.affected_rules[%d].full_checks[%d]: %q is not a path-gated check or a configured frontend test row", i, j, name)
+			}
+		}
+	}
+	return nil
 }
 
 // checkAffectedRules rejects a ci.gate.affected_rules entry naming a frontend

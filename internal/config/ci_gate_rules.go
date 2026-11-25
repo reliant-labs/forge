@@ -36,7 +36,11 @@ func validateCIGatePaths(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 		at := []string{"ci", "gate", "affected_rules", fmt.Sprintf("[%d]", i)}
 		label := fmt.Sprintf("ci.gate.affected_rules[%d]", i)
 		key := func(k string) []string { return append(append([]string(nil), at...), k) }
-		if len(r.Paths) == 0 {
+		if r.On != "" && r.On != CIGateOnGoSource {
+			issue(key("on"), fmt.Sprintf("%s.on %q is not a known match", label, r.On),
+				"the one value is `go-source` (every changed .go file).")
+		}
+		if len(r.Paths) == 0 && r.On == "" {
 			issue(key("paths"), label+" has no paths",
 				"set `paths:` to the globs of the changed files the rule claims, e.g. [\"frontends/web/**\"].")
 		}
@@ -49,6 +53,27 @@ func validateCIGatePaths(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 					"use `./internal/store/...` (a subtree), `./internal/db` (one package) or an import path.")
 			}
 		}
+		for j, p := range r.PackagesImporting {
+			if strings.TrimSpace(p) == "" || strings.ContainsAny(p, " \t") || strings.Contains(p, "...") || strings.Contains(p, "{") {
+				issue(append(key("packages_importing"), fmt.Sprintf("[%d]", j)),
+					fmt.Sprintf("%s.packages_importing[%d] %q is not one package", label, j, p),
+					"name the helper package: `./internal/db/testutil` or its import path.")
+			}
+		}
+		for j, p := range r.Packages {
+			if t := strings.ReplaceAll(p, "{dir}", ""); strings.ContainsAny(t, "{}") {
+				issue(append(key("packages"), fmt.Sprintf("[%d]", j)),
+					fmt.Sprintf("%s.packages[%d] %q has an unknown placeholder", label, j, p),
+					"the one placeholder is `{dir}`, the matched file's directory below the glob's literal prefix: `./gen/{dir}`.")
+			}
+		}
+		for j, c := range r.FullChecks {
+			if strings.TrimSpace(c) == "" {
+				issue(append(key("full_checks"), fmt.Sprintf("[%d]", j)),
+					fmt.Sprintf("%s.full_checks[%d] is empty", label, j),
+					"name a gate row: a path-gated check or test-<frontend>.")
+			}
+		}
 		for j, f := range r.Frontends {
 			if strings.TrimSpace(f) == "" {
 				issue(append(key("frontends"), fmt.Sprintf("[%d]", j)),
@@ -57,12 +82,12 @@ func validateCIGatePaths(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 			}
 		}
 		switch {
-		case r.Full && (len(r.Packages) > 0 || len(r.Frontends) > 0):
+		case r.Full && (len(r.Packages) > 0 || len(r.Frontends) > 0 || len(r.PackagesImporting) > 0):
 			issue(key("full"), label+" sets full: true and also packages or frontends",
-				"a full rule already runs everything: drop full, or drop packages and frontends.")
-		case !r.Full && len(r.Packages) == 0 && len(r.Frontends) == 0:
+				"a full rule already runs everything: drop full, or drop packages, packages_importing and frontends.")
+		case !r.Full && len(r.Packages) == 0 && len(r.Frontends) == 0 && len(r.PackagesImporting) == 0 && len(r.FullChecks) == 0:
 			issue(at, label+" selects nothing",
-				"give it packages, frontends, or full: true with a reason. A file no test reads belongs in ci.gate.affected_ignore.")
+				"give it packages, packages_importing, frontends, full_checks, or full: true with a reason. A file no test reads belongs in ci.gate.affected_ignore.")
 		}
 	}
 	for i, c := range cfg.CI.Gate.ExtraChecks {

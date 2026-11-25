@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+	"testing/synctest"
 )
 
 const realOutput = "forge version v1.7.0 (commit 0123456789ab, built 2026-10-01)\n" +
@@ -142,9 +142,9 @@ func TestScanFindsEveryReliantForgeOnPath(t *testing.T) {
 }
 
 func TestScanAlreadyCanceledDoesNotProbe(t *testing.T) {
-	path := writeExe(t, filepath.Join(t.TempDir(), "forge"), "elf")
+	path := writeExe(t, filepath.Join(t.TempDir(), "forge.exe"), "elf")
 	probe := &fakeProbe{out: map[string]string{path: realOutput}}
-	s := Scanner{PathEnv: filepath.Dir(path), GOOS: "linux", Probe: probe.probe}
+	s := Scanner{PathEnv: filepath.Dir(path), GOOS: "windows", Probe: probe.probe}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	rep := s.Scan(ctx, "v1.10.0")
@@ -155,41 +155,47 @@ func TestScanAlreadyCanceledDoesNotProbe(t *testing.T) {
 	}
 }
 
-func TestScanCancellationDoesNotWaitForProbe(t *testing.T) {
-	path := writeExe(t, filepath.Join(t.TempDir(), "forge"), "elf")
-	started := make(chan struct{})
-	release := make(chan struct{})
-	finished := make(chan struct{})
-	defer close(release)
-	s := Scanner{PathEnv: filepath.Dir(path), GOOS: "linux", Probe: func(context.Context, string) ([]byte, error) {
-		close(started)
-		<-release // Deliberately ignore cancellation, but do not leak the fixture.
-		defer close(finished)
-		return []byte(realOutput), nil
-	}}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan Report, 1)
-	go func() { done <- s.Scan(ctx, "v1.10.0") }()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("probe did not start")
-	}
-	cancel()
-	select {
-	case rep := <-done:
-		if len(rep.Binaries) != 0 || rep.Running != "v1.10.0" {
-			t.Fatalf("canceled scan = %+v", rep)
+func TestScanCancellationReturnsBeforeBlockedProbe(t *testing.T) {
+	// Windows does not preserve Unix executable bits. Use its candidate names
+	// and discovery rules on every host; the injected probe never runs the file.
+	path := writeExe(t, filepath.Join(t.TempDir(), "forge.exe"), "elf")
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		finished := make(chan struct{})
+		defer close(release)
+		s := Scanner{PathEnv: filepath.Dir(path), GOOS: "windows", Probe: func(context.Context, string) ([]byte, error) {
+			close(started)
+			<-release // Deliberately ignore cancellation.
+			defer close(finished)
+			return []byte(realOutput), nil
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan Report, 1)
+		go func() { done <- s.Scan(ctx, "v1.10.0") }()
+		synctest.Wait()
+		select {
+		case <-started:
+		default:
+			t.Fatal("probe did not start")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Scan waited for a probe that ignores cancellation")
-	}
-	select {
-	case <-finished:
-		t.Fatal("probe unexpectedly finished before release")
-	default:
-	}
+		cancel()
+		synctest.Wait()
+		select {
+		case rep := <-done:
+			if len(rep.Binaries) != 0 || rep.Running != "v1.10.0" {
+				t.Fatalf("canceled scan = %+v", rep)
+			}
+		default:
+			t.Fatal("Scan waited for a probe that ignores cancellation")
+		}
+		select {
+		case <-finished:
+			t.Fatal("probe unexpectedly finished before release")
+		default:
+		}
+	})
 }
 
 func TestWarningNamesBothForgesAndTheFix(t *testing.T) {

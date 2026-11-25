@@ -101,6 +101,7 @@ forge db migration new	cmd	allow-version-skew:bool backward-compatible:string br
 forge db migration rebase	cmd	all-pending:bool allow-version-skew:bool dir:string project-dir/C:string
 forge db query	cmd	addr:string allow-version-skew:bool allow-writable-role:bool confirm-env:string database:string file/f:string format:string json:bool max-rows:int project-dir/C:string reason:string sslmode:string timeout:duration workload:string
 forge db reset	cmd	allow-version-skew:bool dir:string dsn:string env:string project-dir/C:string yes:bool
+forge db restore	cmd	allow-version-skew:bool as:string database:string db:string dry-run:bool project-dir/C:string to:string
 forge db seed	group	allow-version-skew:bool project-dir/C:string
 forge db seed apply	cmd	allow-remote-dsn:bool allow-version-skew:bool dir:string dsn:string env:string project-dir/C:string
 forge db seed reset	cmd	allow-remote-dsn:bool allow-version-skew:bool dir:string dsn:string env:string project-dir/C:string

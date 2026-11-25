@@ -5,14 +5,18 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/tools/go/packages"
 )
 
 // Mocks for dep interfaces that live in ANOTHER package of this module.
@@ -106,6 +110,20 @@ func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[stri
 		if typed == nil && parseSyntax() == nil {
 			continue
 		}
+		// Claim the import only when a field names an interface of the
+		// package. A Deps field can hold a VALUE of a non-interface type
+		// from it (a config struct, a string enum); nothing is mocked for
+		// those, so the import would be one the mock never uses, and the
+		// mock would not compile ("imported and not used"). Reachable
+		// interfaces only come from mocked ones, so checking the named
+		// fields is enough. The claim stays ahead of the first
+		// typedInterface call, which registers the package under its
+		// declared name: the consumer's own spelling must win.
+		if !slices.ContainsFunc(req.names, func(name string) bool {
+			return namesInterface(typed, parseSyntax, name)
+		}) {
+			continue
+		}
 		qualifier := aliases.use(importPath, req.qualifier, true)
 
 		// Transitive closure over the NAMED interfaces only. An accessor
@@ -159,6 +177,24 @@ func foreignInterfaces(dir string, fset *token.FileSet, consumerImports map[stri
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 
 	return defs, aliases.neededImports()
+}
+
+// namesInterface reports whether name is an interface in the foreign
+// package: by its type-checked declaration when the toolchain loaded the
+// package and declares the name, else by the syntax view.
+func namesInterface(typed *packages.Package, syntax func() *foreignPackage, name string) bool {
+	if typed != nil && typed.Types != nil {
+		if obj, _ := typed.Types.Scope().Lookup(name).(*types.TypeName); obj != nil {
+			_, ok := obj.Type().Underlying().(*types.Interface)
+			return ok
+		}
+	}
+	pkg := syntax()
+	if pkg == nil {
+		return false
+	}
+	_, ok := pkg.interfaces[name]
+	return ok
 }
 
 // ImportDef is one import required by generated mock code. Name is the

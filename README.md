@@ -54,6 +54,7 @@ monitoring. The limits: [Deploying with no account](docs/mcp.md#deploying-with-n
   <a href="https://github.com/reliant-labs/forge/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/reliant-labs/forge" /></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
   <a href="https://www.npmjs.com/package/@reliantlabs/forge"><img alt="npm" src="https://img.shields.io/npm/v/@reliantlabs/forge" /></a>
+  <a href="https://glama.ai/mcp/servers/reliant-labs/forge"><img alt="reliant-labs/forge MCP server" src="https://glama.ai/mcp/servers/reliant-labs/forge/badges/score.svg" /></a>
 </p>
 
 ## What Forge is

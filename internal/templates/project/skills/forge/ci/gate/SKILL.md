@@ -346,6 +346,9 @@ of the same key, as forge's own tool cache does.
 
 An extra runs in the `checks` lane unless `lane` says otherwise. `replaces` puts
 it in the replaced row's position, lane and group; forge's command does not run.
-An `after` that names no check, and a dependency cycle, are errors. A
+An extra named like one of forge's rows, with no `replaces`, takes that row over
+the same way and the gate warns: a row a newer forge adds (`lint-<frontend>`
+once a frontend is discovered) never turns an extra you already had into a
+config error. Add `replaces: <name>` to say so. An `after` that names no check, and a dependency cycle, are errors. A
 `mutates_tree` check that fails on a tree that was clean when the gate started
 resets the tree; on a dirty tree it never does.

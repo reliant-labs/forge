@@ -371,7 +371,7 @@ func checkForgePinSkew(cmd, root *cobra.Command, w io.Writer, allow bool) error 
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		handed, err := handOff(ctx, w, rel, machineWideRun(rel, cmd.Flags()), allow, projectRoot, forgeInvocationArgs())
+		handed, err := handOff(ctx, w, rel, machineWideRun(rel, cmd.Flags()), implicitTargetRun(rel, cmd.Flags()), allow, projectRoot, forgeInvocationArgs())
 		if err != nil || handed {
 			return err
 		}

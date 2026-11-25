@@ -32,6 +32,7 @@
 *_gen.test.ts merge=forge-generated
 *_gen.json merge=forge-generated
 *_gen.ndjson merge=forge-generated
+*_gen.k merge=forge-generated
 forge_service_catalog.json merge=forge-generated
 .forge/scaffolded/** merge=forge-generated
 .forge/hashes/** merge=forge-generated

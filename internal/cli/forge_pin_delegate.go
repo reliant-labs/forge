@@ -79,8 +79,9 @@ import (
 //     asks it precisely because it cannot reach the pin itself.
 //   - project upgrade: moves the pin, so it is run by the forge being moved
 //     TO, and must work when the old pin cannot be built. Its reporting
-//     subcommands (upgradeReportCommands) are handed to a pin NEWER than
-//     this forge.
+//     subcommands (upgradeReportCommands), and a run that would move the
+//     pin to this forge (implicitTargetFlags), are handed to a pin NEWER
+//     than this forge.
 //   - project new: the project it writes is not the one around the cwd.
 //   - report-bug: reports a defect in this forge, and must work offline.
 //   - telemetry: this machine's usage-event choice, the same for every forge.
@@ -158,6 +159,42 @@ var machineWideFlags = map[string]string{
 // older-than-the-pin decision.
 var upgradeReportCommands = map[string]bool{
 	"project upgrade list": true,
+}
+
+// implicitTargetFlags names, per command that moves the pin, the flag that
+// names the forge it moves to. Unset, the target is this forge — so a forge
+// OLDER than the pin would move it backwards. `reliant forge project upgrade
+// --check`, run by a reliant embedding v1.10.1 in a project pinned at
+// v1.11.0, offered "v1.11.0 → v1.10.1 (dev build)" while every other verb
+// handed off (forge report 17382bac). Such a run is handed to a pin newer
+// than this forge, like upgradeReportCommands, where it is the no-op it
+// should be; when the pin cannot be had, the upgrade refuses the downgrade
+// itself (refuseImplicitDowngrade). With the flag set the run is the user's
+// explicit choice and stays exempt.
+var implicitTargetFlags = map[string]string{
+	"project upgrade": "to",
+}
+
+// implicitTargetRun reports whether flags, parsed for the command at rel,
+// leave its target forge implicit: this forge (implicitTargetFlags).
+func implicitTargetRun(rel string, flags *pflag.FlagSet) bool {
+	name, ok := implicitTargetFlags[rel]
+	if !ok || flags == nil || flags.Lookup(name) == nil {
+		return false
+	}
+	v, _ := flags.GetString(name)
+	return strings.TrimSpace(v) == ""
+}
+
+// handOffModeOf is handOffModeFor for a run whose flags are known:
+// implicitTarget is implicitTargetRun's answer.
+func handOffModeOf(rel string, machineWide, implicitTarget bool) handOffMode {
+	if implicitTarget {
+		if _, ok := implicitTargetFlags[rel]; ok {
+			return handOffPreferred
+		}
+	}
+	return handOffModeFor(rel, machineWide)
 }
 
 // handOffModeFor is the hand-off decision for the command at rel (relative to
@@ -272,7 +309,7 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		return false, err
 	}
 	inv := parseInvocation(args)
-	if handOffModeFor(inv.rel, inv.machineWide) == runHere {
+	if handOffModeOf(inv.rel, inv.machineWide, inv.implicitTarget) == runHere {
 		return false, nil
 	}
 	root, err := projectRootFrom(inv.projectDir)
@@ -280,7 +317,7 @@ func HandOffToPinned(ctx context.Context, args []string, stderr io.Writer) (hand
 		// The tree reports a bad -C itself, with its own message.
 		return false, nil
 	}
-	return handOff(ctx, stderr, inv.rel, inv.machineWide, inv.allow, root, args)
+	return handOff(ctx, stderr, inv.rel, inv.machineWide, inv.implicitTarget, inv.allow, root, args)
 }
 
 // skewFlagBeforeCommand refuses --allow-version-skew written before the
@@ -330,6 +367,9 @@ type invocation struct {
 	// machineWide is a run across every project on the machine
 	// (machineWideRun: `env down --all`).
 	machineWide bool
+	// implicitTarget is a pin-moving run whose target is this forge
+	// (implicitTargetRun: `project upgrade` without --to).
+	implicitTarget bool
 	// projectDir is -C / --project-dir.
 	projectDir string
 }
@@ -356,6 +396,7 @@ func parseInvocation(args []string) invocation {
 	inv := invocation{rel: commandRel(cmd, root)}
 	inv.allow, _ = cmd.Flags().GetBool(allowVersionSkewFlag)
 	inv.machineWide = machineWideRun(inv.rel, cmd.Flags())
+	inv.implicitTarget = implicitTargetRun(inv.rel, cmd.Flags())
 	inv.projectDir, _ = cmd.Flags().GetString("project-dir")
 	if cmd.HasSubCommands() {
 		// `forge project <a subcommand this forge lacks>`.
@@ -493,14 +534,17 @@ func projectRootFrom(dir string) (string, error) {
 // handOff is the decision both entry points share: hand the command at rel to
 // the forge projectRoot wants, run this forge, or fail. args are the forge
 // arguments of this invocation; machineWide, whether the run spans every
-// project on the machine (machineWideRun).
-func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bool, projectRoot string, args []string) (handed bool, err error) {
-	mode := handOffModeFor(rel, machineWide)
+// project on the machine (machineWideRun); implicitTarget, whether it moves
+// the pin to this forge (implicitTargetRun).
+func handOff(ctx context.Context, w io.Writer, rel string, machineWide, implicitTarget, allow bool, projectRoot string, args []string) (handed bool, err error) {
+	mode := handOffModeOf(rel, machineWide, implicitTarget)
 	if mode == runHere {
 		return false, nil
 	}
-	t, ok, unpinned := pinTarget(rel, allow, projectRoot)
-	if unpinned != "" {
+	t, ok, unpinned := pinTargetOf(rel, implicitTarget, allow, projectRoot)
+	// An upgrade with no pin to compare has nothing to hand off and never
+	// printed the notice; it reports the unpinned project itself.
+	if unpinned != "" && !implicitTarget {
 		noteUnpinned(w, unpinned)
 	}
 	if !ok {
@@ -538,6 +582,12 @@ func handOff(ctx context.Context, w io.Writer, rel string, machineWide, allow bo
 // overrode the check (allow, or the environment), or a local development forge
 // against a tag pin for a command that tolerates it.
 func pinTarget(rel string, allow bool, projectRoot string) (t delegateTarget, ok bool, unpinned string) {
+	return pinTargetOf(rel, false, allow, projectRoot)
+}
+
+// pinTargetOf is pinTarget for a run whose flags are known: implicitTarget
+// is implicitTargetRun's answer.
+func pinTargetOf(rel string, implicitTarget, allow bool, projectRoot string) (t delegateTarget, ok bool, unpinned string) {
 	if projectRoot == "" {
 		return delegateTarget{}, false, "not inside a forge project"
 	}
@@ -552,9 +602,10 @@ func pinTarget(rel string, allow bool, projectRoot string) (t delegateTarget, ok
 		// Run this forge; checkForgePinSkew warns, or refuses.
 		return delegateTarget{}, false, ""
 	}
-	if upgradeReportCommands[rel] && !t.pinIsNewer() {
+	if (upgradeReportCommands[rel] || implicitTarget) && !t.pinIsNewer() {
 		// This forge is the upgrade target (or cannot be ordered against
-		// the pin): it reports its own playbooks, as `project upgrade` does.
+		// the pin): it reports its own playbooks, and moves the pin to
+		// itself, as `project upgrade` does.
 		return delegateTarget{}, false, ""
 	}
 	return t, true, ""

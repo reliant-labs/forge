@@ -958,6 +958,7 @@ func (p planner) extraCheck(where string, e config.CIGateCheck) (Check, error) {
 		Env:          envList(e.Env),
 		SkipExitCode: e.SkipExitCode,
 		Paths:        append([]string(nil), e.Paths...),
+		GoClosure:    append([]string(nil), e.PathsGoClosure...),
 	}
 	if e.Lane != "" {
 		c.Lane = Lane(e.Lane)

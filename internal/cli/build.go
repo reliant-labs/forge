@@ -573,6 +573,12 @@ func resolveProjectImageTag(cfg *config.ProjectConfig, entities *KCLEntities, ta
 	if err := checkExplicitTagAgainstPins(entities, opts, cfg.Name, projectImageBuilt); err != nil {
 		return "", err
 	}
+	// A pushed image with no declared destination would push a bare tag,
+	// which docker sends to Docker Hub. Refused here, before anything is
+	// built, beside the other refusal about what this build tags.
+	if err := refuseUndeclaredPushes(cfg, targets, opts); err != nil {
+		return "", err
+	}
 	projectTag := buildTagFor(opts, imagePinFor(entities, cfg.Name), resolvedTag)
 	if projectImageBuilt && projectTag != resolvedTag {
 		fmt.Printf("[build]   %s image tag: %s (pinned by its declared image)\n", cfg.Name, projectTag)
@@ -767,7 +773,7 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 		}
 		return runBuildPlan(ctx, cfg, entities, targets, opts, resolvedTag, projectTag)
 	}
-	if err := preflightRealBuild(ctx, entities, opts); err != nil {
+	if err := preflightRealBuild(ctx, entities, opts, lightBuild(targets, entities)); err != nil {
 		return err
 	}
 	// A cut of this version that pushed every image and was interrupted
@@ -1029,8 +1035,16 @@ func recordBuild(ctx context.Context, cfg *config.ProjectConfig, entities *KCLEn
 // release — a ShellBuild checkout that is not at the commit the project pins
 // (preflightReleaseSources). Refusing the release HERE rather than at the cut
 // is what keeps a refused release from pushing images under its version.
-func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions) error {
-	if err := checkBuildStorageFn(projectDirForKCL()); err != nil {
+//
+// A LIGHT build (no go build, no image build: a static site) is admitted
+// under the light-build reserve; every heavy lane it does not have checks
+// the full reserve again before it runs.
+func preflightRealBuild(ctx context.Context, entities *KCLEntities, opts buildOptions, light bool) error {
+	check := checkBuildStorageFn
+	if light {
+		check = checkLightBuildStorageFn
+	}
+	if err := check(projectDirForKCL()); err != nil {
 		return err
 	}
 	// Push access for the in-process pushes, with the credential docker was
@@ -1143,6 +1157,25 @@ type buildTargetSet struct {
 	goTargets         []goBuildTarget
 	skipProjectDocker bool
 	cfgArchForDocker  string
+}
+
+// lightBuild reports a build that runs no go build and no image build of any
+// kind — frontends built with their package manager only, such as a static
+// site. Conservative by construction: the target set must hold no go target
+// and no docker frontend, AND the env must declare no workload with a build
+// at all, since ShellBuild, external, remote-docker and variant lanes are
+// derived from workloads rather than held in the target set. No render (nil)
+// is not light.
+func lightBuild(t buildTargetSet, e *KCLEntities) bool {
+	if e == nil || len(t.goTargets) > 0 || len(t.dockerFrontends) > 0 {
+		return false
+	}
+	for _, w := range e.Workloads {
+		if w.Build.Type != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // resolveBuildTargetSet applies the framework / --target / skipFrontends
@@ -2650,7 +2683,8 @@ func buildFrontend(ctx context.Context, fe config.FrontendConfig, memCaps buildM
 	// purpose. Re-deriving through Dir would apply a containment check to
 	// a path that is legitimately external and undo the resolution.
 	feDir := fe.DeclaredDir()
-	if err := checkBuildStorageFn(feDir); err != nil {
+	// A package-manager build, not an image or go build: the light reserve.
+	if err := checkLightBuildStorageFn(feDir); err != nil {
 		return buildResult{name: fe.Name, kind: "frontend", duration: time.Since(start), err: err}
 	}
 	// forge.yaml's dev_runner picks the package manager; `<runner> run build`
@@ -2970,7 +3004,11 @@ func imageTagSet(repository, resolvedTag string, push, releaseScoped bool) docke
 			out.push = append(out.push, refs...)
 		}
 	}
-	add(repository, push)
+	// A repository with no registry host is never pushed: docker would send
+	// it to docker.io/library, which no forge declaration names. A pushing
+	// build refuses that case up front (refuseUndeclaredPushes); this keeps
+	// every other path from pushing one implicitly.
+	add(repository, push && registryHost(repository) != "")
 	for _, mirror := range k3dMirrorRepositories(repository) {
 		add(mirror, false)
 	}

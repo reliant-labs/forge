@@ -267,6 +267,11 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	if err != nil {
 		return fail(err)
 	}
+	// The backend may have resolved a short id to the full one: every read
+	// below asks by the full id.
+	if res.Issue.ID != "" {
+		id = res.Issue.ID
+	}
 	res.Issue.Culprit = displayCulprit(res.Issue.Culprit, res.LatestEvent)
 	doc := obsIssueDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Suspects: []obsSuspectDoc{}, Statements: nil}
 	doc.Issue = issueRowDoc(res.Issue)

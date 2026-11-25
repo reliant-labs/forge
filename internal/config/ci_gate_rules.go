@@ -106,6 +106,13 @@ func validateCIGatePaths(cfg *ProjectConfig, root *yaml.Node) []validationIssue 
 	}
 	for i, c := range cfg.CI.Gate.ExtraChecks {
 		globs([]string{"ci", "gate", "extra_checks", fmt.Sprintf("[%d]", i), "paths"}, fmt.Sprintf("ci.gate.extra_checks[%d].paths", i), c.Paths)
+		for j, p := range c.PathsGoClosure {
+			if p = strings.TrimSpace(p); p == "" || strings.HasPrefix(p, "-") || strings.ContainsAny(p, "*?[") {
+				issue([]string{"ci", "gate", "extra_checks", fmt.Sprintf("[%d]", i), "paths_go_closure", fmt.Sprintf("[%d]", j)},
+					fmt.Sprintf("ci.gate.extra_checks[%d].paths_go_closure[%d] %q is not a Go package pattern", i, j, c.PathsGoClosure[j]),
+					"name packages as go list does: \"./tools/docgen\", \"./tools/docgen/...\" or an import path.")
+			}
+		}
 	}
 	return out
 }

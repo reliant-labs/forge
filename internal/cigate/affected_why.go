@@ -214,6 +214,12 @@ type DocumentAffected struct {
 	TransitiveCap    int      `json:"transitive_cap,omitempty"`
 	Deferred         []string `json:"deferred"`
 	FullGateRequired bool     `json:"full_gate_required"`
+	// LockfileChecks are the lockfile-<frontend> rows the diff adds;
+	// ClosureHits, per check with paths_go_closure, the changed files in
+	// its Go build closure, and ClosureErrors why one was not computed.
+	LockfileChecks []string            `json:"lockfile_checks"`
+	ClosureHits    map[string][]string `json:"closure_hits,omitempty"`
+	ClosureErrors  map[string]string   `json:"closure_errors,omitempty"`
 }
 
 // Document renders a for the --json document; nil for a nil a.
@@ -230,7 +236,8 @@ func (a *Affected) Document() *DocumentAffected {
 	d := &DocumentAffected{Full: a.Full, Reason: a.Reason, BaseRef: a.BaseRef, Base: a.Base, Total: a.Total,
 		Changed: nonNil(a.Changed), Packages: nonNil(a.Packages), Build: nonNil(a.Build), Frontends: nonNil(a.Frontends),
 		Why: a.Why, Files: a.Files, Selections: nonNil(a.Selections), Line: a.Line(),
-		Reach: a.Reach, TransitiveCap: a.TransitiveCap, Deferred: nonNil(a.Deferred), FullGateRequired: len(a.Deferred) > 0}
+		Reach: a.Reach, TransitiveCap: a.TransitiveCap, Deferred: nonNil(a.Deferred), FullGateRequired: len(a.Deferred) > 0,
+		LockfileChecks: nonNil(a.LockfileChecks), ClosureHits: a.ClosureHits, ClosureErrors: a.ClosureErrs}
 	if d.Why == nil {
 		d.Why = []PackageWhy{}
 	}

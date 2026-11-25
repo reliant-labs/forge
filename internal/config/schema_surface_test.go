@@ -138,7 +138,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[CIGateCheck](),
 			want: []string{
 				"after", "cache", "command", "dir", "env", "group", "heavy",
-				"lane", "mutates_tree", "name", "paths", "probe", "replaces", "requires",
+				"lane", "mutates_tree", "name", "paths", "paths_go_closure", "probe", "replaces", "requires",
 				"skip_exit_code",
 			},
 		},

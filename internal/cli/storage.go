@@ -258,6 +258,13 @@ var checkBuildStorageFn = func(project string) error {
 	return checkBuildStorage(project, os.Stderr)
 }
 
+// checkLightBuildStorageFn is checkBuildStorageFn for a LIGHT build lane (no
+// go build, no image build): admitted under storage.LightBuildReserveGiB
+// rather than the heavy-build reserve.
+var checkLightBuildStorageFn = func(project string) error {
+	return checkBuildStorageWith(project, os.Stderr, true)
+}
+
 // enforceReserveEnv turns the host reserve back into a refusal on a CI
 // runner. Any non-empty value enforces it.
 const enforceReserveEnv = "FORGE_STORAGE_ENFORCE_RESERVE"
@@ -284,6 +291,12 @@ const enforceReserveEnv = "FORGE_STORAGE_ENFORCE_RESERVE"
 // line above. A persistent self-hosted runner IS a machine that fills, so
 // FORGE_STORAGE_ENFORCE_RESERVE=1 restores the refusal there.
 func checkBuildStorage(project string, warn io.Writer) error {
+	return checkBuildStorageWith(project, warn, false)
+}
+
+// checkBuildStorageWith is checkBuildStorage, under the light-build reserve
+// when light is set (storage.Policy.LightBuild).
+func checkBuildStorageWith(project string, warn io.Writer, light bool) error {
 	path, err := storage.DefaultPath()
 	if err != nil {
 		return err
@@ -291,6 +304,9 @@ func checkBuildStorage(project string, warn io.Writer) error {
 	p, err := storage.Load(path)
 	if err != nil {
 		return err
+	}
+	if light {
+		p = p.LightBuild()
 	}
 	_, err = storage.CheckBuildSpace(p, project)
 	var short *storage.ReserveError

@@ -148,6 +148,10 @@ type TemplateData struct {
 	ConfigPackage string
 	// ConfigGoPackage is the go_package option value.
 	ConfigGoPackage string
+	// DatabaseOptional renders config.proto.tmpl's database_url as not
+	// required: a project scaffolded with no database must start without
+	// one. False (the zero value) keeps it required.
+	DatabaseOptional bool
 }
 
 // TemplateData returns the render input naming the layout's package.

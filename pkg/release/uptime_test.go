@@ -135,3 +135,24 @@ func TestShapeValidateRefusesDuplicateAndInvalidUptimeChecks(t *testing.T) {
 		t.Error("a private url survives Shape.Validate: a shape is stored forever and read by another program")
 	}
 }
+
+// A wildcard host names many hosts and resolves as none: a check of one could
+// only ever report down (obs f96ff669). Refused at declaration; a derived one
+// in a shape an earlier forge recorded still decodes.
+func TestUptimeURLRefusesAWildcardHost(t *testing.T) {
+	if err := ValidateUptimeURL("https://*.reliantlabs.dev"); !errors.Is(err, ErrUptimeWildcardHost) {
+		t.Errorf("ValidateUptimeURL(wildcard) = %v, want ErrUptimeWildcardHost", err)
+	}
+	if err := ValidateUptimeURL("https://app.reliantlabs.dev/health"); err != nil {
+		t.Errorf("a concrete host was refused: %v", err)
+	}
+	declared := ShapeUptimeCheck{Name: "apps", URL: "https://*.reliantlabs.dev", Method: "GET", IntervalSeconds: 60, TimeoutSeconds: 10, Source: UptimeSourceUser}
+	if err := declared.validate(); err == nil {
+		t.Error("a declared wildcard check validated")
+	}
+	derived := declared
+	derived.Source = UptimeSourceDefault
+	if err := derived.validate(); err != nil {
+		t.Errorf("a derived wildcard check recorded by an earlier forge no longer decodes: %v", err)
+	}
+}

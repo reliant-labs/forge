@@ -767,11 +767,8 @@ func runBuild(ctx context.Context, opts buildOptions) error {
 	// A project image that would compile a different forge than the host
 	// does is refused before anything is built — and by --plan, which
 	// preflights what the real build would fail on.
-	if opts.checkForgeBridge && opts.buildDocker && len(targets.goTargets) > 0 && !targets.skipProjectDocker {
-		dir := projectDirForKCL()
-		if err := refuseUnbuildableForgeBridge(dir, projectImageCompilesGo(filepath.Join(dir, "Dockerfile"))); err != nil {
-			return err
-		}
+	if err := preflightForgeBridge(opts, targets); err != nil {
+		return err
 	}
 
 	// --plan stops HERE: the build set is fully resolved by the same

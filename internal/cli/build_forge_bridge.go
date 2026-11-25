@@ -80,6 +80,16 @@ type forgeBridgeGit interface {
 
 var bridgeGit forgeBridgeGit = realForgeBridgeGit{}
 
+// preflightForgeBridge is runBuild's call: only a build that opted in
+// (checkForgeBridge) and builds the project image is judged.
+func preflightForgeBridge(opts buildOptions, targets buildTargetSet) error {
+	if !opts.checkForgeBridge || !opts.buildDocker || len(targets.goTargets) == 0 || targets.skipProjectDocker {
+		return nil
+	}
+	dir := projectDirForKCL()
+	return refuseUnbuildableForgeBridge(dir, projectImageCompilesGo(filepath.Join(dir, "Dockerfile")))
+}
+
 // refuseUnbuildableForgeBridge returns the refusal for projectDir, or nil.
 // compilesInImage is whether the project image compiles Go itself.
 func refuseUnbuildableForgeBridge(projectDir string, compilesInImage bool) error {

@@ -81,7 +81,7 @@ What you get is an **`Identity`**: `{ authenticated, email?, name?, subject? }`.
 
 Two backends, one cookie: `Frontend.apis` (`frontend/serving`).
 
-`credentials: "include"` on every auth `fetch` is load-bearing and easy to lose. Whenever the API is on another origin (a deployed literal `API_URL` naming the API's own host, or the dev loop with `FORGE_DEV_API_PROXY=off`, where the API is on its own port), the default (`"same-origin"`) makes the browser **silently drop the `Set-Cookie`**: login returns 200, the identity comes back, and the user stays signed out with nothing in the console to explain it. The server pairs it with `cors_allow_credentials`. Through the dev proxy it costs nothing.
+Every auth `fetch` takes its credentials from `apiCredentials(url)` (`src/lib/api-base.ts`), never a literal. To an API on another origin (a literal `API_URL`, or `FORGE_DEV_API_PROXY=off`) it is `"include"`: the default makes the browser **silently drop the `Set-Cookie`**, so login returns 200 and the user stays signed out. The server pairs it with `cors_allow_credentials`. On the page's own origin (`/_api`) it is `"same-origin"`, so an opaque-origin page (an unclaimed preview) is not refused the wildcard CORS grant.
 
 The same holds for every RPC after sign-in, on both sides:
 
@@ -155,7 +155,7 @@ The trade you are making: hosted pages give you MFA, social sign-in and password
 
 - **The browser never contacts the identity provider.** If a frontend file grows an issuer URL, a client id, or a redirect, the flow has been half-reverted — and a tree with two ways to become authenticated only protects the token on one of them.
 - **No token in the bundle.** `useAuth()` exposes none, `native-login.ts` stores none, and nothing may put one in `localStorage`, `sessionStorage` or `document.cookie` — anything written there is script-readable, which is the exact exposure the HttpOnly cookie removes.
-- **`credentials: "include"`, always**, on every auth fetch. The default silently drops the session cookie cross-origin.
+- **`credentials: apiCredentials(url)`, always**, on every auth fetch (above).
 - Identity is for RENDERING. Authorization is the server's, on every request.
 - Never put a credential in a bundle's public env (`NEXT_PUBLIC_*` / `VITE_*` / `EXPO_PUBLIC_*`) — those are inlined at build time and readable by anyone who loads the page.
 - `returnTo` on the sign-in screen is attacker-supplied: accept absolute same-origin paths only. `//evil.com` is protocol-relative, so the second character matters as much as the first.

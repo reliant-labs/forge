@@ -1,0 +1,3 @@
+# Every @reliantlabs/forge-web-runtime version npm serves, one per line, in
+# semver order. WRITTEN BY THE RELEASE, NEVER BY HAND (scripts/release-forge.sh).
+0.13.22

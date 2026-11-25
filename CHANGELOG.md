@@ -7,6 +7,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.11.0] - 2026-11-25
+
+### Added
+
+- **pgo:** hosted projects refresh each binary's default.pgo weekly from the env's profiles ([#2641](https://github.com/reliant-labs/forge/pull/2641))
+- **devidp:** hand a social sign-in's upstream provider tokens to an app hook ([#2445](https://github.com/reliant-labs/forge/pull/2445))
+- **test:** forge test flakes, flake gate, confirm and quarantine ([#2611](https://github.com/reliant-labs/forge/pull/2611))
+- **vuln:** forge vuln patch bumps vulnerable Python dependencies (pip, pip-compile, poetry, uv) ([#2510](https://github.com/reliant-labs/forge/pull/2510))
+- **test:** release test evidence and forge test run ([#2614](https://github.com/reliant-labs/forge/pull/2614))
+- **crud:** declarative row ownership — forge:owner= on a table scopes the generated CRUD ops ([#2461](https://github.com/reliant-labs/forge/pull/2461))
+- **resmetrics:** darwin and windows readers, Options.Volumes, observe.Resources ([#2652](https://github.com/reliant-labs/forge/pull/2652))
+- **test:** forge test report --upload records runs on the control plane ([#2642](https://github.com/reliant-labs/forge/pull/2642))
+- **crud:** generated CRUD ops persist through a declared <Entity>Store Deps field ([#2662](https://github.com/reliant-labs/forge/pull/2662))
+- **resmetrics:** KCL resource_metrics, process and host dashboard panels, built-in catalog names ([#2660](https://github.com/reliant-labs/forge/pull/2660))
+- **vuln:** SBOMs on by default for new projects, and a v1.10.0 upgrade playbook for existing ones ([#2666](https://github.com/reliant-labs/forge/pull/2666))
+- **kcl:** named same-origin APIs for frontends (/\_api/@name) ([#2669](https://github.com/reliant-labs/forge/pull/2669))
+- **test:** forge test collect pulls coverage from running instrumented servers ([#2617](https://github.com/reliant-labs/forge/pull/2617))
+- **devidp:** account settings on the login broker (email, password, links, passkeys, sessions, reauth) ([#2663](https://github.com/reliant-labs/forge/pull/2663))
+- **selfupdate:** opt-in autoupdate wiring and serverkit Server.SelfUpdate hook ([#2651](https://github.com/reliant-labs/forge/pull/2651))
+- **build:** forge build and the env up dev loop compile with -trimpath, so worktrees share build-cache entries ([#2680](https://github.com/reliant-labs/forge/pull/2680))
+- **auth:** RequireExpiry refuses a token with no exp, and the scaffolded SetupAuth sets it ([#2681](https://github.com/reliant-labs/forge/pull/2681))
+- **lint:** forge-runtime-caller-path warns on source paths from runtime.Caller, which -trimpath breaks ([#2687](https://github.com/reliant-labs/forge/pull/2687))
+- **kcl:** a scaffolded GoBuild declares flags = ["-trimpath"], and its flags reach go-run, air and build variants ([#2690](https://github.com/reliant-labs/forge/pull/2690))
+- **test:** test uploads carry the project's flake policy and Go module ([#2689](https://github.com/reliant-labs/forge/pull/2689))
+- **deploy:** suggest --claimable when a deploy has no credentials ([#2653](https://github.com/reliant-labs/forge/pull/2653))
+- **release:** forge's releases attach a CycloneDX SBOM per published binary ([#2691](https://github.com/reliant-labs/forge/pull/2691))
+- **devidp:** cross-host and native sign-in handoff with PKCE one-time codes ([#2664](https://github.com/reliant-labs/forge/pull/2664))
+- **orm:** a \_repo_ext.go no entity owns gets an ExtStore, so forge:no-entity tables' queries can be Deps ([#2693](https://github.com/reliant-labs/forge/pull/2693))
+- **pgtest:** FORGE_TEST_POSTGRES_DIR moves the embedded server's root (data, pool, logs) under a directory you choose, e.g. tmpfs ([#2702](https://github.com/reliant-labs/forge/pull/2702))
+- **selfupdate:** swap a running binary on Windows ([#2646](https://github.com/reliant-labs/forge/pull/2646))
+- **scaffold:** package new accepts nested /-separated names (credentials/vault) ([#2704](https://github.com/reliant-labs/forge/pull/2704))
+- **accesstoken:** mcp:oauth scope for an MCP client's audience-bound OAuth token ([#2705](https://github.com/reliant-labs/forge/pull/2705))
+- **accesstoken:** mcp:forge scope for the hosted Reliant Forge MCP server's OAuth token, with its procedure table ([#2706](https://github.com/reliant-labs/forge/pull/2706))
+- **scaffold:** forge scaffold variant — one component, several configurations as types ([#2709](https://github.com/reliant-labs/forge/pull/2709))
+- **graph:** resolve orm.Context Deps fields to the project's ORM client ([#2710](https://github.com/reliant-labs/forge/pull/2710))
+- **web-runtime:** per-call CallOptions on generated service hooks and per-service transport interceptors ([#2712](https://github.com/reliant-labs/forge/pull/2712))
+- **frontend:** generate React Query hooks for an imported proto module (package.json forge.imported_hooks) ([#2707](https://github.com/reliant-labs/forge/pull/2707))
+- **vuln:** forge ci vuln-sbom --pull downloads the database first, so a fresh CI runner scans instead of skipping ([#2722](https://github.com/reliant-labs/forge/pull/2722))
+- **lint:** forge lint --idempotency keeps NO_SIDE_EFFECTS markers honest ([#2718](https://github.com/reliant-labs/forge/pull/2718))
+- **web-runtime:** createFixtureTransport on Connect's router transport, composable fixture packs and checkFixturePack ([#2716](https://github.com/reliant-labs/forge/pull/2716))
+- **lint:** forge lint --idempotency keeps reads that return a secret or a per-call value off GET ([#2728](https://github.com/reliant-labs/forge/pull/2728))
+- **web-runtime:** fixedSession and a ./session subpath ([#2733](https://github.com/reliant-labs/forge/pull/2733))
+- **kcl:** forge.Fixtures serves a fixture pack from runtime config ([#2719](https://github.com/reliant-labs/forge/pull/2719))
+
+### Changed
+
+- **benefits:** cite pkg/experimentstats as evidence for controlled rollouts and A/B tests ([#2643](https://github.com/reliant-labs/forge/pull/2643))
+- **skills:** published protos keep a compat contract; hosting billing is pay-as-you-go, not a machine plan; hosted browser telemetry is on by default ([#2575](https://github.com/reliant-labs/forge/pull/2575))
+- **npm:** agent-findable npm and registry metadata ([#2645](https://github.com/reliant-labs/forge/pull/2645))
+- **readme:** give the docs MCP server install line in Deploy with your agent ([#2678](https://github.com/reliant-labs/forge/pull/2678))
+- run forge's own test lanes through forge test capture and its flake gate ([#2626](https://github.com/reliant-labs/forge/pull/2626))
+- **templates:** a -short smoke test renders a fresh scaffold's config_gen.k and env through the native KCL runtime ([#2699](https://github.com/reliant-labs/forge/pull/2699))
+- **templates:** a -short guard checks every .Render call site's data supplies each field its template references ([#2701](https://github.com/reliant-labs/forge/pull/2701))
+- forge dogfoods its test record, quarantine and SBOM scan (race/integration/vitest lanes with coverage, main upload, forge ci vuln-sbom) ([#2717](https://github.com/reliant-labs/forge/pull/2717))
+- pull the vulnerability database before forge ci vuln-sbom, and keep the scan from gating main (lint.rules vuln-gate: warn) ([#2720](https://github.com/reliant-labs/forge/pull/2720))
+- **proposals:** URL view state in forge-web-runtime ([#2724](https://github.com/reliant-labs/forge/pull/2724))
+- **e2e:** align scaffold proofs with build flags and call options ([#2736](https://github.com/reliant-labs/forge/pull/2736))
+
+### Fixed
+
+- **lint:** rules that missed the v1.9.0 tag ship in v1.10.0, so they warn through it ([#2638](https://github.com/reliant-labs/forge/pull/2638))
+- **test:** TestE2EFreshScaffoldLintExitsZero expects the static-export note #2411 prints ([#2650](https://github.com/reliant-labs/forge/pull/2650))
+- **orm:** a store keyed by a timestamp column imports time ([#2644](https://github.com/reliant-labs/forge/pull/2644))
+- **db:** migration new --closed-set names the out-of-step constraints when the name it is given is not one ([#2648](https://github.com/reliant-labs/forge/pull/2648))
+- **test:** main is green again — scaffolded middleware tests, auth_sessions banner, prettier-clean templates, phantom flake fields ([#2649](https://github.com/reliant-labs/forge/pull/2649))
+- **config:** a subtree config with no required field is optional on the process bundle, so adding one keeps existing envs rendering ([#2659](https://github.com/reliant-labs/forge/pull/2659))
+- **lint:** the buf lint and proto-format lanes run the buf go.mod pins, not whichever buf PATH has ([#2658](https://github.com/reliant-labs/forge/pull/2658))
+- **scaffold:** the scaffolded middleware test compiles against credentialFrom's channel return ([#2655](https://github.com/reliant-labs/forge/pull/2655))
+- **seed:** an authoritative ref narrows every route to its parent, not only the first ([#2657](https://github.com/reliant-labs/forge/pull/2657))
+- **test:** tests that build the root command never run in parallel ([#2668](https://github.com/reliant-labs/forge/pull/2668))
+- **testflakes:** the flake gate maps changed lines onto the test they fall in ([#2665](https://github.com/reliant-labs/forge/pull/2665))
+- **upgrade:** the v1.10.0 pgo-default-on playbook detects, and its ci.workflows opt-out loads ([#2670](https://github.com/reliant-labs/forge/pull/2670))
+- **auth:** scaffold the login broker when its config declares no environment ([#2671](https://github.com/reliant-labs/forge/pull/2671))
+- **auth:** name the login broker's cookies after the project, never "." ([#2672](https://github.com/reliant-labs/forge/pull/2672))
+- **auth:** the scaffolded login broker passes gosec ([#2673](https://github.com/reliant-labs/forge/pull/2673))
+- **lint:** rules that missed the v1.10.0 tag ship in v1.11.0, so they warn through it ([#2675](https://github.com/reliant-labs/forge/pull/2675))
+- **upgrade:** the sbom-vulnerabilities playbook ships in v1.11.0, so it lives under migrations/v1.11.0 ([#2674](https://github.com/reliant-labs/forge/pull/2674))
+- **test:** main is green again — the vite site test follows the v1.10.0 runtime floor, a deterministic changes store poll helper, and the forge.yaml rescaffold flake removed ([#2677](https://github.com/reliant-labs/forge/pull/2677))
+- **web-runtime:** browser telemetry packages are optional peers, so a ./node consumer installs none of them ([#2654](https://github.com/reliant-labs/forge/pull/2654))
+- **lint:** proto-format runs the project's pinned buf, and refuses a mismatched one instead of reporting false diffs ([#2682](https://github.com/reliant-labs/forge/pull/2682))
+- **cli:** every command's help is MDX-safe, so a rendered CLI reference builds ([#2684](https://github.com/reliant-labs/forge/pull/2684))
+- **config:** config_gen.workloadEnvMap is generated when a binary binds config to a command, so the dev env renders ([#2683](https://github.com/reliant-labs/forge/pull/2683))
+- **ci:** pgo-refresh.yml is born only where a Go binary can use it, and a deleted or otherwise-declared one is never re-created ([#2686](https://github.com/reliant-labs/forge/pull/2686))
+- **testflakes:** scrub confirm output, contain quarantine paths, infer removal only from complete runs, key failures by package ([#2692](https://github.com/reliant-labs/forge/pull/2692))
+- **identity:** log the import outcome with its context (forge-tracing-log-without-ctx) ([#2688](https://github.com/reliant-labs/forge/pull/2688))
+- **testlocal:** relocate Istanbul coverage recorded under another checkout root ([#2694](https://github.com/reliant-labs/forge/pull/2694))
+- **templates:** scaffold render tests build their ROOTS stub through codegen.RootsKCL, so the template's .Process field renders ([#2696](https://github.com/reliant-labs/forge/pull/2696))
+- **ci:** main is green again — revert the unpublished ^0.14.0 web-runtime floor (#2654), and fix the #2683/#2686/#2626 test reds ([#2697](https://github.com/reliant-labs/forge/pull/2697))
+- **codegen:** graph compose panic, marked-constructor node types, stale-method hint, harness-constructed refusal ([#2708](https://github.com/reliant-labs/forge/pull/2708))
+- **ci:** check-compat treats an rpc newly declaring NO_SIDE_EFFECTS as additive, matching reliant and control-plane ([#2721](https://github.com/reliant-labs/forge/pull/2721))
+- **test:** the case-folding ext-store test probes the file system instead of skipping on its own fixture (main red: vacuousguard) ([#2730](https://github.com/reliant-labs/forge/pull/2730))
+- **toolfetch:** TestFetchedToolChecks skips when the host's temp dir ancestry is owned by an unmapped uid ([#2732](https://github.com/reliant-labs/forge/pull/2732))
+
 ## [v1.10.0] - 2026-11-21
 
 ### Added
@@ -9428,7 +9521,8 @@ RESTHandler() http.Handler`) backed by an unexported `restHandler`
 
 ### Security
 
-[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/reliant-labs/forge/compare/v1.11.0...HEAD
+[v1.11.0]: https://github.com/reliant-labs/forge/compare/v1.10.0...v1.11.0
 [v1.10.0]: https://github.com/reliant-labs/forge/compare/v1.9.0...v1.10.0
 [v1.9.0]: https://github.com/reliant-labs/forge/compare/v1.8.0...v1.9.0
 [v1.8.0]: https://github.com/reliant-labs/forge/compare/v1.7.0...v1.8.0

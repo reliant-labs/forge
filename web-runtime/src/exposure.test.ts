@@ -125,6 +125,35 @@ describe("trackExposure", () => {
     ]);
   });
 
+  it("records an account unit's account, and a new account is a new exposure", () => {
+    const opts = { provider: "forge", run: "r_1", unit: "account" };
+    trackExposure("billing", "on", { ...opts, account: "a1" });
+    trackExposure("billing", "on", { ...opts, account: "a1" });
+    trackExposure("billing", "on", { ...opts, account: "a2" });
+    trackExposure("billing", "on", { ...opts, account: "" });
+
+    expect(events.map(([, p]) => p.account)).toEqual(["a1", "a2", undefined]);
+    expect(events[0]![1]).toEqual({
+      flag: "billing",
+      variant: "on",
+      provider: "forge",
+      run: "r_1",
+      unit: "account",
+      account: "a1",
+    });
+  });
+
+  it("carries no account where the tier carries no ids (GPC)", () => {
+    vi.stubGlobal("navigator", { globalPrivacyControl: true });
+    trackExposure("billing", "on", { unit: "account", account: "a1" });
+    expect(events).toEqual([
+      [
+        FLAG_EVALUATED_EVENT,
+        { flag: "billing", variant: "on", unit: "account" },
+      ],
+    ]);
+  });
+
   it("records nothing after optOutOfAnalytics", () => {
     optOutOfAnalytics();
     trackExposure("new-checkout", "treatment");

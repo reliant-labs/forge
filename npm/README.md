@@ -48,9 +48,10 @@ Deploy this app with Reliant Forge. Run
 MCP server's deploy_claimable tool), then give me the live URL and the claim link.
 ```
 
-The claim link expires in 72 hours: treat it like a password. Opening it signs
-you up free and makes the deploy yours. It fits one static site, or one service
-with one database; the limits are in
+The claim link is a one-time link for you, good for 72 hours: whoever opens it
+first signs up free and owns the deploy, so keep it out of commits, issues and
+public places. It fits one static site, or one service with one database; the
+limits are in
 [docs/mcp.md](https://github.com/reliant-labs/forge/blob/main/docs/mcp.md#deploying-with-no-account).
 
 ## In the repo you are in

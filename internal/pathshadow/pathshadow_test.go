@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const realOutput = "forge version v1.7.0 (commit 0123456789ab, built 2026-10-01)\n" +
@@ -137,6 +138,57 @@ func TestScanFindsEveryReliantForgeOnPath(t *testing.T) {
 	}
 	if !rep.Mismatched() {
 		t.Error("Mismatched() = false with a v1.7.0 forge first on PATH")
+	}
+}
+
+func TestScanAlreadyCanceledDoesNotProbe(t *testing.T) {
+	path := writeExe(t, filepath.Join(t.TempDir(), "forge"), "elf")
+	probe := &fakeProbe{out: map[string]string{path: realOutput}}
+	s := Scanner{PathEnv: filepath.Dir(path), GOOS: "linux", Probe: probe.probe}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rep := s.Scan(ctx, "v1.10.0")
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if len(probe.calls) != 0 || len(rep.Binaries) != 0 || rep.Running != "v1.10.0" {
+		t.Fatalf("canceled scan = %+v, probe calls = %v", rep, probe.calls)
+	}
+}
+
+func TestScanCancellationDoesNotWaitForProbe(t *testing.T) {
+	path := writeExe(t, filepath.Join(t.TempDir(), "forge"), "elf")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	defer close(release)
+	s := Scanner{PathEnv: filepath.Dir(path), GOOS: "linux", Probe: func(context.Context, string) ([]byte, error) {
+		close(started)
+		<-release // Deliberately ignore cancellation, but do not leak the fixture.
+		defer close(finished)
+		return []byte(realOutput), nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan Report, 1)
+	go func() { done <- s.Scan(ctx, "v1.10.0") }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("probe did not start")
+	}
+	cancel()
+	select {
+	case rep := <-done:
+		if len(rep.Binaries) != 0 || rep.Running != "v1.10.0" {
+			t.Fatalf("canceled scan = %+v", rep)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Scan waited for a probe that ignores cancellation")
+	}
+	select {
+	case <-finished:
+		t.Fatal("probe unexpectedly finished before release")
+	default:
 	}
 }
 

@@ -26,7 +26,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/mod/semver"
@@ -107,13 +106,30 @@ func Disabled() bool { return os.Getenv(DisableEnv) != "" }
 
 // Scan returns the running version and every Reliant Forge on PATH. running
 // is the version this process reports; the running executable, when it is on
-// PATH, is listed with it and Self set, and never probed.
+// PATH, is listed with it and Self set, and never probed. The probe wait is
+// bounded by probeTimeout and the caller's context; cancellation returns the
+// results collected so far, even if a custom Probe ignores its context.
 func (s Scanner) Scan(ctx context.Context, running string) Report {
 	rep := Report{Running: running}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		return rep
+	}
 	cands := s.candidates()
 	found := make([]*Binary, len(cands))
-	var wg sync.WaitGroup
+	type result struct {
+		index  int
+		binary *Binary
+	}
+	// Each callback can finish after Scan returns, without blocking or writing
+	// to the report's storage. Only this goroutine owns found.
+	results := make(chan result, len(cands))
+	pending := 0
 	for i, c := range cands {
+		if ctx.Err() != nil {
+			break
+		}
 		if s.isSelf(c) {
 			found[i] = &Binary{Path: c, Version: running, Self: true}
 			continue
@@ -127,19 +143,30 @@ func (s Scanner) Scan(ctx context.Context, running string) Report {
 		if s.Probe == nil {
 			continue
 		}
-		wg.Add(1)
+		pending++
 		go func(i int, c string) {
-			defer wg.Done()
-			out, err := s.Probe(ctx, c)
-			if err != nil {
-				return
+			r := result{index: i}
+			if ctx.Err() == nil {
+				out, err := s.Probe(ctx, c)
+				if err == nil {
+					if v, ok := ParseVersionOutput(out); ok {
+						r.binary = &Binary{Path: c, Version: v}
+					}
+				}
 			}
-			if v, ok := ParseVersionOutput(out); ok {
-				found[i] = &Binary{Path: c, Version: v}
-			}
+			results <- r
 		}(i, c)
 	}
-	wg.Wait()
+collect:
+	for pending > 0 {
+		select {
+		case r := <-results:
+			found[r.index] = r.binary
+			pending--
+		case <-ctx.Done():
+			break collect
+		}
+	}
 	for _, b := range found {
 		if b != nil {
 			rep.Binaries = append(rep.Binaries, *b)

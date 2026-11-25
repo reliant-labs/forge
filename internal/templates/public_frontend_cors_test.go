@@ -27,19 +27,27 @@ import (
 // policy that env sets, for the preflight and the rpc itself.
 func TestPublicFrontendTransportNeedsCredentialedCORS(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{
-		"frontend/nextjs/src/lib/api-base.ts",
-		"frontend/vite-spa/src/lib/api-base.ts",
-	} {
+	for _, frontend := range []string{"nextjs", "vite-spa"} {
+		path := "frontend/" + frontend + "/src/lib/api-base.ts"
 		src, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// If a transport stops sending credentials when no one signs in,
-		// this test's premise is gone: revisit the dev env's gate instead
-		// of deleting the assertion.
-		if !strings.Contains(string(src), `credentials: "include"`) {
-			t.Fatalf("%s no longer fetches a cross-origin API with credentials \"include\"; the dev env's CORS_ALLOW_CREDENTIALS gate (kcl/dev/main.k.tmpl) assumes it does", path)
+		// The mode is now chosen per request: same-origin requests need not
+		// include credentials, but a direct cross-origin API still must.
+		// If that changes, revisit the dev env's gate, not this premise.
+		if !strings.Contains(string(src), `return new URL(url, pageOrigin).origin === pageOrigin ? "same-origin" : "include";`) {
+			t.Fatalf("%s no longer chooses credentials \"include\" for a cross-origin API; the dev env's CORS_ALLOW_CREDENTIALS gate (kcl/dev/main.k.tmpl) assumes it does", path)
+		}
+		// Pin the transport's use of that decision too: checking only the
+		// helper would pass even if fetch stopped sending credentials.
+		path = "frontend/" + frontend + "/src/lib/connect.ts.tmpl"
+		src, err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), `fetch(input, { ...init, credentials: apiCredentials(input) })`) {
+			t.Fatalf("%s no longer delegates fetch credentials to apiCredentials", path)
 		}
 	}
 

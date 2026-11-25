@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Deploy, publish or host this app with Reliant Forge, with or without a Reliant account. Use when the user asks to deploy, ship, publish, host or put live a website, web app, API or service, wants a public URL to share, or asks for free hosting with no signup. Works on a Vite or Next.js app, an app in any language with its own Dockerfile, or a Forge project.
+description: Deploy, publish or host this app with Reliant Forge, with or without a Reliant account. Use when the user asks to deploy, ship, publish, host or put live a website, web app, API or service, wants a public URL to share, or asks for free hosting with no signup, or asks whether a deploy is healthy (that check needs a signed-in Reliant account). Works on a Vite or Next.js app, an app in any language with its own Dockerfile, or a Forge project.
 ---
 
 # Deploy with Reliant Forge

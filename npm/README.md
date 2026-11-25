@@ -1,6 +1,6 @@
 # @reliantlabs/forge
 
-Guardrails for apps in any agent harness. Deploy with no account: a live URL plus a claim link.
+Deploy what your coding agent built, and let it prove the release works. Deploys need no account.
 
 [Forge](https://github.com/reliant-labs/forge) is guardrails for apps. It is an
 open-source (Apache-2.0) framework, CLI and MCP server that supercharges any

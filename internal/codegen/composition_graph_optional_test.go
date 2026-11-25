@@ -203,6 +203,7 @@ func TestOptionalComponentFollowsVariantAccessorToConsumerField(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, body string }{
 		{"accessor chain", "return tools.New(tools.Deps{CP: g.CallerControlPlane().Client(), Name: \"x\"})"},
+		{"nested in a call argument", "return tools.New(tools.Deps{CP: wrap(g.CallerControlPlane().Client().Sub()), Name: \"x\"})"},
 		{"through a local", "cp := g.CallerControlPlane()\n\treturn tools.New(tools.Deps{CP: cp.Client(), Name: \"x\"})"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

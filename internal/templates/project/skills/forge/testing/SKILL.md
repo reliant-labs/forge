@@ -42,6 +42,10 @@ stays real at every tier.
   `FORGE_TEST_POSTGRES_DIR=/dev/shm` (an absolute path; a relative one is
   ignored) moves the embedded server's data, pool state and logs out of
   os.TempDir(), e.g. onto tmpfs, without moving `t.TempDir()` the way `TMPDIR` would.
+  Creating a test's database never blocks past 2 minutes
+  (`FORGE_TEST_CREATE_TIMEOUT`, a Go duration; `0` waits forever): a stuck
+  create fails the test with the server's data dir and what postgres waited
+  on, instead of hanging until `go test -timeout`.
   A test's own database is named after the process that made it, so one a
   crashed run left behind is dropped by the next run that reaches the server,
   and never one whose process is still running.

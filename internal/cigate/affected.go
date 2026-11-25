@@ -281,6 +281,26 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			sel.changedPkgs[pkg] = true
 		}
 	}
+	// A nested module's Go file is Go source too: rules `on: go-source`
+	// (tree-wide walkers) select their packages for it.
+	inRoot := map[string]bool{}
+	for _, f := range rootChanged {
+		inRoot[f] = true
+	}
+	for _, f := range changed {
+		if inRoot[f] || !strings.HasSuffix(f, ".go") {
+			continue
+		}
+		for i, rule := range in.Rules {
+			if rule.On != config.CIGateOnGoSource {
+				continue
+			}
+			sel.hits[i]++
+			for _, pkg := range g.rulePackages(f, rule) {
+				sel.rulePkgs[pkg] = true
+			}
+		}
+	}
 	for _, f := range nested.rootFiles {
 		pkg, ok := g.owner(f)
 		if !ok {
@@ -356,20 +376,26 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 				sel.frontends[fe] = true
 			}
 		}
-		if matchGlobs(f, ignore) {
-			continue
-		}
+		// A package that owns the file (its Go source, an embedded file, its
+		// testdata) runs even when affected_ignore lists the file. A non-Go
+		// file also selects the packages that name it, whether or not a rule
+		// claims it or affected_ignore lists it: claiming and ignoring decide
+		// only whether an unplaced file forces the full suite.
 		pkg, ok := g.owner(f)
+		read := false
+		if !strings.HasSuffix(f, ".go") {
+			if readers := g.readers.readersOf(f); len(readers) > 0 {
+				for p := range readers {
+					sel.rulePkgs[p] = true
+				}
+				sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+				read = true
+			}
+		}
 		switch {
 		case ok:
 			sel.changedPkgs[pkg] = true
-		case claimed:
-		case len(g.readers.readersOf(f)) > 0:
-			readers := g.readers.readersOf(f)
-			for p := range readers {
-				sel.rulePkgs[p] = true
-			}
-			sel.readerLines = append(sel.readerLines, readerLine(f, readers))
+		case claimed, read, matchGlobs(f, ignore):
 		default:
 			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
 		}

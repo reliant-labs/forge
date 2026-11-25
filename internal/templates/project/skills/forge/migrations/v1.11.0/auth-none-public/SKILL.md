@@ -45,7 +45,10 @@ rewrite them; this playbook is the edit.
    proto.
 2. **Stop the frontend asking for a session.** In each frontend under
    `frontends/`:
-   - delete `src/lib/auth/native-login.ts` and `src/components/ui/login_form.tsx`;
+   - delete `src/lib/auth/native-login.ts` and `src/components/ui/login_form.tsx`
+     (in a pnpm workspace, `packages/ui-web/src/components/ui/login_form.tsx` and
+     its `LoginForm` line in `packages/ui-web/src/index.ts`, once no frontend
+     signs in);
    - in `src/lib/auth/use-auth.ts`, replace `import type { Identity } from "./native-login";`
      with the interface itself:
      `export interface Identity { authenticated: boolean; email?: string; name?: string; subject?: string; }`;

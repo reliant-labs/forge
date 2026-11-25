@@ -17,6 +17,10 @@
 // A missing, unreachable or malformed snapshot is an empty store: every
 // change evaluates as `unknown` and every call site gets its own default.
 //
+// An app not on Reliant hosting serves that file itself, from a server that
+// fetches it from the control plane (`./changes-server`); server rendering
+// can hand loadChanges the same fetch as its `source`.
+//
 // ── What gets recorded ───────────────────────────────────────────────────
 //
 // evaluate() records `flag_evaluated` through exposure.ts with
@@ -50,6 +54,15 @@ export interface LoadChangesOptions {
   url?: string;
   /** The fetch to use (tests, server rendering). Default the global one. */
   fetch?: typeof fetch;
+  /**
+   * Where the snapshot document comes from, instead of fetching `url`: a
+   * function resolving to its JSON text, or to null or "" for none. For
+   * server rendering an app not on Reliant hosting, pass one that calls
+   * `fetchChangesSnapshot` from `@reliantlabs/forge-web-runtime/changes-server`
+   * — on the server only, since it holds the control plane token. A
+   * rejection is an empty store, like an unreachable url.
+   */
+  source?: () => Promise<string | null | undefined>;
 }
 
 /** A loaded snapshot, ready to evaluate. */
@@ -100,8 +113,15 @@ function store(snapshot: Snapshot | null): ChangesStore {
 export async function loadChanges(
   options?: LoadChangesOptions,
 ): Promise<ChangesStore> {
-  const url = options?.url ?? CHANGES_SNAPSHOT_URL;
+  const source = options?.source;
+  const url = source
+    ? "the changes source"
+    : (options?.url ?? CHANGES_SNAPSHOT_URL);
   try {
+    if (source) {
+      const text = await source();
+      return store(text ? parseSnapshot(text) : null);
+    }
     const fetchImpl = options?.fetch ?? globalThis.fetch;
     if (typeof fetchImpl !== "function") {
       return store(null);

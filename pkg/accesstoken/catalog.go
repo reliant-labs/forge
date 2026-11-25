@@ -193,6 +193,10 @@ var catalog = []scopeEntry{
 	{scope: ScopeTestsRead, class: ClassStandard, bundles: inDeveloperAndUp},
 	{scope: ScopeTestsWrite, class: ClassStandard, bundles: inCIAndUp},
 	{scope: ScopeMCPForge, class: ClassPersonal},
+	// Reading a snapshot is what changes:write already permits; a
+	// developer or an admin holds it, and an app's own token is minted
+	// with it alone.
+	{scope: ScopeChangesRead, class: ClassStandard, bundles: inDeveloperAndUp},
 }
 
 // entryOf returns scope's catalog row.

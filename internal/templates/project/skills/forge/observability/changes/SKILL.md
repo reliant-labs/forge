@@ -42,6 +42,22 @@ snapshot, so every call site gets the default written in code; a file that
 does not parse keeps the last good snapshot and logs once. The file is re-read
 every 10s. `String`, `Float64` and `Decode` read the other value types.
 
+### Not on Reliant hosting
+
+An app on its own cluster or host fetches the same snapshot from the control
+plane, with an access token carrying `changes:read` (it reads one
+environment's snapshot and nothing else): `reliant forge cloud token create
+--env <env> --name <app>-changes --scopes changes:read`. Set
+`FORGE_CHANGES_URL` (the control plane's base URL),
+`FORGE_CHANGES_ENVIRONMENT_ID` and `FORGE_CHANGES_TOKEN`, allow egress to the
+control plane on 443, and open the store with
+`changes.OpenFromEnv(ctx, os.Getenv, changes.Options{})`: it reads
+`FORGE_CHANGES_FILE` when set (hosting), else fetches every 15s, keeping the
+last good snapshot and backing off on errors. The browser never holds the
+token: serve `/_forge/changes.json` from your server with
+`fetchChangesSnapshot` (`@reliantlabs/forge-web-runtime/changes-server`).
+Details: forge `docs/changes.md`, "Apps not on Reliant hosting".
+
 Prefer the OpenFeature API? Register the provider and keep call sites
 vendor-neutral:
 

@@ -48,6 +48,10 @@
       "types": "./dist/auth/supabase.d.ts",
       "default": "./dist/auth/supabase.js"
     },
+    "./changes-server": {
+      "types": "./dist/changes-server.d.ts",
+      "default": "./dist/changes-server.js"
+    },
     "./devlog": {
       "types": "./dist/devlog.d.ts",
       "default": "./dist/devlog.js"

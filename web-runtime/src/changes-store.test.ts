@@ -154,6 +154,34 @@ describe("loadChanges", () => {
     const store = await loadChanges();
     expect(store.evaluate("all").reason).toBe("unknown");
   });
+
+  it("reads a source instead of fetching when one is given", async () => {
+    const fetchImpl = respond("never read");
+    const store = await loadChanges({
+      fetch: fetchImpl,
+      source: async () => SNAPSHOT,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.revision).toBe(7);
+    expect(changeString(store.evaluate("all"), "red")).toBe("blue");
+  });
+
+  it("is an empty store when a source has nothing, fails or is malformed", async () => {
+    for (const source of [
+      async () => null,
+      async () => "",
+      async () => {
+        throw new Error("HTTP 403 permission_denied");
+      },
+      async () => '{"schema":"forge.changes/v9","revision":1}',
+    ]) {
+      const store = await loadChanges({ source });
+      expect(store.revision).toBe(0);
+      expect(store.evaluate("all").reason).toBe("unknown");
+    }
+    // Nothing is "no changes yet"; a failure and a bad document warn.
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("ChangesStore.evaluate", () => {

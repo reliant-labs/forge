@@ -1,15 +1,76 @@
 # Forge
 
-**Forge is guardrails for apps.** It is an open-source (Apache-2.0) framework,
-CLI and MCP server that supercharges any agent harness: Claude Code, Codex,
-Cursor, a harness you wrote, or CI. It scaffolds Go services, React frontends
-and SQL migrations into the right places, lints for your architecture and for
-unsafe migrations, tests against a real Postgres, and builds each release once
-and promotes it by digest. Use it piece by piece in any repo, in any language,
-with no rewrite. Deploy with no account: in a Vite or Next.js app, or an app
-with its own Dockerfile, run
-`npx -y @reliantlabs/forge@latest env deploy prod --claimable` to get a live URL
-and a claim link that is good for 72 hours.
+**Reliant Forge: deploy what your coding agent built, and let it prove the release works.**
+
+One command deploys a Vite site, a statically exported Next.js site, or any app
+with a Dockerfile, with a managed Postgres when the app uses one. Sign in free,
+and your agent reads the release's traces, errors and pass/fail verdict through
+the same CLI, or the verdict, errors and logs through Forge's MCP server.
+
+<!-- TODO(owner): 30-45s GIF/video of the deploy-and-verify loop goes here: an
+agent deploys, a request fails, it runs `forge obs issues`, follows the trace,
+fixes the code, redeploys, and `forge obs check` passes. No asset exists yet. -->
+
+```bash
+npx -y @reliantlabs/forge@latest env deploy prod --claimable
+```
+
+Run it in your app's directory. No account is needed: it prints a live URL
+and a claim link. The deploy goes offline after 72 hours unless someone opens
+the link, which signs them up free and makes the deploy theirs, so treat the
+link like a password. Until it is claimed, a service (not a static site) has no
+outbound internet. Watching the release afterwards, its traces, errors and
+`forge obs check` verdict, needs that free sign-in: there is no anonymous
+monitoring. The limits: [Deploying with no account](docs/mcp.md#deploying-with-no-account).
+
+1. **One command deploys your app.** A Vite or static Next.js site, or a
+   Dockerfile app in any language, is adopted where it stands, leaving its own
+   files alone, and each release is built once and promoted by digest.
+   [Adopt it piece by piece](docs/why-forge.md#start-anywhere) ·
+   [Build once, promote](docs/why-forge.md#build-once-promote)
+2. **Every release is judged by its own telemetry.** `forge obs check` compares
+   the window after a promotion with the one before it, says PASS, FAIL or
+   INCONCLUSIVE, and ties new errors to the release that caused them.
+   [How releases are judged](docs/why-forge.md#release-health)
+3. **Built for agents.** `forge obs check --json` prints the verdict as one
+   document, and its exit code tells pass (0) from regressed (1) and not
+   proven good (2). `forge mcp` serves deploy, lint and monitoring tools over
+   MCP, and the skills an agent loads ship inside the binary.
+   [Built for your agent](#built-for-your-agent) · [MCP server](docs/mcp.md)
+
+<p align="center">
+  <a href="https://reliantlabs.io/products/forge">Website</a>
+  ·
+  <a href="https://demo.reliantlabs.io/forge/demo?section=built">Live demo</a>
+  ·
+  <a href="https://docs.reliantlabs.io/forge/overview">Docs</a>
+  ·
+  <a href="https://github.com/reliant-labs/reliant">Reliant</a>
+  ·
+  <a href="https://join.slack.com/t/reliant-pn51441/shared_invite/zt-4c7wet6o2-W_Tksw80LaRGxZqUz9GQdA">Slack</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/reliant-labs/forge/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/reliant-labs/forge" /></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
+  <a href="https://www.npmjs.com/package/@reliantlabs/forge"><img alt="npm" src="https://img.shields.io/npm/v/@reliantlabs/forge" /></a>
+</p>
+
+## What Forge is
+
+Forge is an open-source (Apache-2.0) framework, CLI and MCP server that
+supercharges any agent harness: Claude Code, Codex, Cursor, a harness you
+wrote, or CI. It scaffolds Go services, React frontends and SQL migrations into
+the right places, lints for your architecture and for unsafe migrations, tests
+against a real Postgres, and builds each release once and promotes it by
+digest. Use it piece by piece in any repo, in any language, with no rewrite.
+
+Most teams build the production system (dev environments, tests, secrets,
+multiple environments, releases, observability and hosting) in year two, under
+deadline, on top of a codebase that wasn't shaped for it. With Forge the first
+commit already has it, wired into files you own and can change.
+
+**Try it in the browser first: [the live demo](https://demo.reliantlabs.io/forge/demo?section=built).**
 
 ## Deploy with your agent
 
@@ -44,32 +105,7 @@ with one database: [Deploying with no account](docs/mcp.md#deploying-with-no-acc
 
 Install `forge`, and the other ways to run it: [Install](#install).
 
-<p align="center">
-  <a href="https://reliantlabs.io/products/forge">Website</a>
-  ·
-  <a href="https://demo.reliantlabs.io/forge/demo?section=built">Live demo</a>
-  ·
-  <a href="https://docs.reliantlabs.io/forge/overview">Docs</a>
-  ·
-  <a href="https://github.com/reliant-labs/reliant">Reliant</a>
-  ·
-  <a href="https://join.slack.com/t/reliant-pn51441/shared_invite/zt-4c7wet6o2-W_Tksw80LaRGxZqUz9GQdA">Slack</a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/reliant-labs/forge/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/reliant-labs/forge" /></a>
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue" /></a>
-  <a href="https://www.npmjs.com/package/@reliantlabs/forge"><img alt="npm" src="https://img.shields.io/npm/v/@reliantlabs/forge" /></a>
-</p>
-
-Most teams build the production system (dev environments, tests, secrets,
-multiple environments, releases, observability and hosting) in year two, under
-deadline, on top of a codebase that wasn't shaped for it. With Forge the first
-commit already has it, wired into files you own and can change.
-
-**Try it in the browser first: [the live demo](https://demo.reliantlabs.io/forge/demo?section=built).**
-
-## Why Forge
+## Why Forge, in full
 
 Because Forge knows your services, RPCs, schema, environments and releases,
 its tools share one model of the app instead of being glued together:

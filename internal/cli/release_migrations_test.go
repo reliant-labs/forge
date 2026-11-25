@@ -168,6 +168,10 @@ func TestCheckPassedMigrationsAdmitsTheReplacement(t *testing.T) {
 // A deploy reads the release's recorded manifest; a release cut before
 // manifests existed is noted, never refused.
 func TestCheckDeployMigrations(t *testing.T) {
+	// Even with an anonymous credential installed, promotions must judge
+	// recorded manifests and report missing ones, just like signed-in deploys.
+	restore := cloud.UseClaimableCredential(cloud.Endpoint{URL: "https://cp.invalid"}, "claimable-token", nil)
+	defer restore()
 	l := incidentLedger()
 	if err := checkDeployMigrations(context.Background(), &bytes.Buffer{}, t.TempDir(), "prod", "v1.7.54", l.ledger(), false); err == nil {
 		t.Fatal("deploying v1.7.54 again was admitted, but prod's schema has passed its 024221")
@@ -438,14 +442,18 @@ func TestPreflightReleaseMigrations_LedgerUnresolvedStillRefusesUnmerged(t *test
 		t.Errorf("an env with no control plane: err = %v, want nil (the cut owns the ledger failure)", err)
 	}
 
-	// Nor is an anonymous deploy's build (this process holds a claimable
-	// credential): it applies the working tree's migrations, and the
-	// --claimable preflight said so (claimableMigrationNote).
+	// A credential alone cannot exempt an ordinary build. Only the explicit
+	// anonymous release creation path applies the working tree's migrations.
 	restore := cloud.UseClaimableCredential(cloud.Endpoint{URL: "https://cp.invalid"}, "claimable-token", nil)
 	err = preflightReleaseMigrations(ctx, dir, hosted, opts)
 	restore()
-	if err != nil {
-		t.Errorf("an anonymous deploy: err = %v, want nil", err)
+	if !errors.As(err, &coded) || coded.code != exitRefused {
+		t.Fatalf("ordinary build with claimable credential: err = %v, want refusal", err)
+	}
+	anonymous := opts
+	anonymous.claimableRelease = true
+	if err := preflightReleaseMigrations(ctx, dir, hosted, anonymous); err != nil {
+		t.Errorf("an anonymous release cut: err = %v, want nil", err)
 	}
 	var note bytes.Buffer
 	if err := claimableMigrationNote(&note, dir, hosted); err != nil ||

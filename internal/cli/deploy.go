@@ -594,6 +594,9 @@ type deployCmdFlags struct {
 	// claimable publishes with an anonymous, claimable identity instead of an
 	// account (deploy_claimable.go).
 	claimable bool
+	// claimableRelease is set only after anonymous admission and obtaining the
+	// target env's session, never inferred from process-wide credentials.
+	claimableRelease bool
 	// claim, set only by the claimable path, resolves the `claim` object of the
 	// --json document at the moment the document is written.
 	claim func() *deployClaimJSON

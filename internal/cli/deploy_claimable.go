@@ -353,6 +353,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// --yes is implied: there is no human at this keyboard to approve a
 		// plan for a throwaway account, and the account is the only thing at stake.
 		inner := f
+		inner.claimableRelease = true
 		inner.promote.yes = true
 		// Every outcome is remembered beside the token, so `env status
 		// --claimable` can tell a published deploy from one whose every

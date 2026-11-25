@@ -47,7 +47,6 @@ import (
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
-	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/migrationgit"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -340,16 +339,14 @@ func passedMigrationsRemedy(env string) string {
 }
 
 // unmergedMigrationGuard is THE rule for when the unmerged-migration check
-// applies, shared by every place that judges it: the cut and the build's
-// preflight (releaseMigrationGuard), a preflight whose ledger could not be
-// resolved, and `forge env deploy <env> --claimable` before it mints an
-// account. It applies only to an env that keeps its ledger on a control plane
-// (hosted; see releaseMigrationGuard for why), not to a project whose
-// migrations another tool applies (foreignToolGuardNote), and not to an
-// anonymous deploy: this process deploys with a claimable credential, and the
-// --claimable preflight already said what it applies (claimableMigrationNote).
+// applies, shared by the cut and the build's preflight, including when its
+// ledger could not be resolved. It applies only to an env that keeps its
+// ledger on a control plane (hosted; see releaseMigrationGuard for why), not
+// to a project whose migrations another tool applies (foreignToolGuardNote).
+// The anonymous release-cut path explicitly opts out at its callers; merely
+// holding a claimable credential never changes this rule.
 func unmergedMigrationGuard(out io.Writer, prefix, projectDir, version string, hosted, allow bool) error {
-	if !hosted || foreignToolGuardNote(projectDir) != "" || cloud.ClaimableActive() {
+	if !hosted || foreignToolGuardNote(projectDir) != "" {
 		return nil
 	}
 	return checkUnmergedMigrations(out, prefix, projectDir, version, allow)
@@ -489,7 +486,7 @@ func releaseMigrationGuard(ctx context.Context, out io.Writer, rel releaseRef, p
 		fmt.Fprintf(out, "[build]   note: %s\n", note)
 		return m, nil
 	}
-	if err := unmergedMigrationGuard(out, "[build]  ", projectDir, version, ledger.Hosted, opts.allowUnmergedMigrations); err != nil {
+	if err := unmergedMigrationGuard(out, "[build]  ", projectDir, version, ledger.Hosted && !opts.claimableRelease, opts.allowUnmergedMigrations); err != nil {
 		return nil, err
 	}
 	if err := checkPassedMigrations(ctx, out, "[build]  ", rel, m, ledger, opts.allowPassedMigrations); err != nil {
@@ -513,7 +510,7 @@ func preflightReleaseMigrations(ctx context.Context, projectDir string, entities
 	ledger, err := ledgerForRendered(ctx, projectDir, opts.env, entities)
 	if err != nil {
 		// The cut resolves the ledger again and owns that failure.
-		return unmergedMigrationGuard(os.Stdout, "[build]  ", projectDir, opts.release, envKeepsHostedLedger(entities), opts.allowUnmergedMigrations)
+		return unmergedMigrationGuard(os.Stdout, "[build]  ", projectDir, opts.release, envKeepsHostedLedger(entities) && !opts.claimableRelease, opts.allowUnmergedMigrations)
 	}
 	var uses []sourceUse
 	if entities != nil {
@@ -535,9 +532,6 @@ func checkDeployMigrations(ctx context.Context, out io.Writer, projectDir, env, 
 	if err != nil || rel == nil {
 		// The promote reads the release itself and owns both failures.
 		return nil //nolint:nilerr // see above
-	}
-	if rel.Migrations == nil && cloud.ClaimableActive() {
-		return nil
 	}
 	if rel.Migrations == nil {
 		if !projectHasMigrations(projectDir) {

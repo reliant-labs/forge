@@ -43,7 +43,7 @@ import { {{joinStrings .Symbols ", "}} } from "{{.Module}}";
 import { {{range $i, $t := .Types}}{{if $i}}, {{end}}{{$t}}{{end}} } from "{{.Path}}";
 {{- end}}
 
-import type { {{.EntityName}} } from "{{.EntityTypeImportPath}}";
+import type { {{.EntityName}} as {{.EntityTypeLocal}} } from "{{.EntityTypeImportPath}}";
 {{- if .HasPageSize}}
 
 // Rows per page requested from the server. Paginate the result with the
@@ -67,7 +67,7 @@ const PAGE_SIZE = 25;
 // order_by (a column name). A sorted list is one page — the server's keyset
 // cursor pages only in primary-key order, so it returns no next-page token.
 {{- end}}
-const columns: ResourceColumn<{{.EntityName}}>[] = [
+const columns: ResourceColumn<{{.EntityTypeLocal}}>[] = [
 {{- $primary := .PrimaryListColumn}}
 {{- range .ListColumns}}
   {
@@ -208,7 +208,7 @@ export default function {{.EntityNamePlural}}Page() {
 {{- end}}
 
   return (
-    <Resource<{{.EntityName}}>
+    <Resource<{{.EntityTypeLocal}}>
       title="{{.EntityNamePlural | humanize}}"
       status={resource.status}
       data={resource.status === "success" ? resource.data.{{.ItemsField}} : undefined}

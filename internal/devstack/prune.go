@@ -71,19 +71,51 @@ type PrunedBlock struct {
 // The registry mutation happens under the same lock AllocateBlock uses
 // (withLock), so a concurrent `forge env up` claiming a new block cannot
 // race a prune.
+//
+// Prune also drops the host-port reservations the reclaimed blocks leave
+// behind; PruneAll reports them.
 func Prune(projectDir string, dryRun bool) ([]PrunedBlock, error) {
+	res, err := PruneAll(projectDir, dryRun)
+	return res.Blocks, err
+}
+
+// PruneResult is everything one prune reclaimed (or, in dry-run mode, would
+// reclaim).
+type PruneResult struct {
+	Blocks []PrunedBlock
+	// Reservations are the entries of the shared host-port store
+	// (HostPortsPath) dropped with them: every "block:<key>:<base>" of a
+	// reclaimed key. Checkout-scoped resolve_port reservations are preserved:
+	// a missing directory alone does not establish that its ports are unused.
+	// Sorted.
+	Reservations []string
+}
+
+// PruneAll is Prune, also reporting the host-port reservations it dropped.
+//
+// Freeing a block without its reservations is what made the freed block
+// unusable: the next key given that block computes the same fixed ports, and
+// allocate_port refuses them because "block:<dead key>:<base>" still holds
+// them. So the reservations go in the same transaction, while the registry
+// lock is held — a concurrent `forge env up` cannot be handed the freed block
+// before its ports are released. The host-port store is rewritten first: a
+// failure after it leaves a still-registered block without reservations,
+// which its next allocation simply re-reserves.
+func PruneAll(projectDir string, dryRun bool) (PruneResult, error) {
 	liveKeys, err := liveWorktreeKeys(projectDir)
 	if err != nil {
-		return nil, fmt.Errorf("enumerate live worktrees (reclaiming nothing): %w", err)
+		return PruneResult{}, fmt.Errorf("enumerate live worktrees (reclaiming nothing): %w", err)
 	}
 
 	var pruned []PrunedBlock
+	var reservations []string
 	err = withLock(projectDir, func() error {
 		reg, err := readRegistry(projectDir)
 		if err != nil {
 			return err
 		}
 		changed := false
+		var freed []string
 		for key, e := range reg {
 			worktree := entryWorktree(key, e)
 			if worktree == "" {
@@ -96,10 +128,22 @@ func Prune(projectDir string, dryRun bool) ([]PrunedBlock, error) {
 				continue // worktree still exists
 			}
 			pruned = append(pruned, PrunedBlock{Key: key, Index: e.Block, Worktree: worktree})
+			freed = append(freed, key)
 			if !dryRun {
 				delete(reg, key)
 				changed = true
 			}
+		}
+		reservations, err = dropHostPortReservations(projectDir, dryRun, func(name string) bool {
+			for _, key := range freed {
+				if blockReservation(name, key) {
+					return true
+				}
+			}
+			return false
+		})
+		if err != nil {
+			return fmt.Errorf("drop host-port reservations: %w", err)
 		}
 		if dryRun || !changed {
 			return nil
@@ -107,10 +151,10 @@ func Prune(projectDir string, dryRun bool) ([]PrunedBlock, error) {
 		return writeRegistry(projectDir, reg)
 	})
 	if err != nil {
-		return nil, err
+		return PruneResult{}, err
 	}
 	sort.Slice(pruned, func(a, b int) bool { return pruned[a].Index < pruned[b].Index })
-	return pruned, nil
+	return PruneResult{Blocks: pruned, Reservations: reservations}, nil
 }
 
 // UnattributedBlock is a block forge cannot classify: a non-stack entry with
@@ -191,12 +235,16 @@ func Unattributed(projectDir string) ([]UnattributedBlock, error) {
 // block and releasing it is meaningless. A key with no entry is refused too,
 // rather than silently succeeding, so a typo does not read as success.
 //
-// Returns the released block index.
-func ReleaseKey(projectDir, key string) (int, error) {
+// Releasing also drops the key's "block:<key>:<base>" host-port reservations
+// (see PruneAll for why they must go with the block).
+//
+// Returns the released block index and the reservations dropped with it.
+func ReleaseKey(projectDir, key string) (int, []string, error) {
 	if key == "" {
-		return 0, fmt.Errorf("refusing to release the default key \"\": block 0 is the primary checkout's implicit block")
+		return 0, nil, fmt.Errorf("refusing to release the default key \"\": block 0 is the primary checkout's implicit block")
 	}
 	var index int
+	var reservations []string
 	err := withLock(projectDir, func() error {
 		reg, err := readRegistry(projectDir)
 		if err != nil {
@@ -207,13 +255,27 @@ func ReleaseKey(projectDir, key string) (int, error) {
 			return fmt.Errorf("no block is registered for key %q", key)
 		}
 		index = e.Block
+		reservations, err = dropHostPortReservations(projectDir, false, func(name string) bool {
+			return blockReservation(name, key)
+		})
+		if err != nil {
+			return fmt.Errorf("drop host-port reservations: %w", err)
+		}
 		delete(reg, key)
 		return writeRegistry(projectDir, reg)
 	})
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return index, nil
+	return index, reservations, nil
+}
+
+// BlockReservations lists key's "block:<key>:<base>" entries in the shared
+// host-port store, without changing anything: what ReleaseKey would drop.
+func BlockReservations(projectDir, key string) ([]string, error) {
+	return dropHostPortReservations(projectDir, true, func(name string) bool {
+		return blockReservation(name, key)
+	})
 }
 
 // entryWorktree returns the worktree whose disappearance would make this entry

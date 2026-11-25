@@ -18,6 +18,9 @@ import (
 // nothing provides, optionally.
 func renderOptionalPinProject(t *testing.T, pin string) map[string][]map[string]any {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("renders real KCL with native inputs invisible to Go's test cache; runs in task test")
+	}
 	dir := t.TempDir()
 	kclMod := "[package]\nname = \"optpins\"\nedition = \"v0.11.0\"\nversion = \"0.0.1\"\n"
 	main := `import forge

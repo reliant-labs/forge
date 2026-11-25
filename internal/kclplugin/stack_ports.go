@@ -14,8 +14,7 @@ import (
 // No rollback: a failed launch may reserve a port but must never erase another
 // process's concurrent allocation. Reservations are stable across retries.
 func UseStackPortStore(projectDir, env string, readOnly bool) {
-	path := filepath.Join(devstack.SharedProjectDir(projectDir), ".forge", "host-ports.json")
-	r := NewPersistentPortResolver(path)
+	r := NewPersistentPortResolver(devstack.HostPortsPath(projectDir))
 	r.readOnly = readOnly
 	r.scope = filepath.Clean(projectDir) + ":" + env
 	armResolver(r)
@@ -61,8 +60,7 @@ func UseStackPortStoreReadOnly(projectDir, env string) {
 	if defaultResolver.Bound() && (!defaultResolver.readOnly || defaultResolver.scope == filepath.Clean(projectDir)+":"+env) {
 		return
 	}
-	path := filepath.Join(devstack.SharedProjectDir(projectDir), ".forge", "host-ports.json")
-	r := NewReadOnlyPortResolver(path)
+	r := NewReadOnlyPortResolver(devstack.HostPortsPath(projectDir))
 	r.scope = filepath.Clean(projectDir) + ":" + env
 	defaultResolver = r
 }

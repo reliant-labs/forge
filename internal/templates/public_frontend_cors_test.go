@@ -15,8 +15,9 @@ import (
 // API on another origin — a deployed API_URL, or dev with
 // FORGE_DEV_API_PROXY=off.
 //
-// Both scaffolded transports fetch with credentials "include" whether or not
-// anyone signs in. For such a request the browser accepts a cross-origin
+// Both scaffolded transports fetch an API on ANOTHER origin with credentials
+// "include" (src/lib/api-base.ts credentialsFor) whether or not anyone signs
+// in. For such a request the browser accepts a cross-origin
 // response only if Access-Control-Allow-Origin echoes the page's origin
 // exactly AND Access-Control-Allow-Credentials is "true" (Fetch standard,
 // CORS check): an auth_required: false rpc is refused like any other when
@@ -27,8 +28,8 @@ import (
 func TestPublicFrontendTransportNeedsCredentialedCORS(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{
-		"frontend/nextjs/src/lib/connect.ts.tmpl",
-		"frontend/vite-spa/src/lib/connect.ts.tmpl",
+		"frontend/nextjs/src/lib/api-base.ts",
+		"frontend/vite-spa/src/lib/api-base.ts",
 	} {
 		src, err := os.ReadFile(path)
 		if err != nil {
@@ -38,7 +39,7 @@ func TestPublicFrontendTransportNeedsCredentialedCORS(t *testing.T) {
 		// this test's premise is gone: revisit the dev env's gate instead
 		// of deleting the assertion.
 		if !strings.Contains(string(src), `credentials: "include"`) {
-			t.Fatalf("%s no longer fetches with credentials \"include\"; the dev env's CORS_ALLOW_CREDENTIALS gate (kcl/dev/main.k.tmpl) assumes it does", path)
+			t.Fatalf("%s no longer fetches a cross-origin API with credentials \"include\"; the dev env's CORS_ALLOW_CREDENTIALS gate (kcl/dev/main.k.tmpl) assumes it does", path)
 		}
 	}
 

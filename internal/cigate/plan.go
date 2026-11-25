@@ -55,9 +55,10 @@ var (
 		Version:     templates.GovulncheckVersion,
 	}
 	goLicenses = Tool{
-		Binary:  "go-licenses",
-		Module:  "github.com/google/go-licenses",
-		Version: templates.GoLicensesVersion,
+		Binary:      "go-licenses",
+		Module:      "github.com/google/go-licenses",
+		Version:     templates.GoLicensesVersion,
+		NeedsGOROOT: true,
 	}
 	// Gitleaks is the secret scanner `forge ci secret-scan` runs. A release
 	// binary on PATH (brew, the GitHub release) records "(devel)" in its
@@ -106,6 +107,13 @@ type PlanInput struct {
 	// Warn, when set, receives the plan's warnings: a configuration the gate
 	// accepts but that should be written differently. nil drops them.
 	Warn func(string)
+	// LicenseWarnFirst, when set, makes a failing license-check row a
+	// warning (an allowed SKIPPED row saying "would fail") rather than a
+	// FAIL, for this reason: the license-check rollout row does not gate the
+	// project yet (lint.GradeRule(cfg, lint.RuleLicenseCheck)). Until forge
+	// set GOROOT for the pinned go-licenses the row checked nothing and
+	// passed, so its findings are new to every project that ran it.
+	LicenseWarnFirst string
 }
 
 // warn passes msg to PlanInput.Warn, when there is one.
@@ -583,6 +591,9 @@ func (p planner) scanChecks() []Check {
 			Heavy: true,
 			Tools: []Tool{goLicenses},
 			Argv:  licenseCheckArgv(p.Root),
+			// The verdict is new (Tool.NeedsGOROOT): warn first.
+			WarnOnFail: p.LicenseWarnFirst,
+			IsFinding:  licenseFindingsOnly,
 		})
 	}
 	return out

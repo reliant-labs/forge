@@ -314,6 +314,15 @@ var newRules = []rolloutGroup{
 		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "An enforce declared before forge evaluated it blocked nothing; it warns \"would block\" for one release before it refuses a promotion"},
 		Rules:        []string{RuleVulnGate, RuleSBOMRequired},
 	},
+	// The license-check gate step made real: the pinned go-licenses ran with
+	// no GOROOT, took every package for the standard library and passed
+	// having checked nothing. With GOROOT set it judges the dependencies,
+	// so its findings are new to every project; they warn for a release.
+	{
+		IntroducedIn: "v1.11.0",
+		Grace:        &rolloutGrace{Until: "v1.12.0", Reason: "license-check passed without loading a dependency before forge set GOROOT for go-licenses; its findings are new to every project, so they warn \"would fail\" for one release before they fail the gate"},
+		Rules:        []string{RuleLicenseCheck},
+	},
 	{
 		IntroducedIn: "v1.10.0",
 		Grace:        &rolloutGrace{Until: "v1.11.0", Reason: "A Next.js frontend that turns on cacheComponents (create-next-app's default) needs time to drop it before the lane gates"},

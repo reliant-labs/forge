@@ -3,10 +3,35 @@ package cigate
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"golang.org/x/mod/modfile"
 )
+
+// The pinned go-licenses v1.6.0 exits 1 both for findings and for scan
+// errors. Accept only its finding lines; any other diagnostic (including an
+// error after an earlier finding) must keep the row failing. Inspect the full
+// output so a long list of findings cannot push an error out of the tail.
+var licenseFindingLine = regexp.MustCompile(`^(Forbidden|Restricted) license type \S+ found for library .+$`)
+
+func licenseFindingsOnly(err error, output string) bool {
+	if exitCode(err) != 1 {
+		return false
+	}
+	found := false
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !licenseFindingLine.MatchString(line) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
 
 // licenseCheckArgv is the go-licenses invocation for the project at root.
 //

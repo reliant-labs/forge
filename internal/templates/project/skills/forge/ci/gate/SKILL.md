@@ -43,7 +43,15 @@ history. `forge ci secret-scan` with no flag scans every commit.
 `license-check` judges the licenses of your dependencies, not your own code:
 it passes go-licenses `--ignore` for the module in `go.mod` and for the modules
 a root `go.work` uses from inside the project, so a project needs no LICENSE
-file of its own for the check to run clean.
+file of its own for the check to run clean. go-licenses runs with `GOROOT` set
+(`go env GOROOT` in the project, unless the environment sets one): the pinned
+binary is built with `-trimpath` and has no GOROOT of its own, and without one
+it takes every package for the standard library and passes having checked
+nothing, which it did before v1.11.0. Its findings are therefore new to every
+project, so they warn first, through the `license-check` lint rollout row: below
+its `gates_from` release a failing row is an allowed `SKIPPED` "would fail"
+naming the dependency, and from it the row FAILs. `lint.rules:
+{license-check: error}` gates now; `{license-check: warn}` keeps it a warning.
 
 Four rules every run obeys:
 

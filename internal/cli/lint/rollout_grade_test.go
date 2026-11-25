@@ -60,15 +60,16 @@ func TestGradeRule(t *testing.T) {
 	}
 }
 
-// The real rows: both rules are new in the next release, so a project pinned
+// The real rows: these rules are new in the next release, so a project pinned
 // at the current release (or the introducing one) is not blocked by them, and
-// one pinned at GatesFrom is.
+// one pinned at GatesFrom is. license-check is the gate row forge made real by
+// running go-licenses with GOROOT set.
 func TestVulnGateRulesWarnFirst(t *testing.T) {
 	prevHistory := previousPinFromHistory
 	t.Cleanup(func() { previousPinFromHistory = prevHistory })
 	previousPinFromHistory = func(string, string) (string, bool) { return "", false }
 
-	for _, rule := range []string{RuleVulnGate, RuleSBOMRequired} {
+	for _, rule := range []string{RuleVulnGate, RuleSBOMRequired, RuleLicenseCheck} {
 		ro, ok := lintRollouts[rule]
 		if !ok || ro.GatesFrom == "" {
 			t.Fatalf("%s has no warn-first rollout row: %+v", rule, ro)

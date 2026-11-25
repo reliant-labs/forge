@@ -120,6 +120,8 @@ func gradableRules() []string {
 		"identity-share-with", "shellbuild-tokens/retired-token", "no-dotenv",
 		// delivery policy verdicts graded outside forge lint (rollout_grade.go)
 		RuleVulnGate, RuleSBOMRequired,
+		// the license-check gate step, made real (rollout_grade.go)
+		RuleLicenseCheck,
 		// auth scaffold
 		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault, ruleAuthRequiredNoSignIn,
 		// secrets

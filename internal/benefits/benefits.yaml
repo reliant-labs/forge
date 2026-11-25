@@ -3242,11 +3242,19 @@ benefits:
     claim: >-
       A generated project's `forge ci gate` runs go-licenses over its Go
       dependencies and fails on one whose license type is forbidden or
-      restricted; there is no license check for npm dependencies.
+      restricted (warn-first, through the `license-check` lint rollout row);
+      there is no license check for npm dependencies.
     availability: forge
     evidence:
       - path: internal/cigate/license.go
       - command: ci gate
+    rules:
+      - id: license-check
+        lane: forge ci gate
+        bug_class: >-
+          A dependency under a forbidden or restricted license (AGPL, GPL)
+          entering the import graph unnoticed (warn-first until
+          `lint.rules: {license-check: error}` or its `gates_from` release)
 
   - id: signed-forge-releases
     category: security

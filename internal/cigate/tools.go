@@ -41,6 +41,14 @@ type Tool struct {
 	// "(devel)").
 	VersionArgs []string
 	VersionRE   *regexp.Regexp
+	// NeedsGOROOT runs the tool with GOROOT set (to `go env GOROOT` in the
+	// check's directory) when the environment does not set it. A binary
+	// built with -trimpath, as every pinned tool is (goInstall), has no
+	// GOROOT of its own: go/build's Default.GOROOT is then empty, and a
+	// tool that tells the standard library apart by that prefix
+	// (go-licenses' isStdLib) takes EVERY package for the standard library,
+	// checks nothing, and passes.
+	NeedsGOROOT bool
 }
 
 // Resolver turns a Tool into a directory to put first on PATH.

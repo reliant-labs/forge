@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -111,6 +112,9 @@ func TestK3dPinMatchesForgesOwnCI(t *testing.T) {
 // the expected digest is replaced with a fixture digest; verification still
 // uses real sha256sum, and sudo redirects the real install into the sandbox.
 func TestInstallK3dScript_InstallsVerifiedBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux runner script requires POSIX paths and executable shell stubs; Git Bash is not a POSIX host")
+	}
 	for _, runner := range []struct {
 		machine string
 		arch    string
@@ -178,6 +182,9 @@ install -m 0755 "$4" "$INSTALL_BIN/k3d"
 // The script refuses a download whose sha256 is not the pinned one, and never
 // installs it. Run against stub curl/uname/sudo on PATH; sha256sum is real.
 func TestInstallK3dScript_RefusesAMismatchedBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Linux runner script requires POSIX paths and executable shell stubs; Git Bash is not a POSIX host")
+	}
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not on PATH")

@@ -154,6 +154,10 @@ type Check struct {
 	// Note annotates the row when the command runs: how it was narrowed
 	// (affected-package mode) or anything else the reader needs.
 	Note string
+	// Paths, when set, are globs of the changed files that make the check
+	// run on a branch in affected mode; with none changed it is N/A
+	// (GateByPaths). In full mode it always runs.
+	Paths []string
 
 	// OnFail runs after the command failed, to undo what it left behind.
 	OnFail func(out io.Writer)

@@ -170,21 +170,17 @@ joins the key; otherwise the cache is off for the run.
 ## Unit tests on a branch: affected mode
 
 On a non-default branch, `unit-tests` runs `task test -- <packages>` for only the
-Go packages whose test binary (the package, its tests, everything they import)
-contains a package the branch changed since `git merge-base HEAD origin/<default>`
-— committed, staged, unstaged and untracked changes alike. A changed `.go` file,
-a file a package embeds, or a file under a package's own `testdata/` changes that
-package. The gate prints the mode and why, e.g.
-`unit tests: affected mode — 7 of 212 test packages reach the 4 changed file(s) since origin/main`.
-
-It **falls back to the whole suite** when any other file changed (`go.mod`,
-`go.sum`, a `testdata/` outside a package, KCL, proto, migrations, the
-Taskfile, scripts — nothing proves which tests read them), on the default
-branch, when nothing changed, without `origin/<default>`, and with `CI_FULL=1`
-or `--full`. A branch stacked on another names its parent with `CI_BASE=<ref>`
-or `--base`. List files no Go test reads in `ci.gate.affected_ignore`
-(`["*.md", "docs/**"]`) so they do not force it. A direct `task test` always
-runs the whole suite: affected mode is the gate's, for a branch.
+Go packages whose test binary contains a package the branch changed since
+`git merge-base HEAD origin/<default>` (a `.go` file, a file a package embeds —
+a migration through `db/embed_gen.go` included — or a package's own
+`testdata/`). The gate prints the mode and why. Any other changed file falls
+back to the whole suite, as do the default branch, `CI_FULL=1` / `--full`, and
+no `origin/<default>`; `CI_BASE=<ref>` / `--base` names a stacked branch's
+parent. `ci.gate.affected_ignore` lists files no Go test reads;
+`ci.gate.affected_rules` say what other paths select (Go test packages, a
+frontend's tests as a `test-<frontend>` row, or the full suite with a reason);
+an extra check with `paths` runs on a branch only when they changed. The rules,
+the frontend rows and path-gated checks: `ci/gate/affected`.
 
 ## The flake gate: flake-check
 
@@ -306,6 +302,9 @@ ci:
     env: { GOPRIVATE: "github.com/acme/*" } # every check, forge's too
     path: [.tools/bin]                       # first on every check's PATH (your own pins)
     affected_ignore: ["*.md", "docs/**"]     # files no Go test reads
+    affected_rules:                          # what other paths select (above)
+      - paths: ["frontends/web/**"]
+        frontends: [web]
     extra_checks:
       - name: gen-llm-gateway        # the row; what CI_SKIP / CI_ONLY match; unique
         command: [go, run, ./cmd/gen-llm-gateway, -check]  # argv, no shell; exit 0 = PASS
@@ -335,6 +334,10 @@ ci:
         command: [scripts/ci-step.sh, lint-go]
         replaces: golangci-lint      # take over one of forge's rows, in its place
         heavy: true
+      - name: electron-tests
+        command: [npm, --prefix, electron, test]
+        lane: test
+        paths: ["electron/**"]       # on a branch: runs only when these changed, else N/A
 ```
 
 If the project pins tools of its own for `path` to find, install each one once

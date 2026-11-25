@@ -131,6 +131,9 @@ const (
 // as soon as its dependencies, the tree and a host slot allow.
 func Plan(in PlanInput) ([]Check, error) {
 	p := planner{PlanInput: in, tree: &treeSnapshot{root: in.Root}}
+	if err := p.checkAffectedRules(); err != nil {
+		return nil, err
+	}
 	lanes := [][]Check{p.checksLane(), p.testLane(), p.integrationLane()}
 	var owned []Check
 	for _, l := range lanes {
@@ -173,6 +176,33 @@ func Plan(in PlanInput) ([]Check, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// checkAffectedRules rejects a ci.gate.affected_rules entry naming a frontend
+// the project does not have: the rule would select tests that never run.
+// (The rest of a rule's shape is checked when forge.yaml loads.)
+func (p planner) checkAffectedRules() error {
+	if p.Cfg == nil {
+		return nil
+	}
+	known := map[string]bool{}
+	var names []string
+	for _, fe := range p.CI.Frontends {
+		known[fe.Name] = true
+		names = append(names, fe.Name)
+	}
+	for i, r := range p.Cfg.CI.Gate.AffectedRules {
+		for _, fe := range r.Frontends {
+			if !known[fe] {
+				have := "this project has no frontends"
+				if len(names) > 0 {
+					have = "its frontends: " + strings.Join(names, ", ")
+				}
+				return fmt.Errorf("ci.gate.affected_rules[%d]: frontends names %q, which is not a frontend of this project (%s)", i, fe, have)
+			}
+		}
+	}
+	return nil
 }
 
 func isBuiltinLane(l Lane) bool {
@@ -335,7 +365,11 @@ func depsCurrent(dir string) bool {
 // feRun runs a package.json script in the frontend with its own package
 // manager.
 func (p planner) feRun(fe templates.FrontendCIConfig, args ...string) []string {
-	dir := p.path(fe.Path)
+	return feRunAt(p.Root, fe, args...)
+}
+
+func feRunAt(root string, fe templates.FrontendCIConfig, args ...string) []string {
+	dir := filepath.Join(root, fe.Path)
 	return frontenddeps.ExecArgv(dir, frontenddeps.PackageManager(dir, ""), append([]string{"run"}, args...)...)
 }
 
@@ -705,11 +739,15 @@ func (p planner) task(name string) []string {
 }
 
 func (p planner) needsDeps(fe templates.FrontendCIConfig) func() string {
+	return needsDepsAt(p.Root, fe)
+}
+
+func needsDepsAt(root string, fe templates.FrontendCIConfig) func() string {
 	return func() string {
-		if dirExists(p.path(fe.Path, "node_modules")) {
+		if dirExists(filepath.Join(root, fe.Path, "node_modules")) {
 			return ""
 		}
-		return fmt.Sprintf("%s/node_modules is missing — run %#q in %s (the deps-%s row does)", fe.Path, frontenddeps.InstallCommand(p.path(fe.Path), "", true), fe.Path, fe.Name)
+		return fmt.Sprintf("%s/node_modules is missing — run %#q in %s (the deps-%s row does)", fe.Path, frontenddeps.InstallCommand(filepath.Join(root, fe.Path), "", true), fe.Path, fe.Name)
 	}
 }
 
@@ -820,6 +858,7 @@ func (p planner) extraCheck(where string, e config.CIGateCheck) (Check, error) {
 		Dir:          e.Dir,
 		Env:          envList(e.Env),
 		SkipExitCode: e.SkipExitCode,
+		Paths:        append([]string(nil), e.Paths...),
 	}
 	if e.Lane != "" {
 		c.Lane = Lane(e.Lane)

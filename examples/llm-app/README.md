@@ -77,6 +77,7 @@ curl https://<your-host>/healthz             # {"ok":true}
 curl -H "Authorization: Bearer $APP_API_TOKEN" 'https://<your-host>/?topic=deploys'
 # a haiku with gateway access; otherwise 503. Without caller credentials: 401/503.
 node --test server.test.js                 # authorization / no-spend regression tests
+node --test deployment.test.js             # prod/staging managed caller-secret wiring (requires Reliant CLI)
 ```
 
 A healthy rollout does not prove model access; only a haiku does.

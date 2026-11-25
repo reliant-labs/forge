@@ -63,7 +63,35 @@ const (
 	ReasonClaimableExpired     = "claimable_expired"
 	ReasonClaimableTakenDown   = "claimable_taken_down"
 	ReasonClaimableInvalidPoW  = "claimable_invalid_pow"
+	// ReasonClaimableContentRefused: the platform's pre-publish content scan
+	// refused an unclaimed deploy's upload (control-plane internal/contentscan).
+	// Some of those refusals are lifted by claiming the deploy; those carry
+	// ClaimRequiredHeader too.
+	ReasonClaimableContentRefused = "claimable_content_refused"
 )
+
+// ClaimRequiredHeader marks a content refusal that claiming the deploy lifts,
+// and its value says why: ClaimRequiredCredentialFields (pages with credential
+// input fields, a sign-in form) or ClaimRequiredContent (anything else the
+// platform will publish only for a claimed deploy). A control plane that
+// predates it sends the reason alone; ClaimRequiredOf then reports false.
+const (
+	ClaimRequiredHeader           = "x-forge-claim-required"
+	ClaimRequiredCredentialFields = "credential_fields"
+	ClaimRequiredContent          = "content"
+)
+
+// ClaimRequiredOf reports whether err is a content refusal that claiming the
+// deploy lifts, and why (a ClaimRequired* value; an unknown value from a newer
+// control plane is passed through).
+func ClaimRequiredOf(err error) (string, bool) {
+	var ce *Error
+	if !errors.As(err, &ce) || !ce.HasReason(ReasonClaimableContentRefused) || ce.Header == nil {
+		return "", false
+	}
+	cause := strings.TrimSpace(ce.Header.Get(ClaimRequiredHeader))
+	return cause, cause != ""
+}
 
 // The ClaimableService procedures forge calls.
 const (
@@ -459,11 +487,12 @@ func RecordClaimableAttempt(ep Endpoint, project, env string, at time.Time, depl
 			return nil
 		}
 		c.Claimable.LastAttemptAt = at.UTC()
-		c.Claimable.LastAttemptError = ""
+		c.Claimable.LastAttemptError, c.Claimable.LastAttemptClaimRequired = "", ""
 		if deployErr == nil {
 			c.Claimable.LastPublishedAt = at.UTC()
 		} else {
 			c.Claimable.LastAttemptError = FirstErrorLine(deployErr)
+			c.Claimable.LastAttemptClaimRequired, _ = ClaimRequiredOf(deployErr)
 		}
 		return f.Put(ep.URL, ClaimableClientIDFor(project, env), c)
 	})

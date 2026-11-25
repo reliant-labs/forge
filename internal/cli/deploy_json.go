@@ -846,6 +846,10 @@ type deployJSONReport struct {
 	Error string `json:"error,omitempty"`
 	// The error's structure — code, reason, scopes (json_error_facts.go).
 	jsonErrorFacts
+	// Claim is set on a `--claimable` deploy the platform refused until it
+	// is claimed (claim.claim_required says why): the claim link is then the
+	// way forward. Absent on every other document.
+	Claim *deployClaimJSON `json:"claim,omitempty"`
 }
 
 // deployJSONReleaseDecision is the release decision, whole.
@@ -1280,6 +1284,16 @@ func (r *deployReport) finish(err error, elapsed time.Duration) {
 	}
 }
 
+// setClaim records the claimable deploy a refusal leaves behind.
+func (r *deployReport) setClaim(c *deployClaimJSON) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.doc.Claim = c
+}
+
 // document returns a copy of the accumulated report.
 func (r *deployReport) document() deployJSONReport {
 	if r == nil {
@@ -1301,6 +1315,7 @@ func (r *deployReport) emit() error {
 	if err := enc.Encode(r.document()); err != nil {
 		return fmt.Errorf("write deploy report: %w", err)
 	}
+	jsonDocumentsWritten.Add(1)
 	return nil
 }
 

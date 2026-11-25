@@ -53,6 +53,9 @@ type fakeClaimableControlPlane struct {
 	holdChallenge chan struct{}
 	// project and env are what Start must be asked for; empty is acme/hosted.
 	project, env string
+	// refuseBundle, when set, makes RecordBundle answer the content scan's
+	// claim-required refusal with this cause.
+	refuseBundle string
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +128,13 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 	if claimed {
 		w.Header().Set(cloud.ReasonHeader, cloud.ReasonAccessTokenRevoked)
 		connectErr(w, http.StatusUnauthorized, "unauthenticated", "revoked")
+		return
+	}
+	if f.refuseBundle != "" && r.URL.Path == "/"+procRecordBundle {
+		w.Header().Set(cloud.ReasonHeader, cloud.ReasonClaimableContentRefused)
+		w.Header().Set(cloud.ClaimRequiredHeader, f.refuseBundle)
+		connectErr(w, http.StatusBadRequest, "failed_precondition",
+			"this site has pages with credential input fields (such as a sign-in form), which an unclaimed deploy can't publish: claim the deploy with its claim link, then publish again; or remove those pages")
 		return
 	}
 	if r.URL.Path == "/"+cloud.ProcGetOrganization {

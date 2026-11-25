@@ -1,10 +1,10 @@
 package cloud
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"runtime"
-	"sync"
 
 	"github.com/reliant-labs/forge/internal/buildinfo"
 	"github.com/reliant-labs/forge/pkg/observe/cliev"
@@ -16,7 +16,7 @@ import (
 // funnel can be broken down by the agent that drove it.
 //
 // A claimable deploy also names its shape, once forge has rendered the env
-// (DeclareDeployShape): "harness=claude; ci=false; template=vite; auth=none".
+// (WithDeployShape): "harness=claude; ci=false; template=vite; auth=none".
 // Every other run sends the first two keys only. A control plane that does
 // not know a key ignores it.
 //
@@ -59,36 +59,21 @@ type DeployShape struct {
 	Auth     string
 }
 
-// declaredShape is the shape this process's claimable deploy declared; the
-// zero value (every other run) adds nothing to the header.
-var declaredShape struct {
-	mu    sync.Mutex
-	shape DeployShape
-}
+type deployShapeKey struct{}
 
-// DeclareDeployShape makes every control-plane call this process sends until
-// restore runs name the deploy's shape in ClientHeader. A value outside its
-// vocabulary is sent as "other", so the header never carries free text.
-func DeclareDeployShape(s DeployShape) (restore func()) {
-	s = DeployShape{
+// WithDeployShape makes control-plane calls using the returned context name
+// this deploy's shape. Other deployments and unrelated calls are unaffected.
+// Values outside the vocabulary become "other", never free text on the wire.
+func WithDeployShape(ctx context.Context, s DeployShape) context.Context {
+	return context.WithValue(ctx, deployShapeKey{}, DeployShape{
 		Template: inVocabulary(s.Template, TemplateForgeNative, TemplateDockerfileApp, TemplateNextjsStatic, TemplateVite, TemplateOther),
 		Auth:     inVocabulary(s.Auth, AuthManaged, AuthNone),
-	}
-	declaredShape.mu.Lock()
-	prev := declaredShape.shape
-	declaredShape.shape = s
-	declaredShape.mu.Unlock()
-	return func() {
-		declaredShape.mu.Lock()
-		declaredShape.shape = prev
-		declaredShape.mu.Unlock()
-	}
+	})
 }
 
-func currentDeployShape() DeployShape {
-	declaredShape.mu.Lock()
-	defer declaredShape.mu.Unlock()
-	return declaredShape.shape
+func deployShapeFromContext(ctx context.Context) DeployShape {
+	s, _ := ctx.Value(deployShapeKey{}).(DeployShape)
+	return s
 }
 
 func inVocabulary(v string, allowed ...string) string {
@@ -112,7 +97,7 @@ func UserAgent() string {
 
 // ClientHeaderValue is this process's X-Forge-Client value.
 func ClientHeaderValue() string {
-	return clientHeaderValue(os.Getenv, buildinfo.IsCI(), currentDeployShape())
+	return clientHeaderValue(os.Getenv, buildinfo.IsCI(), DeployShape{})
 }
 
 func clientHeaderValue(getenv func(string) string, ci bool, shape DeployShape) string {
@@ -135,9 +120,9 @@ func clientHeaderValue(getenv func(string) string, ci bool, shape DeployShape) s
 // to the control plane. Every request forge sends the control plane goes
 // through it: Connect calls (Client.call), the OAuth token exchange at login
 // (identifiedDoer) and the identity revoke at logout.
-func setClientIdentity(h http.Header) {
+func setClientIdentity(ctx context.Context, h http.Header) {
 	h.Set("User-Agent", UserAgent())
-	h.Set(ClientHeader, ClientHeaderValue())
+	h.Set(ClientHeader, clientHeaderValue(os.Getenv, buildinfo.IsCI(), deployShapeFromContext(ctx)))
 	setInstallIdentity(h, cliev.Default())
 }
 
@@ -170,6 +155,6 @@ func setInstallIdentity(h http.Header, c *cliev.Client) {
 type identifiedDoer struct{ next *http.Client }
 
 func (d identifiedDoer) Do(req *http.Request) (*http.Response, error) {
-	setClientIdentity(req.Header)
+	setClientIdentity(req.Context(), req.Header)
 	return d.next.Do(req)
 }

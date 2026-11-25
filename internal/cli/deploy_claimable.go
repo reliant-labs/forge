@@ -316,7 +316,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		}
 		// From here every control-plane call names the deploy's shape.
 		shape = claimableShapeOf(entities)
-		defer cloud.DeclareDeployShape(shape)()
+		ctx = cloud.WithDeployShape(ctx, shape)
 		if entities == nil || !entities.HasHosted() || entities.ControlPlane == nil {
 			return fmt.Errorf("env %q publishes nothing to a hosted control plane, so there is nothing to deploy with --claimable.\n"+
 				"fix: bind the env's workloads to forge.OnHosted (deploy/hosting), then: %s env deploy %s --claimable", envName, Name(), envName)

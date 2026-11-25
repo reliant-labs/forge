@@ -68,27 +68,44 @@ func TestClientHeaderValue_DeployShape(t *testing.T) {
 	}
 }
 
-// DeclareDeployShape reaches ClientHeaderValue until restored, and never lets
-// a value outside the vocabulary onto the wire.
-func TestDeclareDeployShape(t *testing.T) {
-	t.Setenv("RELIANT_AGENT_SHELL", "")
-	t.Setenv("CLAUDECODE", "")
-	buildinfo.SetCI(false)
-	t.Cleanup(buildinfo.ClearCI)
-	before := ClientHeaderValue()
-	restore := DeclareDeployShape(DeployShape{Template: "/home/alice/app", Auth: "zitadel"})
-	got := ClientHeaderValue()
-	if !regexp.MustCompile(`^harness=[a-z]+; ci=false; template=other; auth=other$`).MatchString(got) {
-		t.Fatalf("ClientHeaderValue = %q: want free text normalized to other", got)
-	}
-	restore()
-	if got := ClientHeaderValue(); got != before {
-		t.Fatalf("after restore ClientHeaderValue = %q, want %q", got, before)
-	}
-	restore = DeclareDeployShape(DeployShape{Template: TemplateDockerfileApp, Auth: AuthManaged})
-	defer restore()
-	if got := ClientHeaderValue(); got != before+"; template=dockerfile-app; auth=managed" {
-		t.Fatalf("ClientHeaderValue = %q", got)
+// Shape declarations are immutable and scoped to the call context, including
+// overlapping deployments, nested declarations, and unrelated requests.
+func TestWithDeployShape(t *testing.T) {
+	base := context.Background()
+	first := WithDeployShape(base, DeployShape{Template: TemplateVite, Auth: AuthNone})
+	second := WithDeployShape(first, DeployShape{Template: TemplateDockerfileApp, Auth: AuthManaged})
+	unknown := WithDeployShape(base, DeployShape{Template: "/home/alice/app", Auth: "zitadel"})
+	for _, tc := range []struct {
+		name   string
+		ctx    context.Context
+		suffix string
+	}{
+		{"unrelated", base, ""},
+		{"first", first, "; template=vite; auth=none"},
+		{"second", second, "; template=dockerfile-app; auth=managed"},
+		{"unknown", unknown, "; template=other; auth=other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got, want := r.Header.Get(ClientHeader), ClientHeaderValue()+tc.suffix; got != want {
+					t.Errorf("header = %q, want %q", got, want)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			ep, err := ResolveEndpoint("prod", &Declaration{Endpoint: srv.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := NewClient(ep, Credential{})
+			for range 3 {
+				if err := client.Call(tc.ctx, "controlplane.v1.ClaimableService/GetClaimableChallenge", map[string]any{}, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
 	}
 }
 

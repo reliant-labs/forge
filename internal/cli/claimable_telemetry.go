@@ -3,7 +3,7 @@ package cli
 // What a claimable deploy tells Reliant about itself, beyond the deploy:
 //
 //   - its SHAPE (claimableShapeOf): the kind of app and how it signs users in,
-//     named to the control plane in X-Forge-Client (cloud.DeclareDeployShape)
+//     named to the control plane in X-Forge-Client (cloud.WithDeployShape)
 //     so the claimable funnel can be broken down by template;
 //   - a REFUSAL forge raises itself (trackClaimableRefused): one
 //     forge_claimable_refused Event, because the control plane never hears of

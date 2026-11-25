@@ -475,10 +475,10 @@ tasks:
     # variable the environment already has: an exported DUMP would otherwise
     # beat the DUMP= given on the command line.
     env:
-      RESTORE_DUMP: '{{.DUMP}}'
-      RESTORE_DB: '{{.SNAPSHOT_DB}}'
-      RESTORE_PGHOST: '{{.PGHOST}}'
-      RESTORE_PGUSER: '{{.PGUSER}}'
+      RESTORE_DUMP: "{{.DUMP}}"
+      RESTORE_DB: "{{.SNAPSHOT_DB}}"
+      RESTORE_PGHOST: "{{.PGHOST}}"
+      RESTORE_PGUSER: "{{.PGUSER}}"
     cmds:
       - cmd: |
           DUMP="${RESTORE_DUMP:-snapshot.dump.gz}"
@@ -531,7 +531,7 @@ tasks:
     # back to the same defaults as the docker-compose service so
     # `task dev-psql` works with zero env setup.
     env:
-      PSQL_USER: '{{.POSTGRES_USER}}'
-      PSQL_DB: '{{.POSTGRES_DB}}'
+      PSQL_USER: "{{.POSTGRES_USER}}"
+      PSQL_DB: "{{.POSTGRES_DB}}"
     cmds:
       - docker compose exec postgres psql -U "${PSQL_USER:-postgres}" -d "${PSQL_DB:-demo}"

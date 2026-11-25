@@ -118,8 +118,10 @@ func (g *ProjectGenerator) generateKCLDeploy() error {
 		}
 		// Persist the explicit opt-in; missing managed identity is not proof
 		// that a project's RPCs should be public (it may use an external IdP).
+		// Keep the module docstring first: a preceding comment makes KCL
+		// treat it as an output value rather than module documentation.
 		if e.env == codegen.DevEnvName && g.AuthNone {
-			content = append([]byte(codegen.AuthNoneDeclaration+"\n"), content...)
+			content = append(content, []byte("\n"+codegen.AuthNoneDeclaration+"\n")...)
 		}
 		destPath := filepath.Join(deployDir, e.env, "main.k")
 		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {

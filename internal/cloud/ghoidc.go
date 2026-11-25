@@ -64,14 +64,11 @@ const (
 var idTokenBackoff = func(attempt int) time.Duration { return time.Duration(attempt) * time.Second }
 
 // ciIdentity resolves the CI-identity credential. It is a value, not package
-// state, so a test gives it its own environment (getenv), transport and mask
-// sink and can run in parallel; processCIIdentity is the one ResolveCredentialFor
+// state, so a test gives it its own environment (getenv) and mask sink and
+// can run in parallel; processCIIdentity is the one ResolveCredentialFor
 // uses.
 type ciIdentity struct {
 	getenv func(string) string
-	// http carries both the ID-token request and the exchange; nil is
-	// net/http's default transport with this file's timeouts.
-	http *http.Client
 	// mask receives the `::add-mask::` workflow command for each minted token.
 	// The runner reads workflow commands from stderr as well as stdout, and
 	// stdout is a command's --json document.
@@ -210,7 +207,7 @@ func (ci *ciIdentity) fetchIDTokenOnce(ctx context.Context, target, reqToken str
 	}
 	req.Header.Set("Authorization", "Bearer "+reqToken)
 	req.Header.Set("Accept", "application/json")
-	resp, err := ci.httpClient(idTokenTimeout).Do(req)
+	resp, err := noRedirectClient(idTokenTimeout).Do(req)
 	if err != nil {
 		return "", true, fmt.Errorf("request to $%s failed: %w", envIDTokenRequestURL, withoutURL(err))
 	}
@@ -242,7 +239,7 @@ func (ci *ciIdentity) fetchIDTokenOnce(ctx context.Context, target, reqToken str
 // message, which names the remedy: an upload then skips and stays green, as it
 // does with no credential at all.
 func (ci *ciIdentity) exchangeFederated(ctx context.Context, ep Endpoint, idToken string, scope accesstoken.Scope) (Credential, error) {
-	c := &Client{Endpoint: ep, HTTP: ci.httpClient(exchangeTimeout)}
+	c := &Client{Endpoint: ep, HTTP: noRedirectClient(exchangeTimeout)}
 	var resp struct {
 		Token     string   `json:"token"`
 		ExpiresAt string   `json:"expiresAt"`
@@ -288,7 +285,8 @@ func withoutURL(err error) error {
 	return err
 }
 
-// httpClient is the client for both requests, and it NEVER follows a redirect.
+// noRedirectClient is the client for both requests, and it NEVER follows a
+// redirect.
 // Each carries a secret: the ID-token request the runner's bearer
 // ($ACTIONS_ID_TOKEN_REQUEST_TOKEN) in its header, the exchange the job's ID
 // token in its body. net/http replays a 307/308's body to wherever the
@@ -296,14 +294,11 @@ func withoutURL(err error) error {
 // or a repository's KCL naming a hostile one) would hand the ID token to a
 // third party. The redirect is answered as the response itself instead, and
 // fails as a non-200.
-func (ci *ciIdentity) httpClient(timeout time.Duration) *http.Client {
-	c := &http.Client{Timeout: timeout}
-	if ci.http != nil {
-		copied := *ci.http
-		c = &copied
+func noRedirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return c
 }
 
 // exchangeDegrades reports an exchange answer that means "no CI credential

@@ -84,6 +84,36 @@ ci:
   rules, and the `test-<name>` rows still run. In full mode there are no
   `test-<name>` rows: `task test` runs every frontend's suite.
 
+### Walkers, helper importers, generated code and whole rows
+
+Four optional rule fields cover what a path list cannot say:
+
+```yaml
+ci:
+  gate:
+    affected_rules:
+      - on: go-source                        # every changed .go file (paths optional)
+        packages: ["./internal/guard"]       # a test that reads the whole tree's Go source
+      - paths: ["db/migrations/**"]
+        packages_importing: ["./internal/db/testutil"]  # tests whose test files import it
+      - paths: ["proto/**"]
+        packages: ["./gen/{dir}"]            # proto/x/v1/a.proto → ./gen/x/v1
+        full_checks: [test-web, electron]    # these rows run whole
+```
+
+- `on: go-source` matches any changed `.go` file besides `paths`. It adds what
+  the rule selects but claims nothing: a Go file outside every package still
+  runs the full suite.
+- `packages_importing` names helper packages (import path or `./dir`). The test
+  packages whose test files import one run (go list's `TestImports` and
+  `XTestImports`); packages that only link it transitively do not.
+- `{dir}` in a `packages` pattern is the matched file's directory below the
+  matching glob's literal prefix (`proto/**` → `proto/`), substituted per file.
+- `full_checks` names gate rows: a path-gated check runs although no change is
+  under its `paths`, and a `test-<frontend>` row is added if needed and runs
+  the whole `test` script instead of `test:related`. `full: true` still means
+  the whole unit lane.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when
@@ -136,3 +166,25 @@ manifest/lock consistency, not offline package availability. The
 tests run against whatever `node_modules` is on disk, so without this row a
 hand-edited lockfile that every fresh install rejects passes the gate. No
 manifest or lockfile changed, full mode, or no lockfile: no row.
+
+## Why each package runs, the build set, and a what-if
+
+Under the mode line the gate prints one line per selected package (up to 30):
+`ex.com/m/b ← a/x.go (imports ex.com/m/a)` — the first changed file that
+reached it and the edge: `changed` (the file is part of it), `imports <pkg>`
+(its test binary links the changed package) or `ci.gate.affected_rules[<i>]`.
+
+`--json` adds an `affected` object to the forge.ci.gate/v1 document whenever the
+gate computed the mode: `full`, `reason`, `changed`, `packages`, `why` (per
+package: `package`, `file`, `edge`), `files` (per changed file: `package`,
+`rules`, `ignored`, `note`), and `build`: every module package, with tests or
+not, whose build contains a changed package, the set a compile phase needs.
+
+`--plan` prints that decision without running a check; `--files` judges the
+files you name instead of the diff:
+
+```bash
+forge ci gate --plan                                    # this branch
+forge ci gate --plan --files internal/a/a.go,docs/x.md  # what would these run, and why
+forge ci gate --plan --json | jq '.build'               # the compile set
+```

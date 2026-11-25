@@ -850,6 +850,7 @@ func validateRequired(cfg *ProjectConfig, root *yaml.Node) []validationIssue {
 	out = append(out, validateLintLanes(cfg, root)...)
 	out = append(out, validateScaffoldExclude(cfg, root)...)
 	out = append(out, validateCIWorkflows(cfg, root)...)
+	out = append(out, validateCILicense(cfg, root)...)
 	out = append(out, validateCIGatePaths(cfg, root)...)
 	out = append(out, validateTests(cfg, root)...)
 	return out

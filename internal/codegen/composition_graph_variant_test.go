@@ -16,8 +16,15 @@ import (
 // workflowcheck.Service, which the worker root reaches when reachVariant.
 func variantOnlyFixture(t *testing.T, reachVariant bool) *graphModel {
 	t.Helper()
+	return variantOnlyFixtureCtor(t, reachVariant, "New")
+}
+
+// variantOnlyFixtureCtor is variantOnlyFixture with the variant built by
+// workflowcheck.<ctor>.
+func variantOnlyFixtureCtor(t *testing.T, reachVariant bool, ctor string) *graphModel {
+	t.Helper()
 	file, err := parser.ParseFile(token.NewFileSet(), "variant.go", `package app
-func NewSyncingChecks() { return &SyncingChecks{Service: workflowcheck.New()} }
+func NewSyncingChecks() { return &SyncingChecks{Service: workflowcheck.`+ctor+`()} }
 `, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -25,8 +32,8 @@ func NewSyncingChecks() { return &SyncingChecks{Service: workflowcheck.New()} }
 	wc := types.NewPackage("example.com/x/internal/workflowcheck", "workflowcheck")
 	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
 	ast.Inspect(file, func(n ast.Node) bool {
-		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "New" {
-			info.Uses[sel.Sel] = types.NewFunc(token.NoPos, wc, "New", nil)
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == ctor {
+			info.Uses[sel.Sel] = types.NewFunc(token.NoPos, wc, ctor, nil)
 		}
 		return true
 	})
@@ -70,5 +77,17 @@ func TestVariantOnlyPackageIsNotUnreachable(t *testing.T) {
 	}
 	if !pkgFinding {
 		t.Fatalf("with no root reaching a variant the package stays unreachable, got %+v", fs)
+	}
+}
+
+// A variant built with the generated NewInstrumented (New wrapped in the
+// package's middleware) reaches the package as New does; reliant's
+// workflowcheck variants are built that way.
+func TestVariantBuiltWithNewInstrumentedReachesPackage(t *testing.T) {
+	if fs := variantOnlyFixtureCtor(t, true, "NewInstrumented").unreachableFindings(); len(fs) != 0 {
+		t.Fatalf("a variant built with NewInstrumented reaches the package, got %+v", fs)
+	}
+	if fs := variantOnlyFixtureCtor(t, true, "NewOther").unreachableFindings(); len(fs) == 0 {
+		t.Fatal("an unrelated constructor is not reach evidence")
 	}
 }

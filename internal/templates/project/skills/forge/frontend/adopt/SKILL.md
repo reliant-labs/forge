@@ -116,8 +116,8 @@ forge's component library lives, relative to the frontend. An unknown key, or a
 `components_dir` outside the frontend, fails generate rather than being ignored.
 
 Route every service your app does not send to the default origin in
-`connectClient()` (`src/lib/connect.ts` shows how): the generated hooks only
-ever call that function.
+`connectClient()` (`src/lib/connect.ts` shows how): outside a
+`TransportScopeProvider`, the generated hooks only ever call that function.
 
 ### Hooks for another repository's services (`imported_hooks`)
 

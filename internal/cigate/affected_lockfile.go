@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/frontenddeps"
@@ -47,6 +48,7 @@ func WithLockfileChecks(checks []Check, a Affected, root string, frontends []tem
 	if len(rows) == 0 {
 		return checks
 	}
+
 	out := make([]Check, 0, len(checks)+len(rows))
 	for _, c := range checks {
 		if r, ok := rows[c.Name]; ok {
@@ -149,4 +151,17 @@ try {
 
 func relJoin(dir, file string) string {
 	return path.Clean(path.Join(filepath.ToSlash(dir), file))
+}
+
+// WithLockfileReport records in a the lockfile rows checks carries: the
+// --json document's affected.lockfile_checks.
+func WithLockfileReport(a Affected, checks []Check) Affected {
+	a.LockfileChecks = nil
+	for _, c := range checks {
+		if strings.HasPrefix(c.Name, LockfileCheckName("")) {
+			a.LockfileChecks = append(a.LockfileChecks, c.Name)
+		}
+	}
+	sort.Strings(a.LockfileChecks)
+	return a
 }

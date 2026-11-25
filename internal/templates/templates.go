@@ -102,6 +102,9 @@ func FuncMap() template.FuncMap {
 		// installForgeRun renders the one forge-install script every
 		// scaffolded workflow shares — see installForgeScript.
 		"installForgeRun": installForgeRun,
+		// installK3dRun renders the pinned, checksum-verified k3d install
+		// every scaffolded workflow shares — see installK3dScript.
+		"installK3dRun": installK3dRun,
 		// connectV2 reports whether the data a template renders asks for
 		// connect-go v2 wiring: its ConnectV2 field (or map key) is true.
 		// Data with no such field is v1 — forge's default, and every render

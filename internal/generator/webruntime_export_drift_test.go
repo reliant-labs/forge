@@ -78,10 +78,13 @@ func TestTemplatesOnlyImportPublishedWebRuntimeExports(t *testing.T) {
 	}
 }
 
-// TestHooksOnlyImportMinimumPublishedWebRuntimeExports checks the subpath used
+// TestHooksOnlyImportMinimumPublishedWebRuntimeExports checks the subpaths used
 // by generated hooks against the FLOOR, not the newest version in the range.
 // 0.13.3/0.13.4 lacked createMutationCall even though ^0.13.3 could install
 // 0.13.5: existing lockfiles kept the incompatible version indefinitely.
+// Every subpath the hooks import is judged: /service-hooks for the builders,
+// /transport-scope for scopedClient (forge#2726), whose absence from the
+// floor is a TS2307 in every scaffolded project, not just a missing name.
 func TestHooksOnlyImportMinimumPublishedWebRuntimeExports(t *testing.T) {
 	if testing.Short() {
 		t.Skip("network + npm; runs in the full suite")
@@ -93,24 +96,35 @@ func TestHooksOnlyImportMinimumPublishedWebRuntimeExports(t *testing.T) {
 	if !ok {
 		t.Fatalf("invalid runtime floor %q", webRuntimePublishedRange)
 	}
-	exported := publishedWebRuntimeExports(t, strings.TrimPrefix(floor, "v"), "service-hooks")
-	for _, sym := range hookRuntimeImports(t) {
-		if !exported[sym] {
-			t.Errorf("generated hooks import %s but published service-hooks at floor %s does not export it", sym, floor)
+	for _, subpath := range hookRuntimeSubpaths {
+		exported := publishedWebRuntimeExports(t, strings.TrimPrefix(floor, "v"), subpath)
+		for _, sym := range hookRuntimeImportsFrom(t, subpath) {
+			if !exported[sym] {
+				t.Errorf("generated hooks import %s from /%s but the published runtime at floor %s does not export it", sym, subpath, floor)
+			}
 		}
 	}
 }
 
-// Read all conditional imports: any generated service may need them. Removing
-// template actions retains their bodies, unlike rendering just one service.
+// hookRuntimeSubpaths are the runtime entry points hooks.ts.tmpl imports.
+// TestHookRuntimeImportScanner fails when the template imports another one,
+// so a new subpath cannot skip the floor check above.
+var hookRuntimeSubpaths = []string{"service-hooks", "transport-scope"}
+
+// hookRuntimeImports returns what hooks.ts.tmpl imports from /service-hooks.
 func hookRuntimeImports(t *testing.T) []string {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join("..", "templates", "frontend", "hooks.ts.tmpl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := regexp.MustCompile(`(?s)\{\{.*?\}\}`).ReplaceAllString(string(body), "")
-	re := regexp.MustCompile(`import\s*\{([^{}]*)\}\s*from\s*"@reliantlabs/forge-web-runtime/service-hooks"`)
+	return hookRuntimeImportsFrom(t, "service-hooks")
+}
+
+// hookRuntimeImportsFrom reads every import hooks.ts.tmpl names from one
+// runtime subpath. It reads all conditional imports: any generated service
+// may need them. Removing template actions retains their bodies, unlike
+// rendering just one service.
+func hookRuntimeImportsFrom(t *testing.T, subpath string) []string {
+	t.Helper()
+	text := hooksTemplateText(t)
+	re := regexp.MustCompile(`import\s*\{([^{}]*)\}\s*from\s*"@reliantlabs/forge-web-runtime/` + regexp.QuoteMeta(subpath) + `"`)
 	var symbols []string
 	for _, match := range re.FindAllStringSubmatch(text, -1) {
 		for _, raw := range strings.Split(match[1], ",") {
@@ -120,9 +134,19 @@ func hookRuntimeImports(t *testing.T) []string {
 		}
 	}
 	if len(symbols) == 0 {
-		t.Fatal("no hook runtime imports found; scanner drifted")
+		t.Fatalf("no hook runtime imports from /%s found; scanner drifted", subpath)
 	}
 	return symbols
+}
+
+// hooksTemplateText is hooks.ts.tmpl with its template actions removed.
+func hooksTemplateText(t *testing.T) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "templates", "frontend", "hooks.ts.tmpl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return regexp.MustCompile(`(?s)\{\{.*?\}\}`).ReplaceAllString(string(body), "")
 }
 
 // Keep the known published API requirement covered in offline/short gates too.
@@ -171,13 +195,27 @@ func TestHookRuntimeExportFloor(t *testing.T) {
 
 func TestHookRuntimeImportScanner(t *testing.T) {
 	imports := hookRuntimeImports(t)
-	for _, want := range []string{"createMutationCall", "createServiceMutations", "createQueryHook", "createInfiniteQueryHook", "serviceKeys"} {
+	for _, want := range []string{"createMutationCall", "createServiceMutations", "createQueryHook", "createInfiniteQueryHook", "serviceKeys", "ServiceCallContext"} {
 		found := false
 		for _, got := range imports {
 			found = found || got == want
 		}
 		if !found {
 			t.Errorf("scanner missed conditional hook import %s: %v", want, imports)
+		}
+	}
+	if got := hookRuntimeImportsFrom(t, "transport-scope"); len(got) != 1 || got[0] != "scopedClient" {
+		t.Errorf("hooks import %v from /transport-scope, want [scopedClient]", got)
+	}
+	// Every runtime subpath the template imports is one the floor check judges.
+	known := map[string]bool{}
+	for _, sp := range hookRuntimeSubpaths {
+		known[sp] = true
+	}
+	subpathRe := regexp.MustCompile(`from\s*"@reliantlabs/forge-web-runtime/([^"]+)"`)
+	for _, m := range subpathRe.FindAllStringSubmatch(hooksTemplateText(t), -1) {
+		if !known[m[1]] {
+			t.Errorf("hooks.ts.tmpl imports /%s, which hookRuntimeSubpaths does not list, so no floor check judges it", m[1])
 		}
 	}
 }
@@ -297,8 +335,8 @@ func publishedWebRuntimeExports(t *testing.T, semverRange string, entrypoints ..
 	dts := filepath.Join(dir, "package", "dist", entrypoint+".d.ts")
 	body, err := os.ReadFile(dts)
 	if err != nil {
-		t.Fatalf("published tarball has no dist/index.d.ts (%v) — the build emitted "+
-			"nothing usable and no consumer can typecheck against it", err)
+		t.Fatalf("published %s has no dist/%s.d.ts (%v) — the floor predates that entry point, "+
+			"or the build emitted nothing usable, and no consumer can typecheck against it", version, entrypoint, err)
 	}
 	return parseExportedSymbols(string(body))
 }

@@ -75,7 +75,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // 0.14.0 is such a breaking change: @hyperdx/otel-web and rrweb moved from the
 // runtime's dependencies to exact optional peers (forge defect ae15c269), so
 // an app importing './telemetry' must declare them. web-runtime/package.json
-// declares 0.14.0 while this floor stays ^0.13.21, the newest version npm
+// declares 0.14.0 while this floor stays on ^0.13, the newest minor npm
 // serves (TestWebRuntimeFloorIsAPublishedVersion); the release that publishes
 // 0.14.0 raises it. The generate run that then raises a frontend to ^0.14
 // declares them (EnsureTelemetryDependencies, which is inert for a ^0.13
@@ -87,7 +87,7 @@ const WebRuntimePackage = "@reliantlabs/forge-web-runtime"
 // 0.13.19), and a pin of an untagged commit can generate code that only the
 // next runtime release ships. Neither shows in a version number, so generate
 // checks content: WebRuntimeContentNotices (webruntime_vocabulary.go).
-const webRuntimePublishedRange = "^0.13.22"
+const webRuntimePublishedRange = "^0.13.23"
 
 // webRuntimeDepRe matches the package's entry wherever it already appears in a
 // package.json, capturing everything up to (but not including) the value so a

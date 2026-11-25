@@ -156,6 +156,25 @@ func TestStoreRecordsOnlyUsefulReasons(t *testing.T) {
 	}
 }
 
+// An account-unit change's assignment names the account it hashed, so a
+// readout can count an app whose accounts are not its telemetry orgs. A
+// user-unit one does not: the user id is a column of every event already.
+func TestStoreRecordsTheAccountOfAnAccountUnit(t *testing.T) {
+	s, ctx, buf := recordingStore(t)
+	s.Evaluate(ctx, "acct", EvalContext{TargetingKey: "u1", Attributes: map[string]string{"account": "a1"}})
+	s.Evaluate(ctx, "exp", EvalContext{TargetingKey: "u1", Attributes: map[string]string{"plan": "paid", "account": "a1"}})
+	got := events(t, buf)
+	if len(got) != 2 {
+		t.Fatalf("recorded %d events, want 2: %v", len(got), got)
+	}
+	if got[0]["product.flag"] != "acct" || got[0]["product.account"] != "a1" {
+		t.Errorf("account-unit assignment: account = %v, want a1 (event %v)", got[0]["product.account"], got[0])
+	}
+	if _, ok := got[1]["product.account"]; ok {
+		t.Errorf("user-unit assignment carries an account: %v", got[1])
+	}
+}
+
 func TestStoreCustomOnEvaluateReplacesRecording(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.json")
 	writeFile(t, path, recordSnapshot())

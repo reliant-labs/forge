@@ -29,10 +29,11 @@ import (
 
 var (
 	// pipeToShell is a download piped straight into a shell (curl/wget into
-	// sh, bash, …; irm into iex). It is matched over text whose line breaks
+	// sh, bash, …, with or without sudo or VAR=value assignments before the
+	// shell; irm into iex). It is matched over text whose line breaks
 	// are folded into spaces, so prose that wraps the command still counts,
 	// and the span is bounded so two unrelated lines cannot pair up.
-	pipeToShell = regexp.MustCompile("\\b(?:curl|wget)\\b[^|`]{0,240}\\|\\s*(?:sudo\\s+)?(?:sh|bash|zsh|dash)\\b" +
+	pipeToShell = regexp.MustCompile("\\b(?:curl|wget)\\b[^|`]{0,240}\\|\\s*(?:sudo\\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\\S*\\s+)*(?:sh|bash|zsh|dash)\\b" +
 		"|\\birm\\b[^|`]{0,240}\\|\\s*iex\\b")
 	// unpinnedGlobalInstall is a global npm install of forge with no version.
 	unpinnedGlobalInstall = regexp.MustCompile(`npm\s+(?:i|install)\s+(?:-g|--global)\s+["']?@reliantlabs/forge(?:[^@\w/-]|$)`)
@@ -104,6 +105,40 @@ func TestShippedSkillsInstallPinnedReleases(t *testing.T) {
 	}
 }
 
+// The workflows forge scaffolds are copied into a project as they are, and run
+// on every push: they install third-party tools the same way, from a pinned
+// release verified against its checksum (k3d: templates.K3dVersion), never a
+// script piped from a moving branch.
+func TestScaffoldedWorkflowsInstallPinnedReleases(t *testing.T) {
+	t.Parallel()
+	ci := templates.CITemplates("github")
+	names, err := ci.List("")
+	if err != nil {
+		t.Fatalf("list CI templates: %v", err)
+	}
+	if len(names) < 5 {
+		t.Fatalf("found only %d CI templates; the walk is looking in the wrong place", len(names))
+	}
+	for _, name := range names {
+		body, err := ci.Get(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, f := range installFindings(string(body)) {
+			t.Errorf("internal/templates/ci/github/%s %s\n\tinstall the tool's pinned release and verify its checksum (see installK3dRun)", name, f)
+		}
+	}
+	for _, arch := range []string{"amd64", "arm64"} {
+		hint := templates.K3dLinuxInstallHint(arch)
+		if hint == "" || !strings.Contains(hint, "sha256sum -c") || !strings.Contains(hint, "/"+templates.K3dVersion+"/") {
+			t.Errorf("forge doctor's k3d hint for linux/%s is not the pinned, verified release: %q", arch, hint)
+		}
+		if f := installFindings(hint); len(f) != 0 {
+			t.Errorf("forge doctor's k3d hint for linux/%s: %v", arch, f)
+		}
+	}
+}
+
 // TestInstallFindingsCatchWhatTheyClaim keeps the patterns honest: each must
 // catch its known-bad shapes and pass the pinned forms the skills now use.
 func TestInstallFindingsCatchWhatTheyClaim(t *testing.T) {
@@ -112,6 +147,8 @@ func TestInstallFindingsCatchWhatTheyClaim(t *testing.T) {
 		"curl -fsSL https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh",
 		"one job that installs forge (`curl -fsSL\n  https://raw.githubusercontent.com/reliant-labs/forge/main/install.sh | sh`), runs",
 		"curl -s https://example.com/install.sh | sudo bash",
+		"run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash",
+		"curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh \\\n  | TAG=\"$K3D_VERSION\" bash",
 		"wget -qO- https://example.com/i.sh | bash",
 		"irm https://raw.githubusercontent.com/reliant-labs/forge/main/install.ps1 | iex",
 		"      - run: npm i -g @reliantlabs/forge\n",
@@ -124,6 +161,7 @@ func TestInstallFindingsCatchWhatTheyClaim(t *testing.T) {
 		"npm install -g @reliantlabs/forge-web-runtime",
 		`curl -sS -b "$JAR" -H 'Content-Type: application/json' -d '{}' "$API/x" | jq .`,
 		"curl a real endpoint in dev | and on the staging URL",
+		templates.K3dLinuxInstallHint("amd64"),
 	}
 	for _, s := range bad {
 		if len(installFindings(s)) == 0 {

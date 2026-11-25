@@ -222,3 +222,21 @@ func TestRunDBRestoreWritesRendersAndRestoresOnFailure(t *testing.T) {
 		t.Fatalf("a render without the restore must restore the file, got %v", err)
 	}
 }
+
+// The render must carry BOTH databases: a render with the restored copy but
+// no source (a Bundle that lists the copy and not the database it restores
+// from) is refused, as is one with the source and no copy.
+func TestRenderedRestoreNeedsTheSourceAndTheCopy(t *testing.T) {
+	restored := DatabaseEntity{Name: "shop-restored", Spec: deployv1alpha1.ManagedDatabaseSpec{
+		Restore: &deployv1alpha1.DatabaseRestore{SourceDatabase: "shop", PointInTime: "2026-11-20T15:02:00Z"}}}
+	if err := renderedRestore([]DatabaseEntity{restored}, "shop", "shop-restored", "2026-11-20T15:02:00Z"); err == nil ||
+		!strings.Contains(err.Error(), `no database "shop" to restore from`) {
+		t.Errorf("a render with only the restored copy passed: %v", err)
+	}
+	if err := renderedRestore([]DatabaseEntity{{Name: "shop"}}, "shop", "shop-restored", "2026-11-20T15:02:00Z"); err == nil {
+		t.Error("a render with only the source passed")
+	}
+	if err := renderedRestore([]DatabaseEntity{{Name: "shop"}, restored}, "shop", "shop-restored", "2026-11-20T15:02:00Z"); err != nil {
+		t.Errorf("a render with both failed: %v", err)
+	}
+}

@@ -194,10 +194,12 @@ func renderedRestore(dbs []DatabaseEntity, source, name, pit string) error {
 			gotNew = true
 		}
 	}
-	switch {
-	case !gotNew:
+	// Both must render: the copy, and the source it restores from. Neither
+	// alone proves the edit reached the env the restore is for.
+	if !gotNew {
 		return fmt.Errorf("the edit does not reach the env's rendered databases (the Bundle may be built in another file)")
-	case !gotSource:
+	}
+	if !gotSource {
 		return fmt.Errorf("the env renders no database %q to restore from", source)
 	}
 	return nil

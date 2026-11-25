@@ -22,6 +22,9 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"go/types"
 	"path/filepath"
 	"sort"
@@ -59,6 +62,7 @@ func (m *graphModel) checkOptionalNilable() error {
 // component fills (a compose.go edge to it) that is not optional.
 func (m *graphModel) optionalComponentFindings() []GraphFinding {
 	var out []GraphFinding
+	viaExpr := composeFieldSources(m.compose)
 	for _, consumer := range m.nodes {
 		var optional []*graphNode
 		for _, d := range m.edges[consumer.Name] {
@@ -70,7 +74,7 @@ func (m *graphModel) optionalComponentFindings() []GraphFinding {
 			continue
 		}
 		for _, p := range optional {
-			for _, df := range m.fieldsFilledBy(consumer, p) {
+			for _, df := range m.fieldsFilledBy(consumer, p, viaExpr[consumer.Name]) {
 				if df.Optional {
 					continue
 				}
@@ -90,15 +94,24 @@ func (m *graphModel) optionalComponentFindings() []GraphFinding {
 	return out
 }
 
-// fieldsFilledBy is consumer's Deps fields whose type p's value satisfies.
-// Untyped (mid-edit), it is none: the edge alone cannot name the field.
-func (m *graphModel) fieldsFilledBy(consumer, p *graphNode) []DepsField {
-	pt, ok := m.u.produced[p.Name]
-	if !ok {
-		return nil
-	}
+// fieldsFilledBy is consumer's Deps fields p fills: those whose type p's
+// value satisfies, and those whose compose.go value expression reads p's
+// accessor (sources: field → nodes, from composeFieldSources). The second
+// catches a value derived from p — a variant wrapper's inner client,
+// `g.CallerControlPlane().Client()` — which is nil exactly when p is, though
+// its type is not p's. Untyped (mid-edit) and unread, it is none: the edge
+// alone cannot name the field.
+func (m *graphModel) fieldsFilledBy(consumer, p *graphNode, sources map[string]map[string]bool) []DepsField {
+	pt, typed := m.u.produced[p.Name]
 	var out []DepsField
 	for _, df := range consumer.Deps {
+		if sources[df.Name][p.Name] {
+			out = append(out, df)
+			continue
+		}
+		if !typed {
+			continue
+		}
 		want := m.u.deps[consumer.Name][df.Name]
 		if want == nil || want == types.Typ[types.Invalid] {
 			continue
@@ -106,6 +119,94 @@ func (m *graphModel) fieldsFilledBy(consumer, p *graphNode) []DepsField {
 		if types.AssignableTo(pt, want) {
 			out = append(out, df)
 		}
+	}
+	return out
+}
+
+// composeFieldSources reads, for each new<X> method of compose.go, the
+// accessors each keyed field of its composite literals calls: node X →
+// field → accessor names. A local assigned from an accessor
+// (`cp := g.CallerControlPlane()`) carries that accessor into every field
+// that reads it. Unparseable source reads as none.
+func composeFieldSources(src string) map[string]map[string]map[string]bool {
+	out := map[string]map[string]map[string]bool{}
+	if src == "" {
+		return out
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "compose.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		return out
+	}
+	for name, fd := range graphComposeMethods(file) {
+		x, ok := strings.CutPrefix(name, "new")
+		if !ok || len(fd.Recv.List[0].Names) != 1 {
+			continue
+		}
+		recv := fd.Recv.List[0].Names[0].Name
+		locals := map[string]map[string]bool{}
+		reads := func(e ast.Node) map[string]bool {
+			got := map[string]bool{}
+			ast.Inspect(e, func(n ast.Node) bool {
+				switch v := n.(type) {
+				case *ast.SelectorExpr:
+					if id, ok := v.X.(*ast.Ident); ok && id.Name == recv {
+						got[v.Sel.Name] = true
+					}
+				case *ast.Ident:
+					for a := range locals[v.Name] {
+						got[a] = true
+					}
+				}
+				return true
+			})
+			return got
+		}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			as, ok := n.(*ast.AssignStmt)
+			if !ok || len(as.Rhs) != 1 {
+				return true
+			}
+			src := reads(as.Rhs[0])
+			if len(src) == 0 {
+				return true
+			}
+			for _, l := range as.Lhs {
+				if id, ok := l.(*ast.Ident); ok && id.Name != "_" {
+					if locals[id.Name] == nil {
+						locals[id.Name] = map[string]bool{}
+					}
+					for a := range src {
+						locals[id.Name][a] = true
+					}
+				}
+			}
+			return true
+		})
+		fields := map[string]map[string]bool{}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			for _, el := range lit.Elts {
+				kv, ok := el.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := kv.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				for a := range reads(kv.Value) {
+					if fields[key.Name] == nil {
+						fields[key.Name] = map[string]bool{}
+					}
+					fields[key.Name][a] = true
+				}
+			}
+			return true
+		})
+		out[x] = fields
 	}
 	return out
 }

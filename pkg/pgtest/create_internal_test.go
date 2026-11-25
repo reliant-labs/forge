@@ -85,9 +85,9 @@ func TestEmbeddedServerClonesByFileCopy(t *testing.T) {
 
 // A CREATE DATABASE that cannot finish fails within createTimeout, naming
 // the server's data directory and what its backend waited on, instead of
-// blocking until the go test timeout. The create is held up the way a lock
-// holds one up: a session that has renamed the template, uncommitted, holds
-// the template's database lock, which CREATE DATABASE … TEMPLATE waits for.
+// blocking until the go test timeout. An explicit SHARE lock on pg_database
+// blocks CREATE DATABASE's catalog write while still allowing the diagnostic
+// query to read the catalog. LOCK TABLE is legal in a transaction block.
 func TestCreateFailsWithinTheTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("boots real postgres; skipped under -short")
@@ -112,7 +112,7 @@ func TestCreateFailsWithinTheTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec("ALTER DATABASE " + tmpl + " RENAME TO " + tmpl + "_held"); err != nil {
+	if _, err := tx.Exec("LOCK TABLE pg_database IN SHARE MODE"); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}

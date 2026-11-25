@@ -12,7 +12,7 @@ description: Local ClickStack telemetry, continuous profiles and live pprof when
 - **Traces:** HyperDX → Search → Traces. Find slow requests, trace cross-service calls.
 - **Metrics:** HyperDX → Search → Metrics. Query `rpc.server.call.duration` (the otelconnect RPC edge histogram; attributes `rpc.method`, `rpc.response.status_code`) etc.
 - **Logs:** HyperDX → Search → Logs. The collector tails `.forge/logs/<env>/*.log`, so a host process's logs are here and in the file; a log with a `TraceId` links to its trace.
-- **Profiles:** continuous profiles are collected locally when enabled; export them with `forge obs profile` (local ClickStack only, `--env <env>` rather than a positional env). Load `forge skill load observability/profiles` for sample types, retention and collection settings. Use `--list` to discover services; no samples is not proof the process used no CPU. For a live process, pprof below remains available.
+- **Profiles:** continuous profiles are collected locally when enabled; export them with `forge obs profile <env>` (a hosted env's through its control plane; with no env, the local ClickStack, where `--env` only filters samples). Load `forge skill load observability/profiles` for sample types, retention and collection settings. Use `--list` to discover services; no samples is not proof the process used no CPU. For a live process, pprof below remains available.
 
 Host processes are pointed at it by `forge env up`, which sets `OTEL_EXPORTER_OTLP_ENDPOINT` to the loopback OTLP/HTTP port the compose service publishes (`_otlp_http_port` in `dev/main.k`) and `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, unless you set them yourself.
 

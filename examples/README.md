@@ -62,6 +62,21 @@ Every example README carries the
 [Deploy with Reliant Forge](../docs/deploy-badge.md) badge. Paste it into your
 own repository's README the same way.
 
+## Regression checks (no deploy)
+
+From the forge repository root:
+
+```bash
+node --test examples/deployment.test.cjs examples/nextjs-static-go-api/scaffold.test.cjs
+```
+
+The deployment tests evaluate the actual prod/staging KCL with each example's
+pinned `reliant forge`: hosted database references, migration ordering and Vite
+static hosting. They need Node and `reliant`, but no database or credentials.
+The scaffold test runs the real notes script against fixture scaffold/build
+tools and checks that every CRUD RPC is public **before** regeneration; it does
+not build or start the generated app.
+
 ## Adding an example
 
 - One directory per example, with a `README.md` in the shape of the others and

@@ -126,7 +126,7 @@ message Order {
 }
 
 func TestAppendOnlyFilter(t *testing.T) {
-	rpcs := buildEntityCRUDRPCPieces("Order")
+	rpcs := buildEntityCRUDRPCPieces("Order", true)
 	msgs := buildEntityCRUDMessagePieces("Order", nil)
 
 	// no-op when appendOnly is false

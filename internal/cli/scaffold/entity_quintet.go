@@ -147,6 +147,19 @@ type quintetCompletionResult struct {
 	AddedMessages []string
 	// ProtoPath is the file the injection targeted (the service file).
 	ProtoPath string
+	// Public reports that the injected rpcs were born auth_required: false,
+	// because the project is one nobody signs in to
+	// (codegen.ProjectHasNoSignIn).
+	Public bool
+}
+
+// publicNote is the line printed under a completion whose rpcs were born
+// public, so the decision forge made for the author is said out loud.
+func (r *quintetCompletionResult) publicNote() string {
+	if !r.Public || len(r.AddedRPCs) == 0 {
+		return ""
+	}
+	return "born public (auth_required: false): this project declares no sign-in (--auth-mode none), so a fail-closed rpc would answer 401 to every caller — set auth_required: true on any rpc that must not be"
 }
 
 func (r *quintetCompletionResult) Complete() bool {
@@ -172,7 +185,9 @@ func completeEntityCRUDProto(root, serviceProtoPath, entityDeclFile, entity stri
 	res := &quintetCompletionResult{ProtoPath: serviceProtoPath}
 
 	var rpcTexts []string
-	for _, p := range appendOnlyFilter(buildEntityCRUDRPCPieces(entity), entity, appendOnly) {
+	authRequired := !codegen.ProjectHasNoSignIn(root)
+	res.Public = !authRequired
+	for _, p := range appendOnlyFilter(buildEntityCRUDRPCPieces(entity, authRequired), entity, appendOnly) {
 		if rpcDeclRE(p.name).MatchString(content) {
 			continue
 		}

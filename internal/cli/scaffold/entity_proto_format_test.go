@@ -64,7 +64,7 @@ func TestEnsureProtoImportSortsIntoPlace(t *testing.T) {
 func TestCRUDRPCReadsDeclareNoSideEffects(t *testing.T) {
 	const option = "option idempotency_level = NO_SIDE_EFFECTS;"
 	want := map[string]bool{"CreateCounter": false, "GetCounter": true, "UpdateCounter": false, "DeleteCounter": false, "ListCounters": true}
-	for _, p := range buildEntityCRUDRPCPieces("Counter") {
+	for _, p := range buildEntityCRUDRPCPieces("Counter", true) {
 		got := strings.Contains(p.text, option)
 		if got != want[p.name] {
 			t.Errorf("%s: declares NO_SIDE_EFFECTS = %v, want %v:\n%s", p.name, got, want[p.name], p.text)
@@ -80,7 +80,7 @@ func TestCRUDRPCReadsDeclareNoSideEffects(t *testing.T) {
 }
 
 func TestCRUDRPCOneFieldOptionLiteralIsOneLine(t *testing.T) {
-	for _, p := range buildEntityCRUDRPCPieces("Counter") {
+	for _, p := range buildEntityCRUDRPCPieces("Counter", true) {
 		if strings.Contains(p.text, "{\n      auth_required: true\n    };") {
 			t.Errorf("%s: a one-field option literal spans three lines; buf format writes {auth_required: true}:\n%s", p.name, p.text)
 		}
@@ -100,7 +100,7 @@ func TestCRUDRPCOptionsStayAuthRequired(t *testing.T) {
 	literal := regexp.MustCompile(`(?s)option \(forge\.v1\.method\) = \{(.*?)\};`)
 	wantIdem := map[string]bool{"CreateCounter": true, "GetCounter": false, "UpdateCounter": true, "DeleteCounter": true, "ListCounters": false}
 
-	pieces := buildEntityCRUDRPCPieces("Counter")
+	pieces := buildEntityCRUDRPCPieces("Counter", true)
 	if len(pieces) != len(wantIdem) {
 		t.Fatalf("got %d CRUD rpcs, want %d", len(pieces), len(wantIdem))
 	}

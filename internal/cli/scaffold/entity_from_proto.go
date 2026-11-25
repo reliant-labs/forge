@@ -491,7 +491,7 @@ func predictQuintetCompletion(scan *codegen.RawProtoScan, entity string, appendO
 		return nil, nil
 	}
 	rpcNames := scan.RPCNames()
-	for _, p := range appendOnlyFilter(buildEntityCRUDRPCPieces(entity), entity, appendOnly) {
+	for _, p := range appendOnlyFilter(buildEntityCRUDRPCPieces(entity, true), entity, appendOnly) {
 		if !rpcNames[p.name] {
 			missingRPCs = append(missingRPCs, p.name)
 		}
@@ -592,6 +592,9 @@ func reportQuintetCompletion(res *quintetCompletionResult, notes []string, err e
 	default:
 		fmt.Printf("  ✅ Completed CRUD quintet in %s (+%d rpc, +%d message)\n",
 			filepath.Base(res.ProtoPath), len(res.AddedRPCs), len(res.AddedMessages))
+		if n := res.publicNote(); n != "" {
+			fmt.Printf("  ℹ️  %s\n", n)
+		}
 	}
 	for _, n := range notes {
 		fmt.Printf("  ℹ️  %s\n", n)

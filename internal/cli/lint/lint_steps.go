@@ -1060,6 +1060,23 @@ func lintPipeline() []linterStep {
 			},
 		},
 
+		// 14a-bis-bis. Auth with no sign-in — an rpc that requires a caller
+		// in a project nobody can sign in to (`--auth-mode none`), so it
+		// answers 401 to every browser caller (see lint_auth_no_sign_in.go).
+		// ADVISORY: warnings; lint.rules can raise it.
+		{
+			name:  "auth-no-sign-in lint",
+			gates: false,
+			scope: scopeByFile,
+			shouldRun: func(rc *lintRunCtx) (bool, string) {
+				return rc.cwd != "" && dirExists(protoDirDefault), ""
+			},
+			collect: func(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
+				fs, err := collectAuthNoSignInJSON(rc.cwd)
+				return fs, false, err
+			},
+		},
+
 		// 14a-ter. Identity sign-in methods — a forge.ManagedIdentity that
 		// declares passkeys, magic links, social sign-in or an open/domain
 		// sign-up the login broker does not serve (see

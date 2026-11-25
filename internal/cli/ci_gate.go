@@ -67,7 +67,10 @@ func newCIGateCmd() *cobra.Command {
 			"`PASS (cached <sha>)`. CI_NO_CACHE=1 or --no-cache runs everything.\n\n" +
 			"On a branch, unit-tests runs only the Go packages the branch's changes reach (affected\n" +
 			"mode), and falls back to the whole suite when anything but Go source changed, on the\n" +
-			"default branch, or with CI_FULL=1 / --full. The mode and why are printed.\n\n" +
+			"default branch, or with CI_FULL=1 / --full. The mode and why are printed.\n" +
+			"ci.gate.affected_rules say what other paths select (Go test packages, a frontend's\n" +
+			"tests as a test-<frontend> row, or the full suite), and an extra check with `paths`\n" +
+			"runs on a branch only when a changed file matches them.\n\n" +
 			"Tiers (--tier, or --event to pick one from a GitHub event name) run the gate as the\n" +
 			"scaffolded ci.yml runs it for that event. A requested built-in lane the tier does not\n" +
 			"run is listed DEFERRED, which does not fail the gate:\n" +
@@ -268,7 +271,7 @@ func runGate(cmd *cobra.Command, args []string, flags gateFlags, out io.Writer) 
 		fmt.Fprintf(out, "tier: %s — %s\n", tier.Name, tier.About)
 	}
 	rep := executeGate(cmd, out, gateExec{
-		root: root, cfg: cfg, frontends: frontendDirs(ciData), plan: plan, flags: flags, tier: tier, tiered: tiered,
+		root: root, cfg: cfg, frontends: frontendDirs(ciData), ciFrontends: ciData.Frontends, plan: plan, flags: flags, tier: tier, tiered: tiered,
 	})
 	run.rep, run.ran = rep, true
 	if rep.Failed() {
@@ -282,10 +285,13 @@ type gateExec struct {
 	root      string
 	cfg       *config.ProjectConfig
 	frontends []string
-	plan      gatePlan
-	flags     gateFlags
-	tier      cigate.Tier
-	tiered    bool
+	// ciFrontends are the discovered frontends, for the test-<frontend>
+	// rows of affected mode.
+	ciFrontends []templates.FrontendCIConfig
+	plan        gatePlan
+	flags       gateFlags
+	tier        cigate.Tier
+	tiered      bool
 }
 
 // executeGate runs the planned checks: verdict cache, affected mode, host
@@ -320,7 +326,8 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 		tierForce = "--tier " + in.tier.Name
 	}
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, frontends: in.ciFrontends,
+		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
 
@@ -397,12 +404,15 @@ func publishGateReport(stderr io.Writer, rep cigate.Report, report string) {
 }
 
 // applyAffectedMode narrows the unit-tests row to the packages a branch
-// reaches (cigate.ComputeAffected), printing the mode and why. A PASS of the
-// whole suite cached for this tree answers for any narrower run, so then the
-// row stays whole and the cache answers it.
+// reaches (cigate.ComputeAffected), printing the mode and why, adds the
+// test-<frontend> rows ci.gate.affected_rules select, and settles path-gated
+// extra checks. A PASS of the whole suite cached for this tree answers for
+// any narrower run, so then the row stays whole and the cache answers it.
 type affectedArgs struct {
 	root, base         string
 	ignore, env, skips []string
+	rules              []config.CIGateAffectedRule
+	frontends          []templates.FrontendCIConfig
 	cache              *cigate.VerdictCache
 	full               bool
 	// tierForce, when set, is the tier that runs the whole suite (--tier main).
@@ -410,25 +420,13 @@ type affectedArgs struct {
 }
 
 func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check, in affectedArgs) []cigate.Check {
-	var unit *cigate.Check
-	for i := range checks {
-		if checks[i].Name == cigate.UnitTests {
-			unit = &checks[i]
-		}
+	narrow := narrowsUnit(out, checks, in)
+	gated := false
+	for _, c := range checks {
+		gated = gated || len(c.Paths) > 0
 	}
-	if unit == nil || unit.NotApplicable != "" {
+	if !narrow && !gated {
 		return checks
-	}
-	for _, s := range in.skips {
-		if s == cigate.UnitTests {
-			return checks
-		}
-	}
-	if in.cache != nil && !unit.NoCache {
-		if commit, ok := in.cache.Lookup(*unit); ok {
-			fmt.Fprintf(out, "unit tests: full suite — it already passed on this tree (%s)\n", commit)
-			return checks
-		}
 	}
 	force := ""
 	switch {
@@ -439,9 +437,43 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 	case in.tierForce != "":
 		force = in.tierForce
 	}
-	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force, Ignore: in.ignore})
+	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
+		Ignore: in.ignore, Rules: in.rules, ChangesOnly: !narrow})
+	if !narrow {
+		return cigate.GateByPaths(checks, a)
+	}
 	fmt.Fprintln(out, a.Line())
-	return cigate.ApplyAffected(checks, a)
+	for _, s := range a.Selections {
+		fmt.Fprintln(out, "  "+s)
+	}
+	return cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends)
+}
+
+// narrowsUnit reports whether this run may narrow the unit-tests row: it is
+// selected, applicable and not skipped, and the cache has no whole-suite PASS
+// for this tree (which it says).
+func narrowsUnit(out io.Writer, checks []cigate.Check, in affectedArgs) bool {
+	var unit *cigate.Check
+	for i := range checks {
+		if checks[i].Name == cigate.UnitTests {
+			unit = &checks[i]
+		}
+	}
+	if unit == nil || unit.NotApplicable != "" {
+		return false
+	}
+	for _, s := range in.skips {
+		if s == cigate.UnitTests {
+			return false
+		}
+	}
+	if in.cache != nil && !unit.NoCache {
+		if commit, ok := in.cache.Lookup(*unit); ok {
+			fmt.Fprintf(out, "unit tests: full suite — it already passed on this tree (%s)\n", commit)
+			return false
+		}
+	}
+	return true
 }
 
 // gateSlots is how the gate bounds its heavy checks: one host heavy slot each.

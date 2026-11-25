@@ -230,7 +230,11 @@ func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
 				// Use the loaded function identity, not the import spelling:
 				// aliases work and a local lookalike New cannot prove reach.
 				pkg := k[:strings.LastIndex(k, ".")]
-				if calls[k+"="+pkg+"."+component.Comp.compConstructor] {
+				// NewInstrumented is the generated New wrapped in the
+				// package's middleware (middleware_gen.go): the same
+				// construction, so it is the same evidence.
+				ctor := component.Comp.compConstructor
+				if calls[k+"="+pkg+"."+ctor] || (ctor == "New" && calls[k+"="+pkg+".NewInstrumented"]) {
 					wrapped[k] = true
 				}
 			}

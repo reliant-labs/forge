@@ -19,10 +19,10 @@ import (
 func TestServiceTaskfileHandsTaskVarsToTheShell(t *testing.T) {
 	rendered := string(renderProject(t, "Taskfile.yml.tmpl", projectData()))
 	for _, want := range []string{
-		"RESTORE_DUMP: '{{.DUMP}}'",
+		`RESTORE_DUMP: "{{.DUMP}}"`,
 		`DUMP="${RESTORE_DUMP:-snapshot.dump.gz}"`,
-		"RESTORE_DB: '{{.SNAPSHOT_DB}}'",
-		"PSQL_DB: '{{.POSTGRES_DB}}'",
+		`RESTORE_DB: "{{.SNAPSHOT_DB}}"`,
+		`PSQL_DB: "{{.POSTGRES_DB}}"`,
 		`-d "${PSQL_DB:-`,
 	} {
 		if !strings.Contains(rendered, want) {

@@ -84,8 +84,11 @@ func TestDeclaresIdentityFollowsAuthNone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.HasPrefix(string(dev), codegen.AuthNoneDeclaration+"\n"); got != tc.authNone {
+		if got := strings.Contains(string(dev), "\n"+codegen.AuthNoneDeclaration+"\n"); got != tc.authNone {
 			t.Errorf("%s: explicit no-sign-in declaration = %v, want %v", tc.name, got, tc.authNone)
+		}
+		if tc.authNone && !strings.HasPrefix(string(dev), `"""`) {
+			t.Error("the module docstring must stay first so KCL does not emit it as an output value")
 		}
 	}
 }

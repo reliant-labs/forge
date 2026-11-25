@@ -80,6 +80,15 @@ type Affected struct {
 	// Selections say, one line per affected rule that matched, what it
 	// claimed and selected.
 	Selections []string
+	// Build are the module packages, with or without tests, whose build
+	// contains a changed package: a compile phase's set (affected mode).
+	Build []string
+	// Why says, per package in Packages and in its order, the first changed
+	// file that selected it and the edge it came by (affected_why.go).
+	Why []PackageWhy
+	// Files reports each changed file's package and claiming rules; set
+	// whenever the package graph was read.
+	Files []FileReport
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -119,6 +128,9 @@ type AffectedInput struct {
 	// for a caller that gates checks by path (GateByPaths) but does not
 	// narrow the unit lane.
 	ChangesOnly bool
+	// Files, when non-empty, are the changed files to judge instead of the
+	// diff against the base: a what-if (`forge ci gate --plan --files`).
+	Files []string
 	// Git and GoList run the two tools; nil uses the real binaries. Tests
 	// substitute.
 	Git    func(ctx context.Context, dir string, args ...string) (string, error)
@@ -131,6 +143,9 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	full := func(reason string) Affected { return Affected{Full: true, Reason: reason} }
 	if in.Force != "" {
 		return full(in.Force)
+	}
+	if len(in.Files) > 0 {
+		return computeAffectedFiles(ctx, in)
 	}
 	git := in.Git
 	if git == nil {
@@ -173,6 +188,12 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	if in.ChangesOnly {
 		return a
 	}
+	return affectedFromGraph(ctx, in, a)
+}
+
+// affectedFromGraph narrows a (its changed files known) by the package graph.
+func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affected {
+	baseRef, short, changed := a.BaseRef, a.Base, a.Changed
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
 	fullAfterDiff := func(reason string) Affected {
@@ -192,9 +213,13 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
 	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
+	files := explainFiles(changed, g, in.Ignore, ruleMatchers(in.Rules))
 	if reason != "" {
-		return fullAfterDiff(reason)
+		full := fullAfterDiff(reason)
+		full.Files = files
+		return full
 	}
+	a.Files = files
 	a.Total = len(g.testDeps)
 	for pkg, deps := range g.testDeps {
 		if sel.changedPkgs[pkg] || sel.rulePkgs[pkg] {
@@ -218,6 +243,8 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 			a.Selections = append(a.Selections, selectionLine(i, rule, sel.hits[i], g))
 		}
 	}
+	a.Build = g.buildSet(sel.changedPkgs)
+	a.Why = explainPackages(a.Packages, files, g, ruleMatchers(in.Rules))
 	return a
 }
 
@@ -370,6 +397,9 @@ type packageGraph struct {
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
+	// buildDeps maps each module package to every package its build (not
+	// its tests) imports, transitively.
+	buildDeps map[string][]string
 }
 
 // listedPackage is the part of a `go list -json` package affected mode reads;
@@ -403,7 +433,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
 		realRoot = r
 	}
-	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}}
+	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, buildDeps: map[string][]string{}}
 	dec := json.NewDecoder(r)
 	for {
 		var p listedPackage
@@ -438,6 +468,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 		path := stripTestVariant(p.ImportPath)
 		if p.ForTest == "" {
 			g.dirPkg[dir] = path
+			g.buildDeps[path] = p.Deps
 		}
 		for _, files := range [][]string{p.EmbedFiles, p.TestEmbedFiles, p.XTestEmbedFiles} {
 			for _, f := range files {

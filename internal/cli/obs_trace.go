@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -169,7 +170,8 @@ func newObsTraceCmd() *cobra.Command {
 		Use:   "trace <trace-id> [env]",
 		Short: "One trace as a tree, with its errors and logs",
 		Long: `Show one trace: its span tree, the failing spans with their exception, and the
-logs that carry its id. [env] defaults to dev.
+logs that carry its id. [env] defaults to dev. The env may also come first, as
+it does for every sibling verb (` + Name() + ` obs trace prod <trace-id>).
 
 Each span line carries what says how it ended: the rpc / http outcome,
 error.type, a database statement's summary, the rows a ClickHouse statement
@@ -198,7 +200,12 @@ counted over every span, follow the tree.
 ` + obsTraceSchema.Help(),
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runObsTrace(cmd.Context(), defaultObsDeps(cmd), args[0], obsEnvArg(args, 1), o)
+			d := defaultObsDeps(cmd)
+			traceID, env, err := obsTraceArgs(args)
+			if err != nil {
+				return obsFail(d, o.out.JSON, schemaObsTrace, err)
+			}
+			return runObsTrace(cmd.Context(), d, traceID, env, o)
 		},
 	}
 	o.register(cmd, 72*time.Hour, 0)
@@ -207,6 +214,57 @@ counted over every span, follow the tree.
 	cmd.Flags().IntVar(&o.logs, "logs", 20, "most correlated log lines to include (0 = none)")
 	_ = cmd.Flags().MarkHidden("limit")
 	return cmd
+}
+
+// obsTraceArgs reads `obs trace`'s positionals: `<trace-id> [env]`, and also
+// `<env> <trace-id>`, the order every sibling verb takes (`obs traces prod`,
+// `obs logs prod`). `obs trace prod 890b…` used to look the 32-hex id up as an
+// env and fail "cannot read env \"890b…\"'s declaration" (forge report
+// 22553dc3).
+//
+// The order is decided by shape: an argument that cannot be a trace id (not
+// hex) is the env, and between two hex arguments the one with a trace id's
+// shape (looksLikeTraceID) is the id. Two that both have it, or no hex
+// argument at all, is a usage error naming the form. Any other pair keeps the
+// documented order, so an id of another length still works there. An empty
+// env argument keeps meaning dev (obsEnvArg).
+func obsTraceArgs(args []string) (traceID, env string, err error) {
+	usage := func(format string, a ...any) error {
+		return obsbackend.Wrong("%s; usage: %s obs trace <trace-id> [env] (or <env> <trace-id>)", fmt.Sprintf(format, a...), Name())
+	}
+	switch len(args) {
+	case 1:
+		if !obsTraceIDRe.MatchString(args[0]) {
+			return "", "", usage("%q is not a trace id (hex)", args[0])
+		}
+		return args[0], obsEnvArg(args, 1), nil
+	case 2:
+		hex0, hex1 := obsTraceIDRe.MatchString(args[0]), obsTraceIDRe.MatchString(args[1])
+		shaped0, shaped1 := looksLikeTraceID(args[0]), looksLikeTraceID(args[1])
+		switch {
+		case !hex0 && !hex1:
+			return "", "", usage("neither %q nor %q is a trace id (hex)", args[0], args[1])
+		case shaped0 && shaped1:
+			return "", "", usage("both %q and %q look like trace ids; name one trace id and one env", args[0], args[1])
+		case !hex0, shaped1 && !shaped0:
+			// Only the second can be the id, or only it has an id's shape
+			// (the first is an all-hex env name such as "e2e").
+			return args[1], obsEnvArg(args[:1], 0), nil
+		}
+		return args[0], obsEnvArg(args, 1), nil
+	}
+	return "", "", usage("want a trace id and an optional env, got %d arguments", len(args))
+}
+
+// obsTraceIDRe is what the backends accept as a trace id
+// (obsquery.NormalizeTraceID): 1-64 hex characters.
+var obsTraceIDRe = regexp.MustCompile(`^[0-9a-fA-F]{1,64}$`)
+
+// looksLikeTraceID reports whether s has a trace id's shape: 32 hex
+// characters (W3C / OpenTelemetry, 16 bytes) or 16 (a 64-bit id). An env name
+// can be all hex ("e2e"), so being hex alone does not make an argument the id.
+func looksLikeTraceID(s string) bool {
+	return (len(s) == 32 || len(s) == 16) && obsTraceIDRe.MatchString(s)
 }
 
 func runObsTrace(ctx context.Context, d obsDeps, traceID, env string, o obsTraceOpts) error {

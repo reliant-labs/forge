@@ -31,6 +31,7 @@ package codegen
 
 import (
 	"fmt"
+	"go/ast"
 	"go/types"
 	"path/filepath"
 	"sort"
@@ -201,8 +202,9 @@ func (m *graphModel) unreachableFindings() []GraphFinding {
 // <pkg>.New with that configuration). The graph identifies a node by its Go
 // type, so a component with no default configuration — only variants — is
 // taken by no consumer and drew no edge, and the variants' providers call its
-// constructor themselves. It is still constructed by every process that
-// reaches one of them, so the reach check must count it: otherwise the
+// constructor themselves. Require a resolved call to that constructor in
+// the provider body as well as the embed; a nil or supplied Service in the
+// same wrapper shape is not evidence. The reach check must count it: otherwise the
 // idiom the graph-checks skill documents could not retire the
 // //forge:provided marker it replaces.
 //
@@ -219,8 +221,19 @@ func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
 		if n.Kind != nodeProvider || !reached[n.Name] {
 			continue
 		}
+		calls := m.providerConstructorCalls(n.Name)
 		for _, k := range embeddedTypeKeys(m.u.produced[n.Name]) {
-			wrapped[k] = true
+			for _, component := range m.nodes {
+				if component.Kind != nodeComponent || component.Comp == nil || namedTypeKey(m.u.produced[component.Name]) != k {
+					continue
+				}
+				// Use the loaded function identity, not the import spelling:
+				// aliases work and a local lookalike New cannot prove reach.
+				pkg := k[:strings.LastIndex(k, ".")]
+				if calls[pkg+"."+component.Comp.compConstructor] {
+					wrapped[k] = true
+				}
+			}
 		}
 	}
 	if len(wrapped) == 0 {
@@ -233,6 +246,47 @@ func (m *graphModel) variantReached(reached map[string]bool) map[string]bool {
 		}
 		if k := namedTypeKey(m.u.produced[n.Name]); k != "" && wrapped[k] {
 			out[n.Name] = true
+		}
+	}
+	return out
+}
+
+// providerConstructorCalls records resolved package functions called in the
+// provider body. A type shape alone is not construction evidence. Do not count
+// closures: declaring a function that could construct a service never calls it.
+// Missing syntax/type information deliberately leaves the component pending.
+func (m *graphModel) providerConstructorCalls(name string) map[string]bool {
+	out := map[string]bool{}
+	if m.u.app == nil || m.u.app.TypesInfo == nil {
+		return out
+	}
+	for _, file := range m.u.app.Syntax {
+		for _, decl := range file.Decls {
+			fd, ok := decl.(*ast.FuncDecl)
+			if !ok || fd.Recv != nil || fd.Name.Name != "New"+name || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(node ast.Node) bool {
+				if _, closure := node.(*ast.FuncLit); closure {
+					return false
+				}
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				var id *ast.Ident
+				switch fun := call.Fun.(type) {
+				case *ast.SelectorExpr:
+					id = fun.Sel
+				case *ast.Ident:
+					id = fun
+				}
+				fn, ok := m.u.app.TypesInfo.Uses[id].(*types.Func)
+				if ok && fn.Pkg() != nil {
+					out[fn.Pkg().Path()+"."+fn.Name()] = true
+				}
+				return true
+			})
 		}
 	}
 	return out

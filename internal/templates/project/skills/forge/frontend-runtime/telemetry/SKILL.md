@@ -7,8 +7,12 @@ description: Browser telemetry in forge frontends — the HyperDX SDK forge scaf
 
 Forge scaffolds, injects and initialises the **HyperDX browser SDK** in Next.js
 and Vite frontends: `@hyperdx/otel-web`, which `@reliantlabs/forge-web-runtime`
-carries as its own dependency and drives itself, with session replay recorded
-by the runtime's own rrweb recorder. The app declares neither. It captures
+drives itself, with session replay recorded by the runtime's own rrweb
+recorder. Both are the runtime's exact optional peers (from 0.14.0), so the app
+declares them at the runtime's versions: every web scaffold does, and
+`forge generate` adds them to any frontend whose sources import
+`@reliantlabs/forge-web-runtime/telemetry`. A consumer that never imports it
+(Expo, an Electron main process on `/node`) installs neither. It captures
 uncaught errors and unhandled rejections, `console.*`, fetch/XHR spans, document
 load, long tasks and web vitals, and ships them as OTLP to ClickStack. There is
 no Sentry SDK and no Sentry-protocol adapter. React Native frontends get

@@ -26,7 +26,7 @@ import (
 
 const webRuntimePublishedVersionsFile = "webruntime_published_versions.txt"
 
-var exactVersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+var publishedVersionRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 
 // readPublishedWebRuntimeVersions parses the recorded list: '#' comments and
 // blank lines are skipped, every other line is one X.Y.Z.
@@ -42,7 +42,7 @@ func readPublishedWebRuntimeVersions(t *testing.T) []string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if !exactVersionRe.MatchString(line) {
+		if !publishedVersionRe.MatchString(line) {
 			t.Fatalf("%s:%d: %q is not an X.Y.Z version", webRuntimePublishedVersionsFile, i+1, line)
 		}
 		versions = append(versions, line)
@@ -52,7 +52,7 @@ func readPublishedWebRuntimeVersions(t *testing.T) []string {
 
 func TestWebRuntimeFloorIsAPublishedVersion(t *testing.T) {
 	floor, ok := strings.CutPrefix(webRuntimePublishedRange, "^")
-	if !ok || !exactVersionRe.MatchString(floor) {
+	if !ok || !publishedVersionRe.MatchString(floor) {
 		t.Fatalf("webRuntimePublishedRange = %q, want a caret range ^X.Y.Z", webRuntimePublishedRange)
 	}
 	for _, v := range readPublishedWebRuntimeVersions(t) {

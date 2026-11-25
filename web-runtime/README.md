@@ -100,14 +100,28 @@ installs `@opentelemetry/api` and nothing else. `src/published-surface.test.ts`
 holds the rule: a peer the `/node` import closure does not reach must be
 optional.
 
-The browser telemetry SDK is not a peer. `@hyperdx/otel-web` and `rrweb` are
-exact-pinned **dependencies**, imported only by `/telemetry` and only through
-`import()`, so each is its own chunk (rrweb loads only when replay runs) and a
-consumer that never imports `/telemetry` bundles neither. They are
-dependencies rather than optional peers because apps that installed an earlier
-runtime declare `@hyperdx/browser` instead; a peer they don't declare would
-fail to resolve on their next install. Those apps need no edit, and their
-`@hyperdx/browser` entry is unused from then on.
+The browser telemetry SDK is an optional peer too. `@hyperdx/otel-web` and
+`rrweb` are imported only by `/telemetry` and only through `import()`, so each
+is its own chunk (rrweb loads only when replay runs) and a consumer that never
+imports `/telemetry` neither bundles nor installs them. Both are **exact**
+peers, because the runtime drives them below their public surface, so an app
+that imports `/telemetry` declares them at exactly the versions in this
+package's `peerDependencies`. Every forge web scaffold (Next.js, Vite, the
+static-site starters) does, and `forge generate` adds them to any frontend
+whose sources import `/telemetry`.
+
+Until 0.14.0 they were **dependencies**, which put about 90 MB of browser
+packages into every consumer, an Electron main process that imports only
+`/node` included. 0.14.0 is a minor release for that reason: a `^0.13` app
+that never regenerates keeps the runtime that carries them, and an app that
+moves to `^0.14` without forge declares them itself:
+
+```sh
+npm install @hyperdx/otel-web@0.20.0 rrweb@2.1.7
+```
+
+An app that installed a runtime before 0.13.19 may still declare
+`@hyperdx/browser`; nothing imports it any more, and it can be removed.
 
 Under Node, `/telemetry` loads the SDK from `dist/hyperdx-otel-web.node.js`
 instead. That file is `@hyperdx/otel-web` bundled for the browser platform

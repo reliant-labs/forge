@@ -82,6 +82,17 @@ func FuncMap() template.FuncMap {
 		"typePinPath": func(name string, hoisted bool) string {
 			return webruntimepeers.TypePinPath(name, hoisted, "")
 		},
+		// webRuntimePeer renders the specifier the runtime declares for one
+		// of its peers (web-runtime/package.json, embedded by
+		// webruntimepeers), so a scaffold's package.json cannot drift from
+		// it. A peer the runtime stops declaring fails the render.
+		"webRuntimePeer": func(name string) (string, error) {
+			spec, ok := webruntimepeers.PeerSpec(name)
+			if !ok {
+				return "", fmt.Errorf("@reliantlabs/forge-web-runtime declares no peer %q", name)
+			}
+			return spec, nil
+		},
 		"joinStrings":  strings.Join,
 		"default":      getDefault,
 		"add":          add,

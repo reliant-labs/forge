@@ -42,8 +42,8 @@ func TestClaimContentRefusal_PrintsTheClaimLink(t *testing.T) {
 		if !strings.Contains(msg, "Claim to unlock") {
 			t.Errorf("%s: does not say what claiming unlocks:\n%s", cause, msg)
 		}
-		if r.reason != cloud.ReasonClaimableContentRefused || r.exit != exitCodeForError(deployErr) {
-			t.Errorf("%s: reason=%q exit=%d: the exit code must stay the one the deploy's error had", cause, r.reason, r.exit)
+		if r.reason != cloud.ReasonClaimableContentRefused || r.exit != exitRefused {
+			t.Errorf("%s: reason=%q exit=%d, want claimable_content_refused and exit 4", cause, r.reason, r.exit)
 		}
 	}
 }
@@ -143,5 +143,35 @@ func TestClaimableDeploy_PlatformClaimRequiredPrintsTheClaimLink(t *testing.T) {
 	}
 	if !strings.Contains(statusOut, "Claim:  https://app.reliant.dev/claim#rcl_9f3KQe") || strings.Contains(statusOut, "do not give the claim link") {
 		t.Errorf("status --claimable after a claim-required refusal:\n%s", statusOut)
+	}
+}
+
+// The scan's other refusals (one claiming does not lift, and an unavailable
+// scan) exit 4 with a --json envelope naming the reason, instead of exit 1
+// and no document (forge examples/express-postgres, 2026-11-25).
+func TestClaimableDeploy_ScanRefusalExits4WithItsEnvelope(t *testing.T) {
+	testkit.Slow(t, "renders KCL and runs the whole CLI")
+	for _, reason := range []string{cloud.ReasonClaimableContentRefused, cloud.ReasonClaimableScanUnavailable} {
+		t.Run(reason, func(t *testing.T) {
+			fake, _ := claimableFixture(t)
+			fake.refuseBundleReason = reason
+			out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--no-wait", "--json")
+			if err == nil || exitCodeForError(err) != exitRefused {
+				t.Fatalf("want exit 4; err=%v\n%s", err, out)
+			}
+			doc := decodeClaimDoc(t, out)
+			if doc["ok"] != false || doc["exit_code"] != float64(exitRefused) || doc["error_reason"] != reason {
+				t.Fatalf("doc = %v", doc)
+			}
+			if next, _ := doc["next_actions"].([]any); len(next) == 0 {
+				t.Errorf("no next_actions: %v", doc)
+			}
+			if !strings.Contains(err.Error(), "evidence id: ev-123") || !strings.Contains(err.Error(), "fix: ") {
+				t.Errorf("refusal text:\n%v", err)
+			}
+			if strings.Contains(err.Error(), "Claim:  ") {
+				t.Errorf("offers the claim link for a refusal claiming does not lift:\n%v", err)
+			}
+		})
 	}
 }

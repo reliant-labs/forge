@@ -382,6 +382,10 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 				noteDeployClaim(ctx, session.document(compute))
 				return r
 			}
+			if r := claimableScanRefusal(envName, deployErr); r != nil {
+				r.emitted = jsonDocumentsWritten.Load() != docsBefore
+				return r
+			}
 			return claimableDeployError(envName, deployErr)
 		}
 		doc := session.document(compute)
@@ -1165,8 +1169,8 @@ func claimRequiredInstructions(env string, cl *credentials.Claimable) string {
 }
 
 // claimContentRefusal renders a content refusal that claiming lifts: what
-// the platform refused, the claim link, and the ways forward. The exit code
-// stays the one the deploy's error already produced.
+// the platform refused, the claim link, and the ways forward. Exit 4, as for
+// every content refusal (contentscan's contract).
 func claimContentRefusal(env, claimURL string, deployErr error) *claimableRefusal {
 	var b strings.Builder
 	fmt.Fprintf(&b, "the platform publishes env %q only once its deploy is claimed. Nothing was published.\n", env)
@@ -1181,13 +1185,51 @@ func claimContentRefusal(env, claimURL string, deployErr error) *claimableRefusa
 	fmt.Fprintf(&b, "  fix: give the claim link to your user; once claimed, they sign in on this machine and deploy: %s",
 		loginThenDeploy(env))
 	r := &claimableRefusal{
-		exit: exitCodeForError(deployErr), code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableContentRefused,
+		exit: exitRefused, code: cloud.CodeFailedPrecondition, reason: cloud.ReasonClaimableContentRefused,
 		msg: b.String(), next: []string{loginThenDeploy(env)},
 	}
 	if ce != nil && ce.Code != "" {
 		r.code = ce.Code
 	}
 	return r
+}
+
+// claimableScanRefusal renders the platform content scan's other answers to
+// an anonymous deploy's upload: a refusal claiming does not lift
+// (claimable_content_refused with no claim-required header), and a scan that
+// could not answer (claimable_scan_unavailable). Both exit 4 (refused,
+// nothing lost), name the reason and the evidence id support needs, and give
+// the next command; a --json caller gets the envelope. nil for any other
+// error.
+func claimableScanRefusal(env string, deployErr error) *claimableRefusal {
+	var ce *cloud.Error
+	if !errors.As(deployErr, &ce) {
+		return nil
+	}
+	evidence := ""
+	if ce.Header != nil {
+		if id := strings.TrimSpace(ce.Header.Get("x-evidence-id")); id != "" {
+			evidence = fmt.Sprintf("\n  evidence id: %s (quote it to Reliant support if you think this is wrong)", id)
+		}
+	}
+	retry := fmt.Sprintf("%s env deploy %s --claimable", Name(), env)
+	switch {
+	case ce.HasReason(cloud.ReasonClaimableScanUnavailable):
+		return &claimableRefusal{
+			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeUnavailable), reason: ce.Reason, next: []string{retry},
+			msg: fmt.Sprintf("the platform's content scan could not judge this anonymous deploy's upload right now. Nothing was published.\n"+
+				"  platform: %s%s\n  fix: retry in a few minutes: %s", emptyAs(ce.Message, "the scan is unavailable"), evidence, retry),
+		}
+	case ce.HasReason(cloud.ReasonClaimableContentRefused):
+		return &claimableRefusal{
+			exit: exitRefused, code: emptyAs(ce.Code, cloud.CodeFailedPrecondition), reason: ce.Reason, next: []string{loginThenDeploy(env)},
+			msg: fmt.Sprintf("the platform's content scan refused this anonymous deploy's upload, and claiming would not change that. "+
+				"Nothing was published.\n  platform: %s%s\n"+
+				"  An organization's own deploys are not scanned this way.\n  fix: deploy it to your own account: %s",
+				emptyAs(ce.Message, "the content was refused"), evidence, loginThenDeploy(env)),
+		}
+	}
+	return nil
 }
 
 // claimToUnlockNote is the one sentence that says what claiming unlocks, in

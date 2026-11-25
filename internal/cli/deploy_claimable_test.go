@@ -56,6 +56,9 @@ type fakeClaimableControlPlane struct {
 	// refuseBundle, when set, makes RecordBundle answer the content scan's
 	// claim-required refusal with this cause.
 	refuseBundle string
+	// refuseBundleReason, when set, makes RecordBundle answer the content
+	// scan's refusal with this reason and no claim-required header.
+	refuseBundleReason string
 }
 
 func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +138,12 @@ func (f *fakeClaimableControlPlane) ServeHTTP(w http.ResponseWriter, r *http.Req
 		w.Header().Set(cloud.ClaimRequiredHeader, f.refuseBundle)
 		connectErr(w, http.StatusBadRequest, "failed_precondition",
 			"this content can't be published from an unclaimed deploy: claim the deploy with its claim link, then publish again")
+		return
+	}
+	if f.refuseBundleReason != "" && r.URL.Path == "/"+procRecordBundle {
+		w.Header().Set(cloud.ReasonHeader, f.refuseBundleReason)
+		w.Header().Set("X-Evidence-Id", "ev-123")
+		connectErr(w, http.StatusBadRequest, "failed_precondition", "this content was refused by the platform's safety scan")
 		return
 	}
 	if r.URL.Path == "/"+cloud.ProcGetOrganization {

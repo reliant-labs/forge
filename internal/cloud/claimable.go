@@ -68,6 +68,9 @@ const (
 	// Some of those refusals are lifted by claiming the deploy; those carry
 	// ClaimRequiredHeader too.
 	ReasonClaimableContentRefused = "claimable_content_refused"
+	// ReasonClaimableScanUnavailable: the content scan could not answer
+	// (fails closed; retryable).
+	ReasonClaimableScanUnavailable = "claimable_scan_unavailable"
 )
 
 // ClaimRequiredHeader marks a content refusal that claiming the deploy lifts,

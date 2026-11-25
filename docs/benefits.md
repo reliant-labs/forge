@@ -3093,7 +3093,7 @@ A failed deploy leaves the previous ReplicaSet serving and a bad migration is st
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge env deploy <env> --release <older> --note "<why>"`
+**Use:** `forge env deploy <env> <older-version> --note "<why>"`
 
 **Why:** There is no rollback command and no down migration, deliberately; the plan and the ledger label an older release `direction BEHIND`. How far back an env may go is a rollback floor (`rollback-floors`): a deploy below one is refused before anything is built.
 

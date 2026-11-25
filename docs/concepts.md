@@ -437,8 +437,10 @@ built to refuse a pass it didn't actually verify, so a missing scanner fails the
 job instead of exiting green over an empty scan. Its `docker-build` job also
 runs Trivy over the images CI builds, blocking on HIGH/CRITICAL. Dependabot
 ships too. A generated project's `forge ci gate` also runs `go-licenses` over its
-Go dependencies and fails on one whose license type is forbidden or restricted;
-there is no license check for npm dependencies.
+Go dependencies and fails on one whose license type is forbidden or restricted,
+or, when forge.yaml sets `ci.license.allowed`, on any license not on that
+allowlist, with reviewed per-module exceptions; there is no license check for
+npm dependencies.
 
 The second half is forge itself, and it runs wherever a release is cut — your
 laptop, your CI, `forge env deploy` — with nothing to set up. Every artifact in a

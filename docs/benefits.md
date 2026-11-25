@@ -2584,14 +2584,16 @@ _Enforced · Forge, on any infrastructure_
 
 ### Forbidden licenses fail the gate
 
-A generated project's `forge ci gate` runs go-licenses over its Go dependencies and fails on one whose license type is forbidden or restricted (warn-first, through the `license-check` lint rollout row); there is no license check for npm dependencies.
+A generated project's `forge ci gate` runs go-licenses over its Go dependencies and fails on one whose license type is forbidden or restricted (warn-first, through the `license-check` lint rollout row), or, with `ci.license.allowed` set, on any license not on that allowlist, with per-module exceptions that each carry a reason; there is no license check for npm dependencies.
 
 _Enforced · Forge, on any infrastructure_
 
 **Evidence:**
 
 - source [`internal/cigate/license.go`](../internal/cigate/license.go)
+- source [`internal/config/ci_license.go`](../internal/config/ci_license.go)
 - command `forge ci gate`
+- skill `ci/license` (`forge skill load ci/license`)
 
 | Rule            | Bug class it prevents                                                                                                                                                                    | Lane            |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |

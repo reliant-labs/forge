@@ -1160,6 +1160,10 @@ const (
 // the project root: forge's generated outputs and its committed state.
 var generatedMergePatterns = []string{
 	"*_gen.go", "*_gen.ts", "*_gen.test.ts", "*_gen.json", "*_gen.ndjson",
+	// KCL renders (deploy/kcl/config_gen.k): every config-changing PR
+	// rewrites its forge:hash lines, and was the one generated kind left on
+	// git's plain merge (forge report 99809c06).
+	"*_gen.k",
 	"forge_service_catalog.json",
 	".forge/scaffolded/**", ".forge/hashes/**", ".forge/disowned.json",
 	"/AGENTS.md", // project root only; the driver verifies the forge-owned prefix

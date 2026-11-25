@@ -29,20 +29,20 @@ Merged is not released, so each row says which final tag carries it.
 | Dogfood: landing-page hero test   | Live (landing-page #162): `hero-copy`, unit `visitor`, a 5% experiment.                                                                                                                                           |
 | Dogfood: a signed-in Reliant ramp | Not started.                                                                                                                                                                                                      |
 
-What the released code already does for each [open decision](#8-open-owner-decisions).
-These are de facto choices for the owner to ratify, not decisions this document
-makes:
+Decisions 1, 2, 3 and 6 were decided by the owner on 2026-11-25; the others
+record what the released code already does, matching the recommendation in
+[section 8](#8-open-owner-decisions).
 
-| #   | What the code does                                                                                                                                                                                                                                       |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | A project-root `changes.yaml`, one declaration for every env, no KCL needed: close to (a), in its own file instead of `forge.yaml`. Released, so changing it now is a deprecation.                                                                       |
-| 2   | (a) for hosted backends: a ConfigMap mounted as the file `FORGE_CHANGES_FILE` names. The non-hosted half, (b) an authenticated fetch, is not built: `GetChangesSnapshot` exists, but there is no SDK fetch source, platform token or egress allow. Open. |
-| 3   | A person, enforced by the control plane: a console browser session, or a one-time code emailed to the person the credential acts for (`step_up_code`). A token or CLI login acting for a person is refused. Stop, end run and ramp down never wait.      |
-| 4   | (a), per app: `/forge/p/<app>/experiments`.                                                                                                                                                                                                              |
-| 5   | (a): `changes:write` and `changes:launch`, grantable per environment.                                                                                                                                                                                    |
-| 6   | Between (b) and (c): the promote is allowed and the snapshot delivers that change off and reports a problem, but the change record is not stopped, nothing is written to its trail, and the deploy plan does not warn. Open.                             |
-| 7   | (a): OpenFeature providers in Go and the browser over the dependency-free core.                                                                                                                                                                          |
-| 8   | (a): no approval unless the environment is protected or named `prod`/`production`.                                                                                                                                                                       |
+| #   | State                                                                                                                                                                                                                                                                                                                                         |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Decided (owner, 2026-11-25):** a project-root `changes.yaml`, one declaration for every env, no KCL needed (released in forge v1.10.0).                                                                                                                                                                                                     |
+| 2   | **Decided (owner, 2026-11-25):** hosted backends read a ConfigMap mounted as the file `FORGE_CHANGES_FILE` names (released); apps not on Reliant hosting fetch `GetChangesSnapshot` with a platform-minted token, plus the egress allow. The fetch is being built.                                                                            |
+| 3   | **Decided (owner, 2026-11-25):** a production launch, ramp up or roll-out needs a person, enforced by the control plane: a console browser session, or a one-time code emailed to the person the credential acts for (`step_up_code`). A token or CLI login acting for a person is refused. Stop, end run and ramp down never wait. Released. |
+| 4   | (a), per app: `/forge/p/<app>/experiments`.                                                                                                                                                                                                                                                                                                   |
+| 5   | (a): `changes:write` and `changes:launch`, grantable per environment.                                                                                                                                                                                                                                                                         |
+| 6   | **Decided (owner, 2026-11-25): (b).** A promote that drops a variant a running change uses goes through; the control plane stops that change and records why in its audit trail, and the deploy plan warns at plan time. Being built; today the snapshot delivers such a change off and reports a problem, without stopping the record.       |
+| 7   | (a): OpenFeature providers in Go and the browser over the dependency-free core.                                                                                                                                                                                                                                                               |
+| 8   | (a): no approval unless the environment is protected or named `prod`/`production`.                                                                                                                                                                                                                                                            |
 
 ## Summary
 
@@ -440,9 +440,10 @@ ledger. An unattended run may draft, preview and stop only.
 
 ## 8. Open owner decisions
 
-None of these is decided. Per project rules, the owner decides architectural
-choices; each row gives the realistic options, a recommendation, and what it
-blocks.
+Per project rules, the owner decides architectural choices; each row gives the
+realistic options, a recommendation, and what it blocks. The owner decided 1, 2,
+3 and 6 on 2026-11-25, and the released code settled the rest; see
+[Where it stands](#where-it-stands-2026-11-25).
 
 | #   | Decision                                             | Options                                                                                                                                                                 | Recommendation                                                                                                                                                      | Blocks                                                     |
 | --- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |

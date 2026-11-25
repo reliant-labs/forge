@@ -1,7 +1,9 @@
 # Changes from pinned sources: carry a source-built frontend's `changes.yaml` into the release
 
-**Status:** proposed. Nothing here is implemented. The open owner decisions are in
-[section 6](#6-open-owner-decisions).
+**Status:** decided (owner, 2026-11-25): forge carries a pinned source's
+`changes.yaml` into the release, option (b), with the recommended answers to
+decisions 1–4 ([section 7](#7-decisions)). Being implemented as a `feat(changes)`
+pull request. The owner may still override any of 1–4.
 **Date:** 2026-11-25
 **Related:** [changes.md](changes.md) (Forge Changes, decision 1: a project-root
 `changes.yaml`), [../changes.md](../changes.md) (the declaration file),
@@ -146,3 +148,21 @@ If an opt-out is wanted, it is an additive optional KCL field on `forge.Frontend
 | 2   | Conflicting declarations of one key  | (a) refuse; (b) warn for one minor, then refuse; (c) root wins.                                                              | (b), following warn-before-gate.                                                                                                 | `env shape` / `env build` errors and the rollout row.       |
 | 3   | Sources that are not pinned          | (a) GitSource only; (b) also a `path` outside the project root.                                                              | (a). An out-of-tree path is the unpinned build that GitSource exists to remove.                                                  | Scope of the merge.                                         |
 | 4   | Provenance in the shape              | (a) none, printed locally by `env shape`; (b) `origin` per change behind a new bundle feature, shown in the console.         | (a) now; (b) when the console has a use for it.                                                                                  | A new bundle feature, and control-plane decoding.           |
+
+## 7. Decisions
+
+Recorded 2026-11-25. The owner chose "Forge carries it over", option (b) of
+decision 0, which includes writing this proposal and then building it. For
+decisions 1–4 the recommendations stand until the owner says otherwise.
+
+| #   | Decided                                                                                                                                                                                                                                                                                                                         | By                                 |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| 0   | (b): forge reads each pinned source's `changes.yaml` into the release. No mirror in control-plane.                                                                                                                                                                                                                              | Owner                              |
+| 1   | (a): on for every `GitSource` frontend. The opt-out is the optional KCL field `forge.Frontend.changes_from_source`; only `False` renders, so every other frontend renders byte-identically.                                                                                                                                     | Recommendation, owner may override |
+| 2   | (b): a conflict is the rule `changes-source-conflict`, declared in forge's lint rollout table (`internal/cli/lint/lint_rollout_table.go`) and graded with `lint.GradeRule`, like `vuln-gate`. It ships in v1.12.0, where it warns and the first declaration ships, and gates from v1.13.0. `lint.rules` dials it like any rule. | Recommendation, owner may override |
+| 3   | (a): `GitSource` frontends only.                                                                                                                                                                                                                                                                                                | Recommendation, owner may override |
+| 4   | (a): no origin in the shape. `forge env shape` prints the origin of each change a source contributed.                                                                                                                                                                                                                           | Recommendation, owner may override |
+
+Prod's launch of `pending-provider-copy` (reliant #3639) waits for the
+implementation's release, then control-plane's forge pin bump and a control-plane
+release.

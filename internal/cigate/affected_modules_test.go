@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -41,14 +43,15 @@ func modulesFixture(t *testing.T) (string, func(context.Context, string, []strin
 		if dir == sdk {
 			return render([]listedPackage{
 				{ImportPath: "ex.com/sdk/client", Name: "client", Dir: filepath.Join(sdk, "client"), Deps: []string{"ex.com/sdk/util"}},
-				{ImportPath: "ex.com/sdk/util", Name: "util", Dir: filepath.Join(sdk, "util")},
+				{ImportPath: "ex.com/sdk/util", Name: "util", Dir: filepath.Join(sdk, "util"), EmbedFiles: []string{"tmpl/x.txt"}},
 				{ImportPath: "ex.com/sdk/client.test", Name: "main", Dir: filepath.Join(sdk, "client"), Deps: []string{"ex.com/sdk/client [ex.com/sdk/client.test]", "ex.com/sdk/util"}},
+				{ImportPath: "ex.com/sdk/util [ex.com/sdk/util.test]", Name: "util", Dir: filepath.Join(sdk, "util"), ForTest: "ex.com/sdk/util", EmbedFiles: []string{"tmpl/x.txt"}, TestEmbedFiles: []string{"golden.txt"}},
 				{ImportPath: "ex.com/sdk/util.test", Name: "main", Dir: filepath.Join(sdk, "util"), Deps: []string{"ex.com/sdk/util [ex.com/sdk/util.test]"}},
 			}), nil
 		}
 		return render([]listedPackage{
 			{ImportPath: "ex.com/sdk/client", Name: "client", Dir: filepath.Join(sdk, "client")},
-			{ImportPath: "ex.com/sdk/util", Name: "util", Dir: filepath.Join(sdk, "util")},
+			{ImportPath: "ex.com/sdk/util", Name: "util", Dir: filepath.Join(sdk, "util"), EmbedFiles: []string{"tmpl/x.txt"}},
 			{ImportPath: "ex.com/m/app", Name: "app", Dir: filepath.Join(root, "app"), Deps: []string{"ex.com/sdk/client", "ex.com/sdk/util"}},
 			{ImportPath: "ex.com/m/other", Name: "other", Dir: filepath.Join(root, "other")},
 			{ImportPath: "ex.com/m/app.test", Name: "main", Dir: filepath.Join(root, "app"), Deps: []string{"ex.com/m/app [ex.com/m/app.test]", "ex.com/sdk/client", "ex.com/sdk/util"}},
@@ -74,7 +77,16 @@ func TestComputeAffected_ReplacedModules(t *testing.T) {
 		{name: "default uses the root graph without nested tests", changed: []string{"sdk/go/util/u.go"}, pkgs: []string{"ex.com/m/app"}},
 		{name: "source maps into the root graph and the module", mode: "auto", changed: []string{"sdk/go/util/u.go"},
 			pkgs: []string{"ex.com/m/app"}, mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
-		{name: "a module test file runs only in the module", mode: "auto", changed: []string{"sdk/go/client/c_test.go"},
+		{name: "a nested go:embed asset selects the root importers and the nested tests", mode: "auto", changed: []string{"sdk/go/util/tmpl/x.txt"},
+			pkgs: []string{"ex.com/m/app"}, mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
+		{name: "a nested test-only embed selects only the nested tests", mode: "auto", changed: []string{"sdk/go/util/golden.txt"},
+			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client", "ex.com/sdk/util"}}},
+		{name: "a nested file nobody embeds keeps the root's full suite", mode: "auto", changed: []string{"sdk/go/notes.txt"}, full: true,
+			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Full: true, Reason: "sdk/go/notes.txt is not Go source, an embedded file or testdata of a package in the module"}},
+		// B1: a _test.go file is compiled only into its own package's test
+		// binary; no root test binary links it (go list -test never puts a
+		// dependency's test files in another package's Deps).
+		{name: "a nested _test.go change selects only the nested module's tests", mode: "auto", changed: []string{"sdk/go/client/c_test.go"},
 			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Packages: []string{"ex.com/sdk/client"}}},
 		{name: "module go.sum: module full, root narrowed", mode: "auto", changed: []string{"sdk/go/go.sum"},
 			mod: &ModuleTests{Dir: "sdk/go", Path: "ex.com/sdk", Full: true, Reason: "sdk/go/go.sum changed"}},
@@ -187,5 +199,21 @@ func TestAnnotateModuleFiles(t *testing.T) {
 		if got[i].Note != w {
 			t.Errorf("%s: Note = %q, want %q", got[i].Path, got[i].Note, w)
 		}
+	}
+}
+
+func TestComputeAffected_NestedAssetOwnershipUnknown(t *testing.T) {
+	root, list := modulesFixture(t)
+	sdk := filepath.Join(root, "sdk", "go")
+	failing := func(ctx context.Context, dir string, env []string) (io.Reader, error) {
+		if dir == sdk {
+			return nil, errors.New("go list: boom")
+		}
+		return list(ctx, dir, env)
+	}
+	a := ComputeAffected(context.Background(), AffectedInput{Root: root, Modules: AffectedModulesAuto,
+		Git: fakeGit{branch: "f", changed: []string{"sdk/go/util/tmpl/x.txt"}}.run, GoList: failing})
+	if !a.Full || !strings.Contains(a.Reason, "could not be read") {
+		t.Fatalf("Full = %v (%s), want the root full because embed ownership is unknown", a.Full, a.Reason)
 	}
 }

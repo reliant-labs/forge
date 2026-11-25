@@ -98,8 +98,13 @@ func replacedModules(root string) []localModule {
 // actual package graph; rest goes on to selectChanges.
 type nestedChanges struct {
 	rootFiles []string
-	rest      []string
-	tests     []ModuleTests
+	// embedDirs are the absolute directories of nested packages that embed
+	// a changed non-Go file (go:embed, not test embeds), for the root graph
+	// to map to its importers; unresolved says why that could not be told.
+	embedDirs  []string
+	unresolved string
+	rest       []string
+	tests      []ModuleTests
 }
 
 func splitNestedModules(ctx context.Context, in AffectedInput, list func(context.Context, string, []string) (io.Reader, error), changed []string) nestedChanges {
@@ -109,7 +114,7 @@ func splitNestedModules(ctx context.Context, in AffectedInput, list func(context
 		nc.rest = changed
 		return nc
 	}
-	byMod := map[int][]string{}
+	byMod, assets := map[int][]string{}, map[int][]string{}
 	for _, f := range changed {
 		f = filepath.ToSlash(f)
 		i := -1
@@ -133,7 +138,7 @@ func splitNestedModules(ctx context.Context, in AffectedInput, list func(context
 			// used by the root. Resolve its directory after listing the root.
 			nc.rootFiles = append(nc.rootFiles, f)
 		default:
-			nc.rest = append(nc.rest, f)
+			assets[i] = append(assets[i], f)
 		}
 	}
 	for i, m := range mods {
@@ -141,16 +146,19 @@ func splitNestedModules(ctx context.Context, in AffectedInput, list func(context
 		if len(files) == 0 {
 			continue
 		}
-		nc.tests = append(nc.tests, moduleTests(ctx, in, list, m, files))
+		mt, g := moduleTests(ctx, in, list, m, files)
+		nc.tests = append(nc.tests, mt)
+		nc.resolveAssets(g, m, assets[i])
 	}
 	sort.Slice(nc.tests, func(i, j int) bool { return nc.tests[i].Dir < nc.tests[j].Dir })
 	return nc
 }
 
 // moduleTests decides one nested module's tests from its own package graph.
-func moduleTests(ctx context.Context, in AffectedInput, list func(context.Context, string, []string) (io.Reader, error), m localModule, files []string) ModuleTests {
+func moduleTests(ctx context.Context, in AffectedInput, list func(context.Context, string, []string) (io.Reader, error), m localModule, files []string) (ModuleTests, *packageGraph) {
 	mt := ModuleTests{Dir: m.dir, Path: m.path}
-	full := func(why string) ModuleTests { mt.Full, mt.Reason = true, why; return mt }
+	var g *packageGraph
+	full := func(why string) (ModuleTests, *packageGraph) { mt.Full, mt.Reason = true, why; return mt, g }
 	var rels []string
 	for _, f := range files {
 		rel := strings.TrimPrefix(f, m.dir+"/")
@@ -164,8 +172,8 @@ func moduleTests(ctx context.Context, in AffectedInput, list func(context.Contex
 	if err != nil {
 		return full("go list failed: " + firstLine(err.Error()))
 	}
-	g, err := readPackageGraph(r, dir)
-	if err != nil {
+	if g, err = readPackageGraph(r, dir); err != nil {
+		g = nil
 		return full("cannot read go list output: " + err.Error())
 	}
 	changed := map[string]bool{}
@@ -186,7 +194,50 @@ func moduleTests(ctx context.Context, in AffectedInput, list func(context.Contex
 		}
 	}
 	sort.Strings(mt.Packages)
-	return mt
+	return mt, g
+}
+
+// resolveAssets settles a nested module's changed non-Go files by the
+// module's own embed ownership. One a nested package go:embeds changes that
+// package's build, which root importers link: its directory goes to
+// embedDirs. One embedded only by tests or under a package's testdata reaches
+// only the nested tests; one nobody owns stays with the root's own rules
+// (rest), as before. Without the module's graph (g nil) ownership is unknown, and the
+// root runs whole.
+func (nc *nestedChanges) resolveAssets(g *packageGraph, m localModule, files []string) {
+	if len(files) == 0 {
+		return
+	}
+	if g == nil {
+		if nc.unresolved == "" {
+			nc.unresolved = files[0] + " changed in nested module " + m.path + ", whose package graph could not be read, so which root packages embed it is unknown"
+		}
+		return
+	}
+	pkgDir := map[string]string{}
+	for d, p := range g.dirPkg {
+		pkgDir[p] = d
+	}
+	for _, f := range files {
+		rel := strings.TrimPrefix(f, m.dir+"/")
+		pkg, ok := g.prodEmbedPkg[filepath.Join(g.root, filepath.FromSlash(rel))]
+		if !ok {
+			if _, nested := g.owner(rel); !nested {
+				nc.rest = append(nc.rest, f)
+			}
+			// A test embed or a package's testdata: only that package's test
+			// binary reads it, and no root binary links one; its row runs.
+			continue
+		}
+		d, ok := pkgDir[pkg]
+		if !ok {
+			if nc.unresolved == "" {
+				nc.unresolved = f + " is embedded by " + pkg + ", whose directory the nested module's graph does not list"
+			}
+			continue
+		}
+		nc.embedDirs = append(nc.embedDirs, d)
+	}
 }
 
 // WithModuleTests adds a test-mod-<dir> row after unit-tests for each nested

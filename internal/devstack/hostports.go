@@ -53,33 +53,6 @@ func blockReservation(name, key string) bool {
 	return rest[:i] == key
 }
 
-// goneCheckoutReservation reports whether name is a resolve_port reservation
-// ("<checkout dir>:<env>:<name>") whose checkout directory no longer exists.
-// Only a definite "does not exist" counts: a stat that fails for any other
-// reason (permissions, an unmounted volume) proves nothing, and dropping a
-// live checkout's reservation would move its port.
-func goneCheckoutReservation(name string) bool {
-	if strings.HasPrefix(name, "block:") {
-		return false
-	}
-	// Split from the right: the checkout path may itself contain ':' (a
-	// Windows drive letter); env and role names do not.
-	i := strings.LastIndex(name, ":")
-	if i <= 0 {
-		return false
-	}
-	j := strings.LastIndex(name[:i], ":")
-	if j <= 0 {
-		return false
-	}
-	dir := name[:j]
-	if !filepath.IsAbs(dir) {
-		return false
-	}
-	_, err := os.Stat(dir)
-	return errors.Is(err, os.ErrNotExist)
-}
-
 // dropHostPortReservations removes every reservation in projectDir's shared
 // host-port store that drop selects, under the store's own writer lock, and
 // returns the removed names, sorted. With dryRun it only reports them. A

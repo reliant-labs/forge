@@ -85,8 +85,9 @@ type PruneResult struct {
 	Blocks []PrunedBlock
 	// Reservations are the entries of the shared host-port store
 	// (HostPortsPath) dropped with them: every "block:<key>:<base>" of a
-	// reclaimed key, and every "<checkout dir>:<env>:<name>" whose checkout
-	// directory no longer exists. Sorted.
+	// reclaimed key. Checkout-scoped resolve_port reservations are preserved:
+	// a missing directory alone does not establish that its ports are unused.
+	// Sorted.
 	Reservations []string
 }
 
@@ -139,7 +140,7 @@ func PruneAll(projectDir string, dryRun bool) (PruneResult, error) {
 					return true
 				}
 			}
-			return goneCheckoutReservation(name)
+			return false
 		})
 		if err != nil {
 			return fmt.Errorf("drop host-port reservations: %w", err)

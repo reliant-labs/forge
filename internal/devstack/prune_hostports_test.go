@@ -30,27 +30,6 @@ func TestBlockReservationMatchesExactlyItsKey(t *testing.T) {
 	}
 }
 
-func TestGoneCheckoutReservationNeedsAMissingAbsoluteDir(t *testing.T) {
-	live := t.TempDir()
-	gone := filepath.Join(t.TempDir(), "deleted-worktree")
-	cases := []struct {
-		name string
-		want bool
-	}{
-		{gone + ":dev:web", true},
-		{live + ":dev:web", false},
-		{"block:wt:21000", false},
-		{"relative/dir:dev:web", false}, // never guess at a relative path
-		{"web", false},
-		{gone + ":web", false}, // not <dir>:<env>:<name>
-	}
-	for _, tc := range cases {
-		if got := goneCheckoutReservation(tc.name); got != tc.want {
-			t.Errorf("goneCheckoutReservation(%q) = %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
 func writeHostPorts(t *testing.T, projectDir string, ports map[string]int) {
 	t.Helper()
 	path := HostPortsPath(projectDir)
@@ -93,21 +72,22 @@ func TestPruneDropsTheFreedBlocksHostPortReservations(t *testing.T) {
 	pruneGit(t, primary, "worktree", "add", "-q", "-b", "dead", deadDir)
 	deadPort := registerStackKey(t, primary, "wt-dead", 21000)
 	prodPort := registerPlainKey(t, primary, "prod", 3000)
+	unrelatedDir := filepath.Join(t.TempDir(), "unavailable-checkout")
 
 	writeHostPorts(t, primary, map[string]int{
-		"block:wt-dead:21000":   deadPort,
-		"block:wt-dead:5432":    deadPort - 21000 + 5432,
-		"block:prod:3000":       prodPort,
-		deadDir + ":dev:web":    40001,
-		primary + ":dev:web":    40002,
-		"block:wt-dead-2:21000": 21300, // a different key sharing the prefix
+		"block:wt-dead:21000":     deadPort,
+		"block:wt-dead:5432":      deadPort - 21000 + 5432,
+		"block:prod:3000":         prodPort,
+		deadDir + ":dev:web":      40001,
+		primary + ":dev:web":      40002,
+		unrelatedDir + ":dev:web": 40003, // missing, but no reclaimed block owns it
+		"block:wt-dead-2:21000":   21300, // a different key sharing the prefix
 	})
 	if err := os.RemoveAll(deadDir); err != nil {
 		t.Fatalf("remove worktree dir: %v", err)
 	}
-	wantDropped := []string{deadDir + ":dev:web", "block:wt-dead:21000", "block:wt-dead:5432"}
-	// The test reads the sorted list: the checkout path sorts by its own
-	// bytes, so sort the expectation the same way.
+	wantDropped := []string{"block:wt-dead:21000", "block:wt-dead:5432"}
+	// Only reservations explicitly owned by reclaimed blocks are dropped.
 	sort.Strings(wantDropped)
 
 	dry, err := PruneAll(primary, true)
@@ -117,7 +97,7 @@ func TestPruneDropsTheFreedBlocksHostPortReservations(t *testing.T) {
 	if !reflect.DeepEqual(dry.Reservations, wantDropped) {
 		t.Fatalf("dry-run reservations = %v, want %v", dry.Reservations, wantDropped)
 	}
-	if got := readHostPorts(t, primary); len(got) != 6 {
+	if got := readHostPorts(t, primary); len(got) != 7 {
 		t.Fatalf("dry-run rewrote host-ports.json: %v", got)
 	}
 
@@ -132,9 +112,11 @@ func TestPruneDropsTheFreedBlocksHostPortReservations(t *testing.T) {
 		t.Fatalf("dropped reservations = %v, want %v", res.Reservations, wantDropped)
 	}
 	want := map[string]int{
-		"block:prod:3000":       prodPort,
-		primary + ":dev:web":    40002,
-		"block:wt-dead-2:21000": 21300,
+		"block:prod:3000":         prodPort,
+		deadDir + ":dev:web":      40001,
+		primary + ":dev:web":      40002,
+		unrelatedDir + ":dev:web": 40003,
+		"block:wt-dead-2:21000":   21300,
 	}
 	if got := readHostPorts(t, primary); !reflect.DeepEqual(got, want) {
 		t.Fatalf("host-ports.json after prune = %v, want %v", got, want)

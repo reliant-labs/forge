@@ -259,8 +259,9 @@ Freeing a block lets the NEXT new worktree take it (blocks are filled
 densely, lowest free index first), so pruning is what keeps the block range
 from being exhausted by worktrees nobody remembers to clean up. Prune also
 drops the freed blocks' reservations from the shared .forge/host-ports.json
-("block:<key>:<base>"), and the resolve_port reservations of checkouts whose
-directory is gone, so the next key given a freed block can reserve its ports.
+("block:<key>:<base>"), so the next key given a freed block can reserve its
+ports. Checkout-scoped resolve_port reservations are left alone: a missing
+directory does not prove that its reserved ports are no longer in use.
 
 By default this only PRINTS what would be reclaimed and changes nothing —
 pass --apply to actually rewrite the registry. This mutates machine-local
@@ -303,7 +304,7 @@ Examples:
 				if apply {
 					verb = "dropped"
 				}
-				_, _ = fmt.Fprintf(out, "\n%s %d host-port reservation(s) of freed blocks and gone checkouts (%s):\n",
+				_, _ = fmt.Fprintf(out, "\n%s %d host-port reservation(s) of freed blocks (%s):\n",
 					verb, len(res.Reservations), devstack.HostPortsPath(projectDirForKCL()))
 				for _, name := range res.Reservations {
 					_, _ = fmt.Fprintf(out, "  %s\n", name)

@@ -10,19 +10,38 @@ const pool = new Pool({
     "postgresql://postgres:postgres@localhost:5432/visits",
 });
 
-const app = express();
+function createApp(database = pool) {
+  const app = express();
 
-app.get("/healthz", async (_req, res) => {
-  await pool.query("SELECT 1");
-  res.json({ ok: true });
-});
+  app.get("/healthz", async (_req, res, next) => {
+    try {
+      await database.query("SELECT 1");
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
 
-app.get("/", async (_req, res) => {
-  const { rows } = await pool.query(
-    "INSERT INTO visits DEFAULT VALUES RETURNING id",
-  );
-  res.json({ message: "hello from express", visit: Number(rows[0].id) });
-});
+  app.get("/", async (_req, res, next) => {
+    try {
+      const { rows } = await database.query(
+        "INSERT INTO visits DEFAULT VALUES RETURNING id",
+      );
+      res.json({ message: "hello from express", visit: Number(rows[0].id) });
+    } catch (err) {
+      next(err);
+    }
+  });
 
-const port = Number(process.env.PORT || 3000);
-app.listen(port, () => console.log(`listening on :${port}`));
+  app.use((err, _req, res, _next) => {
+    console.error("Database request failed", err);
+    res.status(503).json({ error: "Service temporarily unavailable" });
+  });
+  return app;
+}
+
+if (require.main === module) {
+  const port = Number(process.env.PORT || 3000);
+  createApp().listen(port, () => console.log(`listening on :${port}`));
+}
+module.exports = { createApp };

@@ -19,6 +19,7 @@ _bundle = forge.Bundle {
     lifecycle = "local"
     workloads = [
         fw.Workload {name = "db", runtime = forge.OnCompose {file = "docker-compose.yml", service = "db"}}  # staging and prod use a managed Postgres instead
+        _compose(wl.migrate, "migrate")
         _compose(wl.api, "api")
     ]
 }

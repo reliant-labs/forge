@@ -17,6 +17,11 @@ api = fw.Workload {
     build = forge.DockerBuild {dockerfile = "Dockerfile", context = "."}
     ports = [fw.Port {name = "http", port = 3000, expose = True}]  # the Dockerfile's EXPOSE
     # forge.llm_env(): OPENAI_* / ANTHROPIC_* / RELIANT_LLM_* for the env's gateway.
-    env = forge.llm_env() | {PORT = "3000", LLM_MODEL = "claude-haiku-4-5"}
+    env = forge.llm_env() | {
+        PORT = "3000"
+        LLM_MODEL = "claude-haiku-4-5"
+        # Missing on an unclaimed deploy: the HTTP handler fails closed.
+        APP_API_TOKEN = forge.ManagedSecret {name = "APP_API_TOKEN", optional = True}
+    }
     probes = tiers.Probes {readinessPath = "/healthz"}
 }

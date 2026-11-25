@@ -17,13 +17,29 @@ no provider key and no gateway URL:
 lines, `forge.llm_env()` and the `/healthz` probe were added by hand (it does
 not detect an LLM SDK).
 
+## Caller authorization
+
+The haiku endpoint spends the organization's budget. It requires
+`Authorization: Bearer <APP_API_TOKEN>`: a separate, high-entropy application
+secret shared only with callers you authorize to spend that budget. Never put it
+in a browser bundle or reuse the gateway key. Requests with missing/wrong tokens
+return 401 without calling the gateway; an unconfigured token returns 503.
+`/healthz` remains public and never calls the gateway.
+
+Generate a random token (for example `openssl rand -hex 32`), then save it via
+`reliant forge secret set --env dev APP_API_TOKEN` (and likewise for staging/prod).
+Keep the same value in your calling shell as `APP_API_TOKEN`. Rotate it if exposed.
+This small example has one authorized caller class, not per-user accounts.
+
 ## It needs a claimed deploy (or an account) to answer
 
 An **unclaimed** `--claimable` deploy has **no outbound internet**, and the LLM
 variables of an unclaimed pod stay blank. So deployed anonymously, the service
 runs and `/` answers **503 "LLM unavailable"** (by design: it degrades rather
 than crash). Once the deploy is claimed, or deployed signed in, the platform
-fills in a per-environment key and `/` returns a haiku.
+fills in a per-environment key and `/` returns a haiku to authorized callers.
+The responses below assume a configured, valid application token; without one,
+no gateway call is possible.
 
 |        | Unclaimed           | Claimed / signed in                                     |
 | ------ | ------------------- | ------------------------------------------------------- |
@@ -42,7 +58,7 @@ Node 22, Docker. For dev, a Reliant access token with the `llm:invoke` scope
 ```bash
 npm install
 reliant forge env up dev
-curl 'localhost:<port>/?topic=postgres'
+curl -H "Authorization: Bearer $APP_API_TOKEN" 'localhost:<port>/?topic=postgres'
 ```
 
 ## Deploy it
@@ -58,7 +74,9 @@ npx -y @reliantlabs/forge@latest env deploy prod --claimable
 
 ```bash
 curl https://<your-host>/healthz             # {"ok":true}
-curl 'https://<your-host>/?topic=deploys'    # a haiku (claimed) or a 503 (unclaimed)
+curl -H "Authorization: Bearer $APP_API_TOKEN" 'https://<your-host>/?topic=deploys'
+# a haiku with gateway access; otherwise 503. Without caller credentials: 401/503.
+node --test server.test.js                 # authorization / no-spend regression tests
 ```
 
 A healthy rollout does not prove model access; only a haiku does.

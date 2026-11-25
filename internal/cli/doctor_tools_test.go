@@ -204,7 +204,7 @@ func TestInstallHintForOS_KnownAndUnknown(t *testing.T) {
 		Name: "k3d",
 		InstallHints: map[string]string{
 			"darwin":  "brew install k3d",
-			"linux":   "curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash",
+			"linux":   k3dLinuxHint("amd64"),
 			"windows": "choco install k3d",
 		},
 		UpstreamURL: "https://k3d.io/",
@@ -212,7 +212,7 @@ func TestInstallHintForOS_KnownAndUnknown(t *testing.T) {
 	if got := installHintForOS(tc, "darwin"); got != "brew install k3d" {
 		t.Errorf("darwin hint = %q", got)
 	}
-	if got := installHintForOS(tc, "linux"); !strings.Contains(got, "install.sh") {
+	if got := installHintForOS(tc, "linux"); !strings.Contains(got, "sha256sum -c") {
 		t.Errorf("linux hint = %q", got)
 	}
 	if got := installHintForOS(tc, "windows"); got != "choco install k3d" {

@@ -326,3 +326,15 @@ func TestAppendEnvBinding_FirstServiceClaimsTheAPIPortKey(t *testing.T) {
 		t.Errorf("a worker must not claim the API port key:\n%s", b)
 	}
 }
+
+func TestAPIWorkloadStanzaFor_NoDatabaseNamesNoDatabaseURL(t *testing.T) {
+	if got := APIWorkloadStanzaFor("example.com/x", "x", false); strings.Contains(got, "DATABASE_URL") || strings.Contains(got, "config_secrets") {
+		t.Errorf("no-database stanza names DATABASE_URL / an empty config_secrets:\n%s", got)
+	}
+	if got := APIWorkloadStanzaFor("example.com/x", "x", false, "IDP_BROKER_TOKEN"); !strings.Contains(got, `config_secrets = ["IDP_BROKER_TOKEN"]`) {
+		t.Errorf("extra secrets dropped:\n%s", got)
+	}
+	if got := APIWorkloadStanza("example.com/x", "x"); !strings.Contains(got, `config_secrets = ["DATABASE_URL"]`) {
+		t.Errorf("APIWorkloadStanza changed:\n%s", got)
+	}
+}

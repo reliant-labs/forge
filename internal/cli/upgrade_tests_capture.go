@@ -66,8 +66,8 @@ under .forge/tests/runs/ (gitignored):
   - test:report: added, to summarise runs and, with -- --upload, send them
     to the control plane.
   - .github/workflows/ci.yml: a ` + "`Report test results`" + ` step after each
-    ` + "`task test`" + ` / ` + "`task test:integration`" + ` step. It uploads with the
-    FORGE_CONTROL_PLANE_TOKEN secret and never fails the job.
+    ` + "`task test`" + ` / ` + "`task test:integration`" + ` step, and ` + "`id-token: write`" + ` on its
+    job: it uploads with GitHub OIDC (no secret) and never fails the job.
 
 A lane is rewritten only when it is still exactly what forge scaffolded; one
 you edited is left alone and the run names the edit to make by hand. Nothing

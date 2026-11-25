@@ -1,6 +1,6 @@
 ---
 name: migrations/v1.12.0/tests-capture
-description: Test runs are recorded (forge v1.12.0). A new project's Taskfile runs each test lane through `forge test capture`, which runs the command unchanged and exits with its status, and records results and coverage under .forge/tests/runs/ (gitignored) on every `task test`, `task test:integration` and `task test:e2e`; `task test:report` summarises them, and the scaffolded CI uploads them to the control plane with a FORGE_CONTROL_PLANE_TOKEN holding tests:write, never failing without one. An older project's Taskfile.yml and .github/workflows/ci.yml are its own (scaffold-once), so its tests keep running unrecorded, unchanged, until it opts in. `forge project upgrade` rewrites each lane still in forge's old scaffolded shape, adds `test:report` and the CI report step (`forge fix tests-capture`), and names each lane you edited with the edit to make by hand. Opt out with FORGE_TESTS=off (one run) or `tests.upload: never` in forge.yaml. Use when Taskfile.yml has no `test:report` task, or a test lane runs `go test` without `forge test capture`.
+description: Test runs are recorded (forge v1.12.0). A new project's Taskfile runs each test lane through `forge test capture`, which runs the command unchanged and exits with its status, and records results and coverage under .forge/tests/runs/ (gitignored) on every `task test`, `task test:integration` and `task test:e2e`; `task test:report` summarises them, and the scaffolded CI uploads them to the control plane with GitHub OIDC (no secret), never failing without a credential. An older project's Taskfile.yml and .github/workflows/ci.yml are its own (scaffold-once), so its tests keep running unrecorded, unchanged, until it opts in. `forge project upgrade` rewrites each lane still in forge's old scaffolded shape, adds `test:report` and the CI report step with its job's `id-token: write` (`forge fix tests-capture`), and names each lane you edited with the edit to make by hand. Opt out with FORGE_TESTS=off (one run) or `tests.upload: never` in forge.yaml. Use when Taskfile.yml has no `test:report` task, or a test lane runs `go test` without `forge test capture`.
 version: v1.12.0
 automation: fix:tests-capture
 detection: forge-detect tests-capture
@@ -78,7 +78,9 @@ When the Taskfile has `test:report`, it also edits .github/workflows/ci.yml: aft
 each step whose `run:` is exactly `task test` or `task test:integration` (with an
 optional ` GOTESTRACE=`), unless the job already runs `task test:report` after it,
 it inserts the step below, comment included. The workflow must decode to the old
-one plus those steps.
+one plus those steps. Each job it gave a step then gets `id-token: write`, as
+`forge fix ci-oidc-permissions` grants it, so an unedited old ci.yml becomes the
+current template's.
 
 Re-running it changes nothing.
 
@@ -107,21 +109,20 @@ step; add it by hand where the codemod could not:
 ```yaml
       - name: Report test results
         if: ${{ !cancelled() }}
-        env:
-          FORGE_CONTROL_PLANE_TOKEN: ${{ secrets.FORGE_CONTROL_PLANE_TOKEN }}
         run: task test:report -- --upload || echo "forge test report exited $? (the test step above is the verdict)"
 ```
 
-The upload needs a repository secret, `FORGE_CONTROL_PLANE_TOKEN`, holding a token
-with `tests:write`. A person signed in to the web app mints it under Settings → API
-tokens (Reliant cloud: https://forge.reliantlabs.io/settings/tokens), then stores it:
+It needs no secret on GitHub: its job gets `id-token: write` (the codemod adds
+it to each job it gives the step, as `forge fix ci-oidc-permissions` does), and
+forge exchanges the job's OIDC token for a short-lived `tests:write` token once
+the Reliant GitHub App is linked to the org. That half is its own playbook:
+`forge skill load migrations/v1.12.0/ci-oidc-uploads`. A
+`FORGE_CONTROL_PLANE_TOKEN` passed in the step's `env:` still works and
+overrides OIDC.
 
-```bash
-gh secret set FORGE_CONTROL_PLANE_TOKEN
-```
-
-Without it (no secret yet, or a fork's pull request) the step prints one line on
-stderr and the job's verdict is the test step's, as it was before.
+Without a credential (the App not linked yet, or a fork's pull request) the
+step prints one line on stderr and the job's verdict is the test step's, as it
+was before.
 
 ## Opting out
 

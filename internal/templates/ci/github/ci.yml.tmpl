@@ -230,6 +230,7 @@ jobs:
     name: Test
     needs: changes
     if: ${{"{{"}} needs.changes.outputs.code == 'true' {{"}}"}}
+{{- template "report-permissions" .}}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -276,6 +277,7 @@ jobs:
     name: Integration Tests
     needs: changes
     if: ${{"{{"}} github.event_name == 'pull_request' && needs.changes.outputs.code == 'true' && needs.changes.outputs.integration == 'true' {{"}}"}}
+{{- template "report-permissions" .}}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -459,18 +461,27 @@ jobs:
       # results and coverage under .forge/tests/runs/. This summarises the run
       # and uploads it to the project's control plane (results, coverage counts
       # and changed line ranges; never source), whose Tests pages show it with
-      # merged coverage and flaky tests. The upload needs a repository secret,
-      # FORGE_CONTROL_PLANE_TOKEN, holding a token with tests:write: a person
-      # signed in to the web app mints it under Settings → API tokens (Reliant
-      # cloud: https://forge.reliantlabs.io/settings/tokens), then stores it
-      # with `gh secret set FORGE_CONTROL_PLANE_TOKEN`. Without it (no secret
-      # yet, or a fork's pull request) the upload is one line on stderr. This
-      # step never fails the job: the test step above is the verdict.
+      # merged coverage and flaky tests. It needs no secret: the job's
+      # `id-token: write` lets forge exchange this run's GitHub OIDC token for
+      # a short-lived tests:write token, once an org admin has linked the
+      # Reliant GitHub App (installed on this repository) to the org in the
+      # web app's organization settings. To upload with a token instead, add
+      # `env: FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}`
+      # to this step: the secret, if set, overrides OIDC; fork PRs get no OIDC
+      # token and skip the upload green. Without a credential the upload is
+      # one line on stderr. This step never fails the job: the test step above
+      # is the verdict.
       - name: Report test results
         if: ${{"{{"}} !cancelled() {{"}}"}}
-        env:
-          FORGE_CONTROL_PLANE_TOKEN: ${{"{{"}} secrets.FORGE_CONTROL_PLANE_TOKEN {{"}}"}}
         run: task test:report -- --upload || echo "forge test report exited $? (the test step above is the verdict)"
+{{- end}}
+{{- define "report-permissions"}}
+    # A job-level block replaces the workflow's, so it repeats the workflow's
+    # permissions. `id-token: write` lets `forge test report` upload with
+    # GitHub OIDC; only a job that uploads gets it.
+    permissions:
+      contents: {{.PermContents | default "read"}}
+      id-token: write
 {{- end}}
 {{- define "install-forge"}}
         # The version comes from the project at run time — go.mod's forge, the

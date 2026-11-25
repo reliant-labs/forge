@@ -133,6 +133,14 @@ func RunsInServer(kind string) bool {
 // the dev env's login-broker token, which only an env running the dev IdP
 // has. They are an env fact, not a workload fact, so the caller passes them.
 func APIWorkloadStanza(modulePath, projectName string, extraSecrets ...string) string {
+	return APIWorkloadStanzaFor(modulePath, projectName, true, extraSecrets...)
+}
+
+// APIWorkloadStanzaFor is APIWorkloadStanza for a project that may have no
+// database: with database false the API reads no DATABASE_URL, so its
+// config_secrets omit it. A hosted env declares no managed database for such a
+// project, and a workload naming a secret nothing provides can never start.
+func APIWorkloadStanzaFor(modulePath, projectName string, database bool, extraSecrets ...string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s = fw.Workload {\n", APIWorkloadIdent)
 	fmt.Fprintf(&b, "    name = %q\n", APIWorkloadName)
@@ -144,7 +152,13 @@ func APIWorkloadStanza(modulePath, projectName string, extraSecrets ...string) s
 	// the API exactly the config `server` reaches.
 	fmt.Fprintf(&b, "    root = %q\n", ServerSubcommand)
 	fmt.Fprintf(&b, "    ports = [fw.Port {name = \"http\", port = %d, expose = True}]\n", config.DefaultServePort)
-	fmt.Fprintf(&b, "    config_secrets = %s\n", kclStringList(append([]string{"DATABASE_URL"}, extraSecrets...)))
+	var secrets []string
+	if database {
+		secrets = append(secrets, "DATABASE_URL")
+	}
+	if secrets = append(secrets, extraSecrets...); len(secrets) > 0 {
+		fmt.Fprintf(&b, "    config_secrets = %s\n", kclStringList(secrets))
+	}
 	b.WriteString("}")
 	return b.String()
 }

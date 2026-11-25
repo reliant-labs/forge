@@ -114,6 +114,29 @@ ci:
   the whole `test` script instead of `test:related`. `full: true` still means
   the whole unit lane.
 
+## Capping the reach: `ci.gate.affected_reach`
+
+By default a changed package selects every test package whose binary links
+it, however far up the import graph. A hub package can make that most of the
+module. `affected_reach` caps it:
+
+```yaml
+ci:
+  gate:
+    affected_reach:
+      mode: direct        # all (default) | direct
+      transitive_cap: 20  # transitive importers allowed to join a direct run
+```
+
+Under `direct`, unit-tests runs the changed packages, the packages a rule
+names, and their direct importers (a package or its tests import a changed
+package). The transitive importers join too when there are at most
+`transitive_cap` of them; past the cap none of them run, and each is named as
+deferred to the full gate: one `deferred to the full gate: <pkg>` line each,
+the count on the unit-tests row's note, and `affected.deferred` in the
+`--json` document. Nothing is dropped silently, and the full suite (the main
+tier, `CI_FULL=1`) still runs them.
+
 ## Extra checks that run only when their paths change
 
 An extra check with `paths: [globs]` runs on a branch in affected mode only when

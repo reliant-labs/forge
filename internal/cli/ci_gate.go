@@ -347,7 +347,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 		tierForce = "--tier " + in.tier.Name
 	}
 	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, frontends: in.ciFrontends,
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, reach: cfg.CI.Gate.AffectedReach, frontends: in.ciFrontends,
 		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce, decided: in.affected,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
@@ -433,6 +433,7 @@ type affectedArgs struct {
 	root, base         string
 	ignore, env, skips []string
 	rules              []config.CIGateAffectedRule
+	reach              *config.CIGateAffectedReach
 	frontends          []templates.FrontendCIConfig
 	cache              *cigate.VerdictCache
 	full               bool
@@ -463,7 +464,7 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		force = in.tierForce
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
-		Ignore: in.ignore, Rules: in.rules, ChangesOnly: !narrow})
+		Ignore: in.ignore, Rules: in.rules, Reach: in.reach, ChangesOnly: !narrow})
 	a = cigate.ResolveGoClosures(ctx, in.root, in.env, checks, a, nil)
 	checks = cigate.WithLockfileChecks(checks, a, in.root, in.frontends)
 	a = cigate.WithLockfileReport(a, checks)
@@ -483,6 +484,9 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		}
 	} else {
 		fmt.Fprintf(out, "  (%d packages; `forge ci gate --plan` or --json says why each runs)\n", len(a.Why))
+	}
+	for _, p := range a.Deferred {
+		fmt.Fprintln(out, "  deferred to the full gate: "+p)
 	}
 	return cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends)
 }

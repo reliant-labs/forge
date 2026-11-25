@@ -257,7 +257,10 @@ a running stack's ports.
 
 Freeing a block lets the NEXT new worktree take it (blocks are filled
 densely, lowest free index first), so pruning is what keeps the block range
-from being exhausted by worktrees nobody remembers to clean up.
+from being exhausted by worktrees nobody remembers to clean up. Prune also
+drops the freed blocks' reservations from the shared .forge/host-ports.json
+("block:<key>:<base>"), and the resolve_port reservations of checkouts whose
+directory is gone, so the next key given a freed block can reserve its ports.
 
 By default this only PRINTS what would be reclaimed and changes nothing —
 pass --apply to actually rewrite the registry. This mutates machine-local
@@ -272,10 +275,11 @@ Examples:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dryRun := !apply
-			pruned, err := devstack.Prune(projectDirForKCL(), dryRun)
+			res, err := devstack.PruneAll(projectDirForKCL(), dryRun)
 			if err != nil {
 				return fmt.Errorf("prune block registry: %w", err)
 			}
+			pruned := res.Blocks
 			out := cmd.OutOrStdout()
 			if len(pruned) == 0 {
 				_, _ = fmt.Fprintln(out, "nothing to prune — every block tied to a worktree still has its worktree")
@@ -292,6 +296,17 @@ Examples:
 					_, _ = fmt.Fprintf(out, "\n%d block(s) would be freed. Re-run with --apply to reclaim them.\n", len(pruned))
 				} else {
 					_, _ = fmt.Fprintf(out, "\n%d block(s) freed.\n", len(pruned))
+				}
+			}
+			if len(res.Reservations) > 0 {
+				verb := "would drop"
+				if apply {
+					verb = "dropped"
+				}
+				_, _ = fmt.Fprintf(out, "\n%s %d host-port reservation(s) of freed blocks and gone checkouts (%s):\n",
+					verb, len(res.Reservations), devstack.HostPortsPath(projectDirForKCL()))
+				for _, name := range res.Reservations {
+					_, _ = fmt.Fprintf(out, "  %s\n", name)
 				}
 			}
 			return reportUnattributed(out, projectDirForKCL())
@@ -403,6 +418,13 @@ Examples:
 						continue
 					}
 					_, _ = fmt.Fprintf(out, "would release: %s (block %d) — %s\n", b.DisplayKey(), b.Index, b.Kind())
+					reservations, err := devstack.BlockReservations(projectDir, key)
+					if err != nil {
+						return fmt.Errorf("read host-port reservations: %w", err)
+					}
+					for _, name := range reservations {
+						_, _ = fmt.Fprintf(out, "would drop host-port reservation: %s\n", name)
+					}
 					_, _ = fmt.Fprintln(out, "\nRe-run with --apply to release it. Only do so if you know this block is dead:\n"+
 						"releasing a live one moves that stack's ports.")
 					return nil
@@ -410,11 +432,14 @@ Examples:
 				return fmt.Errorf("no block is registered for key %q (see `forge env devstack list`)", key)
 			}
 
-			index, err := devstack.ReleaseKey(projectDir, key)
+			index, reservations, err := devstack.ReleaseKey(projectDir, key)
 			if err != nil {
 				return fmt.Errorf("release block: %w", err)
 			}
 			_, _ = fmt.Fprintf(out, "released: %s (block %d)\n", key, index)
+			for _, name := range reservations {
+				_, _ = fmt.Fprintf(out, "dropped host-port reservation: %s\n", name)
+			}
 			return nil
 		},
 	}

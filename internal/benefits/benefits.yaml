@@ -1049,6 +1049,29 @@ benefits:
     evidence:
       - skill: testing
 
+  - id: test-results-recorded
+    category: test
+    title: Test lanes and coverage recorded
+    claim: >-
+      `task test` records each lane it runs (unit, every frontend, integration,
+      e2e) with its coverage under `.forge/tests/runs/`, and the scaffolded CI
+      uploads the run to the project's control plane, so test results and
+      coverage are history rather than a log line.
+    status: recorded
+    availability: forge
+    use: >-
+      Nothing to set up locally: `task test`, then `task test:report`. CI
+      uploads once the repository secret `FORGE_CONTROL_PLANE_TOKEN` holds a
+      `tests:write` token (`gh secret set FORGE_CONTROL_PLANE_TOKEN`); without it
+      the step prints one line and the job stays green. `FORGE_TESTS=off` or
+      `tests.upload: never` turn it off.
+    evidence:
+      - command: test report
+      - command: test capture
+      - path: internal/templates/ci/github/ci.yml.tmpl
+      - skill: testing
+      - skill: ci
+
   - id: slow-test-enforcement
     category: test
     title: Slow-test gating for the fast tier

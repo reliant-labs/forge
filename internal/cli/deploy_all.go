@@ -251,8 +251,9 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// for the same reason.
 		pushIfDeclared: true,
 		// The deploy ran the capacity pre-flight before it got here.
-		capacityChecked: true,
-		release:         choice.Version,
+		capacityChecked:  true,
+		claimableRelease: f.claimableRelease,
+		release:          choice.Version,
 		// The cut this deploy makes is held to the migration-order guard
 		// like any release cut, with the deploy's waivers.
 		allowPassedMigrations:   f.promote.allowPassedMigrations,

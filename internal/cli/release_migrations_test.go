@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -167,6 +168,10 @@ func TestCheckPassedMigrationsAdmitsTheReplacement(t *testing.T) {
 // A deploy reads the release's recorded manifest; a release cut before
 // manifests existed is noted, never refused.
 func TestCheckDeployMigrations(t *testing.T) {
+	// Even with an anonymous credential installed, promotions must judge
+	// recorded manifests and report missing ones, just like signed-in deploys.
+	restore := cloud.UseClaimableCredential(cloud.Endpoint{URL: "https://cp.invalid"}, "claimable-token", nil)
+	defer restore()
 	l := incidentLedger()
 	if err := checkDeployMigrations(context.Background(), &bytes.Buffer{}, t.TempDir(), "prod", "v1.7.54", l.ledger(), false); err == nil {
 		t.Fatal("deploying v1.7.54 again was admitted, but prod's schema has passed its 024221")
@@ -370,6 +375,11 @@ func TestUnmergedMigrationsRemedy(t *testing.T) {
 		if !strings.Contains(got, "--"+allowUnmergedMigrationsFlag) {
 			t.Errorf("%s: remedy no longer names the hotfix waiver:\n%s", tc.ref, got)
 		}
+		// The scaffolded commitlint hook (type-enum, subject-case) refuses
+		// any message that is not a lower-case conventional commit.
+		if !strings.Contains(got, `git commit -m "feat: add migrations"`) {
+			t.Errorf("%s: remedy's commit message is not a conventional commit:\n%s", tc.ref, got)
+		}
 	}
 }
 
@@ -430,6 +440,26 @@ func TestPreflightReleaseMigrations_LedgerUnresolvedStillRefusesUnmerged(t *test
 	// An env whose ledger is this machine's is not judged by this rule.
 	if err := preflightReleaseMigrations(ctx, dir, &KCLEntities{}, opts); err != nil {
 		t.Errorf("an env with no control plane: err = %v, want nil (the cut owns the ledger failure)", err)
+	}
+
+	// A credential alone cannot exempt an ordinary build. Only the explicit
+	// anonymous release creation path applies the working tree's migrations.
+	restore := cloud.UseClaimableCredential(cloud.Endpoint{URL: "https://cp.invalid"}, "claimable-token", nil)
+	err = preflightReleaseMigrations(ctx, dir, hosted, opts)
+	restore()
+	if !errors.As(err, &coded) || coded.code != exitRefused {
+		t.Fatalf("ordinary build with claimable credential: err = %v, want refusal", err)
+	}
+	anonymous := opts
+	anonymous.claimableRelease = true
+	if err := preflightReleaseMigrations(ctx, dir, hosted, anonymous); err != nil {
+		t.Errorf("an anonymous release cut: err = %v, want nil", err)
+	}
+	var note bytes.Buffer
+	if err := claimableMigrationNote(&note, dir, hosted); err != nil ||
+		!strings.Contains(note.String(), "applies the migrations in this working tree") ||
+		!strings.Contains(note.String(), "20260101000000_counters.up.sql") {
+		t.Errorf("claimable note: err = %v, out %q; want one line naming the uncommitted migration", err, note.String())
 	}
 
 	migGit(t, dir, "add", "-A")

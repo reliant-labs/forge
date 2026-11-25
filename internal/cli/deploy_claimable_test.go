@@ -944,14 +944,14 @@ func TestClaimableDeploy_PlanOnlyPreviewsAndCreatesNothing(t *testing.T) {
 	}
 }
 
-// A migration the default branch does not hold is refused by the release cut
-// (checkUnmergedMigrations). The --plan-only preview used to say "fits" for
-// such a checkout, and the deploy refused it only after a full build. Both
-// now judge it from the checkout first: the preview fails, and the deploy is
-// refused before any proof of work, account or build — until it is committed.
-func TestClaimableDeploy_UnmergedMigrationIsRefusedBeforeAnythingIsCreated(t *testing.T) {
+// A migration the default branch does not hold is refused by a signed-in
+// release cut (checkUnmergedMigrations), but not by an anonymous deploy: its
+// env is a throwaway preview no main races, and "no commit needed" is its
+// promise. The --plan-only preview says it fits and notes, in one line, that
+// the working tree's migrations are applied as they are.
+func TestClaimableDeploy_UnmergedMigrationIsAppliedFromTheWorkingTree(t *testing.T) {
 	testkit.Slow(t, "renders KCL, execs git and runs the whole CLI")
-	fake, _ := claimableFixture(t)
+	claimableFixture(t)
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -962,38 +962,19 @@ func TestClaimableDeploy_UnmergedMigrationIsRefusedBeforeAnythingIsCreated(t *te
 	writeMigFile(t, dir, "20260101000000_counters.up.sql")
 
 	out, err := runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
-	if err == nil || exitCodeForError(err) != exitRefused {
-		t.Fatalf("preview of an uncommitted migration: want exit 4; err=%v\n%s", err, out)
+	if err != nil {
+		t.Fatalf("preview of an uncommitted migration: want exit 0; err=%v\n%s", err, out)
 	}
-	doc := decodeClaimDoc(t, out)
-	refusal, _ := doc["release_refusal"].(string)
-	if doc["ok"] != false || doc["eligible"] != true || !strings.Contains(refusal, "20260101000000_counters.up.sql") ||
-		doc["error_reason"] != reasonUnmergedMigrations {
+	if doc := decodeClaimDoc(t, out); doc["ok"] != true || doc["release_refusal"] != nil {
 		t.Errorf("preview doc = %v", doc)
 	}
-	if !strings.Contains(refusal, "git add db/migrations && git commit") {
-		t.Errorf("the refusal does not say how to commit the migration:\n%s", refusal)
-	}
 
-	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--json")
-	if err == nil || exitCodeForError(err) != exitRefused {
-		t.Fatalf("deploy of an uncommitted migration: want exit 4; err=%v\n%s", err, out)
-	}
-	if doc := decodeClaimDoc(t, out); doc["error_reason"] != reasonUnmergedMigrations {
-		t.Errorf("deploy doc = %v", doc)
-	}
-	if fake.challenges != 0 || fake.starts != 0 {
-		t.Errorf("the refusal came after the account path: challenges=%d starts=%d", fake.challenges, fake.starts)
-	}
-
-	migGit(t, dir, "add", "-A")
-	migGit(t, dir, "commit", "-q", "-m", "migration")
-	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only", "--json")
+	out, err = runForge(t, "env", "deploy", "hosted", "--claimable", "--plan-only")
 	if err != nil {
-		t.Fatalf("preview once the migration is on main: %v\n%s", err, out)
+		t.Fatalf("text preview of an uncommitted migration: want exit 0; err=%v\n%s", err, out)
 	}
-	if doc := decodeClaimDoc(t, out); doc["release_refusal"] != nil {
-		t.Errorf("a committed migration is still refused: %v", doc["release_refusal"])
+	if !strings.Contains(out, "applies the migrations in this working tree") || !strings.Contains(out, "20260101000000_counters.up.sql") {
+		t.Errorf("the preview does not say the working tree's migrations are applied:\n%s", out)
 	}
 }
 

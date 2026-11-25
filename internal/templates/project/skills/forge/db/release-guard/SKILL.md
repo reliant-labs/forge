@@ -51,7 +51,9 @@ merge-time check — those compare against `main`. Merge the migration first (a
 hotfix branch can cherry-pick the merged file). `--allow-unmerged-migrations`
 waives it for a hotfix that cannot wait; refusal 1 still guards the next
 release. An env on this machine's ledger is exempt: deploying a feature branch
-to it is the dev loop.
+to it is the dev loop. So is an anonymous deploy (`forge env deploy <env>
+--claimable`): it applies the working tree's migrations, committed or not, and
+prints one line saying so, because its throwaway env has no `main` to race.
 
 ## What is never a refusal
 

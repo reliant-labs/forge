@@ -202,10 +202,10 @@ the end; do not load it preemptively.
 const briefFooter = `
 ## Before the first deploy
 
-Commit every migration on the default branch (` + "`git add db/migrations && git commit`" + `;
-push it if there is a remote): a hosted deploy refuses one main does not hold,
-before building. ` + "`forge env deploy prod --claimable --plan-only`" + ` checks that and
-the no-account plan's limits, creating nothing.
+` + "`forge env deploy prod --claimable`" + ` (no account) applies the working tree's
+migrations as they are. A signed-in deploy refuses one main does not hold:
+commit it first (` + "`git commit -m \"feat: add migrations\"`" + `). ` + "`--plan-only`" + `
+checks the no-account limits, creating nothing.
 
 ## Where depth lives
 

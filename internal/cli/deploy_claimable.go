@@ -43,29 +43,35 @@ import (
 const (
 	reasonClaimableSignedIn   = "claimable_signed_in"
 	reasonClaimableIneligible = "claimable_ineligible"
-	// reasonUnmergedMigrations: the checkout carries a migration the default
-	// branch does not hold, which the release cut refuses
-	// (checkUnmergedMigrations).
-	reasonUnmergedMigrations = "unmerged_migrations"
 )
 
-// claimableReleaseLabel names the release a claimable preflight judges: it
-// has no version yet, because the deploy picks one after these checks.
-const claimableReleaseLabel = "from this checkout"
-
-// claimableMigrationRefusal is the release cut's unmerged-migration refusal
-// (unmergedMigrationGuard, the same rule and the same predicate), judged from
-// the checkout BEFORE an anonymous deploy solves a proof of work, mints an
-// account or builds anything — and by --plan-only, which used to report
-// "fits" for a checkout the deploy then refused after a full build. The
-// refusal is a claimableRefusal so a --json caller gets its envelope.
-func claimableMigrationRefusal(out io.Writer, projectDir string, e *KCLEntities, allow bool) error {
-	err := unmergedMigrationGuard(out, "[deploy]", projectDir, claimableReleaseLabel, envKeepsHostedLedger(e), allow)
-	var coded exitCodeError
-	if !errors.As(err, &coded) {
+// claimableMigrationNote is what an anonymous deploy does instead of the
+// release cut's unmerged-migration refusal (unmergedMigrationGuard): it
+// applies the migrations of the working tree it runs from, committed or not,
+// and says so in one line. The refusal exists so a SHARED env's schema never
+// gets ahead of main; an unclaimed env is a throwaway preview no team's main
+// races, and "no account, repository or commit needed" is its promise. After
+// the claim, a signed-in deploy is held to the refusal again, and the passed-
+// migration check still guards every later release. Judged from the checkout
+// before an anonymous deploy solves a proof of work, mints an account or
+// builds anything, and by --plan-only. It returns an error only when the
+// migrations directory cannot be read.
+func claimableMigrationNote(out io.Writer, projectDir string, e *KCLEntities) error {
+	if !envKeepsHostedLedger(e) || foreignToolGuardNote(projectDir) != "" {
+		return nil
+	}
+	u, err := findUnmergedMigrations(projectDir)
+	if err != nil {
 		return err
 	}
-	return &claimableRefusal{exit: coded.code, code: cloud.CodeFailedPrecondition, reason: reasonUnmergedMigrations, msg: coded.msg}
+	switch {
+	case len(u.files) > 0:
+		fmt.Fprintf(out, "[deploy] note: an anonymous deploy applies the migrations in this working tree as they are, so %d not on %s (%s) need no commit (a signed-in deploy refuses them until they are on it)\n",
+			len(u.files), u.ref, strings.Join(u.files, ", "))
+	case u.noDefaultBranch:
+		fmt.Fprintln(out, "[deploy] note: an anonymous deploy applies the migrations in this working tree as they are; no commit is needed")
+	}
+	return nil
 }
 
 // The claimable plan's caps are the control plane's, read from its public
@@ -316,7 +322,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		limits := claimableLimitsFrom(ep, answer.av, answer.ok, answer.err)
 		defer useClaimableLimits(limits)()
 		if f.promote.planOnly {
-			return previewClaimable(envName, entities, ep, answer, limits, claimableMigrations{projectDir, f.promote.allowUnmergedMigrations}, f.jsonOut)
+			return previewClaimable(envName, entities, ep, answer, limits, claimableMigrations{projectDir}, f.jsonOut)
 		}
 		fmt.Fprintf(out, "  %s\n", limits.note())
 		if err := refuseClaimableWhenSignedIn(ep, envName); err != nil {
@@ -325,7 +331,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		if reasons := claimableAdmission(envName, entities, limits.limits); len(reasons) > 0 {
 			return claimableIneligibleError(envName, limits.limits, reasons)
 		}
-		if err := claimableMigrationRefusal(out, projectDir, entities, f.promote.allowUnmergedMigrations); err != nil {
+		if err := claimableMigrationNote(out, projectDir, entities); err != nil {
 			return err
 		}
 		project := hostedProjectName()
@@ -358,6 +364,7 @@ func dispatchClaimableDeploy(ctx context.Context, envName string, f deployCmdFla
 		// --yes is implied: there is no human at this keyboard to approve a
 		// plan for a throwaway account, and the account is the only thing at stake.
 		inner := f
+		inner.claimableRelease = true
 		inner.promote.yes = true
 		// Every outcome is remembered beside the token, so `env status
 		// --claimable` can tell a published deploy from one whose every
@@ -461,18 +468,19 @@ type claimablePreviewJSON struct {
 	LimitsPublished bool                `json:"limits_published"`
 	LimitsNote      string              `json:"limits_note"`
 	// ReleaseRefusal is why the deploy would refuse to cut a release from
-	// this checkout, judged by the cut's own rule before anything is built:
-	// today, a migration the default branch does not hold. Empty when none.
-	// Not part of Eligible (which is the env's fit to the plan), but it
-	// fails the preview all the same: the deploy cannot succeed.
+	// this checkout, judged before anything is built: today, a migrations
+	// directory that cannot be read. (A migration the default branch does
+	// not hold no longer is one: an anonymous deploy applies the working
+	// tree's, claimableMigrationNote.) Empty when none. Not part of Eligible
+	// (which is the env's fit to the plan), but it fails the preview all the
+	// same: the deploy cannot succeed.
 	ReleaseRefusal string `json:"release_refusal,omitempty"`
 }
 
-// claimableMigrations is what the preview needs to judge the release cut's
-// unmerged-migration refusal: the checkout, and whether it is waived.
+// claimableMigrations is what the preview needs to judge the checkout's
+// migrations (claimableMigrationNote).
 type claimableMigrations struct {
 	projectDir string
-	allow      bool
 }
 
 // claimableLimitsJSON is the caps in the preview document.
@@ -515,7 +523,7 @@ func previewClaimable(env string, e *KCLEntities, ep cloud.Endpoint, answer clai
 	doc.Limits, doc.LimitsPublished, doc.LimitsNote = limitsJSON(limits.limits), limits.published, limits.note()
 	doc.Reasons = claimableAdmission(env, e, limits.limits)
 	doc.Eligible = len(doc.Reasons) == 0
-	refusal := claimableMigrationRefusal(progressWriter(jsonOut), mig.projectDir, e, mig.allow)
+	refusal := claimableMigrationNote(progressWriter(jsonOut), mig.projectDir, e)
 	if refusal != nil {
 		doc.ReleaseRefusal = refusal.Error()
 	}

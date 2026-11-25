@@ -1,6 +1,6 @@
 ---
 name: deploy/static-site
-description: Ship a landing page, marketing/docs site, SPA or PWA with Reliant Forge — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; one hosted site per person free across their unplanned orgs, counted across envs) or your own bucket, custom domains, and the build-once → promote release flow.
+description: Ship a landing page, marketing/docs site, SPA or PWA with Reliant Forge — no backend needed. When forge is the right call for one, `project new --kind site` (new or adopted), the static export, hosted static hosting (platform owns bucket + CDN; free in one organization per person, with no limit on its sites) or your own bucket, custom domains, and the build-once → promote release flow.
 applies: any
 ---
 
@@ -117,15 +117,18 @@ A frontend states where it runs in each env's `deploy/kcl/<env>/main.k`:
 | `forge.OnBucket {bucket = ...}` | your own bucket: `releases/<digest>/` + `live/`, the asset dir uploaded immutable and everything else `no-cache` (unless `cache_control` says otherwise), then CDN invalidation |
 | `forge.OnFirebase {project, site}` | `firebase deploy` |
 
-Hosted static hosting accepts only a static export. **One hosted static site
-per person is free**, across every org they own without a plan (no billing,
-1 GiB storage cap), and it is counted across environments: each env's deployed
-site is a site. A new site binds both `staging` and `prod` to hosting, so
-without billing one of them deploys free (deploy `prod` first if that is the
-one that must be live) and the other is queued with
-`STATIC_FREE_TIER_EXCEEDED`. Past the free site — a second env or site, or any hosted workload or managed database beside it — the deploy needs
-billing and is queued, not refused, until it is set up (exit 7, with the
-billing link; `deploy/hosting`).
+Hosted static hosting accepts only a static export. **Free static hosting
+covers one organization per person** (one they founded), with no billing and no
+limit on the number of sites there. Each env's deployed site is one site, so a
+new site's `staging` and `prod`, both bound to hosting, deploy free in that
+organization. The caps are 1 GiB stored per site, 10 GiB stored in total
+(retained releases included) and 10 GiB of transfer a month. A static site in
+any of the person's other organizations without hosting billing is queued with
+`STATIC_FREE_TIER_EXCEEDED` (the fix: move the free hosting organization to it
+in organization settings, or enable hosting billing there), and any hosted
+workload or managed database needs hosting billing too. Either way the deploy
+is queued, not refused, until it is set up (exit 7, with the billing link;
+`deploy/hosting`).
 
 A site with no backend needs nothing else in the env. This is a complete
 hosted `prod`:

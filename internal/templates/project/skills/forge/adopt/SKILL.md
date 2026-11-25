@@ -53,7 +53,7 @@ Say these in the user's terms. Each names its entry in forge's benefits registry
 | **Errors that never leak internals** (Go, Connect) | `svcerr.Wrap(err)`: a classified code out, the driver's SQL and DSN stay in the log | `svcerr-redaction` |
 | **Telemetry with no SDK to configure** (Node) | `initNodeTelemetry` ships logs, uncaught errors and spans over OTLP/HTTP | `node-telemetry` |
 | **Playbooks that match the tool** | 180+ skills served by the forge binary, and its MCP tools | `skills-in-the-binary`, `mcp-server` |
-| **A static site or SPA live, with environments** | an existing Vite or Next.js app adopted in place; hosted, one site free | `static-site-first-class`, `free-static-site`, `claimable-deploys` |
+| **A static site or SPA live, with environments** | an existing Vite or Next.js app adopted in place; hosted, free in one organization per person | `static-site-first-class`, `free-static-site`, `claimable-deploys` |
 | **Dashboards, issues and alerts for the app as it runs** | `forge obs init` mints an ingest token; three `OTEL_*` variables send any app's telemetry to dashboards at `https://forge.reliantlabs.io/forge/p/<project>/observability` (sign-in required); forge need not build or deploy it | `monitoring-any-language`, `obs-check` |
 | **Deploys with a memory** | one `forge release record` step after the user's own deploy job: a deploy marker and an `obs check` verdict per release, a Releases page | `record-deploys`, `release-ledger` |
 | **Proof before forge touches a deploy** | `forge.OnExternal` drives their own Helm, Fly, Cloud Run or script; `forge env verify` shows no diff first and changes nothing | `external-deploy-tooling`, `env-verify-parity` |
@@ -185,7 +185,8 @@ yours into theirs.
 
 Rules: sum only the steps the user chose; round to 5 minutes; give a range when
 two modifiers are uncertain. Never
-say "free" beyond the one free static site: a hosted workload or database needs
+say "free" beyond static sites in the person's one free hosting organization:
+a static site elsewhere, or a hosted workload or database, needs hosting
 billing (the deploy queues, exits 7 and prints the link). If the survey breaks
 an assumption (no Dockerfile, migrations outside `db/migrations`, a polyrepo),
 say so and revise the number out loud. **When the honest estimate is long, say

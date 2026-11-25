@@ -4239,15 +4239,17 @@ benefits:
 
   - id: free-static-site
     category: host
-    title: One static site free
+    title: Free static hosting in one organization
     claim: >-
-      One hosted static site is free per owning person, counted across every env
-      and every org they own without a plan, with metered egress above the free
-      tier.
+      Static hosting is free in one organization per person (one they founded),
+      with no limit on the number of sites there (each env's site is one): 1 GiB
+      stored per site, 10 GiB stored and 10 GiB of transfer a month in total.
+      Static sites in the person's other organizations, and any backend or
+      database, need hosting billing.
     availability: hosted
     why: >-
       The allowance is per person, not per org, because a per-org allowance
-      would multiply free sites (owner decision, 2026-10-26).
+      would multiply free hosting (owner decisions, 2026-10-26 and 2026-11-20).
     evidence:
       - external: control-plane:internal/freesite
       - external: control-plane:internal/staticfreetier
@@ -5387,7 +5389,7 @@ glance:
     - fact: A CDN-served site with a live URL, and your own domain with HTTPS issued and renewed
       show: env deploy prod
       benefits: [static-hosting-cdn, live-hostname, custom-domains-tls]
-    - fact: One hosted site free per person; with no account, a live URL plus a 72-hour claim link
+    - fact: Free static hosting in one org per person, any number of sites; with no account, a 72-hour claim link
       show: env deploy prod --claimable
       benefits: [free-static-site, claimable-deploys]
     - fact: Browser errors, page views and masked session replay, wired in by the scaffold

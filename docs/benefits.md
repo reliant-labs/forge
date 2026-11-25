@@ -3491,13 +3491,13 @@ _Enforced · Reliant hosting_
 
 <a id="free-static-site"></a>
 
-### One static site free
+### Free static hosting in one organization
 
-One hosted static site is free per owning person, counted across every env and every org they own without a plan, with metered egress above the free tier.
+Static hosting is free in one organization per person (one they founded), with no limit on the number of sites there (each env's site is one): 1 GiB stored per site, 10 GiB stored and 10 GiB of transfer a month in total. Static sites in the person's other organizations, and any backend or database, need hosting billing.
 
 _Enforced · Reliant hosting_
 
-**Why:** The allowance is per person, not per org, because a per-org allowance would multiply free sites (owner decision, 2026-10-26).
+**Why:** The allowance is per person, not per org, because a per-org allowance would multiply free hosting (owner decisions, 2026-10-26 and 2026-11-20).
 
 **Evidence:**
 

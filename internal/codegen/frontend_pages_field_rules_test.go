@@ -255,8 +255,8 @@ func TestFormOptionalScalar_EncodedKinds(t *testing.T) {
 func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 	page := fieldRulesPage(t, fieldRulesSvc())
 	wantChoices := []PageEnumValue{
-		{Ref: "ThingKind.RESIDENTIAL", Label: "Residential"},
-		{Ref: "ThingKind.COMMERCIAL", Label: "Commercial"},
+		{Ref: "ThingKindEnum.RESIDENTIAL", Label: "Residential"},
+		{Ref: "ThingKindEnum.COMMERCIAL", Label: "Commercial"},
 	}
 	assertChoices := func(label string, got []PageEnumValue) {
 		t.Helper()
@@ -279,7 +279,7 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 		assertChoices(form.name+" select", kind.EnumValues)
 		// The zod mirror of the CHECK: a stored zero (a schema forge did not
 		// birth) is refused on both forms rather than written back.
-		if want := `z.coerce.number().pipe(z.enum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value")`; kind.ZodExpr != want {
+		if want := `z.coerce.number().pipe(z.enum(ThingKindEnum)).refine((v): boolean => v !== ThingKindEnum.UNSPECIFIED, "Choose a value")`; kind.ZodExpr != want {
 			t.Errorf("%s kind zod = %s, want %s", form.name, kind.ZodExpr, want)
 		}
 	}
@@ -302,12 +302,12 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 		for _, name := range []string{"create-page.tsx.tmpl", "edit-page.tsx.tmpl", "list-page.tsx.tmpl"} {
 			out := renderPageTemplate(t, tmplKind, name, page)
 			for _, offered := range []string{
-				"<option value={ ThingKind.UNSPECIFIED }>",
-				"<option value={String(ThingKind.UNSPECIFIED)}>",
-				"[ThingKind.UNSPECIFIED,",
+				"<option value={ ThingKindEnum.UNSPECIFIED }>",
+				"<option value={String(ThingKindEnum.UNSPECIFIED)}>",
+				"[ThingKindEnum.UNSPECIFIED,",
 				// The list's <FilterBar> options, in either tree.
-				"[ThingKind.UNSPECIFIED], label",
-				"String(ThingKind.UNSPECIFIED), label",
+				"[ThingKindEnum.UNSPECIFIED], label",
+				"String(ThingKindEnum.UNSPECIFIED), label",
 			} {
 				if strings.Contains(out, offered) {
 					t.Errorf("%s/%s offers the UNSPECIFIED zero value (%s):\n%s", tmplKind, name, offered, out)
@@ -318,14 +318,14 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 		// first real member — which is also what the API stores when the
 		// field is omitted.
 		create := renderPageTemplate(t, tmplKind, "create-page.tsx.tmpl", page)
-		if !strings.Contains(create, "defaultValue={ ThingKind.RESIDENTIAL }") {
+		if !strings.Contains(create, "defaultValue={ ThingKindEnum.RESIDENTIAL }") {
 			t.Errorf("%s create select is not defaulted to the first real member:\n%s", tmplKind, create)
 		}
 		if strings.Contains(create, "Select kind…") {
 			t.Errorf("%s create select still renders an empty placeholder for a NOT NULL enum:\n%s", tmplKind, create)
 		}
 		list := renderPageTemplate(t, tmplKind, "list-page.tsx.tmpl", page)
-		for _, member := range []string{"ThingKind.RESIDENTIAL", "ThingKind.COMMERCIAL"} {
+		for _, member := range []string{"ThingKindEnum.RESIDENTIAL", "ThingKindEnum.COMMERCIAL"} {
 			// The list filter is the installed <FilterBar>: Next.js keys its
 			// options by member NAME (the URL token), Vite by number.
 			if !strings.Contains(list, "["+member+"], label") && !strings.Contains(list, "String("+member+"), label") {
@@ -333,7 +333,7 @@ func TestEnumZeroValue_NeverAChoice(t *testing.T) {
 			}
 		}
 		// The Next.js page parses the URL token against this array.
-		if tmplKind == "pages" && !strings.Contains(list, "[ThingKind.RESIDENTIAL, ThingKind.COMMERCIAL] as const") {
+		if tmplKind == "pages" && !strings.Contains(list, "[ThingKindEnum.RESIDENTIAL, ThingKindEnum.COMMERCIAL] as const") {
 			t.Errorf("%s list filter options are not exactly the real members:\n%s", tmplKind, list)
 		}
 	}
@@ -351,16 +351,16 @@ func TestEnumZeroValue_ByWireNumber(t *testing.T) {
 	if !ok {
 		t.Fatal("ThingKind should resolve")
 	}
-	if meta.ZeroRef != "ThingKind.NONE" {
-		t.Errorf("ZeroRef = %q, want ThingKind.NONE", meta.ZeroRef)
+	if meta.ZeroRef != "ThingKindEnum.NONE" {
+		t.Errorf("ZeroRef = %q, want ThingKindEnum.NONE", meta.ZeroRef)
 	}
-	if len(meta.Values) != 2 || meta.Values[0].Ref != "ThingKind.RESIDENTIAL" || meta.Values[1].Ref != "ThingKind.COMMERCIAL" {
+	if len(meta.Values) != 2 || meta.Values[0].Ref != "ThingKindEnum.RESIDENTIAL" || meta.Values[1].Ref != "ThingKindEnum.COMMERCIAL" {
 		t.Errorf("Values = %+v, want RESIDENTIAL, COMMERCIAL", meta.Values)
 	}
 
 	delete(svc.EnumNumbers, "services.things.v1.ThingKind")
 	meta, _ = resolveFormEnum(svc, "Thing", "services.things.v1.ThingKind")
-	if meta.ZeroRef != "ThingKind.NONE" || len(meta.Values) != 2 {
+	if meta.ZeroRef != "ThingKindEnum.NONE" || len(meta.Values) != 2 {
 		t.Errorf("without EnumNumbers: ZeroRef = %q, Values = %+v; want the first value as the zero", meta.ZeroRef, meta.Values)
 	}
 }
@@ -380,13 +380,13 @@ func TestEnumOptional_NoneIsAChoice(t *testing.T) {
 	page := fieldRulesPage(t, svc)
 
 	kind := formFieldNamed(t, page.CreateFields, "kind")
-	if want := `z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().pipe(z.enum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value").optional())`; kind.ZodExpr != want {
+	if want := `z.preprocess((v) => (v === "" ? undefined : v), z.coerce.number().pipe(z.enum(ThingKindEnum)).refine((v): boolean => v !== ThingKindEnum.UNSPECIFIED, "Choose a value").optional())`; kind.ZodExpr != want {
 		t.Errorf("optional kind zod = %s, want %s", kind.ZodExpr, want)
 	}
 	// Edit opens a NULL enum on None, never on the first real member — an
 	// unrelated Save must not write a value the record never had.
 	editKind := formFieldNamed(t, page.UpdateFields, "kind")
-	if want := "item.kind === ThingKind.UNSPECIFIED ? undefined : item.kind"; editKind.PrefillExpr != want {
+	if want := "item.kind === ThingKindEnum.UNSPECIFIED ? undefined : item.kind"; editKind.PrefillExpr != want {
 		t.Errorf("optional kind edit prefill = %s, want %s", editKind.PrefillExpr, want)
 	}
 	for _, tmplKind := range []string{"pages", "vite-spa-pages"} {

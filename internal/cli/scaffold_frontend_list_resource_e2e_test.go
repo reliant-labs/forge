@@ -70,7 +70,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 	for _, want := range []string{
 		`import { useQueryResource } from "@/hooks/use-query-resource";`,
 		`import { Resource, type ResourceColumn, type ResourceSort } from "@reliantlabs/forge-web-runtime";`,
-		`import { OrderStatus } from "@/gen/services/order/v1/order_pb";`,
+		`import { OrderStatus as OrderStatusEnum } from "@/gen/services/order/v1/order_pb";`,
 		`const resource = useQueryResource(query);`,
 		`<Resource<OrderEntity>`,
 		`status={resource.status}`,
@@ -82,7 +82,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`status: status,`,
 		// The status facet is a typed option of the installed <FilterBar>,
 		// in the wrapping toolbar row, not in the header's actions.
-		`{ value: OrderStatus[OrderStatus.SHIPPED], label: "Shipped" }`,
+		`{ value: OrderStatusEnum[OrderStatusEnum.SHIPPED], label: "Shipped" }`,
 		`import FilterBar from "@/components/ui/filter_bar";`,
 		`toolbar={`,
 		`<FilterBar`,
@@ -124,7 +124,7 @@ func TestE2EScaffoldFrontendListResource(t *testing.T) {
 		`import { useTypedSearchParams } from "@/lib/search-schemas";`,
 		`const params = useTypedSearchParams(searchParamsSchema);`,
 		`const search = params.q ?? "";`,
-		`const status = statusOptions.find((member) => OrderStatus[member] === params.status);`,
+		`const status = statusOptions.find((member) => OrderStatusEnum[member] === params.status);`,
 		`setFilters({ status: next.status });`,
 		`values={{ status: params.status ?? "" }}`,
 		// useSearchParams() outside a Suspense boundary fails `next build`.

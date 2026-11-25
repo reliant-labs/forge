@@ -388,8 +388,8 @@ func TestPageTemplates_EnumColumnsRenderThroughStatusBadge(t *testing.T) {
 	}{
 		// status is this entity's primary cell, so the list wraps the badge
 		// in the record link; the badge call itself is the same.
-		{tmpl: "list-page.tsx.tmpl", cell: `<StatusBadge value={item.status} enumType={ OrderStatus } />`},
-		{tmpl: "detail-page.tsx.tmpl", cell: `value: <StatusBadge value={item.status} enumType={ OrderStatus } />,`},
+		{tmpl: "list-page.tsx.tmpl", cell: `<StatusBadge value={item.status} enumType={ OrderStatusEnum } />`},
+		{tmpl: "detail-page.tsx.tmpl", cell: `value: <StatusBadge value={item.status} enumType={ OrderStatusEnum } />,`},
 	} {
 		// Both browser page trees must tell the SAME story — the vite-spa
 		// detail page used to have no enum branch at all and rendered the
@@ -398,7 +398,7 @@ func TestPageTemplates_EnumColumnsRenderThroughStatusBadge(t *testing.T) {
 			rendered := renderPageInDirForTest(t, dir, tc.tmpl, page)
 			for _, want := range []string{
 				`import { StatusBadge } from "@/components/status-badge";`,
-				`import { OrderStatus } from "@/gen/services/orders/v1/orders_pb";`,
+				`import { OrderStatus as OrderStatusEnum } from "@/gen/services/orders/v1/orders_pb";`,
 				tc.cell,
 			} {
 				if !strings.Contains(rendered, want) {
@@ -408,7 +408,7 @@ func TestPageTemplates_EnumColumnsRenderThroughStatusBadge(t *testing.T) {
 			// The hand reverse-map at the call site is exactly what the shared
 			// component now owns — no page may re-grow it.
 			for _, banned := range []string{
-				"OrderStatus[item.status]",
+				"OrderStatusEnum[item.status]",
 				`import Badge from "@/components/ui/badge";`,
 			} {
 				if strings.Contains(rendered, banned) {

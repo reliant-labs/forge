@@ -230,6 +230,15 @@ func uploadTestReport(ctx context.Context, in testUploadInput) *testUpload {
 	}
 	client := cloud.NewClient(ep, cred)
 	client.HTTP.Timeout = testUploadTimeout
+	// RecordTestRun takes tests:write (or deploy:write) from a machine
+	// credential. A session's credential — a Reliant daemon's, through the
+	// credential helper, or a stored `forge login` — is minted for
+	// LoginScopes, which hold deploy:write only for a person granted it, so
+	// the client elevates for tests:write before the first upload: the person
+	// behind the session may hold that narrow scope without deploy:write. An
+	// explicit token (FORGE_CONTROL_PLANE_TOKEN, --token) is presented as
+	// it is, and a refused elevation falls back to the base credential.
+	client.DeclareScope(testUploadScope, procRecordTestRun)
 	features, err := hostedTestFeatures(ctx, client)
 	if err != nil {
 		return finish(testUploadFailed, fmt.Sprintf("could not ask %s whether it records test runs: %v", ep.URL, err))

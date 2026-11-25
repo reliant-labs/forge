@@ -1,6 +1,6 @@
 ---
 name: compare
-description: Reliant Forge and Reliant hosting next to Vercel, Netlify, Supabase, Render, Fly.io or Railway — what one system replaces, where it does not fit (hosted frontends are static exports, so no SSR, server actions or middleware), and what hosting costs, with sources. Load when a user asks "why not Vercel?", "what will this cost?" or which platform to pick.
+description: Reliant Forge and Reliant hosting next to Vercel, Netlify, Supabase, Render, Fly.io or Railway — what one system replaces, where it does not fit (hosted frontends are static exports, so no SSR, server actions or middleware; one hosted region; no traffic-split canaries or automatic rollback; no autoscaling yet), and what hosting costs, with sources. Load when a user asks "why not Vercel?", "what will this cost?" or which platform to pick.
 applies: any
 ---
 
@@ -37,9 +37,9 @@ telemetry, deployed to Reliant hosting or to infrastructure you run.
 
 | Next to | Forge adds | The other has, and forge hosting does not |
 |---|---|---|
-| Vercel, Netlify | a typed backend, Postgres, migrations, auth, telemetry, alerts and release gates in the same project | SSR, server actions, middleware, ISR and edge functions for Next.js |
+| Vercel, Netlify | a typed backend, Postgres, migrations, auth, telemetry, alerts and release gates in the same project | SSR, server actions, middleware, ISR and edge functions for Next.js; releases that shift a share of traffic to a new deployment gradually (forge ramps a code path to a share of users with a Change instead) |
 | Supabase | your own typed API generated from proto, per-endpoint telemetry, safety-checked migrations and release gates | queries straight from the browser under row-level security, realtime channels |
-| Render, Fly.io, Railway | codegen, telemetry, alerts, release health checks and build-once promotion that come with the project | hosted cron jobs, a choice of regions |
+| Render, Fly.io, Railway | codegen, telemetry, alerts, release health checks and build-once promotion that come with the project | hosted cron jobs, a choice of regions (forge hosting runs in GCP us-central1 only), autoscaling (not on forge hosting yet) |
 
 A split is fine: a Next.js app that needs a server can stay on Vercel and call
 a forge API hosted on Reliant, and one workload can bind to a cluster you run

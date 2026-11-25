@@ -5411,13 +5411,14 @@ limits:
     title: Hosted frontends are static exports
     claim: >-
       Reliant hosting serves a frontend only as a static export, so no
-      server-side rendering, server actions, middleware, ISR, request-time
-      `cookies()`/`headers()` or on-the-fly image optimization; a Vite SPA or a
-      statically exportable Next.js app fits as it is.
+      server-side rendering, server actions, middleware, ISR, edge functions,
+      request-time `cookies()`/`headers()` or on-the-fly image optimization; a
+      Vite SPA or a statically exportable Next.js app fits as it is.
     instead: >-
-      run a Next.js app that needs a server as a container workload (`output:
-      standalone`, skill `frontend/serving`), or keep it on a host built for
-      that and point it at the forge API.
+      split the app: keep a Next.js frontend that needs a server on Vercel (or
+      another host built for it) and have it call a forge API hosted on
+      Reliant, or run it as a container workload (`output: standalone`, skill
+      `frontend/serving`).
     evidence:
       - analyzer: --static-export
       - skill: frontend/serving
@@ -5445,20 +5446,25 @@ limits:
   - id: one-hosted-region
     title: One hosted region
     claim: >-
-      Hosted services and managed databases run in one region, GCP us-central1,
-      with no region choice; static sites are served through the CDN edge.
+      Hosted services, workers, jobs and managed databases run in one region,
+      GCP us-central1, in one zone (us-central1-a), with no region choice and
+      no multi-region failover; static sites are served through the CDN edge.
     instead: >-
       bind a workload to a cluster you run in another region
       (`forge.OnCluster`).
     evidence:
+      - external: control-plane:deploy/kcl/lib/gvisor_pool.k
       - external: control-plane:deploy/kcl/lib/hub_pool.k
       - skill: deploy
   - id: no-hosted-autoscaling
-    title: Hosted backends do not autoscale
+    title: Hosted backends do not autoscale yet
     claim: >-
-      A hosted service or worker runs the replica count its env declares; it
-      does not scale with traffic between a min and a max, and a managed
-      database's storage and compute do not grow on their own.
+      Today a hosted service or worker runs the replica count its env declares;
+      it does not scale with traffic between a min and a max, and a managed
+      database's storage and compute do not grow on their own. Replicas
+      scaling between a min and a max on CPU, and managed-database storage
+      that grows, are planned; scaling to zero and database compute
+      autoscaling are not.
     instead: >-
       raise the replica count or the shape in the env's `main.k` and deploy, or
       bind the workload to a cluster you run and give it your own
@@ -5466,6 +5472,39 @@ limits:
     evidence:
       - skill: deploy/hosting
       - command: env shape
+  - id: no-traffic-split-canary
+    title: No traffic-split canary releases
+    claim: >-
+      A promotion moves all of an env's traffic to the new release as its pods
+      roll out; there is no canary or gradual rollout that sends a percentage
+      of requests to the new release while the previous one serves the rest.
+    instead: >-
+      ramp new behavior to a stable share of users with a Change
+      (`changes.yaml`, in beta) inside one release, judge each promotion with
+      `forge obs check`, and declare the promotion health gate
+      (`delivery_policy.health_gate`) so prod takes a release only after
+      staging ran it and passed.
+    evidence:
+      - command: obs check
+      - skill: deploy/delivery-policy
+      - skill: observability/changes
+      - library: pkg/releasehealth
+  - id: no-automatic-rollback
+    title: No automatic rollback
+    claim: >-
+      A release that fails its health check is not rolled back for you: the
+      verdict fails, `ReleaseRegressed` fires, and the promotion health gate
+      keeps it out of the next env, but the env that failed keeps running it
+      until you deploy again.
+    instead: >-
+      roll forward with a fixed release, or deploy an earlier one as an
+      ordinary promote (`forge env deploy <env> <older-version> --note
+      "<why>"`) when the env's rollback floor allows it.
+    evidence:
+      - command: obs check
+      - command: env deploy --note
+      - skill: deploy/rollback-floor
+      - skill: observability/release-health
   - id: hosted-profiling-opt-in
     title: Hosted profiling is opt-in
     claim: >-

@@ -23,7 +23,10 @@ package cli
 //     first keeps main's head at or above every env's, which is what makes
 //     the merge-time lint sufficient. --allow-unmerged-migrations waives it
 //     (a hotfix that genuinely cannot land on main first); the passed-
-//     migration guard still protects the next release.
+//     migration guard still protects the next release. An anonymous
+//     deploy (`forge env deploy <env> --claimable`) is exempt: its env is a
+//     throwaway preview no team's main races, and it applies the migrations
+//     of the working tree it was run from (claimableMigrationNote).
 //
 // Sibling checkouts are judged only by (1). Their commits are already held to
 // the project's pins (source_pin.go), and the pin is the sibling's business.
@@ -341,10 +344,12 @@ func passedMigrationsRemedy(env string) string {
 // preflight (releaseMigrationGuard), a preflight whose ledger could not be
 // resolved, and `forge env deploy <env> --claimable` before it mints an
 // account. It applies only to an env that keeps its ledger on a control plane
-// (hosted; see releaseMigrationGuard for why), and not to a project whose
-// migrations another tool applies (foreignToolGuardNote).
+// (hosted; see releaseMigrationGuard for why), not to a project whose
+// migrations another tool applies (foreignToolGuardNote), and not to an
+// anonymous deploy: this process deploys with a claimable credential, and the
+// --claimable preflight already said what it applies (claimableMigrationNote).
 func unmergedMigrationGuard(out io.Writer, prefix, projectDir, version string, hosted, allow bool) error {
-	if !hosted || foreignToolGuardNote(projectDir) != "" {
+	if !hosted || foreignToolGuardNote(projectDir) != "" || cloud.ClaimableActive() {
 		return nil
 	}
 	return checkUnmergedMigrations(out, prefix, projectDir, version, allow)
@@ -367,13 +372,48 @@ func envKeepsHostedLedger(entities *KCLEntities) bool {
 // the default branch does not hold, unless allow. Unknowable without a
 // default branch, and then a note.
 func checkUnmergedMigrations(out io.Writer, prefix, projectDir, version string, allow bool) error {
+	u, err := findUnmergedMigrations(projectDir)
+	if err != nil {
+		return err
+	}
+	if u.noDefaultBranch {
+		fmt.Fprintf(out, "%s note: no default branch to compare with, so release %s's migrations were not checked for being merged\n", prefix, version)
+		return nil
+	}
+	if len(u.files) == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("release %s carries %d migration(s) that are not on %s: %s — "+
+		"an env that applies them gets a schema ahead of the default branch, and the next migration main merges can land below it while passing every merge-time check",
+		version, len(u.files), u.ref, strings.Join(u.files, ", "))
+	if allow {
+		fmt.Fprintf(out, "%s WARNING (--%s): %s\n", prefix, allowUnmergedMigrationsFlag, msg)
+		return nil
+	}
+	return exitCodeError{code: exitRefused, msg: msg + unmergedMigrationsRemedy(u.ref, u.dir)}
+}
+
+// unmergedMigrations is the checkout's own migrations the default branch does
+// not hold. files is empty when there are none (or no migrations at all);
+// noDefaultBranch says there was nothing to compare with, so it is unknown.
+type unmergedMigrations struct {
+	files           []string
+	noDefaultBranch bool
+	// ref is the default branch as migrationgit.DefaultBranchFiles names it;
+	// dir is the migrations directory, repository-relative.
+	ref, dir string
+}
+
+// findUnmergedMigrations judges the checkout at projectDir: the one
+// predicate the release cut's refusal and the anonymous deploy's note share.
+func findUnmergedMigrations(projectDir string) (unmergedMigrations, error) {
 	dir, ok := projectMigrationsDir(projectDir)
 	if !ok {
-		return nil
+		return unmergedMigrations{}, nil
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", dir, err)
+		return unmergedMigrations{}, fmt.Errorf("read %s: %w", dir, err)
 	}
 	var names []string
 	for _, e := range entries {
@@ -383,35 +423,23 @@ func checkUnmergedMigrations(out io.Writer, prefix, projectDir, version string, 
 	}
 	files := release.NewMigrationSet("", "", names).Files
 	if len(files) == 0 {
-		return nil
+		return unmergedMigrations{}, nil
 	}
 	root := migrationgit.RepoRoot(projectDir)
 	onMain, ref, ok := migrationgit.DefaultBranchFiles(root, dir)
 	if !ok {
-		fmt.Fprintf(out, "%s note: no default branch to compare with, so release %s's migrations were not checked for being merged\n", prefix, version)
-		return nil
+		return unmergedMigrations{noDefaultBranch: true}, nil
 	}
-	var unmerged []string
+	u := unmergedMigrations{ref: ref}
 	for _, f := range files {
 		if !onMain[f] {
-			unmerged = append(unmerged, f)
+			u.files = append(u.files, f)
 		}
 	}
-	if len(unmerged) == 0 {
-		return nil
+	if u.dir, ok = migrationgit.RepoRelative(root, dir); !ok {
+		u.dir = config.MigrationsDirIn(projectDir)
 	}
-	msg := fmt.Sprintf("release %s carries %d migration(s) that are not on %s: %s — "+
-		"an env that applies them gets a schema ahead of the default branch, and the next migration main merges can land below it while passing every merge-time check",
-		version, len(unmerged), ref, strings.Join(unmerged, ", "))
-	if allow {
-		fmt.Fprintf(out, "%s WARNING (--%s): %s\n", prefix, allowUnmergedMigrationsFlag, msg)
-		return nil
-	}
-	rel, ok := migrationgit.RepoRelative(root, dir)
-	if !ok {
-		rel = config.MigrationsDirIn(projectDir)
-	}
-	return exitCodeError{code: exitRefused, msg: msg + unmergedMigrationsRemedy(ref, rel)}
+	return u, nil
 }
 
 // unmergedMigrationsRemedy is the refusal's fix, with the commands for the
@@ -427,7 +455,9 @@ func unmergedMigrationsRemedy(ref, dir string) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  Put them on %s first, then deploy from a commit that carries them:", branch)
-	fmt.Fprintf(&b, "\n    not committed yet:  git switch %s && git add %s && git commit -m \"Add migrations\"", branch, dir)
+	// A conventional-commit message: a scaffolded project's commitlint hook
+	// refuses "Add migrations" (type-enum, subject-case).
+	fmt.Fprintf(&b, "\n    not committed yet:  git switch %s && git add %s && git commit -m \"feat: add migrations\"", branch, dir)
 	b.WriteString("\n    on another branch:  merge it into " + branch + " (a hotfix branch can cherry-pick the merged file)")
 	if remote != "" {
 		fmt.Fprintf(&b, "\n    then:               git push %s %s", remote, branch)

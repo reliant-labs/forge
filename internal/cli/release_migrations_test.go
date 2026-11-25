@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/reliant-labs/forge/internal/buildtarget"
+	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/pkg/release"
@@ -370,6 +371,11 @@ func TestUnmergedMigrationsRemedy(t *testing.T) {
 		if !strings.Contains(got, "--"+allowUnmergedMigrationsFlag) {
 			t.Errorf("%s: remedy no longer names the hotfix waiver:\n%s", tc.ref, got)
 		}
+		// The scaffolded commitlint hook (type-enum, subject-case) refuses
+		// any message that is not a lower-case conventional commit.
+		if !strings.Contains(got, `git commit -m "feat: add migrations"`) {
+			t.Errorf("%s: remedy's commit message is not a conventional commit:\n%s", tc.ref, got)
+		}
 	}
 }
 
@@ -430,6 +436,22 @@ func TestPreflightReleaseMigrations_LedgerUnresolvedStillRefusesUnmerged(t *test
 	// An env whose ledger is this machine's is not judged by this rule.
 	if err := preflightReleaseMigrations(ctx, dir, &KCLEntities{}, opts); err != nil {
 		t.Errorf("an env with no control plane: err = %v, want nil (the cut owns the ledger failure)", err)
+	}
+
+	// Nor is an anonymous deploy's build (this process holds a claimable
+	// credential): it applies the working tree's migrations, and the
+	// --claimable preflight said so (claimableMigrationNote).
+	restore := cloud.UseClaimableCredential(cloud.Endpoint{URL: "https://cp.invalid"}, "claimable-token", nil)
+	err = preflightReleaseMigrations(ctx, dir, hosted, opts)
+	restore()
+	if err != nil {
+		t.Errorf("an anonymous deploy: err = %v, want nil", err)
+	}
+	var note bytes.Buffer
+	if err := claimableMigrationNote(&note, dir, hosted); err != nil ||
+		!strings.Contains(note.String(), "applies the migrations in this working tree") ||
+		!strings.Contains(note.String(), "20260101000000_counters.up.sql") {
+		t.Errorf("claimable note: err = %v, out %q; want one line naming the uncommitted migration", err, note.String())
 	}
 
 	migGit(t, dir, "add", "-A")

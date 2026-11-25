@@ -4,6 +4,9 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/deploy"
+	"github.com/reliant-labs/forge/pkg/deploy/v1alpha1"
 )
 
 // hostingCatalog is the pay-as-you-go hosting list in control-plane's
@@ -70,9 +73,25 @@ func TestHostingClaimMatchesTheCatalog(t *testing.T) {
 		total.Add(total, new(big.Rat).Mul(billed(storageGiB, 1, c.includedStorageGiB), rat(c.storagePerGiBMonth)))
 		return "$" + total.FloatString(2)
 	}
-	for _, want := range []string{month("0.1", "0.5", "0"), month("0.25", "1", "10")} {
-		if !strings.Contains(claim, want+" ") {
+	// The worked examples: the shape a scaffolded service requests, the
+	// smallest shape hosting admits, and managed Postgres. Each must sit on
+	// the hosted shape band (deploy.CheckShapeBand): a figure for a shape
+	// admission refuses (0.1 vCPU / 512 MiB, forge report 798a32f1) prices
+	// something no hosted deploy can run.
+	for _, shape := range []struct{ vcpu, memGiB, storageGiB string }{
+		{"0.25", "1", "0"}, {"0.125", "0.5", "0"}, {"0.25", "1", "10"},
+	} {
+		if want := month(shape.vcpu, shape.memGiB, shape.storageGiB); !strings.Contains(claim, want+" ") {
 			t.Errorf("hosting claim does not quote the catalog's %s a month:\n%s", want, claim)
+		}
+		milli := new(big.Rat).Mul(rat(shape.vcpu), big.NewRat(1000, 1))
+		memBytes := new(big.Rat).Mul(rat(shape.memGiB), big.NewRat(1<<30, 1))
+		if !milli.IsInt() || !memBytes.IsInt() {
+			t.Fatalf("shape %+v is not whole millicores and bytes", shape)
+		}
+		res := v1alpha1.Resources{CPURequestMillicores: milli.Num().Int64(), MemoryRequestBytes: memBytes.Num().Int64()}
+		if err := deploy.CheckShapeBand(res); err != nil {
+			t.Errorf("hosting claim quotes a shape admission refuses: %v", err)
 		}
 	}
 }

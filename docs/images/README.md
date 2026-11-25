@@ -36,3 +36,29 @@ that example. Displayed timestamps and relative times can change between visits.
   at [v1.8.3](https://demo.reliantlabs.io/forge/p/shop/releases/v1.8.3?env=prod&tab=health),
   but is not pictured; these three images keep the README to one diagnostic
   story and avoid exposing names in release history.
+
+## The deploy-and-verify recording
+
+`forge-deploy-verify.gif` (top of the repository README) was recorded on
+2026-11-25 (UTC) with the released forge v1.11.0 (`npx -y @reliantlabs/forge@1.11.0`),
+against Reliant cloud. It is a real terminal session, recorded with asciinema and
+rendered with agg. A small scaffolded app (`forge project new --service greeter`,
+one `Greet` rpc with a planted bug: it slices the first letter of an empty name)
+was deployed twice:
+
+- **No account:** `forge env deploy prod --claimable` printed the live URL and the
+  claim link. The link's token is masked in the recording, because it is a bearer
+  credential.
+- **Signed in** (an organization's credential): the same app was deployed, real
+  traffic (one request in ten with an empty name) produced the panic, and
+  `forge obs issues`, `forge obs issue`, `forge obs trace` and `forge obs check`
+  read it. The release health window was set to 5 minutes
+  (`forge.ReleaseHealth {window = "5m"}`). The one-line fix was redeployed and
+  `forge obs check --wait --json` returned PASS, exit 0. Observability needs that
+  sign-in: the anonymous deploy has none.
+
+Edits are limited to timing: idle time and typing are shortened, and the build,
+push and rollout logs and the wait for the after window are cut, each cut marked
+on screen with a dim `… trimmed` line. Every command and every other line of
+output is from the run. Afterwards the signed-in environment was deleted and the
+unclaimed deploy stopped (it expires and is deleted on its own).

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/reliant-labs/forge/internal/frontenddeps"
@@ -35,7 +37,14 @@ func FrontendTestName(fe string) string { return "test-" + fe }
 // changed, or no changed file is under it (a rule claimed a file elsewhere
 // for it) — the whole `test` script, as `task test` runs it.
 func WithFrontendTests(checks []Check, a Affected, root string, frontends []templates.FrontendCIConfig) []Check {
-	if a.Full || len(a.Frontends) == 0 {
+	selected := append([]string(nil), a.Frontends...)
+	for _, c := range a.FullChecks {
+		if fe, ok := strings.CutPrefix(c, "test-"); ok && !slices.Contains(selected, fe) {
+			selected = append(selected, fe)
+		}
+	}
+	sort.Strings(selected)
+	if a.Full || len(selected) == 0 {
 		return checks
 	}
 	at := -1
@@ -56,12 +65,13 @@ func WithFrontendTests(checks []Check, a Affected, root string, frontends []temp
 		taken[c.Name] = true
 	}
 	var rows []Check
-	for _, name := range a.Frontends {
+	for _, name := range selected {
 		fe, ok := byName[name]
 		if !ok || taken[FrontendTestName(name)] {
 			continue // Plan rejects an unknown frontend; a project row of this name wins
 		}
-		rows = append(rows, frontendTest(root, fe, changedUnder(a.Changed, fe.Path)))
+		whole := slices.Contains(a.FullChecks, FrontendTestName(name))
+		rows = append(rows, frontendTest(root, fe, changedUnder(a.Changed, fe.Path), whole))
 	}
 	out := make([]Check, 0, len(checks)+len(rows))
 	out = append(out, checks[:at+1]...)
@@ -69,7 +79,9 @@ func WithFrontendTests(checks []Check, a Affected, root string, frontends []temp
 	return append(out, checks[at+1:]...)
 }
 
-func frontendTest(root string, fe templates.FrontendCIConfig, changed []string) Check {
+// frontendTest builds fe's row; whole (a rule's full_checks) runs the whole
+// `test` script whatever changed.
+func frontendTest(root string, fe templates.FrontendCIConfig, changed []string, whole bool) Check {
 	c := Check{
 		Name:   FrontendTestName(fe.Name),
 		Lane:   LaneTest,
@@ -109,6 +121,9 @@ func frontendTest(root string, fe templates.FrontendCIConfig, changed []string) 
 		}
 	}
 	switch {
+	case whole && scripts["test"] != "":
+		c.Argv = feRunAt(root, fe, append(append([]string{"test"}, sep...), "--passWithNoTests")...)
+		c.Note = "affected mode: whole suite — ci.gate.affected_rules full_checks names " + c.Name
 	case scripts[RelatedScript] != "" && nonSource == "" && len(related) > 0:
 		c.Argv = feRunAt(root, fe, append(append([]string{RelatedScript}, sep...), related...)...)
 		c.Note = fmt.Sprintf("affected mode: tests related to %d changed file(s)", len(related))

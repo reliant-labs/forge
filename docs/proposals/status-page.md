@@ -2,9 +2,10 @@
 
 **Status:** the owner approved building a status page on 2026-11-25. It is the
 first item of the platform-gap wave, picked up from the parked ticket
-control-plane#3227. The design below is **proposed**. The open owner decisions
-are collected in [section 11](#11-open-owner-decisions), and each one says what
-it blocks.
+control-plane#3227. On 2026-11-25 the owner also accepted every recommendation
+in [section 11](#11-owner-decisions) ("agreed"), so decisions 0 to 12 are
+**settled** (the list below). Details not named there remain proposed until
+their slice's PR.
 **Date:** 2026-11-25
 **Related:** control-plane#3227 (this ticket), control-plane#3230 (incidents,
 parked), [changes.md](changes.md) (the precedent for "the release declares, the
@@ -35,8 +36,11 @@ The design has three parts:
   reads only what was published. No request from the public ever reaches tenant
   telemetry.
 
-A page is private by default, and the private view is a console page for signed
-in members. Making it public is a deliberate act by a person. Measured state
+A status page is **opt-in**. A project or env without a `forge.StatusPage`
+declaration gets no page of any kind: nothing is rendered or published, and the
+console shows only an empty state that explains how to opt in. A declared page
+is private at first: a console page for signed-in members. Making it public is a
+separate, deliberate act by a person. Measured state
 (up, down, no data) appears on its own. Words (incident updates) are drafted by
 a person or an agent and published only by a person.
 
@@ -49,12 +53,55 @@ a person or an agent and published only by a person.
 2. **Monitoring requires sign-in** (owner, 2026-11-11, start-anywhere decision
    2). There is no claimable or anonymous path to observability. This proposal
    therefore treats a public page as a **published artifact**, not as anonymous
-   read access. [Decision 1](#11-open-owner-decisions) asks the owner to confirm
-   that reading, because the page is the first public surface fed by telemetry.
+   read access. The owner confirmed that reading in decision 1 (item 4 below).
 3. **Multi-region hosting is not now** (owner, 2026-11-25; control-plane#3240
    stays parked). The prober runs in one region, the platform cluster
    (`kcl/schema.k`, `UptimeCheck`: "Regions are not declared: v1 probes from the
    platform's own cluster"). The page states this limit and does not hide it.
+4. **Every owner decision in [section 11](#11-owner-decisions) is decided on its
+   recommended option** (owner, 2026-11-25, "agreed"):
+   - **0.** Turn the uptime prober on in prod now (`uptime_prober.enabled` and
+     the Cloud Monitoring heartbeat), as slice 0.
+   - **1.** A public page is allowed as a **published allowlist artifact**, with
+     no public query path. No one reads telemetry anonymously.
+   - **2.** Going public is live control-plane state, set by a person with
+     `status:publish` in a console session and audited. It is never a KCL
+     field.
+   - **3.** Components are declared as `forge.StatusPage` in the env's KCL,
+     beside `forge.Uptime`.
+   - **4.** Agents draft and a person publishes every word. An opt-in
+     fixed-template auto-publish may be revisited once drafts have a track
+     record.
+   - **5.** State is measured by default, and a person may override it with a
+     labelled, audited state.
+   - **6.** Feeds (Atom and JSON) come first. Email with double opt-in comes
+     only after a privacy and terms review. SMS, Slack and webhooks come later.
+   - **7.** The 90-day history is a tenant-schema ClickHouse daily rollup,
+     `uptime_check_1d`, retained like the query rollups.
+   - **8.** Status-page incidents ship now, with a nullable link that the
+     control-plane#3230 incident object fills later.
+   - **9.** Forge-only users without an account get the public renderer and the
+     `forge.status/v1` schema, and no self-hosted prober.
+   - **10.** Pages are hosted on Reliant static hosting with `stale-if-error`.
+     The shared-fate limit is published.
+   - **11.** A declared page's private view is free. One public page per org is
+     free and is exempt from the static-site count. Further pages, and email
+     past a free cap, need billing. (As amended by item 5: there is no private
+     view for an env that has not opted in.)
+   - **12.** The new scopes `status:write` and `status:publish` join forge's
+     closed set.
+5. **A status page is opt-in only** (owner, 2026-11-25: "have status page be
+   opt-in only"). No project or env gets a status page, not even the private
+   view, unless its KCL declares `forge.StatusPage`. When the declaration is
+   absent, the env's shape carries no `status_page`, and its render is byte-for-byte
+   what it was before this feature. The publisher does no work for it, and the
+   console shows an empty state that explains how to opt in. Scaffolds and
+   `forge project new` never add a `forge.StatusPage`. Going public stays a
+   separate, audited act by a person, on top of the declaration (item 4,
+   decision 2). Uptime checks, the prober and the uptime alerts are not part of
+   this opt-in: they keep collecting data for every hosted env as before
+   (`Uptime and certificate probes` in `docs/benefits.md`), and the page only
+   reads that data.
 
 ## 1. Problem and experience
 
@@ -87,10 +134,12 @@ samples today (`docs/observability/uptime-prober.md`, "Status"; step 2 of
 "Turning it on" is the owner's). A status page with no samples shows "no data"
 for every component, so slice 0 of the rollout is turning the prober on.
 
-**What a person does.** In **Observability › Uptime & Status page** they see
-the private page: every check of the env, its state and its bars, rendered by
-the same renderer the public page uses. The project's `deploy/kcl/prod/main.k`
-names the public components. "Publish page" makes the page public on a platform
+**What a person does.** They opt in by declaring `forge.StatusPage` in the
+env's `deploy/kcl/prod/main.k` and naming its components. Until they do,
+**Observability › Uptime & Status page** shows the Uptime dashboard and an empty
+state with the declaration to add. Once the release carrying it is promoted,
+they see the private page: the declared components, their states and bars,
+rendered by the same renderer the public page uses. "Publish page" makes the page public on a platform
 hostname, and **Configure › Domains** binds `status.example.com` to it. During
 an outage they open an incident from the down component, write or approve
 updates, and resolve it. They schedule maintenance ahead of time.
@@ -118,17 +167,20 @@ updates, upcoming maintenance, and the incident history. The page links to
 A **component** is a public name for one or more uptime checks of **one** env.
 Its state is the worst state among its checks.
 
-| Source                                         | Check name (today)        | Shown on the private view | Shown on the public page                     |
-| ---------------------------------------------- | ------------------------- | ------------------------- | -------------------------------------------- |
-| `forge.OnHosted` frontend (derived)            | `<frontend>`              | Yes, one row per check    | Only if a declared component names the check |
-| Hosted workload with an exposed port (derived) | `<workload>`              | Yes                       | Same                                         |
-| HTTPRoute with a hostname (derived)            | `route-<route>`           | Yes                       | Same                                         |
-| `forge.UptimeCheck` (declared)                 | its `name`                | Yes                       | Same                                         |
-| A check the env opted out of (`Uptime.skip`)   | not in the shape, no data | No                        | No; naming it is a render error              |
+| Source                                          | Check name (today)        | Shown on the private view (page declared)                      | Shown on the public page                     |
+| ----------------------------------------------- | ------------------------- | -------------------------------------------------------------- | -------------------------------------------- |
+| `forge.OnHosted` frontend (derived)             | `<frontend>`              | Only if a declared component names the check                   | Only if a declared component names the check |
+| Hosted workload with an exposed port (derived)  | `<workload>`              | Same                                                           | Same                                         |
+| HTTPRoute with a hostname (derived)             | `route-<route>`           | Same                                                           | Same                                         |
+| `forge.UptimeCheck` (declared)                  | its `name`                | Same                                                           | Same                                         |
+| A check the env opted out of (`Uptime.skip`)    | not in the shape, no data | No                                                             | No; naming it is a render error              |
+| Any check, in an env with no `forge.StatusPage` | as above                  | No page (empty state); the check stays on the Uptime dashboard | No page                                      |
 
-The public page is **opt-in per component**. A derived check on `route-admin`
-must never become public because someone published the page. The private view
-lists every check, so the console stays useful with nothing declared.
+The page is **opt-in**, and so is each component on it. A derived check on
+`route-admin` must never become public because someone published the page. The
+private view shows the same declared components the public page would, so a
+person previews exactly what publishing exposes. Every check stays visible on
+the existing Uptime dashboard whether or not a page is declared.
 
 ### State vocabulary
 
@@ -142,7 +194,7 @@ dashboard and the alerts agree on what "down" means.
 | Outage               | An uptime incident is open on a check (3 or more failed probes in a row), the definition `UptimeChecksSQL` uses.                                                                          |
 | Maintenance          | A published maintenance window covering the component is active. It takes precedence over the measured state.                                                                             |
 | No data              | The newest probe is older than `UptimeStaleAfter` (15 minutes), or the check has no samples. Shown as grey and never as "operational": silence from the prober is not evidence of health. |
-| (override) any state | A person set it on an incident, for example to correct a single-region false positive. It is labelled on the page and recorded ([decision 5](#11-open-owner-decisions)).                  |
+| (override) any state | A person set it on an incident, for example to correct a single-region false positive. It is labelled on the page and recorded ([decision 5](#11-owner-decisions)).                       |
 
 ### History bars
 
@@ -155,7 +207,7 @@ that day show on hover.
 Metrics are kept for **30 days** on hosting (`MetricsDays: 30`, control-plane
 `internal/obstenant/render.go:51`), so 90 days of bars cannot be read from
 `otel_metrics_gauge`. They need a durable daily rollup
-([decision 7](#11-open-owner-decisions)). The proposal is a tenant-schema
+([decision 7](#11-owner-decisions), settled). It is a tenant-schema
 rollup table, `uptime_check_1d` (env, check, day, probes, passed, first failure,
 last failure). A materialized view on `otel_metrics_gauge` fills it at ingest,
 and it is retained like the existing query rollups (`RollupDays: 395`, the
@@ -228,13 +280,13 @@ are per-env topology that lives only in KCL today (start-anywhere decision 8:
 "YAML holds switches and simple values; KCL holds topology"). Changes went to
 `changes.yaml` because a change is identical in every env. A status page is the
 opposite case: it describes one env. This is
-[decision 3](#11-open-owner-decisions).
+[decision 3](#11-owner-decisions).
 
 **Publishing is not declared.** Whether the page is public is live control-plane
 state, changed by a person, like a domain binding (`forge domain` keeps domains
 out of KCL for a similar reason: an outward-facing, human-gated act that must
 not flip with a rollback). Rolling back to an older release must not publish or
-unpublish a page. That is [decision 2](#11-open-owner-decisions).
+unpublish a page ([decision 2](#11-owner-decisions), settled).
 
 ### State (proposed): control-plane tables
 
@@ -282,7 +334,8 @@ uses. For each page with a declared shape it:
    boundary (a Postgres `NOTIFY`, the way the reconciler is woken in
    `internal/app/reconcile_wire.go`).
 
-Private pages are never written to the bucket. The console renders the private
+An env with no declared page has no `status_pages` row and is never visited by
+the publisher. Private pages are never written to the bucket. The console renders the private
 view from the same document, which it gets through `GetStatusPage` under
 `obs:read`.
 
@@ -313,7 +366,7 @@ reports on. A backend outage does not reach the static origin, so the common
 case (the app's API is down) is reported correctly. An outage of Reliant's
 static origin or CDN takes down the hosted site and its status page together,
 and `stale-if-error` softens that only for cached pages. Independent hosting is
-[decision 10](#11-open-owner-decisions). The prober itself shares fate with the
+[decision 10](#11-owner-decisions). The prober itself shares fate with the
 cluster it runs in. Its external heartbeat (`/healthz/uptime-prober`, probed by
 Cloud Monitoring) is unchanged, and a stale prober shows "No data", never
 "Operational".
@@ -345,7 +398,7 @@ recorded with a reason.
 holding `status:publish` in that environment. Publishing requires a
 **console-session principal**, as Changes decision 3 proposes: a person's
 `user_token` held by an agent is not a person here. Whether an agent may ever
-publish on its own is [decision 4](#11-open-owner-decisions). The agent's input
+publish on its own was [decision 4](#11-owner-decisions): settled as never in v1. The agent's input
 is the timeline the incidents ticket (control-plane#3230) describes: the alert's
 `Why` findings, `obs changes`, new and regressed issues, and the last promotion.
 None of that is copied into the public text unless a person publishes it.
@@ -361,7 +414,7 @@ incident object: owner, severity, timeline, runbooks and postmortem. This
 proposal does not build it. Status incidents carry a nullable link, and when
 #3230 lands its incident gets a "Post to status page" action that creates a
 draft here. Building the incident object first is
-[decision 8](#11-open-owner-decisions).
+[decision 8](#11-owner-decisions).
 
 ## 5. Subscribers
 
@@ -386,7 +439,7 @@ display name. It is sent on publish of an incident's first update, of its
 resolution, and of maintenance (24 hours before, and at start). Middle updates
 are sent only if the subscriber opted in. Addresses are stored encrypted, deleted
 with the page, and never exported or shown in full in the console. Who controls
-this data, and on what terms, is part of [decision 6](#11-open-owner-decisions).
+this data, and on what terms, is part of the review [decision 6](#11-owner-decisions) requires.
 
 ## 6. Public serving and the sign-in rule
 
@@ -419,7 +472,7 @@ is anonymous observability under another name, and this proposal rejects it
 | No Reliant account                                                                       | None. forge ships no prober.                                                                                                                                                                 | `pkg/statuspage` and the `forge.status/v1` schema are public, so a team can render a page from its own monitor's data.                                   |
 | Dev (`forge env up dev`)                                                                 | None (a local stack has no prober).                                                                                                                                                          | `forge obs statuspage preview dev` renders the declared page from a sample document to a local file, so the layout can be checked before a deploy.       |
 
-A self-hosted prober in forge is out of v1 ([decision 9](#11-open-owner-decisions)).
+A self-hosted prober in forge is out of v1 ([decision 9](#11-owner-decisions)).
 
 ## 8. API, scopes, UI, CLI and agent tools
 
@@ -482,10 +535,10 @@ What a page costs Reliant:
   a month included);
 - email sends in the subscriber slice.
 
-The proposal ([decision 11](#11-open-owner-decisions)):
+Settled ([decision 11](#11-owner-decisions)):
 
-- The private view is included for every signed-in org. It is part of
-  monitoring.
+- A declared page's private view is included for every signed-in org. It is
+  part of monitoring. There is no page, and no cost, without the declaration.
 - One public page per org is included and does **not** count as a static site.
   It counts neither toward the free tier (`computegate`,
   `StaticFreeTierExceeded`) nor toward a billed org's live cap
@@ -515,27 +568,28 @@ row for Statuspage, Instatus and Better Stack.
 | **A Next.js or Vite page shipped as a site template** the user deploys themselves | Fully customizable. It is a project to maintain, it needs a data endpoint, which is the anonymous-API problem again, and it is not "day 0". The `forge.status/v1` JSON keeps this open for the 20%.                                                                                                                                              |
 | **Declaring visibility in KCL** (`public = True`)                                 | It is declarative, but a rollback would flip it, and going public is a person's act. See decision 2.                                                                                                                                                                                                                                             |
 
-## 11. Open owner decisions
+## 11. Owner decisions
 
-None of these is decided. Per project rules, the owner decides architectural
-choices. Each row gives the realistic options, a recommendation and what it
-blocks.
+**All settled (owner, 2026-11-25): each row is decided on its recommended
+option.** The table keeps the options that were weighed, as the record of why.
+Per project rules the owner decides architectural choices. Reopening a row is
+the owner's call.
 
-| #   | Decision                                         | Options                                                                                                                                                                                                                                                                                  | Recommendation                                                                                                                                                                                                                                                                                                                    | Blocks                                                        |
-| --- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| 0   | Turn the uptime prober on in prod                | (a) now, as uptime-prober.md steps 2 to 4 describe (`uptime_prober.enabled = true` and the Cloud Monitoring heartbeat, phase 15); (b) later, with the status page shipping private-only.                                                                                                 | (a). It is not new architecture, but it is the owner's step in that runbook, and every slice below shows "No data" without it. The alerts it powers are worth having anyway.                                                                                                                                                      | Every slice's dogfood; the 90-day history starts on this day. |
-| 1   | May a status page be public?                     | (a) yes, as a **published artifact**: a platform-written allowlist projection, no public query path ([section 6](#6-public-serving-and-the-sign-in-rule)); (b) no, private console view only; (c) a public live read API.                                                                | (a). It honors "monitoring requires sign-in": no one reads telemetry anonymously, they read what a person chose to publish. (c) is anonymous observability.                                                                                                                                                                       | Every public slice.                                           |
-| 2   | How a page becomes public                        | (a) live control-plane state set by a person with `status:publish` in a console session, audited, like a domain binding; (b) `public = True` in KCL, applied on deploy; (c) both, KCL as the default.                                                                                    | (a). Going public is an outward-facing act that must survive a rollback unchanged, which a declared field cannot promise.                                                                                                                                                                                                         | `PublishStatusPage`, console toggle.                          |
-| 3   | Where the page's components are declared         | (a) `forge.StatusPage` on the env's Bundle in KCL, beside `forge.Uptime`; (b) a forge.yaml `status_page:` section; (c) console-only configuration in the control plane.                                                                                                                  | (a). Components name per-env checks, which exist only in KCL (start-anywhere decision 8: topology in KCL). (c) breaks "declarative over imperative". A forge.yaml form follows only if checks gain one.                                                                                                                           | Shape field, render validation, the skill.                    |
-| 4   | May an agent publish on its own?                 | (a) never: agents draft, a person publishes every word; (b) per-page opt-in: an agent may publish a **fixed template** ("Investigating: API is unavailable") after N minutes of a measured outage, free text still needs a person; (c) agents publish freely, as the ticket's text says. | (a) for v1, then (b) as an opt-in once drafts have a track record. Public words speak for the company. The measured Outage state already appears with no one acting, so (a) does not leave visitors uninformed. The ticket says "the agent posts updates"; the brief for this wave says human-published, so this needs your call. | Agent tools, Autopilot step, approval card.                   |
-| 5   | Measured or manual component state               | (a) measured by default, a person may override with a labelled, audited state; (b) manual only, probes only suggest (Statuspage's model); (c) measured only, no override.                                                                                                                | (a). Day-0 value needs measured state. One probe region means false positives happen, so a person must be able to correct them, visibly.                                                                                                                                                                                          | `SetComponentOverride`, state logic.                          |
-| 6   | Subscriber channels and data responsibility      | (a) feeds only (Atom and JSON), no personal data; (b) also email with double opt-in, Reliant processing the app's users' addresses under the customer's instruction; (c) also SMS, Slack and webhooks.                                                                                   | (a) in the first public slice, (b) as its own slice after a privacy and terms review (subprocessor list, DPA wording, deletion). (c) later.                                                                                                                                                                                       | Subscriber slice, `SubscribeStatus` (the only public write).  |
-| 7   | Where 90 days of history live                    | (a) a tenant-schema ClickHouse rollup `uptime_check_1d`, retained like the query rollups (395 days); (b) a Postgres daily table the publisher writes; (c) show 30 days, the metrics retention.                                                                                           | (a). It is one source, filled at ingest, the established rollup pattern, and `obsquery` reads it for the dashboard too. (b) is a second copy of the same fact.                                                                                                                                                                    | The bars; the tenant schema migration.                        |
-| 8   | Order relative to incidents (control-plane#3230) | (a) status incidents stand alone now, with a nullable link the #3230 incident fills later; (b) build the #3230 incident object first, and the page publishes from it.                                                                                                                    | (a). The page is useful with no incident model, and the link keeps one future record. (b) delays the page by an M-sized design.                                                                                                                                                                                                   | Incident tables and rpcs.                                     |
-| 9   | Forge-only users with no account                 | (a) public renderer and schema only, no self-hosted prober; (b) ship a self-hosted prober in forge.                                                                                                                                                                                      | (a). Monitoring requires sign-in. A forge prober is a second monitoring runtime to maintain for users we do not monitor.                                                                                                                                                                                                          | `pkg/statuspage` scope; docs.                                 |
-| 10  | Where pages are hosted (shared fate)             | (a) Reliant static hosting with `stale-if-error`, the limit published; (b) a separate serving path on independent infrastructure (another provider or bucket and CDN).                                                                                                                   | (a) for v1, stated honestly in benefits and compare. (b) is a multi-provider project, and multi-region is "not now".                                                                                                                                                                                                              | Serving slice; what status.reliantlabs.io may claim.          |
-| 11  | Pricing                                          | (a) private view free; one public page per org free and exempt from the static-site count; email past a free cap and further pages need billing; (b) a public page needs billing; (c) a priced add-on.                                                                                   | (a). The ticket's premise is "every production app needs a status page on day 0". Its marginal cost is small and bounded.                                                                                                                                                                                                         | `computegate`, `pricing.yaml`, benefits row.                  |
-| 12  | New scopes                                       | (a) `status:write` and `status:publish` in forge's closed set (a semver minor); (b) reuse `obs:write` or `obs:triage`.                                                                                                                                                                   | (a). Speaking publicly is a separate authority from editing dashboards or triaging issues, and it must be grantable per environment.                                                                                                                                                                                              | Authorization for every mutation.                             |
+| #   | Decision                                         | Options                                                                                                                                                                                                                                                                                  | Recommendation                                                                                                                                                                                                                                                                              | Blocks                                                        |
+| --- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| 0   | Turn the uptime prober on in prod                | (a) now, as uptime-prober.md steps 2 to 4 describe (`uptime_prober.enabled = true` and the Cloud Monitoring heartbeat, phase 15); (b) later, with the status page shipping private-only.                                                                                                 | (a). It is not new architecture, but it is the owner's step in that runbook, and every slice below shows "No data" without it. The alerts it powers are worth having anyway.                                                                                                                | Every slice's dogfood; the 90-day history starts on this day. |
+| 1   | May a status page be public?                     | (a) yes, as a **published artifact**: a platform-written allowlist projection, no public query path ([section 6](#6-public-serving-and-the-sign-in-rule)); (b) no, private console view only; (c) a public live read API.                                                                | (a). It honors "monitoring requires sign-in": no one reads telemetry anonymously, they read what a person chose to publish. (c) is anonymous observability.                                                                                                                                 | Every public slice.                                           |
+| 2   | How a page becomes public                        | (a) live control-plane state set by a person with `status:publish` in a console session, audited, like a domain binding; (b) `public = True` in KCL, applied on deploy; (c) both, KCL as the default.                                                                                    | (a). Going public is an outward-facing act that must survive a rollback unchanged, which a declared field cannot promise.                                                                                                                                                                   | `PublishStatusPage`, console toggle.                          |
+| 3   | Where the page's components are declared         | (a) `forge.StatusPage` on the env's Bundle in KCL, beside `forge.Uptime`; (b) a forge.yaml `status_page:` section; (c) console-only configuration in the control plane.                                                                                                                  | (a). Components name per-env checks, which exist only in KCL (start-anywhere decision 8: topology in KCL). (c) breaks "declarative over imperative". A forge.yaml form follows only if checks gain one.                                                                                     | Shape field, render validation, the skill.                    |
+| 4   | May an agent publish on its own?                 | (a) never: agents draft, a person publishes every word; (b) per-page opt-in: an agent may publish a **fixed template** ("Investigating: API is unavailable") after N minutes of a measured outage, free text still needs a person; (c) agents publish freely, as the ticket's text says. | (a) for v1, then (b) as an opt-in once drafts have a track record. Public words speak for the company. The measured Outage state already appears with no one acting, so (a) does not leave visitors uninformed. The ticket said "the agent posts updates"; the owner chose human-published. | Agent tools, Autopilot step, approval card.                   |
+| 5   | Measured or manual component state               | (a) measured by default, a person may override with a labelled, audited state; (b) manual only, probes only suggest (Statuspage's model); (c) measured only, no override.                                                                                                                | (a). Day-0 value needs measured state. One probe region means false positives happen, so a person must be able to correct them, visibly.                                                                                                                                                    | `SetComponentOverride`, state logic.                          |
+| 6   | Subscriber channels and data responsibility      | (a) feeds only (Atom and JSON), no personal data; (b) also email with double opt-in, Reliant processing the app's users' addresses under the customer's instruction; (c) also SMS, Slack and webhooks.                                                                                   | (a) in the first public slice, (b) as its own slice after a privacy and terms review (subprocessor list, DPA wording, deletion). (c) later.                                                                                                                                                 | Subscriber slice, `SubscribeStatus` (the only public write).  |
+| 7   | Where 90 days of history live                    | (a) a tenant-schema ClickHouse rollup `uptime_check_1d`, retained like the query rollups (395 days); (b) a Postgres daily table the publisher writes; (c) show 30 days, the metrics retention.                                                                                           | (a). It is one source, filled at ingest, the established rollup pattern, and `obsquery` reads it for the dashboard too. (b) is a second copy of the same fact.                                                                                                                              | The bars; the tenant schema migration.                        |
+| 8   | Order relative to incidents (control-plane#3230) | (a) status incidents stand alone now, with a nullable link the #3230 incident fills later; (b) build the #3230 incident object first, and the page publishes from it.                                                                                                                    | (a). The page is useful with no incident model, and the link keeps one future record. (b) delays the page by an M-sized design.                                                                                                                                                             | Incident tables and rpcs.                                     |
+| 9   | Forge-only users with no account                 | (a) public renderer and schema only, no self-hosted prober; (b) ship a self-hosted prober in forge.                                                                                                                                                                                      | (a). Monitoring requires sign-in. A forge prober is a second monitoring runtime to maintain for users we do not monitor.                                                                                                                                                                    | `pkg/statuspage` scope; docs.                                 |
+| 10  | Where pages are hosted (shared fate)             | (a) Reliant static hosting with `stale-if-error`, the limit published; (b) a separate serving path on independent infrastructure (another provider or bucket and CDN).                                                                                                                   | (a) for v1, stated honestly in benefits and compare. (b) is a multi-provider project, and multi-region is "not now".                                                                                                                                                                        | Serving slice; what status.reliantlabs.io may claim.          |
+| 11  | Pricing                                          | (a) a declared page's private view free (opt-in, settled item 5); one public page per org free and exempt from the static-site count; email past a free cap and further pages need billing; (b) a public page needs billing; (c) a priced add-on.                                        | (a). The ticket's premise is "every production app needs a status page on day 0". Its marginal cost is small and bounded.                                                                                                                                                                   | `computegate`, `pricing.yaml`, benefits row.                  |
+| 12  | New scopes                                       | (a) `status:write` and `status:publish` in forge's closed set (a semver minor); (b) reuse `obs:write` or `obs:triage`.                                                                                                                                                                   | (a). Speaking publicly is a separate authority from editing dashboards or triaging issues, and it must be grantable per environment.                                                                                                                                                        | Authorization for every mutation.                             |
 
 ## 12. Rollout plan
 
@@ -551,16 +605,19 @@ incidents, maintenance, agent drafting and email. Each slice ships alone.
    classified). `forge.StatusPage` in KCL with render validation, the
    `status_page` shape field, and `BundleFeatureStatusPage` with strip logic.
    The `observability/status-page` skill. `forge obs statuspage preview`.
+   Opt-in: no default and no scaffold adds one, and a test proves that an env
+   without the declaration renders byte-identically.
 2. **control-plane: history.** The `uptime_check_1d` rollup (tenant schema
    migration) and `obsquery.UptimeDailySQL`. The dashboard's range beyond 30
    days reads it too.
 3. **control-plane and console: private view.** `StatusService.GetStatusPage`
-   under `obs:read`, and the console page behind a `ReliantWebConfig` flag. The
-   first user-visible value.
+   under `obs:read` (NotFound for an env without the declaration), and the
+   console page behind a `ReliantWebConfig` flag, with the opt-in empty state.
+   The first user-visible value.
 4. **Public page.** Scopes (the forge PR first), `status_pages`,
    `PublishStatusPage`, the `status_publisher` worker, bucket prefix and host
    index, `no-cache` and `stale-if-error`, the `@status` domain target, and
-   feeds. Behind decisions 1, 2, 10 and 11.
+   feeds (decisions 1, 2, 10 and 11, settled).
 5. **Incidents and maintenance.** Tables, rpcs, the append-only ledger,
    overrides, the maintenance-silence link, console flows and CLI verbs.
 6. **Agent drafting.** Agent tools, the Autopilot on-call step, Inbox and

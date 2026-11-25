@@ -38,12 +38,13 @@ const AffectedModulesAuto = "auto"
 // ModuleTests is one nested module's affected tests.
 type ModuleTests struct {
 	// Dir is the module's directory, project-relative; Path its module path.
-	Dir, Path string
+	Dir  string `json:"dir"`
+	Path string `json:"path"`
 	// Full runs the module's whole suite (./...); Reason says why.
-	Full   bool
-	Reason string
+	Full   bool   `json:"full"`
+	Reason string `json:"reason,omitempty"`
 	// Packages are the module's packages to test (affected mode).
-	Packages []string
+	Packages []string `json:"packages"`
 }
 
 // ModuleTestName is the row of a nested module's tests: test-mod-sdk-go.

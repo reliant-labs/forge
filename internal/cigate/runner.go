@@ -171,6 +171,10 @@ type Check struct {
 	// run on a branch in affected mode; with none changed it is N/A
 	// (GateByPaths). In full mode it always runs.
 	Paths []string
+	// GoClosure, when set, are Go package patterns: on a branch in affected
+	// mode the check also runs when a changed file is in their build
+	// closure (ResolveGoClosures, then GateByPaths).
+	GoClosure []string
 
 	// OnFail runs after the command failed, to undo what it left behind.
 	OnFail func(out io.Writer)

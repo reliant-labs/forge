@@ -110,6 +110,9 @@ type scopeEntry struct {
 	neverOnDaemon bool
 	// notElevatable: see Elevatable.
 	notElevatable bool
+	// federation: see FederationOf. The zero value, FederationNone, keeps a
+	// scope away from every CI identity until its row says otherwise.
+	federation Federation
 }
 
 // The bundle lists a catalog row uses. Each bundle is a superset of the
@@ -191,8 +194,14 @@ var catalog = []scopeEntry{
 	{scope: ScopeChangesLaunch, class: ClassSensitive, notElevatable: true},
 	{scope: ScopeVulnRead, class: ClassStandard, bundles: inCIAndUp},
 	{scope: ScopeTestsRead, class: ClassStandard, bundles: inDeveloperAndUp},
-	{scope: ScopeTestsWrite, class: ClassStandard, bundles: inCIAndUp},
+	// A test run is append-only evidence about one commit: any CI run of
+	// the org's repository, on any ref, may record its own.
+	{scope: ScopeTestsWrite, class: ClassStandard, bundles: inCIAndUp, federation: FederationAnyRef},
 	{scope: ScopeMCPForge, class: ClassPersonal},
+	// Reading a snapshot is what changes:write already permits; a
+	// developer or an admin holds it, and an app's own token is minted
+	// with it alone.
+	{scope: ScopeChangesRead, class: ClassStandard, bundles: inDeveloperAndUp},
 }
 
 // entryOf returns scope's catalog row.

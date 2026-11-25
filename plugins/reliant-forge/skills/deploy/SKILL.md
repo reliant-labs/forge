@@ -38,19 +38,22 @@ A directory with no `forge.yaml` is adopted in place first: Forge adds
 `forge.yaml` and `deploy/kcl/` and never changes the app's own files. Tell the
 user about the files it added.
 
-The result is a live URL and a claim link. Give the user both, and tell them:
+The result is a live URL and a claim link. Show both to the user who asked for
+the deploy, in your reply to them, and tell them:
 
-- The claim link is good for 72 hours. Treat it like a password: opening it
-  signs them up free and makes the deploy theirs.
+- The claim link is a one-time link for them, good for 72 hours: the first
+  person to open it signs up free and becomes the deploy's owner.
 - Unclaimed, the deploy is live for 72 hours, then offline for 7 more days,
   then deleted.
 - An unclaimed deploy is one static site, or one service (one replica) with
   one Postgres database and no backups. An unclaimed service has no outbound
   internet. Claiming it lifts these limits.
 
-To show the URL and claim link again later, call `deploy_status`.
+To show the user the URL and claim link again later, call `deploy_status`.
 
-Never write the claim link into a commit, a file in the repo or a log.
+Because whoever opens the claim link first owns the deploy, it goes to that
+user and nowhere else: never into a commit, a file in the repo, a log, an
+issue, a pull request or any public place.
 
 ## Signed in: deploy to the account
 

@@ -30,7 +30,8 @@ const (
 	// query its database (db:query), read its object storage
 	// (storage:read), read its rendered config values
 	// (deploy:config:read), run its changes (changes:write,
-	// changes:launch), read its vulnerability findings (vuln:read) or read
+	// changes:launch), read its Changes snapshot (changes:read), read its
+	// vulnerability findings (vuln:read) or read
 	// the test runs recorded against it (tests:read), and no other env of
 	// the org.
 	ResourceEnvironment ResourceKind = "environment"
@@ -90,6 +91,9 @@ var scopeResourceRules = map[Scope]struct {
 	// or a launch grant for staging and nothing else.
 	ScopeChangesWrite:  {kind: ResourceEnvironment, required: false},
 	ScopeChangesLaunch: {kind: ResourceEnvironment, required: false},
+	// changes:read is an app's token: bound, it reads its own
+	// environment's snapshot and no other's.
+	ScopeChangesRead: {kind: ResourceEnvironment, required: false},
 	// vuln:read reads one env's findings when bound: what is exploitable in
 	// prod, for a token that must not see staging's.
 	ScopeVulnRead: {kind: ResourceEnvironment, required: false},

@@ -1139,6 +1139,12 @@ type CIGateCheck struct {
 	// default branch, CI_FULL=1 / --full, --tier main or full, no base to
 	// diff against) it always runs.
 	Paths []string `yaml:"paths,omitempty"`
+	// PathsGoClosure, when set, are Go package patterns (`./tools/docgen/...`):
+	// on a branch in affected mode the check also runs when a changed file
+	// is in their build closure (`go list -deps`), besides any Paths glob it
+	// matches. For a check that runs a generator or tool built from the
+	// module. In full mode it always runs.
+	PathsGoClosure []string `yaml:"paths_go_closure,omitempty"`
 }
 
 // CIGateAffectedRule is one ci.gate.affected_rules entry: the changed files
@@ -1164,7 +1170,24 @@ type CIGateAffectedRule struct {
 	// Reason is printed beside what the rule selected; for a Full rule it is
 	// the cause the gate gives for running the full suite.
 	Reason string `yaml:"reason,omitempty"`
+	// On widens what the rule matches. "go-source" matches every changed
+	// .go file as well as Paths (which may then be empty): a walker test
+	// that reads the whole tree's Go source runs on any Go change. A Go file
+	// matched only this way keeps its own mapping and is not claimed.
+	On string `yaml:"on,omitempty"`
+	// PackagesImporting are import paths (or ./dir patterns) of helper
+	// packages: when the rule matches, every test package whose test files
+	// import one of them runs (go list's TestImports and XTestImports).
+	PackagesImporting []string `yaml:"packages_importing,omitempty"`
+	// FullChecks name gate rows that run whole when the rule matches: a
+	// path-gated check runs even with no change under its paths, and a
+	// test-<frontend> row runs the frontend's whole `test` script.
+	FullChecks []string `yaml:"full_checks,omitempty"`
 }
+
+// CIGateOnGoSource is the CIGateAffectedRule.On value that matches every
+// changed .go file.
+const CIGateOnGoSource = "go-source"
 
 // CIGateProbe is a command whose success a check needs before it runs.
 type CIGateProbe struct {

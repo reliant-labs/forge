@@ -119,11 +119,11 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 		},
 		{
 			// Every key is read by cigate.ComputeAffected (paths, except,
-			// packages, full, reason) and cigate.WithFrontendTests
-			// (frontends).
+			// packages, packages_importing, on, full, reason, full_checks)
+			// and cigate.WithFrontendTests (frontends, full_checks).
 			name: "CIGateAffectedRule",
 			typ:  reflect.TypeFor[CIGateAffectedRule](),
-			want: []string{"except", "frontends", "full", "packages", "paths", "reason"},
+			want: []string{"except", "frontends", "full", "full_checks", "on", "packages", "packages_importing", "paths", "reason"},
 		},
 		{
 			// Every key is read by cigate's planner (internal/cigate/
@@ -132,7 +132,7 @@ func TestSchemaSurface_TopLevelKeys(t *testing.T) {
 			typ:  reflect.TypeFor[CIGateCheck](),
 			want: []string{
 				"after", "cache", "command", "dir", "env", "group", "heavy",
-				"lane", "mutates_tree", "name", "paths", "probe", "replaces", "requires",
+				"lane", "mutates_tree", "name", "paths", "paths_go_closure", "probe", "replaces", "requires",
 				"skip_exit_code",
 			},
 		},

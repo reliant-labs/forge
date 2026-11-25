@@ -257,7 +257,7 @@ func TestClaimableDeploy_PublishesAndPrintsTheClaim(t *testing.T) {
 		t.Errorf("claim.url = %q, want the deploy's live address", u)
 	}
 	instr, _ := claim["agent_instructions"].(string)
-	for _, want := range []string{"Give claim_url to your user", "whoever claims it first owns the deploy", "env status hosted --claimable"} {
+	for _, want := range []string{"Give claim_url to your user", "whoever claims it first owns the deploy", "show it only to them", "env status hosted --claimable"} {
 		if !strings.Contains(instr, want) {
 			t.Errorf("agent_instructions lacks %q:\n%s", want, instr)
 		}
@@ -385,7 +385,8 @@ func TestPrintClaimBlock_TextMatchesTheDesign(t *testing.T) {
 		"Claim:  https://app.reliant.dev/claim#rcl_9f3KQe",
 		"FOR AN AGENT: give the claim link above to your user and tell them it expires in 72h.",
 		"Opening it signs them up for free and makes this site theirs.",
-		"Treat the link like a password: whoever claims it first owns the site. Do not",
+		"It is a one-time link for your user: whoever claims it first owns the site, so show",
+		"it only to them, never in a commit, a log, an issue or anywhere public.",
 		"env status prod --claimable",
 	} {
 		if !strings.Contains(b.String(), want) {

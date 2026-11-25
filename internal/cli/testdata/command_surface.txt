@@ -65,7 +65,7 @@ forge cloud registry login	cmd	allow-version-skew:bool password-env:string passw
 forge cloud registry ref	cmd	allow-version-skew:bool github-output:bool image:string project-dir/C:string
 forge cloud status	cmd	allow-version-skew:bool project-dir/C:string token:string
 forge cloud token	group	allow-version-skew:bool project-dir/C:string
-forge cloud token create	cmd	allow-version-skew:bool env:string expires-in:duration json:bool name:string org:string project-dir/C:string scopes:string token:string
+forge cloud token create	cmd	allow-version-skew:bool bind-env:string env:string expires-in:duration json:bool name:string org:string project-dir/C:string scopes:string token:string
 forge cloud token list	cmd	allow-version-skew:bool env:string include-revoked:bool json:bool org:string project-dir/C:string token:string
 forge cloud token revoke	cmd	allow-version-skew:bool env:string json:bool org:string project-dir/C:string token:string
 forge cluster	group	allow-version-skew:bool project-dir/C:string

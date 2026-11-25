@@ -653,8 +653,9 @@ func TestPlan_VulnSBOMStep(t *testing.T) {
 }
 
 // Two frontends declared on one directory are one directory to install,
-// lint and build: the first of them names its rows, and the second gets none.
-// Two deps rows there would run two installs into one node_modules at once.
+// lint and build: the one named like the directory names its rows, and the
+// other gets none. Two deps rows there would run two installs into one
+// node_modules at once.
 func TestPlan_SharedFrontendDirectoryGetsOneSetOfRows(t *testing.T) {
 	in := PlanInput{Root: t.TempDir(), Forge: []string{"forge"}, CI: templates.CIWorkflowData{
 		HasFrontends: true, LintFrontend: true, VerifyGenerated: true,
@@ -668,15 +669,62 @@ func TestPlan_SharedFrontendDirectoryGetsOneSetOfRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range []string{"deps-admin", "deps-desktop", "lint-desktop", "typecheck-desktop", "build-desktop", "build-admin"} {
+	for _, row := range []string{"deps-admin", "deps-web", "lint-web", "typecheck-web", "build-web", "build-admin"} {
 		find(t, all, row)
 	}
 	for _, n := range names(all) {
-		if strings.HasSuffix(n, "-web") {
-			t.Errorf("row %s duplicates frontends/web, which deps-desktop already installs", n)
+		if strings.HasSuffix(n, "-desktop") {
+			t.Errorf("row %s duplicates frontends/web, which deps-web already installs", n)
 		}
 	}
-	if got := strings.Join(find(t, all, "verify-generated").After, " "); got != "deps-admin deps-desktop" {
+	if got := strings.Join(find(t, all, "verify-generated").After, " "); got != "deps-admin deps-web" {
 		t.Errorf("verify-generated waits for %q, want one deps row per directory", got)
+	}
+}
+
+// A `replaces:` naming any frontend of a shared directory still takes that
+// directory's row, whichever frontend names it: each frontend had its own
+// rows before shared directories were planned once, and a project's
+// forge.yaml written then must keep working (forge is semver at major 1).
+// Reordering the declarations never renames a row either.
+func TestPlan_ReplacesNamesAnyFrontendOfASharedDirectory(t *testing.T) {
+	shared := []templates.FrontendCIConfig{
+		{Name: "desktop", Path: "frontends/web"},
+		{Name: "forge-demo", Path: "frontends/web"},
+		{Name: "web", Path: "frontends/web"},
+	}
+	for _, order := range [][]int{{0, 1, 2}, {1, 2, 0}, {2, 0, 1}} {
+		var fes []templates.FrontendCIConfig
+		for _, i := range order {
+			fes = append(fes, shared[i])
+		}
+		for _, replaces := range []string{"lint-web", "lint-desktop", "lint-forge-demo"} {
+			in := PlanInput{Root: t.TempDir(), Forge: []string{"forge"}, Cfg: &config.ProjectConfig{}, CI: templates.CIWorkflowData{
+				HasFrontends: true, LintFrontend: true, Frontends: fes,
+			}}
+			in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{{Name: "eslint-web", Command: []string{"x"}, Replaces: replaces}}
+			all, err := Plan(in)
+			if err != nil {
+				t.Fatalf("order %v, replaces %s: %v", order, replaces, err)
+			}
+			if got := find(t, all, "eslint-web"); got.Group != GroupStatic {
+				t.Errorf("order %v, replaces %s: the replacement did not take lint-web's group: %+v", order, replaces, got)
+			}
+			for _, n := range names(all) {
+				if n == "lint-web" || n == "lint-desktop" || n == "lint-forge-demo" {
+					t.Errorf("order %v, replaces %s: forge's row %s still runs beside its replacement", order, replaces, n)
+				}
+			}
+		}
+		in := PlanInput{Root: t.TempDir(), Forge: []string{"forge"}, Cfg: &config.ProjectConfig{}, CI: templates.CIWorkflowData{
+			HasFrontends: true, LintFrontend: true, Frontends: fes,
+		}}
+		in.Cfg.CI.Gate.ExtraChecks = []config.CIGateCheck{
+			{Name: "a", Command: []string{"x"}, Replaces: "lint-desktop"},
+			{Name: "b", Command: []string{"y"}, Replaces: "lint-web"},
+		}
+		if _, err := Plan(in); err == nil {
+			t.Errorf("order %v: two replacements of one directory's lint row must be rejected", order)
+		}
 	}
 }

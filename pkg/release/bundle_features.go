@@ -238,6 +238,13 @@ const (
 	// stripped. A shape with one identity carries Shape.Identity alone, as it
 	// always did, and needs nothing of the reader.
 	BundleFeatureIdentities = "shape-identities"
+	// BundleFeatureStatusPage is Shape.StatusPage: the env's declared status
+	// page (forge.StatusPage). A control plane that predates it builds no
+	// page for the env, so a shape carrying it is written only to one that
+	// names the feature. The page names uptime checks, so it is also left
+	// out for a reader that does not decode those. A project that declares
+	// none carries no key, so it needs nothing of the reader.
+	BundleFeatureStatusPage = "shape-status-page"
 )
 
 // CapabilityConvergesSeveralIdentities is advertised beside the bundle
@@ -317,7 +324,7 @@ const CapabilityServesNamedSiteAPIs = "serves-named-site-apis"
 // advertises exactly this list, so what it claims to decode and what its
 // decoder accepts are one fact.
 func BundleDocFeatures() []string {
-	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities}
+	return []string{BundleFeatureCommitIdentity, BundleFeatureObjectSummaries, BundleFeatureFrontendTelemetry, BundleFeatureStoreSecrets, BundleFeatureDataAccess, BundleFeatureReleaseHealth, BundleFeatureUptimeChecks, BundleFeatureDatabaseDashboards, BundleFeatureServiceCatalog, BundleFeaturePlacementPrerequisites, BundleFeatureHealthGate, BundleFeatureDeclaredEnvs, BundleFeatureShapePlacement, BundleFeatureIdentitySignIn, BundleFeatureExternalDatabases, BundleFeatureExternalDatabaseTLS, BundleFeatureStorage, BundleFeatureFunnelPerson, BundleFeatureReleaseProbes, BundleFeatureReleaseHealthBaseline, BundleFeaturePromotionChecks, BundleFeaturePreview, BundleFeatureReleaseHealthRegressedMinEvents, BundleFeatureReleaseHealthErrorRate, BundleFeatureReleaseHealthAlertBaseline, BundleFeatureReleaseHealthChangedOps, BundleFeatureIdentityCodeLifetime, BundleFeatureTelemetry, BundleFeatureChanges, BundleFeatureIdentities, BundleFeatureStatusPage}
 }
 
 // BundleReader is what the backend a bundle is recorded in decodes: the
@@ -509,6 +516,9 @@ func (r *BundleReader) LimitShape(s Shape) Shape {
 	}
 	if !r.Supports(BundleFeatureChanges) {
 		s.Changes = nil
+	}
+	if !r.Supports(BundleFeatureStatusPage) || !r.Supports(BundleFeatureUptimeChecks) {
+		s.StatusPage = nil
 	}
 	if !r.Supports(BundleFeaturePromotionChecks) && s.DeliveryPolicy != nil &&
 		(s.DeliveryPolicy.RequiredGates != nil || s.DeliveryPolicy.ApprovalHook != nil) {

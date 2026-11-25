@@ -537,6 +537,7 @@ func bundleShapeInputOf(doc envShapeDoc) bundle.ShapeInput {
 		DataAccess:          doc.Shape.DataAccess,
 		ReleaseHealth:       doc.Shape.ReleaseHealth,
 		UptimeChecks:        doc.Shape.UptimeChecks,
+		StatusPage:          doc.Shape.StatusPage,
 		ReleaseProbes:       doc.Shape.ReleaseProbes,
 		Identity:            doc.Shape.Identity,
 		Identities:          doc.Shape.Identities,

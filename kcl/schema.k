@@ -7355,6 +7355,85 @@ schema Uptime:
             "Uptime.skip ${skip} must be check names (lowercase letters, digits, '-' and '_')"
 
 # ---------------------------------------------------------------------------
+# Status page: the public components an env's uptime checks make up.
+# ---------------------------------------------------------------------------
+
+_STATUS_URL_RE = r"^https?://[^/@\s]+(/\S*)?$"
+
+schema StatusLink:
+    """One header link of a status page (support, the app, a blog)."""
+    label: str
+    url: str
+
+    check:
+        1 <= len(label) <= 40, "StatusLink.label '${label}' must be 1 to 40 characters"
+        regex.match(url, _STATUS_URL_RE) and len(url) <= 2048, \
+            "StatusLink '${label}': url '${url}' must be an absolute http(s) address with a host and no credential"
+
+schema StatusComponent:
+    """One row of a status page: a public name for one or more of the env's
+    uptime checks. Its state is the worst of theirs.
+
+    `checks` names checks of THIS env's final list: the ones forge derives
+    (`<frontend>`, `<workload>`, `route-<route>`), minus `Uptime.skip`, plus
+    `Uptime.checks`. A name that is not there is refused at render.
+    """
+    name: str
+    description?: str
+    checks: [str]
+
+    check:
+        1 <= len(name) <= 64, "StatusComponent.name '${name}' must be 1 to 64 characters"
+        not description or len(description) <= 200, \
+            "StatusComponent '${name}': description is longer than 200 characters"
+        len(checks) >= 1, "StatusComponent '${name}' names no uptime check: a component is made of at least one"
+        isunique(checks), "StatusComponent '${name}' names a check twice"
+        all c in checks {regex.match(c, _UPTIME_NAME_RE)}, \
+            "StatusComponent '${name}': checks ${checks} must be uptime check names (lowercase letters, digits, '-' and '_')"
+
+schema StatusPage:
+    """The env's status page, on `Bundle.status_page`: what a page telling
+    the app's own users whether it works shows. Each component is a public
+    name for some of the env's uptime checks (see Uptime), so the page is
+    opt-in per component: a check no component names never appears on it.
+
+        status_page = forge.StatusPage {
+            title = "Acme status"
+            links = [forge.StatusLink {label = "Support", url = "https://acme.com/help"}]
+            components = [
+                forge.StatusComponent {name = "Website", checks = ["web"]}
+                forge.StatusComponent {name = "API", checks = ["api-ready", "route-billing"], description = "REST and webhooks"}
+            ]
+        }
+
+    Whether the page is public is NOT declared here: publishing is a
+    person's act in the control plane, and a rollback must neither publish
+    nor unpublish a page. Check names never reach the public page; it shows
+    component names, states, daily availability and published notices
+    (the forge.status/v1 document, forge/pkg/statuspage).
+
+      * `logo_url`     — an https image shown beside the title.
+      * `accent_color` — a #rrggbb colour for the page's decoration (never
+        a text or state colour).
+    """
+    title: str
+    logo_url?: str
+    accent_color?: str
+    links: [StatusLink] = []
+    components: [StatusComponent]
+
+    check:
+        1 <= len(title) <= 100, "StatusPage.title '${title}' must be 1 to 100 characters"
+        not logo_url or (regex.match(logo_url, r"^https://[^/@\s]+(/\S*)?$") and len(logo_url) <= 2048), \
+            "StatusPage.logo_url '${logo_url}' must be an absolute https address with a host and no credential"
+        not accent_color or regex.match(accent_color, r"^#[0-9a-fA-F]{6}$"), \
+            "StatusPage.accent_color '${accent_color}' must be a #rrggbb colour"
+        len(links) <= 10, "StatusPage.links has ${len(links)} links, more than 10"
+        1 <= len(components) <= 50, "StatusPage.components must name 1 to 50 components"
+        len({c.name: 1 for c in components}) == len(components), \
+            "StatusPage.components names a component twice: a component name is unique within a page"
+
+# ---------------------------------------------------------------------------
 # Bundle — the project-level container forge.render() consumes.
 # ---------------------------------------------------------------------------
 
@@ -9132,6 +9211,10 @@ schema Bundle:
     # hosted env gets one per public frontend and route with no declaration;
     # declare `uptime` to add checks or opt out. See Uptime.
     uptime?: Uptime
+    # The env's status page: the public components its uptime checks make
+    # up. UNSET = no page. Whether it is public is control-plane state, not
+    # declared. See StatusPage.
+    status_page?: StatusPage
     # The env's users (forge.ManagedIdentity): roles, the applications that
     # sign users in, the workloads that read tokens, and where the instance
     # runs. UNSET = no managed identity (bring your own issuer in config.k).

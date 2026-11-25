@@ -642,6 +642,14 @@ type Shape struct {
 	// that predates it refuses the whole shape, so it is a bundle-document
 	// feature ([BundleFeatureChanges]).
 	Changes map[string]ShapeChange `json:"changes,omitempty"`
+	// StatusPage is the env's declared status page (forge.StatusPage): its
+	// title, links and the components its uptime checks make up. Whether it
+	// is public is NOT here: that is live control-plane state. Omitted when
+	// the env declares none, so every shape recorded before the field
+	// encodes and hashes exactly as it did; a control plane that predates it
+	// refuses the whole shape, so it is a bundle-document feature
+	// ([BundleFeatureStatusPage]).
+	StatusPage *ShapeStatusPage `json:"status_page,omitempty"`
 }
 
 // ApplierForge is [Shape.Applier] for an env forge applies by declaration. It is
@@ -1255,6 +1263,9 @@ func (s Shape) Validate() error {
 	if err := validateUptimeChecks(s.UptimeChecks); err != nil {
 		return err
 	}
+	if err := validateStatusPage(s.StatusPage, s.UptimeChecks); err != nil {
+		return err
+	}
 	if err := validateReleaseProbes(s.ReleaseProbes); err != nil {
 		return err
 	}
@@ -1443,6 +1454,7 @@ func (s Shape) Canonical() Shape {
 		}
 	}
 	out.UptimeChecks = canonicalUptimeChecks(s.UptimeChecks)
+	out.StatusPage = canonicalStatusPage(s.StatusPage)
 	out.ReleaseProbes = canonicalReleaseProbes(s.ReleaseProbes)
 	out.Databases = canonicalShapeDatabases(s.Databases)
 	out.ExternalDatabases = canonicalExternalDatabases(s.ExternalDatabases)

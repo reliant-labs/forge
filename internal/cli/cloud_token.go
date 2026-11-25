@@ -58,6 +58,10 @@ type wireAccessToken struct {
 	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt    *time.Time `json:"lastUsedAt,omitempty"`
 	RevokedAt     *time.Time `json:"revokedAt,omitempty"`
+	Resource      *struct {
+		Kind string `json:"kind"`
+		ID   string `json:"id"`
+	} `json:"resource,omitempty"`
 }
 
 func newCloudTokenCmd() *cobra.Command {
@@ -160,6 +164,7 @@ func newCloudTokenCreateCmd() *cobra.Command {
 		name    string
 		scopes  string
 		expires time.Duration
+		bindEnv string
 	)
 	cmd := &cobra.Command{
 		Use:   "create --env <env> --name <name> --scopes <s1,s2>",
@@ -170,17 +175,21 @@ func newCloudTokenCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := checkEnvBinding(name, parsed, bindEnv); err != nil {
+				return err
+			}
 			client, err := f.client(cmd.Context())
 			if err != nil {
 				return err
 			}
-			return runCloudTokenCreate(cmd.Context(), client, name, parsed, expires, f.jsonOut, cmd.OutOrStdout())
+			return runCloudTokenCreateBound(cmd.Context(), client, name, parsed, expires, bindEnv, f.jsonOut, cmd.OutOrStdout())
 		},
 	}
 	f.register(cmd)
 	cmd.Flags().StringVar(&name, "name", "", "What the token is for, e.g. github-actions (required)")
 	cmd.Flags().StringVar(&scopes, "scopes", "", "Comma-separated scopes, e.g. deploy:read,deploy:write (required)")
 	cmd.Flags().DurationVar(&expires, "expires-in", 0, "Expire after this long (default: never)")
+	cmd.Flags().StringVar(&bindEnv, "bind-env", "", "Confine the token to one environment, by the control plane's environment id; every scope must bind to an environment (e.g. changes:read, obs:read). Needs a control plane whose CreateToken accepts a resource binding (control-plane#3713); an older one rejects the request")
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("scopes")
 	return cmd
@@ -229,8 +238,37 @@ type cloudTokenCreateDocument struct {
 	Secret string `json:"secret"`
 }
 
+// checkEnvBinding refuses, before the round trip, a --bind-env whose scopes
+// cannot ride an environment binding (accesstoken's binding rules), naming
+// the scope. An empty bindEnv binds nothing.
+func checkEnvBinding(name string, scopes []string, bindEnv string) error {
+	if strings.TrimSpace(bindEnv) == "" {
+		return nil
+	}
+	set, err := accesstoken.NewSet(scopes)
+	if err != nil {
+		return err
+	}
+	g := accesstoken.Grant{OrgID: "org", Name: name, Scopes: set, Resource: &accesstoken.Resource{Kind: accesstoken.ResourceEnvironment, ID: strings.TrimSpace(bindEnv)}}
+	if err := g.Validate(time.Now()); err != nil {
+		return fmt.Errorf("--bind-env: %w", err)
+	}
+	return nil
+}
+
 func runCloudTokenCreate(ctx context.Context, client cloudCaller, name string, scopes []string, expires time.Duration, jsonOut bool, out io.Writer) error {
+	return runCloudTokenCreateBound(ctx, client, name, scopes, expires, "", jsonOut, out)
+}
+
+// runCloudTokenCreateBound is runCloudTokenCreate with an optional
+// environment binding, sent as CreateTokenRequest.resource
+// ({"kind":"environment","id":…}). Empty bindEnv sends no resource, so the
+// request is byte-for-byte what an older control plane accepts.
+func runCloudTokenCreateBound(ctx context.Context, client cloudCaller, name string, scopes []string, expires time.Duration, bindEnv string, jsonOut bool, out io.Writer) error {
 	req := map[string]any{"name": name, "scopes": scopes}
+	if env := strings.TrimSpace(bindEnv); env != "" {
+		req["resource"] = map[string]string{"kind": string(accesstoken.ResourceEnvironment), "id": env}
+	}
 	if expires > 0 {
 		req["expiresAt"] = time.Now().Add(expires).UTC().Format(time.RFC3339)
 	}
@@ -241,12 +279,23 @@ func runCloudTokenCreate(ctx context.Context, client cloudCaller, name string, s
 	if err := client.Call(ctx, procCreateToken, req, &resp); err != nil {
 		return tokenAdminRefusal("mint", fmt.Errorf("create token %q: %w", name, err))
 	}
+	// Older servers may accept but ignore resource. Never expose the secret
+	// or claim confinement unless the minted token confirms the exact binding.
+	if env := strings.TrimSpace(bindEnv); env != "" {
+		resource := resp.Token.Resource
+		if resource == nil || resource.Kind != string(accesstoken.ResourceEnvironment) || resource.ID != env {
+			return fmt.Errorf("create token %q: server did not confirm the requested environment binding %q; secret withheld. Revoke token %q (cloud token revoke) in the same organization, then use a control plane that stores and returns resource bindings before retrying", name, env, resp.Token.ID)
+		}
+	}
 	if jsonOut {
 		doc := cloudTokenCreateDocument{Token: resp.Token, Secret: resp.Secret}
 		doc.stamp(nil)
 		return writeJSONDocument(out, doc)
 	}
 	fmt.Fprintf(out, "Created org token %q (%s), scopes %s\n", resp.Token.Name, resp.Token.ID, strings.Join(resp.Token.Scopes, ","))
+	if env := strings.TrimSpace(bindEnv); env != "" {
+		fmt.Fprintf(out, "Bound to environment %s: it acts there and nowhere else.\n", env)
+	}
 	fmt.Fprintf(out, "\n  %s\n\n", resp.Secret)
 	fmt.Fprintln(out, "This secret is shown ONCE and cannot be read back. Store it now, e.g.:")
 	fmt.Fprintln(out, "  gh secret set FORGE_CONTROL_PLANE_TOKEN")

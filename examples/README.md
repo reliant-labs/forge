@@ -40,7 +40,8 @@ npx -y @reliantlabs/forge@latest env deploy prod --claimable               # dep
 ```
 
 `--claimable` publishes with no account and prints a live URL and a claim link.
-The claim link works like a password: whoever opens it first owns the deploy.
+The claim link is one-time: whoever opens it first owns the deploy, so it is for
+you alone, never for commits, issues or public places.
 
 |                          | Unclaimed (`--claimable`, no account)                                   | Claimed, or deployed signed in                                               |
 | ------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |

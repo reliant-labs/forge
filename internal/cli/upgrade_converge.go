@@ -374,6 +374,9 @@ func newUpgradeRun(opts upgradeOptions, rep *upgradeReport) (*upgradeRun, error)
 	}
 	r.from = store.Meta().EffectiveForgeVersion()
 	rep.From, rep.To = r.from, r.target
+	if err := refuseImplicitDowngrade(r.from, r.target, opts.to); err != nil {
+		return nil, err
+	}
 	for name := range opts.skip {
 		if !containsString(skippablePhases, name) {
 			return nil, cliutil.UserErr(Name()+" project upgrade --skip",
@@ -403,6 +406,30 @@ func newUpgradeRun(opts upgradeOptions, rep *upgradeReport) (*upgradeRun, error)
 	}
 	r.banner()
 	return r, nil
+}
+
+// refuseImplicitDowngrade refuses an upgrade whose target is this forge
+// (no --to) when this forge is older than the pin: it would move the pin
+// backwards and call that an upgrade. The hand-off normally gives such a run
+// to the pinned forge (implicitTargetFlags); this is the answer when that
+// forge could not be had, or the hand-off is off. An explicit --to is the
+// user's choice and is left alone, as is a version semver cannot order.
+func refuseImplicitDowngrade(from, target, to string) error {
+	if strings.TrimSpace(to) != "" {
+		return nil
+	}
+	f, t := semverKey(from), semverKey(target)
+	if f == "" || t == "" || semver.Compare(t, f) >= 0 {
+		return nil
+	}
+	return cliutil.UserErr(
+		Name()+" project upgrade",
+		fmt.Sprintf("this forge is %s, older than the project's pin %s — upgrading to it would move the pin backwards",
+			describeVersion(target), describeVersion(from)),
+		"",
+		fmt.Sprintf("run the pinned forge (%s handles this when it can obtain it), a newer forge, or name the target: '%s project upgrade --to <version>'",
+			Name(), Name()),
+	)
 }
 
 func (r *upgradeRun) banner() {

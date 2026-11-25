@@ -116,6 +116,7 @@ describe("the published surface", () => {
       "./auth/clerk",
       "./auth/firebase",
       "./auth/supabase",
+      "./changes-server",
       "./devlog",
       "./fixture-transport",
       "./interceptors",
@@ -165,9 +166,14 @@ describe("the published surface", () => {
     //   - otel-proxy is the dev servers' /_otel proxy (Vite mounts it
     //     through ./vite, Next.js's next.config.ts starts its relay). It
     //     imports node:http, node:https and node:fs.
+    //   - changes-server fetches a Changes snapshot with a control plane
+    //     token. It imports nothing a browser lacks, but it belongs on a
+    //     server only, and a browser bundle must never carry the code that
+    //     holds that token.
     const barrel = readFileSync(join(pkgDir, "dist", "index.d.ts"), "utf8");
     for (const forbidden of [
       "./auth/",
+      "./changes-server",
       "./fixture-transport",
       "./mock-transport",
       "./node",

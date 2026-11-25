@@ -264,7 +264,7 @@ func TestFeedbackLoopScopes_AreTheirOwnAuthority(t *testing.T) {
 // an org automation token carries it without acting as a person; a Reliant
 // agent's daemon-bound session credential can carry all three.
 func TestFeedbackLoopScopes_NeedNoActingUserAndRideADaemon(t *testing.T) {
-	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead, ScopeVulnRead, ScopeTestsRead} {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead, ScopeVulnRead, ScopeTestsRead, ScopeChangesRead} {
 		if RequiresActingUser(s) {
 			t.Errorf("%s must not require an acting user", s)
 		}
@@ -891,7 +891,7 @@ func TestDaemonResume_IsOneDaemonActingAsOnePerson(t *testing.T) {
 func TestEnvironmentBinding(t *testing.T) {
 	now := time.Now()
 	env := &Resource{Kind: ResourceEnvironment, ID: "env-prod"}
-	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead, ScopeVulnRead, ScopeTestsRead} {
+	for _, s := range []Scope{ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead, ScopeVulnRead, ScopeTestsRead, ScopeChangesRead} {
 		bound := Grant{OrgID: "org", Name: "ci", Scopes: SetOf(s), Resource: env}
 		if err := bound.Validate(now); err != nil {
 			t.Errorf("%s bound to an environment was refused: %v", s, err)
@@ -906,7 +906,7 @@ func TestEnvironmentBinding(t *testing.T) {
 	for _, s := range AllScopes {
 		switch s {
 		case ScopeObsRead, ScopeObsTriage, ScopeDBQuery, ScopeStorageRead, ScopeDeployConfigRead,
-			ScopeChangesWrite, ScopeChangesLaunch, ScopeVulnRead, ScopeTestsRead:
+			ScopeChangesRead, ScopeChangesWrite, ScopeChangesLaunch, ScopeVulnRead, ScopeTestsRead:
 			continue
 		}
 		g := Grant{OrgID: "org", Name: "x", Scopes: SetOf(s), ActingUserID: "user", Resource: env}

@@ -29,7 +29,7 @@ A bundle is a reviewed set of scopes for one kind of holder. A grant row or a to
 | Bundle | For | Holds |
 |---|---|---|
 | `ci` | an org's CI, acting as no person | `deploy:read`, `deploy:write`, `vuln:read`, `tests:write` |
-| `developer` | a person building and shipping | `ci`'s scopes, their own API, runs, triggers, inbox and questions, `domain:read`, `obs:*`, `changes:write`, `tests:read`. Not `secret:read`: secrets are the highest-value thing a leaked developer token could reach, so a developer is granted it explicitly |
+| `developer` | a person building and shipping | `ci`'s scopes, their own API, runs, triggers, inbox and questions, `domain:read`, `obs:*`, `changes:read`, `changes:write`, `tests:read`. Not `secret:read`: secrets are the highest-value thing a leaked developer token could reach, so a developer is granted it explicitly |
 | `admin` | a person administering the org | every member and standard scope that is not a whole credential of its own, `secret:read` included; no personal scope (a person holds those already) |
 
 **No sensitive scope is in any bundle, `admin` included.** An admin is granted each sensitive scope one by one. `accesstoken.ExpandBundle` skips a sensitive scope even if a catalog row listed one, and forge's own tests fail such a row.

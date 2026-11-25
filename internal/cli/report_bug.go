@@ -20,7 +20,7 @@ import (
 // `forge report-bug` files a defect in forge itself with the Reliant
 // engineering team. It is the standalone forge's counterpart of reliant's
 // report_bug agent tool, for a person or an agent in any harness. forge
-// sends no report unless someone runs it (internal/bugreport,
+// sends nothing unless someone runs it (internal/bugreport,
 // docs/report-bug.md).
 
 // reportBugUsage is the guidance every surface gives: when to report, when
@@ -51,8 +51,7 @@ directories; forge's version, OS and architecture; the command line with
 secrets removed; the project's pinned forge_version; the agent harness
 forge detected; and a random install id used only for rate limiting. Never
 file contents or environment values. --dry-run prints the exact payload
-without sending it. forge sends no report unless someone runs this command
-(its anonymous usage events are another matter: forge telemetry --help).
+without sending it. forge sends nothing unless someone runs this command.
 
 When you are logged in (forge login), the report carries your user id so
 the team can follow up; --anonymous leaves it off.

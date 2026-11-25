@@ -55,6 +55,14 @@
 //	ec := changes.EvalContext{TargetingKey: userID}
 //	if changes.Bool(store.Evaluate(ctx, "new-checkout", ec), false) { … }
 //
+// An app not on Reliant hosting fetches the same snapshot from the control
+// plane instead (OpenControlPlane), with an access token carrying
+// changes:read. OpenFromEnv picks whichever the environment declares —
+// EnvFile, or EnvURL, EnvEnvironmentID and EnvToken — and is the one call an
+// app needs either way:
+//
+//	store := changes.OpenFromEnv(ctx, os.Getenv, changes.Options{})
+//
 // Bool, String, Float64 and Decode read a result with the default written in
 // code. An app that evaluates through OpenFeature registers the provider in
 // the openfeature subpackage instead, which wraps a Store.

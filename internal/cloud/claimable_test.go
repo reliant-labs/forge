@@ -223,6 +223,106 @@ func TestClaimableClient_SendsNoCredentialAndDecodesTheDeploy(t *testing.T) {
 	}
 }
 
+// The canary pass rides StartClaimableDeploy alone, and only when the
+// environment holds a non-blank one. Not parallel: it sets the environment.
+func TestClaimableClient_SendsTheCanaryPassOnlyOnStart(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, want, endpoint string
+	}{
+		{name: "set", env: "  pass-123\n", want: "pass-123", endpoint: DefaultEndpoint},
+		{name: "blank", env: "   ", endpoint: DefaultEndpoint},
+		{name: "unset", env: "", endpoint: DefaultEndpoint},
+		{name: "custom", env: "pass-123", endpoint: "https://example.com"},
+		{name: "insecure", env: "pass-123", endpoint: "http://admin.reliantapi.com"},
+		{name: "other-port", env: "pass-123", endpoint: DefaultEndpoint + ":8443"},
+		{name: "suffix", env: "pass-123", endpoint: DefaultEndpoint + ".example.com"},
+		{name: "userinfo", env: "pass-123", endpoint: "https://user@admin.reliantapi.com"},
+		{name: "explicit-https-port", env: "pass-123", want: "pass-123", endpoint: DefaultEndpoint + ":443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(ClaimableCanaryTokenEnv, tc.env)
+			saw := map[string][]string{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				saw[r.URL.Path] = r.Header.Values(ClaimableCanaryHeader)
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/" + ProcGetClaimableAvailability:
+					_, _ = w.Write([]byte(`{}`))
+				case "/" + ProcGetClaimableChallenge:
+					_, _ = w.Write([]byte(`{"challenge":"c1","difficultyBits":10,"expiresAt":"2026-10-26T15:00:00Z"}`))
+				case "/" + ProcStartClaimableDeploy:
+					_, _ = w.Write([]byte(`{"accessToken":"rlat_x","orgId":"org-1","claimUrl":"https://app.reliant.dev/claim#rcl_x"}`))
+				}
+			}))
+			defer srv.Close()
+			c := NewClaimableClient(endpointFor(t, "prod", tc.endpoint, ""))
+			// Keep the declared origin intact for credential policy, routing
+			// the wire request to our local fixture without external network.
+			c.client.HTTP.Transport = canaryTestTransport(func(r *http.Request) (*http.Response, error) {
+				local := r.Clone(r.Context())
+				local.URL.Scheme = "http"
+				local.URL.Host = strings.TrimPrefix(srv.URL, "http://")
+				return srv.Client().Transport.RoundTrip(local)
+			})
+			ctx := context.Background()
+			if _, err := c.Availability(ctx); err != nil {
+				t.Fatalf("availability: %v", err)
+			}
+			if _, err := c.Challenge(ctx); err != nil {
+				t.Fatalf("challenge: %v", err)
+			}
+			if _, err := c.Start(ctx, ClaimableStartRequest{Project: "acme", Env: "prod"}); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			for _, proc := range []string{ProcGetClaimableAvailability, ProcGetClaimableChallenge} {
+				if got, ok := saw["/"+proc]; !ok || len(got) != 0 {
+					t.Fatalf("%s: canary header = %q (called: %v), want none", proc, got, ok)
+				}
+			}
+			got := saw["/"+ProcStartClaimableDeploy]
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("start sent canary header %q with no pass in the environment", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("start canary header = %q, want [%q]", got, tc.want)
+			}
+		})
+	}
+}
+
+type canaryTestTransport func(*http.Request) (*http.Response, error)
+
+func (f canaryTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestClaimableClient_CanaryPassDoesNotFollowRedirect(t *testing.T) {
+	t.Setenv(ClaimableCanaryTokenEnv, "pass-123")
+	c := NewClaimableClient(endpointFor(t, "prod", DefaultEndpoint, ""))
+	calls := 0
+	c.client.HTTP.Transport = canaryTestTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Host != "admin.reliantapi.com" || r.Header.Get(ClaimableCanaryHeader) != "pass-123" {
+			t.Errorf("unexpected canary request to %s", r.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusTemporaryRedirect,
+			Header:     http.Header{"Location": {"https://example.com/stolen"}},
+			Body:       http.NoBody,
+			Request:    r,
+		}, nil
+	})
+	if _, err := c.Start(context.Background(), ClaimableStartRequest{}); err == nil {
+		t.Fatal("redirect must not succeed")
+	}
+	if calls != 1 {
+		t.Fatalf("made %d requests, want only the initial request", calls)
+	}
+}
+
 func TestClaimableThrottleOf_ReadsDetailThenMetadata(t *testing.T) {
 	t.Parallel()
 	fromDetail := &Error{Code: CodeResourceExhausted, Reason: ReasonClaimableThrottled, Details: []ErrorDetail{{

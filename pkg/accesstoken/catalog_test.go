@@ -235,13 +235,13 @@ func TestBundleContents(t *testing.T) {
 			ScopeDomainRead, ScopeObsRead, ScopeObsTriage, ScopeObsWrite,
 			ScopeRunsStart, ScopeRunsRead, ScopeRunsControl, ScopeTriggersFire, ScopeTriggersManage,
 			ScopeInboxRead, ScopeInboxManage, ScopeQuestionsAnswer,
-			ScopeChangesWrite, ScopeVulnRead, ScopeTestsRead, ScopeTestsWrite,
+			ScopeChangesWrite, ScopeVulnRead, ScopeTestsRead, ScopeTestsWrite, ScopeChangesRead,
 		},
 		BundleAdmin: {
 			ScopeDeployRead, ScopeDeployWrite, ScopeBillingRead, ScopeClusterManage,
 			ScopeSecretRead, ScopeDomainRead, ScopeDomainWrite, ScopeIdentityRead,
 			ScopeObsRead, ScopeObsTriage, ScopeObsWrite,
-			ScopeChangesWrite, ScopeVulnRead, ScopeTestsRead, ScopeTestsWrite,
+			ScopeChangesWrite, ScopeVulnRead, ScopeTestsRead, ScopeTestsWrite, ScopeChangesRead,
 		},
 	}
 	for b, scopes := range want {

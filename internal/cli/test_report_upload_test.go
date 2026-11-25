@@ -15,11 +15,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
 	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/testlocal"
+	"github.com/reliant-labs/forge/pkg/credentials"
 	"github.com/reliant-labs/forge/pkg/testreport"
 )
 
@@ -41,6 +43,17 @@ type fakeTestsService struct {
 	// records are the RecordTestRun bodies, in order; calls every path.
 	records []map[string]any
 	calls   []string
+	// recordBearer, when set, is the only bearer RecordTestRun accepts:
+	// any other is refused 403 for missing tests:write, as the control
+	// plane refuses a credential carrying neither upload scope.
+	recordBearer string
+	// exchangeGrants maps a bearer to the token ExchangeToken hands it for
+	// exactly [tests:write]; any other exchange is refused 403. exchanges
+	// are the scopes each exchange asked for.
+	exchangeGrants map[string]string
+	exchanges      [][]string
+	// bearers are the bearers RecordTestRun was called with, in order.
+	bearers []string
 }
 
 func (f *fakeTestsService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +72,28 @@ func (f *fakeTestsService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"testFeatures": f.features})
+	case "/controlplane.v1.AccessTokenService/ExchangeToken":
+		var req struct {
+			Scopes []string `json:"scopes"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.exchanges = append(f.exchanges, req.Scopes)
+		granted, ok := f.exchangeGrants[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if !ok || len(req.Scopes) != 1 || req.Scopes[0] != testUploadScope {
+			connectErr(http.StatusForbidden, "permission_denied", "an exchange cannot widen a credential")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"secret": granted,
+			"token":  map[string]any{"expiresAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+		})
 	case "/controlplane.v1.TestsService/RecordTestRun":
+		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		f.bearers = append(f.bearers, bearer)
+		if f.recordBearer != "" && bearer != f.recordBearer {
+			connectErr(http.StatusForbidden, "permission_denied", "this machine credential does not carry the deploy:write or tests:write scope")
+			return
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			connectErr(http.StatusBadRequest, cloud.CodeInvalidArgument, err.Error())
@@ -205,6 +239,92 @@ func TestTestReportUploadRecordsTheLaneRun(t *testing.T) {
 				t.Fatalf("an uploaded document carries source %q (from %q)", line, src)
 			}
 		}
+	}
+}
+
+// signInAs replaces trUploadProject's token variable with a stored `forge
+// login` for the fake control plane: a session's credential, which forge may
+// elevate, where a token handed to it verbatim is presented as it is. The
+// credential helper (a Reliant daemon's session) is elevated the same way
+// (cloud.Client.elevatable).
+func signInAs(t *testing.T, token string) {
+	t.Helper()
+	t.Setenv(cloud.DefaultTokenEnv, "")
+	decl, err := testUploadControlPlane(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := cloud.CredentialsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.Store(path, decl.Endpoint, cloud.ClientID, credentials.Credential{Token: token, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A session's credential is minted for forge's login scopes, which carry
+// deploy:write only for a person granted it. The upload elevates for the
+// narrow tests:write before its first RecordTestRun, so a session whose
+// person holds tests:write alone records runs, and the control plane refuses
+// nothing.
+func TestTestReportUploadElevatesASessionForTestsWrite(t *testing.T) {
+	fake := &fakeTestsService{
+		features:       []string{hostedTestFeatureResults},
+		recordBearer:   "rlat_tests_write",
+		exchangeGrants: map[string]string{"rlat_session": "rlat_tests_write"},
+	}
+	trUploadProject(t, trStream("pass"), 0, fake, nil)
+	signInAs(t, "rlat_session")
+	rep, code := trReport(t, "--upload=required")
+	if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadOK {
+		t.Fatalf("exit %d upload %+v", code, rep.Upload)
+	}
+	if want := [][]string{{testUploadScope}}; !reflect.DeepEqual(fake.exchanges, want) {
+		t.Fatalf("exchanges %v, want %v", fake.exchanges, want)
+	}
+	if want := []string{"rlat_tests_write"}; !reflect.DeepEqual(fake.bearers, want) {
+		t.Fatalf("RecordTestRun bearers %v, want the elevated token alone %v", fake.bearers, want)
+	}
+}
+
+// A session whose person cannot be elevated for tests:write (it holds
+// deploy:write, which RecordTestRun also accepts, or the control plane
+// predates the scope) still uploads with its own credential, as it did before
+// the scope was declared.
+func TestTestReportUploadFallsBackToTheSessionWhenElevationIsRefused(t *testing.T) {
+	fake := &fakeTestsService{features: []string{hostedTestFeatureResults}, recordBearer: "rlat_session"}
+	trUploadProject(t, trStream("pass"), 0, fake, nil)
+	signInAs(t, "rlat_session")
+	rep, code := trReport(t, "--upload=required")
+	if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadOK {
+		t.Fatalf("exit %d upload %+v", code, rep.Upload)
+	}
+	if len(fake.exchanges) != 1 {
+		t.Fatalf("exchanges %v, want the one refused tests:write exchange", fake.exchanges)
+	}
+	if want := []string{"rlat_session"}; !reflect.DeepEqual(fake.bearers, want) {
+		t.Fatalf("RecordTestRun bearers %v, want %v", fake.bearers, want)
+	}
+}
+
+// An explicit token (FORGE_CONTROL_PLANE_TOKEN: a CI secret, or
+// ci-full-main.sh's tests:write token) is presented verbatim and never traded.
+func TestTestReportUploadPresentsAnExplicitTokenAsIs(t *testing.T) {
+	fake := &fakeTestsService{
+		features:       []string{hostedTestFeatureResults},
+		exchangeGrants: map[string]string{"rlat_test": "rlat_tests_write"},
+	}
+	trUploadProject(t, trStream("pass"), 0, fake, nil)
+	rep, code := trReport(t, "--upload=required")
+	if code != exitOK || rep.Upload == nil || rep.Upload.Status != testUploadOK {
+		t.Fatalf("exit %d upload %+v", code, rep.Upload)
+	}
+	if len(fake.exchanges) != 0 {
+		t.Fatalf("an explicit token was exchanged: %v", fake.exchanges)
+	}
+	if want := []string{"rlat_test"}; !reflect.DeepEqual(fake.bearers, want) {
+		t.Fatalf("RecordTestRun bearers %v, want %v", fake.bearers, want)
 	}
 }
 

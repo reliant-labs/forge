@@ -31,9 +31,10 @@ Then ask your agent:
 Deploy this app with Reliant Forge, then give me the live URL and the claim link.
 ```
 
-The claim link is good for 72 hours; treat it like a password. Opening it signs
-you up free and makes the deploy yours. An unclaimed deploy fits one static
-site, or one service with one database:
+The claim link is a one-time link for you, good for 72 hours: whoever opens it
+first signs up free and owns the deploy, so keep it out of commits, issues and
+public places. An unclaimed deploy fits one static site, or one service with
+one database:
 [Deploying with no account](../../docs/mcp.md#deploying-with-no-account).
 
 ## What it runs, fetches and sends
@@ -54,18 +55,8 @@ Node.js 18 or newer is the only requirement.
   deploy to an account uses the login that `forge login` stored on your
   machine. Monitoring and release tools read from the same control plane, and
   the console is at forge.reliantlabs.io.
-- **Anonymous usage events.** A release of Forge sends two events: the first
-  run of an install (its version, OS, architecture and the coding agent running
-  it), and a claimable deploy Forge itself refused before reaching the control
-  plane (the reason, from a fixed list, with the same fields and the kind of
-  app and auth mode). They carry a random install id and never code, paths,
-  names or error messages. `DO_NOT_TRACK=1`, `FORGE_TELEMETRY=off` or
-  `forge telemetry off` stops them, and a CI runner never sends them. A
-  claimable deploy also names its app template (vite, nextjs-static,
-  dockerfile-app, forge-native or other) and auth mode (managed or none) to the
-  control plane.
-- The only other thing Forge sends is a bug report you ask it to file
-  (`report_bug`).
+- Forge sends no usage telemetry. The only other thing it sends is a bug
+  report you ask it to file (`report_bug`).
 
 ## Support
 

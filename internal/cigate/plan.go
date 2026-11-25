@@ -858,6 +858,7 @@ func (p planner) extras(owned []Check) (map[string]Check, []Check, error) {
 			return nil, nil, err
 		}
 		if e.Replaces != "" {
+			e.Replaces = p.sharedDirRow(e.Replaces, ownedBy)
 			orig, ok := ownedBy[e.Replaces]
 			switch {
 			case !ok:
@@ -907,6 +908,28 @@ func (p planner) extras(owned []Check) (map[string]Check, []Check, error) {
 	return replaced, added, nil
 }
 
+// sharedDirRow resolves a row name that refers to a frontend sharing its
+// directory with another to the row forge plans for that directory. Frontends
+// declared on one directory get one set of rows, named for the frontend that
+// stands for it (templates.UniqueFrontendDirs); a `replaces: lint-<other>`
+// written when each frontend had its own rows still names that directory's
+// lint row. Any other name is returned unchanged.
+func (p planner) sharedDirRow(name string, owned map[string]Check) string {
+	if _, ok := owned[name]; ok {
+		return name
+	}
+	for other, canon := range templates.FrontendsSharingDir(p.CI.Frontends) {
+		prefix, ok := strings.CutSuffix(name, "-"+other)
+		if !ok || prefix == "" {
+			continue
+		}
+		if row := prefix + "-" + canon; owned[row].Name != "" {
+			return row
+		}
+	}
+	return name
+}
+
 // extraCheck validates one extra_checks entry and turns it into a Check.
 func (p planner) extraCheck(where string, e config.CIGateCheck) (Check, error) {
 	switch {
@@ -935,6 +958,7 @@ func (p planner) extraCheck(where string, e config.CIGateCheck) (Check, error) {
 		Env:          envList(e.Env),
 		SkipExitCode: e.SkipExitCode,
 		Paths:        append([]string(nil), e.Paths...),
+		GoClosure:    append([]string(nil), e.PathsGoClosure...),
 	}
 	if e.Lane != "" {
 		c.Lane = Lane(e.Lane)

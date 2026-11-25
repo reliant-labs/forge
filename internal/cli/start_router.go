@@ -58,8 +58,9 @@ default prod does not fit.
 
 It exits 0 with the live URL and a claim link. Give both to the user, and tell
 them the site goes offline in 72 hours unless they open the claim link, which
-signs them up for free and makes it theirs. Treat the link like a password:
-never post it anywhere public. ` + "`forge env status prod --claimable`" + ` prints it again.
+signs them up for free and makes it theirs. It is a one-time link for that
+user: whoever opens it first owns the site, so show it only to them, never in
+a commit, a log, an issue or anywhere public. ` + "`forge env status prod --claimable`" + ` prints it again.
 
 | It says | Do |
 |---|---|

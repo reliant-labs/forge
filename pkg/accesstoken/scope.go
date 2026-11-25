@@ -358,6 +358,17 @@ const (
 	// authority is a control-plane rpc. It binds to nothing (an upload names
 	// its environment in the request, which this binding would not confine).
 	ScopeTestsWrite Scope = "tests:write"
+
+	// ScopeChangesRead reads one environment's Changes snapshot
+	// (control-plane ChangesService.GetChangesSnapshot), and does nothing
+	// else. It is the credential of an app NOT on Reliant hosting, which
+	// fetches the snapshot its backend evaluates (pkg/changes
+	// OpenControlPlane) instead of reading a mounted file. It acts as no
+	// person and may be bound to one environment, confining a leaked app
+	// token to that environment's snapshot. changes:write and
+	// changes:launch imply it at the point of use (see changes.go); nothing
+	// else does, and it implies nothing.
+	ScopeChangesRead Scope = "changes:read"
 )
 
 // AllScopes is the closed set, grouped by product, least authority first.
@@ -406,6 +417,7 @@ var AllScopes = []Scope{
 	ScopeTestsRead,
 	ScopeTestsWrite,
 	ScopeMCPForge,
+	ScopeChangesRead,
 }
 
 // ParseScope maps a wire string onto a known Scope. An unknown string is an
@@ -510,6 +522,8 @@ func (s Set) Permits(want Scope) bool {
 		return s.Has(ScopeObsTriage) || s.Has(ScopeObsWrite)
 	case ScopeChangesWrite:
 		return s.Has(ScopeChangesLaunch)
+	case ScopeChangesRead:
+		return s.Has(ScopeChangesWrite) || s.Has(ScopeChangesLaunch)
 	default:
 		return false
 	}

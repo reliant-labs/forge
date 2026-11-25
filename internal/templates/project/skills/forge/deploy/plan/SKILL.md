@@ -66,6 +66,12 @@ baseline and the plan after it is clean.
 | `secret_needed` | info / warn | see below |
 | `unknown` | warn | a section that could not be computed — never read it as "no changes" |
 
+Beside the findings, a control plane that runs Changes lists `running changes
+this deploy stops`: each running change whose variant (or key) the release no
+longer declares, which the deploy will stop. Warnings only, outside the digest
+and the gate; `--json` carries them as `deploy_plan.change_warnings`
+(`observability/changes`).
+
 Field paths name list items by `name` (containers, env vars, ports) and never
 carry a value — the plan is printed into CI logs. They are prose: a finding's
 detail is not part of the digest, so two machines that could and could not

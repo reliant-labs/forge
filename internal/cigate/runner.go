@@ -208,6 +208,9 @@ type Report struct {
 	Dirty bool
 	// Wall is the gate's elapsed time.
 	Wall time.Duration
+	// Affected is the unit lane's affected-mode reach, set by the caller
+	// that computed it (the --json document's "affected").
+	Affected *DocumentAffected
 }
 
 // Failed reports whether the gate is red: any FAIL, or any SKIPPED the caller

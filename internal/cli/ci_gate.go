@@ -327,8 +327,8 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 	if in.tiered && in.tier.FullSuite {
 		tierForce = "--tier " + in.tier.Name
 	}
-	selected := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
-		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, frontends: in.ciFrontends,
+	selected, affectedDoc := applyAffectedMode(ctx, out, in.plan.selected, affectedArgs{
+		root: root, base: base, ignore: cfg.CI.Gate.AffectedIgnore, rules: cfg.CI.Gate.AffectedRules, reach: cfg.CI.Gate.AffectedReach, frontends: in.ciFrontends,
 		env: env, skips: in.plan.skips, cache: cache, full: flags.full, tierForce: tierForce,
 	})
 	selected = cigate.WithFlakeBase(selected, base)
@@ -354,6 +354,7 @@ func executeGate(cmd *cobra.Command, out io.Writer, in gateExec) cigate.Report {
 
 	rep := cigate.Run(ctx, in.plan.label, selected, opt)
 	rep.Head, rep.Dirty = gitHead(root)
+	rep.Affected = affectedDoc
 	rep.RenderText(out)
 	history.Observe(rep)
 	if err := history.Save(); err != nil {
@@ -414,6 +415,7 @@ type affectedArgs struct {
 	root, base         string
 	ignore, env, skips []string
 	rules              []config.CIGateAffectedRule
+	reach              *config.CIGateAffectedReach
 	frontends          []templates.FrontendCIConfig
 	cache              *cigate.VerdictCache
 	full               bool
@@ -421,14 +423,14 @@ type affectedArgs struct {
 	tierForce string
 }
 
-func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check, in affectedArgs) []cigate.Check {
+func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check, in affectedArgs) ([]cigate.Check, *cigate.DocumentAffected) {
 	narrow := narrowsUnit(out, checks, in)
 	gated := false
 	for _, c := range checks {
 		gated = gated || len(c.Paths) > 0
 	}
 	if !narrow && !gated {
-		return checks
+		return checks, nil
 	}
 	force := ""
 	switch {
@@ -440,15 +442,18 @@ func applyAffectedMode(ctx context.Context, out io.Writer, checks []cigate.Check
 		force = in.tierForce
 	}
 	a := cigate.ComputeAffected(ctx, cigate.AffectedInput{Root: in.root, BaseRef: in.base, Env: in.env, Force: force,
-		Ignore: in.ignore, Rules: in.rules, ChangesOnly: !narrow})
+		Ignore: in.ignore, Rules: in.rules, Reach: in.reach, ChangesOnly: !narrow})
 	if !narrow {
-		return cigate.GateByPaths(checks, a)
+		return cigate.GateByPaths(checks, a), nil
 	}
 	fmt.Fprintln(out, a.Line())
 	for _, s := range a.Selections {
 		fmt.Fprintln(out, "  "+s)
 	}
-	return cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends)
+	for _, p := range a.Deferred {
+		fmt.Fprintln(out, "  deferred to the full gate: "+p)
+	}
+	return cigate.WithFrontendTests(cigate.ApplyAffected(checks, a), a, in.root, in.frontends), cigate.NewDocumentAffected(a)
 }
 
 // narrowsUnit reports whether this run may narrow the unit-tests row: it is

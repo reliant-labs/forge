@@ -1065,7 +1065,7 @@ before we model a single run.
      Grant/Revoke/List RPCs, `GetMyOrgEntitlements` and `RequestOrgEntitlement`
      with its Slack notice ([section 4.1](#41-access-by-request));
    - reliant: the ML nav item, the request-access page, and the `ml` fixture
-     handler in the demo pack;
+     handler in the demo fixtures;
    - the landing page and docs: "ML: by request".
 
    Each later slice adds its pages to the demo fixtures in the same PR.

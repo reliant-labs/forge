@@ -594,12 +594,21 @@ type deployCmdFlags struct {
 	// claimable publishes with an anonymous, claimable identity instead of an
 	// account (deploy_claimable.go).
 	claimable bool
+	// claimableRelease is set only after anonymous admission and obtaining the
+	// target env's session, never inferred from process-wide credentials.
+	claimableRelease bool
 	// claim, set only by the claimable path, resolves the `claim` object of the
 	// --json document at the moment the document is written.
 	claim func() *deployClaimJSON
 	// promoted, set only by the claimable path, is called once the
 	// promotion is recorded, whatever the rollout then does.
 	promoted func()
+	// refusal, set only by the claimable path, translates a platform
+	// refusal of the follow-through (the content scan at publish) into the
+	// claimable path's own, and returns its `claim` object when claiming
+	// lifts it, BEFORE the deploy's --json document is written: so that one
+	// document says what the process exits with (deploy_claimable.go).
+	refusal func(error) (*deployClaimJSON, error)
 	// offlineLedger deploys the cached current release with the hosted
 	// ledger unreachable (offline_ledger.go).
 	offlineLedger bool

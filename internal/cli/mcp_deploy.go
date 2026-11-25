@@ -99,14 +99,21 @@ type claimableDeployResult struct {
 	// error, when it is known.
 	NothingDeployed  bool   `json:"nothing_deployed,omitempty"`
 	LastAttemptError string `json:"last_attempt_error,omitempty"`
+	// ClaimRequired is set when the platform publishes this deploy only
+	// once it is claimed, and says why (today always "content"). The claim
+	// link is then the way forward.
+	ClaimRequired string `json:"claim_required,omitempty"`
 	// RolloutVerified is true only when this call waited for the rollout and
 	// it came up healthy. A no_wait deploy and deploy_status leave it false:
 	// the URL is not proven to answer, and the tool never calls it live.
 	RolloutVerified bool   `json:"rollout_verified"`
 	URL             string `json:"url,omitempty"`
-	ClaimURL        string `json:"claim_url,omitempty"`
-	ExpiresAt       string `json:"expires_at,omitempty"`
-	PurgeAfter      string `json:"purge_after,omitempty"`
+	// APIURL is where the app's API answers on the site's own host
+	// (<site origin>/_api), when the platform serves it there.
+	APIURL     string `json:"api_url,omitempty"`
+	ClaimURL   string `json:"claim_url,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
+	PurgeAfter string `json:"purge_after,omitempty"`
 	// Limits is the claimable plan, to relay; NoOutboundInternet is true when
 	// the deploy runs a service.
 	Limits             string `json:"limits"`
@@ -271,6 +278,10 @@ func (r *mcpRunner) deployClaimable(ctx context.Context, progress *progressSink,
 		}
 		msg := emptyAs(doc.Error, errMessage(runErr))
 		failedResult(res, code, msg, doc.ErrorReason, doc.NextActions)
+		if res.ClaimRequired != "" && res.ClaimURL != "" {
+			// Refused until claimed: the claim link is the next step.
+			res.NextSteps = claimNextSteps(res)
+		}
 		if doc.RetryAt != "" {
 			res.NextSteps += fmt.Sprintf(" Do not retry before %s.", doc.RetryAt)
 		}
@@ -363,10 +374,11 @@ func (r *mcpRunner) deployStatus(ctx context.Context, in deployStatusInput) (*cl
 }
 
 func fillClaim(res *claimableDeployResult, c *deployClaimJSON) {
-	res.State, res.URL, res.ClaimURL = c.State, c.URL, c.ClaimURL
+	res.State, res.URL, res.APIURL, res.ClaimURL = c.State, c.URL, c.APIURL, c.ClaimURL
 	res.ExpiresAt, res.PurgeAfter = rfc3339OrEmpty(c.ExpiresAt), rfc3339OrEmpty(c.PurgeAfter)
 	res.NoOutboundInternet = c.NoOutboundInternet
 	res.NothingDeployed = !c.Published
+	res.ClaimRequired = c.ClaimRequired
 	if c.LastAttempt != nil {
 		res.LastAttemptError = c.LastAttempt.Error
 	}
@@ -400,6 +412,12 @@ func failedResult(res *claimableDeployResult, code int, msg, reason string, next
 // the app live only when the claim's window is open AND this call verified
 // the rollout; every other state says what is true instead.
 func claimNextSteps(res *claimableDeployResult) string {
+	if res.NothingDeployed && res.ClaimRequired != "" && (res.State == "live" || res.State == "suspended") {
+		return fmt.Sprintf("Nothing is deployed yet: the platform publishes this deploy only once it is claimed. Give your "+
+			"user the claim link %s and tell them it expires at %s: opening it signs them up for free and makes this deploy "+
+			"theirs. Treat the link like a password: do not post it anywhere public. Once they have claimed it, they sign in "+
+			"on this machine and deploy: %s.", res.ClaimURL, res.ExpiresAt, loginThenDeploy(res.Env))
+	}
 	if res.NothingDeployed && (res.State == "live" || res.State == "suspended") {
 		why := "No deploy of it has published yet."
 		if res.LastAttemptError != "" {
@@ -431,6 +449,10 @@ func claimNextSteps(res *claimableDeployResult) string {
 			fmt.Fprintf(&b, "The deploy's address is %s, but its rollout is not verified: the control plane accepted it "+
 				"and it may still be starting. Do not tell your user it is live until that URL answers: fetch it, or "+
 				"call deploy_claimable again without no_wait, which waits until the rollout is healthy. ", res.URL)
+		}
+		if res.APIURL != "" {
+			fmt.Fprintf(&b, "Its API answers on the same host at %s (Connect paths go under it, e.g. %s/<package>.<Service>/<Method>). ",
+				res.APIURL, res.APIURL)
 		}
 	}
 	fmt.Fprintf(&b, "Give them the claim link %s and tell them it expires at %s: opening it signs them up for free and "+

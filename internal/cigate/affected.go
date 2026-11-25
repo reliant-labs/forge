@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/reliant-labs/forge/internal/config"
 	"github.com/reliant-labs/forge/internal/goexec"
 )
 
@@ -34,10 +35,20 @@ import (
 //
 // ANY other changed file falls back to the full suite, because nothing proves
 // which tests read it: go.mod / go.sum, a testdata/ outside a package, KCL,
-// proto, migrations, the Taskfile, scripts, a README a test happens to read —
-// unless forge.yaml's ci.gate.affected_ignore names it. So does the default
-// branch itself, a branch with no changes, a missing origin/<default>, and an
-// explicit request (CI_FULL=1). The mode and its reason are always printed.
+// proto, the Taskfile, scripts, a README a test happens to read — unless
+// forge.yaml's ci.gate.affected_ignore names it, or a ci.gate.affected_rules
+// entry claims it. So does the default branch itself, a branch with no
+// changes, a missing origin/<default>, and an explicit request (CI_FULL=1).
+// The mode and its reason are always printed. (A migration under
+// db/migrations/ is embedded by the generated db/embed_gen.go, so it maps to
+// the db package like any embedded file.)
+//
+// An affected rule (config.CIGateAffectedRule) is the project saying what a
+// path the package graph cannot place selects: Go test packages to run, the
+// frontends whose tests run (a test-<name> row, WithFrontendTests), or the
+// full suite with a reason. A file a non-full rule matches is claimed: it
+// adds what the rule selects and no longer forces the full suite. Rules may
+// add packages for Go files too; a Go file keeps its own mapping besides.
 
 // FullEnv forces the full unit suite on a branch.
 const FullEnv = "CI_FULL"
@@ -58,8 +69,17 @@ type Affected struct {
 	// BaseRef is the ref diffed against (origin/main); Base its merge-base
 	// with HEAD, short.
 	BaseRef, Base string
-	// Changed are the changed files, project-relative.
+	// Changed are the changed files, project-relative. Set whenever the
+	// branch was diffed — also when an unclaimed file sent the unit lane to
+	// the full suite — and empty in full mode (default branch, CI_FULL, a
+	// full tier, no base), which is what GateByPaths keys on.
 	Changed []string
+	// Frontends are the frontends ci.gate.affected_rules selected, by name,
+	// sorted (affected mode only).
+	Frontends []string
+	// Selections say, one line per affected rule that matched, what it
+	// claimed and selected.
+	Selections []string
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -67,12 +87,16 @@ func (a Affected) Line() string {
 	if a.Full {
 		return "unit tests: full suite — " + a.Reason
 	}
-	if len(a.Packages) == 0 {
-		return fmt.Sprintf("unit tests: affected mode — no package with tests reaches the %d changed file(s) since %s (%s); %s=1 runs the full suite",
-			len(a.Changed), a.BaseRef, a.Base, FullEnv)
+	fe := ""
+	if len(a.Frontends) > 0 {
+		fe = "; frontend tests: " + strings.Join(a.Frontends, ", ")
 	}
-	return fmt.Sprintf("unit tests: affected mode — %d of %d test packages reach the %d changed file(s) since %s (%s); %s=1 runs the full suite",
-		len(a.Packages), a.Total, len(a.Changed), a.BaseRef, a.Base, FullEnv)
+	if len(a.Packages) == 0 {
+		return fmt.Sprintf("unit tests: affected mode — no package with tests reaches the %d changed file(s) since %s (%s)%s; %s=1 runs the full suite",
+			len(a.Changed), a.BaseRef, a.Base, fe, FullEnv)
+	}
+	return fmt.Sprintf("unit tests: affected mode — %d of %d test packages reach the %d changed file(s) since %s (%s)%s; %s=1 runs the full suite",
+		len(a.Packages), a.Total, len(a.Changed), a.BaseRef, a.Base, fe, FullEnv)
 }
 
 // AffectedInput configures ComputeAffected.
@@ -88,6 +112,13 @@ type AffectedInput struct {
 	BaseRef string
 	// Ignore are ci.gate.affected_ignore's globs: files no Go test reads.
 	Ignore []string
+	// Rules are ci.gate.affected_rules: what a changed file the package
+	// graph cannot place selects.
+	Rules []config.CIGateAffectedRule
+	// ChangesOnly stops once the changed files are known, without go list:
+	// for a caller that gates checks by path (GateByPaths) but does not
+	// narrow the unit lane.
+	ChangesOnly bool
 	// Git and GoList run the two tools; nil uses the real binaries. Tests
 	// substitute.
 	Git    func(ctx context.Context, dir string, args ...string) (string, error)
@@ -139,6 +170,14 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 		return full("nothing changed since " + baseRef + " (" + short + ")")
 	}
 	a := Affected{BaseRef: baseRef, Base: short, Changed: changed}
+	if in.ChangesOnly {
+		return a
+	}
+	// After the diff, the unit lane may still run whole; the changed files
+	// stay recorded, so path-gated checks are still judged by them.
+	fullAfterDiff := func(reason string) Affected {
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed}
+	}
 
 	list := in.GoList
 	if list == nil {
@@ -146,44 +185,158 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 	}
 	r, err := list(ctx, in.Root, in.Env)
 	if err != nil {
-		return full("go list failed: " + firstLine(err.Error()))
+		return fullAfterDiff("go list failed: " + firstLine(err.Error()))
 	}
 	g, err := readPackageGraph(r, in.Root)
 	if err != nil {
-		return full("cannot read go list output: " + err.Error())
+		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
-	changedPkgs := map[string]bool{}
-	for _, f := range changed {
-		if ignoredByGlobs(f, in.Ignore) {
-			continue
-		}
-		pkg, ok := g.owner(f)
-		if !ok {
-			return full(fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do)", f))
-		}
-		changedPkgs[pkg] = true
+	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
+	if reason != "" {
+		return fullAfterDiff(reason)
 	}
 	a.Total = len(g.testDeps)
 	for pkg, deps := range g.testDeps {
-		if changedPkgs[pkg] {
+		if sel.changedPkgs[pkg] || sel.rulePkgs[pkg] {
 			a.Packages = append(a.Packages, pkg)
 			continue
 		}
 		for _, d := range deps {
-			if changedPkgs[d] {
+			if sel.changedPkgs[d] {
 				a.Packages = append(a.Packages, pkg)
 				break
 			}
 		}
 	}
 	sort.Strings(a.Packages)
+	for fe := range sel.frontends {
+		a.Frontends = append(a.Frontends, fe)
+	}
+	sort.Strings(a.Frontends)
+	for i, rule := range in.Rules {
+		if sel.hits[i] > 0 {
+			a.Selections = append(a.Selections, selectionLine(i, rule, sel.hits[i], g))
+		}
+	}
 	return a
 }
 
-// ApplyAffected narrows the unit-tests row to a's packages. In full mode it
-// only annotates the row.
-func ApplyAffected(checks []Check, a Affected) []Check {
+// selection is what the changed files select before the test binaries are
+// consulted.
+type selection struct {
+	changedPkgs map[string]bool // packages the changed files are part of
+	rulePkgs    map[string]bool // test packages an affected rule names
+	frontends   map[string]bool // frontends an affected rule names
+	hits        []int           // per rule, how many changed files it claimed
+}
+
+// selectChanges maps each changed file to what it selects, or returns why the
+// unit lane must run whole: a full rule matched, or a file nothing claims.
+func selectChanges(changed []string, g *packageGraph, ignore []string, rules []config.CIGateAffectedRule) (selection, string) {
+	sel := selection{changedPkgs: map[string]bool{}, rulePkgs: map[string]bool{}, frontends: map[string]bool{}, hits: make([]int, len(rules))}
+	for _, f := range changed {
+		claimed := false
+		for i, rule := range rules {
+			if !matchGlobs(f, rule.Paths) || matchGlobs(f, rule.Except) {
+				continue
+			}
+			if rule.Full {
+				why := rule.Reason
+				if why == "" {
+					why = "the rule runs the full suite"
+				}
+				return sel, fmt.Sprintf("%s changed — %s (ci.gate.affected_rules[%d])", f, why, i)
+			}
+			sel.hits[i]++
+			claimed = true
+			for _, pat := range rule.Packages {
+				for _, pkg := range g.resolve(pat) {
+					sel.rulePkgs[pkg] = true
+				}
+			}
+			for _, fe := range rule.Frontends {
+				sel.frontends[fe] = true
+			}
+		}
+		if matchGlobs(f, ignore) {
+			continue
+		}
+		pkg, ok := g.owner(f)
+		switch {
+		case ok:
+			sel.changedPkgs[pkg] = true
+		case !claimed:
+			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
+		}
+	}
+	return sel, ""
+}
+
+// selectionLine says what affected rule i claimed and selected.
+func selectionLine(i int, rule config.CIGateAffectedRule, hits int, g *packageGraph) string {
+	var what []string
+	for _, pat := range rule.Packages {
+		switch n := len(g.resolve(pat)); n {
+		case 0:
+			what = append(what, pat+" (no package with tests)")
+		case 1:
+			what = append(what, pat+" (1 package)")
+		default:
+			what = append(what, fmt.Sprintf("%s (%d packages)", pat, n))
+		}
+	}
+	if len(rule.Frontends) > 0 {
+		what = append(what, "frontend tests: "+strings.Join(rule.Frontends, ", "))
+	}
+	line := fmt.Sprintf("ci.gate.affected_rules[%d] (%s): %d changed file(s) → %s",
+		i, strings.Join(rule.Paths, ", "), hits, strings.Join(what, "; "))
+	if rule.Reason != "" {
+		line += " — " + rule.Reason
+	}
+	return line
+}
+
+// GateByPaths settles each path-gated check (Check.Paths, an extra check's
+// `paths`): on a branch in affected mode it runs only when a changed file
+// matches, and is otherwise N/A, which fails nothing and is never cached. In
+// full mode (a.Changed empty: the default branch, CI_FULL, a full tier, no
+// base) every check runs.
+func GateByPaths(checks []Check, a Affected) []Check {
 	out := append([]Check(nil), checks...)
+	if len(a.Changed) == 0 {
+		return out
+	}
+	for i := range out {
+		c := &out[i]
+		if len(c.Paths) == 0 || c.NotApplicable != "" || c.Deferred != "" {
+			continue
+		}
+		var hit []string
+		for _, f := range a.Changed {
+			if matchGlobs(f, c.Paths) {
+				hit = append(hit, f)
+			}
+		}
+		if len(hit) == 0 {
+			c.NotApplicable = fmt.Sprintf("affected mode: no change under %s since %s (%s=1 runs it)", strings.Join(c.Paths, ", "), a.BaseRef, FullEnv)
+			continue
+		}
+		note := "affected mode: " + hit[0] + " changed"
+		if len(hit) > 1 {
+			note = fmt.Sprintf("affected mode: %s and %d more changed", hit[0], len(hit)-1)
+		}
+		if c.Note != "" {
+			note = c.Note + "; " + note
+		}
+		c.Note = note
+	}
+	return out
+}
+
+// ApplyAffected narrows the unit-tests row to a's packages. In full mode it
+// only annotates the row. Path-gated checks are settled too (GateByPaths).
+func ApplyAffected(checks []Check, a Affected) []Check {
+	out := GateByPaths(checks, a)
 	for i := range out {
 		c := &out[i]
 		if c.Name != UnitTests || c.NotApplicable != "" {
@@ -197,7 +350,9 @@ func ApplyAffected(checks []Check, a Affected) []Check {
 		default:
 			// `task test -- <packages>` replaces the default ./... with the
 			// list. It also skips the frontend lane, which is right: affected
-			// mode means every changed file is Go.
+			// mode means every changed file is Go, ignored, or claimed by an
+			// affected rule, whose frontends get rows of their own
+			// (WithFrontendTests).
 			c.Argv = append(append(append([]string(nil), c.Argv...), "--"), a.Packages...)
 			c.Note = fmt.Sprintf("affected mode: %d of %d packages (since %s)", len(a.Packages), a.Total, a.BaseRef)
 		}
@@ -332,10 +487,37 @@ func (g *packageGraph) owner(rel string) (string, bool) {
 	return "", false
 }
 
-// ignoredByGlobs matches rel against affected_ignore globs: a pattern with no
-// slash matches the base name anywhere (`*.md`), `dir/**` matches everything
-// under dir, anything else matches the whole path (path.Match syntax).
-func ignoredByGlobs(rel string, globs []string) bool {
+// resolve returns the module's test packages a ci.gate.affected_rules
+// package pattern names: `./dir` (one directory), `./dir/...` (the subtree),
+// or an import path in the same two forms.
+func (g *packageGraph) resolve(pattern string) []string {
+	p := filepath.ToSlash(strings.TrimSpace(pattern))
+	sub := p == "..." || strings.HasSuffix(p, "/...")
+	base := strings.TrimSuffix(strings.TrimSuffix(p, "..."), "/")
+	var out []string
+	if base == "." || base == "" && sub || strings.HasPrefix(p, "./") {
+		dir := filepath.Join(g.root, filepath.FromSlash(strings.TrimPrefix(base, "./")))
+		for d, pkg := range g.dirPkg {
+			if _, ok := g.testDeps[pkg]; ok && (d == dir || sub && within(dir, d)) {
+				out = append(out, pkg)
+			}
+		}
+	} else {
+		for pkg := range g.testDeps {
+			if pkg == base || sub && strings.HasPrefix(pkg, base+"/") {
+				out = append(out, pkg)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// matchGlobs matches rel against affected_ignore-style globs: a pattern with
+// no slash matches the base name anywhere (`*.md`), `dir/**` matches
+// everything under dir, anything else matches the whole path (path.Match
+// syntax).
+func matchGlobs(rel string, globs []string) bool {
 	rel = filepath.ToSlash(rel)
 	for _, g := range globs {
 		g = strings.TrimPrefix(filepath.ToSlash(g), "./")

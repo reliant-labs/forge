@@ -1895,6 +1895,7 @@ _Enforced · Forge, on any infrastructure_
 | `forge-go-markers`                   | A `//forge:` comment in Go that forge does not read, an unknown name or a spelling its parser ignores                                                                                                                                     | `--go-markers`      |
 | `forge-go-markers-reason-missing`    | A marker whose reason is mandatory (`forge:auth-unscoped-ok`) written with none, which forge ignores; advisory                                                                                                                            | `--go-markers`      |
 | `forgeconv-open-signup`              | A login broker that mounts `POST /auth/register` unconditionally: outside development an unverified address gets a signed-in account, which opens email-bound invitations to takeover (advisory)                                          | bare `forge lint`   |
+| `forge-auth-required-no-sign-in`     | An rpc that requires a signed-in caller in a project nobody can sign in to (`--auth-mode none`): it answers 401 to every browser caller (advisory)                                                                                        | bare `forge lint`   |
 | `forgeconv-identity-methods`         | A `forge.ManagedIdentity` declaring a sign-in method or signup mode the project's own broker does not serve, so the declaration is converged and silently ignored                                                                         | bare `forge lint`   |
 | `forgeconv-unproven-signup`          | A deployed sign-up whose address nobody proves (identity mail `delivery = "none"`, or `auth_self_signup` outside development): the email is a contact field anyone can type, so whatever the app binds to it is bound to whoever typed it | bare `forge lint`   |
 | `forgeconv-unproven-signup-default`  | A config schema that defaults `auth_self_signup` to true, which turns the legacy sign-up on in every environment that does not set it, prod included: each such account's email is an address nobody proved                               | bare `forge lint`   |
@@ -2598,6 +2599,10 @@ _Enforced · Forge, on any infrastructure_
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
 | `license-check` | A dependency under a forbidden or restricted license (AGPL, GPL) entering the import graph unnoticed (warn-first until `lint.rules: {license-check: error}` or its `gates_from` release) | `forge ci gate` |
 
+| Rule            | Bug class it prevents                                                                                                                                                                    | Lane            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `license-check` | A dependency under a forbidden or restricted license (AGPL, GPL) entering the import graph unnoticed (warn-first until `lint.rules: {license-check: error}` or its `gates_from` release) | `forge ci gate` |
+
 <a id="signed-forge-releases"></a>
 
 ### Signed, verified forge installs
@@ -3094,7 +3099,7 @@ A failed deploy leaves the previous ReplicaSet serving and a bad migration is st
 
 _Enforced · Forge, on any infrastructure_
 
-**Use:** `forge env deploy <env> --release <older> --note "<why>"`
+**Use:** `forge env deploy <env> <older-version> --note "<why>"`
 
 **Why:** There is no rollback command and no down migration, deliberately; the plan and the ledger label an older release `direction BEHIND`. How far back an env may go is a rollback floor (`rollback-floors`): a deploy below one is refused before anything is built.
 

@@ -336,6 +336,9 @@ func runSweep(f *factory.Factory, svcFilter string, dryRun bool) error { //nolin
 				summary.QuintetsCompleted++
 				fmt.Printf("     ✅ quintet completed in %s (+%d rpc, +%d message)\n",
 					filepath.Base(rep.Quintet.ProtoPath), len(rep.Quintet.AddedRPCs), len(rep.Quintet.AddedMessages))
+				if n := rep.Quintet.publicNote(); n != "" {
+					fmt.Printf("     ℹ️  %s\n", n)
+				}
 			}
 			for _, n := range rep.Notes {
 				fmt.Printf("     ℹ️  %s\n", n)

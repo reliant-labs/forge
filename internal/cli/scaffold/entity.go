@@ -364,8 +364,16 @@ type crudProtoPiece struct {
 // NO_SIDE_EFFECTS;`: read-only fixture transports serve only rpcs that do,
 // connect-es may send them as GETs, and `forge lint --idempotency` asks it
 // of every read, so an entity is born lint-clean and demo-ready.
-func buildEntityCRUDRPCPieces(entity string) []crudProtoPiece {
+//
+// authRequired is the `auth_required` every verb is born with: true (fail
+// closed) unless the project is one nobody signs in to
+// (codegen.ProjectHasNoSignIn — `forge project new --auth-mode none`), where
+// nothing issues a credential and a fail-closed rpc would answer 401 to
+// every caller. Either way the value is spelled out in the proto, so the
+// author reads, and owns, the decision.
+func buildEntityCRUDRPCPieces(entity string, authRequired bool) []crudProtoPiece {
 	plural := naming.Pluralize(entity)
+	authLine := fmt.Sprintf("auth_required: %t", authRequired)
 	var pieces []crudProtoPiece
 	for _, op := range []struct {
 		verb, name, opts string
@@ -385,10 +393,10 @@ func buildEntityCRUDRPCPieces(entity string) []crudProtoPiece {
 		// `buf format`'s shapes: a one-field literal stays on one line, a
 		// longer one takes a line per field.
 		if op.opts == "" {
-			b.WriteString("    option (forge.v1.method) = {auth_required: true};\n")
+			fmt.Fprintf(&b, "    option (forge.v1.method) = {%s};\n", authLine)
 		} else {
 			b.WriteString("    option (forge.v1.method) = {\n")
-			b.WriteString("      auth_required: true\n")
+			fmt.Fprintf(&b, "      %s\n", authLine)
 			fmt.Fprintf(&b, "      %s\n", op.opts)
 			b.WriteString("    };\n")
 		}

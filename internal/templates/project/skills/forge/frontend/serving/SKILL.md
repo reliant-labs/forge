@@ -119,12 +119,12 @@ second transport from it:
 
 ```ts
 import { createConnectTransport } from "@connectrpc/connect-web";
-import { apiBaseFor } from "@/lib/api-base";
+import { apiBaseFor, apiCredentials } from "@/lib/api-base";
 
 // Beside src/lib/connect.ts's transport, with the same session-carrying fetch.
 const billing = createConnectTransport({
   baseUrl: apiBaseFor("billing"),
-  fetch: (input, init) => fetch(input, { ...init, credentials: "include" }),
+  fetch: (input, init) => fetch(input, { ...init, credentials: apiCredentials(input) }),
 });
 ```
 

@@ -123,7 +123,7 @@ func gradableRules() []string {
 		// the license-check gate step, made real (rollout_grade.go)
 		RuleLicenseCheck,
 		// auth scaffold
-		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault,
+		ruleOpenSignup, ruleIdentityMethods, ruleUnprovenSignup, ruleUnprovenSignupDefault, ruleAuthRequiredNoSignIn,
 		// secrets
 		secrets.RuleClusterKind, secrets.RuleESPolicy, secrets.RuleKeyCoverage, secrets.RuleUnreferenced,
 		secrets.RuleImmutablePin, secrets.RuleOutOfBandReason, secrets.RuleWildcardRead, secrets.RuleEscrow,

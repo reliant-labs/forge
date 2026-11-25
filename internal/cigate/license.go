@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,31 @@ import (
 
 	"github.com/reliant-labs/forge/internal/config"
 )
+
+// The pinned go-licenses v1.6.0 exits 1 both for findings and for scan
+// errors. Accept only its finding lines; any other diagnostic (including an
+// error after an earlier finding) must keep the row failing. Inspect the full
+// output so a long list of findings cannot push an error out of the tail.
+// ci.license.allowed swaps the blocklist line for go-licenses' allowlist one.
+var licenseFindingLine = regexp.MustCompile(`^((Forbidden|Restricted) license type|Not allowed license) \S+ found for library .+$`)
+
+func licenseFindingsOnly(err error, output string) bool {
+	if exitCode(err) != 1 {
+		return false
+	}
+	found := false
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !licenseFindingLine.MatchString(line) {
+			return false
+		}
+		found = true
+	}
+	return found
+}
 
 // licensePlan is the license-check row as the project's policy
 // (forge.yaml ci.license) shapes it.
@@ -22,9 +48,10 @@ type licensePlan struct {
 	// row FAIL without running: an expired entry fails the gate, as an
 	// expired ci.vuln_scan.exemptions entry does.
 	expired []string
-	// note names the required modules an exception also exempts, because
-	// go-licenses matches --ignore as a prefix.
-	note string
+	// overbroad names the required modules an exception's --ignore would
+	// also exempt past its own module path (go-licenses matches a raw
+	// prefix). Any makes the row FAIL without running.
+	overbroad string
 }
 
 // planLicenseCheck is the go-licenses invocation for the project at root.
@@ -65,7 +92,7 @@ func planLicenseCheck(root string, policy config.CILicenseConfig, now time.Time)
 	}
 
 	var plan licensePlan
-	var reach []string
+	var reach, live []string
 	for _, ex := range policy.Exceptions {
 		mod := strings.TrimSpace(ex.Module)
 		if mod == "" {
@@ -79,17 +106,56 @@ func planLicenseCheck(root string, policy config.CILicenseConfig, now time.Time)
 			ignored[mod] = true
 			argv = append(argv, "--ignore", mod)
 		}
+		live = append(live, mod)
+	}
+	// go-licenses v1.6.0 drops every package whose import path merely starts
+	// with an --ignore string (licenses/library.go: strings.HasPrefix), so
+	// `github.com/foo/bar` also silences github.com/foo/barbaz and
+	// github.com/foo/bar/v2: other modules, with licenses of their own. An
+	// exception that reaches a required module past its own path is refused
+	// (the row FAILs naming it) unless that module has an exception too.
+	for _, mod := range live {
 		for _, d := range sortedKeys(deps) {
-			if d != mod && !isOwn[d] && strings.HasPrefix(d, mod) {
-				reach = append(reach, fmt.Sprintf("%s also exempts %s", mod, d))
+			if d == mod || isOwn[d] || !strings.HasPrefix(d, mod) || ignored[d] || exceptionCovers(mod, d) {
+				continue
 			}
+			reach = append(reach, fmt.Sprintf("%s would also exempt %s", mod, d))
 		}
 	}
 	plan.argv = argv
 	if len(reach) > 0 {
-		plan.note = "go-licenses matches ci.license.exceptions by prefix: " + strings.Join(reach, "; ")
+		plan.overbroad = "go-licenses matches --ignore as a raw prefix of package paths, so " + strings.Join(reach, "; ") +
+			" — add an exception for each of those modules too (with its own reason), or remove the entry"
 	}
 	return plan
+}
+
+// exceptionCovers reports whether d is within the module path mod: mod
+// itself or a package below it. A major-version suffix (mod/v2) is a
+// different module, and so is a sibling sharing a prefix (modbaz).
+func exceptionCovers(mod, d string) bool {
+	if d == mod {
+		return true
+	}
+	rest, ok := strings.CutPrefix(d, mod+"/")
+	if !ok {
+		return false
+	}
+	first, _, _ := strings.Cut(rest, "/")
+	return !isMajorSuffix(first)
+}
+
+// isMajorSuffix is a module major-version path element: v2, v3, …
+func isMajorSuffix(s string) bool {
+	if len(s) < 2 || s[0] != 'v' || s[1] == '0' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != "v1"
 }
 
 // expiredLicenseNote is the FAIL note of a row with expired exceptions.

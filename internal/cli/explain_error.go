@@ -86,6 +86,12 @@ var reasonExplanations = []reasonExplanation{
 	{[]string{cloud.ReasonClaimableTakenDown}, func(c explainCtx) forgeErrorExplanation {
 		return forgeErrorExplanation{"The platform took this deploy down (content or abuse policy). Do not retry anonymously; tell your user. They can deploy under their own account.", []string{c.login}, "no"}
 	}},
+	{[]string{cloud.ReasonClaimableContentRefused}, func(c explainCtx) forgeErrorExplanation {
+		return forgeErrorExplanation{"The platform refused the content of this unclaimed deploy, so none of it went live. If the output printed a Claim: link (or the error says to claim the deploy first), claiming lifts the refusal: give the link to your user, and once they have claimed it, deploy again as their account. Otherwise the content matched a malware, phishing or bad-URL check: change it before deploying again, since the same content is refused again.", []string{c.login, c.deploy}, "no"}
+	}},
+	{[]string{cloud.ReasonClaimableScanUnavailable}, func(c explainCtx) forgeErrorExplanation {
+		return forgeErrorExplanation{"The platform could not check this unclaimed deploy's content right now, and unchecked content is never published, so none of it went live. This is not the project. Run the same command again later.", []string{c.deploy}, "later"}
+	}},
 	{[]string{cloud.ReasonClaimableInvalidPoW}, func(c explainCtx) forgeErrorExplanation {
 		return forgeErrorExplanation{"The proof-of-work challenge expired before it was solved (a slow or busy machine). Nothing was created; run it again.", []string{c.deploy}, "now"}
 	}},

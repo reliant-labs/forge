@@ -2233,6 +2233,12 @@ benefits:
           A login broker that mounts `POST /auth/register` unconditionally:
           outside development an unverified address gets a signed-in account,
           which opens email-bound invitations to takeover (advisory)
+      - id: forge-auth-required-no-sign-in
+        lane: ""
+        bug_class: >-
+          An rpc that requires a signed-in caller in a project nobody can sign
+          in to (`--auth-mode none`): it answers 401 to every browser caller
+          (advisory)
       - id: forgeconv-identity-methods
         lane: ""
         bug_class: >-
@@ -3775,7 +3781,7 @@ benefits:
       binding an older release is an ordinary promote labelled BEHIND in the
       plan and the ledger.
     availability: forge
-    use: '`forge env deploy <env> --release <older> --note "<why>"`'
+    use: '`forge env deploy <env> <older-version> --note "<why>"`'
     why: >-
       There is no rollback command and no down migration, deliberately; the plan
       and the ledger label an older release `direction BEHIND`. How far back an

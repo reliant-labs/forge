@@ -3,7 +3,10 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/codegen"
 )
 
 // TestProjectDeclaresIdentity pins how the regenerate lane reads "does this
@@ -73,6 +76,19 @@ func TestDeclaresIdentityFollowsAuthNone(t *testing.T) {
 		g.AuthNone = tc.authNone
 		if got := g.declaresIdentity(); got != tc.want {
 			t.Errorf("%s: declaresIdentity = %v, want %v", tc.name, got, tc.want)
+		}
+		if err := g.generateKCLDeploy(); err != nil {
+			t.Fatal(err)
+		}
+		dev, err := os.ReadFile(filepath.Join(g.Path, "deploy", "kcl", "dev", "main.k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(dev), "\n"+codegen.AuthNoneDeclaration+"\n"); got != tc.authNone {
+			t.Errorf("%s: explicit no-sign-in declaration = %v, want %v", tc.name, got, tc.authNone)
+		}
+		if tc.authNone && !strings.HasPrefix(string(dev), `"""`) {
+			t.Error("the module docstring must stay first so KCL does not emit it as an output value")
 		}
 	}
 }

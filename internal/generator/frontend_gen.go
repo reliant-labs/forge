@@ -130,10 +130,13 @@ type FrontendGenOptions struct {
 	// declares no identity provider — there, a guarded frontend can only
 	// ever redirect every page to a sign-in form nothing can satisfy.
 	//
-	// The session modules (src/lib/auth/context, use-auth, native-login, …)
-	// and the unmounted route-guard.tsx are still emitted: they compile,
-	// answer "signed out" without an issuer, and are what gating the
-	// frontend later re-attaches to.
+	// Nor is the API client of the sign-in flow (src/lib/auth/native-login),
+	// so the frontend never calls the API's /auth/* routes: the auth context
+	// answers "signed out" without a request (the fixture user in mock mode),
+	// and otel_gen.ts asks no session endpoint who the user is
+	// (IdentifySession). The context and use-auth modules, the session menu
+	// and the unmounted route-guard.tsx are still emitted: they compile, and
+	// are what gating the frontend later re-attaches to.
 	Public bool
 }
 
@@ -177,9 +180,11 @@ func FrontendTypedConfigFrom(envVars []string) FrontendTypedConfig {
 // and the forms, hooks and tests only those screens (or the Vite tree's
 // inline sign-in routes, gated on .Public there) use.
 //
-// The session plumbing stays: src/lib/auth/{context,use-auth,native-login,
-// session-provider,return-to}, which the shell and the session menu read and
-// which answer "signed out" with no login broker behind them, and the unused
+// So is native-login.ts, the client of the API's /auth/* routes: a public
+// frontend's context (context.tsx's .Public branch) and session menu take
+// their Identity type from use-auth and send no request. The rest of the
+// session plumbing stays: src/lib/auth/{context,use-auth,session-provider,
+// return-to}, which the shell and the session menu read, and the unused
 // route-guard.tsx, the seam gating the frontend later re-attaches to.
 func isSignInScreen(rel string) bool {
 	rel = strings.TrimSuffix(filepath.ToSlash(rel), ".tmpl")
@@ -209,6 +214,7 @@ var signInOnlyFiles = map[string]struct{}{
 	"src/components/sign-in-methods.tsx":       {},
 	"src/components/social-callback.tsx":       {},
 	"src/components/verify-email-form.tsx":     {},
+	"src/lib/auth/native-login.ts":             {},
 	"src/lib/auth/password.test.tsx":           {},
 	"src/lib/auth/sign-in-methods.test.tsx":    {},
 	"src/lib/auth/use-auth-options.ts":         {},
@@ -294,8 +300,10 @@ func generateFrontendFiles(root, modulePath, projectName, frontendName string, a
 
 		// The web trees ship native-login.ts and api-base.ts beside the
 		// otel_gen.ts that reads these, so the scaffold renders what the
-		// first `forge generate` re-derives from disk.
-		IdentifySession: webTree,
+		// first `forge generate` re-derives from disk — except a public
+		// tree, which ships no native-login.ts and has no session to ask
+		// about.
+		IdentifySession: webTree && !opts.Public,
 
 		DevLogFromRuntime: tmplDir == "vite-spa" && viteDevLogFromRuntime(runtimeFloor),
 	}
@@ -399,7 +407,7 @@ func generateFrontendFiles(root, modulePath, projectName, frontendName string, a
 	// Skipping the per-frontend copy here is what makes the multi-frontend
 	// case stop diverging.
 	if (tmplDir == "nextjs" || tmplDir == "vite-spa") && !opts.Workspaces {
-		if err := installCoreComponents(root, frontendDir); err != nil {
+		if err := installCoreComponents(root, frontendDir, opts.Public); err != nil {
 			return fmt.Errorf("install core components: %w", err)
 		}
 	}
@@ -532,9 +540,26 @@ var coreComponents = []string{
 	"data_table",
 }
 
+// signInComponents are the core components only a frontend people sign in
+// to has a use for: login_form renders a password field. A public frontend
+// (FrontendGenOptions.Public) is not handed one — it would be dead code, and
+// a credential field in an unclaimed deploy's bundle is what the hosted
+// content scan refuses.
+var signInComponents = map[string]bool{"login_form": true}
+
+// frontendSignsIn reports whether a forge-scaffolded frontend signs in: it
+// ships the sign-in flow's API client, src/lib/auth/native-login.ts, which a
+// public frontend is scaffolded without (signInOnlyFiles). The same file
+// decides otel_gen.ts's IdentifySession on every `forge generate`.
+func frontendSignsIn(frontendDir string) bool {
+	_, err := os.Stat(filepath.Join(frontendDir, "src", "lib", "auth", "native-login.ts"))
+	return err == nil
+}
+
 // installCoreComponents writes core UI components from the component library
-// into the frontend's src/components/ui/ directory.
-func installCoreComponents(root, frontendDir string) error {
+// into the frontend's src/components/ui/ directory. A public frontend gets
+// every one but signInComponents.
+func installCoreComponents(root, frontendDir string, public bool) error {
 	lib := components.NewLibrary()
 	componentsDir := filepath.Join(frontendDir, "src", "components", "ui")
 	if err := os.MkdirAll(componentsDir, 0755); err != nil {
@@ -543,6 +568,9 @@ func installCoreComponents(root, frontendDir string) error {
 
 	var refused []error
 	for _, name := range coreComponents {
+		if public && signInComponents[name] {
+			continue
+		}
 		content := componentContentForDir(frontendDir, name)
 		if content == "" {
 			c, err := lib.Get(name)
@@ -587,9 +615,15 @@ func EnsureCoreComponentsIn(frontendDir, componentsRel string) error {
 		return fmt.Errorf("create components dir: %w", err)
 	}
 	root := frontendProjectRoot(frontendDir)
+	signsIn := frontendSignsIn(frontendDir)
 
 	var refused []error
 	for _, name := range coreComponents {
+		// A public frontend was scaffolded without the sign-in components;
+		// a later generate must not install them after all.
+		if !signsIn && signInComponents[name] {
+			continue
+		}
 		dest := filepath.Join(componentsDir, name+".tsx")
 		// Before the presence check: on a case-folding filesystem (macOS,
 		// Windows) stat finds the app's Button.tsx under the name button.tsx,

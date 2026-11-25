@@ -60,6 +60,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/forgecompat"
 	"github.com/reliant-labs/forge/internal/goexec"
+	"github.com/reliant-labs/forge/internal/pathshadow"
 	"github.com/reliant-labs/forge/pkg/hostslot"
 )
 
@@ -673,6 +674,9 @@ func RunCommandVersion(ctx context.Context, path string, args []string) (string,
 	// forge.yaml up the tree there is no pin, so no skew check, no hand-off
 	// and no remedy, in this forge and in every older one.
 	cmd.Dir = outsideAnyProject()
+	// Nor does the probed forge scan PATH for other forges and run each one's
+	// `version` in turn: that check is for a person reading the output.
+	cmd.Env = append(os.Environ(), pathshadow.DisableEnv+"=1")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

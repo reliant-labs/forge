@@ -461,12 +461,27 @@ tasks:
     # add a sibling `db-snapshot` task that downloads + sanitizes from
     # there and writes the dump file this task expects.
     desc: Restore a DB snapshot dump to local postgres (DUMP=path/to/file.dump[.gz])
+    # `task db-snapshot-restore DUMP=x` sets a Task var, and a Task var never
+    # reaches the shell on its own, so each knob is handed over here. Task
+    # resolves {{`{{.DUMP}}`}} to the var given to task, else to DUMP in the
+    # environment, else to nothing, and the shell then applies the default.
+    # The shell names differ from the vars' because Task never overrides a
+    # variable the environment already has: an exported DUMP would otherwise
+    # beat the DUMP= given on the command line.
+    env:
+      RESTORE_DUMP: "{{`{{.DUMP}}`}}"
+      RESTORE_DB: "{{`{{.SNAPSHOT_DB}}`}}"
+      RESTORE_PGHOST: "{{`{{.PGHOST}}`}}"
+      RESTORE_PGUSER: "{{`{{.PGUSER}}`}}"
     cmds:
       - cmd: |
-          DUMP="${DUMP:-snapshot.dump.gz}"
-          DB="${SNAPSHOT_DB:-{{.ProjectName}}_snapshot}"
-          PGHOST="${PGHOST:-127.0.0.1}"
-          PGUSER="${PGUSER:-postgres}"
+          DUMP="${RESTORE_DUMP:-snapshot.dump.gz}"
+          DB="${RESTORE_DB:-{{.ProjectName}}_snapshot}"
+          PGHOST="${RESTORE_PGHOST:-127.0.0.1}"
+          PGUSER="${RESTORE_PGUSER:-postgres}"
+          # A failed createdb, a corrupt dump or a partial restore stops here
+          # with pg_restore's (or gunzip's) status, never "Restore complete".
+          set -eo pipefail
           if [ ! -f "$DUMP" ]; then
             echo "ERROR: Dump file '$DUMP' not found." >&2
             echo "Usage: task db-snapshot-restore DUMP=/path/to/snapshot.dump[.gz]" >&2
@@ -480,10 +495,10 @@ tasks:
           createdb -h "$PGHOST" -U "$PGUSER" "$DB"
           if [[ "$DUMP" == *.gz ]]; then
             gunzip -c "$DUMP" | pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
-              --no-owner --no-privileges --clean --if-exists || true
+              --no-owner --no-privileges --clean --if-exists
           else
             pg_restore -h "$PGHOST" -U "$PGUSER" -d "$DB" \
-              --no-owner --no-privileges --clean --if-exists "$DUMP" || true
+              --no-owner --no-privileges --clean --if-exists "$DUMP"
           fi
           echo "==> Restore complete. Connect with: psql -h $PGHOST -U $PGUSER -d $DB"
 
@@ -504,8 +519,13 @@ tasks:
       - rm -rf .forge/debug
 
   dev-psql:
-    desc: Open psql shell to development database (uses $POSTGRES_USER/$POSTGRES_DB, defaults match docker-compose.yml)
+    desc: Open psql shell to development database (POSTGRES_USER=/POSTGRES_DB= as task vars or env, defaults match docker-compose.yml)
+    # POSTGRES_USER / POSTGRES_DB come from `task dev-psql POSTGRES_DB=x` or
+    # the environment, handed to the shell as in db-snapshot-restore, and fall
+    # back to the same defaults as the docker-compose service so
+    # `task dev-psql` works with zero env setup.
+    env:
+      PSQL_USER: "{{`{{.POSTGRES_USER}}`}}"
+      PSQL_DB: "{{`{{.POSTGRES_DB}}`}}"
     cmds:
-      # POSTGRES_USER / POSTGRES_DB fall back to the same defaults as the
-      # docker-compose service so `task dev-psql` works with zero env setup.
-      - docker compose exec postgres psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-{{.ProjectName}}}"
+      - docker compose exec postgres psql -U "${PSQL_USER:-postgres}" -d "${PSQL_DB:-{{.ProjectName}}}"

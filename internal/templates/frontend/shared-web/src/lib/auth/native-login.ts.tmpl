@@ -4,10 +4,10 @@
 // with an HttpOnly cookie. No token is readable here, by design: the Identity it returns decides
 // what to SHOW, never what is ALLOWED. Depth: `forge skill load auth/frontend`.
 {{if .HasTypedConfig}}
-import { apiBase } from "@/lib/api-base";
+import { apiBase, apiCredentials } from "@/lib/api-base";
 import { loadConfig } from "@/lib/config_gen";
 {{else}}
-import { apiBase } from "@/lib/api-base";
+import { apiBase, apiCredentials } from "@/lib/api-base";
 {{end}}
 {{- if .HasTypedConfig}}
 /**
@@ -43,6 +43,22 @@ function apiOrigin(): string {
   return apiBase(String(configured));
 }
 {{- end}}
+
+/**
+ * Sends a request to the API at `path`, carrying the session cookie however
+ * the API is reached (apiCredentials, src/lib/api-base.ts). On this page's own
+ * origin (`/_api`, and the dev proxy) that is "same-origin": the cookie
+ * travels, and a page served in an opaque origin (an unclaimed preview) is not
+ * refused the platform's wildcard CORS grant. On an API with its own host (a
+ * literal API_URL, or the dev loop with FORGE_DEV_API_PROXY=off) it is
+ * "include": anything less silently DROPS the session cookie, so login
+ * answers 200 and the user stays signed out. The server pairs that with
+ * cors_allow_credentials. Every call in this file goes through here.
+ */
+function apiFetch(path: string, init: RequestInit): Promise<Response> {
+  const url = `${apiOrigin()}${path}`;
+  return fetch(url, { ...init, credentials: apiCredentials(url) });
+}
 
 /** Who is signed in. Presentation only — see the file header. */
 export interface Identity {
@@ -167,10 +183,7 @@ export async function signOut(): Promise<Identity> {
  */
 export async function fetchIdentity(): Promise<Identity> {
   try {
-    const response = await fetch(`${apiOrigin()}/auth/session`, {
-      // See the note in post(): the cookie only travels to an API on
-      // another origin with "include".
-      credentials: "include",
+    const response = await apiFetch("/auth/session", {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) return { authenticated: false };
@@ -189,16 +202,9 @@ async function post(path: string, body: unknown): Promise<Identity> {
 async function request(path: string, body: unknown): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${apiOrigin()}${path}`, {
+    response = await apiFetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // "include", not "same-origin": whenever the API is on another origin
-      // — a deployed API_URL naming its own host, or the dev loop with
-      // FORGE_DEV_API_PROXY=off — "same-origin" silently DROPS the session
-      // cookie: login returns 200 and the user stays signed out, with
-      // nothing in the console to explain it. The server pairs this with
-      // cors_allow_credentials. Through the dev proxy it costs nothing.
-      credentials: "include",
       body: JSON.stringify(body),
     });
   } catch {
@@ -286,8 +292,7 @@ export const LEGACY_AUTH_OPTIONS: AuthOptions = {
  */
 export async function fetchAuthOptions(): Promise<AuthOptions> {
   try {
-    const response = await fetch(`${apiOrigin()}/auth/options`, {
-      credentials: "include",
+    const response = await apiFetch("/auth/options", {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) return LEGACY_AUTH_OPTIONS;
@@ -323,8 +328,7 @@ export async function fetchAuthOptions(): Promise<AuthOptions> {
  */
 export async function fetchPasswordPolicy(): Promise<PasswordPolicy | null> {
   try {
-    const response = await fetch(`${apiOrigin()}/auth/password-policy`, {
-      credentials: "include",
+    const response = await apiFetch("/auth/password-policy", {
       headers: { Accept: "application/json" },
     });
     if (!response.ok || response.status === 204) return null;
@@ -562,8 +566,7 @@ export interface PasskeySummary {
 export async function listPasskeys(): Promise<PasskeySummary[]> {
   let response: Response;
   try {
-    response = await fetch(`${apiOrigin()}/auth/passkeys`, {
-      credentials: "include",
+    response = await apiFetch("/auth/passkeys", {
       headers: { Accept: "application/json" },
     });
   } catch {

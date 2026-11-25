@@ -132,6 +132,9 @@ type buildOptions struct {
 	// capacityChecked records that the caller (`forge env deploy`) already ran
 	// the hosted capacity pre-flight, so the build does not repeat it.
 	capacityChecked bool
+	// claimableRelease is set only by the anonymous deploy's release creation
+	// path. It exempts that cut from main ancestry, never promotion ordering.
+	claimableRelease bool
 	// allowPassedMigrations and allowUnmergedMigrations are the
 	// migration-order guard's waivers on a release cut
 	// (release_migrations.go).

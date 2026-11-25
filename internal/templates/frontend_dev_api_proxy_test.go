@@ -163,9 +163,9 @@ func TestDevAPIProxy_TransportsAskAPIBase(t *testing.T) {
 		data.HasMockAPI = typed
 
 		for _, tc := range []struct{ tmpl, imp, call string }{
-			{"nextjs/src/lib/connect.ts.tmpl", `import { apiBase } from "./api-base";`, "return apiBase("},
-			{"vite-spa/src/lib/connect.ts.tmpl", `import { apiBase } from "./api-base";`, "return apiBase("},
-			{"shared-web/src/lib/auth/native-login.ts.tmpl", `import { apiBase } from "@/lib/api-base";`, "return apiBase(String("},
+			{"nextjs/src/lib/connect.ts.tmpl", `import { apiBase, apiCredentials } from "./api-base";`, "return apiBase("},
+			{"vite-spa/src/lib/connect.ts.tmpl", `import { apiBase, apiCredentials } from "./api-base";`, "return apiBase("},
+			{"shared-web/src/lib/auth/native-login.ts.tmpl", `import { apiBase, apiCredentials } from "@/lib/api-base";`, "return apiBase(String("},
 		} {
 			s := renderTelemetryTmpl(t, tc.tmpl, data)
 			if got := strings.Count(s, tc.imp); got != 1 {

@@ -154,7 +154,7 @@ func TestComputeAffected_IgnoreGlobs(t *testing.T) {
 	if a.Full || strings.Join(a.Packages, " ") != "ex.com/m/b" {
 		t.Fatalf("Full=%v (%s) packages=%v", a.Full, a.Reason, a.Packages)
 	}
-	if !ignoredByGlobs("deploy/kcl/dev/main.k", []string{"deploy/kcl/*/main.k"}) || ignoredByGlobs("deploy/kcl/main.k", []string{"deploy/kcl/*/main.k"}) {
+	if !matchGlobs("deploy/kcl/dev/main.k", []string{"deploy/kcl/*/main.k"}) || matchGlobs("deploy/kcl/main.k", []string{"deploy/kcl/*/main.k"}) {
 		t.Error("a glob with a slash matches the whole path")
 	}
 }

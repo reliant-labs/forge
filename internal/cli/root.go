@@ -445,6 +445,12 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print the forge version and build identity (--pinned: the project's pinned forge)",
 		Long: `Print this forge's version and build identity.
 
+When another forge on PATH reports a different version, a warning on stderr
+names each one with its version, which one a bare 'forge' runs, and how to
+remove or update the stale one. It runs each forge's 'version' (an npm shim's
+package.json is read instead) and never uses the network; set
+FORGE_NO_PATH_CHECK=1 to skip it.
+
 --pinned prints the forge the project pins instead — the project found from
 the working directory or -C — fetching or building it the way a command
 handed to it would, but printing it instead of running it:
@@ -466,6 +472,7 @@ cannot be had.`,
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s version %s\n", Name(), versionLine())
 			fmt.Fprint(cmd.OutOrStdout(), buildinfo.Describe())
+			warnForgeOnPath(cmd.Context(), cmd.ErrOrStderr())
 			return nil
 		},
 	}

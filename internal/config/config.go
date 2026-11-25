@@ -1055,6 +1055,13 @@ type CIGateConfig struct {
 	// change to one does not force the full unit suite when the gate tests
 	// only the packages a branch affects. Any other non-Go change does.
 	AffectedIgnore []string `yaml:"affected_ignore,omitempty"`
+	// AffectedRules say what a changed file selects in affected mode when
+	// the Go package graph cannot place it (a frontend source file, KCL, a
+	// script): Go test packages to run, frontends whose tests to run, or the
+	// whole suite with a reason. A file a rule claims no longer forces the
+	// full suite; a file no rule matches behaves as without rules. See
+	// CIGateAffectedRule and internal/cigate/affected.go.
+	AffectedRules []CIGateAffectedRule `yaml:"affected_rules,omitempty"`
 	// ExtraChecks are the project's own rows. By default each runs in the
 	// `checks` lane, so the scaffolded CI job (`task ci:checks`) and a
 	// developer's `task ci` run the same ones.
@@ -1120,6 +1127,37 @@ type CIGateCheck struct {
 	// Replaces takes over one of forge's own checks: this check runs in its
 	// place, in its lane and position, and forge's command does not run.
 	Replaces string `yaml:"replaces,omitempty"`
+	// Paths, when set, are project-relative globs (affected_ignore's
+	// syntax): on a branch in affected mode the check runs only when a
+	// changed file matches one, and is otherwise N/A. In full mode (the
+	// default branch, CI_FULL=1 / --full, --tier main or full, no base to
+	// diff against) it always runs.
+	Paths []string `yaml:"paths,omitempty"`
+}
+
+// CIGateAffectedRule is one ci.gate.affected_rules entry: the changed files
+// it claims (Paths minus Except) and what they select.
+type CIGateAffectedRule struct {
+	// Paths are project-relative globs, affected_ignore's syntax (`*.md`
+	// matches a base name anywhere, `dir/**` a whole tree, anything else the
+	// whole path). Required.
+	Paths []string `yaml:"paths"`
+	// Except are globs Paths would match that the rule does not claim.
+	Except []string `yaml:"except,omitempty"`
+	// Packages are Go package patterns whose tests run when the rule
+	// matches: `./internal/store/...` (a directory subtree), `./internal/db`
+	// (one directory), or import paths in the same forms. They are matched
+	// against the module's packages that have tests.
+	Packages []string `yaml:"packages,omitempty"`
+	// Frontends are frontends, by their discovered name, whose tests run
+	// when the rule matches (a test-<name> row).
+	Frontends []string `yaml:"frontends,omitempty"`
+	// Full runs the whole suite when the rule matches, as an unmatched file
+	// does, with Reason printed as the cause.
+	Full bool `yaml:"full,omitempty"`
+	// Reason is printed beside what the rule selected; for a Full rule it is
+	// the cause the gate gives for running the full suite.
+	Reason string `yaml:"reason,omitempty"`
 }
 
 // CIGateProbe is a command whose success a check needs before it runs.

@@ -102,8 +102,12 @@ deploy goes offline (72h; then deleted 7 days later) and an instruction for you.
 them up for free and makes the deploy theirs, with nothing to copy. Treat the
 link like a password (whoever claims first owns the deploy) and never post it
 publicly. `forge env status <env> --claimable` prints it again; `--json` carries
-it as `claim` (`state`, `published`, `last_attempt`, `url`, `claim_url`,
-`expires_at`, `purge_after`, `agent_instructions`).
+it as `claim` (`state`, `published`, `last_attempt`, `url`, `api_url`,
+`claim_url`, `expires_at`, `purge_after`, `agent_instructions`). A site whose
+`API_URL` references its hosted backend also prints `API: <site>/_api`
+(`api_url`): the backend's address on the site's own host. Signed in,
+`forge env status <env>` prints the same line under the site's URL
+(`hosted_api_urls` in `--json`).
 
 The claim and its 72h clock start with the **first attempt**, not the first
 success, and a redeploy does not extend them. So `state: "live"` means only that
@@ -120,7 +124,8 @@ the token you deploy with. Fix the failure and deploy again.
 | Fits | one static site, or one service (1 replica, at most 125m / 128 MiB, request and limit, no burst) with one managed database (256 MiB of data on a 1 GiB volume) and that service's migration job (a gating `before = [fw.BEFORE_ALL]` job, or a standalone pre-rollout one). No workers, cron, second service or database, custom domains or remote builds: exit 4, naming each with its KCL fix |
 | **No outbound internet until claimed** | An unclaimed **service** (not a static site) serves requests and uses its own database, but every call out of it fails: a payment, an LLM, a webhook, a package download, and any DNS lookup of a name outside the cluster (the connection errors, or the name does not resolve: the backend's resolver answers only the cluster's own names, such as its database's). That is the platform, not a bug in the app, so do not debug it or work around it; it ends when the deploy is claimed, when the platform restarts the backend on the normal hosted network (TCP 80/443 to the public internet). Plan for it: an app that needs an external API at startup will not come up unclaimed. Do not assume Reliant's gateway is available unclaimed: `deploy/llm` documents that credentials may stay blank until its in-cluster route is enabled. Disable the LLM feature when credentials are absent, or claim first; never weaken networking to work around this. The claim block, `--json` (`claim.no_outbound_internet`, and `claim.agent_instructions`) and `--plan-only` all say so |
 | Not the shape band | The billed plan's 4 GiB-per-vCPU band does not apply to an anonymous deploy (it is never billed); the caps above do. `forge env shape <env> --claimable` judges an env that way |
-| Preview first | `forge env deploy <env> --claimable --plan-only` checks everything locally (the caps, the hosted plan, the resources, and that every migration is committed on the default branch — the release cut refuses one that is not) and asks the platform whether it takes anonymous deploys right now. No identity, nothing created; exit 0 when the env fits |
+| Preview first | `forge env deploy <env> --claimable --plan-only` checks everything locally (the caps, the hosted plan, the resources) and asks the platform whether it takes anonymous deploys right now. No identity, nothing created; exit 0 when the env fits |
+| No commit needed | An anonymous deploy applies the migrations in the working tree as they are, committed or not, and says so in one line: its env is a throwaway preview no team's `main` races. A signed-in deploy of a shared env refuses a migration the default branch does not hold (`db/release-guard`) |
 | Scaffold for it | `forge project new <name> --claimable ...` writes a prod that fits: `control_plane = forge.ControlPlane {claimable = True}` (every check then judges it under this plan, and a signed-in deploy is refused until you remove the line) and `_claimable_resources` on its hosted services and jobs |
 | Unavailable: exit 4 `claimable_unavailable` | The platform cannot take it: `disabled by operator`, an `unavailable dependency (<component>)`, `not supported yet` (a cause the platform reserves for a capability it lacks), or `not deployed` (no ClaimableService). Checked before any build; `--json` carries `unavailable_cause` and `unavailable_component`. Not your project: retry later, or deploy to your own account |
 | Never queued | An unclaimed deploy is refused (exit 4), never held for billing; **exit 7 does not occur** |

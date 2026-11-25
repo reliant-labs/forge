@@ -153,6 +153,7 @@ func runDeployEverything(ctx context.Context, envName string, f deployCmdFlags) 
 		Run:                   p.run,
 		Claim:                 f.claim,
 		Promoted:              f.promoted,
+		Refusal:               f.refusal,
 		// AutoVersion is stated so the gate's refusal and its --plan-only
 		// line can say "release X was cut and pushed; approving it needs no
 		// rebuild" — without it a CI author reads "pass --yes" and re-runs
@@ -250,8 +251,9 @@ func buildAndCutForDeploy(ctx context.Context, projectDir, envName string, f dep
 		// for the same reason.
 		pushIfDeclared: true,
 		// The deploy ran the capacity pre-flight before it got here.
-		capacityChecked: true,
-		release:         choice.Version,
+		capacityChecked:  true,
+		claimableRelease: f.claimableRelease,
+		release:          choice.Version,
 		// The cut this deploy makes is held to the migration-order guard
 		// like any release cut, with the deploy's waivers.
 		allowPassedMigrations:   f.promote.allowPassedMigrations,

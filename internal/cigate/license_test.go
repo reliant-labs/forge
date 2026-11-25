@@ -68,22 +68,54 @@ func TestPlanLicenseCheck(t *testing.T) {
 			if got := strings.Join(lp.expired, ", "); got != tc.expired {
 				t.Errorf("expired = %q, want %q", got, tc.expired)
 			}
-			if lp.note != "" {
-				t.Errorf("note = %q, want none", lp.note)
+			if lp.overbroad != "" {
+				t.Errorf("overbroad = %q, want none", lp.overbroad)
 			}
 		})
 	}
 }
 
-// go-licenses matches --ignore as a prefix, so an exception can reach past
-// its module. The row says which required modules it reaches.
-func TestPlanLicenseCheck_NotesAnExceptionsPrefixReach(t *testing.T) {
+// go-licenses matches --ignore as a raw prefix of package paths, so an
+// exception for github.com/foo/bar also drops github.com/foo/barbaz and
+// github.com/foo/bar/v2, distinct modules. The plan refuses such an
+// exception, naming exactly those modules; its own packages, and a module
+// that carries an exception of its own, are not reach.
+func TestPlanLicenseCheck_RefusesAnExceptionsPrefixReach(t *testing.T) {
+	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 	root := t.TempDir()
-	write(t, root, "go.mod", "module example.com/shop\n\nrequire (\n\tgithub.com/foo/bar v1.0.0\n\tgithub.com/foo/bar-client v1.0.0\n\tgithub.com/foo/bar/v2 v2.0.0\n)\n")
-	lp := planLicenseCheck(root, config.CILicenseConfig{Exceptions: []config.CILicenseException{{Module: "github.com/foo/bar", Reason: "r"}}}, time.Now())
-	for _, want := range []string{"github.com/foo/bar also exempts github.com/foo/bar-client", "github.com/foo/bar also exempts github.com/foo/bar/v2"} {
-		if !strings.Contains(lp.note, want) {
-			t.Errorf("note %q does not say %q", lp.note, want)
+	write(t, root, "go.mod", "module example.com/shop\n\nrequire (\n\tgithub.com/foo/bar v1.0.0\n\tgithub.com/foo/bar/sub v1.0.0\n\tgithub.com/foo/barbaz v1.0.0\n\tgithub.com/foo/bar/v2 v2.0.0\n\tgithub.com/foo/bar-client v1.0.0\n)\n")
+	ex := func(mods ...string) config.CILicenseConfig {
+		var p config.CILicenseConfig
+		for _, m := range mods {
+			p.Exceptions = append(p.Exceptions, config.CILicenseException{Module: m, Reason: "r"})
+		}
+		return p
+	}
+	lp := planLicenseCheck(root, ex("github.com/foo/bar"), now)
+	for _, want := range []string{"github.com/foo/bar would also exempt github.com/foo/barbaz", "github.com/foo/bar would also exempt github.com/foo/bar/v2", "github.com/foo/bar would also exempt github.com/foo/bar-client"} {
+		if !strings.Contains(lp.overbroad, want) {
+			t.Errorf("overbroad %q does not say %q", lp.overbroad, want)
+		}
+	}
+	if strings.Contains(lp.overbroad, "exempt github.com/foo/bar/sub") {
+		t.Errorf("overbroad %q names a module within the exception's path", lp.overbroad)
+	}
+	if lp := planLicenseCheck(root, ex("github.com/foo/bar", "github.com/foo/barbaz", "github.com/foo/bar/v2", "github.com/foo/bar-client"), now); lp.overbroad != "" {
+		t.Errorf("every reached module has its own exception, yet overbroad = %q", lp.overbroad)
+	}
+	c := planner{PlanInput: PlanInput{Root: root, Cfg: &config.ProjectConfig{CI: config.CIConfig{License: ex("github.com/foo/bar")}}, Now: func() time.Time { return now }}}.licenseCheck()
+	if !strings.Contains(c.Failed, "github.com/foo/barbaz") {
+		t.Errorf("Failed = %q: an over-broad exception must fail the row", c.Failed)
+	}
+}
+
+func TestExceptionCovers(t *testing.T) {
+	for d, want := range map[string]bool{
+		"github.com/foo/bar": true, "github.com/foo/bar/sub": true, "github.com/foo/bar/v1x": true,
+		"github.com/foo/bar/v2": false, "github.com/foo/bar/v10/x": false, "github.com/foo/barbaz": false,
+	} {
+		if got := exceptionCovers("github.com/foo/bar", d); got != want {
+			t.Errorf("exceptionCovers(bar, %s) = %v, want %v", d, got, want)
 		}
 	}
 }

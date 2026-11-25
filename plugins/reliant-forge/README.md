@@ -3,11 +3,11 @@
 Deploy what your coding agent built, and let it prove the release works. Deploys need no account.
 
 Forge is an open-source framework and CLI that puts guardrails on any app and
-deploys it with no account: `npx -y @reliantlabs/forge@1.10.0 env deploy prod --claimable`.
+deploys it with no account: `npx -y @reliantlabs/forge@1.11.0 env deploy prod --claimable`.
 
 This plugin gives your agent two things:
 
-- **The Forge MCP server** (`npx -y @reliantlabs/forge@1.10.0 mcp`): `deploy_claimable`,
+- **The Forge MCP server** (`npx -y @reliantlabs/forge@1.11.0 mcp`): `deploy_claimable`,
   `deploy_status` and `explain_error`, plus tools that introspect a Forge
   project, read the skill catalog, and run `lint` and `generate`. Every tool:
   [docs/mcp.md](../../docs/mcp.md).

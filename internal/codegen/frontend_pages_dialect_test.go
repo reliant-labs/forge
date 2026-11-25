@@ -26,7 +26,7 @@ func TestApplyFormDialect_Zod3(t *testing.T) {
 
 	for form, fields := range map[string][]PageField{"create": page.CreateFields, "edit": page.UpdateFields} {
 		if got, want := pageFieldNamed(t, fields, "kind").ZodExpr,
-			`z.coerce.number().pipe(z.nativeEnum(ThingKind)).refine((v): boolean => v !== ThingKind.UNSPECIFIED, "Choose a value")`; got != want {
+			`z.coerce.number().pipe(z.nativeEnum(ThingKindEnum)).refine((v): boolean => v !== ThingKindEnum.UNSPECIFIED, "Choose a value")`; got != want {
 			t.Errorf("%s kind zod = %s, want %s", form, got, want)
 		}
 		if got, want := pageFieldNamed(t, fields, "email").ZodExpr,
@@ -65,7 +65,7 @@ func TestFormPages_ResolverTyping(t *testing.T) {
 			for _, want := range []string{
 				"});\n\ntype FormInput = z.input<typeof schema>;\ntype FormValues = z.output<typeof schema>;\n\n",
 				"useForm<FormInput, unknown, FormValues>({",
-				"z.enum(BrandStatus)",
+				"z.enum(BrandStatusEnum)",
 			} {
 				if !strings.Contains(current, want) {
 					t.Errorf("%s/%s (zod 4) missing %q:\n%s", kind, name, want, current)
@@ -79,7 +79,7 @@ func TestFormPages_ResolverTyping(t *testing.T) {
 			for _, want := range []string{
 				"});\n\ntype FormValues = z.infer<typeof schema>;\n\n",
 				"useForm<FormValues>({",
-				"z.nativeEnum(BrandStatus)",
+				"z.nativeEnum(BrandStatusEnum)",
 			} {
 				if !strings.Contains(old, want) {
 					t.Errorf("%s/%s (zod 3) missing %q:\n%s", kind, name, want, old)

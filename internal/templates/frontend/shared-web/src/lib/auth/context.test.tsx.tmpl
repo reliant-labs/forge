@@ -1,4 +1,111 @@
-// yours: scaffolded once, never touched again — forge will not overwrite this file
+{{if .Public}}// yours: scaffolded once, never touched again — forge will not overwrite this file
+//
+// Pins how src/lib/auth/context.tsx answers "who is signed in?" in a PUBLIC
+// frontend (--auth-mode none): the project declares no sign-in, so the context
+// must never ask the API — there is no /auth/session to answer — and reads
+// signed out, or the fixture user in mock mode ("true" and "hybrid").
+//
+// Lives under the browser-shared root because it is a Vitest suite: Next.js
+// and Vite SPA both run `vitest run`.
+
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { AuthContextProvider } from "./context";
+import { useAuth } from "./use-auth";
+{{- if .HasTypedConfig}}
+
+// The mode is read through the typed config module, exactly as the app
+// reads it. A live object, so each test can set the mode before it mounts.
+const config = vi.hoisted(() => ({ API_URL: "", MOCK_API: "" }));
+vi.mock("@/lib/config_gen", () => ({ loadConfig: () => config }));
+
+function setMockMode(mode: string) {
+  config.MOCK_API = mode;
+}
+{{- else}}
+
+function setMockMode(mode: string) {
+  vi.stubEnv("{{if eq .Platform "vite-spa"}}VITE_MOCK_API{{else}}NEXT_PUBLIC_MOCK_API{{end}}", mode);
+}
+{{- end}}
+
+function stubNetwork() {
+  const fetchMock = vi.fn(async () => {
+    throw new TypeError("Failed to fetch");
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function Probe() {
+  const { identity, isAuthenticated, isLoading, logout } = useAuth();
+  if (isLoading) return <p>checking</p>;
+  return (
+    <div>
+      <p>{isAuthenticated ? `signed in as ${identity.email ?? ""}` : "signed out"}</p>
+      <button type="button" onClick={() => void logout()}>
+        Sign out
+      </button>
+    </div>
+  );
+}
+
+afterEach(() => {
+  cleanup();
+  setMockMode("");
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe("AuthContextProvider (public frontend)", () => {
+  it("reads signed out without sending a request", async () => {
+    setMockMode("");
+    const fetchMock = stubNetwork();
+
+    render(
+      <AuthContextProvider>
+        <Probe />
+      </AuthContextProvider>,
+    );
+
+    expect(await screen.findByText("signed out")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["true", "hybrid"])(
+    "signs in as the fixture user when MOCK_API=%s, without a request",
+    async (mode) => {
+      setMockMode(mode);
+      const fetchMock = stubNetwork();
+
+      render(
+        <AuthContextProvider>
+          <Probe />
+        </AuthContextProvider>,
+      );
+
+      expect(await screen.findByText("signed in as dev@localhost")).toBeTruthy();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("signs the fixture user out locally in mock mode", async () => {
+    setMockMode("true");
+    const fetchMock = stubNetwork();
+
+    render(
+      <AuthContextProvider>
+        <Probe />
+      </AuthContextProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByText("signed out")).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+{{else}}// yours: scaffolded once, never touched again — forge will not overwrite this file
 //
 // Pins how src/lib/auth/context.tsx answers "who is signed in?" in each mode.
 //
@@ -202,3 +309,4 @@ describe("AuthContextProvider", () => {
     );
   });
 });
+{{end -}}

@@ -32,6 +32,9 @@ func FuncMap() template.FuncMap {
 		// taskfileTrimpathGOFLAGS is the Taskfile env's GOFLAGS entry
 		// (TaskfileTrimpathGOFLAGS), shared with `forge fix trimpath-default`.
 		"taskfileTrimpathGOFLAGS": func() string { return TaskfileTrimpathGOFLAGS },
+		// taskfileDevLdflags is the `sh:` of a Taskfile's dev-build
+		// -ldflags=-w (TaskfileDevLdflagsScript).
+		"taskfileDevLdflags": func() string { return TaskfileDevLdflagsScript },
 		// pnpmVersion is the pnpm a scaffolded frontend pins (PnpmVersion).
 		"pnpmVersion": func() string { return PnpmVersion },
 		// pgoBuildArg names a binary's PGO ARG in the Dockerfile (PGOBuildArg).

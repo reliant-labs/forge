@@ -259,6 +259,8 @@ schema OnHost:
       * delve  — `dlv exec --headless … ./bin/<output_name> -- <args>`
       * air    — `air -c <air_config>`; the air config owns the argv, and
                  gets build.flags in $FORGE_GO_BUILD_FLAGS.
+      go-run and air also link without DWARF (-ldflags=-w) unless
+      FORGE_DEV_DWARF=1.
 
     A workload with an explicit `command` runs `command + args` verbatim
     (a sibling repo's binary, a third-party tool). Env comes from the

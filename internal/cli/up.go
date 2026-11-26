@@ -3350,18 +3350,10 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 		return nil, "", err
 	}
 	excludeUnbuiltAirDirs(ctx, &spec, w.Name)
-	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
-	if err != nil {
-		return nil, "", err
-	}
-	pinHostToolPath(cmd, spec.Runner)
-	if spec.IgnoresArgs() && !spec.AirRunsArgs() {
-		fmt.Printf("[up] host %s: runner air takes its argv from %s (entrypoint / args_bin); the workload's args %v are not passed\n",
-			w.Name, emptyAs(spec.AirConfig, hostlaunch.DefaultAirConfig), spec.Args)
-	}
 
 	// Env composition: projectConfig → secrets → declared env →
-	// os.Environ() wins last.
+	// os.Environ() wins last. It comes before the argv, which depends on it:
+	// FORGE_DEV_DWARF and GOFLAGS decide the dev build's -ldflags.
 	//
 	// Secrets come from the env's bundle secret_provider, SCOPED to what
 	// this workload DECLARES: the provider map is the whole store, and a
@@ -3375,6 +3367,18 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	declared := hostWorkloadConfig(cfg, w, secretsLayer, env)
 	hostEnv, envConflicts := hostlaunch.LayerHostEnvConflicts(os.Environ(), nil, nil, declared)
 	reportEnvConflicts(w.Name, envConflicts)
+
+	spec = withDevLinkFlags(spec, hostEnv)
+	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
+	if err != nil {
+		return nil, "", err
+	}
+	pinHostToolPath(cmd, spec.Runner)
+	if spec.IgnoresArgs() && !spec.AirRunsArgs() {
+		fmt.Printf("[up] host %s: runner air takes its argv from %s (entrypoint / args_bin); the workload's args %v are not passed\n",
+			w.Name, emptyAs(spec.AirConfig, hostlaunch.DefaultAirConfig), spec.Args)
+	}
+
 	cmd.Env = hostlaunch.WithPGO(spec, hostEnv)
 	cmd.Env = hostlaunch.WithCoverage(spec, cmd.Env)
 	var dropped []string
@@ -3407,13 +3411,51 @@ func reportAirBuildFlags(name string, spec hostlaunch.RunnerSpec, dropped []stri
 	}
 	cmd := spec.AirBuildCmd()
 	missing := slices.DeleteFunc(slices.Clone(spec.GoBuildFlags), func(f string) bool {
-		return strings.Contains(cmd, "-trimpath") && strings.HasPrefix(strings.TrimLeft(f, "-"), "trimpath")
+		// forge's own dev-loop default is not a declared flag: a config
+		// that builds without it links with DWARF, as it always did.
+		return f == hostlaunch.DevLinkFlag ||
+			strings.Contains(cmd, "-trimpath") && strings.HasPrefix(strings.TrimLeft(f, "-"), "trimpath")
 	})
 	if len(missing) == 0 {
 		return
 	}
 	fmt.Printf("[up] host %s: its air config does not build with $%s, so it does not get %v (from the build's GoBuild.flags, or a cover build); add it to the config's `go build`, as a new scaffold's .air.toml does (`forge fix trimpath-default` adds it)\n",
 		name, hostlaunch.GoBuildFlagsEnv, missing)
+}
+
+// goEnvGOFLAGS is the GOFLAGS a go command started with env reads from the go
+// env file (`go env -w`, the toolchain's go.env) when env sets none: the
+// output of `go env GOFLAGS`, "" when it cannot be read. Swappable so a test
+// execs no go.
+var goEnvGOFLAGS = func(env []string) string {
+	cmd := exec.Command("go", "env", "GOFLAGS")
+	cmd.Env = env
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// withDevLinkFlags links the dev-loop build of a runner that compiles on
+// launch (air, go-run) without DWARF, unless FORGE_DEV_DWARF=1 or an -ldflags
+// somebody else declared decides it: hostlaunch.WithDevLinkFlags, given the
+// GOFLAGS the build's go command will read. env is the process env the runner
+// starts with.
+func withDevLinkFlags(spec hostlaunch.RunnerSpec, env []string) hostlaunch.RunnerSpec {
+	if !spec.CompilesOnLaunch() || hostlaunch.DevDWARF(env) {
+		return spec
+	}
+	goflags, set := "", false
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GOFLAGS="); ok {
+			goflags, set = v, true // the last one is what the go tool reads
+		}
+	}
+	if !set {
+		goflags = goEnvGOFLAGS(env)
+	}
+	return hostlaunch.WithDevLinkFlags(spec, env, goflags)
 }
 
 // hostRunnerSpec is the hostlaunch input for a host workload: its runtime

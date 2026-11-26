@@ -179,6 +179,7 @@ func TestMain(m *testing.M) {
 	// with room; storage_reserve_ci_test.go calls checkBuildStorage itself,
 	// and storage_guards_test.go sets its own refusal.
 	checkBuildStorageFn = func(string) error { return nil }
+	checkHostBuildStorageFn = func(string) error { return nil }
 	if err := isolateLedgerHome(); err != nil {
 		fmt.Fprintf(os.Stderr, "cli: isolate the ledger home: %v\n", err)
 		os.Exit(1)

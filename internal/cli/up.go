@@ -1254,10 +1254,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 				}
 				return nil
 			}
-			timeout := opts.hostReadyTimeout
-			if timeout == 0 {
-				timeout = hostReadyTimeout
-			}
+			timeout := opts.readyTimeout()
 			return launchStartupPlan(ctx, startupPlan, func(n startupNode) error {
 				failures := 0
 				if n.frontend {
@@ -1328,10 +1325,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// this run started are already tracked, so the next `forge env up` / `forge
 	// run` for this project+env reclaims them and `forge env down` stops them.
 	// Scoped by --target inside the gate.
-	readyTimeout := opts.hostReadyTimeout
-	if readyTimeout == 0 {
-		readyTimeout = hostReadyTimeout
-	}
+	readyTimeout := opts.readyTimeout()
 	readyCtx, readySpan := startUpSpan(ctx, "readiness")
 	err = waitHostServicesReady(readyCtx, entities, projectID, opts.env, opts.targets, readyTimeout, hostReadyPoll, procs)
 	readySpan.end(err)
@@ -1468,6 +1462,14 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	stopErr := procs.shutdown()
 	session.stop(time.Now().UTC())
 	return stopErr
+}
+
+// readyTimeout applies the same default to dependency and post-launch gates.
+func (opts upOptions) readyTimeout() time.Duration {
+	if opts.hostReadyTimeout > 0 {
+		return opts.hostReadyTimeout
+	}
+	return hostReadyTimeout
 }
 
 // teardownSupervisedExit stops a supervising run's children on any return

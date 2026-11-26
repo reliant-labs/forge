@@ -252,7 +252,7 @@ func TestHoldOutlivesARestart(t *testing.T) {
 // TestRestartLeaseHeld: only a live, recent restart holds the lease.
 func TestRestartLeaseHeld(t *testing.T) {
 	_, projectID, env := testStack(t)
-	now := time.Now()
+	now := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
 	if restartLeaseHeld(projectID, env, now) {
 		t.Fatal("held with no lease")
 	}
@@ -260,17 +260,23 @@ func TestRestartLeaseHeld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !restartLeaseHeld(projectID, env, now) {
+	path, _ := restartLeasePath(projectID, env)
+	// Pin the recorded instant as well as the observing clock: scheduling
+	// delays cannot change either side of the lease-age boundary.
+	live, _ := json.Marshal(restartLease{PID: os.Getpid(), StartedAt: now})
+	if err := os.WriteFile(path, live, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !restartLeaseHeld(projectID, env, now.Add(restartLeaseMaxAge-time.Nanosecond)) {
 		t.Error("a live restart's lease is not held")
 	}
-	if restartLeaseHeld(projectID, env, now.Add(restartLeaseMaxAge+time.Minute)) {
+	if restartLeaseHeld(projectID, env, now.Add(restartLeaseMaxAge)) {
 		t.Error("an hour-old lease is still held; a recycled pid could hold a supervisor forever")
 	}
 	release()
 	if restartLeaseHeld(projectID, env, now) {
 		t.Error("held after release")
 	}
-	path, _ := restartLeasePath(projectID, env)
 	dead, _ := json.Marshal(restartLease{PID: 1 << 30, StartedAt: now})
 	if err := os.WriteFile(path, dead, 0o644); err != nil {
 		t.Fatal(err)

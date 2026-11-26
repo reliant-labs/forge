@@ -3,6 +3,7 @@ package seedplan
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -209,7 +210,11 @@ func TestFingerprint_CoversMigrationsAndVocabAndRefusesUnreadableInput(t *testin
 	if _, err := FingerprintWithConfig(mig, Config{Rows: 1}); err == nil {
 		t.Error("an unreadable input fails the config-folded fingerprint too")
 	}
-	if _, err := FingerprintInputs(filepath.Join(mig, "00003_x.up.sql")); err == nil || !strings.Contains(err.Error(), "read migrations dir") {
-		t.Errorf("a migrations path that is a file: %v", err)
+	// POSIX only: on Windows os.ReadDir of a regular file succeeds (empty), so
+	// there is no "not a directory" error to report.
+	if runtime.GOOS != "windows" {
+		if _, err := FingerprintInputs(filepath.Join(mig, "00003_x.up.sql")); err == nil || !strings.Contains(err.Error(), "read migrations dir") {
+			t.Errorf("a migrations path that is a file: %v", err)
+		}
 	}
 }

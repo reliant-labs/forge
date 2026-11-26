@@ -17,6 +17,7 @@ One grype database per machine, shared by every project, never one per project.
 | Fresh enough | built within **5 days** (grype's own limit; grype refuses an older one). Below, the freshness rule says what that means for a verdict |
 | Mirror | `FORGE_VULN_DB_URL`: a mirror of `https://grype.anchore.io/databases` with the same layout (`<url>/v6/latest.json` and the archives it names); grype verifies each archive against the listing's sha256 |
 | Offline | `forge vuln db import <vulnerability-db_v6.*.tar.zst>` loads an archive downloaded elsewhere |
+| Read-only | `forge vuln gate --db <dir>` reads a database another process keeps (mounted read-only into a sandbox): it writes nothing into it, fetches nothing, and shares its lock only when the lock file is there |
 | Concurrency | scans share it; an update or import takes a lock alone |
 
 ```bash

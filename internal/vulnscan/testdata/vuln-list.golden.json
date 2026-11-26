@@ -27,7 +27,15 @@
     "blocking": [
       "CVE-2026-4738"
     ],
-    "determined": true
+    "determined": true,
+    "reason": "vuln_gate_blocked",
+    "exemptions_applied": [
+      {
+        "id": "CVE-2026-48779",
+        "reason": "ws is only used by the dev server",
+        "expires": "2026-12-31"
+      }
+    ]
   },
   "counts": {
     "critical": 1,
@@ -65,7 +73,8 @@
         "worker"
       ],
       "first_seen": "2026-11-18T07:00:11.41065994Z",
-      "action": "block"
+      "action": "block",
+      "rule": "block_severity"
     },
     {
       "id": "CVE-2026-82560",
@@ -95,7 +104,8 @@
         "worker"
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
-      "action": "warn"
+      "action": "warn",
+      "rule": "warn_severity"
     },
     {
       "id": "GHSA-chx6-hx7r-mcp5",
@@ -128,7 +138,8 @@
         "worker"
       ],
       "first_seen": "2026-11-20T07:00:11.41065994Z",
-      "action": "warn"
+      "action": "warn",
+      "rule": "warn_severity"
     },
     {
       "id": "CVE-2025-60876",

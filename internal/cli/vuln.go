@@ -4,6 +4,7 @@ package cli
 // what the env's vuln_gate makes of it.
 //
 //	forge vuln scan [<dir> | --image <ref@digest> | --release <v> | --deployed <env>] [--json]
+//	forge vuln gate [<name>=]<path>... [--sbom <file>] [--db <dir>] [--out <dir>] [--policy <file> | --env <env>] [--json]
 //	forge vuln list <env> [--release v] [--severity s] [--fixable] [--kev] [--include-exempt] [--json]
 //	forge vuln show <env> <advisory-id | package> [--json]
 //	forge vuln sbom <env> [--release v] [--artifact name] [--format cyclonedx|spdx]
@@ -33,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -76,6 +78,9 @@ type vulnDeps struct {
 	// sbomCache is the SBOM cache's directory for `vuln sbom --file`; nil
 	// or "" caches nothing.
 	sbomCache func() string
+	// httpClient reads the database listing for `vuln gate`; nil is the
+	// database's own client.
+	httpClient *http.Client
 }
 
 func defaultVulnDeps() vulnDeps {
@@ -144,6 +149,7 @@ control plane's (it scans the SBOMs each cut uploads, and rescans deployed
 releases daily), which needs the vuln:read scope (exit 4 without it).`,
 	}
 	cmd.AddCommand(newVulnScanCmd(deps))
+	cmd.AddCommand(newVulnGateCmd(deps))
 	cmd.AddCommand(newVulnListCmd(deps))
 	cmd.AddCommand(newVulnShowCmd(deps))
 	cmd.AddCommand(newVulnSBOMCmd(deps))

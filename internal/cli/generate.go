@@ -140,9 +140,9 @@ Scoped:
   //forge:contract type, mock_gen.go from it or contract.go and a
   forge:deps deps.go, and middleware_gen.go. It writes through the same
   writers as a full run, so the bytes match, and validates by compiling the
-  scoped packages alone: an error in one of them rolls the run back, while a
-  package outside the scope that does not compile is reported and does not
-  block it. It runs in seconds, in the express lane, and is never recorded
+  scoped packages and their dependencies: any compile error rolls the run
+  back unless --keep-on-build-failure is set. Unrelated packages are not
+  compiled. It runs in seconds, in the express lane, and is never recorded
   as verified. A proto, migration or config change still needs the full run.
 
 Skipping:

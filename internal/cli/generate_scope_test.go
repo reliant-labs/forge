@@ -223,6 +223,24 @@ func TestCompileScopedPackages_AttributesErrors(t *testing.T) {
 	if strings.Contains(rep.Elsewhere, "undefinedInC") {
 		t.Fatalf("pkg/c, which the scope does not import, was compiled: %s", rep.Elsewhere)
 	}
+	for _, keep := range []bool{false, true} {
+		ctx := &pipelineContext{ProjectDir: root, Scope: scope, KeepOnBuildFailure: keep}
+		stepErr := stepValidateScopedPackages(ctx)
+		if keep {
+			if stepErr != nil || ctx.keptBuildFailure == nil || !slices.Contains(ctx.SoftFailures, scopedValidateStep) {
+				t.Fatalf("broken dependency with --keep-on-build-failure: err=%v kept=%v soft=%v", stepErr, ctx.keptBuildFailure, ctx.SoftFailures)
+			}
+			var ve *validateBuildError
+			if !errors.As(ctx.keptBuildFailure, &ve) || !strings.Contains(ve.Output, "undefinedInB") {
+				t.Fatalf("kept failure lost the dependency diagnostic: %v", ctx.keptBuildFailure)
+			}
+		} else {
+			var ve *validateBuildError
+			if !errors.As(stepErr, &ve) || !strings.Contains(ve.Output, "undefinedInB") {
+				t.Fatalf("broken dependency: err=%v, want a validateBuildError quoting it (the run rolls back)", stepErr)
+			}
+		}
+	}
 
 	if err := os.Remove(filepath.Join(root, "internal", "b", "broken.go")); err != nil {
 		t.Fatal(err)

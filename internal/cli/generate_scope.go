@@ -19,9 +19,8 @@ package cli
 //     checksums chokepoint and manifest, goimports and the re-stamp of what
 //     it wrote;
 //   - validated by compiling the scoped packages (not the tree) without
-//     linking. Only an error in a scoped package rolls the run back; a
-//     package they import that does not compile is reported and the output
-//     kept, because it is not this run's to fix.
+//     linking. Any compile error, including in an imported dependency,
+//     rolls the run back unless --keep-on-build-failure is set.
 //
 // A narrowed run is never recorded as a verified fixed point
 // (generateCacheModeFor), and holds an express-lane heavy slot: its work is
@@ -195,44 +194,27 @@ func gateScoped(ctx *pipelineContext) bool { return len(ctx.Scope) > 0 }
 // and without their tests: the files a --scope run writes are all non-test
 // sources of those packages. A compile error in a scoped package fails the
 // step — the run rolls back, or keeps its writes under
-// --keep-on-build-failure, as the full run's compile check does. A package
-// they import that does not compile is reported and the output kept: the
-// scoped packages could not be checked, but nothing this run wrote is the
-// cause.
+// --keep-on-build-failure, as the full run's compile check does. Errors in
+// imported dependencies also fail validation: the scoped packages cannot be
+// validated until those dependencies compile.
 func stepValidateScopedPackages(ctx *pipelineContext) error {
 	fmt.Printf("\n🔨 Validating %s...\n", strings.Join(ctx.Scope, ", "))
 	rep, err := compileScopedPackages(ctx.ProjectDir, ctx.Scope)
 	if err != nil {
 		return goBuildValidateFailure(ctx.ProjectDir, err.Error(), err)
 	}
-	if rep.Elsewhere != "" {
-		reportUnvalidatedScope(os.Stderr, ctx.Scope, rep.Elsewhere)
-	}
-	if rep.Scoped == "" {
-		if rep.Elsewhere == "" {
-			fmt.Println("  ✅ The scoped packages compile")
-		}
+	output := rep.Scoped + rep.Elsewhere
+	if output == "" {
+		fmt.Println("  ✅ The scoped packages compile")
 		return nil
 	}
-	fmt.Fprint(os.Stderr, rep.Scoped)
-	verr := goBuildValidateFailure(ctx.ProjectDir, rep.Scoped, errors.New("the scoped packages do not compile"))
+	fmt.Fprint(os.Stderr, output)
+	verr := goBuildValidateFailure(ctx.ProjectDir, output, errors.New("the scoped packages or their dependencies do not compile"))
 	if !ctx.KeepOnBuildFailure {
 		return verr
 	}
 	ctx.keptBuildFailure = verr
 	return ctx.warnOrFail(scopedValidateStep, verr)
-}
-
-// reportUnvalidatedScope says the scoped packages could not be compiled
-// because something they import does not, quoting its first error.
-func reportUnvalidatedScope(w io.Writer, scope contractScope, elsewhere string) {
-	first := strings.SplitN(strings.TrimSpace(elsewhere), "\n", 2)[0]
-	if errs := compilerErrorLines(elsewhere); len(errs) > 0 {
-		first = errs[0]
-	}
-	fmt.Fprintf(w, "  ⚠️  %s not validated: a package outside the scope does not compile (%s). "+
-		"This run's files were kept — nothing it wrote is the cause; run `go build` on the scope once that package builds.\n",
-		strings.Join(scope, ", "), first)
 }
 
 // scopedCompileReport splits a scoped compile's errors by where they are.

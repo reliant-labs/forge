@@ -223,10 +223,10 @@ forge generate --scope internal/assigner --scope internal/distributor
 
 It rewrites only `contract_gen.go`, `mock_gen.go` and `middleware_gen.go` of the
 packages under each named `internal/` directory, with the full run's writers
-(same bytes), in seconds. It then compiles those packages alone: an error in one
-rolls the run back (`--keep-on-build-failure` keeps the files); a package outside
-the scope that does not compile — another agent's half-done work — is reported,
-not blocking. It is never recorded as verified. A proto, migration or config
+(same bytes), in seconds. It then compiles those packages and their dependencies:
+any compile error rolls the run back (`--keep-on-build-failure` keeps the files
+but still reports failed validation). Unrelated packages are not compiled.
+It is never recorded as verified. A proto, migration or config
 change, or a `Deps` field change (`--steps harness`), needs more.
 
 A consumer's `deps.go` interface follows the producer by hand: copy the

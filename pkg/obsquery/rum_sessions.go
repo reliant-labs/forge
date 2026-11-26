@@ -470,11 +470,17 @@ func GetSession(ctx context.Context, run Runner, q SessionLookup) (SessionSummar
 type TimelineKind string
 
 const (
-	TimelineNavigation    TimelineKind = "navigation"     // a document load or route change
-	TimelineClick         TimelineKind = "click"          // one physical click or tap
-	TimelineRequestFailed TimelineKind = "request_failed" // a fetch or XHR with status >= 400 or an error status
-	TimelineError         TimelineKind = "error"          // a browser error (an error_events row)
-	TimelineEvent         TimelineKind = "event"          // a custom event (track / HyperDX.addAction)
+	// TimelineNavigation is a document load or route change.
+	TimelineNavigation TimelineKind = "navigation"
+	// TimelineClick is one physical click or tap.
+	TimelineClick TimelineKind = "click"
+	// TimelineRequestFailed is a fetch or XHR with status >= 400 or an error
+	// status.
+	TimelineRequestFailed TimelineKind = "request_failed"
+	// TimelineError is a browser error (an error_events row).
+	TimelineError TimelineKind = "error"
+	// TimelineEvent is a custom event (track / HyperDX.addAction).
+	TimelineEvent TimelineKind = "event"
 )
 
 // TimelineEntry is one line of a session's timeline.

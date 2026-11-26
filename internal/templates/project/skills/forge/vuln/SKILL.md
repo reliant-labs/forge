@@ -46,17 +46,38 @@ forge vuln list prod                # what the release prod runs is known to be 
 | Artifact | syft reads | Recorded `source` |
 |---|---|---|
 | Image forge built (go, docker, shell, adopted Dockerfile apps) | the local docker daemon by digest, else the registry | `image` |
-| Prebuilt image (hosted backend, a pinned third-party image) | the registry, by digest | `registry` |
+| Prebuilt image (hosted backend, a pinned third-party image), or one carried unchanged from an earlier release (`carried_from`) | the registry, by digest | `registry` |
 | Host binary (`forge.OnHost`) | the file (Go buildinfo lists every linked module) | `binary` |
 | Static site (hosted, bucket, Firebase), npm package | the frontend's or package's lockfile, dev dependencies excluded | `lockfile` |
+| Static site built from a `forge.GitSource` | the lockfile in the **source** checkout at the pinned commit (the frontend's `subdir`, else up to that checkout's root), never this repository's | `lockfile` |
 | Go module | its `go.mod` | `lockfile` |
 | An SBOM your CI produced (`release record --sbom`) | nothing: recorded verbatim | `ci-provided` |
+| A frontend's source maps (`<frontend>.sourcemaps`) | nothing: debugging data, not code that runs | status `not_applicable` |
+| A git source pin (`kind: git`) | nothing: it names a commit; the site built from it has its own SBOM | status `not_applicable` |
 
 A static site's SBOM is **"from lockfile"** and **overstates the bundle**: a
 built `dist/` carries no package metadata, so the production dependencies in the
 lockfile (build tools in `dependencies` included) are the best evidence available.
-A git source pin and a frontend's source maps get no SBOM. A variant image (one
-digest per platform variant) records `unavailable`: one SBOM per artifact.
+A variant image (one digest per platform variant) records `unavailable`: one SBOM
+per artifact.
+
+**Every artifact is accounted for.** One an SBOM applies to records it (`ok`) or
+says why not (`unavailable`, which reads "not scanned"). One it does not apply to
+(source maps, a git pin) records `not_applicable` with the reason: it names no
+SBOM, and never counts as missing — not in coverage, not in `vuln_gate`, not in
+`provenance_sbom`'s `sbom_missing`. Applicability is decided from the artifact
+itself (`release.SBOMApplicable` in `pkg/release`), never from the recorded
+status. The cut's summary counts the applicable ones and names the rest:
+
+```
+[build] SBOMs: 10 of 10 applicable artifacts recorded (6 from cache); 6 not applicable (3 source maps, 3 git source pins)
+```
+
+`forge vuln list` says the same (`10 of 10 applicable artifacts scanned; 6 not
+applicable (...)`), and its JSON lists them under `coverage.not_applicable`;
+`coverage.artifacts` counts only the applicable ones. A forge that predates
+`not_applicable` reads it as an unknown status it tolerates, and already leaves
+the same artifacts out of coverage.
 
 Syft's output is cached by what it read (image digest, file hash) and the syft
 version in `$FORGE_SBOM_CACHE` (default `<UserCacheDir>/forge/sbom`), so a re-cut of

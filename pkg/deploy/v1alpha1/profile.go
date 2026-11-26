@@ -67,6 +67,16 @@ var FieldProfiles = map[string]Profile{
 	"args":     ProfileRestricted,
 	"replicas": ProfileRestricted,
 
+	// autoscale moves the author's OWN Deployment within a range they
+	// declared, capped by MaxAutoscaleReplicas, so it reaches nothing a fixed
+	// replica count does not. Admission charges the maximum. A control plane
+	// that does not apply HorizontalPodAutoscalers yet is refused at deploy
+	// (release.CapabilityAutoscalesWorkloads), not here.
+	"autoscale":                  ProfileRestricted,
+	"autoscale.minReplicas":      ProfileRestricted,
+	"autoscale.maxReplicas":      ProfileRestricted,
+	"autoscale.cpuTargetPercent": ProfileRestricted,
+
 	"resources":                      ProfileRestricted,
 	"resources.cpuRequestMillicores": ProfileRestricted,
 	"resources.cpuLimitMillicores":   ProfileRestricted,

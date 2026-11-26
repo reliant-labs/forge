@@ -1,4 +1,6 @@
 // yours: scaffolded once, never touched again — forge will not overwrite this file.
+// Rename it freely once it holds real tests (e.g. to rpc_ping_test.go, beside the handler), or delete it:
+// .forge/scaffolded/ records that forge wrote it, so forge never writes it again, even if Ping is re-stubbed.
 // ONE RPC PER FILE, no package-level identifiers, so two RPCs' owners never collide; CRUD RPCs are
 // tested in handlers_crud_test.go.
 // TestPing_Generated: rows for `tdd.RunRPCCasesV2`. The scaffold row is SELF-DESTRUCTING: it matches only

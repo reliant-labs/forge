@@ -128,13 +128,19 @@ func (k *StageKind) UnmarshalJSON(data []byte) error {
 type StageStatus string
 
 const (
-	// StagePassed, StageFailed, StageSkipped and StageErrored mean exactly
-	// what the matching [GateStatus] values mean.
-	StagePassed  StageStatus = StageStatus(GateStatusPassed)
-	StageFailed  StageStatus = StageStatus(GateStatusFailed)
+	// StagePassed means what [GateStatusPassed] means: the check ran and found
+	// nothing wrong.
+	StagePassed StageStatus = StageStatus(GateStatusPassed)
+	// StageFailed means what [GateStatusFailed] means: the check ran and found
+	// something wrong.
+	StageFailed StageStatus = StageStatus(GateStatusFailed)
+	// StageSkipped means what [GateStatusSkipped] means: the check did not
+	// apply.
 	StageSkipped StageStatus = StageStatus(GateStatusSkipped)
+	// StageErrored means what [GateStatusError] means: the check could not
+	// reach a verdict.
 	StageErrored StageStatus = StageStatus(GateStatusError)
-	// StageRunning: the stage has started and has not reached a verdict.
+	// StageRunning means the stage has started and has not reached a verdict.
 	// A run with any running stage is not finished, which is why a "did
 	// the whole run pass" check cannot treat this as either outcome.
 	StageRunning StageStatus = "running"

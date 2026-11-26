@@ -67,13 +67,13 @@ const (
 type LaneResults string
 
 const (
-	// LaneResultsParsed: the results file holds the declared format.
+	// LaneResultsParsed means the results file holds the declared format.
 	LaneResultsParsed LaneResults = "parsed"
-	// LaneResultsUnparsed: a results file was stored, as captured, but it
+	// LaneResultsUnparsed means a results file was stored, as captured, but it
 	// is not (or not only) the declared format — a command that never ran
 	// `go test -json`, or a report file of another shape.
 	LaneResultsUnparsed LaneResults = "unparsed"
-	// LaneResultsMissing: there is no results file — `--results` named a
+	// LaneResultsMissing means there is no results file — `--results` named a
 	// file the command never wrote, or the stream could not be stored.
 	LaneResultsMissing LaneResults = "missing"
 )

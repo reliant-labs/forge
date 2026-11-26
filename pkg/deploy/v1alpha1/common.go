@@ -276,11 +276,18 @@ type SecretKeyRef struct {
 type DatabaseCredentialKey string
 
 const (
-	DatabaseKeyURI      DatabaseCredentialKey = "uri"
-	DatabaseKeyHost     DatabaseCredentialKey = "host"
-	DatabaseKeyPort     DatabaseCredentialKey = "port"
-	DatabaseKeyDBName   DatabaseCredentialKey = "dbname"
+	// DatabaseKeyURI is the full connection URI, credentials included. It is
+	// the default, and the one a consumer should use.
+	DatabaseKeyURI DatabaseCredentialKey = "uri"
+	// DatabaseKeyHost is the server's host name.
+	DatabaseKeyHost DatabaseCredentialKey = "host"
+	// DatabaseKeyPort is the server's port.
+	DatabaseKeyPort DatabaseCredentialKey = "port"
+	// DatabaseKeyDBName is the database's name.
+	DatabaseKeyDBName DatabaseCredentialKey = "dbname"
+	// DatabaseKeyUsername is the application role's user name.
 	DatabaseKeyUsername DatabaseCredentialKey = "username"
+	// DatabaseKeyPassword is the application role's password.
 	DatabaseKeyPassword DatabaseCredentialKey = "password"
 )
 
@@ -415,12 +422,22 @@ func (r Resources) WithDefaults() Resources {
 type Phase string
 
 const (
-	PhasePending     Phase = "Pending"
+	// PhasePending is declared and not yet acted on. Nothing serves.
+	PhasePending Phase = "Pending"
+	// PhaseProgressing is applied and converging: a rollout, a sync, a
+	// Cluster provisioning.
 	PhaseProgressing Phase = "Progressing"
-	PhaseReady       Phase = "Ready"
-	PhaseDegraded    Phase = "Degraded"
-	PhaseFailed      Phase = "Failed"
-	PhaseLocked      Phase = "Locked"
+	// PhaseReady is serving what the spec declares.
+	PhaseReady Phase = "Ready"
+	// PhaseDegraded exists but is not serving; the fault is inside the
+	// workload.
+	PhaseDegraded Phase = "Degraded"
+	// PhaseFailed is a resource the platform refused or could not converge.
+	// Nothing was applied.
+	PhaseFailed Phase = "Failed"
+	// PhaseLocked is a retained ManagedDatabase whose CR was deleted: every
+	// byte still exists, but nothing names it any more.
+	PhaseLocked Phase = "Locked"
 )
 
 // TierStatus is the observed state shared by the kinds that serve traffic

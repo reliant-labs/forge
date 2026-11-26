@@ -212,6 +212,7 @@ type Auditor interface {
 // AuditFunc adapts a function to [Auditor].
 type AuditFunc func(ctx context.Context, e Event) error
 
+// Audit calls f.
 func (f AuditFunc) Audit(ctx context.Context, e Event) error { return f(ctx, e) }
 
 // Run executes sql as one bounded read-only query. Every failure is an

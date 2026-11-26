@@ -44,6 +44,7 @@ var bundleFeatureKeys = map[string][]string{
 	BundleFeaturePromotionChecks:      {"shape.delivery_policy.required_gates", "shape.delivery_policy.approval_hook"},
 	BundleFeaturePreview:              {"shape.preview"},
 	BundleFeatureChanges:              {"shape.changes"},
+	BundleFeatureStatusPage:           {"shape.status_page"},
 	BundleFeatureTelemetry:            {"shape.telemetry"},
 	BundleFeatureVulnScopedExemptions: {"shape.delivery_policy.vuln_gate.scoped_exemptions"},
 	// A layer feature: it adds BundleServiceCatalogPath to the manifests
@@ -173,6 +174,7 @@ func fullBundleDoc() BundleDoc {
 			Buckets:                  []ShapeBucket{{Name: "uploads", RuntimeKind: BucketRuntimeHosted}},
 			Preview:                  &ShapePreview{Of: "preview", ExpiresAt: "2026-12-01T00:00:00Z", Source: "pr-12"},
 			Changes:                  map[string]ShapeChange{"new-checkout": checkoutChange()},
+			StatusPage:               statusPage(),
 			Telemetry:                ShapeTelemetryOf([]telemetry.Target{hostedTarget("api")}),
 		},
 		Objects: []ObjectSummary{{Key: api.Key(), Summary: "2 replicas · containers api"}},
@@ -212,6 +214,9 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	}
 	if !strayRoots["shape.changes"] {
 		t.Fatalf("the full document does not stray at shape.changes (strays %v): the fixture no longer exercises it", strays)
+	}
+	if !strayRoots["shape.status_page"] {
+		t.Fatalf("the full document does not stray at shape.status_page (strays %v): the fixture no longer exercises it", strays)
 	}
 	if !strayRoots["shape.buckets"] {
 		t.Fatalf("the full document does not stray at shape.buckets (strays %v): the fixture no longer exercises it", strays)
@@ -258,6 +263,7 @@ func TestAnOldReaderGetsADocumentItsDecoderAccepts(t *testing.T) {
 	wantShape.Buckets = nil
 	wantShape.Preview = nil
 	wantShape.Changes = nil
+	wantShape.StatusPage = nil
 	wantShape.Telemetry = nil
 	gateless := *full.Shape.DeliveryPolicy
 	gateless.HealthGate, gateless.RequiredGates, gateless.ApprovalHook = nil, nil, nil

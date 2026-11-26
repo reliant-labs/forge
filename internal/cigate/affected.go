@@ -108,6 +108,9 @@ type Affected struct {
 	// Files reports each changed file's package and claiming rules; set
 	// whenever the package graph was read.
 	Files []FileReport
+	// Modules are the nested replaced modules' own tests
+	// (ci.gate.affected_modules: auto; WithModuleTests).
+	Modules []ModuleTests
 }
 
 // Line is the one line the gate prints about the unit lane's mode.
@@ -143,6 +146,9 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Modules is ci.gate.affected_modules: "auto" maps changes in nested
+	// modules the root go.mod replaces onto ./dir (affected_modules.go).
+	Modules string
 	// Reach is ci.gate.affected_reach; nil is full transitive reach.
 	Reach *config.CIGateAffectedReach
 	// ChangesOnly stops once the changed files are known, without go list:
@@ -218,13 +224,21 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	baseRef, short, changed := a.BaseRef, a.Base, a.Changed
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
+	var modules []ModuleTests
 	fullAfterDiff := func(reason string) Affected {
-		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks}
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks, Modules: modules}
 	}
 
 	list := in.GoList
 	if list == nil {
 		list = runGoList
+	}
+	rootChanged := changed
+	nested := nestedChanges{}
+	if in.Modules == AffectedModulesAuto {
+		nested = splitNestedModules(ctx, in, list, changed)
+		rootChanged, modules = nested.rest, nested.tests
+		a.Modules = modules
 	}
 	r, err := list(ctx, in.Root, in.Env)
 	if err != nil {
@@ -234,12 +248,30 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	if err != nil {
 		return fullAfterDiff("cannot read go list output: " + err.Error())
 	}
-	sel, reason := selectChanges(changed, g, in.Ignore, in.Rules)
+	sel, reason := selectChanges(rootChanged, g, in.Ignore, in.Rules)
 	files := explainFiles(changed, g, in.Ignore, ruleMatchers(in.Rules))
+	files = annotateModuleFiles(files, nested, modules)
 	if reason != "" {
 		full := fullAfterDiff(reason)
 		full.Files = files
 		return full
+	}
+	if nested.unresolved != "" {
+		return fullAfterDiff(nested.unresolved)
+	}
+	for _, d := range nested.embedDirs {
+		// A nested package embedding a changed file: the root's own graph
+		// names it when any root test binary links it; unlisted, none does.
+		if pkg, ok := g.dirPkg[d]; ok {
+			sel.changedPkgs[pkg] = true
+		}
+	}
+	for _, f := range nested.rootFiles {
+		pkg, ok := g.owner(f)
+		if !ok {
+			return fullAfterDiff(f + " cannot be mapped to a package in the root graph")
+		}
+		sel.changedPkgs[pkg] = true
 	}
 	a.Files = files
 	a.Total = len(g.testDeps)
@@ -458,6 +490,9 @@ type packageGraph struct {
 	dirPkg map[string]string
 	// embedPkg maps an embedded file (absolute) to the package embedding it.
 	embedPkg map[string]string
+	// prodEmbedPkg is embedPkg for non-test embeds only: the files a
+	// package's importers link (affected_modules.go).
+	prodEmbedPkg map[string]string
 	// directImports maps each module package to what it and its tests
 	// (internal and external test files) import directly.
 	directImports map[string][]string
@@ -505,7 +540,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
 		realRoot = r
 	}
-	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}, directImports: map[string][]string{}}
+	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, prodEmbedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}, directImports: map[string][]string{}}
 	dec := json.NewDecoder(r)
 	for {
 		var p listedPackage
@@ -553,6 +588,9 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 			for _, f := range files {
 				g.embedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
 			}
+		}
+		for _, f := range p.EmbedFiles {
+			g.prodEmbedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
 		}
 	}
 	// Only the module's own packages are candidates to test.

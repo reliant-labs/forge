@@ -150,8 +150,14 @@ type Locker interface {
 type State string
 
 const (
-	StatePending  State = "pending"
-	StateFiring   State = "firing"
+	// StatePending is a series that is returning but has not yet returned for
+	// the rule's whole `for` duration.
+	StatePending State = "pending"
+	// StateFiring is a series that has returned for at least `for`: the alert
+	// is active.
+	StateFiring State = "firing"
+	// StateResolved is a firing instance that stopped returning and stayed
+	// stopped past flap damping.
 	StateResolved State = "resolved"
 )
 
@@ -191,12 +197,17 @@ type InstanceRef struct {
 type Transition string
 
 const (
-	TransitionPending  Transition = "pending"
-	TransitionFiring   Transition = "firing"
+	// TransitionPending means an inactive series started returning.
+	TransitionPending Transition = "pending"
+	// TransitionFiring means a pending series held for `for` and fired.
+	TransitionFiring Transition = "firing"
+	// TransitionResolved means a firing instance resolved.
 	TransitionResolved Transition = "resolved"
-	// TransitionInactive: a pending series stopped returning before `for` held.
+	// TransitionInactive means a pending series stopped returning before `for`
+	// held.
 	TransitionInactive Transition = "inactive"
-	// TransitionRemoved: the rule was deleted while the instance was live.
+	// TransitionRemoved means the rule was deleted while the instance was
+	// live.
 	TransitionRemoved Transition = "removed"
 )
 

@@ -40,8 +40,14 @@ type tracingRun struct {
 
 // tracingFindings runs the rules over the project at cwd. fix enables the
 // autofix; explicit says the lane was named (`--tracing`), which fixes at
-// warn too.
-func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) (tracingRun, error) {
+// warn too. keep, when non-nil, is the run's --scope (or its positional
+// package paths): the rules still report project-wide, but only a file keep
+// accepts is rewritten.
+//
+// Without keep a scoped `forge lint --fix --scope pkg/sdk` renamed a
+// `store.New` to `store.NewInstrumented` in cmd/…/commands.go — another
+// agent's file, in a shared checkout, far outside the scope it was given.
+func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool, keep func(rel string) bool) (tracingRun, error) {
 	var lintCfg config.LintConfig
 	contracts, libraryOnly := true, false
 	if cfg != nil {
@@ -67,8 +73,11 @@ func tracingFindings(cwd string, cfg *config.ProjectConfig, fix, explicit bool) 
 		LibraryOnly: libraryOnly,
 		Fix:         fix,
 		FixFilter: func(f finding.Finding) bool {
-			adjusted, keep := rules.Override(f)
-			if !keep || (!explicit && adjusted.Severity != finding.SeverityError) {
+			if keep != nil && !keep(filepath.ToSlash(f.File)) {
+				return false
+			}
+			adjusted, graded := rules.Override(f)
+			if !graded || (!explicit && adjusted.Severity != finding.SeverityError) {
 				return false
 			}
 			content, err := os.ReadFile(filepath.Join(cwd, filepath.FromSlash(f.File)))
@@ -157,7 +166,7 @@ func tracingAutoFixable(rule string) bool {
 // --fix`, the migration) its warnings too; each rewrite is reported as it
 // lands. --json refuses --fix, so it is detect-only. Error findings gate.
 func collectTracingJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error) {
-	run, err := tracingFindings(rc.cwd, rc.cfg, rc.fix, rc.targeted)
+	run, err := tracingFindings(rc.cwd, rc.cfg, rc.fix, rc.targeted, formatKeep(rc.scope, rc.paths))
 	if err != nil {
 		return nil, false, err
 	}

@@ -48,11 +48,13 @@ const (
 type Disposition uint8
 
 const (
-	// Granted: the role may SELECT the column.
+	// Granted means the role may SELECT the column.
 	Granted Disposition = iota
-	// WithheldSecret: declared forge:secret.
+	// WithheldSecret withholds a column declared forge:secret.
 	WithheldSecret
-	// WithheldUndecided: credential-shaped, and nobody decided.
+	// WithheldUndecided withholds a column that looks like a credential (a
+	// binary column, or text with a credential-shaped name) and that nobody
+	// declared readable or secret.
 	WithheldUndecided
 )
 

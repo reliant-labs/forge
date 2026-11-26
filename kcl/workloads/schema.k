@@ -91,6 +91,7 @@ supports = caps.supports
 # The generated WorkloadSpec sub-types (kcl/tiers/tiers_gen.k), with the
 # camelCase field names the wire carries.
 Port = tiers.Port
+Autoscale = tiers.Autoscale
 Resources = tiers.Resources
 Probes = tiers.Probes
 PolicyRule = tiers.PolicyRule

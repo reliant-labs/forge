@@ -59,6 +59,11 @@ type LibrarySpec struct {
 	// Symbols is the package's exported surface, present only for the
 	// packages --signatures selected. See libraries_signatures.go.
 	Symbols []LibrarySymbol `json:"symbols,omitempty"`
+	// Subpackages names the inventory packages nested under this one
+	// (`observe` → `observe/genai`, `observe/metrics`, …), present only for
+	// the packages --signatures selected: a package's API never includes
+	// its subpackages', so the reader is told they exist and how to ask.
+	Subpackages []string `json:"subpackages,omitempty"`
 }
 
 // LibrariesSpec is the whole dump: the resolved Go module and its packages,
@@ -141,9 +146,14 @@ methods at all, so 'go doc .../crud' never mentions crud.Repo.UpdateMasked.
 'go doc -all <pkg>' is complete but roughly ten times larger, most of it
 prose. Neither needs the source directory, and neither does reading files.
 
+A nested package is named by its path under pkg/ (observe/metrics); the full
+import path, a pkg/ or forge/pkg/ prefix, and the bare last element when only
+one package ends in it (metrics) name it too. A package's API stops at its own
+directory, so a selected package also lists its subpackages.
+
 A selector naming a package or symbol that does not exist is an error listing
-what does, so a briefing script whose list has gone stale fails loudly rather
-than quietly shipping an incomplete API.
+the closest names and then what does exist, so a briefing script whose list
+has gone stale fails loudly rather than quietly shipping an incomplete API.
 
 Examples:
   forge project libraries

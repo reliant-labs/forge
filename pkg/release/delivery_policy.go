@@ -81,23 +81,25 @@ type ShapeDeliveryPolicy struct {
 	ApprovalHook *ShapeApprovalHook `json:"approval_hook,omitempty"`
 }
 
-// ShapeRequiredGates: a promotion to this env is admitted only when it carries
-// a gate of every name in Names, each with status passed (`forge env deploy
-// --gate name=e2e,status=passed`, or a forge `--gate-json` document). A gate
-// that is missing refuses the promotion `required_gate_missing`; one carried
-// as failed, error or skipped refuses it `required_gate_failed`. An empty
-// Names requires nothing, whatever the mode, so naming a gate is the opt-in.
-// `audit` admits and records what enforce would have refused.
+// ShapeRequiredGates is the required-gates control: a promotion to this env is
+// admitted only when it carries a gate of every name in Names, each with
+// status passed (`forge env deploy --gate name=e2e,status=passed`, or a forge
+// `--gate-json` document). A gate that is missing refuses the promotion
+// `required_gate_missing`; one carried as failed, error or skipped refuses it
+// `required_gate_failed`. An empty Names requires nothing, whatever the mode,
+// so naming a gate is the opt-in. `audit` admits and records what enforce
+// would have refused.
 type ShapeRequiredGates struct {
 	Mode  DeliveryMode `json:"mode"`
 	Names []string     `json:"names"`
 }
 
-// ShapeApprovalHook: before a promotion to this env is written, the hook is
-// asked, with an [ApprovalRequest], and answers an [ApprovalDecision]. Exactly
-// one of URL (an HTTPS endpoint the env's ledger POSTs to: the control plane
-// for an env that has one, forge otherwise) or Argv (a command forge runs,
-// with no shell, for an env without a control plane) is set.
+// ShapeApprovalHook is the approval-hook control: before a promotion to this
+// env is written, the hook is asked, with an [ApprovalRequest], and answers an
+// [ApprovalDecision]. Exactly one of URL (an HTTPS endpoint the env's ledger
+// POSTs to: the control plane for an env that has one, forge otherwise) or
+// Argv (a command forge runs, with no shell, for an env without a control
+// plane) is set.
 //
 // In `enforce`, anything but approve refuses: deny `approval_denied`, pending
 // `approval_pending`, and a hook that times out, fails or answers something
@@ -112,13 +114,13 @@ type ShapeApprovalHook struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 }
 
-// ShapeHealthGate: a promotion of release R to this env is admitted only
-// once every env in After has proved R good — the control plane holds a
-// release-health verdict of PASS for its newest promotion of R there (the
-// verdict `forge obs check` reports as exit 0). The order is declared, never
-// inferred: an empty After gates nothing, whatever the mode. `enforce`
-// refuses an unproven promotion unless it carries the recorded override;
-// `audit` admits it and records what enforce would have refused.
+// ShapeHealthGate is the health-gate control: a promotion of release R to this
+// env is admitted only once every env in After has proved R good — the control
+// plane holds a release-health verdict of PASS for its newest promotion of R
+// there (the verdict `forge obs check` reports as exit 0). The order is
+// declared, never inferred: an empty After gates nothing, whatever the mode.
+// `enforce` refuses an unproven promotion unless it carries the recorded
+// override; `audit` admits it and records what enforce would have refused.
 type ShapeHealthGate struct {
 	Mode  DeliveryMode `json:"mode"`
 	After []string     `json:"after"`
@@ -129,17 +131,18 @@ type ShapeControl struct {
 	Mode DeliveryMode `json:"mode"`
 }
 
-// ShapeTrustedBuilder: only artifacts built by the platform's builder for the
-// org, or by one of Builders (`<kind>:<id>`), are eligible.
+// ShapeTrustedBuilder is the trusted-builder control: only artifacts built by
+// the platform's builder for the org, or by one of Builders (`<kind>:<id>`),
+// are eligible.
 type ShapeTrustedBuilder struct {
 	Mode     DeliveryMode `json:"mode"`
 	Builders []string     `json:"builders"`
 }
 
-// ShapeSigning: images and the bundle are signed. Key is the key model;
-// KeyRef is a customer key's PUBLIC reference (never key material);
-// OIDCIssuer and OIDCSubject name the identity a keyless signature must come
-// from.
+// ShapeSigning is the signing control: images and the bundle are signed. Key
+// is the key model; KeyRef is a customer key's PUBLIC reference (never key
+// material); OIDCIssuer and OIDCSubject name the identity a keyless signature
+// must come from.
 type ShapeSigning struct {
 	Mode        DeliveryMode `json:"mode"`
 	Key         string       `json:"key"`
@@ -148,9 +151,10 @@ type ShapeSigning struct {
 	OIDCSubject string       `json:"oidc_subject,omitempty"`
 }
 
-// ShapeVulnGate: a finding blocks when it is KEV-listed (BlockKEV), or when
-// its severity is at or above BlockSeverity and, with FixableOnly, a fixed
-// version exists. A non-blocking finding at or above WarnSeverity is warned.
+// ShapeVulnGate is the vulnerability gate: a finding blocks when it is
+// KEV-listed (BlockKEV), or when its severity is at or above BlockSeverity
+// and, with FixableOnly, a fixed version exists. A non-blocking finding at or
+// above WarnSeverity is warned.
 type ShapeVulnGate struct {
 	Mode          DeliveryMode      `json:"mode"`
 	BlockSeverity string            `json:"block_severity"`
@@ -293,9 +297,10 @@ type ShapeBundleKinds struct {
 	Deny  []string     `json:"deny"`
 }
 
-// ShapeApprovals: Required distinct people must approve a promotion, the
-// requester included. 1 is one-person approval. Approvers are the org members
-// who may approve; more than one required needs at least that many.
+// ShapeApprovals is the approvals control: Required distinct people must
+// approve a promotion, the requester included. 1 is one-person approval.
+// Approvers are the org members who may approve; more than one required needs
+// at least that many.
 type ShapeApprovals struct {
 	Mode      DeliveryMode `json:"mode"`
 	Required  int          `json:"required"`

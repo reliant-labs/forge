@@ -205,7 +205,8 @@ type Judged struct {
 
 // Coverage is how much of a release was scanned.
 type Coverage struct {
-	// Artifacts is how many artifacts the release has.
+	// Artifacts is how many artifacts of the release an SBOM applies to
+	// (release.SBOMApplicable): the N of "N of N applicable".
 	Artifacts int `json:"artifacts"`
 	// WithSBOM is how many of them have a stored SBOM.
 	WithSBOM int `json:"with_sbom"`
@@ -213,12 +214,37 @@ type Coverage struct {
 	Scanned int `json:"scanned"`
 	// Unscanned names each artifact with no SBOM or no scan, with why.
 	Unscanned []UnscannedArtifact `json:"unscanned,omitempty"`
+	// NotApplicable names each artifact of the release no SBOM describes
+	// (source maps, a git source pin), with why. They are outside
+	// Artifacts, and never unscanned.
+	NotApplicable []NotApplicableArtifact `json:"not_applicable,omitempty"`
 }
 
 // UnscannedArtifact is an artifact the verdict could not cover.
 type UnscannedArtifact struct {
 	Artifact string `json:"artifact"`
 	Reason   string `json:"reason"`
+}
+
+// NotApplicableArtifact is an artifact no SBOM describes, so no scan covers.
+type NotApplicableArtifact struct {
+	Artifact string `json:"artifact"`
+	Reason   string `json:"reason"`
+}
+
+// NotApplicableOf lists rel's artifacts no SBOM describes
+// (release.SBOMNotApplicable), sorted by name; nil when there are none.
+func NotApplicableOf(rel *release.Release) []NotApplicableArtifact {
+	if rel == nil {
+		return nil
+	}
+	var out []NotApplicableArtifact
+	for _, name := range rel.ArtifactNames() {
+		if reason, ok := release.SBOMNotApplicable(name, rel.Artifacts[name]); ok {
+			out = append(out, NotApplicableArtifact{Artifact: name, Reason: reason})
+		}
+	}
+	return out
 }
 
 // Complete reports whether every artifact was scanned.

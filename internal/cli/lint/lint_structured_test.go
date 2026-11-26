@@ -6,6 +6,7 @@ package lint
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -377,6 +378,42 @@ func TestRenderLintOutcomesScopedVerdictNamesUnscopedLanes(t *testing.T) {
 	}
 	if strings.Contains(got, "All ") {
 		t.Errorf("scoped verdict claims a whole-project pass: %q", got)
+	}
+}
+
+// A scope of many paths — the pre-push hook passes one --scope per changed
+// file — is summarized in the verdict, not listed: a project's first push
+// printed a ~10 KB verdict line naming all 349 files (friction #48). A short
+// scope is still named in full.
+func TestScopedVerdictSummarizesALongScope(t *testing.T) {
+	paths := make([]string, 0, 349)
+	for i := range 349 {
+		paths = append(paths, fmt.Sprintf("dir/f%03d.go", i))
+	}
+	long := &lintScope{root: t.TempDir(), paths: paths}
+	outcomes := []lintStepOutcome{
+		{name: "golangci-lint", gates: true, ran: true},
+		{name: "graph lint", gates: true, unscoped: true},
+	}
+	var buf bytes.Buffer
+	if err := renderLintOutcomes(&buf, outcomes, true, long); err != nil {
+		t.Fatalf("clean scoped run failed: %v", err)
+	}
+	got := strings.TrimRight(buf.String(), "\n")
+	want := "scope 349 paths (dir/f000.go, dir/f001.go, dir/f002.go and 346 more) only"
+	if !strings.Contains(got, want) {
+		t.Errorf("verdict %q does not summarize the scope as %q", got, want)
+	}
+	if strings.Contains(got, "dir/f003.go") || len(got) > 400 {
+		t.Errorf("verdict lists the scope instead of summarizing it (%d bytes): %q", len(got), got)
+	}
+	if !strings.Contains(got, "not run: graph lint") {
+		t.Errorf("summarized verdict dropped the unscoped lanes: %q", got)
+	}
+
+	short := &lintScope{root: long.root, paths: paths[:scopeListedMax]}
+	if got, want := short.summary(), strings.Join(paths[:scopeListedMax], ", "); got != want {
+		t.Errorf("short scope summary = %q, want every path: %q", got, want)
 	}
 }
 

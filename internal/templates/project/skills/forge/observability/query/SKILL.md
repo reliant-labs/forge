@@ -60,6 +60,8 @@ Local and cloud compile through ONE query compiler (`forge/pkg/obsquery`), so a 
 | `forge obs issue <id> [env]` | Everything needed to fix one issue: culprit, frames, latest event and its trace, events per version, co-occurring issues, the other issues of its incident, the release live when it was last seen, suspect commits from local git (`--events N`); on a cloud env also its assignee and the newest `--timeline-limit N` (default 10) timeline entries, oldest first: status changes, comments, assignment, linked chats |
 | `forge obs issue resolve\|ignore\|unresolve <id> [env]` | Triage (cloud; needs `obs:triage`): `resolve --in next\|<version>`, `ignore --until 72h` |
 | `forge obs issue comment <id> <text> [env]` | Add a comment (cloud; needs `obs:triage`) |
+| `forge obs issue edit-comment <id> <comment-id> <text> [env]` | Replace one of your comments (cloud; needs `obs:triage`) |
+| `forge obs issue delete-comment <id> <comment-id> [env]` | Remove a comment: its author, or an org owner or admin (cloud; needs `obs:triage`) |
 | `forge obs issue assign <id> <user-id\|me\|none> [env]` | Set or clear the assignee (cloud; needs `obs:triage`); sends the version it read, exits 1 `changed since you read it` if the issue moved, never retries |
 | `forge obs sessions [env]` | Real-user browser sessions that started in the range, newest first (`--has-error`, `--has-replay`, `--user`, `--path`, `--since` up to 30d, `--limit`, `--page-token`). Hosted envs only |
 | `forge obs users [env]` | Users over the range (`--since`, default 7d, up to 90d) and the one before: active, new, returning, per env, with `--series N` daily counts and `--seen-total`. Hosted envs only |

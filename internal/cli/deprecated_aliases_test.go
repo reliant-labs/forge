@@ -320,6 +320,11 @@ func TestCapabilitiesListsDeprecatedAliases(t *testing.T) {
 		if strings.HasPrefix(a.Old, "forge env releases") {
 			t.Errorf("deprecated_aliases lists %q, a kept alias (owner Q4)", a.Old)
 		}
+		// `forge start` is the entry point the README and every skill
+		// send agents to (forge report 25e5c543).
+		if a.Old == "forge start" || strings.HasPrefix(a.Old, "forge start ") {
+			t.Errorf("deprecated_aliases lists %q, the promoted entry point", a.Old)
+		}
 	}
 	paths := map[string]bool{}
 	for _, c := range doc.Commands {
@@ -375,7 +380,7 @@ func TestPhaseTwoDeprecation(t *testing.T) {
 			t.Errorf("`forge %s` should be hidden in phase 2", rel)
 		}
 	}
-	for _, rel := range []string{"env releases", "env releases list", "cloud registry", "dev cluster up", "scaffold package", "release list"} {
+	for _, rel := range []string{"env releases", "env releases list", "cloud registry", "dev cluster up", "scaffold package", "release list", "start", "start app"} {
 		if c := findRel(root, rel); c == nil || c.Hidden {
 			t.Errorf("`forge %s` should stay visible in phase 2", rel)
 		}
@@ -392,7 +397,7 @@ func TestPhaseTwoDeprecation(t *testing.T) {
 	if got := warn("package new"); !strings.Contains(got, `use "`+Name()+` scaffold package"`) {
 		t.Errorf("package new warning = %q", got)
 	}
-	for _, rel := range []string{"cloud registry login", "env releases list", "release list", "generate"} {
+	for _, rel := range []string{"cloud registry login", "env releases list", "release list", "generate", "start", "start app"} {
 		if got := warn(rel); got != "" {
 			t.Errorf("`forge %s` warned: %q", rel, got)
 		}

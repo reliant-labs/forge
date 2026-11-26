@@ -111,6 +111,7 @@ Examples:
 				return err
 			}
 			opts.env = args[0]
+			opts.checkForgeBridge = true
 			composing := basePromotion != "" || snapshotBootstrap
 			if len(selectors) > 0 {
 				opts.buildTarget = selectors[0]

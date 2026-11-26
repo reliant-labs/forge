@@ -137,7 +137,12 @@ func commandMoveTable() []commandMove {
 	return []commandMove{
 		// project
 		{Old: "doctor", New: "project doctor", build: same(newDoctorCmd)},
-		{Old: "start", New: "project start", build: same(newStartCmd)},
+		// `forge start` is the entry point forge promotes everywhere — the
+		// README, every skill, reliantlabs.io: "install forge, run `forge
+		// start`" — so it is kept for good, not deprecated (forge report
+		// 25e5c543: capabilities called it deprecated while it ran silently
+		// and the docs sent every agent to it).
+		{Old: "start", New: "project start", build: same(newStartCmd), keepOld: true},
 		// scaffold
 		{Old: "package new", New: "scaffold package", preexisting: true},
 		// lint

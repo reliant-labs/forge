@@ -8,6 +8,7 @@ package obsbackend
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/reliant-labs/forge/internal/cloud"
@@ -310,10 +311,82 @@ func (c Cloud) GetIssue(ctx context.Context, req GetIssueRequest) (GetIssueResul
 		return GetIssueResult{}, Undetermined("--explain compiles the local backend's SQL; hosted issues have no statement to show")
 	}
 	res, err := c.getIssue(ctx, req.ID, req.Narrow)
+	if err != nil && issueIDPrefix(req.ID) && isCloudNotFound(err) {
+		// A SHORT ID, like the 8 characters a table or a log line shows:
+		// the control plane answers only full ids, so resolve the prefix
+		// against the env's issues (obs d42c4b4c).
+		full, rerr := c.resolveIssuePrefix(ctx, req.ID, req.Narrow)
+		if rerr != nil {
+			return GetIssueResult{}, rerr
+		}
+		res, err = c.getIssue(ctx, full, req.Narrow)
+	}
 	if err != nil {
 		return res, err
 	}
 	return res, c.checkEnv(res.Issue)
+}
+
+// issueIDPrefix reports an id that can only be a prefix of a control-plane
+// issue id (a UUID): shorter than one, and only hex digits and dashes.
+func issueIDPrefix(id string) bool {
+	if len(id) < 4 || len(id) >= 36 {
+		return false
+	}
+	for _, r := range id {
+		if !strings.ContainsRune("0123456789abcdefABCDEF-", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isCloudNotFound(err error) bool {
+	var ce *cloud.Error
+	return errors.As(err, &ce) && ce.HasCode(cloud.CodeNotFound)
+}
+
+// issuePrefixPages bounds the issues a prefix is resolved against.
+const issuePrefixPages, issuePrefixPageSize = 10, 100
+
+// resolveIssuePrefix is the one issue of this env (any status, in the
+// narrow's time range) whose id starts with prefix. None, or more than one,
+// is refused naming the fix.
+func (c Cloud) resolveIssuePrefix(ctx context.Context, prefix string, n Narrow) (string, error) {
+	want := strings.ToLower(prefix)
+	var matches []string
+	seen := map[string]bool{}
+	token := ""
+	for page := 0; page < issuePrefixPages; page++ {
+		res, err := c.ListIssues(ctx, ListIssuesRequest{Narrow: n, Statuses: IssueStatuses, Sort: "last", Limit: issuePrefixPageSize, PageToken: token})
+		if err != nil {
+			return "", err
+		}
+		for _, i := range res.Issues {
+			// Deduplicated: a list that shifts between pages may repeat one.
+			if strings.HasPrefix(strings.ToLower(i.ID), want) && !seen[i.ID] {
+				seen[i.ID] = true
+				matches = append(matches, i.ID)
+			}
+		}
+		if token = res.NextPageToken; token == "" {
+			break
+		}
+	}
+	// The scan stopped at its cap with issues left unread: one match so far
+	// is not proof of a unique one, so nothing is resolved.
+	if token != "" && len(matches) <= 1 {
+		return "", Wrong("%s has more than %d issues in this time range, so %q could not be resolved to exactly one: use the full id from `forge obs issues %s` (or narrow --since)",
+			c.Env, issuePrefixPages*issuePrefixPageSize, prefix, c.Env)
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", Wrong("no issue of %s seen in this time range has an id starting with %q: use the full id from `forge obs issues %s` (or widen --since)", c.Env, prefix, c.Env)
+	default:
+		return "", Wrong("%d issues of %s have an id starting with %q (%s): give more of the id", len(matches), c.Env, prefix, strings.Join(matches, ", "))
+	}
 }
 
 func (c Cloud) checkEnv(i Issue) error {

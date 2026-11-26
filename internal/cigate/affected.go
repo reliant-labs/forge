@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -80,6 +81,24 @@ type Affected struct {
 	// Selections say, one line per affected rule that matched, what it
 	// claimed and selected.
 	Selections []string
+	// Reach is the ci.gate.affected_reach the run applied: "all" (also
+	// when unset) or "direct", with its TransitiveCap.
+	Reach         string
+	TransitiveCap int
+	// Deferred are the test packages a direct reach left to the full gate:
+	// transitive importers past the cap. Sorted; never dropped silently.
+	Deferred []string
+	// ClosureHits are, per check with GoClosure, the changed files in its
+	// Go build closure; ClosureErrs why one could not be computed
+	// (ResolveGoClosures).
+	ClosureHits map[string][]string
+	ClosureErrs map[string]string
+	// LockfileChecks are the lockfile-<frontend> rows the diff added
+	// (WithLockfileChecks), sorted.
+	LockfileChecks []string
+	// FullChecks are the gate rows a matching rule's full_checks force to
+	// run whole, sorted. Set whenever Changed is.
+	FullChecks []string
 	// Build are the module packages, with or without tests, whose build
 	// contains a changed package: a compile phase's set (affected mode).
 	Build []string
@@ -102,10 +121,10 @@ func (a Affected) Line() string {
 	}
 	if len(a.Packages) == 0 {
 		return fmt.Sprintf("unit tests: affected mode — no package with tests reaches the %d changed file(s) since %s (%s)%s; %s=1 runs the full suite",
-			len(a.Changed), a.BaseRef, a.Base, fe, FullEnv)
+			len(a.Changed), a.BaseRef, a.Base, fe, FullEnv) + a.deferredLine()
 	}
 	return fmt.Sprintf("unit tests: affected mode — %d of %d test packages reach the %d changed file(s) since %s (%s)%s; %s=1 runs the full suite",
-		len(a.Packages), a.Total, len(a.Changed), a.BaseRef, a.Base, fe, FullEnv)
+		len(a.Packages), a.Total, len(a.Changed), a.BaseRef, a.Base, fe, FullEnv) + a.deferredLine()
 }
 
 // AffectedInput configures ComputeAffected.
@@ -124,6 +143,8 @@ type AffectedInput struct {
 	// Rules are ci.gate.affected_rules: what a changed file the package
 	// graph cannot place selects.
 	Rules []config.CIGateAffectedRule
+	// Reach is ci.gate.affected_reach; nil is full transitive reach.
+	Reach *config.CIGateAffectedReach
 	// ChangesOnly stops once the changed files are known, without go list:
 	// for a caller that gates checks by path (GateByPaths) but does not
 	// narrow the unit lane.
@@ -184,7 +205,8 @@ func ComputeAffected(ctx context.Context, in AffectedInput) Affected {
 		// nothing about the base unless the suite actually runs.
 		return full("nothing changed since " + baseRef + " (" + short + ")")
 	}
-	a := Affected{BaseRef: baseRef, Base: short, Changed: changed}
+	fullChecks := ruleFullChecks(changed, in.Rules)
+	a := Affected{BaseRef: baseRef, Base: short, Changed: changed, FullChecks: fullChecks}
 	if in.ChangesOnly {
 		return a
 	}
@@ -197,7 +219,7 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 	// After the diff, the unit lane may still run whole; the changed files
 	// stay recorded, so path-gated checks are still judged by them.
 	fullAfterDiff := func(reason string) Affected {
-		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed}
+		return Affected{Full: true, Reason: reason, BaseRef: baseRef, Base: short, Changed: changed, FullChecks: a.FullChecks}
 	}
 
 	list := in.GoList
@@ -233,6 +255,7 @@ func affectedFromGraph(ctx context.Context, in AffectedInput, a Affected) Affect
 			}
 		}
 	}
+	applyReach(&a, g, sel, in.Reach)
 	sort.Strings(a.Packages)
 	for fe := range sel.frontends {
 		a.Frontends = append(a.Frontends, fe)
@@ -264,7 +287,8 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 	for _, f := range changed {
 		claimed := false
 		for i, rule := range rules {
-			if !matchGlobs(f, rule.Paths) || matchGlobs(f, rule.Except) {
+			matched, claims := ruleMatch(f, rule)
+			if !matched {
 				continue
 			}
 			if rule.Full {
@@ -275,11 +299,9 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 				return sel, fmt.Sprintf("%s changed — %s (ci.gate.affected_rules[%d])", f, why, i)
 			}
 			sel.hits[i]++
-			claimed = true
-			for _, pat := range rule.Packages {
-				for _, pkg := range g.resolve(pat) {
-					sel.rulePkgs[pkg] = true
-				}
+			claimed = claimed || claims
+			for _, pkg := range g.rulePackages(f, rule) {
+				sel.rulePkgs[pkg] = true
 			}
 			for _, fe := range rule.Frontends {
 				sel.frontends[fe] = true
@@ -303,6 +325,10 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 func selectionLine(i int, rule config.CIGateAffectedRule, hits int, g *packageGraph) string {
 	var what []string
 	for _, pat := range rule.Packages {
+		if strings.Contains(pat, DirPlaceholder) {
+			what = append(what, pat+" (per matched file)")
+			continue
+		}
 		switch n := len(g.resolve(pat)); n {
 		case 0:
 			what = append(what, pat+" (no package with tests)")
@@ -312,11 +338,21 @@ func selectionLine(i int, rule config.CIGateAffectedRule, hits int, g *packageGr
 			what = append(what, fmt.Sprintf("%s (%d packages)", pat, n))
 		}
 	}
+	if len(rule.PackagesImporting) > 0 {
+		what = append(what, fmt.Sprintf("importers of %s (%d packages)", strings.Join(rule.PackagesImporting, ", "), len(g.importers(rule.PackagesImporting))))
+	}
 	if len(rule.Frontends) > 0 {
 		what = append(what, "frontend tests: "+strings.Join(rule.Frontends, ", "))
 	}
+	if len(rule.FullChecks) > 0 {
+		what = append(what, "whole: "+strings.Join(rule.FullChecks, ", "))
+	}
+	paths := rule.Paths
+	if rule.On != "" {
+		paths = append(append([]string(nil), paths...), "on: "+rule.On)
+	}
 	line := fmt.Sprintf("ci.gate.affected_rules[%d] (%s): %d changed file(s) → %s",
-		i, strings.Join(rule.Paths, ", "), hits, strings.Join(what, "; "))
+		i, strings.Join(paths, ", "), hits, strings.Join(what, "; "))
 	if rule.Reason != "" {
 		line += " — " + rule.Reason
 	}
@@ -335,29 +371,52 @@ func GateByPaths(checks []Check, a Affected) []Check {
 	}
 	for i := range out {
 		c := &out[i]
-		if len(c.Paths) == 0 || c.NotApplicable != "" || c.Deferred != "" {
+		if len(c.Paths) == 0 && len(c.GoClosure) == 0 || c.NotApplicable != "" || c.Deferred != "" {
+			continue
+		}
+		if why, ok := a.ClosureErrs[c.Name]; ok {
+			c.Note = joinNote(c.Note, "affected mode: Go closure of "+strings.Join(c.GoClosure, ", ")+" unknown ("+why+") — runs")
 			continue
 		}
 		var hit []string
+		inClosure := map[string]bool{}
+		for _, f := range a.ClosureHits[c.Name] {
+			inClosure[f] = true
+		}
 		for _, f := range a.Changed {
-			if matchGlobs(f, c.Paths) {
+			if len(c.Paths) > 0 && matchGlobs(f, c.Paths) || inClosure[f] {
 				hit = append(hit, f)
 			}
 		}
+		if len(hit) == 0 && slices.Contains(a.FullChecks, c.Name) {
+			c.Note = "affected mode: run whole by ci.gate.affected_rules full_checks"
+			continue
+		}
 		if len(hit) == 0 {
-			c.NotApplicable = fmt.Sprintf("affected mode: no change under %s since %s (%s=1 runs it)", strings.Join(c.Paths, ", "), a.BaseRef, FullEnv)
+			var under []string
+			if len(c.Paths) > 0 {
+				under = append(under, strings.Join(c.Paths, ", "))
+			}
+			if len(c.GoClosure) > 0 {
+				under = append(under, "the Go build closure of "+strings.Join(c.GoClosure, ", "))
+			}
+			c.NotApplicable = fmt.Sprintf("affected mode: no change under %s since %s (%s=1 runs it)", strings.Join(under, " or "), a.BaseRef, FullEnv)
 			continue
 		}
 		note := "affected mode: " + hit[0] + " changed"
 		if len(hit) > 1 {
 			note = fmt.Sprintf("affected mode: %s and %d more changed", hit[0], len(hit)-1)
 		}
-		if c.Note != "" {
-			note = c.Note + "; " + note
-		}
-		c.Note = note
+		c.Note = joinNote(c.Note, note)
 	}
 	return out
+}
+
+func joinNote(old, note string) string {
+	if old != "" {
+		return old + "; " + note
+	}
+	return note
 }
 
 // ApplyAffected narrows the unit-tests row to a's packages. In full mode it
@@ -372,8 +431,10 @@ func ApplyAffected(checks []Check, a Affected) []Check {
 		switch {
 		case a.Full:
 			c.Note = "full suite: " + a.Reason
-		case len(a.Packages) == 0:
+		case len(a.Packages) == 0 && len(a.Deferred) == 0:
 			c.NotApplicable = fmt.Sprintf("affected mode: no package with tests reaches the changes since %s (%s=1 runs the full suite)", a.BaseRef, FullEnv)
+		case len(a.Packages) == 0:
+			c.NotApplicable = fmt.Sprintf("affected mode: only transitive importers reach the changes since %s; %d deferred to the full gate", a.BaseRef, len(a.Deferred))
 		default:
 			// `task test -- <packages>` replaces the default ./... with the
 			// list. It also skips the frontend lane, which is right: affected
@@ -382,6 +443,9 @@ func ApplyAffected(checks []Check, a Affected) []Check {
 			// (WithFrontendTests).
 			c.Argv = append(append(append([]string(nil), c.Argv...), "--"), a.Packages...)
 			c.Note = fmt.Sprintf("affected mode: %d of %d packages (since %s)", len(a.Packages), a.Total, a.BaseRef)
+			if len(a.Deferred) > 0 {
+				c.Note += fmt.Sprintf("; %d deferred to the full gate", len(a.Deferred))
+			}
 		}
 	}
 	return out
@@ -394,9 +458,14 @@ type packageGraph struct {
 	dirPkg map[string]string
 	// embedPkg maps an embedded file (absolute) to the package embedding it.
 	embedPkg map[string]string
+	// directImports maps each module package to what it and its tests
+	// (internal and external test files) import directly.
+	directImports map[string][]string
 	// testDeps maps each module package that has tests to every package its
 	// test binary links.
 	testDeps map[string][]string
+	// testImports maps a module package to what its test files import.
+	testImports map[string]map[string]bool
 	// buildDeps maps each module package to every package its build (not
 	// its tests) imports, transitively.
 	buildDeps map[string][]string
@@ -414,6 +483,9 @@ type listedPackage struct {
 	EmbedFiles      []string `json:"EmbedFiles"`
 	TestEmbedFiles  []string `json:"TestEmbedFiles"`
 	XTestEmbedFiles []string `json:"XTestEmbedFiles"`
+	Imports         []string `json:"Imports"`
+	TestImports     []string `json:"TestImports"`
+	XTestImports    []string `json:"XTestImports"`
 }
 
 func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
@@ -433,7 +505,7 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 	if r, rerr := filepath.EvalSymlinks(absRoot); rerr == nil {
 		realRoot = r
 	}
-	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, buildDeps: map[string][]string{}}
+	g := &packageGraph{root: absRoot, dirPkg: map[string]string{}, embedPkg: map[string]string{}, testDeps: map[string][]string{}, testImports: map[string]map[string]bool{}, buildDeps: map[string][]string{}, directImports: map[string][]string{}}
 	dec := json.NewDecoder(r)
 	for {
 		var p listedPackage
@@ -468,8 +540,15 @@ func readPackageGraph(r io.Reader, root string) (*packageGraph, error) {
 		path := stripTestVariant(p.ImportPath)
 		if p.ForTest == "" {
 			g.dirPkg[dir] = path
+			for _, imp := range append(append([]string(nil), p.TestImports...), p.XTestImports...) {
+				if g.testImports[path] == nil {
+					g.testImports[path] = map[string]bool{}
+				}
+				g.testImports[path][imp] = true
+			}
 			g.buildDeps[path] = p.Deps
 		}
+		g.addDirectImports(path, p)
 		for _, files := range [][]string{p.EmbedFiles, p.TestEmbedFiles, p.XTestEmbedFiles} {
 			for _, f := range files {
 				g.embedPkg[filepath.Join(dir, filepath.FromSlash(f))] = path
@@ -633,7 +712,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 
 func runGoList(ctx context.Context, dir string, env []string) (io.Reader, error) {
 	cmd := exec.CommandContext(ctx, "go", "list", "-e", "-deps", "-test",
-		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles",
+		"-json=ImportPath,Name,Dir,ForTest,Standard,Deps,EmbedFiles,TestEmbedFiles,XTestEmbedFiles,Imports,TestImports,XTestImports",
 		"./...")
 	cmd.Dir = dir
 	if env == nil {

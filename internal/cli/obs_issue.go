@@ -42,6 +42,7 @@ var obsIssueSchema = obsout.Schema{
 		"timeline_omitted", "timeline_issue_id", "timeline_note",
 		"comment", "comment.id", "comment.issue_id", "comment.author", "comment.author.id", "comment.author.name",
 		"comment.body", "comment.created_at", "comment.updated_at",
+		"deleted_comment", "deleted_comment.id",
 		"latest_event", "latest_event.time", "latest_event.trace_id", "latest_event.span_id", "latest_event.version",
 		"latest_event.message", "latest_event.attributes.*", "latest_event.session_id", "latest_event.url_path",
 		"events", "events.time", "events.trace_id", "events.span_id", "events.version", "events.message", "events.attributes.*",
@@ -232,7 +233,7 @@ Triage needs a hosted env: a local issue is a query over logs and has no state.
 	cmd.Flags().IntVar(&o.timelineLimit, "timeline-limit", defaultTimelineLimit, fmt.Sprintf("newest timeline entries (comments, status changes, assignment, linked chats) to include, oldest first (0 = none; at most %d)", maxTimelineLimit))
 	_ = cmd.Flags().MarkHidden("limit")
 	cmd.AddCommand(newObsIssueTriageCmd("resolve"), newObsIssueTriageCmd("ignore"), newObsIssueTriageCmd("unresolve"),
-		newObsIssueCommentCmd(), newObsIssueAssignCmd())
+		newObsIssueCommentCmd(), newObsIssueEditCommentCmd(), newObsIssueDeleteCommentCmd(), newObsIssueAssignCmd())
 	return cmd
 }
 
@@ -266,6 +267,11 @@ func runObsIssue(ctx context.Context, d obsDeps, id, env string, o obsIssueOpts)
 	res, err := r.GetIssue(ctx, obsbackend.GetIssueRequest{Narrow: n, ID: id})
 	if err != nil {
 		return fail(err)
+	}
+	// The backend may have resolved a short id to the full one: every read
+	// below asks by the full id.
+	if res.Issue.ID != "" {
+		id = res.Issue.ID
 	}
 	res.Issue.Culprit = displayCulprit(res.Issue.Culprit, res.LatestEvent)
 	doc := obsIssueDoc{Scope: obsScope(b.Info(), n), QueryMode: QueryModeStructured, Suspects: []obsSuspectDoc{}, Statements: nil}

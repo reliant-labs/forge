@@ -396,3 +396,59 @@ func TestFloorFromWire(t *testing.T) {
 		t.Fatalf("floor = %+v", f)
 	}
 }
+
+// An over-long --reason is refused by the CLI, naming its length, before any
+// store is opened: a control plane that predates naming the field answers it
+// only with "the fields in this request cannot be combined", and the train's
+// declared order floor looped on that (control-plane#3742). Every changing verb
+// shares the check.
+func TestFloorVerbsRefuseAnOverlongReasonBeforeAnyRequest(t *testing.T) {
+	long := strings.Repeat("x", release.MaxFloorReasonBytes+1)
+	for _, args := range [][]string{
+		{"set", "prod", "v1.0.0", "--reason", long},
+		{"lower", "prod", "v1.0.0", "--reason", long},
+		{"clear", "prod", "--reason", long},
+		{"lift", "prod", "flr_1", "--reason", long},
+	} {
+		cmd := newEnvFloorCmd()
+		cmd.SetArgs(args)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		err := cmd.ExecuteContext(context.Background())
+		var exit exitCodeError
+		if !errors.As(err, &exit) || exit.code != exitWrong {
+			t.Fatalf("%s: err = %v; want an exit-%d refusal", args[0], err, exitWrong)
+		}
+		if want := "1025 bytes, over the 1024-byte limit"; !strings.Contains(exit.msg, want) {
+			t.Errorf("%s: %q does not say %q", args[0], exit.msg, want)
+		}
+	}
+	at := floorFlags{reason: strings.Repeat("x", release.MaxFloorReasonBytes)}
+	if err := at.requireReason("set"); err != nil {
+		t.Errorf("a reason of exactly %d bytes is refused: %v", release.MaxFloorReasonBytes, err)
+	}
+	if err := (&floorFlags{reason: "\xff"}).requireReason("set"); err == nil {
+		t.Error("a reason that is not UTF-8 is admitted")
+	}
+}
+
+// `env deploy --floor "<why>"` sets a floor too, so its reason is held to the
+// same cap, refused by name before anything is built, recorded or sent.
+func TestDeployFloorRefusesAnOverlongReasonBeforeAnything(t *testing.T) {
+	cmd := newDeployCmd()
+	cmd.SetArgs([]string{"prod", "v1.0.0", "--floor", strings.Repeat("x", release.MaxFloorReasonBytes+1)})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.ExecuteContext(context.Background())
+	var exit exitCodeError
+	if !errors.As(err, &exit) || exit.code != exitWrong {
+		t.Fatalf("err = %v; want an exit-%d refusal", err, exitWrong)
+	}
+	if want := "forge env deploy: --floor is 1025 bytes, over the 1024-byte limit"; !strings.Contains(exit.msg, want) {
+		t.Errorf("%q does not say %q", exit.msg, want)
+	}
+	// Measured as stored: surrounding whitespace the control plane trims does not count.
+	if err := floorReasonRefusal("forge env deploy", "--floor", "  "+strings.Repeat("x", release.MaxFloorReasonBytes)+"\n"); err != nil {
+		t.Errorf("a %d-byte reason with surrounding whitespace is refused: %v", release.MaxFloorReasonBytes, err)
+	}
+}

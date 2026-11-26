@@ -24,6 +24,10 @@ import (
 const (
 	procRecordTestRun = "controlplane.v1.TestsService/RecordTestRun"
 
+	// testUploadScope is the narrow scope RecordTestRun asks of a machine
+	// credential: uploading test runs, and nothing else.
+	testUploadScope = "tests:write"
+
 	// hostedTestFeatureResults is GetCapabilities.test_features'
 	// "test-results": RecordTestRun stores an uploaded run and ingests it.
 	// It gates the upload.

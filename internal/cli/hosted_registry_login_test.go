@@ -105,6 +105,9 @@ func isolatedCredentials(t *testing.T) string {
 	t.Setenv("FORGE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv(cloud.DefaultTokenEnv, "")
+	// A GitHub Actions job granted id-token: write must not hand these tests
+	// its own identity.
+	t.Setenv(cloud.CIOIDCEnv, "off")
 	path, err := cloud.CredentialsPath()
 	if err != nil {
 		t.Fatal(err)

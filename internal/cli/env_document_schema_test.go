@@ -26,7 +26,7 @@ const envSchemaPath = "../../schema/env.v1.schema.json"
 // differs. FORGE_UPDATE_GOLDEN=1 rewrites it.
 func TestEnvSchemaIsCurrent(t *testing.T) {
 	if testing.Short() {
-		t.Skip("regenerates the schema from repository Go sources; runs in task test")
+		t.Skip("regenerates the schema by scanning source for type comments; runs in task test")
 	}
 	got, err := generateEnvSchema(newSourceDescriber(t, "../.."))
 	if err != nil {

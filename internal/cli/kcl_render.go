@@ -359,6 +359,9 @@ type ControlPlaneEntity struct {
 	// agree with it or be wrong. env names the declaring env in messages.
 	org *orgState
 	env string
+	// placeholderOrg marks a plan-scoped copy whose org is a stand-in
+	// (withPlaceholderOrg), not one the credential acts for.
+	placeholderOrg bool
 	// RegistryHost is the platform registry this org's artifacts live on,
 	// defaulted in KCL to forge.RELIANT_REGISTRY_HOST.
 	//

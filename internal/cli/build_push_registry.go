@@ -39,7 +39,7 @@ type imageDestination struct {
 	// build artifact is ever tagged for it, so repositoryFor skips it.
 	mirror bool
 	// unresolved marks a hosted destination a credential-free --plan
-	// composed under a placeholder org (assumeOrgForPlan): the org segment is a
+	// composed under a placeholder org (scopePlanPlaceholderOrg): the org segment is a
 	// placeholder, so the address shows the shape the push will take but was
 	// not validated against the platform.
 	unresolved bool
@@ -219,6 +219,9 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 	if err := preflightPlacementBuild(ctx, declared, *opts); err != nil {
 		return nil, pushPlan{}, err
 	}
+	if opts.plan {
+		scopePlanPlaceholderOrg(declared, entities)
+	}
 	plan, err := resolvePushPlan(*opts, declared)
 	if err != nil {
 		return nil, pushPlan{}, err
@@ -233,6 +236,33 @@ func renderBuildInputs(ctx context.Context, cfg *config.ProjectConfig, opts *bui
 	}
 	opts.pushPlan = plan
 	return entities, plan, nil
+}
+
+// scopePlanPlaceholderOrg lets a credential-free --plan preflight the bare
+// hosted images it cannot resolve. With no org there is no push base, so each
+// bare image stayed bare, dropped out of the destinations, and a release plan
+// of an env whose hosted images were all bare refused itself as having
+// nothing to push.
+//
+// When the env needs a push base and none composes, both renders this build
+// holds (the full declaration and the --target narrowing) get a COPY of the
+// control-plane declaration whose org is unresolvedOrgSegment. Every consumer
+// that composes a hosted address from them — the destinations, the release
+// coverage gate, the static-site step — then composes the same one. The
+// original declaration and its org cache are untouched, so nothing that runs
+// after the plan can read the placeholder as a resolved org. Only a plan
+// calls this; a pushing build resolves the org strictly (requireOrg).
+func scopePlanPlaceholderOrg(declared, entities *KCLEntities) {
+	if declared == nil || declared.ControlPlane == nil || !declared.HasHosted() ||
+		!hostedNeedsPushBase(declared) || platformPushBase(declared) != "" {
+		return
+	}
+	orig := declared.ControlPlane
+	scoped := orig.withPlaceholderOrg(unresolvedOrgSegment)
+	declared.ControlPlane = scoped
+	if entities != nil && entities.ControlPlane == orig {
+		entities.ControlPlane = scoped
+	}
 }
 
 // resolvePushPlan is the ONE place a build decides where its images go: each
@@ -264,21 +294,11 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 	// image: that is not a refusal, it is a preflight that cannot resolve what
 	// it was never allowed to learn. The pushing run refuses (above).
 	//
-	// It still preflights them. The plan assumes a placeholder org
-	// (unresolvedOrgSegment) for the rest of this process, so every consumer
-	// that composes a hosted address — the destinations here, the release
-	// coverage gate, the static-site push — composes the same one, and each
-	// destination under it is marked unresolved so the header says what was
-	// not validated. Leaving them bare dropped every one from the
-	// destinations, and a release plan of an env whose hosted images were all
-	// bare refused itself as having nothing to push.
-	unresolved := false
-	if opts.plan && pushBase == "" && declared != nil && declared.ControlPlane != nil &&
-		declared.HasHosted() && hostedNeedsPushBase(declared) {
-		declared.ControlPlane.assumeOrgForPlan(unresolvedOrgSegment)
-		pushBase = platformPushBase(declared)
-		unresolved = pushBase != ""
-	}
+	// It still preflights them: renderBuildInputs gives a credential-free
+	// plan a copy of the control-plane declaration whose org is a placeholder
+	// (scopePlanPlaceholderOrg), so pushBase composes and each destination
+	// under it is marked unresolved for the header.
+	unresolved := opts.plan && declared != nil && declared.ControlPlane != nil && declared.ControlPlane.placeholderOrg
 	if !(opts.plan && pushBase == "") {
 		if err := checkHostedImagesResolve(opts.env, declared, pushBase); err != nil {
 			return pushPlan{}, err

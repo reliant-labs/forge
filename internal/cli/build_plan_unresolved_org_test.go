@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // unresolvableOrg makes every env's org lookup fail, as it does on a machine
@@ -118,5 +120,40 @@ func TestBuildPlan_BareHostedStaticSiteIsPlannedWithoutCredential(t *testing.T) 
 		if !strings.Contains(out, want) {
 			t.Errorf("plan output lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestBuildPlan_PlaceholderOrgNeverReachesTheSharedDeclaration: the
+// placeholder lives on a plan-scoped COPY of the control-plane declaration.
+// The declaration the render produced keeps its own org cache, so nothing that
+// reads it after the plan sees the placeholder as a resolved org.
+func TestBuildPlan_PlaceholderOrgNeverReachesTheSharedDeclaration(t *testing.T) {
+	planProject(t, hostedPlatformFixture("", "pt"))
+	unresolvableOrg(t)
+
+	var orig *ControlPlaneEntity
+	prev := renderBuildEntitiesFn
+	renderBuildEntitiesFn = func(ctx context.Context, cfg *config.ProjectConfig, opts buildOptions) (*KCLEntities, *KCLEntities, error) {
+		declared, entities, err := prev(ctx, cfg, opts)
+		if declared != nil {
+			orig = declared.ControlPlane
+		}
+		return declared, entities, err
+	}
+	t.Cleanup(func() { renderBuildEntitiesFn = prev })
+
+	opts := buildOptions{env: "prod", push: true, release: "v0.0.0", plan: true, buildDocker: true, outputDir: "bin", buildTarget: "all"}
+	entities, plan, err := renderBuildInputs(t.Context(), mustLoadProjectConfig(t), &opts)
+	if err != nil {
+		t.Fatalf("credential-free plan: %v", err)
+	}
+	if plan.unresolvedCount() != 1 || entities.ControlPlane == nil || !entities.ControlPlane.placeholderOrg {
+		t.Fatalf("the plan should act on the placeholder copy: unresolved=%d entities.ControlPlane=%+v", plan.unresolvedCount(), entities.ControlPlane)
+	}
+	if orig == nil || orig == entities.ControlPlane || orig.placeholderOrg {
+		t.Fatalf("the rendered declaration must not be the plan's copy: orig=%p plan=%p", orig, entities.ControlPlane)
+	}
+	if org, err := orig.organization(t.Context()); err == nil || org == unresolvedOrgSegment {
+		t.Errorf("the rendered declaration's org cache must still say it could not learn the org; got %q, %v", org, err)
 	}
 }

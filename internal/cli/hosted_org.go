@@ -62,25 +62,22 @@ func (cp *ControlPlaneEntity) setResolvedOrg(org string) {
 	cp.org.done, cp.org.org, cp.org.err = true, org, nil
 }
 
-// assumeOrgForPlan pins a placeholder organization for the rest of the
-// process, for a credential-free `forge env build --plan`: the plan composes
-// every hosted address under it and labels them unresolved. Only a plan calls
-// it, and a plan writes, pushes and authenticates nothing, so the placeholder
-// never reaches a registry or the control plane. An org already learned is
-// kept.
-func (cp *ControlPlaneEntity) assumeOrgForPlan(placeholder string) {
+// withPlaceholderOrg is a COPY of cp whose organization is placeholder, for a
+// credential-free `forge env build --plan`: the plan composes every hosted
+// address under it and labels them unresolved (placeholderOrg).
+//
+// A copy, never cp itself: cp's org cache is the one every later read of this
+// declaration consults, and a placeholder written there would read as a
+// resolved org to anything that ran after the plan in the same process. The
+// copy has its own cache, pinned, so it never makes a call.
+func (cp *ControlPlaneEntity) withPlaceholderOrg(placeholder string) *ControlPlaneEntity {
 	if cp == nil {
-		return
+		return nil
 	}
-	if cp.org == nil {
-		cp.org = &orgState{}
-	}
-	cp.org.mu.Lock()
-	defer cp.org.mu.Unlock()
-	if cp.org.done && cp.org.err == nil && cp.org.org != "" {
-		return
-	}
-	cp.org.done, cp.org.org, cp.org.err = true, placeholder, nil
+	c := *cp
+	c.org = &orgState{done: true, org: placeholder}
+	c.placeholderOrg = true
+	return &c
 }
 
 // organization is the strict read: the org the credential acts for, or an error

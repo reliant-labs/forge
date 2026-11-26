@@ -1,6 +1,7 @@
 package ciguard
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,12 +34,18 @@ func TestCoverageFloorJobJudgesMainsFullLanes(t *testing.T) {
 	}
 	var wf struct {
 		Jobs map[string]struct {
-			If    string    `yaml:"if"`
-			Needs needsList `yaml:"needs"`
+			If       string    `yaml:"if"`
+			Needs    needsList `yaml:"needs"`
+			Strategy struct {
+				Matrix struct {
+					Include []map[string]string `yaml:"include"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
 			Steps []struct {
 				Run  string            `yaml:"run"`
 				Uses string            `yaml:"uses"`
 				With map[string]string `yaml:"with"`
+				Env  map[string]string `yaml:"env"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
@@ -74,6 +81,30 @@ func TestCoverageFloorJobJudgesMainsFullLanes(t *testing.T) {
 		}
 	}
 
+	// The lanes the floor must see: one -race profile per shard of each
+	// full-shard matrix (scripts/ci-test-full-shard.sh records lane
+	// <lane>-race), and one per integration step's --lane.
+	want := map[string]int{}
+	captureLane := regexp.MustCompile(`--lane (integration[A-Za-z0-9_-]*)`)
+	for _, j := range wf.Jobs {
+		shards := false
+		for _, s := range j.Steps {
+			if strings.Contains(s.Run, "scripts/ci-test-full-shard.sh") {
+				shards = true
+			}
+			for _, m := range captureLane.FindAllStringSubmatch(s.Run, -1) {
+				want[m[1]]++
+			}
+		}
+		if shards {
+			for _, e := range j.Strategy.Matrix.Include {
+				if f := strings.Fields(e["args"]); len(f) == 3 {
+					want[f[0]+"-race"]++
+				}
+			}
+		}
+	}
+
 	downloads, judges := false, false
 	for _, s := range floor.Steps {
 		if strings.HasPrefix(s.Uses, "actions/download-artifact@") && s.With["pattern"] == "test-runs-*" &&
@@ -82,6 +113,19 @@ func TestCoverageFloorJobJudgesMainsFullLanes(t *testing.T) {
 		}
 		if strings.Contains(s.Run, "scripts/ci-coverage-floor.sh .forge/tests/runs .github/coverage-floor") {
 			judges = true
+			got := map[string]int{}
+			for _, entry := range strings.Fields(s.Env["COVERAGE_LANES"]) {
+				lane, n, ok := strings.Cut(entry, ":")
+				count, err := strconv.Atoi(n)
+				if !ok || err != nil {
+					t.Errorf("COVERAGE_LANES entry %q is not <lane>:<count>", entry)
+					continue
+				}
+				got[lane] = count
+			}
+			if !maps.Equal(got, want) {
+				t.Errorf("coverage-floor's COVERAGE_LANES is %v, but ci.yml records %v: a lane the list omits fails every run as unrecognised, and a stale count judges a run without a shard", got, want)
+			}
 		}
 		if strings.Contains(s.Run, "go test") {
 			t.Errorf("coverage-floor runs %q: it judges the lanes' profiles and must not run tests of its own", s.Run)
@@ -148,6 +192,7 @@ func TestCoverageFloorScript(t *testing.T) {
 		"r4/unit/cover.out": profile(mod + "/b/b_gen.go:1.1,2.1 10 5"),
 	}
 
+	lanesEnv := "unit-race:1 cli-race:1 integration:1"
 	run := func(t *testing.T, floor string) (string, int) {
 		t.Helper()
 		root := t.TempDir()
@@ -181,7 +226,7 @@ func TestCoverageFloorScript(t *testing.T) {
 		}
 		cmd := exec.Command("bash", "-c", script, "ci-coverage-floor.sh", runs, floorFile)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"))
+		cmd.Env = append(os.Environ(), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"), "COVERAGE_LANES="+lanesEnv)
 		out, err := cmd.CombinedOutput()
 		code := 0
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -219,13 +264,44 @@ func TestCoverageFloorScript(t *testing.T) {
 		})
 	}
 
-	t.Run("no full-lane profile", func(t *testing.T) {
-		saved := lanes
-		t.Cleanup(func() { lanes = saved })
-		lanes = map[string]string{"r4/unit/cover.out": saved["r4/unit/cover.out"]}
-		out, code := run(t, "50")
-		if code != 2 || !strings.Contains(out, "nothing to measure, which is not 0%") {
-			t.Fatalf("a run with only the -short tier must exit 2 as unmeasured, got %d:\n%s", code, out)
-		}
-	})
+	// Incomplete runs are unmeasured (exit 2), never judged on what is left.
+	// Each case would otherwise PASS a 50% floor: dropping cli-race leaves
+	// a 6-of-20 total, but dropping integration leaves an unchanged one, and
+	// a missing low-coverage shard raises the total.
+	for _, tc := range []struct {
+		name, lanes, want string
+		edit              func(map[string]string)
+	}{
+		{"a low-coverage shard is missing", "unit-race:1 cli-race:1 integration:1", "integration: 0 profile(s), want 1",
+			func(l map[string]string) { delete(l, "r3/integration/cover.out") }},
+		{"a lane has fewer shards than the run declares", "unit-race:2 cli-race:1 integration:1", "unit-race: 1 profile(s), want 2", nil},
+		{"a profile is empty", "unit-race:1 cli-race:1 integration:1", "holds no coverage block",
+			func(l map[string]string) { l["r3/integration/cover.out"] = "mode: set\n" }},
+		{"a lane nobody declared", "unit-race:1 cli-race:1", "integration: recorded, but COVERAGE_LANES does not name it", nil},
+		{"only the -short tier", "unit-race:1", "unit-race: 0 profile(s), want 1",
+			func(l map[string]string) {
+				for k := range l {
+					if k != "r4/unit/cover.out" {
+						delete(l, k)
+					}
+				}
+			}},
+		{"no lane list", "", "COVERAGE_LANES is not set", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			savedLanes, savedEnv := maps.Clone(lanes), lanesEnv
+			t.Cleanup(func() { lanes, lanesEnv = savedLanes, savedEnv })
+			if tc.edit != nil {
+				tc.edit(lanes)
+			}
+			lanesEnv = tc.lanes
+			out, code := run(t, "10")
+			if code != 2 || !strings.Contains(out, tc.want) {
+				t.Fatalf("an incomplete run must exit 2 naming %q, got exit %d:\n%s", tc.want, code, out)
+			}
+			if strings.Contains(out, "coverage: ") {
+				t.Errorf("an incomplete run must not report a total:\n%s", out)
+			}
+		})
+	}
 }

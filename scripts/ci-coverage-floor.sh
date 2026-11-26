@@ -7,7 +7,7 @@
 # finish: it downloads their test-runs-* artifacts into <runs-dir> (default
 # .forge/tests/runs) and runs this. Exit 1 when the total is below the number
 # in <floor-file> (default .github/coverage-floor), 2 when there is nothing to
-# measure.
+# measure or the lanes' profiles are incomplete.
 #
 # WHAT IS MEASURED. The union of main's full-mode lanes, each recorded as
 # <runs-dir>/<run>/<lane>/cover.out: `*-race` (scripts/ci-test-full-shard.sh,
@@ -46,12 +46,50 @@ if ! [[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
   exit 2
 fi
 
+# COMPLETE OR NOTHING. COVERAGE_LANES names every full lane the run must
+# have recorded and how many profiles each (`unit-race:2 cli-race:3
+# integration:1 ...`; ci.yml's coverage-floor step sets it, and
+# internal/ciguard derives it from ci.yml's matrices and integration steps).
+# A total over some lanes is not the total: a missing low-coverage shard would
+# RAISE it and pass a floor the run did not clear. So a lane with fewer
+# profiles than named, an empty profile (one that holds no block), or a
+# full lane the list does not name fails as unmeasured (exit 2), before any
+# arithmetic.
+if [[ -z "${COVERAGE_LANES:-}" ]]; then
+  echo "::error::COVERAGE_LANES is not set: name every full lane and its profile count (e.g. 'unit-race:2 cli-race:3 integration:1')"
+  exit 2
+fi
+declare -A want=() have=()
+for entry in $COVERAGE_LANES; do
+  if ! [[ "$entry" =~ ^([A-Za-z0-9_.-]+):([1-9][0-9]*)$ ]]; then
+    echo "::error::COVERAGE_LANES entry '$entry' is not <lane>:<count>"
+    exit 2
+  fi
+  want[${BASH_REMATCH[1]}]=${BASH_REMATCH[2]}
+done
+
 profiles=()
+incomplete=()
 while IFS= read -r p; do
-  [[ -s "$p" ]] && profiles+=("$p")
+  lane=$(basename "$(dirname "$p")")
+  if ! grep -qv '^mode:' "$p" 2>/dev/null; then
+    incomplete+=("$lane: $p holds no coverage block")
+    continue
+  fi
+  have[$lane]=$((${have[$lane]:-0} + 1))
+  profiles+=("$p")
 done < <(find "$runs" -name cover.out -type f 2>/dev/null | awk -F/ '$(NF-1) ~ /-race$|^integration/' | sort)
-if [[ ${#profiles[@]} -eq 0 ]]; then
-  echo "::error::no full-lane cover.out under $runs (*-race, integration*): nothing to measure, which is not 0%"
+for lane in "${!want[@]}"; do
+  if ((${have[$lane]:-0} != ${want[$lane]})); then
+    incomplete+=("$lane: ${have[$lane]:-0} profile(s), want ${want[$lane]}")
+  fi
+done
+for lane in "${!have[@]}"; do
+  [[ -n "${want[$lane]:-}" ]] || incomplete+=("$lane: recorded, but COVERAGE_LANES does not name it")
+done
+if [[ ${#incomplete[@]} -gt 0 ]]; then
+  echo "::error::the full lanes' coverage under $runs is incomplete, so the total is unmeasured (never judged on part of the suite):"
+  printf '  %s\n' "${incomplete[@]}" | sort
   exit 2
 fi
 

@@ -1683,8 +1683,15 @@ jobs:
           pattern: test-runs-*
           merge-multiple: true
           path: .forge/tests/runs
+      # Every full lane and how many profiles it records: test's unit
+      # shards, test-cli's internal/cli shards, and each integration step's
+      # lane. A run missing any of them is unmeasured, never judged on part
+      # of the suite. internal/ciguard derives this list from the matrices
+      # and steps above and fails when it drifts.
       - name: Total coverage against the floor
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          COVERAGE_LANES: "unit-race:2 cli-race:3 integration-storage:1 integration-clickhouse:1 integration:1"
         run: scripts/ci-coverage-floor.sh .forge/tests/runs .github/coverage-floor
 
   gate:

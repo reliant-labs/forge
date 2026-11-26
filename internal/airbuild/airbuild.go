@@ -134,11 +134,12 @@ func Run(ctx context.Context, o Options) Result {
 
 	code := o.PrecheckStatus
 	var err error
+	var installed bool
 	if code == 0 {
 		staged := statOrNil(o.stagedPath())
 		code, err = execute(ctx, o.Argv, o.Env, o.Stdout, o.Stderr, sigs)
 		if code == 0 {
-			err = install(o.stagedPath(), o.Out, staged)
+			installed, err = install(o.stagedPath(), o.Out, staged)
 			if err != nil {
 				code = 1
 			}
@@ -146,7 +147,9 @@ func Run(ctx context.Context, o Options) Result {
 	}
 	runner, alive, haveRunner := o.Runner()
 	if code == 0 {
-		if haveRunner {
+		// Only staged output installed by this invocation certifies a build.
+		// A zero exit status alone may have left an old binary untouched.
+		if haveRunner && installed {
 			_ = atomicfile.WriteFile(o.okPath(), []byte(runner), 0o644)
 		} else {
 			_ = os.Remove(o.okPath())
@@ -234,18 +237,18 @@ func (o Options) hold(ctx context.Context, alive func() bool, sigs <-chan os.Sig
 
 // install moves the build's staged output onto out. A build that wrote no
 // staged file (or left one it did not touch) wrote out itself, or nothing.
-func install(staged, out string, before fs.FileInfo) error {
+func install(staged, out string, before fs.FileInfo) (bool, error) {
 	after := statOrNil(staged)
 	if after == nil {
-		return nil
+		return false, nil
 	}
 	if before != nil && os.SameFile(before, after) && before.ModTime().Equal(after.ModTime()) && before.Size() == after.Size() {
-		return nil
+		return false, nil
 	}
 	if err := atomicfile.Replace(staged, out); err != nil {
-		return fmt.Errorf("install the build's output: %w", err)
+		return false, fmt.Errorf("install the build's output: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func statOrNil(path string) fs.FileInfo {

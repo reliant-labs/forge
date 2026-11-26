@@ -316,6 +316,44 @@ func TestSuccessfulBuildInstallsItsOutput(t *testing.T) {
 	})
 }
 
+// A successful no-op must not certify output left by an earlier session,
+// even when an unchanged staged file or a previous success marker exists.
+func TestSuccessfulBuildWithoutStagedOutputDoesNotCertifyBinary(t *testing.T) {
+	for _, staleStage := range []bool{false, true} {
+		for _, sameRunner := range []bool{false, true} {
+			t.Run(fmt.Sprintf("staged=%t/sameRunner=%t", staleStage, sameRunner), func(t *testing.T) {
+				f := newFixture(t).running()
+				if !sameRunner {
+					f.runner = "4243@200"
+				}
+				if staleStage {
+					if err := os.WriteFile(f.out+".tmp", []byte("stale staged build"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// The fake runner command exits successfully without writing output.
+				if r := Run(context.Background(), f.opts("runner")); r.ExitCode != 0 || r.Err != nil {
+					t.Fatalf("successful no-op = %+v", r)
+				}
+				if got := readFile(t, f.out); got != "last good build" {
+					t.Fatalf("no-op replaced output: %q", got)
+				}
+				if _, err := os.Stat(Options{Out: f.out}.okPath()); !os.IsNotExist(err) {
+					t.Fatalf("no-op left a success marker: %v", err)
+				}
+				// A canceled context bounds a regression that incorrectly holds.
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				o := f.opts("fail:3")
+				o.PrecheckStatus = 3
+				if r := Run(ctx, o); r.ExitCode != 3 || r.Held {
+					t.Fatalf("later failure = %+v, want status 3 without holding", r)
+				}
+			})
+		}
+	}
+}
+
 func TestBuildThatCannotStartIs127(t *testing.T) {
 	f := newFixture(t)
 	o := f.opts("")

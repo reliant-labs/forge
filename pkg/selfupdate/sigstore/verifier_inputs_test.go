@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,16 +141,23 @@ func TestReadBounded(t *testing.T) {
 		path    string
 		limit   int64
 		wantLen int
-		wantErr string
+		wantErr string // substring, for the limit error this package words itself
+		wantIs  error  // for OS errors, whose text differs per platform
 	}{
-		{"empty file", write("empty", 0), 10, 0, ""},
-		{"exactly at the limit", write("at", 10), 10, 10, ""},
-		{"one byte over the limit", write("over", 11), 10, 0, "larger than 10 bytes"},
-		{"missing file", filepath.Join(dir, "missing"), 10, 0, "no such file"},
+		{"empty file", write("empty", 0), 10, 0, "", nil},
+		{"exactly at the limit", write("at", 10), 10, 10, "", nil},
+		{"one byte over the limit", write("over", 11), 10, 0, "larger than 10 bytes", nil},
+		{"missing file", filepath.Join(dir, "missing"), 10, 0, "", fs.ErrNotExist},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := readBounded(tt.path, tt.limit)
+			if tt.wantIs != nil {
+				if !errors.Is(err, tt.wantIs) {
+					t.Fatalf("err = %v, want errors.Is %v", err, tt.wantIs)
+				}
+				return
+			}
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)

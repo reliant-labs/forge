@@ -1,3 +1,8 @@
+//go:build !windows
+
+// The envtest harness is real only off Windows (envtest.go); the Windows stub
+// has its own contract, pinned in envtest_windows_test.go.
+
 package controllertest
 
 import (
@@ -51,8 +56,8 @@ func TestAvailable(t *testing.T) {
 	}
 
 	t.Run("no resolvable home directory", func(t *testing.T) {
-		if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
-			t.Skip("os.UserHomeDir does not read $HOME on this platform")
+		if runtime.GOOS == "plan9" {
+			t.Skip("os.UserHomeDir reads $home, not $HOME, on plan9")
 		}
 		t.Setenv("HOME", "")
 		t.Setenv("KUBEBUILDER_ASSETS", "")

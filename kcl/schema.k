@@ -6955,16 +6955,50 @@ schema Signing:
         not oidc_issuer or oidc_issuer.startswith("https://"), \
             "Signing.oidc_issuer must be an https:// URL"
 
+# _vuln_exemption_identity is what makes two exemptions the same declaration:
+# the advisory and the scope, each list sorted (release.ShapeVulnScopedExempt.Identity).
+_vuln_exemption_identity = lambda e -> str {
+    "|".join([e.id, ",".join(sorted(e.packages)), ",".join(sorted(e.artifacts)), ",".join(sorted(e.locations))])
+}
+
+# _vuln_scope_entry_ok is one packages / artifacts / locations entry: not
+# empty, not padded with spaces, one line.
+_vuln_scope_entry_ok = lambda v: str -> bool {
+    v != "" and v == v.strip() and "\n" not in v and "\r" not in v and "\t" not in v
+}
+
 schema VulnExemption:
     """One accepted advisory. Every exemption carries its reason and an
     expiry, the same vocabulary as forge's own govulncheck exemptions
     (`ci.vuln.exemptions`): an exemption past `expires` stops applying.
 
         forge.VulnExemption {id = "CVE-2026-0001", reason = "unreachable: we never call the parser", expires = "2026-12-31"}
+
+    `packages`, `artifacts` and `locations` scope it. Unset, it covers the
+    advisory in every package of every artifact of the env. Each one set
+    narrows it, and a finding is exempt only where every set field names it:
+
+        forge.VulnExemption {id = "GO-2026-6859", reason = "grype never parses untrusted archives",
+            expires = "2026-12-31", artifacts = ["api"], locations = ["/usr/local/bin/grype"]}
+
+    - `packages`: a package name ("stdlib") or a purl prefix
+      ("pkg:golang/stdlib", "pkg:npm/lodash@4.17.20").
+    - `artifacts`: release artifact names.
+    - `locations`: absolute paths inside the artifact, exact, or every path
+      under one that ends in "/". This is what tells two Go binaries' stdlib
+      findings apart: their package is "stdlib" either way.
+
+    A finding found in several places (artifacts, or binaries of one image)
+    is exempt only when every place is covered; anywhere else it still
+    counts. A control plane that predates scopes ignores a scoped exemption
+    (the finding stays in its gate) rather than widening it.
     """
     id: str
     reason: str
     expires: str
+    packages: [str] = []
+    artifacts: [str] = []
+    locations: [str] = []
 
     check:
         regex.match(id, _DELIVERY_ID_RE), \
@@ -6972,6 +7006,12 @@ schema VulnExemption:
         reason.strip() != "", "VulnExemption '${id}' needs a reason: the claim a reviewer can check"
         regex.match(expires, _DELIVERY_DATE_RE), \
             "VulnExemption '${id}'.expires '${expires}' must be a YYYY-MM-DD date: an exemption is time-boxed, it cannot be open-ended"
+        all v in [*packages, *artifacts, *locations] { _vuln_scope_entry_ok(v) }, \
+            "VulnExemption '${id}' has an empty, space-padded or multi-line packages / artifacts / locations entry"
+        all l in locations { l.startswith("/") }, \
+            "VulnExemption '${id}'.locations ${[l for l in locations if not l.startswith('/')]} must be absolute paths inside the artifact (/usr/local/bin/grype)"
+        len(packages) == len({v: 1 for v in packages}) and len(artifacts) == len({v: 1 for v in artifacts}) and len(locations) == len({v: 1 for v in locations}), \
+            "VulnExemption '${id}' names the same package, artifact or location twice"
 
 schema VulnPolicy:
     """The vulnerability gate, checked against the release's SBOM at record
@@ -6998,8 +7038,8 @@ schema VulnPolicy:
             "VulnPolicy.warn_severity \"${warn_severity}\" is stricter than block_severity \"${block_severity}\": a finding is warned about only below the blocking line, so lower warn_severity or raise block_severity"
         mode == "off" or block_kev or block_severity != "none", \
             "VulnPolicy mode = \"${mode}\" with block_kev = False and block_severity = \"none\" blocks nothing: re-enable one, or set mode = \"off\""
-        len(exemptions) == len({e.id: 1 for e in exemptions}), \
-            "VulnPolicy.exemptions names an advisory twice: ${[e.id for e in exemptions if len([x for x in exemptions if x.id == e.id]) > 1]}"
+        len(exemptions) == len({_vuln_exemption_identity(e): 1 for e in exemptions}), \
+            "VulnPolicy.exemptions names an advisory twice with the same scope (packages, artifacts, locations): ${[e.id for e in exemptions if len([x for x in exemptions if _vuln_exemption_identity(x) == _vuln_exemption_identity(e)]) > 1]}"
 
 schema BundleKinds:
     """Narrow what a bundle may contain, beyond the baseline.

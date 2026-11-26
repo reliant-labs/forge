@@ -1,6 +1,7 @@
 package vulnscan
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,7 +24,10 @@ import (
 //   - A finding with no severity counts as critical (fail closed).
 //   - An unexpired exemption whose id is the finding's id or one of its
 //     aliases takes the finding out of the gate: a CVE exemption covers the
-//     GHSA of the same advisory.
+//     GHSA of the same advisory. A scoped exemption (packages, artifacts,
+//     locations) covers only the occurrences its scope names, and takes the
+//     finding out only when every occurrence is covered by some exemption:
+//     anywhere it is not, the finding still counts.
 
 // Action is what the rule makes of one finding.
 type Action string
@@ -36,11 +40,18 @@ const (
 )
 
 // Exemption is an accepted advisory, as the env declares it
-// (forge.VulnExemption): time-boxed, with its reason.
+// (forge.VulnExemption): time-boxed, with its reason, and the scope it
+// covers the advisory in (none: everywhere).
 type Exemption struct {
 	ID      string `json:"id"`
 	Reason  string `json:"reason"`
 	Expires string `json:"expires"`
+	// Packages, Artifacts and Locations are the exemption's scope
+	// (release.ShapeVulnScopedExempt), absent when it covers the advisory
+	// everywhere.
+	Packages  []string `json:"packages,omitempty"`
+	Artifacts []string `json:"artifacts,omitempty"`
+	Locations []string `json:"locations,omitempty"`
 }
 
 // exemptionDateLayout is how an exemption's expiry is written.
@@ -58,23 +69,87 @@ func (e Exemption) Expired(now time.Time) bool {
 	return today.After(exp)
 }
 
-// exemptionFor returns the unexpired exemption that covers f, if any.
-func exemptionFor(gate release.ShapeVulnGate, f Finding, now time.Time) *Exemption {
+// Occurrences are every place f was found: one per location of its package
+// in each artifact it is in. A finding whose source names no artifact, or no
+// location, has occurrences that leave them empty, which no exemption scoped
+// to an artifact or a location covers.
+func occurrencesOf(f Finding, artifacts []string) []release.VulnOccurrence {
+	if len(artifacts) == 0 {
+		artifacts = []string{""}
+	}
+	locs := f.Locations
+	if len(locs) == 0 {
+		locs = []string{""}
+	}
+	out := make([]release.VulnOccurrence, 0, len(artifacts)*len(locs))
+	for _, a := range artifacts {
+		for _, l := range locs {
+			out = append(out, release.VulnOccurrence{PackageName: f.Package.Name, PackagePURL: f.Package.PURL, Artifact: a, Location: l})
+		}
+	}
+	return out
+}
+
+// exemptionFor returns the unexpired exemption that takes f out of the gate,
+// if any: an unscoped one of its advisory, or else, when every occurrence of
+// f is covered by some scoped one, the one covering the first. occ nil is
+// occurrencesOf(f, nil).
+func exemptionFor(gate release.ShapeVulnGate, f Finding, occ []release.VulnOccurrence, now time.Time) *Exemption {
 	for _, x := range gate.Exemptions {
-		e := Exemption{ID: x.ID, Reason: x.Reason, Expires: x.Expires}
-		if f.Names(strings.TrimSpace(e.ID)) && !e.Expired(now) {
+		if e := exemptionOf(release.ShapeVulnScopedExempt{ID: x.ID, Reason: x.Reason, Expires: x.Expires}); f.Names(strings.TrimSpace(e.ID)) && !e.Expired(now) {
 			return &e
 		}
 	}
-	return nil
+	var scoped []release.ShapeVulnScopedExempt
+	for _, x := range gate.ScopedExemptions {
+		if e := exemptionOf(x); f.Names(strings.TrimSpace(e.ID)) && !e.Expired(now) {
+			if !x.Scoped() {
+				return &e
+			}
+			scoped = append(scoped, x)
+		}
+	}
+	if len(scoped) == 0 {
+		return nil
+	}
+	if occ == nil {
+		occ = occurrencesOf(f, nil)
+	}
+	var first *Exemption
+	for _, o := range occ {
+		i := slices.IndexFunc(scoped, func(x release.ShapeVulnScopedExempt) bool { return x.ScopeCovers(o) })
+		if i < 0 {
+			return nil
+		}
+		if first == nil {
+			e := exemptionOf(scoped[i])
+			first = &e
+		}
+	}
+	return first
+}
+
+// exemptionOf is a declared exemption as the rule reports it.
+func exemptionOf(x release.ShapeVulnScopedExempt) Exemption {
+	return Exemption{
+		ID: x.ID, Reason: x.Reason, Expires: x.Expires,
+		Packages: slices.Clone(x.Packages), Artifacts: slices.Clone(x.Artifacts), Locations: slices.Clone(x.Locations),
+	}
 }
 
 // Judge applies the rule to one finding. A finding an exemption covers is
 // ActionNone, and the exemption is returned beside it. The gate's mode is not
 // consulted: Judge says what the rule makes of the finding, which is the same
 // whether the gate enforces, audits, or is off.
+//
+// It knows no artifact of f, so an exemption scoped to an artifact does not
+// cover it; [Evaluate] judges with each finding's occurrences.
 func Judge(gate release.ShapeVulnGate, f Finding, now time.Time) (Action, *Exemption) {
-	if e := exemptionFor(gate, f, now); e != nil {
+	return judge(gate, f, nil, now)
+}
+
+func judge(gate release.ShapeVulnGate, f Finding, occ []release.VulnOccurrence, now time.Time) (Action, *Exemption) {
+	if e := exemptionFor(gate, f, occ, now); e != nil {
 		return ActionNone, e
 	}
 	if gate.BlockKEV && f.KEV {
@@ -246,6 +321,10 @@ type EvaluateInput struct {
 	// neither blocks nor is exempt. The warn band, which gates nothing and
 	// which such a ledger does not report, is still this rule's.
 	Judged map[string]Judgement
+	// Occurrences are where each finding was found, by Finding.Key(): what a
+	// scoped exemption is matched against. A finding it does not name is
+	// matched as found in no known artifact, at its Locations.
+	Occurrences map[string][]release.VulnOccurrence
 }
 
 // judgeAuthoritative is a finding's action under in.Judged.
@@ -257,7 +336,7 @@ func judgeAuthoritative(in EvaluateInput, f Finding) (Action, *Exemption) {
 	case a.Blocking:
 		return ActionBlock, nil
 	}
-	if local, _ := Judge(in.Gate, f, in.Now); local == ActionWarn {
+	if local, _ := judge(in.Gate, f, in.Occurrences[f.Key()], in.Now); local == ActionWarn {
 		return ActionWarn, nil
 	}
 	return ActionNone, nil
@@ -294,11 +373,11 @@ func Evaluate(in EvaluateInput) Evaluation {
 		case !off && in.Judged != nil:
 			j.Action, j.Exemption = judgeAuthoritative(in, f)
 		case !off:
-			j.Action, j.Exemption = Judge(in.Gate, f, in.Now)
+			j.Action, j.Exemption = judge(in.Gate, f, in.Occurrences[f.Key()], in.Now)
 		case in.Judged != nil:
 			j.Exemption = in.Judged[f.Key()].Exemption
 		default:
-			j.Exemption = exemptionFor(in.Gate, f, in.Now)
+			j.Exemption = exemptionFor(in.Gate, f, in.Occurrences[f.Key()], in.Now)
 		}
 		switch j.Action {
 		case ActionBlock:

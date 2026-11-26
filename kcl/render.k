@@ -811,8 +811,8 @@ _logs_double_shipped = lambda workloads: [any], o: any -> [str] {
         and typeof(w.env["OTEL_LOGS_EXPORTER"]) == "str" and "otlp" in w.env["OTEL_LOGS_EXPORTER"]]
 }
 
-_cluster_targets = lambda workloads: [any] -> [any] {
-    [w.runtime.target for w in workloads if w.runtime and w.runtime.type == "cluster" and w.kind != "tool"]
+_cluster_targets = lambda target_sources: [any] -> [any] {
+    [w.runtime.target for w in target_sources if w.runtime and w.runtime.type == "cluster" and w.kind != "tool"]
 }
 
 # The destination's credential reference: a bearer token file wins over a
@@ -834,9 +834,9 @@ _obs_token_secret = lambda o: any -> any {
 # The credential Secret must be supplied wherever the agent will read it, or the
 # DaemonSet never starts. Nothing to check without a cluster workload (no
 # agent) or without a credential secret.
-_headers_secret_supplied = lambda workloads: [any], o: any, required: [any], rendered: [any], delivered: [any] -> bool {
+_headers_secret_supplied = lambda credential_sources: [any], o: any, required: [any], rendered: [any], delivered: [any] -> bool {
     _ref = _destination_secret(o)
-    _need = bool(o and o.enabled and _ref and len(_cluster_targets(workloads)) > 0)
+    _need = bool(o and o.enabled and _ref and len(_cluster_targets(credential_sources)) > 0)
     (not _need) or any s in required { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
         or any s in rendered { s.name == _ref.name and s.namespace == o.agent.namespace and _ref.key in s.keys } \
         or any s in delivered { s.name == _ref.name and _cps_ns(s) == o.agent.namespace and _ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] }
@@ -862,9 +862,9 @@ _cps_ns = lambda s: ControlPlaneSecret -> str {
 
 # One per cluster that runs the node agent when the destination is the control
 # plane's ingest: that is the Secret the agent reads its token from.
-_cps_derived = lambda workloads: [any], o: any -> [ControlPlaneSecret] {
+_cps_derived = lambda derived_sources: [any], o: any -> [ControlPlaneSecret] {
     _on = bool(o and o.enabled and o.destination and o.destination.token_from_control_plane)
-    _targets = {t.cluster: t for t in _cluster_targets(workloads)} if _on else {}
+    _targets = {t.cluster: t for t in _cluster_targets(derived_sources)} if _on else {}
     [ControlPlaneSecret {
         name = OTEL_AGENT_TOKEN_SECRET
         cluster = t
@@ -873,8 +873,8 @@ _cps_derived = lambda workloads: [any], o: any -> [ControlPlaneSecret] {
     } for _, t in _targets]
 }
 
-_cps_all = lambda workloads: [any], o: any, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
-    declared + _cps_derived(workloads, o)
+_cps_all = lambda credential_sources: [any], o: any, declared: [ControlPlaneSecret] -> [ControlPlaneSecret] {
+    declared + _cps_derived(credential_sources, o)
 }
 
 _cps_key = lambda s: ControlPlaneSecret -> str {
@@ -924,7 +924,7 @@ _cps_also_provided = lambda workloads: [any], o: any, declared: [ControlPlaneSec
 # cluster and namespace. Empty when none, or when the workload does not run on a
 # cluster.
 _cps_token_for = lambda w: any, rt: any, bundle: Bundle -> [ControlPlaneSecret] {
-    [s for s in _cps_all(bundle.workloads, bundle.observability, bundle.control_plane_secrets) if rt.type == "cluster" and s.kind == "telemetry_token" and s.cluster.cluster == rt.target.cluster and _cps_ns(s) == rt.target.namespace]
+    [s for s in _cps_all(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability), bundle.observability, bundle.control_plane_secrets) if rt.type == "cluster" and s.kind == "telemetry_token" and s.cluster.cluster == rt.target.cluster and _cps_ns(s) == rt.target.namespace]
 }
 
 # Whether forge wires the credential into w: it does unless the author set the
@@ -2269,12 +2269,20 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
     manifest | {metadata = _meta | {labels = {k: v for k, v in _labels if k != "forge.dev/cluster"} | {"forge.dev/cluster" = context}}}
 }
 
-# One ObservabilityAgent record per cluster that runs a forge workload, when
-# the env declares a destination. Go (pkg/deploy.RenderObservabilityAgent)
+# Include scraped ML clusters in the agent's placement and credential planning,
+# even when they run no forge workloads. An external collector owns those
+# scrapes instead when telemetry_collector is declared.
+_obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
+    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
+    agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
+}
+
+# One ObservabilityAgent record per workload or scraped ML cluster, when the
+# env declares a destination. Go (pkg/deploy.RenderObservabilityAgent)
 # expands it into the DaemonSet and the node-local Service.
 _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
     _o = b.observability
-    _targets = {t.cluster: t for t in _cluster_targets(b.workloads)} if _obs_on(b) and b.observability.destination else {}
+    _targets = {t.cluster: t for t in _cluster_targets(_obs_workloads(b.workloads, b.ml_stacks, b.observability))} if _obs_on(b) and b.observability.destination else {}
     [{
         apiVersion = "forge.dev/v1alpha1"
         kind = "ObservabilityAgent"
@@ -2331,7 +2339,7 @@ _tel_agent_spec = lambda b: Bundle, cluster: str -> {str:} {
 # Every credential (a bearer token, a CA) a target on forge's node agent
 # reads: {cluster, service, ref}, ref as _tel_secret renders it.
 _tel_agent_secret_refs = lambda b: Bundle -> [any] {
-    _clusters = {t.cluster: t for t in _cluster_targets(b.workloads)} if _obs_on(b) and b.observability.destination else {}
+    _clusters = {t.cluster: t for t in _cluster_targets(_obs_workloads(b.workloads, b.ml_stacks, b.observability))} if _obs_on(b) and b.observability.destination else {}
     [{"service": x["service_name"], "ref": r} for c, _ in _clusters for x in _tel_agent_targets(b, c) \
         for r in [m["bearer_token"] for m in x["metrics"] + x["profiles"]] + [m["tls"]["ca"] for m in x["metrics"] + x["profiles"] if m["tls"]] if r]
 }
@@ -2345,7 +2353,7 @@ _tel_agent_secret_refs = lambda b: Bundle -> [any] {
 _check_agent_telemetry = lambda b: Bundle -> bool {
     _refs = _tel_agent_secret_refs(b)
     _ns = b.observability.agent.namespace if _refs else ""
-    _delivered = _cps_all(b.workloads, b.observability, _cps_decl(b.workloads, _idns(b), b.env, b.project, b.control_plane_secrets)) if _refs else []
+    _delivered = _cps_all(_obs_workloads(b.workloads, b.ml_stacks, b.observability), b.observability, _cps_decl(b.workloads, _idns(b), b.env, b.project, b.control_plane_secrets)) if _refs else []
     _missing = [d for d in _refs if not (any s in b.required_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in b.rendered_secrets { s.name == d.ref.secret and s.namespace == _ns and d.ref.key in s.keys } \
         or any s in _delivered { s.name == d.ref.secret and _cps_ns(s) == _ns and d.ref.key in CONTROL_PLANE_SECRET_KINDS[s.kind] })]
@@ -3275,7 +3283,7 @@ render = lambda bundle: Bundle -> any {
             "egress_ports": bundle.network_policy.egress_ports
             # The node agent is the env's collector: the telemetry allow
             # follows it unless the author named another.
-            "telemetry_namespace": bundle.network_policy.telemetry_namespace or (bundle.observability.agent.namespace if _obs_on(bundle) and bundle.observability.destination and len(_cluster_targets(bundle.workloads)) > 0 else "")
+            "telemetry_namespace": bundle.network_policy.telemetry_namespace or (bundle.observability.agent.namespace if _obs_on(bundle) and bundle.observability.destination and len(_cluster_targets(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability))) > 0 else "")
             "ingress_namespace": bundle.network_policy.ingress_namespace
         } if bundle.network_policy else None
         "workloads": _entities
@@ -3414,7 +3422,7 @@ render = lambda bundle: Bundle -> any {
         # logs in. A declaration only; no value.
         if bundle.openbao:
             "openbao": _openbao(bundle).block
-        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(bundle.workloads, bundle.observability, _cps_decl(bundle.workloads, _idns(bundle), bundle.env, bundle.project, bundle.control_plane_secrets))]
+        "control_plane_secrets": [_render_control_plane_secret(s, bundle) for s in _cps_all(_obs_workloads(bundle.workloads, bundle.ml_stacks, bundle.observability), bundle.observability, _cps_decl(bundle.workloads, _idns(bundle), bundle.env, bundle.project, bundle.control_plane_secrets))]
         # WHERE secret values come from. A declaration only: no secret VALUE
         # ever enters this output.
         if bundle.secret_provider:

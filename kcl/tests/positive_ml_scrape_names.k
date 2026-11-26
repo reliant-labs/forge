@@ -40,6 +40,9 @@ _two = forge.render(_bundle([
 ], []))
 assert_two_stack_names = _ml(_two) == ["ml-dcgm-exporter-gke_acme_us-central1_a", "ml-dcgm-exporter-gke_acme_us-central1_b"]
 assert_two_stack_clusters = [t.cluster for t in _two.telemetry if t.source.startswith("ml-stack:")] == ["gke_acme_us-central1_a", "gke_acme_us-central1_b"]
+_agents = [m for m in _two.manifests if m.kind == "ObservabilityAgent"]
+assert_one_agent_per_cluster = sorted([m.metadata.labels["forge.dev/cluster"] for m in _agents]) == [_a.cluster, _b.cluster]
+assert_cluster_local_scrapes = all m in _agents { len(m.spec.telemetry) == 1 and m.spec.telemetry[0].cluster == m.metadata.labels["forge.dev/cluster"] }
 
 _named = forge.render(_bundle([forge.MLStack {
     cluster = _a

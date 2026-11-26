@@ -9161,6 +9161,7 @@ schema Bundle:
     # forge labels as its own), one stack per cluster. `forge ml discover`
     # proposes it. Empty renders nothing.
     ml_stacks: [MLStack] = []
+    _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live
     # (its unseal key, its database password, its recovery escrow): outside
     # the store, because they cannot live in what they bootstrap. UNSET =
@@ -9364,18 +9365,18 @@ schema Bundle:
         # CONNECTED CLUSTER TO DELIVER IT TO. Both are declared facts, so both
         # are refused here, while the author is looking at the KCL, rather than
         # as a deploy that is accepted and never delivers.
-        len(_cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
-            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
-        len(_cps_unbound(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
-            _cps_unbound_msg(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
-        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(workloads)) > 0, \
+        len(_cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0 or control_plane, \
+            "Bundle.control_plane_secrets ${[s.name for s in _cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))]} need control_plane = forge.ControlPlane {} on the same Bundle: the control plane is what mints, delivers and renews them"
+        len(_cps_unbound(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)) == 0, \
+            _cps_unbound_msg(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), cluster_target, connected_clusters)
+        not (observability and observability.enabled and observability.destination and observability.destination.token_from_control_plane) or len(_cluster_targets(_agent_workloads)) > 0, \
             "Bundle.observability.destination.token_from_control_plane = True needs a cluster workload: the credential is delivered to the node agent, which forge renders only on a cluster the env deploys to"
-        len(_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_duplicates(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
-        len(_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
-        len(_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
-            "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
+        len(_cps_duplicates(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_duplicates(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} declared twice for the same cluster and namespace — the control plane would write one Secret from two declarations"
+        len(_cps_second_telemetry_token(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_second_telemetry_token(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))} — a cluster and namespace has at most one telemetry_token (a workload reads exactly one OTLP credential)"
+        len(_cps_also_provided(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)) == 0, \
+            "Bundle.control_plane_secrets: ${_cps_also_provided(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
         len(_duplicates([s.cluster.cluster for s in ml_stacks])) == 0, \
@@ -9415,7 +9416,7 @@ schema Bundle:
         # checked live by the deploy preflight) or a rendered_secrets entry.
         # A local env without cluster workloads uses the secret store instead,
         # which `forge env up` checks before it starts anything.
-        _headers_secret_supplied(workloads, observability, required_secrets, rendered_secrets, _cps_all(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
+        _headers_secret_supplied(_agent_workloads, observability, required_secrets, rendered_secrets, _cps_all(_agent_workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets))), \
             _headers_secret_msg(observability)
         # ONE LOG SHIPPING PATH. The node agent (cluster) and the local
         # collector (host) already ship container/process logs; a workload that

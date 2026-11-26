@@ -263,7 +263,10 @@ Examples:
                                  # packages; whole-project linters (frontend
                                  # lint, graph, component-drift, config-reach) are
                                  # skipped and named in the verdict, so run an
-                                 # unscoped 'forge lint' before merging
+                                 # unscoped 'forge lint' before merging.
+                                 # A handler dir also reports its service's
+                                 # proto findings (and back), and the verdict
+                                 # counts errors left outside the scope
 
 The advisory rules above are warnings by default — they fail the build only
 when lint.rules sets them to error.
@@ -420,7 +423,7 @@ func registerLintFlags(cmd *cobra.Command, flags *lintFlags) {
 	cmd.Flags().BoolVar(&flags.noFix, "no-fix", false, "Same as --check: write nothing, print the diff each fix would apply, and fail if any is pending")
 	cmd.Flags().BoolVar(&flags.jsonOut, "json", false, "Output findings as JSON (see lint_json.go header for the schema; exit code matches text mode)")
 	cmd.Flags().BoolVarP(&flags.quiet, "quiet", "q", false, "Print only what failed: a one-line summary per failing linter, its error findings, and the verdict as the LAST line (a clean run is one line). With --fix, fixes are applied silently; combines with the targeted flags and --scope")
-	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. With --fix, only files under PATH are rewritten")
+	cmd.Flags().StringSliceVar(&flags.scope, "scope", nil, "Report only findings in files under `PATH` (repeatable or comma-separated, project-relative). Go linters run on PATH's packages only; file-anchored linters report only findings under PATH; whole-project linters (frontend lint, graph, component-drift, config-reach) cannot be scoped, are skipped, and are named in the verdict. A path in one half of a service (internal/handlers/<svc>, proto/services/<svc>) also reports the findings in its other half, and the verdict counts the errors left outside the scope. With --fix, only files under PATH are rewritten")
 	// No backticks: cobra would render the first quoted span as the flag's
 	// argument placeholder (see --optional-deps-guard).
 	cmd.Flags().BoolVar(&flags.showSuppressed, "show-suppressed", false, "List every suppression the project declares, with file:line, what it covers and the stated reason: forge.yaml lint.rules (off/warn) and contracts.exclude, //forge:exclude-contract markers, forge:lint-disable* and nolint directives, and the migration and optional-dep pragmas. Read-only: runs no linter and exits 0; combines with --json and --scope")
@@ -1014,6 +1017,12 @@ type lintVerdict struct {
 	off []string
 	// scope is the --scope value, "" for a whole-project run.
 	scope string
+	// outside counts the error findings a scoped run did not report because
+	// their files lie outside the scope, and outsideLanes names the lanes
+	// that found them. A scoped pass must not read as "an unscoped run
+	// passes too" when the lanes already know it will not.
+	outside      int
+	outsideLanes []string
 	// hiddenWarnings counts findings --quiet did not print.
 	hiddenWarnings int
 	// graced are the findings that warn only because the project's pin has
@@ -1124,6 +1133,10 @@ func (v lintVerdict) suffix() string {
 			fmt.Fprintf(&b, "; not scoped, so not run: %s (whole-project — run an unscoped `forge lint` before merging)",
 				strings.Join(v.unscoped, ", "))
 		}
+	}
+	if v.outside > 0 {
+		fmt.Fprintf(&b, "; %s outside the scope not shown (%s) — an unscoped `forge lint` reports them",
+			plural(v.outside, "error"), strings.Join(v.outsideLanes, ", "))
 	}
 	if v.hiddenWarnings > 0 {
 		fmt.Fprintf(&b, "; %s not shown (--quiet)", plural(v.hiddenWarnings, "advisory finding"))

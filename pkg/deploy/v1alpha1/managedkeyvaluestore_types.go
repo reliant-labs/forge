@@ -459,6 +459,19 @@ type ManagedKeyValueStore struct {
 	Status ManagedKeyValueStoreStatus `json:"status,omitempty"`
 }
 
+// Validate checks the resource's metadata.name and spec. Consumers validating
+// a resource should call this rather than validating its spec alone.
+func (s ManagedKeyValueStore) Validate() error {
+	var errs []error
+	if err := ValidateKeyValueStoreName(s.Name); err != nil {
+		errs = append(errs, fmt.Errorf("metadata.name: %w", err))
+	}
+	if err := s.Spec.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("spec: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
 // ManagedKeyValueStoreList contains a list of ManagedKeyValueStore.
 //
 // +kubebuilder:object:root=true

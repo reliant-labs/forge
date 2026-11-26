@@ -102,6 +102,30 @@ func TestValidateKeyValueStoreName(t *testing.T) {
 	}
 }
 
+func TestManagedKeyValueStoreResourceValidate(t *testing.T) {
+	for _, name := range []string{"q", "queue", "cache-1", strings.Repeat("a", MaxKeyValueStoreNameLength)} {
+		store := ManagedKeyValueStore{}
+		store.Name = name
+		if err := store.Validate(); err != nil {
+			t.Errorf("valid resource %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "1queue", "Queue", "-q", "q-", "q.ueue", "q_ueue", strings.Repeat("a", MaxKeyValueStoreNameLength+1)} {
+		store := ManagedKeyValueStore{}
+		store.Name = name
+		mustFail(t, store.Validate(), "metadata.name")
+	}
+	store := ManagedKeyValueStore{}
+	store.Name = "queue"
+	store.Spec.Engine = "redis"
+	mustFail(t, store.Validate(), "spec: engine")
+	// Report both resource and spec violations, not just the first one.
+	store.Name = "1queue"
+	err := store.Validate()
+	mustFail(t, err, "metadata.name")
+	mustFail(t, err, "spec: engine")
+}
+
 // TestEnvVarKeyValueStoreRef: keyValueStoreRef is a channel of its own —
 // validated, defaulted to url, counted against "one channel per entry", and
 // allowed on the restricted profile.

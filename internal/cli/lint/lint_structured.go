@@ -157,6 +157,31 @@ func (s *lintScope) String() string {
 	return strings.Join(s.paths, ", ")
 }
 
+// scopeListedMax is how many scope paths a summary names one by one; a
+// longer scope is a count and its first scopeListedHead paths.
+const (
+	scopeListedMax  = 4
+	scopeListedHead = 3
+)
+
+// summary renders the scope where a person reads it — the verdict line and
+// the --show-suppressed heading: every path when there are a few, otherwise
+// how many there are and the first of them.
+//
+// The scaffolded pre-push hook scopes a push to every file it changes, one
+// --scope each, and listing them all made the verdict of a project's first
+// push a single ~10 KB line (349 paths, Ranger build, friction #48).
+func (s *lintScope) summary() string {
+	if s == nil {
+		return ""
+	}
+	if len(s.paths) <= scopeListedMax {
+		return s.String()
+	}
+	return fmt.Sprintf("%d paths (%s and %d more)", len(s.paths),
+		strings.Join(s.paths[:scopeListedHead], ", "), len(s.paths)-scopeListedHead)
+}
+
 // contains reports whether file — project-relative or absolute — lies
 // under the scope.
 func (s *lintScope) contains(file string) bool {
@@ -634,7 +659,7 @@ func structuredFixPrePass(ctx context.Context, cwd string, cfg *config.ProjectCo
 // lane with an error or warning is shown. Info findings (skip notes) are
 // never printed here — a skipped lane is named in the verdict instead.
 func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, scope *lintScope) error {
-	v := lintVerdict{scope: scope.String(), graced: gracedFindings(outcomes)}
+	v := lintVerdict{scope: scope.summary(), graced: gracedFindings(outcomes)}
 	for _, o := range outcomes {
 		switch {
 		case o.off:

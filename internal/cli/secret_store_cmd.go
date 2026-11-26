@@ -1131,6 +1131,22 @@ func generatableSecretNames(e *KCLEntities) []string {
 	return out
 }
 
+// hostInfraSecretNames is the store keys a host-infra instance itself reads:
+// a host MinIO's root credentials. They are declared even when no workload
+// references the MinIO's buckets, because the server cannot start without
+// them.
+func hostInfraSecretNames(e *KCLEntities) []string {
+	var names []string
+	for _, hi := range e.Infra {
+		for _, n := range []string{hi.MinIORootUserSecret, hi.MinIORootPasswordSecret} {
+			if n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	return names
+}
+
 func declaredSecretNames(e *KCLEntities) []string {
 	seen := map[string]struct{}{}
 	for _, r := range secretRefsFromEntities(e) {
@@ -1143,6 +1159,9 @@ func declaredSecretNames(e *KCLEntities) []string {
 			for _, name := range managedSecretNamesForService(&e.Workloads[i]) {
 				seen[name] = struct{}{}
 			}
+		}
+		for _, name := range hostInfraSecretNames(e) {
+			seen[name] = struct{}{}
 		}
 	}
 	for _, ref := range renderedSecretStoreKeys(e) {

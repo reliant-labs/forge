@@ -96,6 +96,10 @@ var unmanagedMarkerRE = protoMarkerFullLineRE(ProtoMarkerUnmanaged)
 // which is the only place the two markers differ.
 var readOnlyFieldMarkerRE = ProtoMarkerAnyLineRE(ReadOnlyProtoMarkers)
 
+// lineCommentRE finds every `//` comment to the end of its line — the text a
+// near-miss marker spelling is looked for in, leading or trailing.
+var lineCommentRE = regexp.MustCompile(`//[^\n]*`)
+
 // RawProtoMessage is one TOP-LEVEL message captured by the raw scan.
 type RawProtoMessage struct {
 	// Name is the message's relative name within the package ("Order").
@@ -105,8 +109,8 @@ type RawProtoMessage struct {
 	// Package is the file's proto package.
 	Package string
 	// Marked reports whether ANY birth marker (`// forge:entity`,
-	// `// forge:append-only`, `// forge:soft-delete`) precedes the
-	// declaration — all three tablize the message.
+	// `// forge:append-only`, `// forge:soft-delete`, `// forge:unique`)
+	// precedes the declaration — all four tablize the message.
 	Marked bool
 	// AppendOnly reports a `// forge:append-only` marker: the entity is
 	// born without Update/Delete RPCs and with a DB guard rejecting
@@ -147,6 +151,21 @@ type RawProtoMessage struct {
 	// inside this message that attached to no captured field — refused at
 	// birth for the reason UnappliedReadOnlyMarkers is.
 	UnappliedOwnerMarkers []RawProtoMarkerSite
+	// Unique are the `// forge:unique <col>[,<col>...]` keys among the
+	// comment lines directly above the declaration, in source order. Each
+	// births one UNIQUE index; the columns are as written (the birth
+	// validates them against the table it renders).
+	Unique []UniqueKeyMarker
+	// UnappliedUniqueMarkers are `forge:unique` markers attributed to this
+	// message that sit anywhere birth does not read one — inside its body,
+	// trailing a field, above a nested declaration. Refused at birth: a key
+	// dropped in silence is a constraint the author believes postgres
+	// enforces.
+	UnappliedUniqueMarkers []RawProtoMarkerSite
+	// UniqueMarkerNearMisses are `forge:*` tokens attributed to this message
+	// that misspell `forge:unique` (codegen.UniqueMarkerNearMiss) — refused
+	// at birth for the same reason.
+	UniqueMarkerNearMisses []RawProtoMarkerSite
 	// GeneratedMarkers are the `// forge:generated <expr>` markers bound to
 	// a field of this message, one per marker, in declaration order. The
 	// expression also lands on the field (SchemaFieldDef.Generated); this
@@ -202,6 +221,17 @@ type RawProtoMarkerSite struct {
 // String renders the site as `<file>:<line>: <source line>`.
 func (s RawProtoMarkerSite) String() string {
 	return fmt.Sprintf("%s:%d: %s", filepath.Base(s.File), s.Line, s.Text)
+}
+
+// UniqueKeyMarker is one `// forge:unique <col>[,<col>...]` key the raw scan
+// bound to a top-level message.
+type UniqueKeyMarker struct {
+	// Columns are the column names as written, in order. Nil when the
+	// marker carried no usable list (UniqueMarkerColumns) — birth refuses
+	// that.
+	Columns []string
+	// Site locates the marker in its .proto file.
+	Site RawProtoMarkerSite
 }
 
 // GeneratedFieldMarker is one `// forge:generated <expr>` marker the raw scan
@@ -475,6 +505,11 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		var pendingFieldOwnerAt []int
 		// A `// forge:request-option` line, pending the same way.
 		pendingFieldRequestOption := false
+		// MESSAGE-level `// forge:unique` lines (byte offsets), pending
+		// exactly like the entity markers: consumed by the next top-level
+		// message, dropped — and so reported unapplied — by any other
+		// statement.
+		var pendingUniqueAt []int
 
 		// Every `// forge:read-only` occurrence in this file, and which of
 		// them a field actually consumed. Whatever is left over is a marker
@@ -484,6 +519,8 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 		consumedReadOnly := make(map[int]bool, len(readOnlySites))
 		ownerSites := OwnerMarkerLineRE.FindAllStringIndex(content, -1)
 		consumedOwner := make(map[int]bool, len(ownerSites))
+		uniqueSites := UniqueMarkerLineRE.FindAllStringIndex(content, -1)
+		consumedUnique := make(map[int]bool, len(uniqueSites))
 		msgStartIdx := len(messages)
 
 		lines := strings.Split(content, "\n")
@@ -512,6 +549,12 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				}
 				if requestOptionMarkerLineRE.MatchString(line) {
 					pendingFieldRequestOption = true
+				}
+				// MESSAGE-level unique key, alone or after another marker
+				// (`// forge:entity forge:unique a,b`): read independently
+				// of the switch below, which the entity marker would win.
+				if loc := UniqueMarkerLineRE.FindStringIndex(line); loc != nil {
+					pendingUniqueAt = append(pendingUniqueAt, lineOffset+loc[0])
 				}
 				switch {
 				case entityMarkerRE.MatchString(trimmedRaw):
@@ -564,6 +607,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 						}
 						pendingMarker, pendingAppendOnly, pendingSoftDelete = false, false, false
 						pendingUnmanaged = false
+						pendingUniqueAt = nil
 						continue
 					}
 				}
@@ -586,12 +630,23 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 						// Nested messages register for type resolution only —
 						// only top-level messages are markable/capturable.
 						rm := &rawMessage{msg: &RawProtoMessage{
-							Name:             name,
-							File:             path,
-							Marked:           pendingMarker, // Package is stamped in pass 2
+							Name: name,
+							File: path,
+							// Package is stamped in pass 2. A unique key tablizes
+							// the message like the lifecycle markers do: a key is
+							// a statement about the table it is born as.
+							Marked:           pendingMarker || len(pendingUniqueAt) > 0,
 							AppendOnly:       pendingAppendOnly,
 							SoftDeleteMarked: pendingSoftDelete,
 						}}
+						for _, at := range pendingUniqueAt {
+							consumedUnique[at] = true
+							cols, _ := UniqueMarkerColumns(commentAt(content, at))
+							rm.msg.Unique = append(rm.msg.Unique, UniqueKeyMarker{
+								Columns: cols,
+								Site:    RawProtoMarkerSite{File: path, Line: lineNumberAt(content, at), Text: sourceLineAt(content, at)},
+							})
+						}
 						messages = append(messages, rm)
 						currentMsg = rm
 					}
@@ -785,6 +840,7 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 				}
 				pendingMarker, pendingAppendOnly, pendingSoftDelete = false, false, false
 				pendingUnmanaged = false
+				pendingUniqueAt = nil
 				// A pending field marker attaches to the immediately-next field
 				// only: any non-field statement (a decl, an enum value) drops it.
 				// Comment/blank lines `continue` above without reaching here, so
@@ -850,6 +906,49 @@ func ScanRawProtoFiles(files []string) (*RawProtoScan, error) { //nolint:gocogni
 			}
 			owner.msg.UnappliedOwnerMarkers = append(owner.msg.UnappliedOwnerMarkers,
 				RawProtoMarkerSite{File: path, Line: lineNumberAt(content, site[0]), Text: sourceLineAt(content, site[0])})
+		}
+
+		// Every `forge:unique` no message consumed, and every near-miss
+		// spelling of it, attributed by the owner rule: the enclosing
+		// body, else the message it precedes, else the file's last one.
+		// Birth refuses the message it lands on — a key dropped in silence
+		// is a constraint the author believes postgres enforces.
+		attribute := func(off int) *rawMessage {
+			for _, rm := range fileMsgs {
+				if off >= rm.msg.BodyOpen && off <= rm.msg.BodyClose {
+					return rm
+				}
+			}
+			for _, rm := range fileMsgs {
+				if rm.msg.BodyOpen > off {
+					return rm
+				}
+			}
+			if len(fileMsgs) > 0 {
+				return fileMsgs[len(fileMsgs)-1]
+			}
+			return nil
+		}
+		siteAt := func(off int) RawProtoMarkerSite {
+			return RawProtoMarkerSite{File: path, Line: lineNumberAt(content, off), Text: sourceLineAt(content, off)}
+		}
+		for _, site := range uniqueSites {
+			if consumedUnique[site[0]] {
+				continue
+			}
+			if rm := attribute(site[0]); rm != nil {
+				rm.msg.UnappliedUniqueMarkers = append(rm.msg.UnappliedUniqueMarkers, siteAt(site[0]))
+			}
+		}
+		for _, loc := range lineCommentRE.FindAllStringIndex(content, -1) {
+			tok := UniqueMarkerNearMiss(content[loc[0]:loc[1]])
+			if tok == "" {
+				continue
+			}
+			off := loc[0] + strings.Index(content[loc[0]:loc[1]], tok)
+			if rm := attribute(off); rm != nil {
+				rm.msg.UniqueMarkerNearMisses = append(rm.msg.UniqueMarkerNearMisses, siteAt(off))
+			}
 		}
 
 		// Every RETIRED spelling this file carries, attributed the same way.

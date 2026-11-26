@@ -182,7 +182,8 @@ marker list and what each emits. In practice: `forge:entity` tablizes a message;
 (opt-in soft delete; an immutable ledger with no Update/Delete);
 `forge:read-only` and `forge:secret` trim a field off the born write and read
 sides respectively; `forge:generated <expr>` births a column postgres computes
-from the same row (and is read-only too).
+from the same row (and is read-only too); `// forge:unique a,b` above the
+message births a `CREATE UNIQUE INDEX` over those columns (one line per key).
 
 `forge:read-only` (and `forge:computed` / `forge:generated`, which imply it) is also read on every
 `forge generate`, because the AIP-134 Update request wraps the whole entity and

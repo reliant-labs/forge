@@ -273,6 +273,36 @@ const (
 	// to share its name with one, which name-matching would take for a
 	// filter.
 	ProtoMarkerRequestOption = "forge:request-option"
+
+	// ProtoMarkerUnique declares, at birth, a UNIQUE index over one or more
+	// of an entity's columns: `// forge:unique namespace,name` above
+	// `message Job {` births
+	// `CREATE UNIQUE INDEX jobs_namespace_name_key ON jobs (namespace, name);`
+	// into the create-table migration. Repeat the line for several keys; a
+	// single column (`// forge:unique email`) is a one-column key.
+	//
+	// It exists because uniqueness is a statement about a whole TABLE, so
+	// nothing per-field could carry it — not the column mapping, not a field
+	// marker, and not protovalidate, which validates one message at a time.
+	// The only route was hand-editing the born migration, every time.
+	//
+	// A message-level marker, placed like ProtoMarkerEntity (a full-line
+	// comment among the ones directly above a top-level `message X {`), and
+	// it may follow the entity marker on its line (`// forge:entity
+	// forge:unique a,b`). Like ProtoMarkerSoftDelete it implies
+	// ProtoMarkerEntity: a key is a statement about the table the message is
+	// born as, so a message carrying one is a message you want tabled.
+	// Every column must be one the birth gives the table; a misplaced marker,
+	// an unknown column or a near-miss spelling refuses the birth, naming the
+	// file and line, because a dropped key is a constraint the author
+	// believes the database enforces and it does not.
+	//
+	// Birth-only, like ProtoMarkerEntity: afterwards the applied schema's
+	// unique index is the truth. A key added to an already-born message is
+	// reported by `forge scaffold` with the index to write in a new
+	// migration; no command writes it for you. Read by the raw scanner
+	// (RawProtoMessage.Unique), for both birth paths.
+	ProtoMarkerUnique = "forge:unique"
 )
 
 // requestOptionMarkerLineRE recognizes ProtoMarkerRequestOption in a
@@ -313,6 +343,79 @@ var KnownProtoMarkers = []string{
 	ProtoMarkerCustom,
 	ProtoMarkerUnmanaged,
 	ProtoMarkerRequestOption,
+	ProtoMarkerUnique,
+}
+
+// uniqueMarkerAfterMarkers is the tail the unique recognizer shares with the
+// owner one: any run of other `forge:*` tokens, then the marker itself, so
+// `// forge:entity forge:unique a,b` reads — but prose that merely mentions
+// the marker mid-sentence does not. The hyphen ends no match, so a longer
+// token (`forge:unique-together`) is never this marker.
+const uniqueMarkerAfterMarkers = `(?:forge:[\w-]+(?:=\S*)?[ \t]+)*` + `forge:unique` + `(?:[^\w-]|$)`
+
+// UniqueMarkerLineRE recognizes ProtoMarkerUnique in a `//`-prefixed proto
+// comment anywhere on a raw source line — the leading full-line form birth
+// honours, and the trailing form after a field it refuses as misplaced.
+var UniqueMarkerLineRE = regexp.MustCompile(`//+[ \t]*` + uniqueMarkerAfterMarkers)
+
+// uniqueColumnsRE captures the column list after the marker — identifiers
+// separated by commas, blanks allowed around each comma — and the rest of the
+// line after it.
+var uniqueColumnsRE = regexp.MustCompile(`forge:unique[ \t]+(\w+(?:[ \t]*,[ \t]*\w+)*)(.*)$`)
+
+// UniqueMarkerColumns returns the columns one `forge:unique` marker line
+// names, in the order written, and whether the line carries the marker at
+// all. A marker with no column list reports (nil, true) — the caller refuses
+// it, since a key over nothing is not an index postgres can build.
+//
+// Prose may follow the list after a punctuation mark (`// forge:unique
+// namespace,name — one name per namespace`), never after a bare blank:
+// `// forge:unique namespace and name` would otherwise read as a ONE-column
+// key on namespace, a stricter table than its author meant, in silence. A
+// word after the list therefore yields (nil, true) as well.
+//
+// The columns are returned as written: duplicates, and names that are no
+// column of the table, are the birth's to refuse, because only it knows the
+// columns the table is born with.
+func UniqueMarkerColumns(line string) (cols []string, found bool) {
+	loc := UniqueMarkerLineRE.FindStringIndex(line)
+	if loc == nil {
+		return nil, false
+	}
+	m := uniqueColumnsRE.FindStringSubmatch(strings.TrimRight(line[loc[0]:], " \t\r"))
+	if m == nil {
+		return nil, true
+	}
+	if rest := strings.TrimLeft(m[2], " \t"); rest != "" && isWordByte(rest[0]) {
+		return nil, true
+	}
+	for _, c := range strings.Split(m[1], ",") {
+		cols = append(cols, strings.TrimSpace(c))
+	}
+	return cols, true
+}
+
+// isWordByte reports whether b is a regexp `\w` byte.
+func isWordByte(b byte) bool {
+	return b == '_' || ('0' <= b && b <= '9') || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
+}
+
+// UniqueMarkerNearMiss returns the first `forge:*` token on a comment line
+// that is a misspelling of ProtoMarkerUnique (`forge:uniqe`, `forge:uniq`,
+// `forge:unique-index`), or "" when there is none. Refused at birth for the
+// reason UnmanagedMarkerNearMiss gives: a misspelled key births a table
+// WITHOUT the constraint its author believes is there, and the duplicate rows
+// it was written to prevent surface only in production.
+func UniqueMarkerNearMiss(line string) string {
+	for _, tok := range forgeTokenRE.FindAllString(line, -1) {
+		if tok == ProtoMarkerUnique || IsKnownProtoMarker(tok) {
+			continue
+		}
+		if ClosestFrom(tok, []string{ProtoMarkerUnique}) != "" {
+			return tok
+		}
+	}
+	return ""
 }
 
 // customCommentRE recognizes ProtoMarkerCustom in comment text buf has already

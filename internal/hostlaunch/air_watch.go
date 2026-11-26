@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/reliant-labs/forge/internal/goexec"
 )
 
 // airDefaultExcludeDir is air's built-in `[build] exclude_dir`, which a
@@ -55,6 +57,7 @@ func GoListDeps(ctx context.Context, dir, tags, pkg string) (GoDeps, error) {
 	args = append(args, "-f", `P {{.Dir}}{{range .EmbedFiles}}{{"\n"}}E {{$.Dir}}/{{.}}{{end}}`, pkg)
 	cmd := exec.CommandContext(ctx, "go", args...) // #nosec G204 -- pkg is the workload's own GoBuild.cmd
 	cmd.Dir = dir
+	cmd.Env = goexec.Env()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

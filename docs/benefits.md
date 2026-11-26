@@ -915,7 +915,7 @@ _Enforced · Forge, on any infrastructure_
 
 _Recorded · Forge, on any infrastructure_
 
-**Use:** Nothing to set up locally: `task test`, then `task test:report`. CI uploads once the repository secret `FORGE_CONTROL_PLANE_TOKEN` holds a `tests:write` token (`gh secret set FORGE_CONTROL_PLANE_TOKEN`); without it the step prints one line and the job stays green. `FORGE_TESTS=off` or `tests.upload: never` turn it off.
+**Use:** Nothing to set up locally: `task test`, then `task test:report`. GitHub CI uploads with no secret, by GitHub OIDC (`id-token: write` on the test jobs), once the Reliant GitHub App is linked to the org; without a credential the step prints one line and the job stays green. `FORGE_TESTS=off` or `tests.upload: never` turn it off.
 
 **Evidence:**
 

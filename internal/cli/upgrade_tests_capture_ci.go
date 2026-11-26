@@ -26,7 +26,9 @@ import (
 // exactly `task test` or `task test:integration` (with the scaffold's
 // optional ` GOTESTRACE=`), unless that job already runs test:report after
 // it. The result must parse and decode to the old workflow plus those steps.
-// Any other test step is the person's to follow, as the playbook shows.
+// Any other test step is the person's to follow, as the playbook shows. The
+// jobs it adds a step to then get `id-token: write` (upgrade_ci_oidc.go), so
+// the step can upload with GitHub OIDC.
 
 // testsCaptureCIPath is the workflow the step edits.
 const testsCaptureCIPath = ".github/workflows/ci.yml"
@@ -164,7 +166,7 @@ func planTestsCaptureCI(dir string) (*testsCaptureCIPlan, error) {
 			ins[k] = strings.Repeat(" ", indentOf(sl)-step.dash+dash) + strings.TrimLeft(sl, " ")
 		}
 		edits = append(edits, testsCaptureEdit{at: end, ins: ins})
-		p.rewrites = append(p.rewrites, fmt.Sprintf("%s: a `Report test results` step after %#q (line %d); it uploads with the FORGE_CONTROL_PLANE_TOKEN secret and never fails the job",
+		p.rewrites = append(p.rewrites, fmt.Sprintf("%s: a `Report test results` step after %#q (line %d); it uploads with the job's GitHub OIDC token (no secret) and never fails the job",
 			testsCaptureCIPath, strings.TrimPrefix(strings.TrimSpace(l), "- "), i+1))
 	}
 	if len(edits) == 0 {
@@ -187,6 +189,15 @@ func planTestsCaptureCI(dir string) (*testsCaptureCIPlan, error) {
 		return p, nil
 	}
 	p.out = out
+	// The new steps upload with the job's GitHub OIDC token, which needs
+	// `id-token: write` on the job (forge fix ci-oidc-permissions), so the
+	// edited workflow gets that too, as the template has it.
+	o := planCIOIDCWorkflow(testsCaptureCIPath, out)
+	p.next = append(p.next, o.next...)
+	if o.out != nil {
+		p.out = o.out
+		p.rewrites = append(p.rewrites, o.rewrites...)
+	}
 	return p, nil
 }
 

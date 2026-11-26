@@ -66,11 +66,20 @@ func (f *floorFlags) requireReason(verb string) error {
 	if strings.TrimSpace(f.reason) == "" {
 		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s needs --reason \"<why>\": it is recorded with the change", verb)}
 	}
-	if n := len(f.reason); n > release.MaxFloorReasonBytes {
-		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s: --reason is %d bytes, over the %d-byte limit a rollback floor's reason has; shorten it (link to a longer rationale instead)", verb, n, release.MaxFloorReasonBytes)}
+	return floorReasonRefusal("forge env floor "+verb, "--reason", f.reason)
+}
+
+// floorReasonRefusal is the length and encoding half of requireReason, shared
+// with `env deploy --floor "<why>"` (raise_floor_reason): exit 1 naming the
+// command, the flag and the byte count, or nil. Measured as the control plane
+// stores it, trimmed.
+func floorReasonRefusal(command, flag, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if n := len(reason); n > release.MaxFloorReasonBytes {
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s: %s is %d bytes, over the %d-byte limit a rollback floor's reason has; shorten it (link to a longer rationale instead)", command, flag, n, release.MaxFloorReasonBytes)}
 	}
-	if !utf8.ValidString(f.reason) {
-		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("forge env floor %s: --reason is not valid UTF-8", verb)}
+	if !utf8.ValidString(reason) {
+		return exitCodeError{code: exitWrong, msg: fmt.Sprintf("%s: %s is not valid UTF-8", command, flag)}
 	}
 	return nil
 }

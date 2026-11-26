@@ -431,3 +431,24 @@ func TestFloorVerbsRefuseAnOverlongReasonBeforeAnyRequest(t *testing.T) {
 		t.Error("a reason that is not UTF-8 is admitted")
 	}
 }
+
+// `env deploy --floor "<why>"` sets a floor too, so its reason is held to the
+// same cap, refused by name before anything is built, recorded or sent.
+func TestDeployFloorRefusesAnOverlongReasonBeforeAnything(t *testing.T) {
+	cmd := newDeployCmd()
+	cmd.SetArgs([]string{"prod", "v1.0.0", "--floor", strings.Repeat("x", release.MaxFloorReasonBytes+1)})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.ExecuteContext(context.Background())
+	var exit exitCodeError
+	if !errors.As(err, &exit) || exit.code != exitWrong {
+		t.Fatalf("err = %v; want an exit-%d refusal", err, exitWrong)
+	}
+	if want := "forge env deploy: --floor is 1025 bytes, over the 1024-byte limit"; !strings.Contains(exit.msg, want) {
+		t.Errorf("%q does not say %q", exit.msg, want)
+	}
+	// Measured as stored: surrounding whitespace the control plane trims does not count.
+	if err := floorReasonRefusal("forge env deploy", "--floor", "  "+strings.Repeat("x", release.MaxFloorReasonBytes)+"\n"); err != nil {
+		t.Errorf("a %d-byte reason with surrounding whitespace is refused: %v", release.MaxFloorReasonBytes, err)
+	}
+}

@@ -126,7 +126,6 @@ func GeneratePlanProtoFile(root, modulePath, serviceName string, rpcs []config.P
 		}
 		if ent.SoftDelete {
 			fmt.Fprintf(&b, "  google.protobuf.Timestamp deleted_at = %d;\n", fieldNum)
-			fieldNum++
 		}
 		b.WriteString("}\n")
 	}

@@ -165,6 +165,11 @@ type HelmChartSpec struct {
 	// the chart does not template, such as a pod's runtimeClassName. Every
 	// key must match exactly one rendered object.
 	Patches map[string]any
+	// Labels are stamped on every object the chart renders, over the
+	// chart's own: an MLStack Install's component-owner stamp and component
+	// (kcl/ml.k), so discovery tells forge's installs from the cluster's.
+	// Empty for a declared HelmChart.
+	Labels map[string]string
 	// SecretCopies are existing Secrets this chart's install copies, by
 	// value, into a namespace it creates: a self-hosted delivery's registry
 	// pull Secret (a Secret never rides a render, so it cannot be a riding
@@ -485,7 +490,45 @@ func RenderHelmChart(ctx context.Context, spec HelmChartSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return stampAppLabel(withNS, spec.Name, spec.Owner), nil
+	return stampExtraLabels(stampAppLabel(withNS, spec.Name, spec.Owner), spec.Labels), nil
+}
+
+// stampExtraLabels sets labels on every document's metadata, over what the
+// chart set. A stream with no labels to stamp is returned byte for byte, so
+// a declared chart renders exactly as before; unparseable documents pass
+// through verbatim, as in stampAppLabel.
+func stampExtraLabels(manifests string, labels map[string]string) string {
+	if len(labels) == 0 {
+		return manifests
+	}
+	var out []string
+	for _, doc := range splitDocs(manifests) {
+		var m map[string]any
+		if err := yaml.Unmarshal([]byte(doc), &m); err != nil || m == nil {
+			out = append(out, doc)
+			continue
+		}
+		meta, _ := m["metadata"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		l, _ := meta["labels"].(map[string]any)
+		if l == nil {
+			l = map[string]any{}
+		}
+		for k, v := range labels {
+			l[k] = v
+		}
+		meta["labels"] = l
+		m["metadata"] = meta
+		b, err := yaml.Marshal(m)
+		if err != nil {
+			out = append(out, doc)
+			continue
+		}
+		out = append(out, string(b))
+	}
+	return strings.Join(out, docDelimiter)
 }
 
 // applyChartPatches merges HelmChart.patches into the rendered stream. It

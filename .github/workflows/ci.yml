@@ -31,6 +31,24 @@ on:
 permissions:
   contents: read
 
+# ── SELF-HOSTED RUNNERS ON cicd, FOR THE MERGE QUEUE ONLY ──────────────────
+#
+# Owner, 2026-11-26: "The cicd machine is supposed to be exactly for this." A
+# merge group's jobs waited for a GitHub-hosted runner far longer than they
+# ran, under the org's ~20-job cap. On a `merge_group` event, test-short,
+# checks, golangci and CI gate run on the runners labelled `self-hosted, cicd`
+# (windows-changed stays on windows-latest); every other event, pull requests
+# above all, keeps `ubuntu-latest`, because this repository is public and a
+# fork's pull request must never reach a self-hosted runner. The runners are
+# also locked down on their own side: unprivileged users with no sudo, no
+# docker and no view of the machine's agent workspaces or credentials, a
+# root-owned job-started hook that refuses any job that is not a merge group
+# or a push to main of this repository, and HOME, /tmp, the tool cache and the
+# workspace emptied before and after every job. internal/ciguard's
+# TestSelfHostedRunnersServeOnlyTheMergeQueue holds every workflow's runs-on
+# to this. To roll back, set those four `runs-on` lines back to ubuntu-latest
+# (and empty selfHostedMergeTier there).
+
 # ── REVIEW FIRST ───────────────────────────────────────────────────────────
 #
 # The owner's rule (2026-10-30): CI minutes are not spent on a head nobody has
@@ -412,7 +430,7 @@ jobs:
   test-short:
     name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       # Every shard reports: one failure must not hide another shard's.
@@ -522,6 +540,20 @@ jobs:
           name: test-short-${{ strategy.job-index }}
           path: ${{ runner.temp }}/test-shard.json
           retention-days: 7
+          if-no-files-found: warn
+      # The merge queue: the runs the -short tier and the flake gate recorded,
+      # for test-upload.yml (a pull request labelled ci:run keeps none; it
+      # uploads nothing).
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-runs-${{ github.job }}-${{ strategy.job-index }}
+          path: .forge/tests/runs
+          include-hidden-files: true
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
 
   # ── Go tests, full mode: three jobs, partitioned by scripts/ci-test-packages.sh ──
@@ -644,14 +676,16 @@ jobs:
           scripts/ci-forge.sh test capture --run "$run" --lane integration-storage -- \
             scripts/ci-go-test.sh -race -tags=integration -count=1 -json -covermode=atomic -coverprofile="$run/integration-storage/cover.out" -timeout=5m ./internal/storage
       # Main only: the runs the steps above recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
@@ -725,14 +759,16 @@ jobs:
           CI_TEST_JSON: ${{ runner.temp }}/test-full.json
         run: scripts/ci-test-full-shard.sh ${{ matrix.args }}
       # Main only: the run the shard recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
@@ -812,14 +848,16 @@ jobs:
       # Main only: the runs the -short tier and the flake gate recorded, for
       # test-upload.yml. The guards are not recorded: they test the repository's
       # shape, not code a coverage report would credit.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only: keeps any archive this job had to fetch, so the next run
       # does not (see embedded-postgres-cache's header).
@@ -1276,14 +1314,16 @@ jobs:
             -run '^(TestServiceDockerBuild_ReproducibleImageID|TestSmoke_UploadedJWKSLogsInToARealOpenBao|TestSmoke_WriterPathAgainstARealOpenBao|TestDBSquash_FromDSN_AdoptsTheGooseDatabaseItWasCutFrom|TestDBSquash_BaselineAndTheNextMigrationApplyInOneMigratekitRun|TestDBSquash_TheDatabaseItsHistoryBuiltAdoptsTheBaseline|TestDBSquash_IsByteForByteReproducible|TestGeneratedProjectDeliversTelemetryToClickStack|TestDockerfile_ProductionLoadLocation|TestScaffoldedMinIOReconcilesAnonymousAccess|TestWhyRoundTripsThroughInstancesAndEvents|TestMigrateAddsTheWhyColumnToAnOlderSchema|TestS3AgainstMinIO|TestConcurrentRunsBehindASessionModePgBouncer|TestConcurrentRunsOverCreateIndexConcurrentlyBehindASessionModePgBouncer|TestSlowSkipsInTheIntegrationLane)$' \
             ./internal/cli ./internal/templates ./pkg/alerting/pgstore ./pkg/blobstore ./pkg/migratekit ./pkg/testkit
       # Main only: the runs the integration steps recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       # Main only (this job runs nowhere else): keeps any archive this job had
       # to fetch, so the next run does not (see embedded-postgres-cache's
@@ -1423,7 +1463,7 @@ jobs:
   checks:
     name: Checks (generated code, KCL, pre-commit, licenses)
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -1542,15 +1582,18 @@ jobs:
         # The forge `Install forge` put on PATH records the lane (the same
         # source scripts/ci-forge.sh would relink); with none, it builds one.
         run: CI_FORGE="$(command -v forge || true)" scripts/ci-web-runtime-test.sh
-      # Main only: the run the step above recorded, for test-upload.yml.
-      - name: Keep the recorded test runs (main only)
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      # Main and the merge queue (this job runs in both): the run the step
+      # above recorded, for test-upload.yml.
+      - name: Keep the recorded test runs (for test-upload.yml)
+        if: ${{ !cancelled() && (github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
         uses: actions/upload-artifact@v7
         with:
           name: test-runs-${{ github.job }}-${{ strategy.job-index }}
           path: .forge/tests/runs
           include-hidden-files: true
-          retention-days: 3
+          # test-upload.yml sends a merge-queue entry's runs when its CI run
+          # completes, so a day is plenty; main's stay 3.
+          retention-days: ${{ github.event_name == 'merge_group' && 1 || 3 }}
           if-no-files-found: warn
       - name: Save the Go caches (main only)
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -1601,7 +1644,7 @@ jobs:
   golangci:
     name: golangci-lint (changed packages)
     if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       # Depth 2: HEAD^1 is the base the diff is read from (the merge commit's
@@ -1710,7 +1753,7 @@ jobs:
       - windows-changed
       - build
       - coverage-floor
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     permissions: {}
     steps:
       # A red run never passes. No label, account or override turns this gate

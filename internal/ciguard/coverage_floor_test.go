@@ -305,3 +305,88 @@ func TestCoverageFloorScript(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckedInCoverageFloorRejectsWhatItRaisedPast runs the script against
+// the checked-in .github/coverage-floor, not a fixture floor, so the number
+// main is held to is pinned: a complete run at 82.00% (over the 81.44 the
+// floor started at, under every floor since main measured 82.33%) is
+// rejected, and a run exactly at the checked-in floor passes. Lowering the
+// floor below 82 fails the first case.
+func TestCheckedInCoverageFloorRejectsWhatItRaisedPast(t *testing.T) {
+	testkit.Slow(t, "execs bash and git")
+	script := readText(t, coverageFloorScript)
+	floorText := readText(t, coverageFloorFile)
+	var floor float64
+	for _, line := range strings.Split(floorText, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			v, err := strconv.ParseFloat(line, 64)
+			if err != nil {
+				t.Fatalf("%s holds %q", coverageFloorFile, line)
+			}
+			floor = v
+		}
+	}
+
+	const mod = "example.test/m"
+	// covered of 10000 statements, split over one covered and one uncovered
+	// block of a complete lane set (one profile per declared lane).
+	run := func(t *testing.T, covered int) (string, int) {
+		t.Helper()
+		root := t.TempDir()
+		for name, content := range map[string]string{"go.mod": "module " + mod + "\n", "a/a.go": "package a\n"} {
+			p := filepath.Join(root, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, args := range [][]string{{"init", "-q"}, {"add", "."}} {
+			if out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		profile := "mode: atomic\n" +
+			mod + "/a/a.go:1.1,2.1 " + strconv.Itoa(covered) + " 1\n" +
+			mod + "/a/a.go:3.1,4.1 " + strconv.Itoa(10000-covered) + " 0\n"
+		runs := filepath.Join(root, "runs")
+		for _, lane := range []string{"r1/unit-race", "r2/integration"} {
+			p := filepath.Join(runs, filepath.FromSlash(lane), "cover.out")
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte(profile), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		floorAbs, err := filepath.Abs(coverageFloorFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", "-c", script, "ci-coverage-floor.sh", runs, floorAbs)
+		cmd.Dir = root
+		cmd.Env = append(os.Environ(), "GITHUB_STEP_SUMMARY="+filepath.Join(root, "summary"), "COVERAGE_LANES=unit-race:1 integration:1")
+		out, err := cmd.CombinedOutput()
+		if ee, ok := err.(*exec.ExitError); ok {
+			return string(out), ee.ExitCode()
+		} else if err != nil {
+			t.Fatalf("run script: %v", err)
+		}
+		return string(out), 0
+	}
+
+	t.Run("82.00% is below the floor", func(t *testing.T) {
+		out, code := run(t, 8200)
+		if code != 1 || !strings.Contains(out, "total Go coverage is 82.00%, below the") {
+			t.Fatalf("a complete run at 82.00%% must fail the checked-in floor (%v), got exit %d:\n%s", floor, code, out)
+		}
+	})
+	t.Run("exactly the floor passes", func(t *testing.T) {
+		covered := int(floor*100 + 0.5)
+		out, code := run(t, covered)
+		if code != 0 {
+			t.Fatalf("a complete run at the checked-in floor (%v) must pass, got exit %d:\n%s", floor, code, out)
+		}
+	})
+}

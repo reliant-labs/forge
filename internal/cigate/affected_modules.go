@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+
+	"github.com/reliant-labs/forge/internal/config"
 )
 
 // Nested replaced modules (ci.gate.affected_modules: auto). A root go.mod
@@ -177,6 +179,28 @@ func moduleTests(ctx context.Context, in AffectedInput, list func(context.Contex
 		g = nil
 		return full("cannot read go list output: " + err.Error())
 	}
+	// Rules use project-relative paths even when the selected tests run in
+	// a nested module. Resolve them with this module's test graph, anchored
+	// at the project root, rather than the root graph (which omits them).
+	ruleGraph := *g
+	ruleGraph.root = in.Root
+	rulePkgs := map[string]bool{}
+	for _, f := range files {
+		for _, rule := range in.Rules {
+			if rule.On != config.CIGateOnGoSource {
+				continue
+			}
+			if matched, _ := ruleMatch(f, rule); !matched {
+				continue
+			}
+			if rule.Full {
+				return full(f + " changed — " + rule.Reason)
+			}
+			for _, pkg := range ruleGraph.rulePackages(f, rule) {
+				rulePkgs[pkg] = true
+			}
+		}
+	}
 	changed := map[string]bool{}
 	for _, rel := range rels {
 		pkg, ok := g.owner(rel)
@@ -186,7 +210,7 @@ func moduleTests(ctx context.Context, in AffectedInput, list func(context.Contex
 		changed[pkg] = true
 	}
 	for pkg, deps := range g.testDeps {
-		hit := changed[pkg]
+		hit := changed[pkg] || rulePkgs[pkg]
 		for _, d := range deps {
 			hit = hit || changed[d]
 		}

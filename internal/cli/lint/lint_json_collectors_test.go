@@ -362,9 +362,10 @@ func TestContractDiagnosticString(t *testing.T) {
 func TestFindingsToJSONFallsBackToPathAndCarriesTheFix(t *testing.T) {
 	// anchorProtoConventionFindings: proto-relative convention paths are
 	// re-anchored under proto/, absolute and empty ones are left alone.
-	fs := []forgeconv.Finding{{File: "services/x/v1/x.proto"}, {File: "/abs/y.proto"}, {File: ""}}
+	abs := filepath.Join(t.TempDir(), "y.proto") // absolute on every OS (a drive letter on Windows)
+	fs := []forgeconv.Finding{{File: "services/x/v1/x.proto"}, {File: abs}, {File: ""}}
 	anchorProtoConventionFindings(fs)
-	if fs[0].File != "proto/services/x/v1/x.proto" || fs[1].File != "/abs/y.proto" || fs[2].File != "" {
+	if fs[0].File != "proto/services/x/v1/x.proto" || fs[1].File != abs || fs[2].File != "" {
 		t.Fatalf("anchored = %+v", fs)
 	}
 }

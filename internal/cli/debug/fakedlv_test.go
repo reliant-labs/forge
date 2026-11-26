@@ -606,3 +606,13 @@ func reaped(cmd *exec.Cmd) bool {
 		return false
 	}
 }
+
+// sleeperAlive reports whether the sleeper is still running. Where signal 0
+// probes a process (everywhere but Windows, whose os.Process.Signal supports
+// only Kill) it must succeed as well as the process being unreaped.
+func sleeperAlive(cmd *exec.Cmd) bool {
+	if reaped(cmd) {
+		return false
+	}
+	return runtime.GOOS == "windows" || cmd.Process.Signal(syscall.Signal(0)) == nil
+}

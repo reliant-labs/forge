@@ -469,7 +469,7 @@ func TestStop_AttachedSessionDetachesAndNeverKills(t *testing.T) {
 	if !strings.Contains(out, "detached; breakpoints removed, target process left running") {
 		t.Errorf("output = %q", out)
 	}
-	if err := sleeper.Process.Signal(syscall.Signal(0)); err != nil || reaped(sleeper) {
+	if !sleeperAlive(sleeper) {
 		t.Errorf("the attached target was killed: %v", err)
 	}
 }
@@ -500,7 +500,7 @@ func TestStop_UnreachableDlvFallsBackToSignalsButStillRespectsOwnership(t *testi
 		if !strings.Contains(out, "target process left running") {
 			t.Errorf("output = %q", out)
 		}
-		if reaped(sleeper) || sleeper.Process.Signal(syscall.Signal(0)) != nil {
+		if !sleeperAlive(sleeper) {
 			t.Error("an attached target was killed when dlv was unreachable")
 		}
 		if s := loadTestSession(t); s != nil {
@@ -707,7 +707,7 @@ func TestStop_ReapsTheDlvServerForgeStarted(t *testing.T) {
 	t.Run("a recycled dlv pid that is no dlv for the session's address is not signalled", func(t *testing.T) {
 		sleeper := startSleeper(t)
 		reapDlv(context.Background(), &dbgsvc.SessionInfo{DlvPID: sleeper.Process.Pid, Addr: "127.0.0.1:1", PID: 1})
-		if reaped(sleeper) || sleeper.Process.Signal(syscall.Signal(0)) != nil {
+		if !sleeperAlive(sleeper) {
 			t.Error("reapDlv signalled a process that is not the session's dlv")
 		}
 	})

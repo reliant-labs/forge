@@ -113,6 +113,9 @@ func TestFind_PrefersABinaryOnPath(t *testing.T) {
 }
 
 func TestFind_SkipsWhenThereIsNothingToRun(t *testing.T) {
+	if testing.Short() {
+		t.Skip("re-executes the test binary as a child; runs in task test")
+	}
 	if os.Getenv("OTELCOLTEST_FIND_CHILD") == "1" {
 		t.Setenv("PATH", t.TempDir())
 		Find(t)

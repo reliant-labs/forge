@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/pkg/testkit"
 )
 
 const sampleGoMod = `module github.com/reliant-labs/forge
@@ -80,6 +82,9 @@ func TestModuleWriteIsRelativeToTheModule(t *testing.T) {
 }
 
 func TestRunReturnsCombinedOutputAndPinsTheModuleEnvironment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns the go command; runs in task test")
+	}
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go is not on PATH")
 	}
@@ -150,6 +155,7 @@ service ItemsService {
 // NewModule generates real stubs; the module then compiles code that uses the
 // generated connect-go v2 handler interface.
 func TestNewModuleGeneratesStubsThatBuild(t *testing.T) {
+	testkit.Slow(t, "runs buf, builds the codegen plugins and builds a generated module with go build")
 	mod := NewModule(t, "example.com/v2app", map[string]string{"services/items/v1/items.proto": itemsProto})
 	if mod.Path != "example.com/v2app" || mod.Dir == "" {
 		t.Fatalf("module = %+v", mod)

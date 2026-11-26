@@ -518,6 +518,9 @@ func TestParseUnifiedZero_Details(t *testing.T) {
 }
 
 func TestExecGit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execs git; runs in task test")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}

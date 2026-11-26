@@ -14,8 +14,8 @@ Beside its constant, each scope has ONE catalog row (`pkg/accesstoken/catalog.go
 | Class | Who holds it | Examples |
 |---|---|---|
 | `personal` | every signed-in person, over their OWN resources; no org grant names it | `reliant:api`, `llm:invoke`, `runs:start`, `inbox:read`, `daemon:manage` |
-| `member` | every member of an org, without a grant | `obs:read`, `obs:triage` |
-| `standard` | org authority held by grant, directly or through a bundle | `deploy:write`, `secret:read`, `domain:write`, `tests:write` |
+| `member` | every member of an org, without a grant, and every credential acting as one (their daemon too) | `obs:read`, `obs:triage`, `tests:write` |
+| `standard` | org authority held by grant, directly or through a bundle | `deploy:write`, `secret:read`, `domain:write`, `tests:read` |
 | `sensitive` | org authority held ONLY by a grant naming the scope | `secret:write`, `db:query`, `storage:read`, `deploy:config:read`, `identity:manage`, `token:read`, `token:write`, `changes:launch` |
 
 A sensitive scope is one whose leak revoking the token does not undo: it reads secrets or users' data, issues credentials or passwords, or shifts production traffic. A future `billing:write` (changing what an org pays, or how) is sensitive from the day it is added; no such scope exists yet.

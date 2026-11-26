@@ -6,8 +6,9 @@ bootstrap chart (it owns CRDs), and one recommendation is dismissed. The
 bundle Install lands in `bundled_charts` with its Namespace in `manifests`,
 the bootstrap one in `helm_charts`, both on the stack's cluster with the
 labels forge stamps on their objects; the scraped adoption lands in
-`telemetry` (on that cluster's agent record), and the declared stack in
-`ml_stacks`. Chart versions are illustrative.
+`telemetry` (on that cluster's agent record, which also asks for the ML
+cluster collector with its defaults: `spec.mlCollector`), and the declared
+stack in `ml_stacks`. Chart versions are illustrative.
 
 The DCGM metric names are the author's data, as `forge ml discover` writes
 them: forge knows none of them.

@@ -132,6 +132,9 @@ type ObservabilityAgentSpec struct {
 	// A pointer, so the spec stays comparable (a slice field is not); on
 	// the wire it is the same JSON list.
 	Telemetry *[]telemetry.Target `json:"telemetry,omitempty"`
+	// MLCollector asks for the ML cluster collector beside the agent
+	// (kcl/ml.k MLCollector; observability_ml.go). Nil renders none.
+	MLCollector *MLClusterCollector `json:"mlCollector,omitempty"`
 }
 
 // declaredTelemetry is s.Telemetry, nil when it declares none.
@@ -467,6 +470,7 @@ func (s ObservabilityAgentSpec) AgentConfigFor(ctx ObservabilityContext) (string
 		if err := tel.MergeInto(cfg); err != nil {
 			return "", err
 		}
+		s.stampMLScrapeCluster(cfg)
 	}
 	return marshalConfig(cfg)
 }
@@ -796,7 +800,15 @@ func RenderObservabilityAgent(s ObservabilityAgentSpec, ctx ObservabilityContext
 		},
 	}
 
-	out, err := toUnstructured([]runtime.Object{nsObj, sa, role, binding, cm, ds, svc})
+	objs := []runtime.Object{nsObj, sa, role, binding, cm, ds, svc}
+	if s.MLCollector != nil {
+		ml, err := renderMLCollector(s, *s.MLCollector, ctx)
+		if err != nil {
+			return nil, err
+		}
+		objs = append(objs, ml...)
+	}
+	out, err := toUnstructured(objs)
 	if err != nil {
 		return nil, err
 	}

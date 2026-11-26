@@ -2321,7 +2321,8 @@ _stamp_cluster = lambda manifest: any, context: str -> any {
 # even when they run no forge workloads. An external collector owns those
 # scrapes instead when telemetry_collector is declared.
 _obs_workloads = lambda agent_workloads: [any], agent_stacks: [any], agent_obs: any -> [any] {
-    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
+    _scraped = [x.cluster for x in _ml_scrapes(agent_stacks)] + [s.cluster.cluster for s in _ml_collected(agent_stacks, True)] \
+        if agent_obs and agent_obs.enabled and not agent_obs.telemetry_collector else []
     agent_workloads + [{kind = "service", runtime = {type = "cluster", target = s.cluster}} for s in agent_stacks if s.cluster.cluster in _scraped]
 }
 
@@ -2358,8 +2359,26 @@ _obs_agent_records = lambda b: Bundle, part_of: str -> [any] {
             }
             "image": _o.agent.image
             "memoryLimitMiB": _o.agent.memory_limit_mib
-        } | _tel_agent_spec(b, t.cluster)
+        } | _tel_agent_spec(b, t.cluster) | _ml_collector_spec(b, t.cluster)
     } for _, t in _targets]
+}
+
+# Whether the env's ML stacks get their cluster collector: observability on
+# with a destination, and no external collector of the env's own.
+_ml_collect = lambda b: Bundle -> bool {
+    bool(_obs_on(b) and b.observability.destination and not b.observability.telemetry_collector)
+}
+
+# The `mlCollector` key of a cluster's agent record (kcl/ml.k MLCollector;
+# pkg/deploy.MLClusterCollector): absent when no collected stack is there.
+_ml_collector_spec = lambda b: Bundle, cluster: str -> {str:} {
+    _s = [s for s in _ml_collected(b.ml_stacks, _ml_collect(b)) if s.cluster.cluster == cluster]
+    {"mlCollector": {
+        "cluster": cluster
+        "nodeInterval": _ml_collector(_s[0]).node_interval
+        "inventoryInterval": _ml_collector(_s[0]).inventory_interval
+        "events": _ml_collector(_s[0]).events
+    }} if _s else {}
 }
 
 # ---------------------------------------------------------------------------
@@ -3387,7 +3406,7 @@ render = lambda bundle: Bundle -> any {
         # tools that read the stack and its decisions without parsing KCL.
         # Absent when none is declared, so an env without renders as before.
         if bundle.ml_stacks:
-            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle))
+            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle), _ml_collect(bundle))
         # The env's own collector, which pulls its cluster targets instead of
         # forge's node agent: the peer the targets' NetworkPolicy rules admit
         # (internal/cluster/telemetry.go). Only beside declared telemetry.

@@ -20,6 +20,7 @@ _outs = [forge.render(forge.Bundle {
     ml_stacks = [forge.MLStack {
         cluster = forge.ClusterTarget {cluster = "gke_acme_us-central1_gpu", namespace = "forge-ml"}
         monitoring = [forge.Adopt {kind = "prometheus", namespace = "monitoring", selector = {app = "prometheus"}, port = 9090 if _mode != "no-scrape" else Undefined}]
+        collector = forge.MLCollector {enabled = False} if _mode == "no-scrape" else Undefined
     }]
 }) for policy in ["local", "flux"]]
 assert_no_remote_agent = all out in _outs {len([m for m in out.manifests if m.kind == "ObservabilityAgent" and m.metadata.labels["forge.dev/cluster"] == "gke_acme_us-central1_gpu"]) == 0}

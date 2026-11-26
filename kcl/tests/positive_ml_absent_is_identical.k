@@ -5,7 +5,8 @@ An env that declares no stack renders byte-identically to one that declares
 `ml_stacks = []` (and the render-contract goldens, which predate MLStack and
 are unchanged, prove the same for every runtime). A stack of adoptions with no
 port lowers to nothing in the cluster: the render differs only by the
-`ml_stacks` projection, with observability on or off.
+`ml_stacks` projection, with observability on or off, once its cluster
+collector is turned off (positive_ml_stack_collector.k covers the collector).
 """
 
 import json
@@ -31,6 +32,7 @@ _adopt_only = [forge.MLStack {
     observed = ["kueue", "dcgm-exporter"]
     accelerators = [forge.Accelerators {vendor = "nvidia", metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator"}}]
     queue = forge.Adopt {kind = "kueue", namespace = "kueue-system"}
+    collector = forge.MLCollector {enabled = False}
 }]
 
 _without = forge.render(_base(None, True))

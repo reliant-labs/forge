@@ -397,7 +397,7 @@ func TestCovDStagePreviewCopyAndSwap(t *testing.T) {
 		kcl := t.TempDir()
 		dst := filepath.Join(kcl, "inst")
 		covDWriteTree(t, kcl, map[string]string{"inst/old.txt": "old", "stage/new.txt": "new"})
-		commit, rollback, err := swapPreviewDir(filepath.Join(kcl, "stage"), dst)
+		_, rollback, err := swapPreviewDir(filepath.Join(kcl, "stage"), dst)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +412,7 @@ func TestCovDStagePreviewCopyAndSwap(t *testing.T) {
 		}
 
 		covDWriteTree(t, kcl, map[string]string{"stage2/new.txt": "new2"})
-		commit, rollback, err = swapPreviewDir(filepath.Join(kcl, "stage2"), dst)
+		commit, _, err := swapPreviewDir(filepath.Join(kcl, "stage2"), dst)
 		if err != nil {
 			t.Fatal(err)
 		}

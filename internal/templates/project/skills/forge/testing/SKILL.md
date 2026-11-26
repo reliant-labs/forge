@@ -269,6 +269,8 @@ is suppressed at its line with the reason, like any forge rule:
 time.Sleep(100 * time.Millisecond)
 ```
 
+Trailing the line works too: `time.Sleep(d) // forge:lint-disable-line forge-test-fixed-sleep: <why>`.
+
 The rules warn in a project pinned below the release after the one that ships
 them, then gate.
 

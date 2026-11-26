@@ -22,6 +22,9 @@
 //	file directive          one file, per rule
 //	line directive          one line, per rule   ← prefer this
 //
+// A line directive is `forge:lint-disable-next-line` above the line, or
+// `forge:lint-disable-line` trailing it.
+//
 // PIGGYBACKING ON //nolint
 //
 // Go authors already have muscle memory for `//nolint:name`, and a
@@ -85,6 +88,14 @@ const (
 	// TokenDisableNextLine turns a rule off for the single line
 	// following the directive.
 	TokenDisableNextLine = "forge:lint-disable-next-line"
+	// TokenDisableLine turns a rule off for the line it trails — ESLint's
+	// `eslint-disable-line` spelling, which authors reach for by habit.
+	// Before it was a token, `forge:lint-disable-line` parsed as
+	// forge:lint-disable followed by "-line …", failed the separator
+	// check, and silenced nothing. It takes golangci's //nolint
+	// positions: trailing code, that line; alone on its line, the span a
+	// next-line directive covers.
+	TokenDisableLine = "forge:lint-disable-line"
 	// TokenDisable opens a suppressed block, closed by TokenEnable or
 	// by end-of-file.
 	TokenDisable = "forge:lint-disable"
@@ -190,13 +201,13 @@ func parseFileIn(content string, syn syntax) *fileDirectives {
 				for _, target := range nextLineTargets(lines, lineNo) {
 					fd.lineScope[target] = append(fd.lineScope[target], d)
 				}
-			case TokenNolint:
+			case TokenNolint, TokenDisableLine:
 				// golangci semantics: trailing on a line of code
 				// applies to THAT line; alone on its own line applies
 				// to what follows it, the same span a next-line
 				// directive covers.
 				targets := []int{lineNo}
-				if isDirectiveOnlyLine(raw, TokenNolint) {
+				if isDirectiveOnlyLine(raw, d.token) {
 					targets = nextLineTargets(lines, lineNo)
 				}
 				for _, target := range targets {
@@ -266,8 +277,10 @@ func parseLineIn(raw string, lineNo int, syn syntax) []directive {
 	var out []directive
 	// Order matters: the longer tokens are prefixes of the shorter one
 	// (forge:lint-disable-file starts with forge:lint-disable), so the
-	// specific spellings must be tested before the general one.
-	for _, tok := range []string{TokenDisableFile, TokenDisableNextLine, TokenEnable, TokenDisable, TokenNolint} {
+	// specific spellings must be tested before the general one. (The
+	// general one still finds its own prefix inside a longer token, and
+	// the separator check in parseRulesAndReason rejects that tail.)
+	for _, tok := range []string{TokenDisableFile, TokenDisableNextLine, TokenDisableLine, TokenEnable, TokenDisable, TokenNolint} {
 		idx := strings.Index(raw, tok)
 		if idx < 0 {
 			continue
@@ -570,7 +583,7 @@ func ApplyFiles(root string, findings []finding.Finding, read func(path string) 
 // never itself reported as an unknown marker.
 func IsDirectiveToken(token string) bool {
 	switch token {
-	case TokenDisableFile, TokenDisableNextLine, TokenDisable, TokenEnable:
+	case TokenDisableFile, TokenDisableNextLine, TokenDisableLine, TokenDisable, TokenEnable:
 		return true
 	}
 	return false

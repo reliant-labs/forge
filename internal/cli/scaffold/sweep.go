@@ -113,7 +113,7 @@ With a NOUN it scaffolds exactly that one thing, no marker required:
   forge scaffold frontend <name>                  a Next.js frontend
   forge scaffold scenario <name>                  a frontend mock scenario
   forge scaffold webhook <name> --service S       a webhook endpoint on a service
-  forge scaffold package <name>                   an internal package (alias for ` + "`forge package new`" + `)
+  forge scaffold package <name>                   an internal package (also spelled ` + "`forge package new`" + `)
   forge scaffold adapter <name>                   an outbound adapter (HTTP/queue/storage gateway)
   forge scaffold library <name>                   a library-shaped package (no contract.go; pre-excluded)
   forge scaffold handler-file <svc> <name>        an additional RPC-group file in handlers/<svc>/

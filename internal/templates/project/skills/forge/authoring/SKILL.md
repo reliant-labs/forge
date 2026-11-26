@@ -7,6 +7,11 @@ description: Authoring a service proto — mark entities with `// forge:entity` 
 
 ## Authoring a service proto
 
+The `services.<service>.v1` wire package is a default, not a requirement.
+For a product-specific namespace like `acme.orders.v1`, set
+`api.proto_package: "acme.{service}.v1"` before scaffolding and configure Buf
+lint as shown in `forge skill load proto/package`.
+
 Three rules cover what agents get wrong.
 
 ### 1. Mark entities, and let scaffold inject their CRUD

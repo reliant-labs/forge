@@ -23,6 +23,7 @@ import (
 	"github.com/reliant-labs/forge/internal/ledgerfile"
 	"github.com/reliant-labs/forge/internal/sbomoci"
 	"github.com/reliant-labs/forge/internal/vulnscan"
+	"github.com/reliant-labs/forge/pkg/accesstoken"
 	"github.com/reliant-labs/forge/pkg/release"
 )
 
@@ -38,7 +39,32 @@ func hostedVulnClient(_ context.Context, env vulnEnv) (cloudCaller, error) {
 	if err != nil {
 		return nil, &exitCodeError{code: exitRefused, msg: fmt.Sprintf("env %q keeps its findings on the control plane at %s, and reading them needs a sign-in: %v", env.Name, ep.URL, err)}
 	}
-	return cloud.NewClient(ep, cred), nil
+	client := cloud.NewClient(ep, cred)
+	declareVulnReadScope(client)
+	return client, nil
+}
+
+// scopeDeclarer is the slice of *cloud.Client that declares a procedure's
+// scope (cloud.Client.DeclareScope).
+type scopeDeclarer interface {
+	DeclareScope(scope string, procedures ...string)
+}
+
+// declareVulnReadScope says that the findings reads need vuln:read, so a
+// session credential (a `forge login`, a Reliant session through the
+// credential helper) is elevated for it BEFORE the first read.
+//
+// WHY DECLARE AND NOT LEARN. A session's token is minted for LoginScopes,
+// which do not carry vuln:read, and the reactive path never learns it: the
+// control plane refuses a read with "missing vuln:read in target
+// organization", which names no "<scope> scope" for the client to elevate
+// for, so every hosted `forge vuln list|show|sbom|patch` exited 4 for an owner
+// who holds the grant. A client that cannot declare (a test's fake caller) is
+// left as it is.
+func declareVulnReadScope(c cloudCaller) {
+	if d, ok := c.(scopeDeclarer); ok {
+		d.DeclareScope(string(accesstoken.ScopeVulnRead), procGetVulnerabilitySummary, procGetVulnerability, procGetReleaseVulnerabilities)
+	}
 }
 
 // hostedVulnSourceFor opens env's control plane and checks it serves

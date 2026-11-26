@@ -192,12 +192,16 @@ func TestFingerprint_CoversMigrationsAndVocabAndRefusesUnreadableInput(t *testin
 	if err := os.Mkdir(filepath.Join(mig, "00002_dir.up.sql"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mig, "00003_x.up.sql"), nil, 0o000); err != nil {
+	if err := os.WriteFile(filepath.Join(mig, "00003_x.up.sql"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if f, err := os.Open(filepath.Join(mig, "00003_x.up.sql")); err == nil {
-		_ = f.Close()
-		t.Skip("running with permissions that ignore file modes")
+	// A directory at the vocab path passes the existence check but cannot be
+	// read as a file, even as root or on Windows where modes are not enforced.
+	if err := os.Remove(VocabPath(mig)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(VocabPath(mig), 0o755); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := FingerprintInputs(mig); err == nil || !strings.Contains(err.Error(), "read seed fingerprint input") {
 		t.Errorf("an unreadable input: %v", err)

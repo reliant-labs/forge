@@ -124,7 +124,7 @@ On an rpc without `auth_required: false`:
    }
    ```
 
-   In a handler test, build a key caller with `middleware.ContextWithClaims(ctx, &middleware.Claims{UserID: "apikey:abcd1234", Credential: auth.APIKeyCredential("abcd1234")})`.
+   In a handler test, build a key caller with `testkit.WithAPIKey("abcd1234")` (`github.com/reliant-labs/forge/pkg/testkit`) beside the key row's role and tenant: `AuthedContext(t, testkit.WithAPIKey("abcd1234"), testkit.WithRoles("dataplane"), testkit.WithOrgID(tenantID))` (the package's generated test helper) in process, or the same options to `WithPrincipal(…)` for the `NewTest<Svc>Server` client. It sets `Credential: auth.APIKeyCredential("abcd1234")` and `UserID: "apikey:abcd1234"`, as the Authenticator would.
 
    **Revoking** sets `revoked_at`. The validator's `WHERE` clause is where revocation and expiry are enforced. `pkg/apikey` knows nothing about your rows.
 

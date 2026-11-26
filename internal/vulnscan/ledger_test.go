@@ -276,3 +276,47 @@ func TestBuildDocumentKeepsReleaseFindingsAtReleaseLevel(t *testing.T) {
 		t.Errorf("JSON = %s (%v), want an empty artifacts list", data, err)
 	}
 }
+
+// The artifacts no SBOM describes are listed beside the coverage, never in
+// it: not scanned is for applicable artifacts only.
+func TestScanReleaseListsNotApplicableArtifacts(t *testing.T) {
+	t.Parallel()
+	store, rel := testRelease(t)
+	rel.Artifacts["web.sourcemaps"] = release.Artifact{Kind: "oci", SBOM: &release.SBOMRef{Status: release.SBOMStatusNotApplicable, Reason: release.SBOMNotApplicableSourcemaps}}
+	// A pin from an older cut, with no ref at all: not applicable by the rule.
+	rel.Artifacts["docs"] = release.Artifact{Kind: release.KindGit, Mode: release.ModeSource}
+	// A ref claiming not_applicable on an image takes nothing out of the
+	// coverage: the rule decides, from the artifact.
+	rel.Artifacts["worker"] = release.Artifact{Kind: "oci", SBOM: &release.SBOMRef{Status: release.SBOMStatusNotApplicable, Reason: "says who"}}
+	rs, err := ScanRelease(context.Background(), store, nil, Status{}, rel, RescanNever)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, a := range rs.Artifacts {
+		names = append(names, a.Artifact)
+	}
+	if strings.Join(names, ",") != "api,web,worker" {
+		t.Errorf("covered artifacts %v, want api,web,worker", names)
+	}
+	want := []NotApplicableArtifact{
+		{Artifact: "docs", Reason: release.SBOMNotApplicableGitSource},
+		{Artifact: "web.sourcemaps", Reason: release.SBOMNotApplicableSourcemaps},
+	}
+	if len(rs.NotApplicable) != len(want) || rs.NotApplicable[0] != want[0] || rs.NotApplicable[1] != want[1] {
+		t.Errorf("not applicable %+v, want %+v", rs.NotApplicable, want)
+	}
+	doc := BuildDocument(DocumentInput{Release: rel.Version, Artifacts: rs.Artifacts, NotApplicable: rs.NotApplicable, Now: testNow})
+	if doc.Coverage.Artifacts != 3 || len(doc.Coverage.NotApplicable) != 2 {
+		t.Errorf("coverage %+v", doc.Coverage)
+	}
+	for _, u := range doc.Coverage.Unscanned {
+		if u.Artifact == "docs" || u.Artifact == "web.sourcemaps" {
+			t.Errorf("%s reads as unscanned", u.Artifact)
+		}
+	}
+	data, err := json.Marshal(doc.Coverage)
+	if err != nil || !strings.Contains(string(data), `"not_applicable":[{"artifact":"docs"`) {
+		t.Errorf("coverage JSON %s, %v", data, err)
+	}
+}

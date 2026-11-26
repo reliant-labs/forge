@@ -235,7 +235,7 @@ func scanReleaseAtCut(ctx context.Context, in cutVulnInput) *cutVulnVerdict {
 	}
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
 		Env: in.Env, Release: in.Release.Version, Gate: pol.VulnGate, Notes: rs.Notes,
-		GradedAs: gradedMode(pol.VulnGate.Mode, grades.Vuln), Artifacts: rs.Artifacts, Now: deps.now(),
+		GradedAs: gradedMode(pol.VulnGate.Mode, grades.Vuln), Artifacts: rs.Artifacts, NotApplicable: rs.NotApplicable, Now: deps.now(),
 	})
 	v.Doc = &doc
 	return v

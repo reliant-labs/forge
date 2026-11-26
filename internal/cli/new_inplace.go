@@ -57,6 +57,10 @@ type inPlaceMergeResult struct {
 	kept []string
 	// overwritten lists pre-existing files replaced because of --force.
 	overwritten []string
+	// created lists new scaffold files, including .gitignore if absent.
+	created []string
+	// gitignoreChanged distinguishes an unchanged merge from a rewrite.
+	gitignoreChanged bool
 	// gitignoreMerged is true when a pre-existing .gitignore was merged;
 	// gitignoreAdded is how many forge entries the merge appended.
 	gitignoreMerged bool
@@ -84,6 +88,16 @@ type skippedIgnore struct {
 // the dev web-runtime bridge, which is relative to where it was written and
 // is re-laid in the target by generator.EnsureDevWebRuntimeLink.
 func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResult, error) {
+	return reconcileScaffoldMerge(staging, target, overwrite, false)
+}
+
+// reconcileScaffoldMerge makes the same decisions for the preview as for a
+// real merge; only the writes are skipped in dry-run mode.
+func reconcileScaffoldMerge(staging, target string, overwrite, dryRun bool) (inPlaceMergeResult, error) {
+	writeFile := atomicfile.WriteFile
+	if dryRun {
+		writeFile = func(string, []byte, fs.FileMode) error { return nil }
+	}
 	var res inPlaceMergeResult
 	err := filepath.WalkDir(staging, func(src string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -109,6 +123,9 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 				res.kept = append(res.kept, relSlash)
 				return filepath.SkipDir
 			}
+			if dryRun {
+				return nil
+			}
 			return os.MkdirAll(dest, 0o755)
 		}
 
@@ -126,7 +143,8 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			forgeBody, skipped := dropTrackedIgnores(string(content), gitTrackedIgnoreMatcher(target))
 			res.gitignoreSkipped = skipped
 			if readErr != nil {
-				return atomicfile.WriteFile(dest, []byte(forgeBody), info.Mode().Perm())
+				res.created = append(res.created, relSlash)
+				return writeFile(dest, []byte(forgeBody), info.Mode().Perm())
 			}
 			merged, added := mergeGitignore(string(existing), forgeBody)
 			res.gitignoreMerged = true
@@ -135,7 +153,8 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 			if merged == string(existing) {
 				return nil
 			}
-			return atomicfile.WriteFile(dest, []byte(merged), 0o644)
+			res.gitignoreChanged = true
+			return writeFile(dest, []byte(merged), 0o644)
 		}
 		switch {
 		case readErr == nil && !overwrite:
@@ -150,9 +169,12 @@ func mergeScaffoldInto(staging, target string, overwrite bool) (inPlaceMergeResu
 				return nil
 			}
 			return fmt.Errorf("read %s: %w", dest, readErr)
+		default:
+			res.created = append(res.created, relSlash)
 		}
-		return atomicfile.WriteFile(dest, content, info.Mode().Perm())
+		return writeFile(dest, content, info.Mode().Perm())
 	})
+	sort.Strings(res.created)
 	sort.Strings(res.kept)
 	sort.Strings(res.overwritten)
 	return res, err

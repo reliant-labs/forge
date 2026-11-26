@@ -43,7 +43,7 @@ forge project new <name>-next --kind <service|cli|library> --mod <module-path>
 
 For a project nothing else imports, use a `-next` suffix (e.g. `github.com/owner/project-next`) during the migration so old and new repos build side-by-side, and rename the module path as the final cutover step. The friction is small and the safety upside is large.
 
-A project other modules already `require` — or one too large and too busy to fork for months — adopts forge **in place** instead (`forge project new --in-place`), one service at a time. That only works because forge can be told which services it does not manage yet; see the next section.
+A project other modules already `require` — or one too large and too busy to fork for months — adopts forge **in place** instead (`forge project new --in-place`; add `--dry-run` first to list every file it would write and every one of yours it would keep), one service at a time. That only works because forge can be told which services it does not manage yet; see the next section.
 
 ## Adopting in place, one service at a time: `// forge:unmanaged`
 

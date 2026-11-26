@@ -385,7 +385,8 @@ func NeverOnDaemon(scope Scope) bool {
 // produce scope. It is org authority (member, standard or sensitive; a
 // personal scope is held already and never exchanged for) that the catalog
 // does not exclude: deploy:write (it authorizes the exchange itself),
-// token:read and token:write, sourcemaps:write (a registry-only credential)
+// the host class as a whole (a second layer beside each host scope's own
+// flag), token:read and token:write, sourcemaps:write (a registry-only credential)
 // and changes:launch (minted directly, never on demand).
 //
 // ELEVATION IS A SEPARATE, EXPLICIT PATH. A true here says nothing about
@@ -394,7 +395,7 @@ func NeverOnDaemon(scope Scope) bool {
 // only while the person behind it holds that scope by grant.
 func Elevatable(scope Scope) bool {
 	e, ok := entryOf(scope)
-	if !ok || e.class == ClassPersonal {
+	if !ok || e.class == ClassPersonal || e.class == ClassHost {
 		return false
 	}
 	return !e.notElevatable

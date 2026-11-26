@@ -40,6 +40,7 @@ func TestHostCredentialShape(t *testing.T) {
 		"client id":              func(g *Grant) { g.ClientID = "c" },
 		"audience":               func(g *Grant) { g.Audience = "https://api.example.com" },
 		"app grant":              func(g *Grant) { g.AppGrantID = "ag" },
+		"ephemeral only":         func(g *Grant) { g.Ephemeral = true },
 		"ephemeral":              func(g *Grant) { g.Ephemeral = true; g.Resource = &Resource{Kind: ResourceDaemon, ID: "d"} },
 		"no expiry":              func(g *Grant) { g.ExpiresAt = nil },
 		"expiry in the past":     func(g *Grant) { g.ExpiresAt = &past },

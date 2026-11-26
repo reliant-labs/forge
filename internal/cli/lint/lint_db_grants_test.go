@@ -181,3 +181,38 @@ func TestDBGrants_ScopeSkipsWithoutTheDescriptor(t *testing.T) {
 		t.Errorf("a project with no protos has no descriptor to miss, got skip %q", msg)
 	}
 }
+
+// ranger: two BYTEA columns named payload held marshalled protobuf messages
+// and were each reported as looking "like a credential". A bytea column named
+// for a document is granted now; an opaque one is still reported, worded for
+// its type rather than its name, with a hint that asks what the bytes are.
+func TestDBGrants_BinaryColumns(t *testing.T) {
+	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": `CREATE TABLE assignments (
+    id       TEXT PRIMARY KEY,
+    payload  BYTEA NOT NULL,
+    blob     BYTEA NOT NULL
+);
+`})
+	rep := grantsReport(t, root)
+	if got, want := names(rep), "assignments.blob"; got != want {
+		t.Fatalf("findings = %s, want %s", got, want)
+	}
+	f := rep.Findings[0]
+	if !strings.Contains(f.message(), "is bytea") || strings.Contains(f.message(), "looks like a credential") {
+		t.Errorf("message should name the type, not call the name a credential: %s", f.message())
+	}
+	if !strings.Contains(f.fixHint(), "forge:readable <what the bytes are") {
+		t.Errorf("hint should ask what the bytes are: %s", f.fixHint())
+	}
+}
+
+func TestDBGrantsFinding_MessageNamesWhyItWasWithheld(t *testing.T) {
+	text := dbGrantsFinding{Schema: "public", Table: "t", Column: "access_token"}
+	if !strings.Contains(text.message(), "looks like a credential") {
+		t.Errorf("text column message: %s", text.message())
+	}
+	bin := dbGrantsFinding{Schema: "public", Table: "t", Column: "blob", Binary: true}
+	if !strings.Contains(bin.message(), "t.blob is bytea") || strings.Contains(bin.message(), "looks like a credential") {
+		t.Errorf("bytea column message: %s", bin.message())
+	}
+}

@@ -40,7 +40,8 @@ const (
 	// called, so the name check does not apply.
 	KindScalar
 	// KindBinary is bytea: opaque by construction, and in practice ciphertext,
-	// a hash or a key. It needs a decision whatever it is called.
+	// a hash or a key. It needs a decision whatever it is called, unless its
+	// name says it holds a serialized document (see [BinaryDocumentShaped]).
 	KindBinary
 )
 
@@ -65,10 +66,38 @@ func (c Column) Disposition() Disposition {
 		return WithheldSecret
 	case c.Readable:
 		return Granted
-	case c.Kind == KindBinary, c.Kind == KindText && CredentialShaped(c.Name):
+	case c.Kind == KindBinary && !BinaryDocumentShaped(c.Name),
+		c.Kind == KindText && CredentialShaped(c.Name):
 		return WithheldUndecided
 	}
 	return Granted
+}
+
+// BinaryDocumentNameWords are final words that say a bytea column holds a
+// serialized document — a protobuf message, a request body, an uploaded image
+// — rather than key material. In a proto-first project `payload BYTEA` holding
+// a marshalled message is the ordinary shape, and its text twin `payload
+// jsonb` was always granted; withholding the bytea one made every such column
+// cost a migration. The list is short on purpose: `data`, `value` and `blob`
+// are absent because they name nothing, and `envelope` is absent because it is
+// also envelope encryption's word.
+var BinaryDocumentNameWords = []string{
+	"payload", "body", "content", "contents", "document", "snapshot",
+	"proto", "protobuf", "image", "thumbnail", "attachment",
+}
+
+// BinaryDocumentShaped reports whether a bytea column's NAME says it holds a
+// serialized document: its last word is one of [BinaryDocumentNameWords] and
+// the name is not also [CredentialShaped] (`encrypted_payload`,
+// `sealed_body` and `payload_hash` stay withheld). Such a column is judged by
+// its name like a text column; every other bytea column still needs a
+// decision.
+func BinaryDocumentShaped(name string) bool {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '_' || r == '-' || r == ' ' })
+	if len(words) == 0 || !slices.Contains(BinaryDocumentNameWords, words[len(words)-1]) {
+		return false
+	}
+	return !CredentialShaped(name)
 }
 
 // CredentialNameStems are matched as substrings of the column name with its

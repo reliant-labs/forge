@@ -17,10 +17,12 @@ package releasehealth
 //
 // A finding is new when no finding of the previous audit has its code, route
 // and ref (siteaudit.Finding identifies a finding by the three), and the
-// previous audit judged its category on its route: a route that axe did not
-// run on before has no a11y baseline, so its violations are not new. A route
-// the previous audit did not crawl is judged against the previous audit as a
-// whole: a page the release added, with an error, is the release's doing.
+// previous audit judged its category at its scope: a route that axe did not
+// run on before has no a11y baseline, so its violations are not new. A
+// site-wide finding, or one on a route the previous audit did not crawl (a
+// page the release added, whose error is the release's doing), needs the
+// previous audit to have judged the category somewhere: its site-level score
+// for it. An audit that ran no axe at all is no a11y baseline.
 //
 // Each frontend yields at most two findings per code: one for the score drop
 // (Ref SiteAuditRefScore; Value the largest drop in points, Threshold the
@@ -114,7 +116,10 @@ type SiteAuditRoute struct {
 	PreviousA11y *int   `json:"previous_a11y,omitempty"`
 }
 
-// SiteAuditBaseline is the audit a release's is compared with.
+// SiteAuditBaseline is the audit a release's is compared with. A nil score
+// says the previous audit judged that category on no page: there is no
+// baseline for it, so neither a score drop nor a new error of that category
+// is a finding, whatever NewErrors holds.
 type SiteAuditBaseline struct {
 	// Release is the release it audited.
 	Release string `json:"release,omitempty"`
@@ -184,21 +189,38 @@ func CompareSiteAudits(frontend, release string, current *siteaudit.Report, prev
 	return f
 }
 
-// judgedBefore reports whether the previous audit judged f's category where
-// f is: on f's route when it crawled it, else anywhere on the site.
+// judgedBefore reports whether the previous audit judged f's category at
+// f's scope, so that the finding's absence from it means something:
+//
+//   - a finding on a route the previous audit crawled: that route's score
+//     for the category (axe may not have run on it);
+//   - a site-wide finding, or one on a route the release added: the
+//     previous audit's site-level score for the category, which is nil when
+//     it judged the category on no page at all.
+//
+// With no score at that scope there is no baseline, and the finding is not
+// new: an audit that never ran axe cannot say a violation was absent. A
+// category this package does not know has no baseline either.
 func judgedBefore(f siteaudit.Finding, previous *siteaudit.Report, prevRoutes map[string]siteaudit.RouteScore) bool {
-	pick := func(s siteaudit.RouteScore) *int {
-		if f.Category == siteaudit.CategoryAccessibility {
-			return s.A11y
-		}
-		return s.SEO
-	}
+	scope := previous.Site.Score
 	if f.Route != "" {
 		if s, ok := prevRoutes[f.Route]; ok {
-			return pick(s) != nil
+			scope = s
 		}
 	}
-	return pick(previous.Site.Score) != nil
+	return categoryScore(scope.SEO, scope.A11y, f.Category) != nil
+}
+
+// categoryScore is the score of category among seo and a11y; nil for a
+// category that has none.
+func categoryScore(seo, a11y *int, category siteaudit.Category) *int {
+	switch category {
+	case siteaudit.CategorySEO:
+		return seo
+	case siteaudit.CategoryAccessibility:
+		return a11y
+	}
+	return nil
 }
 
 func cloneInt(p *int) *int {
@@ -308,6 +330,11 @@ func (c siteAuditCategory) scoreFinding(a SiteAuditFacts, since string) (Finding
 }
 
 func (c siteAuditCategory) newErrorsFinding(a SiteAuditFacts, since string) (Finding, bool) {
+	// A category the previous audit judged nowhere has no baseline: none of
+	// its errors is new, even in facts a caller built by hand.
+	if prev := categoryScore(a.Previous.SEO, a.Previous.A11y, c.category); prev == nil {
+		return Finding{}, false
+	}
 	var errs []SiteAuditFinding
 	for _, e := range a.NewErrors {
 		if e.Category == c.category {

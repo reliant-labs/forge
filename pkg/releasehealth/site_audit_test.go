@@ -330,3 +330,69 @@ func mustJSON(t *testing.T, v any) string {
 	}
 	return string(b)
 }
+
+// A category the previous audit judged nowhere (no site-level score: it ran
+// no axe, or scored no page for SEO) is no baseline: a site-wide error of
+// it, or one on a page the release added, is not new (review B1).
+func TestCompareSiteAuditsNeedsABaselineForTheCategory(t *testing.T) {
+	siteWide := func(code string, cat siteaudit.Category) siteaudit.Finding {
+		return siteaudit.Finding{Code: code, Severity: siteaudit.SeverityError, Category: cat}
+	}
+	cur := report(score(ip(80), ip(80)), []siteaudit.RouteReport{
+		{Route: "/", Status: 200, Score: score(ip(80), ip(80))},
+		{Route: "/new", Status: 200, Score: score(ip(80), ip(80))},
+	},
+		siteWide("robots_unreachable", siteaudit.CategorySEO),
+		siteWide("a11y_violation", siteaudit.CategoryAccessibility),
+		siteaudit.Finding{Code: "a11y_violation", Severity: siteaudit.SeverityError, Category: siteaudit.CategoryAccessibility, Route: "/new", Ref: "button-name"},
+		siteaudit.Finding{Code: "indexing_mismatch", Severity: siteaudit.SeverityError, Category: siteaudit.CategorySEO, Route: "/new"},
+		siteaudit.Finding{Code: "made_up", Severity: siteaudit.SeverityError, Category: "performance"})
+	for _, tc := range []struct {
+		name string
+		prev siteaudit.RouteScore
+		want []string // codes of the new errors, by category
+	}{
+		{"no a11y score anywhere: only SEO errors are new", score(ip(95), nil), []string{"seo:robots_unreachable", "seo:indexing_mismatch"}},
+		{"no SEO score anywhere: only a11y errors are new", score(nil, ip(95)), []string{"accessibility:a11y_violation", "accessibility:a11y_violation"}},
+		{"neither: nothing is new", score(nil, nil), nil},
+		{"both: every known category's errors are new", score(ip(95), ip(95)),
+			[]string{"seo:robots_unreachable", "accessibility:a11y_violation", "accessibility:a11y_violation", "seo:indexing_mismatch"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := report(tc.prev, []siteaudit.RouteReport{{Route: "/", Status: 200, Score: tc.prev}})
+			f := CompareSiteAudits("web", "v2", cur, "v1", prev)
+			var got []string
+			for _, e := range f.NewErrors {
+				got = append(got, string(e.Category)+":"+e.Code)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("new errors = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Evaluate holds facts built by hand to the same rule: a new error of a
+// category with no previous site-level score is no finding.
+func TestSiteAuditNewErrorsNeedAPreviousScore(t *testing.T) {
+	seoErr := SiteAuditFinding{Code: "robots_unreachable", Category: siteaudit.CategorySEO}
+	a11yErr := SiteAuditFinding{Code: "a11y_violation", Category: siteaudit.CategoryAccessibility, Ref: "region"}
+	for _, tc := range []struct {
+		name            string
+		prevSEO, prA11y *int
+		want            []string
+	}{
+		{"no previous a11y score", ip(90), nil, []string{"seo_regressed/new_errors"}},
+		{"no previous SEO score", nil, ip(90), []string{"a11y_regressed/new_errors"}},
+		{"no previous score at all", nil, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := withNewErrors(audit(90, 90, 95, 95), seoErr, a11yErr)
+			a.Previous.SEO, a.Previous.A11y = tc.prevSEO, tc.prA11y
+			r := Evaluate(siteInput(t, a))
+			if got := codesRefs(r.Findings); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("findings = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

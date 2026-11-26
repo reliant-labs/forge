@@ -97,14 +97,19 @@ var FieldProfiles = map[string]Profile{
 	"env.databaseRef.key":        ProfileRestricted,
 	// bucketRef names a bucket of the workload's own environment, like
 	// databaseRef names a database: it reaches nothing outside the env.
-	"env.bucketRef":        ProfileRestricted,
-	"env.bucketRef.name":   ProfileRestricted,
-	"env.bucketRef.key":    ProfileRestricted,
-	"env.workloadURL":      ProfileRestricted,
-	"env.workloadURL.name": ProfileRestricted,
-	"env.secretRef":        ProfileFull,
-	"env.configMapRef":     ProfileFull,
-	"env.fieldRef":         ProfileFull,
+	"env.bucketRef":      ProfileRestricted,
+	"env.bucketRef.name": ProfileRestricted,
+	"env.bucketRef.key":  ProfileRestricted,
+	// keyValueStoreRef names a key-value store of the workload's own
+	// environment, like databaseRef: it reaches nothing outside the env.
+	"env.keyValueStoreRef":      ProfileRestricted,
+	"env.keyValueStoreRef.name": ProfileRestricted,
+	"env.keyValueStoreRef.key":  ProfileRestricted,
+	"env.workloadURL":           ProfileRestricted,
+	"env.workloadURL.name":      ProfileRestricted,
+	"env.secretRef":             ProfileFull,
+	"env.configMapRef":          ProfileFull,
+	"env.fieldRef":              ProfileFull,
 
 	"ports":          ProfileRestricted,
 	"ports.name":     ProfileRestricted,

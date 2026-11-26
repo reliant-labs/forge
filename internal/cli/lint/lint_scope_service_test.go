@@ -8,6 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/reliant-labs/forge/internal/cli/factory"
+	"github.com/reliant-labs/forge/internal/projectstore"
 )
 
 // A scope over one half of a service reports findings in its other half:
@@ -99,6 +102,13 @@ message RotateKeyResponse {}
 		}
 	}
 	t.Chdir(root)
+	// CLI normally registers this loader during init. This package's tests
+	// run without that CLI bootstrap, including the changed-tests gate.
+	previousLoader := factory.New().LoadProjectStore
+	factory.SetProjectStoreLoader(func() (*projectstore.Store, error) {
+		return nil, ErrProjectConfigNotFound
+	})
+	t.Cleanup(func() { factory.SetProjectStoreLoader(previousLoader) })
 	var convention linterStep
 	for _, step := range lintPipeline() {
 		if step.name == "forge convention lint" {

@@ -2525,6 +2525,32 @@ _render_uptime_checks = lambda b: Bundle -> [any] {
     [{k = v for k, v in _all[n] if v != None} for n in sorted([n for n in _all])]
 }
 
+# ---------------------------------------------------------------------------
+# Status page (schema.k StatusPage), resolved to the release shape's
+# `status_page`. Every check a component names must be in the env's final
+# check list, the way Uptime.skip refuses a name forge derives no check for.
+# ---------------------------------------------------------------------------
+
+_render_status_page = lambda b: Bundle -> any {
+    _p = b.status_page
+    _checks = [c.name for c in _render_uptime_checks(b)]
+    _unknown = ["${c.name}: ${n}" for c in _p.components for n in c.checks if n not in _checks]
+    assert not _unknown, \
+        "StatusPage.components name uptime checks this env does not have: ${_unknown} (its checks: ${_checks}). A component shows the env's uptime checks: name one of them, declare it in forge.Uptime.checks, or stop skipping it"
+    _page = {
+        "title": _p.title
+        "logo_url": _p.logo_url if _p.logo_url else None
+        "accent_color": _p.accent_color if _p.accent_color else None
+        "links": [{"label": l.label, "url": l.url} for l in _p.links] if _p.links else None
+        "components": [{k = v for k, v in {
+            "name": c.name
+            "description": c.description if c.description else None
+            "checks": sorted(c.checks)
+        } if v != None} for c in _p.components]
+    }
+    {k = v for k, v in _page if v != None}
+}
+
 # The declaration, as the Go side (forge env up, the local forwarder) reads it.
 _render_observability = lambda b: Bundle -> any {
     _o = b.observability
@@ -3284,6 +3310,10 @@ render = lambda bundle: Bundle -> any {
         # derives for a hosted env. Go records them in the release shape.
         if _render_uptime_checks(bundle):
             "uptime_checks": _render_uptime_checks(bundle)
+        # The env's status page, resolved against those checks. Go records it
+        # in the release shape. Whether it is public is control-plane state.
+        if bundle.status_page:
+            "status_page": _render_status_page(bundle)
         # The release-health policy, resolved, only when the env declares one.
         # Go records it in the release shape unless it is all defaults.
         if bundle.release_health:

@@ -25,9 +25,12 @@ alone without a directive:
   `go.opentelemetry.io/` package, or calls `observe.Setup`. A main that does
   none of that (a load generator, an example client) installs no tracer, so
   it and the packages only such mains reach are skipped, unless another
-  module can import them. A package no main reaches is still linted.
+  module can run them through a public package. A package no main reaches
+  is still linted. Build-constraint uncertainty keeps code linted too: if any
+  file in a main's closure is excluded by the current Go build context, that
+  main cannot establish the untraced exemption.
 - **A library's default for a client its caller supplies.** In a package
-  another module can reach (importable, or imported by one),
+  another module can import directly (not its internal implementation dependencies),
   `if o.HTTPClient == nil { o.HTTPClient = &http.Client{} }` (or
   `http.DefaultClient`, assigned to the very value tested) is not flagged:
   tracing is the caller's choice. Internal code keeps the finding. A public

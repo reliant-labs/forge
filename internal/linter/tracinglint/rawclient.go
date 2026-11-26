@@ -29,8 +29,8 @@
 //		hc = &http.Client{}
 //	}
 //
-// in a package another module can reach (importable, or imported by an
-// importable package — reach.go). Whether that client is traced is the
+// in a package another module can import directly (reach.go). Internal
+// dependencies of public packages do not qualify. Whether that client is traced is the
 // importing program's choice, made in another module forge cannot see, and
 // importing forge's observe into a public SDK to build the default would
 // impose forge's telemetry stack on every user of it. Only the exact shape is

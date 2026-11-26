@@ -25,9 +25,11 @@
 // Every ambiguity keeps the current behaviour: a package no main reaches
 // (dead code, test-only helpers) stays linted, as does any package another
 // module can reach, since forge cannot see the processes that import it.
-// Build constraints are ignored (every file's imports count), which only
-// adds edges, and so only keeps more code in scope. The signal reads the
-// local source only: a main that boots through a third-party framework that
+// Every file's imports count as possible traced paths. If any file in a
+// main's closure is excluded by the current Go build context (tags or filename
+// constraints), that closure stays linted: excluded code cannot prove an
+// untraced process exists. Mixed package clauses also stay in scope.
+// The signal reads the local source only: a main that boots through a third-party framework that
 // installs a tracer provider the program never names would be taken for
 // untraced. Such a program almost always touches OpenTelemetry itself, which
 // is why the signal is any go.opentelemetry.io/ import rather than only the
@@ -37,6 +39,7 @@ package tracinglint
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -58,11 +61,12 @@ const (
 type pkgNode struct {
 	path   string // import path
 	modRel string // directory relative to its module root, slash-separated
-	// main is set when every non-test file is package main. A directory
-	// mixing a library with a `//go:build ignore` program is a library.
-	main      bool
-	imports   map[string]bool
-	telemetry bool // may install telemetry (see the file doc)
+	// main is set when every non-test file is package main. Mixed package
+	// clauses are conservatively kept in scope as a library.
+	main           bool
+	buildUncertain bool // at least one file is excluded or cannot be matched
+	imports        map[string]bool
+	telemetry      bool // may install telemetry (see the file doc)
 }
 
 // reach is the per-package answer, keyed by absolute directory.
@@ -122,9 +126,13 @@ func buildReach(root, module string) (reach, error) {
 	for dir, n := range nodes {
 		if !n.main && !hasInternalSegment(n.modRel) {
 			importable = append(importable, dir)
+			r.external[dir] = true
 		}
 	}
-	r.external, _ = closure(importable)
+	// A public package can execute its internal dependencies, but an outside
+	// caller cannot import those implementations to configure their defaults.
+	// Keep execution reachability separate from the caller-default exemption.
+	externallyRun, _ := closure(importable)
 
 	tracedBy, untracedBy := map[string]bool{}, map[string]bool{}
 	for dir, n := range nodes {
@@ -134,7 +142,7 @@ func buildReach(root, module string) (reach, error) {
 		run, unknown := closure([]string{dir})
 		traced := unknown
 		for d := range run {
-			traced = traced || nodes[d].telemetry
+			traced = traced || nodes[d].telemetry || nodes[d].buildUncertain
 		}
 		for d := range run {
 			if traced {
@@ -145,7 +153,7 @@ func buildReach(root, module string) (reach, error) {
 		}
 	}
 	for dir := range untracedBy {
-		if !tracedBy[dir] && !r.external[dir] {
+		if !tracedBy[dir] && !externallyRun[dir] {
 			r.untraced[dir] = true
 		}
 	}
@@ -229,6 +237,10 @@ func loadPkgGraph(root string) (map[string]*pkgNode, []string, error) {
 			}
 			nodes[dir] = n
 		}
+		// Retain every import as a possible traced path, but never let an
+		// excluded file prove that a process (or its closure) is untraced.
+		matches, matchErr := build.Default.MatchFile(dir, name)
+		n.buildUncertain = n.buildUncertain || matchErr != nil || !matches
 		if file.Name.Name != "main" {
 			notMain[dir] = true
 		}

@@ -762,6 +762,49 @@ func TestUntracedProgramsAreOutOfScope(t *testing.T) {
 			want: flagged("cmd/load/main.go"),
 		},
 		{
+			name: "an ignored main cannot exempt its internal dependency",
+			files: map[string]string{
+				"cmd/tool/main.go":          "//go:build ignore\n\n" + untracedSrc("main", mod+"internal/helper"),
+				"internal/helper/helper.go": untracedSrc("helper"),
+			},
+			want: append(flagged("cmd/tool/main.go"), flagged("internal/helper/helper.go")...),
+		},
+		{
+			name: "a legacy build constraint cannot prove an untraced process",
+			files: map[string]string{
+				"cmd/tool/main.go":          "// +build ignore\n\n" + untracedSrc("main", mod+"internal/helper"),
+				"internal/helper/helper.go": untracedSrc("helper"),
+			},
+			want: append(flagged("cmd/tool/main.go"), flagged("internal/helper/helper.go")...),
+		},
+		{
+			name: "an excluded library file does not hide an ignored main",
+			files: map[string]string{
+				"cmd/tool/main.go":          "//go:build ignore\n\n" + untracedSrc("main", mod+"internal/helper"),
+				"cmd/tool/lib.go":           "//go:build ignore\n\npackage tool\n",
+				"internal/helper/helper.go": untracedSrc("helper"),
+			},
+			want: append(flagged("cmd/tool/main.go"), flagged("internal/helper/helper.go")...),
+		},
+		{
+			name: "platform filename constraints cannot prove an untraced process",
+			files: map[string]string{
+				"cmd/tool/main_linux.go":    untracedSrc("main", mod+"internal/helper"),
+				"cmd/tool/main_windows.go":  "package main\n",
+				"internal/helper/helper.go": untracedSrc("helper"),
+			},
+			want: append(flagged("cmd/tool/main_linux.go"), flagged("internal/helper/helper.go")...),
+		},
+		{
+			name: "an excluded dependency file keeps the closure in scope",
+			files: map[string]string{
+				"cmd/tool/main.go":           untracedSrc("main", mod+"internal/helper"),
+				"internal/helper/helper.go":  untracedSrc("helper"),
+				"internal/helper/ignored.go": "//go:build ignore\n\npackage helper\n",
+			},
+			want: append(flagged("cmd/tool/main.go"), flagged("internal/helper/helper.go")...),
+		},
+		{
 			name: "a main importing a local package that is not on disk is unknown, so traced",
 			files: map[string]string{
 				"cmd/load/main.go": untracedSrc("main", mod+"gen/missing"),
@@ -829,19 +872,20 @@ func New(o Options) *Client {
 		"pkg/sdk/client.go":             pkg("sdk"),
 		"pkg/sdk/internal/conn/conn.go": pkg("conn"),
 		"internal/server/client.go":     pkg("server"),
+		"pkg/public/public.go":          "package public\n\nimport _ \"example.com/app/internal/server\"\n",
 	})
 	res, err := Lint(root, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var want []string
-	for _, file := range []string{"pkg/sdk/client.go", "pkg/sdk/internal/conn/conn.go"} {
-		for _, line := range []string{"23", "26", "29"} {
+	for _, line := range []string{"23", "26", "29"} {
+		want = append(want, RuleRawHTTPClient+" pkg/sdk/client.go:"+line)
+	}
+	for _, file := range []string{"internal/server/client.go", "pkg/sdk/internal/conn/conn.go"} {
+		for _, line := range []string{"12", "15", "19", "23", "26", "29"} {
 			want = append(want, RuleRawHTTPClient+" "+file+":"+line)
 		}
-	}
-	for _, line := range []string{"12", "15", "19", "23", "26", "29"} {
-		want = append(want, RuleRawHTTPClient+" internal/server/client.go:"+line)
 	}
 	assertHits(t, res, want...)
 	if r := res.Findings[0].Remediation; !strings.Contains(r, "forge:lint-disable-file "+RuleRawHTTPClient) ||

@@ -1851,6 +1851,9 @@ _spec = lambda w: any, rt: any, bundle: Bundle -> any {
         successfulJobsHistoryLimit = w.successfulJobsHistoryLimit
         failedJobsHistoryLimit = w.failedJobsHistoryLimit
         ttlSecondsAfterFinished = w.ttlSecondsAfterFinished
+        concurrencyPolicy = w.concurrencyPolicy
+        startingDeadlineSeconds = w.startingDeadlineSeconds
+        timeZone = w.timeZone
     }
 }
 

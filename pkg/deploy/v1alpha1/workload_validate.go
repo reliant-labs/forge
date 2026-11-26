@@ -7,12 +7,21 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
+
+	// The IANA database, embedded, so validateTimeZone answers the same on a
+	// host with no zoneinfo. It is consulted only when the system's is missing.
+	_ "time/tzdata"
 )
 
 var (
 	// cronFieldRE is one field of a 5-field cron expression: digits, *, and
 	// the - , / operators, or a three-letter month/day name.
-	cronFieldRE    = regexp.MustCompile(`^([0-9*,/\-]+|[A-Za-z]{3}([,\-][A-Za-z]{3})*)$`)
+	cronFieldRE = regexp.MustCompile(`^([0-9*,/\-]+|[A-Za-z]{3}([,\-][A-Za-z]{3})*)$`)
+	// timeZoneRE is the shape of an IANA zone name (Area/Location[/Sub], or
+	// a bare name like UTC). time.LoadLocation is the real test; this keeps a
+	// path such as "../etc" from ever reaching it.
+	timeZoneRE     = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`)
 	namedSchedules = map[string]bool{"@hourly": true, "@daily": true, "@weekly": true, "@monthly": true, "@yearly": true, "@annually": true}
 	// annotationNameRE / annotationPrefixRE are the Kubernetes annotation
 	// key grammar: [prefix/]name.
@@ -64,6 +73,9 @@ var kindCapabilities = map[string]map[WorkloadKind]bool{
 	"version":                       {KindOperator: true},
 	"leaderElection":                {KindOperator: true},
 	"schedule":                      {KindCron: true},
+	"concurrencyPolicy":             {KindCron: true},
+	"startingDeadlineSeconds":       {KindCron: true},
+	"timeZone":                      {KindCron: true},
 	"before":                        {KindJob: true},
 	"deployPhase":                   {KindJob: true},
 	"serviceAccountAnnotations":     {KindService: true, KindWorker: true, KindJob: true, KindCron: true, KindOperator: true},
@@ -108,6 +120,9 @@ var kindCapabilityReasons = map[string]string{
 	"version":                       "version is the API version of an operator's CRDs; declare kind operator",
 	"leaderElection":                "only an operator's manager elects a leader",
 	"schedule":                      "only a cron runs on a schedule; a one-shot is kind job",
+	"concurrencyPolicy":             "only a cron has a next tick for a run still going to overlap",
+	"startingDeadlineSeconds":       "only a cron has ticks that can start late",
+	"timeZone":                      "only a cron has a schedule to read in a time zone",
 	"before":                        "before orders a one-shot job ahead of other workloads; it is only valid for kind job",
 	"deployPhase":                   "deployPhase places a standalone job in the deploy; it is only valid for kind job",
 	"serviceAccountAnnotations":     "a tool is never scheduled, so forge renders no ServiceAccount to annotate",
@@ -167,7 +182,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	if validKind {
 		for _, field := range []string{
 			"ports", "replicas", "autoscale", "probes", "storageGiB", "namespacedRBAC", "clusterRBAC", "crds", "group",
-			"version", "leaderElection", "schedule", "before", "deployPhase", "serviceAccountAnnotations",
+			"version", "leaderElection", "schedule", "concurrencyPolicy", "startingDeadlineSeconds", "timeZone", "before", "deployPhase", "serviceAccountAnnotations",
 			"sidecars", "volumes", "serviceAccount", "nodeSelector", "tolerations", "podAnnotations",
 			"priorityClassName", "enableServiceLinks", "strategy", "terminationGracePeriodSeconds", "preStopSeconds",
 			"activeDeadlineSeconds", "successfulJobsHistoryLimit", "failedJobsHistoryLimit", "ttlSecondsAfterFinished", "securityContext",
@@ -215,6 +230,7 @@ func (s WorkloadSpec) Validate(p Profile) error {
 	if s.Schedule != "" && !validSchedule(s.Schedule) {
 		errs = append(errs, fmt.Errorf("schedule %q must be a 5-field cron expression or one of @hourly, @daily, @weekly, @monthly, @yearly", s.Schedule))
 	}
+	errs = append(errs, s.cronScheduleErrors()...)
 	errs = append(errs, validateBefore(s.Before)...)
 	switch s.DeployPhase {
 	case "", DeployPhasePreRollout, DeployPhasePostRollout:
@@ -441,6 +457,12 @@ func (s WorkloadSpec) declares(field string) bool {
 		return s.LeaderElection != nil
 	case "schedule":
 		return s.Schedule != ""
+	case "concurrencyPolicy":
+		return s.ConcurrencyPolicy != ""
+	case "startingDeadlineSeconds":
+		return s.StartingDeadlineSeconds != nil
+	case "timeZone":
+		return s.TimeZone != ""
 	case "before":
 		return len(s.Before) > 0
 	case "deployPhase":
@@ -497,6 +519,45 @@ func validSchedule(s string) bool {
 		}
 	}
 	return true
+}
+
+// cronScheduleErrors checks the fields that say how a cron's schedule fires:
+// its concurrency policy, its starting deadline and its time zone. Which
+// kinds may set them is checked with the other kind capabilities.
+func (s WorkloadSpec) cronScheduleErrors() []error {
+	var errs []error
+	switch s.ConcurrencyPolicy {
+	case "", CronConcurrencyAllow, CronConcurrencyForbid, CronConcurrencyReplace:
+	default:
+		errs = append(errs, fmt.Errorf("concurrencyPolicy %q must be Allow, Forbid or Replace", s.ConcurrencyPolicy))
+	}
+	if d := s.StartingDeadlineSeconds; d != nil && (*d < MinCronStartingDeadlineSeconds || *d > MaxCronStartingDeadlineSeconds) {
+		errs = append(errs, fmt.Errorf("startingDeadlineSeconds must be %d-%d (got %d): the CronJob controller checks its schedules about every %d seconds, so a shorter deadline can skip a tick that was on time; omit it for no deadline",
+			MinCronStartingDeadlineSeconds, MaxCronStartingDeadlineSeconds, *d, MinCronStartingDeadlineSeconds))
+	}
+	if tz := s.TimeZone; tz != "" {
+		errs = append(errs, validateTimeZone(tz)...)
+	}
+	return errs
+}
+
+// validateTimeZone checks a cron's time zone the way the Kubernetes API
+// server does: a name time.LoadLocation resolves. The time/tzdata import
+// makes the answer the same on every host, including a container image with
+// no zoneinfo, so a spec the CLI admits is not refused by a control plane
+// built FROM scratch. "Local" resolves too, but to the zone of whatever
+// process reads it, so it is refused.
+func validateTimeZone(tz string) []error {
+	if tz == "Local" {
+		return []error{errors.New(`timeZone "Local" is the zone of whatever controller reads it, not a zone; name one, such as "Etc/UTC"`)}
+	}
+	if len(tz) > 64 || !timeZoneRE.MatchString(tz) {
+		return []error{fmt.Errorf("timeZone %q must be an IANA time zone name, such as \"Europe/Berlin\" or \"Etc/UTC\"", tz)}
+	}
+	if _, err := time.LoadLocation(tz); err != nil {
+		return []error{fmt.Errorf("timeZone %q is not a known IANA time zone, such as \"Europe/Berlin\" or \"Etc/UTC\"", tz)}
+	}
+	return nil
 }
 
 func validateBefore(before []string) []error {

@@ -75,6 +75,30 @@ const (
 	StrategyRecreate DeploymentStrategy = "Recreate"
 )
 
+// CronConcurrencyPolicy is what a cron does when a run is still going at its
+// next tick (CronJob.spec.concurrencyPolicy).
+//
+// +kubebuilder:validation:Enum=Allow;Forbid;Replace
+type CronConcurrencyPolicy string
+
+const (
+	// CronConcurrencyAllow starts the next run beside the one still going.
+	CronConcurrencyAllow CronConcurrencyPolicy = "Allow"
+	// CronConcurrencyForbid skips the tick while a run is still going.
+	CronConcurrencyForbid CronConcurrencyPolicy = "Forbid"
+	// CronConcurrencyReplace stops the run still going and starts the next.
+	CronConcurrencyReplace CronConcurrencyPolicy = "Replace"
+)
+
+// MinCronStartingDeadlineSeconds and MaxCronStartingDeadlineSeconds bound
+// StartingDeadlineSeconds. The CronJob controller checks its schedules about
+// every 10 seconds, so a shorter deadline can skip a tick that was on time; a
+// day is the longest catch-up a schedule should ever need.
+const (
+	MinCronStartingDeadlineSeconds = 10
+	MaxCronStartingDeadlineSeconds = 86400
+)
+
 // BeforeAll is the BROADCAST entry for Before: gate every workload in the
 // environment without naming any of them. Schema migration is the case it
 // exists for. An enumerated list of dependents goes stale the day a workload
@@ -220,6 +244,34 @@ type WorkloadSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	Schedule string `json:"schedule,omitempty"`
+
+	// ConcurrencyPolicy is what a cron does when a run is still going at its
+	// next tick: Forbid skips the tick, Replace stops the running one, Allow
+	// runs both (CronJob.spec.concurrencyPolicy). Unset renders nothing, so
+	// Kubernetes' default, Allow, applies. Cron only. Allowed under every
+	// profile: it only schedules the author's own runs.
+	// +optional
+	ConcurrencyPolicy CronConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
+
+	// StartingDeadlineSeconds is how late a cron's tick may still start
+	// (CronJob.spec.startingDeadlineSeconds); a tick that cannot start within
+	// it is skipped and counted as missed. It bounds the catch-up after the
+	// controller or the cluster was down. Unset renders nothing: no deadline.
+	// 10-86400. Cron only. Allowed under every profile.
+	// +optional
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=86400
+	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
+
+	// TimeZone is the IANA time zone a cron's schedule is read in, such as
+	// "Europe/Berlin" or "Etc/UTC" (CronJob.spec.timeZone, Kubernetes 1.27+).
+	// Unset renders nothing, so the schedule is read in the kube-controller-
+	// manager's zone. "Local" is refused: it means whatever zone the
+	// controller happens to run in. Cron only. Allowed under every profile.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*$`
+	TimeZone string `json:"timeZone,omitempty"`
 
 	// Before names the workloads that must not start until this job exits
 	// 0, or [BeforeAll] for every workload in the environment.
@@ -883,6 +935,18 @@ type WorkloadStatus struct {
 	// never ran".
 	// +optional
 	LastReadyAt *metav1.Time `json:"lastReadyAt,omitempty"`
+
+	// LastScheduleTime is when a cron's schedule last started a run
+	// (CronJob.status.lastScheduleTime). Nil for every other kind, and for a
+	// cron that has not fired yet.
+	// +optional
+	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
+
+	// LastSuccessfulTime is when a cron's last successful run finished
+	// (CronJob.status.lastSuccessfulTime). Nil for every other kind, and for
+	// a cron no run of which has succeeded yet.
+	// +optional
+	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 }
 
 // Workload is one runnable thing: a service, worker, job, cron, operator or

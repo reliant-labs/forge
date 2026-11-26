@@ -48,7 +48,7 @@ _all = [
         preStopSeconds = 10
     }
     fw.Workload {name = "store", image = "localhost:5050/demo", args = ["store"], ports = [fw.Port {name = "http", port = 8080}], storageGiB = 10, serves = ["blobs", "index"]}
-    fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/demo", args = ["sweep"], schedule = "@daily"}
+    fw.Workload {name = "nightly", kind = "cron", image = "localhost:5050/demo", args = ["sweep"], schedule = "@daily", concurrencyPolicy = "Forbid", startingDeadlineSeconds = 300, timeZone = "Europe/Berlin"}
     fw.Workload {name = "migrate", kind = "job", image = "localhost:5050/demo", args = ["db", "migrate", "up"], before = [fw.BEFORE_ALL]}
     fw.Workload {name = "report", kind = "job", image = "localhost:5050/demo", args = ["report"], deployPhase = "post-rollout"}
     fw.Workload {

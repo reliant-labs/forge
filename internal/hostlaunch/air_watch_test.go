@@ -134,6 +134,44 @@ func TestAirUnwatchedDirsLeavesAirAlone(t *testing.T) {
 	})
 }
 
+// A custom root and the launch directory use different exclusion bases.
+// Do not derive bare names that could exclude an imported sibling tree.
+func TestAirUnwatchedDirsCustomRootLeavesAirAlone(t *testing.T) {
+	for _, rootKind := range []string{"relative", "absolute", "parent"} {
+		t.Run(rootKind, func(t *testing.T) {
+			project := t.TempDir()
+			root := "subdir"
+			if rootKind == "absolute" {
+				root = filepath.ToSlash(filepath.Join(project, "subdir"))
+			} else if rootKind == "parent" {
+				root = ".."
+			}
+			writeTree(t, project, map[string]string{
+				".air.toml":               "root = '" + root + "'\n[build]\n cmd = 'go build ./subdir/cmd/acme'\n exclude_dir = ['tmp', 'my-own']\n",
+				"subdir/cmd/acme/main.go": "package main",
+				"subdir/examples/main.go": "package main",
+				"examples/dependency.go":  "package examples",
+			})
+			spec := RunnerSpec{Runner: "air", ProjectDir: project, GoPkg: "./subdir/cmd/acme"}
+			got, err := spec.AirUnwatchedDirs(context.Background(), func(context.Context, string, string, string) (GoDeps, error) {
+				t.Fatal("custom roots must not run go list")
+				return GoDeps{}, nil
+			})
+			if err != nil || len(got) != 0 {
+				t.Fatalf("AirUnwatchedDirs = %q, %v, want no exclusions", got, err)
+			}
+			spec.AirExcludeDirs = got
+			cmd, err := BuildCmd(context.Background(), "api", spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := []string{"air", "-c", DefaultAirConfig}; !reflect.DeepEqual(cmd.Args, want) {
+				t.Errorf("argv = %q, want unchanged %q", cmd.Args, want)
+			}
+		})
+	}
+}
+
 // air's -build.exclude_dir REPLACES the config's exclude_dir, so the flag
 // forge passes carries the config's own entries first: a user's edits to
 // .air.toml stay in force, and the file is never rewritten.

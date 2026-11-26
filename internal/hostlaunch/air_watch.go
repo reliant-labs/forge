@@ -150,7 +150,8 @@ func (c airWatchConfig) effectiveExcludeDir() []string {
 //
 // It returns nothing, and no error, where it has nothing sound to derive
 // from: a runner other than air, no Go build, an unreadable config, a config
-// that sets `include_dir` (its author chose the watch set), a build command
+// that sets `include_dir` (its author chose the watch set), a root different
+// from air's launch directory, a build command
 // that does not visibly build GoPkg (a `make build` could build anything),
 // or a binary whose package is outside the air root (a cross-repo
 // working_dir). An error means list failed; the caller says so and
@@ -168,6 +169,13 @@ func (s RunnerSpec) AirUnwatchedDirs(ctx context.Context, list DepsLister) ([]st
 	}
 	cfg, root, err := s.readAirWatchConfig()
 	if err != nil || len(cfg.IncludeDir) > 0 || !buildsPackage(cfg.BuildCmd, s.GoPkg) {
+		return nil, nil
+	}
+	// Derived names are relative to the scanned root, but air resolves
+	// exclude_dir from its launch directory. Leave custom roots unchanged
+	// rather than risk excluding a different tree containing dependencies.
+	_, base := s.airPaths()
+	if filepath.Clean(root) != filepath.Clean(base) {
 		return nil, nil
 	}
 	dir := s.ProjectDir

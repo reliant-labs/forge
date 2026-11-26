@@ -100,6 +100,9 @@ Run `forge generate` after every config-block or contract-bearing package port. 
 
 ## Sub-module under `pkg/`
 
+Publishing a Go SDK that imports generated types or clients? Load
+`migration-cli/go-sdk` for the `gen/` module tag and the clean-consumer check.
+
 `pkg/` is ONLY for code with real external importers you will support as public API. No external importer ⇒ keep it in `internal/`, not `pkg/`. Carve out a `pkg/` sub-module (its own `pkg/go.mod`) only when you have **runtime libraries** downstream consumers should import without pulling in your CLI / build-tool dep graph (Cobra, codegen libs, Delve, etc.). Symptoms:
 
 - Tooling deps bleeding into `go.sum` of importers.

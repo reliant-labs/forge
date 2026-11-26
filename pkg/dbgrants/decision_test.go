@@ -42,20 +42,6 @@ func TestCredentialShapedLeavesOrdinaryColumnsAlone(t *testing.T) {
 	}
 }
 
-func TestBinaryDocumentShaped(t *testing.T) {
-	for name, want := range map[string]bool{
-		"payload": true, "report_payload": true, "raw_body": true, "content": true, "avatar_image": true,
-		"snapshot": true, "spec_proto": true, "Payload": true,
-		"data": false, "value": false, "blob": false, "key": false, "nonce": false, "digest": false,
-		"encrypted_payload": false, "sealed_body": false, "payload_hash": false, "payload_ciphertext": false,
-		"envelope": false, "payload_key": false, "": false,
-	} {
-		if got := BinaryDocumentShaped(name); got != want {
-			t.Errorf("BinaryDocumentShaped(%q) = %v, want %v", name, got, want)
-		}
-	}
-}
-
 func TestDispositionCombinesTheDeclarations(t *testing.T) {
 	cases := []struct {
 		name string
@@ -70,15 +56,8 @@ func TestDispositionCombinesTheDeclarations(t *testing.T) {
 		{"secret wins over readable", Column{Name: "token_hash", Secret: true, Readable: true}, WithheldSecret},
 		{"a numeric counter named for tokens is not a credential", Column{Name: "input_tokens", Kind: KindScalar}, Granted},
 		{"a timestamp named for a token is not a credential", Column{Name: "token_expires_at", Kind: KindScalar}, Granted},
-		{"bytea is opaque and needs a decision", Column{Name: "data", Kind: KindBinary}, WithheldUndecided},
-		{"bytea can be declared readable", Column{Name: "data", Kind: KindBinary, Readable: true}, Granted},
-		// ranger: assignments.payload and task_load_reports.payload hold
-		// marshalled protobuf messages.
-		{"a bytea payload is a serialized document", Column{Name: "payload", Kind: KindBinary}, Granted},
-		{"a bytea request body is a serialized document", Column{Name: "request_body", Kind: KindBinary}, Granted},
-		{"an encrypted payload still needs a decision", Column{Name: "encrypted_payload", Kind: KindBinary}, WithheldUndecided},
-		{"a payload hash still needs a decision", Column{Name: "payload_hash", Kind: KindBinary}, WithheldUndecided},
-		{"a document name does not override a secret", Column{Name: "payload", Kind: KindBinary, Secret: true}, WithheldSecret},
+		{"bytea is opaque and needs a decision whatever it is called", Column{Name: "payload", Kind: KindBinary}, WithheldUndecided},
+		{"bytea can be declared readable", Column{Name: "payload", Kind: KindBinary, Readable: true}, Granted},
 		{"unset kind is the strict reading", Column{Name: "api_key", Kind: KindText}, WithheldUndecided},
 	}
 	for _, tc := range cases {

@@ -183,18 +183,17 @@ func TestDBGrants_ScopeSkipsWithoutTheDescriptor(t *testing.T) {
 }
 
 // ranger: two BYTEA columns named payload held marshalled protobuf messages
-// and were each reported as looking "like a credential". A bytea column named
-// for a document is granted now; an opaque one is still reported, worded for
-// its type rather than its name, with a hint that asks what the bytes are.
+// and were each reported as looking "like a credential". A bytea column is
+// withheld for its type, not its name: the finding now says so, and its hint
+// asks what the bytes are.
 func TestDBGrants_BinaryColumns(t *testing.T) {
 	root := writeGrantsProject(t, map[string]string{"0001_birth.up.sql": `CREATE TABLE assignments (
     id       TEXT PRIMARY KEY,
-    payload  BYTEA NOT NULL,
-    blob     BYTEA NOT NULL
+    payload  BYTEA NOT NULL
 );
 `})
 	rep := grantsReport(t, root)
-	if got, want := names(rep), "assignments.blob"; got != want {
+	if got, want := names(rep), "assignments.payload"; got != want {
 		t.Fatalf("findings = %s, want %s", got, want)
 	}
 	f := rep.Findings[0]

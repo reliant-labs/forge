@@ -1,14 +1,12 @@
 package debug
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-delve/delve/service/api"
 	"github.com/spf13/cobra"
@@ -800,5 +798,3 @@ func TestResolveShortFuncName_BothReceiverSpellings(t *testing.T) {
 	})
 }
 
-var _ = errors.New
-var _ = time.Second

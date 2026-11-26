@@ -3,7 +3,7 @@ package mlrecs
 import (
 	"sort"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // Chart is an upstream helm chart a fix installs, pinned. Propose writes it

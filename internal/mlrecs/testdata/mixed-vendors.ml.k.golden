@@ -29,22 +29,7 @@ ml_stacks = [forge.MLStack {
         # 8 × AMD_Instinct_MI300X_OAM (amd.com/gpu) on 1 node
         forge.Accelerators {
             vendor = "amd"
-            metrics = forge.Adopt {
-                kind = "amd-device-metrics-exporter"
-                namespace = "kube-amd-gpu"
-                version = "v1.2.0"
-                selector = {"app.kubernetes.io/name": "metrics-exporter"}
-                port = 5000
-                # Metric names from the exporter's docs, unverified: check its /metrics.
-                allow = [
-                    "gpu_gfx_activity"
-                    "gpu_used_vram"
-                    "gpu_total_vram"
-                    "gpu_power_usage"
-                    "gpu_junction_temperature"
-                    "gpu_ecc_uncorrect_total"
-                ]
-            }
+            metrics = forge.Adopt {kind = "amd-device-metrics-exporter", namespace = "kube-amd-gpu", version = "v1.2.0"}
         }
         # 4 × tpu-v5-lite-podslice (google.com/tpu) on 1 node
         forge.Accelerators {
@@ -96,3 +81,19 @@ ml_stacks = [forge.MLStack {
         }
     ]
 }]
+
+# The scrapes of the components adopted above: forge.Adopt only records what
+# runs, and the collector scrapes what this env's observability lists. Add
+# them to its main.k (beside any telemetry it already lists):
+#
+#     forge.Bundle {
+#         observability = forge.Observability {telemetry = ml.ml_telemetry}
+#     }
+ml_telemetry = [
+    forge.Telemetry {
+        service_name = "amd-device-metrics-exporter", scope = "platform", cluster = "lab-mixed"
+        namespaces = ["kube-amd-gpu"], selector = {"app.kubernetes.io/name": "metrics-exporter"}
+        # Metric names from the exporter's docs, unverified: check its /metrics.
+        metrics = [forge.MetricsScrape {port = 5000, allow = "gpu_gfx_activity|gpu_used_vram|gpu_total_vram|gpu_power_usage|gpu_junction_temperature|gpu_ecc_uncorrect_total"}]
+    }
+]

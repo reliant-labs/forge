@@ -2,21 +2,28 @@ package mlrecs
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/pmezard/go-difflib/difflib"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // How an env's main.k uses the ml.k Propose writes. Every proposal's header
 // states it; it is kept here, once, so a change of idiom is one edit.
 const (
-	MainKImport      = "import .ml"
-	MainKBundleField = "ml_stacks = ml.ml_stacks"
+	MainKImport         = "import .ml"
+	MainKBundleField    = "ml_stacks = ml.ml_stacks"
+	MainKTelemetryField = "telemetry = ml.ml_telemetry"
 )
+
+// TelemetryList is the top-level list of forge.Telemetry a proposal writes
+// when it adopts a component it can scrape: forge.Adopt only records what
+// runs, and the env's Observability.telemetry is what gets scraped.
+const TelemetryList = "ml_telemetry"
 
 // DefaultNamespace is where forge.Install charts render by default.
 const DefaultNamespace = "forge-ml"
@@ -167,7 +174,10 @@ type proposer struct {
 	opts   ProposeOptions
 	active map[string]bool // finding ids whose suggestions are written uncommented
 	sugg   []suggestion
-	b      strings.Builder
+	// telemetry is one forge.Telemetry per adopted component discovery
+	// can scrape, collected while the stack renders.
+	telemetry [][]string
+	b         strings.Builder
 }
 
 func propose(inv *mldiscover.Inventory, findings []Finding, opts ProposeOptions, active map[string]bool) string {
@@ -262,6 +272,28 @@ func (p *proposer) render() {
 	p.renderNotes()
 	p.renderDecisions()
 	p.line(0, false, "}]")
+	p.renderTelemetry()
+}
+
+// renderTelemetry writes the scrapes of the adopted components as their
+// own list, for the env's Observability.telemetry.
+func (p *proposer) renderTelemetry() {
+	if len(p.telemetry) == 0 {
+		return
+	}
+	p.line(0, false, "")
+	p.line(0, true, "The scrapes of the components adopted above: forge.Adopt only records what")
+	p.line(0, true, "runs, and the collector scrapes what this env's observability lists. Add")
+	p.line(0, true, "them to its main.k (beside any telemetry it already lists):")
+	p.line(0, true, "")
+	p.line(0, true, "    forge.Bundle {")
+	p.line(0, true, "        observability = forge.Observability {"+MainKTelemetryField+"}")
+	p.line(0, true, "    }")
+	p.line(0, false, TelemetryList+" = [")
+	for _, t := range p.telemetry {
+		p.lines(1, false, t)
+	}
+	p.line(0, false, "]")
 }
 
 func (p *proposer) renderObserved(date string) {
@@ -364,25 +396,53 @@ func (p *proposer) adopt(c mldiscover.Component, scrape bool) []string {
 	if note != "" {
 		fields = append(fields, [2]string{"note", strconv.Quote(note)})
 	}
-	if !scrape || len(c.Selector) == 0 || c.MetricsPort == 0 {
-		parts := make([]string, len(fields))
-		for i, f := range fields {
-			parts[i] = f[0] + " = " + f[1]
-		}
-		return []string{"forge.Adopt {" + strings.Join(parts, ", ") + "}"}
+	if scrape && len(c.Selector) > 0 && c.MetricsPort != 0 {
+		p.telemetry = append(p.telemetry, p.scrape(c))
 	}
-	out := []string{"forge.Adopt {"}
-	for _, f := range fields {
-		out = append(out, "    "+f[0]+" = "+f[1])
+	parts := make([]string, len(fields))
+	for i, f := range fields {
+		parts[i] = f[0] + " = " + f[1]
 	}
-	out = append(out, "    selector = "+kclStringMap(c.Selector), "    port = "+strconv.Itoa(int(c.MetricsPort)))
+	return []string{"forge.Adopt {" + strings.Join(parts, ", ") + "}"}
+}
+
+// scrape renders the forge.Telemetry that scrapes an adopted component:
+// platform scope (no env identity), on the cluster discovery read, named
+// by the component's kind.
+func (p *proposer) scrape(c mldiscover.Component) []string {
+	out := []string{"forge.Telemetry {",
+		"    service_name = " + strconv.Quote(c.Kind) + `, scope = "platform", cluster = ` + strconv.Quote(p.inv.Context)}
+	sel := "selector = " + kclStringMap(c.Selector)
+	if c.Namespace != "" {
+		sel = "namespaces = [" + strconv.Quote(c.Namespace) + "], " + sel
+	}
+	out = append(out, "    "+sel)
 	allow, verified := metricAllow[c.Kind], !unverifiedAllow[c.Kind]
 	if c.Config != nil && c.Config.DeterminedBy != mldiscover.DeterminedByPresence && len(c.Config.Fields) > 0 {
 		allow, verified = c.Config.Fields, true
 		out = append(out, "    # The fields discovery found it exporting ("+c.Config.DeterminedBy+": "+c.Config.Source+").")
 	}
-	out = append(out, indentLines(allowLines(allow, verified), "    ")...)
-	return append(out, "}")
+	if len(allow) > 0 && !verified {
+		out = append(out, "    "+unverifiedAllowComment)
+	}
+	return append(out, "    metrics = ["+metricsScrape(c.MetricsPort, allow)+"]", "}")
+}
+
+// unverifiedAllowComment heads an allow list taken from docs, not a node.
+const unverifiedAllowComment = "# Metric names from the exporter's docs, unverified: check its /metrics."
+
+// metricsScrape is a forge.MetricsScrape of port keeping the names in
+// allow (MetricsScrape.allow is one anchored RE2 alternation).
+func metricsScrape(port int32, allow []string) string {
+	s := "forge.MetricsScrape {port = " + strconv.Itoa(int(port))
+	if len(allow) > 0 {
+		quoted := make([]string, len(allow))
+		for i, m := range allow {
+			quoted[i] = regexp.QuoteMeta(m)
+		}
+		s += ", allow = " + strconv.Quote(strings.Join(quoted, "|"))
+	}
+	return s + "}"
 }
 
 func allowLines(allow []string, verified bool) []string {
@@ -391,7 +451,7 @@ func allowLines(allow []string, verified bool) []string {
 	}
 	var out []string
 	if !verified {
-		out = append(out, "# Metric names from the exporter's docs, unverified: check its /metrics.")
+		out = append(out, unverifiedAllowComment)
 	}
 	out = append(out, "allow = [")
 	for _, m := range allow {

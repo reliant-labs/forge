@@ -49,7 +49,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // PageSize is the Limit of every list.

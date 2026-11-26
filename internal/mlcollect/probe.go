@@ -23,7 +23,7 @@ import (
 
 	"k8s.io/client-go/kubernetes"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // The probe's bounds.

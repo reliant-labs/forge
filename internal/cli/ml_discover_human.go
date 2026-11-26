@@ -14,8 +14,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
-	"github.com/reliant-labs/forge/pkg/mlrecs"
+	"github.com/reliant-labs/forge/internal/mldiscover"
+	"github.com/reliant-labs/forge/internal/mlrecs"
 )
 
 // mlLabelWidth pads every section label to one column.
@@ -453,9 +453,13 @@ func mlProposalLines(p *mlPrinter, doc MLDiscoverDocument, o mlDiscoverOptions) 
 	if o.env != "" {
 		mainK = filepath.ToSlash(filepath.Join("deploy", "kcl", o.env, "main.k"))
 	}
-	p.row("", "wire it into "+mainK+":",
-		"    import .ml",
-		"    ml_stacks = ml.ml_stacks   # in its forge.Bundle")
+	wire := []string{"wire it into " + mainK + ":",
+		"    " + mlrecs.MainKImport,
+		"    " + mlrecs.MainKBundleField + "   # in its forge.Bundle"}
+	if strings.Contains(pr.MLK, "\n"+mlrecs.TelemetryList+" = [") {
+		wire = append(wire, "    observability = forge.Observability {"+mlrecs.MainKTelemetryField+"}   # the scrapes, in the same Bundle")
+	}
+	p.row("", wire...)
 	p.blank()
 	switch {
 	case pr.Exists && pr.Diff != "":

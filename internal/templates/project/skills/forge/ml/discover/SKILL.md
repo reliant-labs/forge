@@ -187,14 +187,34 @@ adopted when present and never installed by default. **KubeRay is adopt-only**: 
 KCL refuses `forge.Install {kind = "kuberay"}` unless it states a `reason`.
 
 The proposed ml.k holds one `forge.MLStack` for the cluster: every found component
-as a `forge.Adopt` (with its namespace, selector and metrics port, so its metrics
-are scraped), each suggested `forge.Install` written but **commented out** for you
-to review, and `observed`: every component kind discovery found running. The KCL
-refuses an `Install` of a kind listed in `observed`. That is the guard against the
-classic failure: a second DCGM exporter on nodes that already run one (the GPU
-Operator's, or GKE's managed DCGM) breaks both exporters' profiling counters. A
-GPU Operator whose ClusterPolicy disables its exporter does not count as a DCGM
-exporter; discover lists `dcgm-exporter` in `observed` only when one runs.
+as a `forge.Adopt` (kind, namespace, version and a note: a record of what runs),
+each suggested `forge.Install` written but **commented out** for you to review,
+and `observed`: every component kind discovery found running. The KCL refuses an
+`Install` of a kind listed in `observed`.
+
+An adopted exporter discovery can scrape is also written as a plain
+`forge.Telemetry` in a separate `ml_telemetry` list, for the env's
+`observability.telemetry`:
+
+```python
+ml_telemetry = [
+    forge.Telemetry {
+        service_name = "dcgm-exporter", scope = "platform", cluster = "gke_acme_us-central1_gpu"
+        namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
+        metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_FB_USED"}]
+    }
+]
+```
+
+`allow` is the field set discovery found the exporter serving, else the
+families the Machines view and the rules read; names taken from an exporter's
+docs rather than a live node are marked unverified.
+
+`observed` is the guard against the classic failure: a second DCGM exporter on
+nodes that already run one (the GPU Operator's, or GKE's managed DCGM) breaks both
+exporters' profiling counters. A GPU Operator whose ClusterPolicy disables its
+exporter does not count as a DCGM exporter; discover lists `dcgm-exporter` in
+`observed` only when one runs.
 
 ## --write, --out and the diff
 
@@ -214,6 +234,10 @@ import .ml
 bundle = forge.Bundle {
     # ...
     ml_stacks = ml.ml_stacks
+    # When the proposal adopts an exporter it can scrape:
+    observability = forge.Observability {
+        telemetry = ml.ml_telemetry   # beside any telemetry the env already lists
+    }
 }
 ```
 

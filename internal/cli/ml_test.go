@@ -24,9 +24,9 @@ import (
 
 	"github.com/reliant-labs/forge/internal/exitcode"
 	"github.com/reliant-labs/forge/internal/mlcollect"
+	"github.com/reliant-labs/forge/internal/mldiscover"
+	"github.com/reliant-labs/forge/internal/mlrecs"
 	"github.com/reliant-labs/forge/internal/schemagen"
-	"github.com/reliant-labs/forge/pkg/mldiscover"
-	"github.com/reliant-labs/forge/pkg/mlrecs"
 )
 
 const mlSnapshotFixture = "testdata/ml/snapshot.json"
@@ -356,7 +356,7 @@ func TestMLDiscoverWriteKeepsDecisionsAndDiffsApply(t *testing.T) {
 		{"cluster": {"cluster": "lab-p4d", "namespace": "gpu-observability"}, "decisions": [
 			{"id": "dcgm-nvlink-off", "decision": "dismiss", "reason": "single-node lab", "expires": "2027-06-01"}]}]}}`
 	out, err := mlRun(t, mlDiscoverOptions{projectDir: dir, env: "prod", write: true, jsonOut: true, namespace: "gpu-observability",
-		fromSnapshot: filepath.Join("..", "..", "pkg", "mldiscover", "testdata", "probed-forge-stack.snapshot.json"),
+		fromSnapshot: filepath.Join("..", "mldiscover", "testdata", "probed-forge-stack.snapshot.json"),
 		render:       func(context.Context, string, string) ([]byte, error) { return []byte(render), nil }})
 	if err != nil {
 		t.Fatal(err)

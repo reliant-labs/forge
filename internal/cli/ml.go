@@ -11,11 +11,12 @@ package cli
 // The pipeline is three pure steps over one read:
 //
 //	internal/mlcollect.Collect   the read set (mlcollect.ReadSet), nothing else
-//	pkg/mldiscover.Discover      Snapshot → Inventory
-//	pkg/mlrecs.Evaluate/Propose  Inventory → findings, and the ml.k
+//	internal/mldiscover.Discover      Snapshot → Inventory
+//	internal/mlrecs.Evaluate/Propose  Inventory → findings, and the ml.k
 //
-// so --from-snapshot runs the same code on a recorded read, and the control
-// plane runs the same packages on its collector's inventory.
+// so --from-snapshot runs the same code on a recorded read. The packages are
+// internal while this command is their only user; one moves to pkg/ (and
+// becomes v1 API) when the control plane runs it on its collector's inventory.
 
 import (
 	"context"
@@ -35,8 +36,8 @@ import (
 	"github.com/reliant-labs/forge/internal/atomicfile"
 	"github.com/reliant-labs/forge/internal/cli/cmdutil"
 	"github.com/reliant-labs/forge/internal/mlcollect"
-	"github.com/reliant-labs/forge/pkg/mldiscover"
-	"github.com/reliant-labs/forge/pkg/mlrecs"
+	"github.com/reliant-labs/forge/internal/mldiscover"
+	"github.com/reliant-labs/forge/internal/mlrecs"
 )
 
 func newMLCmd() *cobra.Command {

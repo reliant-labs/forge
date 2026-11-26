@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // LinkCoverage returns a copy of cov with each row's Findings set to the ids

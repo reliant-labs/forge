@@ -33,42 +33,7 @@ ml_stacks = [forge.MLStack {
         # 16 × NVIDIA-A100-SXM4-40GB (nvidia.com/gpu) on 2 nodes, pool a100-pool
         forge.Accelerators {
             vendor = "nvidia"
-            metrics = forge.Adopt {
-                kind = "dcgm-exporter"
-                namespace = "gpu-operator"
-                version = "3.3.9-3.6.1-ubuntu22.04"
-                note = "managed by the GPU Operator"
-                selector = {"app": "nvidia-dcgm-exporter"}
-                port = 9400
-                # The fields discovery found it exporting (version-default: dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)).
-                allow = [
-                    "DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS"
-                    "DCGM_FI_DEV_DEC_UTIL"
-                    "DCGM_FI_DEV_ENC_UTIL"
-                    "DCGM_FI_DEV_FB_FREE"
-                    "DCGM_FI_DEV_FB_USED"
-                    "DCGM_FI_DEV_GPU_TEMP"
-                    "DCGM_FI_DEV_GPU_UTIL"
-                    "DCGM_FI_DEV_MEMORY_TEMP"
-                    "DCGM_FI_DEV_MEM_CLOCK"
-                    "DCGM_FI_DEV_MEM_COPY_UTIL"
-                    "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL"
-                    "DCGM_FI_DEV_PCIE_REPLAY_COUNTER"
-                    "DCGM_FI_DEV_POWER_USAGE"
-                    "DCGM_FI_DEV_ROW_REMAP_FAILURE"
-                    "DCGM_FI_DEV_SM_CLOCK"
-                    "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION"
-                    "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS"
-                    "DCGM_FI_DEV_VGPU_LICENSE_STATUS"
-                    "DCGM_FI_DEV_XID_ERRORS"
-                    "DCGM_FI_DRIVER_VERSION"
-                    "DCGM_FI_PROF_DRAM_ACTIVE"
-                    "DCGM_FI_PROF_GR_ENGINE_ACTIVE"
-                    "DCGM_FI_PROF_PCIE_RX_BYTES"
-                    "DCGM_FI_PROF_PCIE_TX_BYTES"
-                    "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"
-                ]
-            }
+            metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", version = "3.3.9-3.6.1-ubuntu22.04", note = "managed by the GPU Operator"}
         }
     ]
     node_health = forge.Adopt {kind = "node-problem-detector", note = "managed by GKE"}
@@ -80,3 +45,19 @@ ml_stacks = [forge.MLStack {
     # Dismiss a finding until a date:
     # decisions = [forge.RecommendationDecision {id = "<finding id>", reason = "<why>", expires = "YYYY-MM-DD"}]
 }]
+
+# The scrapes of the components adopted above: forge.Adopt only records what
+# runs, and the collector scrapes what this env's observability lists. Add
+# them to its main.k (beside any telemetry it already lists):
+#
+#     forge.Bundle {
+#         observability = forge.Observability {telemetry = ml.ml_telemetry}
+#     }
+ml_telemetry = [
+    forge.Telemetry {
+        service_name = "dcgm-exporter", scope = "platform", cluster = "gke_acme-ml_us-central1_gpu"
+        namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
+        # The fields discovery found it exporting (version-default: dcgm-exporter 3.3.9-3.6.1 etc/dcp-metrics-included.csv (default of 3.3.9-3.6.1-ubuntu22.04)).
+        metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS|DCGM_FI_DEV_DEC_UTIL|DCGM_FI_DEV_ENC_UTIL|DCGM_FI_DEV_FB_FREE|DCGM_FI_DEV_FB_USED|DCGM_FI_DEV_GPU_TEMP|DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_MEMORY_TEMP|DCGM_FI_DEV_MEM_CLOCK|DCGM_FI_DEV_MEM_COPY_UTIL|DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL|DCGM_FI_DEV_PCIE_REPLAY_COUNTER|DCGM_FI_DEV_POWER_USAGE|DCGM_FI_DEV_ROW_REMAP_FAILURE|DCGM_FI_DEV_SM_CLOCK|DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION|DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS|DCGM_FI_DEV_VGPU_LICENSE_STATUS|DCGM_FI_DEV_XID_ERRORS|DCGM_FI_DRIVER_VERSION|DCGM_FI_PROF_DRAM_ACTIVE|DCGM_FI_PROF_GR_ENGINE_ACTIVE|DCGM_FI_PROF_PCIE_RX_BYTES|DCGM_FI_PROF_PCIE_TX_BYTES|DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"}]
+    }
+]

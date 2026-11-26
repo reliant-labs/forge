@@ -21,7 +21,7 @@ import (
 
 	"github.com/reliant-labs/forge/internal/k3dkmsg"
 	"github.com/reliant-labs/forge/internal/mlcollect"
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // fakeGPUOperatorChart is run-ai/fake-gpu-operator's chart: it advertises

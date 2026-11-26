@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // update rewrites testdata/*.findings.golden.json and *.ml.k.golden:
 //
-//	go test ./pkg/mlrecs -run TestGolden -update
+//	go test ./internal/mlrecs -run TestGolden -update
 var update = flag.Bool("update", false, "rewrite testdata/*.golden from Evaluate's and Propose's output")
 
 // The snapshots are mldiscover's recorded fixtures.
@@ -89,7 +89,7 @@ func golden(t *testing.T, path string, got []byte) {
 		t.Fatalf("reading %s (run with -update to create it): %v", path, err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Errorf("%s differs; run `go test ./pkg/mlrecs -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
+		t.Errorf("%s differs; run `go test ./internal/mlrecs -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
 	}
 }
 

@@ -27,19 +27,15 @@ schema HelmChart:
 
 _ML_ADOPT_ONLY = ["kuberay"]
 
+# An inventory assertion: what runs. Its scrape is a forge.Telemetry.
 schema Adopt:
     kind: str
     namespace?: str
-    selector?: {str:str}
-    port?: int
-    allow: [str] = []
     version?: str
     note?: str
 
     check:
         regex.match(kind, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"), "Adopt: kind '${kind}' is not RFC-1123"
-        port == None or selector != None, "Adopt '${kind}': port needs selector"
-        not allow or port != None, "Adopt '${kind}': allow needs port"
 
 schema Install:
     kind: str
@@ -99,3 +95,25 @@ schema MLStack:
         all k in _installed {k not in observed}, "discovery found a kind running (observed); adopt it instead of installing a second one"
         len([a.vendor for a in accelerators]) == len({a.vendor: None for a in accelerators}), "accelerator vendors repeat"
         len([d.id for d in decisions]) == len({d.id: None for d in decisions}), "decision ids repeat"
+
+# A stand-in for kcl/telemetry.k's Telemetry and MetricsScrape: the fields
+# the proposal's ml_telemetry writes, with the checks an Observability
+# telemetry entry is held to.
+schema MetricsScrape:
+    port: int | str
+    allow?: str
+
+schema Telemetry:
+    service_name?: str
+    scope: "project" | "platform" = "project"
+    cluster?: str
+    namespaces?: [str]
+    selector?: {str:str}
+    metrics: [MetricsScrape] = []
+
+    check:
+        not service_name or regex.match(service_name, r"^[a-z0-9]([-a-z0-9_.]*[a-z0-9])?$"), "Telemetry.service_name '${service_name}' is not a valid name"
+        service_name and selector and cluster, "Observability.telemetry: service_name, selector and cluster are required"
+        not selector or all k, v in selector { k and v }, "Telemetry.selector keys and values must be non-empty"
+        not namespaces or all n in namespaces { regex.match(n, r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") }, "Telemetry.namespaces must be RFC-1123 labels"
+        metrics, "Telemetry declares nothing to collect"

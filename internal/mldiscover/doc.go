@@ -57,6 +57,6 @@
 //
 // The exported helpers ([PodAccelerators], [AcceleratorPods], [PodOwner],
 // [NodeCoverage], [IsSpot], …) are the facts the recommendation rules in
-// pkg/mlrecs read, so the two packages never disagree about what an
+// internal/mlrecs read, so the two packages never disagree about what an
 // accelerator pod or a spot node is.
 package mldiscover

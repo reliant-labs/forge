@@ -28,33 +28,7 @@ ml_stacks = [forge.MLStack {
         # 16 × Tesla-K80 (nvidia.com/gpu) on 2 nodes
         forge.Accelerators {
             vendor = "nvidia"
-            metrics = forge.Adopt {
-                kind = "dcgm-exporter"
-                namespace = "gpu-operator"
-                version = "0.2.1"
-                selector = {"app": "nvidia-dcgm-exporter"}
-                port = 9400
-                allow = [
-                    "DCGM_FI_DEV_GPU_UTIL"
-                    "DCGM_FI_PROF_GR_ENGINE_ACTIVE"
-                    "DCGM_FI_PROF_SM_ACTIVE"
-                    "DCGM_FI_PROF_SM_OCCUPANCY"
-                    "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"
-                    "DCGM_FI_PROF_DRAM_ACTIVE"
-                    "DCGM_FI_DEV_FB_USED"
-                    "DCGM_FI_DEV_FB_FREE"
-                    "DCGM_FI_DEV_GPU_TEMP"
-                    "DCGM_FI_DEV_POWER_USAGE"
-                    "DCGM_FI_DEV_XID_ERRORS"
-                    "DCGM_FI_DEV_ECC_DBE_VOL_TOTAL"
-                    "DCGM_FI_DEV_ROW_REMAP_FAILURE"
-                    "DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS"
-                    "DCGM_FI_DEV_PCIE_REPLAY_COUNTER"
-                    "DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL"
-                    "DCGM_FI_DEV_CLOCK_THROTTLE_REASONS"
-                    "DCGM_FI_DEV_CLOCKS_EVENT_REASONS"
-                ]
-            }
+            metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", version = "0.2.1"}
         }
     ]
     # Suggested for finding no-node-health: uncomment to install.
@@ -137,3 +111,18 @@ ml_stacks = [forge.MLStack {
     # Dismiss a finding until a date:
     # decisions = [forge.RecommendationDecision {id = "<finding id>", reason = "<why>", expires = "YYYY-MM-DD"}]
 }]
+
+# The scrapes of the components adopted above: forge.Adopt only records what
+# runs, and the collector scrapes what this env's observability lists. Add
+# them to its main.k (beside any telemetry it already lists):
+#
+#     forge.Bundle {
+#         observability = forge.Observability {telemetry = ml.ml_telemetry}
+#     }
+ml_telemetry = [
+    forge.Telemetry {
+        service_name = "dcgm-exporter", scope = "platform", cluster = "k3d-fake-gpu"
+        namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
+        metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_GPU_UTIL|DCGM_FI_PROF_GR_ENGINE_ACTIVE|DCGM_FI_PROF_SM_ACTIVE|DCGM_FI_PROF_SM_OCCUPANCY|DCGM_FI_PROF_PIPE_TENSOR_ACTIVE|DCGM_FI_PROF_DRAM_ACTIVE|DCGM_FI_DEV_FB_USED|DCGM_FI_DEV_FB_FREE|DCGM_FI_DEV_GPU_TEMP|DCGM_FI_DEV_POWER_USAGE|DCGM_FI_DEV_XID_ERRORS|DCGM_FI_DEV_ECC_DBE_VOL_TOTAL|DCGM_FI_DEV_ROW_REMAP_FAILURE|DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS|DCGM_FI_DEV_PCIE_REPLAY_COUNTER|DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL|DCGM_FI_DEV_CLOCK_THROTTLE_REASONS|DCGM_FI_DEV_CLOCKS_EVENT_REASONS"}]
+    }
+]

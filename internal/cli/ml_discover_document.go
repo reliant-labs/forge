@@ -15,9 +15,9 @@ import (
 	"encoding/json"
 	"reflect"
 
+	"github.com/reliant-labs/forge/internal/mldiscover"
+	"github.com/reliant-labs/forge/internal/mlrecs"
 	"github.com/reliant-labs/forge/internal/schemagen"
-	"github.com/reliant-labs/forge/pkg/mldiscover"
-	"github.com/reliant-labs/forge/pkg/mlrecs"
 	forgeschema "github.com/reliant-labs/forge/schema"
 )
 

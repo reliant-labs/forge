@@ -8,7 +8,7 @@ import (
 
 	kcl "kcl-lang.io/kcl-go"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // runKCL evaluates an ml.k against the contract stub in testdata/kclstub,

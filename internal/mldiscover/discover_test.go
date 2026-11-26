@@ -19,7 +19,7 @@ import (
 
 // update rewrites testdata/*.inventory.golden.json from the current output:
 //
-//	go test ./pkg/mldiscover -run TestGolden -update
+//	go test ./internal/mldiscover -run TestGolden -update
 var update = flag.Bool("update", false, "rewrite testdata/*.inventory.golden.json from Discover's output")
 
 var fixtures = []string{
@@ -99,7 +99,7 @@ func compareGolden(t *testing.T, path string, got []byte) {
 		t.Fatalf("reading %s (run with -update to create it): %v", path, err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Errorf("%s differs; run `go test ./pkg/mldiscover -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
+		t.Errorf("%s differs; run `go test ./internal/mldiscover -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestGolden(t *testing.T) {
 				t.Fatalf("reading %s (run with -update to create it): %v", path, err)
 			}
 			if !bytes.Equal(got, want) {
-				t.Errorf("%s differs; run `go test ./pkg/mldiscover -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
+				t.Errorf("%s differs; run `go test ./internal/mldiscover -run TestGolden -update` and review the diff.\n--- got ---\n%s", path, got)
 			}
 		})
 	}

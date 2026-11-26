@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/reliant-labs/forge/pkg/mldiscover"
+	"github.com/reliant-labs/forge/internal/mldiscover"
 )
 
 // applyUnifiedDiff applies a unified diff (difflib's output) to base,

@@ -30,25 +30,26 @@ ml_stacks = [forge.MLStack {
         # 2 × NVIDIA-A100-80GB-PCIe (nvidia.com/gpu) on 2 nodes, pool gpupool
         forge.Accelerators {
             vendor = "nvidia"
-            metrics = forge.Adopt {
-                kind = "dcgm-exporter"
-                namespace = "gpu-operator"
-                version = "4.1.1-4.0.4-ubuntu22.04"
-                note = "managed by the GPU Operator"
-                selector = {"app": "nvidia-dcgm-exporter"}
-                port = 9400
-                # The fields discovery found it exporting (config: ConfigMap/gpu-operator/custom-dcgm-metrics key dcgm-metrics.csv).
-                allow = [
-                    "DCGM_FI_DEV_FB_FREE"
-                    "DCGM_FI_DEV_FB_USED"
-                    "DCGM_FI_DEV_GPU_TEMP"
-                    "DCGM_FI_DEV_GPU_UTIL"
-                    "DCGM_FI_DEV_POWER_USAGE"
-                ]
-            }
+            metrics = forge.Adopt {kind = "dcgm-exporter", namespace = "gpu-operator", version = "4.1.1-4.0.4-ubuntu22.04", note = "managed by the GPU Operator"}
         }
     ]
     node_health = forge.Adopt {kind = "node-problem-detector", namespace = "kube-system", version = "v0.8.19"}
     # Dismiss a finding until a date:
     # decisions = [forge.RecommendationDecision {id = "<finding id>", reason = "<why>", expires = "YYYY-MM-DD"}]
 }]
+
+# The scrapes of the components adopted above: forge.Adopt only records what
+# runs, and the collector scrapes what this env's observability lists. Add
+# them to its main.k (beside any telemetry it already lists):
+#
+#     forge.Bundle {
+#         observability = forge.Observability {telemetry = ml.ml_telemetry}
+#     }
+ml_telemetry = [
+    forge.Telemetry {
+        service_name = "dcgm-exporter", scope = "platform", cluster = "aks-ml-prod"
+        namespaces = ["gpu-operator"], selector = {"app": "nvidia-dcgm-exporter"}
+        # The fields discovery found it exporting (config: ConfigMap/gpu-operator/custom-dcgm-metrics key dcgm-metrics.csv).
+        metrics = [forge.MetricsScrape {port = 9400, allow = "DCGM_FI_DEV_FB_FREE|DCGM_FI_DEV_FB_USED|DCGM_FI_DEV_GPU_TEMP|DCGM_FI_DEV_GPU_UTIL|DCGM_FI_DEV_POWER_USAGE"}]
+    }
+]

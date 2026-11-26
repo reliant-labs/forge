@@ -31,6 +31,24 @@ on:
 permissions:
   contents: read
 
+# ── SELF-HOSTED RUNNERS ON cicd, FOR THE MERGE QUEUE ONLY ──────────────────
+#
+# Owner, 2026-11-26: "The cicd machine is supposed to be exactly for this." A
+# merge group's jobs waited for a GitHub-hosted runner far longer than they
+# ran, under the org's ~20-job cap. On a `merge_group` event, test-short,
+# checks, golangci and CI gate run on the runners labelled `self-hosted, cicd`
+# (windows-changed stays on windows-latest); every other event, pull requests
+# above all, keeps `ubuntu-latest`, because this repository is public and a
+# fork's pull request must never reach a self-hosted runner. The runners are
+# also locked down on their own side: unprivileged users with no sudo, no
+# docker and no view of the machine's agent workspaces or credentials, a
+# root-owned job-started hook that refuses any job that is not a merge group
+# or a push to main of this repository, and HOME, /tmp, the tool cache and the
+# workspace emptied before and after every job. internal/ciguard's
+# TestSelfHostedRunnersServeOnlyTheMergeQueue holds every workflow's runs-on
+# to this. To roll back, set those four `runs-on` lines back to ubuntu-latest
+# (and empty selfHostedMergeTier there).
+
 # ── REVIEW FIRST ───────────────────────────────────────────────────────────
 #
 # The owner's rule (2026-10-30): CI minutes are not spent on a head nobody has
@@ -412,7 +430,7 @@ jobs:
   test-short:
     name: Test (${{ matrix.label }})
     if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       # Every shard reports: one failure must not hide another shard's.
@@ -1423,7 +1441,7 @@ jobs:
   checks:
     name: Checks (generated code, KCL, pre-commit, licenses)
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:run') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -1601,7 +1619,7 @@ jobs:
   golangci:
     name: golangci-lint (changed packages)
     if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:run')) }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       # Depth 2: HEAD^1 is the base the diff is read from (the merge commit's
@@ -1710,7 +1728,7 @@ jobs:
       - windows-changed
       - build
       - coverage-floor
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","cicd"]') || 'ubuntu-latest' }}
     permissions: {}
     steps:
       # A red run never passes. No label, account or override turns this gate

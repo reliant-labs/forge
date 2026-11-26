@@ -21,7 +21,8 @@ package lint
 //     paths;
 //   - //forge:exclude-contract package markers (codegen.FindExcludeContractMarker);
 //   - forge:lint-disable-file, forge:lint-disable-next-line,
-//     forge:lint-disable … forge:lint-enable and //nolint: directives
+//     forge:lint-disable-line, forge:lint-disable … forge:lint-enable and
+//     //nolint: directives
 //     (suppress.Declarations), in Go, proto, SQL, TypeScript/JavaScript and
 //     YAML;
 //   - the rule-specific pragmas: -- forge:allow-destructive,

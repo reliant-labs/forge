@@ -157,7 +157,7 @@ func runContractAnalysisInProcess(ctx context.Context, paths, excludes []string,
 // are unreachable once this returns, so the caller's second load does not
 // stack on top of them.
 func analyzeContractPackages(ctx context.Context, cwd string, paths []string, gate contract.ExcludeGateOptions) ([]contractDiagnostic, *excludeGateLoad, error) {
-	pkgs, err := loadPackagesForAnalysis(ctx, paths, analysisLoad{tests: true})
+	pkgs, err := loadPackagesForAnalysis(ctx, paths, analysisLoad{tests: true, undecidedOnBrokenDeps: true})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -480,6 +480,13 @@ type analysisLoad struct {
 	// instead of failing the load: the caller decides which of them it can
 	// do without (the exclusion gate's search, excludeGateLoad.check).
 	allowBroken bool
+	// undecidedOnBrokenDeps reports a load whose only errors come from
+	// packages outside the requested ones (and the requested packages'
+	// failure to import them) as a laneUndecidedError: the requested
+	// packages could not be judged, which a scoped run reports as such
+	// (lint_scope_undecided.go). Any error of a requested package's own is
+	// the plain load failure.
+	undecidedOnBrokenDeps bool
 }
 
 // loadPackagesForAnalysis loads paths with the syntax and type information
@@ -525,9 +532,48 @@ func loadPackagesForAnalysis(ctx context.Context, paths []string, load analysisL
 		return pkgs, nil
 	}
 	if err := packageLoadErrors(pkgs); err != nil {
+		if load.undecidedOnBrokenDeps {
+			if broken := brokenDependencies(pkgs); len(broken) > 0 {
+				return nil, &laneUndecidedError{broken: broken, cause: err.Error()}
+			}
+		}
 		return nil, err
 	}
 	return pkgs, nil
+}
+
+// brokenDependencies returns the import paths of the packages that failed to
+// load when every load error is theirs: an error on a package that is not
+// one of roots (the requested packages and their test variants), or a
+// root's "could not import X" of such a package. Nil when any root failed
+// for a reason of its own.
+func brokenDependencies(roots []*packages.Package) []string {
+	isRoot := map[string]bool{}
+	rootPath := map[string]bool{}
+	for _, r := range roots {
+		isRoot[r.ID] = true
+		rootPath[r.PkgPath] = true
+	}
+	broken := map[string]bool{}
+	own := false
+	packages.Visit(roots, nil, func(p *packages.Package) {
+		for _, e := range p.Errors {
+			if !isRoot[p.ID] {
+				broken[p.PkgPath] = true
+				continue
+			}
+			first, root := couldNotImport(e.Msg)
+			if first == "" || rootPath[first] {
+				own = true
+				continue
+			}
+			broken[root] = true
+		}
+	})
+	if own {
+		return nil
+	}
+	return sortedSet(broken)
 }
 
 // packageLoadErrors is the error for pkgs and their imports failing to load,

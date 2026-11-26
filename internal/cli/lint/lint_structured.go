@@ -289,8 +289,12 @@ type lintStepOutcome struct {
 	// unscoped marks a whole-project lane skipped because of --scope.
 	unscoped bool
 	// off marks a lane forge.yaml's lint.lanes switched off.
-	off      bool
-	findings []lintJSONFinding
+	off bool
+	// undecided is why a scoped lane could not judge its scope — the
+	// packages it was given import broken packages outside it
+	// (lint_scope_undecided.go). Such a lane neither ran nor failed.
+	undecided string
+	findings  []lintJSONFinding
 	// gated reports that this lane fails the build.
 	gated bool
 	// gap is set when the lane (or part of it) was supposed to execute
@@ -387,6 +391,11 @@ func collectLintOutcomesFrom(rc *lintRunCtx, pipeline []linterStep) []lintStepOu
 			err   error
 		)
 		withLaneHeartbeat("lint: "+step.name, func() { fs, gated, err = step.collect(stepRC) })
+		if ud, ok := asUndecided(err); ok && rc.scope != nil {
+			o.undecided = ud.reason()
+			outcomes = append(outcomes, o)
+			continue
+		}
 		if err != nil {
 			// A hard collection failure degrades to a finding rather than
 			// aborting the sweep — severity/gating governed by step.gates.
@@ -437,6 +446,8 @@ func flattenLintOutcomes(outcomes []lintStepOutcome) ([]lintJSONFinding, bool) {
 		case o.unscoped:
 			findings = append(findings, skippedFinding(o.name+
 				": whole-project lane — not run under --scope (run an unscoped `forge lint` for it)"))
+		case o.undecided != "":
+			findings = append(findings, skippedFinding(o.name+": not decided under --scope: "+o.undecided))
 		case !o.ran:
 			if o.skipMsg != "" {
 				findings = append(findings, skippedFinding(o.skipMsg))
@@ -524,6 +535,16 @@ func collectLaneOutcome(
 		}
 	}
 	report, handled, err := collectSingleLinterJSON(ctx, flags, paths, cwd, store, cfg, scope)
+	if ud, ok := asUndecided(err); ok {
+		if scope != nil {
+			o.undecided = ud.reason()
+			return o, nil
+		}
+		// Unscoped, the lane failed: say so as its finding, as the sweep does.
+		o.ran, o.gated = true, true
+		o.findings = []lintJSONFinding{{Severity: lintSevError, Rule: "external", Message: fmt.Sprintf("--%s failed: %v", lane, err)}}
+		return o, nil
+	}
 	if err != nil {
 		return o, err
 	}
@@ -668,6 +689,12 @@ func renderLintOutcomes(w io.Writer, outcomes []lintStepOutcome, quiet bool, sco
 			continue
 		case o.unscoped:
 			v.unscoped = append(v.unscoped, o.name)
+			continue
+		case o.undecided != "":
+			// Printed in --quiet too: it is a hole in what the run proved,
+			// and the reason is what to wait for.
+			v.undecided = append(v.undecided, o.name)
+			fmt.Fprintf(w, "○ %s — not decided: %s\n", o.name, o.undecided)
 			continue
 		case !o.ran:
 			if o.skipMsg != "" && o.gates {
@@ -841,7 +868,7 @@ func tallyFromOutcomes(outcomes []lintStepOutcome) lintLaneTally {
 		switch {
 		case o.off:
 			t.skipped = append(t.skipped, o.name+" ("+laneOffNote+")")
-		case o.unscoped:
+		case o.unscoped, o.undecided != "":
 			t.skipped = append(t.skipped, o.name)
 		case !o.ran:
 			if o.skipMsg != "" && o.gates {

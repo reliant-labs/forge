@@ -1276,6 +1276,11 @@ func collectTypedAccessGuardJSON(rc *lintRunCtx) ([]lintJSONFinding, bool, error
 // finding.
 func collectContractLintJSON(ctx context.Context, paths []string, excludes []string, gate contract.ExcludeGateOptions) ([]lintJSONFinding, bool, error) {
 	diags, err := runContractAnalysisInProcess(ctx, paths, excludes, gate)
+	if ud, ok := asUndecided(err); ok {
+		// The engine decides: undecided under --scope, the lane's failure
+		// otherwise (lint_scope_undecided.go).
+		return nil, false, ud
+	}
 	if err != nil {
 		return []lintJSONFinding{{
 			Severity: lintSevError,

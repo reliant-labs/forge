@@ -1005,6 +1005,10 @@ type lintVerdict struct {
 	// allowed are lanes that could not run and were accepted by name
 	// (--allow-skip / lint.allow_skip): SKIPPED (allowed).
 	allowed []laneGap
+	// undecided are scoped lanes that could not judge the scope because it
+	// imports broken packages outside it (lint_scope_undecided.go): named,
+	// never counted as passed, not a failure of the slice.
+	undecided []string
 	// failed are the lanes that ran and fail the build.
 	failed []string
 	// unscoped are whole-project lanes a --scope run did not run.
@@ -1053,6 +1057,9 @@ func (v lintVerdict) render(w io.Writer) error {
 
 	if len(v.ran) == 0 {
 		var detail []string
+		if len(v.undecided) > 0 {
+			detail = append(detail, "not decided (imports outside the scope do not compile): "+strings.Join(v.undecided, ", "))
+		}
 		if len(v.advisoryUnavailable) > 0 {
 			detail = append(detail, "could not run: "+strings.Join(v.advisoryUnavailable, ", "))
 		}
@@ -1085,6 +1092,10 @@ func (v lintVerdict) render(w io.Writer) error {
 	if len(v.allowed) > 0 {
 		extras = append(extras, fmt.Sprintf("%d SKIPPED (allowed): %s", len(v.allowed), describeAllowed(v.allowed)))
 	}
+	if len(v.undecided) > 0 {
+		extras = append(extras, fmt.Sprintf("%d NOT DECIDED (%s: imports outside the scope do not compile)",
+			len(v.undecided), strings.Join(v.undecided, ", ")))
+	}
 	if len(v.skipped) > 0 {
 		extras = append(extras, fmt.Sprintf("%d skipped (%s)", len(v.skipped), strings.Join(v.skipped, ", ")))
 	}
@@ -1097,6 +1108,12 @@ func (v lintVerdict) render(w io.Writer) error {
 
 	// An advisory lane that could not run demotes the headline: it is a
 	// hole in the coverage, even though it cannot fail the run.
+	if len(v.undecided) > 0 && len(v.advisoryUnavailable) == 0 {
+		// Not a pass of the whole slice: the headline says so, as it does
+		// for a lane that could not run.
+		fmt.Fprintf(w, "⚠️  %d gating linter(s) passed; %s%s\n", len(v.ran), strings.Join(extras, "; "), v.suffix())
+		return nil
+	}
 	if len(v.advisoryUnavailable) > 0 {
 		// The hint goes ABOVE the verdict so the verdict stays the last line.
 		fmt.Fprintln(w, "   ↳ a lane that could not run is not a lane that passed — fix the cause above, or pass --strict to fail on it")

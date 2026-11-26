@@ -97,6 +97,9 @@ schema EnvVar:
     # `valueFrom.fieldRef.fieldPath`. Empty => not a fieldRef var. This is
     # the k8s-adapter target of the agnostic `EnvSource.from_field`.
     field_ref: str = ""
+    # The public URL of a frontend of this environment, resolved for a
+    # BUILD (see FrontendURL). Only a frontend's `env_vars` honour it.
+    frontend_url?: FrontendURL
     # secret_optional marks a `secret_ref` whose value is allowed to be
     # ABSENT from the environment's secret store.
     #
@@ -124,16 +127,16 @@ schema EnvVar:
         name, "EnvVar.name is required"
         not secret_optional or secret_ref, \
             "EnvVar.secret_optional is only meaningful with secret_ref — it exempts a DECLARED secret from the store pre-flight, and there is nothing to exempt without one"
-        value != Undefined or secret_ref or config_map_ref or field_ref, \
-            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, or field_ref"
+        value != Undefined or secret_ref or config_map_ref or field_ref or frontend_url, \
+            "EnvVar must set value (empty string is OK), secret_ref, config_map_ref, field_ref, or frontend_url"
         # EXACTLY one channel. k8s rejects an env entry carrying both
         # `value` and `valueFrom` ("may not be specified when `value` is
         # not empty") — and it rejects it only SERVER-side, so
         # `kubectl apply --dry-run=client` passes and the deploy dies
         # against the real cluster. Caught here, at the point the
         # ambiguity is written.
-        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0] if c == 1]) == 1, \
-            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref (k8s rejects an env entry with both value and valueFrom)"
+        len([c for c in [1 if value != Undefined else 0, 1 if secret_ref else 0, 1 if config_map_ref else 0, 1 if field_ref else 0, 1 if frontend_url else 0] if c == 1]) == 1, \
+            "EnvVar '${name}' sets more than one source — pick exactly one of value / secret_ref / config_map_ref / field_ref / frontend_url (k8s rejects an env entry with both value and valueFrom)"
 
 # Author-facing helpers that PRODUCE fw.Resources' neutral values (CPU in
 # millicores, memory in BYTES), so nobody writes raw numbers:
@@ -4539,6 +4542,45 @@ schema WorkloadURL(tiers.WorkloadURLRef):
 
     check:
         name == workload, "WorkloadURL: set `workload` only; `name` is derived from it"
+
+schema FrontendURL:
+    """The public URL of a frontend of this environment, by NAME, as a
+    BUILD-time value: the origin a static build writes into the HTML it
+    emits (a canonical link, og:url, robots.txt's Sitemap: line).
+
+        env_vars = [forge.EnvVar {
+            name = "SITE_URL"
+            frontend_url = forge.FrontendURL {frontend = "web"}
+        }]
+
+    The twin of WorkloadURL, for the one place a reference cannot wait for
+    the control plane: a build. Crawlers read the HTML as served, so the
+    origin must be IN the built files, and `runtime_config` (which reaches
+    only JavaScript) cannot carry it.
+
+    Who resolves it depends on where the TARGET runs:
+
+      * forge.OnHosted: forge, when it builds the release, from the
+        environment's live status: the target's first live custom domain,
+        else its platform hostname. A release is built once and promoted by
+        digest, so every env that serves it carries the origin of the env it
+        was BUILT for; build in the env whose URL search engines should
+        index (prod). An env that has never been deployed has no hostname
+        yet: the value is empty, forge says so, and the next release
+        carries it.
+      * forge.OnHost: the render, to the dev server's URL
+        (http://localhost:<port><base_path>).
+      * anything else (your bucket, Firebase, BuildOnly) is refused: forge
+        does not know the hostname your CDN or Firebase site answers on, so
+        set the variable to a literal `value` instead.
+
+    Only a frontend's `env_vars` may carry one. An unknown name is refused
+    at render.
+    """
+    frontend: str
+
+    check:
+        frontend, "FrontendURL.frontend is required: the name of a frontend of this environment"
 
 # A funnel or activation window ("30m", "7d") in seconds. Only call it on a
 # value that matched _WINDOW_RE.

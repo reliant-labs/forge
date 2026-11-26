@@ -3951,7 +3951,7 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
         "dev_runner": f.dev_runner
         "port": f.port
         "env_file": f.env_file if f.env_file else None
-        "env_vars": [_render_env_var(e) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
+        "env_vars": [_render_frontend_env_var(e, f, bundle) for e in f.env_vars if not (_obs_browser_off(bundle) and e.name == _otel_endpoint_var(f))] \
             + ([_render_env_var(EnvVar {name = _otel_endpoint_var(f), value = "off"})] if _obs_browser_off(bundle) else [])
         "config": _render_frontend_config(f.config) if f.config else None
         "runtime": _render_frontend_runtime(f.runtime)
@@ -3984,6 +3984,38 @@ _render_frontend = lambda f: Frontend, bundle: Bundle -> any {
 # `value`, which preserves an explicitly-set empty string (rendered as
 # `""`, not `null`). Empty-string `value` is a legal disable sentinel
 # downstream (e.g. RUNTIME_CLASS_NAME="" to skip runtimeClassName).
+#
+# A frontend's env var lowers a forge.FrontendURL by where its TARGET runs
+# (kcl/schema.k FrontendURL): a dev server's URL is known now, so it becomes
+# the value; a hosted frontend's hostname is the control plane's, so the
+# reference is kept for the build to resolve (`frontend_url`, value null);
+# every other runtime has no hostname forge knows, and is refused. Every
+# var that carries no FrontendURL renders exactly as _render_env_var does.
+_render_frontend_env_var = lambda ev: EnvVar, f: Frontend, bundle: Bundle -> any {
+    _r = _render_env_var(ev)
+    (_r | _frontend_url_lowered(ev.name, ev.frontend_url, f, bundle)) if ev.frontend_url else _r
+}
+
+_frontend_url_lowered = lambda name: str, ref: FrontendURL, f: Frontend, bundle: Bundle -> any {
+    _where = "frontend '${f.name}' env_vars ${name}"
+    _targets = [t for t in bundle.frontends if t.name == ref.frontend]
+    assert _targets, \
+        "${_where}: forge.FrontendURL names frontend '${ref.frontend}', which this environment does not declare. " \
+        + "Declared frontends: " + ", ".join([t.name for t in bundle.frontends]) + "."
+    _t = _targets[0]
+    _type = _t.runtime.type if _t.runtime else ""
+    assert _type in ["host", "hosted"], \
+        "${_where}: forge.FrontendURL '${ref.frontend}' runs on the ${_type} runtime, whose public hostname forge does not know " \
+        + "(it is your CDN's or your Firebase site's). Set ${name} to the site's URL as a literal: forge.EnvVar {name = \"${name}\", value = \"https://example.com\"}."
+    # A dev server's URL baked into a published build would ship localhost
+    # as the site's canonical origin.
+    assert not (_type == "host" and f.runtime and f.runtime.type != "host"), \
+        "${_where}: forge.FrontendURL '${ref.frontend}' is a dev server (forge.OnHost), and frontend '${f.name}' publishes a build on the ${f.runtime.type} runtime: " \
+        + "the build would carry http://localhost as its origin. Name a hosted frontend, or set ${name} to a literal value."
+    {"value": "http://localhost:" + str(_t.port) + (_t.base_path if _t.base_path else "")} if _type == "host" \
+        else {"frontend_url": {"frontend": ref.frontend}}
+}
+
 _render_env_var = lambda ev: EnvVar -> any {
     {
         "name": ev.name

@@ -3169,7 +3169,10 @@ func frontendToBuildOnly(f FrontendEntity) deploytarget.BuildOnlyFrontend {
 func frontendBuildEnv(f FrontendEntity) map[string]string {
 	buildEnv := map[string]string{}
 	for _, ev := range f.EffectiveEnvVars() {
-		if ev.Value != "" {
+		// A forge.FrontendURL with no hostname yet is present-but-empty, like
+		// the mock var below, so a SITE_URL left in the shell cannot name
+		// another origin in the build.
+		if ev.Value != "" || ev.FrontendURL != nil {
 			buildEnv[ev.Name] = ev.Value
 		}
 	}

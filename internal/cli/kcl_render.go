@@ -1667,6 +1667,19 @@ type KCLEnvVar struct {
 	// pre-flight. Set by config codegen from `optional: true` on a
 	// `sensitive` proto field — never hand-authored.
 	SecretOptional bool `json:"secret_optional,omitempty"`
+
+	// FrontendURL is a forge.FrontendURL the render KEPT: its target is a
+	// hosted frontend, whose hostname only the control plane knows, so a
+	// build resolves it into Value from the env's live status
+	// (resolveBuildFrontendURLs). nil for every other var, a FrontendURL to a
+	// dev server included (the render resolved that one into Value).
+	FrontendURL *KCLFrontendURL `json:"frontend_url,omitempty"`
+}
+
+// KCLFrontendURL mirrors kcl/schema.k FrontendURL as the render keeps it.
+type KCLFrontendURL struct {
+	// Frontend names the frontend whose public URL is the value.
+	Frontend string `json:"frontend"`
 }
 
 // ObservabilityEntity is the env's typed observability declaration

@@ -32,8 +32,9 @@ var taskfileTemplatesByKind = []string{"Taskfile.yml.tmpl", "Taskfile.cli.yml.tm
 const cliArgsScope = "{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}./...{{end}}"
 
 type renderedTask struct {
-	Desc string `yaml:"desc"`
-	Cmds []any  `yaml:"cmds"`
+	Desc string         `yaml:"desc"`
+	Vars map[string]any `yaml:"vars"`
+	Cmds []any          `yaml:"cmds"`
 }
 
 func renderedTasks(t *testing.T, tmpl string) map[string]renderedTask {
@@ -115,6 +116,27 @@ func TestTaskfileTemplatesShipShortTier(t *testing.T) {
 			}
 			if !strings.Contains(cmd, cliArgsScope) {
 				t.Errorf("test:short is not scoped by `--` args like `test` is (want %q): %q", cliArgsScope, cmd)
+			}
+
+			// `go test -short` without -v prints a skipped test nowhere, so a
+			// package whose testkit.Slow tests all skipped looked as green as
+			// one where they ran. The run goes through `forge test capture
+			// --no-record`, which prints go test's text from -json, keeps its
+			// exit status and cache, records nothing, and ends with a line
+			// counting the skips.
+			const wrapper = "{{.CAPTURE}} test capture --no-record"
+			if !strings.HasPrefix(cmd, wrapper) || !has("-json") {
+				t.Errorf("test:short does not run `go test -json` under %q, so skipped slow tests go unreported: %q", wrapper, cmd)
+			}
+			if !strings.Contains(cmd, `{{if contains "-json" .CLI_ARGS}} --render raw{{end}}`) {
+				t.Errorf("test:short does not print the raw stream for `-- -json`, as `task test` does: %q", cmd)
+			}
+			capture, _ := short.Vars["CAPTURE"].(map[string]any)
+			probe, _ := capture["sh"].(string)
+			// A `go run` of the pin costs ~1s a call; the forge on PATH is
+			// used instead when it has the flag, and FORGE otherwise.
+			if !strings.Contains(probe, "forge test capture --no-record --help") || !strings.Contains(probe, `echo "{{.FORGE}}"`) {
+				t.Errorf("test:short's CAPTURE var does not pick the forge on PATH over a `go run` of FORGE: %q", probe)
 			}
 
 			// The full lane keeps the CI flags; the two tiers must not collapse.

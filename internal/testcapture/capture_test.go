@@ -53,8 +53,11 @@ func helperMain(mode string) int {
 		for _, l := range helperStream {
 			fmt.Println(l)
 		}
-		// The lane's own command writes its coverage into the lane dir.
-		_ = os.WriteFile(filepath.Join(os.Getenv(EnvLaneDir), testreport.LaneCoverProfile), []byte("mode: atomic\n"), 0o644)
+		// The lane's own command writes its coverage into the lane dir,
+		// when it is told of one (an unrecorded capture tells it none).
+		if dir := os.Getenv(EnvLaneDir); dir != "" {
+			_ = os.WriteFile(filepath.Join(dir, testreport.LaneCoverProfile), []byte("mode: atomic\n"), 0o644)
+		}
 		return 1
 	case "env":
 		fmt.Printf("%s|%s|%s\n", os.Getenv(EnvRun), os.Getenv(EnvLane), os.Getenv(EnvLaneDir))
@@ -157,6 +160,44 @@ func TestCaptureRecordsAGoTestStream(t *testing.T) {
 	run, err := testreport.ReadRunManifest(h.run)
 	if err != nil || len(run.Lanes) != 1 || run.Lanes[0] != "unit" {
 		t.Fatalf("run.json lanes = %v, %v", run.Lanes, err)
+	}
+}
+
+// A capture that records nothing (--no-record, the inner loop; or
+// FORGE_TESTS=off) prints the stream as a recorded one does — go test's
+// text, not raw JSON — begins no run and writes no lane.
+func TestCaptureRendersWhenItRecordsNothing(t *testing.T) {
+	t.Parallel()
+	wantOut := "--- FAIL: TestA (0.00s)\n    a_test.go:3: dsn postgres://app:hunter22@db/x\nnot an event: password=hunter22\nFAIL\texample.com/p\t0.01s\n"
+	for name, tweak := range map[string]func(*CaptureOptions){
+		"no-record": func(o *CaptureOptions) { o.NoRecord, o.Lane, o.RunDir = true, "", "" },
+		"off": func(o *CaptureOptions) {
+			o.Getenv = envOf(map[string]string{EnvTests: "off"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			h := &harness{t: t, root: t.TempDir()}
+			h.run = filepath.Join(h.root, "run")
+			o := h.opts("unit", "stream", nil)
+			tweak(&o)
+			res := Capture(context.Background(), o)
+			if res.ExitCode != 1 || res.StartErr != nil || res.LaneDir != "" {
+				t.Fatalf("Capture = %+v, want exit 1 with nothing recorded", res)
+			}
+			if h.stdout.String() != wantOut {
+				t.Fatalf("terminal:\n%q\nwant:\n%q", h.stdout.String(), wantOut)
+			}
+			if h.stderr.Len() != 0 {
+				t.Fatalf("stderr: %s", h.stderr.String())
+			}
+			if _, err := os.Stat(filepath.Join(h.run, "unit", testreport.LaneResultsFile)); !os.IsNotExist(err) {
+				t.Fatalf("results.json written though nothing is recorded: %v", err)
+			}
+			if entries, _ := os.ReadDir(filepath.Join(h.root, ".forge")); len(entries) != 0 {
+				t.Fatalf("a run was begun: %v", entries)
+			}
+		})
 	}
 }
 

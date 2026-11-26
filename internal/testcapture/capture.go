@@ -54,6 +54,11 @@ type CaptureOptions struct {
 	// Format declares the results' format; "" detects it.
 	Format string
 	Render string
+	// NoRecord runs and prints the command as a recorded capture would and
+	// records nothing: no run is begun and no lane written. It is the inner
+	// loop's (`task test:short`), which re-runs on every edit and whose
+	// results no report should count.
+	NoRecord bool
 	// Command is run as given, never through a shell.
 	Command []string
 	Stdin   io.Reader
@@ -119,7 +124,7 @@ func Capture(ctx context.Context, opts CaptureOptions) CaptureResult {
 		return CaptureResult{ExitCode: 126, StartErr: errors.New("no command to run")}
 	}
 	c := &capture{opts: opts}
-	if Off(opts.Getenv) {
+	if opts.NoRecord || Off(opts.Getenv) {
 		return c.passThrough(ctx)
 	}
 	c.prepare(ctx)
@@ -232,14 +237,25 @@ func (c *capture) ensureLaneDir(run string) {
 	_ = os.MkdirAll(testreport.LaneDir(run, c.opts.Lane), 0o755)
 }
 
-// passThrough runs the command with nothing recorded.
+// passThrough runs the command with nothing recorded. Its output is printed
+// as a recorded run's is: a `go test -json` stream on stdout (no --results) is
+// rendered, so what a lane prints does not depend on whether it was recorded.
 func (c *capture) passThrough(ctx context.Context) CaptureResult {
 	run := c.opts.RunDir
-	if run == "" {
+	if run == "" && !c.opts.NoRecord {
 		run = strings.TrimSpace(c.opts.Getenv(EnvRun))
 	}
 	c.ensureLaneDir(run)
-	code, err := execute(ctx, c.opts.Command, c.opts.Environ, c.opts.Stdin, c.opts.Stdout, c.opts.Stderr)
+	stdout := c.opts.Stdout
+	var st *stream
+	if c.opts.Results == "" {
+		st = c.newStream()
+		stdout = st
+	}
+	code, err := execute(ctx, c.opts.Command, c.opts.Environ, c.opts.Stdin, stdout, c.opts.Stderr)
+	if st != nil {
+		st.flush()
+	}
 	return CaptureResult{ExitCode: code, StartErr: err}
 }
 
@@ -373,7 +389,8 @@ type stream struct {
 	failed  bool
 }
 
-func (c *capture) openStream() *stream {
+// newStream is a stream that renders the command's stdout and stores nothing.
+func (c *capture) newStream() *stream {
 	mode := c.opts.Render
 	if mode == RenderAuto {
 		mode = RenderText
@@ -385,6 +402,13 @@ func (c *capture) openStream() *stream {
 	if !s.raw {
 		s.render = NewRenderer(c.opts.Stdout, mode == RenderVerbose)
 	}
+	return s
+}
+
+// openStream is a stream that also stores the stream in the lane's
+// results.json.
+func (c *capture) openStream() *stream {
+	s := c.newStream()
 	f, err := os.Create(filepath.Join(c.laneDir, testreport.LaneResultsFile))
 	if err != nil {
 		c.warn("cannot store the stream: %v", err)
@@ -494,7 +518,8 @@ func replaceOutput(raw []byte, from, to string) []byte {
 	return out
 }
 
-func (c *capture) closeStream(s *stream) {
+// flush handles the line the command left unended and closes the renderer.
+func (s *stream) flush() {
 	if len(s.pending) > 0 {
 		s.line(s.pending, false)
 		s.pending = nil
@@ -502,6 +527,10 @@ func (c *capture) closeStream(s *stream) {
 	if s.render != nil {
 		s.render.Close()
 	}
+}
+
+func (c *capture) closeStream(s *stream) {
+	s.flush()
 	stats := s.stats
 	c.lane.Stream = &stats
 	c.lane.Format = testreport.LaneFormatGoJSON

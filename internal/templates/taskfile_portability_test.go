@@ -95,8 +95,11 @@ func externalCommands(t *testing.T, snippet string) []string {
 	text := strings.ReplaceAll(snippet, "{{.SLOT}}", "")
 	// {{.FORGE}} is the pinned forge, `go run …/cmd/forge@<pin>`: go is what
 	// the shell runs. {{.SCRIPT}} is the npm command line the `frontends`
-	// task runs in each frontend.
+	// task runs in each frontend. {{.CAPTURE}} is test:short's forge: FORGE,
+	// or the forge on PATH when that one has `test capture --no-record`
+	// (its own probe, checked below like SLOT's).
 	text = strings.ReplaceAll(text, "{{.FORGE}}", "go")
+	text = strings.ReplaceAll(text, "{{.CAPTURE}}", "go")
 	text = strings.ReplaceAll(text, "{{.SCRIPT}}", "npm")
 	text = taskTemplateExpr.ReplaceAllString(text, "x")
 	// Task parses with mvdan's bash dialect.

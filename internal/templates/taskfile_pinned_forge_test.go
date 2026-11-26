@@ -17,8 +17,16 @@ var taskfileTemplates = []string{"Taskfile.yml.tmpl", "Taskfile.cli.yml.tmpl", "
 // TestTaskfilesRunThePinnedForge: every forge a scaffolded Taskfile runs is
 // {{.FORGE}}, the project's pin — never `forge` off PATH, which is routinely
 // another version (a bundled forge rejected reliant's forge.yaml with
-// `unknown key "lint.tracing"`). The one exception is the SLOT probe: heavy
-// slots are machine-wide, and the probe runs on every `task` invocation.
+// `unknown key "lint.tracing"`). The exceptions are two probes of commands
+// that are pin-independent (forge_pin_skew.go's pinIndependentCommands: they
+// never read forge.yaml, and every forge that has them behaves the same):
+//
+//   - SLOT: heavy slots are machine-wide, and the probe runs on every `task`
+//     invocation.
+//   - test:short's CAPTURE: `test capture` prints the inner loop's run, and a
+//     `go run` of the pin costs about a second on every edit. The forge on
+//     PATH is used only when FORGE is that `go run` and the probe proves the
+//     PATH forge has `test capture --no-record`.
 //
 // And no task runs a bare `buf generate`: codegen is `forge generate`, which
 // runs the pinned buf and plugins and everything else forge projects.
@@ -38,8 +46,19 @@ func TestTaskfilesRunThePinnedForge(t *testing.T) {
 			}
 			slot, _ := doc.Vars["SLOT"].(map[string]any)
 			slotSh, _ := slot["sh"].(string)
+			var tasks struct {
+				Tasks map[string]renderedTask `yaml:"tasks"`
+			}
+			if err := yaml.Unmarshal(rendered, &tasks); err != nil {
+				t.Fatal(err)
+			}
+			capture, _ := tasks.Tasks["test:short"].Vars["CAPTURE"].(map[string]any)
+			captureSh, _ := capture["sh"].(string)
+			if captureSh == "" || !strings.Contains(captureSh, `case "{{.FORGE}}" in "go run "*)`) {
+				t.Errorf("test:short's CAPTURE must fall back to the forge on PATH only in place of a `go run` FORGE; got %q", captureSh)
+			}
 			for _, snippet := range taskfileShellSnippets(t, rendered) {
-				if snippet == slotSh {
+				if snippet == slotSh || snippet == captureSh {
 					continue
 				}
 				for _, cmd := range externalCommands(t, snippet) {
@@ -100,8 +119,15 @@ func TestServiceTaskfileRunsUnderTask(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The pinned forge reports two frontends, one at a KCL-declared path.
-	fake("pinned-forge", `[ "$1 $2" = "project frontends" ] && printf 'npm:frontends/admin\nnpm:web\n'`)
+	// The pinned forge reports two frontends, one at a KCL-declared path, and
+	// begins the run test:frontend records into (`test begin` prints its dir).
+	runDir := t.TempDir()
+	fake("pinned-forge", `case "$1 $2" in
+"project frontends") printf 'npm:frontends/admin\nnpm:web\n' ;;
+"test begin") echo `+runDir+` ;;
+*) exit 1 ;;
+esac
+`)
 	fake("npm", `echo "$(basename "$PWD") $*" >> `+marks+"\n")
 	for _, fe := range []string{"frontends/admin", "web"} {
 		if err := os.MkdirAll(filepath.Join(dir, fe), 0o755); err != nil {
@@ -122,6 +148,28 @@ func TestServiceTaskfileRunsUnderTask(t *testing.T) {
 
 	if out := run(nil, "--dry", "ci"); !strings.Contains(out, "go run github.com/reliant-labs/forge/cmd/forge@"+pin+" ci gate all") {
 		t.Errorf("task ci does not run the pinned forge:\n%s", out)
+	}
+
+	// test:short prints its run through `test capture --no-record`: the
+	// pinned forge's, unless the forge on PATH has the flag (it is spared the
+	// `go run`), and FORGE_BIN's whenever it is set.
+	const shortCmd = " test capture --no-record -- go test -short -json -timeout 60s ./..."
+	for _, tc := range []struct {
+		name, pathForge string
+		env             []string
+		want            string
+	}{
+		{"PATH forge lacks the flag", "exit 1", nil, "go run github.com/reliant-labs/forge/cmd/forge@" + pin + shortCmd},
+		{"PATH forge has the flag", `[ "$*" = "test capture --no-record --help" ]`, nil, "forge" + shortCmd},
+		{"FORGE_BIN", "exit 0", []string{"FORGE_BIN=" + filepath.Join(bin, "pinned-forge")}, filepath.Join(bin, "pinned-forge") + shortCmd},
+	} {
+		fake("forge", tc.pathForge+"\n")
+		if out := run(tc.env, "--dry", "test:short"); !strings.Contains(out, "task: [test:short] "+tc.want+"\n") {
+			t.Errorf("%s: task test:short does not run %q:\n%s", tc.name, tc.want, out)
+		}
+	}
+	if err := os.Remove(filepath.Join(bin, "forge")); err != nil {
+		t.Fatal(err)
 	}
 
 	// SLOT= : no host slot around the fake npm.

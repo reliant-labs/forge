@@ -97,14 +97,14 @@ func TestUniqueKeyRefusal(t *testing.T) {
 // The renderer never emits a key postgres would reject: a refused key is a
 // TODO comment and a note, should a caller skip the CLI pre-flight.
 func TestRenderEntityMigrationFromProto_RefusedUniqueKeyIsATodo(t *testing.T) {
-	mig := RenderEntityMigrationFromProto(uniqueJobSpec([]string{"namespace", "nmae"}))
+	mig := RenderEntityMigrationFromProto(uniqueJobSpec([]string{"namespace", "namez"}))
 	if strings.Contains(mig.UpSQL, "CREATE UNIQUE INDEX") {
 		t.Errorf("a refused key must not be emitted:\n%s", mig.UpSQL)
 	}
-	if !strings.Contains(mig.UpSQL, "-- TODO: unique key (namespace, nmae) skipped — it names nmae") {
+	if !strings.Contains(mig.UpSQL, "-- TODO: unique key (namespace, namez) skipped — it names namez") {
 		t.Errorf("a refused key must be carried as a TODO:\n%s", mig.UpSQL)
 	}
-	if !strings.Contains(strings.Join(mig.Notes, "\n"), "unique key (namespace, nmae)") {
+	if !strings.Contains(strings.Join(mig.Notes, "\n"), "unique key (namespace, namez)") {
 		t.Errorf("a refused key must be reported in the notes, got %q", mig.Notes)
 	}
 }

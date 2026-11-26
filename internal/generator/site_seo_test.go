@@ -81,12 +81,32 @@ func TestNextSiteStarterHasNoPublicRobots(t *testing.T) {
 }
 
 // siteSEOGoldenFiles are the files of a fresh site the SEO and accessibility
-// defaults live in, per starter kind. None depends on the web runtime floor,
-// so a floor bump does not churn them.
+// defaults live in, per starter kind. None depends on the web runtime floor
+// (package.json and vite.config.ts do, and the release bookkeeping raises the
+// floor without regenerating goldens), so a floor bump does not churn them.
+// TestWriteSiteStarter checks package.json's eslint script and runtime range.
 var siteSEOGoldenFiles = map[string][]string{
-	"vite-spa": {"index.html", "eslint.config.mjs", "package.json", "deploy/kcl/dev/main.k", "deploy/kcl/prod/main.k"},
+	"vite-spa": {"index.html", "eslint.config.mjs", "deploy/kcl/dev/main.k", "deploy/kcl/prod/main.k"},
 	"nextjs": {"src/app/layout.tsx", "src/app/page.tsx", "src/app/robots.ts", "src/app/sitemap.ts", "src/lib/site.ts",
-		"eslint.config.mjs", "package.json"},
+		"eslint.config.mjs"},
+}
+
+// Each starter lints with eslint and the jsx-a11y plugin its config loads.
+func TestSiteStarterDeclaresItsLint(t *testing.T) {
+	for kind, deps := range map[string][]string{
+		"vite-spa": {"eslint", "@eslint/js", "eslint-plugin-jsx-a11y", "typescript-eslint"},
+		"nextjs":   {"eslint", "@eslint/js", "eslint-plugin-jsx-a11y", "eslint-config-next"},
+	} {
+		pkg, err := os.ReadFile(filepath.Join(writeStarterSite(t, kind), "package.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range append([]string{`"lint": "eslint ."`}, deps...) {
+			if !strings.Contains(string(pkg), `"`+strings.Trim(want, `"`)) {
+				t.Errorf("%s package.json lacks %s:\n%s", kind, want, pkg)
+			}
+		}
+	}
 }
 
 // TestSiteStarterSEOGoldens pins the rendered head tags, metadata, robots and

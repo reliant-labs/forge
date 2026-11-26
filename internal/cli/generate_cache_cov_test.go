@@ -30,8 +30,14 @@ func TestCovDAgoString(t *testing.T) {
 }
 
 func TestCovDFingerprintKeyPath(t *testing.T) {
-	root := filepath.Join(string(filepath.Separator), "proj")
-	abs := filepath.Join(string(filepath.Separator), "opt", "tool", "x")
+	// Built from t.TempDir so both are absolute on every OS: a slash-rooted
+	// literal has no drive letter on Windows and would not count as absolute.
+	base := t.TempDir()
+	root := filepath.Join(base, "proj")
+	abs := filepath.Join(base, "opt", "tool", "x")
+	if !filepath.IsAbs(abs) {
+		t.Fatalf("fixture %q must be absolute", abs)
+	}
 	cases := []struct {
 		name, key string
 		wantPath  string

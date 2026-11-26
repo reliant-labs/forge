@@ -150,7 +150,7 @@ func TestCovDWriteEnvDiff_RendersEveryCategory(t *testing.T) {
 	changeAnon := release.ObjectChange{Candidate: noWorkload, ConfigChanged: true}
 
 	doc := envDiffDoc{
-		Source: "/work/proj", Against: "live", Charts: false,
+		Source: "proj-dir", Against: "live", Charts: false,
 		Environments: []envDiffEntry{
 			{Env: "broken", Status: diffImpure, Detail: "wrote 2", Wrote: []string{"a.txt", "b.txt"}},
 			{Env: "fresh", Status: diffOK, WouldBeCreated: true},
@@ -179,7 +179,7 @@ func TestCovDWriteEnvDiff_RendersEveryCategory(t *testing.T) {
 	writeEnvDiff(&b, doc)
 	out := b.String()
 	for _, want := range []string{
-		"diff of /work/proj against live",
+		"diff of proj-dir against live",
 		"(Helm chart objects are not compared; pass --charts to template them)",
 		"broken: impure", "wrote 2", "    wrote a.txt", "    wrote b.txt",
 		"fresh: ok", "would be created: this environment is declared here",

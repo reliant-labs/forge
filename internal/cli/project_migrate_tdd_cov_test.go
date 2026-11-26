@@ -167,8 +167,11 @@ func TestCovDRelPath(t *testing.T) {
 	if got := relPath(filepath.Join("a", "b"), filepath.Join("a", "b", "c", "d.go")); got != filepath.Join("c", "d.go") {
 		t.Errorf("relPath = %q", got)
 	}
-	if got := relPath("rel", filepath.Join(string(filepath.Separator), "abs", "x")); got == "" {
-		t.Error("an unrelatable path must come back non-empty")
+	// A relative base cannot be related to an absolute path on any OS, so the
+	// path comes back as given.
+	abs := filepath.Join(t.TempDir(), "x")
+	if got := relPath("rel", abs); got != abs {
+		t.Errorf("an unrelatable path must come back unchanged, got %q want %q", got, abs)
 	}
 }
 

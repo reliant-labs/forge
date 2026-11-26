@@ -46,8 +46,25 @@ invisible until you look at the UI:
 ```
 forge db seed apply    # introspect db/migrations, INSERT deterministic rows (dev only)
 forge db seed status   # per-table seeded-row counts vs the seed model
-forge db seed reset    # wipe seeded tables and re-seed (dev only)
+forge db seed reset    # TRUNCATE the plan's tables and dependents, then re-seed (dev only)
+forge db seed clear --confirm  # delete matching seed keys without re-seeding (dev only)
 ```
+
+**Clear vs. reset.** `clear` uses the current manual seed plan's deterministic
+primary keys, not row provenance. **A matching application row is deleted too**
+(for example, if it uses a small integer key the seeder plans to use). PostgreSQL's
+`ON DELETE` actions still apply to rows referencing a match; a restrictive foreign
+key or append-only trigger can block the operation, rolling it back. Tables with
+no seedable primary key are skipped. No tables are truncated and no custom SQL
+is replayed. `reset`, by contrast, truncates entire plan tables with `CASCADE`,
+including application rows, then re-seeds.
+
+To clean up a table seeded by an older auto-seed that no longer belongs to
+its CRUD scope, run `forge db seed clear --table assignments --confirm`.
+`--table` narrows deletion, not key generation: the manual plan still includes
+non-CRUD tables. Clear before changing the seed model or opting a table out;
+rows not matched by the current plan will not be found. On the next
+`forge env up`, use `--no-seed` if you want to keep the database empty.
 
 `-C` from anywhere, a throwaway postgres (any loopback `--dsn`), or a
 `seeded nothing` error: load `db/seeding/targets`.

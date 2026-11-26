@@ -97,29 +97,29 @@ bills exactly as today. `replicas` keeps its meaning.
 
 ## 2. What the code does today (verified)
 
-| Area             | Today                                                                                                                                                                                                                                                                                                                     | Consequence for autoscaling                                                                                                            |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Declaration      | `replicas` on the author schema (`kcl/workload.k:705`, checks `:783`, `:844-845`, `:856-857`), lowered by `_spec` (`kcl/render.k:1811-1844`) into `tiers.Workload`, which is **generated** from `pkg/deploy/v1alpha1.WorkloadSpec` (`workload_types.go:140-151`; `kcl/tiers/tiers_gen.k:1-12`). The CRD is the same type. | A new field starts in Go, then the tiers KCL is regenerated; control-plane's Workload CRD gets it by pinning forge.                    |
-| CPU request      | Always present after defaulting: 250m / 1 GiB, limit = request when unset (`pkg/deploy/v1alpha1/common.go:341-389`). Hosted standard plans hold requests to a shape band (`pkg/deploy/shape.go:57`).                                                                                                                      | An HPA on CPU utilization always has a denominator. With limit = request, utilization cannot pass ~100%, so a target must be below it. |
-| Runtime masks    | host refuses `replicas != 1` (`kcl/render.k:2112`); compose (`:2042-2053`) and build-only (`:2055-2060`) refuse it; hosted restricts neither `replicas` nor `resources`, and already refuses `podAnnotations` because they drive "autoscalers … the hosted platform owns" (`kcl/tiers/tiers_gen.k:814`).                  | `autoscale` takes the same masks as `replicas`.                                                                                        |
-| Cluster render   | `renderLongRunning` states `spec.replicas` (`workload_render.go:463`), states 25%/25% rolling update (`:180`, `:501-505`), adds hostname spread (`:459`) and a PDB with `maxUnavailable: 1` only when replicas > 1 (`:531-542`).                                                                                          | Must omit `spec.replicas` when autoscaled; spread and PDB must key on `maxReplicas > 1`, not on a count that now moves.                |
-| HPA anywhere     | None. `autoscaling/v2` appears nowhere in forge. HPA is only in kind tables: `internal/cluster/chart_namespace.go:37`, `internal/cluster/owned_prune.go:104`.                                                                                                                                                             | Prune already handles a removed HPA on clusters.                                                                                       |
-| Overrides        | A bundle override can set `{"Deployment/api" = {spec.replicas = 10}}` (`kcl/tests/positive_bundle_overrides.k:38`).                                                                                                                                                                                                       | Must be refused beside `autoscale`.                                                                                                    |
-| Hosted path      | forge records `forge.dev/v1alpha1` Workload records in the env bundle; control-plane applies them (`internal/deploytarget/hosted.go:1-32`). The operator renders them with **forge's** `RenderWorkloads` under `ProfileRestricted` (`control-plane/internal/operators/workload/controller.go:167,592`).                   | One renderer change serves both bindings.                                                                                              |
-| Hosted kind set  | Closed: Deployment, Job, Service, PVC, ServiceAccount, NetworkPolicy, PodDisruptionBudget; anything else fails "the hosted platform does not apply" (`control-plane/.../workload/decorate.go:134-191`).                                                                                                                   | HPA must be added, with checks.                                                                                                        |
-| Hosted apply     | Server-side apply with `ForceOwnership` under the tier field manager (`control-plane/internal/operators/shared/tier.go:45-46`).                                                                                                                                                                                           | Same fight as on clusters; same fix.                                                                                                   |
-| Lapse / suspend  | `holdForLapse` merge-patches `replicas=0` under its own owner; `resumeFromLapse` relies on the normal apply to bring replicas back (`control-plane/.../workload/lapse.go:23-25,98,109-112`).                                                                                                                              | With replicas no longer applied, resume must write `minReplicas` itself.                                                               |
-| Readiness        | Reads the **live** `spec.replicas` and observed updated/ready counts (`controller.go:973-976,1314-1395`; `deployrollout/rollout.go:446-449`); `workloadhealth` is Degraded when ready < desired (`workloadhealth/health.go:14-30`).                                                                                       | Already tolerates a moving count.                                                                                                      |
-| Release health   | Per-service aggregates over before/after windows gated by `min_requests`, plus `workload_restarts` (`pkg/releasehealth/releasehealth.go:19-80`). No per-replica or fixed-count assumption.                                                                                                                                | No change. A scale-in termination is not a restart.                                                                                    |
-| Admission        | Demand is request × `replicas` (`control-plane/internal/deployspec/spec.go:322-341`); PAYG ceiling 2000m / 8 GiB / 50 GiB storage (`planlimits/deploy_admission.go:78-92,122-141`).                                                                                                                                       | Must count `maxReplicas`.                                                                                                              |
-| Namespace quota  | `DeriveDeployNamespaceQuota` = ceiling × rollout surge 2 for CPU/memory, ceiling + build cache for storage (`control-plane/internal/operators/shared/quota.go:436-470,158`).                                                                                                                                              | If admission counts the max, the quota already fits it.                                                                                |
-| Claimable        | 1 replica, 125m, 128Mi (`planlimits/claimable.go:45-53,109`), enforced at `computegate/claimable.go:238-240`.                                                                                                                                                                                                             | Autoscale with `maxReplicas > 1` is refused for claimable deploys.                                                                     |
-| Billing          | Live meter bills each Deployment's `status.readyReplicas` × requests per sweep (`control-plane/internal/billing/inframeter/sweeper.go:127-178`). A shadow v2 meter bills each Ready pod at max(request, used CPU) via metrics-server (`inframeter/v2_compute.go:25-63`).                                                  | Replica-hours are already what we bill. No new meter.                                                                                  |
-| Tenant cluster   | GKE Standard, cluster autoscaler on (`deploy/gcp/provision.sh:1363,1382`; `kata_pool.k:116,136`). Hosted workloads run under gVisor (`hosted_deploy.k:415-419`) on a pool of 0–8 nodes (`gvisor_pool.k:63-64`). Nothing disables metrics-server; k3d dev/e2e disable it (`deploy/k3d-v2.yaml:152`).                       | metrics-server for gVisor pods must be proven (slice 0). Scale-out can wait minutes on a node. e2e needs metrics-server enabled.       |
-| Managed DB       | In-cluster CloudNativePG, not Cloud SQL (`control-plane/internal/operators/manageddatabase/doc.go:4-5`). Size from `storageGiB`; never shrinks (`keepExistingStorage`, `manageddatabase/claimable.go:169-240`, used at `controller.go:400`). No explicit StorageClass. Claimable fixed at 256 MiB incl. WAL.              | Autogrow raises `spec.storage.size` on the Cluster; `keepExistingStorage` already keeps a grown size.                                  |
-| Disk signal      | Only `cnpg_pg_database_size_bytes` is collected (logical size, no WAL, not volume fill; `deploy/cnpg/cloudnative-pg.yaml:147`, `otel_agent.k:861`). No `kubelet_volume_stats_*`.                                                                                                                                          | Autogrow needs a volume-fill signal that does not exist yet.                                                                           |
-| Resize primitive | `shared.ConvergePVCSize`: grow-only, classifies refusals as QuotaExceeded / Unsupported StorageClass / Failed (`control-plane/internal/operators/shared/pvcsize.go:16-76`), used by workspace disks.                                                                                                                      | Its refusal classification is reusable; for CNPG the size goes on the Cluster, not the PVC.                                            |
-| Storage billing  | Provisioned GiB, written or not, 10¢/GiB-month (`plansconfig/pricing.yaml:53`; `hosted_usage_policy.go:51`).                                                                                                                                                                                                              | Every grow raises the bill. Whether DB volumes feed the same pool is unconfirmed (slice 0).                                            |
+| Area             | Today                                                                                                                                                                                                                                                                                                                     | Consequence for autoscaling                                                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Declaration      | `replicas` on the author schema (`kcl/workload.k:705`, checks `:783`, `:844-845`, `:856-857`), lowered by `_spec` (`kcl/render.k:1811-1844`) into `tiers.Workload`, which is **generated** from `pkg/deploy/v1alpha1.WorkloadSpec` (`workload_types.go:140-151`; `kcl/tiers/tiers_gen.k:1-12`). The CRD is the same type. | A new field starts in Go, then the tiers KCL is regenerated; control-plane's Workload CRD gets it by pinning forge.                        |
+| CPU request      | Always present after defaulting: 250m / 1 GiB, limit = request when unset (`pkg/deploy/v1alpha1/common.go:341-389`). Hosted standard plans hold requests to a shape band (`pkg/deploy/shape.go:57`).                                                                                                                      | An HPA on CPU utilization always has a denominator. With limit = request, utilization cannot pass ~100%, so a target must be below it.     |
+| Runtime masks    | host refuses `replicas != 1` (`kcl/render.k:2112`); compose (`:2042-2053`) and build-only (`:2055-2060`) refuse it; hosted restricts neither `replicas` nor `resources`, and already refuses `podAnnotations` because they drive "autoscalers … the hosted platform owns" (`kcl/tiers/tiers_gen.k:814`).                  | `autoscale` takes the same masks as `replicas`.                                                                                            |
+| Cluster render   | `renderLongRunning` states `spec.replicas` (`workload_render.go:463`), states 25%/25% rolling update (`:180`, `:501-505`), adds hostname spread (`:459`) and a PDB with `maxUnavailable: 1` only when replicas > 1 (`:531-542`).                                                                                          | Must omit `spec.replicas` when autoscaled; spread and PDB must key on `maxReplicas > 1`, not on a count that now moves.                    |
+| HPA anywhere     | None. `autoscaling/v2` appears nowhere in forge. HPA is only in kind tables: `internal/cluster/chart_namespace.go:37`, `internal/cluster/owned_prune.go:104`.                                                                                                                                                             | Prune already handles a removed HPA on clusters.                                                                                           |
+| Overrides        | A bundle override can set `{"Deployment/api" = {spec.replicas = 10}}` (`kcl/tests/positive_bundle_overrides.k:38`).                                                                                                                                                                                                       | Must be refused beside `autoscale`.                                                                                                        |
+| Hosted path      | forge records `forge.dev/v1alpha1` Workload records in the env bundle; control-plane applies them (`internal/deploytarget/hosted.go:1-32`). The operator renders them with **forge's** `RenderWorkloads` under `ProfileRestricted` (`control-plane/internal/operators/workload/controller.go:167,592`).                   | One renderer change serves both bindings.                                                                                                  |
+| Hosted kind set  | Closed: Deployment, Job, Service, PVC, ServiceAccount, NetworkPolicy, PodDisruptionBudget; anything else fails "the hosted platform does not apply" (`control-plane/.../workload/decorate.go:134-191`).                                                                                                                   | HPA must be added, with checks.                                                                                                            |
+| Hosted apply     | Server-side apply with `ForceOwnership` under the tier field manager (`control-plane/internal/operators/shared/tier.go:45-46`).                                                                                                                                                                                           | Same fight as on clusters; same fix.                                                                                                       |
+| Lapse / suspend  | `holdForLapse` merge-patches `replicas=0` under its own owner; `resumeFromLapse` relies on the normal apply to bring replicas back (`control-plane/.../workload/lapse.go:23-25,98,109-112`).                                                                                                                              | An active HPA would contest a `replicas=0` patch, and with replicas no longer applied resume must write `minReplicas` itself: section 4.2. |
+| Readiness        | Reads the **live** `spec.replicas` and observed updated/ready counts (`controller.go:973-976,1314-1395`; `deployrollout/rollout.go:446-449`); `workloadhealth` is Degraded when ready < desired (`workloadhealth/health.go:14-30`).                                                                                       | Already tolerates a moving count.                                                                                                          |
+| Release health   | Per-service aggregates over before/after windows gated by `min_requests`, plus `workload_restarts` (`pkg/releasehealth/releasehealth.go:19-80`). No per-replica or fixed-count assumption.                                                                                                                                | No change. A scale-in termination is not a restart.                                                                                        |
+| Admission        | Demand is request × `replicas` (`control-plane/internal/deployspec/spec.go:322-341`); PAYG ceiling 2000m / 8 GiB / 50 GiB storage (`planlimits/deploy_admission.go:78-92,122-141`).                                                                                                                                       | Must count `maxReplicas`.                                                                                                                  |
+| Namespace quota  | `DeriveDeployNamespaceQuota` = ceiling × rollout surge 2 for CPU/memory, ceiling + build cache for storage (`control-plane/internal/operators/shared/quota.go:436-470,158`).                                                                                                                                              | If admission counts the max, the quota already fits it.                                                                                    |
+| Claimable        | 1 replica, 125m, 128Mi (`planlimits/claimable.go:45-53,109`), enforced at `computegate/claimable.go:238-240`.                                                                                                                                                                                                             | Autoscale with `maxReplicas > 1` is refused for claimable deploys.                                                                         |
+| Billing          | Live meter bills each Deployment's `status.readyReplicas` × requests per sweep (`control-plane/internal/billing/inframeter/sweeper.go:127-178`). A shadow v2 meter bills each Ready pod at max(request, used CPU) via metrics-server (`inframeter/v2_compute.go:25-63`).                                                  | Replica-hours are already what we bill. No new meter.                                                                                      |
+| Tenant cluster   | GKE Standard, cluster autoscaler on (`deploy/gcp/provision.sh:1363,1382`; `kata_pool.k:116,136`). Hosted workloads run under gVisor (`hosted_deploy.k:415-419`) on a pool of 0–8 nodes (`gvisor_pool.k:63-64`). Nothing disables metrics-server; k3d dev/e2e disable it (`deploy/k3d-v2.yaml:152`).                       | metrics-server for gVisor pods must be proven (slice 0). Scale-out can wait minutes on a node. e2e needs metrics-server enabled.           |
+| Managed DB       | In-cluster CloudNativePG, not Cloud SQL (`control-plane/internal/operators/manageddatabase/doc.go:4-5`). Size from `storageGiB`; never shrinks (`keepExistingStorage`, `manageddatabase/claimable.go:169-240`, used at `controller.go:400`). No explicit StorageClass. Claimable fixed at 256 MiB incl. WAL.              | Autogrow raises `spec.storage.size` on the Cluster; `keepExistingStorage` already keeps a grown size.                                      |
+| Disk signal      | Only `cnpg_pg_database_size_bytes` is collected (logical size, no WAL, not volume fill; `deploy/cnpg/cloudnative-pg.yaml:147`, `otel_agent.k:861`). No `kubelet_volume_stats_*`.                                                                                                                                          | Autogrow needs a volume-fill signal that does not exist yet.                                                                               |
+| Resize primitive | `shared.ConvergePVCSize`: grow-only, classifies refusals as QuotaExceeded / Unsupported StorageClass / Failed (`control-plane/internal/operators/shared/pvcsize.go:16-76`), used by workspace disks.                                                                                                                      | Its refusal classification is reusable; for CNPG the size goes on the Cluster, not the PVC.                                                |
+| Storage billing  | Provisioned GiB, written or not, 10¢/GiB-month (`plansconfig/pricing.yaml:53`; `hosted_usage_policy.go:51`).                                                                                                                                                                                                              | Every grow raises the bill. Whether DB volumes feed the same pool is unconfirmed (slice 0).                                                |
 
 ## 3. Architecture: forge
 
@@ -277,10 +277,12 @@ v1, not fields: a field is forever, and we have no data yet on what to tune.
    needs no change: it is derived from the same ceiling × surge 2.
 5. **Claimable**: the computegate replica check reads `maxReplicas`; the
    refusal says to claim the app to autoscale.
-6. **Lapse and suspend**: `holdForLapse` keeps writing `replicas = 0` (an HPA
-   stops acting on a target at zero, `ScalingActive=False`); `resumeFromLapse`
-   writes `replicas = minReplicas` through the scale subresource, because the
-   normal apply no longer carries it. Both get a test.
+6. **Lapse and suspend** (section 4.2): a suspended workload has no HPA.
+   `suspendCompute` deletes the workload's HPA before it writes `replicas = 0`,
+   and `holdForLapse` applies nothing, so nothing re-creates it during the
+   lapse. `resumeFromLapse` writes `replicas = minReplicas` through the scale
+   subresource before the normal apply re-creates the HPA. The protocol never
+   relies on the HPA's own behaviour at zero replicas.
 7. **Advertise** `autoscales-workloads` only once 2–6 ship.
 8. **Status**: the deploy status gains additive proto fields for the range,
    the current and desired counts, current CPU vs target, and the HPA's
@@ -322,6 +324,70 @@ v1, not fields: a field is forever, and we have no data yet on what to tune.
   default; slice 0 confirms that class allows expansion on `prod-daemon-v2`, and
   the operator pins it explicitly in slice 4 rather than relying on the default.
 
+### 4.2 Lapse and suspend with an HPA
+
+Today `suspendCompute` merge-patches the Deployment's `spec.replicas = 0` under
+`lapseFieldOwner`, and `resumeFromLapse` relies on the next apply, under the
+tier field manager with `ForceOwnership`, to take `spec.replicas` back
+(`control-plane/internal/operators/workload/lapse.go:23-25,98-112`). Both halves
+break once the workload is autoscaled:
+
+- The HPA is a second writer of the same field. Whether it leaves a target at
+  zero alone is HPA controller behaviour (`ScalingActive=False`,
+  `ScalingDisabled`), not a contract the platform controls. Entitlement loss
+  must stop compute whatever the HPA controller version does.
+- The render no longer states `spec.replicas`, so the apply on resume never
+  writes it, and the Deployment would stay at zero.
+
+The protocol takes the HPA out of the picture for as long as compute is
+suspended, for both reasons `holdForLapse` handles: a lapsed plan and the
+owner's stop.
+
+1. **Suspend.** `suspendCompute` first deletes the HPA named for the workload,
+   in the workload's namespace, if one exists (NotFound is success; any other
+   error fails the reconcile, which retries, and `replicas = 0` is not written
+   until the delete succeeds). It then writes `replicas = 0` through the
+   Deployment's **scale subresource** under `lapseFieldOwner`. It no longer
+   merge-patches the Deployment: the scale subresource is the path the HPA
+   writes through, so one write path serves both cases.
+2. **During the lapse.** `holdForLapse` renders and applies nothing, so
+   nothing re-creates the HPA. Every resync re-asserts the suspension: it
+   deletes an HPA that has appeared (one a person created by hand, say) and
+   writes zero again if the count moved.
+3. **Resume.** Once entitled, `resumeFromLapse`, which runs before the apply in
+   the same reconcile, writes `replicas = minReplicas` through the scale
+   subresource under `lapseFieldOwner` when the workload is autoscaled. The
+   normal apply then re-creates the HPA, which finds a running target and
+   takes over the count from there. A workload that is not autoscaled is
+   unchanged: the render states `spec.replicas` and the tier manager's forced
+   apply takes the field back, as today.
+4. **Field ownership.** For an autoscaled workload, no applied manifest owns
+   `spec.replicas`; the scale-subresource writers (the HPA, `lapseFieldOwner`,
+   and forge's `forge-replicas-handover`) take turns, and none of them is
+   removed by an apply that omits the field. Removing `autoscale` from a
+   suspended workload needs no special case: the render states `spec.replicas`
+   again, and the forced apply on resume takes it.
+
+Tests (envtest, beside the existing `lapse_test.go` cases), each for both the
+lapsed-plan and the owner-stop reason:
+
+- suspending an autoscaled workload deletes its HPA, leaves the Deployment at
+  zero, and a later resync during the lapse neither re-creates the HPA nor
+  moves the count; an HPA created during the lapse is deleted again;
+- a failed HPA delete fails the reconcile and does not write zero (fake client
+  error injection);
+- resuming sets `replicas = minReplicas` before the apply, the apply re-creates
+  the HPA with the rendered spec, and `managedFields` shows `spec.replicas`
+  owned by `lapseFieldOwner`, not by the tier manager;
+- resuming a workload whose `autoscale` was removed during the lapse ends with
+  the rendered `replicas` and no HPA;
+- a workload that is not autoscaled keeps today's behaviour (the existing
+  tests, unchanged).
+
+The k3d `e2e/hosted_deploy` scale test in slice 2 adds one lapse and resume of
+an autoscaled service with metrics-server running, and checks that no pod runs
+during the lapse.
+
 ## 5. Billing, quotas and cost
 
 - **Compute** is already billed from live `readyReplicas` × requests
@@ -361,6 +427,7 @@ v1, not fields: a field is forever, and we have no data yet on what to tune.
 | Memory or custom metrics in v1                                                                     | Memory rarely falls when load falls (caches, Go heap), so memory HPAs flap or never scale in; custom metrics need an adapter on the tenant cluster. The `metrics` list shape leaves room for both later.                                           |
 | Vertical Pod Autoscaler                                                                            | Changes the billed shape under the user and conflicts with the hosted shape band. Out of the approved scope.                                                                                                                                       |
 | Admission at `minReplicas`, letting the quota cap the HPA                                          | Admits deploys whose max could never run; the HPA would hit the ResourceQuota and pods would fail to create with no clear owner of the error. Kept as an option in section 8.                                                                      |
+| Keep the HPA through a lapse and rely on it ignoring a target at zero replicas                     | That is HPA controller behaviour, not a contract: entitlement loss must stop compute whatever the controller does, and resume would still need to write the count. Deleting the HPA (section 4.2) leaves one writer during a lapse.                |
 | Database autogrow as an alert only                                                                 | Cheapest, and still leaves a person on the critical path at 3am. Kept as the fallback if the signal work slips.                                                                                                                                    |
 | Cloud SQL for tenant databases (built-in storage increase)                                         | Managed databases are in-cluster CloudNativePG by design (backups, restore and isolation are built on it). A different engine for one feature is not proportionate.                                                                                |
 

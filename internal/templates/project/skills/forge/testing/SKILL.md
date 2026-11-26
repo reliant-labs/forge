@@ -222,6 +222,8 @@ A plain `if testing.Short() { t.Skip("<why>") }` is still a valid marker, and
 so is bypassing only the slow side effect under `-short`. Gate it, don't gut
 it — never weaken an assertion to fit the 60s per-package timeout.
 
+A `Slow` test still runs under `task test`'s default `-race` and 120s per-package timeout. For a test that gains nothing from race detection (e.g. a single-goroutine simulation), use `testkit.SkipUnderRace(t, why)` or run a smaller workload when `testkit.RaceEnabled()`.
+
 Two guards hold the line, because neither sees everything:
 
 | Guard | What it catches |

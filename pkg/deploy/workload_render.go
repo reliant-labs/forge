@@ -703,11 +703,13 @@ func (set *workloadSet) renderJob(w *workload, ctx Context) ([]runtime.Object, e
 	return objs, nil
 }
 
-// renderCron renders a CronJob (expand.k:536-619). It sets no
-// concurrencyPolicy or startingDeadlineSeconds: Kubernetes' defaults (Allow,
-// none) apply. The history limits and the finished-Job TTL are the
-// workload's own, and unset leaves Kubernetes' defaults (3/1, no expiry).
-// A cron is never gated (capabilities.k:188-190).
+// renderCron renders a CronJob (expand.k:536-619). Every schedule field is
+// the workload's own and rendered only when declared: forge adds no default
+// of its own, so an unset concurrencyPolicy, startingDeadlineSeconds, timeZone
+// and history limit leaves Kubernetes' (Allow, none, the controller's zone,
+// 3/1), and a CronJob a cluster already runs does not change under a newer
+// forge. The jobTemplate carries the workload's labels, so each spawned Job
+// does. A cron is never gated (capabilities.k:188-190).
 func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 	pod := set.podSpec(w, ctx, nil)
 	pod.RestartPolicy = corev1.RestartPolicyOnFailure
@@ -717,16 +719,25 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 		ObjectMeta: objectMeta(w.name, ctx.Namespace, labels),
 		Spec: batchv1.CronJobSpec{
 			Schedule:                   w.spec.Schedule,
+			TimeZone:                   cronTimeZone(w.spec.TimeZone),
+			ConcurrencyPolicy:          batchv1.ConcurrencyPolicy(w.spec.ConcurrencyPolicy),
+			StartingDeadlineSeconds:    w.spec.StartingDeadlineSeconds,
 			SuccessfulJobsHistoryLimit: w.spec.SuccessfulJobsHistoryLimit,
 			FailedJobsHistoryLimit:     w.spec.FailedJobsHistoryLimit,
-			JobTemplate: batchv1.JobTemplateSpec{Spec: batchv1.JobSpec{
-				ActiveDeadlineSeconds:   w.spec.ActiveDeadlineSeconds,
-				TTLSecondsAfterFinished: w.spec.TTLSecondsAfterFinished,
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
-					Spec:       pod,
+			JobTemplate: batchv1.JobTemplateSpec{
+				// The Jobs the CronJob controller spawns carry the workload's
+				// labels too, so a Job (not only its pods) is selectable by
+				// name and kind: for status, for prune, and for attribution.
+				ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels)},
+				Spec: batchv1.JobSpec{
+					ActiveDeadlineSeconds:   w.spec.ActiveDeadlineSeconds,
+					TTLSecondsAfterFinished: w.spec.TTLSecondsAfterFinished,
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: copyLabels(labels), Annotations: w.spec.PodAnnotations},
+						Spec:       pod,
+					},
 				},
-			}},
+			},
 		},
 	}
 	objs := []runtime.Object{cj}
@@ -735,6 +746,15 @@ func (set *workloadSet) renderCron(w *workload, ctx Context) []runtime.Object {
 		objs = append(objs, np)
 	}
 	return objs
+}
+
+// cronTimeZone is CronJob.spec.timeZone: nil when the workload names no
+// zone, so a cluster older than Kubernetes 1.27 never sees the field.
+func cronTimeZone(tz string) *string {
+	if tz == "" {
+		return nil
+	}
+	return &tz
 }
 
 // podSpec is the pod every kind shares: identity, hardening, the main

@@ -40,3 +40,31 @@ Related proposals:
   - Python: instrumentation SDK first, PyTorch supported (HF Trainer, Lightning, torchtitan, Megatron, DeepSpeed callbacks) + `ml/instrument` skill; `forge scaffold training` later. SETTLED.
   - Bad training: opt-in auto-remediation declared in KCL. SETTLED. Plus, owner emphasis: at large scale (thousands of GPUs, all collaborating), fast checkpoint / replace / resume is the priority — downtime costs millions. Design for minimal time-to-resume: fast failure detection, hot spares, fast checkpoint, node replacement without full restart, restart-time breakdown, goodput.
   - Self-improving RL: build the FEEDBACK-LOOP HOOKS first (events, APIs, CLI, triggers). Users plug in the forge CLI however they like; Reliant workflows are one harness on top. SETTLED.
+- 2026-11-26 06:01Z owner: "agreed with your recs". Every open owner decision in the two proposals below is SETTLED on its recommended option. The hybrid nav is no longer just the working default: it is decided.
+  - `reliant-for-ml.md` (forge#2888), decisions 23–32:
+    - 23: hybrid nav. An ML area holds **Training** (not "Runs"), Evals, Models, Fleet and setup. Releases go in Deployments, smoke runs in Previews, GPU telemetry in Observability, alerts in Inbox and eval gates in Tests.
+    - 24: cross-node remediation uses upstream first: JobSet, TorchElastic, NVSentinel and cloud auto-repair. A small forge-rendered executor in the customer's cluster does only what ties a node action to a run (cordon, swap a spare, resume, record). The control plane does not do it.
+    - 25: the training-run ledger is in control-plane Postgres per org. Step scalars go in a new step-keyed ClickHouse table.
+    - 26: the Python SDK is `sdk/python/` in forge, Apache-2.0, on PyPI. It stays 0.x until a design partner confirms the API, then becomes 1.0.
+    - 27: typed `forge` integration triggers with payload schemas.
+    - 28: launches are audited, bounded by template params and budgets, and need an approval on production queues.
+    - 29: hot spares are Kueue placeholder workloads, or tainted standby nodes without Kueue.
+    - 30: smoke training runs on CPU by default. A GPU pool is used only when the team declares one.
+    - 31: pickle weights warn first, then a lint gate, plus an opt-in `DeliveryPolicy` promotion block.
+    - 32: the remediation default is `recommend`. `act` must be set explicitly.
+    - Also settled, in `ml-workloads.md`: decision 18 is the published SDK; Settled item 8 is amended to the hybrid nav; and automatic cordon/drain stays out by default but is possible when declared.
+  - `llm-agent-observability.md` (forge#2931) §15, decisions 1–14:
+    - 1: normalise at ingest, additively, from one forge table compiled to OTTL.
+    - 2: Langfuse OTLP path alias with `langfuse.*` attributes, a migration guide and dual-run. No REST emulation.
+    - 3: content capture is off by default, per env and gateway-enforced. It has its own table and retention, tool I/O is a second switch, and the org has a kill switch.
+    - 4: a new `obs:content:read` scope. Every read is audited, and agents read only with a person's grant.
+    - 5: LLM judges run in a control-plane worker and code evaluators in customer code. A Reliant workflow comes later.
+    - 6: evaluators are declared in the repo. Their live state is in the control plane.
+    - 7: prompt files ship in the release and a Change picks among them. Console edits open a PR.
+    - 8: LiteLLM's price map is vendored, read through a query-time dictionary, with overrides shared with the ML price sheet.
+    - 9: quality gates warn first. Offline eval gates are displayed first and block per env on opt-in.
+    - 10: one evals model with ML: the spec's model, with its subject widened to a release and a Change variant.
+    - 11: one Python package shared with the ML SDK (a `genai` module), plus a TS subpath export.
+    - 12: open instrumentation and data, a hosted loop, BYOC later.
+    - 13: AI data is billed on the flat GiB meter. Judge calls are billed at gateway passthrough.
+    - 14: autopilot stopping a prompt arm is opt-in per change.

@@ -3,8 +3,10 @@ package dockercred
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"oras.land/oras-go/v2/registry/remote/auth"
@@ -139,5 +141,111 @@ func TestLoginHonoursAFilePin(t *testing.T) {
 	cred, err := mustCredential(t, path)(context.Background(), "registry.example.com")
 	if err != nil || cred.Password != "rlat_pinned" {
 		t.Fatalf("got %+v, %v", cred, err)
+	}
+}
+
+// Login, unlike LoginTo, writes to the ambient docker config, which an
+// anonymous deploy points at its throwaway directory with $DOCKER_CONFIG.
+func TestLoginWritesTheAmbientConfigAndCredentialReadsItBack(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", dir)
+	if err := Login(context.Background(), "registry.example.com", "forge", "rlat_ambient"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
+		t.Fatalf("Login did not write $DOCKER_CONFIG/config.json: %v", err)
+	}
+	credential, err := Credential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := credential(context.Background(), "registry.example.com")
+	if err != nil || cred.Username != "forge" || cred.Password != "rlat_ambient" {
+		t.Fatalf("got %+v, %v; want the credential Login stored", cred, err)
+	}
+}
+
+// docker files Docker Hub's credential under its legacy index URL, so a login
+// for "docker.io" must land there for docker itself to find it.
+func TestLoginForDockerHubUsesTheIndexKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := LoginTo(context.Background(), path, "docker.io", "me", "hub-secret"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Auths map[string]json.RawMessage `json:"auths"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Auths["https://index.docker.io/v1/"]; !ok || len(cfg.Auths) != 1 {
+		t.Fatalf("auths keys = %v, want only https://index.docker.io/v1/", cfg.Auths)
+	}
+	// oras asks the hook for registry-1.docker.io, which it files under the same key.
+	cred, err := mustCredential(t, path)(context.Background(), "registry-1.docker.io")
+	if err != nil || cred.Password != "hub-secret" {
+		t.Fatalf("got %+v, %v; want the stored Hub login read back for registry-1.docker.io", cred, err)
+	}
+}
+
+func TestServerAddress(t *testing.T) {
+	for in, want := range map[string]string{
+		"docker.io":            "https://index.docker.io/v1/",
+		"ghcr.io":              "ghcr.io",
+		"localhost:5000":       "localhost:5000",
+		"index.docker.io":      "index.docker.io",
+		"registry.example.com": "registry.example.com",
+	} {
+		if got := serverAddress(in); got != want {
+			t.Errorf("serverAddress(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A config.json that is not JSON cannot say which hosts are pinned, so every
+// entry point reports it with the file's path rather than guessing.
+func TestUnreadableConfigIsReportedByEveryEntryPoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"credHelpers": not-json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCKER_CONFIG", dir)
+
+	for name, call := range map[string]func() error{
+		"CredentialFrom": func() error { _, err := CredentialFrom(path); return err },
+		"Credential":     func() error { _, err := Credential(); return err },
+		"LoginTo": func() error {
+			return LoginTo(context.Background(), path, "registry.example.com", "u", "p")
+		},
+		"Login": func() error { return Login(context.Background(), "registry.example.com", "u", "p") },
+	} {
+		err := call()
+		if err == nil {
+			t.Errorf("%s accepted a config that is not JSON", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("%s error %q does not name %s", name, err, path)
+		}
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != `{"credHelpers": not-json` {
+		t.Errorf("a failed login rewrote the broken config: %q", raw)
+	}
+}
+
+// A config directory that cannot be read as a file (config.json is a
+// directory) is an error, not an empty config.
+func TestConfigPathThatIsADirectoryIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CredentialFrom(path); err == nil {
+		t.Fatal("CredentialFrom accepted a config.json that is a directory")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -185,5 +186,158 @@ func assertNoStaging(t *testing.T, kindDir string) {
 	t.Helper()
 	if left, _ := filepath.Glob(filepath.Join(kindDir, stagingPrefix+"*")); len(left) != 0 {
 		t.Errorf("staging left behind: %v", left)
+	}
+}
+
+// With no override the cache lives under the user cache directory, in forge's
+// own subtree, so it never collides with another tool's cache.
+func TestRoot_DefaultsToTheUserCacheDirectory(t *testing.T) {
+	t.Setenv(EnvRoot, "")
+	base := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", base)
+	t.Setenv("HOME", base)
+	t.Setenv("LocalAppData", base)
+	want, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = filepath.Join(want, "forge", "tools")
+	got, err := Root()
+	if err != nil || got != want {
+		t.Fatalf("Root() = %q, %v; want %q", got, err, want)
+	}
+	if dir, err := KindDir(KindGolangci); err != nil || dir != filepath.Join(want, KindGolangci) {
+		t.Errorf("KindDir(golangci) = %q, %v; want it under %s", dir, err, want)
+	}
+}
+
+// A machine with no user cache directory and no override gets an error that
+// names the variable that fixes it, from Root and from everything built on it.
+func TestRoot_NamesTheOverrideWhenThereIsNoCacheDirectory(t *testing.T) {
+	t.Setenv(EnvRoot, "")
+	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("LocalAppData", "")
+	if _, err := os.UserCacheDir(); err == nil {
+		t.Skip("this OS finds a user cache directory without HOME")
+	}
+	if _, err := Root(); err == nil || !strings.Contains(err.Error(), EnvRoot) {
+		t.Errorf("Root() error = %v; want it to name %s", err, EnvRoot)
+	}
+	if _, err := KindDir(KindGate); err == nil || !strings.Contains(err.Error(), EnvRoot) {
+		t.Errorf("KindDir() error = %v; want Root's error passed through", err)
+	}
+}
+
+// A published entry that is already ready is kept, and the finished stage is
+// left for Ensure's cleanup: nothing is moved into or over it.
+func TestPublish_KeepsAReadyEntry(t *testing.T) {
+	t.Parallel()
+	kindDir := t.TempDir()
+	dir := filepath.Join(kindDir, "fake@v1")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, tool), []byte("winner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(kindDir, stagingPrefix+"fake@v1-x")
+	if err := os.Mkdir(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, tool), []byte("loser"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := publish(stage, dir, readyWith("winner")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, tool)); string(b) != "winner" {
+		t.Errorf("the published entry was overwritten: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(stage, tool)); err != nil {
+		t.Errorf("publish consumed the stage of a lost race: %v", err)
+	}
+}
+
+// If the rename fails because another install published the key in the
+// meantime, the winner's entry is as good as ours and publish succeeds; if
+// the rename fails with nothing usable in place, the error surfaces.
+func TestPublish_RenameFailure(t *testing.T) {
+	t.Parallel()
+	kindDir := t.TempDir()
+	missingStage := filepath.Join(kindDir, "no-such-stage")
+	dir := filepath.Join(kindDir, "fake@v1")
+
+	if err := publish(missingStage, dir, func(string) bool { return true }); err != nil {
+		t.Errorf("rename lost to a ready entry: publish = %v, want nil", err)
+	}
+	err := publish(missingStage, dir, func(string) bool { return false })
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("rename failed with nothing ready: publish = %v, want the rename error", err)
+	}
+}
+
+// An unusable entry that cannot be moved aside is an error naming it, rather
+// than a rename that lands inside it.
+func TestPublish_UnusableEntryThatCannotBeMovedAside(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory this user cannot rename within")
+	}
+	kindDir := t.TempDir()
+	dir := filepath.Join(kindDir, "fake@v1")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stage := filepath.Join(t.TempDir(), "stage")
+	if err := os.Mkdir(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(kindDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(kindDir, 0o755) })
+
+	err := publish(stage, dir, func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), dir) {
+		t.Fatalf("publish = %v, want an error naming %s", err, dir)
+	}
+}
+
+// A kind directory that cannot be created (its parent is a file) fails
+// Ensure before it builds anything.
+func TestEnsure_UnusableKindDirFailsBeforeBuilding(t *testing.T) {
+	t.Parallel()
+	parent := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(parent, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built := false
+	_, err := Ensure(context.Background(), filepath.Join(parent, "gate"), "fake@v1", readyWith("v"), func(context.Context, string) error { built = true; return nil })
+	if err == nil {
+		t.Fatal("Ensure succeeded under a kind directory that is a file's child")
+	}
+	if built {
+		t.Error("build ran although the staging directory could not be made")
+	}
+}
+
+// The entry directory is world-readable even though MkdirTemp makes the stage
+// 0700: the cache is shared by every user of the machine.
+func TestEnsure_PublishedEntryIsTraversableByOthers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no POSIX permission bits")
+	}
+	t.Parallel()
+	kindDir := t.TempDir()
+	dir, err := Ensure(context.Background(), kindDir, "fake@v1", readyWith("v"), writeTool("v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("entry mode = %o, want 755", got)
 	}
 }

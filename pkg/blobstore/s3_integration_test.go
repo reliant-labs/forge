@@ -310,6 +310,88 @@ func TestS3AgainstMinIO(t *testing.T) {
 		}
 	})
 
+	t.Run("server-side put and open", func(t *testing.T) {
+		checkObjectIO(t, s, "io")
+	})
+
+	t.Run("open reads and hashes a browser upload", func(t *testing.T) {
+		png := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte("pixels"), 200)...)
+		if code, out := send(t, put("t4/upload.png", "image/png", int64(len(png))), png); code != http.StatusOK {
+			t.Fatalf("upload: %d %s", code, out)
+		}
+		head, o, err := readOpen(t, s, "t4/upload.png", blobstore.OpenOptions{Length: 512})
+		if err != nil || len(head) != 512 || o.Size != int64(len(png)) || o.ContentType != "image/png" {
+			t.Fatalf("sniff read = %d bytes %+v %v", len(head), o, err)
+		}
+		if got := http.DetectContentType(head); got != "image/png" {
+			t.Fatalf("sniffed %q, want image/png", got)
+		}
+		all, _, err := readOpen(t, s, "t4/upload.png", blobstore.OpenOptions{})
+		if err != nil || sha256Hex(all) != sha256Hex(png) {
+			t.Fatalf("full read hashes to %s, %v; want %s", sha256Hex(all), err, sha256Hex(png))
+		}
+	})
+
+	t.Run("a body past one part is a multipart upload, aborted when it breaks a bound", func(t *testing.T) {
+		const part = 16 << 20
+		big := bytes.Repeat([]byte("0123456789abcdef"), (part+part/2)/16)
+		o, err := blobstore.PutObject(ctx, s, "t5/big.bin", bytes.NewReader(big), blobstore.PutObjectOptions{ContentType: "application/octet-stream"})
+		if err != nil || o.Size != int64(len(big)) || o.SHA256 != sha256Hex(big) {
+			t.Fatalf("PutObject(unknown size, %d bytes) = %+v, %v", len(big), o, err)
+		}
+		tail, _, err := readOpen(t, s, "t5/big.bin", blobstore.OpenOptions{Offset: int64(len(big)) - 16})
+		if err != nil || string(tail) != "0123456789abcdef" {
+			t.Fatalf("tail = %q, %v", tail, err)
+		}
+		if _, err := blobstore.PutObject(ctx, s, "t5/refused.bin", bytes.NewReader(big), blobstore.PutObjectOptions{ContentType: "application/octet-stream", MaxBytes: part + 1}); !errors.Is(err, blobstore.ErrTooLarge) {
+			t.Fatalf("PutObject past MaxBytes = %v, want ErrTooLarge", err)
+		}
+		if _, err := blobstore.PutObject(ctx, s, "t5/short.bin", bytes.NewReader(big), blobstore.PutObjectOptions{ContentType: "application/octet-stream", ContentLength: int64(len(big)) + 1}); !errors.Is(err, blobstore.ErrInvalidOptions) {
+			t.Fatalf("PutObject shorter than declared = %v, want ErrInvalidOptions", err)
+		}
+		for _, k := range []string{"t5/refused.bin", "t5/short.bin"} {
+			if _, err := s.Stat(ctx, k); !errors.Is(err, blobstore.ErrNotFound) {
+				t.Fatalf("a refused upload left %s: %v", k, err)
+			}
+		}
+		admin, err := minio.New(fmt.Sprintf("127.0.0.1:%d", port), &minio.Options{Creds: credentials.NewStaticV4(minioUser, minioSecret, ""), Region: "us-east-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for u := range admin.ListIncompleteUploads(ctx, bucket, "t5/", true) {
+			if u.Err != nil {
+				t.Fatal(u.Err)
+			}
+			t.Fatalf("a refused multipart upload was left behind: %+v", u)
+		}
+	})
+
+	t.Run("an inline preview forces a safe type", func(t *testing.T) {
+		html := []byte("<script>alert(1)</script>")
+		if code, out := send(t, put("t6/page.html", "text/html", int64(len(html))), html); code != http.StatusOK {
+			t.Fatalf("upload: %d %s", code, out)
+		}
+		req, err := s.PresignGet(ctx, "t6/page.html", blobstore.GetOptions{Inline: true, ResponseContentType: "image/png"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Get(req.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !bytes.Equal(got, html) {
+			t.Fatalf("download: %d %q", resp.StatusCode, got)
+		}
+		if ct, cd := resp.Header.Get("Content-Type"), resp.Header.Get("Content-Disposition"); ct != "image/png" || cd != "inline" {
+			t.Fatalf("Content-Type %q, Content-Disposition %q; want image/png, inline", ct, cd)
+		}
+		if _, err := s.PresignGet(ctx, "t6/page.html", blobstore.GetOptions{Inline: true, ResponseContentType: "text/html"}); !errors.Is(err, blobstore.ErrInvalidOptions) {
+			t.Fatalf("inline text/html = %v, want ErrInvalidOptions", err)
+		}
+	})
+
 	t.Run("a wrong credential is a failure, not not-found", func(t *testing.T) {
 		bad, err := blobstore.NewS3(blobstore.S3Config{
 			Endpoint: fmt.Sprintf("http://127.0.0.1:%d", port), Bucket: bucket,

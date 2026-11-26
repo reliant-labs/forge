@@ -95,6 +95,23 @@ func TestGoodPageScoresFull(t *testing.T) {
 	}
 }
 
+func TestSamePageFragmentsDoNotFailLinkText(t *testing.T) {
+	for _, href := range []string{"#section", "/#section", "https://good.example/#section"} {
+		for _, text := range []string{"", "click here"} {
+			t.Run(href+"/"+text, func(t *testing.T) {
+				html := strings.Replace(goodPage, `<a href="/about">About us</a>`, `<a href="`+href+`">`+text+`</a>`, 1)
+				rep := Evaluate(Input{Site: "https://good.example", Pages: []Page{{URL: "https://good.example/", Status: 200, RawHTML: html}}})
+				if c := codes(rep); c["link_text_empty"] != 0 || c["link_text_generic"] != 0 {
+					t.Errorf("same-page fragment produced link-text findings: %v", c)
+				}
+				if s := rep.Routes[0].Score.SEO; s == nil || *s != 100 {
+					t.Errorf("SEO = %v, want 100", s)
+				}
+			})
+		}
+	}
+}
+
 func TestEvaluateRawIgnoresFetchedFacts(t *testing.T) {
 	in := Input{
 		Site: "https://good.example",

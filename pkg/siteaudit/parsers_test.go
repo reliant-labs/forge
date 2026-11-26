@@ -121,7 +121,7 @@ func TestParseSitemap(t *testing.T) {
 	if err != nil || !s.Index || len(s.Locs) != 1 {
 		t.Fatalf("index: %+v, %v", s, err)
 	}
-	for _, bad := range []string{"", "not xml", "<rss/>", "<urlset><url></urlset>"} {
+	for _, bad := range []string{"", "not xml", "<rss/>", "<urlset><url></urlset>", "<urlset>", "<sitemapindex>", "<urlset><url><loc>https://a.example/</loc></url>"} {
 		if _, err := ParseSitemap(bad); err == nil {
 			t.Errorf("ParseSitemap(%q): want an error", bad)
 		}

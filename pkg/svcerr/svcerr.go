@@ -56,6 +56,13 @@
 // Both forms preserve the sentinel for downstream errors.Is checks and
 // for Code() lookups.
 //
+// A domain package's own named sentinel is a [Sentinel]:
+//
+//	var ErrJobDeleted = svcerr.Sentinel(svcerr.ErrNotFound, "job was deleted") // → CodeNotFound, "job was deleted"
+//
+// not a type of its own that unwraps to a kind: that keeps the code, but its
+// text is not one svcerr was handed, so the client reads "not found".
+//
 // # What the client reads
 //
 // The message on the wire is the DETAIL the constructor was given, and

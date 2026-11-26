@@ -105,7 +105,7 @@ To forward a dependency's verdict on purpose, return it (or `svcerr.Wrap` it) di
 
 Redaction applies only to that fallback: codes you choose (`InvalidArgument`, `NotFound`, …) keep the message you gave them, because it is part of your API. So never put a driver error inside one — `svcerr.InvalidArgument(err.Error())` opts out of every protection above.
 
-**A hand-built `*connect.Error` is never redacted.** `svcerr.Interceptor` passes it through exactly as built, and connect-go publishes its `Message()` either way — so `connect.NewError(code, err)` and `connect.NewError(code, fmt.Errorf("push failed: %w", err))` put `err.Error()` on the wire. That is deliberate (the interceptor cannot tell a DSN from text you meant the user to read — a daemon's git rejection — and rewriting it would change every project's wire on a forge bump), so the fix is at the call site: `svcerr.WrapOr(err, svcerr.Internal("push failed"))`, or, when the underlying text IS for the user, put it in the constructor's argument (`svcerr.FailedPrecondition(daemonMsg)`). In a handler, test with `tdd.AssertConnectError`, which reads `svcerr.Code` — the code the interceptor sends — so a bare `svcerr.NotFound("x")` asserts as `not_found` with no client in the loop.
+**A hand-built `*connect.Error` is never redacted.** `svcerr.Interceptor` passes it through exactly as built, and connect-go publishes its `Message()` either way — so `connect.NewError(code, err)` and `connect.NewError(code, fmt.Errorf("push failed: %w", err))` put `err.Error()` on the wire. That is deliberate (rewriting it would change every project's wire on a forge bump), so the fix is at the call site: `svcerr.WrapOr(err, svcerr.Internal("push failed"))`, or, when the underlying text IS for the user, put it in the constructor's argument (`svcerr.FailedPrecondition(daemonMsg)`). In a handler, test with `tdd.AssertConnectError`, which reads `svcerr.Code` — the code the interceptor sends — so a bare `svcerr.NotFound("x")` asserts as `not_found` with no client in the loop.
 
 `forge lint --conventions` warns (`forgeconv-no-handler-error-mapping`) on a re-rolled per-service mapper: two or more `errors.Is`/`errors.As` sentinels whose arms produce a connect error (return a `connect.NewError`, or return or assign a `connect.Code…`). Sentinels that pick something else — a response status, a retry — are not mapping and do not fire.
 
@@ -120,7 +120,7 @@ lint:
 
 ### Domain sentinels
 
-Return domain failures with `svcerr` sentinels (not bespoke ones) — the bare sentinel (`return nil, svcerr.ErrNotFound`) when there's no detail, or the constructor (`svcerr.NotFound("thing")`, `svcerr.FailedPrecondition("no billing account")`) when a human-readable detail belongs in the string. Both preserve the sentinel for `errors.Is` / `svcerr.Code`. The full set covers every `connect.Code`:
+Return domain failures as `svcerr` values — the bare sentinel (`return nil, svcerr.ErrNotFound`), or a constructor (`svcerr.NotFound("thing")`, `svcerr.FailedPrecondition("no billing account")`) when a detail belongs in the string. **Only text handed to svcerr reaches the client:** an error type of your own that unwraps to `svcerr.ErrNotFound` keeps the code, but the client reads `not found`. A NAMED domain sentinel is `var ErrJobDeleted = svcerr.Sentinel(svcerr.ErrNotFound, "job was deleted")`: `errors.Is` matches it and its kind, and the client reads its text. The kinds:
 
 | svcerr sentinel / constructor | connect.Code + when |
 |---|---|
@@ -135,7 +135,7 @@ Return domain failures with `svcerr` sentinels (not bespoke ones) — the bare s
 | `ErrUnavailable` / `Unavailable` | `CodeUnavailable` — upstream dependency offline |
 | `ErrUnimplemented` / `Unimplemented` | `CodeUnimplemented` — stubbed / feature-flagged |
 
-Add a new sentinel only when the set has no representative for the code you need. (`context.Canceled`/`DeadlineExceeded` pass through `svcerr.ToConnect`.)
+`context.Canceled`/`DeadlineExceeded` pass through `svcerr.ToConnect`.
 
 ### User errors vs server errors — `svcerr.Classify`
 

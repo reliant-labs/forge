@@ -68,3 +68,5 @@ Related proposals:
     - 12: open instrumentation and data, a hosted loop, BYOC later.
     - 13: AI data is billed on the flat GiB meter. Judge calls are billed at gateway passthrough.
     - 14: autopilot stopping a prompt arm is opt-in per change.
+- 2026-11-26 owner, multi-cluster (VERBATIM): "very likely our control plane needs to support multi-cluster workloads, since gpu trains might be resource constrained, and need to deploy across regions. in fact if we need to come up with a special multi-cluster scheduler that could also be our secret sauce (although i'd like to open source that....)"
+  - Answered by [`docs/proposals/ml-multicluster-scheduling.md`](../ml-multicluster-scheduling.md). That proposal recommends MultiKueue for dispatch with our open-source placement controller as its external dispatcher, scoring on expected completion time plus cost from signals joined per org. Its decisions 33–44 are open.

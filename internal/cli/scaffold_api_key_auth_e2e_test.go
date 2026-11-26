@@ -41,6 +41,11 @@ import (
 // an api_keys table → fill in the APIKeyValidator seam over the serving pool →
 // generate → build → boot → call — and ends on real HTTP. Nothing in it
 // reaches past the seams the skill names.
+//
+// It also names the product's own key prefix (friction #34: a product built
+// on forge handed its users keys that said "fk_"): APIKeyFormat returns
+// "keyapp_", and a key with that prefix authenticates beside an "fk_" key
+// issued before the rename.
 func TestE2EScaffoldAPIKeyAuth(t *testing.T) {
 	t.Parallel() // independent project in its own t.TempDir; binary shared via sync.Once
 	forgeBin := buildforgeBinary(t)
@@ -100,11 +105,22 @@ message Widget {
 	if !strings.Contains(authGo, seam) {
 		t.Fatalf("internal/app/auth.go must scaffold the APIKeyValidator seam returning nil (keys disabled):\n%s", authGo)
 	}
+	// The product's own key prefix, as the skill's "Your product's key
+	// prefix" says: one value, which SetupAuth installs on the authenticator.
+	const formatSeam = "func APIKeyFormat() apikey.Format {\n\treturn apikey.Format{}\n}"
+	if !strings.Contains(authGo, formatSeam) {
+		t.Fatalf("internal/app/auth.go must scaffold the APIKeyFormat seam returning forge's default:\n%s", authGo)
+	}
+	if !strings.Contains(authGo, "authenticator.UseKeyFormat(APIKeyFormat())") {
+		t.Fatalf("SetupAuth must install APIKeyFormat on the authenticator:\n%s", authGo)
+	}
+	authGo = strings.Replace(authGo, formatSeam,
+		"func APIKeyFormat() apikey.Format {\n\treturn apikey.MustFormat(\""+apiKeyE2EPrefix+"\")\n}", 1)
 	// The validator the skill describes: one indexed read by lookup prefix
 	// on the handlers' own pool, then a constant-time hash compare.
 	authGo = strings.Replace(authGo, seam, `func APIKeyValidator(db *DB) auth.KeyValidator {
 	return auth.KeyValidatorFunc(func(ctx context.Context, key string) (*auth.Claims, error) {
-		prefix, err := apikey.LookupPrefix(key)
+		prefix, err := APIKeyFormat().LookupPrefix(key)
 		if err != nil {
 			return nil, err
 		}
@@ -122,8 +138,6 @@ message Widget {
 	})
 }`, 1)
 	authGo = strings.Replace(authGo, "\t\"context\"\n", "\t\"context\"\n\t\"errors\"\n", 1)
-	authGo = strings.Replace(authGo, "\t\"github.com/reliant-labs/forge/pkg/auth\"\n",
-		"\t\"github.com/reliant-labs/forge/pkg/apikey\"\n\t\"github.com/reliant-labs/forge/pkg/auth\"\n", 1)
 	if err := os.WriteFile(authPath, []byte(authGo), 0o644); err != nil {
 		t.Fatalf("fill in APIKeyValidator: %v", err)
 	}
@@ -136,6 +150,9 @@ message Widget {
 	// ── 3. Boot it and drive the accept/reject matrix over HTTP ─────────
 	bootAPIKeyAuthMatrix(t, projectDir)
 }
+
+// apiKeyE2EPrefix is the key prefix the test project names for its keys.
+const apiKeyE2EPrefix = "keyapp_"
 
 // apiKeyServerLog collects the server's output; the test reads it while the
 // process may still be writing.
@@ -170,11 +187,17 @@ func bootAPIKeyAuthMatrix(t *testing.T, projectDir string) {
 	defer cleanup()
 	applyProjectMigrationsPostgres(t, projectDir, dsn)
 
-	// Issue two keys the way the skill says to: store the lookup prefix and
-	// the hash, never the key. One is then revoked.
+	// Issue keys the way the skill says to: store the lookup prefix and the
+	// hash, never the key. One is then revoked; one is an "fk_" key, issued
+	// before the project named its own prefix.
 	const owner = "key-owner-746"
-	key := issueAPIKeyE2E(t, dsn, owner, false)
-	revoked := issueAPIKeyE2E(t, dsn, "revoked-owner", true)
+	format := apikey.MustFormat(apiKeyE2EPrefix)
+	key := issueAPIKeyE2E(t, dsn, format, owner, false)
+	if !strings.HasPrefix(key, apiKeyE2EPrefix) {
+		t.Fatalf("issued key %q does not carry the project's prefix %q", key, apiKeyE2EPrefix)
+	}
+	revoked := issueAPIKeyE2E(t, dsn, format, "revoked-owner", true)
+	legacy := issueAPIKeyE2E(t, dsn, apikey.Format{}, "legacy-owner", false)
 
 	pubPEM, bearer := mintDevJWT(t)
 
@@ -239,10 +262,14 @@ func bootAPIKeyAuthMatrix(t *testing.T, projectDir string) {
 	}{
 		{"api key on X-API-Key", []string{"X-API-Key", key}, http.StatusOK},
 		{"api key as a bearer token", []string{"Authorization", "Bearer " + key}, http.StatusOK},
+		{"fk_ key issued before the prefix changed", []string{"X-API-Key", legacy}, http.StatusOK},
+		{"fk_ key as a bearer token", []string{"Authorization", "Bearer " + legacy}, http.StatusOK},
 		{"jwt as a bearer token", []string{"Authorization", bearer}, http.StatusOK},
 		{"right prefix, wrong secret", []string{"X-API-Key", wrongKey}, http.StatusUnauthorized},
 		{"revoked key", []string{"X-API-Key", revoked}, http.StatusUnauthorized},
-		{"malformed key", []string{"X-API-Key", apikey.KeyPrefix + "short"}, http.StatusUnauthorized},
+		{"malformed key", []string{"X-API-Key", apiKeyE2EPrefix + "short"}, http.StatusUnauthorized},
+		{"malformed fk_ key", []string{"X-API-Key", apikey.KeyPrefix + "short"}, http.StatusUnauthorized},
+		{"another product's prefix", []string{"X-API-Key", "other_" + key[len(apiKeyE2EPrefix):]}, http.StatusUnauthorized},
 		{"not a key at all", []string{"X-API-Key", "hunter2"}, http.StatusUnauthorized},
 		{"no credential", nil, http.StatusUnauthorized},
 		// One credential per request: the Bearer token is the one checked,
@@ -289,13 +316,13 @@ func bootAPIKeyAuthMatrix(t *testing.T, projectDir string) {
 // issueAPIKeyE2E generates a key and stores what the skill says to store —
 // the lookup prefix and the SHA-256 hash, never the key — returning the
 // plaintext, as an issuing endpoint would exactly once.
-func issueAPIKeyE2E(t *testing.T, dsn, userID string, revoke bool) string {
+func issueAPIKeyE2E(t *testing.T, dsn string, format apikey.Format, userID string, revoke bool) string {
 	t.Helper()
-	key, err := apikey.Generate()
+	key, err := format.Generate()
 	if err != nil {
 		t.Fatalf("generate api key: %v", err)
 	}
-	prefix, err := apikey.LookupPrefix(key)
+	prefix, err := format.LookupPrefix(key)
 	if err != nil {
 		t.Fatalf("lookup prefix: %v", err)
 	}

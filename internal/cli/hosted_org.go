@@ -62,6 +62,27 @@ func (cp *ControlPlaneEntity) setResolvedOrg(org string) {
 	cp.org.done, cp.org.org, cp.org.err = true, org, nil
 }
 
+// assumeOrgForPlan pins a placeholder organization for the rest of the
+// process, for a credential-free `forge env build --plan`: the plan composes
+// every hosted address under it and labels them unresolved. Only a plan calls
+// it, and a plan writes, pushes and authenticates nothing, so the placeholder
+// never reaches a registry or the control plane. An org already learned is
+// kept.
+func (cp *ControlPlaneEntity) assumeOrgForPlan(placeholder string) {
+	if cp == nil {
+		return
+	}
+	if cp.org == nil {
+		cp.org = &orgState{}
+	}
+	cp.org.mu.Lock()
+	defer cp.org.mu.Unlock()
+	if cp.org.done && cp.org.err == nil && cp.org.org != "" {
+		return
+	}
+	cp.org.done, cp.org.org, cp.org.err = true, placeholder, nil
+}
+
 // organization is the strict read: the org the credential acts for, or an error
 // that says why it could not be learned. Either answer is remembered for the
 // process.

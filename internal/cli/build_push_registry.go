@@ -38,7 +38,17 @@ type imageDestination struct {
 	// It is a push destination — the build logs in to its host — but no
 	// build artifact is ever tagged for it, so repositoryFor skips it.
 	mirror bool
+	// unresolved marks a hosted destination a credential-free --plan
+	// composed under a placeholder org (assumeOrgForPlan): the org segment is a
+	// placeholder, so the address shows the shape the push will take but was
+	// not validated against the platform.
+	unresolved bool
 }
+
+// unresolvedOrgSegment stands in for the organization a credential-free
+// --plan could not learn. Angle brackets keep it from ever passing for a real
+// org in anything a person reads or copies.
+const unresolvedOrgSegment = "<org>"
 
 // host is the registry host `docker login` authenticates against for this
 // destination.
@@ -73,8 +83,25 @@ func (p pushPlan) printHeader() {
 		verb = "pushed"
 	}
 	for _, d := range p.destinations {
+		if d.unresolved {
+			fmt.Printf("[build]   Image:    %s (declared by workload %q; %s; UNRESOLVED: no control-plane credential, "+
+				"so %s stands in for your org and this address was not validated)\n", d.repository, d.workload, verb, unresolvedOrgSegment)
+			continue
+		}
 		fmt.Printf("[build]   Image:    %s (declared by workload %q; %s)\n", d.repository, d.workload, verb)
 	}
+}
+
+// unresolvedCount is how many destinations a credential-free --plan composed
+// under its placeholder org.
+func (p pushPlan) unresolvedCount() int {
+	n := 0
+	for _, d := range p.destinations {
+		if d.unresolved {
+			n++
+		}
+	}
+	return n
 }
 
 // repositoryFor is the declared repository a built artifact goes to.
@@ -236,12 +263,33 @@ func resolvePushPlan(opts buildOptions, declared *KCLEntities) (pushPlan, error)
 	// A --plan with no credential has no org and so no base for a bare hosted
 	// image: that is not a refusal, it is a preflight that cannot resolve what
 	// it was never allowed to learn. The pushing run refuses (above).
+	//
+	// It still preflights them. The plan assumes a placeholder org
+	// (unresolvedOrgSegment) for the rest of this process, so every consumer
+	// that composes a hosted address — the destinations here, the release
+	// coverage gate, the static-site push — composes the same one, and each
+	// destination under it is marked unresolved so the header says what was
+	// not validated. Leaving them bare dropped every one from the
+	// destinations, and a release plan of an env whose hosted images were all
+	// bare refused itself as having nothing to push.
+	unresolved := false
+	if opts.plan && pushBase == "" && declared != nil && declared.ControlPlane != nil &&
+		declared.HasHosted() && hostedNeedsPushBase(declared) {
+		declared.ControlPlane.assumeOrgForPlan(unresolvedOrgSegment)
+		pushBase = platformPushBase(declared)
+		unresolved = pushBase != ""
+	}
 	if !(opts.plan && pushBase == "") {
 		if err := checkHostedImagesResolve(opts.env, declared, pushBase); err != nil {
 			return pushPlan{}, err
 		}
 	}
 	dests := declaredImageDestinationsWithBase(declared, pushBase)
+	if unresolved {
+		for i := range dests {
+			dests[i].unresolved = hostedimage.UnderBase(pushBase, dests[i].repository)
+		}
+	}
 	plan := pushPlan{env: opts.env, destinations: dests, pushBase: pushBase}
 	if !opts.push {
 		plan.push = opts.pushIfDeclared && opts.env != "" && len(dests) > 0

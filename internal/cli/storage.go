@@ -99,32 +99,7 @@ func newStorageCmd() *cobra.Command {
 		cfg, err := storage.Load(p)
 		return cfg, p, err
 	}
-	var checkReserve uint64
-	var checkLane string
-	check := &cobra.Command{Use: "check [path...]", Args: cobra.ArbitraryArgs, Short: "Refuse a build below the physical host free-space reserve", RunE: func(cmd *cobra.Command, paths []string) error {
-		p, _, err := load()
-		if err != nil {
-			return err
-		}
-		if !cmd.Flags().Changed("lane") {
-			checkLane = os.Getenv(storageLaneEnv)
-		}
-		lane, err := parseBuildLane(checkLane)
-		if err != nil {
-			return err
-		}
-		override, err := reserveOverride(checkReserve)
-		if err != nil {
-			return err
-		}
-		if len(paths) == 0 {
-			paths = []string{"."}
-		}
-		return admitBuild(p, lane, override, cmd.ErrOrStderr(), paths...)
-	}}
-	check.Flags().Uint64Var(&checkReserve, "reserve", 0, "refuse below this many GiB free for this run only, instead of the policy's reserve (default: $"+storage.ReserveOverrideEnv+", else the policy)")
-	check.Flags().StringVar(&checkLane, "lane", "heavy", "what the build writes: heavy (images, whole-project builds: the policy reserve), host (one binary for a host process: refused below "+fmt.Sprint(storage.HostBuildReserveGiB)+" GiB, warned below the policy reserve) or light (no go or image build: "+fmt.Sprint(storage.LightBuildReserveGiB)+" GiB); default $"+storageLaneEnv+", which forge env up sets to host for its host processes")
-	group.AddCommand(check)
+	group.AddCommand(newStorageCheckCmd(load))
 	group.AddCommand(&cobra.Command{Use: "status", Args: cobra.NoArgs, Short: "Report physical host capacity, Docker usage and node cleanup settings", RunE: func(cmd *cobra.Command, _ []string) error {
 		p, _, err := load()
 		if err != nil {
@@ -246,6 +221,36 @@ func newStorageCmd() *cobra.Command {
 	group.AddCommand(newStorageAutoGCCmd(&path))
 	group.AddCommand(newStorageGoCacheCmd(&path))
 	return cmdutil.StrictGroup(group)
+}
+
+// newStorageCheckCmd keeps lane admission and its flags together.
+func newStorageCheckCmd(load func() (storage.Policy, string, error)) *cobra.Command {
+	var checkReserve uint64
+	var checkLane string
+	check := &cobra.Command{Use: "check [path...]", Args: cobra.ArbitraryArgs, Short: "Refuse a build below the physical host free-space reserve", RunE: func(cmd *cobra.Command, paths []string) error {
+		p, _, err := load()
+		if err != nil {
+			return err
+		}
+		if !cmd.Flags().Changed("lane") {
+			checkLane = os.Getenv(storageLaneEnv)
+		}
+		lane, err := parseBuildLane(checkLane)
+		if err != nil {
+			return err
+		}
+		override, err := reserveOverride(checkReserve)
+		if err != nil {
+			return err
+		}
+		if len(paths) == 0 {
+			paths = []string{"."}
+		}
+		return admitBuild(p, lane, override, cmd.ErrOrStderr(), paths...)
+	}}
+	check.Flags().Uint64Var(&checkReserve, "reserve", 0, "refuse below this many GiB free for this run only, instead of the policy's reserve (default: $"+storage.ReserveOverrideEnv+", else the policy)")
+	check.Flags().StringVar(&checkLane, "lane", "heavy", "what the build writes: heavy (images, whole-project builds: the policy reserve), host (one binary for a host process: refused below "+fmt.Sprint(storage.HostBuildReserveGiB)+" GiB, warned below the policy reserve) or light (no go or image build: "+fmt.Sprint(storage.LightBuildReserveGiB)+" GiB); default $"+storageLaneEnv+", which forge env up sets to host for its host processes")
+	return check
 }
 
 // newStorageWorktreesCmd is `forge storage worktrees`. It reads no storage

@@ -6,11 +6,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/reliant-labs/forge/pkg/siteaudit"
 )
@@ -257,5 +260,68 @@ func TestCrawlRefusesARelativeSite(t *testing.T) {
 	t.Parallel()
 	if _, err := Crawl(context.Background(), Options{Site: "/just/a/path", Fetcher: HTTPFetcher{Client: http.DefaultClient}}); err == nil {
 		t.Fatal("want an error for a site that is not an absolute http(s) URL")
+	}
+}
+
+// recordingFetcher answers from a table and records every URL requested.
+type recordingFetcher struct {
+	mu        sync.Mutex
+	responses map[string]Response
+	requested []string
+}
+
+func (f *recordingFetcher) Fetch(_ context.Context, _, rawURL string, _ int64) Response {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requested = append(f.requested, rawURL)
+	if r, ok := f.responses[rawURL]; ok {
+		return r
+	}
+	return Response{Status: 404, Header: http.Header{}}
+}
+
+func TestLinkChecksFollowOnlySameHostRedirects(t *testing.T) {
+	t.Parallel()
+	html := http.Header{"Content-Type": {"text/html"}}
+	redirect := func(to string) Response {
+		return Response{Status: 302, Header: http.Header{"Location": {to}}}
+	}
+	f := &recordingFetcher{responses: map[string]Response{
+		"https://acme.example/": {Status: 200, Header: html, Body: []byte(page("Home",
+			`<a href="https://public.example/go">out</a> <a href="https://acme.example/old.pdf">pdf</a>`))},
+		"https://public.example/go":    redirect("http://127.0.0.1:8080/admin"),
+		"https://acme.example/old.pdf": redirect("/new.pdf"),
+		"https://acme.example/new.pdf": {Status: 200, Header: http.Header{}},
+	}}
+	res, err := Crawl(context.Background(), Options{Site: "https://acme.example/", Fetcher: f, CheckExternal: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range f.requested {
+		if strings.Contains(u, "127.0.0.1") {
+			t.Fatalf("a link check followed a redirect off the linked host to %s (requested: %v)", u, f.requested)
+		}
+	}
+	if lr, ok := linkStatus(res.Input, "https://public.example/go"); !ok || lr.Status != 302 {
+		t.Errorf("cross-host redirect = %+v, %v; want the 302 reported", lr, ok)
+	}
+	if lr, ok := linkStatus(res.Input, "https://acme.example/old.pdf"); !ok || lr.Status != 200 {
+		t.Errorf("same-host redirect = %+v, %v; want it followed to the 200", lr, ok)
+	}
+}
+
+func TestGuardedClientRefusesLoopback(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("the guarded client reached a loopback server")
+	}))
+	t.Cleanup(srv.Close)
+	u, _ := url.Parse(srv.URL)
+	r := HTTPFetcher{Client: GuardedClient(u, 5*time.Second)}.Fetch(context.Background(), http.MethodGet, srv.URL, 1024)
+	if r.Status != 0 || !strings.Contains(r.Err, "refused") {
+		t.Fatalf("fetch of %s = status %d err %q; want a netguard refusal", srv.URL, r.Status, r.Err)
+	}
+	if err := RefusedHost(u); err == nil {
+		t.Error("RefusedHost accepted a loopback address")
 	}
 }

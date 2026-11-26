@@ -473,8 +473,11 @@ func (c *crawler) linkChecks(ctx context.Context) {
 
 // checkOne checks one target: HEAD, falling back to a capped GET when HEAD
 // is refused or fails; an image is fetched whole, to test it for forge's
-// placeholder. A same-site redirect is followed a few hops so a target
-// that moved is judged by where it landed.
+// placeholder. A redirect that stays on the target's own scheme and host is
+// followed a few hops, so a target that moved is judged by where it landed;
+// one to anywhere else is reported as the 3xx and never requested, so a
+// link check reaches no destination the page did not name (the guarded
+// client's dialer refuses private addresses besides).
 func (c *crawler) checkOne(ctx context.Context, ch check) siteaudit.LinkResult {
 	target := ch.url
 	for hop := 0; ; hop++ {
@@ -490,7 +493,7 @@ func (c *crawler) checkOne(ctx context.Context, ch check) siteaudit.LinkResult {
 		if r.Status >= 300 && r.Status < 400 && hop < maxRedirectHops {
 			if loc := r.Header.Get("Location"); loc != "" {
 				base, _ := url.Parse(target)
-				if next, err := base.Parse(loc); err == nil && (next.Scheme == "http" || next.Scheme == "https") {
+				if next, err := base.Parse(loc); err == nil && next.Scheme == base.Scheme && strings.EqualFold(next.Host, base.Host) {
 					target = next.String()
 					continue
 				}

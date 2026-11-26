@@ -9501,10 +9501,11 @@ schema Bundle:
     # `source` needs one on the cluster it lands on; it may be declared by
     # another env's bundle, in which case the deploy preflight checks it.
     external_secrets_operators: [ExternalSecretsOperator] = []
-    # What each cluster runs for ML (forge.MLStack, kcl/ml.k): every
-    # component adopted (read where it runs) or installed (a pinned chart
-    # forge labels as its own), one stack per cluster. `forge ml discover`
-    # proposes it. Empty renders nothing.
+    # The ML components each cluster declares (forge.MLStack, kcl/ml.k),
+    # any subset of them, one stack per cluster: each declared component is
+    # adopted (read where it runs) or installed (a pinned chart forge labels
+    # as its own), and only what a stack declares renders. `forge ml
+    # discover` proposes it. Empty renders nothing.
     ml_stacks: [MLStack] = []
     _agent_workloads = _obs_workloads(workloads, ml_stacks, observability)
     # Where the values the secret store needs BEFORE it can serve a read live

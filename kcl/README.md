@@ -51,6 +51,7 @@ public top-level var.
 | `forge.ManagedDatabase`                                                                                                                    | A Postgres on a cluster (CloudNativePG) or on the control plane.                                                                                                                                                                                                                                                                               |
 | `forge.Bucket` / `BucketOnMinIO` / `BucketOnS3` / `BucketRef` / `bucket_env` / `minio_workload`                                            | An object-storage bucket (`Bundle.buckets`) on the env's MinIO or any S3-compatible service, handed to a workload as `forge.BucketRef` env values (`forge.bucket_env` emits the seven forge/pkg/blobstore reads). On `forge.OnHosted` the control plane provisions it (a `ManagedBucket`) and a hosted workload reads it as `bucketRef`.       |
 | `forge.LLM` / `LLMEndpoint` / `LLMRef` / `llm_env`                                                                                         | The env's LLM gateway (`Bundle.llm`): `forge.OnHosted` is Reliant's gateway (the platform fills the six `forge.llm_env()` variables of a hosted workload, rendered blank by canonical name), `forge.LLMEndpoint` any OpenAI/Anthropic-compatible endpoint. Skill `deploy/llm`.                                                                 |
+| `forge.MLStack` / `Adopt` / `Install` / `Accelerators` / `RecommendationDecision`                                                          | What a cluster runs for ML (`Bundle.ml_stacks`, one per cluster): each component adopted (read where it runs, scraped when it has a port) or installed (a pinned chart, labelled `forge.dev/component-owner`), never both, never a kind discovery observed. `forge ml discover` proposes it; see kcl/ml.k.                                     |
 
 ### What each runtime does with a workload
 
@@ -377,6 +378,7 @@ kcl/
   schema.k             # the Bundle and every env-level declaration
   telemetry.k          # forge.Telemetry: declared telemetry for systems forge did not build
   database_telemetry.k # the default Telemetry of a ManagedDatabase and its CloudNativePG operator
+  ml.k                 # forge.MLStack: a cluster's ML components, each adopted or installed
   render.k             # the lowering: Bundle -> output (forge.render)
   core.k               # env-map helpers for [EnvVar] lists (frontends)
   base.k               # -D option accessors, env groups, helpers

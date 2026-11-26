@@ -45,6 +45,12 @@ THE OUTPUT (internal/cli/testdata/render_contract/ pins it per runtime):
     config_maps, gateways, http_routes, grpc_routes, runtime_classes,
     helm_charts, required_secrets, required_dns, secret_provider,
     rendered_secrets, control_plane
+    bundled_charts[]          HelmCharts delivered in the bundle: delivery =
+                              "bundle", and each MLStack Install (with the
+                              `labels` stamped on its objects), present only
+                              when there is one
+    ml_stacks[]               the declared ML stacks (kcl/ml.k MLStack),
+                              present only when declared
     manifests[]               the applyable stream: RuntimeClasses,
                               Namespaces, ConfigMaps, one `forge.dev/v1alpha1
                               Workload` record per CLUSTER-bound workload
@@ -191,7 +197,8 @@ _cloud_build_without_platform = lambda w: any -> bool {
 # so a helper it calls must be given them.
 _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: any, \
                             gateways: [any], http_routes: [any], grpc_routes: [any], \
-                            helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any] -> [str] {
+                            helm_charts: [any], manifests: [any], generated: [any], rendered_secrets: [any], \
+                            ml_stacks: [any] -> [str] {
     _from_workloads = [w.runtime.target.cluster for w in workloads \
         if w.runtime and w.runtime.type == "cluster" and w.runtime.target]
     _from_databases = [db.runtime.target.cluster for db in databases \
@@ -206,8 +213,10 @@ _targeted_contexts = lambda workloads: [any], databases: [any], cluster_target: 
     _from_manifests = [m.cluster for m in manifests if m.cluster]
     _from_generated = [g.cluster for g in generated if g.cluster]
     _from_secrets = [s.cluster for s in rendered_secrets if s.cluster]
+    # An MLStack's Installs are bundle charts on its cluster (kcl/ml.k).
+    _from_ml = _ml_install_contexts(ml_stacks)
     _all = _from_workloads + _from_databases + _from_primary + _from_gateways \
-        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets
+        + _from_http + _from_grpc + _from_charts + _from_manifests + _from_generated + _from_secrets + _from_ml
     sorted([c for c in {x: 0 for x in _all if x}])
 }
 
@@ -240,9 +249,9 @@ _is_forge_managed_context = lambda ctx: str, clusters: [any] -> bool {
 _unmanaged_contexts = lambda clusters: [any], workloads: [any], databases: [any], \
                              cluster_target: any, gateways: [any], http_routes: [any], \
                              grpc_routes: [any], helm_charts: [any], manifests: [any], \
-                             generated: [any], rendered_secrets: [any] -> [str] {
+                             generated: [any], rendered_secrets: [any], ml_stacks: [any] -> [str] {
     [c for c in _targeted_contexts(workloads, databases, cluster_target, gateways, \
-            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) \
+            http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks) \
         if not _is_forge_managed_context(c, clusters)]
 }
 
@@ -2881,11 +2890,31 @@ _tel_managed_database = lambda db: any, t: Telemetry, b: Bundle -> any {
 # {t, svc}, in render order. A ManagedDatabase's default counts: it is the
 # database's Telemetry until replaced.
 _tel_declared = lambda b: Bundle -> [any] {
+    _own = _tel_declared_own(b)
+    _own + [{"t": t, "svc": t.service_name} for t in _ml_telemetry_of(b, [d.svc for d in _own])]
+}
+
+# The env's Telemetry before the ML stacks' derived scrapes: what replaces
+# one of those by declaring its service name.
+_tel_declared_own = lambda b: Bundle -> [any] {
     [{"t": w.telemetry, "svc": _tel_service_name(w)} for w in b.workloads if w.telemetry] \
         + [{"t": d.telemetry, "svc": d.telemetry.service_name or d.name} for d in b.infra if d.telemetry] \
         + [{"t": t, "svc": t.service_name or g.name} for g in b.manifests for t in g.telemetry] \
         + ([{"t": t, "svc": t.service_name} for t in b.observability.telemetry] if b.observability else []) \
         + [{"t": d.t, "svc": d.t.service_name or managed_database_service_name(d.db.name)} for d in _db_telemetries(b)]
+}
+
+# The Telemetry an env's ML stacks lower to (kcl/ml.k _ml_telemetry): one
+# scrape per adopted component with a port, only when observability is on.
+# `taken` are the service names the env declares itself.
+_ml_telemetry_of = lambda b: Bundle, taken: [str] -> [Telemetry] {
+    _ml_telemetry(b.ml_stacks, _obs_on(b), taken) if b.ml_stacks else []
+}
+
+# An ML stack's scrape, attached as Observability.telemetry is.
+_tel_ml = lambda t: Telemetry, b: Bundle -> any {
+    _tel_target(t, t.service_name, "ml-stack:" + t.cluster, "observability", "cluster", \
+        t.cluster, t.namespaces or [], t.selector or {}, "", {}, b)
 }
 
 # The CloudNativePG operator's default targets: one per cluster holding a
@@ -2910,6 +2939,7 @@ _render_telemetry = lambda b: Bundle -> [any] {
         + [_tel_host_infra(d, b) for d in b.infra if d.telemetry] \
         + [_tel_manifests(g, t, _pt, b) for g in b.manifests for t in g.telemetry] \
         + ([_tel_observability(t, b) for t in b.observability.telemetry] if b.observability else []) \
+        + [_tel_ml(t, b) for t in _ml_telemetry_of(b, [d.svc for d in _tel_declared_own(b)])] \
         + [_tel_managed_database(d.db, d.t, b) for d in _db_telemetries(b)] \
         + _tel_cnpg_operators(b)
 }
@@ -3156,6 +3186,16 @@ _openbao = lambda b: Bundle -> any {
     }) if b.openbao else Undefined
 }
 
+# The Namespaces the env's bundle Installs need (kcl/ml.k _ml_namespaces),
+# less those the env renders itself (_namespaces) or declares in a
+# forge.Manifests group, on the same cluster.
+_ml_namespaces_of = lambda b: Bundle, entities: [any] -> [any] {
+    _pt = _primary_target(b)
+    _forge = ["${n.metadata.labels['forge.dev/cluster']}/${n.metadata.name}" for n in _namespaces(b, entities)]
+    _declared = ["${g.cluster or (_pt.cluster if _pt else '')}/${m.metadata.name}" for g in b.manifests for m in g.objects if m.kind == "Namespace" and m.metadata and m.metadata.name]
+    _ml_namespaces(b.ml_stacks, eso_lib.eso_owner(b.project, b.env), _forge + _declared) if b.ml_stacks else []
+}
+
 _manifests = lambda b: Bundle, entities: [any] -> [any] {
     _pt = _primary_target(b)
     _ns = _pt.namespace if _pt else ""
@@ -3164,6 +3204,7 @@ _manifests = lambda b: Bundle, entities: [any] -> [any] {
     labels_lib.stamp_env_all(
         [_render_runtime_class_manifest(rc, _ns, _project) for rc in b.runtime_classes] \
         + _namespaces(b, entities) \
+        + _ml_namespaces_of(b, entities) \
         + [_place_on_primary(_render_config_map_manifest(cm, _ns, _project), _pt) for cm in b.config_maps] \
         + [_workload_record(e, _project, b.release) for e in entities if e.runtime.type == "cluster" and e.kind != "tool"] \
         + _obs_agent_records(b, _project) \
@@ -3260,6 +3301,11 @@ render = lambda bundle: Bundle -> any {
         # before.
         if _render_telemetry(bundle):
             "telemetry": _render_telemetry(bundle)
+        # The declared ML stacks (kcl/ml.k MLStack documents the shape), for
+        # tools that read the stack and its decisions without parsing KCL.
+        # Absent when none is declared, so an env without renders as before.
+        if bundle.ml_stacks:
+            "ml_stacks": _ml_render(bundle.ml_stacks, _obs_on(bundle))
         # The env's own collector, which pulls its cluster targets instead of
         # forge's node agent: the peer the targets' NetworkPolicy rules admit
         # (internal/cluster/telemetry.go). Only beside declared telemetry.
@@ -3338,12 +3384,14 @@ render = lambda bundle: Bundle -> any {
         # Platform deps (helm-as-a-RENDERER): the CLI expands each via `helm
         # template --skip-crds` and folds the result into the apply stream,
         # selected by `--target <name>`. Not in `manifests`.
-        "helm_charts": [_render_helm_chart(h) for h in _all_helm_charts(bundle) if h.delivery != "bundle"]
+        "helm_charts": [_render_helm_chart(h) for h in _all_helm_charts(bundle) if h.delivery != "bundle"] \
+            + [_render_helm_chart(x.chart) | {"labels": _ml_chart_labels(x, bundle)} for x in _ml_install_charts(bundle.ml_stacks) if x.chart.delivery != "bundle"]
         # Bring-your-own YAML, rendered Go-side at extract time and shipped in
         # the bundle (internal/cluster/byo_yaml.go). Keys appear only when
         # declared, so an env with neither renders exactly as before.
-        if [h for h in bundle.helm_charts if h.delivery == "bundle"]:
-            "bundled_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery == "bundle"]
+        if [h for h in bundle.helm_charts if h.delivery == "bundle"] or [x for x in _ml_install_charts(bundle.ml_stacks) if x.chart.delivery == "bundle"]:
+            "bundled_charts": [_render_helm_chart(h) for h in bundle.helm_charts if h.delivery == "bundle"] \
+                + [_render_ml_chart(x, bundle) for x in _ml_install_charts(bundle.ml_stacks) if x.chart.delivery == "bundle"]
         if bundle.generated:
             "generated": [{
                 "name": g.name
@@ -4364,7 +4412,7 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
     _p = b.delivery_policy or DeliveryPolicy {}
     _sign = _delivery_signing_mode(_p, bool(b.control_plane))
     _verify = _delivery_flux_verify_mode(_p, bool(b.control_plane))
-    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets)
+    _ctx = _targeted_contexts(b.workloads, b.databases, b.cluster_target, b.gateways, b.http_routes, b.grpc_routes, b.helm_charts, b.manifests, b.generated, b.rendered_secrets, b.ml_stacks)
     {
         "chart": flux_delivery_lib.FLUX_DELIVERY_CHART_NAME
         "env": b.env
@@ -4392,6 +4440,34 @@ _render_flux_delivery = lambda b: Bundle -> {str: any} {
 # existing FilterManifestsByApp axis. `values` passes through verbatim.
 # NEVER appears in render_manifests — the expansion is a Go-side shell-out
 # (helm), not a KCL render.
+# The labels forge stamps on every object an MLStack Install's chart renders,
+# on either delivery: the component-owner stamp (the spelling lib/eso.k gives
+# it) and the component.
+_ml_chart_labels = lambda x: any, b: Bundle -> {str:str} {
+    {
+        "${eso_lib.ESO_COMPONENT_OWNER_LABEL}" = eso_lib.eso_owner(b.project, b.env)
+        "${eso_lib.ESO_COMPONENT_LABEL}" = ML_COMPONENT_PREFIX + x.kind
+    }
+}
+
+# An MLStack bundle Install's chart, as a `bundled_charts` entry: exactly the
+# keys internal/cluster reads for a bundle chart (BundledChartOutput), plus
+# its labels.
+_render_ml_chart = lambda x: any, b: Bundle -> any {
+    _h = x.chart
+    {
+        "name": _h.name
+        "chart": _h.chart if _h.chart else None
+        "repo": _h.repo if _h.repo else None
+        "oci": _h.oci if _h.oci else None
+        "version": _h.version
+        "namespace": _h.namespace
+        "values": _h.values
+        "cluster": _eso_context(_h)
+        "labels": _ml_chart_labels(x, b)
+    }
+}
+
 _render_helm_chart = lambda h: HelmChart -> any {
     {
         "name": h.name

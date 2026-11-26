@@ -9156,6 +9156,11 @@ schema Bundle:
     # `source` needs one on the cluster it lands on; it may be declared by
     # another env's bundle, in which case the deploy preflight checks it.
     external_secrets_operators: [ExternalSecretsOperator] = []
+    # What each cluster runs for ML (forge.MLStack, kcl/ml.k): every
+    # component adopted (read where it runs) or installed (a pinned chart
+    # forge labels as its own), one stack per cluster. `forge ml discover`
+    # proposes it. Empty renders nothing.
+    ml_stacks: [MLStack] = []
     # Where the values the secret store needs BEFORE it can serve a read live
     # (its unseal key, its database password, its recovery escrow): outside
     # the store, because they cannot live in what they bootstrap. UNSET =
@@ -9335,16 +9340,16 @@ schema Bundle:
             "Bundle.flux_delivery configures the in-cluster Flux of an `applier = \"flux\"` env, and this env declares applier = ${applier}. Declare applier = \"flux\", or drop flux_delivery"
         applier != "flux" or not control_plane, \
             "Bundle sets applier = \"flux\" and control_plane: an env with a control plane is delivered by its hub (`hub_converges`), never by a second Flux forge installs. applier = \"flux\" is for an env with no control plane"
-        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets)) == 1, \
-            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets) or 'none'}"
+        applier != "flux" or len(_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks)) == 1, \
+            "Bundle sets applier = \"flux\", which needs exactly ONE cluster: the Flux forge installs applies in the cluster it runs in. This env targets ${_targeted_contexts(workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks) or 'none'}"
         applier != "flux" or not env or (regex.match(_flux_delivery_ns(flux_delivery, project, env), r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$") and len(_flux_delivery_ns(flux_delivery, project, env)) <= 63), \
             "Bundle sets applier = \"flux\" and its delivery namespace '${_flux_delivery_ns(flux_delivery, project, env)}' (forge-delivery-<project>-<env>) is not a namespace name of at most 63 characters. Name one: flux_delivery = forge.FluxDelivery {namespace = \"...\"}"
         applier != "flux" or len([h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]) == 0, \
             "Bundle sets applier = \"flux\" and also declares the Flux chart (${[h.name for h in helm_charts if h.oci == _FLUX_CHART_OCI]}): applier = \"flux\" installs Flux itself (target flux-delivery), and two Flux installs in one cluster fight over the same CRDs. Drop the helm_charts entry; tune the install through flux_delivery"
         not lifecycle or len(_unmanaged_contexts(clusters, workloads, databases, \
                 cluster_target, gateways, http_routes, grpc_routes, helm_charts, \
-                manifests, generated, rendered_secrets)) == 0, \
-            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets))} is not one"
+                manifests, generated, rendered_secrets, ml_stacks)) == 0, \
+            "a '${lifecycle}' env may only target clusters forge creates (Bundle.clusters); ${', '.join(_unmanaged_contexts(clusters, workloads, databases, cluster_target, gateways, http_routes, grpc_routes, helm_charts, manifests, generated, rendered_secrets, ml_stacks))} is not one"
         # SEVERAL IDENTITIES (Bundle.identities): which instances exist is
         # judged before anything derived from them (their Secrets, below).
         not (identity and len(identities) > 0), \
@@ -9373,6 +9378,10 @@ schema Bundle:
             "Bundle.control_plane_secrets: ${_cps_also_provided(workloads, observability, _cps_decl(workloads, _idn_all(identity, identities), env, project, control_plane_secrets), required_secrets, rendered_secrets, cluster_target)} also declared as a required_secrets ExternalSecret or a rendered_secrets entry. One Secret has one provider: the control plane delivers it, so drop the other declaration"
         # SECRETS (forge.OpenBao, forge.ExternalSecretsOperator, StoreSource).
         # The structural rules live on the schemas; these need the Bundle.
+        len(_duplicates([s.cluster.cluster for s in ml_stacks])) == 0, \
+            "Bundle.ml_stacks declares two stacks on cluster ${_duplicates([s.cluster.cluster for s in ml_stacks])}: one forge.MLStack per cluster context. Merge them into one"
+        len(_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])) == 0, \
+            "Bundle.ml_stacks scrapes two components as service ${_duplicates([x.svc for x in _ml_scrapes(ml_stacks)])}: a scrape's service.name is unique in the env. Set service_name on one of them (forge.Adopt or forge.Install)"
         len(_duplicates([_eso_context(e) for e in external_secrets_operators])) == 0, \
             "Bundle.external_secrets_operators installs ESO twice on ${_duplicates([_eso_context(e) for e in external_secrets_operators])}: one cluster has one External Secrets Operator (several fight over the cluster-scoped CRDs and webhook configurations). Remove the duplicate; configure the one with `values`"
         len(_openbao_sources(required_secrets)) == 0 or openbao, \

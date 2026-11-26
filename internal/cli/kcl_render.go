@@ -744,6 +744,9 @@ type HelmChartEntity struct {
 	// Patches are merge patches for the objects the chart renders, keyed
 	// `Kind/name` (see cluster.HelmChartSpec.Patches).
 	Patches map[string]any `json:"patches,omitempty"`
+	// Labels are stamped on every object the chart renders: set on the chart
+	// an MLStack Install lowers to (kcl/ml.k), absent on a declared one.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // PruneEnabled reports the chart's prune setting: on unless declared off.

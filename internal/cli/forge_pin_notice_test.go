@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +24,41 @@ func noticeStore(t *testing.T) (advance func(time.Duration)) {
 	pinNoticeNow = func() time.Time { return now }
 	t.Setenv(pinNoticeEnv, "")
 	return func(d time.Duration) { now = now.Add(d) }
+}
+
+// Pause the first claimant before it reads or writes the stamp. The second
+// invocation must not also claim the notice, even with no stamp on disk yet.
+func TestPinNoticeDue_ConcurrentClaim(t *testing.T) {
+	advance := noticeStore(t)
+	for _, day := range []string{"missing stamp", "previous day's stamp"} {
+		t.Run(day, func(t *testing.T) {
+			now := pinNoticeNow()
+			previousNow := pinNoticeNow
+			entered, release := make(chan struct{}), make(chan struct{})
+			var calls atomic.Int32
+			pinNoticeNow = func() time.Time {
+				if calls.Add(1) == 1 {
+					close(entered)
+					<-release
+				}
+				return now
+			}
+			result := make(chan bool, 1)
+			go func() { result <- pinNoticeDue("handoff", "project", "pin", "binary", false) }()
+			<-entered
+			second := pinNoticeDue("handoff", "project", "pin", "binary", false)
+			close(release)
+			first := <-result
+			pinNoticeNow = previousNow
+			if !first || second {
+				t.Errorf("concurrent claims: first=%v second=%v, want true/false", first, second)
+			}
+			if pinNoticeDue("handoff", "project", "pin", "binary", false) {
+				t.Error("notice remained due after the claimant wrote the stamp")
+			}
+		})
+		advance(24 * time.Hour)
+	}
 }
 
 const handOffNoticeLead = "forge: running forge_version " + skewTestPin + ", which forge.yaml pins ("

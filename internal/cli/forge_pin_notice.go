@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/spf13/pflag"
 
 	"github.com/reliant-labs/forge/internal/atomicfile"
@@ -76,13 +77,28 @@ func pinNoticeDue(kind, projectRoot, want, binary string, quiet bool) bool {
 	}
 	sum := sha256.Sum256([]byte(strings.Join([]string{kind, projectRoot, want, binary}, "\x00")))
 	stamp := filepath.Join(dir, kind+"-"+hex.EncodeToString(sum[:8]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return true
+	}
+	// Claim the entire read/decide/write operation across processes. A busy
+	// lock means another invocation is handling the notice; don't delay the
+	// command just to print it. Keep the lock file: unlinking it can let two
+	// processes lock different inodes for the same stamp.
+	lock := flock.New(stamp + ".lock")
+	locked, err := lock.TryLock()
+	if err != nil {
+		return true
+	}
+	if !locked {
+		return false
+	}
+	defer func() { _ = lock.Unlock() }()
+
 	today := pinNoticeNow().Format(time.DateOnly)
 	if data, err := os.ReadFile(stamp); err == nil && strings.TrimSpace(string(data)) == today {
 		return false
 	}
-	if err := os.MkdirAll(dir, 0o755); err == nil {
-		_ = atomicfile.WriteFile(stamp, []byte(today+"\n"), 0o644)
-	}
+	_ = atomicfile.WriteFile(stamp, []byte(today+"\n"), 0o644)
 	return true
 }
 

@@ -343,9 +343,10 @@ var newRules = []rolloutGroup{
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing tests that find testdata or the repository root from runtime.Caller's file pass in an untrimmed build; warn for a release so each can resolve paths against the package directory (or check filepath.IsAbs) before the rule gates"}, Rules: []string{callerpath.RuleID}},
 	// forge lint --graph: a consumer field an optional component
 	// (//forge:optional-component) fills must be // forge:optional-dep.
-	// Tightened in the same unreleased v1.11.0 to follow a variant wrapper's
-	// accessor to the fields it fills (e5e9b7da), so this row covers it.
-	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "The optional-component marker is new; a project adopting it marks its consumers' fields optional during the release before the rule gates"}, Rules: []string{"forge-graph-optional-component"}},
+	// Tightened to follow a variant wrapper's accessor to the fields it fills
+	// (e5e9b7da), so this row covers it. #2711 merged after the v1.11.0 tag,
+	// so the rule ships in v1.12.0.
+	{IntroducedIn: "v1.12.0", Grace: &rolloutGrace{Until: "v1.13.0", Reason: "The optional-component marker is new; a project adopting it marks its consumers' fields optional during the release before the rule gates"}, Rules: []string{"forge-graph-optional-component"}},
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Existing projects, and every table forge scaffold births without an owner field (the birth declares no exemption for its author), serve unowned tables through generated CRUD; warn for a release so each author can declare forge:owner= or a reasoned forge:unscoped / forge:public before the rule gates"}, Rules: []string{ruleCRUDTableUnowned}},
 	// forge lint --idempotency: an rpc's idempotency_level must agree with
 	// its name (lint_idempotency.go).
@@ -354,8 +355,9 @@ var newRules = []rolloutGroup{
 	// in to (`forge project new --auth-mode none`): it answers 401 to every
 	// browser caller (lint_auth_no_sign_in.go). The lane is advisory (its
 	// findings are warnings at any pin); the row is what lets lint.rules
-	// raise it, and the window applies only to a project that does.
-	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Every --auth-mode none project scaffolded before this release was born with auth_required: true on its CRUD rpcs; warn for a release so each author can publish them or say who calls them before a project that raises the rule sees it gate"}, Rules: []string{ruleAuthRequiredNoSignIn}},
+	// raise it, and the window applies only to a project that does. #2778
+	// merged after the v1.11.0 tag, so the rule ships in v1.12.0.
+	{IntroducedIn: "v1.12.0", Grace: &rolloutGrace{Until: "v1.13.0", Reason: "Every --auth-mode none project scaffolded before this release was born with auth_required: true on its CRUD rpcs; warn for a release so each author can publish them or say who calls them before a project that raises the rule sees it gate"}, Rules: []string{ruleAuthRequiredNoSignIn}},
 	// forge lint --idempotency: a read whose response carries a secret or a
 	// per-call value never declares NO_SIDE_EFFECTS (lint_idempotency_secret.go).
 	{IntroducedIn: "v1.11.0", Grace: &rolloutGrace{Until: "v1.12.0", Reason: "Reads that return a token, a presigned URL or a one-time link already declare NO_SIDE_EFFECTS in existing protos, some because forge-idempotency-read-undeclared asked them to; warn for a release so each can move to forge:mutation with a reason before the rule gates"}, Rules: []string{ruleIdempotencySecretResponse}},

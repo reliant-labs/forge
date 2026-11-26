@@ -95,6 +95,10 @@ type upOptions struct {
 	// (auto|hosted|local), over FORGE_DEV_TELEMETRY and the env's
 	// observability.dev_telemetry. See up_devtelemetry.go.
 	telemetry string
+	// restart is set by `forge env restart` (env_restart.go): the run
+	// replaces the targeted processes inside a running stack and converges
+	// nothing around them. nil for `forge env up`.
+	restart *upRestart
 }
 
 // inTargetSet reports whether name should run given the --target filter.
@@ -468,7 +472,7 @@ func renderRuntimeStatus(ctx context.Context, env, signal string, verbose bool) 
 		// from the host rows, and a container is not a forge-owned process.
 		compose := composeRows(ctx, entities, read.projectDir, env, nil, composePublishersFn)
 		probeRowsListening(compose, portInUse)
-		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, nil, nil)
+		renderUpSummary(os.Stdout, env, append(rows, compose...), "down", true, restartHints(env, rows, read.resolved), nil)
 	}
 	if line := devTelemetryStatusLine(read.projectDir, env, time.Now()); line != "" {
 		fmt.Println(line)
@@ -1021,6 +1025,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	if err := validateDeployTargets(entities, opts.targets); err != nil {
 		return err
 	}
+	if err := opts.restart.checkTargets(entities, opts.env, opts.targets); err != nil {
+		return err
+	}
 	// WHERE THIS STACK'S TELEMETRY GOES (up_devtelemetry.go). Decided
 	// before the Docker check below: a stack whose telemetry is hosted runs
 	// no local collector, so it needs no Docker for it. The session is
@@ -1078,6 +1085,10 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// reach the backend on its allocated port instead of the baked default.
 	// Only host services that declare no port of their own get one — see
 	// resolveEphemeralHostPorts.
+	// A scoped run keeps the ports of the stack it replaces processes in.
+	if len(opts.targets) > 0 {
+		reuseLivePorts(entities, cfg, loadResolvedEnv(projectID, opts.env))
+	}
 	apiBaseURL := resolveEphemeralHostPorts(entities)
 	resolveEphemeralFrontendPorts(cfg, entities)
 	// Named same-origin APIs (Frontend.apis) are proxied by each dev server
@@ -1210,6 +1221,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// `forge env down` / `forge env ps` — from the moment it exists, however
 	// this process returns.
 	procs := newProcRegistry(projectID, projectDir, opts.env)
+	if opts.restart != nil && opts.restart.runID != "" {
+		procs.runID = opts.restart.runID // the restarted process joins the run that owns the stack
+	}
 	if !detach {
 		sigCtx, stopSignals := signal.NotifyContext(ctx, upTeardownSignals...)
 		defer stopSignals()
@@ -1301,7 +1315,7 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// re-renders the KCL from scratch (and reverts resolve_port drift), so it
 	// can't recover the live port. A failed readiness gate is exactly when
 	// someone needs to know which port the thing that didn't come up was on.
-	persistResolvedEnv(projectID, opts.env, entities, cfg, opts.targets, frontendsOn)
+	persistResolvedEnv(projectID, opts.env, entities, cfg, opts.targets, frontendsOn, opts.renderOptions)
 
 	// Post-launch readiness gate. The host phase only confirmed the runners
 	// FORKED — not that their children actually bound their ports. Before we
@@ -1388,7 +1402,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 	// unreachable control plane and a non-local env all cost nothing but a
 	// note — see up_session.go. The session itself was built before the
 	// launch (see the telemetry decision above).
-	session.start(time.Now().UTC())
+	if opts.restart.joinsSession() {
+		session.start(time.Now().UTC())
+	}
 
 	if detach {
 		// A DETACHED STACK HAS NO HEARTBEAT, and that is acceptable
@@ -1401,7 +1417,9 @@ func runUp(ctx context.Context, opts upOptions) (err error) { //nolint:funlen //
 		// text says so.
 		// A hosted stack's telemetry keeper goes with the stack: a tracked
 		// child, stopped by `forge env down` (devtelemetry_keeper.go).
-		devTelemetry.startKeeper(procs, true, os.Stdout)
+		if opts.restart.joinsSession() {
+			devTelemetry.startKeeper(procs, true, os.Stdout)
+		}
 		fmt.Printf("[up] detached %d process(es). Stop with `forge env down %s`.\n",
 			procs.count(), opts.env)
 		if hint := nonTTYWatchHint(opts.env, opts.background); hint != "" {
@@ -1586,12 +1604,14 @@ func upHostPhase(ctx context.Context, p hostPhase) error {
 		// Fail-closed: a job that does not exit 0 stops the up rather than
 		// letting its dependents run against a world it was supposed to
 		// have prepared.
-		jobsCtx, jobsSpan := startUpSpan(ctx, "jobs")
-		if err := runHostJobs(jobsCtx, cfg, entities, p.prov.All(), opts.env); err != nil {
-			jobsSpan.end(err)
-			return err
+		if opts.restart.runsJobs() {
+			jobsCtx, jobsSpan := startUpSpan(ctx, "jobs")
+			if err := runHostJobs(jobsCtx, cfg, entities, p.prov.All(), opts.env); err != nil {
+				jobsSpan.end(err)
+				return err
+			}
+			jobsSpan.end(nil)
 		}
-		jobsSpan.end(nil)
 		// Re-read the secret store: the identity step above (and any job)
 		// may have PUBLISHED into it. The store was read before they ran, so
 		// without this a fresh project's API would start without the broker
@@ -4186,22 +4206,28 @@ type resolvedEnvState struct {
 	Ports       map[string]int `json:"ports"` // service/frontend name → live listen port
 	// StopGraceSeconds is how long a teardown from outside this run waits
 	// between SIGTERM and SIGKILL (stackTreeStop): the longest host
-	// workload's preStopSeconds plus stopGraceMargin, capped at
-	// maxStopGrace. 0: no workload asked for longer than the default.
-	StopGraceSeconds int    `json:"stop_grace_seconds,omitempty"`
-	UpdatedAt        string `json:"updated_at"`
+	// workload's stop drain (preStopSeconds, or its Air kill_delay) plus
+	// stopGraceMargin, capped at maxStopGrace. 0: no workload asked for
+	// longer than the default.
+	StopGraceSeconds int `json:"stop_grace_seconds,omitempty"`
+	// RenderOptions are the raw `-D name=value` options the launch rendered
+	// with, so `forge env restart` renders a replacement process the same way.
+	RenderOptions []string `json:"render_options,omitempty"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
 // hostStopGrace is the stop grace the host workloads in entities declare
-// through preStopSeconds: the longest, plus stopGraceMargin, capped at
-// maxStopGrace. 0 when none declares one.
+// through preStopSeconds or their runner's own kill delay (Air's kill_delay,
+// as the supervising run's requireStopGrace reads it): the longest, plus
+// stopGraceMargin, capped at maxStopGrace. 0 when none declares one.
 func hostStopGrace(entities *KCLEntities) time.Duration {
 	if entities == nil {
 		return 0
 	}
 	var longest time.Duration
 	for _, w := range entities.WorkloadsOn(RuntimeHost) {
-		longest = max(longest, hostPreStop(w))
+		spec := hostRunnerSpec(w)
+		longest = max(longest, hostPreStop(w), airStopDrain(spec, spec.Dir()))
 	}
 	if longest == 0 {
 		return 0
@@ -4214,7 +4240,7 @@ func hostStopGrace(entities *KCLEntities) time.Duration {
 // the same collectUpServices rows the summary printed) and the DATABASE_URL
 // (via resolveSeedDSN, the same source auto-seed uses). Best-effort — a write
 // failure only costs `forge env status` its live-port overlay, never the run.
-func persistResolvedEnv(projectID, env string, entities *KCLEntities, cfg *config.ProjectConfig, targets []string, frontendsOn bool) {
+func persistResolvedEnv(projectID, env string, entities *KCLEntities, cfg *config.ProjectConfig, targets []string, frontendsOn bool, renderOptions []string) {
 	path, err := upEnvStatePath(projectID, env)
 	if err != nil {
 		fmt.Printf("[up] warning: resolve env state path: %v\n", err)
@@ -4228,11 +4254,13 @@ func persistResolvedEnv(projectID, env string, entities *KCLEntities, cfg *confi
 			ports[r.Name] = r.Port
 		}
 	}
+	mergeUntargetedPorts(ports, loadResolvedEnv(projectID, env), targets)
 	st := resolvedEnvState{
 		Env:              env,
 		DatabaseURL:      resolveSeedDSN(entities, cfg, env),
 		Ports:            ports,
 		StopGraceSeconds: int(hostStopGrace(entities) / time.Second),
+		RenderOptions:    renderOptions,
 		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(st, "", "  ")

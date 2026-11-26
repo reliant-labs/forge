@@ -554,6 +554,15 @@ func brokenDependencies(roots []*packages.Package) []string {
 		isRoot[r.ID] = true
 		rootPath[r.PkgPath] = true
 	}
+	// An import diagnostic alone does not prove that the dependency is
+	// broken: an unresolved import in a root is the root's own defect.
+	// Collect evidence from the loaded graph before classifying root errors.
+	failed := map[string]bool{}
+	packages.Visit(roots, nil, func(p *packages.Package) {
+		if !isRoot[p.ID] && len(p.Errors) > 0 {
+			failed[p.PkgPath] = true
+		}
+	})
 	broken := map[string]bool{}
 	own := false
 	packages.Visit(roots, nil, func(p *packages.Package) {
@@ -563,7 +572,7 @@ func brokenDependencies(roots []*packages.Package) []string {
 				continue
 			}
 			first, root := couldNotImport(e.Msg)
-			if first == "" || rootPath[first] {
+			if first == "" || rootPath[first] || !failed[first] || !failed[root] {
 				own = true
 				continue
 			}

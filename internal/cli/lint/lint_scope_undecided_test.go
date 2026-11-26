@@ -7,7 +7,40 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
+
+func TestBrokenDependenciesRequiresLoadEvidence(t *testing.T) {
+	const dep = "example.com/m/dep"
+	for _, tt := range []struct {
+		name    string
+		visited bool
+		failed  bool
+		want    []string
+	}{
+		{name: "unresolved import"},
+		{name: "loaded dependency without errors", visited: true},
+		{name: "broken dependency", visited: true, failed: true, want: []string{dep}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := &packages.Package{
+				ID: "example.com/m/a", PkgPath: "example.com/m/a",
+				Errors: []packages.Error{{Msg: "could not import " + dep + " (unavailable)"}},
+			}
+			if tt.visited {
+				p := &packages.Package{ID: dep, PkgPath: dep}
+				if tt.failed {
+					p.Errors = []packages.Error{{Msg: "undefined: missing"}}
+				}
+				root.Imports = map[string]*packages.Package{dep: p}
+			}
+			if got := brokenDependencies([]*packages.Package{root}); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("brokenDependencies = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestCouldNotImport(t *testing.T) {
 	for msg, want := range map[string][2]string{

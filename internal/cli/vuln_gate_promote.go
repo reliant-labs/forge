@@ -304,7 +304,7 @@ func judgeVulnGate(ctx context.Context, out io.Writer, in vulnPromoteInput, src 
 		now = in.Now()
 	}
 	doc := vulnscan.BuildDocument(vulnscan.DocumentInput{
-		Env: in.Env, Release: in.Version, Gate: in.Policy.VulnGate, GradedAs: graded, Artifacts: scans, Now: now,
+		Env: in.Env, Release: in.Version, Gate: in.Policy.VulnGate, GradedAs: graded, Artifacts: scans, NotApplicable: vulnscan.NotApplicableOf(rel), Now: now,
 		ReleaseFindings: found.Release, Stale: found.Stale, FreshnessFromSource: found.FreshnessFromSource,
 		Judged: found.Judged, JudgedBy: found.JudgedBy,
 	})

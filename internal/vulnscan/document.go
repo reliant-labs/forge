@@ -178,8 +178,11 @@ type DocumentInput struct {
 	// declared mode (EvaluateInput.GradedAs).
 	GradedAs  release.DeliveryMode
 	Artifacts []ArtifactScan
-	Filter    Filter
-	Now       time.Time
+	// NotApplicable are the release's artifacts no SBOM describes
+	// (Coverage.NotApplicable); never part of Artifacts.
+	NotApplicable []NotApplicableArtifact
+	Filter        Filter
+	Now           time.Time
 	// Notes are carried into the document (Document.Notes).
 	Notes []string
 	// Stale marks the findings stale whatever the database's build time
@@ -225,6 +228,7 @@ func ScanIsCurrent(s *Scan, now time.Time) bool {
 func BuildDocument(in DocumentInput) Document {
 	doc := Document{Schema: DocumentSchema, Env: in.Env, Release: in.Release, Findings: []DocumentFinding{}, Notes: append([]string(nil), in.Notes...)}
 	doc.Coverage.Artifacts = len(in.Artifacts)
+	doc.Coverage.NotApplicable = append([]NotApplicableArtifact(nil), in.NotApplicable...)
 	byKey := map[string]*DocumentFinding{}
 	var order []string
 	var oldest *Scan

@@ -382,11 +382,11 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 				sel.frontends[fe] = true
 			}
 		}
-		// A package that owns the file (its Go source, an embedded file, its
-		// testdata) runs even when affected_ignore lists the file. A non-Go
-		// file also selects the packages that name it, whether or not a rule
-		// claims it or affected_ignore lists it: claiming and ignoring decide
-		// only whether an unplaced file forces the full suite.
+		// Explicit rules still apply, but ignored files do not select their
+		// owners or readers and cannot force the unowned-file fallback.
+		if matchGlobs(f, ignore) {
+			continue
+		}
 		pkg, ok := g.owner(f)
 		read := false
 		if !strings.HasSuffix(f, ".go") {
@@ -401,7 +401,7 @@ func selectChanges(changed []string, g *packageGraph, ignore []string, rules []c
 		switch {
 		case ok:
 			sel.changedPkgs[pkg] = true
-		case claimed, read, matchGlobs(f, ignore):
+		case claimed, read:
 		default:
 			return sel, fmt.Sprintf("%s changed, and it is not Go source, an embedded file or testdata of a package — nothing proves which tests read it (ci.gate.affected_ignore lists files none do; ci.gate.affected_rules says what a path selects)", f)
 		}

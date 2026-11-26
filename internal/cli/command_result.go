@@ -133,17 +133,29 @@ func resultStatus(err error) string {
 // maxResultReason bounds the reason: the full error is printed right above.
 const maxResultReason = 160
 
-// reasonOf is an error's first line, the part a RESULT line can carry. The
-// full message is the error the host prints just above the line.
+// reasonOf summarizes the error in one bounded line. A first line ending
+// in a colon introduces a detail; keep the next nonblank line too instead
+// of ending the summary just before the cause. The full error stays above.
 func reasonOf(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := err.Error()
-	if i := strings.IndexByte(msg, '\n'); i >= 0 {
-		msg = msg[:i]
+	header, rest, _ := strings.Cut(err.Error(), "\n")
+	msg := strings.TrimSpace(header)
+	if msg == "" || strings.HasSuffix(msg, ":") {
+		for line := range strings.SplitSeq(rest, "\n") {
+			detail := strings.TrimSpace(line)
+			if detail != "" {
+				msg = strings.TrimSpace(msg + " " + detail)
+				if len([]rune(msg)) > maxResultReason && strings.HasSuffix(strings.TrimSpace(header), ":") {
+					// Prioritize the cause when the introductory line uses
+					// up the budget. The full summary still appears above.
+					msg = detail
+				}
+				break
+			}
+		}
 	}
-	msg = strings.TrimSpace(msg)
 	if r := []rune(msg); len(r) > maxResultReason {
 		msg = string(r[:maxResultReason-1]) + "…"
 	}

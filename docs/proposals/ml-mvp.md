@@ -3,7 +3,10 @@
 **Status:** proposal. Nothing here is built. It narrows and re-orders the merged
 ML proposals into a first product, following the owner's input of 2026-11-26
 15:45Z (verbatim in the [spec's owner input log](ml-spec/README.md#owner-input-log)).
-Its open owner decisions are in [section 7](#7-open-owner-decisions).
+Its owner decisions 45–57 are settled on their recommended options
+([section 7](#7-owner-decisions-settled-2026-11-26)), under one settled principle
+above them all: [piecemeal opt-in](#settled-principle-piecemeal-opt-in).
+Multi-cluster scheduling is [on hold](#5-build-order).
 **Date:** 2026-11-26
 **Narrows:** [reliant-for-ml.md](reliant-for-ml.md) (the north star; its §11 build
 order is what this re-orders), [ml-workloads.md](ml-workloads.md) (the stack,
@@ -12,8 +15,9 @@ models, training templates, testing without GPUs) and the
 document changes one of them, it says so in [section 0](#0-what-this-changes).
 **In flight beside it:** `forge.MLStack` (forge#2887), `forge ml discover`
 (forge#2893), the Phase A console views (reliant#3726, control-plane#3772),
-multi-cluster scheduling (forge#2994, which also records the fencing design this
-document lands first), and the owner's "take your recommendations on all" record
+multi-cluster scheduling (forge#2994, held by the owner on 2026-11-26; it also
+records the fencing design this document lands first, inside one cluster), and
+the owner's "take your recommendations on all" record
 (forge#2989), which settles ml-workloads decisions 1–22.
 
 ## Summary
@@ -28,7 +32,8 @@ already manages standard parts of an app: Zitadel, the OTel pipeline, CNPG, Valk
 So the MVP is three things, in this order:
 
 1. **Managed ML add-ons.** `forge.KServe`, `forge.Kueue`, `forge.KubeflowTrainer`
-   and `forge.KubeRay`, declared in an env's `forge.MLStack`. Each one adopts the
+   and `forge.KubeRay`, each declared on its own in an env's `forge.MLStack` (a
+   stack of one is valid). Each one adopts the
    install the cluster already runs, or installs forge's tested, pinned version.
    Each also carries its telemetry, dashboards and alerts by default, and is
    upgraded by a reviewed KCL diff. Reliant hosting has no GPUs, so "hosted" means
@@ -53,17 +58,79 @@ CPU torch TrainJob ([section 4](#4-the-pr-fast-path-and-the-golden-path-demo)).
 Datasets as a catalog, sweeps, pipelines, labeling and a feature store are out of
 v1 ([section 5](#5-build-order)).
 
+"In this order" is the build order, not an adoption order. A team can take any
+one of the three, or any single piece of one, without the others
+([piecemeal opt-in](#settled-principle-piecemeal-opt-in)).
+
+## Settled principle: piecemeal opt-in
+
+The owner, 2026-11-26: "We are piecemeal opt-in. Nothing is all or nothing users
+can opt into certain features without taking others."
+
+**Every ML capability is independently adoptable.** Managed KServe, managed
+Kueue, managed Kubeflow Trainer, managed KubeRay, the ML collector and its
+telemetry, `forge ml discover`, `forge.ModelService`, model releases, eval gates,
+training-run records, the Python SDK, and recommendations and remediation: none
+requires another, unless there is a hard technical dependency, and each such
+dependency is named in the matrix below. Everything else in this document is
+read through this rule:
+
+- **`forge.MLStack` is only a grouping.** It gives the per-cluster checks
+  (never adopted and installed, never installed twice) one place to live. A
+  stack holding one component is a valid stack. Nothing outside the stack
+  requires one: `forge.ModelService`, a model release and an eval gate work with
+  no `MLStack`, no collector and no Kueue.
+- **forge never adds an add-on the file does not name.** "When Kueue is
+  installed" ([decision 55](#7-owner-decisions-settled-2026-11-26)) means when
+  the stack declares `forge.Kueue`, or a person accepts the finding's KCL diff
+  that declares it. A template that names a queue on a cluster with no Kueue,
+  declared or adopted, is a render error that names the fix, never an implicit
+  install.
+- **A missing piece narrows what is reported; it is not an error.** Discovery,
+  the collector, the default telemetry and the recommendations report on what
+  is there. A cluster with only KServe gets KServe's findings and nothing about
+  queues.
+- **Integrations switch on when both sides are present.** Kueue's TrainJob and
+  RayJob integrations, the queue label on a TrainJob, Ray admission through
+  Kueue: each is configured only where both components are declared or adopted.
+- **The golden-path demo uses everything together** because it is the
+  acceptance test of the whole path. Each slice's own proof
+  ([section 6](#6-rollout)) runs with only that slice's capability.
+- **Code that couples two capabilities without a hard dependency named here is
+  a bug** against this principle, fixed in the code rather than documented.
+
+### Opt-in matrix
+
+"Needs" lists only hard technical dependencies. Every capability also needs what
+any forge project needs (a `forge.yaml`, an env) and, for anything rendered into
+a cluster, a `forge.ClusterTarget`.
+
+| Capability                                         | Needs                                                                                                                                                                                          | Works without                                                                                                                                                      |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Managed KServe (`forge.KServe`)                    | cert-manager, adopted or installed (KServe's webhooks need it)                                                                                                                                 | Kueue, Trainer, KubeRay, the collector, `forge.ModelService` (customer InferenceServices in `forge.Manifests` keep working), model releases, the control plane     |
+| Managed Kueue (`forge.Kueue`)                      | Nothing else (cert-manager optional)                                                                                                                                                           | KServe, Trainer, KubeRay (their integrations stay off), the collector, training-run records, the control plane                                                     |
+| Managed Kubeflow Trainer (`forge.KubeflowTrainer`) | Nothing else (it manages its own certificates)                                                                                                                                                 | Kueue (a TrainJob runs unqueued, decision 55), KServe, KubeRay, training-run records, the control plane                                                            |
+| Managed KubeRay (`forge.KubeRay`)                  | Nothing else (webhooks off by default)                                                                                                                                                         | Kueue (Ray admission through Kueue is optional), KServe, Trainer, the control plane                                                                                |
+| ML collector and add-on telemetry                  | Off until declared. A connected cluster for the collector (`forge cluster connect`); a telemetry pipeline (forge's, or the customer's OTLP endpoint) for the add-ons' default scrapes          | `forge.MLStack`, every managed add-on (it reports what it finds), the SDK, model releases, training-run records                                                    |
+| `forge ml discover`                                | Read access to the cluster                                                                                                                                                                     | `forge.MLStack` (it can write the first one), any add-on being present, the collector, the control plane                                                           |
+| `forge.ModelService`                               | A KServe install serving the `v1beta1` InferenceService CRD (managed, adopted, or the customer's own, checked by the cluster preflight); a `forge.Model` whose digest it renders               | `forge.MLStack`, managed KServe, Kueue, Trainer, KubeRay, the collector, eval gates, training runs, the control plane                                              |
+| Model release                                      | forge's release ledger (`forge env build --release`) and a `forge.Model`; for OCI loading, the modelcar binding of section 2.2                                                                 | `forge.ModelService` (`forge.Manifests` with `release_inputs` takes the digest), `forge.MLStack`, any add-on, eval gates, training runs (`source_run` is optional) |
+| Eval gate (`forge.EvalSuite`)                      | A candidate and a baseline endpoint, a versioned eval set, a harness workload. As a promotion gate, a `DeliveryPolicy.required_gates` entry; `forge ml eval check --json` alone runs in any CI | KServe, `forge.ModelService` (any endpoint is judged), `forge.MLStack`, Kueue, training runs, the collector                                                        |
+| Training-run records                               | The control plane's run ledger (decision 25 of reliant-for-ml), so a Reliant org with the ML entitlement; a `forge.Training` template, or an observed orchestrator CR                          | Kueue, Trainer (a plain `Job` or JobSet runs too), KServe, the SDK (a forge-rendered sidecar reports checkpoint durability), model releases, the collector         |
+| Python SDK                                         | An endpoint to report to: the control plane for run records, or any OTLP collector for spans and metrics                                                                                       | A forge project, `forge.Training`, `forge.MLStack`, every add-on, the collector                                                                                    |
+| Recommendations and remediation                    | The data each one reads (a recommendation with no source does not fire). Remediation in `act` mode also needs a declared `forge.Resilience` and a run record                                   | Every capability it does not read; `recommend` mode needs no executor                                                                                              |
+
 ## 0. What this changes
 
-| Merged proposal                                                                                                             | This document                                                                                                                                                                                                                                                                                                                                                              |
-| --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| reliant-for-ml §11: phases B (fleet) → C (scheduling) → D (inference) → E (runs, E1–E5) → F (evals and models) → G          | Re-ordered: Fleet and Setup (in flight, kept) → **serving, model release and the eval gate** (D + F's model half, moved up) → **training runs** (C + E1, E4 and the in-cluster part of E5) → multi-cluster (forge#2994) → KubeRay. Observed runs, MLflow import, the SDK's breadth and resilience actions beyond resume stay where they were ([section 5](#5-build-order)) |
-| ml-workloads §3.1: `MLStack` slots hold `Adopt \| Install`; the add-on's configuration is chart values                      | Adds typed **managed** components (`forge.KServe`, `forge.Kueue`, …) that lower to the same `Adopt` and `Install`, carrying forge's tested version, its configuration and its default telemetry ([section 1.2](#12-the-kcl-shape))                                                                                                                                         |
-| ml-workloads §3.1, "not proposed: typed wrappers for third-party CRDs"; a KServe InferenceService goes in `forge.Manifests` | Proposes one narrow forge-owned shape, `forge.ModelService`, that renders an InferenceService from a model release. `forge.Manifests` with `release_inputs` stays supported as the escape hatch. This is [decision 48](#7-open-owner-decisions)                                                                                                                            |
-| ml-workloads §6 and decision 8: model splits through KServe `canaryTrafficPercent`                                          | KServe's canary is Serverless-only, and the MVP installs Standard mode ([decision 49](#7-open-owner-decisions)). So online comparison stays in-app Changes for v1                                                                                                                                                                                                          |
-| ml-workloads decision 22, reliant-for-ml §6.2: eval results displayed first, gates later                                    | Unchanged as a default. The MVP builds the gate itself (a `required_gates` entry, opt-in per env) and makes the verdict **per segment**, because the golden path needs a failing case ([section 2.5](#25-the-eval-gate-and-the-segment-verdict))                                                                                                                           |
-| spec 00 and reliant-for-ml §2: datasets as versioned lineage entities; §6.4 data validation                                 | v1 records only a dataset reference, a digest or snapshot id, and a region on the run. No catalog, no validators ([section 3.4](#34-datasets-a-reference-not-a-catalog))                                                                                                                                                                                                   |
-| forge#2994 §8.4: attempt write fencing for a cross-cluster resume                                                           | The same mechanism lands first inside one cluster, with the training-run slice ([section 3.3](#33-checkpoints-fencing-and-resume)). forge#2994 extends it across clusters                                                                                                                                                                                                  |
+| Merged proposal                                                                                                             | This document                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| reliant-for-ml §11: phases B (fleet) → C (scheduling) → D (inference) → E (runs, E1–E5) → F (evals and models) → G          | Re-ordered: Fleet and Setup (in flight, kept) → **serving, model release and the eval gate** (D + F's model half, moved up) → **training runs** (C + E1, E4 and the in-cluster part of E5) → multi-cluster (forge#2994, on hold) → KubeRay. Observed runs, MLflow import, the SDK's breadth and resilience actions beyond resume stay where they were ([section 5](#5-build-order)) |
+| ml-workloads §3.1: `MLStack` slots hold `Adopt \| Install`; the add-on's configuration is chart values                      | Adds typed **managed** components (`forge.KServe`, `forge.Kueue`, …) that lower to the same `Adopt` and `Install`, carrying forge's tested version, its configuration and its default telemetry ([section 1.2](#12-the-kcl-shape))                                                                                                                                                  |
+| ml-workloads §3.1, "not proposed: typed wrappers for third-party CRDs"; a KServe InferenceService goes in `forge.Manifests` | Proposes one narrow forge-owned shape, `forge.ModelService`, that renders an InferenceService from a model release. `forge.Manifests` with `release_inputs` stays supported as the escape hatch. This is [decision 48](#7-owner-decisions-settled-2026-11-26)                                                                                                                       |
+| ml-workloads §6 and decision 8: model splits through KServe `canaryTrafficPercent`                                          | KServe's canary is Serverless-only, and the MVP installs Standard mode ([decision 49](#7-owner-decisions-settled-2026-11-26)). So online comparison stays in-app Changes for v1                                                                                                                                                                                                     |
+| ml-workloads decision 22, reliant-for-ml §6.2: eval results displayed first, gates later                                    | Unchanged as a default. The MVP builds the gate itself (a `required_gates` entry, opt-in per env) and makes the verdict **per segment**, because the golden path needs a failing case ([section 2.5](#25-the-eval-gate-and-the-segment-verdict))                                                                                                                                    |
+| spec 00 and reliant-for-ml §2: datasets as versioned lineage entities; §6.4 data validation                                 | v1 records only a dataset reference, a digest or snapshot id, and a region on the run. No catalog, no validators ([section 3.4](#34-datasets-a-reference-not-a-catalog))                                                                                                                                                                                                            |
+| forge#2994 §8.4: attempt write fencing for a cross-cluster resume                                                           | The same mechanism lands first inside one cluster, with the training-run slice ([section 3.3](#33-checkpoints-fencing-and-resume)). forge#2994 would extend it across clusters; multi-cluster is on hold                                                                                                                                                                            |
 
 Everything else in those documents stands, including the settled decisions
 (1–32, and 1–22 as recorded by forge#2989).
@@ -107,6 +174,20 @@ add-ons are typed components in its slots, a third member of the component union
 beside `Adopt` and `Install`. Each **lowers to `Adopt` or `Install`**, so nothing
 new reaches the cluster that #2887 cannot already deliver.
 
+The umbrella is **only a grouping**. Every slot is optional, and a stack that
+declares one component is complete: a team that wants managed Kueue and nothing
+else writes this, and gets Kueue, its queues and its telemetry, with no KServe,
+no Trainer, no collector and no other add-on rendered:
+
+```python
+ml_stacks = [forge.MLStack {
+    cluster = _gpu
+    queue = forge.Kueue {version = "0.20.8", queues = [forge.Queue {name = "team-a", flavor = "l4", quota = {"nvidia.com/gpu": 8}}]}
+}]
+```
+
+The fuller example below declares every add-on only to show each slot:
+
 ```python
 import forge
 
@@ -139,13 +220,13 @@ ml_stacks = [forge.MLStack {
 
 Every managed component has the same fields, and the same lowering:
 
-| Field       | Meaning                                                                                                                                                                                                                                                        |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mode`      | `"auto"` (default): adopt if the kind is in `MLStack.observed`, else install. `"adopt"`: never install; render refuses if the kind is not observed and says to run `forge ml discover`. `"install"`: install; refused when observed, as #2887 already refuses  |
-| `version`   | The chart and image version. The scaffold and `forge ml discover` write forge's tested pin explicitly, so a forge upgrade never changes it silently ([decision 47](#7-open-owner-decisions)). Ignored on adopt, where the observed version is recorded instead |
-| typed knobs | The few settings forge must own to make the rest work (KServe's deployment mode and OCI model loading, Kueue's integrations and queues). A short list, not a mirror of the chart                                                                               |
-| `values`    | Chart values passed through for everything else: the 20% escape hatch                                                                                                                                                                                          |
-| `telemetry` | Defaults on (`default_telemetry = True`, as `forge.ManagedDatabase` has); overridable per field                                                                                                                                                                |
+| Field       | Meaning                                                                                                                                                                                                                                                                      |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`      | `"auto"` (default): adopt if the kind is in `MLStack.observed`, else install. `"adopt"`: never install; render refuses if the kind is not observed and says to run `forge ml discover`. `"install"`: install; refused when observed, as #2887 already refuses                |
+| `version`   | The chart and image version. The scaffold and `forge ml discover` write forge's tested pin explicitly, so a forge upgrade never changes it silently ([decision 47](#7-owner-decisions-settled-2026-11-26)). Ignored on adopt, where the observed version is recorded instead |
+| typed knobs | The few settings forge must own to make the rest work (KServe's deployment mode and OCI model loading, Kueue's integrations and queues). A short list, not a mirror of the chart                                                                                             |
+| `values`    | Chart values passed through for everything else: the 20% escape hatch                                                                                                                                                                                                        |
+| `telemetry` | Defaults on (`default_telemetry = True`, as `forge.ManagedDatabase` has); overridable per field                                                                                                                                                                              |
 
 What each one installs and configures:
 
@@ -162,13 +243,15 @@ v0.20.8, Trainer v2.4.0, KubeRay v1.8.0). KubeRay's OCI chart location is
 unverified.
 
 **Why the umbrella, and not first-class Bundle kinds** like `Bundle.managed_databases`
-([decision 45](#7-open-owner-decisions)): the add-ons share one cluster and depend
-on each other (KServe on cert-manager, Kueue's integrations on Trainer and
-KubeRay). The checks that prevent a duplicate install, and the inventory they read,
-are per cluster and already live on `MLStack`. Bundle-level kinds would need each to
-name its cluster again and would lose those cross-component checks. The cost is
-that `ManagedDatabase` and these differ in shape; the shared idea is the
-runtime split, which the umbrella still has through `MLStack.cluster`.
+([decision 45](#7-owner-decisions-settled-2026-11-26)): the add-ons share one cluster.
+The one hard dependency among them is KServe's on cert-manager; Kueue's TrainJob
+and RayJob integrations are not dependencies, they switch on only where Trainer or
+KubeRay is also present. The checks that prevent a duplicate install, and the
+inventory they read, are per cluster and already live on `MLStack`. Bundle-level
+kinds would need each to name its cluster again and would lose those checks. The
+umbrella is a grouping, not a bundle: declaring one add-on in it takes nothing
+else. The cost is that `ManagedDatabase` and these differ in shape; the shared
+idea is the runtime split, which the umbrella still has through `MLStack.cluster`.
 
 **Why typed components, and not `Install` with chart values:** a bare `Install`
 cannot carry forge's knowledge of which settings make the rest work. Without
@@ -192,9 +275,11 @@ not from a live read at render. Render stays a pure function of the repository.
   (`internal/cluster/preflight.go:1653`). An adopted KServe in Serverless mode with
   OCI support off is reported as a finding with the exact setting to change. forge
   never reconfigures an install it did not make.
-- The cluster collector's inventory (ml-workloads §3.2) keeps `observed` honest
-  after the first look: a kind that appears later raises
-  `ml-addon-installed-twice` before the next deploy installs over it.
+- Where the team runs the cluster collector, its inventory (ml-workloads §3.2)
+  keeps `observed` honest after the first look: a kind that appears later raises
+  `ml-addon-installed-twice` before the next deploy installs over it. The
+  collector is its own opt-in; without it, re-running `forge ml discover` and the
+  deploy preflight's served-kinds check do the same job at deploy time.
 
 ### 1.4 What "hosted" means for each add-on
 
@@ -202,11 +287,11 @@ Reliant hosting has no GPUs, and we never provision them (ml-workloads Settled 1
 So for v1, "managed" means **forge runs the operator's lifecycle in the
 customer's cluster, and the control plane hosts what surrounds it**:
 
-| Add-on            | In the customer's cluster                                                | Hosted by the control plane                                                                                                                                     | A hosted runtime later?                                                                                                                                                                              |
-| ----------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| KServe + vLLM     | The operator, the ServingRuntimes, the InferenceServices, the model pull | The model release ledger; the weights in Reliant's registry (ml-workloads Settled 7); release health and `obs check`; dashboards and alerts; version advisories | Possible for small CPU models: a platform-run KServe, like the platform-run CNPG operator, serving tenant InferenceServices in tenant namespaces. Not in v1 ([decision 46](#7-open-owner-decisions)) |
-| Kueue (+ Trainer) | The operator, the queues and flavors, admission                          | Queue and admission telemetry (the Queues view), the training-run ledger, launch budgets and approvals (reliant-for-ml decision 28), version advisories         | No: there is nothing to queue on hosting. The multi-cluster manager is a separate question (forge#2994, its decision 34, which includes a Reliant-hosted manager per org)                            |
-| KubeRay           | Adopted, as today                                                        | Telemetry and run records for RayJobs                                                                                                                           | No                                                                                                                                                                                                   |
+| Add-on            | In the customer's cluster                                                | Hosted by the control plane                                                                                                                                     | A hosted runtime later?                                                                                                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| KServe + vLLM     | The operator, the ServingRuntimes, the InferenceServices, the model pull | The model release ledger; the weights in Reliant's registry (ml-workloads Settled 7); release health and `obs check`; dashboards and alerts; version advisories | Possible for small CPU models: a platform-run KServe, like the platform-run CNPG operator, serving tenant InferenceServices in tenant namespaces. Not in v1 ([decision 46](#7-owner-decisions-settled-2026-11-26)) |
+| Kueue (+ Trainer) | The operator, the queues and flavors, admission                          | Queue and admission telemetry (the Queues view), the training-run ledger, launch budgets and approvals (reliant-for-ml decision 28), version advisories         | No: there is nothing to queue on hosting. The multi-cluster manager is a separate question, on hold with the rest of multi-cluster (forge#2994, its decision 34)                                                   |
+| KubeRay           | Adopted, as today                                                        | Telemetry and run records for RayJobs                                                                                                                           | No                                                                                                                                                                                                                 |
 
 `MLStack.cluster` is a `ClusterTarget`. A hosted runtime, if it comes, is an
 additive arm on that binding, as `OnHosted` is on `ManagedDatabase`. Nothing in v1
@@ -243,6 +328,12 @@ component forge installs, not presets for systems forge does not know, so the
 third-party-telemetry rule of "no presets" is not bent (and the accelerator
 adapters are already the settled exception, ml-workloads decision 3).
 
+The default telemetry is per add-on and travels with it: managed Kueue alone
+brings Kueue's scrape and alerts, and nothing else. It needs a telemetry
+pipeline, not the ML collector, and `telemetry` turns it off for a team that
+already watches the operator another way. The ML cluster collector is a separate
+opt-in that is never switched on by declaring an add-on.
+
 | Add-on      | Scraped (exact names verify against the pinned version)                                                                                          | Default alerts                                                                  |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
 | KServe/vLLM | vLLM's `vllm:*` engine metrics (requests running and waiting, TTFT, inter-token latency, KV-cache use), the KServe controller's reconcile errors | InferenceService not ready; KV cache saturated; queue wait above baseline       |
@@ -257,7 +348,7 @@ go through forge's node agent like any workload's.
 
 - **No separate charge for a managed add-on** while ML is by request. What the
   add-ons send is observability ingest, billed as today, with the free accelerator
-  tier settled for the beta (ml-workloads decision 11). [Decision 56](#7-open-owner-decisions)
+  tier settled for the beta (ml-workloads decision 11). [Decision 56](#7-owner-decisions-settled-2026-11-26)
   asks whether that changes at GA.
 - **Model storage** uses the separate `models/` allowance per plan (ml-workloads
   decision 13), and pull egress is metered first (decision 6).
@@ -276,13 +367,13 @@ serving this request?". Staging and prod promote the same release by digest.
 Retraining is a new candidate release, even at the same commit, with the code
 artifacts carried forward (`Artifact.CarriedFrom`, ml-workloads decision 7).
 
-| Component                   | Recorded as                                                                                                                                 | Notes                                                                                                                                                                        |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Weights                     | An `oci` artifact (`KindOCI`, `pkg/release/release.go:43`): a ModelPack manifest, one layer per weight file                                 | ml-workloads §3.5. Safetensors preferred; pickle formats warn, then gate (reliant-for-ml decision 31)                                                                        |
-| Tokenizer and preprocessing | Layers of the same ModelPack (tokenizer files, generation config, chat template). Preprocessing **code** is in the serving image or the app | One digest covers the weights and everything that must change with them                                                                                                      |
-| Serving image               | An `oci` image artifact: the vLLM runtime image, pinned by digest, usually carried forward                                                  | The ServingRuntime references it by digest                                                                                                                                   |
-| Input/output contract       | A `file` artifact: the contract file's digest                                                                                               | A named built-in (`openai-chat`, `openai-completions`) or a JSON Schema / OpenAPI file in the repo ([decision 57](#7-open-owner-decisions)). The app's tests call against it |
-| Lineage                     | On the model: the source run, attempt and checkpoint, the dataset reference and digest, the template's release and commit                   | `forge.Model.source_run` (ml-workloads §7), widened to the run record of section 3                                                                                           |
+| Component                   | Recorded as                                                                                                                                 | Notes                                                                                                                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Weights                     | An `oci` artifact (`KindOCI`, `pkg/release/release.go:43`): a ModelPack manifest, one layer per weight file                                 | ml-workloads §3.5. Safetensors preferred; pickle formats warn, then gate (reliant-for-ml decision 31)                                                                                      |
+| Tokenizer and preprocessing | Layers of the same ModelPack (tokenizer files, generation config, chat template). Preprocessing **code** is in the serving image or the app | One digest covers the weights and everything that must change with them                                                                                                                    |
+| Serving image               | An `oci` image artifact: the vLLM runtime image, pinned by digest, usually carried forward                                                  | The ServingRuntime references it by digest                                                                                                                                                 |
+| Input/output contract       | A `file` artifact: the contract file's digest                                                                                               | A named built-in (`openai-chat`, `openai-completions`) or a JSON Schema / OpenAPI file in the repo ([decision 57](#7-owner-decisions-settled-2026-11-26)). The app's tests call against it |
+| Lineage                     | On the model: the source run, attempt and checkpoint, the dataset reference and digest, the template's release and commit                   | `forge.Model.source_run` (ml-workloads §7), widened to the run record of section 3                                                                                                         |
 
 **The Flux bundle stays small.** It carries the rendered InferenceService with an
 immutable reference to the weights, never the weights. Checkpoints go to object
@@ -299,7 +390,7 @@ storage; a release is cut only when a checkpoint becomes a candidate
 
 The OCI loading mode is a KServe setting: `modelcar` (a sidecar image, works on
 any containerd), `native` (a Kubernetes image volume) or `fetch` (an init
-container). The MVP uses `modelcar` ([decision 50](#7-open-owner-decisions)).
+container). The MVP uses `modelcar` ([decision 50](#7-owner-decisions-settled-2026-11-26)).
 
 **Modelcar identity is a release prerequisite, not a tag fallback.** A ModelPack
 is an OCI artifact; its manifest digest does not by itself name a runnable
@@ -332,7 +423,7 @@ model_services = [forge.ModelService {
     name = "support-assistant"
     cluster = _gpu
     model = "support-assistant"                 # the release's digest is substituted at render
-    runtime = "vllm"                            # a ServingRuntime from forge.KServe.runtimes
+    runtime = "vllm"                            # a ServingRuntime: one forge.KServe declares, or one the cluster already has
     accelerators = tiers.Accelerators {count = 1, product = "nvidia-l4"}   # omitted on CPU
     replicas = 2
     args = ["--max-model-len=4096"]
@@ -351,7 +442,7 @@ It renders:
 - `OTEL_RESOURCE_ATTRIBUTES` carrying `forge.release`, `ml.model.name` and
   `ml.model.digest`, and the release labels forge stamps on every workload.
 
-**Why a forge shape and not `forge.Manifests`** ([decision 48](#7-open-owner-decisions)):
+**Why a forge shape and not `forge.Manifests`** ([decision 48](#7-owner-decisions-settled-2026-11-26)):
 the release has to know which serving resource carries which model, to substitute
 the digest, tag the traces and judge the right SLIs. `forge.Manifests` with
 `release_inputs` can substitute a digest, but the link from model to service is
@@ -359,6 +450,13 @@ then a string in a YAML file. `forge.ModelService` covers the common case with a
 handful of fields and an `overrides` patch. It does not copy KServe's schema.
 `forge.Manifests` stays supported for anything it does not cover, including
 KServe's alpha `LLMInferenceService`.
+
+`forge.ModelService` needs a KServe that serves the InferenceService CRD and
+nothing else from this document. That KServe may be forge's managed one, one an
+`MLStack` adopts, or one the customer runs that no `MLStack` mentions: the
+cluster preflight's served-kinds check is what proves it is there. No Kueue, no
+collector and no eval gate is involved, and the training-run lineage on the
+model is filled in only when a run produced it.
 
 ### 2.4 Request traces name the model
 
@@ -397,9 +495,14 @@ delivery_policy = forge.DeliveryPolicy {
   refuses a promotion that does not carry a named gate as passed, and accepts a
   check's JSON verdict document as the gate. Naming the suite is the opt-in, per
   env, which keeps decision 22 (display first) as the default.
+- **It judges any endpoint.** The candidate and the baseline are endpoints, so a
+  model served by `forge.ModelService`, by the customer's own InferenceService or
+  outside Kubernetes is judged the same way. The gate needs no KServe, no
+  `MLStack` and no training run, and `forge ml eval check --json` runs in any CI
+  without a forge promotion at all.
 - **The run.** `forge ml eval run staging --suite support-regression` runs the
   harness as a Job in the env's cluster against the candidate's endpoint, on the
-  versioned eval set ([decision 52](#7-open-owner-decisions)). The baseline is
+  versioned eval set ([decision 52](#7-owner-decisions-settled-2026-11-26)). The baseline is
   the current prod release's result **on the same eval-set digest**. When none
   is recorded, the harness runs against prod's model too.
 - **The verdict.** `forge ml eval check staging --suite support-regression --baseline prod --json`
@@ -409,7 +512,7 @@ delivery_policy = forge.DeliveryPolicy {
   what `forge env deploy prod <v> --gate` carries.
 - **A regression is statistical.** A metric regresses only when the drop exceeds
   both its confidence interval and the declared `max_regression`
-  ([decision 51](#7-open-owner-decisions)). One failing segment fails the verdict.
+  ([decision 51](#7-owner-decisions-settled-2026-11-26)). One failing segment fails the verdict.
 
 The case the owner's notes name, as the verdict shows it:
 
@@ -477,22 +580,28 @@ step). A run with no declared phases has one implicit phase.
 | Checkpoint | step; attempt `n`; tier; manifest digest; `durable_at`; `published` (only a published checkpoint exists to a resume)                                                                                                                     |
 
 The run's identity is the ledger's, not the CR's. When an attempt moves to another
-cluster (forge#2994), it is the same run with a new attempt.
+cluster (forge#2994, on hold), it is the same run with a new attempt.
 
 ### 3.2 What a run renders
 
 `forge.Training` (ml-workloads §3.1) with `orchestrator = "trainjob"` renders a
-Kubeflow Trainer **TrainJob** against the `ClusterTrainingRuntime` that
-`forge.KubeflowTrainer` installs, labelled with the template's Kueue LocalQueue
-(`kueue.x-k8s.io/queue-name`), so Kueue admits it as a gang. Kueue has a TrainJob
-integration on the pinned version. A plain `Job` stays available for the CPU smoke
-run and for clusters without Trainer ([decision 53](#7-open-owner-decisions)).
+Kubeflow Trainer **TrainJob** against a `ClusterTrainingRuntime`: the one
+`forge.KubeflowTrainer` installs, or one an adopted Trainer already has. When the
+template names a Kueue LocalQueue, the TrainJob is labelled with it
+(`kueue.x-k8s.io/queue-name`), so Kueue admits it as a gang; Kueue has a TrainJob
+integration on the pinned version. A template that names no queue runs unqueued.
+A plain `Job` stays available for the CPU smoke run and for clusters without
+Trainer ([decision 53](#7-owner-decisions-settled-2026-11-26)). A run is recorded
+the same way whichever of these runs it.
 forge renders into the pod: `FORGE_RUN`, `FORGE_ATTEMPT`, `FORGE_CHECKPOINT_DIR`
 (the attempt's own prefix) and `FORGE_RESUME_FROM` (the last published
 checkpoint, empty on the first attempt).
 
-Kueue arrives with training, not before: it is installed when a template names a
-queue or the `gpu-jobs-bypass-queue` finding is accepted ([decision 55](#7-open-owner-decisions)).
+Kueue arrives with training, not before: it is installed when the stack declares
+it, which is when a team starts naming queues or accepts the
+`gpu-jobs-bypass-queue` finding's KCL diff ([decision 55](#7-owner-decisions-settled-2026-11-26)).
+forge never installs it as a side effect: a template that names a queue on a
+cluster with no Kueue, declared or adopted, is a render error that names the fix.
 Kueue decides who may run and when; Ray, when it comes, decides how a running
 program spreads its work. That is why they coexist.
 
@@ -527,9 +636,9 @@ A run records `forge.DatasetRef {uri, digest | snapshot, region}`. The digest is
 whatever identifies the data immutably in the customer's system (an object
 manifest's SHA-256, a lakeFS commit, an Iceberg snapshot id). Reliant stores the
 reference, never the data. It is enough for lineage (which data made these
-weights) and for placement locality later (forge#2994 scores data staging time by
-region). There is no catalog, no versioning service, no validators and no split
-management in v1 ([decision 54](#7-open-owner-decisions)).
+weights) and for placement locality if multi-cluster resumes (forge#2994, on
+hold, scores data staging time by region). There is no catalog, no versioning service, no validators and no split
+management in v1 ([decision 54](#7-owner-decisions-settled-2026-11-26)).
 
 ## 4. The PR fast path and the golden-path demo
 
@@ -558,12 +667,14 @@ wall time (a target, not yet measured).
 ### 4.2 The golden-path demo: the MVP's acceptance test
 
 The MVP is done when this runs end to end, in CI on CPU, and as a recorded demo.
+It uses every capability at once because it is the whole path; no team has to
+adopt them together, and each slice is also proven alone ([section 6](#6-rollout)).
 
 | Step | What happens                                                                                                              | What proves it                                                                                                           | Slice |
 | ---- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----- |
 | 1    | Change a training recipe in a worktree and open a PR                                                                      | —                                                                                                                        | —     |
 | 2    | The PR fast path passes (4.1)                                                                                             | Smoke train, resume, export, KServe boot, app call, all green in Tests                                                   | S7    |
-| 3    | Merge; dispatch the full run. In the MVP it goes to the template's cluster; with forge#2994, to one of the two            | A run with attempt 1 in the ledger; a TrainJob admitted by Kueue on fake GPUs                                            | S5–S6 |
+| 3    | Merge; dispatch the full run. It goes to the template's cluster (multi-cluster dispatch is on hold)                       | A run with attempt 1 in the ledger; a TrainJob admitted by Kueue on fake GPUs                                            | S5–S6 |
 | 4    | Inject an interruption: delete a worker pod mid-run; separately, `SIGSTOP` attempt 1 and resume it after attempt 2 starts | Attempt 2 resumes from the last published checkpoint; the stopped attempt's publish is refused (fencing)                 | S6    |
 | 5    | The run publishes a candidate: checkpoint → ModelPack → release with code carried forward                                 | An immutable release whose model digest is new and whose code digests equal v13's                                        | S2    |
 | 6    | Staging serves it and evaluates it against prod on the same eval-set digest                                               | `forge ml eval check` exit 0, its verdict document                                                                       | S3–S4 |
@@ -575,8 +686,9 @@ The MVP is done when this runs end to end, in CI on CPU, and as a recorded demo.
 - **Two k3d clusters**, connected with `forge cluster connect`: `ml-a` (staging,
   and training) and `ml-b` (prod). Each runs run:ai's **fake-gpu-operator**, which
   advertises `nvidia.com/gpu` on CPU nodes; it is documented for Kubernetes
-  generally, and running it on k3d specifically is to be confirmed (verify). When
-  forge#2994's slices land, step 3 dispatches to either cluster.
+  generally, and running it on k3d specifically is to be confirmed (verify).
+  Dispatching step 3 to either cluster waits on multi-cluster, which is on hold
+  ([section 5](#5-build-order)).
 - **Serving:** KServe in Standard mode with a vLLM CPU ServingRuntime
   (`vllm/vllm-openai-cpu`, per vLLM's docs) serving `facebook/opt-125m`. KServe
   ships no CPU vLLM runtime, so forge declares one (verify that it runs under
@@ -599,8 +711,25 @@ unchanged unless named.
 | 1   | Fleet and Setup     | `forge.MLStack` and `forge ml discover`; the collector; Fleet and Setup views on real data                                                                                                                     | B                                          | In flight (forge#2887, #2893). Keep                              |
 | 2   | **Serving**         | Managed `forge.KServe` and cert-manager; `forge.Model`, ModelPack push, the registry's R1–R3; `forge.ModelService`; traces tagged with the digest; inference release health; the eval gate and segment verdict | D, and F's eval-and-model half, moved up   | This proposal                                                    |
 | 3   | **Training runs**   | Managed `forge.Kueue` and `forge.KubeflowTrainer`; `forge.Training` → TrainJob; the run and attempt ledger; checkpoint publish, fencing and resume in one cluster; `forge ml run` and `wait`; the PR fast path | C, E1, E4, and the full-restart part of E5 | This proposal                                                    |
-| 4   | Multi-cluster       | MultiKueue and the open placement controller                                                                                                                                                                   | new                                        | Proposal in flight (forge#2994)                                  |
+| 4   | Multi-cluster       | MultiKueue and the open placement controller                                                                                                                                                                   | new                                        | **On hold** (owner, 2026-11-26; below)                           |
 | 5   | KubeRay             | Managed `forge.KubeRay` (adopt by default); RayJob and RayService templates; Kueue admission of Ray workloads                                                                                                  | new                                        | Later                                                            |
+
+**Multi-cluster is on hold (owner, 2026-11-26).** The owner held forge#2994:
+"Either we need to push this to a separate repo or we need to instead create or
+allow or hook into primitives that work with whatever the customer is already
+using. Or we just hold on multicluster for foreseeable future." The three
+options, with no recommendation asked for now:
+
+1. **A separate repository.** The placement controller and its MultiKueue
+   dispatcher live outside forge, as their own project.
+2. **Hook into the primitives the customer already runs.** forge adopts the
+   customer's MultiKueue, Karmada, SkyPilot or Armada, as it adopts their KServe
+   or Kueue, rather than shipping a multi-cluster scheduler of its own.
+3. **Hold indefinitely.** Nothing multi-cluster is built for the foreseeable
+   future.
+
+Until the owner picks one, step 4 does not start, and nothing in steps 0–3 or 5
+waits on it. The in-cluster fencing of section 3.3 does not depend on it either.
 
 The SDK track (reliant-for-ml phase B′) runs in parallel from step 2. The MVP
 needs only its checkpoint-durability report and run and attempt tags.
@@ -609,7 +738,9 @@ needs only its checkpoint-durability report and run and attempt tags.
 shorter path to value: most teams serve before they train their own models, a
 served model already exercises the release ledger, gates and `obs check`, and
 those are what make a training run's output worth recording. Fleet and Setup stay
-first because every add-on is declared on the stack they introduce.
+first because the add-ons are declared on the stack they introduce. The order is
+what gets built first, not what a team must adopt first: a team can take step 2's
+eval gate, or step 3's run records, without anything from step 1.
 
 **Explicitly out of v1:**
 
@@ -628,6 +759,8 @@ first because every add-on is declared on the stack they introduce.
 
 Each slice ships alone, behind the ML entitlement where it touches the control
 plane, and every forge piece works without the control plane (start anywhere).
+Each is also adopted alone: its proof below runs with only that slice's
+capability declared ([piecemeal opt-in](#settled-principle-piecemeal-opt-in)).
 Each adds its fixtures to the demo in the same PR.
 
 | Slice | Repo                          | What lands                                                                                                                                                                                                            | Proven by (k3d, CPU)                                                          |
@@ -644,26 +777,72 @@ Each adds its fixtures to the demo in the same PR.
 S1 and the registry work of S2 can start together. S5 can start beside S2; S6
 needs S5, and S4 needs S2.
 
-## 7. Open owner decisions
+## 7. Owner decisions (settled 2026-11-26)
 
-Numbering continues forge#2994's (33–44). Each gives the realistic options, a
-recommendation and what it blocks.
+Numbering continues forge#2994's (33–44). The owner accepted this document on
+2026-11-26 ("2997 accept"), with one principle over all of it: "We are piecemeal
+opt-in. Nothing is all or nothing users can opt into certain features without
+taking others" ([the settled principle](#settled-principle-piecemeal-opt-in)).
 
-| #   | Decision                                 | Options                                                                                                                                                                                                                                                                          | Recommendation                                                                                                                                                                                                                     | Blocks      |
-| --- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| 45  | Shape of the managed add-ons             | (a) Typed managed components in `forge.MLStack`'s slots, lowering to `Adopt`/`Install`. (b) First-class Bundle kinds (`Bundle.kserves`), each with its own runtime binding, like `ManagedDatabase`. (c) No typed kinds: `Install` with chart values                              | (a). The add-ons depend on each other per cluster, and the duplicate-install checks already live on `MLStack`. (b) repeats the cluster on each and loses those checks; (c) cannot carry the settings the model release depends on  | S1          |
-| 46  | What "hosted" means for ML add-ons in v1 | (a) forge manages the operator in the customer's cluster; the control plane hosts the ledgers, telemetry, advisories and budgets; a hosted runtime stays an additive option. (b) Also a platform-run KServe for small CPU models on Reliant hosting now. (c) GPU hosting         | (a). Hosting has no GPUs, and CPU-only serving is a narrow product. (c) contradicts Settled 1. Revisit (b) when a customer asks to serve small models without a cluster                                                            | S1, pricing |
-| 47  | Add-on upgrade policy                    | (a) The version is written into `ml.k`; forge proposes bumps as a reviewed diff (`ml-addon-outdated`). (b) Omitted versions follow forge's pin, so upgrading forge upgrades the operator                                                                                         | (a). It is declarative and reviewed (ml-workloads P1), and an operator upgrade on a GPU cluster is not a side effect of a CLI upgrade. (b) stays possible for a team that omits `version`, with a lint warning                     | S1          |
-| 48  | How an InferenceService is declared      | (a) A narrow `forge.ModelService` that renders it, with `overrides`; `forge.Manifests` still works. (b) `forge.Manifests` with `release_inputs` only (ml-workloads as written). (c) KServe's alpha `LLMInferenceService`                                                         | (a). The release must link a model to its service to substitute the digest, tag traces and judge SLIs. It amends ml-workloads' "no typed wrappers" for this one shape, and stays a few fields, not a copy of the CRD. (c) is alpha | S2          |
-| 49  | KServe deployment mode                   | (a) Standard only in v1. (b) Serverless with Knative, for canaries and scale-to-zero                                                                                                                                                                                             | (a). It installs without Knative or Istio, which is what a customer's GPU cluster usually lacks. Online comparison stays in-app Changes. Revisit (b) with ml-workloads decision 8's router splits                                  | S1, S2      |
-| 50  | How KServe loads an OCI model            | (a) `modelcar`. (b) `native`, a Kubernetes image volume. (c) `fetch`, an init container                                                                                                                                                                                          | (a) by default: it works on any containerd. (b) when image volumes are on by default where the customer runs (needs containerd 2.1+, ml-workloads §3.5). (c) only as a fallback                                                    | S2          |
-| 51  | The segment verdict's rule               | (a) Paired comparison on the same eval-set digest; a metric regresses when the drop exceeds its confidence interval and the declared `max_regression`; any failing segment fails; an under-sampled segment is "not proven". (b) Aggregate only. (c) Thresholds without intervals | (a). It is the case the owner's notes name, and (c) blocks releases on noise (decision 22's concern)                                                                                                                               | S4          |
-| 52  | Where the eval harness runs              | (a) As a Job in the env's cluster, against the candidate's endpoint. (b) In a control-plane worker                                                                                                                                                                               | (a). Code evaluators run in customer code, as llm-agent-observability decision 5 settled; samples stay in the customer's bucket. LLM judges keep that decision's control-plane worker                                              | S4          |
-| 53  | The default training orchestrator        | (a) Kubeflow Trainer TrainJob under Kueue, plain Job for smoke runs. (b) JobSet. (c) Plain Job only                                                                                                                                                                              | (a). Trainer v2 runs on JobSet, has runtimes to declare once, and Kueue integrates with it. JobSet stays an `orchestrator` value for teams that use it                                                                             | S5          |
-| 54  | Datasets in v1                           | (a) A reference with a digest or snapshot id and a region on the run, nothing else. (b) A minimal dataset entity with versions                                                                                                                                                   | (a), as the owner suggested. It serves lineage and placement; (b) is the catalog's first step and can follow a design partner                                                                                                      | S6          |
-| 55  | When Kueue is installed                  | (a) When a template names a queue, or the `gpu-jobs-bypass-queue` finding is accepted. (b) Always with Trainer                                                                                                                                                                   | (a). The owner's order: Kueue when GPUs are contended. A single team's first TrainJob does not need it                                                                                                                             | S5          |
-| 56  | Billing for managed add-ons at GA        | (a) None separate: covered by observability ingest and the ML pricing. (b) A fee per managed cluster. (c) Per managed accelerator-hour                                                                                                                                           | (a) through beta, then decide with ml-workloads decision 11's data                                                                                                                                                                 | GA          |
-| 57  | The model's input/output contract        | (a) Named built-ins (`openai-chat`, `openai-completions`) plus a JSON Schema or OpenAPI file in the repo. (b) Free-form, unchecked                                                                                                                                               | (a). vLLM serves the OpenAI-compatible API, so most models need no file; a custom model's contract is a file the app's tests call against, and a contract change is a declared rollback floor                                      | S2          |
+### Settled (owner, 2026-11-26)
+
+Every decision below is settled on its recommended option. Item N is decision N,
+and the sections that raised each one describe the chosen option.
+
+45. **Typed managed components in `forge.MLStack`'s slots**, lowering to `Adopt`
+    and `Install`. `MLStack` is only a grouping: a stack with one component is a
+    valid stack, and `forge.ModelService`, a model release and an eval gate work
+    without any `MLStack`, collector or Kueue.
+46. **"Hosted" means forge manages the operator in the customer's cluster**, and
+    the control plane hosts the ledgers, telemetry, advisories and budgets. A
+    hosted runtime stays an additive option for later.
+47. **The add-on version is written into `ml.k`**, and forge proposes bumps as a
+    reviewed diff (`ml-addon-outdated`). An omitted version follows forge's pin,
+    with a lint warning.
+48. **A narrow `forge.ModelService` renders the InferenceService**, with an
+    `overrides` patch. `forge.Manifests` with `release_inputs` keeps working.
+49. **KServe runs in Standard mode only in v1.** Online comparison stays in-app
+    Changes.
+50. **KServe loads OCI models as `modelcar`** by default; `native` when image
+    volumes are on where the customer runs; `fetch` only as a fallback.
+51. **The segment verdict is a paired comparison** on the same eval-set digest. A
+    metric regresses when the drop exceeds its confidence interval and the
+    declared `max_regression`; any failing segment fails; an under-sampled
+    segment is "not proven".
+52. **The eval harness runs as a Job in the env's cluster**, against the
+    candidate's endpoint. LLM judges keep their control-plane worker.
+53. **The default training orchestrator is a Kubeflow Trainer TrainJob**, queued
+    by Kueue where Kueue is present, with a plain Job for smoke runs. JobSet stays
+    an `orchestrator` value.
+54. **A dataset is a reference** with a digest or snapshot id and a region on the
+    run, nothing else, in v1.
+55. **Kueue is installed when the stack declares it**: when a team starts naming
+    queues, or accepts the `gpu-jobs-bypass-queue` finding's KCL diff. Never as a
+    side effect, and never always with Trainer.
+56. **No separate charge for managed add-ons** through beta; GA pricing is decided
+    with ml-workloads decision 11's data.
+57. **The model's input/output contract** is a named built-in (`openai-chat`,
+    `openai-completions`) or a JSON Schema or OpenAPI file in the repo.
+
+### The record
+
+The options weighed, for the record. The chosen option is the recommended one.
+
+| #   | Decision                                 | Options weighed                                                                                                                                                                                                                                                                  | Chosen, and why                                                                                                                                                                                                                                                                                                           | Unblocks    |
+| --- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| 45  | Shape of the managed add-ons             | (a) Typed managed components in `forge.MLStack`'s slots, lowering to `Adopt`/`Install`. (b) First-class Bundle kinds (`Bundle.kserves`), each with its own runtime binding, like `ManagedDatabase`. (c) No typed kinds: `Install` with chart values                              | (a). The add-ons share a cluster, and the duplicate-install checks already live on `MLStack`. `MLStack` is only a grouping: one component alone is a valid stack, and nothing outside it requires one. (b) repeats the cluster on each and loses those checks; (c) cannot carry the settings the model release depends on | S1          |
+| 46  | What "hosted" means for ML add-ons in v1 | (a) forge manages the operator in the customer's cluster; the control plane hosts the ledgers, telemetry, advisories and budgets; a hosted runtime stays an additive option. (b) Also a platform-run KServe for small CPU models on Reliant hosting now. (c) GPU hosting         | (a). Hosting has no GPUs, and CPU-only serving is a narrow product. (c) contradicts Settled 1. Revisit (b) when a customer asks to serve small models without a cluster                                                                                                                                                   | S1, pricing |
+| 47  | Add-on upgrade policy                    | (a) The version is written into `ml.k`; forge proposes bumps as a reviewed diff (`ml-addon-outdated`). (b) Omitted versions follow forge's pin, so upgrading forge upgrades the operator                                                                                         | (a). It is declarative and reviewed (ml-workloads P1), and an operator upgrade on a GPU cluster is not a side effect of a CLI upgrade. (b) stays possible for a team that omits `version`, with a lint warning                                                                                                            | S1          |
+| 48  | How an InferenceService is declared      | (a) A narrow `forge.ModelService` that renders it, with `overrides`; `forge.Manifests` still works. (b) `forge.Manifests` with `release_inputs` only (ml-workloads as written). (c) KServe's alpha `LLMInferenceService`                                                         | (a). The release must link a model to its service to substitute the digest, tag traces and judge SLIs. It amends ml-workloads' "no typed wrappers" for this one shape, and stays a few fields, not a copy of the CRD. (c) is alpha                                                                                        | S2          |
+| 49  | KServe deployment mode                   | (a) Standard only in v1. (b) Serverless with Knative, for canaries and scale-to-zero                                                                                                                                                                                             | (a). It installs without Knative or Istio, which is what a customer's GPU cluster usually lacks. Online comparison stays in-app Changes. Revisit (b) with ml-workloads decision 8's router splits                                                                                                                         | S1, S2      |
+| 50  | How KServe loads an OCI model            | (a) `modelcar`. (b) `native`, a Kubernetes image volume. (c) `fetch`, an init container                                                                                                                                                                                          | (a) by default: it works on any containerd. (b) when image volumes are on by default where the customer runs (needs containerd 2.1+, ml-workloads §3.5). (c) only as a fallback                                                                                                                                           | S2          |
+| 51  | The segment verdict's rule               | (a) Paired comparison on the same eval-set digest; a metric regresses when the drop exceeds its confidence interval and the declared `max_regression`; any failing segment fails; an under-sampled segment is "not proven". (b) Aggregate only. (c) Thresholds without intervals | (a). It is the case the owner's notes name, and (c) blocks releases on noise (decision 22's concern)                                                                                                                                                                                                                      | S4          |
+| 52  | Where the eval harness runs              | (a) As a Job in the env's cluster, against the candidate's endpoint. (b) In a control-plane worker                                                                                                                                                                               | (a). Code evaluators run in customer code, as llm-agent-observability decision 5 settled; samples stay in the customer's bucket. LLM judges keep that decision's control-plane worker                                                                                                                                     | S4          |
+| 53  | The default training orchestrator        | (a) Kubeflow Trainer TrainJob under Kueue, plain Job for smoke runs. (b) JobSet. (c) Plain Job only                                                                                                                                                                              | (a). Trainer v2 runs on JobSet, has runtimes to declare once, and Kueue integrates with it where Kueue is present. JobSet stays an `orchestrator` value for teams that use it                                                                                                                                             | S5          |
+| 54  | Datasets in v1                           | (a) A reference with a digest or snapshot id and a region on the run, nothing else. (b) A minimal dataset entity with versions                                                                                                                                                   | (a), as the owner suggested. It serves lineage and placement; (b) is the catalog's first step and can follow a design partner                                                                                                                                                                                             | S6          |
+| 55  | When Kueue is installed                  | (a) When a template names a queue, or the `gpu-jobs-bypass-queue` finding is accepted. (b) Always with Trainer                                                                                                                                                                   | (a). The owner's order: Kueue when GPUs are contended. A single team's first TrainJob does not need it. "Installed" means the stack declares it; naming a queue with no Kueue is a render error, never an implicit install                                                                                                | S5          |
+| 56  | Billing for managed add-ons at GA        | (a) None separate: covered by observability ingest and the ML pricing. (b) A fee per managed cluster. (c) Per managed accelerator-hour                                                                                                                                           | (a) through beta, then decide with ml-workloads decision 11's data                                                                                                                                                                                                                                                        | GA          |
+| 57  | The model's input/output contract        | (a) Named built-ins (`openai-chat`, `openai-completions`) plus a JSON Schema or OpenAPI file in the repo. (b) Free-form, unchecked                                                                                                                                               | (a). vLLM serves the OpenAI-compatible API, so most models need no file; a custom model's contract is a file the app's tests call against, and a contract change is a declared rollback floor                                                                                                                             | S2          |
 
 ## Appendix: verification list
 

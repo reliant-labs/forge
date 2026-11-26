@@ -163,6 +163,27 @@ Absence from the wire keeps a client's `update_mask` off it, but a full replace
 whose entity was built from the request still writes the zero it holds — the
 gap `forge:immutable` closes.
 
+### A mask path is a whole column
+
+A path names a **whole column**, never a field inside one: a path into a JSONB
+column (`spec.task_ttl`) is not a column, so it is refused as `InvalidArgument`
+(`unknown_field`), and the column is written whole or not at all. A check that
+validates a column only when the update writes it must not match paths by
+hand: `crud.MaskTouches(paths, "spec")` applies the op's own rules (an empty
+mask or `"*"` is a full replace and writes every column; `spec.x` counts as
+touching `spec`; `spec_version` does not):
+
+```go
+func (s *Service) UpdateJob(ctx context.Context, req *connect.Request[pb.UpdateJobRequest]) (*connect.Response[pb.UpdateJobResponse], error) {
+    if crud.MaskTouches(req.Msg.GetUpdateMask().GetPaths(), "spec") {
+        if err := s.validateSpec(req.Msg.GetJob().GetSpec()); err != nil {
+            return nil, err
+        }
+    }
+    return crud.HandleUpdate(s.crudUpdateJobOp())(ctx, req)
+}
+```
+
 ## `forge:version` — concurrent writes to the same row
 
 By default the last writer wins, silently: two clients that each change a

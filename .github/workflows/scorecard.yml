@@ -25,6 +25,13 @@ on:
 
 permissions: read-all
 
+# ci.yml's rule (internal/templates/ci_concurrency_test.go): a newer push to
+# main supersedes the pending run, a run in progress finishes, and scheduled
+# runs keep a group of their own.
+concurrency:
+  group: scorecard-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   analysis:
     name: Scorecard analysis

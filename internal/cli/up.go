@@ -3349,6 +3349,7 @@ func buildHostServiceCmd(ctx context.Context, cfg *config.ProjectConfig, w Workl
 	if err := withHostCover(ctx, &spec, w, env); err != nil {
 		return nil, "", err
 	}
+	excludeUnbuiltAirDirs(ctx, &spec, w.Name)
 	cmd, err := hostlaunch.BuildCmd(ctx, w.Name, spec)
 	if err != nil {
 		return nil, "", err
